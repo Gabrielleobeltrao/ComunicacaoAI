@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { Chats } from './pages/Chats'
 import { Dashboard } from './pages/Dashboard'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
@@ -18,6 +19,14 @@ function App() {
         element={
           <ProtectedRoute>
             <Dashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/chats"
+        element={
+          <ProtectedRoute>
+            <Chats />
           </ProtectedRoute>
         }
       />

@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { WidgetManager } from '../components/WidgetManager'
 import { signOut, useSession } from '../lib/auth-client'
 
@@ -14,7 +14,12 @@ export function Dashboard() {
   return (
     <div className="min-h-screen bg-slate-950 text-white">
       <header className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
-        <h1 className="text-lg font-semibold">Agentes</h1>
+        <div className="flex items-center gap-6">
+          <h1 className="text-lg font-semibold">Agentes</h1>
+          <Link to="/chats" className="text-sm text-slate-400 transition hover:text-white">
+            Chats
+          </Link>
+        </div>
         <div className="flex items-center gap-4">
           <span className="text-sm text-slate-400">
             {session?.user.email}
@@ -41,13 +46,6 @@ export function Dashboard() {
           <h2 className="mb-2 font-medium">Agentes conectados</h2>
           <p className="text-sm text-slate-400">
             Nenhum agente configurado ainda.
-          </p>
-        </section>
-
-        <section className="rounded-xl border border-slate-800 bg-slate-900 p-6 md:col-span-2">
-          <h2 className="mb-2 font-medium">Chat</h2>
-          <p className="text-sm text-slate-400">
-            O chat entre os agentes vai aparecer aqui.
           </p>
         </section>
 
