@@ -8,4 +8,7 @@ export const auth = betterAuth({
     enabled: true,
   },
   trustedOrigins: [process.env.CLIENT_URL ?? 'http://localhost:5173'],
+  advanced: {
+    cookiePrefix: 'comunicacaoai',
+  },
 })
