@@ -1,0 +1,16 @@
+{
+  "name": "comunicacaoai",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "concurrently -n frontend,backend -c blue,green \"npm run dev -w frontend\" \"npm run dev -w backend\"",
+    "build": "npm run build -w frontend && npm run build -w backend"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}
