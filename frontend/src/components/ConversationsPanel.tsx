@@ -25,6 +25,7 @@ export function ConversationsPanel() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<ConversationSummary | null>(null)
+  const [widgetFilter, setWidgetFilter] = useState('')
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [reply, setReply] = useState('')
   const [sending, setSending] = useState(false)
@@ -132,32 +133,59 @@ export function ConversationsPanel() {
     )
   }
 
+  const widgetOptions = Array.from(
+    new Map(conversations.map((c) => [c.widgetId, c.widgetName])),
+    ([id, name]) => ({ id, name }),
+  )
+  const filteredConversations = widgetFilter
+    ? conversations.filter((c) => c.widgetId === widgetFilter)
+    : conversations
+
   return (
     <div className="grid gap-4 md:grid-cols-[minmax(0,240px)_1fr]">
-      <ul className="space-y-2">
-        {conversations.map((conversation) => {
-          const isSelected =
-            selected?.widgetId === conversation.widgetId &&
-            selected?.conversationId === conversation.conversationId
+      <div className="space-y-2">
+        <select
+          value={widgetFilter}
+          onChange={(e) => setWidgetFilter(e.target.value)}
+          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+        >
+          <option value="">Todos os widgets</option>
+          {widgetOptions.map((widget) => (
+            <option key={widget.id} value={widget.id}>
+              {widget.name}
+            </option>
+          ))}
+        </select>
 
-          return (
-            <li key={`${conversation.widgetId}-${conversation.conversationId}`}>
-              <button
-                type="button"
-                onClick={() => setSelected(conversation)}
-                className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-                  isSelected
-                    ? 'border-slate-500 bg-slate-800'
-                    : 'border-slate-800 bg-slate-950/50 hover:bg-slate-900'
-                }`}
-              >
-                <p className="font-medium">{conversation.widgetName}</p>
-                <p className="truncate text-slate-400">{conversation.lastMessage}</p>
-              </button>
-            </li>
-          )
-        })}
-      </ul>
+        {filteredConversations.length === 0 ? (
+          <p className="text-sm text-slate-400">Nenhuma conversa para esse widget.</p>
+        ) : (
+          <ul className="space-y-2">
+            {filteredConversations.map((conversation) => {
+              const isSelected =
+                selected?.widgetId === conversation.widgetId &&
+                selected?.conversationId === conversation.conversationId
+
+              return (
+                <li key={`${conversation.widgetId}-${conversation.conversationId}`}>
+                  <button
+                    type="button"
+                    onClick={() => setSelected(conversation)}
+                    className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
+                      isSelected
+                        ? 'border-slate-500 bg-slate-800'
+                        : 'border-slate-800 bg-slate-950/50 hover:bg-slate-900'
+                    }`}
+                  >
+                    <p className="font-medium">{conversation.widgetName}</p>
+                    <p className="truncate text-slate-400">{conversation.lastMessage}</p>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
 
       <div className="flex h-120 flex-col rounded-lg border border-slate-800 bg-slate-950/50">
         <div className="flex-1 space-y-2 overflow-y-auto p-3">
