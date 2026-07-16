@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useParams } from 'react-router'
 import { API_URL } from '../lib/api'
+import { socket } from '../lib/socket'
 
 interface WidgetConfig {
   name: string
@@ -9,6 +10,7 @@ interface WidgetConfig {
 
 interface WidgetMessage {
   _id: string
+  conversationId: string
   role: 'visitor' | 'agent'
   content: string
   createdAt: string
@@ -63,6 +65,29 @@ export function Widget() {
     load()
   }, [publicKey])
 
+  // Realtime delivery: join this visitor's own conversation room so new
+  // messages (e.g. the owner's reply) arrive instantly, without polling.
+  useEffect(() => {
+    const id = conversationId.current
+    if (!id) return
+
+    socket.connect()
+    socket.emit('join-conversation', { conversationId: id })
+
+    function handleMessage(message: WidgetMessage) {
+      if (message.conversationId !== id) return
+      setMessages((prev) => (prev.some((m) => m._id === message._id) ? prev : [...prev, message]))
+    }
+
+    socket.on('message', handleMessage)
+
+    return () => {
+      socket.off('message', handleMessage)
+      socket.emit('leave-conversation', { conversationId: id })
+    }
+  }, [publicKey])
+
+  // Low-frequency fallback in case a socket event is missed (e.g. a reconnect gap).
   useEffect(() => {
     if (!publicKey) return
 
@@ -73,7 +98,7 @@ export function Widget() {
       if (res.ok) {
         setMessages(await res.json())
       }
-    }, 3000)
+    }, 15000)
 
     return () => clearInterval(interval)
   }, [publicKey])
@@ -91,16 +116,12 @@ export function Widget() {
     setInput('')
 
     try {
-      const res = await fetch(`${API_URL}/api/public/widgets/${publicKey}/messages`, {
+      await fetch(`${API_URL}/api/public/widgets/${publicKey}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId: conversationId.current, content }),
       })
-
-      if (res.ok) {
-        const newMessages: WidgetMessage[] = await res.json()
-        setMessages((prev) => [...prev, ...newMessages])
-      }
+      // The new message arrives via the "message" socket event above.
     } finally {
       setSending(false)
     }

@@ -1,11 +1,14 @@
 import 'dotenv/config'
+import { createServer } from 'node:http'
 import cors from 'cors'
 import express from 'express'
 import type { NextFunction, Request, Response } from 'express'
 import { ObjectId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
+import { Server } from 'socket.io'
 import { auth } from './auth.js'
 import { mongoClient } from './db.js'
+import type { WidgetMessage } from './widgets.js'
 import {
   addMessage,
   addOwnerReply,
@@ -19,10 +22,11 @@ import {
 
 const app = express()
 const port = process.env.PORT ?? 4000
+const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173'
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URL ?? 'http://localhost:5173',
+    origin: clientUrl,
     credentials: true,
   }),
 )
@@ -30,6 +34,37 @@ app.use(
 app.all('/api/auth/*splat', toNodeHandler(auth))
 
 app.use(express.json())
+
+const httpServer = createServer(app)
+const io = new Server(httpServer, {
+  cors: { origin: clientUrl, credentials: true },
+})
+
+io.on('connection', (socket) => {
+  socket.on('join-conversation', ({ conversationId }: { conversationId?: string }) => {
+    if (typeof conversationId === 'string') {
+      socket.join(`conversation:${conversationId}`)
+    }
+  })
+
+  socket.on('leave-conversation', ({ conversationId }: { conversationId?: string }) => {
+    if (typeof conversationId === 'string') {
+      socket.leave(`conversation:${conversationId}`)
+    }
+  })
+
+  socket.on('join-owner', async () => {
+    const session = await auth.api.getSession({ headers: fromNodeHeaders(socket.handshake.headers) })
+    if (session) {
+      socket.join(`owner:${session.user.id}`)
+    }
+  })
+})
+
+function broadcastMessage(message: WidgetMessage, ownerId: string) {
+  io.to(`conversation:${message.conversationId}`).emit('message', message)
+  io.to(`owner:${ownerId}`).emit('conversations-updated')
+}
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
@@ -113,6 +148,7 @@ app.post(
       res.status(404).json({ error: 'Conversation not found' })
       return
     }
+    broadcastMessage(message, res.locals.userId)
     res.status(201).json(message)
   },
 )
@@ -153,12 +189,13 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
     return
   }
   const visitorMessage = await addMessage(widget._id, conversationId, 'visitor', content)
+  broadcastMessage(visitorMessage, widget.ownerId)
   res.status(201).json([visitorMessage])
 })
 
 async function start() {
   await mongoClient.connect()
-  app.listen(port, () => {
+  httpServer.listen(port, () => {
     console.log(`Backend listening on http://localhost:${port}`)
   })
 }

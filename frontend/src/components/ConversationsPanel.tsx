@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
+import { socket } from '../lib/socket'
 
 interface ConversationSummary {
   widgetId: string
@@ -14,6 +15,7 @@ interface ConversationSummary {
 
 interface ConversationMessage {
   _id: string
+  conversationId: string
   role: 'visitor' | 'agent'
   content: string
   createdAt: string
@@ -40,20 +42,29 @@ export function ConversationsPanel() {
     }
 
     load()
-    const interval = setInterval(load, 5000)
+    const interval = setInterval(load, 20000)
+
+    // Realtime: refresh the list instantly whenever any of the owner's
+    // widgets receives a new message, instead of waiting for the poll.
+    socket.connect()
+    socket.emit('join-owner')
+    socket.on('conversations-updated', load)
+
     return () => {
       cancelled = true
       clearInterval(interval)
+      socket.off('conversations-updated', load)
     }
   }, [])
 
   useEffect(() => {
     if (!selected) return
     let cancelled = false
+    const { widgetId, conversationId } = selected
 
     async function loadMessages() {
       const res = await fetch(
-        `${API_URL}/api/widgets/${selected!.widgetId}/conversations/${selected!.conversationId}/messages`,
+        `${API_URL}/api/widgets/${widgetId}/conversations/${conversationId}/messages`,
         { credentials: 'include' },
       )
       if (res.ok && !cancelled) {
@@ -62,10 +73,22 @@ export function ConversationsPanel() {
     }
 
     loadMessages()
-    const interval = setInterval(loadMessages, 4000)
+    const interval = setInterval(loadMessages, 15000)
+
+    socket.emit('join-conversation', { conversationId })
+
+    function handleMessage(message: ConversationMessage) {
+      if (message.conversationId !== conversationId) return
+      setMessages((prev) => (prev.some((m) => m._id === message._id) ? prev : [...prev, message]))
+    }
+
+    socket.on('message', handleMessage)
+
     return () => {
       cancelled = true
       clearInterval(interval)
+      socket.off('message', handleMessage)
+      socket.emit('leave-conversation', { conversationId })
     }
   }, [selected])
 
@@ -82,7 +105,7 @@ export function ConversationsPanel() {
     setReply('')
 
     try {
-      const res = await fetch(
+      await fetch(
         `${API_URL}/api/widgets/${selected.widgetId}/conversations/${selected.conversationId}/messages`,
         {
           method: 'POST',
@@ -91,11 +114,7 @@ export function ConversationsPanel() {
           body: JSON.stringify({ content }),
         },
       )
-
-      if (res.ok) {
-        const message: ConversationMessage = await res.json()
-        setMessages((prev) => [...prev, message])
-      }
+      // The new message arrives via the "message" socket event above.
     } finally {
       setSending(false)
     }
