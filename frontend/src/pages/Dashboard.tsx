@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router'
+import { WidgetManager } from '../components/WidgetManager'
 import { signOut, useSession } from '../lib/auth-client'
 
 export function Dashboard() {
@@ -48,6 +49,15 @@ export function Dashboard() {
           <p className="text-sm text-slate-400">
             O chat entre os agentes vai aparecer aqui.
           </p>
+        </section>
+
+        <section className="rounded-xl border border-slate-800 bg-slate-900 p-6 md:col-span-2">
+          <h2 className="mb-2 font-medium">Widget de chat</h2>
+          <p className="mb-4 text-sm text-slate-400">
+            Crie um widget e cole o script abaixo no site do seu cliente para
+            abrir um chat flutuante conectado a este objetivo.
+          </p>
+          <WidgetManager />
         </section>
       </main>
     </div>
