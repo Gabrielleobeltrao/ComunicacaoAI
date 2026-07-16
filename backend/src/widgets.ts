@@ -41,6 +41,18 @@ export function getWidgetByPublicKey(publicKey: string) {
   return widgets.findOne({ publicKey })
 }
 
+export function getWidgetById(widgetId: ObjectId) {
+  return widgets.findOne({ _id: widgetId })
+}
+
+export function renameWidget(ownerId: string, widgetId: ObjectId, name: string) {
+  return widgets.findOneAndUpdate(
+    { _id: widgetId, ownerId },
+    { $set: { name } },
+    { returnDocument: 'after' },
+  )
+}
+
 export function listMessages(widgetId: ObjectId, conversationId: string) {
   return widgetMessages.find({ widgetId, conversationId }).sort({ createdAt: 1 }).toArray()
 }
