@@ -1,10 +1,57 @@
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
+import { AgentManager } from '../components/AgentManager'
+import { ApiKeySettings } from '../components/ApiKeySettings'
 import { WidgetManager } from '../components/WidgetManager'
+import { API_URL } from '../lib/api'
 import { signOut, useSession } from '../lib/auth-client'
+import type { AgentSummary, WidgetSummary } from '../lib/types'
 
 export function Dashboard() {
   const navigate = useNavigate()
   const { data: session } = useSession()
+  const [widgets, setWidgets] = useState<WidgetSummary[]>([])
+  const [widgetsLoading, setWidgetsLoading] = useState(true)
+  const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [agentsLoading, setAgentsLoading] = useState(true)
+
+  const loadWidgets = useCallback(async () => {
+    const res = await fetch(`${API_URL}/api/widgets`, { credentials: 'include' })
+    if (res.ok) setWidgets(await res.json())
+    setWidgetsLoading(false)
+  }, [])
+
+  const loadAgents = useCallback(async () => {
+    const res = await fetch(`${API_URL}/api/agents`, { credentials: 'include' })
+    if (res.ok) setAgents(await res.json())
+    setAgentsLoading(false)
+  }, [])
+
+  useEffect(() => {
+    loadWidgets()
+    loadAgents()
+  }, [loadWidgets, loadAgents])
+
+  async function handleAssignAgent(widgetId: string, agentId: string) {
+    if (agentId) {
+      await fetch(`${API_URL}/api/agents/${agentId}/widget`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ widgetId }),
+      })
+    } else {
+      const current = agents.find((agent) => agent.widgetId === widgetId)
+      if (!current) return
+      await fetch(`${API_URL}/api/agents/${current._id}/widget`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ widgetId: null }),
+      })
+    }
+    await loadAgents()
+  }
 
   async function handleSignOut() {
     await signOut()
@@ -21,6 +68,7 @@ export function Dashboard() {
           </Link>
         </div>
         <div className="flex items-center gap-4">
+          <ApiKeySettings />
           <span className="text-sm text-slate-400">
             {session?.user.email}
           </span>
@@ -42,20 +90,33 @@ export function Dashboard() {
           </p>
         </section>
 
-        <section className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-          <h2 className="mb-2 font-medium">Agentes conectados</h2>
-          <p className="text-sm text-slate-400">
-            Nenhum agente configurado ainda.
+        <section className="rounded-xl border border-slate-800 bg-slate-900 p-6 md:col-span-2">
+          <h2 className="mb-2 font-medium">Agentes</h2>
+          <p className="mb-4 text-sm text-slate-400">
+            Crie um agente aqui. Para vincular a um widget, use o seletor na
+            seção "Widget de chat" abaixo.
           </p>
+          <AgentManager
+            agents={agents}
+            loading={agentsLoading}
+            widgets={widgets}
+            onChange={loadAgents}
+          />
         </section>
 
         <section className="rounded-xl border border-slate-800 bg-slate-900 p-6 md:col-span-2">
           <h2 className="mb-2 font-medium">Widget de chat</h2>
           <p className="mb-4 text-sm text-slate-400">
-            Crie um widget e cole o script abaixo no site do seu cliente para
-            abrir um chat flutuante conectado a este objetivo.
+            Crie um widget, escolha qual agente vai atendê-lo e cole o script
+            abaixo no site do seu cliente.
           </p>
-          <WidgetManager />
+          <WidgetManager
+            widgets={widgets}
+            loading={widgetsLoading}
+            agents={agents}
+            onChange={loadWidgets}
+            onAssignAgent={handleAssignAgent}
+          />
         </section>
       </main>
     </div>
