@@ -52,7 +52,7 @@ Requirements: Node.js 22+, npm, and a MongoDB Atlas cluster (a free tier works).
 2. Configure the backend environment — copy `backend/.env.example` to `backend/.env` and fill in:
    - `MONGODB_URI` — your MongoDB Atlas connection string
    - `BETTER_AUTH_SECRET` — any long random string
-   - `BETTER_AUTH_URL` — `http://localhost:3001` for local dev
+   - `BETTER_AUTH_URL` — `http://localhost:4000` for local dev
    - `CLIENT_URL` — `http://localhost:5173` for local dev
 
 3. Optionally configure the frontend — copy `frontend/.env.example` to `frontend/.env` if you need to point `VITE_API_URL` somewhere other than the default (the Vite dev server already proxies `/api` to the backend, so this is usually not required locally).
@@ -62,7 +62,7 @@ Requirements: Node.js 22+, npm, and a MongoDB Atlas cluster (a free tier works).
    npm run dev
    ```
    - Frontend: http://localhost:5173
-   - Backend: http://localhost:3001
+   - Backend: http://localhost:4000
 
 ## Scripts
 

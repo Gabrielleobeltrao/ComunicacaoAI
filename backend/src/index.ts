@@ -6,7 +6,7 @@ import { mongoClient } from './db.js'
 import { toNodeHandler } from 'better-auth/node'
 
 const app = express()
-const port = process.env.PORT ?? 3001
+const port = process.env.PORT ?? 4000
 
 app.use(
   cors({
