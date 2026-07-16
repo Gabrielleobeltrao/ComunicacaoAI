@@ -1,24 +1,10 @@
 {
   "permissions": {
     "allow": [
+      "Bash",
       "Write",
       "Edit",
-      "Bash(npm *)",
-      "Bash(npx *)",
-      "Bash(node *)",
-      "Bash(mkdir *)",
-      "Bash(mv *)",
-      "Bash(cp *)",
-      "Bash(ls *)",
-      "Bash(cat *)",
-      "Bash(touch *)",
-      "Bash(chmod *)",
-      "Bash(find *)",
-      "Bash(grep *)",
-      "Bash(git *)",
-      "Bash(rm -rf frontend/node_modules)",
-      "Bash(rm -rf backend/node_modules)",
-      "Bash(curl *)"
+      "Read"
     ]
   }
 }
