@@ -1,5 +1,5 @@
 const VOYAGE_API_URL = 'https://api.voyageai.com/v1/embeddings'
-const VOYAGE_MODEL = process.env.VOYAGE_MODEL ?? 'voyage-3'
+const VOYAGE_MODEL = process.env.VOYAGE_MODEL ?? 'voyage-4'
 
 interface VoyageEmbeddingResponse {
   data: { embedding: number[] }[]
