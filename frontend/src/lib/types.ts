@@ -1,7 +1,14 @@
+export type WidgetPosition = 'right' | 'left'
+
 export interface WidgetSummary {
   _id: string
   name: string
   publicKey: string
+  primaryColor: string | null
+  welcomeTitle: string | null
+  welcomeMessage: string | null
+  position: WidgetPosition
+  avatarUrl: string | null
 }
 
 export interface AgentSummary {
