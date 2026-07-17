@@ -67,21 +67,30 @@ export function Widget() {
 
   // Realtime delivery: join this visitor's own conversation room so new
   // messages (e.g. the owner's reply) arrive instantly, without polling.
+  // Room membership lives on the socket connection, so it's lost on any
+  // reconnect (backend restart, brief network drop) — rejoin on every
+  // "connect" event, not just the first one, or messages silently stop
+  // arriving until a manual page refresh.
   useEffect(() => {
     const id = conversationId.current
     if (!id) return
 
-    socket.connect()
-    socket.emit('join-conversation', { conversationId: id })
+    function joinRoom() {
+      socket.emit('join-conversation', { conversationId: id })
+    }
 
     function handleMessage(message: WidgetMessage) {
       if (message.conversationId !== id) return
       setMessages((prev) => (prev.some((m) => m._id === message._id) ? prev : [...prev, message]))
     }
 
+    socket.on('connect', joinRoom)
     socket.on('message', handleMessage)
+    socket.connect()
+    if (socket.connected) joinRoom()
 
     return () => {
+      socket.off('connect', joinRoom)
       socket.off('message', handleMessage)
       socket.emit('leave-conversation', { conversationId: id })
     }

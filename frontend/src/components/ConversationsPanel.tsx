@@ -47,13 +47,21 @@ export function ConversationsPanel() {
 
     // Realtime: refresh the list instantly whenever any of the owner's
     // widgets receives a new message, instead of waiting for the poll.
-    socket.connect()
-    socket.emit('join-owner')
+    // Room membership is lost on reconnect, so rejoin on every "connect"
+    // event (not just the first) or updates silently stop arriving.
+    function joinOwnerRoom() {
+      socket.emit('join-owner')
+    }
+
+    socket.on('connect', joinOwnerRoom)
     socket.on('conversations-updated', load)
+    socket.connect()
+    if (socket.connected) joinOwnerRoom()
 
     return () => {
       cancelled = true
       clearInterval(interval)
+      socket.off('connect', joinOwnerRoom)
       socket.off('conversations-updated', load)
     }
   }, [])
@@ -76,18 +84,23 @@ export function ConversationsPanel() {
     loadMessages()
     const interval = setInterval(loadMessages, 15000)
 
-    socket.emit('join-conversation', { conversationId })
+    function joinRoom() {
+      socket.emit('join-conversation', { conversationId })
+    }
 
     function handleMessage(message: ConversationMessage) {
       if (message.conversationId !== conversationId) return
       setMessages((prev) => (prev.some((m) => m._id === message._id) ? prev : [...prev, message]))
     }
 
+    socket.on('connect', joinRoom)
     socket.on('message', handleMessage)
+    if (socket.connected) joinRoom()
 
     return () => {
       cancelled = true
       clearInterval(interval)
+      socket.off('connect', joinRoom)
       socket.off('message', handleMessage)
       socket.emit('leave-conversation', { conversationId })
     }
