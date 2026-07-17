@@ -9,7 +9,7 @@ const PLATFORM_API_KEY = process.env.OPENAI_API_KEY
 // Used only if we can't reach OpenAI (no key configured yet, or the API call fails).
 const FALLBACK_MODELS = [
   { id: 'gpt-5.1', label: 'GPT-5.1' },
-  { id: 'gpt-5.1-mini', label: 'GPT-5.1 Mini' },
+  { id: 'gpt-5-mini', label: 'GPT-5 Mini' },
 ]
 
 // OpenAI's /v1/models lists everything on the account (embeddings, tts,
@@ -74,7 +74,7 @@ export async function generateAgentReply(
 ): Promise<string> {
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
-    max_tokens: 1024,
+    max_completion_tokens: 1024,
     messages: [
       { role: 'system', content: buildSystemPrompt(objective, knowledge) },
       ...history.map((turn) => ({ role: turn.role, content: turn.content })),
@@ -91,7 +91,7 @@ export async function transcribeImage(
 ): Promise<string> {
   const response = await buildClient(apiKey).chat.completions.create({
     model: DEFAULT_MODEL,
-    max_tokens: 2048,
+    max_completion_tokens: 2048,
     messages: [
       {
         role: 'user',
