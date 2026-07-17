@@ -33,7 +33,7 @@ import {
   getProviderKeyStatus,
   setProviderApiKey,
 } from './userSettings.js'
-import type { WidgetMessage } from './widgets.js'
+import type { WidgetMessage, WidgetPosition } from './widgets.js'
 import {
   addMessage,
   addOwnerReply,
@@ -44,18 +44,24 @@ import {
   listConversationsForOwner,
   listMessages,
   listWidgets,
-  renameWidget,
+  setWidgetAvatar,
+  updateWidget,
 } from './widgets.js'
 
 const app = express()
 const port = process.env.PORT ?? 4000
 const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173'
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } })
+const uploadAvatar = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } })
+const AVATAR_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 
 app.use(
-  cors({
-    origin: clientUrl,
-    credentials: true,
+  cors((req, callback) => {
+    // Public widget endpoints are fetched by widget-loader.js from arbitrary
+    // customer domains, so they need to allow any origin. They don't use
+    // cookies (no requireAuth), so credentials stay off for that reflection.
+    const isPublicWidgetRoute = req.path.startsWith('/api/public/')
+    callback(null, isPublicWidgetRoute ? { origin: true, credentials: false } : { origin: clientUrl, credentials: true })
   }),
 )
 
@@ -153,13 +159,27 @@ app.delete('/api/settings/:provider/key', requireAuth, async (req, res) => {
   res.status(204).end()
 })
 
+function isWidgetPosition(value: unknown): value is WidgetPosition {
+  return value === 'left' || value === 'right'
+}
+
 app.post('/api/widgets', requireAuth, async (req, res) => {
-  const { name } = req.body ?? {}
+  const { name, primaryColor, welcomeTitle, welcomeMessage, position } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
     return
   }
-  const widget = await createWidget(res.locals.userId, name)
+  if (position !== undefined && !isWidgetPosition(position)) {
+    res.status(400).json({ error: 'Invalid position' })
+    return
+  }
+
+  const widget = await createWidget(res.locals.userId, name, {
+    primaryColor: typeof primaryColor === 'string' ? primaryColor : undefined,
+    welcomeTitle: typeof welcomeTitle === 'string' ? welcomeTitle : undefined,
+    welcomeMessage: typeof welcomeMessage === 'string' ? welcomeMessage : undefined,
+    position,
+  })
   res.status(201).json(widget)
 })
 
@@ -174,12 +194,72 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid widget id' })
     return
   }
-  const { name } = req.body ?? {}
-  if (!name) {
-    res.status(400).json({ error: 'name is required' })
+  const { name, primaryColor, welcomeTitle, welcomeMessage, position } = req.body ?? {}
+  const updates: {
+    name?: string
+    primaryColor?: string | null
+    welcomeTitle?: string | null
+    welcomeMessage?: string | null
+    position?: WidgetPosition
+  } = {}
+  if (typeof name === 'string' && name.trim()) updates.name = name
+  if (typeof primaryColor === 'string' || primaryColor === null) updates.primaryColor = primaryColor || null
+  if (typeof welcomeTitle === 'string' || welcomeTitle === null) updates.welcomeTitle = welcomeTitle || null
+  if (typeof welcomeMessage === 'string' || welcomeMessage === null) {
+    updates.welcomeMessage = welcomeMessage || null
+  }
+  if (position !== undefined) {
+    if (!isWidgetPosition(position)) {
+      res.status(400).json({ error: 'Invalid position' })
+      return
+    }
+    updates.position = position
+  }
+  if (Object.keys(updates).length === 0) {
+    res.status(400).json({ error: 'Nothing to update' })
     return
   }
-  const widget = await renameWidget(res.locals.userId, new ObjectId(widgetId), name)
+
+  const widget = await updateWidget(res.locals.userId, new ObjectId(widgetId), updates)
+  if (!widget) {
+    res.status(404).json({ error: 'Widget not found' })
+    return
+  }
+  res.json(widget)
+})
+
+app.post(
+  '/api/widgets/:widgetId/avatar',
+  requireAuth,
+  uploadAvatar.single('file'),
+  async (req, res) => {
+    const widgetId = String(req.params.widgetId)
+    if (!ObjectId.isValid(widgetId)) {
+      res.status(400).json({ error: 'Invalid widget id' })
+      return
+    }
+    if (!req.file || !AVATAR_MIME_TYPES.has(req.file.mimetype)) {
+      res.status(400).json({ error: 'A valid image file (jpeg, png, gif or webp) is required' })
+      return
+    }
+
+    const avatarUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`
+    const widget = await setWidgetAvatar(res.locals.userId, new ObjectId(widgetId), avatarUrl)
+    if (!widget) {
+      res.status(404).json({ error: 'Widget not found' })
+      return
+    }
+    res.json(widget)
+  },
+)
+
+app.delete('/api/widgets/:widgetId/avatar', requireAuth, async (req, res) => {
+  const widgetId = String(req.params.widgetId)
+  if (!ObjectId.isValid(widgetId)) {
+    res.status(400).json({ error: 'Invalid widget id' })
+    return
+  }
+  const widget = await setWidgetAvatar(res.locals.userId, new ObjectId(widgetId), null)
   if (!widget) {
     res.status(404).json({ error: 'Widget not found' })
     return
@@ -443,7 +523,14 @@ app.get('/api/public/widgets/:publicKey', async (req, res) => {
     res.status(404).json({ error: 'Widget not found' })
     return
   }
-  res.json({ name: widget.name })
+  res.json({
+    name: widget.name,
+    primaryColor: widget.primaryColor,
+    welcomeTitle: widget.welcomeTitle,
+    welcomeMessage: widget.welcomeMessage,
+    position: widget.position,
+    avatarUrl: widget.avatarUrl,
+  })
 })
 
 app.get('/api/public/widgets/:publicKey/messages', async (req, res) => {

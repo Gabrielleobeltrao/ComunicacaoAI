@@ -2,12 +2,19 @@ import { randomBytes } from 'crypto'
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 
+export type WidgetPosition = 'right' | 'left'
+
 export interface Widget {
   _id: ObjectId
   ownerId: string
   name: string
   publicKey: string
   createdAt: Date
+  primaryColor: string | null
+  welcomeTitle: string | null
+  welcomeMessage: string | null
+  position: WidgetPosition
+  avatarUrl: string | null
 }
 
 export interface WidgetMessage {
@@ -22,12 +29,26 @@ export interface WidgetMessage {
 const widgets = db.collection<Widget>('widgets')
 const widgetMessages = db.collection<WidgetMessage>('widget_messages')
 
-export async function createWidget(ownerId: string, name: string) {
+export async function createWidget(
+  ownerId: string,
+  name: string,
+  options: {
+    primaryColor?: string | null
+    welcomeTitle?: string | null
+    welcomeMessage?: string | null
+    position?: WidgetPosition
+  } = {},
+) {
   const widget: Omit<Widget, '_id'> = {
     ownerId,
     name,
     publicKey: randomBytes(9).toString('base64url'),
     createdAt: new Date(),
+    primaryColor: options.primaryColor ?? null,
+    welcomeTitle: options.welcomeTitle ?? null,
+    welcomeMessage: options.welcomeMessage ?? null,
+    position: options.position ?? 'right',
+    avatarUrl: null,
   }
   const result = await widgets.insertOne(widget as Widget)
   return { ...widget, _id: result.insertedId }
@@ -45,10 +66,28 @@ export function getWidgetById(widgetId: ObjectId) {
   return widgets.findOne({ _id: widgetId })
 }
 
-export function renameWidget(ownerId: string, widgetId: ObjectId, name: string) {
+export function updateWidget(
+  ownerId: string,
+  widgetId: ObjectId,
+  updates: {
+    name?: string
+    primaryColor?: string | null
+    welcomeTitle?: string | null
+    welcomeMessage?: string | null
+    position?: WidgetPosition
+  },
+) {
   return widgets.findOneAndUpdate(
     { _id: widgetId, ownerId },
-    { $set: { name } },
+    { $set: updates },
+    { returnDocument: 'after' },
+  )
+}
+
+export function setWidgetAvatar(ownerId: string, widgetId: ObjectId, avatarUrl: string | null) {
+  return widgets.findOneAndUpdate(
+    { _id: widgetId, ownerId },
+    { $set: { avatarUrl } },
     { returnDocument: 'after' },
   )
 }
