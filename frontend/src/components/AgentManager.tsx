@@ -43,6 +43,13 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
   const [deletingDocId, setDeletingDocId] = useState<string | null>(null)
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([])
 
+  const [viewingDocId, setViewingDocId] = useState<string | null>(null)
+  const [viewingDocTitle, setViewingDocTitle] = useState('')
+  const [viewingDocContent, setViewingDocContent] = useState('')
+  const [viewingDocLoading, setViewingDocLoading] = useState(false)
+  const [savingDocView, setSavingDocView] = useState(false)
+  const [docViewError, setDocViewError] = useState<string | null>(null)
+
   useEffect(() => {
     async function loadProviders() {
       const res = await fetch(`${API_URL}/api/providers`, { credentials: 'include' })
@@ -88,6 +95,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setNewDocContent('')
     setNewDocFile(null)
     setDocError(null)
+    closeDocumentView()
     loadDocuments(agent._id)
   }
 
@@ -260,6 +268,61 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     }
   }
 
+  async function openDocumentView(documentId: string) {
+    if (!editingAgent) return
+    setViewingDocId(documentId)
+    setViewingDocLoading(true)
+    setDocViewError(null)
+
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${editingAgent._id}/documents/${documentId}`, {
+        credentials: 'include',
+      })
+      if (!res.ok) {
+        setDocViewError('Não foi possível carregar o documento.')
+        return
+      }
+      const doc = await res.json()
+      setViewingDocTitle(doc.title)
+      setViewingDocContent(doc.content)
+    } finally {
+      setViewingDocLoading(false)
+    }
+  }
+
+  function closeDocumentView() {
+    setViewingDocId(null)
+    setViewingDocTitle('')
+    setViewingDocContent('')
+    setDocViewError(null)
+  }
+
+  async function handleSaveDocumentView(event: FormEvent) {
+    event.preventDefault()
+    if (!editingAgent || !viewingDocId) return
+    setSavingDocView(true)
+    setDocViewError(null)
+
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${editingAgent._id}/documents/${viewingDocId}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: viewingDocTitle, content: viewingDocContent }),
+      })
+
+      if (!res.ok) {
+        setDocViewError('Não foi possível salvar o documento.')
+        return
+      }
+
+      closeDocumentView()
+      await loadDocuments(editingAgent._id)
+    } finally {
+      setSavingDocView(false)
+    }
+  }
+
   const widgetNameById = new Map(widgets.map((w) => [w._id, w.name]))
 
   return (
@@ -413,19 +476,59 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
           ) : (
             <ul className="space-y-2">
               {documents.map((doc) => (
-                <li
-                  key={doc._id}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 p-2 text-sm"
-                >
-                  <span>{doc.title}</span>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteDocument(doc._id)}
-                    disabled={deletingDocId === doc._id}
-                    className="text-xs text-red-400 underline transition hover:text-red-300 disabled:opacity-50"
-                  >
-                    {deletingDocId === doc._id ? 'Excluindo...' : 'Excluir'}
-                  </button>
+                <li key={doc._id} className="rounded-lg border border-slate-800 p-2 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <span>{doc.title}</span>
+                    <div className="flex gap-3">
+                      <button
+                        type="button"
+                        onClick={() => (viewingDocId === doc._id ? closeDocumentView() : openDocumentView(doc._id))}
+                        className="text-xs text-slate-400 underline transition hover:text-white"
+                      >
+                        {viewingDocId === doc._id ? 'Fechar' : 'Ver/Editar'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteDocument(doc._id)}
+                        disabled={deletingDocId === doc._id}
+                        className="text-xs text-red-400 underline transition hover:text-red-300 disabled:opacity-50"
+                      >
+                        {deletingDocId === doc._id ? 'Excluindo...' : 'Excluir'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {viewingDocId === doc._id && (
+                    <div className="mt-2 border-t border-slate-800 pt-2">
+                      {viewingDocLoading ? (
+                        <p className="text-sm text-slate-400">Carregando...</p>
+                      ) : (
+                        <form onSubmit={handleSaveDocumentView} className="space-y-2">
+                          <input
+                            value={viewingDocTitle}
+                            onChange={(e) => setViewingDocTitle(e.target.value)}
+                            required
+                            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                          />
+                          <textarea
+                            value={viewingDocContent}
+                            onChange={(e) => setViewingDocContent(e.target.value)}
+                            rows={6}
+                            required
+                            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                          />
+                          {docViewError && <p className="text-sm text-red-400">{docViewError}</p>}
+                          <button
+                            type="submit"
+                            disabled={savingDocView}
+                            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+                          >
+                            {savingDocView ? 'Salvando...' : 'Salvar alterações'}
+                          </button>
+                        </form>
+                      )}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

@@ -96,6 +96,33 @@ export function listDocuments(agentId: ObjectId) {
     .toArray()
 }
 
+export function getDocument(agentId: ObjectId, documentId: ObjectId) {
+  return documents.findOne({ _id: documentId, agentId })
+}
+
+export async function updateDocument(
+  agentId: ObjectId,
+  documentId: ObjectId,
+  updates: { title?: string; content?: string },
+) {
+  const setFields: Partial<KnowledgeDocument> = { updatedAt: new Date() }
+  if (updates.title !== undefined) setFields.title = updates.title
+  if (updates.content !== undefined) setFields.content = updates.content
+
+  const result = await documents.findOneAndUpdate(
+    { _id: documentId, agentId },
+    { $set: setFields },
+    { returnDocument: 'after' },
+  )
+  if (!result) return null
+
+  if (updates.content !== undefined) {
+    await indexDocumentChunks(agentId, documentId, updates.content)
+  }
+
+  return result
+}
+
 export async function deleteDocument(agentId: ObjectId, documentId: ObjectId) {
   await chunks.deleteMany({ agentId, documentId })
   const result = await documents.deleteOne({ _id: documentId, agentId })

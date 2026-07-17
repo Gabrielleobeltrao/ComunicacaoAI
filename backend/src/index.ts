@@ -22,8 +22,10 @@ import {
   createDocument,
   deleteDocument,
   ensureVectorIndex,
+  getDocument,
   listDocuments,
   searchKnowledge,
+  updateDocument,
 } from './knowledge.js'
 import { generateAgentReply, listModelsForProvider, PROVIDER_IDS, PROVIDER_INFO } from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
@@ -416,6 +418,60 @@ app.get('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
   }
   const documents = await listDocuments(agent._id)
   res.json(documents)
+})
+
+app.get('/api/agents/:agentId/documents/:documentId', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  const documentId = String(req.params.documentId)
+  if (!ObjectId.isValid(agentId) || !ObjectId.isValid(documentId)) {
+    res.status(400).json({ error: 'Invalid id' })
+    return
+  }
+  const agent = await getAgentById(res.locals.userId, new ObjectId(agentId))
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const document = await getDocument(agent._id, new ObjectId(documentId))
+  if (!document) {
+    res.status(404).json({ error: 'Document not found' })
+    return
+  }
+  res.json(document)
+})
+
+app.patch('/api/agents/:agentId/documents/:documentId', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  const documentId = String(req.params.documentId)
+  if (!ObjectId.isValid(agentId) || !ObjectId.isValid(documentId)) {
+    res.status(400).json({ error: 'Invalid id' })
+    return
+  }
+  const agent = await getAgentById(res.locals.userId, new ObjectId(agentId))
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const { title, content } = req.body ?? {}
+  const updates: { title?: string; content?: string } = {}
+  if (typeof title === 'string' && title.trim()) updates.title = title
+  if (typeof content === 'string' && content.trim()) updates.content = content
+  if (Object.keys(updates).length === 0) {
+    res.status(400).json({ error: 'Nothing to update' })
+    return
+  }
+
+  try {
+    const document = await updateDocument(agent._id, new ObjectId(documentId), updates)
+    if (!document) {
+      res.status(404).json({ error: 'Document not found' })
+      return
+    }
+    res.json({ ...document, content: undefined })
+  } catch (error) {
+    console.error('Failed to update knowledge document:', error)
+    res.status(502).json({ error: 'Failed to process document. Check the embedding service configuration.' })
+  }
 })
 
 app.delete('/api/agents/:agentId/documents/:documentId', requireAuth, async (req, res) => {
