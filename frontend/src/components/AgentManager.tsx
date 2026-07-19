@@ -29,6 +29,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
   const [editObjective, setEditObjective] = useState('')
   const [editProvider, setEditProvider] = useState<'anthropic' | 'openai'>('anthropic')
   const [editModel, setEditModel] = useState('')
+  const [editMemoryEnabled, setEditMemoryEnabled] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -65,6 +66,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setEditObjective('')
     setEditProvider('anthropic')
     setEditModel('')
+    setEditMemoryEnabled(false)
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -89,6 +91,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setEditObjective(agent.objective)
     setEditProvider(agent.provider ?? 'anthropic')
     setEditModel(agent.model ?? '')
+    setEditMemoryEnabled(agent.memoryEnabled ?? false)
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -115,6 +118,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
             objective: editObjective,
             provider: editProvider,
             model: editModel || null,
+            memoryEnabled: editMemoryEnabled,
           }),
         })
 
@@ -148,6 +152,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
           objective: editObjective,
           provider: editProvider,
           model: editModel || null,
+          memoryEnabled: editMemoryEnabled,
         }),
       })
 
@@ -427,6 +432,24 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
                 </option>
               ))}
             </select>
+          </div>
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-800 p-3">
+            <div>
+              <p className="text-sm font-medium">Memória da conversa</p>
+              <p className="text-sm text-slate-400">
+                O agente guarda fatos importantes (nome, preferências, decisões) e lembra deles mesmo
+                depois que saem do histórico recente. Gera uma chamada extra ao LLM por mensagem.
+              </p>
+            </div>
+            <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+              <input
+                type="checkbox"
+                checked={editMemoryEnabled}
+                onChange={(e) => setEditMemoryEnabled(e.target.checked)}
+                className="peer sr-only"
+              />
+              <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+            </label>
           </div>
           {editError && <p className="text-sm text-red-400">{editError}</p>}
           <button

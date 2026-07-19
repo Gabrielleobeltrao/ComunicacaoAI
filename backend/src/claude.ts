@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getCachedModels, setCachedModels } from './modelCache.js'
-import { buildSystemPrompt } from './systemPrompt.js'
+import { buildMemoryUpdatePrompt, buildSystemPrompt, MEMORY_UPDATE_SYSTEM_PROMPT } from './systemPrompt.js'
 import type { ChatTurn } from './systemPrompt.js'
 
 export type { ChatTurn }
@@ -51,6 +51,7 @@ export async function listAvailableModels(
 export async function generateAgentReply(
   objective: string,
   knowledge: string[],
+  memory: string,
   history: ChatTurn[],
   model?: string | null,
   apiKey?: string | null,
@@ -58,7 +59,7 @@ export async function generateAgentReply(
   const response = await buildClient(apiKey).messages.create({
     model: model || DEFAULT_MODEL,
     max_tokens: 1024,
-    system: buildSystemPrompt(objective, knowledge),
+    system: buildSystemPrompt(objective, knowledge, memory),
     thinking: { type: 'disabled' },
     output_config: { effort: 'low' },
     messages: history.map((turn) => ({ role: turn.role, content: turn.content })),
@@ -66,6 +67,26 @@ export async function generateAgentReply(
 
   const textBlock = response.content.find((block) => block.type === 'text')
   return textBlock && textBlock.type === 'text' ? textBlock.text : ''
+}
+
+export async function updateMemory(
+  currentMemory: string,
+  visitorMessage: string,
+  agentReply: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<string> {
+  const response = await buildClient(apiKey).messages.create({
+    model: model || DEFAULT_MODEL,
+    max_tokens: 300,
+    system: MEMORY_UPDATE_SYSTEM_PROMPT,
+    thinking: { type: 'disabled' },
+    output_config: { effort: 'low' },
+    messages: [{ role: 'user', content: buildMemoryUpdatePrompt(currentMemory, visitorMessage, agentReply) }],
+  })
+
+  const textBlock = response.content.find((block) => block.type === 'text')
+  return textBlock && textBlock.type === 'text' ? textBlock.text.trim() : currentMemory
 }
 
 export async function transcribeImage(

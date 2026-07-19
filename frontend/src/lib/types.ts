@@ -18,6 +18,7 @@ export interface AgentSummary {
   provider: 'anthropic' | 'openai'
   model: string | null
   widgetId: string | null
+  memoryEnabled: boolean
 }
 
 export interface ProviderInfo {

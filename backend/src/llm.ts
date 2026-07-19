@@ -19,12 +19,24 @@ function providerFor(provider: string | null | undefined) {
 export function generateAgentReply(
   objective: string,
   knowledge: string[],
+  memory: string,
   history: ChatTurn[],
   provider: string | null | undefined,
   model: string | null | undefined,
   apiKey: string | null | undefined,
 ): Promise<string> {
-  return providerFor(provider).generateAgentReply(objective, knowledge, history, model, apiKey)
+  return providerFor(provider).generateAgentReply(objective, knowledge, memory, history, model, apiKey)
+}
+
+export function updateConversationMemory(
+  currentMemory: string,
+  visitorMessage: string,
+  agentReply: string,
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  apiKey: string | null | undefined,
+): Promise<string> {
+  return providerFor(provider).updateMemory(currentMemory, visitorMessage, agentReply, model, apiKey)
 }
 
 export function transcribeImage(

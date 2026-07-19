@@ -10,6 +10,7 @@ export interface Agent {
   provider: Provider
   model: string | null
   widgetId: ObjectId | null
+  memoryEnabled: boolean
   createdAt: Date
 }
 
@@ -19,7 +20,7 @@ export async function createAgent(
   ownerId: string,
   name: string,
   widgetId: ObjectId | null,
-  options: { objective?: string; provider?: Provider; model?: string | null } = {},
+  options: { objective?: string; provider?: Provider; model?: string | null; memoryEnabled?: boolean } = {},
 ) {
   if (widgetId) {
     await unlinkWidgetFromOtherAgents(ownerId, widgetId, null)
@@ -32,6 +33,7 @@ export async function createAgent(
     provider: options.provider ?? 'anthropic',
     model: options.model ?? null,
     widgetId,
+    memoryEnabled: options.memoryEnabled ?? false,
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -65,7 +67,13 @@ export async function setAgentWidget(ownerId: string, agentId: ObjectId, widgetI
 export function updateAgent(
   ownerId: string,
   agentId: ObjectId,
-  updates: { name?: string; objective?: string; provider?: Provider; model?: string | null },
+  updates: {
+    name?: string
+    objective?: string
+    provider?: Provider
+    model?: string | null
+    memoryEnabled?: boolean
+  },
 ) {
   return agents.findOneAndUpdate(
     { _id: agentId, ownerId },

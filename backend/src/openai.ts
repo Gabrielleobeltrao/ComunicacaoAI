@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import { getCachedModels, setCachedModels } from './modelCache.js'
-import { buildSystemPrompt } from './systemPrompt.js'
+import { buildMemoryUpdatePrompt, buildSystemPrompt, MEMORY_UPDATE_SYSTEM_PROMPT } from './systemPrompt.js'
 import type { ChatTurn } from './systemPrompt.js'
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.1'
@@ -68,6 +68,7 @@ export async function listAvailableModels(
 export async function generateAgentReply(
   objective: string,
   knowledge: string[],
+  memory: string,
   history: ChatTurn[],
   model?: string | null,
   apiKey?: string | null,
@@ -76,12 +77,31 @@ export async function generateAgentReply(
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 1024,
     messages: [
-      { role: 'system', content: buildSystemPrompt(objective, knowledge) },
+      { role: 'system', content: buildSystemPrompt(objective, knowledge, memory) },
       ...history.map((turn) => ({ role: turn.role, content: turn.content })),
     ],
   })
 
   return response.choices[0]?.message?.content ?? ''
+}
+
+export async function updateMemory(
+  currentMemory: string,
+  visitorMessage: string,
+  agentReply: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<string> {
+  const response = await buildClient(apiKey).chat.completions.create({
+    model: model || DEFAULT_MODEL,
+    max_completion_tokens: 300,
+    messages: [
+      { role: 'system', content: MEMORY_UPDATE_SYSTEM_PROMPT },
+      { role: 'user', content: buildMemoryUpdatePrompt(currentMemory, visitorMessage, agentReply) },
+    ],
+  })
+
+  return response.choices[0]?.message?.content?.trim() || currentMemory
 }
 
 export async function transcribeImage(

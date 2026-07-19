@@ -27,7 +27,14 @@ import {
   searchKnowledge,
   updateDocument,
 } from './knowledge.js'
-import { generateAgentReply, listModelsForProvider, PROVIDER_IDS, PROVIDER_INFO } from './llm.js'
+import { getConversationMemory, setConversationMemory } from './conversationMemory.js'
+import {
+  generateAgentReply,
+  listModelsForProvider,
+  PROVIDER_IDS,
+  PROVIDER_INFO,
+  updateConversationMemory,
+} from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
 import {
   clearProviderApiKey,
@@ -282,7 +289,7 @@ async function resolveOwnedWidgetId(ownerId: string, widgetId: unknown) {
 }
 
 app.post('/api/agents', requireAuth, async (req, res) => {
-  const { name, widgetId, objective, provider, model } = req.body ?? {}
+  const { name, widgetId, objective, provider, model, memoryEnabled } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
     return
@@ -302,6 +309,7 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     objective: typeof objective === 'string' ? objective : undefined,
     provider,
     model: typeof model === 'string' || model === null ? model || null : undefined,
+    memoryEnabled: typeof memoryEnabled === 'boolean' ? memoryEnabled : undefined,
   })
   res.status(201).json(agent)
 })
@@ -317,8 +325,14 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid agent id' })
     return
   }
-  const { name, objective, provider, model } = req.body ?? {}
-  const updates: { name?: string; objective?: string; provider?: Provider; model?: string | null } = {}
+  const { name, objective, provider, model, memoryEnabled } = req.body ?? {}
+  const updates: {
+    name?: string
+    objective?: string
+    provider?: Provider
+    model?: string | null
+    memoryEnabled?: boolean
+  } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
   if (provider !== undefined) {
@@ -329,6 +343,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     updates.provider = provider
   }
   if (typeof model === 'string' || model === null) updates.model = model || null
+  if (typeof memoryEnabled === 'boolean') updates.memoryEnabled = memoryEnabled
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
     return
@@ -635,8 +650,10 @@ async function respondWithAgentIfLinked(
   const agent = await getAgentByWidgetId(widgetId)
   if (!agent) return
 
+  // Keep the raw window short — a compact per-conversation memory (below)
+  // carries older context forward instead of resending the whole history.
   const recentMessages = await listMessages(widgetId, conversationId)
-  const history: ChatTurn[] = recentMessages.slice(-10).map((message) => ({
+  const history: ChatTurn[] = recentMessages.slice(-6).map((message) => ({
     role: message.role === 'visitor' ? 'user' : 'assistant',
     content: message.content,
   }))
@@ -650,9 +667,11 @@ async function respondWithAgentIfLinked(
   }
 
   const apiKey = await getProviderApiKey(ownerId, agent.provider)
+  const memory = agent.memoryEnabled ? await getConversationMemory(widgetId, conversationId) : ''
   const replyText = await generateAgentReply(
     agent.objective,
     knowledge,
+    memory,
     history,
     agent.provider,
     agent.model,
@@ -662,6 +681,16 @@ async function respondWithAgentIfLinked(
 
   const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText)
   broadcastMessage(agentMessage, ownerId)
+
+  if (agent.memoryEnabled) {
+    // Fire-and-forget: refreshing the compact memory doesn't need to block
+    // the reply the visitor is waiting on.
+    updateConversationMemory(memory, visitorContent, replyText, agent.provider, agent.model, apiKey)
+      .then((updated) => setConversationMemory(widgetId, conversationId, updated))
+      .catch((error) => {
+        console.error('Failed to update conversation memory:', error)
+      })
+  }
 }
 
 async function start() {
