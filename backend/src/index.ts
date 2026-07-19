@@ -5,17 +5,30 @@ import express from 'express'
 import type { NextFunction, Request, Response } from 'express'
 import multer from 'multer'
 import { ObjectId } from 'mongodb'
+import type { WithId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import { Server } from 'socket.io'
 import {
   createAgent,
+  DEFAULT_HISTORY_LIMIT,
   getAgentById,
   getAgentByWidgetId,
   listAgents,
+  MEMORY_TYPES,
   setAgentWidget,
   updateAgent,
 } from './agents.js'
+import type { Agent, MemoryType } from './agents.js'
 import { auth } from './auth.js'
+import {
+  getLinkedVisitorProfileId,
+  getConversationMemory,
+  getStructuredMemory,
+  linkVisitorProfile,
+  setConversationMemory,
+  setStructuredMemory,
+} from './conversationMemory.js'
+import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
 import {
@@ -27,21 +40,31 @@ import {
   searchKnowledge,
   updateDocument,
 } from './knowledge.js'
-import { getConversationMemory, setConversationMemory } from './conversationMemory.js'
 import {
+  extractIdentity,
   generateAgentReply,
   listModelsForProvider,
   PROVIDER_IDS,
   PROVIDER_INFO,
   updateConversationMemory,
+  updateStructuredMemory,
 } from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
+import { buildIdentityCaptureInstruction, formatStructuredMemory } from './systemPrompt.js'
 import {
   clearProviderApiKey,
   getProviderApiKey,
   getProviderKeyStatus,
   setProviderApiKey,
 } from './userSettings.js'
+import {
+  computeIdentityKey,
+  findVisitorProfile,
+  getVisitorProfile,
+  setVisitorProfileMemory,
+  setVisitorProfileStructuredMemory,
+  upsertVisitorProfile,
+} from './visitorProfiles.js'
 import type { WidgetMessage, WidgetPosition } from './widgets.js'
 import {
   addMessage,
@@ -141,6 +164,26 @@ app.get('/api/settings', requireAuth, async (_req, res) => {
 
 function isProvider(value: unknown): value is Provider {
   return typeof value === 'string' && (PROVIDER_IDS as string[]).includes(value)
+}
+
+const MAX_HISTORY_LIMIT = 30
+
+function isValidHistoryLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_HISTORY_LIMIT
+}
+
+function isMemoryType(value: unknown): value is MemoryType {
+  return typeof value === 'string' && (MEMORY_TYPES as string[]).includes(value)
+}
+
+const MAX_IDENTITY_FIELDS = 5
+
+function isValidIdentityFields(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_IDENTITY_FIELDS &&
+    value.every((field) => typeof field === 'string' && field.trim().length > 0)
+  )
 }
 
 app.put('/api/settings/:provider/key', requireAuth, async (req, res) => {
@@ -289,13 +332,25 @@ async function resolveOwnedWidgetId(ownerId: string, widgetId: unknown) {
 }
 
 app.post('/api/agents', requireAuth, async (req, res) => {
-  const { name, widgetId, objective, provider, model, memoryEnabled } = req.body ?? {}
+  const { name, widgetId, objective, provider, model, memoryType, historyLimit, identityFields } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
     return
   }
   if (provider !== undefined && !isProvider(provider)) {
     res.status(400).json({ error: 'Unknown provider' })
+    return
+  }
+  if (historyLimit !== undefined && !isValidHistoryLimit(historyLimit)) {
+    res.status(400).json({ error: `historyLimit must be an integer between 1 and ${MAX_HISTORY_LIMIT}` })
+    return
+  }
+  if (memoryType !== undefined && !isMemoryType(memoryType)) {
+    res.status(400).json({ error: 'Unknown memoryType' })
+    return
+  }
+  if (identityFields !== undefined && !isValidIdentityFields(identityFields)) {
+    res.status(400).json({ error: `identityFields must be a list of up to ${MAX_IDENTITY_FIELDS} non-empty strings` })
     return
   }
 
@@ -309,7 +364,9 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     objective: typeof objective === 'string' ? objective : undefined,
     provider,
     model: typeof model === 'string' || model === null ? model || null : undefined,
-    memoryEnabled: typeof memoryEnabled === 'boolean' ? memoryEnabled : undefined,
+    memoryType,
+    historyLimit,
+    identityFields,
   })
   res.status(201).json(agent)
 })
@@ -325,13 +382,15 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid agent id' })
     return
   }
-  const { name, objective, provider, model, memoryEnabled } = req.body ?? {}
+  const { name, objective, provider, model, memoryType, historyLimit, identityFields } = req.body ?? {}
   const updates: {
     name?: string
     objective?: string
     provider?: Provider
     model?: string | null
-    memoryEnabled?: boolean
+    memoryType?: MemoryType
+    historyLimit?: number
+    identityFields?: string[]
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
@@ -343,7 +402,29 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     updates.provider = provider
   }
   if (typeof model === 'string' || model === null) updates.model = model || null
-  if (typeof memoryEnabled === 'boolean') updates.memoryEnabled = memoryEnabled
+  if (memoryType !== undefined) {
+    if (!isMemoryType(memoryType)) {
+      res.status(400).json({ error: 'Unknown memoryType' })
+      return
+    }
+    updates.memoryType = memoryType
+  }
+  if (historyLimit !== undefined) {
+    if (!isValidHistoryLimit(historyLimit)) {
+      res.status(400).json({ error: `historyLimit must be an integer between 1 and ${MAX_HISTORY_LIMIT}` })
+      return
+    }
+    updates.historyLimit = historyLimit
+  }
+  if (identityFields !== undefined) {
+    if (!isValidIdentityFields(identityFields)) {
+      res
+        .status(400)
+        .json({ error: `identityFields must be a list of up to ${MAX_IDENTITY_FIELDS} non-empty strings` })
+      return
+    }
+    updates.identityFields = identityFields
+  }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
     return
@@ -650,10 +731,14 @@ async function respondWithAgentIfLinked(
   const agent = await getAgentByWidgetId(widgetId)
   if (!agent) return
 
+  const memoryType = agent.memoryType ?? 'none'
+  const identityFields = agent.identityFields ?? []
+
   // Keep the raw window short — a compact per-conversation memory (below)
   // carries older context forward instead of resending the whole history.
   const recentMessages = await listMessages(widgetId, conversationId)
-  const history: ChatTurn[] = recentMessages.slice(-6).map((message) => ({
+  const historyLimit = agent.historyLimit ?? DEFAULT_HISTORY_LIMIT
+  const history: ChatTurn[] = recentMessages.slice(-historyLimit).map((message) => ({
     role: message.role === 'visitor' ? 'user' : 'assistant',
     content: message.content,
   }))
@@ -667,29 +752,139 @@ async function respondWithAgentIfLinked(
   }
 
   const apiKey = await getProviderApiKey(ownerId, agent.provider)
-  const memory = agent.memoryEnabled ? await getConversationMemory(widgetId, conversationId) : ''
+
+  // If a previous turn in this conversation already resolved who the
+  // visitor is, their memory lives on the profile (shared across every
+  // conversation/device they use), not on this one conversation.
+  const visitorProfileId = await getLinkedVisitorProfileId(widgetId, conversationId)
+  const visitorProfile = visitorProfileId ? await getVisitorProfile(visitorProfileId) : null
+
+  let memoryText = ''
+  if (memoryType === 'facts') {
+    memoryText = visitorProfile ? visitorProfile.memory : await getConversationMemory(widgetId, conversationId)
+  } else if (memoryType === 'structured') {
+    const structured = visitorProfile
+      ? visitorProfile.structuredMemory
+      : await getStructuredMemory(widgetId, conversationId)
+    memoryText = formatStructuredMemory(structured)
+  } else if (memoryType === 'semantic') {
+    try {
+      const relevant = await searchRelevantTurns(agent._id, conversationId, visitorContent)
+      memoryText = relevant
+        .map((turn) => `${turn.role === 'visitor' ? 'Visitante' : 'Agente'}: ${turn.content}`)
+        .join('\n')
+    } catch (error) {
+      console.error('Semantic memory search failed, replying without it:', error)
+    }
+  }
+
+  const identityInstruction =
+    identityFields.length > 0 && !visitorProfile ? buildIdentityCaptureInstruction(identityFields) : ''
+
   const replyText = await generateAgentReply(
     agent.objective,
     knowledge,
-    memory,
+    memoryText,
     history,
     agent.provider,
     agent.model,
     apiKey,
+    identityInstruction,
   )
   if (!replyText) return
 
   const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText)
   broadcastMessage(agentMessage, ownerId)
 
-  if (agent.memoryEnabled) {
-    // Fire-and-forget: refreshing the compact memory doesn't need to block
-    // the reply the visitor is waiting on.
-    updateConversationMemory(memory, visitorContent, replyText, agent.provider, agent.model, apiKey)
-      .then((updated) => setConversationMemory(widgetId, conversationId, updated))
-      .catch((error) => {
-        console.error('Failed to update conversation memory:', error)
-      })
+  // Fire-and-forget: none of this background bookkeeping should block the
+  // reply the visitor is waiting on.
+  refreshMemoryAndIdentity({
+    agent,
+    memoryType,
+    identityFields,
+    widgetId,
+    conversationId,
+    visitorProfileId: visitorProfile?._id ?? null,
+    history,
+    visitorContent,
+    replyText,
+    apiKey,
+  }).catch((error) => {
+    console.error('Failed to update conversation memory/identity:', error)
+  })
+}
+
+async function refreshMemoryAndIdentity(params: {
+  agent: WithId<Agent>
+  memoryType: MemoryType
+  identityFields: string[]
+  widgetId: ObjectId
+  conversationId: string
+  visitorProfileId: ObjectId | null
+  history: ChatTurn[]
+  visitorContent: string
+  replyText: string
+  apiKey: string | null
+}) {
+  const { agent, memoryType, identityFields, widgetId, conversationId, history, visitorContent, replyText, apiKey } =
+    params
+  if (!agent) return
+  let visitorProfileId = params.visitorProfileId
+
+  // Resolve identity first (if configured and not yet linked) so a
+  // freshly-created profile can receive this turn's memory update too.
+  if (identityFields.length > 0 && !visitorProfileId) {
+    const extracted = await extractIdentity(
+      identityFields,
+      [...history, { role: 'user', content: visitorContent }],
+      agent.provider,
+      agent.model,
+      apiKey,
+    )
+    if (extracted) {
+      const identityKey = computeIdentityKey(identityFields, extracted)
+      if (identityKey) {
+        const existingProfile = await findVisitorProfile(agent._id, identityKey)
+        const profile = await upsertVisitorProfile(agent._id, identityKey, extracted)
+        if (profile) {
+          visitorProfileId = profile._id
+          await linkVisitorProfile(widgetId, conversationId, profile._id)
+
+          // Seed a brand-new profile with whatever this conversation had
+          // accumulated so far, so nothing said before identification is lost.
+          if (!existingProfile) {
+            if (memoryType === 'facts') {
+              const existing = await getConversationMemory(widgetId, conversationId)
+              if (existing) await setVisitorProfileMemory(profile._id, existing)
+            } else if (memoryType === 'structured') {
+              const existing = await getStructuredMemory(widgetId, conversationId)
+              if (Object.keys(existing).length > 0) {
+                await setVisitorProfileStructuredMemory(profile._id, existing)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (memoryType === 'facts') {
+    const current = visitorProfileId
+      ? ((await getVisitorProfile(visitorProfileId))?.memory ?? '')
+      : await getConversationMemory(widgetId, conversationId)
+    const updated = await updateConversationMemory(current, visitorContent, replyText, agent.provider, agent.model, apiKey)
+    if (visitorProfileId) await setVisitorProfileMemory(visitorProfileId, updated)
+    else await setConversationMemory(widgetId, conversationId, updated)
+  } else if (memoryType === 'structured') {
+    const current = visitorProfileId
+      ? ((await getVisitorProfile(visitorProfileId))?.structuredMemory ?? {})
+      : await getStructuredMemory(widgetId, conversationId)
+    const updated = await updateStructuredMemory(current, visitorContent, replyText, agent.provider, agent.model, apiKey)
+    if (visitorProfileId) await setVisitorProfileStructuredMemory(visitorProfileId, updated)
+    else await setStructuredMemory(widgetId, conversationId, updated)
+  } else if (memoryType === 'semantic') {
+    await recordTurn(agent._id, widgetId, conversationId, 'visitor', visitorContent)
+    await recordTurn(agent._id, widgetId, conversationId, 'agent', replyText)
   }
 }
 
@@ -701,6 +896,9 @@ async function start() {
   // shouldn't pay its round-trip to Atlas on every dev-server restart.
   ensureVectorIndex().catch((error) => {
     console.error('ensureVectorIndex failed:', error)
+  })
+  ensureConversationTurnsVectorIndex().catch((error) => {
+    console.error('ensureConversationTurnsVectorIndex failed:', error)
   })
 
   httpServer.listen(port, () => {

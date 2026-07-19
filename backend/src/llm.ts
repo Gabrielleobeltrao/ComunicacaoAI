@@ -24,8 +24,17 @@ export function generateAgentReply(
   provider: string | null | undefined,
   model: string | null | undefined,
   apiKey: string | null | undefined,
+  identityInstruction = '',
 ): Promise<string> {
-  return providerFor(provider).generateAgentReply(objective, knowledge, memory, history, model, apiKey)
+  return providerFor(provider).generateAgentReply(
+    objective,
+    knowledge,
+    memory,
+    history,
+    model,
+    apiKey,
+    identityInstruction,
+  )
 }
 
 export function updateConversationMemory(
@@ -37,6 +46,27 @@ export function updateConversationMemory(
   apiKey: string | null | undefined,
 ): Promise<string> {
   return providerFor(provider).updateMemory(currentMemory, visitorMessage, agentReply, model, apiKey)
+}
+
+export function updateStructuredMemory(
+  currentMemory: Record<string, string>,
+  visitorMessage: string,
+  agentReply: string,
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  apiKey: string | null | undefined,
+): Promise<Record<string, string>> {
+  return providerFor(provider).updateStructuredMemory(currentMemory, visitorMessage, agentReply, model, apiKey)
+}
+
+export function extractIdentity(
+  fields: string[],
+  recentMessages: ChatTurn[],
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  apiKey: string | null | undefined,
+): Promise<Record<string, string> | null> {
+  return providerFor(provider).extractIdentity(fields, recentMessages, model, apiKey)
 }
 
 export function transcribeImage(

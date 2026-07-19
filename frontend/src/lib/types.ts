@@ -11,6 +11,8 @@ export interface WidgetSummary {
   avatarUrl: string | null
 }
 
+export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
+
 export interface AgentSummary {
   _id: string
   name: string
@@ -18,7 +20,9 @@ export interface AgentSummary {
   provider: 'anthropic' | 'openai'
   model: string | null
   widgetId: string | null
-  memoryEnabled: boolean
+  memoryType: MemoryType
+  historyLimit: number
+  identityFields: string[]
 }
 
 export interface ProviderInfo {

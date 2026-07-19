@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { API_URL } from '../lib/api'
-import type { AgentSummary, KnowledgeDocumentSummary, ProviderInfo, WidgetSummary } from '../lib/types'
+import type { AgentSummary, KnowledgeDocumentSummary, MemoryType, ProviderInfo, WidgetSummary } from '../lib/types'
 import { Modal } from './Modal'
 
 interface AgentManagerProps {
@@ -19,6 +19,42 @@ interface PendingDoc {
   file?: File
 }
 
+const DEFAULT_HISTORY_LIMIT = 6
+const MAX_HISTORY_LIMIT = 30
+const MAX_IDENTITY_FIELDS = 5
+
+function MemoryOptionSwitch({
+  label,
+  description,
+  value,
+  active,
+  onSelect,
+}: {
+  label: string
+  description: string
+  value: MemoryType
+  active: boolean
+  onSelect: (value: MemoryType) => void
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-800 p-3">
+      <div>
+        <p className="text-sm font-medium">{label}</p>
+        <p className="text-sm text-slate-400">{description}</p>
+      </div>
+      <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+        <input
+          type="checkbox"
+          checked={active}
+          onChange={(e) => onSelect(e.target.checked ? value : 'none')}
+          className="peer sr-only"
+        />
+        <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+      </label>
+    </div>
+  )
+}
+
 export function AgentManager({ agents, loading, widgets, onChange }: AgentManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
 
@@ -29,7 +65,9 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
   const [editObjective, setEditObjective] = useState('')
   const [editProvider, setEditProvider] = useState<'anthropic' | 'openai'>('anthropic')
   const [editModel, setEditModel] = useState('')
-  const [editMemoryEnabled, setEditMemoryEnabled] = useState(false)
+  const [editMemoryType, setEditMemoryType] = useState<MemoryType>('none')
+  const [editHistoryLimit, setEditHistoryLimit] = useState(DEFAULT_HISTORY_LIMIT)
+  const [editIdentityFields, setEditIdentityFields] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -66,7 +104,9 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setEditObjective('')
     setEditProvider('anthropic')
     setEditModel('')
-    setEditMemoryEnabled(false)
+    setEditMemoryType('none')
+    setEditHistoryLimit(DEFAULT_HISTORY_LIMIT)
+    setEditIdentityFields([])
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -91,7 +131,9 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setEditObjective(agent.objective)
     setEditProvider(agent.provider ?? 'anthropic')
     setEditModel(agent.model ?? '')
-    setEditMemoryEnabled(agent.memoryEnabled ?? false)
+    setEditMemoryType(agent.memoryType ?? 'none')
+    setEditHistoryLimit(agent.historyLimit ?? DEFAULT_HISTORY_LIMIT)
+    setEditIdentityFields(agent.identityFields ?? [])
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -106,6 +148,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     event.preventDefault()
     setEditError(null)
     setSaving(true)
+    const identityFields = editIdentityFields.map((field) => field.trim()).filter(Boolean)
 
     try {
       if (isCreating) {
@@ -118,7 +161,9 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
             objective: editObjective,
             provider: editProvider,
             model: editModel || null,
-            memoryEnabled: editMemoryEnabled,
+            memoryType: editMemoryType,
+            historyLimit: editHistoryLimit,
+            identityFields,
           }),
         })
 
@@ -152,7 +197,9 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
           objective: editObjective,
           provider: editProvider,
           model: editModel || null,
-          memoryEnabled: editMemoryEnabled,
+          memoryType: editMemoryType,
+          historyLimit: editHistoryLimit,
+          identityFields,
         }),
       })
 
@@ -228,6 +275,18 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
 
   function handleRemovePendingDoc(id: string) {
     setPendingDocs((prev) => prev.filter((doc) => doc.id !== id))
+  }
+
+  function handleAddIdentityField() {
+    setEditIdentityFields((prev) => [...prev, ''])
+  }
+
+  function handleIdentityFieldChange(index: number, value: string) {
+    setEditIdentityFields((prev) => prev.map((field, i) => (i === index ? value : field)))
+  }
+
+  function handleRemoveIdentityField(index: number) {
+    setEditIdentityFields((prev) => prev.filter((_, i) => i !== index))
   }
 
   async function uploadPendingDocs(agentId: string): Promise<number> {
@@ -433,23 +492,89 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
               ))}
             </select>
           </div>
-          <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-800 p-3">
-            <div>
-              <p className="text-sm font-medium">Memória da conversa</p>
-              <p className="text-sm text-slate-400">
-                O agente guarda fatos importantes (nome, preferências, decisões) e lembra deles mesmo
-                depois que saem do histórico recente. Gera uma chamada extra ao LLM por mensagem.
-              </p>
-            </div>
-            <label className="relative inline-flex shrink-0 cursor-pointer items-center">
-              <input
-                type="checkbox"
-                checked={editMemoryEnabled}
-                onChange={(e) => setEditMemoryEnabled(e.target.checked)}
-                className="peer sr-only"
+          <div>
+            <p className="mb-2 text-sm text-slate-400">
+              Memória da conversa (só um tipo pode ficar ativo por vez)
+            </p>
+            <div className="space-y-2">
+              <MemoryOptionSwitch
+                label="Memória de fatos-chave"
+                description="Guarda fatos importantes (nome, preferências, decisões) em texto livre, mesclando fatos novos com os antigos. Gera uma chamada extra ao LLM por mensagem."
+                value="facts"
+                active={editMemoryType === 'facts'}
+                onSelect={setEditMemoryType}
               />
-              <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+              <MemoryOptionSwitch
+                label="Memória estruturada"
+                description="Guarda dados em pares chave:valor (ex: 'Serviço preferido: Corte degradê') — mais organizado que texto livre. Gera uma chamada extra ao LLM por mensagem."
+                value="structured"
+                active={editMemoryType === 'structured'}
+                onSelect={setEditMemoryType}
+              />
+              <MemoryOptionSwitch
+                label="Memória por busca semântica"
+                description="Busca os trechos mais relevantes de qualquer ponto da conversa pra cada pergunta, em vez de manter um resumo. Não gera chamada extra ao LLM, mas usa embeddings."
+                value="semantic"
+                active={editMemoryType === 'semantic'}
+                onSelect={setEditMemoryType}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-slate-400">
+              Mensagens recentes enviadas por chamada
             </label>
+            <input
+              type="number"
+              min={1}
+              max={MAX_HISTORY_LIMIT}
+              value={editHistoryLimit}
+              onChange={(e) =>
+                setEditHistoryLimit(
+                  Math.min(MAX_HISTORY_LIMIT, Math.max(1, Number(e.target.value) || DEFAULT_HISTORY_LIMIT)),
+                )
+              }
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              Quantas das últimas mensagens da conversa são enviadas ao LLM em cada resposta (padrão:{' '}
+              {DEFAULT_HISTORY_LIMIT}). Mais mensagens dão mais contexto imediato, mas custam mais por
+              chamada.
+            </p>
+          </div>
+          <div className="space-y-2 rounded-lg border border-slate-800 p-3">
+            <p className="text-sm font-medium">Identificação do visitante</p>
+            <p className="text-sm text-slate-400">
+              Campos que o agente vai perguntar naturalmente durante a conversa (ex: Nome, Email) pra
+              reconhecer esse visitante de novo em conversas futuras, mesmo em outro aparelho. Deixe vazio
+              pra não pedir identificação.
+            </p>
+            {editIdentityFields.map((field, index) => (
+              <div key={index} className="flex gap-2">
+                <input
+                  value={field}
+                  onChange={(e) => handleIdentityFieldChange(index, e.target.value)}
+                  placeholder="Ex: Nome"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleRemoveIdentityField(index)}
+                  className="text-xs text-red-400 underline transition hover:text-red-300"
+                >
+                  Remover
+                </button>
+              </div>
+            ))}
+            {editIdentityFields.length < MAX_IDENTITY_FIELDS && (
+              <button
+                type="button"
+                onClick={handleAddIdentityField}
+                className="text-xs text-slate-400 underline transition hover:text-white"
+              >
+                + Adicionar campo
+              </button>
+            )}
           </div>
           {editError && <p className="text-sm text-red-400">{editError}</p>}
           <button

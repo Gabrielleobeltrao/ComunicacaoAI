@@ -1,6 +1,15 @@
 import OpenAI from 'openai'
 import { getCachedModels, setCachedModels } from './modelCache.js'
-import { buildMemoryUpdatePrompt, buildSystemPrompt, MEMORY_UPDATE_SYSTEM_PROMPT } from './systemPrompt.js'
+import {
+  buildIdentityExtractionPrompt,
+  buildMemoryUpdatePrompt,
+  buildStructuredMemoryUpdatePrompt,
+  buildSystemPrompt,
+  IDENTITY_EXTRACTION_SYSTEM_PROMPT,
+  MEMORY_UPDATE_SYSTEM_PROMPT,
+  parseJsonObject,
+  STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
+} from './systemPrompt.js'
 import type { ChatTurn } from './systemPrompt.js'
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.1'
@@ -72,12 +81,13 @@ export async function generateAgentReply(
   history: ChatTurn[],
   model?: string | null,
   apiKey?: string | null,
+  identityInstruction = '',
 ): Promise<string> {
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 1024,
     messages: [
-      { role: 'system', content: buildSystemPrompt(objective, knowledge, memory) },
+      { role: 'system', content: buildSystemPrompt(objective, knowledge, memory, identityInstruction) },
       ...history.map((turn) => ({ role: turn.role, content: turn.content })),
     ],
   })
@@ -102,6 +112,49 @@ export async function updateMemory(
   })
 
   return response.choices[0]?.message?.content?.trim() || currentMemory
+}
+
+export async function updateStructuredMemory(
+  currentMemory: Record<string, string>,
+  visitorMessage: string,
+  agentReply: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<Record<string, string>> {
+  const response = await buildClient(apiKey).chat.completions.create({
+    model: model || DEFAULT_MODEL,
+    max_completion_tokens: 300,
+    messages: [
+      { role: 'system', content: STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT },
+      { role: 'user', content: buildStructuredMemoryUpdatePrompt(currentMemory, visitorMessage, agentReply) },
+    ],
+  })
+
+  const text = response.choices[0]?.message?.content
+  if (!text) return currentMemory
+  const parsed = parseJsonObject(text)
+  return Object.keys(parsed).length > 0 ? parsed : currentMemory
+}
+
+export async function extractIdentity(
+  fields: string[],
+  recentMessages: ChatTurn[],
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<Record<string, string> | null> {
+  const response = await buildClient(apiKey).chat.completions.create({
+    model: model || DEFAULT_MODEL,
+    max_completion_tokens: 200,
+    messages: [
+      { role: 'system', content: IDENTITY_EXTRACTION_SYSTEM_PROMPT },
+      { role: 'user', content: buildIdentityExtractionPrompt(fields, recentMessages) },
+    ],
+  })
+
+  const text = response.choices[0]?.message?.content
+  if (!text) return null
+  const parsed = parseJsonObject(text)
+  return Object.keys(parsed).length === fields.length ? parsed : null
 }
 
 export async function transcribeImage(

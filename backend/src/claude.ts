@@ -1,6 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getCachedModels, setCachedModels } from './modelCache.js'
-import { buildMemoryUpdatePrompt, buildSystemPrompt, MEMORY_UPDATE_SYSTEM_PROMPT } from './systemPrompt.js'
+import {
+  buildIdentityExtractionPrompt,
+  buildMemoryUpdatePrompt,
+  buildStructuredMemoryUpdatePrompt,
+  buildSystemPrompt,
+  IDENTITY_EXTRACTION_SYSTEM_PROMPT,
+  MEMORY_UPDATE_SYSTEM_PROMPT,
+  parseJsonObject,
+  STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
+} from './systemPrompt.js'
 import type { ChatTurn } from './systemPrompt.js'
 
 export type { ChatTurn }
@@ -55,11 +64,12 @@ export async function generateAgentReply(
   history: ChatTurn[],
   model?: string | null,
   apiKey?: string | null,
+  identityInstruction = '',
 ): Promise<string> {
   const response = await buildClient(apiKey).messages.create({
     model: model || DEFAULT_MODEL,
     max_tokens: 1024,
-    system: buildSystemPrompt(objective, knowledge, memory),
+    system: buildSystemPrompt(objective, knowledge, memory, identityInstruction),
     thinking: { type: 'disabled' },
     output_config: { effort: 'low' },
     messages: history.map((turn) => ({ role: turn.role, content: turn.content })),
@@ -87,6 +97,51 @@ export async function updateMemory(
 
   const textBlock = response.content.find((block) => block.type === 'text')
   return textBlock && textBlock.type === 'text' ? textBlock.text.trim() : currentMemory
+}
+
+export async function updateStructuredMemory(
+  currentMemory: Record<string, string>,
+  visitorMessage: string,
+  agentReply: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<Record<string, string>> {
+  const response = await buildClient(apiKey).messages.create({
+    model: model || DEFAULT_MODEL,
+    max_tokens: 300,
+    system: STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
+    thinking: { type: 'disabled' },
+    output_config: { effort: 'low' },
+    messages: [
+      { role: 'user', content: buildStructuredMemoryUpdatePrompt(currentMemory, visitorMessage, agentReply) },
+    ],
+  })
+
+  const textBlock = response.content.find((block) => block.type === 'text')
+  if (!textBlock || textBlock.type !== 'text') return currentMemory
+  const parsed = parseJsonObject(textBlock.text)
+  return Object.keys(parsed).length > 0 ? parsed : currentMemory
+}
+
+export async function extractIdentity(
+  fields: string[],
+  recentMessages: ChatTurn[],
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<Record<string, string> | null> {
+  const response = await buildClient(apiKey).messages.create({
+    model: model || DEFAULT_MODEL,
+    max_tokens: 200,
+    system: IDENTITY_EXTRACTION_SYSTEM_PROMPT,
+    thinking: { type: 'disabled' },
+    output_config: { effort: 'low' },
+    messages: [{ role: 'user', content: buildIdentityExtractionPrompt(fields, recentMessages) }],
+  })
+
+  const textBlock = response.content.find((block) => block.type === 'text')
+  if (!textBlock || textBlock.type !== 'text') return null
+  const parsed = parseJsonObject(textBlock.text)
+  return Object.keys(parsed).length === fields.length ? parsed : null
 }
 
 export async function transcribeImage(

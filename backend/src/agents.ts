@@ -2,6 +2,11 @@ import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 import type { Provider } from './llm.js'
 
+export const DEFAULT_HISTORY_LIMIT = 6
+
+export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
+export const MEMORY_TYPES: MemoryType[] = ['none', 'facts', 'structured', 'semantic']
+
 export interface Agent {
   _id: ObjectId
   ownerId: string
@@ -10,7 +15,9 @@ export interface Agent {
   provider: Provider
   model: string | null
   widgetId: ObjectId | null
-  memoryEnabled: boolean
+  memoryType: MemoryType
+  historyLimit: number
+  identityFields: string[]
   createdAt: Date
 }
 
@@ -20,7 +27,14 @@ export async function createAgent(
   ownerId: string,
   name: string,
   widgetId: ObjectId | null,
-  options: { objective?: string; provider?: Provider; model?: string | null; memoryEnabled?: boolean } = {},
+  options: {
+    objective?: string
+    provider?: Provider
+    model?: string | null
+    memoryType?: MemoryType
+    historyLimit?: number
+    identityFields?: string[]
+  } = {},
 ) {
   if (widgetId) {
     await unlinkWidgetFromOtherAgents(ownerId, widgetId, null)
@@ -33,7 +47,9 @@ export async function createAgent(
     provider: options.provider ?? 'anthropic',
     model: options.model ?? null,
     widgetId,
-    memoryEnabled: options.memoryEnabled ?? false,
+    memoryType: options.memoryType ?? 'none',
+    historyLimit: options.historyLimit ?? DEFAULT_HISTORY_LIMIT,
+    identityFields: options.identityFields ?? [],
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -72,7 +88,9 @@ export function updateAgent(
     objective?: string
     provider?: Provider
     model?: string | null
-    memoryEnabled?: boolean
+    memoryType?: MemoryType
+    historyLimit?: number
+    identityFields?: string[]
   },
 ) {
   return agents.findOneAndUpdate(
