@@ -1,25 +1,31 @@
 # ComunicacaoAI
 
-A SaaS platform for managing goal-oriented communication agents. Agents are connected in chats where they ask questions and give answers, working together toward a defined objective.
+A SaaS platform for managing goal-oriented AI communication agents, connected to embeddable chat widgets that businesses drop into their own sites.
 
-## Status
+## What it does
 
-Early-stage scaffold. Authentication (sign up, sign in, protected dashboard) is wired up end to end. Agent management and the objective-driven chat between agents are not implemented yet — the dashboard currently shows placeholder sections for "Objective", "Connected agents", and "Chat".
+- **Agents** — create an AI agent with an objective/instructions, pick its LLM provider (Anthropic or OpenAI) and model, and give it a knowledge base (pasted text, `.txt`, `.pdf`, or images — extracted/transcribed automatically) for grounded, RAG-based answers.
+- **Widgets** — create an embeddable chat widget, customize its color/position/avatar/welcome message, and link it to an agent. Drop a single `<script>` tag on any site to embed it.
+- **Chats** — every visitor conversation is isolated per-visitor and streams to the owner in real time (Socket.IO), with a dedicated page to browse/filter and reply manually.
+- **Conversation memory** — per agent, pick one memory strategy: freeform key-facts, structured key:value facts, or semantic search over past turns. Optionally configure identity fields (e.g. Name, Email) that the agent asks for conversationally, so a visitor's memory follows them across devices/sessions instead of resetting every conversation.
+- **BYOK** — users can store their own Anthropic/OpenAI API key (encrypted at rest), which takes priority over the platform's fallback key.
 
 ## Tech stack
 
 **Frontend** (`frontend/`)
-- React 19 + TypeScript
-- Vite
-- Tailwind CSS
+- React 19 + TypeScript, Vite, Tailwind CSS
 - React Router (`react-router`)
 - `better-auth/react` client
+- `socket.io-client` for realtime chat delivery
 
 **Backend** (`backend/`)
-- Node.js + TypeScript
-- Express 5
-- MongoDB Atlas (official `mongodb` driver)
+- Node.js + TypeScript, Express 5
+- MongoDB Atlas (official `mongodb` driver), including Atlas Vector Search for RAG and semantic memory
 - Better Auth (email/password, MongoDB adapter)
+- Socket.IO for realtime message delivery
+- `@anthropic-ai/sdk` and `openai` — pluggable per agent
+- Voyage AI (REST) for embeddings (knowledge base + semantic memory)
+- Multer + `pdf-parse` for file uploads/extraction
 
 The repo is an npm workspaces monorepo (`frontend` + `backend`), with a single lockfile at the root.
 
@@ -27,22 +33,41 @@ The repo is an npm workspaces monorepo (`frontend` + `backend`), with a single l
 
 ```
 .
-├── frontend/   # React SPA
+├── frontend/
 │   └── src/
-│       ├── lib/auth-client.ts   # better-auth/react client
-│       ├── components/          # ProtectedRoute, etc.
-│       └── pages/                # Home, Login, Register, Dashboard
-├── backend/    # Express API
+│       ├── lib/
+│       │   ├── auth-client.ts          # better-auth/react client
+│       │   ├── socket.ts               # shared Socket.IO client
+│       │   ├── types.ts                # shared frontend types
+│       │   └── useAgentsAndWidgets.ts  # shared agents/widgets data hook
+│       ├── components/
+│       │   ├── AgentManager.tsx        # agent create/edit popup (memory, KB, identity fields...)
+│       │   ├── WidgetManager.tsx       # widget create/edit popup (visual customization)
+│       │   ├── ApiKeySettings.tsx      # BYOK settings popup
+│       │   ├── ConversationsPanel.tsx  # Chats page conversation list + reply UI
+│       │   ├── AppNav.tsx              # shared nav across authenticated pages
+│       │   ├── Modal.tsx               # reusable popup
+│       │   └── ProtectedRoute.tsx
+│       └── pages/                      # Home, Login, Register, Dashboard, Agents, Widgets, Chats, Widget (public)
+│   └── public/widget-loader.js         # embeddable script customers drop on their site
+├── backend/
 │   └── src/
-│       ├── db.ts     # MongoDB client/connection
-│       ├── auth.ts   # Better Auth instance (mongodb adapter)
-│       └── index.ts  # Express app, mounts /api/auth/*
-└── package.json      # root workspace + `npm run dev`
+│       ├── db.ts, auth.ts              # MongoDB client, Better Auth instance
+│       ├── index.ts                    # Express app + all routes, Socket.IO wiring
+│       ├── agents.ts, widgets.ts       # Agent/Widget data models
+│       ├── knowledge.ts, voyage.ts     # RAG knowledge base + embeddings
+│       ├── conversationMemory.ts       # per-conversation facts/structured memory
+│       ├── conversationTurns.ts        # semantic memory (embedded turns + vector search)
+│       ├── visitorProfiles.ts          # cross-conversation visitor identity + memory
+│       ├── llm.ts, claude.ts, openai.ts, systemPrompt.ts  # provider-agnostic LLM layer
+│       ├── crypto.ts, userSettings.ts  # BYOK key encryption/storage
+│       └── fileExtraction.ts           # .txt/.pdf/image → text for the knowledge base
+└── package.json                        # root workspace + `npm run dev`
 ```
 
 ## Getting started
 
-Requirements: Node.js 22+, npm, and a MongoDB Atlas cluster (a free tier works).
+Requirements: Node.js 22+, npm, and a MongoDB Atlas cluster (a free tier works, but Atlas Vector Search — used for RAG and semantic memory — requires an M10+ cluster or a shared cluster with Search enabled).
 
 1. Install dependencies (from the repo root):
    ```
@@ -54,8 +79,11 @@ Requirements: Node.js 22+, npm, and a MongoDB Atlas cluster (a free tier works).
    - `BETTER_AUTH_SECRET` — any long random string
    - `BETTER_AUTH_URL` — `http://localhost:4000` for local dev
    - `CLIENT_URL` — `http://localhost:5173` for local dev
+   - `ENCRYPTION_KEY` — any long random string (encrypts BYOK keys at rest; generate with `openssl rand -hex 32`)
+   - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — optional platform-level fallback keys; users can set their own per account in Settings instead
+   - `VOYAGE_API_KEY` — required for the knowledge base (RAG) and semantic memory to work; no BYOK for this one
 
-3. Optionally configure the frontend — copy `frontend/.env.example` to `frontend/.env` if you need to point `VITE_API_URL` somewhere other than the default (the Vite dev server already proxies `/api` to the backend, so this is usually not required locally).
+3. Optionally configure the frontend — copy `frontend/.env.example` to `frontend/.env` if you need to point `VITE_API_URL` somewhere other than the default (the Vite dev server already proxies `/api` and `/socket.io` to the backend, so this is usually not required locally).
 
 4. Run both apps together:
    ```
@@ -73,6 +101,6 @@ Run from the repo root:
 
 ## Roadmap
 
-- Agent management (create/configure agents, assign objectives)
-- Objective-driven chat orchestration between agents
-- Real-time updates (e.g. Socket.IO) for the chat view
+- Booking/appointment capture (structured lead capture or full calendar tool-calling)
+- Additional chat channels beyond the embeddable widget (e.g. WhatsApp)
+- Owner-configurable structured-memory fields (currently LLM-inferred)
