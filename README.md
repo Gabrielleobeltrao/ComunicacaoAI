@@ -7,7 +7,8 @@ A SaaS platform for managing goal-oriented AI communication agents, connected to
 - **Agents** — create an AI agent with an objective/instructions, pick its LLM provider (Anthropic or OpenAI) and model, and give it a knowledge base (pasted text, `.txt`, `.pdf`, or images — extracted/transcribed automatically) for grounded, RAG-based answers.
 - **Widgets** — create an embeddable chat widget, customize its color/position/avatar/welcome message, and link it to an agent. Drop a single `<script>` tag on any site to embed it.
 - **Chats** — every visitor conversation is isolated per-visitor and streams to the owner in real time (Socket.IO), with a dedicated page to browse/filter and reply manually.
-- **Conversation memory** — per agent, pick one memory strategy: freeform key-facts, structured key:value facts, or semantic search over past turns. Optionally configure identity fields (e.g. Name, Email) that the agent asks for conversationally, so a visitor's memory follows them across devices/sessions instead of resetting every conversation.
+- **Conversation memory** — per agent, pick one memory strategy: freeform key-facts, structured key:value facts, or semantic search over past turns, plus how many recent messages get sent to the LLM per call.
+- **Visitor identity** — optionally toggle identity capture and define custom fields (e.g. Name, Email) that the agent asks for conversationally (no blocking form, so it also works for future non-widget channels). Once captured, a visitor's memory follows them across devices/sessions instead of resetting every conversation. A separate per-agent setting controls whether a visitor's chat persists across visits in the same browser or always starts fresh.
 - **BYOK** — users can store their own Anthropic/OpenAI API key (encrypted at rest), which takes priority over the platform's fallback key.
 
 ## Tech stack
@@ -41,11 +42,11 @@ The repo is an npm workspaces monorepo (`frontend` + `backend`), with a single l
 │       │   ├── types.ts                # shared frontend types
 │       │   └── useAgentsAndWidgets.ts  # shared agents/widgets data hook
 │       ├── components/
-│       │   ├── AgentManager.tsx        # agent create/edit popup (memory, KB, identity fields...)
+│       │   ├── AgentManager.tsx        # agent create/edit popup — 4-step wizard (basics, memory, identity, KB)
 │       │   ├── WidgetManager.tsx       # widget create/edit popup (visual customization)
 │       │   ├── ApiKeySettings.tsx      # BYOK settings popup
 │       │   ├── ConversationsPanel.tsx  # Chats page conversation list + reply UI
-│       │   ├── AppNav.tsx              # shared nav across authenticated pages
+│       │   ├── Sidebar.tsx, AppLayout.tsx  # shared sidebar nav + layout across authenticated pages
 │       │   ├── Modal.tsx               # reusable popup
 │       │   └── ProtectedRoute.tsx
 │       └── pages/                      # Home, Login, Register, Dashboard, Agents, Widgets, Chats, Widget (public)
