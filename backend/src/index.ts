@@ -9,6 +9,7 @@ import type { WithId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import { Server } from 'socket.io'
 import {
+  CONVERSATION_PERSISTENCE_TYPES,
   createAgent,
   DEFAULT_HISTORY_LIMIT,
   getAgentById,
@@ -18,7 +19,7 @@ import {
   setAgentWidget,
   updateAgent,
 } from './agents.js'
-import type { Agent, MemoryType } from './agents.js'
+import type { Agent, ConversationPersistence, MemoryType } from './agents.js'
 import { auth } from './auth.js'
 import {
   getLinkedVisitorProfileId,
@@ -186,6 +187,10 @@ function isValidIdentityFields(value: unknown): value is string[] {
   )
 }
 
+function isConversationPersistence(value: unknown): value is ConversationPersistence {
+  return typeof value === 'string' && (CONVERSATION_PERSISTENCE_TYPES as string[]).includes(value)
+}
+
 app.put('/api/settings/:provider/key', requireAuth, async (req, res) => {
   const { provider } = req.params
   if (!isProvider(provider)) {
@@ -332,7 +337,18 @@ async function resolveOwnedWidgetId(ownerId: string, widgetId: unknown) {
 }
 
 app.post('/api/agents', requireAuth, async (req, res) => {
-  const { name, widgetId, objective, provider, model, memoryType, historyLimit, identityFields } = req.body ?? {}
+  const {
+    name,
+    widgetId,
+    objective,
+    provider,
+    model,
+    memoryType,
+    historyLimit,
+    identityEnabled,
+    identityFields,
+    conversationPersistence,
+  } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
     return
@@ -353,6 +369,10 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: `identityFields must be a list of up to ${MAX_IDENTITY_FIELDS} non-empty strings` })
     return
   }
+  if (conversationPersistence !== undefined && !isConversationPersistence(conversationPersistence)) {
+    res.status(400).json({ error: 'Unknown conversationPersistence' })
+    return
+  }
 
   const { widgetObjectId, error } = await resolveOwnedWidgetId(res.locals.userId, widgetId)
   if (error) {
@@ -366,7 +386,9 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     model: typeof model === 'string' || model === null ? model || null : undefined,
     memoryType,
     historyLimit,
+    identityEnabled: typeof identityEnabled === 'boolean' ? identityEnabled : undefined,
     identityFields,
+    conversationPersistence,
   })
   res.status(201).json(agent)
 })
@@ -382,7 +404,17 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid agent id' })
     return
   }
-  const { name, objective, provider, model, memoryType, historyLimit, identityFields } = req.body ?? {}
+  const {
+    name,
+    objective,
+    provider,
+    model,
+    memoryType,
+    historyLimit,
+    identityEnabled,
+    identityFields,
+    conversationPersistence,
+  } = req.body ?? {}
   const updates: {
     name?: string
     objective?: string
@@ -390,7 +422,9 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     model?: string | null
     memoryType?: MemoryType
     historyLimit?: number
+    identityEnabled?: boolean
     identityFields?: string[]
+    conversationPersistence?: ConversationPersistence
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
@@ -416,6 +450,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     }
     updates.historyLimit = historyLimit
   }
+  if (typeof identityEnabled === 'boolean') updates.identityEnabled = identityEnabled
   if (identityFields !== undefined) {
     if (!isValidIdentityFields(identityFields)) {
       res
@@ -424,6 +459,13 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
       return
     }
     updates.identityFields = identityFields
+  }
+  if (conversationPersistence !== undefined) {
+    if (!isConversationPersistence(conversationPersistence)) {
+      res.status(400).json({ error: 'Unknown conversationPersistence' })
+      return
+    }
+    updates.conversationPersistence = conversationPersistence
   }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -675,6 +717,7 @@ app.get('/api/public/widgets/:publicKey', async (req, res) => {
     res.status(404).json({ error: 'Widget not found' })
     return
   }
+  const agent = await getAgentByWidgetId(widget._id)
   res.json({
     name: widget.name,
     primaryColor: widget.primaryColor,
@@ -682,6 +725,7 @@ app.get('/api/public/widgets/:publicKey', async (req, res) => {
     welcomeMessage: widget.welcomeMessage,
     position: widget.position,
     avatarUrl: widget.avatarUrl,
+    conversationPersistence: agent?.conversationPersistence ?? 'same_browser',
   })
 })
 
@@ -732,7 +776,7 @@ async function respondWithAgentIfLinked(
   if (!agent) return
 
   const memoryType = agent.memoryType ?? 'none'
-  const identityFields = agent.identityFields ?? []
+  const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
 
   // Keep the raw window short — a compact per-conversation memory (below)
   // carries older context forward instead of resending the whole history.

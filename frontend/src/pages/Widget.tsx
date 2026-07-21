@@ -4,6 +4,8 @@ import { useParams } from 'react-router'
 import { API_URL } from '../lib/api'
 import { socket } from '../lib/socket'
 
+type ConversationPersistence = 'same_browser' | 'always_new'
+
 interface WidgetConfig {
   name: string
   primaryColor: string | null
@@ -11,6 +13,7 @@ interface WidgetConfig {
   welcomeMessage: string | null
   position: 'right' | 'left'
   avatarUrl: string | null
+  conversationPersistence: ConversationPersistence
 }
 
 interface WidgetMessage {
@@ -21,7 +24,11 @@ interface WidgetMessage {
   createdAt: string
 }
 
-function getConversationId(publicKey: string) {
+function getConversationId(publicKey: string, persistence: ConversationPersistence) {
+  if (persistence === 'always_new') {
+    return crypto.randomUUID()
+  }
+
   const key = `widget-conversation:${publicKey}`
   let conversationId = localStorage.getItem(key)
   if (!conversationId) {
@@ -44,23 +51,23 @@ export function Widget() {
   useEffect(() => {
     if (!publicKey) return
 
-    conversationId.current = getConversationId(publicKey)
-
     async function load() {
       try {
-        const [configRes, messagesRes] = await Promise.all([
-          fetch(`${API_URL}/api/public/widgets/${publicKey}`),
-          fetch(
-            `${API_URL}/api/public/widgets/${publicKey}/messages?conversationId=${conversationId.current}`,
-          ),
-        ])
-
+        const configRes = await fetch(`${API_URL}/api/public/widgets/${publicKey}`)
         if (!configRes.ok) {
           setError('Widget não encontrado.')
           return
         }
+        const configData: WidgetConfig = await configRes.json()
+        setConfig(configData)
 
-        setConfig(await configRes.json())
+        // Depends on the config (some_browser vs always_new), so this can
+        // only be resolved after the config request comes back.
+        conversationId.current = getConversationId(publicKey, configData.conversationPersistence)
+
+        const messagesRes = await fetch(
+          `${API_URL}/api/public/widgets/${publicKey}/messages?conversationId=${conversationId.current}`,
+        )
         setMessages(messagesRes.ok ? await messagesRes.json() : [])
       } catch {
         setError('Não foi possível carregar o widget.')

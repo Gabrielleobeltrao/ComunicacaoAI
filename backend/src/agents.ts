@@ -7,6 +7,9 @@ export const DEFAULT_HISTORY_LIMIT = 6
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
 export const MEMORY_TYPES: MemoryType[] = ['none', 'facts', 'structured', 'semantic']
 
+export type ConversationPersistence = 'same_browser' | 'always_new'
+export const CONVERSATION_PERSISTENCE_TYPES: ConversationPersistence[] = ['same_browser', 'always_new']
+
 export interface Agent {
   _id: ObjectId
   ownerId: string
@@ -17,7 +20,9 @@ export interface Agent {
   widgetId: ObjectId | null
   memoryType: MemoryType
   historyLimit: number
+  identityEnabled: boolean
   identityFields: string[]
+  conversationPersistence: ConversationPersistence
   createdAt: Date
 }
 
@@ -33,7 +38,9 @@ export async function createAgent(
     model?: string | null
     memoryType?: MemoryType
     historyLimit?: number
+    identityEnabled?: boolean
     identityFields?: string[]
+    conversationPersistence?: ConversationPersistence
   } = {},
 ) {
   if (widgetId) {
@@ -49,7 +56,9 @@ export async function createAgent(
     widgetId,
     memoryType: options.memoryType ?? 'none',
     historyLimit: options.historyLimit ?? DEFAULT_HISTORY_LIMIT,
+    identityEnabled: options.identityEnabled ?? false,
     identityFields: options.identityFields ?? [],
+    conversationPersistence: options.conversationPersistence ?? 'same_browser',
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -90,7 +99,9 @@ export function updateAgent(
     model?: string | null
     memoryType?: MemoryType
     historyLimit?: number
+    identityEnabled?: boolean
     identityFields?: string[]
+    conversationPersistence?: ConversationPersistence
   },
 ) {
   return agents.findOneAndUpdate(

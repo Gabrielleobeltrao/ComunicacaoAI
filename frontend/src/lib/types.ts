@@ -12,6 +12,7 @@ export interface WidgetSummary {
 }
 
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
+export type ConversationPersistence = 'same_browser' | 'always_new'
 
 export interface AgentSummary {
   _id: string
@@ -22,7 +23,9 @@ export interface AgentSummary {
   widgetId: string | null
   memoryType: MemoryType
   historyLimit: number
+  identityEnabled: boolean
   identityFields: string[]
+  conversationPersistence: ConversationPersistence
 }
 
 export interface ProviderInfo {
