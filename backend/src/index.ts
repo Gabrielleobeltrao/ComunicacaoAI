@@ -13,13 +13,11 @@ import {
   createAgent,
   DEFAULT_HISTORY_LIMIT,
   getAgentById,
-  getAgentByWidgetId,
   GUARDRAIL_MODES,
   listAgents,
   MEMORY_TYPES,
   RESPONSE_DETAILS,
   RESPONSE_TONES,
-  setAgentWidget,
   updateAgent,
 } from './agents.js'
 import type {
@@ -87,13 +85,12 @@ import {
   setVisitorProfileStructuredOutputData,
   upsertVisitorProfile,
 } from './visitorProfiles.js'
-import type { WidgetMessage, WidgetPosition } from './widgets.js'
+import type { Widget, WidgetMessage, WidgetPosition } from './widgets.js'
 import {
   addMessage,
   addOwnerReply,
   createWidget,
   getConversationMessages,
-  getWidgetById,
   getWidgetByPublicKey,
   listConversationsForOwner,
   listMessages,
@@ -273,8 +270,20 @@ function isWidgetPosition(value: unknown): value is WidgetPosition {
   return value === 'left' || value === 'right'
 }
 
+async function resolveOwnedAgentId(ownerId: string, agentId: unknown) {
+  if (!agentId) return { agentObjectId: null, error: null }
+  if (typeof agentId !== 'string' || !ObjectId.isValid(agentId)) {
+    return { agentObjectId: null, error: 'Invalid agent id' }
+  }
+  const agent = await getAgentById(ownerId, new ObjectId(agentId))
+  if (!agent) {
+    return { agentObjectId: null, error: 'Agent not found' }
+  }
+  return { agentObjectId: agent._id, error: null }
+}
+
 app.post('/api/widgets', requireAuth, async (req, res) => {
-  const { name, primaryColor, welcomeTitle, welcomeMessage, position } = req.body ?? {}
+  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
     return
@@ -284,11 +293,18 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     return
   }
 
+  const { agentObjectId, error } = await resolveOwnedAgentId(res.locals.userId, agentId)
+  if (error) {
+    res.status(400).json({ error })
+    return
+  }
+
   const widget = await createWidget(res.locals.userId, name, {
     primaryColor: typeof primaryColor === 'string' ? primaryColor : undefined,
     welcomeTitle: typeof welcomeTitle === 'string' ? welcomeTitle : undefined,
     welcomeMessage: typeof welcomeMessage === 'string' ? welcomeMessage : undefined,
     position,
+    agentId: agentObjectId,
   })
   res.status(201).json(widget)
 })
@@ -304,13 +320,14 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid widget id' })
     return
   }
-  const { name, primaryColor, welcomeTitle, welcomeMessage, position } = req.body ?? {}
+  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId } = req.body ?? {}
   const updates: {
     name?: string
     primaryColor?: string | null
     welcomeTitle?: string | null
     welcomeMessage?: string | null
     position?: WidgetPosition
+    agentId?: ObjectId | null
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof primaryColor === 'string' || primaryColor === null) updates.primaryColor = primaryColor || null
@@ -324,6 +341,14 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
       return
     }
     updates.position = position
+  }
+  if (agentId !== undefined) {
+    const { agentObjectId, error } = await resolveOwnedAgentId(res.locals.userId, agentId)
+    if (error) {
+      res.status(400).json({ error })
+      return
+    }
+    updates.agentId = agentObjectId
   }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -377,22 +402,9 @@ app.delete('/api/widgets/:widgetId/avatar', requireAuth, async (req, res) => {
   res.json(widget)
 })
 
-async function resolveOwnedWidgetId(ownerId: string, widgetId: unknown) {
-  if (!widgetId) return { widgetObjectId: null, error: null }
-  if (typeof widgetId !== 'string' || !ObjectId.isValid(widgetId)) {
-    return { widgetObjectId: null, error: 'Invalid widget id' }
-  }
-  const widget = await getWidgetById(new ObjectId(widgetId))
-  if (!widget || widget.ownerId !== ownerId) {
-    return { widgetObjectId: null, error: 'Widget not found' }
-  }
-  return { widgetObjectId: widget._id, error: null }
-}
-
 app.post('/api/agents', requireAuth, async (req, res) => {
   const {
     name,
-    widgetId,
     objective,
     provider,
     model,
@@ -461,13 +473,7 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     return
   }
 
-  const { widgetObjectId, error } = await resolveOwnedWidgetId(res.locals.userId, widgetId)
-  if (error) {
-    res.status(400).json({ error })
-    return
-  }
-
-  const agent = await createAgent(res.locals.userId, name, widgetObjectId, {
+  const agent = await createAgent(res.locals.userId, name, {
     objective: typeof objective === 'string' ? objective : undefined,
     provider,
     model: typeof model === 'string' || model === null ? model || null : undefined,
@@ -786,27 +792,6 @@ app.delete('/api/agents/:agentId/documents/:documentId', requireAuth, async (req
   res.status(204).end()
 })
 
-app.post('/api/agents/:agentId/widget', requireAuth, async (req, res) => {
-  const agentId = String(req.params.agentId)
-  if (!ObjectId.isValid(agentId)) {
-    res.status(400).json({ error: 'Invalid agent id' })
-    return
-  }
-
-  const { widgetObjectId, error } = await resolveOwnedWidgetId(res.locals.userId, req.body?.widgetId)
-  if (error) {
-    res.status(400).json({ error })
-    return
-  }
-
-  const agent = await setAgentWidget(res.locals.userId, new ObjectId(agentId), widgetObjectId)
-  if (!agent) {
-    res.status(404).json({ error: 'Agent not found' })
-    return
-  }
-  res.json(agent)
-})
-
 app.get('/api/conversations', requireAuth, async (_req, res) => {
   const conversations = await listConversationsForOwner(res.locals.userId)
   res.json(conversations)
@@ -871,7 +856,7 @@ app.get('/api/public/widgets/:publicKey', async (req, res) => {
     res.status(404).json({ error: 'Widget not found' })
     return
   }
-  const agent = await getAgentByWidgetId(widget._id)
+  const agent = widget.agentId ? await getAgentById(widget.ownerId, widget.agentId) : null
   res.json({
     name: widget.name,
     primaryColor: widget.primaryColor,
@@ -915,18 +900,15 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
 
   // Fire-and-forget: the visitor's request doesn't wait on embeddings + Claude.
   // The reply (if any) arrives over the socket once it's ready.
-  respondWithAgentIfLinked(widget._id, widget.ownerId, conversationId, content).catch((error) => {
+  respondWithAgentIfLinked(widget, conversationId, content).catch((error) => {
     console.error('Agent auto-reply failed:', error)
   })
 })
 
-async function respondWithAgentIfLinked(
-  widgetId: ObjectId,
-  ownerId: string,
-  conversationId: string,
-  visitorContent: string,
-) {
-  const agent = await getAgentByWidgetId(widgetId)
+async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: string, visitorContent: string) {
+  const widgetId = widget._id
+  const ownerId = widget.ownerId
+  const agent = widget.agentId ? await getAgentById(ownerId, widget.agentId) : null
   if (!agent) return
 
   const memoryType = agent.memoryType ?? 'none'

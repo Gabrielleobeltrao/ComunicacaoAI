@@ -3,7 +3,7 @@ import { AppLayout } from '../components/AppLayout'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 
 export function Agents() {
-  const { agents, agentsLoading, loadAgents, widgets } = useAgentsAndWidgets()
+  const { agents, agentsLoading, loadAgents } = useAgentsAndWidgets()
 
   return (
     <AppLayout current="/agents" title="Agentes">
@@ -12,7 +12,7 @@ export function Agents() {
         <p className="mb-4 text-sm text-slate-400">
           Crie um agente aqui. Para vincular a um widget, use o seletor na página "Widgets".
         </p>
-        <AgentManager agents={agents} loading={agentsLoading} widgets={widgets} onChange={loadAgents} />
+        <AgentManager agents={agents} loading={agentsLoading} onChange={loadAgents} />
       </section>
     </AppLayout>
   )

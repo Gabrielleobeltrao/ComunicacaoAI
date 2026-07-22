@@ -15,6 +15,7 @@ export interface Widget {
   welcomeMessage: string | null
   position: WidgetPosition
   avatarUrl: string | null
+  agentId: ObjectId | null
 }
 
 export interface WidgetMessage {
@@ -37,6 +38,7 @@ export async function createWidget(
     welcomeTitle?: string | null
     welcomeMessage?: string | null
     position?: WidgetPosition
+    agentId?: ObjectId | null
   } = {},
 ) {
   const widget: Omit<Widget, '_id'> = {
@@ -49,6 +51,7 @@ export async function createWidget(
     welcomeMessage: options.welcomeMessage ?? null,
     position: options.position ?? 'right',
     avatarUrl: null,
+    agentId: options.agentId ?? null,
   }
   const result = await widgets.insertOne(widget as Widget)
   return { ...widget, _id: result.insertedId }
@@ -75,6 +78,7 @@ export function updateWidget(
     welcomeTitle?: string | null
     welcomeMessage?: string | null
     position?: WidgetPosition
+    agentId?: ObjectId | null
   },
 ) {
   return widgets.findOneAndUpdate(

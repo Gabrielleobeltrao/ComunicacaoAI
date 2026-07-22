@@ -9,6 +9,7 @@ export interface WidgetSummary {
   welcomeMessage: string | null
   position: WidgetPosition
   avatarUrl: string | null
+  agentId: string | null
 }
 
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
@@ -23,7 +24,6 @@ export interface AgentSummary {
   objective: string
   provider: 'anthropic' | 'openai'
   model: string | null
-  widgetId: string | null
   memoryType: MemoryType
   historyLimit: number
   identityEnabled: boolean

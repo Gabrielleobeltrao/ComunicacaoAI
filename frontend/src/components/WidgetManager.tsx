@@ -10,11 +10,11 @@ interface WidgetManagerProps {
   widgets: WidgetSummary[]
   loading: boolean
   agents: AgentSummary[]
+  agentsLoading: boolean
   onChange: () => void | Promise<void>
-  onAssignAgent: (widgetId: string, agentId: string) => void | Promise<void>
 }
 
-export function WidgetManager({ widgets, loading, agents, onChange, onAssignAgent }: WidgetManagerProps) {
+export function WidgetManager({ widgets, loading, agents, agentsLoading, onChange }: WidgetManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
 
   const [editingWidget, setEditingWidget] = useState<WidgetSummary | null>(null)
@@ -52,7 +52,7 @@ export function WidgetManager({ widgets, loading, agents, onChange, onAssignAgen
     setIsCreating(false)
     setEditingWidget(widget)
     setEditName(widget.name)
-    setEditAgentId(agents.find((agent) => agent.widgetId === widget._id)?._id ?? '')
+    setEditAgentId(widget.agentId ?? '')
     setEditPrimaryColor(widget.primaryColor)
     setEditWelcomeTitle(widget.welcomeTitle ?? '')
     setEditWelcomeMessage(widget.welcomeMessage ?? '')
@@ -135,6 +135,7 @@ export function WidgetManager({ widgets, loading, agents, onChange, onAssignAgen
             welcomeTitle: editWelcomeTitle || null,
             welcomeMessage: editWelcomeMessage || null,
             position: editPosition,
+            agentId: editAgentId || null,
           }),
         })
 
@@ -145,9 +146,6 @@ export function WidgetManager({ widgets, loading, agents, onChange, onAssignAgen
 
         const created: WidgetSummary = await res.json()
 
-        if (editAgentId) {
-          await onAssignAgent(created._id, editAgentId)
-        }
         if (pendingAvatarFile) {
           await uploadAvatarNow(created._id, pendingAvatarFile)
           setPendingAvatarFile(null)
@@ -171,17 +169,13 @@ export function WidgetManager({ widgets, loading, agents, onChange, onAssignAgen
           welcomeTitle: editWelcomeTitle || null,
           welcomeMessage: editWelcomeMessage || null,
           position: editPosition,
+          agentId: editAgentId || null,
         }),
       })
 
       if (!res.ok) {
         setEditError('Não foi possível salvar.')
         return
-      }
-
-      const currentAgentId = agents.find((agent) => agent.widgetId === editingWidget._id)?._id ?? ''
-      if (currentAgentId !== editAgentId) {
-        await onAssignAgent(editingWidget._id, editAgentId)
       }
 
       setEditingWidget(null)
@@ -202,7 +196,8 @@ export function WidgetManager({ widgets, loading, agents, onChange, onAssignAgen
       <button
         type="button"
         onClick={openCreate}
-        className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200"
+        disabled={agentsLoading}
+        className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
       >
         + Novo widget
       </button>
@@ -215,7 +210,7 @@ export function WidgetManager({ widgets, loading, agents, onChange, onAssignAgen
         <ul className="space-y-3">
           {widgets.map((widget) => {
             const snippet = `<script src="${window.location.origin}/widget-loader.js" data-widget-key="${widget.publicKey}"></script>`
-            const linkedAgent = agents.find((agent) => agent.widgetId === widget._id)
+            const linkedAgent = agents.find((agent) => agent._id === widget.agentId)
 
             return (
               <li key={widget._id} className="rounded-lg border border-slate-800 p-3">
@@ -229,9 +224,10 @@ export function WidgetManager({ widgets, loading, agents, onChange, onAssignAgen
                   <button
                     type="button"
                     onClick={() => openEdit(widget)}
-                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800"
+                    disabled={agentsLoading}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800 disabled:opacity-50"
                   >
-                    Editar
+                    {agentsLoading ? 'Carregando...' : 'Editar'}
                   </button>
                 </div>
                 <code className="block overflow-x-auto rounded bg-slate-950 p-2 text-xs text-slate-300">

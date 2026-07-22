@@ -25,27 +25,6 @@ export function useAgentsAndWidgets() {
     loadAgents()
   }, [loadWidgets, loadAgents])
 
-  async function handleAssignAgent(widgetId: string, agentId: string) {
-    if (agentId) {
-      await fetch(`${API_URL}/api/agents/${agentId}/widget`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ widgetId }),
-      })
-    } else {
-      const current = agents.find((agent) => agent.widgetId === widgetId)
-      if (!current) return
-      await fetch(`${API_URL}/api/agents/${current._id}/widget`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ widgetId: null }),
-      })
-    }
-    await loadAgents()
-  }
-
   return {
     widgets,
     widgetsLoading,
@@ -53,6 +32,5 @@ export function useAgentsAndWidgets() {
     agents,
     agentsLoading,
     loadAgents,
-    handleAssignAgent,
   }
 }

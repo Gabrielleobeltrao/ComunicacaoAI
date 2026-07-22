@@ -3,7 +3,7 @@ import { WidgetManager } from '../components/WidgetManager'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 
 export function Widgets() {
-  const { widgets, widgetsLoading, loadWidgets, agents, handleAssignAgent } = useAgentsAndWidgets()
+  const { widgets, widgetsLoading, loadWidgets, agents, agentsLoading } = useAgentsAndWidgets()
 
   return (
     <AppLayout current="/widgets" title="Widgets">
@@ -17,8 +17,8 @@ export function Widgets() {
           widgets={widgets}
           loading={widgetsLoading}
           agents={agents}
+          agentsLoading={agentsLoading}
           onChange={loadWidgets}
-          onAssignAgent={handleAssignAgent}
         />
       </section>
     </AppLayout>

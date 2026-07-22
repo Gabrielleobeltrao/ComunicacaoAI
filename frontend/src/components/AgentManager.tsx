@@ -10,14 +10,12 @@ import type {
   ProviderInfo,
   ResponseDetail,
   ResponseTone,
-  WidgetSummary,
 } from '../lib/types'
 import { Modal } from './Modal'
 
 interface AgentManagerProps {
   agents: AgentSummary[]
   loading: boolean
-  widgets: WidgetSummary[]
   onChange: () => void | Promise<void>
 }
 
@@ -91,7 +89,7 @@ function OptionSwitch<T extends string>({
   )
 }
 
-export function AgentManager({ agents, loading, widgets, onChange }: AgentManagerProps) {
+export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
 
   const [providers, setProviders] = useState<ProviderInfo[]>([])
@@ -507,8 +505,6 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     }
   }
 
-  const widgetNameById = new Map(widgets.map((w) => [w._id, w.name]))
-
   return (
     <div className="space-y-4">
       <button
@@ -532,11 +528,6 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
             >
               <div>
                 <p className="font-medium">{agent.name}</p>
-                <p className="text-sm text-slate-400">
-                  {agent.widgetId
-                    ? `Vinculado a "${widgetNameById.get(agent.widgetId) ?? 'widget removido'}"`
-                    : 'Sem widget vinculado'}
-                </p>
               </div>
               <button
                 type="button"

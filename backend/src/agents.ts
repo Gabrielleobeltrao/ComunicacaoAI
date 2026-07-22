@@ -26,7 +26,6 @@ export interface Agent {
   objective: string
   provider: Provider
   model: string | null
-  widgetId: ObjectId | null
   memoryType: MemoryType
   historyLimit: number
   identityEnabled: boolean
@@ -48,7 +47,6 @@ const agents = db.collection<Agent>('agents')
 export async function createAgent(
   ownerId: string,
   name: string,
-  widgetId: ObjectId | null,
   options: {
     objective?: string
     provider?: Provider
@@ -68,17 +66,12 @@ export async function createAgent(
     responseFormatting?: boolean
   } = {},
 ) {
-  if (widgetId) {
-    await unlinkWidgetFromOtherAgents(ownerId, widgetId, null)
-  }
-
   const agent: Omit<Agent, '_id'> = {
     ownerId,
     name,
     objective: options.objective ?? '',
     provider: options.provider ?? 'anthropic',
     model: options.model ?? null,
-    widgetId,
     memoryType: options.memoryType ?? 'none',
     historyLimit: options.historyLimit ?? DEFAULT_HISTORY_LIMIT,
     identityEnabled: options.identityEnabled ?? false,
@@ -104,22 +97,6 @@ export function listAgents(ownerId: string) {
 
 export function getAgentById(ownerId: string, agentId: ObjectId) {
   return agents.findOne({ _id: agentId, ownerId })
-}
-
-export function getAgentByWidgetId(widgetId: ObjectId) {
-  return agents.findOne({ widgetId })
-}
-
-export async function setAgentWidget(ownerId: string, agentId: ObjectId, widgetId: ObjectId | null) {
-  if (widgetId) {
-    await unlinkWidgetFromOtherAgents(ownerId, widgetId, agentId)
-  }
-
-  return agents.findOneAndUpdate(
-    { _id: agentId, ownerId },
-    { $set: { widgetId } },
-    { returnDocument: 'after' },
-  )
 }
 
 export function updateAgent(
@@ -149,12 +126,5 @@ export function updateAgent(
     { _id: agentId, ownerId },
     { $set: updates },
     { returnDocument: 'after' },
-  )
-}
-
-async function unlinkWidgetFromOtherAgents(ownerId: string, widgetId: ObjectId, exceptAgentId: ObjectId | null) {
-  await agents.updateMany(
-    { ownerId, widgetId, ...(exceptAgentId ? { _id: { $ne: exceptAgentId } } : {}) },
-    { $set: { widgetId: null } },
   )
 }
