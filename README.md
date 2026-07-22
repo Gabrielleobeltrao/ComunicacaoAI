@@ -9,6 +9,9 @@ A SaaS platform for managing goal-oriented AI communication agents, connected to
 - **Chats** — every visitor conversation is isolated per-visitor and streams to the owner in real time (Socket.IO), with a dedicated page to browse/filter and reply manually.
 - **Conversation memory** — per agent, pick one memory strategy: freeform key-facts, structured key:value facts, or semantic search over past turns, plus how many recent messages get sent to the LLM per call.
 - **Visitor identity** — optionally toggle identity capture and define custom fields (e.g. Name, Email) that the agent asks for conversationally (no blocking form, so it also works for future non-widget channels). Once captured, a visitor's memory follows them across devices/sessions instead of resetting every conversation. A separate per-agent setting controls whether a visitor's chat persists across visits in the same browser or always starts fresh.
+- **Guardrails** — keep an agent on-topic with either a system-prompt instruction (free) or a pre-reply verification call that refuses out-of-scope messages before the main reply is generated.
+- **Custom structured-data extraction** — define your own field schema (e.g. Orçamento, Urgência) that the agent extracts from the conversation in the background, optionally delivered to an external system via webhook whenever the data changes — useful for qualifying leads.
+- **Response style** — tune tone (neutral/friendly/formal/enthusiastic), detail level, emoji use, and markdown formatting per agent; replies render as real markdown (bold, lists) in both the widget and the owner's Chats view.
 - **BYOK** — users can store their own Anthropic/OpenAI API key (encrypted at rest), which takes priority over the platform's fallback key.
 
 ## Tech stack
@@ -42,10 +45,11 @@ The repo is an npm workspaces monorepo (`frontend` + `backend`), with a single l
 │       │   ├── types.ts                # shared frontend types
 │       │   └── useAgentsAndWidgets.ts  # shared agents/widgets data hook
 │       ├── components/
-│       │   ├── AgentManager.tsx        # agent create/edit popup — 4-step wizard (basics, memory, identity, KB)
+│       │   ├── AgentManager.tsx        # agent create/edit popup — 7-step wizard (basics, style, memory, guardrails, identity, structured output, KB)
 │       │   ├── WidgetManager.tsx       # widget create/edit popup (visual customization)
 │       │   ├── ApiKeySettings.tsx      # BYOK settings popup
 │       │   ├── ConversationsPanel.tsx  # Chats page conversation list + reply UI
+│       │   ├── MessageContent.tsx      # shared markdown-safe message renderer (widget + Chats)
 │       │   ├── Sidebar.tsx, AppLayout.tsx  # shared sidebar nav + layout across authenticated pages
 │       │   ├── Modal.tsx               # reusable popup
 │       │   └── ProtectedRoute.tsx
@@ -57,10 +61,10 @@ The repo is an npm workspaces monorepo (`frontend` + `backend`), with a single l
 │       ├── index.ts                    # Express app + all routes, Socket.IO wiring
 │       ├── agents.ts, widgets.ts       # Agent/Widget data models
 │       ├── knowledge.ts, voyage.ts     # RAG knowledge base + embeddings
-│       ├── conversationMemory.ts       # per-conversation facts/structured memory
+│       ├── conversationMemory.ts       # per-conversation facts/structured memory + custom structured-output data
 │       ├── conversationTurns.ts        # semantic memory (embedded turns + vector search)
 │       ├── visitorProfiles.ts          # cross-conversation visitor identity + memory
-│       ├── llm.ts, claude.ts, openai.ts, systemPrompt.ts  # provider-agnostic LLM layer
+│       ├── llm.ts, claude.ts, openai.ts, systemPrompt.ts  # provider-agnostic LLM layer (guardrails, response style, memory prompts)
 │       ├── crypto.ts, userSettings.ts  # BYOK key encryption/storage
 │       └── fileExtraction.ts           # .txt/.pdf/image → text for the knowledge base
 └── package.json                        # root workspace + `npm run dev`
@@ -102,6 +106,5 @@ Run from the repo root:
 
 ## Roadmap
 
-- Booking/appointment capture (structured lead capture or full calendar tool-calling)
+- Booking/appointment capture (full calendar tool-calling)
 - Additional chat channels beyond the embeddable widget (e.g. WhatsApp)
-- Owner-configurable structured-memory fields (currently LLM-inferred)
