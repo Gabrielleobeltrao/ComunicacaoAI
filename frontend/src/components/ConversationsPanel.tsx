@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import { socket } from '../lib/socket'
+import { MessageContent } from './MessageContent'
 
 interface ConversationSummary {
   widgetId: string
@@ -214,7 +215,7 @@ export function ConversationsPanel() {
                     : 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-white px-3 py-2 text-sm text-slate-950'
                 }
               >
-                {message.content}
+                <MessageContent content={message.content} />
               </div>
             ))
           )}

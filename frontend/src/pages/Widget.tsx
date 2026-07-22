@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { useParams } from 'react-router'
 import { API_URL } from '../lib/api'
 import { socket } from '../lib/socket'
+import { MessageContent } from '../components/MessageContent'
 
 type ConversationPersistence = 'same_browser' | 'always_new'
 
@@ -199,7 +200,7 @@ export function Widget() {
             }
             style={message.role === 'visitor' ? accentStyle : undefined}
           >
-            {message.content}
+            <MessageContent content={message.content} />
           </div>
         ))}
         <div ref={messagesEndRef} />

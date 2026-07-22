@@ -71,11 +71,19 @@ export async function generateAgentReply(
   apiKey?: string | null,
   identityInstruction = '',
   guardrailInstruction = '',
+  responseStyleInstruction = '',
 ): Promise<string> {
   const response = await buildClient(apiKey).messages.create({
     model: model || DEFAULT_MODEL,
     max_tokens: 1024,
-    system: buildSystemPrompt(objective, knowledge, memory, identityInstruction, guardrailInstruction),
+    system: buildSystemPrompt(
+      objective,
+      knowledge,
+      memory,
+      identityInstruction,
+      guardrailInstruction,
+      responseStyleInstruction,
+    ),
     thinking: { type: 'disabled' },
     output_config: { effort: 'low' },
     messages: history.map((turn) => ({ role: turn.role, content: turn.content })),

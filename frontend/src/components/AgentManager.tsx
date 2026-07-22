@@ -8,6 +8,8 @@ import type {
   KnowledgeDocumentSummary,
   MemoryType,
   ProviderInfo,
+  ResponseDetail,
+  ResponseTone,
   WidgetSummary,
 } from '../lib/types'
 import { Modal } from './Modal'
@@ -32,7 +34,28 @@ const MAX_HISTORY_LIMIT = 30
 const MAX_IDENTITY_FIELDS = 5
 const MAX_STRUCTURED_OUTPUT_FIELDS = 10
 
-const STEPS = ['Básico', 'Memória', 'Guardrails', 'Identificação', 'Dados estruturados', 'Base de conhecimento']
+const STEPS = [
+  'Básico',
+  'Estilo',
+  'Memória',
+  'Guardrails',
+  'Identificação',
+  'Dados estruturados',
+  'Base de conhecimento',
+]
+
+const TONE_OPTIONS: { value: ResponseTone; label: string }[] = [
+  { value: 'neutral', label: 'Neutro (padrão)' },
+  { value: 'friendly', label: 'Amigável' },
+  { value: 'formal', label: 'Formal' },
+  { value: 'enthusiastic', label: 'Entusiasmado' },
+]
+
+const DETAIL_OPTIONS: { value: ResponseDetail; label: string }[] = [
+  { value: 'balanced', label: 'Equilibrado (padrão)' },
+  { value: 'concise', label: 'Direto e conciso' },
+  { value: 'detailed', label: 'Explicativo e detalhado' },
+]
 
 function OptionSwitch<T extends string>({
   label,
@@ -90,6 +113,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
   const [editStructuredOutputEnabled, setEditStructuredOutputEnabled] = useState(false)
   const [editStructuredOutputFields, setEditStructuredOutputFields] = useState<string[]>([])
   const [editStructuredOutputWebhookUrl, setEditStructuredOutputWebhookUrl] = useState('')
+  const [editResponseTone, setEditResponseTone] = useState<ResponseTone>('neutral')
+  const [editResponseDetail, setEditResponseDetail] = useState<ResponseDetail>('balanced')
+  const [editResponseEmojis, setEditResponseEmojis] = useState(false)
+  const [editResponseFormatting, setEditResponseFormatting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -150,6 +177,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setEditStructuredOutputEnabled(false)
     setEditStructuredOutputFields([])
     setEditStructuredOutputWebhookUrl('')
+    setEditResponseTone('neutral')
+    setEditResponseDetail('balanced')
+    setEditResponseEmojis(false)
+    setEditResponseFormatting(false)
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -184,6 +215,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setEditStructuredOutputEnabled(agent.structuredOutputEnabled ?? false)
     setEditStructuredOutputFields(agent.structuredOutputFields ?? [])
     setEditStructuredOutputWebhookUrl(agent.structuredOutputWebhookUrl ?? '')
+    setEditResponseTone(agent.responseTone ?? 'neutral')
+    setEditResponseDetail(agent.responseDetail ?? 'balanced')
+    setEditResponseEmojis(agent.responseEmojis ?? false)
+    setEditResponseFormatting(agent.responseFormatting ?? false)
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -223,6 +258,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
             structuredOutputEnabled: editStructuredOutputEnabled,
             structuredOutputFields,
             structuredOutputWebhookUrl,
+            responseTone: editResponseTone,
+            responseDetail: editResponseDetail,
+            responseEmojis: editResponseEmojis,
+            responseFormatting: editResponseFormatting,
           }),
         })
 
@@ -265,6 +304,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
           structuredOutputEnabled: editStructuredOutputEnabled,
           structuredOutputFields,
           structuredOutputWebhookUrl,
+          responseTone: editResponseTone,
+          responseDetail: editResponseDetail,
+          responseEmojis: editResponseEmojis,
+          responseFormatting: editResponseFormatting,
         }),
       })
 
@@ -605,6 +648,71 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
           {step === 1 && (
             <>
               <div>
+                <label className="mb-1 block text-sm text-slate-400">Tom</label>
+                <select
+                  value={editResponseTone}
+                  onChange={(e) => setEditResponseTone(e.target.value as ResponseTone)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                >
+                  {TONE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm text-slate-400">Nível de detalhe</label>
+                <select
+                  value={editResponseDetail}
+                  onChange={(e) => setEditResponseDetail(e.target.value as ResponseDetail)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                >
+                  {DETAIL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 p-3">
+                <div>
+                  <p className="text-sm font-medium">Emojis</p>
+                  <p className="text-sm text-slate-400">Permite usar emojis com moderação nas respostas.</p>
+                </div>
+                <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    checked={editResponseEmojis}
+                    onChange={(e) => setEditResponseEmojis(e.target.checked)}
+                    className="peer sr-only"
+                  />
+                  <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                </label>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 p-3">
+                <div>
+                  <p className="text-sm font-medium">Formatação</p>
+                  <p className="text-sm text-slate-400">
+                    Permite negrito e listas nas respostas — o widget já exibe isso formatado.
+                  </p>
+                </div>
+                <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    checked={editResponseFormatting}
+                    onChange={(e) => setEditResponseFormatting(e.target.checked)}
+                    className="peer sr-only"
+                  />
+                  <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                </label>
+              </div>
+            </>
+          )}
+
+          {step === 2 && (
+            <>
+              <div>
                 <p className="mb-2 text-sm text-slate-400">
                   Memória da conversa (só um tipo pode ficar ativo por vez)
                 </p>
@@ -660,7 +768,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
             </>
           )}
 
-          {step === 2 && (
+          {step === 3 && (
             <div>
               <p className="mb-2 text-sm text-slate-400">
                 Guardrails — restrição de escopo (só uma opção pode ficar ativa por vez)
@@ -686,7 +794,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
             </div>
           )}
 
-          {step === 3 && (
+          {step === 4 && (
             <div className="space-y-3 rounded-lg border border-slate-800 p-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -756,7 +864,7 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
             </div>
           )}
 
-          {step === 4 && (
+          {step === 5 && (
             <div className="space-y-3 rounded-lg border border-slate-800 p-3">
               <div className="flex items-start justify-between gap-3">
                 <div>

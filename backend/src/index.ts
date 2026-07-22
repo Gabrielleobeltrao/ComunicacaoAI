@@ -17,10 +17,19 @@ import {
   GUARDRAIL_MODES,
   listAgents,
   MEMORY_TYPES,
+  RESPONSE_DETAILS,
+  RESPONSE_TONES,
   setAgentWidget,
   updateAgent,
 } from './agents.js'
-import type { Agent, ConversationPersistence, GuardrailMode, MemoryType } from './agents.js'
+import type {
+  Agent,
+  ConversationPersistence,
+  GuardrailMode,
+  MemoryType,
+  ResponseDetail,
+  ResponseTone,
+} from './agents.js'
 import { auth } from './auth.js'
 import {
   getLinkedVisitorProfileId,
@@ -58,6 +67,7 @@ import {
 import type { ChatTurn, Provider } from './llm.js'
 import {
   buildIdentityCaptureInstruction,
+  buildResponseStyleInstruction,
   formatStructuredMemory,
   GUARDRAIL_REFUSAL_MESSAGE,
   GUARDRAIL_SCOPE_INSTRUCTION,
@@ -226,6 +236,14 @@ function isValidWebhookUrl(value: unknown): value is string {
   }
 }
 
+function isResponseTone(value: unknown): value is ResponseTone {
+  return typeof value === 'string' && (RESPONSE_TONES as string[]).includes(value)
+}
+
+function isResponseDetail(value: unknown): value is ResponseDetail {
+  return typeof value === 'string' && (RESPONSE_DETAILS as string[]).includes(value)
+}
+
 app.put('/api/settings/:provider/key', requireAuth, async (req, res) => {
   const { provider } = req.params
   if (!isProvider(provider)) {
@@ -387,6 +405,10 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     structuredOutputEnabled,
     structuredOutputFields,
     structuredOutputWebhookUrl,
+    responseTone,
+    responseDetail,
+    responseEmojis,
+    responseFormatting,
   } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
@@ -430,6 +452,14 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'structuredOutputWebhookUrl must be a valid http(s) URL' })
     return
   }
+  if (responseTone !== undefined && !isResponseTone(responseTone)) {
+    res.status(400).json({ error: 'Unknown responseTone' })
+    return
+  }
+  if (responseDetail !== undefined && !isResponseDetail(responseDetail)) {
+    res.status(400).json({ error: 'Unknown responseDetail' })
+    return
+  }
 
   const { widgetObjectId, error } = await resolveOwnedWidgetId(res.locals.userId, widgetId)
   if (error) {
@@ -453,6 +483,10 @@ app.post('/api/agents', requireAuth, async (req, res) => {
       typeof structuredOutputWebhookUrl === 'string' || structuredOutputWebhookUrl === null
         ? structuredOutputWebhookUrl || null
         : undefined,
+    responseTone,
+    responseDetail,
+    responseEmojis: typeof responseEmojis === 'boolean' ? responseEmojis : undefined,
+    responseFormatting: typeof responseFormatting === 'boolean' ? responseFormatting : undefined,
   })
   res.status(201).json(agent)
 })
@@ -482,6 +516,10 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     structuredOutputEnabled,
     structuredOutputFields,
     structuredOutputWebhookUrl,
+    responseTone,
+    responseDetail,
+    responseEmojis,
+    responseFormatting,
   } = req.body ?? {}
   const updates: {
     name?: string
@@ -497,6 +535,10 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     structuredOutputEnabled?: boolean
     structuredOutputFields?: string[]
     structuredOutputWebhookUrl?: string | null
+    responseTone?: ResponseTone
+    responseDetail?: ResponseDetail
+    responseEmojis?: boolean
+    responseFormatting?: boolean
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
@@ -563,6 +605,22 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     }
     updates.structuredOutputWebhookUrl = structuredOutputWebhookUrl || null
   }
+  if (responseTone !== undefined) {
+    if (!isResponseTone(responseTone)) {
+      res.status(400).json({ error: 'Unknown responseTone' })
+      return
+    }
+    updates.responseTone = responseTone
+  }
+  if (responseDetail !== undefined) {
+    if (!isResponseDetail(responseDetail)) {
+      res.status(400).json({ error: 'Unknown responseDetail' })
+      return
+    }
+    updates.responseDetail = responseDetail
+  }
+  if (typeof responseEmojis === 'boolean') updates.responseEmojis = responseEmojis
+  if (typeof responseFormatting === 'boolean') updates.responseFormatting = responseFormatting
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
     return
@@ -938,6 +996,12 @@ async function respondWithAgentIfLinked(
   const identityInstruction =
     identityFields.length > 0 && !visitorProfile ? buildIdentityCaptureInstruction(identityFields) : ''
   const guardrailInstruction = guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : ''
+  const responseStyleInstruction = buildResponseStyleInstruction(
+    agent.responseTone ?? 'neutral',
+    agent.responseDetail ?? 'balanced',
+    agent.responseEmojis ?? false,
+    agent.responseFormatting ?? false,
+  )
 
   const replyText = await generateAgentReply(
     agent.objective,
@@ -949,6 +1013,7 @@ async function respondWithAgentIfLinked(
     apiKey,
     identityInstruction,
     guardrailInstruction,
+    responseStyleInstruction,
   )
   if (!replyText) return
 

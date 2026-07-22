@@ -88,6 +88,7 @@ export async function generateAgentReply(
   apiKey?: string | null,
   identityInstruction = '',
   guardrailInstruction = '',
+  responseStyleInstruction = '',
 ): Promise<string> {
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
@@ -95,7 +96,14 @@ export async function generateAgentReply(
     messages: [
       {
         role: 'system',
-        content: buildSystemPrompt(objective, knowledge, memory, identityInstruction, guardrailInstruction),
+        content: buildSystemPrompt(
+          objective,
+          knowledge,
+          memory,
+          identityInstruction,
+          guardrailInstruction,
+          responseStyleInstruction,
+        ),
       },
       ...history.map((turn) => ({ role: turn.role, content: turn.content })),
     ],

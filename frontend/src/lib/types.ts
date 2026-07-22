@@ -14,6 +14,8 @@ export interface WidgetSummary {
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
 export type ConversationPersistence = 'same_browser' | 'always_new'
 export type GuardrailMode = 'none' | 'prompt' | 'verification'
+export type ResponseTone = 'neutral' | 'friendly' | 'formal' | 'enthusiastic'
+export type ResponseDetail = 'balanced' | 'concise' | 'detailed'
 
 export interface AgentSummary {
   _id: string
@@ -31,6 +33,10 @@ export interface AgentSummary {
   structuredOutputEnabled: boolean
   structuredOutputFields: string[]
   structuredOutputWebhookUrl: string | null
+  responseTone: ResponseTone
+  responseDetail: ResponseDetail
+  responseEmojis: boolean
+  responseFormatting: boolean
 }
 
 export interface ProviderInfo {

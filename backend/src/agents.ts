@@ -13,6 +13,12 @@ export const CONVERSATION_PERSISTENCE_TYPES: ConversationPersistence[] = ['same_
 export type GuardrailMode = 'none' | 'prompt' | 'verification'
 export const GUARDRAIL_MODES: GuardrailMode[] = ['none', 'prompt', 'verification']
 
+export type ResponseTone = 'neutral' | 'friendly' | 'formal' | 'enthusiastic'
+export const RESPONSE_TONES: ResponseTone[] = ['neutral', 'friendly', 'formal', 'enthusiastic']
+
+export type ResponseDetail = 'balanced' | 'concise' | 'detailed'
+export const RESPONSE_DETAILS: ResponseDetail[] = ['balanced', 'concise', 'detailed']
+
 export interface Agent {
   _id: ObjectId
   ownerId: string
@@ -30,6 +36,10 @@ export interface Agent {
   structuredOutputEnabled: boolean
   structuredOutputFields: string[]
   structuredOutputWebhookUrl: string | null
+  responseTone: ResponseTone
+  responseDetail: ResponseDetail
+  responseEmojis: boolean
+  responseFormatting: boolean
   createdAt: Date
 }
 
@@ -52,6 +62,10 @@ export async function createAgent(
     structuredOutputEnabled?: boolean
     structuredOutputFields?: string[]
     structuredOutputWebhookUrl?: string | null
+    responseTone?: ResponseTone
+    responseDetail?: ResponseDetail
+    responseEmojis?: boolean
+    responseFormatting?: boolean
   } = {},
 ) {
   if (widgetId) {
@@ -74,6 +88,10 @@ export async function createAgent(
     structuredOutputEnabled: options.structuredOutputEnabled ?? false,
     structuredOutputFields: options.structuredOutputFields ?? [],
     structuredOutputWebhookUrl: options.structuredOutputWebhookUrl ?? null,
+    responseTone: options.responseTone ?? 'neutral',
+    responseDetail: options.responseDetail ?? 'balanced',
+    responseEmojis: options.responseEmojis ?? false,
+    responseFormatting: options.responseFormatting ?? false,
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -121,6 +139,10 @@ export function updateAgent(
     structuredOutputEnabled?: boolean
     structuredOutputFields?: string[]
     structuredOutputWebhookUrl?: string | null
+    responseTone?: ResponseTone
+    responseDetail?: ResponseDetail
+    responseEmojis?: boolean
+    responseFormatting?: boolean
   },
 ) {
   return agents.findOneAndUpdate(

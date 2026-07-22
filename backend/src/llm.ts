@@ -26,6 +26,7 @@ export function generateAgentReply(
   apiKey: string | null | undefined,
   identityInstruction = '',
   guardrailInstruction = '',
+  responseStyleInstruction = '',
 ): Promise<string> {
   return providerFor(provider).generateAgentReply(
     objective,
@@ -36,6 +37,7 @@ export function generateAgentReply(
     apiKey,
     identityInstruction,
     guardrailInstruction,
+    responseStyleInstruction,
   )
 }
 
