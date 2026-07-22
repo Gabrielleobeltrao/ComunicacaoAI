@@ -5,7 +5,7 @@ A SaaS platform for managing goal-oriented AI communication agents, connected to
 ## What it does
 
 - **Agents** — create an AI agent with an objective/instructions, pick its LLM provider (Anthropic or OpenAI) and model, and give it a knowledge base (pasted text, `.txt`, `.pdf`, or images — extracted/transcribed automatically) for grounded, RAG-based answers.
-- **Widgets** — create an embeddable chat widget, customize its color/position/avatar/welcome message, and link it to an agent. Drop a single `<script>` tag on any site to embed it.
+- **Widgets** — create an embeddable chat widget, customize its color/position/avatar/welcome message, and pick which agent answers there. The same agent can be linked to any number of widgets. Drop a single `<script>` tag on any site to embed it.
 - **Chats** — every visitor conversation is isolated per-visitor and streams to the owner in real time (Socket.IO), with a dedicated page to browse/filter and reply manually.
 - **Conversation memory** — per agent, pick one memory strategy: freeform key-facts, structured key:value facts, or semantic search over past turns, plus how many recent messages get sent to the LLM per call.
 - **Visitor identity** — optionally toggle identity capture and define custom fields (e.g. Name, Email) that the agent asks for conversationally (no blocking form, so it also works for future non-widget channels). Once captured, a visitor's memory follows them across devices/sessions instead of resetting every conversation. A separate per-agent setting controls whether a visitor's chat persists across visits in the same browser or always starts fresh.
