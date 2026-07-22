@@ -14,20 +14,23 @@ import {
   DEFAULT_HISTORY_LIMIT,
   getAgentById,
   getAgentByWidgetId,
+  GUARDRAIL_MODES,
   listAgents,
   MEMORY_TYPES,
   setAgentWidget,
   updateAgent,
 } from './agents.js'
-import type { Agent, ConversationPersistence, MemoryType } from './agents.js'
+import type { Agent, ConversationPersistence, GuardrailMode, MemoryType } from './agents.js'
 import { auth } from './auth.js'
 import {
   getLinkedVisitorProfileId,
   getConversationMemory,
   getStructuredMemory,
+  getStructuredOutputData,
   linkVisitorProfile,
   setConversationMemory,
   setStructuredMemory,
+  setStructuredOutputData,
 } from './conversationMemory.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
@@ -42,7 +45,9 @@ import {
   updateDocument,
 } from './knowledge.js'
 import {
+  checkGuardrail,
   extractIdentity,
+  extractStructuredOutput,
   generateAgentReply,
   listModelsForProvider,
   PROVIDER_IDS,
@@ -51,7 +56,12 @@ import {
   updateStructuredMemory,
 } from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
-import { buildIdentityCaptureInstruction, formatStructuredMemory } from './systemPrompt.js'
+import {
+  buildIdentityCaptureInstruction,
+  formatStructuredMemory,
+  GUARDRAIL_REFUSAL_MESSAGE,
+  GUARDRAIL_SCOPE_INSTRUCTION,
+} from './systemPrompt.js'
 import {
   clearProviderApiKey,
   getProviderApiKey,
@@ -64,6 +74,7 @@ import {
   getVisitorProfile,
   setVisitorProfileMemory,
   setVisitorProfileStructuredMemory,
+  setVisitorProfileStructuredOutputData,
   upsertVisitorProfile,
 } from './visitorProfiles.js'
 import type { WidgetMessage, WidgetPosition } from './widgets.js'
@@ -189,6 +200,30 @@ function isValidIdentityFields(value: unknown): value is string[] {
 
 function isConversationPersistence(value: unknown): value is ConversationPersistence {
   return typeof value === 'string' && (CONVERSATION_PERSISTENCE_TYPES as string[]).includes(value)
+}
+
+function isGuardrailMode(value: unknown): value is GuardrailMode {
+  return typeof value === 'string' && (GUARDRAIL_MODES as string[]).includes(value)
+}
+
+const MAX_STRUCTURED_OUTPUT_FIELDS = 10
+
+function isValidStructuredOutputFields(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_STRUCTURED_OUTPUT_FIELDS &&
+    value.every((field) => typeof field === 'string' && field.trim().length > 0)
+  )
+}
+
+function isValidWebhookUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 app.put('/api/settings/:provider/key', requireAuth, async (req, res) => {
@@ -348,6 +383,10 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     identityEnabled,
     identityFields,
     conversationPersistence,
+    guardrailMode,
+    structuredOutputEnabled,
+    structuredOutputFields,
+    structuredOutputWebhookUrl,
   } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
@@ -373,6 +412,24 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Unknown conversationPersistence' })
     return
   }
+  if (guardrailMode !== undefined && !isGuardrailMode(guardrailMode)) {
+    res.status(400).json({ error: 'Unknown guardrailMode' })
+    return
+  }
+  if (structuredOutputFields !== undefined && !isValidStructuredOutputFields(structuredOutputFields)) {
+    res.status(400).json({
+      error: `structuredOutputFields must be a list of up to ${MAX_STRUCTURED_OUTPUT_FIELDS} non-empty strings`,
+    })
+    return
+  }
+  if (
+    structuredOutputWebhookUrl !== undefined &&
+    structuredOutputWebhookUrl !== null &&
+    !isValidWebhookUrl(structuredOutputWebhookUrl)
+  ) {
+    res.status(400).json({ error: 'structuredOutputWebhookUrl must be a valid http(s) URL' })
+    return
+  }
 
   const { widgetObjectId, error } = await resolveOwnedWidgetId(res.locals.userId, widgetId)
   if (error) {
@@ -389,6 +446,13 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     identityEnabled: typeof identityEnabled === 'boolean' ? identityEnabled : undefined,
     identityFields,
     conversationPersistence,
+    guardrailMode,
+    structuredOutputEnabled: typeof structuredOutputEnabled === 'boolean' ? structuredOutputEnabled : undefined,
+    structuredOutputFields,
+    structuredOutputWebhookUrl:
+      typeof structuredOutputWebhookUrl === 'string' || structuredOutputWebhookUrl === null
+        ? structuredOutputWebhookUrl || null
+        : undefined,
   })
   res.status(201).json(agent)
 })
@@ -414,6 +478,10 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     identityEnabled,
     identityFields,
     conversationPersistence,
+    guardrailMode,
+    structuredOutputEnabled,
+    structuredOutputFields,
+    structuredOutputWebhookUrl,
   } = req.body ?? {}
   const updates: {
     name?: string
@@ -425,6 +493,10 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     identityEnabled?: boolean
     identityFields?: string[]
     conversationPersistence?: ConversationPersistence
+    guardrailMode?: GuardrailMode
+    structuredOutputEnabled?: boolean
+    structuredOutputFields?: string[]
+    structuredOutputWebhookUrl?: string | null
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
@@ -466,6 +538,30 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
       return
     }
     updates.conversationPersistence = conversationPersistence
+  }
+  if (guardrailMode !== undefined) {
+    if (!isGuardrailMode(guardrailMode)) {
+      res.status(400).json({ error: 'Unknown guardrailMode' })
+      return
+    }
+    updates.guardrailMode = guardrailMode
+  }
+  if (typeof structuredOutputEnabled === 'boolean') updates.structuredOutputEnabled = structuredOutputEnabled
+  if (structuredOutputFields !== undefined) {
+    if (!isValidStructuredOutputFields(structuredOutputFields)) {
+      res.status(400).json({
+        error: `structuredOutputFields must be a list of up to ${MAX_STRUCTURED_OUTPUT_FIELDS} non-empty strings`,
+      })
+      return
+    }
+    updates.structuredOutputFields = structuredOutputFields
+  }
+  if (structuredOutputWebhookUrl !== undefined) {
+    if (structuredOutputWebhookUrl !== null && !isValidWebhookUrl(structuredOutputWebhookUrl)) {
+      res.status(400).json({ error: 'structuredOutputWebhookUrl must be a valid http(s) URL' })
+      return
+    }
+    updates.structuredOutputWebhookUrl = structuredOutputWebhookUrl || null
   }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -777,6 +873,7 @@ async function respondWithAgentIfLinked(
 
   const memoryType = agent.memoryType ?? 'none'
   const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
+  const guardrailMode = agent.guardrailMode ?? 'none'
 
   // Keep the raw window short — a compact per-conversation memory (below)
   // carries older context forward instead of resending the whole history.
@@ -787,6 +884,24 @@ async function respondWithAgentIfLinked(
     content: message.content,
   }))
 
+  const apiKey = await getProviderApiKey(ownerId, agent.provider)
+
+  if (guardrailMode === 'verification') {
+    // A failed check fails open (treats the message as in-scope) rather than
+    // silently refusing every visitor if the classification call errors out.
+    let inScope = true
+    try {
+      inScope = await checkGuardrail(agent.objective, history, visitorContent, agent.provider, agent.model, apiKey)
+    } catch (error) {
+      console.error('Guardrail check failed, allowing the message through:', error)
+    }
+    if (!inScope) {
+      const refusal = await addMessage(widgetId, conversationId, 'agent', GUARDRAIL_REFUSAL_MESSAGE)
+      broadcastMessage(refusal, ownerId)
+      return
+    }
+  }
+
   let knowledge: string[] = []
   try {
     const results = await searchKnowledge(agent._id, visitorContent)
@@ -794,8 +909,6 @@ async function respondWithAgentIfLinked(
   } catch (error) {
     console.error('Knowledge search failed, replying without grounding:', error)
   }
-
-  const apiKey = await getProviderApiKey(ownerId, agent.provider)
 
   // If a previous turn in this conversation already resolved who the
   // visitor is, their memory lives on the profile (shared across every
@@ -824,6 +937,7 @@ async function respondWithAgentIfLinked(
 
   const identityInstruction =
     identityFields.length > 0 && !visitorProfile ? buildIdentityCaptureInstruction(identityFields) : ''
+  const guardrailInstruction = guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : ''
 
   const replyText = await generateAgentReply(
     agent.objective,
@@ -834,6 +948,7 @@ async function respondWithAgentIfLinked(
     agent.model,
     apiKey,
     identityInstruction,
+    guardrailInstruction,
   )
   if (!replyText) return
 
@@ -929,6 +1044,42 @@ async function refreshMemoryAndIdentity(params: {
   } else if (memoryType === 'semantic') {
     await recordTurn(agent._id, widgetId, conversationId, 'visitor', visitorContent)
     await recordTurn(agent._id, widgetId, conversationId, 'agent', replyText)
+  }
+
+  if (agent.structuredOutputEnabled && (agent.structuredOutputFields?.length ?? 0) > 0) {
+    const fields = agent.structuredOutputFields
+    const current = visitorProfileId
+      ? ((await getVisitorProfile(visitorProfileId))?.structuredOutputData ?? {})
+      : await getStructuredOutputData(widgetId, conversationId)
+    const updated = await extractStructuredOutput(fields, current, visitorContent, replyText, agent.provider, agent.model, apiKey)
+
+    if (JSON.stringify(updated) !== JSON.stringify(current)) {
+      if (visitorProfileId) await setVisitorProfileStructuredOutputData(visitorProfileId, updated)
+      else await setStructuredOutputData(widgetId, conversationId, updated)
+
+      if (agent.structuredOutputWebhookUrl) {
+        sendStructuredOutputWebhook(agent.structuredOutputWebhookUrl, {
+          agentId: agent._id.toString(),
+          widgetId: widgetId.toString(),
+          conversationId,
+          data: updated,
+          updatedAt: new Date().toISOString(),
+        }).catch((error) => {
+          console.error('Structured output webhook delivery failed:', error)
+        })
+      }
+    }
+  }
+}
+
+async function sendStructuredOutputWebhook(url: string, payload: unknown) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    console.error(`Structured output webhook returned ${response.status} for ${url}`)
   }
 }
 

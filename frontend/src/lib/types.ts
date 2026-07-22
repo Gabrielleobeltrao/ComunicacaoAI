@@ -13,6 +13,7 @@ export interface WidgetSummary {
 
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
 export type ConversationPersistence = 'same_browser' | 'always_new'
+export type GuardrailMode = 'none' | 'prompt' | 'verification'
 
 export interface AgentSummary {
   _id: string
@@ -26,6 +27,10 @@ export interface AgentSummary {
   identityEnabled: boolean
   identityFields: string[]
   conversationPersistence: ConversationPersistence
+  guardrailMode: GuardrailMode
+  structuredOutputEnabled: boolean
+  structuredOutputFields: string[]
+  structuredOutputWebhookUrl: string | null
 }
 
 export interface ProviderInfo {

@@ -7,6 +7,7 @@ export interface ConversationMemory {
   conversationId: string
   memory: string
   structuredMemory: Record<string, string>
+  structuredOutputData: Record<string, string>
   visitorProfileId: ObjectId | null
   updatedAt: Date
 }
@@ -46,6 +47,26 @@ export async function setStructuredMemory(
   await conversationMemories.updateOne(
     { widgetId, conversationId },
     { $set: { structuredMemory, updatedAt: new Date() } },
+    { upsert: true },
+  )
+}
+
+export async function getStructuredOutputData(
+  widgetId: ObjectId,
+  conversationId: string,
+): Promise<Record<string, string>> {
+  const doc = await getDoc(widgetId, conversationId)
+  return doc?.structuredOutputData ?? {}
+}
+
+export async function setStructuredOutputData(
+  widgetId: ObjectId,
+  conversationId: string,
+  structuredOutputData: Record<string, string>,
+) {
+  await conversationMemories.updateOne(
+    { widgetId, conversationId },
+    { $set: { structuredOutputData, updatedAt: new Date() } },
     { upsert: true },
   )
 }

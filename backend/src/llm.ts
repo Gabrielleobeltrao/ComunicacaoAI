@@ -25,6 +25,7 @@ export function generateAgentReply(
   model: string | null | undefined,
   apiKey: string | null | undefined,
   identityInstruction = '',
+  guardrailInstruction = '',
 ): Promise<string> {
   return providerFor(provider).generateAgentReply(
     objective,
@@ -34,7 +35,31 @@ export function generateAgentReply(
     model,
     apiKey,
     identityInstruction,
+    guardrailInstruction,
   )
+}
+
+export function checkGuardrail(
+  objective: string,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  apiKey: string | null | undefined,
+): Promise<boolean> {
+  return providerFor(provider).checkGuardrail(objective, recentMessages, visitorMessage, model, apiKey)
+}
+
+export function extractStructuredOutput(
+  fields: string[],
+  currentData: Record<string, string>,
+  visitorMessage: string,
+  agentReply: string,
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  apiKey: string | null | undefined,
+): Promise<Record<string, string>> {
+  return providerFor(provider).extractStructuredOutput(fields, currentData, visitorMessage, agentReply, model, apiKey)
 }
 
 export function updateConversationMemory(

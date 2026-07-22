@@ -1,14 +1,19 @@
 import OpenAI from 'openai'
 import { getCachedModels, setCachedModels } from './modelCache.js'
 import {
+  buildGuardrailCheckPrompt,
   buildIdentityExtractionPrompt,
   buildMemoryUpdatePrompt,
   buildStructuredMemoryUpdatePrompt,
+  buildStructuredOutputExtractionPrompt,
   buildSystemPrompt,
+  GUARDRAIL_CHECK_SYSTEM_PROMPT,
   IDENTITY_EXTRACTION_SYSTEM_PROMPT,
   MEMORY_UPDATE_SYSTEM_PROMPT,
+  parseInScopeResult,
   parseJsonObject,
   STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
+  STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT,
 } from './systemPrompt.js'
 import type { ChatTurn } from './systemPrompt.js'
 
@@ -82,12 +87,16 @@ export async function generateAgentReply(
   model?: string | null,
   apiKey?: string | null,
   identityInstruction = '',
+  guardrailInstruction = '',
 ): Promise<string> {
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 1024,
     messages: [
-      { role: 'system', content: buildSystemPrompt(objective, knowledge, memory, identityInstruction) },
+      {
+        role: 'system',
+        content: buildSystemPrompt(objective, knowledge, memory, identityInstruction, guardrailInstruction),
+      },
       ...history.map((turn) => ({ role: turn.role, content: turn.content })),
     ],
   })
@@ -155,6 +164,53 @@ export async function extractIdentity(
   if (!text) return null
   const parsed = parseJsonObject(text)
   return Object.keys(parsed).length === fields.length ? parsed : null
+}
+
+export async function checkGuardrail(
+  objective: string,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<boolean> {
+  const response = await buildClient(apiKey).chat.completions.create({
+    model: model || DEFAULT_MODEL,
+    max_completion_tokens: 50,
+    messages: [
+      { role: 'system', content: GUARDRAIL_CHECK_SYSTEM_PROMPT },
+      { role: 'user', content: buildGuardrailCheckPrompt(objective, recentMessages, visitorMessage) },
+    ],
+  })
+
+  const text = response.choices[0]?.message?.content
+  if (!text) return true
+  return parseInScopeResult(text)
+}
+
+export async function extractStructuredOutput(
+  fields: string[],
+  currentData: Record<string, string>,
+  visitorMessage: string,
+  agentReply: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<Record<string, string>> {
+  const response = await buildClient(apiKey).chat.completions.create({
+    model: model || DEFAULT_MODEL,
+    max_completion_tokens: 300,
+    messages: [
+      { role: 'system', content: STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: buildStructuredOutputExtractionPrompt(fields, currentData, visitorMessage, agentReply),
+      },
+    ],
+  })
+
+  const text = response.choices[0]?.message?.content
+  if (!text) return currentData
+  const parsed = parseJsonObject(text)
+  return Object.keys(parsed).length > 0 ? parsed : currentData
 }
 
 export async function transcribeImage(

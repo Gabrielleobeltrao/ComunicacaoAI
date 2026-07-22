@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import type {
   AgentSummary,
   ConversationPersistence,
+  GuardrailMode,
   KnowledgeDocumentSummary,
   MemoryType,
   ProviderInfo,
@@ -29,21 +30,24 @@ interface PendingDoc {
 const DEFAULT_HISTORY_LIMIT = 6
 const MAX_HISTORY_LIMIT = 30
 const MAX_IDENTITY_FIELDS = 5
+const MAX_STRUCTURED_OUTPUT_FIELDS = 10
 
-const STEPS = ['Básico', 'Memória', 'Identificação', 'Base de conhecimento']
+const STEPS = ['Básico', 'Memória', 'Guardrails', 'Identificação', 'Dados estruturados', 'Base de conhecimento']
 
-function MemoryOptionSwitch({
+function OptionSwitch<T extends string>({
   label,
   description,
   value,
+  offValue,
   active,
   onSelect,
 }: {
   label: string
   description: string
-  value: MemoryType
+  value: T
+  offValue: T
   active: boolean
-  onSelect: (value: MemoryType) => void
+  onSelect: (value: T) => void
 }) {
   return (
     <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-800 p-3">
@@ -55,7 +59,7 @@ function MemoryOptionSwitch({
         <input
           type="checkbox"
           checked={active}
-          onChange={(e) => onSelect(e.target.checked ? value : 'none')}
+          onChange={(e) => onSelect(e.target.checked ? value : offValue)}
           className="peer sr-only"
         />
         <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
@@ -82,6 +86,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
   const [editIdentityFields, setEditIdentityFields] = useState<string[]>([])
   const [editConversationPersistence, setEditConversationPersistence] =
     useState<ConversationPersistence>('same_browser')
+  const [editGuardrailMode, setEditGuardrailMode] = useState<GuardrailMode>('none')
+  const [editStructuredOutputEnabled, setEditStructuredOutputEnabled] = useState(false)
+  const [editStructuredOutputFields, setEditStructuredOutputFields] = useState<string[]>([])
+  const [editStructuredOutputWebhookUrl, setEditStructuredOutputWebhookUrl] = useState('')
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -138,6 +146,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setEditIdentityEnabled(false)
     setEditIdentityFields([])
     setEditConversationPersistence('same_browser')
+    setEditGuardrailMode('none')
+    setEditStructuredOutputEnabled(false)
+    setEditStructuredOutputFields([])
+    setEditStructuredOutputWebhookUrl('')
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -168,6 +180,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setEditIdentityEnabled(agent.identityEnabled ?? false)
     setEditIdentityFields(agent.identityFields ?? [])
     setEditConversationPersistence(agent.conversationPersistence ?? 'same_browser')
+    setEditGuardrailMode(agent.guardrailMode ?? 'none')
+    setEditStructuredOutputEnabled(agent.structuredOutputEnabled ?? false)
+    setEditStructuredOutputFields(agent.structuredOutputFields ?? [])
+    setEditStructuredOutputWebhookUrl(agent.structuredOutputWebhookUrl ?? '')
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -184,6 +200,8 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
     setEditError(null)
     setSaving(true)
     const identityFields = editIdentityFields.map((field) => field.trim()).filter(Boolean)
+    const structuredOutputFields = editStructuredOutputFields.map((field) => field.trim()).filter(Boolean)
+    const structuredOutputWebhookUrl = editStructuredOutputWebhookUrl.trim() || null
 
     try {
       if (isCreating) {
@@ -201,6 +219,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
             identityEnabled: editIdentityEnabled,
             identityFields,
             conversationPersistence: editConversationPersistence,
+            guardrailMode: editGuardrailMode,
+            structuredOutputEnabled: editStructuredOutputEnabled,
+            structuredOutputFields,
+            structuredOutputWebhookUrl,
           }),
         })
 
@@ -239,6 +261,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
           identityEnabled: editIdentityEnabled,
           identityFields,
           conversationPersistence: editConversationPersistence,
+          guardrailMode: editGuardrailMode,
+          structuredOutputEnabled: editStructuredOutputEnabled,
+          structuredOutputFields,
+          structuredOutputWebhookUrl,
         }),
       })
 
@@ -326,6 +352,18 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
 
   function handleRemoveIdentityField(index: number) {
     setEditIdentityFields((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  function handleAddStructuredOutputField() {
+    setEditStructuredOutputFields((prev) => [...prev, ''])
+  }
+
+  function handleStructuredOutputFieldChange(index: number, value: string) {
+    setEditStructuredOutputFields((prev) => prev.map((field, i) => (i === index ? value : field)))
+  }
+
+  function handleRemoveStructuredOutputField(index: number) {
+    setEditStructuredOutputFields((prev) => prev.filter((_, i) => i !== index))
   }
 
   async function uploadPendingDocs(agentId: string): Promise<number> {
@@ -478,10 +516,10 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
         title={isCreating ? 'Novo agente' : 'Editar agente'}
         wide
       >
-        <div className="mb-5 flex items-center">
+        <div className="mb-5 flex items-start">
           {STEPS.map((label, index) => (
-            <div key={label} className="flex flex-1 items-center last:flex-none">
-              <div className="flex items-center gap-2">
+            <Fragment key={label}>
+              <div className="flex flex-col items-center">
                 <div
                   className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-medium ${
                     index === step
@@ -493,12 +531,16 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
                 >
                   {index + 1}
                 </div>
-                <span className={`hidden text-xs sm:inline ${index === step ? 'text-white' : 'text-slate-500'}`}>
+                <span
+                  className={`mt-1 w-16 text-center text-[10px] leading-tight ${
+                    index === step ? 'text-white' : 'text-slate-500'
+                  }`}
+                >
                   {label}
                 </span>
               </div>
-              {index < STEPS.length - 1 && <div className="mx-2 h-px flex-1 bg-slate-800" />}
-            </div>
+              {index < STEPS.length - 1 && <div className="mt-3 h-px flex-1 bg-slate-800" />}
+            </Fragment>
           ))}
         </div>
 
@@ -567,24 +609,27 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
                   Memória da conversa (só um tipo pode ficar ativo por vez)
                 </p>
                 <div className="space-y-2">
-                  <MemoryOptionSwitch
+                  <OptionSwitch
                     label="Memória de fatos-chave"
                     description="Guarda fatos importantes (nome, preferências, decisões) em texto livre, mesclando fatos novos com os antigos. Gera uma chamada extra ao LLM por mensagem."
                     value="facts"
+                    offValue="none"
                     active={editMemoryType === 'facts'}
                     onSelect={setEditMemoryType}
                   />
-                  <MemoryOptionSwitch
+                  <OptionSwitch
                     label="Memória estruturada"
                     description="Guarda dados em pares chave:valor (ex: 'Serviço preferido: Corte degradê') — mais organizado que texto livre. Gera uma chamada extra ao LLM por mensagem."
                     value="structured"
+                    offValue="none"
                     active={editMemoryType === 'structured'}
                     onSelect={setEditMemoryType}
                   />
-                  <MemoryOptionSwitch
+                  <OptionSwitch
                     label="Memória por busca semântica"
                     description="Busca os trechos mais relevantes de qualquer ponto da conversa pra cada pergunta, em vez de manter um resumo. Não gera chamada extra ao LLM, mas usa embeddings."
                     value="semantic"
+                    offValue="none"
                     active={editMemoryType === 'semantic'}
                     onSelect={setEditMemoryType}
                   />
@@ -616,6 +661,32 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
           )}
 
           {step === 2 && (
+            <div>
+              <p className="mb-2 text-sm text-slate-400">
+                Guardrails — restrição de escopo (só uma opção pode ficar ativa por vez)
+              </p>
+              <div className="space-y-2">
+                <OptionSwitch
+                  label="Reforço no prompt"
+                  description="Instrução mais forte no system prompt pedindo pro modelo recusar assuntos fora do objetivo do agente. Sem chamada extra ao LLM, mas depende do modelo respeitar — mais fraco contra tentativas de fuga."
+                  value="prompt"
+                  offValue="none"
+                  active={editGuardrailMode === 'prompt'}
+                  onSelect={setEditGuardrailMode}
+                />
+                <OptionSwitch
+                  label="Verificação extra por chamada"
+                  description="Antes de responder, uma chamada LLM extra classifica se a pergunta está dentro do escopo do agente; se não estiver, devolve uma recusa padrão em vez de gerar a resposta completa. Mais confiável, mas soma uma chamada por mensagem."
+                  value="verification"
+                  offValue="none"
+                  active={editGuardrailMode === 'verification'}
+                  onSelect={setEditGuardrailMode}
+                />
+              </div>
+            </div>
+          )}
+
+          {step === 3 && (
             <div className="space-y-3 rounded-lg border border-slate-800 p-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -682,6 +753,77 @@ export function AgentManager({ agents, loading, widgets, onChange }: AgentManage
                   navegador. Com "sempre nova", cada vez que o chat é aberto começa do zero.
                 </p>
               </div>
+            </div>
+          )}
+
+          {step === 4 && (
+            <div className="space-y-3 rounded-lg border border-slate-800 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">Dados estruturados personalizados</p>
+                  <p className="text-sm text-slate-400">
+                    Defina campos de negócio (ex: Orçamento, Urgência) que o agente extrai da conversa. Você
+                    escolhe a estrutura — útil pra qualificar leads ou enviar os dados pra um sistema externo.
+                  </p>
+                </div>
+                <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    checked={editStructuredOutputEnabled}
+                    onChange={(e) => setEditStructuredOutputEnabled(e.target.checked)}
+                    className="peer sr-only"
+                  />
+                  <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                </label>
+              </div>
+
+              {editStructuredOutputEnabled && (
+                <>
+                  <div className="space-y-2">
+                    {editStructuredOutputFields.map((field, index) => (
+                      <div key={index} className="flex gap-2">
+                        <input
+                          value={field}
+                          onChange={(e) => handleStructuredOutputFieldChange(index, e.target.value)}
+                          placeholder="Ex: Orçamento"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveStructuredOutputField(index)}
+                          className="text-xs text-red-400 underline transition hover:text-red-300"
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    ))}
+                    {editStructuredOutputFields.length < MAX_STRUCTURED_OUTPUT_FIELDS && (
+                      <button
+                        type="button"
+                        onClick={handleAddStructuredOutputField}
+                        className="text-xs text-slate-400 underline transition hover:text-white"
+                      >
+                        + Adicionar campo
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="border-t border-slate-800 pt-3">
+                    <label className="mb-1 block text-sm text-slate-400">Webhook (opcional)</label>
+                    <input
+                      type="url"
+                      value={editStructuredOutputWebhookUrl}
+                      onChange={(e) => setEditStructuredOutputWebhookUrl(e.target.value)}
+                      placeholder="https://sua-api.com/webhook"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      Se preenchido, os dados extraídos são enviados por POST (JSON) pra essa URL sempre que
+                      houver uma atualização.
+                    </p>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </form>

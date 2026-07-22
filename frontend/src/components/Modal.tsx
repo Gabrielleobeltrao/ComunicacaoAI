@@ -29,7 +29,7 @@ export function Modal({ open, onClose, title, children, wide }: ModalProps) {
       onClick={onClose}
     >
       <div
-        className={`w-full ${wide ? 'max-w-2xl' : 'max-w-md'} max-h-[85vh] overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-6`}
+        className={`w-full ${wide ? 'max-w-2xl' : 'max-w-md'} max-h-[85vh] overflow-x-hidden overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-6`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">

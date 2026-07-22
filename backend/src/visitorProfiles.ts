@@ -9,6 +9,7 @@ export interface VisitorProfile {
   identityValues: Record<string, string>
   memory: string
   structuredMemory: Record<string, string>
+  structuredOutputData: Record<string, string>
   createdAt: Date
   updatedAt: Date
 }
@@ -47,7 +48,7 @@ export async function upsertVisitorProfile(
     { agentId, identityKey },
     {
       $set: { identityValues, updatedAt: now },
-      $setOnInsert: { agentId, identityKey, memory: '', structuredMemory: {}, createdAt: now },
+      $setOnInsert: { agentId, identityKey, memory: '', structuredMemory: {}, structuredOutputData: {}, createdAt: now },
     },
     { upsert: true },
   )
@@ -64,4 +65,11 @@ export async function setVisitorProfileMemory(profileId: ObjectId, memory: strin
 
 export async function setVisitorProfileStructuredMemory(profileId: ObjectId, structuredMemory: Record<string, string>) {
   await visitorProfiles.updateOne({ _id: profileId }, { $set: { structuredMemory, updatedAt: new Date() } })
+}
+
+export async function setVisitorProfileStructuredOutputData(
+  profileId: ObjectId,
+  structuredOutputData: Record<string, string>,
+) {
+  await visitorProfiles.updateOne({ _id: profileId }, { $set: { structuredOutputData, updatedAt: new Date() } })
 }

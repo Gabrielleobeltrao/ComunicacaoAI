@@ -10,6 +10,9 @@ export const MEMORY_TYPES: MemoryType[] = ['none', 'facts', 'structured', 'seman
 export type ConversationPersistence = 'same_browser' | 'always_new'
 export const CONVERSATION_PERSISTENCE_TYPES: ConversationPersistence[] = ['same_browser', 'always_new']
 
+export type GuardrailMode = 'none' | 'prompt' | 'verification'
+export const GUARDRAIL_MODES: GuardrailMode[] = ['none', 'prompt', 'verification']
+
 export interface Agent {
   _id: ObjectId
   ownerId: string
@@ -23,6 +26,10 @@ export interface Agent {
   identityEnabled: boolean
   identityFields: string[]
   conversationPersistence: ConversationPersistence
+  guardrailMode: GuardrailMode
+  structuredOutputEnabled: boolean
+  structuredOutputFields: string[]
+  structuredOutputWebhookUrl: string | null
   createdAt: Date
 }
 
@@ -41,6 +48,10 @@ export async function createAgent(
     identityEnabled?: boolean
     identityFields?: string[]
     conversationPersistence?: ConversationPersistence
+    guardrailMode?: GuardrailMode
+    structuredOutputEnabled?: boolean
+    structuredOutputFields?: string[]
+    structuredOutputWebhookUrl?: string | null
   } = {},
 ) {
   if (widgetId) {
@@ -59,6 +70,10 @@ export async function createAgent(
     identityEnabled: options.identityEnabled ?? false,
     identityFields: options.identityFields ?? [],
     conversationPersistence: options.conversationPersistence ?? 'same_browser',
+    guardrailMode: options.guardrailMode ?? 'none',
+    structuredOutputEnabled: options.structuredOutputEnabled ?? false,
+    structuredOutputFields: options.structuredOutputFields ?? [],
+    structuredOutputWebhookUrl: options.structuredOutputWebhookUrl ?? null,
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -102,6 +117,10 @@ export function updateAgent(
     identityEnabled?: boolean
     identityFields?: string[]
     conversationPersistence?: ConversationPersistence
+    guardrailMode?: GuardrailMode
+    structuredOutputEnabled?: boolean
+    structuredOutputFields?: string[]
+    structuredOutputWebhookUrl?: string | null
   },
 ) {
   return agents.findOneAndUpdate(
