@@ -53,10 +53,12 @@ export function Widget() {
 
   useEffect(() => {
     if (!publicKey) return
+    // Capture the narrowed value so it stays `string` inside the closure below.
+    const key = publicKey
 
     async function load() {
       try {
-        const configRes = await fetch(`${API_URL}/api/public/widgets/${publicKey}`)
+        const configRes = await fetch(`${API_URL}/api/public/widgets/${key}`)
         if (!configRes.ok) {
           setError('Widget não encontrado.')
           return
@@ -66,10 +68,10 @@ export function Widget() {
 
         // Depends on the config (some_browser vs always_new), so this can
         // only be resolved after the config request comes back.
-        conversationId.current = getConversationId(publicKey, configData.conversationPersistence)
+        conversationId.current = getConversationId(key, configData.conversationPersistence)
 
         const messagesRes = await fetch(
-          `${API_URL}/api/public/widgets/${publicKey}/messages?conversationId=${conversationId.current}`,
+          `${API_URL}/api/public/widgets/${key}/messages?conversationId=${conversationId.current}`,
         )
         setMessages(messagesRes.ok ? await messagesRes.json() : [])
       } catch {
