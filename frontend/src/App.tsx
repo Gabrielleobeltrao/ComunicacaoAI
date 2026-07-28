@@ -6,6 +6,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
+import { Teams } from './pages/Teams'
 import { Widget } from './pages/Widget'
 import { Widgets } from './pages/Widgets'
 
@@ -29,6 +30,14 @@ function App() {
         element={
           <ProtectedRoute>
             <Agents />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/teams"
+        element={
+          <ProtectedRoute>
+            <Teams />
           </ProtectedRoute>
         }
       />

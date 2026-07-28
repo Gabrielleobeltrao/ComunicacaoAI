@@ -26,6 +26,16 @@ function AgentsIcon({ className }: IconProps) {
   )
 }
 
+function TeamsIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <circle cx="8" cy="9" r="2.5" />
+      <circle cx="16" cy="9" r="2.5" />
+      <path d="M3.5 18a4.5 4.5 0 0 1 9 0M11.5 18a4.5 4.5 0 0 1 9 0" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 function WidgetsIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
@@ -49,6 +59,7 @@ function ChatsIcon({ className }: IconProps) {
 const LINKS = [
   { to: '/dashboard', label: 'Dashboard', Icon: DashboardIcon },
   { to: '/agents', label: 'Agentes', Icon: AgentsIcon },
+  { to: '/teams', label: 'Equipes', Icon: TeamsIcon },
   { to: '/widgets', label: 'Widgets', Icon: WidgetsIcon },
   { to: '/chats', label: 'Chats', Icon: ChatsIcon },
 ]
