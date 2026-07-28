@@ -17,6 +17,7 @@ export type ConversationPersistence = 'same_browser' | 'always_new'
 export type GuardrailMode = 'none' | 'prompt' | 'verification'
 export type ResponseTone = 'neutral' | 'friendly' | 'formal' | 'enthusiastic'
 export type ResponseDetail = 'balanced' | 'concise' | 'detailed'
+export type Language = 'pt' | 'en' | 'es' | 'auto'
 
 export interface AgentSummary {
   _id: string
@@ -37,6 +38,28 @@ export interface AgentSummary {
   responseDetail: ResponseDetail
   responseEmojis: boolean
   responseFormatting: boolean
+  handoffEnabled: boolean
+  firstMessage: string | null
+  proactivityEnabled: boolean
+  proactivityGuidance: string
+  language: Language
+  dailyMessageLimit: number
+  cheapAuxModel: boolean
+  promptCaching: boolean
+}
+
+export interface DashboardStats {
+  conversations: number
+  conversationsThisWeek: number
+  messagesThisWeek: number
+  attendedConversations: number
+  handoffs: number
+  qualifiedLeads: number
+  agents: number
+  widgets: number
+  tokensThisWeek: number
+  tokensThisMonth: number
+  monthlyTokenCap: number
 }
 
 export interface ProviderInfo {

@@ -15,6 +15,7 @@ interface WidgetConfig {
   position: 'right' | 'left'
   avatarUrl: string | null
   conversationPersistence: ConversationPersistence
+  firstMessage: string | null
 }
 
 interface WidgetMessage {
@@ -46,6 +47,7 @@ export function Widget() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const conversationId = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -134,16 +136,21 @@ export function Widget() {
     if (!input.trim() || !publicKey || !conversationId.current) return
 
     setSending(true)
+    setNotice(null)
     const content = input
     setInput('')
 
     try {
-      await fetch(`${API_URL}/api/public/widgets/${publicKey}/messages`, {
+      const res = await fetch(`${API_URL}/api/public/widgets/${publicKey}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId: conversationId.current, content }),
       })
-      // The new message arrives via the "message" socket event above.
+      if (res.status === 429) {
+        setInput(content)
+        setNotice('Você atingiu o limite de mensagens por hoje. Tente novamente mais tarde.')
+      }
+      // Otherwise the new message arrives via the "message" socket event above.
     } finally {
       setSending(false)
     }
@@ -165,14 +172,17 @@ export function Widget() {
     )
   }
 
+  // The agent's proactive first message wins over the widget's generic
+  // welcome message when both are configured.
+  const welcomeContent = config.firstMessage || config.welcomeMessage
   const displayMessages =
-    messages.length === 0 && config.welcomeMessage
+    messages.length === 0 && welcomeContent
       ? [
           {
             _id: 'welcome',
             conversationId: '',
             role: 'agent' as const,
-            content: config.welcomeMessage,
+            content: welcomeContent,
             createdAt: '',
           },
           ...messages,
@@ -205,6 +215,10 @@ export function Widget() {
         ))}
         <div ref={messagesEndRef} />
       </div>
+
+      {notice && (
+        <p className="border-t border-slate-800 px-4 py-2 text-center text-xs text-amber-400">{notice}</p>
+      )}
 
       <form onSubmit={handleSubmit} className="flex gap-2 border-t border-slate-800 p-3">
         <input

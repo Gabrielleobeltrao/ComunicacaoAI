@@ -100,6 +100,74 @@ export function listMessages(widgetId: ObjectId, conversationId: string) {
   return widgetMessages.find({ widgetId, conversationId }).sort({ createdAt: 1 }).toArray()
 }
 
+export function countVisitorMessagesSince(widgetId: ObjectId, conversationId: string, since: Date) {
+  return widgetMessages.countDocuments({ widgetId, conversationId, role: 'visitor', createdAt: { $gte: since } })
+}
+
+export interface OwnerStats {
+  conversations: number
+  conversationsThisWeek: number
+  messagesThisWeek: number
+  attendedConversations: number
+  handoffs: number
+  qualifiedLeads: number
+}
+
+export async function getOwnerStats(ownerId: string): Promise<OwnerStats> {
+  const ownerWidgets = await widgets.find({ ownerId }).project({ _id: 1 }).toArray()
+  const widgetIds = ownerWidgets.map((w) => w._id)
+  if (widgetIds.length === 0) {
+    return {
+      conversations: 0,
+      conversationsThisWeek: 0,
+      messagesThisWeek: 0,
+      attendedConversations: 0,
+      handoffs: 0,
+      qualifiedLeads: 0,
+    }
+  }
+
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+
+  const convGroups = await widgetMessages
+    .aggregate<{ _id: unknown; lastAt: Date; hasAgent: boolean }>([
+      { $match: { widgetId: { $in: widgetIds } } },
+      {
+        $group: {
+          _id: { widgetId: '$widgetId', conversationId: '$conversationId' },
+          lastAt: { $max: '$createdAt' },
+          hasAgent: { $max: { $cond: [{ $eq: ['$role', 'agent'] }, 1, 0] } },
+        },
+      },
+    ])
+    .toArray()
+
+  const conversations = convGroups.length
+  const conversationsThisWeek = convGroups.filter((g) => g.lastAt >= weekAgo).length
+  const attendedConversations = convGroups.filter((g) => Boolean(g.hasAgent)).length
+
+  const messagesThisWeek = await widgetMessages.countDocuments({
+    widgetId: { $in: widgetIds },
+    createdAt: { $gte: weekAgo },
+  })
+
+  const memories = db.collection('conversation_memories')
+  const handoffs = await memories.countDocuments({ widgetId: { $in: widgetIds }, humanHandoff: true })
+  const qualifiedLeads = await memories.countDocuments({
+    widgetId: { $in: widgetIds },
+    $expr: { $gt: [{ $size: { $objectToArray: { $ifNull: ['$structuredOutputData', {}] } } }, 0] },
+  })
+
+  return {
+    conversations,
+    conversationsThisWeek,
+    messagesThisWeek,
+    attendedConversations,
+    handoffs,
+    qualifiedLeads,
+  }
+}
+
 export interface ConversationSummary {
   widgetId: ObjectId
   widgetName: string
@@ -108,6 +176,7 @@ export interface ConversationSummary {
   lastRole: WidgetMessage['role']
   lastAt: Date
   messageCount: number
+  humanHandoff: boolean
 }
 
 export async function listConversationsForOwner(ownerId: string): Promise<ConversationSummary[]> {
@@ -139,6 +208,15 @@ export async function listConversationsForOwner(ownerId: string): Promise<Conver
     ])
     .toArray()
 
+  // The handoff flag lives on the per-conversation memory doc, not on the
+  // messages — join it in so the list can badge conversations waiting for
+  // a human without an extra request per row.
+  const handoffDocs = await db
+    .collection('conversation_memories')
+    .find({ widgetId: { $in: ownerWidgets.map((w) => w._id) }, humanHandoff: true })
+    .toArray()
+  const handoffKeys = new Set(handoffDocs.map((d) => `${d.widgetId}:${d.conversationId}`))
+
   return groups.map((group) => ({
     widgetId: group._id.widgetId,
     widgetName: nameById.get(group._id.widgetId.toString()) ?? 'Widget',
@@ -147,6 +225,7 @@ export async function listConversationsForOwner(ownerId: string): Promise<Conver
     lastRole: group.lastRole,
     lastAt: group.lastAt,
     messageCount: group.messageCount,
+    humanHandoff: handoffKeys.has(`${group._id.widgetId}:${group._id.conversationId}`),
   }))
 }
 

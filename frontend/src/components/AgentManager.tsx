@@ -6,11 +6,13 @@ import type {
   ConversationPersistence,
   GuardrailMode,
   KnowledgeDocumentSummary,
+  Language,
   MemoryType,
   ProviderInfo,
   ResponseDetail,
   ResponseTone,
 } from '../lib/types'
+import { MessageContent } from './MessageContent'
 import { Modal } from './Modal'
 
 interface AgentManagerProps {
@@ -31,6 +33,7 @@ const DEFAULT_HISTORY_LIMIT = 6
 const MAX_HISTORY_LIMIT = 30
 const MAX_IDENTITY_FIELDS = 5
 const MAX_STRUCTURED_OUTPUT_FIELDS = 10
+const MAX_DAILY_MESSAGE_LIMIT = 1000
 
 const STEPS = [
   'Básico',
@@ -53,6 +56,13 @@ const DETAIL_OPTIONS: { value: ResponseDetail; label: string }[] = [
   { value: 'balanced', label: 'Equilibrado (padrão)' },
   { value: 'concise', label: 'Direto e conciso' },
   { value: 'detailed', label: 'Explicativo e detalhado' },
+]
+
+const LANGUAGE_OPTIONS: { value: Language; label: string }[] = [
+  { value: 'pt', label: 'Português (padrão)' },
+  { value: 'en', label: 'Inglês' },
+  { value: 'es', label: 'Espanhol' },
+  { value: 'auto', label: 'Automático (idioma do visitante)' },
 ]
 
 function OptionSwitch<T extends string>({
@@ -115,6 +125,14 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
   const [editResponseDetail, setEditResponseDetail] = useState<ResponseDetail>('balanced')
   const [editResponseEmojis, setEditResponseEmojis] = useState(false)
   const [editResponseFormatting, setEditResponseFormatting] = useState(false)
+  const [editHandoffEnabled, setEditHandoffEnabled] = useState(false)
+  const [editFirstMessage, setEditFirstMessage] = useState('')
+  const [editProactivityEnabled, setEditProactivityEnabled] = useState(false)
+  const [editProactivityGuidance, setEditProactivityGuidance] = useState('')
+  const [editLanguage, setEditLanguage] = useState<Language>('pt')
+  const [editDailyMessageLimit, setEditDailyMessageLimit] = useState(0)
+  const [editCheapAuxModel, setEditCheapAuxModel] = useState(true)
+  const [editPromptCaching, setEditPromptCaching] = useState(true)
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -128,6 +146,13 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
   const [docError, setDocError] = useState<string | null>(null)
   const [deletingDocId, setDeletingDocId] = useState<string | null>(null)
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([])
+
+  const [playgroundAgent, setPlaygroundAgent] = useState<AgentSummary | null>(null)
+  const [playgroundMessages, setPlaygroundMessages] = useState<
+    { role: 'user' | 'assistant'; content: string; handoff?: boolean }[]
+  >([])
+  const [playgroundInput, setPlaygroundInput] = useState('')
+  const [playgroundSending, setPlaygroundSending] = useState(false)
 
   const [viewingDocId, setViewingDocId] = useState<string | null>(null)
   const [viewingDocTitle, setViewingDocTitle] = useState('')
@@ -179,6 +204,14 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
     setEditResponseDetail('balanced')
     setEditResponseEmojis(false)
     setEditResponseFormatting(false)
+    setEditHandoffEnabled(false)
+    setEditFirstMessage('')
+    setEditProactivityEnabled(false)
+    setEditProactivityGuidance('')
+    setEditLanguage('pt')
+    setEditDailyMessageLimit(0)
+    setEditCheapAuxModel(true)
+    setEditPromptCaching(true)
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -217,6 +250,14 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
     setEditResponseDetail(agent.responseDetail ?? 'balanced')
     setEditResponseEmojis(agent.responseEmojis ?? false)
     setEditResponseFormatting(agent.responseFormatting ?? false)
+    setEditHandoffEnabled(agent.handoffEnabled ?? false)
+    setEditFirstMessage(agent.firstMessage ?? '')
+    setEditProactivityEnabled(agent.proactivityEnabled ?? false)
+    setEditProactivityGuidance(agent.proactivityGuidance ?? '')
+    setEditLanguage(agent.language ?? 'pt')
+    setEditDailyMessageLimit(agent.dailyMessageLimit ?? 0)
+    setEditCheapAuxModel(agent.cheapAuxModel ?? true)
+    setEditPromptCaching(agent.promptCaching ?? true)
     setEditError(null)
     setAddMode('text')
     setNewDocTitle('')
@@ -260,6 +301,14 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
             responseDetail: editResponseDetail,
             responseEmojis: editResponseEmojis,
             responseFormatting: editResponseFormatting,
+            handoffEnabled: editHandoffEnabled,
+            firstMessage: editFirstMessage.trim() || null,
+            proactivityEnabled: editProactivityEnabled,
+            proactivityGuidance: editProactivityGuidance.trim(),
+            language: editLanguage,
+            dailyMessageLimit: editDailyMessageLimit,
+            cheapAuxModel: editCheapAuxModel,
+            promptCaching: editPromptCaching,
           }),
         })
 
@@ -306,6 +355,14 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
           responseDetail: editResponseDetail,
           responseEmojis: editResponseEmojis,
           responseFormatting: editResponseFormatting,
+          handoffEnabled: editHandoffEnabled,
+          firstMessage: editFirstMessage.trim() || null,
+          proactivityEnabled: editProactivityEnabled,
+          proactivityGuidance: editProactivityGuidance.trim(),
+          language: editLanguage,
+          dailyMessageLimit: editDailyMessageLimit,
+          cheapAuxModel: editCheapAuxModel,
+          promptCaching: editPromptCaching,
         }),
       })
 
@@ -505,6 +562,48 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
     }
   }
 
+  function openPlayground(agent: AgentSummary) {
+    setPlaygroundAgent(agent)
+    setPlaygroundMessages([])
+    setPlaygroundInput('')
+  }
+
+  async function handlePlaygroundSend(event: FormEvent) {
+    event.preventDefault()
+    if (!playgroundAgent || !playgroundInput.trim() || playgroundSending) return
+
+    const next = [...playgroundMessages, { role: 'user' as const, content: playgroundInput.trim() }]
+    setPlaygroundMessages(next)
+    setPlaygroundInput('')
+    setPlaygroundSending(true)
+
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${playgroundAgent._id}/playground`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })) }),
+      })
+      if (res.ok) {
+        const body = await res.json()
+        setPlaygroundMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: body.reply, handoff: body.handoff },
+        ])
+      } else {
+        setPlaygroundMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: 'Não foi possível gerar a resposta — verifique a chave de API em Configurações.',
+          },
+        ])
+      }
+    } finally {
+      setPlaygroundSending(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <button
@@ -529,13 +628,22 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
               <div>
                 <p className="font-medium">{agent.name}</p>
               </div>
-              <button
-                type="button"
-                onClick={() => openEdit(agent)}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800"
-              >
-                Editar
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => openPlayground(agent)}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800"
+                >
+                  Testar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openEdit(agent)}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800"
+                >
+                  Editar
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -602,6 +710,20 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
                 />
               </div>
               <div>
+                <label className="mb-1 block text-sm text-slate-400">Primeira mensagem proativa</label>
+                <textarea
+                  value={editFirstMessage}
+                  onChange={(e) => setEditFirstMessage(e.target.value)}
+                  rows={2}
+                  placeholder="Ex: Oi! 👋 Quer ver o cardápio ou já fazer um pedido?"
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Mensagem que o agente mostra ao visitante assim que o chat abre. Se vazio, vale a
+                  mensagem de boas-vindas configurada no widget.
+                </p>
+              </div>
+              <div>
                 <label className="mb-1 block text-sm text-slate-400">Provedor</label>
                 <select
                   value={editProvider}
@@ -633,11 +755,58 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
                   ))}
                 </select>
               </div>
+              <div className="space-y-2 rounded-lg border border-slate-800 p-3">
+                <p className="text-sm font-medium">Otimização de custo</p>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-slate-400">
+                    Modo econômico — tarefas internas (memória, extração, guardrail) rodam num modelo
+                    barato, sem afetar a qualidade da resposta ao visitante.
+                  </p>
+                  <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                    <input
+                      type="checkbox"
+                      checked={editCheapAuxModel}
+                      onChange={(e) => setEditCheapAuxModel(e.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                  </label>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t border-slate-800 pt-2">
+                  <p className="text-sm text-slate-400">
+                    Cache de prompt — reaproveita o contexto fixo (objetivo + instruções) entre as
+                    mensagens de uma conversa, reduzindo o custo de entrada.
+                  </p>
+                  <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                    <input
+                      type="checkbox"
+                      checked={editPromptCaching}
+                      onChange={(e) => setEditPromptCaching(e.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                  </label>
+                </div>
+              </div>
             </>
           )}
 
           {step === 1 && (
             <>
+              <div>
+                <label className="mb-1 block text-sm text-slate-400">Idioma das respostas</label>
+                <select
+                  value={editLanguage}
+                  onChange={(e) => setEditLanguage(e.target.value as Language)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                >
+                  {LANGUAGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div>
                 <label className="mb-1 block text-sm text-slate-400">Tom</label>
                 <select
@@ -697,6 +866,41 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
                   />
                   <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
                 </label>
+              </div>
+              <div className="space-y-3 rounded-lg border border-slate-800 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Proatividade comercial</p>
+                    <p className="text-sm text-slate-400">
+                      O agente sugere complementos, combos e promoções quando fizer sentido na conversa
+                      (ex: oferecer a bebida que completa o combo).
+                    </p>
+                  </div>
+                  <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                    <input
+                      type="checkbox"
+                      checked={editProactivityEnabled}
+                      onChange={(e) => setEditProactivityEnabled(e.target.checked)}
+                      className="peer sr-only"
+                    />
+                    <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                  </label>
+                </div>
+                {editProactivityEnabled && (
+                  <div>
+                    <textarea
+                      value={editProactivityGuidance}
+                      onChange={(e) => setEditProactivityGuidance(e.target.value)}
+                      rows={3}
+                      placeholder={'Ex: Quem pede hambúrguer sem bebida, ofereça o combo com refri por +R$ 5.\nSobremesa do dia tem 20% off pra quem pedir prato principal.'}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      Diretrizes do que oferecer (opcional). Promoções na base de conhecimento também são
+                      usadas automaticamente.
+                    </p>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -781,6 +985,44 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
                   active={editGuardrailMode === 'verification'}
                   onSelect={setEditGuardrailMode}
                 />
+              </div>
+              <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-slate-800 p-3">
+                <div>
+                  <p className="text-sm font-medium">Handoff humano</p>
+                  <p className="text-sm text-slate-400">
+                    Se o visitante pedir pra falar com uma pessoa, estiver insatisfeito ou o caso fugir do
+                    escopo, o agente avisa que vai chamar um atendente e para de responder. A conversa fica
+                    marcada na página Chats pra você assumir (e devolver ao agente quando quiser).
+                  </p>
+                </div>
+                <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    checked={editHandoffEnabled}
+                    onChange={(e) => setEditHandoffEnabled(e.target.checked)}
+                    className="peer sr-only"
+                  />
+                  <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                </label>
+              </div>
+              <div className="mt-3 rounded-lg border border-slate-800 p-3">
+                <label className="mb-1 block text-sm font-medium">Limite de mensagens por visitante (24h)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={MAX_DAILY_MESSAGE_LIMIT}
+                  value={editDailyMessageLimit}
+                  onChange={(e) =>
+                    setEditDailyMessageLimit(
+                      Math.min(MAX_DAILY_MESSAGE_LIMIT, Math.max(0, Math.floor(Number(e.target.value) || 0))),
+                    )
+                  }
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Protege sua conta de API contra spam no widget público. Cada visitante pode enviar até esse
+                  número de mensagens a cada 24h. Use <strong>0</strong> para sem limite.
+                </p>
               </div>
             </div>
           )}
@@ -1131,6 +1373,59 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
               {isCreating ? (saving ? 'Criando...' : 'Criar agente') : saving ? 'Salvando...' : 'Salvar'}
             </button>
           )}
+        </div>
+      </Modal>
+
+      <Modal
+        open={playgroundAgent !== null}
+        onClose={() => setPlaygroundAgent(null)}
+        title={playgroundAgent ? `Testar: ${playgroundAgent.name}` : 'Testar agente'}
+        wide
+      >
+        <p className="mb-3 text-xs text-slate-500">
+          Conversa de teste — nada é salvo e a memória do agente não é usada. Ideal pra ajustar o
+          objetivo, estilo e guardrails.
+        </p>
+        <div className="flex h-96 flex-col rounded-lg border border-slate-800 bg-slate-950/50">
+          <div className="flex-1 space-y-2 overflow-y-auto p-3">
+            {playgroundMessages.length === 0 && (
+              <p className="text-sm text-slate-400">Envie uma mensagem como se fosse o visitante.</p>
+            )}
+            {playgroundMessages.map((message, index) => (
+              <div key={index}>
+                <div
+                  className={
+                    message.role === 'user'
+                      ? 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-white px-3 py-2 text-sm text-slate-950'
+                      : 'max-w-[85%] rounded-2xl rounded-tl-sm bg-slate-800 px-3 py-2 text-sm'
+                  }
+                >
+                  <MessageContent content={message.content} />
+                </div>
+                {message.handoff && (
+                  <p className="mt-1 text-xs font-medium text-amber-400">
+                    ⚠ Handoff acionado — numa conversa real, o agente pararia de responder aqui.
+                  </p>
+                )}
+              </div>
+            ))}
+            {playgroundSending && <p className="text-sm text-slate-500">Digitando...</p>}
+          </div>
+          <form onSubmit={handlePlaygroundSend} className="flex gap-2 border-t border-slate-800 p-3">
+            <input
+              value={playgroundInput}
+              onChange={(e) => setPlaygroundInput(e.target.value)}
+              placeholder="Mensagem do visitante..."
+              className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-slate-500"
+            />
+            <button
+              type="submit"
+              disabled={playgroundSending || !playgroundInput.trim()}
+              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+            >
+              Enviar
+            </button>
+          </form>
         </div>
       </Modal>
     </div>

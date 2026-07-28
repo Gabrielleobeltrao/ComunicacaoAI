@@ -14,7 +14,9 @@ import {
   DEFAULT_HISTORY_LIMIT,
   getAgentById,
   GUARDRAIL_MODES,
+  LANGUAGES,
   listAgents,
+  MAX_DAILY_MESSAGE_LIMIT,
   MEMORY_TYPES,
   RESPONSE_DETAILS,
   RESPONSE_TONES,
@@ -24,18 +26,21 @@ import type {
   Agent,
   ConversationPersistence,
   GuardrailMode,
+  Language,
   MemoryType,
   ResponseDetail,
   ResponseTone,
 } from './agents.js'
 import { auth } from './auth.js'
 import {
+  getHumanHandoff,
   getLinkedVisitorProfileId,
   getConversationMemory,
   getStructuredMemory,
   getStructuredOutputData,
   linkVisitorProfile,
   setConversationMemory,
+  setHumanHandoff,
   setStructuredMemory,
   setStructuredOutputData,
 } from './conversationMemory.js'
@@ -52,6 +57,7 @@ import {
   updateDocument,
 } from './knowledge.js'
 import {
+  auxiliaryModel,
   checkGuardrail,
   extractIdentity,
   extractStructuredOutput,
@@ -65,17 +71,24 @@ import {
 import type { ChatTurn, Provider } from './llm.js'
 import {
   buildIdentityCaptureInstruction,
+  buildLanguageInstruction,
+  buildProactivityInstruction,
   buildResponseStyleInstruction,
   formatStructuredMemory,
   GUARDRAIL_REFUSAL_MESSAGE,
   GUARDRAIL_SCOPE_INSTRUCTION,
+  HANDOFF_INSTRUCTION,
+  HANDOFF_MARKER,
 } from './systemPrompt.js'
 import {
   clearProviderApiKey,
+  getMonthlyTokenCap,
   getProviderApiKey,
   getProviderKeyStatus,
+  setMonthlyTokenCap,
   setProviderApiKey,
 } from './userSettings.js'
+import { getMonthlyTokens, getUsageSummary, recordReplyUsage } from './tokenUsage.js'
 import {
   computeIdentityKey,
   findVisitorProfile,
@@ -89,8 +102,11 @@ import type { Widget, WidgetMessage, WidgetPosition } from './widgets.js'
 import {
   addMessage,
   addOwnerReply,
+  countVisitorMessagesSince,
   createWidget,
   getConversationMessages,
+  getOwnerStats,
+  getWidgetById,
   getWidgetByPublicKey,
   listConversationsForOwner,
   listMessages,
@@ -177,8 +193,23 @@ app.get('/api/providers', requireAuth, async (_req, res) => {
 })
 
 app.get('/api/settings', requireAuth, async (_req, res) => {
-  const status = await getProviderKeyStatus(res.locals.userId)
-  res.json(status)
+  const [status, monthlyTokenCap] = await Promise.all([
+    getProviderKeyStatus(res.locals.userId),
+    getMonthlyTokenCap(res.locals.userId),
+  ])
+  res.json({ ...status, monthlyTokenCap })
+})
+
+const MAX_MONTHLY_TOKEN_CAP = 1_000_000_000
+
+app.put('/api/settings/monthly-token-cap', requireAuth, async (req, res) => {
+  const { cap } = req.body ?? {}
+  if (typeof cap !== 'number' || !Number.isInteger(cap) || cap < 0 || cap > MAX_MONTHLY_TOKEN_CAP) {
+    res.status(400).json({ error: `cap must be an integer between 0 and ${MAX_MONTHLY_TOKEN_CAP}` })
+    return
+  }
+  await setMonthlyTokenCap(res.locals.userId, cap)
+  res.json({ monthlyTokenCap: cap })
 })
 
 function isProvider(value: unknown): value is Provider {
@@ -239,6 +270,14 @@ function isResponseTone(value: unknown): value is ResponseTone {
 
 function isResponseDetail(value: unknown): value is ResponseDetail {
   return typeof value === 'string' && (RESPONSE_DETAILS as string[]).includes(value)
+}
+
+function isLanguage(value: unknown): value is Language {
+  return typeof value === 'string' && (LANGUAGES as string[]).includes(value)
+}
+
+function isValidDailyMessageLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_DAILY_MESSAGE_LIMIT
 }
 
 app.put('/api/settings/:provider/key', requireAuth, async (req, res) => {
@@ -421,9 +460,25 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     responseDetail,
     responseEmojis,
     responseFormatting,
+    handoffEnabled,
+    firstMessage,
+    proactivityEnabled,
+    proactivityGuidance,
+    language,
+    dailyMessageLimit,
+    cheapAuxModel,
+    promptCaching,
   } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
+    return
+  }
+  if (language !== undefined && !isLanguage(language)) {
+    res.status(400).json({ error: 'Unknown language' })
+    return
+  }
+  if (dailyMessageLimit !== undefined && !isValidDailyMessageLimit(dailyMessageLimit)) {
+    res.status(400).json({ error: `dailyMessageLimit must be an integer between 0 and ${MAX_DAILY_MESSAGE_LIMIT}` })
     return
   }
   if (provider !== undefined && !isProvider(provider)) {
@@ -493,6 +548,15 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     responseDetail,
     responseEmojis: typeof responseEmojis === 'boolean' ? responseEmojis : undefined,
     responseFormatting: typeof responseFormatting === 'boolean' ? responseFormatting : undefined,
+    handoffEnabled: typeof handoffEnabled === 'boolean' ? handoffEnabled : undefined,
+    firstMessage:
+      typeof firstMessage === 'string' || firstMessage === null ? firstMessage || null : undefined,
+    proactivityEnabled: typeof proactivityEnabled === 'boolean' ? proactivityEnabled : undefined,
+    proactivityGuidance: typeof proactivityGuidance === 'string' ? proactivityGuidance : undefined,
+    language,
+    dailyMessageLimit: typeof dailyMessageLimit === 'number' ? dailyMessageLimit : undefined,
+    cheapAuxModel: typeof cheapAuxModel === 'boolean' ? cheapAuxModel : undefined,
+    promptCaching: typeof promptCaching === 'boolean' ? promptCaching : undefined,
   })
   res.status(201).json(agent)
 })
@@ -526,6 +590,14 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     responseDetail,
     responseEmojis,
     responseFormatting,
+    handoffEnabled,
+    firstMessage,
+    proactivityEnabled,
+    proactivityGuidance,
+    language,
+    dailyMessageLimit,
+    cheapAuxModel,
+    promptCaching,
   } = req.body ?? {}
   const updates: {
     name?: string
@@ -545,6 +617,14 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     responseDetail?: ResponseDetail
     responseEmojis?: boolean
     responseFormatting?: boolean
+    handoffEnabled?: boolean
+    firstMessage?: string | null
+    proactivityEnabled?: boolean
+    proactivityGuidance?: string
+    language?: Language
+    dailyMessageLimit?: number
+    cheapAuxModel?: boolean
+    promptCaching?: boolean
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
@@ -627,6 +707,26 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
   }
   if (typeof responseEmojis === 'boolean') updates.responseEmojis = responseEmojis
   if (typeof responseFormatting === 'boolean') updates.responseFormatting = responseFormatting
+  if (typeof handoffEnabled === 'boolean') updates.handoffEnabled = handoffEnabled
+  if (typeof firstMessage === 'string' || firstMessage === null) updates.firstMessage = firstMessage || null
+  if (typeof proactivityEnabled === 'boolean') updates.proactivityEnabled = proactivityEnabled
+  if (typeof proactivityGuidance === 'string') updates.proactivityGuidance = proactivityGuidance
+  if (language !== undefined) {
+    if (!isLanguage(language)) {
+      res.status(400).json({ error: 'Unknown language' })
+      return
+    }
+    updates.language = language
+  }
+  if (dailyMessageLimit !== undefined) {
+    if (!isValidDailyMessageLimit(dailyMessageLimit)) {
+      res.status(400).json({ error: `dailyMessageLimit must be an integer between 0 and ${MAX_DAILY_MESSAGE_LIMIT}` })
+      return
+    }
+    updates.dailyMessageLimit = dailyMessageLimit
+  }
+  if (typeof cheapAuxModel === 'boolean') updates.cheapAuxModel = cheapAuxModel
+  if (typeof promptCaching === 'boolean') updates.promptCaching = promptCaching
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
     return
@@ -638,6 +738,121 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     return
   }
   res.json(agent)
+})
+
+const MAX_PLAYGROUND_MESSAGES = 40
+
+// Stateless test chat: the panel sends the whole local history and gets one
+// reply back. Nothing is persisted — no widget, no memory, no extraction —
+// so owners can iterate on the objective/style/guardrails safely.
+app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  if (!ObjectId.isValid(agentId)) {
+    res.status(400).json({ error: 'Invalid agent id' })
+    return
+  }
+  const agent = await getAgentById(res.locals.userId, new ObjectId(agentId))
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+
+  const { messages } = req.body ?? {}
+  const isValidHistory =
+    Array.isArray(messages) &&
+    messages.length > 0 &&
+    messages.length <= MAX_PLAYGROUND_MESSAGES &&
+    messages.every(
+      (m: unknown) =>
+        typeof m === 'object' &&
+        m !== null &&
+        ((m as ChatTurn).role === 'user' || (m as ChatTurn).role === 'assistant') &&
+        typeof (m as ChatTurn).content === 'string' &&
+        (m as ChatTurn).content.trim().length > 0,
+    )
+  if (!isValidHistory) {
+    res.status(400).json({ error: `messages must be 1-${MAX_PLAYGROUND_MESSAGES} {role, content} turns` })
+    return
+  }
+  const history = messages as ChatTurn[]
+  const lastUser = [...history].reverse().find((m) => m.role === 'user')
+  if (!lastUser) {
+    res.status(400).json({ error: 'At least one user message is required' })
+    return
+  }
+
+  const apiKey = await getProviderApiKey(res.locals.userId, agent.provider)
+  const guardrailMode = agent.guardrailMode ?? 'none'
+
+  if (guardrailMode === 'verification') {
+    let inScope = true
+    try {
+      inScope = await checkGuardrail(
+        agent.objective,
+        history.slice(0, -1),
+        lastUser.content,
+        agent.provider,
+        auxModelFor(agent),
+        apiKey,
+      )
+    } catch (error) {
+      console.error('Playground guardrail check failed, allowing the message through:', error)
+    }
+    if (!inScope) {
+      res.json({ reply: GUARDRAIL_REFUSAL_MESSAGE, refusedByGuardrail: true, handoff: false })
+      return
+    }
+  }
+
+  let knowledge: string[] = []
+  try {
+    const results = await searchKnowledge(agent._id, lastUser.content)
+    knowledge = results.map((result) => result.content)
+  } catch (error) {
+    console.error('Playground knowledge search failed, replying without grounding:', error)
+  }
+
+  const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
+  const behaviorInstruction = [
+    guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : '',
+    agent.handoffEnabled ? HANDOFF_INSTRUCTION : '',
+    agent.proactivityEnabled ? buildProactivityInstruction(agent.proactivityGuidance ?? '') : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+  const { text: generated, usage } = await generateAgentReply(
+    agent.objective,
+    knowledge,
+    '',
+    history,
+    agent.provider,
+    agent.model,
+    apiKey,
+    identityFields.length > 0 ? buildIdentityCaptureInstruction(identityFields) : '',
+    behaviorInstruction,
+    [
+      buildLanguageInstruction(agent.language ?? 'pt'),
+      buildResponseStyleInstruction(
+        agent.responseTone ?? 'neutral',
+        agent.responseDetail ?? 'balanced',
+        agent.responseEmojis ?? false,
+        agent.responseFormatting ?? false,
+      ),
+    ].join('\n\n'),
+    agent.promptCaching ?? true,
+  )
+  recordReplyUsage(res.locals.userId, usage).catch((error) =>
+    console.error('Failed to record token usage:', error),
+  )
+  let reply = generated
+
+  let handoff = false
+  if (agent.handoffEnabled && reply.trimStart().startsWith(HANDOFF_MARKER)) {
+    handoff = true
+    reply = reply.trimStart().slice(HANDOFF_MARKER.length).trim()
+  }
+  res.json({ reply, refusedByGuardrail: false, handoff })
 })
 
 app.post('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
@@ -797,6 +1012,24 @@ app.get('/api/conversations', requireAuth, async (_req, res) => {
   res.json(conversations)
 })
 
+app.get('/api/stats', requireAuth, async (_req, res) => {
+  const [stats, agents, widgets, usage, monthlyTokenCap] = await Promise.all([
+    getOwnerStats(res.locals.userId),
+    listAgents(res.locals.userId),
+    listWidgets(res.locals.userId),
+    getUsageSummary(res.locals.userId),
+    getMonthlyTokenCap(res.locals.userId),
+  ])
+  res.json({
+    ...stats,
+    agents: agents.length,
+    widgets: widgets.length,
+    tokensThisWeek: usage.tokensThisWeek,
+    tokensThisMonth: usage.tokensThisMonth,
+    monthlyTokenCap,
+  })
+})
+
 app.get(
   '/api/widgets/:widgetId/conversations/:conversationId/messages',
   requireAuth,
@@ -817,6 +1050,61 @@ app.get(
       return
     }
     res.json(messages)
+  },
+)
+
+app.get(
+  '/api/widgets/:widgetId/conversations/:conversationId/structured-data',
+  requireAuth,
+  async (req, res) => {
+    const widgetIdStr = String(req.params.widgetId)
+    const conversationId = String(req.params.conversationId)
+    if (!ObjectId.isValid(widgetIdStr)) {
+      res.status(400).json({ error: 'Invalid widget id' })
+      return
+    }
+    const widgetId = new ObjectId(widgetIdStr)
+    const widget = await getWidgetById(widgetId)
+    if (!widget || widget.ownerId !== res.locals.userId) {
+      res.status(404).json({ error: 'Widget not found' })
+      return
+    }
+
+    // Once the visitor is identified, the extracted data lives on their
+    // cross-conversation profile rather than on this conversation's doc.
+    const visitorProfileId = await getLinkedVisitorProfileId(widgetId, conversationId)
+    const visitorProfile = visitorProfileId ? await getVisitorProfile(visitorProfileId) : null
+    const data = visitorProfile
+      ? (visitorProfile.structuredOutputData ?? {})
+      : await getStructuredOutputData(widgetId, conversationId)
+    const humanHandoff = await getHumanHandoff(widgetId, conversationId)
+    res.json({ data, humanHandoff })
+  },
+)
+
+app.post(
+  '/api/widgets/:widgetId/conversations/:conversationId/handoff',
+  requireAuth,
+  async (req, res) => {
+    const widgetIdStr = String(req.params.widgetId)
+    const conversationId = String(req.params.conversationId)
+    if (!ObjectId.isValid(widgetIdStr)) {
+      res.status(400).json({ error: 'Invalid widget id' })
+      return
+    }
+    const widgetId = new ObjectId(widgetIdStr)
+    const widget = await getWidgetById(widgetId)
+    if (!widget || widget.ownerId !== res.locals.userId) {
+      res.status(404).json({ error: 'Widget not found' })
+      return
+    }
+    const { active } = req.body ?? {}
+    if (typeof active !== 'boolean') {
+      res.status(400).json({ error: 'active must be a boolean' })
+      return
+    }
+    await setHumanHandoff(widgetId, conversationId, active)
+    res.json({ humanHandoff: active })
   },
 )
 
@@ -865,6 +1153,7 @@ app.get('/api/public/widgets/:publicKey', async (req, res) => {
     position: widget.position,
     avatarUrl: widget.avatarUrl,
     conversationPersistence: agent?.conversationPersistence ?? 'same_browser',
+    firstMessage: agent?.firstMessage ?? null,
   })
 })
 
@@ -894,6 +1183,20 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
     res.status(400).json({ error: 'conversationId and content are required' })
     return
   }
+
+  // Anti-abuse: cap visitor messages per conversation over a rolling 24h so a
+  // spammed public widget can't run up the owner's LLM bill. 0 = unlimited.
+  const limitAgent = widget.agentId ? await getAgentById(widget.ownerId, widget.agentId) : null
+  const dailyLimit = limitAgent?.dailyMessageLimit ?? 0
+  if (dailyLimit > 0) {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const sentToday = await countVisitorMessagesSince(widget._id, conversationId, since)
+    if (sentToday >= dailyLimit) {
+      res.status(429).json({ error: 'Daily message limit reached', limitReached: true })
+      return
+    }
+  }
+
   const visitorMessage = await addMessage(widget._id, conversationId, 'visitor', content)
   broadcastMessage(visitorMessage, widget.ownerId)
   res.status(201).json([visitorMessage])
@@ -905,11 +1208,29 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
   })
 })
 
+// Which model to use for background/utility calls: the cheap one when the
+// agent's economy toggle is on (default), otherwise the agent's own model.
+function auxModelFor(agent: WithId<Agent>): string | null {
+  return agent.cheapAuxModel === false ? agent.model : auxiliaryModel(agent.provider)
+}
+
 async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: string, visitorContent: string) {
   const widgetId = widget._id
   const ownerId = widget.ownerId
   const agent = widget.agentId ? await getAgentById(ownerId, widget.agentId) : null
   if (!agent) return
+
+  // A human took over (or the agent requested handoff earlier) — stay silent
+  // until the owner hands the conversation back to the agent.
+  if (await getHumanHandoff(widgetId, conversationId)) return
+
+  // Optional monthly token budget: once the owner is over their cap, stop all
+  // auto-replies (checked before any LLM call, so spend truly halts at zero).
+  const monthlyCap = await getMonthlyTokenCap(ownerId)
+  if (monthlyCap > 0 && (await getMonthlyTokens(ownerId)) >= monthlyCap) {
+    console.warn(`Monthly token cap reached for owner ${ownerId}; skipping auto-reply.`)
+    return
+  }
 
   const memoryType = agent.memoryType ?? 'none'
   const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
@@ -931,7 +1252,14 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     // silently refusing every visitor if the classification call errors out.
     let inScope = true
     try {
-      inScope = await checkGuardrail(agent.objective, history, visitorContent, agent.provider, agent.model, apiKey)
+      inScope = await checkGuardrail(
+        agent.objective,
+        history,
+        visitorContent,
+        agent.provider,
+        auxModelFor(agent),
+        apiKey,
+      )
     } catch (error) {
       console.error('Guardrail check failed, allowing the message through:', error)
     }
@@ -977,15 +1305,26 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
 
   const identityInstruction =
     identityFields.length > 0 && !visitorProfile ? buildIdentityCaptureInstruction(identityFields) : ''
-  const guardrailInstruction = guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : ''
-  const responseStyleInstruction = buildResponseStyleInstruction(
-    agent.responseTone ?? 'neutral',
-    agent.responseDetail ?? 'balanced',
-    agent.responseEmojis ?? false,
-    agent.responseFormatting ?? false,
-  )
+  // Handoff and proactivity ride in the same behavior-instruction slot as the
+  // scope guardrail — they're all conduct rules layered onto the objective.
+  const behaviorInstruction = [
+    guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : '',
+    agent.handoffEnabled ? HANDOFF_INSTRUCTION : '',
+    agent.proactivityEnabled ? buildProactivityInstruction(agent.proactivityGuidance ?? '') : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+  const responseStyleInstruction = [
+    buildLanguageInstruction(agent.language ?? 'pt'),
+    buildResponseStyleInstruction(
+      agent.responseTone ?? 'neutral',
+      agent.responseDetail ?? 'balanced',
+      agent.responseEmojis ?? false,
+      agent.responseFormatting ?? false,
+    ),
+  ].join('\n\n')
 
-  const replyText = await generateAgentReply(
+  const { text: generatedReply, usage } = await generateAgentReply(
     agent.objective,
     knowledge,
     memoryText,
@@ -994,13 +1333,30 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     agent.model,
     apiKey,
     identityInstruction,
-    guardrailInstruction,
+    behaviorInstruction,
     responseStyleInstruction,
+    agent.promptCaching ?? true,
   )
+  recordReplyUsage(ownerId, usage).catch((error) => console.error('Failed to record token usage:', error))
+  let replyText = generatedReply
   if (!replyText) return
+
+  let handoffRequested = false
+  if (agent.handoffEnabled && replyText.trimStart().startsWith(HANDOFF_MARKER)) {
+    handoffRequested = true
+    replyText =
+      replyText.trimStart().slice(HANDOFF_MARKER.length).trim() ||
+      'Vou chamar um atendente humano para continuar com você — só um momento!'
+  }
 
   const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText)
   broadcastMessage(agentMessage, ownerId)
+
+  if (handoffRequested) {
+    await setHumanHandoff(widgetId, conversationId, true)
+    // broadcastMessage above already pinged the owner's conversation list;
+    // from here on the early-return at the top keeps the agent silent.
+  }
 
   // Fire-and-forget: none of this background bookkeeping should block the
   // reply the visitor is waiting on.
@@ -1044,7 +1400,7 @@ async function refreshMemoryAndIdentity(params: {
       identityFields,
       [...history, { role: 'user', content: visitorContent }],
       agent.provider,
-      agent.model,
+      auxModelFor(agent),
       apiKey,
     )
     if (extracted) {
@@ -1078,14 +1434,28 @@ async function refreshMemoryAndIdentity(params: {
     const current = visitorProfileId
       ? ((await getVisitorProfile(visitorProfileId))?.memory ?? '')
       : await getConversationMemory(widgetId, conversationId)
-    const updated = await updateConversationMemory(current, visitorContent, replyText, agent.provider, agent.model, apiKey)
+    const updated = await updateConversationMemory(
+      current,
+      visitorContent,
+      replyText,
+      agent.provider,
+      auxModelFor(agent),
+      apiKey,
+    )
     if (visitorProfileId) await setVisitorProfileMemory(visitorProfileId, updated)
     else await setConversationMemory(widgetId, conversationId, updated)
   } else if (memoryType === 'structured') {
     const current = visitorProfileId
       ? ((await getVisitorProfile(visitorProfileId))?.structuredMemory ?? {})
       : await getStructuredMemory(widgetId, conversationId)
-    const updated = await updateStructuredMemory(current, visitorContent, replyText, agent.provider, agent.model, apiKey)
+    const updated = await updateStructuredMemory(
+      current,
+      visitorContent,
+      replyText,
+      agent.provider,
+      auxModelFor(agent),
+      apiKey,
+    )
     if (visitorProfileId) await setVisitorProfileStructuredMemory(visitorProfileId, updated)
     else await setStructuredMemory(widgetId, conversationId, updated)
   } else if (memoryType === 'semantic') {
@@ -1098,7 +1468,15 @@ async function refreshMemoryAndIdentity(params: {
     const current = visitorProfileId
       ? ((await getVisitorProfile(visitorProfileId))?.structuredOutputData ?? {})
       : await getStructuredOutputData(widgetId, conversationId)
-    const updated = await extractStructuredOutput(fields, current, visitorContent, replyText, agent.provider, agent.model, apiKey)
+    const updated = await extractStructuredOutput(
+      fields,
+      current,
+      visitorContent,
+      replyText,
+      agent.provider,
+      auxModelFor(agent),
+      apiKey,
+    )
 
     if (JSON.stringify(updated) !== JSON.stringify(current)) {
       if (visitorProfileId) await setVisitorProfileStructuredOutputData(visitorProfileId, updated)

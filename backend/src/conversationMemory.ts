@@ -9,6 +9,7 @@ export interface ConversationMemory {
   structuredMemory: Record<string, string>
   structuredOutputData: Record<string, string>
   visitorProfileId: ObjectId | null
+  humanHandoff: boolean
   updatedAt: Date
 }
 
@@ -67,6 +68,19 @@ export async function setStructuredOutputData(
   await conversationMemories.updateOne(
     { widgetId, conversationId },
     { $set: { structuredOutputData, updatedAt: new Date() } },
+    { upsert: true },
+  )
+}
+
+export async function getHumanHandoff(widgetId: ObjectId, conversationId: string): Promise<boolean> {
+  const doc = await getDoc(widgetId, conversationId)
+  return doc?.humanHandoff ?? false
+}
+
+export async function setHumanHandoff(widgetId: ObjectId, conversationId: string, active: boolean) {
+  await conversationMemories.updateOne(
+    { widgetId, conversationId },
+    { $set: { humanHandoff: active, updatedAt: new Date() } },
     { upsert: true },
   )
 }

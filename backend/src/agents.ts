@@ -19,6 +19,11 @@ export const RESPONSE_TONES: ResponseTone[] = ['neutral', 'friendly', 'formal', 
 export type ResponseDetail = 'balanced' | 'concise' | 'detailed'
 export const RESPONSE_DETAILS: ResponseDetail[] = ['balanced', 'concise', 'detailed']
 
+export type Language = 'pt' | 'en' | 'es' | 'auto'
+export const LANGUAGES: Language[] = ['pt', 'en', 'es', 'auto']
+
+export const MAX_DAILY_MESSAGE_LIMIT = 1000
+
 export interface Agent {
   _id: ObjectId
   ownerId: string
@@ -39,6 +44,14 @@ export interface Agent {
   responseDetail: ResponseDetail
   responseEmojis: boolean
   responseFormatting: boolean
+  handoffEnabled: boolean
+  firstMessage: string | null
+  proactivityEnabled: boolean
+  proactivityGuidance: string
+  language: Language
+  dailyMessageLimit: number
+  cheapAuxModel: boolean
+  promptCaching: boolean
   createdAt: Date
 }
 
@@ -64,6 +77,14 @@ export async function createAgent(
     responseDetail?: ResponseDetail
     responseEmojis?: boolean
     responseFormatting?: boolean
+    handoffEnabled?: boolean
+    firstMessage?: string | null
+    proactivityEnabled?: boolean
+    proactivityGuidance?: string
+    language?: Language
+    dailyMessageLimit?: number
+    cheapAuxModel?: boolean
+    promptCaching?: boolean
   } = {},
 ) {
   const agent: Omit<Agent, '_id'> = {
@@ -85,6 +106,14 @@ export async function createAgent(
     responseDetail: options.responseDetail ?? 'balanced',
     responseEmojis: options.responseEmojis ?? false,
     responseFormatting: options.responseFormatting ?? false,
+    handoffEnabled: options.handoffEnabled ?? false,
+    firstMessage: options.firstMessage ?? null,
+    proactivityEnabled: options.proactivityEnabled ?? false,
+    proactivityGuidance: options.proactivityGuidance ?? '',
+    language: options.language ?? 'pt',
+    dailyMessageLimit: options.dailyMessageLimit ?? 0,
+    cheapAuxModel: options.cheapAuxModel ?? true,
+    promptCaching: options.promptCaching ?? true,
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -120,6 +149,14 @@ export function updateAgent(
     responseDetail?: ResponseDetail
     responseEmojis?: boolean
     responseFormatting?: boolean
+    handoffEnabled?: boolean
+    firstMessage?: string | null
+    proactivityEnabled?: boolean
+    proactivityGuidance?: string
+    language?: Language
+    dailyMessageLimit?: number
+    cheapAuxModel?: boolean
+    promptCaching?: boolean
   },
 ) {
   return agents.findOneAndUpdate(

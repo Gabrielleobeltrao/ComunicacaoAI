@@ -12,6 +12,7 @@ interface ConversationSummary {
   lastRole: 'visitor' | 'agent'
   lastAt: string
   messageCount: number
+  humanHandoff: boolean
 }
 
 interface ConversationMessage {
@@ -28,6 +29,9 @@ export function ConversationsPanel() {
   const [selected, setSelected] = useState<ConversationSummary | null>(null)
   const [widgetFilter, setWidgetFilter] = useState('')
   const [messages, setMessages] = useState<ConversationMessage[]>([])
+  const [structuredData, setStructuredData] = useState<Record<string, string>>({})
+  const [handoffActive, setHandoffActive] = useState(false)
+  const [togglingHandoff, setTogglingHandoff] = useState(false)
   const [reply, setReply] = useState('')
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -70,7 +74,11 @@ export function ConversationsPanel() {
   useEffect(() => {
     if (!selected) return
     let cancelled = false
+    let structuredDataTimeout: ReturnType<typeof setTimeout> | undefined
     const { widgetId, conversationId } = selected
+
+    setStructuredData({})
+    setHandoffActive(selected.humanHandoff)
 
     async function loadMessages() {
       const res = await fetch(
@@ -82,8 +90,24 @@ export function ConversationsPanel() {
       }
     }
 
+    async function loadStructuredData() {
+      const res = await fetch(
+        `${API_URL}/api/widgets/${widgetId}/conversations/${conversationId}/structured-data`,
+        { credentials: 'include' },
+      )
+      if (res.ok && !cancelled) {
+        const body = await res.json()
+        setStructuredData(body.data ?? {})
+        setHandoffActive(body.humanHandoff ?? false)
+      }
+    }
+
     loadMessages()
-    const interval = setInterval(loadMessages, 15000)
+    loadStructuredData()
+    const interval = setInterval(() => {
+      loadMessages()
+      loadStructuredData()
+    }, 15000)
 
     function joinRoom() {
       socket.emit('join-conversation', { conversationId })
@@ -92,6 +116,10 @@ export function ConversationsPanel() {
     function handleMessage(message: ConversationMessage) {
       if (message.conversationId !== conversationId) return
       setMessages((prev) => (prev.some((m) => m._id === message._id) ? prev : [...prev, message]))
+      // The extraction runs in the background after the agent's reply, so
+      // give it a moment before refreshing instead of fetching immediately.
+      clearTimeout(structuredDataTimeout)
+      structuredDataTimeout = setTimeout(loadStructuredData, 5000)
     }
 
     socket.on('connect', joinRoom)
@@ -101,6 +129,7 @@ export function ConversationsPanel() {
     return () => {
       cancelled = true
       clearInterval(interval)
+      clearTimeout(structuredDataTimeout)
       socket.off('connect', joinRoom)
       socket.off('message', handleMessage)
       socket.emit('leave-conversation', { conversationId })
@@ -132,6 +161,36 @@ export function ConversationsPanel() {
       // The new message arrives via the "message" socket event above.
     } finally {
       setSending(false)
+    }
+  }
+
+  async function handleToggleHandoff() {
+    if (!selected || togglingHandoff) return
+    setTogglingHandoff(true)
+
+    try {
+      const res = await fetch(
+        `${API_URL}/api/widgets/${selected.widgetId}/conversations/${selected.conversationId}/handoff`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ active: !handoffActive }),
+        },
+      )
+      if (res.ok) {
+        const body = await res.json()
+        setHandoffActive(body.humanHandoff)
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.widgetId === selected.widgetId && c.conversationId === selected.conversationId
+              ? { ...c, humanHandoff: body.humanHandoff }
+              : c,
+          ),
+        )
+      }
+    } finally {
+      setTogglingHandoff(false)
     }
   }
 
@@ -191,7 +250,14 @@ export function ConversationsPanel() {
                         : 'border-slate-800 bg-slate-950/50 hover:bg-slate-900'
                     }`}
                   >
-                    <p className="font-medium">{conversation.widgetName}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium">{conversation.widgetName}</p>
+                      {conversation.humanHandoff && (
+                        <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-400">
+                          Humano
+                        </span>
+                      )}
+                    </div>
                     <p className="truncate text-slate-400">{conversation.lastMessage}</p>
                   </button>
                 </li>
@@ -202,6 +268,45 @@ export function ConversationsPanel() {
       </div>
 
       <div className="flex h-120 flex-col rounded-lg border border-slate-800 bg-slate-950/50">
+        {selected && (
+          <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-3 py-2">
+            <p className="text-xs text-slate-400">
+              {handoffActive ? (
+                <span className="font-medium text-amber-400">
+                  Atendimento humano ativo — o agente não responde nesta conversa.
+                </span>
+              ) : (
+                'Agente respondendo automaticamente.'
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={handleToggleHandoff}
+              disabled={togglingHandoff}
+              className="shrink-0 rounded-lg border border-slate-700 px-2.5 py-1 text-xs transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              {handoffActive ? 'Devolver ao agente' : 'Assumir conversa'}
+            </button>
+          </div>
+        )}
+        {selected && Object.keys(structuredData).length > 0 && (
+          <div className="border-b border-slate-800 p-3">
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+              Dados estruturados
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {Object.entries(structuredData).map(([field, value]) => (
+                <span
+                  key={field}
+                  className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs"
+                >
+                  <span className="text-slate-400">{field}:</span>{' '}
+                  <span className="text-white">{value}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex-1 space-y-2 overflow-y-auto p-3">
           {!selected ? (
             <p className="text-sm text-slate-400">Selecione uma conversa para ver as mensagens.</p>
