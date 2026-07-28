@@ -11,7 +11,13 @@ A SaaS platform for managing goal-oriented AI communication agents, connected to
 - **Visitor identity** — optionally toggle identity capture and define custom fields (e.g. Name, Email) that the agent asks for conversationally (no blocking form, so it also works for future non-widget channels). Once captured, a visitor's memory follows them across devices/sessions instead of resetting every conversation. A separate per-agent setting controls whether a visitor's chat persists across visits in the same browser or always starts fresh.
 - **Guardrails** — keep an agent on-topic with either a system-prompt instruction (free) or a pre-reply verification call that refuses out-of-scope messages before the main reply is generated.
 - **Custom structured-data extraction** — define your own field schema (e.g. Orçamento, Urgência) that the agent extracts from the conversation in the background, optionally delivered to an external system via webhook whenever the data changes — useful for qualifying leads.
-- **Response style** — tune tone (neutral/friendly/formal/enthusiastic), detail level, emoji use, and markdown formatting per agent; replies render as real markdown (bold, lists) in both the widget and the owner's Chats view.
+- **Response style** — tune tone (neutral/friendly/formal/enthusiastic), detail level, reply language (pt/en/es/auto), emoji use, and markdown formatting per agent; replies render as real markdown (bold, lists) in both the widget and the owner's Chats view.
+- **Human handoff** — the agent detects "this needs a person" (explicit request, frustration, out-of-scope case), says so, and goes silent; the conversation is flagged in Chats where the owner can take over and later hand it back to the agent.
+- **Proactive selling** — an optional first message the agent opens with, plus owner-written upsell guidance (combos, promotions) the agent weaves into the conversation, grounded in the knowledge base.
+- **Test playground** — chat with any agent directly from the panel (nothing persisted, no memory) to iterate on objective/style/guardrails before going live.
+- **Dashboard** — real metrics: conversations and messages this week, qualified leads, conversations awaiting a human, attendance rate, and token spend.
+- **Cost controls** — per-agent toggles to run background calls (memory, extraction, guardrail) on a cheap model and to cache the static prompt prefix; token usage is tracked per owner with an optional monthly cap that halts auto-replies when exceeded.
+- **Anti-abuse limit** — optional per-visitor daily message cap on the public widget, rejected before any storage or LLM call.
 - **BYOK** — users can store their own Anthropic/OpenAI API key (encrypted at rest), which takes priority over the platform's fallback key.
 
 ## Tech stack
