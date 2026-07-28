@@ -24,6 +24,14 @@ interface ConversationMessage {
   createdAt: string
 }
 
+interface OrchestrationDecision {
+  specialists: string[]
+  clarify: boolean
+  mode: 'adaptive' | 'pipeline'
+  advanced: boolean
+  createdAt: string
+}
+
 export function ConversationsPanel() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -31,6 +39,8 @@ export function ConversationsPanel() {
   const [widgetFilter, setWidgetFilter] = useState('')
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [structuredData, setStructuredData] = useState<Record<string, string>>({})
+  const [decisions, setDecisions] = useState<OrchestrationDecision[]>([])
+  const [showDecisions, setShowDecisions] = useState(false)
   const [handoffActive, setHandoffActive] = useState(false)
   const [togglingHandoff, setTogglingHandoff] = useState(false)
   const [reply, setReply] = useState('')
@@ -79,6 +89,7 @@ export function ConversationsPanel() {
     const { widgetId, conversationId } = selected
 
     setStructuredData({})
+    setDecisions([])
     setHandoffActive(selected.humanHandoff)
 
     async function loadMessages() {
@@ -103,11 +114,23 @@ export function ConversationsPanel() {
       }
     }
 
+    async function loadDecisions() {
+      const res = await fetch(
+        `${API_URL}/api/widgets/${widgetId}/conversations/${conversationId}/decisions`,
+        { credentials: 'include' },
+      )
+      if (res.ok && !cancelled) {
+        setDecisions(await res.json())
+      }
+    }
+
     loadMessages()
     loadStructuredData()
+    loadDecisions()
     const interval = setInterval(() => {
       loadMessages()
       loadStructuredData()
+      loadDecisions()
     }, 15000)
 
     function joinRoom() {
@@ -117,6 +140,9 @@ export function ConversationsPanel() {
     function handleMessage(message: ConversationMessage) {
       if (message.conversationId !== conversationId) return
       setMessages((prev) => (prev.some((m) => m._id === message._id) ? prev : [...prev, message]))
+      // A decision is logged before its reply, so it's already persisted by
+      // the time the agent message arrives — refresh it right away.
+      loadDecisions()
       // The extraction runs in the background after the agent's reply, so
       // give it a moment before refreshing instead of fetching immediately.
       clearTimeout(structuredDataTimeout)
@@ -306,6 +332,61 @@ export function ConversationsPanel() {
                 </span>
               ))}
             </div>
+          </div>
+        )}
+        {selected && decisions.length > 0 && (
+          <div className="border-b border-slate-800 p-3">
+            <button
+              type="button"
+              onClick={() => setShowDecisions((prev) => !prev)}
+              className="flex w-full items-center justify-between gap-2 text-xs font-medium uppercase tracking-wide text-slate-500 transition hover:text-slate-300"
+            >
+              <span>
+                Orquestração{' '}
+                <span className="normal-case tracking-normal text-slate-600">
+                  ({decisions.length} {decisions.length === 1 ? 'decisão' : 'decisões'})
+                </span>
+              </span>
+              <span className="text-slate-600">{showDecisions ? '▾' : '▸'}</span>
+            </button>
+            {showDecisions && (
+              <ol className="mt-2 space-y-1">
+                {decisions.map((decision, index) => (
+                  <li key={index} className="flex items-center gap-2 text-xs text-slate-400">
+                    <span className="w-5 shrink-0 text-right text-slate-600">{index + 1}.</span>
+                    {decision.mode === 'pipeline' ? (
+                      <span className="flex items-center gap-1.5">
+                        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">
+                          Fluxo
+                        </span>
+                        <span className="text-slate-300">Etapa: {decision.specialists[0] ?? '—'}</span>
+                        {decision.advanced && (
+                          <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-400">
+                            avançou
+                          </span>
+                        )}
+                      </span>
+                    ) : decision.clarify ? (
+                      <span className="flex items-center gap-1.5">
+                        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">
+                          Adaptativo
+                        </span>
+                        <span className="text-amber-400">Pediu esclarecimento</span>
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1.5">
+                        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">
+                          Adaptativo
+                        </span>
+                        <span className="text-slate-300">
+                          Consultou: {decision.specialists.length > 0 ? decision.specialists.join(', ') : '—'}
+                        </span>
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         )}
         <div className="flex-1 space-y-2 overflow-y-auto p-3">
