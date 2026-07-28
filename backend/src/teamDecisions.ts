@@ -42,3 +42,49 @@ export async function logTeamDecision(entry: {
 export function listTeamDecisionsForConversation(ownerId: string, widgetId: ObjectId, conversationId: string) {
   return teamDecisions.find({ ownerId, widgetId, conversationId }).sort({ createdAt: 1 }).toArray()
 }
+
+export interface TeamDecisionAggregate {
+  totals: { _id: ObjectId; decisions: number; clarify: number; moved: number }[]
+  // Times each specialist/stage handled a turn, per team.
+  specialists: { _id: { teamId: ObjectId; name: string }; count: number }[]
+  // Times each stage was left (was the source of a pipeline move), per team.
+  fromStages: { _id: { teamId: ObjectId; name: string }; count: number }[]
+}
+
+// Aggregate every orchestration decision for an owner into per-team rollups the
+// dashboard turns into analytics (top specialists, clarify rate, stage activity).
+export async function aggregateTeamDecisions(ownerId: string): Promise<TeamDecisionAggregate> {
+  const [totals, specialists, fromStages] = await Promise.all([
+    teamDecisions
+      .aggregate([
+        { $match: { ownerId } },
+        {
+          $group: {
+            _id: '$teamId',
+            decisions: { $sum: 1 },
+            clarify: { $sum: { $cond: ['$clarify', 1, 0] } },
+            moved: { $sum: { $cond: ['$advanced', 1, 0] } },
+          },
+        },
+      ])
+      .toArray(),
+    teamDecisions
+      .aggregate([
+        { $match: { ownerId } },
+        { $unwind: '$specialists' },
+        { $group: { _id: { teamId: '$teamId', name: '$specialists' }, count: { $sum: 1 } } },
+      ])
+      .toArray(),
+    teamDecisions
+      .aggregate([
+        { $match: { ownerId, fromStage: { $type: 'string' } } },
+        { $group: { _id: { teamId: '$teamId', name: '$fromStage' }, count: { $sum: 1 } } },
+      ])
+      .toArray(),
+  ])
+  return {
+    totals: totals as TeamDecisionAggregate['totals'],
+    specialists: specialists as TeamDecisionAggregate['specialists'],
+    fromStages: fromStages as TeamDecisionAggregate['fromStages'],
+  }
+}

@@ -71,6 +71,17 @@ export interface AgentSummary {
   promptCaching: boolean
 }
 
+export interface TeamAnalytics {
+  teamId: string
+  teamName: string
+  mode: TeamMode
+  decisions: number
+  clarifyRate: number
+  moves: number
+  specialists: { name: string; count: number }[]
+  stages: { name: string; handled: number; left: number }[]
+}
+
 export interface DashboardStats {
   conversations: number
   conversationsThisWeek: number

@@ -76,7 +76,7 @@ import {
 } from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
 import type { RouterOption, StageTransitionOption } from './systemPrompt.js'
-import { listTeamDecisionsForConversation, logTeamDecision } from './teamDecisions.js'
+import { aggregateTeamDecisions, listTeamDecisionsForConversation, logTeamDecision } from './teamDecisions.js'
 import {
   buildClarificationInstruction,
   buildIdentityCaptureInstruction,
@@ -1440,6 +1440,54 @@ app.get('/api/stats', requireAuth, async (_req, res) => {
     tokensThisMonth: usage.tokensThisMonth,
     monthlyTokenCap,
   })
+})
+
+// Per-team analytics from the orchestration decision log: how often each
+// specialist/stage handled a turn, how often the supervisor asked to clarify,
+// and how many pipeline moves happened — so owners can tune their teams.
+app.get('/api/team-analytics', requireAuth, async (_req, res) => {
+  const [teams, agg] = await Promise.all([
+    listTeams(res.locals.userId),
+    aggregateTeamDecisions(res.locals.userId),
+  ])
+
+  const totalsByTeam = new Map(agg.totals.map((t) => [t._id.toString(), t]))
+  const specialistsByTeam = new Map<string, { name: string; count: number }[]>()
+  for (const s of agg.specialists) {
+    const key = s._id.teamId.toString()
+    const list = specialistsByTeam.get(key) ?? []
+    list.push({ name: s._id.name, count: s.count })
+    specialistsByTeam.set(key, list)
+  }
+  const leftByTeam = new Map<string, Map<string, number>>()
+  for (const f of agg.fromStages) {
+    const key = f._id.teamId.toString()
+    const map = leftByTeam.get(key) ?? new Map<string, number>()
+    map.set(f._id.name, f.count)
+    leftByTeam.set(key, map)
+  }
+
+  const analytics = teams
+    .map((team) => {
+      const id = team._id.toString()
+      const totals = totalsByTeam.get(id) ?? { decisions: 0, clarify: 0, moved: 0 }
+      const left = leftByTeam.get(id) ?? new Map<string, number>()
+      const specialists = (specialistsByTeam.get(id) ?? []).sort((a, b) => b.count - a.count)
+      return {
+        teamId: id,
+        teamName: team.name,
+        mode: team.mode ?? 'adaptive',
+        decisions: totals.decisions,
+        clarifyRate: totals.decisions > 0 ? totals.clarify / totals.decisions : 0,
+        moves: totals.moved,
+        specialists: specialists.slice(0, 6),
+        stages: specialists.map((s) => ({ name: s.name, handled: s.count, left: left.get(s.name) ?? 0 })),
+      }
+    })
+    .filter((t) => t.decisions > 0)
+    .sort((a, b) => b.decisions - a.decisions)
+
+  res.json(analytics)
 })
 
 app.get(

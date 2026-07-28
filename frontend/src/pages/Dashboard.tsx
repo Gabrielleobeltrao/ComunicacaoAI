@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { API_URL } from '../lib/api'
-import type { DashboardStats } from '../lib/types'
+import type { DashboardStats, TeamAnalytics } from '../lib/types'
 
 const SECTIONS = [
   {
@@ -45,15 +45,83 @@ function Metric({
   )
 }
 
+function TeamAnalyticsCard({ team }: { team: TeamAnalytics }) {
+  const rows = team.specialists
+  const max = Math.max(1, ...rows.map((s) => s.count))
+  // Pipeline: the stage that handled the most turns yet moved the flow onward
+  // the least — where the conversation tends to get "stuck".
+  const stickiest =
+    team.mode === 'pipeline' && team.stages.length > 0
+      ? [...team.stages].sort((a, b) => b.handled - b.left - (a.handled - a.left))[0]
+      : null
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <p className="font-medium">{team.teamName}</p>
+          <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+            {team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}
+          </span>
+        </div>
+        <span className="text-xs text-slate-500">
+          {team.decisions.toLocaleString('pt-BR')} {team.decisions === 1 ? 'turno' : 'turnos'}
+        </span>
+      </div>
+
+      <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+        {team.mode === 'pipeline' ? 'Atividade por etapa' : 'Mais consultados'}
+      </p>
+      <ul className="space-y-1.5">
+        {rows.map((s) => (
+          <li key={s.name}>
+            <div className="mb-0.5 flex items-center justify-between text-xs">
+              <span className="text-slate-300">{s.name}</span>
+              <span className="text-slate-500">{s.count}</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-slate-800">
+              <div className="h-1.5 rounded-full bg-slate-400" style={{ width: `${(s.count / max) * 100}%` }} />
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+        {team.mode === 'pipeline' ? (
+          <>
+            <span>
+              Avanços/desvios: <span className="text-slate-300">{team.moves}</span>
+            </span>
+            {stickiest && (
+              <span>
+                Mais fica em: <span className="text-slate-300">{stickiest.name}</span>
+              </span>
+            )}
+          </>
+        ) : (
+          <span>
+            Pediu esclarecimento: <span className="text-slate-300">{Math.round(team.clarifyRate * 100)}%</span>
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
+  const [teamAnalytics, setTeamAnalytics] = useState<TeamAnalytics[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
-      const res = await fetch(`${API_URL}/api/stats`, { credentials: 'include' })
-      if (res.ok && !cancelled) setStats(await res.json())
+      const [statsRes, teamsRes] = await Promise.all([
+        fetch(`${API_URL}/api/stats`, { credentials: 'include' }),
+        fetch(`${API_URL}/api/team-analytics`, { credentials: 'include' }),
+      ])
+      if (statsRes.ok && !cancelled) setStats(await statsRes.json())
+      if (teamsRes.ok && !cancelled) setTeamAnalytics(await teamsRes.json())
       if (!cancelled) setLoading(false)
     }
     load()
@@ -114,6 +182,17 @@ export function Dashboard() {
             <p className="text-sm text-slate-400">Não foi possível carregar as métricas.</p>
           )}
         </section>
+
+        {teamAnalytics.length > 0 && (
+          <section>
+            <h2 className="mb-3 text-sm font-medium text-slate-400">Equipes</h2>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {teamAnalytics.map((team) => (
+                <TeamAnalyticsCard key={team.teamId} team={team} />
+              ))}
+            </div>
+          </section>
+        )}
 
         <section>
           <h2 className="mb-3 text-sm font-medium text-slate-400">Atalhos</h2>
