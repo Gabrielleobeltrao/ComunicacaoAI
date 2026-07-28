@@ -110,10 +110,70 @@ function ProviderKeyField({
   )
 }
 
+function MonthlyCapField({ initialCap, onSaved }: { initialCap: number; onSaved: () => void | Promise<void> }) {
+  const [cap, setCap] = useState(initialCap)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    setCap(initialCap)
+  }, [initialCap])
+
+  async function handleSave() {
+    setSaving(true)
+    setSaved(false)
+    try {
+      const res = await fetch(`${API_URL}/api/settings/monthly-token-cap`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cap }),
+      })
+      if (res.ok) {
+        setSaved(true)
+        await onSaved()
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-slate-800 p-3">
+      <h4 className="font-medium">Teto mensal de tokens</h4>
+      <p className="text-sm text-slate-400">
+        Quando o total de tokens gastos no mês passar desse número, os agentes param de responder
+        automaticamente (você ainda pode responder manualmente na página Chats). Use 0 para sem teto.
+      </p>
+      <div className="flex gap-2">
+        <input
+          type="number"
+          min={0}
+          value={cap}
+          onChange={(e) => {
+            setSaved(false)
+            setCap(Math.max(0, Math.floor(Number(e.target.value) || 0)))
+          }}
+          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+        />
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={saving}
+          className="shrink-0 rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+        >
+          {saving ? 'Salvando...' : saved ? 'Salvo ✓' : 'Salvar'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function ApiKeySettings() {
   const [open, setOpen] = useState(false)
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [status, setStatus] = useState<KeyStatus>({})
+  const [monthlyCap, setMonthlyCap] = useState(0)
   const [loading, setLoading] = useState(true)
 
   async function loadSettings() {
@@ -123,7 +183,11 @@ export function ApiKeySettings() {
       fetch(`${API_URL}/api/settings`, { credentials: 'include' }),
     ])
     if (providersRes.ok) setProviders(await providersRes.json())
-    if (statusRes.ok) setStatus(await statusRes.json())
+    if (statusRes.ok) {
+      const { monthlyTokenCap, ...keyStatus } = await statusRes.json()
+      setStatus(keyStatus)
+      setMonthlyCap(typeof monthlyTokenCap === 'number' ? monthlyTokenCap : 0)
+    }
     setLoading(false)
   }
 
@@ -159,14 +223,17 @@ export function ApiKeySettings() {
           {loading ? (
             <p className="text-sm text-slate-400">Carregando...</p>
           ) : (
-            providers.map((provider) => (
-              <ProviderKeyField
-                key={provider.id}
-                provider={provider}
-                hasKey={Boolean(status[provider.id])}
-                onChange={loadSettings}
-              />
-            ))
+            <>
+              {providers.map((provider) => (
+                <ProviderKeyField
+                  key={provider.id}
+                  provider={provider}
+                  hasKey={Boolean(status[provider.id])}
+                  onChange={loadSettings}
+                />
+              ))}
+              <MonthlyCapField initialCap={monthlyCap} onSaved={loadSettings} />
+            </>
           )}
         </div>
       </Modal>

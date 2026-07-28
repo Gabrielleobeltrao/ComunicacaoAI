@@ -6,7 +6,7 @@ import {
   buildMemoryUpdatePrompt,
   buildStructuredMemoryUpdatePrompt,
   buildStructuredOutputExtractionPrompt,
-  buildSystemPrompt,
+  buildSystemPromptParts,
   GUARDRAIL_CHECK_SYSTEM_PROMPT,
   IDENTITY_EXTRACTION_SYSTEM_PROMPT,
   MEMORY_UPDATE_SYSTEM_PROMPT,
@@ -16,10 +16,28 @@ import {
   STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT,
 } from './systemPrompt.js'
 import type { ChatTurn } from './systemPrompt.js'
+import type { AgentReplyResult, TokenUsage } from './llm.js'
 
 export type { ChatTurn }
 
+// Anthropic reports cached reads/writes separately; sum them so the metric
+// reflects total tokens processed.
+function anthropicUsage(usage: Anthropic.Usage): TokenUsage {
+  return {
+    inputTokens:
+      usage.input_tokens +
+      (usage.cache_creation_input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0),
+    outputTokens: usage.output_tokens,
+  }
+}
+
 const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5'
+
+// Background/utility calls (memory, extraction, guardrail check) are
+// classification-style tasks that don't need the flagship model — route them
+// to a small, cheap model to keep token spend down.
+export const AUXILIARY_MODEL = process.env.ANTHROPIC_AUX_MODEL ?? 'claude-haiku-4-5'
 const PLATFORM_API_KEY = process.env.ANTHROPIC_API_KEY
 
 // Used only if we can't reach Anthropic (no key configured yet, or the API call fails).
@@ -72,25 +90,40 @@ export async function generateAgentReply(
   identityInstruction = '',
   guardrailInstruction = '',
   responseStyleInstruction = '',
-): Promise<string> {
+  enableCaching = true,
+): Promise<AgentReplyResult> {
+  const { cacheablePrefix, dynamicSuffix } = buildSystemPromptParts(
+    objective,
+    knowledge,
+    memory,
+    identityInstruction,
+    guardrailInstruction,
+    responseStyleInstruction,
+  )
+
+  // Mark the static prefix (objective + behavior instructions) as cacheable so
+  // repeated turns in a conversation pay ~10% for that prefix instead of full price.
+  const system: Anthropic.TextBlockParam[] = [
+    enableCaching
+      ? { type: 'text', text: cacheablePrefix, cache_control: { type: 'ephemeral' } }
+      : { type: 'text', text: cacheablePrefix },
+  ]
+  if (dynamicSuffix) system.push({ type: 'text', text: dynamicSuffix })
+
   const response = await buildClient(apiKey).messages.create({
     model: model || DEFAULT_MODEL,
     max_tokens: 1024,
-    system: buildSystemPrompt(
-      objective,
-      knowledge,
-      memory,
-      identityInstruction,
-      guardrailInstruction,
-      responseStyleInstruction,
-    ),
+    system,
     thinking: { type: 'disabled' },
     output_config: { effort: 'low' },
     messages: history.map((turn) => ({ role: turn.role, content: turn.content })),
   })
 
   const textBlock = response.content.find((block) => block.type === 'text')
-  return textBlock && textBlock.type === 'text' ? textBlock.text : ''
+  return {
+    text: textBlock && textBlock.type === 'text' ? textBlock.text : '',
+    usage: anthropicUsage(response.usage),
+  }
 }
 
 export async function updateMemory(

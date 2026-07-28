@@ -6,6 +6,7 @@ export interface UserSettings {
   _id: string
   anthropicApiKeyEncrypted: string | null
   openaiApiKeyEncrypted: string | null
+  monthlyTokenCap?: number
   updatedAt: Date
 }
 
@@ -40,6 +41,19 @@ export async function getProviderKeyStatus(ownerId: string): Promise<Record<Prov
     anthropic: Boolean(doc?.anthropicApiKeyEncrypted),
     openai: Boolean(doc?.openaiApiKeyEncrypted),
   }
+}
+
+export async function getMonthlyTokenCap(ownerId: string): Promise<number> {
+  const doc = await settings.findOne({ _id: ownerId })
+  return typeof doc?.monthlyTokenCap === 'number' ? doc.monthlyTokenCap : 0
+}
+
+export async function setMonthlyTokenCap(ownerId: string, cap: number) {
+  await settings.updateOne(
+    { _id: ownerId },
+    { $set: { monthlyTokenCap: cap, updatedAt: new Date() } },
+    { upsert: true },
+  )
 }
 
 export async function getProviderApiKey(ownerId: string, provider: Provider): Promise<string | null> {

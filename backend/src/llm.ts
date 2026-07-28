@@ -5,6 +5,16 @@ import type { ChatTurn } from './systemPrompt.js'
 export type { ChatTurn }
 export type Provider = 'anthropic' | 'openai'
 
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+}
+
+export interface AgentReplyResult {
+  text: string
+  usage: TokenUsage
+}
+
 export const PROVIDER_INFO: { id: Provider; label: string }[] = [
   { id: 'anthropic', label: 'Anthropic (Claude)' },
   { id: 'openai', label: 'OpenAI (GPT)' },
@@ -14,6 +24,12 @@ export const PROVIDER_IDS = PROVIDER_INFO.map((p) => p.id)
 
 function providerFor(provider: string | null | undefined) {
   return provider === 'openai' ? openaiProvider : anthropicProvider
+}
+
+// The small model used for background/utility calls, regardless of the
+// (possibly flagship) model the agent uses for the visitor-facing reply.
+export function auxiliaryModel(provider: string | null | undefined): string {
+  return providerFor(provider).AUXILIARY_MODEL
 }
 
 export function generateAgentReply(
@@ -27,7 +43,8 @@ export function generateAgentReply(
   identityInstruction = '',
   guardrailInstruction = '',
   responseStyleInstruction = '',
-): Promise<string> {
+  enableCaching = true,
+): Promise<AgentReplyResult> {
   return providerFor(provider).generateAgentReply(
     objective,
     knowledge,
@@ -38,6 +55,7 @@ export function generateAgentReply(
     identityInstruction,
     guardrailInstruction,
     responseStyleInstruction,
+    enableCaching,
   )
 }
 

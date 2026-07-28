@@ -16,8 +16,14 @@ import {
   STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT,
 } from './systemPrompt.js'
 import type { ChatTurn } from './systemPrompt.js'
+import type { AgentReplyResult } from './llm.js'
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.1'
+
+// Background/utility calls (memory, extraction, guardrail check) are
+// classification-style tasks that don't need the flagship model — route them
+// to a small, cheap model to keep token spend down.
+export const AUXILIARY_MODEL = process.env.OPENAI_AUX_MODEL ?? 'gpt-5-mini'
 const PLATFORM_API_KEY = process.env.OPENAI_API_KEY
 
 // Used only if we can't reach OpenAI (no key configured yet, or the API call fails).
@@ -89,7 +95,14 @@ export async function generateAgentReply(
   identityInstruction = '',
   guardrailInstruction = '',
   responseStyleInstruction = '',
-): Promise<string> {
+  // OpenAI caches long prompt prefixes automatically at no cost and offers no
+  // opt-out, so the per-agent caching toggle is a no-op here — accepted only to
+  // keep the provider signatures identical.
+  enableCaching = true,
+): Promise<AgentReplyResult> {
+  void enableCaching
+  // buildSystemPrompt puts the static objective + instructions first, which is
+  // what OpenAI's automatic prompt caching keys off of (>1024-token prefixes).
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 1024,
@@ -109,7 +122,13 @@ export async function generateAgentReply(
     ],
   })
 
-  return response.choices[0]?.message?.content ?? ''
+  return {
+    text: response.choices[0]?.message?.content ?? '',
+    usage: {
+      inputTokens: response.usage?.prompt_tokens ?? 0,
+      outputTokens: response.usage?.completion_tokens ?? 0,
+    },
+  }
 }
 
 export async function updateMemory(
@@ -122,6 +141,10 @@ export async function updateMemory(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 300,
+    // gpt-5 mini/nano are reasoning models; without this they burn the whole
+    // (small) token budget on reasoning and return empty content. These utility
+    // tasks don't need reasoning.
+    reasoning_effort: 'minimal',
     messages: [
       { role: 'system', content: MEMORY_UPDATE_SYSTEM_PROMPT },
       { role: 'user', content: buildMemoryUpdatePrompt(currentMemory, visitorMessage, agentReply) },
@@ -141,6 +164,7 @@ export async function updateStructuredMemory(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 300,
+    reasoning_effort: 'minimal',
     messages: [
       { role: 'system', content: STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT },
       { role: 'user', content: buildStructuredMemoryUpdatePrompt(currentMemory, visitorMessage, agentReply) },
@@ -162,6 +186,7 @@ export async function extractIdentity(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 200,
+    reasoning_effort: 'minimal',
     messages: [
       { role: 'system', content: IDENTITY_EXTRACTION_SYSTEM_PROMPT },
       { role: 'user', content: buildIdentityExtractionPrompt(fields, recentMessages) },
@@ -183,7 +208,8 @@ export async function checkGuardrail(
 ): Promise<boolean> {
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
-    max_completion_tokens: 50,
+    max_completion_tokens: 100,
+    reasoning_effort: 'minimal',
     messages: [
       { role: 'system', content: GUARDRAIL_CHECK_SYSTEM_PROMPT },
       { role: 'user', content: buildGuardrailCheckPrompt(objective, recentMessages, visitorMessage) },
@@ -206,6 +232,7 @@ export async function extractStructuredOutput(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 300,
+    reasoning_effort: 'minimal',
     messages: [
       { role: 'system', content: STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT },
       {
