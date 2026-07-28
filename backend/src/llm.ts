@@ -1,6 +1,6 @@
 import * as anthropicProvider from './claude.js'
 import * as openaiProvider from './openai.js'
-import type { ChatTurn } from './systemPrompt.js'
+import type { ChatTurn, RouterOption } from './systemPrompt.js'
 
 export type { ChatTurn }
 export type Provider = 'anthropic' | 'openai'
@@ -68,6 +68,27 @@ export function checkGuardrail(
   apiKey: string | null | undefined,
 ): Promise<boolean> {
   return providerFor(provider).checkGuardrail(objective, recentMessages, visitorMessage, model, apiKey)
+}
+
+export function routeToAgent(
+  options: RouterOption[],
+  currentAgentIndex: number | null,
+  defaultAgentIndex: number,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  apiKey: string | null | undefined,
+): Promise<number> {
+  return providerFor(provider).routeToAgent(
+    options,
+    currentAgentIndex,
+    defaultAgentIndex,
+    recentMessages,
+    visitorMessage,
+    model,
+    apiKey,
+  )
 }
 
 export function extractStructuredOutput(

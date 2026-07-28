@@ -16,6 +16,7 @@ export interface Widget {
   position: WidgetPosition
   avatarUrl: string | null
   agentId: ObjectId | null
+  teamId: ObjectId | null
 }
 
 export interface WidgetMessage {
@@ -24,6 +25,8 @@ export interface WidgetMessage {
   conversationId: string
   role: 'visitor' | 'agent'
   content: string
+  // For team-routed replies: which specialist agent answered (shown in Chats).
+  agentName?: string | null
   createdAt: Date
 }
 
@@ -39,6 +42,7 @@ export async function createWidget(
     welcomeMessage?: string | null
     position?: WidgetPosition
     agentId?: ObjectId | null
+    teamId?: ObjectId | null
   } = {},
 ) {
   const widget: Omit<Widget, '_id'> = {
@@ -52,6 +56,7 @@ export async function createWidget(
     position: options.position ?? 'right',
     avatarUrl: null,
     agentId: options.agentId ?? null,
+    teamId: options.teamId ?? null,
   }
   const result = await widgets.insertOne(widget as Widget)
   return { ...widget, _id: result.insertedId }
@@ -79,6 +84,7 @@ export function updateWidget(
     welcomeMessage?: string | null
     position?: WidgetPosition
     agentId?: ObjectId | null
+    teamId?: ObjectId | null
   },
 ) {
   return widgets.findOneAndUpdate(
@@ -255,12 +261,14 @@ export async function addMessage(
   conversationId: string,
   role: WidgetMessage['role'],
   content: string,
+  agentName: string | null = null,
 ) {
   const message: Omit<WidgetMessage, '_id'> = {
     widgetId,
     conversationId,
     role,
     content,
+    agentName,
     createdAt: new Date(),
   }
   const result = await widgetMessages.insertOne(message as WidgetMessage)

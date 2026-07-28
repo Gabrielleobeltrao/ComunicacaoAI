@@ -10,6 +10,19 @@ export interface WidgetSummary {
   position: WidgetPosition
   avatarUrl: string | null
   agentId: string | null
+  teamId: string | null
+}
+
+export interface TeamMemberSummary {
+  agentId: string
+  routingDescription: string
+  isDefault: boolean
+}
+
+export interface TeamSummary {
+  _id: string
+  name: string
+  members: TeamMemberSummary[]
 }
 
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'

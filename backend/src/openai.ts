@@ -5,6 +5,7 @@ import {
   buildIdentityExtractionPrompt,
   buildMemoryUpdatePrompt,
   buildStructuredMemoryUpdatePrompt,
+  buildRouterPrompt,
   buildStructuredOutputExtractionPrompt,
   buildSystemPrompt,
   GUARDRAIL_CHECK_SYSTEM_PROMPT,
@@ -12,10 +13,12 @@ import {
   MEMORY_UPDATE_SYSTEM_PROMPT,
   parseInScopeResult,
   parseJsonObject,
+  parseRouterChoice,
+  ROUTER_SYSTEM_PROMPT,
   STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
   STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT,
 } from './systemPrompt.js'
-import type { ChatTurn } from './systemPrompt.js'
+import type { ChatTurn, RouterOption } from './systemPrompt.js'
 import type { AgentReplyResult } from './llm.js'
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.1'
@@ -219,6 +222,33 @@ export async function checkGuardrail(
   const text = response.choices[0]?.message?.content
   if (!text) return true
   return parseInScopeResult(text)
+}
+
+export async function routeToAgent(
+  options: RouterOption[],
+  currentAgentIndex: number | null,
+  defaultAgentIndex: number,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<number> {
+  const response = await buildClient(apiKey).chat.completions.create({
+    model: model || DEFAULT_MODEL,
+    max_completion_tokens: 100,
+    reasoning_effort: 'minimal',
+    messages: [
+      { role: 'system', content: ROUTER_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: buildRouterPrompt(options, currentAgentIndex, defaultAgentIndex, recentMessages, visitorMessage),
+      },
+    ],
+  })
+
+  const text = response.choices[0]?.message?.content
+  if (!text) return defaultAgentIndex
+  return parseRouterChoice(text, options.length, defaultAgentIndex)
 }
 
 export async function extractStructuredOutput(

@@ -5,6 +5,7 @@ import {
   buildIdentityExtractionPrompt,
   buildMemoryUpdatePrompt,
   buildStructuredMemoryUpdatePrompt,
+  buildRouterPrompt,
   buildStructuredOutputExtractionPrompt,
   buildSystemPromptParts,
   GUARDRAIL_CHECK_SYSTEM_PROMPT,
@@ -12,10 +13,12 @@ import {
   MEMORY_UPDATE_SYSTEM_PROMPT,
   parseInScopeResult,
   parseJsonObject,
+  parseRouterChoice,
+  ROUTER_SYSTEM_PROMPT,
   STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
   STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT,
 } from './systemPrompt.js'
-import type { ChatTurn } from './systemPrompt.js'
+import type { ChatTurn, RouterOption } from './systemPrompt.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
 
 export type { ChatTurn }
@@ -210,6 +213,34 @@ export async function checkGuardrail(
   const textBlock = response.content.find((block) => block.type === 'text')
   if (!textBlock || textBlock.type !== 'text') return true
   return parseInScopeResult(textBlock.text)
+}
+
+export async function routeToAgent(
+  options: RouterOption[],
+  currentAgentIndex: number | null,
+  defaultAgentIndex: number,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<number> {
+  const response = await buildClient(apiKey).messages.create({
+    model: model || DEFAULT_MODEL,
+    max_tokens: 50,
+    system: ROUTER_SYSTEM_PROMPT,
+    thinking: { type: 'disabled' },
+    output_config: { effort: 'low' },
+    messages: [
+      {
+        role: 'user',
+        content: buildRouterPrompt(options, currentAgentIndex, defaultAgentIndex, recentMessages, visitorMessage),
+      },
+    ],
+  })
+
+  const textBlock = response.content.find((block) => block.type === 'text')
+  if (!textBlock || textBlock.type !== 'text') return defaultAgentIndex
+  return parseRouterChoice(textBlock.text, options.length, defaultAgentIndex)
 }
 
 export async function extractStructuredOutput(

@@ -33,17 +33,21 @@ import type {
 } from './agents.js'
 import { auth } from './auth.js'
 import {
+  getActiveAgentId,
   getHumanHandoff,
   getLinkedVisitorProfileId,
   getConversationMemory,
   getStructuredMemory,
   getStructuredOutputData,
   linkVisitorProfile,
+  setActiveAgentId,
   setConversationMemory,
   setHumanHandoff,
   setStructuredMemory,
   setStructuredOutputData,
 } from './conversationMemory.js'
+import { createTeam, deleteTeam, getTeamById, listTeams, updateTeam } from './teams.js'
+import type { Team, TeamMember } from './teams.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
@@ -65,10 +69,12 @@ import {
   listModelsForProvider,
   PROVIDER_IDS,
   PROVIDER_INFO,
+  routeToAgent,
   updateConversationMemory,
   updateStructuredMemory,
 } from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
+import type { RouterOption } from './systemPrompt.js'
 import {
   buildIdentityCaptureInstruction,
   buildLanguageInstruction,
@@ -321,8 +327,20 @@ async function resolveOwnedAgentId(ownerId: string, agentId: unknown) {
   return { agentObjectId: agent._id, error: null }
 }
 
+async function resolveOwnedTeamId(ownerId: string, teamId: unknown) {
+  if (!teamId) return { teamObjectId: null, error: null }
+  if (typeof teamId !== 'string' || !ObjectId.isValid(teamId)) {
+    return { teamObjectId: null, error: 'Invalid team id' }
+  }
+  const team = await getTeamById(ownerId, new ObjectId(teamId))
+  if (!team) {
+    return { teamObjectId: null, error: 'Team not found' }
+  }
+  return { teamObjectId: team._id, error: null }
+}
+
 app.post('/api/widgets', requireAuth, async (req, res) => {
-  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId } = req.body ?? {}
+  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId, teamId } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
     return
@@ -332,6 +350,11 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     return
   }
 
+  const { teamObjectId, error: teamError } = await resolveOwnedTeamId(res.locals.userId, teamId)
+  if (teamError) {
+    res.status(400).json({ error: teamError })
+    return
+  }
   const { agentObjectId, error } = await resolveOwnedAgentId(res.locals.userId, agentId)
   if (error) {
     res.status(400).json({ error })
@@ -343,7 +366,9 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     welcomeTitle: typeof welcomeTitle === 'string' ? welcomeTitle : undefined,
     welcomeMessage: typeof welcomeMessage === 'string' ? welcomeMessage : undefined,
     position,
-    agentId: agentObjectId,
+    // A widget is answered by a team OR a single agent, never both.
+    teamId: teamObjectId,
+    agentId: teamObjectId ? null : agentObjectId,
   })
   res.status(201).json(widget)
 })
@@ -359,7 +384,7 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid widget id' })
     return
   }
-  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId } = req.body ?? {}
+  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId, teamId } = req.body ?? {}
   const updates: {
     name?: string
     primaryColor?: string | null
@@ -367,6 +392,7 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     welcomeMessage?: string | null
     position?: WidgetPosition
     agentId?: ObjectId | null
+    teamId?: ObjectId | null
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof primaryColor === 'string' || primaryColor === null) updates.primaryColor = primaryColor || null
@@ -381,13 +407,24 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     }
     updates.position = position
   }
-  if (agentId !== undefined) {
+  // The widget target: a team wins over a single agent when both are sent.
+  if (teamId !== undefined) {
+    const { teamObjectId, error } = await resolveOwnedTeamId(res.locals.userId, teamId)
+    if (error) {
+      res.status(400).json({ error })
+      return
+    }
+    updates.teamId = teamObjectId
+    if (teamObjectId) updates.agentId = null
+  }
+  if (agentId !== undefined && !updates.teamId) {
     const { agentObjectId, error } = await resolveOwnedAgentId(res.locals.userId, agentId)
     if (error) {
       res.status(400).json({ error })
       return
     }
     updates.agentId = agentObjectId
+    if (agentObjectId) updates.teamId = null
   }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -439,6 +476,107 @@ app.delete('/api/widgets/:widgetId/avatar', requireAuth, async (req, res) => {
     return
   }
   res.json(widget)
+})
+
+// ---- Teams (agent orchestration) ----
+
+const MAX_TEAM_MEMBERS = 10
+
+function serializeTeam(team: WithId<Team>) {
+  return {
+    _id: team._id.toString(),
+    name: team.name,
+    members: team.members.map((m) => ({
+      agentId: m.agentId.toString(),
+      routingDescription: m.routingDescription,
+      isDefault: m.isDefault,
+    })),
+  }
+}
+
+async function resolveTeamMembers(
+  ownerId: string,
+  raw: unknown,
+): Promise<{ members?: TeamMember[]; error?: string }> {
+  if (!Array.isArray(raw)) return { error: 'members must be a list' }
+  if (raw.length > MAX_TEAM_MEMBERS) return { error: `A team can have at most ${MAX_TEAM_MEMBERS} agents` }
+  const members: TeamMember[] = []
+  const seen = new Set<string>()
+  for (const m of raw) {
+    if (typeof m !== 'object' || m === null) return { error: 'Invalid member' }
+    const agentId = (m as { agentId?: unknown }).agentId
+    if (typeof agentId !== 'string' || !ObjectId.isValid(agentId)) return { error: 'Invalid agent id in members' }
+    if (seen.has(agentId)) return { error: 'The same agent appears twice in the team' }
+    const agent = await getAgentById(ownerId, new ObjectId(agentId))
+    if (!agent) return { error: 'Agent not found' }
+    seen.add(agentId)
+    const desc = (m as { routingDescription?: unknown }).routingDescription
+    members.push({
+      agentId: agent._id,
+      routingDescription: typeof desc === 'string' ? desc : '',
+      isDefault: (m as { isDefault?: unknown }).isDefault === true,
+    })
+  }
+  return { members }
+}
+
+app.post('/api/teams', requireAuth, async (req, res) => {
+  const { name, members } = req.body ?? {}
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    res.status(400).json({ error: 'name is required' })
+    return
+  }
+  const { members: parsed, error } = await resolveTeamMembers(res.locals.userId, members ?? [])
+  if (error) {
+    res.status(400).json({ error })
+    return
+  }
+  const team = await createTeam(res.locals.userId, name, parsed ?? [])
+  res.status(201).json(serializeTeam(team as WithId<Team>))
+})
+
+app.get('/api/teams', requireAuth, async (_req, res) => {
+  const teams = await listTeams(res.locals.userId)
+  res.json(teams.map(serializeTeam))
+})
+
+app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
+  const teamId = String(req.params.teamId)
+  if (!ObjectId.isValid(teamId)) {
+    res.status(400).json({ error: 'Invalid team id' })
+    return
+  }
+  const { name, members } = req.body ?? {}
+  const updates: { name?: string; members?: TeamMember[] } = {}
+  if (typeof name === 'string' && name.trim()) updates.name = name
+  if (members !== undefined) {
+    const { members: parsed, error } = await resolveTeamMembers(res.locals.userId, members)
+    if (error) {
+      res.status(400).json({ error })
+      return
+    }
+    updates.members = parsed
+  }
+  if (Object.keys(updates).length === 0) {
+    res.status(400).json({ error: 'Nothing to update' })
+    return
+  }
+  const team = await updateTeam(res.locals.userId, new ObjectId(teamId), updates)
+  if (!team) {
+    res.status(404).json({ error: 'Team not found' })
+    return
+  }
+  res.json(serializeTeam(team))
+})
+
+app.delete('/api/teams/:teamId', requireAuth, async (req, res) => {
+  const teamId = String(req.params.teamId)
+  if (!ObjectId.isValid(teamId)) {
+    res.status(400).json({ error: 'Invalid team id' })
+    return
+  }
+  await deleteTeam(res.locals.userId, new ObjectId(teamId))
+  res.status(204).end()
 })
 
 app.post('/api/agents', requireAuth, async (req, res) => {
@@ -1138,13 +1276,25 @@ app.post(
   },
 )
 
+// The agent that supplies widget-level settings (first message, conversation
+// persistence, daily limit): the single linked agent, or a team's default member.
+async function getWidgetConfigAgent(widget: WithId<Widget>) {
+  if (widget.agentId) return getAgentById(widget.ownerId, widget.agentId)
+  if (widget.teamId) {
+    const team = await getTeamById(widget.ownerId, widget.teamId)
+    const member = team?.members.find((m) => m.isDefault) ?? team?.members[0]
+    if (member) return getAgentById(widget.ownerId, member.agentId)
+  }
+  return null
+}
+
 app.get('/api/public/widgets/:publicKey', async (req, res) => {
   const widget = await getWidgetByPublicKey(req.params.publicKey)
   if (!widget) {
     res.status(404).json({ error: 'Widget not found' })
     return
   }
-  const agent = widget.agentId ? await getAgentById(widget.ownerId, widget.agentId) : null
+  const agent = await getWidgetConfigAgent(widget)
   res.json({
     name: widget.name,
     primaryColor: widget.primaryColor,
@@ -1186,7 +1336,7 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
 
   // Anti-abuse: cap visitor messages per conversation over a rolling 24h so a
   // spammed public widget can't run up the owner's LLM bill. 0 = unlimited.
-  const limitAgent = widget.agentId ? await getAgentById(widget.ownerId, widget.agentId) : null
+  const limitAgent = await getWidgetConfigAgent(widget)
   const dailyLimit = limitAgent?.dailyMessageLimit ?? 0
   if (dailyLimit > 0) {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
@@ -1214,11 +1364,77 @@ function auxModelFor(agent: WithId<Agent>): string | null {
   return agent.cheapAuxModel === false ? agent.model : auxiliaryModel(agent.provider)
 }
 
+// Pick the team member to answer this turn. Sticky: the router is told which
+// agent is currently handling the conversation and keeps it unless the topic
+// clearly moved to another specialist's area. Single-member teams skip routing.
+async function routeTeamMember(
+  teamId: ObjectId,
+  ownerId: string,
+  widgetId: ObjectId,
+  conversationId: string,
+  visitorContent: string,
+): Promise<WithId<Agent> | null> {
+  const team = await getTeamById(ownerId, teamId)
+  if (!team || team.members.length === 0) return null
+
+  const resolved = (
+    await Promise.all(
+      team.members.map(async (m) => ({ member: m, agent: await getAgentById(ownerId, m.agentId) })),
+    )
+  ).filter((x): x is { member: TeamMember; agent: WithId<Agent> } => x.agent !== null)
+  if (resolved.length === 0) return null
+
+  const defaultIndex = Math.max(
+    0,
+    resolved.findIndex((x) => x.member.isDefault),
+  )
+
+  if (resolved.length === 1) {
+    await setActiveAgentId(widgetId, conversationId, resolved[0].agent._id)
+    return resolved[0].agent
+  }
+
+  const options: RouterOption[] = resolved.map((x, i) => ({
+    index: i,
+    name: x.agent.name,
+    description: x.member.routingDescription.trim() || x.agent.objective.trim() || x.agent.name,
+  }))
+
+  const activeAgentId = await getActiveAgentId(widgetId, conversationId)
+  const currentIndex = activeAgentId ? resolved.findIndex((x) => x.agent._id.equals(activeAgentId)) : -1
+
+  const recent = await listMessages(widgetId, conversationId)
+  const routingHistory: ChatTurn[] = recent.slice(-6).map((m) => ({
+    role: m.role === 'visitor' ? 'user' : 'assistant',
+    content: m.content,
+  }))
+
+  const router = resolved[defaultIndex].agent
+  const routerKey = await getProviderApiKey(ownerId, router.provider)
+  let chosen = defaultIndex
+  try {
+    chosen = await routeToAgent(
+      options,
+      currentIndex >= 0 ? currentIndex : null,
+      defaultIndex,
+      routingHistory,
+      visitorContent,
+      router.provider,
+      auxModelFor(router),
+      routerKey,
+    )
+  } catch (error) {
+    console.error('Team routing failed, using default agent:', error)
+  }
+
+  const chosenAgent = resolved[chosen].agent
+  await setActiveAgentId(widgetId, conversationId, chosenAgent._id)
+  return chosenAgent
+}
+
 async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: string, visitorContent: string) {
   const widgetId = widget._id
   const ownerId = widget.ownerId
-  const agent = widget.agentId ? await getAgentById(ownerId, widget.agentId) : null
-  if (!agent) return
 
   // A human took over (or the agent requested handoff earlier) — stay silent
   // until the owner hands the conversation back to the agent.
@@ -1231,6 +1447,18 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     console.warn(`Monthly token cap reached for owner ${ownerId}; skipping auto-reply.`)
     return
   }
+
+  // Resolve who answers: a single linked agent, or a team member the router picks.
+  let agent: WithId<Agent> | null = null
+  let fromTeam = false
+  if (widget.teamId) {
+    agent = await routeTeamMember(widget.teamId, ownerId, widgetId, conversationId, visitorContent)
+    fromTeam = agent !== null
+  } else if (widget.agentId) {
+    agent = await getAgentById(ownerId, widget.agentId)
+  }
+  if (!agent) return
+  const replyAgentName = fromTeam ? agent.name : null
 
   const memoryType = agent.memoryType ?? 'none'
   const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
@@ -1264,7 +1492,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       console.error('Guardrail check failed, allowing the message through:', error)
     }
     if (!inScope) {
-      const refusal = await addMessage(widgetId, conversationId, 'agent', GUARDRAIL_REFUSAL_MESSAGE)
+      const refusal = await addMessage(widgetId, conversationId, 'agent', GUARDRAIL_REFUSAL_MESSAGE, replyAgentName)
       broadcastMessage(refusal, ownerId)
       return
     }
@@ -1349,7 +1577,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       'Vou chamar um atendente humano para continuar com você — só um momento!'
   }
 
-  const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText)
+  const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText, replyAgentName)
   broadcastMessage(agentMessage, ownerId)
 
   if (handoffRequested) {

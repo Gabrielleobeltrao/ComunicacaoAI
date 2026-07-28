@@ -20,6 +20,7 @@ interface ConversationMessage {
   conversationId: string
   role: 'visitor' | 'agent'
   content: string
+  agentName?: string | null
   createdAt: string
 }
 
@@ -312,15 +313,19 @@ export function ConversationsPanel() {
             <p className="text-sm text-slate-400">Selecione uma conversa para ver as mensagens.</p>
           ) : (
             messages.map((message) => (
-              <div
-                key={message._id}
-                className={
-                  message.role === 'visitor'
-                    ? 'max-w-[85%] rounded-2xl rounded-tl-sm bg-slate-800 px-3 py-2 text-sm'
-                    : 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-white px-3 py-2 text-sm text-slate-950'
-                }
-              >
-                <MessageContent content={message.content} />
+              <div key={message._id} className={message.role === 'visitor' ? '' : 'flex flex-col items-end'}>
+                <div
+                  className={
+                    message.role === 'visitor'
+                      ? 'max-w-[85%] rounded-2xl rounded-tl-sm bg-slate-800 px-3 py-2 text-sm'
+                      : 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-white px-3 py-2 text-sm text-slate-950'
+                  }
+                >
+                  <MessageContent content={message.content} />
+                </div>
+                {message.role === 'agent' && message.agentName && (
+                  <span className="mt-0.5 mr-1 text-[10px] text-slate-500">{message.agentName}</span>
+                )}
               </div>
             ))
           )}

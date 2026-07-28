@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { API_URL } from '../lib/api'
-import type { AgentSummary, WidgetPosition, WidgetSummary } from '../lib/types'
+import type { AgentSummary, TeamSummary, WidgetPosition, WidgetSummary } from '../lib/types'
 import { Modal } from './Modal'
 
 const DEFAULT_COLOR = '#111827'
@@ -11,15 +11,23 @@ interface WidgetManagerProps {
   loading: boolean
   agents: AgentSummary[]
   agentsLoading: boolean
+  teams: TeamSummary[]
   onChange: () => void | Promise<void>
 }
 
-export function WidgetManager({ widgets, loading, agents, agentsLoading, onChange }: WidgetManagerProps) {
+// The "answered by" selector encodes the choice as agent:<id> or team:<id>.
+function parseTarget(target: string): { agentId: string | null; teamId: string | null } {
+  if (target.startsWith('team:')) return { agentId: null, teamId: target.slice(5) }
+  if (target.startsWith('agent:')) return { agentId: target.slice(6), teamId: null }
+  return { agentId: null, teamId: null }
+}
+
+export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, onChange }: WidgetManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
 
   const [editingWidget, setEditingWidget] = useState<WidgetSummary | null>(null)
   const [editName, setEditName] = useState('')
-  const [editAgentId, setEditAgentId] = useState('')
+  const [editTarget, setEditTarget] = useState('')
   const [editPrimaryColor, setEditPrimaryColor] = useState<string | null>(null)
   const [editWelcomeTitle, setEditWelcomeTitle] = useState('')
   const [editWelcomeMessage, setEditWelcomeMessage] = useState('')
@@ -32,7 +40,7 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, onChang
 
   function resetCustomizationFields() {
     setEditName('')
-    setEditAgentId('')
+    setEditTarget('')
     setEditPrimaryColor(null)
     setEditWelcomeTitle('')
     setEditWelcomeMessage('')
@@ -52,7 +60,7 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, onChang
     setIsCreating(false)
     setEditingWidget(widget)
     setEditName(widget.name)
-    setEditAgentId(widget.agentId ?? '')
+    setEditTarget(widget.teamId ? `team:${widget.teamId}` : widget.agentId ? `agent:${widget.agentId}` : '')
     setEditPrimaryColor(widget.primaryColor)
     setEditWelcomeTitle(widget.welcomeTitle ?? '')
     setEditWelcomeMessage(widget.welcomeMessage ?? '')
@@ -122,6 +130,7 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, onChang
     event.preventDefault()
     setEditError(null)
     setSaving(true)
+    const target = parseTarget(editTarget)
 
     try {
       if (isCreating) {
@@ -135,7 +144,8 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, onChang
             welcomeTitle: editWelcomeTitle || null,
             welcomeMessage: editWelcomeMessage || null,
             position: editPosition,
-            agentId: editAgentId || null,
+            agentId: target.agentId,
+            teamId: target.teamId,
           }),
         })
 
@@ -169,7 +179,8 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, onChang
           welcomeTitle: editWelcomeTitle || null,
           welcomeMessage: editWelcomeMessage || null,
           position: editPosition,
-          agentId: editAgentId || null,
+          agentId: target.agentId,
+          teamId: target.teamId,
         }),
       })
 
@@ -210,16 +221,20 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, onChang
         <ul className="space-y-3">
           {widgets.map((widget) => {
             const snippet = `<script src="${window.location.origin}/widget-loader.js" data-widget-key="${widget.publicKey}"></script>`
+            const linkedTeam = teams.find((team) => team._id === widget.teamId)
             const linkedAgent = agents.find((agent) => agent._id === widget.agentId)
+            const attendedBy = linkedTeam
+              ? `Equipe "${linkedTeam.name}"`
+              : linkedAgent
+                ? `Agente "${linkedAgent.name}"`
+                : 'Sem atendimento'
 
             return (
               <li key={widget._id} className="rounded-lg border border-slate-800 p-3">
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <div>
                     <p className="font-medium">{widget.name}</p>
-                    <p className="text-sm text-slate-400">
-                      {linkedAgent ? `Atendido por "${linkedAgent.name}"` : 'Sem agente vinculado'}
-                    </p>
+                    <p className="text-sm text-slate-400">{attendedBy}</p>
                   </div>
                   <button
                     type="button"
@@ -262,18 +277,29 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, onChang
           </div>
 
           <div>
-            <label className="mb-1 block text-sm text-slate-400">Agente vinculado</label>
+            <label className="mb-1 block text-sm text-slate-400">Atendido por</label>
             <select
-              value={editAgentId}
-              onChange={(e) => setEditAgentId(e.target.value)}
+              value={editTarget}
+              onChange={(e) => setEditTarget(e.target.value)}
               className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
             >
-              <option value="">Sem agente vinculado</option>
-              {agents.map((agent) => (
-                <option key={agent._id} value={agent._id}>
-                  {agent.name}
-                </option>
-              ))}
+              <option value="">Sem atendimento</option>
+              {teams.length > 0 && (
+                <optgroup label="Equipes">
+                  {teams.map((team) => (
+                    <option key={team._id} value={`team:${team._id}`}>
+                      {team.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              <optgroup label="Agentes">
+                {agents.map((agent) => (
+                  <option key={agent._id} value={`agent:${agent._id}`}>
+                    {agent.name}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </div>
 

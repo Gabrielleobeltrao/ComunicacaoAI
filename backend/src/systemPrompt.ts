@@ -3,6 +3,59 @@ export interface ChatTurn {
   content: string
 }
 
+export interface RouterOption {
+  index: number
+  name: string
+  description: string
+}
+
+export const ROUTER_SYSTEM_PROMPT = `Você é o roteador de uma equipe de agentes de atendimento. Cada agente é especialista em um assunto. Sua tarefa é escolher qual agente deve responder à mensagem mais recente do visitante.
+
+Regras:
+- Escolha o agente cuja especialidade melhor corresponde ao que o visitante quer AGORA.
+- Se a conversa já está sendo tratada por um agente (indicado como "agente atual") e a nova mensagem continua no mesmo assunto, MANTENHA o agente atual — só troque se o assunto claramente mudou para a área de outro agente.
+- Na dúvida ou se for algo genérico (saudação, agradecimento), escolha o agente padrão.
+
+Responda APENAS com um objeto JSON válido, sem comentários, sem markdown: {"agent": <número do índice do agente escolhido>}`
+
+export function buildRouterPrompt(
+  options: RouterOption[],
+  currentAgentIndex: number | null,
+  defaultAgentIndex: number,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+): string {
+  const agentList = options.map((o) => `[${o.index}] ${o.name}: ${o.description}`).join('\n')
+  const transcript = recentMessages
+    .map((turn) => `${turn.role === 'user' ? 'Visitante' : 'Agente'}: ${turn.content}`)
+    .join('\n')
+  const currentLine =
+    currentAgentIndex !== null ? `Agente atual desta conversa: [${currentAgentIndex}]\n` : ''
+  return `Agentes disponíveis:\n${agentList}\n\nAgente padrão (fallback): [${defaultAgentIndex}]\n${currentLine}${
+    transcript ? `\nConversa recente:\n${transcript}\n` : ''
+  }\nNova mensagem do visitante: ${visitorMessage}\n\nAgente escolhido (JSON):`
+}
+
+// Parse the router's chosen index, clamped to a valid option; caller supplies
+// the fallback (default agent) when the response is unusable.
+export function parseRouterChoice(text: string, optionCount: number, fallback: number): number {
+  const cleaned = text
+    .trim()
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/, '')
+    .trim()
+  try {
+    const parsed: unknown = JSON.parse(cleaned)
+    const value = (parsed as { agent?: unknown })?.agent
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < optionCount) {
+      return value
+    }
+  } catch {
+    // fall through to fallback
+  }
+  return fallback
+}
+
 // Split so the prompt-caching layer can cache the parts that stay identical
 // across every turn of a conversation (objective + behavior instructions) and
 // leave only the per-turn parts (memory, identity, knowledge) uncached.

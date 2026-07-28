@@ -10,6 +10,9 @@ export interface ConversationMemory {
   structuredOutputData: Record<string, string>
   visitorProfileId: ObjectId | null
   humanHandoff: boolean
+  // Sticky routing: the team member currently handling this conversation, so
+  // the router keeps it on the same specialist until the topic changes.
+  activeAgentId: ObjectId | null
   updatedAt: Date
 }
 
@@ -81,6 +84,19 @@ export async function setHumanHandoff(widgetId: ObjectId, conversationId: string
   await conversationMemories.updateOne(
     { widgetId, conversationId },
     { $set: { humanHandoff: active, updatedAt: new Date() } },
+    { upsert: true },
+  )
+}
+
+export async function getActiveAgentId(widgetId: ObjectId, conversationId: string): Promise<ObjectId | null> {
+  const doc = await getDoc(widgetId, conversationId)
+  return doc?.activeAgentId ?? null
+}
+
+export async function setActiveAgentId(widgetId: ObjectId, conversationId: string, agentId: ObjectId) {
+  await conversationMemories.updateOne(
+    { widgetId, conversationId },
+    { $set: { activeAgentId: agentId, updatedAt: new Date() } },
     { upsert: true },
   )
 }
