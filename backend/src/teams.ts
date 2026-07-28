@@ -1,10 +1,19 @@
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 
+// 'adaptive': a supervisor consults the right specialists per message.
+// 'pipeline': an ordered flow — each member handles one stage and hands off to
+// the next when its advance condition is met (member order = stage order).
+export type TeamMode = 'adaptive' | 'pipeline'
+
 export interface TeamMember {
   agentId: ObjectId
-  // Short "when to use this agent" hint the router reads to pick a specialist.
+  // Adaptive: "when to use this agent" hint the supervisor reads. Pipeline:
+  // what this stage does. Either way, a short description of the member's role.
   routingDescription: string
+  // Pipeline only: the condition under which this stage is complete and the
+  // flow should move to the next member. Ignored in adaptive mode.
+  advanceWhen: string
   // The fallback specialist for ambiguous messages; also the source of
   // widget-level settings (first message, conversation persistence, limit).
   isDefault: boolean
@@ -14,6 +23,7 @@ export interface Team {
   _id: ObjectId
   ownerId: string
   name: string
+  mode: TeamMode
   members: TeamMember[]
   createdAt: Date
 }
@@ -28,10 +38,11 @@ function normalizeMembers(members: TeamMember[]): TeamMember[] {
   return members.map((m, i) => ({ ...m, isDefault: i === chosen }))
 }
 
-export async function createTeam(ownerId: string, name: string, members: TeamMember[]) {
+export async function createTeam(ownerId: string, name: string, mode: TeamMode, members: TeamMember[]) {
   const team: Omit<Team, '_id'> = {
     ownerId,
     name,
+    mode,
     members: normalizeMembers(members),
     createdAt: new Date(),
   }
@@ -50,7 +61,7 @@ export function getTeamById(ownerId: string, teamId: ObjectId) {
 export function updateTeam(
   ownerId: string,
   teamId: ObjectId,
-  updates: { name?: string; members?: TeamMember[] },
+  updates: { name?: string; mode?: TeamMode; members?: TeamMember[] },
 ) {
   const normalized = updates.members ? { ...updates, members: normalizeMembers(updates.members) } : updates
   return teams.findOneAndUpdate({ _id: teamId, ownerId }, { $set: normalized }, { returnDocument: 'after' })

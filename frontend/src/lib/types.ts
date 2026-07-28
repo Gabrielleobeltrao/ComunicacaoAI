@@ -13,15 +13,19 @@ export interface WidgetSummary {
   teamId: string | null
 }
 
+export type TeamMode = 'adaptive' | 'pipeline'
+
 export interface TeamMemberSummary {
   agentId: string
   routingDescription: string
+  advanceWhen: string
   isDefault: boolean
 }
 
 export interface TeamSummary {
   _id: string
   name: string
+  mode: TeamMode
   members: TeamMemberSummary[]
 }
 

@@ -4,21 +4,24 @@ import {
   buildGuardrailCheckPrompt,
   buildIdentityExtractionPrompt,
   buildMemoryUpdatePrompt,
+  buildStageAdvancePrompt,
   buildStructuredMemoryUpdatePrompt,
-  buildRouterPrompt,
   buildStructuredOutputExtractionPrompt,
   buildSystemPromptParts,
+  buildTeamPlannerPrompt,
   GUARDRAIL_CHECK_SYSTEM_PROMPT,
   IDENTITY_EXTRACTION_SYSTEM_PROMPT,
   MEMORY_UPDATE_SYSTEM_PROMPT,
+  parseAdvanceResult,
   parseInScopeResult,
   parseJsonObject,
-  parseRouterChoice,
-  ROUTER_SYSTEM_PROMPT,
+  parseTeamPlan,
+  STAGE_ADVANCE_SYSTEM_PROMPT,
   STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
   STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT,
+  TEAM_PLANNER_SYSTEM_PROMPT,
 } from './systemPrompt.js'
-import type { ChatTurn, RouterOption } from './systemPrompt.js'
+import type { ChatTurn, RouterOption, TeamPlan } from './systemPrompt.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
 
 export type { ChatTurn }
@@ -215,32 +218,56 @@ export async function checkGuardrail(
   return parseInScopeResult(textBlock.text)
 }
 
-export async function routeToAgent(
+export async function planTeamResponse(
   options: RouterOption[],
-  currentAgentIndex: number | null,
-  defaultAgentIndex: number,
+  currentIndices: number[],
+  defaultIndex: number,
   recentMessages: ChatTurn[],
   visitorMessage: string,
   model?: string | null,
   apiKey?: string | null,
-): Promise<number> {
+): Promise<TeamPlan> {
   const response = await buildClient(apiKey).messages.create({
     model: model || DEFAULT_MODEL,
-    max_tokens: 50,
-    system: ROUTER_SYSTEM_PROMPT,
+    max_tokens: 80,
+    system: TEAM_PLANNER_SYSTEM_PROMPT,
     thinking: { type: 'disabled' },
     output_config: { effort: 'low' },
     messages: [
       {
         role: 'user',
-        content: buildRouterPrompt(options, currentAgentIndex, defaultAgentIndex, recentMessages, visitorMessage),
+        content: buildTeamPlannerPrompt(options, currentIndices, defaultIndex, recentMessages, visitorMessage),
       },
     ],
   })
 
   const textBlock = response.content.find((block) => block.type === 'text')
-  if (!textBlock || textBlock.type !== 'text') return defaultAgentIndex
-  return parseRouterChoice(textBlock.text, options.length, defaultAgentIndex)
+  if (!textBlock || textBlock.type !== 'text') return { specialists: [defaultIndex], clarify: false }
+  return parseTeamPlan(textBlock.text, options.length, defaultIndex)
+}
+
+export async function checkStageAdvance(
+  stageGoal: string,
+  advanceCondition: string,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<boolean> {
+  const response = await buildClient(apiKey).messages.create({
+    model: model || DEFAULT_MODEL,
+    max_tokens: 50,
+    system: STAGE_ADVANCE_SYSTEM_PROMPT,
+    thinking: { type: 'disabled' },
+    output_config: { effort: 'low' },
+    messages: [
+      { role: 'user', content: buildStageAdvancePrompt(stageGoal, advanceCondition, recentMessages, visitorMessage) },
+    ],
+  })
+
+  const textBlock = response.content.find((block) => block.type === 'text')
+  if (!textBlock || textBlock.type !== 'text') return false
+  return parseAdvanceResult(textBlock.text)
 }
 
 export async function extractStructuredOutput(

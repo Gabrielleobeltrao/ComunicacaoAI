@@ -4,21 +4,24 @@ import {
   buildGuardrailCheckPrompt,
   buildIdentityExtractionPrompt,
   buildMemoryUpdatePrompt,
+  buildStageAdvancePrompt,
   buildStructuredMemoryUpdatePrompt,
-  buildRouterPrompt,
   buildStructuredOutputExtractionPrompt,
   buildSystemPrompt,
+  buildTeamPlannerPrompt,
   GUARDRAIL_CHECK_SYSTEM_PROMPT,
   IDENTITY_EXTRACTION_SYSTEM_PROMPT,
   MEMORY_UPDATE_SYSTEM_PROMPT,
+  parseAdvanceResult,
   parseInScopeResult,
   parseJsonObject,
-  parseRouterChoice,
-  ROUTER_SYSTEM_PROMPT,
+  parseTeamPlan,
+  STAGE_ADVANCE_SYSTEM_PROMPT,
   STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
   STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT,
+  TEAM_PLANNER_SYSTEM_PROMPT,
 } from './systemPrompt.js'
-import type { ChatTurn, RouterOption } from './systemPrompt.js'
+import type { ChatTurn, RouterOption, TeamPlan } from './systemPrompt.js'
 import type { AgentReplyResult } from './llm.js'
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.1'
@@ -224,31 +227,54 @@ export async function checkGuardrail(
   return parseInScopeResult(text)
 }
 
-export async function routeToAgent(
+export async function planTeamResponse(
   options: RouterOption[],
-  currentAgentIndex: number | null,
-  defaultAgentIndex: number,
+  currentIndices: number[],
+  defaultIndex: number,
   recentMessages: ChatTurn[],
   visitorMessage: string,
   model?: string | null,
   apiKey?: string | null,
-): Promise<number> {
+): Promise<TeamPlan> {
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
-    max_completion_tokens: 100,
+    max_completion_tokens: 150,
     reasoning_effort: 'minimal',
     messages: [
-      { role: 'system', content: ROUTER_SYSTEM_PROMPT },
+      { role: 'system', content: TEAM_PLANNER_SYSTEM_PROMPT },
       {
         role: 'user',
-        content: buildRouterPrompt(options, currentAgentIndex, defaultAgentIndex, recentMessages, visitorMessage),
+        content: buildTeamPlannerPrompt(options, currentIndices, defaultIndex, recentMessages, visitorMessage),
       },
     ],
   })
 
   const text = response.choices[0]?.message?.content
-  if (!text) return defaultAgentIndex
-  return parseRouterChoice(text, options.length, defaultAgentIndex)
+  if (!text) return { specialists: [defaultIndex], clarify: false }
+  return parseTeamPlan(text, options.length, defaultIndex)
+}
+
+export async function checkStageAdvance(
+  stageGoal: string,
+  advanceCondition: string,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+  model?: string | null,
+  apiKey?: string | null,
+): Promise<boolean> {
+  const response = await buildClient(apiKey).chat.completions.create({
+    model: model || DEFAULT_MODEL,
+    max_completion_tokens: 100,
+    reasoning_effort: 'minimal',
+    messages: [
+      { role: 'system', content: STAGE_ADVANCE_SYSTEM_PROMPT },
+      { role: 'user', content: buildStageAdvancePrompt(stageGoal, advanceCondition, recentMessages, visitorMessage) },
+    ],
+  })
+
+  const text = response.choices[0]?.message?.content
+  if (!text) return false
+  return parseAdvanceResult(text)
 }
 
 export async function extractStructuredOutput(

@@ -9,19 +9,26 @@ export interface RouterOption {
   description: string
 }
 
-export const ROUTER_SYSTEM_PROMPT = `Você é o roteador de uma equipe de agentes de atendimento. Cada agente é especialista em um assunto. Sua tarefa é escolher qual agente deve responder à mensagem mais recente do visitante.
+export interface TeamPlan {
+  specialists: number[]
+  clarify: boolean
+}
+
+export const TEAM_PLANNER_SYSTEM_PROMPT = `Você é o orquestrador de uma equipe de agentes especialistas de atendimento. Cada agente domina um assunto. Dada a mensagem mais recente do visitante, decida QUAIS especialistas têm a informação necessária para responder — pode ser um ou vários.
 
 Regras:
-- Escolha o agente cuja especialidade melhor corresponde ao que o visitante quer AGORA.
-- Se a conversa já está sendo tratada por um agente (indicado como "agente atual") e a nova mensagem continua no mesmo assunto, MANTENHA o agente atual — só troque se o assunto claramente mudou para a área de outro agente.
-- Na dúvida ou se for algo genérico (saudação, agradecimento), escolha o agente padrão.
+- Escolha todos os especialistas cujas áreas cobrem o que o visitante quer AGORA. Se a mensagem toca em mais de um assunto, inclua todos os relevantes.
+- Se a conversa já vinha sendo tratada por um ou mais especialistas (indicados como "atuais") e a nova mensagem continua no mesmo assunto, mantenha-os.
+- Se a mensagem for genérica (saudação, agradecimento), escolha o especialista padrão.
+- Se a mensagem for ambígua a ponto de não dar pra saber o que o visitante quer, marque "clarify": true.
+- Nunca invente especialistas fora da lista.
 
-Responda APENAS com um objeto JSON válido, sem comentários, sem markdown: {"agent": <número do índice do agente escolhido>}`
+Responda APENAS com um objeto JSON válido, sem comentários, sem markdown: {"specialists": [índices], "clarify": true|false}`
 
-export function buildRouterPrompt(
+export function buildTeamPlannerPrompt(
   options: RouterOption[],
-  currentAgentIndex: number | null,
-  defaultAgentIndex: number,
+  currentIndices: number[],
+  defaultIndex: number,
   recentMessages: ChatTurn[],
   visitorMessage: string,
 ): string {
@@ -29,16 +36,99 @@ export function buildRouterPrompt(
   const transcript = recentMessages
     .map((turn) => `${turn.role === 'user' ? 'Visitante' : 'Agente'}: ${turn.content}`)
     .join('\n')
-  const currentLine =
-    currentAgentIndex !== null ? `Agente atual desta conversa: [${currentAgentIndex}]\n` : ''
-  return `Agentes disponíveis:\n${agentList}\n\nAgente padrão (fallback): [${defaultAgentIndex}]\n${currentLine}${
+  const currentLine = currentIndices.length > 0 ? `Especialistas atuais desta conversa: [${currentIndices.join(', ')}]\n` : ''
+  return `Especialistas disponíveis:\n${agentList}\n\nEspecialista padrão (fallback): [${defaultIndex}]\n${currentLine}${
     transcript ? `\nConversa recente:\n${transcript}\n` : ''
-  }\nNova mensagem do visitante: ${visitorMessage}\n\nAgente escolhido (JSON):`
+  }\nNova mensagem do visitante: ${visitorMessage}\n\nDecisão (JSON):`
 }
 
-// Parse the router's chosen index, clamped to a valid option; caller supplies
-// the fallback (default agent) when the response is unusable.
-export function parseRouterChoice(text: string, optionCount: number, fallback: number): number {
+// Parse the planner's decision, clamping indices to valid options. Falls back
+// to the default specialist when nothing usable comes back and no clarify.
+export function parseTeamPlan(text: string, optionCount: number, fallbackIndex: number): TeamPlan {
+  const cleaned = text
+    .trim()
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/, '')
+    .trim()
+  try {
+    const parsed = JSON.parse(cleaned) as { specialists?: unknown; clarify?: unknown }
+    const clarify = parsed.clarify === true
+    const specialists = Array.isArray(parsed.specialists)
+      ? [
+          ...new Set(
+            parsed.specialists.filter(
+              (v): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < optionCount,
+            ),
+          ),
+        ]
+      : []
+    if (specialists.length === 0 && !clarify) return { specialists: [fallbackIndex], clarify: false }
+    return { specialists, clarify }
+  } catch {
+    return { specialists: [fallbackIndex], clarify: false }
+  }
+}
+
+// Reframes the chosen specialists' expertise into one unified assistant so the
+// visitor never perceives multiple agents.
+export function buildTeamObjective(
+  teamName: string,
+  specialists: { name: string; objective: string }[],
+): string {
+  const areas = specialists.map((s) => `- ${s.name}: ${s.objective.trim() || s.name}`).join('\n')
+  return `Você é o assistente de atendimento${teamName ? ` de ${teamName}` : ''}. Responda como UM único assistente, de forma unificada e natural — nunca diga que consultou agentes ou especialistas diferentes, nem mencione uma "equipe". Use as áreas de especialidade abaixo, combinando-as quando a pergunta tocar em mais de uma:\n${areas}`
+}
+
+export function buildClarificationInstruction(topics: string[]): string {
+  const list = topics.length > 0 ? ` As áreas em que você pode ajudar incluem: ${topics.join('; ')}.` : ''
+  return `A mensagem do visitante ficou ambígua e você ainda não sabe exatamente o que ele precisa. Em vez de responder, faça UMA pergunta curta, calorosa e natural para entender melhor o que ele quer — converse de forma acolhedora, sem soar como um formulário ou menu de opções numeradas.${list}`
+}
+
+// ── Pipeline (fluxo em etapas) ──────────────────────────────────────────────
+// In pipeline mode the team is an ordered flow: each stage is handled by one
+// specialist agent and hands off to the next when a condition is met. The
+// visitor must never perceive the handoff — it's always one continuous voice.
+
+// Frames the current stage's specialist as one seamless assistant, focused on
+// this stage's job, and explicitly forbids announcing any transfer/handoff so
+// the flow stays invisible to the visitor.
+export function buildPipelineStageObjective(
+  teamName: string,
+  stage: { name: string; objective: string; stageGoal: string },
+): string {
+  const focus = stage.objective.trim() || stage.name
+  const goalLine = stage.stageGoal.trim()
+    ? `\n\nNesta etapa do atendimento, seu foco é: ${stage.stageGoal.trim()}`
+    : ''
+  return `Você é o assistente de atendimento${teamName ? ` de ${teamName}` : ''}. Fale como UM único assistente contínuo: o visitante conversa com você como se fosse uma só pessoa do começo ao fim. NUNCA diga que vai transferir, encaminhar, passar para outro setor, chamar outra pessoa ou consultar um especialista, e nunca mencione "etapas" ou "equipe" — a conversa deve fluir de forma natural e ininterrupta.\n\nSua área de atuação:\n${focus}${goalLine}`
+}
+
+export const STAGE_ADVANCE_SYSTEM_PROMPT = `Você acompanha um atendimento que segue um fluxo em etapas. Cada etapa tem um objetivo e uma condição para avançar para a próxima. Dada a etapa atual e a conversa mais recente (incluindo a última mensagem do visitante), decida se a condição para avançar JÁ foi satisfeita.
+
+Regras:
+- Responda "advance": true apenas quando a condição de avanço estiver claramente satisfeita pela conversa até agora.
+- Se ainda faltar alguma informação ou algum passo da etapa atual, responda "advance": false.
+- Na dúvida, responda false — é melhor permanecer na etapa atual do que pular cedo demais.
+
+Responda APENAS com um objeto JSON válido, sem comentários, sem markdown: {"advance": true|false}`
+
+export function buildStageAdvancePrompt(
+  stageGoal: string,
+  advanceCondition: string,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+): string {
+  const transcript = recentMessages
+    .map((turn) => `${turn.role === 'user' ? 'Visitante' : 'Agente'}: ${turn.content}`)
+    .join('\n')
+  return `Objetivo da etapa atual: ${stageGoal.trim() || '(não especificado)'}\nCondição para avançar para a próxima etapa: ${
+    advanceCondition.trim() || '(não especificada)'
+  }\n\n${transcript ? `Conversa recente:\n${transcript}\n\n` : ''}Nova mensagem do visitante: ${visitorMessage}\n\nAvaliação (JSON):`
+}
+
+// Fail closed: a parse failure keeps the conversation on the current stage
+// rather than skipping ahead on a malformed classification.
+export function parseAdvanceResult(text: string): boolean {
   const cleaned = text
     .trim()
     .replace(/^```(?:json)?/i, '')
@@ -46,14 +136,13 @@ export function parseRouterChoice(text: string, optionCount: number, fallback: n
     .trim()
   try {
     const parsed: unknown = JSON.parse(cleaned)
-    const value = (parsed as { agent?: unknown })?.agent
-    if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < optionCount) {
-      return value
+    if (parsed && typeof parsed === 'object' && typeof (parsed as { advance?: unknown }).advance === 'boolean') {
+      return (parsed as { advance: boolean }).advance
     }
   } catch {
-    // fall through to fallback
+    // fall through to the fail-closed default below
   }
-  return fallback
+  return false
 }
 
 // Split so the prompt-caching layer can cache the parts that stay identical

@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
-import type { AgentSummary, TeamSummary } from '../lib/types'
+import type { AgentSummary, TeamMode, TeamSummary } from '../lib/types'
+import { MessageContent } from './MessageContent'
 import { Modal } from './Modal'
 
 interface TeamManagerProps {
@@ -15,25 +16,98 @@ interface TeamManagerProps {
 interface EditMember {
   agentId: string
   routingDescription: string
+  advanceWhen: string
   isDefault: boolean
+}
+
+interface PlayMessage {
+  role: 'user' | 'assistant'
+  content: string
+  specialists?: string[]
+  clarify?: boolean
+  stage?: string | null
+  advanced?: boolean
+  mode?: TeamMode
 }
 
 export function TeamManager({ teams, loading, agents, agentsLoading, onChange }: TeamManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
   const [editingTeam, setEditingTeam] = useState<TeamSummary | null>(null)
   const [editName, setEditName] = useState('')
+  const [editMode, setEditMode] = useState<TeamMode>('adaptive')
   const [editMembers, setEditMembers] = useState<EditMember[]>([])
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
+  const [playgroundTeam, setPlaygroundTeam] = useState<TeamSummary | null>(null)
+  const [playMessages, setPlayMessages] = useState<PlayMessage[]>([])
+  const [playInput, setPlayInput] = useState('')
+  const [playSending, setPlaySending] = useState(false)
+  const [playStageIndex, setPlayStageIndex] = useState(0)
+
   const agentNameById = new Map(agents.map((a) => [a._id, a.name]))
   const open = isCreating || editingTeam !== null
+  const isPipeline = editMode === 'pipeline'
+
+  function openPlayground(team: TeamSummary) {
+    setPlaygroundTeam(team)
+    setPlayMessages([])
+    setPlayInput('')
+    setPlayStageIndex(0)
+  }
+
+  async function handlePlaygroundSend(event: FormEvent) {
+    event.preventDefault()
+    if (!playgroundTeam || !playInput.trim() || playSending) return
+    const next: PlayMessage[] = [...playMessages, { role: 'user', content: playInput.trim() }]
+    setPlayMessages(next)
+    setPlayInput('')
+    setPlaySending(true)
+    try {
+      const res = await fetch(`${API_URL}/api/teams/${playgroundTeam._id}/playground`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: next.map(({ role, content }) => ({ role, content })),
+          stageIndex: playStageIndex,
+        }),
+      })
+      if (res.ok) {
+        const body = await res.json()
+        if (typeof body.stageIndex === 'number') setPlayStageIndex(body.stageIndex)
+        setPlayMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: body.reply,
+            specialists: body.specialists,
+            clarify: body.clarify,
+            stage: body.stage,
+            advanced: body.advanced,
+            mode: body.mode,
+          },
+        ])
+      } else {
+        setPlayMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: 'Não foi possível gerar a resposta — verifique a chave de API em Configurações.',
+          },
+        ])
+      }
+    } finally {
+      setPlaySending(false)
+    }
+  }
 
   function openCreate() {
     setIsCreating(true)
     setEditingTeam(null)
     setEditName('')
+    setEditMode('adaptive')
     setEditMembers([])
     setEditError(null)
   }
@@ -42,6 +116,7 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
     setIsCreating(false)
     setEditingTeam(team)
     setEditName(team.name)
+    setEditMode(team.mode)
     setEditMembers(team.members.map((m) => ({ ...m })))
     setEditError(null)
   }
@@ -58,7 +133,7 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
     if (!agentId) return
     setEditMembers((prev) => [
       ...prev,
-      { agentId, routingDescription: '', isDefault: prev.length === 0 },
+      { agentId, routingDescription: '', advanceWhen: '', isDefault: prev.length === 0 },
     ])
   }
 
@@ -71,8 +146,22 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
     })
   }
 
+  function moveMember(index: number, direction: -1 | 1) {
+    setEditMembers((prev) => {
+      const target = index + direction
+      if (target < 0 || target >= prev.length) return prev
+      const next = [...prev]
+      ;[next[index], next[target]] = [next[target], next[index]]
+      return next
+    })
+  }
+
   function setDescription(agentId: string, value: string) {
     setEditMembers((prev) => prev.map((m) => (m.agentId === agentId ? { ...m, routingDescription: value } : m)))
+  }
+
+  function setAdvanceWhen(agentId: string, value: string) {
+    setEditMembers((prev) => prev.map((m) => (m.agentId === agentId ? { ...m, advanceWhen: value } : m)))
   }
 
   function setDefault(agentId: string) {
@@ -83,15 +172,21 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
     event.preventDefault()
     setEditError(null)
     if (editMembers.length < 2) {
-      setEditError('Uma equipe precisa de pelo menos 2 agentes para o roteamento fazer sentido.')
+      setEditError(
+        isPipeline
+          ? 'Um fluxo precisa de pelo menos 2 etapas.'
+          : 'Uma equipe precisa de pelo menos 2 agentes para o orquestrador fazer sentido.',
+      )
       return
     }
     setSaving(true)
     const body = JSON.stringify({
       name: editName,
+      mode: editMode,
       members: editMembers.map((m) => ({
         agentId: m.agentId,
         routingDescription: m.routingDescription.trim(),
+        advanceWhen: m.advanceWhen.trim(),
         isDefault: m.isDefault,
       })),
     })
@@ -153,8 +248,9 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
         <p className="text-sm text-slate-400">Carregando equipes...</p>
       ) : teams.length === 0 ? (
         <p className="text-sm text-slate-400">
-          Nenhuma equipe ainda. Uma equipe junta vários agentes especialistas e um roteador escolhe qual
-          responde cada mensagem.
+          Nenhuma equipe ainda. Uma equipe junta vários agentes especialistas — no modo adaptativo um
+          orquestrador consulta os que fazem sentido em cada mensagem; no modo fluxo, o atendimento passa
+          por etapas em sequência. Sempre com uma voz única para o visitante.
         </p>
       ) : (
         <ul className="space-y-3">
@@ -164,19 +260,36 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
               className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 p-3"
             >
               <div>
-                <p className="font-medium">{team.name}</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-medium">{team.name}</p>
+                  <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+                    {team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}
+                  </span>
+                </div>
                 <p className="text-sm text-slate-400">
-                  {team.members.length} agente{team.members.length === 1 ? '' : 's'}:{' '}
-                  {team.members.map((m) => agentNameById.get(m.agentId) ?? 'removido').join(', ')}
+                  {team.mode === 'pipeline'
+                    ? team.members.map((m) => agentNameById.get(m.agentId) ?? 'removido').join(' → ')
+                    : `${team.members.length} agente${team.members.length === 1 ? '' : 's'}: ${team.members
+                        .map((m) => agentNameById.get(m.agentId) ?? 'removido')
+                        .join(', ')}`}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => openEdit(team)}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800"
-              >
-                Editar
-              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => openPlayground(team)}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800"
+                >
+                  Testar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openEdit(team)}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800"
+                >
+                  Editar
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -196,22 +309,82 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
             />
           </div>
 
+          <div>
+            <label className="mb-1 block text-sm text-slate-400">Modo de orquestração</label>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setEditMode('adaptive')}
+                className={`rounded-lg border p-3 text-left text-sm transition ${
+                  editMode === 'adaptive'
+                    ? 'border-slate-400 bg-slate-800'
+                    : 'border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                <span className="font-medium">Adaptativo</span>
+                <span className="mt-1 block text-xs text-slate-400">
+                  Um supervisor consulta, a cada mensagem, os especialistas que têm a informação.
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditMode('pipeline')}
+                className={`rounded-lg border p-3 text-left text-sm transition ${
+                  editMode === 'pipeline'
+                    ? 'border-slate-400 bg-slate-800'
+                    : 'border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                <span className="font-medium">Fluxo (pipeline)</span>
+                <span className="mt-1 block text-xs text-slate-400">
+                  Etapas em sequência: cada agente cuida de uma parte e passa para a próxima.
+                </span>
+              </button>
+            </div>
+          </div>
+
           <div className="space-y-2">
-            <p className="text-sm font-medium">Agentes da equipe</p>
+            <p className="text-sm font-medium">{isPipeline ? 'Etapas do fluxo' : 'Agentes da equipe'}</p>
             <p className="text-xs text-slate-500">
-              Descreva quando cada agente deve ser usado — é o que o roteador lê para escolher quem
-              responde. Marque um como padrão (fallback para mensagens ambíguas).
+              {isPipeline
+                ? 'As etapas são executadas na ordem abaixo. Descreva o que cada etapa faz e quando ela deve passar para a próxima. Marque uma etapa como padrão (voz, memória e configurações compartilhadas).'
+                : 'Descreva quando cada agente deve ser usado — é o que o orquestrador lê para decidir quais consultar. Marque um como padrão (voz da equipe e fallback para mensagens ambíguas).'}
             </p>
 
             {editMembers.length === 0 ? (
-              <p className="text-sm text-slate-400">Adicione pelo menos 2 agentes.</p>
+              <p className="text-sm text-slate-400">Adicione pelo menos 2 {isPipeline ? 'etapas' : 'agentes'}.</p>
             ) : (
               <ul className="space-y-2">
-                {editMembers.map((m) => (
+                {editMembers.map((m, index) => (
                   <li key={m.agentId} className="rounded-lg border border-slate-800 p-3">
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium">{agentNameById.get(m.agentId) ?? 'Agente'}</span>
+                      <span className="text-sm font-medium">
+                        {isPipeline && <span className="text-slate-500">{index + 1}. </span>}
+                        {agentNameById.get(m.agentId) ?? 'Agente'}
+                      </span>
                       <div className="flex items-center gap-3">
+                        {isPipeline && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => moveMember(index, -1)}
+                              disabled={index === 0}
+                              className="rounded border border-slate-700 px-1.5 text-xs text-slate-400 transition hover:bg-slate-800 disabled:opacity-30"
+                              aria-label="Subir etapa"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveMember(index, 1)}
+                              disabled={index === editMembers.length - 1}
+                              className="rounded border border-slate-700 px-1.5 text-xs text-slate-400 transition hover:bg-slate-800 disabled:opacity-30"
+                              aria-label="Descer etapa"
+                            >
+                              ↓
+                            </button>
+                          </div>
+                        )}
                         <label className="flex items-center gap-1.5 text-xs text-slate-400">
                           <input
                             type="radio"
@@ -233,9 +406,24 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
                     <input
                       value={m.routingDescription}
                       onChange={(e) => setDescription(m.agentId, e.target.value)}
-                      placeholder="Quando usar este agente (ex: reservas, horários e disponibilidade)"
+                      placeholder={
+                        isPipeline
+                          ? 'O que esta etapa faz (ex: qualificar o lead e coletar requisitos)'
+                          : 'Quando usar este agente (ex: reservas, horários e disponibilidade)'
+                      }
                       className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
                     />
+                    {isPipeline &&
+                      (index === editMembers.length - 1 ? (
+                        <p className="mt-1.5 text-xs text-slate-600">Última etapa — encerra o fluxo.</p>
+                      ) : (
+                        <input
+                          value={m.advanceWhen}
+                          onChange={(e) => setAdvanceWhen(m.agentId, e.target.value)}
+                          placeholder="Quando avançar para a próxima etapa (ex: quando já tiver data e nº de pessoas)"
+                          className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                        />
+                      ))}
                   </li>
                 ))}
               </ul>
@@ -250,7 +438,7 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
                 }}
                 className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
               >
-                <option value="">+ Adicionar agente à equipe</option>
+                <option value="">+ Adicionar {isPipeline ? 'etapa' : 'agente à equipe'}</option>
                 {availableAgents.map((a) => (
                   <option key={a._id} value={a._id}>
                     {a.name}
@@ -284,6 +472,66 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        open={playgroundTeam !== null}
+        onClose={() => setPlaygroundTeam(null)}
+        title={playgroundTeam ? `Testar: ${playgroundTeam.name}` : 'Testar equipe'}
+        wide
+      >
+        <p className="mb-3 text-xs text-slate-500">
+          {playgroundTeam?.mode === 'pipeline'
+            ? 'Conversa de teste — nada é salvo. Cada resposta mostra em qual etapa do fluxo o atendimento está.'
+            : 'Conversa de teste — nada é salvo. Cada resposta mostra quais especialistas o orquestrador consultou.'}
+        </p>
+        <div className="flex h-96 flex-col rounded-lg border border-slate-800 bg-slate-950/50">
+          <div className="flex-1 space-y-2 overflow-y-auto p-3">
+            {playMessages.length === 0 && (
+              <p className="text-sm text-slate-400">Envie uma mensagem como se fosse o visitante.</p>
+            )}
+            {playMessages.map((message, index) => (
+              <div key={index} className={message.role === 'user' ? '' : 'flex flex-col items-start'}>
+                <div
+                  className={
+                    message.role === 'user'
+                      ? 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-white px-3 py-2 text-sm text-slate-950'
+                      : 'max-w-[85%] rounded-2xl rounded-tl-sm bg-slate-800 px-3 py-2 text-sm'
+                  }
+                >
+                  <MessageContent content={message.content} />
+                </div>
+                {message.role === 'assistant' && (
+                  <span className="mt-0.5 text-[10px] text-slate-500">
+                    {message.mode === 'pipeline'
+                      ? `↳ etapa: ${message.stage ?? '—'}${message.advanced ? ' · avançou' : ''}`
+                      : message.clarify
+                        ? '↳ pediu esclarecimento'
+                        : message.specialists && message.specialists.length > 0
+                          ? `↳ consultou: ${message.specialists.join(', ')}`
+                          : ''}
+                  </span>
+                )}
+              </div>
+            ))}
+            {playSending && <p className="text-sm text-slate-500">Orquestrando...</p>}
+          </div>
+          <form onSubmit={handlePlaygroundSend} className="flex gap-2 border-t border-slate-800 p-3">
+            <input
+              value={playInput}
+              onChange={(e) => setPlayInput(e.target.value)}
+              placeholder="Mensagem do visitante..."
+              className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-slate-500"
+            />
+            <button
+              type="submit"
+              disabled={playSending || !playInput.trim()}
+              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+            >
+              Enviar
+            </button>
+          </form>
+        </div>
       </Modal>
     </div>
   )

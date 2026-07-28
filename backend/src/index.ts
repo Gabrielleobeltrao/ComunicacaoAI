@@ -47,7 +47,7 @@ import {
   setStructuredOutputData,
 } from './conversationMemory.js'
 import { createTeam, deleteTeam, getTeamById, listTeams, updateTeam } from './teams.js'
-import type { Team, TeamMember } from './teams.js'
+import type { Team, TeamMember, TeamMode } from './teams.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
@@ -63,23 +63,28 @@ import {
 import {
   auxiliaryModel,
   checkGuardrail,
+  checkStageAdvance,
   extractIdentity,
   extractStructuredOutput,
   generateAgentReply,
   listModelsForProvider,
+  planTeamResponse,
   PROVIDER_IDS,
   PROVIDER_INFO,
-  routeToAgent,
   updateConversationMemory,
   updateStructuredMemory,
 } from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
 import type { RouterOption } from './systemPrompt.js'
+import { listTeamDecisionsForConversation, logTeamDecision } from './teamDecisions.js'
 import {
+  buildClarificationInstruction,
   buildIdentityCaptureInstruction,
   buildLanguageInstruction,
+  buildPipelineStageObjective,
   buildProactivityInstruction,
   buildResponseStyleInstruction,
+  buildTeamObjective,
   formatStructuredMemory,
   GUARDRAIL_REFUSAL_MESSAGE,
   GUARDRAIL_SCOPE_INSTRUCTION,
@@ -486,9 +491,11 @@ function serializeTeam(team: WithId<Team>) {
   return {
     _id: team._id.toString(),
     name: team.name,
+    mode: team.mode ?? 'adaptive',
     members: team.members.map((m) => ({
       agentId: m.agentId.toString(),
       routingDescription: m.routingDescription,
+      advanceWhen: m.advanceWhen ?? '',
       isDefault: m.isDefault,
     })),
   }
@@ -511,19 +518,31 @@ async function resolveTeamMembers(
     if (!agent) return { error: 'Agent not found' }
     seen.add(agentId)
     const desc = (m as { routingDescription?: unknown }).routingDescription
+    const advanceWhen = (m as { advanceWhen?: unknown }).advanceWhen
     members.push({
       agentId: agent._id,
       routingDescription: typeof desc === 'string' ? desc : '',
+      advanceWhen: typeof advanceWhen === 'string' ? advanceWhen : '',
       isDefault: (m as { isDefault?: unknown }).isDefault === true,
     })
   }
   return { members }
 }
 
+function parseTeamMode(value: unknown): TeamMode | null {
+  if (value === undefined) return 'adaptive'
+  return value === 'adaptive' || value === 'pipeline' ? value : null
+}
+
 app.post('/api/teams', requireAuth, async (req, res) => {
-  const { name, members } = req.body ?? {}
+  const { name, mode, members } = req.body ?? {}
   if (!name || typeof name !== 'string' || !name.trim()) {
     res.status(400).json({ error: 'name is required' })
+    return
+  }
+  const parsedMode = parseTeamMode(mode)
+  if (parsedMode === null) {
+    res.status(400).json({ error: 'Unknown team mode' })
     return
   }
   const { members: parsed, error } = await resolveTeamMembers(res.locals.userId, members ?? [])
@@ -531,7 +550,7 @@ app.post('/api/teams', requireAuth, async (req, res) => {
     res.status(400).json({ error })
     return
   }
-  const team = await createTeam(res.locals.userId, name, parsed ?? [])
+  const team = await createTeam(res.locals.userId, name, parsedMode, parsed ?? [])
   res.status(201).json(serializeTeam(team as WithId<Team>))
 })
 
@@ -546,9 +565,17 @@ app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid team id' })
     return
   }
-  const { name, members } = req.body ?? {}
-  const updates: { name?: string; members?: TeamMember[] } = {}
+  const { name, mode, members } = req.body ?? {}
+  const updates: { name?: string; mode?: TeamMode; members?: TeamMember[] } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
+  if (mode !== undefined) {
+    const parsedMode = parseTeamMode(mode)
+    if (parsedMode === null) {
+      res.status(400).json({ error: 'Unknown team mode' })
+      return
+    }
+    updates.mode = parsedMode
+  }
   if (members !== undefined) {
     const { members: parsed, error } = await resolveTeamMembers(res.locals.userId, members)
     if (error) {
@@ -577,6 +604,212 @@ app.delete('/api/teams/:teamId', requireAuth, async (req, res) => {
   }
   await deleteTeam(res.locals.userId, new ObjectId(teamId))
   res.status(204).end()
+})
+
+// Stateless team test chat: runs the supervisor (plan → merge specialists →
+// one unified reply, or a clarification) over the supplied history. Nothing is
+// persisted; also reports which specialists were consulted so the owner can see
+// the orchestration decision.
+app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
+  const teamIdStr = String(req.params.teamId)
+  if (!ObjectId.isValid(teamIdStr)) {
+    res.status(400).json({ error: 'Invalid team id' })
+    return
+  }
+  const team = await getTeamById(res.locals.userId, new ObjectId(teamIdStr))
+  if (!team) {
+    res.status(404).json({ error: 'Team not found' })
+    return
+  }
+
+  const { messages, stageIndex: rawStageIndex } = req.body ?? {}
+  const isValidHistory =
+    Array.isArray(messages) &&
+    messages.length > 0 &&
+    messages.length <= MAX_PLAYGROUND_MESSAGES &&
+    messages.every(
+      (m: unknown) =>
+        typeof m === 'object' &&
+        m !== null &&
+        ((m as ChatTurn).role === 'user' || (m as ChatTurn).role === 'assistant') &&
+        typeof (m as ChatTurn).content === 'string' &&
+        (m as ChatTurn).content.trim().length > 0,
+    )
+  if (!isValidHistory) {
+    res.status(400).json({ error: `messages must be 1-${MAX_PLAYGROUND_MESSAGES} {role, content} turns` })
+    return
+  }
+  const history = messages as ChatTurn[]
+  const lastUser = [...history].reverse().find((m) => m.role === 'user')
+  if (!lastUser) {
+    res.status(400).json({ error: 'At least one user message is required' })
+    return
+  }
+
+  const resolved = (
+    await Promise.all(
+      team.members.map(async (m) => ({ member: m, agent: await getAgentById(res.locals.userId, m.agentId) })),
+    )
+  ).filter((x): x is { member: TeamMember; agent: WithId<Agent> } => x.agent !== null)
+  if (resolved.length === 0) {
+    res.status(400).json({ error: 'Team has no valid agents' })
+    return
+  }
+
+  const defaultIndex = Math.max(
+    0,
+    resolved.findIndex((x) => x.member.isDefault),
+  )
+  const configAgent = resolved[defaultIndex].agent
+  const apiKey = await getProviderApiKey(res.locals.userId, configAgent.provider)
+  const teamObjectiveFor = (chosen: { member: TeamMember; agent: WithId<Agent> }[]) =>
+    buildTeamObjective(
+      team.name,
+      chosen.map((x) => ({ name: x.agent.name, objective: x.agent.objective })),
+    )
+
+  const mode: TeamMode = team.mode ?? 'adaptive'
+  let replyObjective: string
+  let knowledgeAgentIds: ObjectId[]
+  let specialistNames: string[]
+  let clarificationTopics: string[] | null = null
+  let clarify = false
+  // Pipeline-only response fields (the client tracks the stage between sends).
+  let pipelineStageName: string | null = null
+  let pipelineStageIndex: number | null = null
+  let pipelineAdvanced = false
+
+  if (mode === 'pipeline' && resolved.length > 1) {
+    // The client sends the stage the conversation is on; default to the first.
+    let stageIndex =
+      typeof rawStageIndex === 'number' && Number.isInteger(rawStageIndex)
+        ? Math.min(Math.max(rawStageIndex, 0), resolved.length - 1)
+        : 0
+    const current = resolved[stageIndex]
+    if (stageIndex < resolved.length - 1) {
+      try {
+        const shouldAdvance = await checkStageAdvance(
+          current.member.routingDescription,
+          current.member.advanceWhen,
+          history.slice(0, -1),
+          lastUser.content,
+          configAgent.provider,
+          auxModelFor(configAgent),
+          apiKey,
+        )
+        if (shouldAdvance) {
+          stageIndex += 1
+          pipelineAdvanced = true
+        }
+      } catch (error) {
+        console.error('Team playground stage advance check failed, staying on current stage:', error)
+      }
+    }
+    const stage = resolved[stageIndex]
+    replyObjective = buildPipelineStageObjective(team.name, {
+      name: stage.agent.name,
+      objective: stage.agent.objective,
+      stageGoal: stage.member.routingDescription,
+    })
+    knowledgeAgentIds = [stage.agent._id]
+    specialistNames = [stage.agent.name]
+    pipelineStageName = stage.agent.name
+    pipelineStageIndex = stageIndex
+  } else {
+    let plan = { specialists: [defaultIndex], clarify: false }
+    if (resolved.length > 1) {
+      const options: RouterOption[] = resolved.map((x, i) => ({
+        index: i,
+        name: x.agent.name,
+        description: x.member.routingDescription.trim() || x.agent.objective.trim() || x.agent.name,
+      }))
+      try {
+        plan = await planTeamResponse(
+          options,
+          [],
+          defaultIndex,
+          history.slice(0, -1),
+          lastUser.content,
+          configAgent.provider,
+          auxModelFor(configAgent),
+          apiKey,
+        )
+      } catch (error) {
+        console.error('Team playground planning failed, using default specialist:', error)
+      }
+    }
+    clarify = plan.clarify
+    if (plan.clarify) {
+      replyObjective = teamObjectiveFor(resolved)
+      knowledgeAgentIds = []
+      specialistNames = []
+      clarificationTopics = resolved.map((x) => x.member.routingDescription.trim() || x.agent.name)
+    } else {
+      const chosen = plan.specialists.map((i) => resolved[i]).filter(Boolean)
+      if (chosen.length === 0) chosen.push(resolved[defaultIndex])
+      replyObjective = teamObjectiveFor(chosen)
+      knowledgeAgentIds = chosen.map((x) => x.agent._id)
+      specialistNames = chosen.map((x) => x.agent.name)
+    }
+  }
+
+  let knowledge: string[] = []
+  for (const id of knowledgeAgentIds) {
+    try {
+      const results = await searchKnowledge(id, lastUser.content)
+      knowledge.push(...results.map((r) => r.content))
+    } catch (error) {
+      console.error('Team playground knowledge search failed:', error)
+    }
+  }
+
+  const behaviorInstruction = [
+    configAgent.guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : '',
+    configAgent.handoffEnabled ? HANDOFF_INSTRUCTION : '',
+    configAgent.proactivityEnabled ? buildProactivityInstruction(configAgent.proactivityGuidance ?? '') : '',
+    clarificationTopics ? buildClarificationInstruction(clarificationTopics) : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+  const { text, usage } = await generateAgentReply(
+    replyObjective,
+    knowledge,
+    '',
+    history,
+    configAgent.provider,
+    configAgent.model,
+    apiKey,
+    '',
+    behaviorInstruction,
+    [
+      buildLanguageInstruction(configAgent.language ?? 'pt'),
+      buildResponseStyleInstruction(
+        configAgent.responseTone ?? 'neutral',
+        configAgent.responseDetail ?? 'balanced',
+        configAgent.responseEmojis ?? false,
+        configAgent.responseFormatting ?? false,
+      ),
+    ].join('\n\n'),
+    configAgent.promptCaching ?? true,
+  )
+  recordReplyUsage(res.locals.userId, usage).catch((error) =>
+    console.error('Failed to record token usage:', error),
+  )
+
+  let reply = text
+  if (configAgent.handoffEnabled && reply.trimStart().startsWith(HANDOFF_MARKER)) {
+    reply = reply.trimStart().slice(HANDOFF_MARKER.length).trim()
+  }
+  res.json({
+    reply,
+    mode,
+    specialists: specialistNames,
+    clarify,
+    stage: pipelineStageName,
+    stageIndex: pipelineStageIndex,
+    advanced: pipelineAdvanced,
+  })
 })
 
 app.post('/api/agents', requireAuth, async (req, res) => {
@@ -1220,6 +1453,37 @@ app.get(
   },
 )
 
+// Orchestration observability: the supervisor/pipeline decisions logged for this
+// conversation (which specialists were consulted, or which stage handled it).
+app.get(
+  '/api/widgets/:widgetId/conversations/:conversationId/decisions',
+  requireAuth,
+  async (req, res) => {
+    const widgetIdStr = String(req.params.widgetId)
+    const conversationId = String(req.params.conversationId)
+    if (!ObjectId.isValid(widgetIdStr)) {
+      res.status(400).json({ error: 'Invalid widget id' })
+      return
+    }
+    const widgetId = new ObjectId(widgetIdStr)
+    const widget = await getWidgetById(widgetId)
+    if (!widget || widget.ownerId !== res.locals.userId) {
+      res.status(404).json({ error: 'Widget not found' })
+      return
+    }
+    const decisions = await listTeamDecisionsForConversation(res.locals.userId, widgetId, conversationId)
+    res.json(
+      decisions.map((d) => ({
+        specialists: d.specialists,
+        clarify: d.clarify,
+        mode: d.mode ?? 'adaptive',
+        advanced: d.advanced ?? false,
+        createdAt: d.createdAt,
+      })),
+    )
+  },
+)
+
 app.post(
   '/api/widgets/:widgetId/conversations/:conversationId/handoff',
   requireAuth,
@@ -1364,16 +1628,32 @@ function auxModelFor(agent: WithId<Agent>): string | null {
   return agent.cheapAuxModel === false ? agent.model : auxiliaryModel(agent.provider)
 }
 
-// Pick the team member to answer this turn. Sticky: the router is told which
-// agent is currently handling the conversation and keeps it unless the topic
-// clearly moved to another specialist's area. Single-member teams skip routing.
-async function routeTeamMember(
+interface TeamTurn {
+  // The default member supplies the team voice + memory/identity/guardrail config.
+  configAgent: WithId<Agent>
+  // A unified objective merging the consulted specialists' expertise.
+  replyObjective: string
+  // Whose knowledge bases to search (the consulted specialists). Empty on clarify.
+  knowledgeAgentIds: ObjectId[]
+  // Consulted specialist names, for owner-side attribution in Chats.
+  replyAgentName: string
+  // Non-null when the supervisor decided the message is too ambiguous to answer.
+  clarificationTopics: string[] | null
+}
+
+// Adaptive supervisor: on each turn a cheap planner decides which specialists
+// (one or several) have the info to answer — or that the message is ambiguous.
+// The visitor always gets ONE unified reply in a single voice; the specialists
+// are internal. Sticky: the planner is told the current specialists so it keeps
+// them while the topic holds.
+async function resolveTeamTurn(
+  widget: WithId<Widget>,
   teamId: ObjectId,
-  ownerId: string,
-  widgetId: ObjectId,
   conversationId: string,
   visitorContent: string,
-): Promise<WithId<Agent> | null> {
+): Promise<TeamTurn | null> {
+  const ownerId = widget.ownerId
+  const widgetId = widget._id
   const team = await getTeamById(ownerId, teamId)
   if (!team || team.members.length === 0) return null
 
@@ -1388,10 +1668,95 @@ async function routeTeamMember(
     0,
     resolved.findIndex((x) => x.member.isDefault),
   )
+  const configAgent = resolved[defaultIndex].agent
+  const teamObjectiveFor = (chosen: { member: TeamMember; agent: WithId<Agent> }[]) =>
+    buildTeamObjective(
+      team.name,
+      chosen.map((x) => ({ name: x.agent.name, objective: x.agent.objective })),
+    )
 
+  // Single-member team: no planning needed.
   if (resolved.length === 1) {
     await setActiveAgentId(widgetId, conversationId, resolved[0].agent._id)
-    return resolved[0].agent
+    await logTeamDecision({
+      ownerId,
+      teamId,
+      widgetId,
+      conversationId,
+      specialists: [resolved[0].agent.name],
+      clarify: false,
+    })
+    return {
+      configAgent,
+      replyObjective: teamObjectiveFor(resolved),
+      knowledgeAgentIds: [resolved[0].agent._id],
+      replyAgentName: resolved[0].agent.name,
+      clarificationTopics: null,
+    }
+  }
+
+  // Pipeline mode: ordered stages. The active stage answers; if its advance
+  // condition is now met we hand off to the next stage first (at most one step
+  // per turn). The visitor never perceives the switch — each stage speaks as
+  // one continuous assistant.
+  if ((team.mode ?? 'adaptive') === 'pipeline') {
+    const activeAgentId = await getActiveAgentId(widgetId, conversationId)
+    let stageIndex = activeAgentId ? resolved.findIndex((x) => x.agent._id.equals(activeAgentId)) : 0
+    if (stageIndex < 0) stageIndex = 0
+
+    const recent = await listMessages(widgetId, conversationId)
+    const advanceHistory: ChatTurn[] = recent.slice(-8).map((m) => ({
+      role: m.role === 'visitor' ? 'user' : 'assistant',
+      content: m.content,
+    }))
+    const apiKey = await getProviderApiKey(ownerId, configAgent.provider)
+
+    let advanced = false
+    const current = resolved[stageIndex]
+    if (stageIndex < resolved.length - 1) {
+      let shouldAdvance = false
+      try {
+        shouldAdvance = await checkStageAdvance(
+          current.member.routingDescription,
+          current.member.advanceWhen,
+          advanceHistory,
+          visitorContent,
+          configAgent.provider,
+          auxModelFor(configAgent),
+          apiKey,
+        )
+      } catch (error) {
+        console.error('Stage advance check failed, staying on current stage:', error)
+      }
+      if (shouldAdvance) {
+        stageIndex += 1
+        advanced = true
+      }
+    }
+
+    const stage = resolved[stageIndex]
+    await setActiveAgentId(widgetId, conversationId, stage.agent._id)
+    await logTeamDecision({
+      ownerId,
+      teamId,
+      widgetId,
+      conversationId,
+      specialists: [stage.agent.name],
+      clarify: false,
+      mode: 'pipeline',
+      advanced,
+    })
+    return {
+      configAgent,
+      replyObjective: buildPipelineStageObjective(team.name, {
+        name: stage.agent.name,
+        objective: stage.agent.objective,
+        stageGoal: stage.member.routingDescription,
+      }),
+      knowledgeAgentIds: [stage.agent._id],
+      replyAgentName: stage.agent.name,
+      clarificationTopics: null,
+    }
   }
 
   const options: RouterOption[] = resolved.map((x, i) => ({
@@ -1401,35 +1766,57 @@ async function routeTeamMember(
   }))
 
   const activeAgentId = await getActiveAgentId(widgetId, conversationId)
-  const currentIndex = activeAgentId ? resolved.findIndex((x) => x.agent._id.equals(activeAgentId)) : -1
+  const currentIndices = activeAgentId
+    ? resolved.flatMap((x, i) => (x.agent._id.equals(activeAgentId) ? [i] : []))
+    : []
 
   const recent = await listMessages(widgetId, conversationId)
-  const routingHistory: ChatTurn[] = recent.slice(-6).map((m) => ({
+  const planHistory: ChatTurn[] = recent.slice(-6).map((m) => ({
     role: m.role === 'visitor' ? 'user' : 'assistant',
     content: m.content,
   }))
 
-  const router = resolved[defaultIndex].agent
-  const routerKey = await getProviderApiKey(ownerId, router.provider)
-  let chosen = defaultIndex
+  const apiKey = await getProviderApiKey(ownerId, configAgent.provider)
+  let plan = { specialists: [defaultIndex], clarify: false }
   try {
-    chosen = await routeToAgent(
+    plan = await planTeamResponse(
       options,
-      currentIndex >= 0 ? currentIndex : null,
+      currentIndices,
       defaultIndex,
-      routingHistory,
+      planHistory,
       visitorContent,
-      router.provider,
-      auxModelFor(router),
-      routerKey,
+      configAgent.provider,
+      auxModelFor(configAgent),
+      apiKey,
     )
   } catch (error) {
-    console.error('Team routing failed, using default agent:', error)
+    console.error('Team planning failed, using default specialist:', error)
   }
 
-  const chosenAgent = resolved[chosen].agent
-  await setActiveAgentId(widgetId, conversationId, chosenAgent._id)
-  return chosenAgent
+  if (plan.clarify) {
+    await logTeamDecision({ ownerId, teamId, widgetId, conversationId, specialists: [], clarify: true })
+    return {
+      configAgent,
+      replyObjective: teamObjectiveFor(resolved),
+      knowledgeAgentIds: [],
+      replyAgentName: team.name,
+      clarificationTopics: resolved.map((x) => x.member.routingDescription.trim() || x.agent.name),
+    }
+  }
+
+  const chosen = plan.specialists.map((i) => resolved[i]).filter(Boolean)
+  if (chosen.length === 0) chosen.push(resolved[defaultIndex])
+  const names = chosen.map((x) => x.agent.name)
+  await logTeamDecision({ ownerId, teamId, widgetId, conversationId, specialists: names, clarify: false })
+  await setActiveAgentId(widgetId, conversationId, chosen[0].agent._id)
+
+  return {
+    configAgent,
+    replyObjective: teamObjectiveFor(chosen),
+    knowledgeAgentIds: chosen.map((x) => x.agent._id),
+    replyAgentName: names.join(' + '),
+    clarificationTopics: null,
+  }
 }
 
 async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: string, visitorContent: string) {
@@ -1448,17 +1835,30 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     return
   }
 
-  // Resolve who answers: a single linked agent, or a team member the router picks.
-  let agent: WithId<Agent> | null = null
-  let fromTeam = false
+  // Resolve who answers. Single agent: itself. Team: the adaptive supervisor
+  // picks the specialists (or asks to clarify) and merges them into one voice.
+  let agent: WithId<Agent>
+  let replyObjective: string
+  let knowledgeAgentIds: ObjectId[]
+  let replyAgentName: string | null
+  let clarificationTopics: string[] | null
   if (widget.teamId) {
-    agent = await routeTeamMember(widget.teamId, ownerId, widgetId, conversationId, visitorContent)
-    fromTeam = agent !== null
-  } else if (widget.agentId) {
-    agent = await getAgentById(ownerId, widget.agentId)
+    const turn = await resolveTeamTurn(widget, widget.teamId, conversationId, visitorContent)
+    if (!turn) return
+    agent = turn.configAgent
+    replyObjective = turn.replyObjective
+    knowledgeAgentIds = turn.knowledgeAgentIds
+    replyAgentName = turn.replyAgentName
+    clarificationTopics = turn.clarificationTopics
+  } else {
+    const single = widget.agentId ? await getAgentById(ownerId, widget.agentId) : null
+    if (!single) return
+    agent = single
+    replyObjective = single.objective
+    knowledgeAgentIds = [single._id]
+    replyAgentName = null
+    clarificationTopics = null
   }
-  if (!agent) return
-  const replyAgentName = fromTeam ? agent.name : null
 
   const memoryType = agent.memoryType ?? 'none'
   const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
@@ -1481,7 +1881,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     let inScope = true
     try {
       inScope = await checkGuardrail(
-        agent.objective,
+        replyObjective,
         history,
         visitorContent,
         agent.provider,
@@ -1498,12 +1898,16 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     }
   }
 
+  // Ground the reply in the knowledge base(s) of the responding agent — or of
+  // every consulted specialist, for a team. Skipped when only clarifying.
   let knowledge: string[] = []
-  try {
-    const results = await searchKnowledge(agent._id, visitorContent)
-    knowledge = results.map((result) => result.content)
-  } catch (error) {
-    console.error('Knowledge search failed, replying without grounding:', error)
+  for (const knowledgeAgentId of knowledgeAgentIds) {
+    try {
+      const results = await searchKnowledge(knowledgeAgentId, visitorContent)
+      knowledge.push(...results.map((result) => result.content))
+    } catch (error) {
+      console.error('Knowledge search failed, replying without grounding:', error)
+    }
   }
 
   // If a previous turn in this conversation already resolved who the
@@ -1535,10 +1939,12 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     identityFields.length > 0 && !visitorProfile ? buildIdentityCaptureInstruction(identityFields) : ''
   // Handoff and proactivity ride in the same behavior-instruction slot as the
   // scope guardrail — they're all conduct rules layered onto the objective.
+  // For a team, a clarification instruction may override "answer" with "ask".
   const behaviorInstruction = [
     guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : '',
     agent.handoffEnabled ? HANDOFF_INSTRUCTION : '',
     agent.proactivityEnabled ? buildProactivityInstruction(agent.proactivityGuidance ?? '') : '',
+    clarificationTopics ? buildClarificationInstruction(clarificationTopics) : '',
   ]
     .filter(Boolean)
     .join('\n\n')
@@ -1553,7 +1959,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   ].join('\n\n')
 
   const { text: generatedReply, usage } = await generateAgentReply(
-    agent.objective,
+    replyObjective,
     knowledge,
     memoryText,
     history,

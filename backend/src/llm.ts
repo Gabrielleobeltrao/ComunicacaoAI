@@ -1,6 +1,6 @@
 import * as anthropicProvider from './claude.js'
 import * as openaiProvider from './openai.js'
-import type { ChatTurn, RouterOption } from './systemPrompt.js'
+import type { ChatTurn, RouterOption, TeamPlan } from './systemPrompt.js'
 
 export type { ChatTurn }
 export type Provider = 'anthropic' | 'openai'
@@ -70,25 +70,37 @@ export function checkGuardrail(
   return providerFor(provider).checkGuardrail(objective, recentMessages, visitorMessage, model, apiKey)
 }
 
-export function routeToAgent(
+export function planTeamResponse(
   options: RouterOption[],
-  currentAgentIndex: number | null,
-  defaultAgentIndex: number,
+  currentIndices: number[],
+  defaultIndex: number,
   recentMessages: ChatTurn[],
   visitorMessage: string,
   provider: string | null | undefined,
   model: string | null | undefined,
   apiKey: string | null | undefined,
-): Promise<number> {
-  return providerFor(provider).routeToAgent(
+): Promise<TeamPlan> {
+  return providerFor(provider).planTeamResponse(
     options,
-    currentAgentIndex,
-    defaultAgentIndex,
+    currentIndices,
+    defaultIndex,
     recentMessages,
     visitorMessage,
     model,
     apiKey,
   )
+}
+
+export function checkStageAdvance(
+  stageGoal: string,
+  advanceCondition: string,
+  recentMessages: ChatTurn[],
+  visitorMessage: string,
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  apiKey: string | null | undefined,
+): Promise<boolean> {
+  return providerFor(provider).checkStageAdvance(stageGoal, advanceCondition, recentMessages, visitorMessage, model, apiKey)
 }
 
 export function extractStructuredOutput(
