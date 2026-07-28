@@ -15,10 +15,16 @@ export interface WidgetSummary {
 
 export type TeamMode = 'adaptive' | 'pipeline'
 
+export interface TeamTransition {
+  condition: string
+  targetAgentId: string
+}
+
 export interface TeamMemberSummary {
   agentId: string
   routingDescription: string
   advanceWhen: string
+  transitions: TeamTransition[]
   isDefault: boolean
 }
 

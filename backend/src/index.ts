@@ -47,7 +47,7 @@ import {
   setStructuredOutputData,
 } from './conversationMemory.js'
 import { createTeam, deleteTeam, getTeamById, listTeams, updateTeam } from './teams.js'
-import type { Team, TeamMember, TeamMode } from './teams.js'
+import type { Team, TeamMember, TeamMode, TeamTransition } from './teams.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
@@ -63,11 +63,11 @@ import {
 import {
   auxiliaryModel,
   checkGuardrail,
-  checkStageAdvance,
   extractIdentity,
   extractStructuredOutput,
   generateAgentReply,
   listModelsForProvider,
+  planStageTransition,
   planTeamResponse,
   PROVIDER_IDS,
   PROVIDER_INFO,
@@ -75,7 +75,7 @@ import {
   updateStructuredMemory,
 } from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
-import type { RouterOption } from './systemPrompt.js'
+import type { RouterOption, StageTransitionOption } from './systemPrompt.js'
 import { listTeamDecisionsForConversation, logTeamDecision } from './teamDecisions.js'
 import {
   buildClarificationInstruction,
@@ -486,6 +486,7 @@ app.delete('/api/widgets/:widgetId/avatar', requireAuth, async (req, res) => {
 // ---- Teams (agent orchestration) ----
 
 const MAX_TEAM_MEMBERS = 10
+const MAX_STAGE_TRANSITIONS = 5
 
 function serializeTeam(team: WithId<Team>) {
   return {
@@ -496,6 +497,10 @@ function serializeTeam(team: WithId<Team>) {
       agentId: m.agentId.toString(),
       routingDescription: m.routingDescription,
       advanceWhen: m.advanceWhen ?? '',
+      transitions: (m.transitions ?? []).map((t) => ({
+        condition: t.condition,
+        targetAgentId: t.targetAgentId.toString(),
+      })),
       isDefault: m.isDefault,
     })),
   }
@@ -508,6 +513,7 @@ async function resolveTeamMembers(
   if (!Array.isArray(raw)) return { error: 'members must be a list' }
   if (raw.length > MAX_TEAM_MEMBERS) return { error: `A team can have at most ${MAX_TEAM_MEMBERS} agents` }
   const members: TeamMember[] = []
+  const rawTransitions: unknown[] = []
   const seen = new Set<string>()
   for (const m of raw) {
     if (typeof m !== 'object' || m === null) return { error: 'Invalid member' }
@@ -523,8 +529,39 @@ async function resolveTeamMembers(
       agentId: agent._id,
       routingDescription: typeof desc === 'string' ? desc : '',
       advanceWhen: typeof advanceWhen === 'string' ? advanceWhen : '',
+      transitions: [],
       isDefault: (m as { isDefault?: unknown }).isDefault === true,
     })
+    rawTransitions.push((m as { transitions?: unknown }).transitions)
+  }
+
+  // Second pass: transitions can point to any stage (skip/branch/back), so
+  // validate their targets only after every member agentId is known.
+  for (let i = 0; i < members.length; i++) {
+    const rt = rawTransitions[i]
+    if (rt === undefined || rt === null) continue
+    if (!Array.isArray(rt)) return { error: 'transitions must be a list' }
+    if (rt.length > MAX_STAGE_TRANSITIONS) {
+      return { error: `A stage can have at most ${MAX_STAGE_TRANSITIONS} transitions` }
+    }
+    const transitions: TeamTransition[] = []
+    for (const t of rt) {
+      if (typeof t !== 'object' || t === null) return { error: 'Invalid transition' }
+      const condition = (t as { condition?: unknown }).condition
+      const targetAgentId = (t as { targetAgentId?: unknown }).targetAgentId
+      if (typeof targetAgentId !== 'string' || !ObjectId.isValid(targetAgentId)) {
+        return { error: 'Invalid transition target' }
+      }
+      if (!seen.has(targetAgentId)) return { error: 'Transition target is not a member of the team' }
+      if (targetAgentId === members[i].agentId.toString()) {
+        return { error: 'A transition cannot target its own stage' }
+      }
+      transitions.push({
+        condition: typeof condition === 'string' ? condition : '',
+        targetAgentId: new ObjectId(targetAgentId),
+      })
+    }
+    members[i].transitions = transitions
   }
   return { members }
 }
@@ -678,6 +715,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
   let pipelineStageName: string | null = null
   let pipelineStageIndex: number | null = null
   let pipelineAdvanced = false
+  let pipelineFromStage: string | null = null
 
   if (mode === 'pipeline' && resolved.length > 1) {
     // The client sends the stage the conversation is on; default to the first.
@@ -685,24 +723,26 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
       typeof rawStageIndex === 'number' && Number.isInteger(rawStageIndex)
         ? Math.min(Math.max(rawStageIndex, 0), resolved.length - 1)
         : 0
-    const current = resolved[stageIndex]
-    if (stageIndex < resolved.length - 1) {
+    const options = buildStageTransitionOptions(resolved, stageIndex)
+    if (options.length > 0) {
       try {
-        const shouldAdvance = await checkStageAdvance(
-          current.member.routingDescription,
-          current.member.advanceWhen,
+        const target = await planStageTransition(
+          resolved[stageIndex].agent.name,
+          resolved[stageIndex].member.routingDescription,
+          options,
           history.slice(0, -1),
           lastUser.content,
           configAgent.provider,
           auxModelFor(configAgent),
           apiKey,
         )
-        if (shouldAdvance) {
-          stageIndex += 1
+        if (target >= 0 && target !== stageIndex) {
+          pipelineFromStage = resolved[stageIndex].agent.name
           pipelineAdvanced = true
+          stageIndex = target
         }
       } catch (error) {
-        console.error('Team playground stage advance check failed, staying on current stage:', error)
+        console.error('Team playground stage transition planning failed, staying on current stage:', error)
       }
     }
     const stage = resolved[stageIndex]
@@ -809,6 +849,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
     stage: pipelineStageName,
     stageIndex: pipelineStageIndex,
     advanced: pipelineAdvanced,
+    fromStage: pipelineFromStage,
   })
 })
 
@@ -1478,6 +1519,7 @@ app.get(
         clarify: d.clarify,
         mode: d.mode ?? 'adaptive',
         advanced: d.advanced ?? false,
+        fromStage: d.fromStage ?? null,
         createdAt: d.createdAt,
       })),
     )
@@ -1628,6 +1670,29 @@ function auxModelFor(agent: WithId<Agent>): string | null {
   return agent.cheapAuxModel === false ? agent.model : auxiliaryModel(agent.provider)
 }
 
+// The moves available out of a pipeline stage: its explicit transitions
+// (skip/branch/back) plus the implicit linear advance to the next stage. Targets
+// are indices into `resolved`; self-targets, out-of-range, and duplicates drop.
+function buildStageTransitionOptions(
+  resolved: { member: TeamMember; agent: WithId<Agent> }[],
+  stageIndex: number,
+): StageTransitionOption[] {
+  const current = resolved[stageIndex]
+  const options: StageTransitionOption[] = []
+  const usedTargets = new Set<number>()
+  for (const transition of current.member.transitions ?? []) {
+    const target = resolved.findIndex((x) => x.agent._id.equals(transition.targetAgentId))
+    if (target < 0 || target === stageIndex || usedTargets.has(target)) continue
+    usedTargets.add(target)
+    options.push({ target, targetName: resolved[target].agent.name, condition: transition.condition })
+  }
+  const next = stageIndex + 1
+  if (next < resolved.length && current.member.advanceWhen.trim() && !usedTargets.has(next)) {
+    options.push({ target: next, targetName: resolved[next].agent.name, condition: current.member.advanceWhen })
+  }
+  return options
+}
+
 interface TeamTurn {
   // The default member supplies the team voice + memory/identity/guardrail config.
   configAgent: WithId<Agent>
@@ -1695,10 +1760,11 @@ async function resolveTeamTurn(
     }
   }
 
-  // Pipeline mode: ordered stages. The active stage answers; if its advance
-  // condition is now met we hand off to the next stage first (at most one step
-  // per turn). The visitor never perceives the switch — each stage speaks as
-  // one continuous assistant.
+  // Pipeline mode: ordered stages. The active stage answers; a planner may first
+  // move the flow to another stage — the next one (advance), a later one (skip),
+  // an alternative (branch), or an earlier one (back) — when a transition's
+  // condition is met. At most one move per turn, and the visitor never perceives
+  // the switch: each stage speaks as one continuous assistant.
   if ((team.mode ?? 'adaptive') === 'pipeline') {
     const activeAgentId = await getActiveAgentId(widgetId, conversationId)
     let stageIndex = activeAgentId ? resolved.findIndex((x) => x.agent._id.equals(activeAgentId)) : 0
@@ -1711,14 +1777,15 @@ async function resolveTeamTurn(
     }))
     const apiKey = await getProviderApiKey(ownerId, configAgent.provider)
 
-    let advanced = false
-    const current = resolved[stageIndex]
-    if (stageIndex < resolved.length - 1) {
-      let shouldAdvance = false
+    let fromStage: string | null = null
+    const options = buildStageTransitionOptions(resolved, stageIndex)
+    if (options.length > 0) {
+      let target = -1
       try {
-        shouldAdvance = await checkStageAdvance(
-          current.member.routingDescription,
-          current.member.advanceWhen,
+        target = await planStageTransition(
+          resolved[stageIndex].agent.name,
+          resolved[stageIndex].member.routingDescription,
+          options,
           advanceHistory,
           visitorContent,
           configAgent.provider,
@@ -1726,11 +1793,11 @@ async function resolveTeamTurn(
           apiKey,
         )
       } catch (error) {
-        console.error('Stage advance check failed, staying on current stage:', error)
+        console.error('Stage transition planning failed, staying on current stage:', error)
       }
-      if (shouldAdvance) {
-        stageIndex += 1
-        advanced = true
+      if (target >= 0 && target !== stageIndex) {
+        fromStage = resolved[stageIndex].agent.name
+        stageIndex = target
       }
     }
 
@@ -1744,7 +1811,8 @@ async function resolveTeamTurn(
       specialists: [stage.agent.name],
       clarify: false,
       mode: 'pipeline',
-      advanced,
+      advanced: fromStage !== null,
+      fromStage,
     })
     return {
       configAgent,

@@ -6,14 +6,25 @@ import { db } from './db.js'
 // the next when its advance condition is met (member order = stage order).
 export type TeamMode = 'adaptive' | 'pipeline'
 
+// Pipeline only: a conditional jump from this stage to another one (identified
+// by its agent). Lets a flow skip ahead, branch (A → B or C), or go back to an
+// earlier stage when the topic changes — beyond the plain linear advance.
+export interface TeamTransition {
+  condition: string
+  targetAgentId: ObjectId
+}
+
 export interface TeamMember {
   agentId: ObjectId
   // Adaptive: "when to use this agent" hint the supervisor reads. Pipeline:
   // what this stage does. Either way, a short description of the member's role.
   routingDescription: string
   // Pipeline only: the condition under which this stage is complete and the
-  // flow should move to the next member. Ignored in adaptive mode.
+  // flow should advance to the NEXT member (the simple linear case). Ignored
+  // in adaptive mode.
   advanceWhen: string
+  // Pipeline only: conditional jumps to non-adjacent stages (skip/branch/back).
+  transitions: TeamTransition[]
   // The fallback specialist for ambiguous messages; also the source of
   // widget-level settings (first message, conversation persistence, limit).
   isDefault: boolean

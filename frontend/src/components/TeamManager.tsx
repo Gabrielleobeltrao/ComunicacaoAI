@@ -13,10 +13,16 @@ interface TeamManagerProps {
   onChange: () => void | Promise<void>
 }
 
+interface EditTransition {
+  condition: string
+  targetAgentId: string
+}
+
 interface EditMember {
   agentId: string
   routingDescription: string
   advanceWhen: string
+  transitions: EditTransition[]
   isDefault: boolean
 }
 
@@ -27,6 +33,7 @@ interface PlayMessage {
   clarify?: boolean
   stage?: string | null
   advanced?: boolean
+  fromStage?: string | null
   mode?: TeamMode
 }
 
@@ -86,6 +93,7 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
             clarify: body.clarify,
             stage: body.stage,
             advanced: body.advanced,
+            fromStage: body.fromStage,
             mode: body.mode,
           },
         ])
@@ -117,7 +125,9 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
     setEditingTeam(team)
     setEditName(team.name)
     setEditMode(team.mode)
-    setEditMembers(team.members.map((m) => ({ ...m })))
+    setEditMembers(
+      team.members.map((m) => ({ ...m, transitions: (m.transitions ?? []).map((t) => ({ ...t })) })),
+    )
     setEditError(null)
   }
 
@@ -133,13 +143,16 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
     if (!agentId) return
     setEditMembers((prev) => [
       ...prev,
-      { agentId, routingDescription: '', advanceWhen: '', isDefault: prev.length === 0 },
+      { agentId, routingDescription: '', advanceWhen: '', transitions: [], isDefault: prev.length === 0 },
     ])
   }
 
   function removeMember(agentId: string) {
     setEditMembers((prev) => {
-      const next = prev.filter((m) => m.agentId !== agentId)
+      const next = prev
+        .filter((m) => m.agentId !== agentId)
+        // Drop any transitions that pointed at the removed stage.
+        .map((m) => ({ ...m, transitions: m.transitions.filter((t) => t.targetAgentId !== agentId) }))
       // Keep exactly one default.
       if (next.length > 0 && !next.some((m) => m.isDefault)) next[0].isDefault = true
       return [...next]
@@ -162,6 +175,33 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
 
   function setAdvanceWhen(agentId: string, value: string) {
     setEditMembers((prev) => prev.map((m) => (m.agentId === agentId ? { ...m, advanceWhen: value } : m)))
+  }
+
+  function addTransition(agentId: string, targetAgentId: string) {
+    if (!targetAgentId) return
+    setEditMembers((prev) =>
+      prev.map((m) =>
+        m.agentId === agentId ? { ...m, transitions: [...m.transitions, { condition: '', targetAgentId }] } : m,
+      ),
+    )
+  }
+
+  function removeTransition(agentId: string, index: number) {
+    setEditMembers((prev) =>
+      prev.map((m) =>
+        m.agentId === agentId ? { ...m, transitions: m.transitions.filter((_, i) => i !== index) } : m,
+      ),
+    )
+  }
+
+  function setTransitionCondition(agentId: string, index: number, value: string) {
+    setEditMembers((prev) =>
+      prev.map((m) =>
+        m.agentId === agentId
+          ? { ...m, transitions: m.transitions.map((t, i) => (i === index ? { ...t, condition: value } : t)) }
+          : m,
+      ),
+    )
   }
 
   function setDefault(agentId: string) {
@@ -187,6 +227,11 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
         agentId: m.agentId,
         routingDescription: m.routingDescription.trim(),
         advanceWhen: m.advanceWhen.trim(),
+        // Transitions only apply to the pipeline flow.
+        transitions:
+          editMode === 'pipeline'
+            ? m.transitions.map((t) => ({ condition: t.condition.trim(), targetAgentId: t.targetAgentId }))
+            : [],
         isDefault: m.isDefault,
       })),
     })
@@ -415,7 +460,9 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
                     />
                     {isPipeline &&
                       (index === editMembers.length - 1 ? (
-                        <p className="mt-1.5 text-xs text-slate-600">Última etapa — encerra o fluxo.</p>
+                        <p className="mt-1.5 text-xs text-slate-600">
+                          Última etapa — encerra o fluxo (mas ainda pode ter desvios abaixo).
+                        </p>
                       ) : (
                         <input
                           value={m.advanceWhen}
@@ -424,6 +471,68 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
                           className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
                         />
                       ))}
+                    {isPipeline && (
+                      <div className="mt-2 rounded-lg border border-slate-800/70 bg-slate-950/40 p-2">
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                          Desvios (opcional)
+                        </p>
+                        {m.transitions.length === 0 ? (
+                          <p className="text-xs text-slate-600">
+                            Pule, ramifique ou volte para outra etapa quando uma condição acontecer.
+                          </p>
+                        ) : (
+                          <ul className="space-y-1.5">
+                            {m.transitions.map((t, ti) => (
+                              <li key={ti} className="flex items-center gap-1.5">
+                                <span className="shrink-0 text-xs text-slate-500">Se</span>
+                                <input
+                                  value={t.condition}
+                                  onChange={(e) => setTransitionCondition(m.agentId, ti, e.target.value)}
+                                  placeholder="ex: o grupo tiver mais de 8 pessoas"
+                                  className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs outline-none focus:border-slate-500"
+                                />
+                                <span className="shrink-0 text-xs text-slate-400">
+                                  → {agentNameById.get(t.targetAgentId) ?? 'etapa'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => removeTransition(m.agentId, ti)}
+                                  className="shrink-0 px-1 text-sm text-red-400 transition hover:text-red-300"
+                                  aria-label="Remover desvio"
+                                >
+                                  ×
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {editMembers.some(
+                          (o) => o.agentId !== m.agentId && !m.transitions.some((t) => t.targetAgentId === o.agentId),
+                        ) && (
+                          <select
+                            value=""
+                            onChange={(e) => {
+                              addTransition(m.agentId, e.target.value)
+                              e.target.value = ''
+                            }}
+                            className="mt-1.5 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs outline-none focus:border-slate-500"
+                          >
+                            <option value="">+ Adicionar desvio para outra etapa</option>
+                            {editMembers
+                              .filter(
+                                (o) =>
+                                  o.agentId !== m.agentId &&
+                                  !m.transitions.some((t) => t.targetAgentId === o.agentId),
+                              )
+                              .map((o) => (
+                                <option key={o.agentId} value={o.agentId}>
+                                  ir para {agentNameById.get(o.agentId) ?? 'etapa'}
+                                </option>
+                              ))}
+                          </select>
+                        )}
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -504,7 +613,9 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
                 {message.role === 'assistant' && (
                   <span className="mt-0.5 text-[10px] text-slate-500">
                     {message.mode === 'pipeline'
-                      ? `↳ etapa: ${message.stage ?? '—'}${message.advanced ? ' · avançou' : ''}`
+                      ? message.advanced && message.fromStage
+                        ? `↳ ${message.fromStage} → ${message.stage ?? '—'}`
+                        : `↳ etapa: ${message.stage ?? '—'}`
                       : message.clarify
                         ? '↳ pediu esclarecimento'
                         : message.specialists && message.specialists.length > 0

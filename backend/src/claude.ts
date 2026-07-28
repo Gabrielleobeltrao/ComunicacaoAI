@@ -4,7 +4,7 @@ import {
   buildGuardrailCheckPrompt,
   buildIdentityExtractionPrompt,
   buildMemoryUpdatePrompt,
-  buildStageAdvancePrompt,
+  buildStageTransitionPrompt,
   buildStructuredMemoryUpdatePrompt,
   buildStructuredOutputExtractionPrompt,
   buildSystemPromptParts,
@@ -12,16 +12,16 @@ import {
   GUARDRAIL_CHECK_SYSTEM_PROMPT,
   IDENTITY_EXTRACTION_SYSTEM_PROMPT,
   MEMORY_UPDATE_SYSTEM_PROMPT,
-  parseAdvanceResult,
   parseInScopeResult,
   parseJsonObject,
+  parseStageTransition,
   parseTeamPlan,
-  STAGE_ADVANCE_SYSTEM_PROMPT,
+  STAGE_TRANSITION_SYSTEM_PROMPT,
   STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
   STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT,
   TEAM_PLANNER_SYSTEM_PROMPT,
 } from './systemPrompt.js'
-import type { ChatTurn, RouterOption, TeamPlan } from './systemPrompt.js'
+import type { ChatTurn, RouterOption, StageTransitionOption, TeamPlan } from './systemPrompt.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
 
 export type { ChatTurn }
@@ -246,28 +246,33 @@ export async function planTeamResponse(
   return parseTeamPlan(textBlock.text, options.length, defaultIndex)
 }
 
-export async function checkStageAdvance(
-  stageGoal: string,
-  advanceCondition: string,
+export async function planStageTransition(
+  currentStageName: string,
+  currentStageGoal: string,
+  options: StageTransitionOption[],
   recentMessages: ChatTurn[],
   visitorMessage: string,
   model?: string | null,
   apiKey?: string | null,
-): Promise<boolean> {
+): Promise<number> {
+  const validTargets = options.map((o) => o.target)
   const response = await buildClient(apiKey).messages.create({
     model: model || DEFAULT_MODEL,
     max_tokens: 50,
-    system: STAGE_ADVANCE_SYSTEM_PROMPT,
+    system: STAGE_TRANSITION_SYSTEM_PROMPT,
     thinking: { type: 'disabled' },
     output_config: { effort: 'low' },
     messages: [
-      { role: 'user', content: buildStageAdvancePrompt(stageGoal, advanceCondition, recentMessages, visitorMessage) },
+      {
+        role: 'user',
+        content: buildStageTransitionPrompt(currentStageName, currentStageGoal, options, recentMessages, visitorMessage),
+      },
     ],
   })
 
   const textBlock = response.content.find((block) => block.type === 'text')
-  if (!textBlock || textBlock.type !== 'text') return false
-  return parseAdvanceResult(textBlock.text)
+  if (!textBlock || textBlock.type !== 'text') return -1
+  return parseStageTransition(textBlock.text, validTargets)
 }
 
 export async function extractStructuredOutput(

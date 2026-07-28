@@ -29,6 +29,7 @@ interface OrchestrationDecision {
   clarify: boolean
   mode: 'adaptive' | 'pipeline'
   advanced: boolean
+  fromStage: string | null
   createdAt: string
 }
 
@@ -359,11 +360,13 @@ export function ConversationsPanel() {
                         <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">
                           Fluxo
                         </span>
-                        <span className="text-slate-300">Etapa: {decision.specialists[0] ?? '—'}</span>
-                        {decision.advanced && (
-                          <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-400">
-                            avançou
+                        {decision.advanced && decision.fromStage ? (
+                          <span className="text-slate-300">
+                            <span className="text-slate-500">{decision.fromStage}</span> →{' '}
+                            {decision.specialists[0] ?? '—'}
                           </span>
+                        ) : (
+                          <span className="text-slate-300">Etapa: {decision.specialists[0] ?? '—'}</span>
                         )}
                       </span>
                     ) : decision.clarify ? (

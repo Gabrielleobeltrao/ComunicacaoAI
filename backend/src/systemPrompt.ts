@@ -103,46 +103,61 @@ export function buildPipelineStageObjective(
   return `Você é o assistente de atendimento${teamName ? ` de ${teamName}` : ''}. Fale como UM único assistente contínuo: o visitante conversa com você como se fosse uma só pessoa do começo ao fim. NUNCA diga que vai transferir, encaminhar, passar para outro setor, chamar outra pessoa ou consultar um especialista, e nunca mencione "etapas" ou "equipe" — a conversa deve fluir de forma natural e ininterrupta.\n\nSua área de atuação:\n${focus}${goalLine}`
 }
 
-export const STAGE_ADVANCE_SYSTEM_PROMPT = `Você acompanha um atendimento que segue um fluxo em etapas. Cada etapa tem um objetivo e uma condição para avançar para a próxima. Dada a etapa atual e a conversa mais recente (incluindo a última mensagem do visitante), decida se a condição para avançar JÁ foi satisfeita.
+// A possible move out of the current stage: which stage to go to (by its index
+// in the resolved member list) and the condition that triggers it. The linear
+// "advance to the next stage" is just one candidate among these.
+export interface StageTransitionOption {
+  target: number
+  targetName: string
+  condition: string
+}
+
+export const STAGE_TRANSITION_SYSTEM_PROMPT = `Você acompanha um atendimento que segue um fluxo em etapas. O visitante está numa etapa atual e existem transições possíveis para outras etapas, cada uma com uma condição. Dada a conversa mais recente (incluindo a última mensagem do visitante), decida se ALGUMA condição de transição já foi claramente satisfeita.
 
 Regras:
-- Responda "advance": true apenas quando a condição de avanço estiver claramente satisfeita pela conversa até agora.
-- Se ainda faltar alguma informação ou algum passo da etapa atual, responda "advance": false.
-- Na dúvida, responda false — é melhor permanecer na etapa atual do que pular cedo demais.
+- Se uma condição foi claramente satisfeita pela conversa até agora, responda com o índice ("target") da etapa de destino daquela transição.
+- Se mais de uma se aplicar, escolha a mais relevante para a última mensagem do visitante.
+- Se nenhuma condição foi satisfeita, responda {"target": -1} para permanecer na etapa atual.
+- Na dúvida, permaneça na etapa atual (-1) — é melhor não mudar cedo demais.
 
-Responda APENAS com um objeto JSON válido, sem comentários, sem markdown: {"advance": true|false}`
+Responda APENAS com um objeto JSON válido, sem comentários, sem markdown: {"target": <número>}`
 
-export function buildStageAdvancePrompt(
-  stageGoal: string,
-  advanceCondition: string,
+export function buildStageTransitionPrompt(
+  currentStageName: string,
+  currentStageGoal: string,
+  options: StageTransitionOption[],
   recentMessages: ChatTurn[],
   visitorMessage: string,
 ): string {
+  const optionList = options
+    .map((o) => `[${o.target}] Ir para "${o.targetName}" se: ${o.condition.trim() || '(condição não especificada)'}`)
+    .join('\n')
   const transcript = recentMessages
     .map((turn) => `${turn.role === 'user' ? 'Visitante' : 'Agente'}: ${turn.content}`)
     .join('\n')
-  return `Objetivo da etapa atual: ${stageGoal.trim() || '(não especificado)'}\nCondição para avançar para a próxima etapa: ${
-    advanceCondition.trim() || '(não especificada)'
-  }\n\n${transcript ? `Conversa recente:\n${transcript}\n\n` : ''}Nova mensagem do visitante: ${visitorMessage}\n\nAvaliação (JSON):`
+  return `Etapa atual: ${currentStageName}${currentStageGoal.trim() ? ` — ${currentStageGoal.trim()}` : ''}\n\nTransições possíveis:\n${optionList}\n\n${
+    transcript ? `Conversa recente:\n${transcript}\n\n` : ''
+  }Nova mensagem do visitante: ${visitorMessage}\n\nDecisão (JSON):`
 }
 
-// Fail closed: a parse failure keeps the conversation on the current stage
-// rather than skipping ahead on a malformed classification.
-export function parseAdvanceResult(text: string): boolean {
+// Returns the chosen target stage index, or -1 to stay. Fail closed: a parse
+// failure or an out-of-range target keeps the conversation on the current stage
+// rather than jumping on a malformed classification.
+export function parseStageTransition(text: string, validTargets: number[]): number {
   const cleaned = text
     .trim()
     .replace(/^```(?:json)?/i, '')
     .replace(/```$/, '')
     .trim()
   try {
-    const parsed: unknown = JSON.parse(cleaned)
-    if (parsed && typeof parsed === 'object' && typeof (parsed as { advance?: unknown }).advance === 'boolean') {
-      return (parsed as { advance: boolean }).advance
+    const parsed = JSON.parse(cleaned) as { target?: unknown }
+    if (typeof parsed.target === 'number' && Number.isInteger(parsed.target) && validTargets.includes(parsed.target)) {
+      return parsed.target
     }
   } catch {
-    // fall through to the fail-closed default below
+    // fall through to the stay default below
   }
-  return false
+  return -1
 }
 
 // Split so the prompt-caching layer can cache the parts that stay identical

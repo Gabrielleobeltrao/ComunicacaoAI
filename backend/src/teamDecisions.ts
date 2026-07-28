@@ -15,6 +15,9 @@ export interface TeamDecision {
   // Pipeline observability (absent on adaptive decisions).
   mode?: 'adaptive' | 'pipeline'
   advanced?: boolean
+  // The stage the flow moved away from this turn (null when it stayed put).
+  // Lets the UI render skip/branch/back as "fromStage → stage", not just advance.
+  fromStage?: string | null
   createdAt: Date
 }
 
@@ -29,6 +32,7 @@ export async function logTeamDecision(entry: {
   clarify: boolean
   mode?: 'adaptive' | 'pipeline'
   advanced?: boolean
+  fromStage?: string | null
 }) {
   await teamDecisions.insertOne({ ...entry, createdAt: new Date() } as TeamDecision)
 }
