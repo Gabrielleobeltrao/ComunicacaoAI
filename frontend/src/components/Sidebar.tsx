@@ -87,16 +87,52 @@ function LogoutIcon({ className }: IconProps) {
   )
 }
 
+// Single chevron pointing right; rotated 90° it points down (group expanded).
+function ChevronIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function SupportIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <path d="M4 13v-1a8 8 0 0 1 16 0v1" strokeLinecap="round" />
+      <rect x="2.5" y="12.5" width="3.5" height="6" rx="1.2" />
+      <rect x="18" y="12.5" width="3.5" height="6" rx="1.2" />
+      <path d="M20 18.5v.5a3 3 0 0 1-3 3h-2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 interface NavLink {
   to: string
   label: string
   Icon: (props: IconProps) => ReactElement
 }
 
-const NAV: NavLink[] = [
+interface NavGroup {
+  key: string
+  label: string
+  Icon: (props: IconProps) => ReactElement
+  children: NavLink[]
+}
+
+type NavEntry = NavLink | NavGroup
+
+const NAV: NavEntry[] = [
   { to: '/dashboard', label: 'Dashboard', Icon: DashboardIcon },
-  { to: '/agents', label: 'Agentes', Icon: AgentsIcon },
-  { to: '/teams', label: 'Equipes', Icon: TeamsIcon },
+  {
+    key: 'atendimento',
+    label: 'Atendimento',
+    Icon: SupportIcon,
+    children: [
+      { to: '/agents', label: 'Agentes', Icon: AgentsIcon },
+      { to: '/teams', label: 'Equipes', Icon: TeamsIcon },
+    ],
+  },
   { to: '/widgets', label: 'Widgets', Icon: WidgetsIcon },
   { to: '/chats', label: 'Chats', Icon: ChatsIcon },
 ]
@@ -110,6 +146,25 @@ export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
   const { data: session } = useSession()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Which parent groups are expanded to reveal their subpages. Persisted;
+  // groups default to open (a key is only stored once toggled shut/open).
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('sidebar-open-groups') ?? '{}')
+      return saved && typeof saved === 'object' ? saved : {}
+    } catch {
+      return {}
+    }
+  })
+  const isGroupOpen = (key: string) => openGroups[key] !== false
+
+  function toggleGroup(key: string) {
+    setOpenGroups((prev) => {
+      const next = { ...prev, [key]: prev[key] === false }
+      localStorage.setItem('sidebar-open-groups', JSON.stringify(next))
+      return next
+    })
+  }
 
   async function handleSignOut() {
     await signOut()
@@ -126,16 +181,56 @@ export function Sidebar({ current }: { current: string }) {
       </div>
 
       <nav className="flex flex-col gap-1">
-        {NAV.map((item) => (
-          <Link
-            key={item.to}
-            to={item.to}
-            className={`${ITEM_BASE} ${item.to === current ? ACTIVE : INACTIVE}`}
-          >
-            <item.Icon className="h-5 w-5 shrink-0" />
-            <span className={LABEL}>{item.label}</span>
-          </Link>
-        ))}
+        {NAV.map((item) => {
+          if (!('children' in item)) {
+            return (
+              <Link
+                key={item.to}
+                to={item.to}
+                className={`${ITEM_BASE} ${item.to === current ? ACTIVE : INACTIVE}`}
+              >
+                <item.Icon className="h-5 w-5 shrink-0" />
+                <span className={LABEL}>{item.label}</span>
+              </Link>
+            )
+          }
+
+          const open = isGroupOpen(item.key)
+          const childActive = item.children.some((child) => child.to === current)
+          return (
+            <div key={item.key} className="flex flex-col gap-1">
+              {/* Section title: not a link — clicking it just expands/collapses.
+                  It highlights only while its active subpage is hidden (collapsed). */}
+              <button
+                type="button"
+                onClick={() => toggleGroup(item.key)}
+                aria-expanded={open}
+                className={`${ITEM_BASE} ${childActive && !open ? ACTIVE : INACTIVE}`}
+              >
+                <item.Icon className="h-5 w-5 shrink-0" />
+                <span className={LABEL}>{item.label}</span>
+                <ChevronIcon
+                  className={`ml-auto h-4 w-4 shrink-0 opacity-0 transition-[transform,opacity] duration-150 group-hover:opacity-100 ${
+                    open ? 'rotate-90' : ''
+                  }`}
+                />
+              </button>
+
+              {open
+                ? item.children.map((child) => (
+                    <Link
+                      key={child.to}
+                      to={child.to}
+                      className={`${ITEM_BASE} group-hover:pl-7 ${child.to === current ? ACTIVE : INACTIVE}`}
+                    >
+                      <child.Icon className="h-4.5 w-4.5 shrink-0 opacity-80" />
+                      <span className={`${LABEL} text-[13px]`}>{child.label}</span>
+                    </Link>
+                  ))
+                : null}
+            </div>
+          )
+        })}
       </nav>
 
       <div className="mt-auto flex flex-col gap-1 border-t border-slate-800 pt-3">
