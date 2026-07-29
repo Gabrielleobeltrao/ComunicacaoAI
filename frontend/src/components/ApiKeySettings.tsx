@@ -169,8 +169,7 @@ function MonthlyCapField({ initialCap, onSaved }: { initialCap: number; onSaved:
   )
 }
 
-export function ApiKeySettings() {
-  const [open, setOpen] = useState(false)
+export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [status, setStatus] = useState<KeyStatus>({})
   const [monthlyCap, setMonthlyCap] = useState(0)
@@ -191,28 +190,14 @@ export function ApiKeySettings() {
     setLoading(false)
   }
 
-  function handleOpen() {
-    setOpen(true)
-    loadSettings()
-  }
-
   useEffect(() => {
     if (open) loadSettings()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [open])
 
   return (
-    <>
-      <button
-        type="button"
-        onClick={handleOpen}
-        className="text-sm text-slate-400 transition hover:text-white"
-      >
-        Configurações
-      </button>
-
-      <Modal open={open} onClose={() => setOpen(false)} title="Configurações">
-        <div className="space-y-4">
+    <Modal open={open} onClose={onClose} title="Configurações">
+      <div className="space-y-4">
           <p className="text-sm text-slate-400">
             Chaves usadas para gerar as respostas dos seus agentes (cada agente escolhe qual provedor
             usar). Se você não configurar uma chave, o sistema tenta usar uma chave padrão do servidor,
@@ -235,8 +220,7 @@ export function ApiKeySettings() {
               <MonthlyCapField initialCap={monthlyCap} onSaved={loadSettings} />
             </>
           )}
-        </div>
-      </Modal>
-    </>
+      </div>
+    </Modal>
   )
 }
