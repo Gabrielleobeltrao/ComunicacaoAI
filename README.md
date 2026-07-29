@@ -55,10 +55,10 @@ The repo is an npm workspaces monorepo (`frontend` + `backend`), with a single l
 │       │   ├── AgentManager.tsx        # agent create/edit popup — 7-step wizard (basics, style, memory, guardrails, identity, structured output, KB)
 │       │   ├── TeamManager.tsx         # team create/edit (mode, members, pipeline stages + transitions) + team test playground
 │       │   ├── WidgetManager.tsx       # widget create/edit popup (visual customization)
-│       │   ├── ApiKeySettings.tsx      # BYOK settings popup
-│       │   ├── ConversationsPanel.tsx  # Chats page conversation list + reply UI
+│       │   ├── ApiKeySettings.tsx      # SettingsModal — BYOK keys + monthly token cap, opened from the sidebar
+│       │   ├── ConversationsPanel.tsx  # Chats page conversation list + reply UI + orchestration decision timeline
 │       │   ├── MessageContent.tsx      # shared markdown-safe message renderer (widget + Chats)
-│       │   ├── Sidebar.tsx, AppLayout.tsx  # shared sidebar nav + layout across authenticated pages
+│       │   ├── Sidebar.tsx, AppLayout.tsx  # collapsible sidebar (grouped sections + footer: settings/account/logout) + page layout
 │       │   ├── Modal.tsx               # reusable popup
 │       │   └── ProtectedRoute.tsx
 │       └── pages/                      # Home, Login, Register, Dashboard, Agents, Teams, Widgets, Chats, Widget (public)
