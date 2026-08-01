@@ -1478,8 +1478,9 @@ app.delete('/api/agents/:agentId/documents/:documentId', requireAuth, async (req
   res.status(204).end()
 })
 
-app.get('/api/conversations', requireAuth, async (_req, res) => {
-  const conversations = await listConversationsForOwner(res.locals.userId)
+app.get('/api/conversations', requireAuth, async (req, res) => {
+  const search = typeof req.query.search === 'string' ? req.query.search : undefined
+  const conversations = await listConversationsForOwner(res.locals.userId, search)
   res.json(conversations)
 })
 

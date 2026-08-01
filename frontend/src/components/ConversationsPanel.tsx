@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import { socket } from '../lib/socket'
@@ -38,6 +38,11 @@ export function ConversationsPanel() {
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<ConversationSummary | null>(null)
   const [widgetFilter, setWidgetFilter] = useState('')
+  const [search, setSearch] = useState('')
+  // Held in a ref so the socket/interval handlers (registered once) always fetch
+  // with the current search term without re-registering on every keystroke.
+  const searchRef = useRef('')
+  searchRef.current = search
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [structuredData, setStructuredData] = useState<Record<string, string>>({})
   const [decisions, setDecisions] = useState<OrchestrationDecision[]>([])
@@ -48,18 +53,19 @@ export function ConversationsPanel() {
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    let cancelled = false
-
-    async function load() {
-      const res = await fetch(`${API_URL}/api/conversations`, { credentials: 'include' })
-      if (res.ok && !cancelled) {
-        setConversations(await res.json())
-      }
-      setLoading(false)
+  // Server-side search across the full message content of each conversation
+  // (see the backend). Stable identity so the socket effect registers it once.
+  const load = useCallback(async () => {
+    const term = searchRef.current.trim()
+    const qs = term ? `?search=${encodeURIComponent(term)}` : ''
+    const res = await fetch(`${API_URL}/api/conversations${qs}`, { credentials: 'include' })
+    if (res.ok) {
+      setConversations(await res.json())
     }
+    setLoading(false)
+  }, [])
 
-    load()
+  useEffect(() => {
     const interval = setInterval(load, 20000)
 
     // Realtime: refresh the list instantly whenever any of the owner's
@@ -76,12 +82,17 @@ export function ConversationsPanel() {
     if (socket.connected) joinOwnerRoom()
 
     return () => {
-      cancelled = true
       clearInterval(interval)
       socket.off('connect', joinOwnerRoom)
       socket.off('conversations-updated', load)
     }
-  }, [])
+  }, [load])
+
+  // Debounced (re)fetch on search change; also does the initial load on mount.
+  useEffect(() => {
+    const timeout = setTimeout(load, 250)
+    return () => clearTimeout(timeout)
+  }, [search, load])
 
   useEffect(() => {
     if (!selected) return
@@ -226,7 +237,9 @@ export function ConversationsPanel() {
     return <p className="text-sm text-slate-400">Carregando conversas...</p>
   }
 
-  if (conversations.length === 0) {
+  // Only show the "no conversations yet" state when there genuinely are none —
+  // not when a search simply returned nothing (the search box must stay usable).
+  if (conversations.length === 0 && !search.trim()) {
     return (
       <p className="text-sm text-slate-400">
         Nenhuma conversa ainda. Teste um widget para ver as mensagens aparecerem aqui.
@@ -245,6 +258,12 @@ export function ConversationsPanel() {
   return (
     <div className="grid gap-4 md:grid-cols-[minmax(0,240px)_1fr]">
       <div className="space-y-2">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar nas conversas..."
+          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+        />
         <select
           value={widgetFilter}
           onChange={(e) => setWidgetFilter(e.target.value)}
@@ -259,7 +278,9 @@ export function ConversationsPanel() {
         </select>
 
         {filteredConversations.length === 0 ? (
-          <p className="text-sm text-slate-400">Nenhuma conversa para esse widget.</p>
+          <p className="text-sm text-slate-400">
+            {search.trim() ? 'Nenhuma conversa encontrada para essa busca.' : 'Nenhuma conversa para esse widget.'}
+          </p>
         ) : (
           <ul className="space-y-2">
             {filteredConversations.map((conversation) => {

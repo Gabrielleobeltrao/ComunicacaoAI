@@ -202,10 +202,18 @@ export interface ConversationSummary {
   humanHandoff: boolean
 }
 
-export async function listConversationsForOwner(ownerId: string): Promise<ConversationSummary[]> {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export async function listConversationsForOwner(
+  ownerId: string,
+  search?: string,
+): Promise<ConversationSummary[]> {
   const ownerWidgets = await widgets.find({ ownerId }).toArray()
   if (ownerWidgets.length === 0) return []
 
+  const widgetIds = ownerWidgets.map((w) => w._id)
   const nameById = new Map(ownerWidgets.map((w) => [w._id.toString(), w.name]))
 
   const groups = await widgetMessages
@@ -216,7 +224,7 @@ export async function listConversationsForOwner(ownerId: string): Promise<Conver
       lastAt: Date
       messageCount: number
     }>([
-      { $match: { widgetId: { $in: ownerWidgets.map((w) => w._id) } } },
+      { $match: { widgetId: { $in: widgetIds } } },
       { $sort: { createdAt: 1 } },
       {
         $group: {
@@ -236,11 +244,32 @@ export async function listConversationsForOwner(ownerId: string): Promise<Conver
   // a human without an extra request per row.
   const handoffDocs = await db
     .collection('conversation_memories')
-    .find({ widgetId: { $in: ownerWidgets.map((w) => w._id) }, humanHandoff: true })
+    .find({ widgetId: { $in: widgetIds }, humanHandoff: true })
     .toArray()
   const handoffKeys = new Set(handoffDocs.map((d) => `${d.widgetId}:${d.conversationId}`))
 
-  return groups.map((group) => ({
+  // Search across the FULL message content of each conversation (not just the
+  // last message), plus the widget name / conversation id, so the owner can
+  // find a thread by anything that was said in it.
+  let selected = groups
+  const term = search?.trim()
+  if (term) {
+    const rx = new RegExp(escapeRegExp(term), 'i')
+    const contentMatches = await widgetMessages
+      .aggregate<{ _id: { widgetId: ObjectId; conversationId: string } }>([
+        { $match: { widgetId: { $in: widgetIds }, content: { $regex: escapeRegExp(term), $options: 'i' } } },
+        { $group: { _id: { widgetId: '$widgetId', conversationId: '$conversationId' } } },
+      ])
+      .toArray()
+    const contentKeys = new Set(contentMatches.map((m) => `${m._id.widgetId}:${m._id.conversationId}`))
+    selected = groups.filter((group) => {
+      const key = `${group._id.widgetId}:${group._id.conversationId}`
+      const widgetName = nameById.get(group._id.widgetId.toString()) ?? ''
+      return contentKeys.has(key) || rx.test(widgetName) || rx.test(group._id.conversationId)
+    })
+  }
+
+  return selected.map((group) => ({
     widgetId: group._id.widgetId,
     widgetName: nameById.get(group._id.widgetId.toString()) ?? 'Widget',
     conversationId: group._id.conversationId,
