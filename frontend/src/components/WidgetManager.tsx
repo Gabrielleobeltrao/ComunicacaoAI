@@ -24,6 +24,8 @@ function parseTarget(target: string): { agentId: string | null; teamId: string |
 
 export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, onChange }: WidgetManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
+  const [deletingWidgetId, setDeletingWidgetId] = useState<string | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
 
   const [editingWidget, setEditingWidget] = useState<WidgetSummary | null>(null)
   const [editName, setEditName] = useState('')
@@ -196,6 +198,34 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
     }
   }
 
+  async function handleDeleteWidget(widget: WidgetSummary) {
+    if (deletingWidgetId) return
+    if (
+      !window.confirm(
+        `Excluir o widget "${widget.name}"? Essa ação não pode ser desfeita e apaga também todas as conversas e mensagens desse widget.`,
+      )
+    ) {
+      return
+    }
+    setListError(null)
+    setDeletingWidgetId(widget._id)
+
+    try {
+      const res = await fetch(`${API_URL}/api/widgets/${widget._id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json().catch(() => null)
+        setListError(body?.error ?? 'Não foi possível excluir o widget.')
+        return
+      }
+      await onChange()
+    } finally {
+      setDeletingWidgetId(null)
+    }
+  }
+
   const pendingAvatarPreview = useMemo(
     () => (pendingAvatarFile ? URL.createObjectURL(pendingAvatarFile) : null),
     [pendingAvatarFile],
@@ -212,6 +242,12 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
       >
         + Novo widget
       </button>
+
+      {listError && (
+        <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          {listError}
+        </p>
+      )}
 
       {loading ? (
         <p className="text-sm text-slate-400">Carregando widgets...</p>
@@ -236,14 +272,24 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
                     <p className="font-medium">{widget.name}</p>
                     <p className="text-sm text-slate-400">{attendedBy}</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => openEdit(widget)}
-                    disabled={agentsLoading}
-                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800 disabled:opacity-50"
-                  >
-                    {agentsLoading ? 'Carregando...' : 'Editar'}
-                  </button>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openEdit(widget)}
+                      disabled={agentsLoading}
+                      className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800 disabled:opacity-50"
+                    >
+                      {agentsLoading ? 'Carregando...' : 'Editar'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteWidget(widget)}
+                      disabled={deletingWidgetId === widget._id}
+                      className="rounded-lg border border-red-500/40 px-3 py-1.5 text-sm text-red-400 transition hover:bg-red-500/10 disabled:opacity-50"
+                    >
+                      {deletingWidgetId === widget._id ? 'Excluindo...' : 'Excluir'}
+                    </button>
+                  </div>
                 </div>
                 <code className="block overflow-x-auto rounded bg-slate-950 p-2 text-xs text-slate-300">
                   {snippet}

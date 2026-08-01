@@ -165,3 +165,8 @@ export function updateAgent(
     { returnDocument: 'after' },
   )
 }
+
+export async function deleteAgent(ownerId: string, agentId: ObjectId) {
+  const result = await agents.deleteOne({ _id: agentId, ownerId })
+  return result.deletedCount > 0
+}

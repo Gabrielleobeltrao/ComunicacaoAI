@@ -129,6 +129,12 @@ export async function deleteDocument(agentId: ObjectId, documentId: ObjectId) {
   return result.deletedCount > 0
 }
 
+// Wipe an agent's entire knowledge base (used when the agent itself is deleted).
+export async function deleteAllForAgent(agentId: ObjectId) {
+  await chunks.deleteMany({ agentId })
+  await documents.deleteMany({ agentId })
+}
+
 export const VECTOR_INDEX_NAME = 'knowledge_vector_index'
 export const EMBEDDING_DIMENSIONS = 1024
 

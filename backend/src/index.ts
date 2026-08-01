@@ -12,6 +12,7 @@ import {
   CONVERSATION_PERSISTENCE_TYPES,
   createAgent,
   DEFAULT_HISTORY_LIMIT,
+  deleteAgent,
   getAgentById,
   GUARDRAIL_MODES,
   LANGUAGES,
@@ -53,6 +54,7 @@ import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
 import {
   createDocument,
+  deleteAllForAgent,
   deleteDocument,
   ensureVectorIndex,
   getDocument,
@@ -115,6 +117,7 @@ import {
   addOwnerReply,
   countVisitorMessagesSince,
   createWidget,
+  deleteWidget,
   getConversationMessages,
   getOwnerStats,
   getWidgetById,
@@ -442,6 +445,22 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     return
   }
   res.json(widget)
+})
+
+app.delete('/api/widgets/:widgetId', requireAuth, async (req, res) => {
+  const widgetId = String(req.params.widgetId)
+  if (!ObjectId.isValid(widgetId)) {
+    res.status(400).json({ error: 'Invalid widget id' })
+    return
+  }
+  // Cascades: also removes the widget's messages, conversation memory, semantic
+  // turns and orchestration decisions (see deleteWidget).
+  const deleted = await deleteWidget(res.locals.userId, new ObjectId(widgetId))
+  if (!deleted) {
+    res.status(404).json({ error: 'Widget not found' })
+    return
+  }
+  res.status(204).end()
 })
 
 app.post(
@@ -1150,6 +1169,46 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     return
   }
   res.json(agent)
+})
+
+app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  if (!ObjectId.isValid(agentId)) {
+    res.status(400).json({ error: 'Invalid agent id' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const agentObjectId = new ObjectId(agentId)
+
+  const agent = await getAgentById(ownerId, agentObjectId)
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+
+  // An agent in use can't be silently removed — deleting it would break the
+  // widgets/teams pointing at it. Block and tell the owner what to unlink first.
+  const [widgets, teams] = await Promise.all([listWidgets(ownerId), listTeams(ownerId)])
+  const usedByWidgets = widgets.filter((w) => w.agentId?.toString() === agentId).map((w) => w.name)
+  const usedByTeams = teams
+    .filter((t) => t.members.some((m) => m.agentId.toString() === agentId))
+    .map((t) => t.name)
+  if (usedByWidgets.length > 0 || usedByTeams.length > 0) {
+    const refs = [
+      ...usedByWidgets.map((n) => `widget "${n}"`),
+      ...usedByTeams.map((n) => `equipe "${n}"`),
+    ]
+    res.status(409).json({
+      error: `Este agente está em uso por ${refs.join(', ')}. Desvincule antes de excluir.`,
+      widgets: usedByWidgets,
+      teams: usedByTeams,
+    })
+    return
+  }
+
+  await deleteAllForAgent(agentObjectId)
+  await deleteAgent(ownerId, agentObjectId)
+  res.status(204).end()
 })
 
 const MAX_PLAYGROUND_MESSAGES = 40

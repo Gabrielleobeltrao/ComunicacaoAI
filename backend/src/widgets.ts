@@ -102,6 +102,23 @@ export function setWidgetAvatar(ownerId: string, widgetId: ObjectId, avatarUrl: 
   )
 }
 
+// Delete a widget and everything scoped to it: its messages plus the per-widget
+// conversation memory, semantic turns and orchestration decision log. Returns
+// false when the widget doesn't exist / isn't owned by this user.
+export async function deleteWidget(ownerId: string, widgetId: ObjectId) {
+  const widget = await widgets.findOne({ _id: widgetId, ownerId })
+  if (!widget) return false
+
+  await Promise.all([
+    widgetMessages.deleteMany({ widgetId }),
+    db.collection('conversation_memories').deleteMany({ widgetId }),
+    db.collection('conversation_turns').deleteMany({ widgetId }),
+    db.collection('team_decisions').deleteMany({ widgetId }),
+  ])
+  await widgets.deleteOne({ _id: widgetId, ownerId })
+  return true
+}
+
 export function listMessages(widgetId: ObjectId, conversationId: string) {
   return widgetMessages.find({ widgetId, conversationId }).sort({ createdAt: 1 }).toArray()
 }

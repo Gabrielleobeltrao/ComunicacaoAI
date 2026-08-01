@@ -101,6 +101,8 @@ function OptionSwitch<T extends string>({
 
 export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
+  const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const [providers, setProviders] = useState<ProviderInfo[]>([])
 
@@ -604,6 +606,34 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
     }
   }
 
+  async function handleDeleteAgent(agent: AgentSummary) {
+    if (deletingAgentId) return
+    if (
+      !window.confirm(
+        `Excluir o agente "${agent.name}"? Essa ação não pode ser desfeita e remove também a base de conhecimento dele.`,
+      )
+    ) {
+      return
+    }
+    setDeleteError(null)
+    setDeletingAgentId(agent._id)
+
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${agent._id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json().catch(() => null)
+        setDeleteError(body?.error ?? 'Não foi possível excluir o agente.')
+        return
+      }
+      await onChange()
+    } finally {
+      setDeletingAgentId(null)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <button
@@ -613,6 +643,12 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
       >
         + Novo agente
       </button>
+
+      {deleteError && (
+        <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          {deleteError}
+        </p>
+      )}
 
       {loading ? (
         <p className="text-sm text-slate-400">Carregando agentes...</p>
@@ -642,6 +678,14 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
                   className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800"
                 >
                   Editar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteAgent(agent)}
+                  disabled={deletingAgentId === agent._id}
+                  className="rounded-lg border border-red-500/40 px-3 py-1.5 text-sm text-red-400 transition hover:bg-red-500/10 disabled:opacity-50"
+                >
+                  {deletingAgentId === agent._id ? 'Excluindo...' : 'Excluir'}
                 </button>
               </div>
             </li>
