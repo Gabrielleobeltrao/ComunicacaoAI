@@ -23,9 +23,8 @@ import {
 } from './systemPrompt.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, TeamPlan } from './systemPrompt.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
-import type { AgentTool } from './agents.js'
-import { MAX_TOOL_ITERATIONS, runToolCall, toolInputSchema } from './agentTools.js'
-import type { ToolCallRecord } from './agentTools.js'
+import { MAX_TOOL_ITERATIONS, runResolvedTool } from './agentTools.js'
+import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 
 export type { ChatTurn }
 
@@ -100,7 +99,7 @@ export async function generateAgentReply(
   guardrailInstruction = '',
   responseStyleInstruction = '',
   enableCaching = true,
-  tools: AgentTool[] = [],
+  tools: ResolvedTool[] = [],
 ): Promise<AgentReplyResult> {
   const { cacheablePrefix, dynamicSuffix } = buildSystemPromptParts(
     objective,
@@ -124,7 +123,7 @@ export async function generateAgentReply(
   const toolDefs: Anthropic.Tool[] = tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    input_schema: toolInputSchema(tool) as Anthropic.Tool.InputSchema,
+    input_schema: tool.inputSchema as Anthropic.Tool.InputSchema,
   }))
 
   const messages: Anthropic.MessageParam[] = history.map((turn) => ({ role: turn.role, content: turn.content }))
@@ -154,7 +153,7 @@ export async function generateAgentReply(
       const results: Anthropic.ToolResultBlockParam[] = []
       for (const block of response.content) {
         if (block.type === 'tool_use') {
-          const record = await runToolCall(tools, block.name, (block.input ?? {}) as Record<string, unknown>)
+          const record = await runResolvedTool(tools, block.name, (block.input ?? {}) as Record<string, unknown>)
           toolCalls.push(record)
           results.push({
             type: 'tool_result',

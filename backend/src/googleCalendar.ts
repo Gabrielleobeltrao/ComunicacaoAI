@@ -7,8 +7,14 @@ const REDIRECT_URI =
   process.env.GOOGLE_REDIRECT_URI ??
   `${process.env.BETTER_AUTH_URL ?? 'http://localhost:4000'}/api/integrations/google/callback`
 
-// calendar = read + create events + free/busy; openid+email to know the account.
-const SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/calendar']
+// calendar = read/create events + free/busy; spreadsheets = append rows;
+// openid+email to know the connected account.
+const SCOPES = [
+  'openid',
+  'email',
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/spreadsheets',
+]
 
 // Whether the server has Google OAuth credentials configured.
 export function googleConfigured(): boolean {

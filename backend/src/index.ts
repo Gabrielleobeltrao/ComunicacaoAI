@@ -28,6 +28,7 @@ import {
 } from './agents.js'
 import type {
   Agent,
+  AgentBuiltinTool,
   AgentTool,
   AgentToolHeader,
   AgentToolParam,
@@ -111,6 +112,7 @@ import { getMonthlyTokens, getUsageSummary, recordReplyUsage } from './tokenUsag
 import { listToolCalls, logToolCalls } from './toolCallLog.js'
 import { deleteIntegration } from './integrations.js'
 import { buildGoogleAuthUrl, connectGoogle, getGoogleStatus, googleConfigured } from './googleCalendar.js'
+import { builtinAppsCatalog, getBuiltinApp, resolveAgentTools } from './builtinTools.js'
 import {
   computeIdentityKey,
   findVisitorProfile,
@@ -353,6 +355,33 @@ function parseTools(raw: unknown): { tools?: AgentTool[]; error?: string } {
   return { tools }
 }
 
+// Validate the built-in integrations enabled on an agent against the catalog.
+function parseBuiltinTools(raw: unknown): { builtinTools?: AgentBuiltinTool[]; error?: string } {
+  if (raw === undefined) return { builtinTools: undefined }
+  if (!Array.isArray(raw)) return { error: 'builtinTools must be a list' }
+
+  const result: AgentBuiltinTool[] = []
+  const seen = new Set<string>()
+  for (const b of raw) {
+    const o = (typeof b === 'object' && b !== null ? b : {}) as Record<string, unknown>
+    const key = typeof o.key === 'string' ? o.key : ''
+    const app = getBuiltinApp(key)
+    if (!app) return { error: `Integração desconhecida "${key}"` }
+    if (seen.has(key)) return { error: `Integração "${key}" duplicada` }
+    seen.add(key)
+
+    const rawConfig = (typeof o.config === 'object' && o.config !== null ? o.config : {}) as Record<string, unknown>
+    const config: Record<string, string> = {}
+    for (const field of app.configFields) {
+      const value = typeof rawConfig[field.key] === 'string' ? (rawConfig[field.key] as string) : ''
+      if (field.required && !value.trim()) return { error: `${app.label}: "${field.label}" é obrigatório.` }
+      config[field.key] = value
+    }
+    result.push({ key, config })
+  }
+  return { builtinTools: result }
+}
+
 function isResponseTone(value: unknown): value is ResponseTone {
   return typeof value === 'string' && (RESPONSE_TONES as string[]).includes(value)
 }
@@ -407,7 +436,10 @@ function readCookie(header: string | undefined, name: string): string | null {
 
 app.get('/api/integrations', requireAuth, async (_req, res) => {
   const google = await getGoogleStatus(res.locals.userId)
-  res.json({ google: { ...google, available: googleConfigured() } })
+  res.json({
+    google: { ...google, available: googleConfigured() },
+    apps: builtinAppsCatalog(),
+  })
 })
 
 // Kick off Google's OAuth consent. A signed-ish state (userId + nonce) is stored
@@ -1039,7 +1071,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
       ),
     ].join('\n\n'),
     configAgent.promptCaching ?? true,
-    configAgent.tools ?? [],
+    await resolveAgentTools(configAgent, res.locals.userId),
   )
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
@@ -1090,6 +1122,7 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     cheapAuxModel,
     promptCaching,
     tools,
+    builtinTools,
   } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
@@ -1154,6 +1187,11 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: toolsError })
     return
   }
+  const { builtinTools: parsedBuiltins, error: builtinError } = parseBuiltinTools(builtinTools)
+  if (builtinError) {
+    res.status(400).json({ error: builtinError })
+    return
+  }
 
   const agent = await createAgent(res.locals.userId, name, {
     objective: typeof objective === 'string' ? objective : undefined,
@@ -1185,6 +1223,7 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     cheapAuxModel: typeof cheapAuxModel === 'boolean' ? cheapAuxModel : undefined,
     promptCaching: typeof promptCaching === 'boolean' ? promptCaching : undefined,
     tools: parsedTools,
+    builtinTools: parsedBuiltins,
   })
   res.status(201).json(agent)
 })
@@ -1227,6 +1266,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     cheapAuxModel,
     promptCaching,
     tools,
+    builtinTools,
   } = req.body ?? {}
   const updates: {
     name?: string
@@ -1255,6 +1295,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     cheapAuxModel?: boolean
     promptCaching?: boolean
     tools?: AgentTool[]
+    builtinTools?: AgentBuiltinTool[]
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
@@ -1364,6 +1405,14 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
       return
     }
     updates.tools = parsedTools
+  }
+  if (builtinTools !== undefined) {
+    const { builtinTools: parsedBuiltins, error } = parseBuiltinTools(builtinTools)
+    if (error) {
+      res.status(400).json({ error })
+      return
+    }
+    updates.builtinTools = parsedBuiltins
   }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -1557,7 +1606,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       ),
     ].join('\n\n'),
     agent.promptCaching ?? true,
-    agent.tools ?? [],
+    await resolveAgentTools(agent, res.locals.userId),
   )
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
@@ -2421,7 +2470,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     behaviorInstruction,
     responseStyleInstruction,
     agent.promptCaching ?? true,
-    agent.tools ?? [],
+    await resolveAgentTools(agent, ownerId),
   )
   recordReplyUsage(ownerId, usage).catch((error) => console.error('Failed to record token usage:', error))
   logToolCalls(widgetId, conversationId, toolCalls).catch((error) =>

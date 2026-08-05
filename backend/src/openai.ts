@@ -23,9 +23,8 @@ import {
 } from './systemPrompt.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, TeamPlan } from './systemPrompt.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
-import type { AgentTool } from './agents.js'
-import { MAX_TOOL_ITERATIONS, runToolCall, toolInputSchema } from './agentTools.js'
-import type { ToolCallRecord } from './agentTools.js'
+import { MAX_TOOL_ITERATIONS, runResolvedTool } from './agentTools.js'
+import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.1'
 
@@ -108,13 +107,13 @@ export async function generateAgentReply(
   // opt-out, so the per-agent caching toggle is a no-op here — accepted only to
   // keep the provider signatures identical.
   enableCaching = true,
-  tools: AgentTool[] = [],
+  tools: ResolvedTool[] = [],
 ): Promise<AgentReplyResult> {
   void enableCaching
   const client = buildClient(apiKey)
   const toolDefs: OpenAI.Chat.Completions.ChatCompletionTool[] = tools.map((tool) => ({
     type: 'function',
-    function: { name: tool.name, description: tool.description, parameters: toolInputSchema(tool) },
+    function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
   }))
 
   // buildSystemPrompt puts the static objective + instructions first, which is
@@ -162,7 +161,7 @@ export async function generateAgentReply(
         } catch {
           /* leave args empty on malformed JSON */
         }
-        const record = await runToolCall(tools, call.function.name, args)
+        const record = await runResolvedTool(tools, call.function.name, args)
         toolCalls.push(record)
         messages.push({ role: 'tool', tool_call_id: call.id, content: record.result })
       }

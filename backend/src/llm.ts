@@ -1,5 +1,4 @@
-import type { AgentTool } from './agents.js'
-import type { ToolCallRecord } from './agentTools.js'
+import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 import * as anthropicProvider from './claude.js'
 import * as openaiProvider from './openai.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, TeamPlan } from './systemPrompt.js'
@@ -47,7 +46,7 @@ export function generateAgentReply(
   guardrailInstruction = '',
   responseStyleInstruction = '',
   enableCaching = true,
-  tools: AgentTool[] = [],
+  tools: ResolvedTool[] = [],
 ): Promise<AgentReplyResult> {
   return providerFor(provider).generateAgentReply(
     objective,

@@ -55,6 +55,13 @@ export interface AgentTool {
   parameters: AgentToolParam[]
 }
 
+// A built-in integration ("app") enabled on the agent, with its per-agent config
+// (e.g. which spreadsheet). See builtinTools.ts for the catalog.
+export interface AgentBuiltinTool {
+  key: string
+  config: Record<string, string>
+}
+
 export interface Agent {
   _id: ObjectId
   ownerId: string
@@ -84,6 +91,7 @@ export interface Agent {
   cheapAuxModel: boolean
   promptCaching: boolean
   tools: AgentTool[]
+  builtinTools: AgentBuiltinTool[]
   createdAt: Date
 }
 
@@ -118,6 +126,7 @@ export async function createAgent(
     cheapAuxModel?: boolean
     promptCaching?: boolean
     tools?: AgentTool[]
+    builtinTools?: AgentBuiltinTool[]
   } = {},
 ) {
   const agent: Omit<Agent, '_id'> = {
@@ -148,6 +157,7 @@ export async function createAgent(
     cheapAuxModel: options.cheapAuxModel ?? true,
     promptCaching: options.promptCaching ?? true,
     tools: options.tools ?? [],
+    builtinTools: options.builtinTools ?? [],
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -192,6 +202,7 @@ export function updateAgent(
     cheapAuxModel?: boolean
     promptCaching?: boolean
     tools?: AgentTool[]
+    builtinTools?: AgentBuiltinTool[]
   },
 ) {
   return agents.findOneAndUpdate(

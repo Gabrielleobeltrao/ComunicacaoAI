@@ -15,6 +15,25 @@ export interface ToolCallRecord {
   result: string
 }
 
+// A tool the model can call, decoupled from how it runs. Custom HTTP tools and
+// built-in integrations (Google, etc.) both resolve to this shape, so the
+// provider loop only ever deals with name + schema + run().
+export interface ResolvedTool {
+  name: string
+  description: string
+  inputSchema: Record<string, unknown>
+  run: (args: Record<string, unknown>) => Promise<{ ok: boolean; result: string }>
+}
+
+export function resolveHttpTool(tool: AgentTool): ResolvedTool {
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: toolInputSchema(tool),
+    run: (args) => executeTool(tool, args),
+  }
+}
+
 // JSON Schema for a tool's arguments, shared by both providers' tool defs.
 export function toolInputSchema(tool: AgentTool) {
   const properties: Record<string, { type: string; description: string }> = {}
@@ -101,8 +120,8 @@ async function executeTool(tool: AgentTool, args: Record<string, unknown>): Prom
 
 // Look up a tool the model asked for by name and run it, returning a record the
 // loop feeds back to the model and the UI shows for observability.
-export async function runToolCall(
-  tools: AgentTool[],
+export async function runResolvedTool(
+  tools: ResolvedTool[],
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolCallRecord> {
@@ -110,6 +129,6 @@ export async function runToolCall(
   if (!tool) {
     return { name, arguments: args, ok: false, result: `A ferramenta "${name}" não existe.` }
   }
-  const { ok, result } = await executeTool(tool, args)
+  const { ok, result } = await tool.run(args)
   return { name, arguments: args, ok, result }
 }
