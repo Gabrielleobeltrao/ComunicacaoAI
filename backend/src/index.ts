@@ -127,23 +127,33 @@ import {
   addMessage,
   addOwnerReply,
   countVisitorMessagesSince,
+  createWhatsAppChannel,
   createWidget,
+  deleteWhatsAppChannel,
   deleteWidget,
   getAgentStats,
   getConversationMessages,
   getOwnerStats,
   getWidgetById,
   getWidgetByPublicKey,
+  inboundAlreadySeen,
   listConversationsForOwner,
   listMessages,
+  listWhatsAppChannels,
   listWidgets,
   setWidgetAvatar,
+  updateWhatsAppChannel,
   updateWidget,
 } from './widgets.js'
+import { getWhatsAppAdapter, sendWhatsAppText, whatsappProvidersCatalog } from './whatsapp.js'
+import { encrypt } from './crypto.js'
 
 const app = express()
 const port = process.env.PORT ?? 4000
 const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173'
+// The backend's own public base URL, used to build inbound webhook URLs the
+// owner pastes into their WhatsApp provider. Set PUBLIC_URL in production.
+const publicUrl = process.env.PUBLIC_URL ?? `http://localhost:${port}`
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } })
 const uploadAvatar = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } })
 const AVATAR_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
@@ -2010,6 +2020,13 @@ app.post(
       return
     }
     broadcastMessage(message, res.locals.userId)
+    // Deliver the human agent's reply to the customer over WhatsApp too.
+    const widget = await getWidgetById(new ObjectId(widgetId))
+    if (widget?.channel === 'whatsapp') {
+      sendWhatsAppText(widget, conversationId, String(content)).catch((error) =>
+        console.error('WhatsApp owner-reply delivery failed:', error),
+      )
+    }
     res.status(201).json(message)
   },
 )
@@ -2025,6 +2042,193 @@ async function getWidgetConfigAgent(widget: WithId<Widget>) {
   }
   return null
 }
+
+// --- WhatsApp channels ----------------------------------------------------
+
+function channelWebhookUrl(provider: string, channelId: ObjectId) {
+  return `${publicUrl}/api/whatsapp/${provider}/webhook/${channelId.toHexString()}`
+}
+
+function sanitizeChannel(channel: WithId<Widget>) {
+  const provider = channel.whatsapp?.provider ?? null
+  return {
+    _id: channel._id,
+    name: channel.name,
+    provider,
+    number: channel.whatsapp?.number ?? null,
+    agentId: channel.agentId,
+    teamId: channel.teamId,
+    createdAt: channel.createdAt,
+    webhookUrl: provider ? channelWebhookUrl(provider, channel._id) : null,
+  }
+}
+
+// Build a validated, provider-specific config from raw input, or send a 400.
+function readChannelConfig(
+  adapter: ReturnType<typeof getWhatsAppAdapter>,
+  raw: unknown,
+  res: express.Response,
+  { requireAll }: { requireAll: boolean },
+): Record<string, string> | null {
+  const cfg = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const clean: Record<string, string> = {}
+  for (const field of adapter?.fields ?? []) {
+    const value = cfg[field.key]
+    const missing = value == null || String(value).trim() === ''
+    if (requireAll && field.required && missing) {
+      res.status(400).json({ error: `Campo obrigatório: ${field.label}` })
+      return null
+    }
+    if (!missing) clean[field.key] = String(value)
+  }
+  return clean
+}
+
+app.get('/api/whatsapp/providers', requireAuth, (_req, res) => {
+  res.json(whatsappProvidersCatalog())
+})
+
+app.get('/api/whatsapp/channels', requireAuth, async (_req, res) => {
+  const channels = await listWhatsAppChannels(res.locals.userId)
+  res.json(channels.map(sanitizeChannel))
+})
+
+app.post('/api/whatsapp/channels', requireAuth, async (req, res) => {
+  const { name, provider, config, agentId, teamId, number } = req.body ?? {}
+  const adapter = typeof provider === 'string' ? getWhatsAppAdapter(provider) : undefined
+  if (!adapter || !adapter.available) {
+    res.status(400).json({ error: 'Provedor de WhatsApp inválido ou indisponível.' })
+    return
+  }
+  if (!name || typeof name !== 'string') {
+    res.status(400).json({ error: 'name is required' })
+    return
+  }
+  if (agentId && !ObjectId.isValid(agentId)) {
+    res.status(400).json({ error: 'Invalid agentId' })
+    return
+  }
+  if (teamId && !ObjectId.isValid(teamId)) {
+    res.status(400).json({ error: 'Invalid teamId' })
+    return
+  }
+  const cleanConfig = readChannelConfig(adapter, config, res, { requireAll: true })
+  if (!cleanConfig) return
+
+  const channel = await createWhatsAppChannel(
+    res.locals.userId,
+    name,
+    {
+      provider,
+      configEnc: encrypt(JSON.stringify(cleanConfig)),
+      number: typeof number === 'string' ? number : null,
+    },
+    {
+      agentId: agentId ? new ObjectId(String(agentId)) : null,
+      teamId: teamId ? new ObjectId(String(teamId)) : null,
+    },
+  )
+  res.status(201).json(sanitizeChannel(channel))
+})
+
+app.patch('/api/whatsapp/channels/:channelId', requireAuth, async (req, res) => {
+  const channelId = String(req.params.channelId)
+  if (!ObjectId.isValid(channelId)) {
+    res.status(400).json({ error: 'Invalid channel id' })
+    return
+  }
+  const { name, agentId, teamId, number, config } = req.body ?? {}
+  const updates: Parameters<typeof updateWhatsAppChannel>[2] = {}
+  if (typeof name === 'string') updates.name = name
+  if (agentId !== undefined) updates.agentId = agentId ? new ObjectId(String(agentId)) : null
+  if (teamId !== undefined) updates.teamId = teamId ? new ObjectId(String(teamId)) : null
+
+  // Re-encrypt config only when a new one is supplied; otherwise keep the stored one.
+  if (config && typeof config === 'object') {
+    const existing = await getWidgetById(new ObjectId(channelId))
+    const provider = existing?.whatsapp?.provider
+    const adapter = provider ? getWhatsAppAdapter(provider) : undefined
+    if (existing && provider && adapter) {
+      const cleanConfig = readChannelConfig(adapter, config, res, { requireAll: false })
+      if (!cleanConfig) return
+      updates.whatsapp = {
+        provider,
+        configEnc: encrypt(JSON.stringify(cleanConfig)),
+        number: typeof number === 'string' ? number : (existing.whatsapp?.number ?? null),
+      }
+    }
+  }
+
+  const updated = await updateWhatsAppChannel(res.locals.userId, new ObjectId(channelId), updates)
+  if (!updated) {
+    res.status(404).json({ error: 'Channel not found' })
+    return
+  }
+  res.json(sanitizeChannel(updated))
+})
+
+app.delete('/api/whatsapp/channels/:channelId', requireAuth, async (req, res) => {
+  const channelId = String(req.params.channelId)
+  if (!ObjectId.isValid(channelId)) {
+    res.status(400).json({ error: 'Invalid channel id' })
+    return
+  }
+  const ok = await deleteWhatsAppChannel(res.locals.userId, new ObjectId(channelId))
+  if (!ok) {
+    res.status(404).json({ error: 'Channel not found' })
+    return
+  }
+  res.status(204).end()
+})
+
+// Inbound webhook (public — the provider calls this server-to-server).
+// GET answers a provider's verification challenge (e.g. Meta's hub.challenge).
+app.get('/api/whatsapp/:provider/webhook/:channelId', (req, res) => {
+  const challenge = req.query['hub.challenge']
+  if (challenge) {
+    res.status(200).send(String(challenge))
+    return
+  }
+  res.status(200).json({ ok: true })
+})
+
+app.post('/api/whatsapp/:provider/webhook/:channelId', async (req, res) => {
+  // Ack immediately so the provider doesn't retry, then process in the background.
+  res.status(200).json({ ok: true })
+
+  const provider = String(req.params.provider)
+  const channelId = String(req.params.channelId)
+  if (!ObjectId.isValid(channelId)) return
+  const adapter = getWhatsAppAdapter(provider)
+  if (!adapter) return
+  const channel = await getWidgetById(new ObjectId(channelId))
+  if (!channel || channel.channel !== 'whatsapp' || channel.whatsapp?.provider !== provider) return
+
+  let inbound
+  try {
+    inbound = adapter.parseInbound(req.body)
+  } catch (error) {
+    console.error('WhatsApp inbound parse failed:', error)
+    return
+  }
+
+  for (const msg of inbound) {
+    if (!msg.text || !msg.from) continue
+    if (msg.externalId && (await inboundAlreadySeen(channel._id, msg.externalId))) continue
+    const visitorMessage = await addMessage(
+      channel._id,
+      msg.from,
+      'visitor',
+      msg.text,
+      null,
+      msg.externalId || null,
+    )
+    broadcastMessage(visitorMessage, channel.ownerId)
+    respondWithAgentIfLinked(channel, msg.from, msg.text).catch((error) =>
+      console.error('WhatsApp auto-reply failed:', error),
+    )
+  }
+})
 
 app.get('/api/public/widgets/:publicKey', async (req, res) => {
   const widget = await getWidgetByPublicKey(req.params.publicKey)
@@ -2489,6 +2693,13 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
 
   const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText, replyAgentName)
   broadcastMessage(agentMessage, ownerId)
+  // On a WhatsApp channel the socket only feeds the owner's Chats view; the
+  // customer gets the reply through the provider. conversationId is their number.
+  if (widget.channel === 'whatsapp') {
+    sendWhatsAppText(widget, conversationId, replyText).catch((error) =>
+      console.error('WhatsApp reply delivery failed:', error),
+    )
+  }
 
   if (handoffRequested) {
     await setHumanHandoff(widgetId, conversationId, true)

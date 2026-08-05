@@ -4,6 +4,17 @@ import { db } from './db.js'
 
 export type WidgetPosition = 'right' | 'left'
 
+// A widget is a conversation channel that links an agent/team to visitors.
+// 'web' is the embeddable chat; 'whatsapp' is a connected WhatsApp number that
+// reuses the same conversation/reply/Chats stack (see whatsapp.ts).
+export interface WhatsAppChannelConfig {
+  provider: string
+  // encrypt(JSON.stringify(providerConfig)) — decrypted only when sending.
+  configEnc: string
+  // The connected business number, for display (optional).
+  number?: string | null
+}
+
 export interface Widget {
   _id: ObjectId
   ownerId: string
@@ -17,6 +28,9 @@ export interface Widget {
   avatarUrl: string | null
   agentId: ObjectId | null
   teamId: ObjectId | null
+  // Absent on legacy docs = 'web'.
+  channel?: 'web' | 'whatsapp'
+  whatsapp?: WhatsAppChannelConfig
 }
 
 export interface WidgetMessage {
@@ -27,6 +41,8 @@ export interface WidgetMessage {
   content: string
   // For team-routed replies: which specialist agent answered (shown in Chats).
   agentName?: string | null
+  // Provider message id for inbound channel messages (dedupes webhook retries).
+  externalId?: string | null
   createdAt: Date
 }
 
@@ -62,8 +78,69 @@ export async function createWidget(
   return { ...widget, _id: result.insertedId }
 }
 
+// --- WhatsApp channels (widgets with channel: 'whatsapp') -----------------
+
+export async function createWhatsAppChannel(
+  ownerId: string,
+  name: string,
+  whatsapp: WhatsAppChannelConfig,
+  options: { agentId?: ObjectId | null; teamId?: ObjectId | null } = {},
+) {
+  const widget: Omit<Widget, '_id'> = {
+    ownerId,
+    name,
+    publicKey: randomBytes(9).toString('base64url'),
+    createdAt: new Date(),
+    primaryColor: null,
+    welcomeTitle: null,
+    welcomeMessage: null,
+    position: 'right',
+    avatarUrl: null,
+    agentId: options.agentId ?? null,
+    teamId: options.teamId ?? null,
+    channel: 'whatsapp',
+    whatsapp,
+  }
+  const result = await widgets.insertOne(widget as Widget)
+  return { ...widget, _id: result.insertedId }
+}
+
+export function listWhatsAppChannels(ownerId: string) {
+  return widgets.find({ ownerId, channel: 'whatsapp' }).sort({ createdAt: -1 }).toArray()
+}
+
+export async function updateWhatsAppChannel(
+  ownerId: string,
+  channelId: ObjectId,
+  updates: {
+    name?: string
+    agentId?: ObjectId | null
+    teamId?: ObjectId | null
+    whatsapp?: WhatsAppChannelConfig
+  },
+) {
+  const set: Partial<Widget> = {}
+  if (updates.name !== undefined) set.name = updates.name
+  if (updates.agentId !== undefined) set.agentId = updates.agentId
+  if (updates.teamId !== undefined) set.teamId = updates.teamId
+  if (updates.whatsapp !== undefined) set.whatsapp = updates.whatsapp
+  if (Object.keys(set).length > 0) {
+    await widgets.updateOne({ _id: channelId, ownerId, channel: 'whatsapp' }, { $set: set })
+  }
+  return widgets.findOne({ _id: channelId, ownerId, channel: 'whatsapp' })
+}
+
+export async function deleteWhatsAppChannel(ownerId: string, channelId: ObjectId) {
+  const channel = await widgets.findOne({ _id: channelId, ownerId, channel: 'whatsapp' })
+  if (!channel) return false
+  await widgetMessages.deleteMany({ widgetId: channelId })
+  await widgets.deleteOne({ _id: channelId, ownerId })
+  return true
+}
+
 export function listWidgets(ownerId: string) {
-  return widgets.find({ ownerId }).sort({ createdAt: -1 }).toArray()
+  // Only the embeddable web widgets; WhatsApp channels are managed separately.
+  return widgets.find({ ownerId, channel: { $ne: 'whatsapp' } }).sort({ createdAt: -1 }).toArray()
 }
 
 export function getWidgetByPublicKey(publicKey: string) {
@@ -319,6 +396,7 @@ export async function addMessage(
   role: WidgetMessage['role'],
   content: string,
   agentName: string | null = null,
+  externalId: string | null = null,
 ) {
   const message: Omit<WidgetMessage, '_id'> = {
     widgetId,
@@ -326,8 +404,17 @@ export async function addMessage(
     role,
     content,
     agentName,
+    externalId,
     createdAt: new Date(),
   }
   const result = await widgetMessages.insertOne(message as WidgetMessage)
   return { ...message, _id: result.insertedId }
+}
+
+// True if an inbound provider message id was already stored for this channel —
+// webhook deliveries can be retried, so we drop duplicates.
+export async function inboundAlreadySeen(widgetId: ObjectId, externalId: string) {
+  if (!externalId) return false
+  const existing = await widgetMessages.findOne({ widgetId, externalId })
+  return existing !== null
 }
