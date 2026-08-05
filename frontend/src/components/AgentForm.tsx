@@ -3,6 +3,7 @@ import type { ChangeEvent, FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import type {
   AgentSummary,
+  AgentTool,
   ConversationPersistence,
   GuardrailMode,
   KnowledgeDocumentSummary,
@@ -12,6 +13,7 @@ import type {
   ResponseDetail,
   ResponseTone,
 } from '../lib/types'
+import { AgentToolsEditor } from './AgentToolsEditor'
 
 interface AgentFormProps {
   // null = creating a new agent; otherwise editing this one.
@@ -46,6 +48,7 @@ const STEPS = [
   'Guardrails',
   'Identificação',
   'Dados estruturados',
+  'Ferramentas',
   'Base de conhecimento',
 ]
 
@@ -137,6 +140,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
   const [editDailyMessageLimit, setEditDailyMessageLimit] = useState(0)
   const [editCheapAuxModel, setEditCheapAuxModel] = useState(true)
   const [editPromptCaching, setEditPromptCaching] = useState(true)
+  const [editTools, setEditTools] = useState<AgentTool[]>([])
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -209,6 +213,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       setEditDailyMessageLimit(agent.dailyMessageLimit ?? 0)
       setEditCheapAuxModel(agent.cheapAuxModel ?? true)
       setEditPromptCaching(agent.promptCaching ?? true)
+      setEditTools(agent.tools ?? [])
       setPendingDocs([])
       loadDocuments(agent._id)
     } else {
@@ -237,6 +242,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       setEditDailyMessageLimit(0)
       setEditCheapAuxModel(true)
       setEditPromptCaching(true)
+      setEditTools([])
       setDocuments([])
       setPendingDocs([])
     }
@@ -300,6 +306,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       dailyMessageLimit: editDailyMessageLimit,
       cheapAuxModel: editCheapAuxModel,
       promptCaching: editPromptCaching,
+      tools: editTools,
     }
 
     try {
@@ -1067,6 +1074,13 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
               </>
             )}
             </div>
+          </>
+        )}
+
+        {show(6) && (
+          <>
+            {heading(6)}
+            <AgentToolsEditor value={editTools} onChange={setEditTools} />
           </>
         )}
       </form>

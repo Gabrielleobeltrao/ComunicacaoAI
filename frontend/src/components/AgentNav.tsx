@@ -69,6 +69,12 @@ const KnowledgeIcon = svg(
   />,
 )
 const ChevronIcon = svg(<path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />)
+const ToolsIcon = svg(
+  <path
+    d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z"
+    strokeLinejoin="round"
+  />,
+)
 
 const SECTION_ICONS: Record<string, (props: IconProps) => ReactElement> = {
   '': OverviewIcon,
@@ -81,6 +87,7 @@ const CONFIG_ICONS: Record<string, (props: IconProps) => ReactElement> = {
   guardrails: GuardrailIcon,
   identificacao: IdentityIcon,
   dados: DataIcon,
+  ferramentas: ToolsIcon,
   conhecimento: KnowledgeIcon,
 }
 
@@ -128,7 +135,7 @@ export function AgentNav() {
       <div className="my-1 h-px bg-slate-800" />
 
       {AGENT_SECTIONS.map((s) => {
-        const Icon = SECTION_ICONS[s.key]
+        const Icon = SECTION_ICONS[s.key] ?? OverviewIcon
         return (
           <Link
             key={s.key}
@@ -158,7 +165,7 @@ export function AgentNav() {
 
       {configOpen &&
         AGENT_CONFIG_SECTIONS.map((s) => {
-          const Icon = CONFIG_ICONS[s.key]
+          const Icon = CONFIG_ICONS[s.key] ?? ConfigIcon
           return (
             <Link
               key={s.key}

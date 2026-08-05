@@ -35,6 +35,38 @@ export interface TeamSummary {
   members: TeamMemberSummary[]
 }
 
+export type ToolMethod = 'GET' | 'POST'
+export type ToolParamType = 'string' | 'number' | 'boolean'
+
+export interface AgentToolParam {
+  name: string
+  type: ToolParamType
+  description: string
+  required: boolean
+}
+
+export interface AgentToolHeader {
+  key: string
+  value: string
+}
+
+export interface AgentTool {
+  name: string
+  description: string
+  method: ToolMethod
+  url: string
+  headers: AgentToolHeader[]
+  parameters: AgentToolParam[]
+}
+
+export interface ToolCall {
+  name: string
+  arguments: Record<string, unknown>
+  ok: boolean
+  result: string
+  createdAt?: string
+}
+
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
 export type ConversationPersistence = 'same_browser' | 'always_new'
 export type GuardrailMode = 'none' | 'prompt' | 'verification'
@@ -69,6 +101,7 @@ export interface AgentSummary {
   dailyMessageLimit: number
   cheapAuxModel: boolean
   promptCaching: boolean
+  tools: AgentTool[]
 }
 
 export interface AgentOverview {

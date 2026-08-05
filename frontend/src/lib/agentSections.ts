@@ -13,5 +13,6 @@ export const AGENT_CONFIG_SECTIONS: { key: string; label: string; step: number }
   { key: 'guardrails', label: 'Guardrails', step: 3 },
   { key: 'identificacao', label: 'Identificação', step: 4 },
   { key: 'dados', label: 'Dados estruturados', step: 5 },
-  { key: 'conhecimento', label: 'Base de conhecimento', step: 6 },
+  { key: 'ferramentas', label: 'Ferramentas', step: 6 },
+  { key: 'conhecimento', label: 'Base de conhecimento', step: 7 },
 ]
