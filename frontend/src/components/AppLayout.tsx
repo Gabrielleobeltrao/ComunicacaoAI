@@ -10,7 +10,8 @@ interface AppLayoutProps {
 export function AppLayout({ current, title, children }: AppLayoutProps) {
   return (
     // Fixed viewport height with no page scroll: the sidebar and header stay
-    // put while only the main area scrolls internally.
+    // put while only the main area scrolls internally. The sidebar itself swaps
+    // to the agent's nav on agent pages (see Sidebar).
     <div className="flex h-screen overflow-hidden bg-slate-950 text-white">
       <Sidebar current={current} />
 

@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import type { ReactElement } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import { signOut, useSession } from '../lib/auth-client'
+import { ACTIVE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
+import { AgentNav } from './AgentNav'
 import { SettingsModal } from './ApiKeySettings'
 
 type IconProps = { className?: string }
@@ -137,14 +139,12 @@ const NAV: NavEntry[] = [
   { to: '/chats', label: 'Chats', Icon: ChatsIcon },
 ]
 
-const ITEM_BASE = 'flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition'
-const INACTIVE = 'text-slate-400 hover:bg-slate-900 hover:text-white'
-const ACTIVE = 'bg-slate-800 text-white'
-const LABEL = 'whitespace-nowrap opacity-0 transition-opacity duration-150 group-hover:opacity-100'
-
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
   const { data: session } = useSession()
+  // On an agent page the middle nav swaps to the agent's own sections; the
+  // shell (logo, footer, hover-to-expand) stays the same.
+  const { agentId } = useParams()
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Which parent groups are expanded to reveal their subpages. Persisted;
   // groups default to open (a key is only stored once toggled shut/open).
@@ -180,6 +180,9 @@ export function Sidebar({ current }: { current: string }) {
         <span className={`text-base font-semibold ${LABEL}`}>ComunicacaoAI</span>
       </div>
 
+      {agentId ? (
+        <AgentNav />
+      ) : (
       <nav className="flex flex-col gap-1">
         {NAV.map((item) => {
           if (!('children' in item)) {
@@ -232,6 +235,7 @@ export function Sidebar({ current }: { current: string }) {
           )
         })}
       </nav>
+      )}
 
       <div className="mt-auto flex flex-col gap-1 border-t border-slate-800 pt-3">
         <button type="button" onClick={() => setSettingsOpen(true)} className={`${ITEM_BASE} ${INACTIVE}`}>

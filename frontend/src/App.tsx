@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
 import { Chats } from './pages/Chats'
 import { Dashboard } from './pages/Dashboard'
@@ -30,6 +31,22 @@ function App() {
         element={
           <ProtectedRoute>
             <Agents />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/agents/:agentId"
+        element={
+          <ProtectedRoute>
+            <AgentDetail />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/agents/:agentId/:section"
+        element={
+          <ProtectedRoute>
+            <AgentDetail />
           </ProtectedRoute>
         }
       />

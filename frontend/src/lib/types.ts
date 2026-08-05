@@ -71,6 +71,21 @@ export interface AgentSummary {
   promptCaching: boolean
 }
 
+export interface AgentOverview {
+  agent: AgentSummary
+  stats: {
+    conversations: number
+    conversationsThisWeek: number
+    messagesThisWeek: number
+    attendedConversations: number
+    handoffs: number
+    qualifiedLeads: number
+  }
+  linkedWidgets: { _id: string; name: string }[]
+  linkedTeams: { _id: string; name: string }[]
+  knowledgeCount: number
+}
+
 export interface TeamAnalytics {
   teamId: string
   teamName: string
