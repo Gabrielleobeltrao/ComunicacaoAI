@@ -67,6 +67,20 @@ export interface ToolCall {
   createdAt?: string
 }
 
+// A built-in integration ("app") enabled on an agent, with its per-agent config.
+export interface AgentBuiltinTool {
+  key: string
+  config: Record<string, string>
+}
+
+export interface BuiltinAppCatalog {
+  key: string
+  label: string
+  description: string
+  connection: 'google'
+  configFields: { key: string; label: string; placeholder?: string; required: boolean }[]
+}
+
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
 export type ConversationPersistence = 'same_browser' | 'always_new'
 export type GuardrailMode = 'none' | 'prompt' | 'verification'
@@ -102,6 +116,7 @@ export interface AgentSummary {
   cheapAuxModel: boolean
   promptCaching: boolean
   tools: AgentTool[]
+  builtinTools: AgentBuiltinTool[]
 }
 
 export interface AgentOverview {

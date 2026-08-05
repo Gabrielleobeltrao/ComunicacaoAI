@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import type {
+  AgentBuiltinTool,
   AgentSummary,
   AgentTool,
   ConversationPersistence,
@@ -13,6 +14,7 @@ import type {
   ResponseDetail,
   ResponseTone,
 } from '../lib/types'
+import { AgentAppsEditor } from './AgentAppsEditor'
 import { AgentToolsEditor } from './AgentToolsEditor'
 
 interface AgentFormProps {
@@ -141,6 +143,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
   const [editCheapAuxModel, setEditCheapAuxModel] = useState(true)
   const [editPromptCaching, setEditPromptCaching] = useState(true)
   const [editTools, setEditTools] = useState<AgentTool[]>([])
+  const [editBuiltinTools, setEditBuiltinTools] = useState<AgentBuiltinTool[]>([])
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -214,6 +217,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       setEditCheapAuxModel(agent.cheapAuxModel ?? true)
       setEditPromptCaching(agent.promptCaching ?? true)
       setEditTools(agent.tools ?? [])
+      setEditBuiltinTools(agent.builtinTools ?? [])
       setPendingDocs([])
       loadDocuments(agent._id)
     } else {
@@ -243,6 +247,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       setEditCheapAuxModel(true)
       setEditPromptCaching(true)
       setEditTools([])
+      setEditBuiltinTools([])
       setDocuments([])
       setPendingDocs([])
     }
@@ -307,6 +312,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       cheapAuxModel: editCheapAuxModel,
       promptCaching: editPromptCaching,
       tools: editTools,
+      builtinTools: editBuiltinTools,
     }
 
     try {
@@ -1080,7 +1086,16 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
         {show(6) && (
           <>
             {heading(6)}
-            <AgentToolsEditor value={editTools} onChange={setEditTools} />
+            <div className="space-y-5">
+              <div>
+                <p className="mb-2 text-sm font-medium">Integrações (apps)</p>
+                <AgentAppsEditor value={editBuiltinTools} onChange={setEditBuiltinTools} />
+              </div>
+              <div className="border-t border-slate-800 pt-4">
+                <p className="mb-2 text-sm font-medium">Ferramentas personalizadas (HTTP)</p>
+                <AgentToolsEditor value={editTools} onChange={setEditTools} />
+              </div>
+            </div>
           </>
         )}
       </form>
