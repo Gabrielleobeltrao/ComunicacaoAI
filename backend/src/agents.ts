@@ -23,6 +23,37 @@ export type Language = 'pt' | 'en' | 'es' | 'auto'
 export const LANGUAGES: Language[] = ['pt', 'en', 'es', 'auto']
 
 export const MAX_DAILY_MESSAGE_LIMIT = 1000
+export const MAX_TOOLS = 10
+export const MAX_TOOL_PARAMS = 10
+
+export type ToolMethod = 'GET' | 'POST'
+export const TOOL_METHODS: ToolMethod[] = ['GET', 'POST']
+
+export type ToolParamType = 'string' | 'number' | 'boolean'
+export const TOOL_PARAM_TYPES: ToolParamType[] = ['string', 'number', 'boolean']
+
+export interface AgentToolParam {
+  name: string
+  type: ToolParamType
+  description: string
+  required: boolean
+}
+
+export interface AgentToolHeader {
+  key: string
+  value: string
+}
+
+// A custom HTTP tool the agent can call: the model decides when to call it based
+// on name/description/parameters, and the backend makes the request to `url`.
+export interface AgentTool {
+  name: string
+  description: string
+  method: ToolMethod
+  url: string
+  headers: AgentToolHeader[]
+  parameters: AgentToolParam[]
+}
 
 export interface Agent {
   _id: ObjectId
@@ -52,6 +83,7 @@ export interface Agent {
   dailyMessageLimit: number
   cheapAuxModel: boolean
   promptCaching: boolean
+  tools: AgentTool[]
   createdAt: Date
 }
 
@@ -85,6 +117,7 @@ export async function createAgent(
     dailyMessageLimit?: number
     cheapAuxModel?: boolean
     promptCaching?: boolean
+    tools?: AgentTool[]
   } = {},
 ) {
   const agent: Omit<Agent, '_id'> = {
@@ -114,6 +147,7 @@ export async function createAgent(
     dailyMessageLimit: options.dailyMessageLimit ?? 0,
     cheapAuxModel: options.cheapAuxModel ?? true,
     promptCaching: options.promptCaching ?? true,
+    tools: options.tools ?? [],
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -157,6 +191,7 @@ export function updateAgent(
     dailyMessageLimit?: number
     cheapAuxModel?: boolean
     promptCaching?: boolean
+    tools?: AgentTool[]
   },
 ) {
   return agents.findOneAndUpdate(

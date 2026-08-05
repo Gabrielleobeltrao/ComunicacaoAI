@@ -1,3 +1,5 @@
+import type { AgentTool } from './agents.js'
+import type { ToolCallRecord } from './agentTools.js'
 import * as anthropicProvider from './claude.js'
 import * as openaiProvider from './openai.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, TeamPlan } from './systemPrompt.js'
@@ -13,6 +15,7 @@ export interface TokenUsage {
 export interface AgentReplyResult {
   text: string
   usage: TokenUsage
+  toolCalls: ToolCallRecord[]
 }
 
 export const PROVIDER_INFO: { id: Provider; label: string }[] = [
@@ -44,6 +47,7 @@ export function generateAgentReply(
   guardrailInstruction = '',
   responseStyleInstruction = '',
   enableCaching = true,
+  tools: AgentTool[] = [],
 ): Promise<AgentReplyResult> {
   return providerFor(provider).generateAgentReply(
     objective,
@@ -56,6 +60,7 @@ export function generateAgentReply(
     guardrailInstruction,
     responseStyleInstruction,
     enableCaching,
+    tools,
   )
 }
 

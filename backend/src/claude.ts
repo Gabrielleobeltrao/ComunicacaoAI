@@ -23,6 +23,9 @@ import {
 } from './systemPrompt.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, TeamPlan } from './systemPrompt.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
+import type { AgentTool } from './agents.js'
+import { MAX_TOOL_ITERATIONS, runToolCall, toolInputSchema } from './agentTools.js'
+import type { ToolCallRecord } from './agentTools.js'
 
 export type { ChatTurn }
 
@@ -97,6 +100,7 @@ export async function generateAgentReply(
   guardrailInstruction = '',
   responseStyleInstruction = '',
   enableCaching = true,
+  tools: AgentTool[] = [],
 ): Promise<AgentReplyResult> {
   const { cacheablePrefix, dynamicSuffix } = buildSystemPromptParts(
     objective,
@@ -116,20 +120,60 @@ export async function generateAgentReply(
   ]
   if (dynamicSuffix) system.push({ type: 'text', text: dynamicSuffix })
 
-  const response = await buildClient(apiKey).messages.create({
-    model: model || DEFAULT_MODEL,
-    max_tokens: 1024,
-    system,
-    thinking: { type: 'disabled' },
-    output_config: { effort: 'low' },
-    messages: history.map((turn) => ({ role: turn.role, content: turn.content })),
-  })
+  const client = buildClient(apiKey)
+  const toolDefs: Anthropic.Tool[] = tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: toolInputSchema(tool) as Anthropic.Tool.InputSchema,
+  }))
 
-  const textBlock = response.content.find((block) => block.type === 'text')
-  return {
-    text: textBlock && textBlock.type === 'text' ? textBlock.text : '',
-    usage: anthropicUsage(response.usage),
+  const messages: Anthropic.MessageParam[] = history.map((turn) => ({ role: turn.role, content: turn.content }))
+  const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 }
+  const toolCalls: ToolCallRecord[] = []
+  let text = ''
+
+  // Agentic loop: keep letting the model call tools until it answers, or we hit
+  // the iteration cap (on the last pass tools are withheld so it must reply).
+  for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
+    const allowTools = toolDefs.length > 0 && iteration < MAX_TOOL_ITERATIONS
+    const response = await client.messages.create({
+      model: model || DEFAULT_MODEL,
+      max_tokens: 1024,
+      system,
+      thinking: { type: 'disabled' },
+      output_config: { effort: 'low' },
+      messages,
+      ...(allowTools ? { tools: toolDefs } : {}),
+    })
+    const turnUsage = anthropicUsage(response.usage)
+    usage.inputTokens += turnUsage.inputTokens
+    usage.outputTokens += turnUsage.outputTokens
+
+    if (allowTools && response.stop_reason === 'tool_use') {
+      messages.push({ role: 'assistant', content: response.content })
+      const results: Anthropic.ToolResultBlockParam[] = []
+      for (const block of response.content) {
+        if (block.type === 'tool_use') {
+          const record = await runToolCall(tools, block.name, (block.input ?? {}) as Record<string, unknown>)
+          toolCalls.push(record)
+          results.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: record.result,
+            is_error: !record.ok,
+          })
+        }
+      }
+      messages.push({ role: 'user', content: results })
+      continue
+    }
+
+    const textBlock = response.content.find((block) => block.type === 'text')
+    text = textBlock && textBlock.type === 'text' ? textBlock.text : ''
+    break
   }
+
+  return { text, usage, toolCalls }
 }
 
 export async function updateMemory(

@@ -22,7 +22,10 @@ import {
   TEAM_PLANNER_SYSTEM_PROMPT,
 } from './systemPrompt.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, TeamPlan } from './systemPrompt.js'
-import type { AgentReplyResult } from './llm.js'
+import type { AgentReplyResult, TokenUsage } from './llm.js'
+import type { AgentTool } from './agents.js'
+import { MAX_TOOL_ITERATIONS, runToolCall, toolInputSchema } from './agentTools.js'
+import type { ToolCallRecord } from './agentTools.js'
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.1'
 
@@ -105,36 +108,72 @@ export async function generateAgentReply(
   // opt-out, so the per-agent caching toggle is a no-op here — accepted only to
   // keep the provider signatures identical.
   enableCaching = true,
+  tools: AgentTool[] = [],
 ): Promise<AgentReplyResult> {
   void enableCaching
+  const client = buildClient(apiKey)
+  const toolDefs: OpenAI.Chat.Completions.ChatCompletionTool[] = tools.map((tool) => ({
+    type: 'function',
+    function: { name: tool.name, description: tool.description, parameters: toolInputSchema(tool) },
+  }))
+
   // buildSystemPrompt puts the static objective + instructions first, which is
   // what OpenAI's automatic prompt caching keys off of (>1024-token prefixes).
-  const response = await buildClient(apiKey).chat.completions.create({
-    model: model || DEFAULT_MODEL,
-    max_completion_tokens: 1024,
-    messages: [
-      {
-        role: 'system',
-        content: buildSystemPrompt(
-          objective,
-          knowledge,
-          memory,
-          identityInstruction,
-          guardrailInstruction,
-          responseStyleInstruction,
-        ),
-      },
-      ...history.map((turn) => ({ role: turn.role, content: turn.content })),
-    ],
-  })
-
-  return {
-    text: response.choices[0]?.message?.content ?? '',
-    usage: {
-      inputTokens: response.usage?.prompt_tokens ?? 0,
-      outputTokens: response.usage?.completion_tokens ?? 0,
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    {
+      role: 'system',
+      content: buildSystemPrompt(
+        objective,
+        knowledge,
+        memory,
+        identityInstruction,
+        guardrailInstruction,
+        responseStyleInstruction,
+      ),
     },
+    ...history.map((turn) => ({ role: turn.role, content: turn.content })),
+  ]
+  const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 }
+  const toolCalls: ToolCallRecord[] = []
+  let text = ''
+
+  // Agentic loop: keep letting the model call tools until it answers, or we hit
+  // the cap (tools are withheld on the last pass so it must reply).
+  for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
+    const allowTools = toolDefs.length > 0 && iteration < MAX_TOOL_ITERATIONS
+    const response = await client.chat.completions.create({
+      model: model || DEFAULT_MODEL,
+      max_completion_tokens: 1024,
+      messages,
+      ...(allowTools ? { tools: toolDefs } : {}),
+    })
+    usage.inputTokens += response.usage?.prompt_tokens ?? 0
+    usage.outputTokens += response.usage?.completion_tokens ?? 0
+
+    const message = response.choices[0]?.message
+    const calls = message?.tool_calls ?? []
+    if (allowTools && message && calls.length > 0) {
+      messages.push(message)
+      for (const call of calls) {
+        if (call.type !== 'function') continue
+        let args: Record<string, unknown> = {}
+        try {
+          args = JSON.parse(call.function.arguments || '{}')
+        } catch {
+          /* leave args empty on malformed JSON */
+        }
+        const record = await runToolCall(tools, call.function.name, args)
+        toolCalls.push(record)
+        messages.push({ role: 'tool', tool_call_id: call.id, content: record.result })
+      }
+      continue
+    }
+
+    text = message?.content ?? ''
+    break
   }
+
+  return { text, usage, toolCalls }
 }
 
 export async function updateMemory(
