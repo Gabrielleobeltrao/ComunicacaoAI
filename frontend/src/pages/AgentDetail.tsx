@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router'
+import { AgentBadges } from '../components/AgentBadges'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
 import { AppLayout } from '../components/AppLayout'
@@ -8,19 +9,6 @@ import { DangerZone } from '../components/DangerZone'
 import { AGENT_CONFIG_SECTIONS, AGENT_SECTIONS } from '../lib/agentSections'
 import { API_URL } from '../lib/api'
 import type { AgentOverview } from '../lib/types'
-
-const MEMORY_LABELS: Record<string, string> = {
-  none: 'Sem memória',
-  facts: 'Fatos-chave',
-  structured: 'Estruturada',
-  semantic: 'Busca semântica',
-}
-
-const GUARDRAIL_LABELS: Record<string, string> = {
-  none: 'Sem guardrail',
-  prompt: 'Reforço no prompt',
-  verification: 'Verificação por chamada',
-}
 
 function Metric({ label, value, suffix, hint }: { label: string; value: number; suffix?: string; hint?: string }) {
   return (
@@ -45,15 +33,7 @@ function OverviewSection({ overview }: { overview: AgentOverview }) {
   const { agent, stats } = overview
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge>{agent.provider === 'openai' ? 'OpenAI' : 'Anthropic'}</Badge>
-        <Badge>{agent.model || 'Modelo padrão'}</Badge>
-        <Badge>{MEMORY_LABELS[agent.memoryType] ?? agent.memoryType}</Badge>
-        <Badge>{GUARDRAIL_LABELS[agent.guardrailMode] ?? agent.guardrailMode}</Badge>
-        {agent.handoffEnabled && <Badge>Handoff</Badge>}
-        {agent.identityEnabled && <Badge>Identificação</Badge>}
-        {agent.structuredOutputEnabled && <Badge>Dados estruturados</Badge>}
-      </div>
+      <AgentBadges agent={agent} />
 
       {agent.objective && <p className="max-w-3xl text-sm text-slate-400">{agent.objective}</p>}
 

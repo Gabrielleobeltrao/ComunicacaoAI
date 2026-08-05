@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
 import type { AgentSummary } from '../lib/types'
+import { AgentBadges } from './AgentBadges'
 import { AgentForm } from './AgentForm'
 import { Modal } from './Modal'
 
@@ -33,9 +34,13 @@ export function AgentManager({ agents, loading, onChange }: AgentManagerProps) {
             <li key={agent._id}>
               <Link
                 to={`/agents/${agent._id}`}
-                className="block rounded-lg border border-slate-800 p-3 transition hover:border-slate-600"
+                className="block space-y-2 rounded-lg border border-slate-800 p-4 transition hover:border-slate-600"
               >
                 <p className="font-medium">{agent.name}</p>
+                {agent.objective && (
+                  <p className="line-clamp-2 text-sm text-slate-400">{agent.objective}</p>
+                )}
+                <AgentBadges agent={agent} />
               </Link>
             </li>
           ))}

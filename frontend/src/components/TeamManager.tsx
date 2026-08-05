@@ -38,28 +38,34 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
         </p>
       ) : (
         <ul className="space-y-3">
-          {teams.map((team) => (
-            <li key={team._id}>
-              <Link
-                to={`/teams/${team._id}`}
-                className="block rounded-lg border border-slate-800 p-3 transition hover:border-slate-600"
-              >
-                <div className="flex items-center gap-2">
-                  <p className="truncate font-medium">{team.name}</p>
-                  <span className="shrink-0 rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
-                    {team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}
-                  </span>
-                </div>
-                <p className="truncate text-sm text-slate-400">
-                  {team.mode === 'pipeline'
-                    ? team.members.map((m) => agentNameById.get(m.agentId) ?? 'removido').join(' → ')
-                    : `${team.members.length} agente${team.members.length === 1 ? '' : 's'}: ${team.members
-                        .map((m) => agentNameById.get(m.agentId) ?? 'removido')
-                        .join(', ')}`}
-                </p>
-              </Link>
-            </li>
-          ))}
+          {teams.map((team) => {
+            const defaultMember = team.members.find((m) => m.isDefault)
+            const defaultName = defaultMember ? agentNameById.get(defaultMember.agentId) : null
+            return (
+              <li key={team._id}>
+                <Link
+                  to={`/teams/${team._id}`}
+                  className="block space-y-2 rounded-lg border border-slate-800 p-4 transition hover:border-slate-600"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate font-medium">{team.name}</p>
+                    <span className="shrink-0 rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
+                      {team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}
+                    </span>
+                    <span className="shrink-0 rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">
+                      {team.members.length} {team.members.length === 1 ? 'agente' : 'agentes'}
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-400">
+                    {team.mode === 'pipeline'
+                      ? team.members.map((m) => agentNameById.get(m.agentId) ?? 'removido').join(' → ')
+                      : team.members.map((m) => agentNameById.get(m.agentId) ?? 'removido').join(', ')}
+                  </p>
+                  {defaultName && <p className="text-xs text-slate-500">Padrão: {defaultName}</p>}
+                </Link>
+              </li>
+            )
+          })}
         </ul>
       )}
 
