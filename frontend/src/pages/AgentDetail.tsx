@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
 import { AppLayout } from '../components/AppLayout'
+import { DangerZone } from '../components/DangerZone'
 import { AGENT_CONFIG_SECTIONS, AGENT_SECTIONS } from '../lib/agentSections'
 import { API_URL } from '../lib/api'
 import type { AgentOverview } from '../lib/types'
@@ -121,9 +122,12 @@ const ALL_KEYS = [...AGENT_SECTIONS.map((s) => s.key), ...AGENT_CONFIG_SECTIONS.
 
 export function AgentDetail() {
   const { agentId, section } = useParams()
+  const navigate = useNavigate()
   const [overview, setOverview] = useState<AgentOverview | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!agentId) return
@@ -140,6 +144,33 @@ export function AgentDetail() {
   useEffect(() => {
     load()
   }, [load])
+
+  async function handleDelete() {
+    if (!overview || deleting) return
+    if (
+      !window.confirm(
+        `Excluir o agente "${overview.agent.name}"? Essa ação não pode ser desfeita e remove também a base de conhecimento dele.`,
+      )
+    ) {
+      return
+    }
+    setDeleteError(null)
+    setDeleting(true)
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${overview.agent._id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json().catch(() => null)
+        setDeleteError(body?.error ?? 'Não foi possível excluir o agente.')
+        return
+      }
+      navigate('/agents')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   const agent = overview?.agent
   // Unknown/typo sections fall back to the overview.
@@ -173,6 +204,16 @@ export function AgentDetail() {
               />
             ) : null}
           </div>
+          {active === 'basico' && (
+            <DangerZone
+              title="Excluir este agente"
+              description="Remove o agente e sua base de conhecimento. Não pode ser desfeito."
+              buttonLabel="Excluir agente"
+              onDelete={handleDelete}
+              deleting={deleting}
+              deleteError={deleteError}
+            />
+          )}
         </div>
       )}
     </AppLayout>

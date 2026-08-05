@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
+import { DangerZone } from '../components/DangerZone'
 import { TeamForm } from '../components/TeamForm'
 import { TeamPlayground } from '../components/TeamPlayground'
 import { API_URL } from '../lib/api'
@@ -35,6 +36,11 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
 
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge>{isPipeline ? 'Fluxo' : 'Adaptativo'}</Badge>
+        <Badge>{`${team.members.length} ${team.members.length === 1 ? 'agente' : 'agentes'}`}</Badge>
+      </div>
+
       <section>
         <h3 className="mb-3 text-sm font-medium text-slate-400">
           {isPipeline ? 'Etapas do fluxo' : 'Agentes da equipe'}
@@ -121,10 +127,13 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
 
 export function TeamDetail() {
   const { teamId, section } = useParams()
+  const navigate = useNavigate()
   const [overview, setOverview] = useState<TeamOverview | null>(null)
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!teamId) return
@@ -156,6 +165,27 @@ export function TeamDetail() {
     }
   }, [])
 
+  async function handleDelete() {
+    if (!overview || deleting) return
+    if (!window.confirm(`Excluir a equipe "${overview.team.name}"? Essa ação não pode ser desfeita.`)) return
+    setDeleteError(null)
+    setDeleting(true)
+    try {
+      const res = await fetch(`${API_URL}/api/teams/${overview.team._id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+      if (!res.ok && res.status !== 204) {
+        const body = await res.json().catch(() => null)
+        setDeleteError(body?.error ?? 'Não foi possível excluir a equipe.')
+        return
+      }
+      navigate('/teams')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   const team = overview?.team
   const raw = section ?? ''
   const active = TEAM_SECTIONS.some((s) => s.key === raw) ? raw : ''
@@ -169,11 +199,6 @@ export function TeamDetail() {
         <p className="text-sm text-slate-400">Equipe não encontrada.</p>
       ) : (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-xl font-semibold">{team.name}</h2>
-            <Badge>{team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}</Badge>
-          </div>
-
           {active === '' ? (
             <OverviewSection overview={overview} agents={agents} />
           ) : (
@@ -186,6 +211,16 @@ export function TeamDetail() {
                   <TeamPlayground key={team._id} team={team} />
                 ) : null}
               </div>
+              {active === 'configuracao' && (
+                <DangerZone
+                  title="Excluir esta equipe"
+                  description="Não pode ser desfeito."
+                  buttonLabel="Excluir equipe"
+                  onDelete={handleDelete}
+                  deleting={deleting}
+                  deleteError={deleteError}
+                />
+              )}
             </div>
           )}
         </div>
