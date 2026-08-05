@@ -33,8 +33,6 @@ function OverviewSection({ overview }: { overview: AgentOverview }) {
   const { agent, stats } = overview
   return (
     <div className="space-y-6">
-      <AgentBadges agent={agent} />
-
       {agent.objective && <p className="max-w-3xl text-sm text-slate-400">{agent.objective}</p>}
 
       <section>
@@ -161,7 +159,11 @@ export function AgentDetail() {
     [...AGENT_SECTIONS, ...AGENT_CONFIG_SECTIONS].find((s) => s.key === active)?.label ?? 'Visão geral'
 
   return (
-    <AppLayout current="/agents" title={agent?.name ?? 'Agente'}>
+    <AppLayout
+      current="/agents"
+      title={agent?.name ?? 'Agente'}
+      titleExtra={agent ? <AgentBadges agent={agent} /> : undefined}
+    >
       {loading ? (
         <p className="text-sm text-slate-400">Carregando agente...</p>
       ) : notFound || !overview || !agent ? (

@@ -38,11 +38,6 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge>{isPipeline ? 'Fluxo' : 'Adaptativo'}</Badge>
-        <Badge>{`${team.members.length} ${team.members.length === 1 ? 'agente' : 'agentes'}`}</Badge>
-      </div>
-
       <section>
         <h3 className="mb-3 text-sm font-medium text-slate-400">
           {isPipeline ? 'Etapas do fluxo' : 'Agentes da equipe'}
@@ -232,8 +227,15 @@ export function TeamDetail() {
   const active = TEAM_SECTIONS.some((s) => s.key === raw) ? raw : ''
   const sectionLabel = TEAM_SECTIONS.find((s) => s.key === active)?.label ?? 'Visão geral'
 
+  const titleExtra = team ? (
+    <>
+      <Badge>{team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}</Badge>
+      <Badge>{`${team.members.length} ${team.members.length === 1 ? 'agente' : 'agentes'}`}</Badge>
+    </>
+  ) : undefined
+
   return (
-    <AppLayout current="/teams" title={team?.name ?? 'Equipe'}>
+    <AppLayout current="/teams" title={team?.name ?? 'Equipe'} titleExtra={titleExtra}>
       {loading ? (
         <p className="text-sm text-slate-400">Carregando equipe...</p>
       ) : notFound || !overview || !team ? (
