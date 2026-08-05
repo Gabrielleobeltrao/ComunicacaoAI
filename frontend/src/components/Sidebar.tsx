@@ -126,7 +126,7 @@ const NAV: NavEntry[] = [
       { to: '/teams', label: 'Equipes', Icon: TeamsIcon },
     ],
   },
-  { to: '/widgets', label: 'Widgets', Icon: WidgetsIcon },
+  { to: '/widgets', label: 'Canais', Icon: WidgetsIcon },
   { to: '/chats', label: 'Chats', Icon: ChatsIcon },
 ]
 

@@ -82,6 +82,26 @@ export interface BuiltinAppCatalog {
   guide?: { steps: string[]; docUrl?: string }
 }
 
+export interface WhatsAppProviderCatalog {
+  key: string
+  label: string
+  description: string
+  available: boolean
+  fields: { key: string; label: string; placeholder?: string; required: boolean; type?: 'text' | 'password' }[]
+  webhookNote?: string
+}
+
+export interface WhatsAppChannel {
+  _id: string
+  name: string
+  provider: string | null
+  number: string | null
+  agentId: string | null
+  teamId: string | null
+  createdAt: string
+  webhookUrl: string | null
+}
+
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
 export type ConversationPersistence = 'same_browser' | 'always_new'
 export type GuardrailMode = 'none' | 'prompt' | 'verification'
