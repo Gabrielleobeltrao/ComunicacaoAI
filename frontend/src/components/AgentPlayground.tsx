@@ -1,14 +1,15 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
-import type { AgentSummary } from '../lib/types'
+import type { AgentSummary, ToolCall } from '../lib/types'
 import { MessageContent } from './MessageContent'
+import { ToolCalls } from './ToolCalls'
 
 // Stateless test chat for a single agent — nothing is persisted and the agent's
 // memory is not used. Reused by the Agents list modal and the agent page.
 export function AgentPlayground({ agent }: { agent: AgentSummary }) {
   const [messages, setMessages] = useState<
-    { role: 'user' | 'assistant'; content: string; handoff?: boolean }[]
+    { role: 'user' | 'assistant'; content: string; handoff?: boolean; toolCalls?: ToolCall[] }[]
   >([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -31,7 +32,10 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
       })
       if (res.ok) {
         const body = await res.json()
-        setMessages((prev) => [...prev, { role: 'assistant', content: body.reply, handoff: body.handoff }])
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: body.reply, handoff: body.handoff, toolCalls: body.toolCalls },
+        ])
       } else {
         setMessages((prev) => [
           ...prev,
@@ -68,6 +72,11 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
               >
                 <MessageContent content={message.content} />
               </div>
+              {message.toolCalls && message.toolCalls.length > 0 && (
+                <div className="max-w-[85%]">
+                  <ToolCalls calls={message.toolCalls} />
+                </div>
+              )}
               {message.handoff && (
                 <p className="mt-1 text-xs font-medium text-amber-400">
                   ⚠ Handoff acionado — numa conversa real, o agente pararia de responder aqui.

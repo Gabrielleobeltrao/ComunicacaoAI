@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
+import type { ToolCall } from '../lib/types'
 import { socket } from '../lib/socket'
 import { MessageContent } from './MessageContent'
+import { ToolCalls } from './ToolCalls'
 
 interface ConversationSummary {
   widgetId: string
@@ -47,6 +49,7 @@ export function ConversationsPanel() {
   const [structuredData, setStructuredData] = useState<Record<string, string>>({})
   const [decisions, setDecisions] = useState<OrchestrationDecision[]>([])
   const [showDecisions, setShowDecisions] = useState(false)
+  const [toolCalls, setToolCalls] = useState<ToolCall[]>([])
   const [handoffActive, setHandoffActive] = useState(false)
   const [togglingHandoff, setTogglingHandoff] = useState(false)
   const [reply, setReply] = useState('')
@@ -102,6 +105,7 @@ export function ConversationsPanel() {
 
     setStructuredData({})
     setDecisions([])
+    setToolCalls([])
     setHandoffActive(selected.humanHandoff)
 
     async function loadMessages() {
@@ -136,13 +140,25 @@ export function ConversationsPanel() {
       }
     }
 
+    async function loadToolCalls() {
+      const res = await fetch(
+        `${API_URL}/api/widgets/${widgetId}/conversations/${conversationId}/tool-calls`,
+        { credentials: 'include' },
+      )
+      if (res.ok && !cancelled) {
+        setToolCalls(await res.json())
+      }
+    }
+
     loadMessages()
     loadStructuredData()
     loadDecisions()
+    loadToolCalls()
     const interval = setInterval(() => {
       loadMessages()
       loadStructuredData()
       loadDecisions()
+      loadToolCalls()
     }, 15000)
 
     function joinRoom() {
@@ -152,9 +168,10 @@ export function ConversationsPanel() {
     function handleMessage(message: ConversationMessage) {
       if (message.conversationId !== conversationId) return
       setMessages((prev) => (prev.some((m) => m._id === message._id) ? prev : [...prev, message]))
-      // A decision is logged before its reply, so it's already persisted by
-      // the time the agent message arrives — refresh it right away.
+      // A decision (and any tool calls) are logged before/with the reply, so
+      // they're already persisted by the time the agent message arrives.
       loadDecisions()
+      loadToolCalls()
       // The extraction runs in the background after the agent's reply, so
       // give it a moment before refreshing instead of fetching immediately.
       clearTimeout(structuredDataTimeout)
@@ -411,6 +428,14 @@ export function ConversationsPanel() {
                 ))}
               </ol>
             )}
+          </div>
+        )}
+        {selected && toolCalls.length > 0 && (
+          <div className="border-b border-slate-800 p-3">
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+              Ferramentas ({toolCalls.length})
+            </p>
+            <ToolCalls calls={toolCalls} />
           </div>
         )}
         <div className="flex-1 space-y-2 overflow-y-auto p-3">

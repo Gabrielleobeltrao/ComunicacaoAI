@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
-import type { TeamMode, TeamSummary } from '../lib/types'
+import type { TeamMode, TeamSummary, ToolCall } from '../lib/types'
 import { MessageContent } from './MessageContent'
+import { ToolCalls } from './ToolCalls'
 
 interface PlayMessage {
   role: 'user' | 'assistant'
@@ -13,6 +14,7 @@ interface PlayMessage {
   advanced?: boolean
   fromStage?: string | null
   mode?: TeamMode
+  toolCalls?: ToolCall[]
 }
 
 // Stateless team test chat — nothing is persisted. Each reply shows which
@@ -52,6 +54,7 @@ export function TeamPlayground({ team }: { team: TeamSummary }) {
             advanced: body.advanced,
             fromStage: body.fromStage,
             mode: body.mode,
+            toolCalls: body.toolCalls,
           },
         ])
       } else {
@@ -103,6 +106,11 @@ export function TeamPlayground({ team }: { team: TeamSummary }) {
                         ? `↳ consultou: ${message.specialists.join(', ')}`
                         : ''}
                 </span>
+              )}
+              {message.toolCalls && message.toolCalls.length > 0 && (
+                <div className="max-w-[85%]">
+                  <ToolCalls calls={message.toolCalls} />
+                </div>
               )}
             </div>
           ))}
