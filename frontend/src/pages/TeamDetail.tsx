@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
+import { AgentBadges } from '../components/AgentBadges'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { TeamForm } from '../components/TeamForm'
@@ -31,6 +32,7 @@ function Badge({ children }: { children: ReactNode }) {
 function OverviewSection({ overview, agents }: { overview: TeamOverview; agents: AgentSummary[] }) {
   const { team, analytics, linkedWidgets } = overview
   const nameById = new Map(agents.map((a) => [a._id, a.name]))
+  const agentById = new Map(agents.map((a) => [a._id, a]))
   const isPipeline = team.mode === 'pipeline'
   const maxCount = Math.max(1, ...(analytics?.specialists.map((s) => s.count) ?? []))
 
@@ -46,16 +48,55 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
           {isPipeline ? 'Etapas do fluxo' : 'Agentes da equipe'}
         </h3>
         <ul className="space-y-2">
-          {team.members.map((m, index) => (
-            <li key={m.agentId} className="rounded-xl border border-slate-800 bg-slate-900 p-3">
-              <div className="flex items-center gap-2">
-                {isPipeline && <span className="text-sm text-slate-500">{index + 1}.</span>}
-                <span className="font-medium">{nameById.get(m.agentId) ?? 'Agente removido'}</span>
-                {m.isDefault && <Badge>Padrão</Badge>}
-              </div>
-              {m.routingDescription && <p className="mt-1 text-sm text-slate-400">{m.routingDescription}</p>}
-            </li>
-          ))}
+          {team.members.map((m, index) => {
+            const full = agentById.get(m.agentId)
+            const inner = (
+              <>
+                <div className="flex items-center gap-2">
+                  {isPipeline && <span className="text-sm text-slate-500">{index + 1}.</span>}
+                  <span className={`font-medium ${full ? '' : 'text-slate-500'}`}>
+                    {full ? full.name : 'Agente removido'}
+                  </span>
+                  {m.isDefault && <Badge>Padrão</Badge>}
+                </div>
+                {full && (
+                  <div className="mt-2">
+                    <AgentBadges agent={full} />
+                  </div>
+                )}
+                {m.routingDescription && <p className="mt-2 text-sm text-slate-400">{m.routingDescription}</p>}
+                {isPipeline && index < team.members.length - 1 && m.advanceWhen && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    <span className="text-slate-600">Avança quando:</span> {m.advanceWhen}
+                  </p>
+                )}
+                {isPipeline && m.transitions.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {m.transitions.map((t, ti) => (
+                      <li key={ti} className="text-xs text-slate-500">
+                        <span className="text-slate-600">Se</span> {t.condition || '…'}{' '}
+                        <span className="text-slate-400">→ {nameById.get(t.targetAgentId) ?? 'etapa'}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )
+            return (
+              <li key={m.agentId}>
+                {full ? (
+                  <Link
+                    to={`/agents/${m.agentId}?from=${encodeURIComponent(`/teams/${team._id}`)}`}
+                    className="block rounded-xl border border-slate-800 bg-slate-900 p-3 transition hover:border-slate-600"
+                  >
+                    {inner}
+                  </Link>
+                ) : (
+                  <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">{inner}</div>
+                )}
+              </li>
+            )
+          })}
         </ul>
       </section>
 

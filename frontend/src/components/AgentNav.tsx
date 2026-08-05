@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ReactElement } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useParams, useSearchParams } from 'react-router'
 import { AGENT_CONFIG_SECTIONS, AGENT_SECTIONS } from '../lib/agentSections'
 import { ACTIVE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
 
@@ -86,9 +86,17 @@ const CONFIG_ICONS: Record<string, (props: IconProps) => ReactElement> = {
 
 export function AgentNav() {
   const { agentId, section } = useParams()
+  const [searchParams] = useSearchParams()
   const base = `/agents/${agentId}`
   const active = section ?? ''
   const configActive = AGENT_CONFIG_SECTIONS.some((s) => s.key === active)
+
+  // Opened from a team? Then "back" returns to that team. The origin is carried
+  // in ?from=... and preserved across the agent's own section links.
+  const from = searchParams.get('from')
+  const qs = from ? `?from=${encodeURIComponent(from)}` : ''
+  const backTo = from ?? '/agents'
+  const backLabel = from ? (from.startsWith('/teams') ? 'Equipe' : 'Voltar') : 'Agentes'
 
   // Collapsible "Configurações" group; persisted, defaults open.
   const [configOpen, setConfigOpen] = useState<boolean>(() => {
@@ -112,9 +120,9 @@ export function AgentNav() {
 
   return (
     <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-      <Link to="/agents" className={`${ITEM_BASE} ${INACTIVE}`}>
+      <Link to={backTo} className={`${ITEM_BASE} ${INACTIVE}`}>
         <BackIcon className="h-5 w-5 shrink-0" />
-        <span className={LABEL}>Agentes</span>
+        <span className={LABEL}>{backLabel}</span>
       </Link>
 
       <div className="my-1 h-px bg-slate-800" />
@@ -124,7 +132,7 @@ export function AgentNav() {
         return (
           <Link
             key={s.key}
-            to={s.key ? `${base}/${s.key}` : base}
+            to={`${s.key ? `${base}/${s.key}` : base}${qs}`}
             className={`${ITEM_BASE} ${active === s.key ? ACTIVE : INACTIVE}`}
           >
             <Icon className="h-5 w-5 shrink-0" />
@@ -154,7 +162,7 @@ export function AgentNav() {
           return (
             <Link
               key={s.key}
-              to={`${base}/${s.key}`}
+              to={`${base}/${s.key}${qs}`}
               className={`${ITEM_BASE} group-hover:pl-7 ${active === s.key ? ACTIVE : INACTIVE}`}
             >
               <Icon className="h-4.5 w-4.5 shrink-0 opacity-80" />
