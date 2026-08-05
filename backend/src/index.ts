@@ -118,6 +118,7 @@ import {
   countVisitorMessagesSince,
   createWidget,
   deleteWidget,
+  getAgentStats,
   getConversationMessages,
   getOwnerStats,
   getWidgetById,
@@ -1209,6 +1210,44 @@ app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
   await deleteAllForAgent(agentObjectId)
   await deleteAgent(ownerId, agentObjectId)
   res.status(204).end()
+})
+
+// Per-agent dashboard: the agent config, its usage metrics (scoped to the
+// widgets it directly answers), where it's used (widgets/teams) and how many
+// knowledge documents it has.
+app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  if (!ObjectId.isValid(agentId)) {
+    res.status(400).json({ error: 'Invalid agent id' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const agentObjectId = new ObjectId(agentId)
+
+  const agent = await getAgentById(ownerId, agentObjectId)
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+
+  const [stats, widgets, teams, documents] = await Promise.all([
+    getAgentStats(ownerId, agentObjectId),
+    listWidgets(ownerId),
+    listTeams(ownerId),
+    listDocuments(agentObjectId),
+  ])
+
+  res.json({
+    agent,
+    stats,
+    linkedWidgets: widgets
+      .filter((w) => w.agentId?.toString() === agentId)
+      .map((w) => ({ _id: w._id, name: w.name })),
+    linkedTeams: teams
+      .filter((t) => t.members.some((m) => m.agentId.toString() === agentId))
+      .map((t) => ({ _id: t._id, name: t.name })),
+    knowledgeCount: documents.length,
+  })
 })
 
 const MAX_PLAYGROUND_MESSAGES = 40

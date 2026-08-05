@@ -138,7 +138,17 @@ export interface OwnerStats {
 
 export async function getOwnerStats(ownerId: string): Promise<OwnerStats> {
   const ownerWidgets = await widgets.find({ ownerId }).project({ _id: 1 }).toArray()
-  const widgetIds = ownerWidgets.map((w) => w._id)
+  return statsForWidgetIds(ownerWidgets.map((w) => w._id))
+}
+
+// Same metrics as the owner-wide dashboard, but scoped to the widgets a single
+// agent directly answers — the numbers shown on that agent's page.
+export async function getAgentStats(ownerId: string, agentId: ObjectId): Promise<OwnerStats> {
+  const agentWidgets = await widgets.find({ ownerId, agentId }).project({ _id: 1 }).toArray()
+  return statsForWidgetIds(agentWidgets.map((w) => w._id))
+}
+
+async function statsForWidgetIds(widgetIds: ObjectId[]): Promise<OwnerStats> {
   if (widgetIds.length === 0) {
     return {
       conversations: 0,
