@@ -77,8 +77,8 @@ export interface BuiltinAppCatalog {
   key: string
   label: string
   description: string
-  connection: 'google'
-  configFields: { key: string; label: string; placeholder?: string; required: boolean }[]
+  connection?: 'google'
+  configFields: { key: string; label: string; placeholder?: string; required: boolean; type?: 'text' | 'password' }[]
 }
 
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'
