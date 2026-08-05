@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { createServer } from 'node:http'
+import { randomBytes } from 'node:crypto'
 import cors from 'cors'
 import express from 'express'
 import type { NextFunction, Request, Response } from 'express'
@@ -18,6 +19,8 @@ import {
   LANGUAGES,
   listAgents,
   MAX_DAILY_MESSAGE_LIMIT,
+  MAX_TOOL_PARAMS,
+  MAX_TOOLS,
   MEMORY_TYPES,
   RESPONSE_DETAILS,
   RESPONSE_TONES,
@@ -25,6 +28,9 @@ import {
 } from './agents.js'
 import type {
   Agent,
+  AgentTool,
+  AgentToolHeader,
+  AgentToolParam,
   ConversationPersistence,
   GuardrailMode,
   Language,
@@ -102,6 +108,9 @@ import {
   setProviderApiKey,
 } from './userSettings.js'
 import { getMonthlyTokens, getUsageSummary, recordReplyUsage } from './tokenUsage.js'
+import { listToolCalls, logToolCalls } from './toolCallLog.js'
+import { deleteIntegration } from './integrations.js'
+import { buildGoogleAuthUrl, connectGoogle, getGoogleStatus, googleConfigured } from './googleCalendar.js'
 import {
   computeIdentityKey,
   findVisitorProfile,
@@ -279,6 +288,71 @@ function isValidWebhookUrl(value: unknown): value is string {
   }
 }
 
+// Validate + normalize the agent's custom HTTP tools from the request body.
+// Returns { tools: undefined } when the field wasn't sent (leave as-is).
+function parseTools(raw: unknown): { tools?: AgentTool[]; error?: string } {
+  if (raw === undefined) return { tools: undefined }
+  if (!Array.isArray(raw)) return { error: 'tools must be a list' }
+  if (raw.length > MAX_TOOLS) return { error: `An agent can have at most ${MAX_TOOLS} tools` }
+
+  const tools: AgentTool[] = []
+  const names = new Set<string>()
+  for (const t of raw) {
+    if (typeof t !== 'object' || t === null) return { error: 'Invalid tool' }
+    const o = t as Record<string, unknown>
+    const name = typeof o.name === 'string' ? o.name.trim() : ''
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+      return { error: `Tool name "${name}" must be 1-64 chars (letters, numbers, _ or -)` }
+    }
+    if (names.has(name)) return { error: `Duplicate tool name "${name}"` }
+    names.add(name)
+    const method = o.method === 'GET' || o.method === 'POST' ? o.method : null
+    if (!method) return { error: `Tool "${name}": method must be GET or POST` }
+    if (!isValidWebhookUrl(o.url)) return { error: `Tool "${name}": url must be a valid http(s) URL` }
+
+    const headers: AgentToolHeader[] = []
+    if (o.headers !== undefined) {
+      if (!Array.isArray(o.headers)) return { error: `Tool "${name}": headers must be a list` }
+      for (const h of o.headers) {
+        const ho = (typeof h === 'object' && h !== null ? h : {}) as Record<string, unknown>
+        if (typeof ho.key !== 'string' || typeof ho.value !== 'string') {
+          return { error: `Tool "${name}": header key/value must be text` }
+        }
+        if (ho.key.trim()) headers.push({ key: ho.key.trim(), value: ho.value })
+      }
+    }
+
+    const parameters: AgentToolParam[] = []
+    if (o.parameters !== undefined) {
+      if (!Array.isArray(o.parameters)) return { error: `Tool "${name}": parameters must be a list` }
+      if (o.parameters.length > MAX_TOOL_PARAMS) {
+        return { error: `Tool "${name}": at most ${MAX_TOOL_PARAMS} parameters` }
+      }
+      const paramNames = new Set<string>()
+      for (const p of o.parameters) {
+        const po = (typeof p === 'object' && p !== null ? p : {}) as Record<string, unknown>
+        const pName = typeof po.name === 'string' ? po.name.trim() : ''
+        if (!/^[a-zA-Z0-9_]{1,64}$/.test(pName)) {
+          return { error: `Tool "${name}": parameter name "${pName}" is invalid` }
+        }
+        if (paramNames.has(pName)) return { error: `Tool "${name}": duplicate parameter "${pName}"` }
+        paramNames.add(pName)
+        const pType = po.type === 'string' || po.type === 'number' || po.type === 'boolean' ? po.type : null
+        if (!pType) return { error: `Tool "${name}": parameter "${pName}" type must be string/number/boolean` }
+        parameters.push({
+          name: pName,
+          type: pType,
+          description: typeof po.description === 'string' ? po.description : '',
+          required: po.required === true,
+        })
+      }
+    }
+
+    tools.push({ name, description: typeof o.description === 'string' ? o.description : '', method, url: o.url, headers, parameters })
+  }
+  return { tools }
+}
+
 function isResponseTone(value: unknown): value is ResponseTone {
   return typeof value === 'string' && (RESPONSE_TONES as string[]).includes(value)
 }
@@ -317,6 +391,58 @@ app.delete('/api/settings/:provider/key', requireAuth, async (req, res) => {
     return
   }
   await clearProviderApiKey(res.locals.userId, provider)
+  res.status(204).end()
+})
+
+// ---- Integrations (Google) ----
+
+function readCookie(header: string | undefined, name: string): string | null {
+  if (!header) return null
+  for (const part of header.split(';')) {
+    const [key, ...rest] = part.trim().split('=')
+    if (key === name) return decodeURIComponent(rest.join('='))
+  }
+  return null
+}
+
+app.get('/api/integrations', requireAuth, async (_req, res) => {
+  const google = await getGoogleStatus(res.locals.userId)
+  res.json({ google: { ...google, available: googleConfigured() } })
+})
+
+// Kick off Google's OAuth consent. A signed-ish state (userId + nonce) is stored
+// in a cookie and checked on the callback to prevent login-CSRF.
+app.get('/api/integrations/google/connect', requireAuth, (req, res) => {
+  if (!googleConfigured()) {
+    res.status(400).json({ error: 'Integração com o Google não está configurada no servidor.' })
+    return
+  }
+  const state = `${res.locals.userId}.${randomBytes(16).toString('hex')}`
+  res.cookie('g_oauth_state', state, { httpOnly: true, sameSite: 'lax', maxAge: 10 * 60 * 1000 })
+  res.redirect(buildGoogleAuthUrl(state))
+})
+
+app.get('/api/integrations/google/callback', requireAuth, async (req, res) => {
+  const code = typeof req.query.code === 'string' ? req.query.code : ''
+  const state = typeof req.query.state === 'string' ? req.query.state : ''
+  const cookieState = readCookie(req.headers.cookie, 'g_oauth_state')
+  res.clearCookie('g_oauth_state')
+
+  if (!code || !state || state !== cookieState || !state.startsWith(`${res.locals.userId}.`)) {
+    res.redirect(`${clientUrl}/dashboard?integration=google_error`)
+    return
+  }
+  try {
+    await connectGoogle(res.locals.userId, code)
+    res.redirect(`${clientUrl}/dashboard?integration=google_connected`)
+  } catch (error) {
+    console.error('Google connect failed:', error)
+    res.redirect(`${clientUrl}/dashboard?integration=google_error`)
+  }
+})
+
+app.delete('/api/integrations/google', requireAuth, async (_req, res) => {
+  await deleteIntegration(res.locals.userId, 'google')
   res.status(204).end()
 })
 
@@ -893,7 +1019,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
     .filter(Boolean)
     .join('\n\n')
 
-  const { text, usage } = await generateAgentReply(
+  const { text, usage, toolCalls } = await generateAgentReply(
     replyObjective,
     knowledge,
     '',
@@ -913,6 +1039,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
       ),
     ].join('\n\n'),
     configAgent.promptCaching ?? true,
+    configAgent.tools ?? [],
   )
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
@@ -931,6 +1058,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
     stageIndex: pipelineStageIndex,
     advanced: pipelineAdvanced,
     fromStage: pipelineFromStage,
+    toolCalls,
   })
 })
 
@@ -961,6 +1089,7 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     dailyMessageLimit,
     cheapAuxModel,
     promptCaching,
+    tools,
   } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
@@ -1020,6 +1149,11 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Unknown responseDetail' })
     return
   }
+  const { tools: parsedTools, error: toolsError } = parseTools(tools)
+  if (toolsError) {
+    res.status(400).json({ error: toolsError })
+    return
+  }
 
   const agent = await createAgent(res.locals.userId, name, {
     objective: typeof objective === 'string' ? objective : undefined,
@@ -1050,6 +1184,7 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     dailyMessageLimit: typeof dailyMessageLimit === 'number' ? dailyMessageLimit : undefined,
     cheapAuxModel: typeof cheapAuxModel === 'boolean' ? cheapAuxModel : undefined,
     promptCaching: typeof promptCaching === 'boolean' ? promptCaching : undefined,
+    tools: parsedTools,
   })
   res.status(201).json(agent)
 })
@@ -1091,6 +1226,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     dailyMessageLimit,
     cheapAuxModel,
     promptCaching,
+    tools,
   } = req.body ?? {}
   const updates: {
     name?: string
@@ -1118,6 +1254,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     dailyMessageLimit?: number
     cheapAuxModel?: boolean
     promptCaching?: boolean
+    tools?: AgentTool[]
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
@@ -1220,6 +1357,14 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
   }
   if (typeof cheapAuxModel === 'boolean') updates.cheapAuxModel = cheapAuxModel
   if (typeof promptCaching === 'boolean') updates.promptCaching = promptCaching
+  if (tools !== undefined) {
+    const { tools: parsedTools, error } = parseTools(tools)
+    if (error) {
+      res.status(400).json({ error })
+      return
+    }
+    updates.tools = parsedTools
+  }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
     return
@@ -1392,7 +1537,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     .filter(Boolean)
     .join('\n\n')
 
-  const { text: generated, usage } = await generateAgentReply(
+  const { text: generated, usage, toolCalls } = await generateAgentReply(
     agent.objective,
     knowledge,
     '',
@@ -1412,6 +1557,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       ),
     ].join('\n\n'),
     agent.promptCaching ?? true,
+    agent.tools ?? [],
   )
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
@@ -1423,7 +1569,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     handoff = true
     reply = reply.trimStart().slice(HANDOFF_MARKER.length).trim()
   }
-  res.json({ reply, refusedByGuardrail: false, handoff })
+  res.json({ reply, refusedByGuardrail: false, handoff, toolCalls })
 })
 
 app.post('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
@@ -1729,6 +1875,35 @@ app.get(
         advanced: d.advanced ?? false,
         fromStage: d.fromStage ?? null,
         createdAt: d.createdAt,
+      })),
+    )
+  },
+)
+
+app.get(
+  '/api/widgets/:widgetId/conversations/:conversationId/tool-calls',
+  requireAuth,
+  async (req, res) => {
+    const widgetIdStr = String(req.params.widgetId)
+    const conversationId = String(req.params.conversationId)
+    if (!ObjectId.isValid(widgetIdStr)) {
+      res.status(400).json({ error: 'Invalid widget id' })
+      return
+    }
+    const widgetId = new ObjectId(widgetIdStr)
+    const widget = await getWidgetById(widgetId)
+    if (!widget || widget.ownerId !== res.locals.userId) {
+      res.status(404).json({ error: 'Widget not found' })
+      return
+    }
+    const calls = await listToolCalls(widgetId, conversationId)
+    res.json(
+      calls.map((c) => ({
+        name: c.name,
+        arguments: c.arguments,
+        ok: c.ok,
+        result: c.result,
+        createdAt: c.createdAt,
       })),
     )
   },
@@ -2234,7 +2409,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     ),
   ].join('\n\n')
 
-  const { text: generatedReply, usage } = await generateAgentReply(
+  const { text: generatedReply, usage, toolCalls } = await generateAgentReply(
     replyObjective,
     knowledge,
     memoryText,
@@ -2246,8 +2421,12 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     behaviorInstruction,
     responseStyleInstruction,
     agent.promptCaching ?? true,
+    agent.tools ?? [],
   )
   recordReplyUsage(ownerId, usage).catch((error) => console.error('Failed to record token usage:', error))
+  logToolCalls(widgetId, conversationId, toolCalls).catch((error) =>
+    console.error('Failed to log tool calls:', error),
+  )
   let replyText = generatedReply
   if (!replyText) return
 
