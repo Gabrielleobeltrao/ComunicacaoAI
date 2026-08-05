@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import type { ReactElement } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
-import { signOut, useSession } from '../lib/auth-client'
+import { signOut } from '../lib/auth-client'
 import { ACTIVE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
 import { AgentNav } from './AgentNav'
 import { TeamNav } from './TeamNav'
-import { SettingsModal } from './ApiKeySettings'
 
 type IconProps = { className?: string }
 
@@ -72,15 +71,6 @@ function SettingsIcon({ className }: IconProps) {
   )
 }
 
-function AccountIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <circle cx="12" cy="8" r="3.5" />
-      <path d="M5 20a7 7 0 0 1 14 0" strokeLinecap="round" />
-    </svg>
-  )
-}
-
 function LogoutIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
@@ -142,11 +132,9 @@ const NAV: NavEntry[] = [
 
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
-  const { data: session } = useSession()
   // On an agent/team page the middle nav swaps to that entity's own sections;
   // the shell (logo, footer, hover-to-expand) stays the same.
   const { agentId, teamId } = useParams()
-  const [settingsOpen, setSettingsOpen] = useState(false)
   // Which parent groups are expanded to reveal their subpages. Persisted;
   // groups default to open (a key is only stored once toggled shut/open).
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
@@ -241,23 +229,16 @@ export function Sidebar({ current }: { current: string }) {
       )}
 
       <div className="mt-auto flex flex-col gap-1 border-t border-slate-800 pt-3">
-        <button type="button" onClick={() => setSettingsOpen(true)} className={`${ITEM_BASE} ${INACTIVE}`}>
+        <Link to="/settings" className={`${ITEM_BASE} ${current === '/settings' ? ACTIVE : INACTIVE}`}>
           <SettingsIcon className="h-5 w-5 shrink-0" />
           <span className={LABEL}>Configurações</span>
-        </button>
-
-        <div className={`${ITEM_BASE} text-slate-500`} title={session?.user.email}>
-          <AccountIcon className="h-5 w-5 shrink-0" />
-          <span className={`${LABEL} truncate`}>{session?.user.email}</span>
-        </div>
+        </Link>
 
         <button type="button" onClick={handleSignOut} className={`${ITEM_BASE} ${INACTIVE}`}>
           <LogoutIcon className="h-5 w-5 shrink-0" />
           <span className={LABEL}>Sair</span>
         </button>
       </div>
-
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </aside>
   )
 }

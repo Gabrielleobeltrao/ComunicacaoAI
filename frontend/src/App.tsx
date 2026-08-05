@@ -7,6 +7,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
+import { Settings } from './pages/Settings'
 import { TeamDetail } from './pages/TeamDetail'
 import { Teams } from './pages/Teams'
 import { Widget } from './pages/Widget'
@@ -88,6 +89,14 @@ function App() {
         element={
           <ProtectedRoute>
             <Chats />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute>
+            <Settings />
           </ProtectedRoute>
         }
       />

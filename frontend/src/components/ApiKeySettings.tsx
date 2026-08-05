@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import type { ProviderInfo } from '../lib/types'
-import { Modal } from './Modal'
 
 type KeyStatus = Record<string, boolean>
 
@@ -110,7 +109,7 @@ function ProviderKeyField({
   )
 }
 
-function MonthlyCapField({ initialCap, onSaved }: { initialCap: number; onSaved: () => void | Promise<void> }) {
+export function MonthlyCapField({ initialCap, onSaved }: { initialCap: number; onSaved: () => void | Promise<void> }) {
   const [cap, setCap] = useState(initialCap)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -169,7 +168,7 @@ function MonthlyCapField({ initialCap, onSaved }: { initialCap: number; onSaved:
   )
 }
 
-function GoogleIntegration() {
+export function GoogleIntegration() {
   const [status, setStatus] = useState<{ connected: boolean; email?: string; available: boolean } | null>(null)
   const [loading, setLoading] = useState(true)
   const [disconnecting, setDisconnecting] = useState(false)
@@ -246,13 +245,14 @@ function GoogleIntegration() {
   )
 }
 
-export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+// The API-keys section of the settings page: loads each provider's key status
+// and lets the owner set/replace/remove a key.
+export function ApiKeysPanel() {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [status, setStatus] = useState<KeyStatus>({})
-  const [monthlyCap, setMonthlyCap] = useState(0)
   const [loading, setLoading] = useState(true)
 
-  async function loadSettings() {
+  async function loadKeys() {
     setLoading(true)
     const [providersRes, statusRes] = await Promise.all([
       fetch(`${API_URL}/api/providers`, { credentials: 'include' }),
@@ -260,49 +260,37 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     ])
     if (providersRes.ok) setProviders(await providersRes.json())
     if (statusRes.ok) {
-      const { monthlyTokenCap, ...keyStatus } = await statusRes.json()
+      const { monthlyTokenCap: _cap, ...keyStatus } = await statusRes.json()
       setStatus(keyStatus)
-      setMonthlyCap(typeof monthlyTokenCap === 'number' ? monthlyTokenCap : 0)
     }
     setLoading(false)
   }
 
   useEffect(() => {
-    if (open) loadSettings()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+    loadKeys()
+  }, [])
 
   return (
-    <Modal open={open} onClose={onClose} title="Configurações">
-      <div className="space-y-4">
-          <p className="text-sm text-slate-400">
-            Chaves usadas para gerar as respostas dos seus agentes (cada agente escolhe qual provedor
-            usar). Se você não configurar uma chave, o sistema tenta usar uma chave padrão do servidor,
-            se houver — a busca na base de conhecimento (RAG) funciona normalmente de qualquer forma,
-            isso só afeta quem gera a resposta final.
-          </p>
+    <div className="space-y-3">
+      <p className="text-sm text-slate-400">
+        Chaves usadas para gerar as respostas dos seus agentes (cada agente escolhe qual provedor
+        usar). Se você não configurar uma chave, o sistema tenta usar uma chave padrão do servidor, se
+        houver — a busca na base de conhecimento (RAG) funciona normalmente de qualquer forma, isso só
+        afeta quem gera a resposta final.
+      </p>
 
-          {loading ? (
-            <p className="text-sm text-slate-400">Carregando...</p>
-          ) : (
-            <>
-              {providers.map((provider) => (
-                <ProviderKeyField
-                  key={provider.id}
-                  provider={provider}
-                  hasKey={Boolean(status[provider.id])}
-                  onChange={loadSettings}
-                />
-              ))}
-              <MonthlyCapField initialCap={monthlyCap} onSaved={loadSettings} />
-
-              <div className="border-t border-slate-800 pt-4">
-                <h3 className="mb-2 text-sm font-medium text-slate-400">Integrações</h3>
-                <GoogleIntegration />
-              </div>
-            </>
-          )}
-      </div>
-    </Modal>
+      {loading ? (
+        <p className="text-sm text-slate-400">Carregando...</p>
+      ) : (
+        providers.map((provider) => (
+          <ProviderKeyField
+            key={provider.id}
+            provider={provider}
+            hasKey={Boolean(status[provider.id])}
+            onChange={loadKeys}
+          />
+        ))
+      )}
+    </div>
   )
 }
