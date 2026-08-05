@@ -659,8 +659,69 @@ app.delete('/api/teams/:teamId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid team id' })
     return
   }
-  await deleteTeam(res.locals.userId, new ObjectId(teamId))
+  const ownerId = res.locals.userId
+
+  // A team in use by a widget can't be silently removed — that widget would be
+  // left with no attendant. Block and tell the owner what to unlink first.
+  const widgets = await listWidgets(ownerId)
+  const usedByWidgets = widgets.filter((w) => w.teamId?.toString() === teamId).map((w) => w.name)
+  if (usedByWidgets.length > 0) {
+    res.status(409).json({
+      error: `Esta equipe está em uso por ${usedByWidgets.map((n) => `widget "${n}"`).join(', ')}. Desvincule antes de excluir.`,
+      widgets: usedByWidgets,
+    })
+    return
+  }
+
+  await deleteTeam(ownerId, new ObjectId(teamId))
   res.status(204).end()
+})
+
+// Per-team dashboard: the team config, its orchestration analytics and the
+// widgets it answers.
+app.get('/api/teams/:teamId/overview', requireAuth, async (req, res) => {
+  const teamId = String(req.params.teamId)
+  if (!ObjectId.isValid(teamId)) {
+    res.status(400).json({ error: 'Invalid team id' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const team = await getTeamById(ownerId, new ObjectId(teamId))
+  if (!team) {
+    res.status(404).json({ error: 'Team not found' })
+    return
+  }
+
+  const [agg, widgets] = await Promise.all([aggregateTeamDecisions(ownerId), listWidgets(ownerId)])
+  const totals = agg.totals.find((t) => t._id.toString() === teamId) ?? { decisions: 0, clarify: 0, moved: 0 }
+  const specialists = agg.specialists
+    .filter((s) => s._id.teamId.toString() === teamId)
+    .map((s) => ({ name: s._id.name, count: s.count }))
+    .sort((a, b) => b.count - a.count)
+  const left = new Map(
+    agg.fromStages.filter((f) => f._id.teamId.toString() === teamId).map((f) => [f._id.name, f.count]),
+  )
+  const analytics =
+    totals.decisions > 0
+      ? {
+          teamId,
+          teamName: team.name,
+          mode: team.mode ?? 'adaptive',
+          decisions: totals.decisions,
+          clarifyRate: totals.decisions > 0 ? totals.clarify / totals.decisions : 0,
+          moves: totals.moved,
+          specialists: specialists.slice(0, 6),
+          stages: specialists.map((s) => ({ name: s.name, handled: s.count, left: left.get(s.name) ?? 0 })),
+        }
+      : null
+
+  res.json({
+    team: serializeTeam(team),
+    analytics,
+    linkedWidgets: widgets
+      .filter((w) => w.teamId?.toString() === teamId)
+      .map((w) => ({ _id: w._id, name: w.name })),
+  })
 })
 
 // Stateless team test chat: runs the supervisor (plan → merge specialists →
