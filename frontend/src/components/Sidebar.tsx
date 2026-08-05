@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { signOut, useSession } from '../lib/auth-client'
 import { ACTIVE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
 import { AgentNav } from './AgentNav'
+import { TeamNav } from './TeamNav'
 import { SettingsModal } from './ApiKeySettings'
 
 type IconProps = { className?: string }
@@ -142,9 +143,9 @@ const NAV: NavEntry[] = [
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
   const { data: session } = useSession()
-  // On an agent page the middle nav swaps to the agent's own sections; the
-  // shell (logo, footer, hover-to-expand) stays the same.
-  const { agentId } = useParams()
+  // On an agent/team page the middle nav swaps to that entity's own sections;
+  // the shell (logo, footer, hover-to-expand) stays the same.
+  const { agentId, teamId } = useParams()
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Which parent groups are expanded to reveal their subpages. Persisted;
   // groups default to open (a key is only stored once toggled shut/open).
@@ -182,6 +183,8 @@ export function Sidebar({ current }: { current: string }) {
 
       {agentId ? (
         <AgentNav />
+      ) : teamId ? (
+        <TeamNav />
       ) : (
       <nav className="flex flex-col gap-1">
         {NAV.map((item) => {

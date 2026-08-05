@@ -97,6 +97,12 @@ export interface TeamAnalytics {
   stages: { name: string; handled: number; left: number }[]
 }
 
+export interface TeamOverview {
+  team: TeamSummary
+  analytics: TeamAnalytics | null
+  linkedWidgets: { _id: string; name: string }[]
+}
+
 export interface DashboardStats {
   conversations: number
   conversationsThisWeek: number

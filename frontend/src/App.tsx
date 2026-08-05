@@ -7,6 +7,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
+import { TeamDetail } from './pages/TeamDetail'
 import { Teams } from './pages/Teams'
 import { Widget } from './pages/Widget'
 import { Widgets } from './pages/Widgets'
@@ -55,6 +56,22 @@ function App() {
         element={
           <ProtectedRoute>
             <Teams />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/teams/:teamId"
+        element={
+          <ProtectedRoute>
+            <TeamDetail />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/teams/:teamId/:section"
+        element={
+          <ProtectedRoute>
+            <TeamDetail />
           </ProtectedRoute>
         }
       />
