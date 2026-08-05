@@ -169,6 +169,83 @@ function MonthlyCapField({ initialCap, onSaved }: { initialCap: number; onSaved:
   )
 }
 
+function GoogleIntegration() {
+  const [status, setStatus] = useState<{ connected: boolean; email?: string; available: boolean } | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [disconnecting, setDisconnecting] = useState(false)
+
+  async function load() {
+    const res = await fetch(`${API_URL}/api/integrations`, { credentials: 'include' })
+    if (res.ok) {
+      const body = await res.json()
+      setStatus(body.google)
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    load()
+  }, [])
+
+  async function disconnect() {
+    setDisconnecting(true)
+    try {
+      await fetch(`${API_URL}/api/integrations/google`, { method: 'DELETE', credentials: 'include' })
+      await load()
+    } finally {
+      setDisconnecting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-slate-800 p-3">
+      <h4 className="font-medium">Google Agenda</h4>
+      {loading ? (
+        <p className="text-sm text-slate-400">Carregando...</p>
+      ) : !status?.available ? (
+        <p className="text-sm text-slate-400">
+          Integração não configurada no servidor (faltam as credenciais <code>GOOGLE_CLIENT_ID</code> /{' '}
+          <code>GOOGLE_CLIENT_SECRET</code>).
+        </p>
+      ) : status.connected ? (
+        <>
+          <p className="text-sm">
+            Conectado
+            {status.email ? (
+              <>
+                {' '}
+                como <span className="text-emerald-400">{status.email}</span>
+              </>
+            ) : null}
+            .
+          </p>
+          <button
+            type="button"
+            onClick={disconnect}
+            disabled={disconnecting}
+            className="rounded-lg border border-slate-700 px-4 py-2 text-sm transition hover:bg-slate-800 disabled:opacity-50"
+          >
+            {disconnecting ? 'Desconectando...' : 'Desconectar'}
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-slate-400">
+            Conecte sua conta Google para os agentes poderem consultar disponibilidade e criar eventos na
+            sua agenda.
+          </p>
+          <a
+            href={`${API_URL}/api/integrations/google/connect`}
+            className="inline-block rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200"
+          >
+            Conectar Google
+          </a>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [status, setStatus] = useState<KeyStatus>({})
@@ -218,6 +295,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 />
               ))}
               <MonthlyCapField initialCap={monthlyCap} onSaved={loadSettings} />
+
+              <div className="border-t border-slate-800 pt-4">
+                <h3 className="mb-2 text-sm font-medium text-slate-400">Integrações</h3>
+                <GoogleIntegration />
+              </div>
             </>
           )}
       </div>
