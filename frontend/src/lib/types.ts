@@ -79,6 +79,7 @@ export interface BuiltinAppCatalog {
   description: string
   connection?: 'google'
   configFields: { key: string; label: string; placeholder?: string; required: boolean; type?: 'text' | 'password' }[]
+  guide?: { steps: string[]; docUrl?: string }
 }
 
 export type MemoryType = 'none' | 'facts' | 'structured' | 'semantic'

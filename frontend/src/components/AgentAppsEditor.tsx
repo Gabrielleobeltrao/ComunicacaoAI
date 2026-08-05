@@ -165,39 +165,81 @@ export function AgentAppsEditor({
       </div>
 
       <Modal
+        wide
         open={configuring !== null}
         onClose={() => setConfiguring(null)}
         title={configuring ? `${editingApp ? 'Configurar' : 'Conectar'} ${configuring.label}` : ''}
       >
         {configuring && (
-          <div className="space-y-3">
-            <p className="text-sm text-slate-400">{configuring.description}</p>
-            {configuring.connection === 'google' && !googleConnected && (
-              <p className="rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-400">
-                Esta integração só funciona depois de conectar sua conta Google em Configurações →
-                Integrações.
-              </p>
-            )}
-            {configuring.configFields.length === 0 ? (
-              <p className="text-sm text-slate-400">Nenhuma configuração necessária.</p>
-            ) : (
-              configuring.configFields.map((field) => (
-                <div key={field.key}>
-                  <label className="mb-1 block text-sm text-slate-400">
-                    {field.label}
-                    {field.required && <span className="text-red-400"> *</span>}
-                  </label>
-                  <input
-                    type={field.type === 'password' ? 'password' : 'text'}
-                    value={draft[field.key] ?? ''}
-                    onChange={(e) => setDraft((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                    placeholder={field.placeholder}
-                    className={inputClass}
-                  />
+          <div className="space-y-5">
+            <div className="flex items-center gap-3">
+              <AppIcon appKey={configuring.key} />
+              <div className="min-w-0">
+                <p className="font-medium text-white">{configuring.label}</p>
+                <p className="text-sm text-slate-400">{configuring.description}</p>
+              </div>
+            </div>
+
+            <div
+              className={
+                configuring.guide ? 'grid gap-5 md:grid-cols-2 md:gap-6' : 'space-y-4'
+              }
+            >
+              {configuring.guide && (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4">
+                  <p className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Como conectar
+                  </p>
+                  <ol className="list-decimal space-y-2 pl-4 text-sm leading-relaxed text-slate-400 marker:text-slate-600">
+                    {configuring.guide.steps.map((step, i) => (
+                      <li key={i}>{step}</li>
+                    ))}
+                  </ol>
+                  {configuring.guide.docUrl && (
+                    <a
+                      href={configuring.guide.docUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-3 inline-block text-sm text-sky-400 hover:underline"
+                    >
+                      Abrir documentação oficial →
+                    </a>
+                  )}
                 </div>
-              ))
-            )}
-            <div className="flex gap-2 pt-1">
+              )}
+
+              <div className="space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Credenciais
+                </p>
+                {configuring.connection === 'google' && !googleConnected && (
+                  <p className="rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-400">
+                    Só funciona depois de conectar sua conta Google em Configurações → Integrações.
+                  </p>
+                )}
+                {configuring.configFields.length === 0 ? (
+                  <p className="text-sm text-slate-400">Nenhuma configuração necessária.</p>
+                ) : (
+                  configuring.configFields.map((field) => (
+                    <div key={field.key}>
+                      <label className="mb-1 block text-sm text-slate-400">
+                        {field.label}
+                        {field.required && <span className="text-red-400"> *</span>}
+                      </label>
+                      <input
+                        type={field.type === 'password' ? 'password' : 'text'}
+                        value={draft[field.key] ?? ''}
+                        onChange={(e) => setDraft((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                        placeholder={field.placeholder}
+                        className={inputClass}
+                      />
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-2 border-t border-slate-800 pt-4">
               <button
                 type="button"
                 onClick={saveConfig}
