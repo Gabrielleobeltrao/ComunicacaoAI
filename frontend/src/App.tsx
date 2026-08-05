@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router'
+import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
@@ -100,6 +100,10 @@ function App() {
           </ProtectedRoute>
         }
       />
+      {/* WhatsApp lives inside the Canais page now; keep the old link working. */}
+      <Route path="/whatsapp" element={<Navigate to="/widgets" replace />} />
+      {/* Any unknown path falls back instead of rendering a blank screen. */}
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   )
 }
