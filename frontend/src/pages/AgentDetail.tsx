@@ -180,13 +180,13 @@ export function AgentDetail() {
               <AgentForm
                 key={`${agent._id}:${config.key}`}
                 agent={agent}
-                only={config.step}
+                section={config.key}
                 layout="flat"
                 onSaved={load}
               />
             ) : null}
           </div>
-          {active === 'basico' && (
+          {active === 'essencial' && (
             <DangerZone
               title="Excluir este agente"
               description="Remove o agente e sua base de conhecimento. Não pode ser desfeito."

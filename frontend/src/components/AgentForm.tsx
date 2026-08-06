@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import type {
@@ -24,9 +24,43 @@ interface AgentFormProps {
   // 'wizard' = step-by-step (the create modal); 'flat' = sections on one screen
   // (the agent page).
   layout?: 'wizard' | 'flat'
-  // Flat layout only: render just this one step's fields (0-6). The form still
-  // holds and saves every field, so unshown fields keep their saved values.
-  only?: number
+  // Flat layout only: which agent-page section to render (see SECTION_BLOCKS).
+  // The form still holds and saves every field, so unshown fields keep their
+  // saved values.
+  section?: string
+}
+
+// The agent page groups fields into blocks; each section shows a set of blocks.
+// "Essencial" is the only thing a common user must touch — everything technical
+// is grouped under "avancado" so it stays out of the way with sensible defaults.
+const SECTION_BLOCKS: Record<string, string[]> = {
+  essencial: ['identidade'],
+  avancado: ['modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados'],
+  ferramentas: ['ferramentas'],
+  conhecimento: ['conhecimento'],
+}
+
+// Which wizard step each block belongs to (the create flow is still stepped).
+const BLOCK_STEP: Record<string, number> = {
+  identidade: 0,
+  modelo: 0,
+  estilo: 1,
+  memoria: 2,
+  guardrails: 3,
+  identificacao: 4,
+  dados: 5,
+  ferramentas: 6,
+  conhecimento: 7,
+}
+
+// Headings shown above each block on the "Avançado" page (stacked blocks).
+const BLOCK_LABELS: Record<string, string> = {
+  modelo: 'Modelo e custo',
+  estilo: 'Estilo das respostas',
+  memoria: 'Memória',
+  guardrails: 'Segurança e limites',
+  identificacao: 'Identificação do visitante',
+  dados: 'Dados estruturados',
 }
 
 interface PendingDoc {
@@ -108,10 +142,9 @@ function OptionSwitch<T extends string>({
   )
 }
 
-export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentFormProps) {
+export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentFormProps) {
   const isCreating = agent === null
   const flat = layout === 'flat'
-  const lastStep = STEPS.length - 1
 
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [step, setStep] = useState(0)
@@ -146,6 +179,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
   const [editBuiltinTools, setEditBuiltinTools] = useState<AgentBuiltinTool[]>([])
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
+  // Autosave (agent page only): status shown in place of a save button, plus a
+  // baseline of the last-saved payload and a flag that the form has loaded.
+  const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [initialized, setInitialized] = useState(false)
+  const savedPayloadRef = useRef<string | null>(null)
 
   const [documents, setDocuments] = useState<KnowledgeDocumentSummary[]>([])
   const [documentsLoading, setDocumentsLoading] = useState(false)
@@ -180,6 +218,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
     setStep(0)
     setEditError(null)
     setSaving(false)
+    // Reset autosave baseline for the freshly loaded agent.
+    savedPayloadRef.current = null
+    setInitialized(false)
+    setAutoSaveState('idle')
     setAddMode('text')
     setNewDocTitle('')
     setNewDocContent('')
@@ -251,8 +293,71 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       setDocuments([])
       setPendingDocs([])
     }
+    // Populated now; the autosave effect can capture its baseline.
+    setInitialized(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?._id])
+
+  // Persist edits automatically on the agent page (flat, editing). The
+  // `initialized` gate ensures the baseline is the loaded agent's values, so
+  // loading never triggers a save; the baseline guard prevents save loops.
+  const payloadJson = JSON.stringify(buildPayload())
+  useEffect(() => {
+    if (!flat || isCreating || !initialized || !agent) return
+    if (savedPayloadRef.current === null) {
+      savedPayloadRef.current = payloadJson
+      return
+    }
+    if (payloadJson === savedPayloadRef.current) return
+
+    setAutoSaveState('saving')
+    const agentId = agent._id
+    const captured = payloadJson
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/agents/${agentId}`, {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: captured,
+        })
+        if (!res.ok) {
+          setAutoSaveState('error')
+          return
+        }
+        savedPayloadRef.current = captured
+        const updated: AgentSummary = await res.json()
+        setAutoSaveState('saved')
+        onSaved(updated)
+      } catch {
+        setAutoSaveState('error')
+      }
+    }, 700)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payloadJson, flat, isCreating, initialized])
+
+  // If the user leaves (switches section / navigates) before the debounce
+  // fires, flush the pending edit so nothing is lost. keepalive lets the
+  // request finish after the component unmounts.
+  const flushRef = useRef<{ agentId: string; json: string } | null>(null)
+  useEffect(() => {
+    if (flat && !isCreating && agent) flushRef.current = { agentId: agent._id, json: payloadJson }
+  })
+  useEffect(() => {
+    return () => {
+      const pending = flushRef.current
+      if (pending && pending.json !== savedPayloadRef.current) {
+        fetch(`${API_URL}/api/agents/${pending.agentId}`, {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: pending.json,
+          keepalive: true,
+        }).catch(() => {})
+      }
+    }
+  }, [])
 
   function goNext() {
     if (step === 0 && !editName.trim()) {
@@ -275,17 +380,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
     setDocumentsLoading(false)
   }
 
-  async function handleSave(event: FormEvent) {
-    event.preventDefault()
-    // In the wizard, only the last step submits; flat layout submits from anywhere.
-    if (!flat && step !== STEPS.length - 1) return
-    setEditError(null)
-    setSaving(true)
-    const identityFields = editIdentityFields.map((field) => field.trim()).filter(Boolean)
-    const structuredOutputFields = editStructuredOutputFields.map((field) => field.trim()).filter(Boolean)
-    const structuredOutputWebhookUrl = editStructuredOutputWebhookUrl.trim() || null
-
-    const payload = {
+  function buildPayload() {
+    return {
       name: editName,
       objective: editObjective,
       provider: editProvider,
@@ -293,12 +389,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       memoryType: editMemoryType,
       historyLimit: editHistoryLimit,
       identityEnabled: editIdentityEnabled,
-      identityFields,
+      identityFields: editIdentityFields.map((field) => field.trim()).filter(Boolean),
       conversationPersistence: editConversationPersistence,
       guardrailMode: editGuardrailMode,
       structuredOutputEnabled: editStructuredOutputEnabled,
-      structuredOutputFields,
-      structuredOutputWebhookUrl,
+      structuredOutputFields: editStructuredOutputFields.map((field) => field.trim()).filter(Boolean),
+      structuredOutputWebhookUrl: editStructuredOutputWebhookUrl.trim() || null,
       responseTone: editResponseTone,
       responseDetail: editResponseDetail,
       responseEmojis: editResponseEmojis,
@@ -314,6 +410,15 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       tools: editTools,
       builtinTools: editBuiltinTools,
     }
+  }
+
+  async function handleSave(event: FormEvent) {
+    event.preventDefault()
+    // In the wizard, only the last step submits; flat layout submits from anywhere.
+    if (!flat && step !== STEPS.length - 1) return
+    setEditError(null)
+    setSaving(true)
+    const payload = buildPayload()
 
     try {
       if (isCreating) {
@@ -544,20 +649,24 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
     }
   }
 
-  // Which config step is visible: the active wizard step, the single `only`
-  // section, or all sections when flat without `only`.
-  const show = (index: number) => (flat ? only == null || only === index : step === index)
-  const showKb = flat ? only == null || only === lastStep : step === lastStep
-  // Headings only label sections when several are stacked (flat, no `only`);
-  // a single-section page is already labelled by the sidebar/page title.
-  const heading = (index: number) =>
-    flat && only == null ? (
+  // Whether a field block is visible: in the flat agent page it depends on the
+  // active section's block set; in the wizard it depends on the current step.
+  const showBlock = (block: string) =>
+    flat ? section == null || (SECTION_BLOCKS[section] ?? []).includes(block) : step === BLOCK_STEP[block]
+  const showKb = showBlock('conhecimento')
+  // On the "Avançado" page several blocks stack, so each gets a heading; other
+  // sections are single-block and already labelled by the page/sidebar.
+  const blockHeading = (block: string) => {
+    if (!(flat && section === 'avancado')) return null
+    const first = SECTION_BLOCKS.avancado.indexOf(block) === 0
+    return (
       <h4
-        className={`text-sm font-semibold text-slate-300 ${index > 0 ? 'mt-2 border-t border-slate-800 pt-4' : ''}`}
+        className={`text-sm font-semibold text-slate-300 ${first ? '' : 'mt-2 border-t border-slate-800 pt-4'}`}
       >
-        {STEPS[index]}
+        {BLOCK_LABELS[block]}
       </h4>
-    ) : null
+    )
+  }
 
   return (
     <div>
@@ -592,9 +701,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       )}
 
       <form id="agent-form" onSubmit={handleSave} className="space-y-3">
-        {show(0) && (
+        {showBlock('identidade') && (
           <>
-            {heading(0)}
             <div>
               <label className="mb-1 block text-sm text-slate-400">Nome</label>
               <input
@@ -606,17 +714,20 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Objetivo / instruções</label>
+              <label className="mb-1 block text-sm text-slate-400">O que este agente faz?</label>
               <textarea
                 value={editObjective}
                 onChange={(e) => setEditObjective(e.target.value)}
-                rows={3}
-                placeholder="Ex: Ajudar clientes do restaurante a tirar dúvidas sobre cardápio, horário e reservas."
+                rows={4}
+                placeholder="Ex: Ajudar clientes do restaurante a tirar dúvidas sobre cardápio, horário e reservas, e anotar pedidos."
                 className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
               />
+              <p className="mt-1 text-xs text-slate-500">
+                Descreva o objetivo e como o agente deve agir — é a instrução principal dele.
+              </p>
             </div>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Primeira mensagem proativa</label>
+              <label className="mb-1 block text-sm text-slate-400">Primeira mensagem</label>
               <textarea
                 value={editFirstMessage}
                 onChange={(e) => setEditFirstMessage(e.target.value)}
@@ -629,6 +740,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
                 mensagem de boas-vindas configurada no widget.
               </p>
             </div>
+          </>
+        )}
+
+        {showBlock('modelo') && (
+          <>
+            {blockHeading('modelo')}
             <div>
               <label className="mb-1 block text-sm text-slate-400">Provedor</label>
               <select
@@ -697,9 +814,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
           </>
         )}
 
-        {show(1) && (
+        {showBlock('estilo') && (
           <>
-            {heading(1)}
+            {blockHeading('estilo')}
             <div>
               <label className="mb-1 block text-sm text-slate-400">Idioma das respostas</label>
               <select
@@ -812,9 +929,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
           </>
         )}
 
-        {show(2) && (
+        {showBlock('memoria') && (
           <>
-            {heading(2)}
+            {blockHeading('memoria')}
             <div>
               <p className="mb-2 text-sm text-slate-400">
                 Memória da conversa (só um tipo pode ficar ativo por vez)
@@ -871,9 +988,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
           </>
         )}
 
-        {show(3) && (
+        {showBlock('guardrails') && (
           <div>
-            {heading(3)}
+            {blockHeading('guardrails')}
             <p className="mb-2 text-sm text-slate-400">
               Guardrails — restrição de escopo (só uma opção pode ficar ativa por vez)
             </p>
@@ -936,9 +1053,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
           </div>
         )}
 
-        {show(4) && (
+        {showBlock('identificacao') && (
           <>
-            {heading(4)}
+            {blockHeading('identificacao')}
             <div className="space-y-3 rounded-lg border border-slate-800 p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -1009,9 +1126,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
           </>
         )}
 
-        {show(5) && (
+        {showBlock('dados') && (
           <>
-            {heading(5)}
+            {blockHeading('dados')}
             <div className="space-y-3 rounded-lg border border-slate-800 p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -1083,9 +1200,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
           </>
         )}
 
-        {show(6) && (
+        {showBlock('ferramentas') && (
           <>
-            {heading(6)}
             <div className="space-y-5">
               <div>
                 <p className="mb-2 text-sm font-medium">Integrações (apps)</p>
@@ -1102,7 +1218,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
 
       {showKb && (
         <>
-          {only == null && <div className="my-5 border-t border-slate-800" />}
+          {section == null && <div className="my-5 border-t border-slate-800" />}
 
           <div className="space-y-3">
             <h4 className="font-medium">Base de conhecimento</h4>
@@ -1272,17 +1388,19 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', only }: AgentForm
       {editError && <p className="mt-4 text-sm text-red-400">{editError}</p>}
 
       {flat ? (
-        // The knowledge-base page manages docs immediately, so it has no config save.
-        only !== lastStep && (
-          <div className="mt-5 flex justify-end border-t border-slate-800 pt-4">
-            <button
-              type="submit"
-              form="agent-form"
-              disabled={saving}
-              className="rounded-lg bg-white px-5 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
-            >
-              {isCreating ? (saving ? 'Criando...' : 'Criar agente') : saving ? 'Salvando...' : 'Salvar alterações'}
-            </button>
+        // No save button: edits persist automatically. The knowledge-base page
+        // manages its docs immediately, so it shows no status line.
+        section !== 'conhecimento' && (
+          <div className="mt-5 flex justify-end border-t border-slate-800 pt-4 text-sm">
+            <span className={autoSaveState === 'error' ? 'text-red-400' : 'text-slate-500'}>
+              {autoSaveState === 'saving'
+                ? 'Salvando...'
+                : autoSaveState === 'saved'
+                  ? 'Salvo ✓'
+                  : autoSaveState === 'error'
+                    ? 'Erro ao salvar — ajuste algo para tentar de novo'
+                    : 'As alterações são salvas automaticamente'}
+            </span>
           </div>
         )
       ) : (

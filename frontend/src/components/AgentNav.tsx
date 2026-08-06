@@ -40,27 +40,6 @@ const BasicIcon = svg([
   <rect key="a" x="4.5" y="3" width="15" height="18" rx="2" />,
   <path key="b" d="M8 8h8M8 12h8M8 16h5" strokeLinecap="round" />,
 ])
-const StyleIcon = svg(
-  <path
-    d="M12 3l2.1 4.9L19 9l-4 3.4L16 18l-4-2.6L8 18l1-5.6L5 9l4.9-1.1L12 3Z"
-    strokeLinejoin="round"
-  />,
-)
-const MemoryIcon = svg([
-  <ellipse key="a" cx="12" cy="6" rx="7" ry="3" />,
-  <path key="b" d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3" />,
-])
-const GuardrailIcon = svg(
-  <path d="M12 3l7 3v5c0 4.5-3 7.7-7 9-4-1.3-7-4.5-7-9V6l7-3Z" strokeLinejoin="round" />,
-)
-const IdentityIcon = svg([
-  <circle key="a" cx="12" cy="9" r="3" />,
-  <path key="b" d="M5.5 20a6.5 6.5 0 0 1 13 0" strokeLinecap="round" />,
-])
-const DataIcon = svg([
-  <rect key="a" x="3.5" y="4" width="17" height="16" rx="2" />,
-  <path key="b" d="M3.5 9h17M9 9v11M15 9v11" />,
-])
 const KnowledgeIcon = svg(
   <path
     d="M5 4.5A1.5 1.5 0 0 1 6.5 3H18a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H6.5A1.5 1.5 0 0 1 5 18.5v-14ZM5 17.5A1.5 1.5 0 0 1 6.5 16H19"
@@ -81,14 +60,10 @@ const SECTION_ICONS: Record<string, (props: IconProps) => ReactElement> = {
   testar: TestIcon,
 }
 const CONFIG_ICONS: Record<string, (props: IconProps) => ReactElement> = {
-  basico: BasicIcon,
-  estilo: StyleIcon,
-  memoria: MemoryIcon,
-  guardrails: GuardrailIcon,
-  identificacao: IdentityIcon,
-  dados: DataIcon,
+  essencial: BasicIcon,
   ferramentas: ToolsIcon,
   conhecimento: KnowledgeIcon,
+  avancado: ConfigIcon,
 }
 
 export function AgentNav() {
