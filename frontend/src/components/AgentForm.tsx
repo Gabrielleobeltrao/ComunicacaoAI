@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
-import type { ChangeEvent, FormEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { ChangeEvent, FormEvent, ReactNode } from 'react'
 import { API_URL } from '../lib/api'
 import type {
   AgentBuiltinTool,
@@ -40,27 +40,34 @@ const SECTION_BLOCKS: Record<string, string[]> = {
   conhecimento: ['conhecimento'],
 }
 
-// Which wizard step each block belongs to (the create flow is still stepped).
-const BLOCK_STEP: Record<string, number> = {
-  identidade: 0,
-  modelo: 0,
-  estilo: 1,
-  memoria: 2,
-  guardrails: 3,
-  identificacao: 4,
-  dados: 5,
-  ferramentas: 6,
-  conhecimento: 7,
-}
-
-// Headings shown above each block on the "Avançado" page (stacked blocks).
-const BLOCK_LABELS: Record<string, string> = {
-  modelo: 'Modelo e custo',
-  estilo: 'Estilo das respostas',
-  memoria: 'Memória',
-  guardrails: 'Segurança e limites',
-  identificacao: 'Identificação do visitante',
-  dados: 'Dados estruturados',
+// A collapsible advanced group: a clickable header that shows/hides its fields.
+// When it isn't the header context (a single block shown alone), it just renders
+// the children. Children stay mounted (hidden) so their state/focus is kept.
+function CollapsibleBlock({
+  title,
+  showHeader,
+  children,
+}: {
+  title: string
+  showHeader: boolean
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  if (!showHeader) return <>{children}</>
+  return (
+    <div className="border-t border-slate-800 first:border-t-0">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 py-3 text-left text-slate-300 transition hover:text-white"
+      >
+        <span className="text-sm font-semibold">{title}</span>
+        <span className={`text-slate-500 transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+      </button>
+      <div className={open ? 'space-y-3 pb-3' : 'hidden'}>{children}</div>
+    </div>
+  )
 }
 
 interface PendingDoc {
@@ -76,17 +83,6 @@ const MAX_HISTORY_LIMIT = 30
 const MAX_IDENTITY_FIELDS = 5
 const MAX_STRUCTURED_OUTPUT_FIELDS = 10
 const MAX_DAILY_MESSAGE_LIMIT = 1000
-
-const STEPS = [
-  'Básico',
-  'Estilo',
-  'Memória',
-  'Guardrails',
-  'Identificação',
-  'Dados estruturados',
-  'Ferramentas',
-  'Base de conhecimento',
-]
 
 const TONE_OPTIONS: { value: ResponseTone; label: string }[] = [
   { value: 'neutral', label: 'Neutro (padrão)' },
@@ -147,7 +143,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
   const flat = layout === 'flat'
 
   const [providers, setProviders] = useState<ProviderInfo[]>([])
-  const [step, setStep] = useState(0)
 
   const [editName, setEditName] = useState('')
   const [editObjective, setEditObjective] = useState('')
@@ -184,6 +179,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
   const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [initialized, setInitialized] = useState(false)
   const savedPayloadRef = useRef<string | null>(null)
+  // Create modal: whether the advanced settings are expanded.
+  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   const [documents, setDocuments] = useState<KnowledgeDocumentSummary[]>([])
   const [documentsLoading, setDocumentsLoading] = useState(false)
@@ -215,9 +212,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
   // for create). Keyed on the id so re-renders that pass an equivalent object
   // don't wipe in-progress edits.
   useEffect(() => {
-    setStep(0)
     setEditError(null)
     setSaving(false)
+    setAdvancedOpen(false)
     // Reset autosave baseline for the freshly loaded agent.
     savedPayloadRef.current = null
     setInitialized(false)
@@ -359,20 +356,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
     }
   }, [])
 
-  function goNext() {
-    if (step === 0 && !editName.trim()) {
-      setEditError('Preencha o nome do agente para continuar.')
-      return
-    }
-    setEditError(null)
-    setStep((s) => Math.min(STEPS.length - 1, s + 1))
-  }
-
-  function goBack() {
-    setEditError(null)
-    setStep((s) => Math.max(0, s - 1))
-  }
-
   async function loadDocuments(agentId: string) {
     setDocumentsLoading(true)
     const res = await fetch(`${API_URL}/api/agents/${agentId}/documents`, { credentials: 'include' })
@@ -414,8 +397,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
 
   async function handleSave(event: FormEvent) {
     event.preventDefault()
-    // In the wizard, only the last step submits; flat layout submits from anywhere.
-    if (!flat && step !== STEPS.length - 1) return
     setEditError(null)
     setSaving(true)
     const payload = buildPayload()
@@ -649,57 +630,22 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
     }
   }
 
-  // Whether a field block is visible: in the flat agent page it depends on the
-  // active section's block set; in the wizard it depends on the current step.
-  const showBlock = (block: string) =>
-    flat ? section == null || (SECTION_BLOCKS[section] ?? []).includes(block) : step === BLOCK_STEP[block]
-  const showKb = showBlock('conhecimento')
-  // On the "Avançado" page several blocks stack, so each gets a heading; other
-  // sections are single-block and already labelled by the page/sidebar.
-  const blockHeading = (block: string) => {
-    if (!(flat && section === 'avancado')) return null
-    const first = SECTION_BLOCKS.avancado.indexOf(block) === 0
-    return (
-      <h4
-        className={`text-sm font-semibold text-slate-300 ${first ? '' : 'mt-2 border-t border-slate-800 pt-4'}`}
-      >
-        {BLOCK_LABELS[block]}
-      </h4>
-    )
+  // Whether a field block is visible. On the agent page it follows the active
+  // section; in the create modal (single screen) the essentials + knowledge are
+  // always shown and the rest is revealed under "Configurações avançadas".
+  const showBlock = (block: string) => {
+    if (flat) return section == null || (SECTION_BLOCKS[section] ?? []).includes(block)
+    if (block === 'identidade' || block === 'conhecimento') return true
+    return advancedOpen
   }
+  const showKb = showBlock('conhecimento')
+  // Advanced groups are collapsible when several stack together (the "Avançado"
+  // page, or the create modal with advanced expanded); a block shown alone (a
+  // single-block section) gets no header.
+  const stacked = (flat && section === 'avancado') || (!flat && advancedOpen)
 
   return (
-    <div>
-      {!flat && (
-        <div className="mb-5 flex items-start">
-          {STEPS.map((label, index) => (
-            <Fragment key={label}>
-              <div className="flex flex-col items-center">
-                <div
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-medium ${
-                    index === step
-                      ? 'bg-white text-slate-950'
-                      : index < step
-                        ? 'bg-slate-600 text-white'
-                        : 'bg-slate-800 text-slate-500'
-                  }`}
-                >
-                  {index + 1}
-                </div>
-                <span
-                  className={`mt-1 w-16 text-center text-[10px] leading-tight ${
-                    index === step ? 'text-white' : 'text-slate-500'
-                  }`}
-                >
-                  {label}
-                </span>
-              </div>
-              {index < STEPS.length - 1 && <div className="mt-3 h-px flex-1 bg-slate-800" />}
-            </Fragment>
-          ))}
-        </div>
-      )}
-
+    <div className="flex flex-col">
       <form id="agent-form" onSubmit={handleSave} className="space-y-3">
         {showBlock('identidade') && (
           <>
@@ -742,10 +688,30 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
             </div>
           </>
         )}
+      </form>
 
-        {showBlock('modelo') && (
-          <>
-            {blockHeading('modelo')}
+      {/* Advanced settings live at the end (order-3, after the knowledge base)
+          in a panel of their own so expanding them doesn't push everything. */}
+      <div className="order-3">
+        {!flat && (
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((o) => !o)}
+            className="flex w-full items-center gap-1.5 border-t border-slate-800 pt-4 text-sm text-slate-400 transition hover:text-white"
+          >
+            <span className={`transition-transform ${advancedOpen ? 'rotate-90' : ''}`}>▸</span>
+            Configurações avançadas
+            <span className="text-xs text-slate-600">(opcional)</span>
+          </button>
+        )}
+
+        <div
+          className={
+            !flat && advancedOpen ? 'mt-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-1' : ''
+          }
+        >
+          {showBlock('modelo') && (
+          <CollapsibleBlock title="Modelo e custo" showHeader={stacked}>
             <div>
               <label className="mb-1 block text-sm text-slate-400">Provedor</label>
               <select
@@ -811,12 +777,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 </label>
               </div>
             </div>
-          </>
+          </CollapsibleBlock>
         )}
 
         {showBlock('estilo') && (
-          <>
-            {blockHeading('estilo')}
+          <CollapsibleBlock title="Estilo das respostas" showHeader={stacked}>
             <div>
               <label className="mb-1 block text-sm text-slate-400">Idioma das respostas</label>
               <select
@@ -926,12 +891,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 </div>
               )}
             </div>
-          </>
+          </CollapsibleBlock>
         )}
 
         {showBlock('memoria') && (
-          <>
-            {blockHeading('memoria')}
+          <CollapsibleBlock title="Memória" showHeader={stacked}>
             <div>
               <p className="mb-2 text-sm text-slate-400">
                 Memória da conversa (só um tipo pode ficar ativo por vez)
@@ -985,12 +949,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 chamada.
               </p>
             </div>
-          </>
+          </CollapsibleBlock>
         )}
 
         {showBlock('guardrails') && (
-          <div>
-            {blockHeading('guardrails')}
+          <CollapsibleBlock title="Segurança e limites" showHeader={stacked}>
             <p className="mb-2 text-sm text-slate-400">
               Guardrails — restrição de escopo (só uma opção pode ficar ativa por vez)
             </p>
@@ -1050,12 +1013,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 número de mensagens a cada 24h. Use <strong>0</strong> para sem limite.
               </p>
             </div>
-          </div>
+          </CollapsibleBlock>
         )}
 
         {showBlock('identificacao') && (
-          <>
-            {blockHeading('identificacao')}
+          <CollapsibleBlock title="Identificação do visitante" showHeader={stacked}>
             <div className="space-y-3 rounded-lg border border-slate-800 p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -1123,12 +1085,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
               </p>
             </div>
             </div>
-          </>
+          </CollapsibleBlock>
         )}
 
         {showBlock('dados') && (
-          <>
-            {blockHeading('dados')}
+          <CollapsibleBlock title="Dados estruturados" showHeader={stacked}>
             <div className="space-y-3 rounded-lg border border-slate-800 p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -1197,11 +1158,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
               </>
             )}
             </div>
-          </>
+          </CollapsibleBlock>
         )}
 
         {showBlock('ferramentas') && (
-          <>
+          <CollapsibleBlock title="Ferramentas" showHeader={stacked}>
             <div className="space-y-5">
               <div>
                 <p className="mb-2 text-sm font-medium">Integrações (apps)</p>
@@ -1212,12 +1173,13 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 <AgentToolsEditor value={editTools} onChange={setEditTools} />
               </div>
             </div>
-          </>
+          </CollapsibleBlock>
         )}
-      </form>
+        </div>
+      </div>
 
       {showKb && (
-        <>
+        <div className="order-2">
           {section == null && <div className="my-5 border-t border-slate-800" />}
 
           <div className="space-y-3">
@@ -1382,16 +1344,16 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
               </button>
             </form>
           </div>
-        </>
+        </div>
       )}
 
-      {editError && <p className="mt-4 text-sm text-red-400">{editError}</p>}
+      {editError && <p className="order-last mt-4 text-sm text-red-400">{editError}</p>}
 
       {flat ? (
         // No save button: edits persist automatically. The knowledge-base page
         // manages its docs immediately, so it shows no status line.
         section !== 'conhecimento' && (
-          <div className="mt-5 flex justify-end border-t border-slate-800 pt-4 text-sm">
+          <div className="order-last mt-5 flex justify-end border-t border-slate-800 pt-4 text-sm">
             <span className={autoSaveState === 'error' ? 'text-red-400' : 'text-slate-500'}>
               {autoSaveState === 'saving'
                 ? 'Salvando...'
@@ -1404,39 +1366,15 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
           </div>
         )
       ) : (
-        <div className="mt-5 flex items-center justify-between border-t border-slate-800 pt-4">
-          {step > 0 ? (
-            <button
-              type="button"
-              onClick={goBack}
-              className="rounded-lg border border-slate-700 px-4 py-2 text-sm transition hover:bg-slate-800"
-            >
-              Voltar
-            </button>
-          ) : (
-            <span />
-          )}
-
-          {step < STEPS.length - 1 ? (
-            <button
-              key="next"
-              type="button"
-              onClick={goNext}
-              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200"
-            >
-              Avançar
-            </button>
-          ) : (
-            <button
-              key="submit"
-              type="submit"
-              form="agent-form"
-              disabled={saving}
-              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
-            >
-              {isCreating ? (saving ? 'Criando...' : 'Criar agente') : saving ? 'Salvando...' : 'Salvar'}
-            </button>
-          )}
+        <div className="order-last mt-5 flex justify-end border-t border-slate-800 pt-4">
+          <button
+            type="submit"
+            form="agent-form"
+            disabled={saving}
+            className="rounded-lg bg-white px-5 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+          >
+            {saving ? 'Criando...' : 'Criar agente'}
+          </button>
         </div>
       )}
     </div>
