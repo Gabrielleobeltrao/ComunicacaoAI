@@ -1,10 +1,9 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link } from 'react-router'
 import { signIn } from '../lib/auth-client'
 
 export function Login() {
-  const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [rememberMe, setRememberMe] = useState(true)
@@ -25,7 +24,9 @@ export function Login() {
       return
     }
 
-    navigate('/dashboard')
+    // Full reload so the session store is read fresh (with the cookie now set)
+    // before ProtectedRoute checks it — a soft navigate races the stale session.
+    window.location.href = '/dashboard'
   }
 
   return (
