@@ -145,7 +145,16 @@ import {
   updateWhatsAppChannel,
   updateWidget,
 } from './widgets.js'
-import { getWhatsAppAdapter, sendWhatsAppText, whatsappProvidersCatalog } from './whatsapp.js'
+import type { InboundMediaRef } from './whatsapp.js'
+import {
+  authenticateWhatsAppInbound,
+  fetchWhatsAppMedia,
+  getWhatsAppAdapter,
+  sendWhatsAppText,
+  verifyWhatsAppChallenge,
+  whatsAppUsesChallenge,
+  whatsappProvidersCatalog,
+} from './whatsapp.js'
 import { encrypt } from './crypto.js'
 
 const app = express()
@@ -170,7 +179,16 @@ app.use(
 
 app.all('/api/auth/*splat', toNodeHandler(auth))
 
-app.use(express.json())
+// Keep the raw body around so the WhatsApp webhook can verify Meta's signature.
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      ;(req as express.Request & { rawBody?: Buffer }).rawBody = buf
+    },
+  }),
+)
+// Twilio posts its webhooks as application/x-www-form-urlencoded.
+app.use(express.urlencoded({ extended: false }))
 
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
@@ -2182,15 +2200,55 @@ app.delete('/api/whatsapp/channels/:channelId', requireAuth, async (req, res) =>
 })
 
 // Inbound webhook (public — the provider calls this server-to-server).
-// GET answers a provider's verification challenge (e.g. Meta's hub.challenge).
-app.get('/api/whatsapp/:provider/webhook/:channelId', (req, res) => {
-  const challenge = req.query['hub.challenge']
-  if (challenge) {
-    res.status(200).send(String(challenge))
+// GET answers a provider's verification challenge (Meta); others just ack.
+app.get('/api/whatsapp/:provider/webhook/:channelId', async (req, res) => {
+  const channelId = String(req.params.channelId)
+  const channel = ObjectId.isValid(channelId) ? await getWidgetById(new ObjectId(channelId)) : null
+  if (channel?.channel === 'whatsapp' && whatsAppUsesChallenge(channel)) {
+    const query = Object.fromEntries(Object.entries(req.query).map(([k, v]) => [k, String(v)]))
+    const challenge = verifyWhatsAppChallenge(channel, query)
+    if (challenge !== null) {
+      res.status(200).send(challenge)
+    } else {
+      res.status(403).send('forbidden')
+    }
     return
   }
+  // Providers without a verification handshake (Evolution/Twilio): just ack.
   res.status(200).json({ ok: true })
 })
+
+// Turn an inbound WhatsApp media message into text the agent can act on:
+// download it, then extract (image → vision, PDF/text → contents). Audio/video
+// aren't readable yet, so the agent is told to ask for a written message.
+const MEDIA_LABEL: Record<InboundMediaRef['kind'], string> = {
+  image: 'uma imagem',
+  audio: 'um áudio',
+  video: 'um vídeo',
+  document: 'um documento',
+  sticker: 'uma figurinha',
+}
+async function inboundMediaToText(channel: WithId<Widget>, ref: InboundMediaRef): Promise<string> {
+  const label = MEDIA_LABEL[ref.kind]
+  if (ref.kind === 'audio' || ref.kind === 'video') {
+    const noun = ref.kind === 'audio' ? 'áudios' : 'vídeos'
+    return `[O cliente enviou ${label}. Você não consegue processar ${noun} — peça gentilmente para ele digitar a mensagem.]`
+  }
+  const media = await fetchWhatsAppMedia(channel, ref)
+  if (!media) return `[O cliente enviou ${label}, mas não consegui acessá-la.]`
+  const configAgent = await getWidgetConfigAgent(channel)
+  const provider = configAgent?.provider ?? null
+  const apiKey = provider ? await getProviderApiKey(channel.ownerId, provider) : null
+  try {
+    const extracted = (await extractTextFromFile(media.bytes, media.mimeType, provider, apiKey)).trim()
+    if (ref.kind === 'image' || ref.kind === 'sticker') {
+      return `[O cliente enviou ${label}. Conteúdo dela: ${extracted}]`
+    }
+    return `[O cliente enviou ${label}${ref.filename ? ` ("${ref.filename}")` : ''}. Conteúdo:\n${extracted}]`
+  } catch {
+    return `[O cliente enviou ${label}, mas não consegui ler o conteúdo (formato não suportado).]`
+  }
+}
 
 app.post('/api/whatsapp/:provider/webhook/:channelId', async (req, res) => {
   // Ack immediately so the provider doesn't retry, then process in the background.
@@ -2204,6 +2262,14 @@ app.post('/api/whatsapp/:provider/webhook/:channelId', async (req, res) => {
   const channel = await getWidgetById(new ObjectId(channelId))
   if (!channel || channel.channel !== 'whatsapp' || channel.whatsapp?.provider !== provider) return
 
+  // Drop forged deliveries when the provider supports authentication (Meta).
+  const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody
+  const signature = req.headers['x-hub-signature-256']
+  if (!authenticateWhatsAppInbound(channel, rawBody, typeof signature === 'string' ? signature : undefined)) {
+    console.warn('WhatsApp inbound failed authentication for channel', channelId)
+    return
+  }
+
   let inbound
   try {
     inbound = adapter.parseInbound(req.body)
@@ -2213,18 +2279,18 @@ app.post('/api/whatsapp/:provider/webhook/:channelId', async (req, res) => {
   }
 
   for (const msg of inbound) {
-    if (!msg.text || !msg.from) continue
+    if (!msg.from) continue
     if (msg.externalId && (await inboundAlreadySeen(channel._id, msg.externalId))) continue
-    const visitorMessage = await addMessage(
-      channel._id,
-      msg.from,
-      'visitor',
-      msg.text,
-      null,
-      msg.externalId || null,
-    )
+    // Media messages arrive with an empty/short text; turn the media into text.
+    let text = msg.text
+    if (msg.media) {
+      const mediaText = await inboundMediaToText(channel, msg.media)
+      text = [msg.text, mediaText].filter(Boolean).join('\n')
+    }
+    if (!text) continue
+    const visitorMessage = await addMessage(channel._id, msg.from, 'visitor', text, null, msg.externalId || null)
     broadcastMessage(visitorMessage, channel.ownerId)
-    respondWithAgentIfLinked(channel, msg.from, msg.text).catch((error) =>
+    respondWithAgentIfLinked(channel, msg.from, text).catch((error) =>
       console.error('WhatsApp auto-reply failed:', error),
     )
   }
