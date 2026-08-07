@@ -10,11 +10,14 @@ interface EditTransition {
 
 interface EditMember {
   agentId: string
+  sector: string
   routingDescription: string
   advanceWhen: string
   transitions: EditTransition[]
   isDefault: boolean
 }
+
+const DEFAULT_SECTORS = ['Suporte', 'Vendas', 'Desenvolvimento', 'Financeiro', 'Marketing']
 
 interface TeamFormProps {
   // null = creating a new team; otherwise editing this one.
@@ -50,12 +53,16 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
   const isPipeline = editMode === 'pipeline'
   const usedAgentIds = new Set(editMembers.map((m) => m.agentId))
   const availableAgents = agents.filter((a) => !usedAgentIds.has(a._id))
+  // Suggest sectors already in use on this team plus a few common defaults.
+  const sectorSuggestions = Array.from(
+    new Set([...editMembers.map((m) => m.sector.trim()).filter(Boolean), ...DEFAULT_SECTORS]),
+  )
 
   function addMember(agentId: string) {
     if (!agentId) return
     setEditMembers((prev) => [
       ...prev,
-      { agentId, routingDescription: '', advanceWhen: '', transitions: [], isDefault: prev.length === 0 },
+      { agentId, sector: '', routingDescription: '', advanceWhen: '', transitions: [], isDefault: prev.length === 0 },
     ])
   }
 
@@ -79,6 +86,10 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
       ;[next[index], next[target]] = [next[target], next[index]]
       return next
     })
+  }
+
+  function setSector(agentId: string, value: string) {
+    setEditMembers((prev) => prev.map((m) => (m.agentId === agentId ? { ...m, sector: value } : m)))
   }
 
   function setDescription(agentId: string, value: string) {
@@ -137,6 +148,8 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
       mode: editMode,
       members: editMembers.map((m) => ({
         agentId: m.agentId,
+        // Sectors organize adaptive teams; they don't apply to ordered pipelines.
+        sector: editMode === 'adaptive' ? m.sector.trim() : '',
         routingDescription: m.routingDescription.trim(),
         advanceWhen: m.advanceWhen.trim(),
         // Transitions only apply to the pipeline flow.
@@ -174,6 +187,11 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
 
   return (
     <form onSubmit={handleSave} className="space-y-4">
+      <datalist id="team-sector-suggestions">
+        {sectorSuggestions.map((s) => (
+          <option key={s} value={s} />
+        ))}
+      </datalist>
       <div>
         <label className="mb-1 block text-sm text-slate-400">Nome da equipe</label>
         <input
@@ -276,6 +294,15 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
                     </button>
                   </div>
                 </div>
+                {!isPipeline && (
+                  <input
+                    value={m.sector}
+                    onChange={(e) => setSector(m.agentId, e.target.value)}
+                    list="team-sector-suggestions"
+                    placeholder="Setor (ex: Suporte, Vendas) — opcional"
+                    className="mb-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                  />
+                )}
                 <input
                   value={m.routingDescription}
                   onChange={(e) => setDescription(m.agentId, e.target.value)}

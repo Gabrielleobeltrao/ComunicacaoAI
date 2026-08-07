@@ -16,6 +16,9 @@ export interface TeamTransition {
 
 export interface TeamMember {
   agentId: ObjectId
+  // Optional department/sector label (e.g. Suporte, Vendas) used to group
+  // members in the UI and to help the adaptive supervisor route. Empty = none.
+  sector: string
   // Adaptive: "when to use this agent" hint the supervisor reads. Pipeline:
   // what this stage does. Either way, a short description of the member's role.
   routingDescription: string

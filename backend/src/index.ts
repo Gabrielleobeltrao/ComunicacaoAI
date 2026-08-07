@@ -701,6 +701,7 @@ function serializeTeam(team: WithId<Team>) {
     mode: team.mode ?? 'adaptive',
     members: team.members.map((m) => ({
       agentId: m.agentId.toString(),
+      sector: m.sector ?? '',
       routingDescription: m.routingDescription,
       advanceWhen: m.advanceWhen ?? '',
       transitions: (m.transitions ?? []).map((t) => ({
@@ -731,8 +732,10 @@ async function resolveTeamMembers(
     seen.add(agentId)
     const desc = (m as { routingDescription?: unknown }).routingDescription
     const advanceWhen = (m as { advanceWhen?: unknown }).advanceWhen
+    const sector = (m as { sector?: unknown }).sector
     members.push({
       agentId: agent._id,
+      sector: typeof sector === 'string' ? sector.trim().slice(0, 60) : '',
       routingDescription: typeof desc === 'string' ? desc : '',
       advanceWhen: typeof advanceWhen === 'string' ? advanceWhen : '',
       transitions: [],
@@ -1028,7 +1031,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
       const options: RouterOption[] = resolved.map((x, i) => ({
         index: i,
         name: x.agent.name,
-        description: x.member.routingDescription.trim() || x.agent.objective.trim() || x.agent.name,
+        description: memberRoutingLine(x.member, x.agent),
       }))
       try {
         plan = await planTeamResponse(
@@ -2372,6 +2375,14 @@ function auxModelFor(agent: WithId<Agent>): string | null {
   return agent.cheapAuxModel === false ? agent.model : auxiliaryModel(agent.provider)
 }
 
+// The line the adaptive planner reads for each specialist: its sector (if set)
+// plus its routing hint, so routing can lean on the department.
+function memberRoutingLine(member: TeamMember, agent: WithId<Agent>): string {
+  const base = member.routingDescription.trim() || agent.objective.trim() || agent.name
+  const sector = member.sector?.trim()
+  return sector ? `[Setor: ${sector}] ${base}` : base
+}
+
 // The moves available out of a pipeline stage: its explicit transitions
 // (skip/branch/back) plus the implicit linear advance to the next stage. Targets
 // are indices into `resolved`; self-targets, out-of-range, and duplicates drop.
@@ -2532,7 +2543,7 @@ async function resolveTeamTurn(
   const options: RouterOption[] = resolved.map((x, i) => ({
     index: i,
     name: x.agent.name,
-    description: x.member.routingDescription.trim() || x.agent.objective.trim() || x.agent.name,
+    description: memberRoutingLine(x.member, x.agent),
   }))
 
   const activeAgentId = await getActiveAgentId(widgetId, conversationId)

@@ -36,63 +36,94 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
   const isPipeline = team.mode === 'pipeline'
   const maxCount = Math.max(1, ...(analytics?.specialists.map((s) => s.count) ?? []))
 
+  const renderMember = (m: (typeof team.members)[number], index: number) => {
+    const full = agentById.get(m.agentId)
+    const inner = (
+      <>
+        <div className="flex items-center gap-2">
+          {isPipeline && <span className="text-sm text-slate-500">{index + 1}.</span>}
+          <span className={`font-medium ${full ? '' : 'text-slate-500'}`}>
+            {full ? full.name : 'Agente removido'}
+          </span>
+          {m.isDefault && <Badge>Padrão</Badge>}
+        </div>
+        {full && (
+          <div className="mt-2">
+            <AgentBadges agent={full} />
+          </div>
+        )}
+        {m.routingDescription && <p className="mt-2 text-sm text-slate-400">{m.routingDescription}</p>}
+        {isPipeline && index < team.members.length - 1 && m.advanceWhen && (
+          <p className="mt-1 text-xs text-slate-500">
+            <span className="text-slate-600">Avança quando:</span> {m.advanceWhen}
+          </p>
+        )}
+        {isPipeline && m.transitions.length > 0 && (
+          <ul className="mt-1.5 space-y-0.5">
+            {m.transitions.map((t, ti) => (
+              <li key={ti} className="text-xs text-slate-500">
+                <span className="text-slate-600">Se</span> {t.condition || '…'}{' '}
+                <span className="text-slate-400">→ {nameById.get(t.targetAgentId) ?? 'etapa'}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </>
+    )
+    return (
+      <li key={m.agentId}>
+        {full ? (
+          <Link
+            to={`/agents/${m.agentId}?from=${encodeURIComponent(`/teams/${team._id}`)}`}
+            className="block rounded-xl border border-slate-800 bg-slate-900 p-3 transition hover:border-slate-600"
+          >
+            {inner}
+          </Link>
+        ) : (
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">{inner}</div>
+        )}
+      </li>
+    )
+  }
+
+  // Adaptive teams group members by sector; pipelines stay in stage order. The
+  // "no sector" group sorts last, and a single empty group means no headings.
+  const sectorGroups: [string, typeof team.members][] = []
+  if (!isPipeline) {
+    const map = new Map<string, typeof team.members>()
+    for (const m of team.members) {
+      const key = (m.sector ?? '').trim()
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)?.push(m)
+    }
+    sectorGroups.push(...[...map.entries()].sort((a, b) => (a[0] === '' ? 1 : b[0] === '' ? -1 : 0)))
+  }
+  const showSectorHeadings = sectorGroups.length > 1 || (sectorGroups.length === 1 && sectorGroups[0][0] !== '')
+
   return (
     <div className="space-y-6">
       <section>
         <h3 className="mb-3 text-sm font-medium text-slate-400">
           {isPipeline ? 'Etapas do fluxo' : 'Agentes da equipe'}
         </h3>
-        <ul className="space-y-2">
-          {team.members.map((m, index) => {
-            const full = agentById.get(m.agentId)
-            const inner = (
-              <>
-                <div className="flex items-center gap-2">
-                  {isPipeline && <span className="text-sm text-slate-500">{index + 1}.</span>}
-                  <span className={`font-medium ${full ? '' : 'text-slate-500'}`}>
-                    {full ? full.name : 'Agente removido'}
-                  </span>
-                  {m.isDefault && <Badge>Padrão</Badge>}
-                </div>
-                {full && (
-                  <div className="mt-2">
-                    <AgentBadges agent={full} />
-                  </div>
-                )}
-                {m.routingDescription && <p className="mt-2 text-sm text-slate-400">{m.routingDescription}</p>}
-                {isPipeline && index < team.members.length - 1 && m.advanceWhen && (
-                  <p className="mt-1 text-xs text-slate-500">
-                    <span className="text-slate-600">Avança quando:</span> {m.advanceWhen}
-                  </p>
-                )}
-                {isPipeline && m.transitions.length > 0 && (
-                  <ul className="mt-1.5 space-y-0.5">
-                    {m.transitions.map((t, ti) => (
-                      <li key={ti} className="text-xs text-slate-500">
-                        <span className="text-slate-600">Se</span> {t.condition || '…'}{' '}
-                        <span className="text-slate-400">→ {nameById.get(t.targetAgentId) ?? 'etapa'}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </>
-            )
-            return (
-              <li key={m.agentId}>
-                {full ? (
-                  <Link
-                    to={`/agents/${m.agentId}?from=${encodeURIComponent(`/teams/${team._id}`)}`}
-                    className="block rounded-xl border border-slate-800 bg-slate-900 p-3 transition hover:border-slate-600"
-                  >
-                    {inner}
-                  </Link>
-                ) : (
-                  <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">{inner}</div>
-                )}
-              </li>
-            )
-          })}
-        </ul>
+        {isPipeline || !showSectorHeadings ? (
+          <ul className="space-y-2">
+            {team.members.map((m, index) => renderMember(m, index))}
+          </ul>
+        ) : (
+          <div className="space-y-4">
+            {sectorGroups.map(([sector, members]) => (
+              <div key={sector || '_none'}>
+                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {sector || 'Sem setor'}
+                </p>
+                <ul className="space-y-2">
+                  {members.map((m) => renderMember(m, team.members.indexOf(m)))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section>

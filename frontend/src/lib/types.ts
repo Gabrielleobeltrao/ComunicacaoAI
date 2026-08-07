@@ -22,6 +22,7 @@ export interface TeamTransition {
 
 export interface TeamMemberSummary {
   agentId: string
+  sector: string
   routingDescription: string
   advanceWhen: string
   transitions: TeamTransition[]
