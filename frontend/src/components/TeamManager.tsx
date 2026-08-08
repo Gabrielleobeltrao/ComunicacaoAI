@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
 import type { AgentSummary, TeamSummary } from '../lib/types'
-import { Modal } from './Modal'
+import { Badge, Button, Card, Dialog } from '../ui'
 import { TeamForm } from './TeamForm'
 
 interface TeamManagerProps {
@@ -14,54 +14,48 @@ interface TeamManagerProps {
 
 export function TeamManager({ teams, loading, agents, agentsLoading, onChange }: TeamManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
-
   const agentNameById = new Map(agents.map((a) => [a._id, a.name]))
 
   return (
     <div className="space-y-4">
-      <button
-        type="button"
-        onClick={() => setIsCreating(true)}
-        disabled={agentsLoading}
-        className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
-      >
-        + Nova equipe
-      </button>
+      <Button icon="plus" disabled={agentsLoading} onClick={() => setIsCreating(true)}>
+        Nova equipe
+      </Button>
 
       {loading ? (
-        <p className="text-sm text-slate-400">Carregando equipes...</p>
+        <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>Carregando equipes...</p>
       ) : teams.length === 0 ? (
-        <p className="text-sm text-slate-400">
+        <p style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 640 }}>
           Nenhuma equipe ainda. Uma equipe junta vários agentes especialistas — no modo adaptativo um
           orquestrador consulta os que fazem sentido em cada mensagem; no modo fluxo, o atendimento passa
           por etapas em sequência. Sempre com uma voz única para o visitante.
         </p>
       ) : (
-        <ul className="space-y-3">
+        <ul className="space-y-3" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
           {teams.map((team) => {
             const defaultMember = team.members.find((m) => m.isDefault)
             const defaultName = defaultMember ? agentNameById.get(defaultMember.agentId) : null
+            const names = team.members.map((m) => agentNameById.get(m.agentId) ?? 'removido')
             return (
               <li key={team._id}>
-                <Link
-                  to={`/teams/${team._id}`}
-                  className="block space-y-2 rounded-lg border border-slate-800 p-4 transition hover:border-slate-600"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="truncate font-medium">{team.name}</p>
-                    <span className="shrink-0 rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
-                      {team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}
-                    </span>
-                    <span className="shrink-0 rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400">
-                      {team.members.length} {team.members.length === 1 ? 'agente' : 'agentes'}
-                    </span>
-                  </div>
-                  <p className="text-sm text-slate-400">
-                    {team.mode === 'pipeline'
-                      ? team.members.map((m) => agentNameById.get(m.agentId) ?? 'removido').join(' → ')
-                      : team.members.map((m) => agentNameById.get(m.agentId) ?? 'removido').join(', ')}
-                  </p>
-                  {defaultName && <p className="text-xs text-slate-500">Padrão: {defaultName}</p>}
+                <Link to={`/teams/${team._id}`} style={{ textDecoration: 'none' }}>
+                  <Card interactive padding="16px" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate" style={{ fontWeight: 700, color: 'var(--text-heading)' }}>
+                        {team.name}
+                      </p>
+                      <Badge tone="brand">{team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}</Badge>
+                      <Badge tone="neutral">
+                        {team.members.length} {team.members.length === 1 ? 'agente' : 'agentes'}
+                      </Badge>
+                    </div>
+                    <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>
+                      {team.mode === 'pipeline' ? names.join(' → ') : names.join(', ')}
+                    </p>
+                    {defaultName ? (
+                      <p style={{ fontSize: 12, color: 'var(--text-faint)' }}>Padrão: {defaultName}</p>
+                    ) : null}
+                  </Card>
                 </Link>
               </li>
             )
@@ -69,7 +63,7 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
         </ul>
       )}
 
-      <Modal open={isCreating} onClose={() => setIsCreating(false)} title="Nova equipe" wide>
+      <Dialog open={isCreating} onClose={() => setIsCreating(false)} title="Nova equipe" width={680}>
         <TeamForm
           team={null}
           agents={agents}
@@ -78,7 +72,7 @@ export function TeamManager({ teams, loading, agents, agentsLoading, onChange }:
             await onChange()
           }}
         />
-      </Modal>
+      </Dialog>
     </div>
   )
 }
