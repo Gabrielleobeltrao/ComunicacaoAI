@@ -107,7 +107,7 @@ export function AgentNav() {
         <span className={LABEL}>{backLabel}</span>
       </Link>
 
-      <div className="my-1 h-px bg-slate-800" />
+      <div className="my-1 h-px bg-(--border-subtle)" />
 
       {AGENT_SECTIONS.map((s) => {
         const Icon = SECTION_ICONS[s.key] ?? OverviewIcon
@@ -131,11 +131,7 @@ export function AgentNav() {
       >
         <ConfigIcon className="h-5 w-5 shrink-0" />
         <span className={LABEL}>Configurações</span>
-        <ChevronIcon
-          className={`ml-auto h-4 w-4 shrink-0 opacity-0 transition-[transform,opacity] duration-150 group-hover:opacity-100 ${
-            configOpen ? 'rotate-90' : ''
-          }`}
-        />
+        <ChevronIcon className={`ml-auto h-4 w-4 shrink-0 transition-transform ${configOpen ? 'rotate-90' : ''}`} />
       </button>
 
       {configOpen &&
@@ -145,7 +141,7 @@ export function AgentNav() {
             <Link
               key={s.key}
               to={`${base}/${s.key}${qs}`}
-              className={`${ITEM_BASE} group-hover:pl-7 ${active === s.key ? ACTIVE : INACTIVE}`}
+              className={`${ITEM_BASE} pl-7 ${active === s.key ? ACTIVE : INACTIVE}`}
             >
               <Icon className="h-4.5 w-4.5 shrink-0 opacity-80" />
               <span className={`${LABEL} text-[13px]`}>{s.label}</span>

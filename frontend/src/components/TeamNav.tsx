@@ -54,7 +54,7 @@ export function TeamNav() {
         <span className={LABEL}>Equipes</span>
       </Link>
 
-      <div className="my-1 h-px bg-slate-800" />
+      <div className="my-1 h-px bg-(--border-subtle)" />
 
       {TEAM_SECTIONS.map((s) => {
         const Icon = SECTION_ICONS[s.key]

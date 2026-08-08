@@ -1,6 +1,6 @@
-// Shared classNames for the sidebar shell, used by both the app nav and the
-// agent nav so they look and behave identically (hover-to-expand labels).
-export const ITEM_BASE = 'flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition'
-export const INACTIVE = 'text-slate-400 hover:bg-slate-900 hover:text-white'
-export const ACTIVE = 'bg-slate-800 text-white'
-export const LABEL = 'whitespace-nowrap opacity-0 transition-opacity duration-150 group-hover:opacity-100'
+// Shared rail item classes (Tavorium light rail), used by the app nav and the
+// agent/team section navs so they look and behave identically.
+export const ITEM_BASE = 'flex w-full items-center gap-3 rounded-[12px] px-3 h-10 text-left text-sm transition'
+export const INACTIVE = 'font-medium text-(--text-body) hover:bg-(--surface-sunken)'
+export const ACTIVE = 'font-bold bg-(--intent-brand-soft) text-(--cobalt-700)'
+export const LABEL = 'flex-1 truncate'

@@ -1,8 +1,8 @@
-import { useState } from 'react'
 import type { ReactElement } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { signOut } from '../lib/auth-client'
 import { ACTIVE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
+import { Brand } from '../ui'
 import { AgentNav } from './AgentNav'
 import { TeamNav } from './TeamNav'
 
@@ -10,7 +10,7 @@ type IconProps = { className?: string }
 
 function DashboardIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} className={className}>
       <rect x="3" y="3" width="7" height="7" rx="1.5" />
       <rect x="14" y="3" width="7" height="7" rx="1.5" />
       <rect x="3" y="14" width="7" height="7" rx="1.5" />
@@ -21,7 +21,7 @@ function DashboardIcon({ className }: IconProps) {
 
 function AgentsIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} className={className}>
       <path d="M12 8V5" strokeLinecap="round" />
       <circle cx="12" cy="3.5" r="1" fill="currentColor" stroke="none" />
       <rect x="5" y="8" width="14" height="10" rx="2" />
@@ -34,7 +34,7 @@ function AgentsIcon({ className }: IconProps) {
 
 function TeamsIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} className={className}>
       <circle cx="8" cy="9" r="2.5" />
       <circle cx="16" cy="9" r="2.5" />
       <path d="M3.5 18a4.5 4.5 0 0 1 9 0M11.5 18a4.5 4.5 0 0 1 9 0" strokeLinecap="round" />
@@ -44,7 +44,7 @@ function TeamsIcon({ className }: IconProps) {
 
 function WidgetsIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} className={className}>
       <path d="M8 7l-5 5 5 5M16 7l5 5-5 5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
@@ -52,7 +52,7 @@ function WidgetsIcon({ className }: IconProps) {
 
 function ChatsIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} className={className}>
       <path
         d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H9l-5 4v-4Z"
         strokeLinecap="round"
@@ -64,7 +64,7 @@ function ChatsIcon({ className }: IconProps) {
 
 function SettingsIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} className={className}>
       <circle cx="12" cy="12" r="3" />
       <path d="M12 2.5v2M12 19.5v2M4.6 7.2l1.7 1M17.7 15.8l1.7 1M4.6 16.8l1.7-1M17.7 8.2l1.7-1M2.5 12h2M19.5 12h2" strokeLinecap="round" />
     </svg>
@@ -73,29 +73,9 @@ function SettingsIcon({ className }: IconProps) {
 
 function LogoutIcon({ className }: IconProps) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} className={className}>
       <path d="M15 5V4a1.5 1.5 0 0 0-1.5-1.5h-7A1.5 1.5 0 0 0 5 4v16a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 15 20v-1" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M10 12h11m0 0-3-3m3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-// Single chevron pointing right; rotated 90° it points down (group expanded).
-function ChevronIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function SupportIcon({ className }: IconProps) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <path d="M4 13v-1a8 8 0 0 1 16 0v1" strokeLinecap="round" />
-      <rect x="2.5" y="12.5" width="3.5" height="6" rx="1.2" />
-      <rect x="18" y="12.5" width="3.5" height="6" rx="1.2" />
-      <path d="M20 18.5v.5a3 3 0 0 1-3 3h-2.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }
@@ -106,54 +86,18 @@ interface NavLink {
   Icon: (props: IconProps) => ReactElement
 }
 
-interface NavGroup {
-  key: string
-  label: string
-  Icon: (props: IconProps) => ReactElement
-  children: NavLink[]
-}
-
-type NavEntry = NavLink | NavGroup
-
-const NAV: NavEntry[] = [
-  { to: '/dashboard', label: 'Dashboard', Icon: DashboardIcon },
-  {
-    key: 'atendimento',
-    label: 'Atendimento',
-    Icon: SupportIcon,
-    children: [
-      { to: '/agents', label: 'Agentes', Icon: AgentsIcon },
-      { to: '/teams', label: 'Equipes', Icon: TeamsIcon },
-    ],
-  },
+const NAV: NavLink[] = [
+  { to: '/dashboard', label: 'Escritório', Icon: DashboardIcon },
+  { to: '/agents', label: 'Agentes', Icon: AgentsIcon },
+  { to: '/teams', label: 'Equipes', Icon: TeamsIcon },
   { to: '/widgets', label: 'Canais', Icon: WidgetsIcon },
-  { to: '/chats', label: 'Chats', Icon: ChatsIcon },
+  { to: '/chats', label: 'Conversas', Icon: ChatsIcon },
 ]
 
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
-  // On an agent/team page the middle nav swaps to that entity's own sections;
-  // the shell (logo, footer, hover-to-expand) stays the same.
+  // On an agent/team page the middle nav swaps to that entity's own sections.
   const { agentId, teamId } = useParams()
-  // Which parent groups are expanded to reveal their subpages. Persisted;
-  // groups default to open (a key is only stored once toggled shut/open).
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('sidebar-open-groups') ?? '{}')
-      return saved && typeof saved === 'object' ? saved : {}
-    } catch {
-      return {}
-    }
-  })
-  const isGroupOpen = (key: string) => openGroups[key] !== false
-
-  function toggleGroup(key: string) {
-    setOpenGroups((prev) => {
-      const next = { ...prev, [key]: prev[key] === false }
-      localStorage.setItem('sidebar-open-groups', JSON.stringify(next))
-      return next
-    })
-  }
 
   async function handleSignOut() {
     await signOut()
@@ -161,12 +105,12 @@ export function Sidebar({ current }: { current: string }) {
   }
 
   return (
-    <aside className="group flex w-16 shrink-0 flex-col overflow-hidden border-r border-slate-800 px-3 py-6 transition-[width] duration-200 hover:w-56">
-      <div className="mb-6 flex items-center gap-2 px-1">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-sm font-bold text-slate-950">
-          C
-        </div>
-        <span className={`text-base font-semibold ${LABEL}`}>ComunicacaoAI</span>
+    <aside
+      className="flex shrink-0 flex-col gap-4 overflow-y-auto border-r px-3.5 py-4"
+      style={{ width: 'var(--rail-width)', background: 'var(--surface-rail)', borderColor: 'var(--border-subtle)' }}
+    >
+      <div className="px-1.5 pt-1">
+        <Brand size={18} />
       </div>
 
       {agentId ? (
@@ -174,66 +118,21 @@ export function Sidebar({ current }: { current: string }) {
       ) : teamId ? (
         <TeamNav />
       ) : (
-      <nav className="flex flex-col gap-1">
-        {NAV.map((item) => {
-          if (!('children' in item)) {
-            return (
-              <Link
-                key={item.to}
-                to={item.to}
-                className={`${ITEM_BASE} ${item.to === current ? ACTIVE : INACTIVE}`}
-              >
-                <item.Icon className="h-5 w-5 shrink-0" />
-                <span className={LABEL}>{item.label}</span>
-              </Link>
-            )
-          }
-
-          const open = isGroupOpen(item.key)
-          const childActive = item.children.some((child) => child.to === current)
-          return (
-            <div key={item.key} className="flex flex-col gap-1">
-              {/* Section title: not a link — clicking it just expands/collapses.
-                  It highlights only while its active subpage is hidden (collapsed). */}
-              <button
-                type="button"
-                onClick={() => toggleGroup(item.key)}
-                aria-expanded={open}
-                className={`${ITEM_BASE} ${childActive && !open ? ACTIVE : INACTIVE}`}
-              >
-                <item.Icon className="h-5 w-5 shrink-0" />
-                <span className={LABEL}>{item.label}</span>
-                <ChevronIcon
-                  className={`ml-auto h-4 w-4 shrink-0 opacity-0 transition-[transform,opacity] duration-150 group-hover:opacity-100 ${
-                    open ? 'rotate-90' : ''
-                  }`}
-                />
-              </button>
-
-              {open
-                ? item.children.map((child) => (
-                    <Link
-                      key={child.to}
-                      to={child.to}
-                      className={`${ITEM_BASE} group-hover:pl-7 ${child.to === current ? ACTIVE : INACTIVE}`}
-                    >
-                      <child.Icon className="h-4.5 w-4.5 shrink-0 opacity-80" />
-                      <span className={`${LABEL} text-[13px]`}>{child.label}</span>
-                    </Link>
-                  ))
-                : null}
-            </div>
-          )
-        })}
-      </nav>
+        <nav className="flex flex-col gap-1">
+          {NAV.map((item) => (
+            <Link key={item.to} to={item.to} className={`${ITEM_BASE} ${item.to === current ? ACTIVE : INACTIVE}`}>
+              <item.Icon className="h-5 w-5 shrink-0" />
+              <span className={LABEL}>{item.label}</span>
+            </Link>
+          ))}
+        </nav>
       )}
 
-      <div className="mt-auto flex flex-col gap-1 border-t border-slate-800 pt-3">
+      <div className="mt-auto flex flex-col gap-1 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
         <Link to="/settings" className={`${ITEM_BASE} ${current === '/settings' ? ACTIVE : INACTIVE}`}>
           <SettingsIcon className="h-5 w-5 shrink-0" />
           <span className={LABEL}>Configurações</span>
         </Link>
-
         <button type="button" onClick={handleSignOut} className={`${ITEM_BASE} ${INACTIVE}`}>
           <LogoutIcon className="h-5 w-5 shrink-0" />
           <span className={LABEL}>Sair</span>
