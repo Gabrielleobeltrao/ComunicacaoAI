@@ -6,15 +6,14 @@ export function Agents() {
   const { agents, agentsLoading, loadAgents } = useAgentsAndWidgets()
 
   return (
-    <AppLayout current="/agents" title="Agentes">
-      <section className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-        <h2 className="mb-2 font-medium">Agentes</h2>
-        <p className="mb-4 text-sm text-slate-400">
-          Crie um agente aqui. Para vincular a um widget, use o seletor na página "Widgets". Para juntar
-          vários agentes num atendimento único, use a página "Equipes".
+    <AppLayout current="/agents" title="Agentes" subtitle="Seu time de agentes de IA">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <p style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 640 }}>
+          Contrate um agente aqui. Para colocá-lo pra atender, use a página "Canais". Para juntar vários
+          num atendimento único, use "Equipes".
         </p>
         <AgentManager agents={agents} loading={agentsLoading} onChange={loadAgents} />
-      </section>
+      </div>
     </AppLayout>
   )
 }
