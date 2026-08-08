@@ -1,0 +1,13 @@
+:root{
+  --radius-xs:6px;
+  --radius-sm:10px;
+  --radius-md:14px;
+  --radius-lg:20px;
+  --radius-xl:28px;
+  --radius-full:999px;
+
+  --radius-control:12px;
+  --radius-card:18px;
+  --radius-panel:24px;
+  --radius-avatar:var(--radius-full);
+}

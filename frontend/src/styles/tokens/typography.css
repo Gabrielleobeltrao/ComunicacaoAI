@@ -1,0 +1,34 @@
+/* Gabarito for headings/names/numbers, Plus Jakarta Sans for UI, JetBrains Mono for data. */
+:root{
+  --text-display-size:44px;
+  --text-display-lh:1.04;
+  --text-display-ls:-.022em;
+  --text-display-weight:800;
+  --text-title-size:30px;
+  --text-title-lh:1.12;
+  --text-title-ls:-.018em;
+  --text-title-weight:800;
+  --text-heading-size:22px;
+  --text-heading-lh:1.2;
+  --text-heading-ls:-.014em;
+  --text-heading-weight:700;
+  --text-subhead-size:17px;
+  --text-subhead-lh:1.3;
+  --text-subhead-ls:-.01em;
+  --text-subhead-weight:700;
+  --text-body-size:15px;
+  --text-body-lh:1.55;
+  --text-body-ls:-.005em;
+  --text-body-weight:400;
+  --text-small-size:13px;
+  --text-small-lh:1.45;
+  --text-small-ls:0;
+  --text-small-weight:500;
+  --text-micro-size:11px;
+  --text-micro-lh:1.35;
+  --text-micro-ls:.06em;
+  --text-micro-weight:700;
+  --text-mono-size:12.5px;
+  --text-mono-lh:1.5;
+  --text-mono-ls:-.01em;
+}

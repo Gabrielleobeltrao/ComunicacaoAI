@@ -1,0 +1,8 @@
+/* Font substitution: Gabarito / Plus Jakarta Sans / JetBrains Mono are Google Fonts
+   stand-ins chosen to match the brief. Swap for licensed files when they arrive.
+   The <link> that loads them lives in index.html. */
+:root{
+  --font-display:"Gabarito","Segoe UI",system-ui,sans-serif;
+  --font-ui:"Plus Jakarta Sans","Segoe UI",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
