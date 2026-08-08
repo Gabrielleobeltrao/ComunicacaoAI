@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from 'react-router'
 import { signIn } from '../lib/auth-client'
+import { AuthScaffold } from '../components/AuthScaffold'
+import { Button, Card, Checkbox, Field, Input } from '../ui'
 
 export function Login() {
   const [email, setEmail] = useState('')
@@ -30,68 +32,43 @@ export function Login() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-white">
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-sm space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-8"
-      >
-        <h1 className="text-2xl font-semibold">Entrar</h1>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-400" htmlFor="email">
-            Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-slate-500"
-          />
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-400" htmlFor="password">
-            Senha
-          </label>
-          <input
-            id="password"
-            type="password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-slate-500"
-          />
-        </div>
-
-        <label className="flex items-center gap-2 text-sm text-slate-400">
-          <input
-            type="checkbox"
-            checked={rememberMe}
-            onChange={(e) => setRememberMe(e.target.checked)}
-            className="h-4 w-4 rounded border-slate-700 bg-slate-950"
-          />
-          Manter conectado
-        </label>
-
-        {error && <p className="text-sm text-red-400">{error}</p>}
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded-lg bg-white px-4 py-2 font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
-        >
-          {loading ? 'Entrando...' : 'Entrar'}
-        </button>
-
-        <p className="text-center text-sm text-slate-400">
-          Não tem conta?{' '}
-          <Link to="/register" className="text-white underline">
-            Criar conta
-          </Link>
-        </p>
+    <AuthScaffold title="Entrar" subtitle="Seu escritório está te esperando.">
+      <form onSubmit={handleSubmit} style={{ width: '100%', maxWidth: 380 }}>
+        <Card padding="22px" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <Field label="E-mail">
+            <Input
+              type="email"
+              required
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="voce@empresa.com"
+              icon="mail"
+            />
+          </Field>
+          <Field label="Senha">
+            <Input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              icon="lock"
+            />
+          </Field>
+          <Checkbox checked={rememberMe} onChange={setRememberMe} label="Manter conectado" />
+          {error && <p style={{ fontSize: 13, color: 'var(--coral-600)' }}>{error}</p>}
+          <Button type="submit" block size="lg" disabled={loading}>
+            {loading ? 'Entrando...' : 'Entrar'}
+          </Button>
+          <span style={{ textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>
+            Não tem conta?{' '}
+            <Link to="/register" style={{ fontWeight: 700 }}>
+              Criar conta
+            </Link>
+          </span>
+        </Card>
       </form>
-    </div>
+    </AuthScaffold>
   )
 }

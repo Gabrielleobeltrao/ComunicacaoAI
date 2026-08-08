@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from 'react-router'
 import { signUp } from '../lib/auth-client'
+import { AuthScaffold } from '../components/AuthScaffold'
+import { Button, Card, Field, Input } from '../ui'
 
 export function Register() {
   const [name, setName] = useState('')
@@ -30,73 +32,52 @@ export function Register() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-white">
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-sm space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-8"
-      >
-        <h1 className="text-2xl font-semibold">Criar conta</h1>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-400" htmlFor="name">
-            Nome
-          </label>
-          <input
-            id="name"
-            type="text"
-            required
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-slate-500"
-          />
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-400" htmlFor="email">
-            Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-slate-500"
-          />
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-400" htmlFor="password">
-            Senha
-          </label>
-          <input
-            id="password"
-            type="password"
-            required
-            minLength={8}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-slate-500"
-          />
-        </div>
-
-        {error && <p className="text-sm text-red-400">{error}</p>}
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded-lg bg-white px-4 py-2 font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
-        >
-          {loading ? 'Criando...' : 'Criar conta'}
-        </button>
-
-        <p className="text-center text-sm text-slate-400">
-          Já tem conta?{' '}
-          <Link to="/login" className="text-white underline">
-            Entrar
-          </Link>
-        </p>
+    <AuthScaffold title="Criar conta" subtitle="Monte seu escritório em menos de um minuto.">
+      <form onSubmit={handleSubmit} style={{ width: '100%', maxWidth: 380 }}>
+        <Card padding="22px" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <Field label="Nome">
+            <Input
+              required
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Como podemos te chamar?"
+              icon="user-round"
+            />
+          </Field>
+          <Field label="E-mail">
+            <Input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="voce@empresa.com"
+              icon="mail"
+            />
+          </Field>
+          <Field label="Senha" hint="Mínimo de 8 caracteres">
+            <Input
+              type="password"
+              required
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              icon="lock"
+            />
+          </Field>
+          {error && <p style={{ fontSize: 13, color: 'var(--coral-600)' }}>{error}</p>}
+          <Button type="submit" block size="lg" disabled={loading}>
+            {loading ? 'Criando...' : 'Criar conta'}
+          </Button>
+          <span style={{ textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>
+            Já tem conta?{' '}
+            <Link to="/login" style={{ fontWeight: 700 }}>
+              Entrar
+            </Link>
+          </span>
+        </Card>
       </form>
-    </div>
+    </AuthScaffold>
   )
 }
