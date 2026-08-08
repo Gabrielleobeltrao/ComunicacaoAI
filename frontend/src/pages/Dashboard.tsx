@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
+import { OfficeFloor } from '../office/OfficeFloor'
 import { API_URL } from '../lib/api'
+import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import type { DashboardStats, TeamAnalytics } from '../lib/types'
-import { Badge, Card, Icon, MetricStat } from '../ui'
+import { Badge, Button, Card, EmptyState, Icon, MetricStat } from '../ui'
 
 const SECTIONS = [
   { to: '/agents', title: 'Agentes', icon: 'users-round', description: 'Contrate e configure seus agentes: objetivo, modelo e base de conhecimento.' },
@@ -101,6 +103,8 @@ function SectionTitle({ children }: { children: string }) {
 }
 
 export function Dashboard() {
+  const navigate = useNavigate()
+  const { agents, agentsLoading } = useAgentsAndWidgets()
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [teamAnalytics, setTeamAnalytics] = useState<TeamAnalytics[]>([])
   const [loading, setLoading] = useState(true)
@@ -128,6 +132,28 @@ export function Dashboard() {
   return (
     <AppLayout current="/dashboard" title="Escritório" subtitle="Visão geral do seu time de IA">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+        <section>
+          <SectionTitle>Sua equipe</SectionTitle>
+          {agentsLoading ? (
+            <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>Carregando o escritório...</p>
+          ) : agents.length === 0 ? (
+            <EmptyState
+              icon="armchair"
+              title="Escritório vazio"
+              body="Contrate seu primeiro agente e veja a mesa dele ganhar vida."
+              action={
+                <Button icon="plus" onClick={() => navigate('/agents')}>
+                  Contratar agente
+                </Button>
+              }
+            />
+          ) : (
+            <Card padding="0" style={{ overflow: 'hidden' }}>
+              <OfficeFloor agents={agents} />
+            </Card>
+          )}
+        </section>
+
         <section>
           <SectionTitle>Visão geral</SectionTitle>
           {loading ? (

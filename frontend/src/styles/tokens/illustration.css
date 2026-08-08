@@ -1,0 +1,31 @@
+:root{
+  /* --- Room materials: wood, chalkboard, chalk --- */
+  --wood-1:#C9A06A;
+  --wood-2:#A87B48;
+  --wood-3:#7E5A32;
+  --board-1:#2C4A42;
+  --board-2:#223B34;
+  --chalk-1:#F6F3E8;
+  --chalk-2:#CBD8D0;
+  --surface-board:var(--board-1);
+  --text-on-board:var(--chalk-1);
+  --text-on-board-muted:var(--chalk-2);
+
+  /* --- Top-down office map --- */
+  --tile:56px;
+  --map-floor:#F3E6D2;        /* main hall, warm brick */
+  --map-floor-line:#E6D4B8;
+  --map-outdoor:#D8EDD6;      /* grass beyond the walls */
+  --map-wall:#EDE6DA;
+  --map-wall-edge:#CFC3AF;
+  --map-room-1:#E7E9F7;       /* quiet room */
+  --map-room-2:#F0EAF8;       /* meeting room */
+  --map-rug:#DCE0F2;
+  --map-shadow:rgba(60,48,32,.18);
+
+  /* --- Illustration frames --- */
+  --illo-ratio-character:3 / 4;
+  --illo-ratio-scene:16 / 9;
+  --illo-ratio-spot:1 / 1;
+  --illo-ratio-sprite:1 / 1;
+}
