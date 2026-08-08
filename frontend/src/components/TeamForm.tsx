@@ -193,29 +193,29 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
         ))}
       </datalist>
       <div>
-        <label className="mb-1 block text-sm text-slate-400">Nome da equipe</label>
+        <label className="mb-1 block text-sm text-(--text-muted)">Nome da equipe</label>
         <input
           value={editName}
           onChange={(e) => setEditName(e.target.value)}
           required
           autoFocus
           placeholder="Ex: Atendimento da barbearia"
-          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
         />
       </div>
 
       <div>
-        <label className="mb-1 block text-sm text-slate-400">Modo de orquestração</label>
+        <label className="mb-1 block text-sm text-(--text-muted)">Modo de orquestração</label>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <button
             type="button"
             onClick={() => setEditMode('adaptive')}
             className={`rounded-lg border p-3 text-left text-sm transition ${
-              editMode === 'adaptive' ? 'border-slate-400 bg-slate-800' : 'border-slate-700 hover:border-slate-600'
+              editMode === 'adaptive' ? 'border-(--intent-brand) bg-(--surface-sunken)' : 'border-(--border-strong) hover:border-(--border-strong)'
             }`}
           >
             <span className="font-medium">Adaptativo</span>
-            <span className="mt-1 block text-xs text-slate-400">
+            <span className="mt-1 block text-xs text-(--text-muted)">
               Um supervisor consulta, a cada mensagem, os especialistas que têm a informação.
             </span>
           </button>
@@ -223,11 +223,11 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
             type="button"
             onClick={() => setEditMode('pipeline')}
             className={`rounded-lg border p-3 text-left text-sm transition ${
-              editMode === 'pipeline' ? 'border-slate-400 bg-slate-800' : 'border-slate-700 hover:border-slate-600'
+              editMode === 'pipeline' ? 'border-(--intent-brand) bg-(--surface-sunken)' : 'border-(--border-strong) hover:border-(--border-strong)'
             }`}
           >
             <span className="font-medium">Fluxo (pipeline)</span>
-            <span className="mt-1 block text-xs text-slate-400">
+            <span className="mt-1 block text-xs text-(--text-muted)">
               Etapas em sequência: cada agente cuida de uma parte e passa para a próxima.
             </span>
           </button>
@@ -236,21 +236,21 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
 
       <div className="space-y-2">
         <p className="text-sm font-medium">{isPipeline ? 'Etapas do fluxo' : 'Agentes da equipe'}</p>
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-(--text-faint)">
           {isPipeline
             ? 'As etapas são executadas na ordem abaixo. Descreva o que cada etapa faz e quando ela deve passar para a próxima. Marque uma etapa como padrão (voz, memória e configurações compartilhadas).'
             : 'Descreva quando cada agente deve ser usado — é o que o orquestrador lê para decidir quais consultar. Marque um como padrão (voz da equipe e fallback para mensagens ambíguas).'}
         </p>
 
         {editMembers.length === 0 ? (
-          <p className="text-sm text-slate-400">Adicione pelo menos 2 {isPipeline ? 'etapas' : 'agentes'}.</p>
+          <p className="text-sm text-(--text-muted)">Adicione pelo menos 2 {isPipeline ? 'etapas' : 'agentes'}.</p>
         ) : (
           <ul className="space-y-2">
             {editMembers.map((m, index) => (
-              <li key={m.agentId} className="rounded-lg border border-slate-800 p-3">
+              <li key={m.agentId} className="rounded-lg border border-(--border-subtle) p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <span className="text-sm font-medium">
-                    {isPipeline && <span className="text-slate-500">{index + 1}. </span>}
+                    {isPipeline && <span className="text-(--text-faint)">{index + 1}. </span>}
                     {agentNameById.get(m.agentId) ?? 'Agente'}
                   </span>
                   <div className="flex items-center gap-3">
@@ -260,7 +260,7 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
                           type="button"
                           onClick={() => moveMember(index, -1)}
                           disabled={index === 0}
-                          className="rounded border border-slate-700 px-1.5 text-xs text-slate-400 transition hover:bg-slate-800 disabled:opacity-30"
+                          className="rounded border border-(--border-strong) px-1.5 text-xs text-(--text-muted) transition hover:bg-(--surface-sunken) disabled:opacity-30"
                           aria-label="Subir etapa"
                         >
                           ↑
@@ -269,14 +269,14 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
                           type="button"
                           onClick={() => moveMember(index, 1)}
                           disabled={index === editMembers.length - 1}
-                          className="rounded border border-slate-700 px-1.5 text-xs text-slate-400 transition hover:bg-slate-800 disabled:opacity-30"
+                          className="rounded border border-(--border-strong) px-1.5 text-xs text-(--text-muted) transition hover:bg-(--surface-sunken) disabled:opacity-30"
                           aria-label="Descer etapa"
                         >
                           ↓
                         </button>
                       </div>
                     )}
-                    <label className="flex items-center gap-1.5 text-xs text-slate-400">
+                    <label className="flex items-center gap-1.5 text-xs text-(--text-muted)">
                       <input
                         type="radio"
                         name="default-member"
@@ -288,7 +288,7 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
                     <button
                       type="button"
                       onClick={() => removeMember(m.agentId)}
-                      className="text-xs text-red-400 underline transition hover:text-red-300"
+                      className="text-xs text-(--coral-600) underline transition hover:text-(--coral-600)"
                     >
                       Remover
                     </button>
@@ -300,7 +300,7 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
                     onChange={(e) => setSector(m.agentId, e.target.value)}
                     list="team-sector-suggestions"
                     placeholder="Setor (ex: Suporte, Vendas) — opcional"
-                    className="mb-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    className="mb-2 w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                   />
                 )}
                 <input
@@ -311,11 +311,11 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
                       ? 'O que esta etapa faz (ex: qualificar o lead e coletar requisitos)'
                       : 'Quando usar este agente (ex: reservas, horários e disponibilidade)'
                   }
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                 />
                 {isPipeline &&
                   (index === editMembers.length - 1 ? (
-                    <p className="mt-1.5 text-xs text-slate-600">
+                    <p className="mt-1.5 text-xs text-(--text-faint)">
                       Última etapa — encerra o fluxo (mas ainda pode ter desvios abaixo).
                     </p>
                   ) : (
@@ -323,36 +323,36 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
                       value={m.advanceWhen}
                       onChange={(e) => setAdvanceWhen(m.agentId, e.target.value)}
                       placeholder="Quando avançar para a próxima etapa (ex: quando já tiver data e nº de pessoas)"
-                      className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                      className="mt-2 w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                     />
                   ))}
                 {isPipeline && (
-                  <div className="mt-2 rounded-lg border border-slate-800/70 bg-slate-950/40 p-2">
-                    <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  <div className="mt-2 rounded-lg border border-(--border-subtle)/70 bg-(--surface-card)/40 p-2">
+                    <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-(--text-faint)">
                       Desvios (opcional)
                     </p>
                     {m.transitions.length === 0 ? (
-                      <p className="text-xs text-slate-600">
+                      <p className="text-xs text-(--text-faint)">
                         Pule, ramifique ou volte para outra etapa quando uma condição acontecer.
                       </p>
                     ) : (
                       <ul className="space-y-1.5">
                         {m.transitions.map((t, ti) => (
                           <li key={ti} className="flex items-center gap-1.5">
-                            <span className="shrink-0 text-xs text-slate-500">Se</span>
+                            <span className="shrink-0 text-xs text-(--text-faint)">Se</span>
                             <input
                               value={t.condition}
                               onChange={(e) => setTransitionCondition(m.agentId, ti, e.target.value)}
                               placeholder="ex: o grupo tiver mais de 8 pessoas"
-                              className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs outline-none focus:border-slate-500"
+                              className="min-w-0 flex-1 rounded border border-(--border-strong) bg-(--surface-card) px-2 py-1 text-xs outline-none focus:border-(--border-focus)"
                             />
-                            <span className="shrink-0 text-xs text-slate-400">
+                            <span className="shrink-0 text-xs text-(--text-muted)">
                               → {agentNameById.get(t.targetAgentId) ?? 'etapa'}
                             </span>
                             <button
                               type="button"
                               onClick={() => removeTransition(m.agentId, ti)}
-                              className="shrink-0 px-1 text-sm text-red-400 transition hover:text-red-300"
+                              className="shrink-0 px-1 text-sm text-(--coral-600) transition hover:text-(--coral-600)"
                               aria-label="Remover desvio"
                             >
                               ×
@@ -370,7 +370,7 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
                           addTransition(m.agentId, e.target.value)
                           e.target.value = ''
                         }}
-                        className="mt-1.5 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs outline-none focus:border-slate-500"
+                        className="mt-1.5 w-full rounded border border-(--border-strong) bg-(--surface-card) px-2 py-1 text-xs outline-none focus:border-(--border-focus)"
                       >
                         <option value="">+ Adicionar desvio para outra etapa</option>
                         {editMembers
@@ -399,7 +399,7 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
               addMember(e.target.value)
               e.target.value = ''
             }}
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+            className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
           >
             <option value="">+ Adicionar {isPipeline ? 'etapa' : 'agente à equipe'}</option>
             {availableAgents.map((a) => (
@@ -411,13 +411,13 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
         )}
       </div>
 
-      {editError && <p className="text-sm text-red-400">{editError}</p>}
+      {editError && <p className="text-sm text-(--coral-600)">{editError}</p>}
 
-      <div className="flex justify-end border-t border-slate-800 pt-4">
+      <div className="flex justify-end border-t border-(--border-subtle) pt-4">
         <button
           type="submit"
           disabled={saving}
-          className="rounded-lg bg-white px-5 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+          className="rounded-lg bg-(--intent-brand) px-5 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
         >
           {isCreating ? (saving ? 'Criando...' : 'Criar equipe') : saving ? 'Salvando...' : 'Salvar alterações'}
         </button>

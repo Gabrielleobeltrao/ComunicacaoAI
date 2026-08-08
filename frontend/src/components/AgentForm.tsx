@@ -55,15 +55,15 @@ function CollapsibleBlock({
   const [open, setOpen] = useState(false)
   if (!showHeader) return <>{children}</>
   return (
-    <div className="border-t border-slate-800 first:border-t-0">
+    <div className="border-t border-(--border-subtle) first:border-t-0">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between gap-2 py-3 text-left text-slate-300 transition hover:text-white"
+        className="flex w-full items-center justify-between gap-2 py-3 text-left text-(--text-body) transition hover:text-(--text-heading)"
       >
         <span className="text-sm font-semibold">{title}</span>
-        <span className={`text-slate-500 transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+        <span className={`text-(--text-faint) transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
       </button>
       <div className={open ? 'space-y-3 pb-3' : 'hidden'}>{children}</div>
     </div>
@@ -120,10 +120,10 @@ function OptionSwitch<T extends string>({
   onSelect: (value: T) => void
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-800 p-3">
+    <div className="flex items-start justify-between gap-3 rounded-lg border border-(--border-subtle) p-3">
       <div>
         <p className="text-sm font-medium">{label}</p>
-        <p className="text-sm text-slate-400">{description}</p>
+        <p className="text-sm text-(--text-muted)">{description}</p>
       </div>
       <label className="relative inline-flex shrink-0 cursor-pointer items-center">
         <input
@@ -132,7 +132,7 @@ function OptionSwitch<T extends string>({
           onChange={(e) => onSelect(e.target.checked ? value : offValue)}
           className="peer sr-only"
         />
-        <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+        <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
       </label>
     </div>
   )
@@ -650,38 +650,38 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
         {showBlock('identidade') && (
           <>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Nome</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Nome</label>
               <input
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
                 required
                 autoFocus
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">O que este agente faz?</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">O que este agente faz?</label>
               <textarea
                 value={editObjective}
                 onChange={(e) => setEditObjective(e.target.value)}
                 rows={4}
                 placeholder="Ex: Ajudar clientes do restaurante a tirar dúvidas sobre cardápio, horário e reservas, e anotar pedidos."
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-(--text-faint)">
                 Descreva o objetivo e como o agente deve agir — é a instrução principal dele.
               </p>
             </div>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Primeira mensagem</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Primeira mensagem</label>
               <textarea
                 value={editFirstMessage}
                 onChange={(e) => setEditFirstMessage(e.target.value)}
                 rows={2}
                 placeholder="Ex: Oi! 👋 Quer ver o cardápio ou já fazer um pedido?"
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-(--text-faint)">
                 Mensagem que o agente mostra ao visitante assim que o chat abre. Se vazio, vale a
                 mensagem de boas-vindas configurada no widget.
               </p>
@@ -697,30 +697,30 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
           <button
             type="button"
             onClick={() => setAdvancedOpen((o) => !o)}
-            className="flex w-full items-center gap-1.5 border-t border-slate-800 pt-4 text-sm text-slate-400 transition hover:text-white"
+            className="flex w-full items-center gap-1.5 border-t border-(--border-subtle) pt-4 text-sm text-(--text-muted) transition hover:text-(--text-heading)"
           >
             <span className={`transition-transform ${advancedOpen ? 'rotate-90' : ''}`}>▸</span>
             Configurações avançadas
-            <span className="text-xs text-slate-600">(opcional)</span>
+            <span className="text-xs text-(--text-faint)">(opcional)</span>
           </button>
         )}
 
         <div
           className={
-            !flat && advancedOpen ? 'mt-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-1' : ''
+            !flat && advancedOpen ? 'mt-3 rounded-xl border border-(--border-subtle) bg-(--surface-card)/40 px-4 py-1' : ''
           }
         >
           {showBlock('modelo') && (
           <CollapsibleBlock title="Modelo e custo" showHeader={stacked}>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Provedor</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Provedor</label>
               <select
                 value={editProvider}
                 onChange={(e) => {
                   setEditProvider(e.target.value as 'anthropic' | 'openai')
                   setEditModel('')
                 }}
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               >
                 {providers.map((provider) => (
                   <option key={provider.id} value={provider.id}>
@@ -730,11 +730,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Modelo</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Modelo</label>
               <select
                 value={editModel}
                 onChange={(e) => setEditModel(e.target.value)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               >
                 <option value="">Padrão do sistema</option>
                 {(providers.find((p) => p.id === editProvider)?.models ?? []).map((model) => (
@@ -744,10 +744,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 ))}
               </select>
             </div>
-            <div className="space-y-2 rounded-lg border border-slate-800 p-3">
+            <div className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
               <p className="text-sm font-medium">Otimização de custo</p>
               <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-(--text-muted)">
                   Modo econômico — tarefas internas (memória, extração, guardrail) rodam num modelo
                   barato, sem afetar a qualidade da resposta ao visitante.
                 </p>
@@ -758,11 +758,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                     onChange={(e) => setEditCheapAuxModel(e.target.checked)}
                     className="peer sr-only"
                   />
-                  <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                  <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
                 </label>
               </div>
-              <div className="flex items-center justify-between gap-3 border-t border-slate-800 pt-2">
-                <p className="text-sm text-slate-400">
+              <div className="flex items-center justify-between gap-3 border-t border-(--border-subtle) pt-2">
+                <p className="text-sm text-(--text-muted)">
                   Cache de prompt — reaproveita o contexto fixo (objetivo + instruções) entre as
                   mensagens de uma conversa, reduzindo o custo de entrada.
                 </p>
@@ -773,7 +773,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                     onChange={(e) => setEditPromptCaching(e.target.checked)}
                     className="peer sr-only"
                   />
-                  <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                  <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
                 </label>
               </div>
             </div>
@@ -783,11 +783,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
         {showBlock('estilo') && (
           <CollapsibleBlock title="Estilo das respostas" showHeader={stacked}>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Idioma das respostas</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Idioma das respostas</label>
               <select
                 value={editLanguage}
                 onChange={(e) => setEditLanguage(e.target.value as Language)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               >
                 {LANGUAGE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -797,11 +797,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Tom</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Tom</label>
               <select
                 value={editResponseTone}
                 onChange={(e) => setEditResponseTone(e.target.value as ResponseTone)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               >
                 {TONE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -811,11 +811,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Nível de detalhe</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Nível de detalhe</label>
               <select
                 value={editResponseDetail}
                 onChange={(e) => setEditResponseDetail(e.target.value as ResponseDetail)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               >
                 {DETAIL_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -824,10 +824,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 ))}
               </select>
             </div>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 p-3">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-(--border-subtle) p-3">
               <div>
                 <p className="text-sm font-medium">Emojis</p>
-                <p className="text-sm text-slate-400">Permite usar emojis com moderação nas respostas.</p>
+                <p className="text-sm text-(--text-muted)">Permite usar emojis com moderação nas respostas.</p>
               </div>
               <label className="relative inline-flex shrink-0 cursor-pointer items-center">
                 <input
@@ -836,13 +836,13 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                   onChange={(e) => setEditResponseEmojis(e.target.checked)}
                   className="peer sr-only"
                 />
-                <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
               </label>
             </div>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 p-3">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-(--border-subtle) p-3">
               <div>
                 <p className="text-sm font-medium">Formatação</p>
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-(--text-muted)">
                   Permite negrito e listas nas respostas — o widget já exibe isso formatado.
                 </p>
               </div>
@@ -853,14 +853,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                   onChange={(e) => setEditResponseFormatting(e.target.checked)}
                   className="peer sr-only"
                 />
-                <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
               </label>
             </div>
-            <div className="space-y-3 rounded-lg border border-slate-800 p-3">
+            <div className="space-y-3 rounded-lg border border-(--border-subtle) p-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium">Proatividade comercial</p>
-                  <p className="text-sm text-slate-400">
+                  <p className="text-sm text-(--text-muted)">
                     O agente sugere complementos, combos e promoções quando fizer sentido na conversa
                     (ex: oferecer a bebida que completa o combo).
                   </p>
@@ -872,7 +872,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                     onChange={(e) => setEditProactivityEnabled(e.target.checked)}
                     className="peer sr-only"
                   />
-                  <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                  <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
                 </label>
               </div>
               {editProactivityEnabled && (
@@ -882,9 +882,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                     onChange={(e) => setEditProactivityGuidance(e.target.value)}
                     rows={3}
                     placeholder={'Ex: Quem pede hambúrguer sem bebida, ofereça o combo com refri por +R$ 5.\nSobremesa do dia tem 20% off pra quem pedir prato principal.'}
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                   />
-                  <p className="mt-1 text-xs text-slate-500">
+                  <p className="mt-1 text-xs text-(--text-faint)">
                     Diretrizes do que oferecer (opcional). Promoções na base de conhecimento também são
                     usadas automaticamente.
                   </p>
@@ -897,7 +897,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
         {showBlock('memoria') && (
           <CollapsibleBlock title="Memória" showHeader={stacked}>
             <div>
-              <p className="mb-2 text-sm text-slate-400">
+              <p className="mb-2 text-sm text-(--text-muted)">
                 Memória da conversa (só um tipo pode ficar ativo por vez)
               </p>
               <div className="space-y-2">
@@ -928,7 +928,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
               </div>
             </div>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">
+              <label className="mb-1 block text-sm text-(--text-muted)">
                 Mensagens recentes enviadas por chamada
               </label>
               <input
@@ -941,9 +941,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                     Math.min(MAX_HISTORY_LIMIT, Math.max(1, Number(e.target.value) || DEFAULT_HISTORY_LIMIT)),
                   )
                 }
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-(--text-faint)">
                 Quantas das últimas mensagens da conversa são enviadas ao LLM em cada resposta (padrão:{' '}
                 {DEFAULT_HISTORY_LIMIT}). Mais mensagens dão mais contexto imediato, mas custam mais por
                 chamada.
@@ -954,7 +954,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
 
         {showBlock('guardrails') && (
           <CollapsibleBlock title="Segurança e limites" showHeader={stacked}>
-            <p className="mb-2 text-sm text-slate-400">
+            <p className="mb-2 text-sm text-(--text-muted)">
               Guardrails — restrição de escopo (só uma opção pode ficar ativa por vez)
             </p>
             <div className="space-y-2">
@@ -975,10 +975,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 onSelect={setEditGuardrailMode}
               />
             </div>
-            <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-slate-800 p-3">
+            <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-(--border-subtle) p-3">
               <div>
                 <p className="text-sm font-medium">Handoff humano</p>
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-(--text-muted)">
                   Se o visitante pedir pra falar com uma pessoa, estiver insatisfeito ou o caso fugir do
                   escopo, o agente avisa que vai chamar um atendente e para de responder. A conversa fica
                   marcada na página Chats pra você assumir (e devolver ao agente quando quiser).
@@ -991,10 +991,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                   onChange={(e) => setEditHandoffEnabled(e.target.checked)}
                   className="peer sr-only"
                 />
-                <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
               </label>
             </div>
-            <div className="mt-3 rounded-lg border border-slate-800 p-3">
+            <div className="mt-3 rounded-lg border border-(--border-subtle) p-3">
               <label className="mb-1 block text-sm font-medium">Limite de mensagens por visitante (24h)</label>
               <input
                 type="number"
@@ -1006,9 +1006,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                     Math.min(MAX_DAILY_MESSAGE_LIMIT, Math.max(0, Math.floor(Number(e.target.value) || 0))),
                   )
                 }
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-(--text-faint)">
                 Protege sua conta de API contra spam no widget público. Cada visitante pode enviar até esse
                 número de mensagens a cada 24h. Use <strong>0</strong> para sem limite.
               </p>
@@ -1018,11 +1018,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
 
         {showBlock('identificacao') && (
           <CollapsibleBlock title="Identificação do visitante" showHeader={stacked}>
-            <div className="space-y-3 rounded-lg border border-slate-800 p-3">
+            <div className="space-y-3 rounded-lg border border-(--border-subtle) p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-medium">Identificação do visitante</p>
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-(--text-muted)">
                   O agente pergunta naturalmente os campos abaixo (ex: Nome, Email) pra reconhecer esse
                   visitante de novo em conversas futuras, mesmo em outro aparelho.
                 </p>
@@ -1034,7 +1034,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                   onChange={(e) => setEditIdentityEnabled(e.target.checked)}
                   className="peer sr-only"
                 />
-                <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
               </label>
             </div>
 
@@ -1046,12 +1046,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                       value={field}
                       onChange={(e) => handleIdentityFieldChange(index, e.target.value)}
                       placeholder="Ex: Nome"
-                      className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                      className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                     />
                     <button
                       type="button"
                       onClick={() => handleRemoveIdentityField(index)}
-                      className="text-xs text-red-400 underline transition hover:text-red-300"
+                      className="text-xs text-(--coral-600) underline transition hover:text-(--coral-600)"
                     >
                       Remover
                     </button>
@@ -1061,7 +1061,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                   <button
                     type="button"
                     onClick={handleAddIdentityField}
-                    className="text-xs text-slate-400 underline transition hover:text-white"
+                    className="text-xs text-(--text-muted) underline transition hover:text-(--text-heading)"
                   >
                     + Adicionar campo
                   </button>
@@ -1069,17 +1069,17 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
               </div>
             )}
 
-            <div className="border-t border-slate-800 pt-3">
-              <label className="mb-1 block text-sm text-slate-400">Continuidade da conversa</label>
+            <div className="border-t border-(--border-subtle) pt-3">
+              <label className="mb-1 block text-sm text-(--text-muted)">Continuidade da conversa</label>
               <select
                 value={editConversationPersistence}
                 onChange={(e) => setEditConversationPersistence(e.target.value as ConversationPersistence)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               >
                 <option value="same_browser">Manter a mesma conversa no mesmo navegador</option>
                 <option value="always_new">Sempre iniciar uma conversa nova</option>
               </select>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-(--text-faint)">
                 Com "mesma conversa", o visitante volta pro histórico de antes ao reabrir o chat no mesmo
                 navegador. Com "sempre nova", cada vez que o chat é aberto começa do zero.
               </p>
@@ -1090,11 +1090,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
 
         {showBlock('dados') && (
           <CollapsibleBlock title="Dados estruturados" showHeader={stacked}>
-            <div className="space-y-3 rounded-lg border border-slate-800 p-3">
+            <div className="space-y-3 rounded-lg border border-(--border-subtle) p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-medium">Dados estruturados personalizados</p>
-                <p className="text-sm text-slate-400">
+                <p className="text-sm text-(--text-muted)">
                   Defina campos de negócio (ex: Orçamento, Urgência) que o agente extrai da conversa. Você
                   escolhe a estrutura — útil pra qualificar leads ou enviar os dados pra um sistema externo.
                 </p>
@@ -1106,7 +1106,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                   onChange={(e) => setEditStructuredOutputEnabled(e.target.checked)}
                   className="peer sr-only"
                 />
-                <div className="peer h-6 w-11 rounded-full bg-slate-700 transition peer-checked:bg-white after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-slate-950" />
+                <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
               </label>
             </div>
 
@@ -1119,12 +1119,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                         value={field}
                         onChange={(e) => handleStructuredOutputFieldChange(index, e.target.value)}
                         placeholder="Ex: Orçamento"
-                        className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                        className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                       />
                       <button
                         type="button"
                         onClick={() => handleRemoveStructuredOutputField(index)}
-                        className="text-xs text-red-400 underline transition hover:text-red-300"
+                        className="text-xs text-(--coral-600) underline transition hover:text-(--coral-600)"
                       >
                         Remover
                       </button>
@@ -1134,23 +1134,23 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                     <button
                       type="button"
                       onClick={handleAddStructuredOutputField}
-                      className="text-xs text-slate-400 underline transition hover:text-white"
+                      className="text-xs text-(--text-muted) underline transition hover:text-(--text-heading)"
                     >
                       + Adicionar campo
                     </button>
                   )}
                 </div>
 
-                <div className="border-t border-slate-800 pt-3">
-                  <label className="mb-1 block text-sm text-slate-400">Webhook (opcional)</label>
+                <div className="border-t border-(--border-subtle) pt-3">
+                  <label className="mb-1 block text-sm text-(--text-muted)">Webhook (opcional)</label>
                   <input
                     type="url"
                     value={editStructuredOutputWebhookUrl}
                     onChange={(e) => setEditStructuredOutputWebhookUrl(e.target.value)}
                     placeholder="https://sua-api.com/webhook"
-                    className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                    className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                   />
-                  <p className="mt-1 text-xs text-slate-500">
+                  <p className="mt-1 text-xs text-(--text-faint)">
                     Se preenchido, os dados extraídos são enviados por POST (JSON) pra essa URL sempre que
                     houver uma atualização.
                   </p>
@@ -1168,7 +1168,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 <p className="mb-2 text-sm font-medium">Integrações (apps)</p>
                 <AgentAppsEditor value={editBuiltinTools} onChange={setEditBuiltinTools} />
               </div>
-              <div className="border-t border-slate-800 pt-4">
+              <div className="border-t border-(--border-subtle) pt-4">
                 <p className="mb-2 text-sm font-medium">Ferramentas personalizadas (HTTP)</p>
                 <AgentToolsEditor value={editTools} onChange={setEditTools} />
               </div>
@@ -1180,30 +1180,30 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
 
       {showKb && (
         <div className="order-2">
-          {section == null && <div className="my-5 border-t border-slate-800" />}
+          {section == null && <div className="my-5 border-t border-(--border-subtle)" />}
 
           <div className="space-y-3">
             <h4 className="font-medium">Base de conhecimento</h4>
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-(--text-muted)">
               Textos que o agente usa para responder com precisão (cardápio, horários, políticas...).
               {isCreating && ' Eles serão enviados assim que o agente for criado.'}
             </p>
 
             {isCreating ? (
               pendingDocs.length === 0 ? (
-                <p className="text-sm text-slate-400">Nenhum documento adicionado ainda.</p>
+                <p className="text-sm text-(--text-muted)">Nenhum documento adicionado ainda.</p>
               ) : (
                 <ul className="space-y-2">
                   {pendingDocs.map((doc) => (
                     <li
                       key={doc.id}
-                      className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 p-2 text-sm"
+                      className="flex items-center justify-between gap-3 rounded-lg border border-(--border-subtle) p-2 text-sm"
                     >
                       <span>{doc.title}</span>
                       <button
                         type="button"
                         onClick={() => handleRemovePendingDoc(doc.id)}
-                        className="text-xs text-red-400 underline transition hover:text-red-300"
+                        className="text-xs text-(--coral-600) underline transition hover:text-(--coral-600)"
                       >
                         Remover
                       </button>
@@ -1212,13 +1212,13 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 </ul>
               )
             ) : documentsLoading ? (
-              <p className="text-sm text-slate-400">Carregando documentos...</p>
+              <p className="text-sm text-(--text-muted)">Carregando documentos...</p>
             ) : documents.length === 0 ? (
-              <p className="text-sm text-slate-400">Nenhum documento adicionado ainda.</p>
+              <p className="text-sm text-(--text-muted)">Nenhum documento adicionado ainda.</p>
             ) : (
               <ul className="space-y-2">
                 {documents.map((doc) => (
-                  <li key={doc._id} className="rounded-lg border border-slate-800 p-2 text-sm">
+                  <li key={doc._id} className="rounded-lg border border-(--border-subtle) p-2 text-sm">
                     <div className="flex items-center justify-between gap-3">
                       <span>{doc.title}</span>
                       <div className="flex gap-3">
@@ -1227,7 +1227,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                           onClick={() =>
                             viewingDocId === doc._id ? closeDocumentView() : openDocumentView(doc._id)
                           }
-                          className="text-xs text-slate-400 underline transition hover:text-white"
+                          className="text-xs text-(--text-muted) underline transition hover:text-(--text-heading)"
                         >
                           {viewingDocId === doc._id ? 'Fechar' : 'Ver/Editar'}
                         </button>
@@ -1235,7 +1235,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                           type="button"
                           onClick={() => handleDeleteDocument(doc._id)}
                           disabled={deletingDocId === doc._id}
-                          className="text-xs text-red-400 underline transition hover:text-red-300 disabled:opacity-50"
+                          className="text-xs text-(--coral-600) underline transition hover:text-(--coral-600) disabled:opacity-50"
                         >
                           {deletingDocId === doc._id ? 'Excluindo...' : 'Excluir'}
                         </button>
@@ -1243,29 +1243,29 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                     </div>
 
                     {viewingDocId === doc._id && (
-                      <div className="mt-2 border-t border-slate-800 pt-2">
+                      <div className="mt-2 border-t border-(--border-subtle) pt-2">
                         {viewingDocLoading ? (
-                          <p className="text-sm text-slate-400">Carregando...</p>
+                          <p className="text-sm text-(--text-muted)">Carregando...</p>
                         ) : (
                           <form onSubmit={handleSaveDocumentView} className="space-y-2">
                             <input
                               value={viewingDocTitle}
                               onChange={(e) => setViewingDocTitle(e.target.value)}
                               required
-                              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                              className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                             />
                             <textarea
                               value={viewingDocContent}
                               onChange={(e) => setViewingDocContent(e.target.value)}
                               rows={6}
                               required
-                              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                              className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                             />
-                            {docViewError && <p className="text-sm text-red-400">{docViewError}</p>}
+                            {docViewError && <p className="text-sm text-(--coral-600)">{docViewError}</p>}
                             <button
                               type="submit"
                               disabled={savingDocView}
-                              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+                              className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
                             >
                               {savingDocView ? 'Salvando...' : 'Salvar alterações'}
                             </button>
@@ -1278,13 +1278,13 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
               </ul>
             )}
 
-            <form onSubmit={handleAddDocument} className="space-y-2 rounded-lg border border-slate-800 p-3">
+            <form onSubmit={handleAddDocument} className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setAddMode('text')}
                   className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    addMode === 'text' ? 'bg-white text-slate-950' : 'border border-slate-700 text-slate-400'
+                    addMode === 'text' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
                   }`}
                 >
                   Colar texto
@@ -1293,7 +1293,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                   type="button"
                   onClick={() => setAddMode('file')}
                   className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    addMode === 'file' ? 'bg-white text-slate-950' : 'border border-slate-700 text-slate-400'
+                    addMode === 'file' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
                   }`}
                 >
                   Enviar arquivo/imagem
@@ -1305,7 +1305,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                 onChange={(e) => setNewDocTitle(e.target.value)}
                 placeholder="Título (ex: Cardápio)"
                 required
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               />
 
               {addMode === 'text' ? (
@@ -1315,7 +1315,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                   placeholder="Cole aqui o conteúdo (cardápio, horários, políticas...)"
                   rows={4}
                   required
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                 />
               ) : (
                 <input
@@ -1323,22 +1323,22 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
                   accept=".txt,.pdf,image/jpeg,image/png,image/gif,image/webp"
                   onChange={handleFileChange}
                   required
-                  className="w-full text-sm text-slate-400 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-1.5 file:text-sm file:text-white"
+                  className="w-full text-sm text-(--text-muted) file:mr-3 file:rounded-lg file:border-0 file:bg-(--surface-sunken) file:px-3 file:py-1.5 file:text-sm file:text-(--text-heading)"
                 />
               )}
 
               {addMode === 'file' && (
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-(--text-faint)">
                   Aceita .txt, .pdf ou imagens (o texto é extraído automaticamente — em imagens, o
                   provedor de LLM do agente transcreve o conteúdo).
                 </p>
               )}
 
-              {docError && <p className="text-sm text-red-400">{docError}</p>}
+              {docError && <p className="text-sm text-(--coral-600)">{docError}</p>}
               <button
                 type="submit"
                 disabled={addingDoc}
-                className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+                className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
               >
                 {addingDoc ? 'Adicionando...' : 'Adicionar documento'}
               </button>
@@ -1347,14 +1347,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
         </div>
       )}
 
-      {editError && <p className="order-last mt-4 text-sm text-red-400">{editError}</p>}
+      {editError && <p className="order-last mt-4 text-sm text-(--coral-600)">{editError}</p>}
 
       {flat ? (
         // No save button: edits persist automatically. The knowledge-base page
         // manages its docs immediately, so it shows no status line.
         section !== 'conhecimento' && (
-          <div className="order-last mt-5 flex justify-end border-t border-slate-800 pt-4 text-sm">
-            <span className={autoSaveState === 'error' ? 'text-red-400' : 'text-slate-500'}>
+          <div className="order-last mt-5 flex justify-end border-t border-(--border-subtle) pt-4 text-sm">
+            <span className={autoSaveState === 'error' ? 'text-(--coral-600)' : 'text-(--text-faint)'}>
               {autoSaveState === 'saving'
                 ? 'Salvando...'
                 : autoSaveState === 'saved'
@@ -1366,12 +1366,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
           </div>
         )
       ) : (
-        <div className="order-last mt-5 flex justify-end border-t border-slate-800 pt-4">
+        <div className="order-last mt-5 flex justify-end border-t border-(--border-subtle) pt-4">
           <button
             type="submit"
             form="agent-form"
             disabled={saving}
-            className="rounded-lg bg-white px-5 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+            className="rounded-lg bg-(--intent-brand) px-5 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
           >
             {saving ? 'Criando...' : 'Criar agente'}
           </button>

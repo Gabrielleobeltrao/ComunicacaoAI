@@ -4,7 +4,7 @@ import type { AgentBuiltinTool, BuiltinAppCatalog } from '../lib/types'
 import { Modal } from './Modal'
 
 const inputClass =
-  'w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500'
+  'w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)'
 
 const APP_EMOJI: Record<string, string> = {
   google_calendar: '📅',
@@ -59,7 +59,7 @@ function AppIcon({ appKey }: { appKey: string }) {
   const brand = BRAND[appKey]
   if (!brand) {
     return (
-      <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-slate-800 text-2xl">
+      <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-(--surface-sunken) text-2xl">
         {APP_EMOJI[appKey] ?? '🔌'}
       </div>
     )
@@ -124,8 +124,8 @@ export function AgentAppsEditor({
     setConfiguring(null)
   }
 
-  if (loading) return <p className="text-sm text-slate-400">Carregando integrações...</p>
-  if (apps.length === 0) return <p className="text-sm text-slate-500">Nenhuma integração disponível.</p>
+  if (loading) return <p className="text-sm text-(--text-muted)">Carregando integrações...</p>
+  if (apps.length === 0) return <p className="text-sm text-(--text-faint)">Nenhuma integração disponível.</p>
 
   const canSave =
     !configuring ||
@@ -142,19 +142,19 @@ export function AgentAppsEditor({
             <div
               key={app.key}
               className={`flex flex-col items-center rounded-xl border p-3 text-center transition ${
-                enabled ? 'border-slate-600 bg-slate-900' : 'border-slate-800'
+                enabled ? 'border-(--border-strong) bg-(--surface-card)' : 'border-(--border-subtle)'
               }`}
             >
               <AppIcon appKey={app.key} />
               <p className="mt-2 text-sm font-medium">{app.label}</p>
-              <span className={`mt-0.5 text-[11px] ${enabled ? 'text-emerald-400' : 'text-slate-600'}`}>
+              <span className={`mt-0.5 text-[11px] ${enabled ? 'text-emerald-400' : 'text-(--text-faint)'}`}>
                 {enabled ? '✓ Conectado' : 'Não conectado'}
               </span>
               <button
                 type="button"
                 onClick={() => openConfig(app)}
                 className={`mt-3 w-full rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                  enabled ? 'border border-slate-700 hover:bg-slate-800' : 'bg-white text-slate-950 hover:bg-slate-200'
+                  enabled ? 'border border-(--border-strong) hover:bg-(--surface-sunken)' : 'bg-(--intent-brand) text-white hover:bg-(--intent-brand-hover)'
                 }`}
               >
                 {enabled ? 'Configurar' : 'Conectar'}
@@ -175,8 +175,8 @@ export function AgentAppsEditor({
             <div className="flex items-center gap-3">
               <AppIcon appKey={configuring.key} />
               <div className="min-w-0">
-                <p className="font-medium text-white">{configuring.label}</p>
-                <p className="text-sm text-slate-400">{configuring.description}</p>
+                <p className="font-medium text-(--text-heading)">{configuring.label}</p>
+                <p className="text-sm text-(--text-muted)">{configuring.description}</p>
               </div>
             </div>
 
@@ -186,11 +186,11 @@ export function AgentAppsEditor({
               }
             >
               {configuring.guide && (
-                <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4">
-                  <p className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <div className="rounded-lg border border-(--border-subtle) bg-(--surface-card)/40 p-4">
+                  <p className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-(--text-faint)">
                     Como conectar
                   </p>
-                  <ol className="list-decimal space-y-2 pl-4 text-sm leading-relaxed text-slate-400 marker:text-slate-600">
+                  <ol className="list-decimal space-y-2 pl-4 text-sm leading-relaxed text-(--text-muted) marker:text-(--text-faint)">
                     {configuring.guide.steps.map((step, i) => (
                       <li key={i}>{step}</li>
                     ))}
@@ -209,22 +209,22 @@ export function AgentAppsEditor({
               )}
 
               <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <p className="text-xs font-semibold uppercase tracking-wide text-(--text-faint)">
                   Credenciais
                 </p>
                 {configuring.connection === 'google' && !googleConnected && (
-                  <p className="rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-400">
+                  <p className="rounded-lg border border-(--border-strong) bg-(--surface-sunken)/50 px-3 py-2 text-sm text-(--text-muted)">
                     Só funciona depois de conectar sua conta Google em Configurações → Integrações.
                   </p>
                 )}
                 {configuring.configFields.length === 0 ? (
-                  <p className="text-sm text-slate-400">Nenhuma configuração necessária.</p>
+                  <p className="text-sm text-(--text-muted)">Nenhuma configuração necessária.</p>
                 ) : (
                   configuring.configFields.map((field) => (
                     <div key={field.key}>
-                      <label className="mb-1 block text-sm text-slate-400">
+                      <label className="mb-1 block text-sm text-(--text-muted)">
                         {field.label}
-                        {field.required && <span className="text-red-400"> *</span>}
+                        {field.required && <span className="text-(--coral-600)"> *</span>}
                       </label>
                       <input
                         type={field.type === 'password' ? 'password' : 'text'}
@@ -239,12 +239,12 @@ export function AgentAppsEditor({
               </div>
             </div>
 
-            <div className="flex gap-2 border-t border-slate-800 pt-4">
+            <div className="flex gap-2 border-t border-(--border-subtle) pt-4">
               <button
                 type="button"
                 onClick={saveConfig}
                 disabled={!canSave}
-                className="flex-1 rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+                className="flex-1 rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
               >
                 {editingApp ? 'Salvar' : 'Conectar'}
               </button>
@@ -255,7 +255,7 @@ export function AgentAppsEditor({
                     onChange(value.filter((v) => v.key !== configuring.key))
                     setConfiguring(null)
                   }}
-                  className="rounded-lg border border-red-500/40 px-4 py-2 text-sm text-red-400 transition hover:bg-red-500/10"
+                  className="rounded-lg border border-(--coral-500) px-4 py-2 text-sm text-(--coral-600) transition hover:bg-(--coral-50)"
                 >
                   Remover
                 </button>

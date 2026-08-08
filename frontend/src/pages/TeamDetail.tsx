@@ -12,20 +12,20 @@ import type { AgentSummary, TeamOverview } from '../lib/types'
 
 function Metric({ label, value, suffix, hint }: { label: string; value: number; suffix?: string; hint?: string }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+    <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
       <p className="text-2xl font-semibold">
         {value.toLocaleString('pt-BR')}
         {suffix}
       </p>
-      <p className="mt-1 text-sm text-slate-400">{label}</p>
-      {hint && <p className="mt-0.5 text-xs text-slate-500">{hint}</p>}
+      <p className="mt-1 text-sm text-(--text-muted)">{label}</p>
+      {hint && <p className="mt-0.5 text-xs text-(--text-faint)">{hint}</p>}
     </div>
   )
 }
 
 function Badge({ children }: { children: ReactNode }) {
   return (
-    <span className="rounded-full border border-slate-700 px-2.5 py-0.5 text-xs text-slate-300">{children}</span>
+    <span className="rounded-full border border-(--border-strong) px-2.5 py-0.5 text-xs text-(--text-body)">{children}</span>
   )
 }
 
@@ -41,8 +41,8 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
     const inner = (
       <>
         <div className="flex items-center gap-2">
-          {isPipeline && <span className="text-sm text-slate-500">{index + 1}.</span>}
-          <span className={`font-medium ${full ? '' : 'text-slate-500'}`}>
+          {isPipeline && <span className="text-sm text-(--text-faint)">{index + 1}.</span>}
+          <span className={`font-medium ${full ? '' : 'text-(--text-faint)'}`}>
             {full ? full.name : 'Agente removido'}
           </span>
           {m.isDefault && <Badge>Padrão</Badge>}
@@ -52,18 +52,18 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
             <AgentBadges agent={full} />
           </div>
         )}
-        {m.routingDescription && <p className="mt-2 text-sm text-slate-400">{m.routingDescription}</p>}
+        {m.routingDescription && <p className="mt-2 text-sm text-(--text-muted)">{m.routingDescription}</p>}
         {isPipeline && index < team.members.length - 1 && m.advanceWhen && (
-          <p className="mt-1 text-xs text-slate-500">
-            <span className="text-slate-600">Avança quando:</span> {m.advanceWhen}
+          <p className="mt-1 text-xs text-(--text-faint)">
+            <span className="text-(--text-faint)">Avança quando:</span> {m.advanceWhen}
           </p>
         )}
         {isPipeline && m.transitions.length > 0 && (
           <ul className="mt-1.5 space-y-0.5">
             {m.transitions.map((t, ti) => (
-              <li key={ti} className="text-xs text-slate-500">
-                <span className="text-slate-600">Se</span> {t.condition || '…'}{' '}
-                <span className="text-slate-400">→ {nameById.get(t.targetAgentId) ?? 'etapa'}</span>
+              <li key={ti} className="text-xs text-(--text-faint)">
+                <span className="text-(--text-faint)">Se</span> {t.condition || '…'}{' '}
+                <span className="text-(--text-muted)">→ {nameById.get(t.targetAgentId) ?? 'etapa'}</span>
               </li>
             ))}
           </ul>
@@ -75,12 +75,12 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
         {full ? (
           <Link
             to={`/agents/${m.agentId}?from=${encodeURIComponent(`/teams/${team._id}`)}`}
-            className="block rounded-xl border border-slate-800 bg-slate-900 p-3 transition hover:border-slate-600"
+            className="block rounded-xl border border-(--border-subtle) bg-(--surface-card) p-3 transition hover:border-(--border-strong)"
           >
             {inner}
           </Link>
         ) : (
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">{inner}</div>
+          <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-3">{inner}</div>
         )}
       </li>
     )
@@ -103,7 +103,7 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
   return (
     <div className="space-y-6">
       <section>
-        <h3 className="mb-3 text-sm font-medium text-slate-400">
+        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">
           {isPipeline ? 'Etapas do fluxo' : 'Agentes da equipe'}
         </h3>
         {isPipeline || !showSectorHeadings ? (
@@ -114,7 +114,7 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
           <div className="space-y-4">
             {sectorGroups.map(([sector, members]) => (
               <div key={sector || '_none'}>
-                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-(--text-faint)">
                   {sector || 'Sem setor'}
                 </p>
                 <ul className="space-y-2">
@@ -127,7 +127,7 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
       </section>
 
       <section>
-        <h3 className="mb-3 text-sm font-medium text-slate-400">Desempenho</h3>
+        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Desempenho</h3>
         {analytics ? (
           <div className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -142,20 +142,20 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
                 />
               )}
             </div>
-            <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+            <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-(--text-faint)">
                 {isPipeline ? 'Atividade por etapa' : 'Mais consultados'}
               </p>
               <ul className="space-y-1.5">
                 {analytics.specialists.map((s) => (
                   <li key={s.name}>
                     <div className="mb-0.5 flex items-center justify-between text-xs">
-                      <span className="text-slate-300">{s.name}</span>
-                      <span className="text-slate-500">{s.count}</span>
+                      <span className="text-(--text-body)">{s.name}</span>
+                      <span className="text-(--text-faint)">{s.count}</span>
                     </div>
-                    <div className="h-1.5 rounded-full bg-slate-800">
+                    <div className="h-1.5 rounded-full bg-(--surface-sunken)">
                       <div
-                        className="h-1.5 rounded-full bg-slate-400"
+                        className="h-1.5 rounded-full bg-(--intent-brand)"
                         style={{ width: `${(s.count / maxCount) * 100}%` }}
                       />
                     </div>
@@ -165,18 +165,18 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
             </div>
           </div>
         ) : (
-          <p className="text-sm text-slate-500">
+          <p className="text-sm text-(--text-faint)">
             Sem dados de orquestração ainda. Eles aparecem conforme a equipe responde conversas.
           </p>
         )}
       </section>
 
       <section>
-        <h3 className="mb-3 text-sm font-medium text-slate-400">Onde é usado</h3>
-        <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Widgets</p>
+        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Onde é usado</h3>
+        <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-(--text-faint)">Widgets</p>
           {linkedWidgets.length === 0 ? (
-            <p className="text-sm text-slate-500">Nenhum widget usa esta equipe.</p>
+            <p className="text-sm text-(--text-faint)">Nenhum widget usa esta equipe.</p>
           ) : (
             <ul className="flex flex-wrap gap-1.5">
               {linkedWidgets.map((w) => (
@@ -268,9 +268,9 @@ export function TeamDetail() {
   return (
     <AppLayout current="/teams" title={team?.name ?? 'Equipe'} titleExtra={titleExtra}>
       {loading ? (
-        <p className="text-sm text-slate-400">Carregando equipe...</p>
+        <p className="text-sm text-(--text-muted)">Carregando equipe...</p>
       ) : notFound || !overview || !team ? (
-        <p className="text-sm text-slate-400">Equipe não encontrada.</p>
+        <p className="text-sm text-(--text-muted)">Equipe não encontrada.</p>
       ) : (
         <div className="space-y-4">
           {active === '' ? (
@@ -278,7 +278,7 @@ export function TeamDetail() {
           ) : (
             <div className="space-y-4">
               <h3 className="text-lg font-semibold">{sectionLabel}</h3>
-              <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+              <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
                 {active === 'configuracao' ? (
                   <TeamForm key={team._id} team={team} agents={agents} onSaved={load} />
                 ) : active === 'testar' ? (

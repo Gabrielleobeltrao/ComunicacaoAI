@@ -52,22 +52,22 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
 
   return (
     <div>
-      <p className="mb-3 text-xs text-slate-500">
+      <p className="mb-3 text-xs text-(--text-faint)">
         Conversa de teste — nada é salvo e a memória do agente não é usada. Ideal pra ajustar o
         objetivo, estilo e guardrails.
       </p>
-      <div className="flex h-96 flex-col rounded-lg border border-slate-800 bg-slate-950/50">
+      <div className="flex h-96 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50">
         <div className="flex-1 space-y-2 overflow-y-auto p-3">
           {messages.length === 0 && (
-            <p className="text-sm text-slate-400">Envie uma mensagem como se fosse o visitante.</p>
+            <p className="text-sm text-(--text-muted)">Envie uma mensagem como se fosse o visitante.</p>
           )}
           {messages.map((message, index) => (
             <div key={index}>
               <div
                 className={
                   message.role === 'user'
-                    ? 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-white px-3 py-2 text-sm text-slate-950'
-                    : 'max-w-[85%] rounded-2xl rounded-tl-sm bg-slate-800 px-3 py-2 text-sm'
+                    ? 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-(--intent-brand) px-3 py-2 text-sm text-white'
+                    : 'max-w-[85%] rounded-2xl rounded-tl-sm bg-(--surface-sunken) px-3 py-2 text-sm'
                 }
               >
                 <MessageContent content={message.content} />
@@ -84,19 +84,19 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
               )}
             </div>
           ))}
-          {sending && <p className="text-sm text-slate-500">Digitando...</p>}
+          {sending && <p className="text-sm text-(--text-faint)">Digitando...</p>}
         </div>
-        <form onSubmit={handleSend} className="flex gap-2 border-t border-slate-800 p-3">
+        <form onSubmit={handleSend} className="flex gap-2 border-t border-(--border-subtle) p-3">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Mensagem do visitante..."
-            className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-slate-500"
+            className="flex-1 rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
           />
           <button
             type="submit"
             disabled={sending || !input.trim()}
-            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+            className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
           >
             Enviar
           </button>

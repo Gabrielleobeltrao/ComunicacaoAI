@@ -12,7 +12,7 @@ function Section({ title, description, children }: { title: string; description?
     <section className="space-y-3">
       <div>
         <h2 className="text-lg font-semibold">{title}</h2>
-        {description && <p className="mt-0.5 text-sm text-slate-400">{description}</p>}
+        {description && <p className="mt-0.5 text-sm text-(--text-muted)">{description}</p>}
       </div>
       {children}
     </section>
@@ -30,10 +30,10 @@ function SummaryCard({ to, label, value }: { to: string; label: string; value: n
   return (
     <Link
       to={to}
-      className="rounded-xl border border-slate-800 bg-slate-900 p-4 transition hover:border-slate-600"
+      className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4 transition hover:border-(--border-strong)"
     >
       <p className="text-2xl font-semibold">{value.toLocaleString('pt-BR')}</p>
-      <p className="mt-1 text-sm text-slate-400">{label}</p>
+      <p className="mt-1 text-sm text-(--text-muted)">{label}</p>
     </Link>
   )
 }
@@ -45,21 +45,21 @@ function UsageBlock({ stats }: { stats: DashboardStats }) {
   const near = cap > 0 && pct >= 80
 
   return (
-    <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-4">
+    <div className="space-y-3 rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
       <div className="flex items-baseline justify-between gap-3">
-        <p className="text-sm text-slate-400">Tokens gastos no mês</p>
+        <p className="text-sm text-(--text-muted)">Tokens gastos no mês</p>
         <p className="text-sm">
           <span className="font-semibold">{used.toLocaleString('pt-BR')}</span>
           {cap > 0 ? (
-            <span className="text-slate-400"> / {cap.toLocaleString('pt-BR')}</span>
+            <span className="text-(--text-muted)"> / {cap.toLocaleString('pt-BR')}</span>
           ) : (
-            <span className="text-slate-500"> · sem teto</span>
+            <span className="text-(--text-faint)"> · sem teto</span>
           )}
         </p>
       </div>
 
       {cap > 0 && (
-        <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+        <div className="h-2 overflow-hidden rounded-full bg-(--surface-sunken)">
           <div
             className={`h-full rounded-full transition-all ${near ? 'bg-amber-400' : 'bg-emerald-400'}`}
             style={{ width: `${pct}%` }}
@@ -67,7 +67,7 @@ function UsageBlock({ stats }: { stats: DashboardStats }) {
         </div>
       )}
 
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-(--text-faint)">
         {stats.tokensThisWeek.toLocaleString('pt-BR')} tokens nesta semana
         {cap > 0 && near && ' · você está perto do teto mensal'}
       </p>
@@ -108,22 +108,22 @@ export function Settings() {
     <AppLayout current="/settings" title="Configurações">
       <div className="max-w-3xl space-y-10">
         <Section title="Conta">
-          <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <div className="space-y-3 rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
             <div>
-              <p className="text-xs uppercase tracking-wide text-slate-500">E-mail</p>
+              <p className="text-xs uppercase tracking-wide text-(--text-faint)">E-mail</p>
               <p className="text-sm">{session?.user.email ?? '—'}</p>
             </div>
             {memberSince && (
-              <div className="border-t border-slate-800 pt-3">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Membro desde</p>
+              <div className="border-t border-(--border-subtle) pt-3">
+                <p className="text-xs uppercase tracking-wide text-(--text-faint)">Membro desde</p>
                 <p className="text-sm">{memberSince}</p>
               </div>
             )}
-            <div className="border-t border-slate-800 pt-3">
+            <div className="border-t border-(--border-subtle) pt-3">
               <button
                 type="button"
                 onClick={handleSignOut}
-                className="rounded-lg border border-slate-700 px-4 py-2 text-sm transition hover:bg-slate-800"
+                className="rounded-lg border border-(--border-strong) px-4 py-2 text-sm transition hover:bg-(--surface-sunken)"
               >
                 Sair da conta
               </button>
@@ -135,7 +135,7 @@ export function Settings() {
           title="Uso do mês"
           description="Consumo de tokens dos seus agentes. Ajuste o teto para pausar as respostas automáticas ao atingir o limite."
         >
-          {stats ? <UsageBlock stats={stats} /> : <p className="text-sm text-slate-400">Carregando...</p>}
+          {stats ? <UsageBlock stats={stats} /> : <p className="text-sm text-(--text-muted)">Carregando...</p>}
           {stats && <MonthlyCapField initialCap={stats.monthlyTokenCap} onSaved={loadStats} />}
         </Section>
 

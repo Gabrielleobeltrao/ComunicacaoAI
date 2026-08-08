@@ -12,20 +12,20 @@ import type { AgentOverview } from '../lib/types'
 
 function Metric({ label, value, suffix, hint }: { label: string; value: number; suffix?: string; hint?: string }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+    <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
       <p className="text-2xl font-semibold">
         {value.toLocaleString('pt-BR')}
         {suffix}
       </p>
-      <p className="mt-1 text-sm text-slate-400">{label}</p>
-      {hint && <p className="mt-0.5 text-xs text-slate-500">{hint}</p>}
+      <p className="mt-1 text-sm text-(--text-muted)">{label}</p>
+      {hint && <p className="mt-0.5 text-xs text-(--text-faint)">{hint}</p>}
     </div>
   )
 }
 
 function Badge({ children }: { children: ReactNode }) {
   return (
-    <span className="rounded-full border border-slate-700 px-2.5 py-0.5 text-xs text-slate-300">{children}</span>
+    <span className="rounded-full border border-(--border-strong) px-2.5 py-0.5 text-xs text-(--text-body)">{children}</span>
   )
 }
 
@@ -33,11 +33,11 @@ function OverviewSection({ overview }: { overview: AgentOverview }) {
   const { agent, stats } = overview
   return (
     <div className="space-y-6">
-      {agent.objective && <p className="max-w-3xl text-sm text-slate-400">{agent.objective}</p>}
+      {agent.objective && <p className="max-w-3xl text-sm text-(--text-muted)">{agent.objective}</p>}
 
       <section>
-        <h3 className="mb-1 text-sm font-medium text-slate-400">Desempenho</h3>
-        <p className="mb-3 text-xs text-slate-500">
+        <h3 className="mb-1 text-sm font-medium text-(--text-muted)">Desempenho</h3>
+        <p className="mb-3 text-xs text-(--text-faint)">
           Métricas das conversas dos widgets que este agente atende diretamente.
         </p>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -60,12 +60,12 @@ function OverviewSection({ overview }: { overview: AgentOverview }) {
       </section>
 
       <section>
-        <h3 className="mb-3 text-sm font-medium text-slate-400">Onde é usado</h3>
+        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Onde é usado</h3>
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Widgets</p>
+          <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-(--text-faint)">Widgets</p>
             {overview.linkedWidgets.length === 0 ? (
-              <p className="text-sm text-slate-500">Nenhum widget usa este agente diretamente.</p>
+              <p className="text-sm text-(--text-faint)">Nenhum widget usa este agente diretamente.</p>
             ) : (
               <ul className="flex flex-wrap gap-1.5">
                 {overview.linkedWidgets.map((w) => (
@@ -76,10 +76,10 @@ function OverviewSection({ overview }: { overview: AgentOverview }) {
               </ul>
             )}
           </div>
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">Equipes</p>
+          <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-(--text-faint)">Equipes</p>
             {overview.linkedTeams.length === 0 ? (
-              <p className="text-sm text-slate-500">Não faz parte de nenhuma equipe.</p>
+              <p className="text-sm text-(--text-faint)">Não faz parte de nenhuma equipe.</p>
             ) : (
               <ul className="flex flex-wrap gap-1.5">
                 {overview.linkedTeams.map((t) => (
@@ -165,15 +165,15 @@ export function AgentDetail() {
       titleExtra={agent ? <AgentBadges agent={agent} /> : undefined}
     >
       {loading ? (
-        <p className="text-sm text-slate-400">Carregando agente...</p>
+        <p className="text-sm text-(--text-muted)">Carregando agente...</p>
       ) : notFound || !overview || !agent ? (
-        <p className="text-sm text-slate-400">Agente não encontrado.</p>
+        <p className="text-sm text-(--text-muted)">Agente não encontrado.</p>
       ) : active === '' ? (
         <OverviewSection overview={overview} />
       ) : (
         <div className="space-y-4">
           <h2 className="text-lg font-semibold">{sectionLabel}</h2>
-          <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+          <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
             {active === 'testar' ? (
               <AgentPlayground key={agent._id} agent={agent} />
             ) : config ? (

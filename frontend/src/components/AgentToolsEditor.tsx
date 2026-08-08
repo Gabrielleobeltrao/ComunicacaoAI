@@ -1,9 +1,9 @@
 import type { AgentTool, ToolMethod, ToolParamType } from '../lib/types'
 
 const inputClass =
-  'w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500'
+  'w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)'
 const miniInput =
-  'min-w-0 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs outline-none focus:border-slate-500'
+  'min-w-0 rounded border border-(--border-strong) bg-(--surface-card) px-2 py-1 text-xs outline-none focus:border-(--border-focus)'
 
 // Controlled editor for an agent's custom HTTP tools.
 export function AgentToolsEditor({
@@ -21,22 +21,22 @@ export function AgentToolsEditor({
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-slate-400">
+      <p className="text-sm text-(--text-muted)">
         Ferramentas deixam o agente chamar uma API sua durante a conversa (ex: checar disponibilidade,
         criar pedido). O modelo decide quando usar com base no nome e na descrição, preenche os
         parâmetros e o resultado volta pra ele continuar a resposta.
       </p>
 
-      {value.length === 0 && <p className="text-sm text-slate-500">Nenhuma ferramenta ainda.</p>}
+      {value.length === 0 && <p className="text-sm text-(--text-faint)">Nenhuma ferramenta ainda.</p>}
 
       {value.map((tool, ti) => (
-        <div key={ti} className="space-y-2 rounded-lg border border-slate-800 p-3">
+        <div key={ti} className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm font-medium">Ferramenta {ti + 1}</p>
             <button
               type="button"
               onClick={() => onChange(value.filter((_, i) => i !== ti))}
-              className="text-xs text-red-400 underline transition hover:text-red-300"
+              className="text-xs text-(--coral-600) underline transition hover:text-(--coral-600)"
             >
               Remover
             </button>
@@ -72,14 +72,14 @@ export function AgentToolsEditor({
             className={inputClass}
           />
 
-          <div className="rounded-lg border border-slate-800/70 bg-slate-950/40 p-2">
-            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+          <div className="rounded-lg border border-(--border-subtle)/70 bg-(--surface-card)/40 p-2">
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-(--text-faint)">
               Parâmetros{' '}
-              <span className="normal-case tracking-normal text-slate-600">
+              <span className="normal-case tracking-normal text-(--text-faint)">
                 ({tool.method === 'GET' ? 'viram query na URL' : 'vão no corpo JSON'})
               </span>
             </p>
-            {tool.parameters.length === 0 && <p className="text-xs text-slate-600">Sem parâmetros.</p>}
+            {tool.parameters.length === 0 && <p className="text-xs text-(--text-faint)">Sem parâmetros.</p>}
             <div className="space-y-1.5">
               {tool.parameters.map((p, pi) => (
                 <div key={pi} className="flex flex-wrap items-center gap-1.5">
@@ -120,7 +120,7 @@ export function AgentToolsEditor({
                     placeholder="descrição"
                     className={`${miniInput} w-32 flex-[2]`}
                   />
-                  <label className="flex items-center gap-1 text-xs text-slate-400">
+                  <label className="flex items-center gap-1 text-xs text-(--text-muted)">
                     <input
                       type="checkbox"
                       checked={p.required}
@@ -139,7 +139,7 @@ export function AgentToolsEditor({
                     onClick={() =>
                       update(ti, { parameters: tool.parameters.filter((_, i) => i !== pi) })
                     }
-                    className="px-1 text-sm text-red-400 transition hover:text-red-300"
+                    className="px-1 text-sm text-(--coral-600) transition hover:text-(--coral-600)"
                     aria-label="Remover parâmetro"
                   >
                     ×
@@ -154,14 +154,14 @@ export function AgentToolsEditor({
                   parameters: [...tool.parameters, { name: '', type: 'string', description: '', required: false }],
                 })
               }
-              className="mt-1 text-xs text-slate-400 underline transition hover:text-white"
+              className="mt-1 text-xs text-(--text-muted) underline transition hover:text-(--text-heading)"
             >
               + parâmetro
             </button>
           </div>
 
-          <div className="rounded-lg border border-slate-800/70 bg-slate-950/40 p-2">
-            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+          <div className="rounded-lg border border-(--border-subtle)/70 bg-(--surface-card)/40 p-2">
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-(--text-faint)">
               Headers (opcional)
             </p>
             {tool.headers.map((h, hi) => (
@@ -187,7 +187,7 @@ export function AgentToolsEditor({
                 <button
                   type="button"
                   onClick={() => update(ti, { headers: tool.headers.filter((_, i) => i !== hi) })}
-                  className="px-1 text-sm text-red-400 transition hover:text-red-300"
+                  className="px-1 text-sm text-(--coral-600) transition hover:text-(--coral-600)"
                   aria-label="Remover header"
                 >
                   ×
@@ -197,7 +197,7 @@ export function AgentToolsEditor({
             <button
               type="button"
               onClick={() => update(ti, { headers: [...tool.headers, { key: '', value: '' }] })}
-              className="text-xs text-slate-400 underline transition hover:text-white"
+              className="text-xs text-(--text-muted) underline transition hover:text-(--text-heading)"
             >
               + header
             </button>
@@ -208,7 +208,7 @@ export function AgentToolsEditor({
       <button
         type="button"
         onClick={addTool}
-        className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800"
+        className="rounded-lg border border-(--border-strong) px-3 py-1.5 text-sm transition hover:bg-(--surface-sunken)"
       >
         + Adicionar ferramenta
       </button>

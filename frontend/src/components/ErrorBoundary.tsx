@@ -27,13 +27,13 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children
 
     return (
-      <div className="min-h-screen bg-slate-950 p-6 text-slate-200">
+      <div className="min-h-screen bg-(--surface-card) p-6 text-(--text-body)">
         <div className="mx-auto max-w-2xl space-y-4">
-          <h1 className="text-lg font-semibold text-red-400">Algo quebrou ao renderizar a tela</h1>
-          <p className="text-sm text-slate-400">
+          <h1 className="text-lg font-semibold text-(--coral-600)">Algo quebrou ao renderizar a tela</h1>
+          <p className="text-sm text-(--text-muted)">
             O erro abaixo interrompeu a interface. Recarregue a página; se continuar, mande esta mensagem.
           </p>
-          <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-900 p-4 text-xs text-red-300">
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-(--border-subtle) bg-(--surface-card) p-4 text-xs text-(--coral-600)">
             {error.message}
             {error.stack ? `\n\n${error.stack}` : ''}
           </pre>
@@ -43,7 +43,7 @@ export class ErrorBoundary extends Component<Props, State> {
               this.setState({ error: null })
               window.location.reload()
             }}
-            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200"
+            className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover)"
           >
             Recarregar
           </button>

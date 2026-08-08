@@ -4,13 +4,13 @@ import type { AgentSummary, TeamSummary, WhatsAppChannel, WhatsAppProviderCatalo
 import { Modal } from './Modal'
 
 const inputClass =
-  'w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500'
+  'w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)'
 
 function CopyField({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)
   return (
     <div className="flex items-stretch gap-2">
-      <code className="flex-1 truncate rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-300">
+      <code className="flex-1 truncate rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-2 text-xs text-(--text-body)">
         {value}
       </code>
       <button
@@ -20,7 +20,7 @@ function CopyField({ value }: { value: string }) {
           setCopied(true)
           setTimeout(() => setCopied(false), 1500)
         }}
-        className="shrink-0 rounded-lg border border-slate-700 px-3 text-xs transition hover:bg-slate-800"
+        className="shrink-0 rounded-lg border border-(--border-strong) px-3 text-xs transition hover:bg-(--surface-sunken)"
       >
         {copied ? 'Copiado ✓' : 'Copiar'}
       </button>
@@ -139,33 +139,33 @@ export function WhatsAppManager({
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
-        <p className="max-w-2xl text-sm text-slate-400">
+        <p className="max-w-2xl text-sm text-(--text-muted)">
           Conecte um número de WhatsApp a um agente ou equipe. As conversas aparecem em Chats como
           qualquer outra, com atendimento humano incluso.
         </p>
         <button
           type="button"
           onClick={openConnect}
-          className="shrink-0 rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200"
+          className="shrink-0 rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover)"
         >
           Conectar WhatsApp
         </button>
       </div>
 
       {loading ? (
-        <p className="text-sm text-slate-400">Carregando...</p>
+        <p className="text-sm text-(--text-muted)">Carregando...</p>
       ) : channels.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-800 p-8 text-center">
-          <p className="text-sm text-slate-400">Nenhum número conectado ainda.</p>
+        <div className="rounded-xl border border-dashed border-(--border-subtle) p-8 text-center">
+          <p className="text-sm text-(--text-muted)">Nenhum número conectado ainda.</p>
         </div>
       ) : (
         <ul className="space-y-3">
           {channels.map((channel) => (
-            <li key={channel._id} className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <li key={channel._id} className="space-y-3 rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="font-medium">{channel.name}</p>
-                  <p className="mt-0.5 text-xs text-slate-500">
+                  <p className="mt-0.5 text-xs text-(--text-faint)">
                     {providerLabel(channel.provider)} · {linkLabel(channel)}
                     {channel.number ? ` · ${channel.number}` : ''}
                   </p>
@@ -173,14 +173,14 @@ export function WhatsAppManager({
                 <button
                   type="button"
                   onClick={() => handleRemove(channel)}
-                  className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs text-red-400 transition hover:bg-red-500/10"
+                  className="rounded-lg border border-(--coral-500) px-3 py-1.5 text-xs text-(--coral-600) transition hover:bg-(--coral-50)"
                 >
                   Remover
                 </button>
               </div>
               {channel.webhookUrl && (
                 <div>
-                  <p className="mb-1 text-xs uppercase tracking-wide text-slate-500">Webhook</p>
+                  <p className="mb-1 text-xs uppercase tracking-wide text-(--text-faint)">Webhook</p>
                   <CopyField value={channel.webhookUrl} />
                 </div>
               )}
@@ -195,8 +195,8 @@ export function WhatsAppManager({
             <p className="text-sm">
               Canal <span className="font-medium">{created.name}</span> criado. Falta um passo:
             </p>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4">
-              <p className="mb-2 text-sm text-slate-300">
+            <div className="rounded-lg border border-(--border-subtle) bg-(--surface-card)/40 p-4">
+              <p className="mb-2 text-sm text-(--text-body)">
                 Cole este endereço como <strong>webhook</strong> na configuração do seu provedor (evento de
                 mensagens recebidas):
               </p>
@@ -205,14 +205,14 @@ export function WhatsAppManager({
             <button
               type="button"
               onClick={() => setConnecting(false)}
-              className="w-full rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200"
+              className="w-full rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover)"
             >
               Concluir
             </button>
           </div>
         ) : !provider ? (
           <div className="space-y-3">
-            <p className="text-sm text-slate-400">Escolha o provedor de WhatsApp:</p>
+            <p className="text-sm text-(--text-muted)">Escolha o provedor de WhatsApp:</p>
             <div className="grid gap-3 sm:grid-cols-3">
               {providers.map((p) => (
                 <button
@@ -222,19 +222,19 @@ export function WhatsAppManager({
                   onClick={() => p.available && setProvider(p)}
                   className={`rounded-xl border p-4 text-left transition ${
                     p.available
-                      ? 'border-slate-800 hover:border-slate-600'
-                      : 'cursor-not-allowed border-slate-800 opacity-50'
+                      ? 'border-(--border-subtle) hover:border-(--border-strong)'
+                      : 'cursor-not-allowed border-(--border-subtle) opacity-50'
                   }`}
                 >
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-medium">{p.label}</p>
                     {!p.available && (
-                      <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] text-slate-500">
+                      <span className="rounded-full border border-(--border-strong) px-2 py-0.5 text-[10px] text-(--text-faint)">
                         Em breve
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-xs text-slate-500">{p.description}</p>
+                  <p className="mt-1 text-xs text-(--text-faint)">{p.description}</p>
                 </button>
               ))}
             </div>
@@ -244,13 +244,13 @@ export function WhatsAppManager({
             <button
               type="button"
               onClick={() => setProvider(null)}
-              className="text-xs text-slate-400 transition hover:text-white"
+              className="text-xs text-(--text-muted) transition hover:text-(--text-heading)"
             >
               ← Trocar provedor ({provider.label})
             </button>
 
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Nome do canal</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Nome do canal</label>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -260,7 +260,7 @@ export function WhatsAppManager({
             </div>
 
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Responder com</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Responder com</label>
               <select value={link} onChange={(e) => setLink(e.target.value)} className={inputClass}>
                 <option value="">Selecione um agente ou equipe</option>
                 {agents.length > 0 && (
@@ -286,9 +286,9 @@ export function WhatsAppManager({
 
             {provider.fields.map((field) => (
               <div key={field.key}>
-                <label className="mb-1 block text-sm text-slate-400">
+                <label className="mb-1 block text-sm text-(--text-muted)">
                   {field.label}
-                  {field.required && <span className="text-red-400"> *</span>}
+                  {field.required && <span className="text-(--coral-600)"> *</span>}
                 </label>
                 <input
                   type={field.type === 'password' ? 'password' : 'text'}
@@ -300,14 +300,14 @@ export function WhatsAppManager({
               </div>
             ))}
 
-            {provider.webhookNote && <p className="text-xs text-slate-500">{provider.webhookNote}</p>}
-            {error && <p className="text-sm text-red-400">{error}</p>}
+            {provider.webhookNote && <p className="text-xs text-(--text-faint)">{provider.webhookNote}</p>}
+            {error && <p className="text-sm text-(--coral-600)">{error}</p>}
 
             <button
               type="button"
               onClick={handleSave}
               disabled={!canSave || saving}
-              className="w-full rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+              className="w-full rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
             >
               {saving ? 'Conectando...' : 'Conectar'}
             </button>

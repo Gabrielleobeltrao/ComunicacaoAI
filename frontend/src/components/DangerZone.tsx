@@ -17,22 +17,22 @@ export function DangerZone({
 }) {
   return (
     <section>
-      <h3 className="mb-3 text-sm font-medium text-slate-400">Zona de perigo</h3>
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-500/30 bg-red-500/5 p-4">
+      <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Zona de perigo</h3>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-(--coral-500) bg-(--coral-50) p-4">
         <div>
           <p className="text-sm font-medium">{title}</p>
-          <p className="text-xs text-slate-400">{description}</p>
+          <p className="text-xs text-(--text-muted)">{description}</p>
         </div>
         <button
           type="button"
           onClick={onDelete}
           disabled={deleting}
-          className="shrink-0 rounded-lg border border-red-500/40 px-3 py-1.5 text-sm text-red-400 transition hover:bg-red-500/10 disabled:opacity-50"
+          className="shrink-0 rounded-lg border border-(--coral-500) px-3 py-1.5 text-sm text-(--coral-600) transition hover:bg-(--coral-50) disabled:opacity-50"
         >
           {deleting ? 'Excluindo...' : buttonLabel}
         </button>
       </div>
-      {deleteError && <p className="mt-2 text-sm text-red-400">{deleteError}</p>}
+      {deleteError && <p className="mt-2 text-sm text-(--coral-600)">{deleteError}</p>}
     </section>
   )
 }

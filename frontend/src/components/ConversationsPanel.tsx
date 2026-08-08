@@ -251,14 +251,14 @@ export function ConversationsPanel() {
   }
 
   if (loading) {
-    return <p className="text-sm text-slate-400">Carregando conversas...</p>
+    return <p className="text-sm text-(--text-muted)">Carregando conversas...</p>
   }
 
   // Only show the "no conversations yet" state when there genuinely are none —
   // not when a search simply returned nothing (the search box must stay usable).
   if (conversations.length === 0 && !search.trim()) {
     return (
-      <p className="text-sm text-slate-400">
+      <p className="text-sm text-(--text-muted)">
         Nenhuma conversa ainda. Teste um widget para ver as mensagens aparecerem aqui.
       </p>
     )
@@ -279,12 +279,12 @@ export function ConversationsPanel() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Buscar nas conversas..."
-          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
         />
         <select
           value={widgetFilter}
           onChange={(e) => setWidgetFilter(e.target.value)}
-          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
         >
           <option value="">Todos os widgets</option>
           {widgetOptions.map((widget) => (
@@ -295,7 +295,7 @@ export function ConversationsPanel() {
         </select>
 
         {filteredConversations.length === 0 ? (
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-(--text-muted)">
             {search.trim() ? 'Nenhuma conversa encontrada para essa busca.' : 'Nenhuma conversa para esse widget.'}
           </p>
         ) : (
@@ -312,8 +312,8 @@ export function ConversationsPanel() {
                     onClick={() => setSelected(conversation)}
                     className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
                       isSelected
-                        ? 'border-slate-500 bg-slate-800'
-                        : 'border-slate-800 bg-slate-950/50 hover:bg-slate-900'
+                        ? 'border-(--border-focus) bg-(--surface-sunken)'
+                        : 'border-(--border-subtle) bg-(--surface-card)/50 hover:bg-(--surface-card)'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -324,7 +324,7 @@ export function ConversationsPanel() {
                         </span>
                       )}
                     </div>
-                    <p className="truncate text-slate-400">{conversation.lastMessage}</p>
+                    <p className="truncate text-(--text-muted)">{conversation.lastMessage}</p>
                   </button>
                 </li>
               )
@@ -333,10 +333,10 @@ export function ConversationsPanel() {
         )}
       </div>
 
-      <div className="flex h-120 flex-col rounded-lg border border-slate-800 bg-slate-950/50">
+      <div className="flex h-120 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50">
         {selected && (
-          <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-3 py-2">
-            <p className="text-xs text-slate-400">
+          <div className="flex items-center justify-between gap-3 border-b border-(--border-subtle) px-3 py-2">
+            <p className="text-xs text-(--text-muted)">
               {handoffActive ? (
                 <span className="font-medium text-amber-400">
                   Atendimento humano ativo — o agente não responde nesta conversa.
@@ -349,77 +349,77 @@ export function ConversationsPanel() {
               type="button"
               onClick={handleToggleHandoff}
               disabled={togglingHandoff}
-              className="shrink-0 rounded-lg border border-slate-700 px-2.5 py-1 text-xs transition hover:bg-slate-800 disabled:opacity-50"
+              className="shrink-0 rounded-lg border border-(--border-strong) px-2.5 py-1 text-xs transition hover:bg-(--surface-sunken) disabled:opacity-50"
             >
               {handoffActive ? 'Devolver ao agente' : 'Assumir conversa'}
             </button>
           </div>
         )}
         {selected && Object.keys(structuredData).length > 0 && (
-          <div className="border-b border-slate-800 p-3">
-            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+          <div className="border-b border-(--border-subtle) p-3">
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-(--text-faint)">
               Dados estruturados
             </p>
             <div className="flex flex-wrap gap-1.5">
               {Object.entries(structuredData).map(([field, value]) => (
                 <span
                   key={field}
-                  className="rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs"
+                  className="rounded-full border border-(--border-strong) bg-(--surface-card) px-2.5 py-1 text-xs"
                 >
-                  <span className="text-slate-400">{field}:</span>{' '}
-                  <span className="text-white">{value}</span>
+                  <span className="text-(--text-muted)">{field}:</span>{' '}
+                  <span className="text-(--text-heading)">{value}</span>
                 </span>
               ))}
             </div>
           </div>
         )}
         {selected && decisions.length > 0 && (
-          <div className="border-b border-slate-800 p-3">
+          <div className="border-b border-(--border-subtle) p-3">
             <button
               type="button"
               onClick={() => setShowDecisions((prev) => !prev)}
-              className="flex w-full items-center justify-between gap-2 text-xs font-medium uppercase tracking-wide text-slate-500 transition hover:text-slate-300"
+              className="flex w-full items-center justify-between gap-2 text-xs font-medium uppercase tracking-wide text-(--text-faint) transition hover:text-(--text-body)"
             >
               <span>
                 Orquestração{' '}
-                <span className="normal-case tracking-normal text-slate-600">
+                <span className="normal-case tracking-normal text-(--text-faint)">
                   ({decisions.length} {decisions.length === 1 ? 'decisão' : 'decisões'})
                 </span>
               </span>
-              <span className="text-slate-600">{showDecisions ? '▾' : '▸'}</span>
+              <span className="text-(--text-faint)">{showDecisions ? '▾' : '▸'}</span>
             </button>
             {showDecisions && (
               <ol className="mt-2 space-y-1">
                 {decisions.map((decision, index) => (
-                  <li key={index} className="flex items-center gap-2 text-xs text-slate-400">
-                    <span className="w-5 shrink-0 text-right text-slate-600">{index + 1}.</span>
+                  <li key={index} className="flex items-center gap-2 text-xs text-(--text-muted)">
+                    <span className="w-5 shrink-0 text-right text-(--text-faint)">{index + 1}.</span>
                     {decision.mode === 'pipeline' ? (
                       <span className="flex items-center gap-1.5">
-                        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">
+                        <span className="rounded border border-(--border-strong) px-1.5 py-0.5 text-[10px] uppercase text-(--text-faint)">
                           Fluxo
                         </span>
                         {decision.advanced && decision.fromStage ? (
-                          <span className="text-slate-300">
-                            <span className="text-slate-500">{decision.fromStage}</span> →{' '}
+                          <span className="text-(--text-body)">
+                            <span className="text-(--text-faint)">{decision.fromStage}</span> →{' '}
                             {decision.specialists[0] ?? '—'}
                           </span>
                         ) : (
-                          <span className="text-slate-300">Etapa: {decision.specialists[0] ?? '—'}</span>
+                          <span className="text-(--text-body)">Etapa: {decision.specialists[0] ?? '—'}</span>
                         )}
                       </span>
                     ) : decision.clarify ? (
                       <span className="flex items-center gap-1.5">
-                        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">
+                        <span className="rounded border border-(--border-strong) px-1.5 py-0.5 text-[10px] uppercase text-(--text-faint)">
                           Adaptativo
                         </span>
                         <span className="text-amber-400">Pediu esclarecimento</span>
                       </span>
                     ) : (
                       <span className="flex items-center gap-1.5">
-                        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">
+                        <span className="rounded border border-(--border-strong) px-1.5 py-0.5 text-[10px] uppercase text-(--text-faint)">
                           Adaptativo
                         </span>
-                        <span className="text-slate-300">
+                        <span className="text-(--text-body)">
                           Consultou: {decision.specialists.length > 0 ? decision.specialists.join(', ') : '—'}
                         </span>
                       </span>
@@ -431,8 +431,8 @@ export function ConversationsPanel() {
           </div>
         )}
         {selected && toolCalls.length > 0 && (
-          <div className="border-b border-slate-800 p-3">
-            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+          <div className="border-b border-(--border-subtle) p-3">
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-(--text-faint)">
               Ferramentas ({toolCalls.length})
             </p>
             <ToolCalls calls={toolCalls} />
@@ -440,21 +440,21 @@ export function ConversationsPanel() {
         )}
         <div className="flex-1 space-y-2 overflow-y-auto p-3">
           {!selected ? (
-            <p className="text-sm text-slate-400">Selecione uma conversa para ver as mensagens.</p>
+            <p className="text-sm text-(--text-muted)">Selecione uma conversa para ver as mensagens.</p>
           ) : (
             messages.map((message) => (
               <div key={message._id} className={message.role === 'visitor' ? '' : 'flex flex-col items-end'}>
                 <div
                   className={
                     message.role === 'visitor'
-                      ? 'max-w-[85%] rounded-2xl rounded-tl-sm bg-slate-800 px-3 py-2 text-sm'
-                      : 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-white px-3 py-2 text-sm text-slate-950'
+                      ? 'max-w-[85%] rounded-2xl rounded-tl-sm bg-(--surface-sunken) px-3 py-2 text-sm'
+                      : 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-(--intent-brand) px-3 py-2 text-sm text-white'
                   }
                 >
                   <MessageContent content={message.content} />
                 </div>
                 {message.role === 'agent' && message.agentName && (
-                  <span className="mt-0.5 mr-1 text-[10px] text-slate-500">{message.agentName}</span>
+                  <span className="mt-0.5 mr-1 text-[10px] text-(--text-faint)">{message.agentName}</span>
                 )}
               </div>
             ))
@@ -463,17 +463,17 @@ export function ConversationsPanel() {
         </div>
 
         {selected && (
-          <form onSubmit={handleReply} className="flex gap-2 border-t border-slate-800 p-3">
+          <form onSubmit={handleReply} className="flex gap-2 border-t border-(--border-subtle) p-3">
             <input
               value={reply}
               onChange={(e) => setReply(e.target.value)}
               placeholder="Responder..."
-              className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-slate-500"
+              className="flex-1 rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
             />
             <button
               type="submit"
               disabled={sending || !reply.trim()}
-              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+              className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
             >
               Enviar
             </button>

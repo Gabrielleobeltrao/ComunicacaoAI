@@ -11,13 +11,13 @@ export function ToolCalls({ calls }: { calls: ToolCall[] }) {
   return (
     <div className="mt-1 space-y-1">
       {calls.map((call, i) => (
-        <div key={i} className="rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px]">
+        <div key={i} className="rounded-lg border border-(--border-subtle) bg-(--surface-card)/60 px-2 py-1 text-[11px]">
           <div className="flex items-center gap-1.5">
-            <span className={call.ok ? 'text-emerald-400' : 'text-red-400'}>🔧</span>
-            <span className="font-medium text-slate-300">{call.name}</span>
-            <span className="min-w-0 truncate text-slate-500">{formatArgs(call.arguments)}</span>
+            <span className={call.ok ? 'text-emerald-400' : 'text-(--coral-600)'}>🔧</span>
+            <span className="font-medium text-(--text-body)">{call.name}</span>
+            <span className="min-w-0 truncate text-(--text-faint)">{formatArgs(call.arguments)}</span>
           </div>
-          <p className="mt-0.5 truncate text-slate-500" title={call.result}>
+          <p className="mt-0.5 truncate text-(--text-faint)" title={call.result}>
             → {call.result}
           </p>
         </div>

@@ -62,7 +62,7 @@ function ProviderKeyField({
   }
 
   return (
-    <div className="space-y-3 rounded-lg border border-slate-800 p-3">
+    <div className="space-y-3 rounded-lg border border-(--border-subtle) p-3">
       <div>
         <h4 className="font-medium">{provider.label}</h4>
         <p className="text-sm">
@@ -70,7 +70,7 @@ function ProviderKeyField({
           {hasKey ? (
             <span className="text-emerald-400">chave configurada</span>
           ) : (
-            <span className="text-slate-400">nenhuma chave configurada</span>
+            <span className="text-(--text-muted)">nenhuma chave configurada</span>
           )}
         </p>
       </div>
@@ -82,14 +82,14 @@ function ProviderKeyField({
           onChange={(e) => setApiKey(e.target.value)}
           placeholder={provider.id === 'openai' ? 'sk-...' : 'sk-ant-...'}
           required
-          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
         />
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {error && <p className="text-sm text-(--coral-600)">{error}</p>}
         <div className="flex gap-2">
           <button
             type="submit"
             disabled={saving}
-            className="flex-1 rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+            className="flex-1 rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
           >
             {saving ? 'Salvando...' : hasKey ? 'Substituir chave' : 'Salvar chave'}
           </button>
@@ -98,7 +98,7 @@ function ProviderKeyField({
               type="button"
               onClick={handleRemove}
               disabled={removing}
-              className="rounded-lg border border-slate-700 px-4 py-2 text-sm transition hover:bg-slate-800 disabled:opacity-50"
+              className="rounded-lg border border-(--border-strong) px-4 py-2 text-sm transition hover:bg-(--surface-sunken) disabled:opacity-50"
             >
               {removing ? 'Removendo...' : 'Remover'}
             </button>
@@ -138,9 +138,9 @@ export function MonthlyCapField({ initialCap, onSaved }: { initialCap: number; o
   }
 
   return (
-    <div className="space-y-2 rounded-lg border border-slate-800 p-3">
+    <div className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
       <h4 className="font-medium">Teto mensal de tokens</h4>
-      <p className="text-sm text-slate-400">
+      <p className="text-sm text-(--text-muted)">
         Quando o total de tokens gastos no mês passar desse número, os agentes param de responder
         automaticamente (você ainda pode responder manualmente na página Chats). Use 0 para sem teto.
       </p>
@@ -153,13 +153,13 @@ export function MonthlyCapField({ initialCap, onSaved }: { initialCap: number; o
             setSaved(false)
             setCap(Math.max(0, Math.floor(Number(e.target.value) || 0)))
           }}
-          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
         />
         <button
           type="button"
           onClick={handleSave}
           disabled={saving}
-          className="shrink-0 rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+          className="shrink-0 rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
         >
           {saving ? 'Salvando...' : saved ? 'Salvo ✓' : 'Salvar'}
         </button>
@@ -197,12 +197,12 @@ export function GoogleIntegration() {
   }
 
   return (
-    <div className="space-y-2 rounded-lg border border-slate-800 p-3">
+    <div className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
       <h4 className="font-medium">Google Agenda</h4>
       {loading ? (
-        <p className="text-sm text-slate-400">Carregando...</p>
+        <p className="text-sm text-(--text-muted)">Carregando...</p>
       ) : !status?.available ? (
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-(--text-muted)">
           Integração não configurada no servidor (faltam as credenciais <code>GOOGLE_CLIENT_ID</code> /{' '}
           <code>GOOGLE_CLIENT_SECRET</code>).
         </p>
@@ -222,20 +222,20 @@ export function GoogleIntegration() {
             type="button"
             onClick={disconnect}
             disabled={disconnecting}
-            className="rounded-lg border border-slate-700 px-4 py-2 text-sm transition hover:bg-slate-800 disabled:opacity-50"
+            className="rounded-lg border border-(--border-strong) px-4 py-2 text-sm transition hover:bg-(--surface-sunken) disabled:opacity-50"
           >
             {disconnecting ? 'Desconectando...' : 'Desconectar'}
           </button>
         </>
       ) : (
         <>
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-(--text-muted)">
             Conecte sua conta Google para os agentes poderem consultar disponibilidade e criar eventos na
             sua agenda.
           </p>
           <a
             href={`${API_URL}/api/integrations/google/connect`}
-            className="inline-block rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200"
+            className="inline-block rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover)"
           >
             Conectar Google
           </a>
@@ -272,7 +272,7 @@ export function ApiKeysPanel() {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-slate-400">
+      <p className="text-sm text-(--text-muted)">
         Chaves usadas para gerar as respostas dos seus agentes (cada agente escolhe qual provedor
         usar). Se você não configurar uma chave, o sistema tenta usar uma chave padrão do servidor, se
         houver — a busca na base de conhecimento (RAG) funciona normalmente de qualquer forma, isso só
@@ -280,7 +280,7 @@ export function ApiKeysPanel() {
       </p>
 
       {loading ? (
-        <p className="text-sm text-slate-400">Carregando...</p>
+        <p className="text-sm text-(--text-muted)">Carregando...</p>
       ) : (
         providers.map((provider) => (
           <ProviderKeyField

@@ -238,21 +238,21 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
         type="button"
         onClick={openCreate}
         disabled={agentsLoading}
-        className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+        className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
       >
         + Novo widget
       </button>
 
       {listError && (
-        <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+        <p className="rounded-lg border border-(--coral-500) bg-(--coral-50) px-3 py-2 text-sm text-(--coral-600)">
           {listError}
         </p>
       )}
 
       {loading ? (
-        <p className="text-sm text-slate-400">Carregando widgets...</p>
+        <p className="text-sm text-(--text-muted)">Carregando widgets...</p>
       ) : widgets.length === 0 ? (
-        <p className="text-sm text-slate-400">Nenhum widget criado ainda.</p>
+        <p className="text-sm text-(--text-muted)">Nenhum widget criado ainda.</p>
       ) : (
         <ul className="space-y-3">
           {widgets.map((widget) => {
@@ -266,18 +266,18 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
                 : 'Sem atendimento'
 
             return (
-              <li key={widget._id} className="rounded-lg border border-slate-800 p-3">
+              <li key={widget._id} className="rounded-lg border border-(--border-subtle) p-3">
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <div>
                     <p className="font-medium">{widget.name}</p>
-                    <p className="text-sm text-slate-400">{attendedBy}</p>
+                    <p className="text-sm text-(--text-muted)">{attendedBy}</p>
                   </div>
                   <div className="flex shrink-0 gap-2">
                     <button
                       type="button"
                       onClick={() => openEdit(widget)}
                       disabled={agentsLoading}
-                      className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm transition hover:bg-slate-800 disabled:opacity-50"
+                      className="rounded-lg border border-(--border-strong) px-3 py-1.5 text-sm transition hover:bg-(--surface-sunken) disabled:opacity-50"
                     >
                       {agentsLoading ? 'Carregando...' : 'Editar'}
                     </button>
@@ -285,13 +285,13 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
                       type="button"
                       onClick={() => handleDeleteWidget(widget)}
                       disabled={deletingWidgetId === widget._id}
-                      className="rounded-lg border border-red-500/40 px-3 py-1.5 text-sm text-red-400 transition hover:bg-red-500/10 disabled:opacity-50"
+                      className="rounded-lg border border-(--coral-500) px-3 py-1.5 text-sm text-(--coral-600) transition hover:bg-(--coral-50) disabled:opacity-50"
                     >
                       {deletingWidgetId === widget._id ? 'Excluindo...' : 'Excluir'}
                     </button>
                   </div>
                 </div>
-                <code className="block overflow-x-auto rounded bg-slate-950 p-2 text-xs text-slate-300">
+                <code className="block overflow-x-auto rounded bg-(--surface-card) p-2 text-xs text-(--text-body)">
                   {snippet}
                 </code>
               </li>
@@ -311,23 +311,23 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
       >
         <form onSubmit={handleSave} className="space-y-3">
           <div>
-            <label className="mb-1 block text-sm text-slate-400">Nome</label>
+            <label className="mb-1 block text-sm text-(--text-muted)">Nome</label>
             <input
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               placeholder="Nome do widget (ex: Suporte)"
               required
               autoFocus
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+              className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-sm text-slate-400">Atendido por</label>
+            <label className="mb-1 block text-sm text-(--text-muted)">Atendido por</label>
             <select
               value={editTarget}
               onChange={(e) => setEditTarget(e.target.value)}
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+              className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
             >
               <option value="">Sem atendimento</option>
               {teams.length > 0 && (
@@ -351,19 +351,19 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Cor principal</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Cor principal</label>
               <div className="flex items-center gap-2">
                 <input
                   type="color"
                   value={editPrimaryColor ?? DEFAULT_COLOR}
                   onChange={(e) => setEditPrimaryColor(e.target.value)}
-                  className="h-9 w-12 rounded border border-slate-700 bg-slate-950"
+                  className="h-9 w-12 rounded border border-(--border-strong) bg-(--surface-card)"
                 />
                 {editPrimaryColor && (
                   <button
                     type="button"
                     onClick={() => setEditPrimaryColor(null)}
-                    className="text-xs text-slate-400 underline transition hover:text-white"
+                    className="text-xs text-(--text-muted) underline transition hover:text-(--text-heading)"
                   >
                     Padrão
                   </button>
@@ -371,11 +371,11 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
               </div>
             </div>
             <div>
-              <label className="mb-1 block text-sm text-slate-400">Posição na tela</label>
+              <label className="mb-1 block text-sm text-(--text-muted)">Posição na tela</label>
               <select
                 value={editPosition}
                 onChange={(e) => setEditPosition(e.target.value as WidgetPosition)}
-                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               >
                 <option value="right">Direita</option>
                 <option value="left">Esquerda</option>
@@ -384,34 +384,34 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
           </div>
 
           <div>
-            <label className="mb-1 block text-sm text-slate-400">Título de boas-vindas</label>
+            <label className="mb-1 block text-sm text-(--text-muted)">Título de boas-vindas</label>
             <input
               value={editWelcomeTitle}
               onChange={(e) => setEditWelcomeTitle(e.target.value)}
               placeholder="Se vazio, usa o nome do widget"
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+              className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-sm text-slate-400">Mensagem de boas-vindas</label>
+            <label className="mb-1 block text-sm text-(--text-muted)">Mensagem de boas-vindas</label>
             <textarea
               value={editWelcomeMessage}
               onChange={(e) => setEditWelcomeMessage(e.target.value)}
               rows={2}
               placeholder="Primeira mensagem automática exibida ao visitante (opcional)"
-              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-slate-500"
+              className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-sm text-slate-400">Ícone do botão</label>
+            <label className="mb-1 block text-sm text-(--text-muted)">Ícone do botão</label>
             <div className="flex items-center gap-3">
               {avatarPreviewUrl && (
                 <img
                   src={avatarPreviewUrl}
                   alt="Ícone do widget"
-                  className="h-10 w-10 rounded-full border border-slate-700 object-cover"
+                  className="h-10 w-10 rounded-full border border-(--border-strong) object-cover"
                 />
               )}
               <input
@@ -419,29 +419,29 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
                 accept="image/jpeg,image/png,image/gif,image/webp"
                 onChange={handleAvatarFileChange}
                 disabled={uploadingAvatar}
-                className="text-sm text-slate-400 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-1.5 file:text-sm file:text-white"
+                className="text-sm text-(--text-muted) file:mr-3 file:rounded-lg file:border-0 file:bg-(--surface-sunken) file:px-3 file:py-1.5 file:text-sm file:text-(--text-heading)"
               />
               {avatarPreviewUrl && (
                 <button
                   type="button"
                   onClick={handleRemoveAvatar}
                   disabled={uploadingAvatar}
-                  className="text-xs text-red-400 underline transition hover:text-red-300 disabled:opacity-50"
+                  className="text-xs text-(--coral-600) underline transition hover:text-(--coral-600) disabled:opacity-50"
                 >
                   Remover
                 </button>
               )}
             </div>
-            <p className="mt-1 text-xs text-slate-500">
+            <p className="mt-1 text-xs text-(--text-faint)">
               Se não enviar um ícone, o botão mostra o texto "Chat".
             </p>
           </div>
 
-          {editError && <p className="text-sm text-red-400">{editError}</p>}
+          {editError && <p className="text-sm text-(--coral-600)">{editError}</p>}
           <button
             type="submit"
             disabled={saving}
-            className="w-full rounded-lg bg-white px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-slate-200 disabled:opacity-50"
+            className="w-full rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
           >
             {isCreating ? (saving ? 'Criando...' : 'Criar widget') : saving ? 'Salvando...' : 'Salvar'}
           </button>

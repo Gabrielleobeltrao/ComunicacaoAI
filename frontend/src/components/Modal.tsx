@@ -29,16 +29,16 @@ export function Modal({ open, onClose, title, children, wide }: ModalProps) {
       onClick={onClose}
     >
       <div
-        className={`w-full ${wide ? 'max-w-2xl' : 'max-w-md'} max-h-[85vh] overflow-x-hidden overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-6`}
+        className={`w-full ${wide ? 'max-w-2xl' : 'max-w-md'} max-h-[85vh] overflow-x-hidden overflow-y-auto rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-medium text-white">{title}</h3>
+          <h3 className="font-medium text-(--text-heading)">{title}</h3>
           <button
             type="button"
             onClick={onClose}
             aria-label="Fechar"
-            className="text-slate-400 transition hover:text-white"
+            className="text-(--text-muted) transition hover:text-(--text-heading)"
           >
             ✕
           </button>
