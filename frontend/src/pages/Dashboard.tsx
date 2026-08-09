@@ -1,17 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { useNavigate } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { OfficeFloor } from '../office/OfficeFloor'
 import { API_URL } from '../lib/api'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
-import type { DashboardStats, TeamAnalytics } from '../lib/types'
-import { Badge, Button, Card, EmptyState, Icon, MetricStat } from '../ui'
-
-const SECTIONS = [
-  { to: '/agents', title: 'Agentes', icon: 'users-round', description: 'Contrate e configure seus agentes: objetivo, modelo e base de conhecimento.' },
-  { to: '/widgets', title: 'Canais', icon: 'share-2', description: 'Coloque seus agentes pra atender no site (widget) e no WhatsApp.' },
-  { to: '/chats', title: 'Conversas', icon: 'messages-square', description: 'Acompanhe e responda as conversas dos visitantes em tempo real.' },
-]
+import type { DashboardStats } from '../lib/types'
+import { Button, Card, EmptyState, IconButton, Input, MetricStat } from '../ui'
 
 function StatCard({
   label,
@@ -34,66 +28,6 @@ function StatCard({
   )
 }
 
-function TeamAnalyticsCard({ team }: { team: TeamAnalytics }) {
-  const rows = team.specialists
-  const max = Math.max(1, ...rows.map((s) => s.count))
-  const stickiest =
-    team.mode === 'pipeline' && team.stages.length > 0
-      ? [...team.stages].sort((a, b) => b.handled - b.left - (a.handled - a.left))[0]
-      : null
-
-  return (
-    <Card padding="16px">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-          <span style={{ fontWeight: 700, color: 'var(--text-heading)' }}>{team.teamName}</span>
-          <Badge tone="brand">{team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}</Badge>
-        </div>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          {team.decisions.toLocaleString('pt-BR')} {team.decisions === 1 ? 'turno' : 'turnos'}
-        </span>
-      </div>
-
-      <p style={{ marginBottom: 8, fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>
-        {team.mode === 'pipeline' ? 'Atividade por etapa' : 'Mais consultados'}
-      </p>
-      <ul style={{ display: 'flex', flexDirection: 'column', gap: 8, listStyle: 'none', margin: 0, padding: 0 }}>
-        {rows.map((s) => (
-          <li key={s.name}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, marginBottom: 3 }}>
-              <span style={{ color: 'var(--text-body)' }}>{s.name}</span>
-              <span style={{ color: 'var(--text-muted)' }}>{s.count}</span>
-            </div>
-            <div style={{ height: 6, borderRadius: 'var(--radius-full)', background: 'var(--surface-sunken)', overflow: 'hidden' }}>
-              <div style={{ width: `${(s.count / max) * 100}%`, height: '100%', borderRadius: 'var(--radius-full)', background: 'var(--intent-brand)' }} />
-            </div>
-          </li>
-        ))}
-      </ul>
-
-      <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: '4px 16px', fontSize: 12, color: 'var(--text-muted)' }}>
-        {team.mode === 'pipeline' ? (
-          <>
-            <span>
-              Avanços/desvios: <span style={{ color: 'var(--text-heading)', fontWeight: 700 }}>{team.moves}</span>
-            </span>
-            {stickiest ? (
-              <span>
-                Mais fica em: <span style={{ color: 'var(--text-heading)', fontWeight: 700 }}>{stickiest.name}</span>
-              </span>
-            ) : null}
-          </>
-        ) : (
-          <span>
-            Pediu esclarecimento:{' '}
-            <span style={{ color: 'var(--text-heading)', fontWeight: 700 }}>{Math.round(team.clarifyRate * 100)}%</span>
-          </span>
-        )}
-      </div>
-    </Card>
-  )
-}
-
 function SectionTitle({ children }: { children: string }) {
   return (
     <h2 style={{ marginBottom: 12, fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>
@@ -106,18 +40,13 @@ export function Dashboard() {
   const navigate = useNavigate()
   const { agents, agentsLoading } = useAgentsAndWidgets()
   const [stats, setStats] = useState<DashboardStats | null>(null)
-  const [teamAnalytics, setTeamAnalytics] = useState<TeamAnalytics[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
-      const [statsRes, teamsRes] = await Promise.all([
-        fetch(`${API_URL}/api/stats`, { credentials: 'include' }),
-        fetch(`${API_URL}/api/team-analytics`, { credentials: 'include' }),
-      ])
+      const statsRes = await fetch(`${API_URL}/api/stats`, { credentials: 'include' })
       if (statsRes.ok && !cancelled) setStats(await statsRes.json())
-      if (teamsRes.ok && !cancelled) setTeamAnalytics(await teamsRes.json())
       if (!cancelled) setLoading(false)
     }
     load()
@@ -129,31 +58,32 @@ export function Dashboard() {
   const attendanceRate =
     stats && stats.conversations > 0 ? Math.round((stats.attendedConversations / stats.conversations) * 100) : 0
 
-  return (
-    <AppLayout current="/dashboard" title="Escritório" subtitle="Visão geral do seu time de IA">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
-        <section>
-          <SectionTitle>Sua equipe</SectionTitle>
-          {agentsLoading ? (
-            <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>Carregando o escritório...</p>
-          ) : agents.length === 0 ? (
-            <EmptyState
-              icon="armchair"
-              title="Escritório vazio"
-              body="Contrate seu primeiro agente e veja a mesa dele ganhar vida."
-              action={
-                <Button icon="plus" onClick={() => navigate('/agents')}>
-                  Contratar agente
-                </Button>
-              }
-            />
-          ) : (
-            <Card padding="0" style={{ overflow: 'hidden' }}>
-              <OfficeFloor agents={agents} />
-            </Card>
-          )}
-        </section>
+  const agentCount = agents.length
+  const teamSubtitle = `${agentCount} ${agentCount === 1 ? 'agente' : 'agentes'}${
+    stats ? ` · ${stats.conversationsThisWeek.toLocaleString('pt-BR')} conversas na semana` : ''
+  }`
 
+  const headerActions = (
+    <>
+      <Input
+        icon="search"
+        placeholder="Buscar agente"
+        aria-label="Buscar agente"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') navigate('/agents')
+        }}
+        style={{ width: 220 }}
+      />
+      <IconButton icon="bell" label="Avisos" variant="soft" onClick={() => navigate('/chats')} />
+      <Button icon="plus" onClick={() => navigate('/agents')}>
+        Contratar agente
+      </Button>
+    </>
+  )
+
+  return (
+    <AppLayout current="/dashboard" title="Escritório" subtitle={teamSubtitle} actions={headerActions}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
         <section>
           <SectionTitle>Visão geral</SectionTitle>
           {loading ? (
@@ -183,44 +113,28 @@ export function Dashboard() {
           )}
         </section>
 
-        {teamAnalytics.length > 0 && (
-          <section>
-            <SectionTitle>Equipes</SectionTitle>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {teamAnalytics.map((team) => (
-                <TeamAnalyticsCard key={team.teamId} team={team} />
-              ))}
-            </div>
-          </section>
-        )}
-
         <section>
-          <SectionTitle>Atalhos</SectionTitle>
-          <div className="grid gap-3 md:grid-cols-3">
-            {SECTIONS.map((section) => (
-              <Link key={section.to} to={section.to} style={{ textDecoration: 'none' }}>
-                <Card interactive padding="20px" style={{ height: '100%' }}>
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 40,
-                      height: 40,
-                      borderRadius: 'var(--radius-md)',
-                      background: 'var(--intent-brand-soft)',
-                      marginBottom: 12,
-                    }}
-                  >
-                    <Icon name={section.icon} size={20} color="var(--intent-brand)" />
-                  </span>
-                  <h3 style={{ marginBottom: 4, fontSize: 16, fontWeight: 700, color: 'var(--text-heading)' }}>{section.title}</h3>
-                  <p style={{ fontSize: 13.5, color: 'var(--text-muted)' }}>{section.description}</p>
-                </Card>
-              </Link>
-            ))}
-          </div>
+          <SectionTitle>Sua equipe</SectionTitle>
+          {agentsLoading ? (
+            <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>Carregando o escritório...</p>
+          ) : agents.length === 0 ? (
+            <EmptyState
+              icon="armchair"
+              title="Escritório vazio"
+              body="Contrate seu primeiro agente e veja a mesa dele ganhar vida."
+              action={
+                <Button icon="plus" onClick={() => navigate('/agents')}>
+                  Contratar agente
+                </Button>
+              }
+            />
+          ) : (
+            <Card padding="0" style={{ overflow: 'hidden' }}>
+              <OfficeFloor agents={agents} />
+            </Card>
+          )}
         </section>
+
       </div>
     </AppLayout>
   )
