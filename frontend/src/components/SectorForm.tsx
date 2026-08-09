@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
+import { DEFAULT_SECTOR_COLOR, SECTOR_COLORS } from '../lib/sectorColors'
 import type { AgentSummary, SectorMode, SectorSummary } from '../lib/types'
 
 interface EditTransition {
@@ -29,6 +30,7 @@ interface SectorFormProps {
 export function SectorForm({ sector, agents, onSaved }: SectorFormProps) {
   const isCreating = sector === null
   const [editName, setEditName] = useState('')
+  const [editColor, setEditColor] = useState(DEFAULT_SECTOR_COLOR)
   const [editMode, setEditMode] = useState<SectorMode>('adaptive')
   const [editMembers, setEditMembers] = useState<EditMember[]>([])
   const [saving, setSaving] = useState(false)
@@ -39,10 +41,12 @@ export function SectorForm({ sector, agents, onSaved }: SectorFormProps) {
     setSaving(false)
     if (sector) {
       setEditName(sector.name)
+      setEditColor(sector.color ?? DEFAULT_SECTOR_COLOR)
       setEditMode(sector.mode)
       setEditMembers(sector.members.map((m) => ({ ...m, transitions: (m.transitions ?? []).map((t) => ({ ...t })) })))
     } else {
       setEditName('')
+      setEditColor(DEFAULT_SECTOR_COLOR)
       setEditMode('adaptive')
       setEditMembers([])
     }
@@ -145,6 +149,7 @@ export function SectorForm({ sector, agents, onSaved }: SectorFormProps) {
     setSaving(true)
     const body = JSON.stringify({
       name: editName,
+      color: editColor,
       mode: editMode,
       members: editMembers.map((m) => ({
         agentId: m.agentId,
@@ -202,6 +207,27 @@ export function SectorForm({ sector, agents, onSaved }: SectorFormProps) {
           placeholder="Ex: Atendimento da barbearia"
           className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
         />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-sm text-(--text-muted)">Cor do setor (base da sala no mapa)</label>
+        <div className="flex flex-wrap gap-2">
+          {SECTOR_COLORS.map((c) => (
+            <button
+              key={c.value}
+              type="button"
+              onClick={() => setEditColor(c.value)}
+              title={c.name}
+              aria-label={c.name}
+              className="h-8 w-8 rounded-full transition"
+              style={{
+                background: c.value,
+                outline: editColor === c.value ? '2px solid var(--text-heading)' : '2px solid transparent',
+                outlineOffset: 2,
+              }}
+            />
+          ))}
+        </div>
       </div>
 
       <div>

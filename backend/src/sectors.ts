@@ -40,6 +40,8 @@ export interface Sector {
   // orphan (unlike agents, which may have no sector).
   officeId: ObjectId
   name: string
+  // The room's base colour on the office map (a CSS colour / hex).
+  color: string
   mode: SectorMode
   members: SectorMember[]
   createdAt: Date
@@ -59,6 +61,7 @@ export async function createSector(
   ownerId: string,
   officeId: ObjectId,
   name: string,
+  color: string,
   mode: SectorMode,
   members: SectorMember[],
 ) {
@@ -66,6 +69,7 @@ export async function createSector(
     ownerId,
     officeId,
     name,
+    color,
     mode,
     members: normalizeMembers(members),
     createdAt: new Date(),
@@ -85,7 +89,7 @@ export function getSectorById(ownerId: string, sectorId: ObjectId) {
 export function updateSector(
   ownerId: string,
   sectorId: ObjectId,
-  updates: { name?: string; mode?: SectorMode; members?: SectorMember[] },
+  updates: { name?: string; color?: string; mode?: SectorMode; members?: SectorMember[] },
 ) {
   const normalized = updates.members ? { ...updates, members: normalizeMembers(updates.members) } : updates
   return sectors.findOneAndUpdate({ _id: sectorId, ownerId }, { $set: normalized }, { returnDocument: 'after' })

@@ -694,6 +694,7 @@ app.delete('/api/widgets/:widgetId/avatar', requireAuth, async (req, res) => {
 
 // ---- Sectors (agent orchestration) ----
 
+const DEFAULT_SECTOR_COLOR = '#2E5BFF'
 const MAX_SECTOR_MEMBERS = 10
 const MAX_STAGE_TRANSITIONS = 5
 
@@ -701,6 +702,7 @@ function serializeSector(sector: WithId<Sector>) {
   return {
     _id: sector._id.toString(),
     name: sector.name,
+    color: sector.color ?? DEFAULT_SECTOR_COLOR,
     mode: sector.mode ?? 'adaptive',
     members: sector.members.map((m) => ({
       agentId: m.agentId.toString(),
@@ -784,7 +786,7 @@ function parseSectorMode(value: unknown): SectorMode | null {
 }
 
 app.post('/api/sectors', requireAuth, async (req, res) => {
-  const { name, mode, members } = req.body ?? {}
+  const { name, mode, members, color } = req.body ?? {}
   if (!name || typeof name !== 'string' || !name.trim()) {
     res.status(400).json({ error: 'name is required' })
     return
@@ -799,8 +801,9 @@ app.post('/api/sectors', requireAuth, async (req, res) => {
     res.status(400).json({ error })
     return
   }
+  const sectorColor = typeof color === 'string' && color.trim() ? color.trim() : DEFAULT_SECTOR_COLOR
   const office = await ensureDefaultOffice(res.locals.userId)
-  const sector = await createSector(res.locals.userId, office._id, name, parsedMode, parsed ?? [])
+  const sector = await createSector(res.locals.userId, office._id, name, sectorColor, parsedMode, parsed ?? [])
   await enforceSingleMembership(res.locals.userId, sector._id, (parsed ?? []).map((m) => m.agentId))
   res.status(201).json(serializeSector(sector as WithId<Sector>))
 })
@@ -816,9 +819,10 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid sector id' })
     return
   }
-  const { name, mode, members } = req.body ?? {}
-  const updates: { name?: string; mode?: SectorMode; members?: SectorMember[] } = {}
+  const { name, mode, members, color } = req.body ?? {}
+  const updates: { name?: string; color?: string; mode?: SectorMode; members?: SectorMember[] } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
+  if (typeof color === 'string' && color.trim()) updates.color = color.trim()
   if (mode !== undefined) {
     const parsedMode = parseSectorMode(mode)
     if (parsedMode === null) {

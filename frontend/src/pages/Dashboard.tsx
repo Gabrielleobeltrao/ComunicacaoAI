@@ -38,7 +38,7 @@ function SectionTitle({ children }: { children: string }) {
 
 export function Dashboard() {
   const navigate = useNavigate()
-  const { agents, agentsLoading } = useAgentsAndWidgets()
+  const { agents, agentsLoading, sectors } = useAgentsAndWidgets()
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -130,7 +130,7 @@ export function Dashboard() {
             />
           ) : (
             <Card padding="0" style={{ overflow: 'hidden' }}>
-              <OfficeFloor agents={agents} />
+              <OfficeFloor agents={agents} sectors={sectors} />
             </Card>
           )}
         </section>

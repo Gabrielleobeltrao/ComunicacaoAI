@@ -38,4 +38,14 @@ export async function runMigrations(): Promise<void> {
     await agentsCol.updateMany({ ownerId, officeId: { $exists: false } }, { $set: { officeId: office._id } })
     await sectorsCol.updateMany({ ownerId, officeId: { $exists: false } }, { $set: { officeId: office._id } })
   }
+
+  // Backfill a room colour on legacy sectors, cycling a palette per owner.
+  const SECTOR_PALETTE = ['#2E5BFF', '#38B6F0', '#17B98A', '#FFB53D', '#8B5CF6', '#FF6A5B']
+  const colorlessOwners = (await sectorsCol.distinct('ownerId', { color: { $exists: false } })) as string[]
+  for (const ownerId of colorlessOwners) {
+    const list = await sectorsCol.find({ ownerId, color: { $exists: false } }).sort({ createdAt: 1 }).toArray()
+    for (let i = 0; i < list.length; i++) {
+      await sectorsCol.updateOne({ _id: list[i]._id }, { $set: { color: SECTOR_PALETTE[i % SECTOR_PALETTE.length] } })
+    }
+  }
 }

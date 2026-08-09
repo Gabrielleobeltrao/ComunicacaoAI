@@ -32,6 +32,8 @@ export interface SectorMemberSummary {
 export interface SectorSummary {
   _id: string
   name: string
+  // The room's base colour on the office map.
+  color: string
   mode: SectorMode
   members: SectorMemberSummary[]
 }
