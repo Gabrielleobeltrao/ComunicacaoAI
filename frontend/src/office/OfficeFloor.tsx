@@ -207,8 +207,10 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
           style={{
             position: 'absolute',
             left: `calc(var(--tile) * ${p.x + p.w / 2})`,
-            top: `calc(var(--tile) * ${p.y - LABEL_OFFSET})`,
-            transform: 'translateX(-50%)',
+            // Anchor the pill by its BOTTOM, a little above the room's top edge,
+            // so it sits fully outside the room (never over the border/agents).
+            top: `calc(var(--tile) * ${p.y} - 3px)`,
+            transform: 'translate(-50%, -100%)',
             zIndex: 6,
             whiteSpace: 'nowrap',
             pointerEvents: 'none',
