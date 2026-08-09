@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router'
+import { accentFor, characterFor, statusFor } from '../lib/agentAvatar'
 import type { AgentSummary } from '../lib/types'
-import type { AgentStatus } from '../ui'
 import { MapAgent } from './MapAgent'
 import { MapObject } from './MapObject'
 import { MapZone } from './MapZone'
@@ -13,15 +13,6 @@ import { OfficeMap } from './OfficeMap'
 // (cadeira-longe behind the top row, cadeira-perto in front of the bottom row).
 // Paint order back-to-front: far chairs -> top agents -> desks -> bottom agents
 // -> near chairs. Clicking an agent opens its page.
-const CHARS = ['bruno', 'lia', 'nina', 'teo']
-const DEPT_COLORS = [
-  'var(--dept-vendas)',
-  'var(--dept-suporte)',
-  'var(--dept-marketing)',
-  'var(--dept-financeiro)',
-  'var(--dept-dev)',
-  'var(--dept-rh)',
-]
 const OBJ = '/illustrations/map/objects'
 
 const DESK_W = 3
@@ -42,8 +33,6 @@ const SLOTS = [
   { col: 0, top: false },
   { col: 1, top: false },
 ]
-
-const AMBIENT: AgentStatus[] = ['working', 'thinking', 'idle', 'working', 'break']
 
 export function OfficeFloor({ agents }: { agents: AgentSummary[] }) {
   const navigate = useNavigate()
@@ -73,23 +62,26 @@ export function OfficeFloor({ agents }: { agents: AgentSummary[] }) {
   const topSeats = seats.filter((s) => s.top)
   const bottomSeats = seats.filter((s) => !s.top)
 
-  const agentEl = (s: (typeof seats)[number], facing: 'frente' | 'costas', zIndex: number) => (
-    <MapAgent
-      key={s.a._id}
-      x={s.x}
-      y={s.y}
-      name={s.a.name.split(' ')[0]}
-      status={AMBIENT[s.i % AMBIENT.length]}
-      agent={CHARS[s.i % CHARS.length]}
-      facing={facing}
-      seated
-      department={DEPT_COLORS[s.i % DEPT_COLORS.length]}
-      speaking={AMBIENT[s.i % AMBIENT.length] === 'thinking'}
-      hoverLift={false}
-      style={{ zIndex }}
-      onOpen={() => navigate(`/agents/${s.a._id}`)}
-    />
-  )
+  const agentEl = (s: (typeof seats)[number], facing: 'frente' | 'costas', zIndex: number) => {
+    const status = statusFor(s.a._id)
+    return (
+      <MapAgent
+        key={s.a._id}
+        x={s.x}
+        y={s.y}
+        name={s.a.name.split(' ')[0]}
+        status={status}
+        agent={characterFor(s.a._id)}
+        facing={facing}
+        seated
+        department={accentFor(s.a._id)}
+        speaking={status === 'thinking'}
+        hoverLift={false}
+        style={{ zIndex }}
+        onOpen={() => navigate(`/agents/${s.a._id}`)}
+      />
+    )
+  }
 
   return (
     <OfficeMap cols={cols} rows={totalRows} tile={44} style={{ maxHeight: 580 }}>
