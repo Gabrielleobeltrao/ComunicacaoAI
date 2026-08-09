@@ -114,7 +114,7 @@ export function Agents() {
               aria-label="Buscar agente"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              style={{ flex: 1, maxWidth: 420 }}
+              style={{ flex: 1 }}
             />
             <Button variant="secondary" icon="sliders-horizontal" onClick={() => setFilterOpen(true)}>
               {activeFilters > 0 ? `Filtros · ${activeFilters}` : 'Filtros'}
