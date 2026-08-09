@@ -26,9 +26,9 @@ const DESKS_PER_ROOM_ROW = 2
 const ROOM_PAD_X = 1
 const DESK_ORIGIN_Y = 2 // top space inside a room for its label + far-agent heads
 const ROOMS_PER_ROW = 2
-const MAP_PAD = 0.6
+const MAP_PAD = 1.2 // safety margin around the whole floor so nothing hugs the edges
 const ROOM_GAP = 1.2
-const LABEL_H = 0.7 // space reserved above each room row for its label
+const LABEL_H = 0.8 // space reserved above each room row for its label
 const LABEL_OFFSET = 0.62 // how far above the room's top edge the label sits
 const LOOSE_STRIDE_X = 2.4
 const LOOSE_STRIDE_Y = 2.7
@@ -104,7 +104,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
     return { a, x: MAP_PAD + 0.9 + col * LOOSE_STRIDE_X + jx, y: looseTop + row * LOOSE_STRIDE_Y + jy }
   })
   const looseRows = loose.length > 0 ? Math.ceil(loose.length / loosePerRow) : 0
-  const totalRows = Math.max(6, Math.ceil(looseTop + looseRows * LOOSE_STRIDE_Y + (looseRows > 0 ? 0.8 : 0)))
+  const totalRows = Math.max(6, Math.ceil(looseTop + looseRows * LOOSE_STRIDE_Y + MAP_PAD))
 
   // Resolve every seated agent's on-screen position within its room's desks.
   const layouts = placed.map((p) => {
