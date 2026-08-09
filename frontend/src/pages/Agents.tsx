@@ -6,9 +6,10 @@ import type { AgentStat } from '../lib/agentAvatar'
 import { API_URL } from '../lib/api'
 import type { AgentCardStats } from '../lib/types'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
-import { Button, Dialog, EmptyState } from '../ui'
+import { Button, Dialog, EmptyState, Field, Input, Select } from '../ui'
 
 const EMPTY_STATS: AgentCardStats = { conversations: 0, attendedConversations: 0, qualifiedLeads: 0 }
+const NO_SECTOR = '__none__'
 
 // Undefined stats (still loading) render as "—"; a loaded agent with no
 // activity shows zeros.
@@ -25,6 +26,12 @@ export function Agents() {
   const { agents, agentsLoading, loadAgents, sectors } = useAgentsAndWidgets()
   const [isCreating, setIsCreating] = useState(false)
   const [agentStats, setAgentStats] = useState<Record<string, AgentCardStats> | null>(null)
+
+  // Search + filters.
+  const [search, setSearch] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [filterSector, setFilterSector] = useState('') // '' = all, sector name, or NO_SECTOR
+  const [filterProvider, setFilterProvider] = useState('') // '' = all | 'anthropic' | 'openai'
 
   useEffect(() => {
     let cancelled = false
@@ -49,15 +56,52 @@ export function Agents() {
     return map
   }, [sectors])
 
+  const activeFilters = (filterSector ? 1 : 0) + (filterProvider ? 1 : 0)
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return agents.filter((a) => {
+      if (q && !`${a.name} ${a.objective || ''}`.toLowerCase().includes(q)) return false
+      if (filterProvider && a.provider !== filterProvider) return false
+      if (filterSector) {
+        const sec = sectorByAgent.get(a._id) ?? null
+        if (filterSector === NO_SECTOR ? sec !== null : sec !== filterSector) return false
+      }
+      return true
+    })
+  }, [agents, search, filterProvider, filterSector, sectorByAgent])
+
+  function clearFilters() {
+    setFilterSector('')
+    setFilterProvider('')
+  }
+  function clearAll() {
+    setSearch('')
+    clearFilters()
+  }
+
   return (
     <AppLayout
       current="/agents"
       title="Agentes"
       subtitle="Seu time de agentes de IA"
       actions={
-        <Button icon="plus" onClick={() => setIsCreating(true)}>
-          Contratar agente
-        </Button>
+        <>
+          <Input
+            icon="search"
+            placeholder="Buscar agente"
+            aria-label="Buscar agente"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ width: 220 }}
+          />
+          <Button variant="secondary" icon="sliders-horizontal" onClick={() => setFilterOpen(true)}>
+            {activeFilters > 0 ? `Filtros · ${activeFilters}` : 'Filtros'}
+          </Button>
+          <Button icon="plus" onClick={() => setIsCreating(true)}>
+            Contratar agente
+          </Button>
+        </>
       }
     >
       {agentsLoading ? (
@@ -73,9 +117,20 @@ export function Agents() {
             </Button>
           }
         />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon="search-x"
+          title="Nenhum agente encontrado"
+          body="Ajuste a busca ou os filtros pra ver mais agentes."
+          action={
+            <Button variant="secondary" icon="x" onClick={clearAll}>
+              Limpar busca e filtros
+            </Button>
+          }
+        />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
-          {agents.map((agent) => (
+          {filtered.map((agent) => (
             <AgentCard
               key={agent._id}
               agent={agent}
@@ -85,6 +140,39 @@ export function Agents() {
           ))}
         </div>
       )}
+
+      <Dialog open={filterOpen} onClose={() => setFilterOpen(false)} title="Filtrar agentes" width={420}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <Field label="Setor">
+            <Select
+              value={filterSector}
+              onChange={(e) => setFilterSector(e.target.value)}
+              options={[
+                { value: '', label: 'Todos os setores' },
+                ...sectors.map((s) => ({ value: s.name, label: s.name })),
+                { value: NO_SECTOR, label: 'Sem setor' },
+              ]}
+            />
+          </Field>
+          <Field label="Provedor">
+            <Select
+              value={filterProvider}
+              onChange={(e) => setFilterProvider(e.target.value)}
+              options={[
+                { value: '', label: 'Todos' },
+                { value: 'anthropic', label: 'Anthropic' },
+                { value: 'openai', label: 'OpenAI' },
+              ]}
+            />
+          </Field>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 4 }}>
+            <Button variant="ghost" onClick={clearFilters} disabled={activeFilters === 0}>
+              Limpar filtros
+            </Button>
+            <Button onClick={() => setFilterOpen(false)}>Aplicar</Button>
+          </div>
+        </div>
+      </Dialog>
 
       <Dialog open={isCreating} onClose={() => setIsCreating(false)} title="Novo agente" width={680}>
         <AgentForm
