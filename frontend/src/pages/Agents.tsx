@@ -86,22 +86,9 @@ export function Agents() {
       title="Agentes"
       subtitle="Seu time de agentes de IA"
       actions={
-        <>
-          <Input
-            icon="search"
-            placeholder="Buscar agente"
-            aria-label="Buscar agente"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ width: 220 }}
-          />
-          <Button variant="secondary" icon="sliders-horizontal" onClick={() => setFilterOpen(true)}>
-            {activeFilters > 0 ? `Filtros · ${activeFilters}` : 'Filtros'}
-          </Button>
-          <Button icon="plus" onClick={() => setIsCreating(true)}>
-            Contratar agente
-          </Button>
-        </>
+        <Button icon="plus" onClick={() => setIsCreating(true)}>
+          Contratar agente
+        </Button>
       }
     >
       {agentsLoading ? (
@@ -117,27 +104,46 @@ export function Agents() {
             </Button>
           }
         />
-      ) : filtered.length === 0 ? (
-        <EmptyState
-          icon="search-x"
-          title="Nenhum agente encontrado"
-          body="Ajuste a busca ou os filtros pra ver mais agentes."
-          action={
-            <Button variant="secondary" icon="x" onClick={clearAll}>
-              Limpar busca e filtros
-            </Button>
-          }
-        />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
-          {filtered.map((agent) => (
-            <AgentCard
-              key={agent._id}
-              agent={agent}
-              sectorName={sectorByAgent.get(agent._id) ?? null}
-              stats={buildStats(agentStats ? (agentStats[agent._id] ?? EMPTY_STATS) : undefined)}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Toolbar: search + filter live in the page, not the topbar. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Input
+              icon="search"
+              placeholder="Buscar agente"
+              aria-label="Buscar agente"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{ flex: 1, maxWidth: 420 }}
             />
-          ))}
+            <Button variant="secondary" icon="sliders-horizontal" onClick={() => setFilterOpen(true)}>
+              {activeFilters > 0 ? `Filtros · ${activeFilters}` : 'Filtros'}
+            </Button>
+          </div>
+
+          {filtered.length === 0 ? (
+            <EmptyState
+              icon="search-x"
+              title="Nenhum agente encontrado"
+              body="Ajuste a busca ou os filtros pra ver mais agentes."
+              action={
+                <Button variant="secondary" icon="x" onClick={clearAll}>
+                  Limpar busca e filtros
+                </Button>
+              }
+            />
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
+              {filtered.map((agent) => (
+                <AgentCard
+                  key={agent._id}
+                  agent={agent}
+                  sectorName={sectorByAgent.get(agent._id) ?? null}
+                  stats={buildStats(agentStats ? (agentStats[agent._id] ?? EMPTY_STATS) : undefined)}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
