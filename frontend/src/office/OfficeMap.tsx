@@ -7,27 +7,68 @@ interface OfficeMapProps {
   rows?: number
   tile?: number
   zoom?: number
+  fitToView?: boolean
   children?: ReactNode
   style?: CSSProperties
 }
 
-const MIN_ZOOM = 0.5
+const ABS_MIN_ZOOM = 0.3
 const MAX_ZOOM = 2
 const ZOOM_STEP = 0.15
-const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100))
+const round2 = (z: number) => Math.round(z * 100) / 100
 
-// The office viewport: a fixed-size window onto a larger floor. Drag to pan
-// (no scrollbars/wheel-scroll), and zoom with the +/-/reset controls or
-// Ctrl/Cmd + wheel. The grid always fills the whole window on both axes.
-export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom = 1, children, style }: OfficeMapProps) {
+// The office viewport: a fixed-size window onto the floor. Drag to pan (no
+// scrollbars/wheel-scroll), and zoom with the +/-/reset controls or Ctrl/Cmd +
+// wheel. The floor grid always fills the whole window; zooming out stops once
+// the entire office fits, so it never shrinks into a corner leaving empty space.
+export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom = 1, fitToView = false, children, style }: OfficeMapProps) {
   const ref = useRef<HTMLDivElement>(null)
   const drag = useRef({ x: 0, y: 0, sl: 0, st: 0, active: false, moved: false })
+  const userZoomed = useRef(false)
   const [zoom, setZoom] = useState(initialZoom)
   const t = tile * zoom
+  const cw = cols * t
+  const ch = rows * t
+
+  // Measure the viewport so the zoom-out floor can track the office's real size.
+  const [viewport, setViewport] = useState({ w: 0, h: 0 })
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const measure = () => {
+      const w = el.clientWidth
+      const h = el.clientHeight
+      setViewport((v) => (v.w === w && v.h === h ? v : { w, h }))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // Lowest zoom that still shows the WHOLE office (contain-fit): the office's
+  // max width/height is the zoom-out limit, so you never zoom past it into a
+  // mostly-empty screen. Capped at 1 (never force a zoom-in as the minimum).
+  const baseW = cols * tile
+  const baseH = rows * tile
+  const fitZoom = viewport.w > 0 && viewport.h > 0 ? Math.min(viewport.w / baseW, viewport.h / baseH) : ABS_MIN_ZOOM
+  const minZoom = Math.min(1, Math.max(ABS_MIN_ZOOM, round2(fitZoom)))
+  const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(minZoom, round2(z)))
+
+  // Until the user zooms manually, keep the whole office fitted to the viewport
+  // (so the default view fills it with no dead space). After they zoom, only
+  // re-clamp so the zoom never drops below the fit limit.
+  useEffect(() => {
+    if (viewport.w === 0) return
+    if (fitToView && !userZoomed.current) setZoom(minZoom)
+    else setZoom((z) => Math.min(MAX_ZOOM, Math.max(minZoom, z)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minZoom, fitToView])
 
   // Keep the viewport centre stable across a zoom change.
   const pendingAnchor = useRef<{ fx: number; fy: number } | null>(null)
   const zoomBy = (delta: number) => {
+    userZoomed.current = true
     const el = ref.current
     if (el) {
       pendingAnchor.current = {
@@ -112,13 +153,20 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
     }
   }
 
+  // Centre the office when it's smaller than the viewport, pin it to the corner
+  // (offset 0) when it's larger and pans. The grid follows the same offset so it
+  // fills the whole window AND stays aligned with the rooms.
+  const offX = `max(0px, calc((100% - ${cw}px) / 2))`
+  const offY = `max(0px, calc((100% - ${ch}px) / 2))`
+
   const inner: CSSProperties = {
     position: 'relative',
-    width: `max(${cols * t}px, 100%)`,
-    height: `max(${rows * t}px, 100%)`,
+    width: `max(${cw}px, 100%)`,
+    height: `max(${ch}px, 100%)`,
     background: 'var(--map-floor)',
     backgroundImage:
       'repeating-linear-gradient(90deg, transparent 0 calc(var(--tile) - 1px), var(--map-floor-line) calc(var(--tile) - 1px) var(--tile)), repeating-linear-gradient(0deg, transparent 0 calc(var(--tile) - 1px), var(--map-floor-line) calc(var(--tile) - 1px) var(--tile))',
+    backgroundPosition: `${offX} ${offY}`,
   }
   ;(inner as Record<string, string>)['--tile'] = `${t}px`
 
@@ -143,15 +191,29 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
         onClickCapture={onClickCapture}
         style={{ position: 'absolute', inset: 0, overflow: 'hidden', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
       >
-        <div style={inner}>{children}</div>
+        <div style={inner}>
+          {/* Content layer — centred within the floor when the office is small. */}
+          <div style={{ position: 'absolute', left: offX, top: offY, width: `${cw}px`, height: `${ch}px` }}>{children}</div>
+        </div>
       </div>
 
       {/* Zoom + fullscreen controls — fixed in the corner, above the panning floor. */}
       <div style={{ position: 'absolute', right: 12, bottom: 12, zIndex: 30, display: 'flex', flexDirection: 'column', gap: 6 }}>
         <IconButton icon={isFull ? 'shrink' : 'expand'} variant="card" size="sm" label={isFull ? 'Sair da tela cheia' : 'Tela cheia'} onClick={toggleFull} />
         <IconButton icon="plus" variant="card" size="sm" label="Aproximar" onClick={() => zoomBy(ZOOM_STEP)} disabled={zoom >= MAX_ZOOM} />
-        <IconButton icon="minus" variant="card" size="sm" label="Afastar" onClick={() => zoomBy(-ZOOM_STEP)} disabled={zoom <= MIN_ZOOM} />
-        <IconButton icon="maximize" variant="card" size="sm" label="Redefinir zoom" onClick={() => zoomBy(1 - zoom)} disabled={zoom === 1} />
+        <IconButton icon="minus" variant="card" size="sm" label="Afastar" onClick={() => zoomBy(-ZOOM_STEP)} disabled={zoom <= minZoom} />
+        <IconButton
+          icon="maximize"
+          variant="card"
+          size="sm"
+          label="Ajustar à tela"
+          onClick={() => {
+            userZoomed.current = false
+            pendingAnchor.current = null
+            setZoom(minZoom)
+          }}
+          disabled={round2(zoom) <= minZoom}
+        />
       </div>
     </div>
   )

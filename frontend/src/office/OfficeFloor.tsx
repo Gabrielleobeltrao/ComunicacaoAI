@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { accentFor, characterFor, statusFor } from '../lib/agentAvatar'
 import type { AgentSummary, SectorSummary } from '../lib/types'
@@ -11,7 +12,10 @@ import { OfficeMap } from './OfficeMap'
 // and shapes, placed on jittered "shelves" so they never line up, and agents
 // without a sector stand loose, scattered anywhere the rooms leave free — above,
 // below, beside and between them. Everything is derived from ids via a seeded
-// PRNG, so the messy layout is random-looking yet stable across renders.
+// PRNG, so the messy layout is random-looking yet stable across renders. The
+// footprint follows the panel's aspect (a wide, short banner) and is shrink-
+// wrapped to the real content, so the office fills the viewport with no dead
+// space to zoom past.
 const OBJ = '/illustrations/map/objects'
 
 const DESK_W = 3
@@ -24,6 +28,7 @@ const DESK_ORIGIN_Y = 2 // top space inside a room for its label + far-agent hea
 const ROOM_PAD_X = 1
 const MARGIN = 1.0 // hard safety edge — nothing crosses it
 const LABEL_OFFSET = 0.62
+const VIEWPORT_H = 560 // map viewport height (px) — the floor's aspect follows the panel width
 
 const SLOTS = [
   { col: 0, top: true },
@@ -74,6 +79,22 @@ function sizeOf(room: Room, rng: () => number) {
 export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; sectors?: SectorSummary[] }) {
   const navigate = useNavigate()
 
+  // Measure the panel width so the office footprint matches its aspect ratio (a
+  // wide, short banner) instead of coming out square and leaving big empty
+  // margins when the whole office is zoomed to fit.
+  const hostRef = useRef<HTMLDivElement>(null)
+  const [hostW, setHostW] = useState(0)
+  useEffect(() => {
+    const el = hostRef.current
+    if (!el) return
+    const measure = () => setHostW((w) => (w === el.clientWidth ? w : el.clientWidth))
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const aspect = Math.min(3.2, Math.max(1.4, (hostW || 1100) / VIEWPORT_H))
+
   const agentById = new Map(agents.map((a) => [a._id, a]))
   const used = new Set<string>()
   const rooms: Room[] = sectors.map((s) => {
@@ -84,17 +105,15 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   const loose = agents.filter((a) => !used.has(a._id))
 
   // Size every room first, then pick an office width that scales with how much
-  // content there is (rooms + loose agents) — so the floor grows with the team
-  // instead of being a fixed, mostly-empty area.
+  // content there is (rooms + loose agents) AND matches the panel's aspect, so
+  // the floor is wide-and-short like the viewport rather than square.
   const roomData = rooms.map((room) => {
     const rng = mulberry32(hash32(room.key))
     return { room, size: sizeOf(room, rng), rng }
   })
   const sumArea = roomData.reduce((acc, d) => acc + d.size.roomW * d.size.roomH, 0)
   const maxRoomW = roomData.reduce((m, d) => Math.max(m, d.size.roomW), 6)
-  // Aim for a roughly square footprint that scales with the content — the extra
-  // area factor also leaves gaps between rooms wide enough for a loose agent.
-  const targetW = Math.max(maxRoomW + 3, Math.sqrt((sumArea + loose.length * 6) * 2.2))
+  const targetW = Math.max(maxRoomW + 3, Math.sqrt((sumArea + loose.length * 6) * 2.6 * aspect))
   const perim = loose.length > 0 ? 2.2 : 0.6
 
   // Place rooms on lightly-jittered shelves — varied, no grid, with roomy gaps
@@ -119,15 +138,17 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
     shelfBottom = Math.max(shelfBottom, y + s.roomH)
   }
   const roomMaxY = placed.length > 0 ? shelfBottom : MARGIN + perim
-  const cols = Math.max(6, Math.ceil(roomMaxX + perim + MARGIN))
-  const totalRows = Math.max(6, Math.ceil(roomMaxY + perim + MARGIN))
+
+  // Provisional bounds give loose agents room to breathe around the rooms.
+  const scatterCols = Math.max(6, Math.ceil(roomMaxX + perim + MARGIN))
+  const scatterRows = Math.max(6, Math.ceil(roomMaxY + perim + MARGIN))
 
   // Scatter loose agents in whatever space the rooms leave free (all sides + gaps).
   const roomRects = placed.map((p) => ({ x: p.x, y: p.y - LABEL_OFFSET - 0.5, x2: p.x + p.w, y2: p.y + p.h }))
   const ax0 = MARGIN + 0.7
-  const ax1 = cols - MARGIN - 0.7
+  const ax1 = scatterCols - MARGIN - 0.7
   const ay0 = MARGIN + 0.7
-  const ay1 = totalRows - MARGIN - 1.6
+  const ay1 = scatterRows - MARGIN - 1.6
   const loosePos: { a: AgentSummary; x: number; y: number }[] = []
   for (const a of loose) {
     const rng = mulberry32(hash32(a._id))
@@ -147,6 +168,18 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
     }
     loosePos.push({ a, x: pos.x, y: pos.y })
   }
+
+  // Shrink-wrap the floor to the actual content (rooms + where loose agents
+  // ended up) so there's no dead space beyond it — the office area itself is
+  // the zoom-out limit.
+  let contentMaxX = roomMaxX
+  let contentMaxY = roomMaxY
+  for (const o of loosePos) {
+    contentMaxX = Math.max(contentMaxX, o.x + 0.9)
+    contentMaxY = Math.max(contentMaxY, o.y + 0.6)
+  }
+  const cols = Math.max(6, Math.ceil(contentMaxX + 1.2))
+  const totalRows = Math.max(6, Math.ceil(contentMaxY + 1.2))
 
   // Seats within each room's (variable) desk grid.
   const layouts = placed.map((p) => {
@@ -192,70 +225,74 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   }
 
   return (
-    <OfficeMap cols={cols} rows={totalRows} tile={42} style={{ height: 560 }}>
-      {/* Sector rooms (varied sizes/shapes) */}
-      {placed.map((p) => (
-        <MapZone key={p.room.key} x={p.x} y={p.y} w={p.w} h={p.h} tint={p.room.color} />
-      ))}
+    <div ref={hostRef}>
+      <OfficeMap cols={cols} rows={totalRows} tile={42} fitToView style={{ height: VIEWPORT_H }}>
+        {/* Sector rooms (varied sizes/shapes) */}
+        {placed.map((p) => (
+          <MapZone key={p.room.key} x={p.x} y={p.y} w={p.w} h={p.h} tint={p.room.color} />
+        ))}
 
-      {/* Sector labels — above each room, outside it */}
-      {placed.map((p) => (
-        <NamePill
-          key={`lbl-${p.room.key}`}
-          name={p.room.name}
-          tone="light"
-          style={{
-            position: 'absolute',
-            left: `calc(var(--tile) * ${p.x + p.w / 2})`,
-            // Anchor the pill by its BOTTOM, a little above the room's top edge,
-            // so it sits fully outside the room (never over the border/agents).
-            top: `calc(var(--tile) * ${p.y} - 3px)`,
-            transform: 'translate(-50%, -100%)',
-            zIndex: 6,
-            whiteSpace: 'nowrap',
-            pointerEvents: 'none',
-          }}
-        />
-      ))}
-
-      {/* Far chairs (z0) */}
-      {topSeats.map((s) => (
-        <MapObject key={`fc-${s.a._id}`} x={s.x} y={s.y + 0.5} w={1} h={1} art={`${OBJ}/cadeira-longe-1x1.svg`} label="Cadeira" style={{ zIndex: 0, pointerEvents: 'none' }} />
-      ))}
-      {/* Far-side agents (frente, z1) */}
-      {topSeats.map((s) => seatedAgentEl(s, 'frente', 1))}
-      {/* Desks (z2) */}
-      {layouts.flatMap((l) =>
-        l.desks.map((d, i) => (
-          <MapObject key={`desk-${l.p.room.key}-${i}`} x={d.x} y={d.y} w={DESK_W} h={DESK_DEPTH} art={`${OBJ}/mesa-4-3x3.svg`} label="Mesa" style={{ zIndex: 2 }} />
-        )),
-      )}
-      {/* Near-side agents (costas, z3) */}
-      {bottomSeats.map((s) => seatedAgentEl(s, 'costas', 3))}
-      {/* Near chairs (z4) */}
-      {bottomSeats.map((s) => (
-        <MapObject key={`nc-${s.a._id}`} x={s.x - 0.075} y={s.y + 1} w={1.15} h={1.3} art={`${OBJ}/cadeira-perto-1x1.15.svg`} label="Cadeira" style={{ zIndex: 4, pointerEvents: 'none' }} />
-      ))}
-
-      {/* Loose agents (no sector) — scattered full-body around the office */}
-      {loosePos.map((o) => {
-        const status = statusFor(o.a._id)
-        return (
-          <MapAgent
-            key={o.a._id}
-            x={o.x}
-            y={o.y}
-            name={o.a.name.split(' ')[0]}
-            status={status}
-            agent={characterFor(o.a._id)}
-            facing="frente"
-            department={accentFor(o.a._id)}
-            hoverLift={false}
-            style={{ zIndex: 3 }}
-            onOpen={() => navigate(`/agents/${o.a._id}`)}
+        {/* Sector labels — above each room, outside it */}
+        {placed.map((p) => (
+          <NamePill
+            key={`lbl-${p.room.key}`}
+            name={p.room.name}
+            tone="light"
+            style={{
+              position: 'absolute',
+              left: `calc(var(--tile) * ${p.x + p.w / 2})`,
+              // Anchor the pill by its BOTTOM, a little above the room's top edge,
+              // so it sits fully outside the room (never over the border/agents).
+              top: `calc(var(--tile) * ${p.y} - 3px)`,
+              transform: 'translate(-50%, -100%)',
+              zIndex: 6,
+              whiteSpace: 'nowrap',
+              pointerEvents: 'none',
+            }}
           />
-        )
-      })}
-    </OfficeMap>
+        ))}
+
+        {/* Far chairs (z0) */}
+        {topSeats.map((s) => (
+          <MapObject key={`fc-${s.a._id}`} x={s.x} y={s.y + 0.5} w={1} h={1} art={`${OBJ}/cadeira-longe-1x1.svg`} label="Cadeira" style={{ zIndex: 0, pointerEvents: 'none' }} />
+        ))}
+        {/* Far-side agents (frente, z1) */}
+        {topSeats.map((s) => seatedAgentEl(s, 'frente', 1))}
+        {/* Desks (z2) */}
+        {layouts.flatMap((l) =>
+          l.desks.map((d, i) => (
+            <MapObject key={`desk-${l.p.room.key}-${i}`} x={d.x} y={d.y} w={DESK_W} h={DESK_DEPTH} art={`${OBJ}/mesa-4-3x3.svg`} label="Mesa" style={{ zIndex: 2 }} />
+          )),
+        )}
+        {/* Near-side agents (costas, z3) */}
+        {bottomSeats.map((s) => seatedAgentEl(s, 'costas', 3))}
+        {/* Near chairs (z4) */}
+        {bottomSeats.map((s) => (
+          <MapObject key={`nc-${s.a._id}`} x={s.x - 0.075} y={s.y + 1} w={1.15} h={1.3} art={`${OBJ}/cadeira-perto-1x1.15.svg`} label="Cadeira" style={{ zIndex: 4, pointerEvents: 'none' }} />
+        ))}
+
+        {/* Loose agents (no sector) — scattered full-body around the office,
+            some facing front and some with their backs turned, for variety. */}
+        {loosePos.map((o) => {
+          const status = statusFor(o.a._id)
+          const facing = mulberry32(hash32(`${o.a._id}:facing`))() < 0.4 ? 'costas' : 'frente'
+          return (
+            <MapAgent
+              key={o.a._id}
+              x={o.x}
+              y={o.y}
+              name={o.a.name.split(' ')[0]}
+              status={status}
+              agent={characterFor(o.a._id)}
+              facing={facing}
+              department={accentFor(o.a._id)}
+              hoverLift={false}
+              style={{ zIndex: 3 }}
+              onOpen={() => navigate(`/agents/${o.a._id}`)}
+            />
+          )
+        })}
+      </OfficeMap>
+    </div>
   )
 }
