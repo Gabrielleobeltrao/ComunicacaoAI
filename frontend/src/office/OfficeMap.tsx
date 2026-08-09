@@ -74,7 +74,9 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom = 1, children,
       onClickCapture={onClickCapture}
       style={{
         position: 'relative',
-        overflow: 'auto',
+        // Hidden (not auto): no scrollbars and no wheel-scroll — you navigate
+        // only by dragging. Programmatic scrollLeft/scrollTop still pans.
+        overflow: 'hidden',
         cursor: 'grab',
         touchAction: 'none',
         userSelect: 'none',
