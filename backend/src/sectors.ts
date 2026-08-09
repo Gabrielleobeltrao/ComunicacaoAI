@@ -4,17 +4,17 @@ import { db } from './db.js'
 // 'adaptive': a supervisor consults the right specialists per message.
 // 'pipeline': an ordered flow — each member handles one stage and hands off to
 // the next when its advance condition is met (member order = stage order).
-export type TeamMode = 'adaptive' | 'pipeline'
+export type SectorMode = 'adaptive' | 'pipeline'
 
 // Pipeline only: a conditional jump from this stage to another one (identified
 // by its agent). Lets a flow skip ahead, branch (A → B or C), or go back to an
 // earlier stage when the topic changes — beyond the plain linear advance.
-export interface TeamTransition {
+export interface SectorTransition {
   condition: string
   targetAgentId: ObjectId
 }
 
-export interface TeamMember {
+export interface SectorMember {
   agentId: ObjectId
   // Optional department/sector label (e.g. Suporte, Vendas) used to group
   // members in the UI and to help the adaptive supervisor route. Empty = none.
@@ -27,42 +27,42 @@ export interface TeamMember {
   // in adaptive mode.
   advanceWhen: string
   // Pipeline only: conditional jumps to non-adjacent stages (skip/branch/back).
-  transitions: TeamTransition[]
+  transitions: SectorTransition[]
   // The fallback specialist for ambiguous messages; also the source of
   // widget-level settings (first message, conversation persistence, limit).
   isDefault: boolean
 }
 
-export interface Team {
+export interface Sector {
   _id: ObjectId
   ownerId: string
   // The Escritório this sector belongs to. Required — a sector is never an
   // orphan (unlike agents, which may have no sector).
   officeId: ObjectId
   name: string
-  mode: TeamMode
-  members: TeamMember[]
+  mode: SectorMode
+  members: SectorMember[]
   createdAt: Date
 }
 
-const teams = db.collection<Team>('teams')
+const sectors = db.collection<Sector>('sectors')
 
 // Exactly one member must be the default. If none/many are flagged, pick the first.
-function normalizeMembers(members: TeamMember[]): TeamMember[] {
+function normalizeMembers(members: SectorMember[]): SectorMember[] {
   if (members.length === 0) return members
   const defaultIndex = members.findIndex((m) => m.isDefault)
   const chosen = defaultIndex >= 0 ? defaultIndex : 0
   return members.map((m, i) => ({ ...m, isDefault: i === chosen }))
 }
 
-export async function createTeam(
+export async function createSector(
   ownerId: string,
   officeId: ObjectId,
   name: string,
-  mode: TeamMode,
-  members: TeamMember[],
+  mode: SectorMode,
+  members: SectorMember[],
 ) {
-  const team: Omit<Team, '_id'> = {
+  const team: Omit<Sector, '_id'> = {
     ownerId,
     officeId,
     name,
@@ -70,29 +70,29 @@ export async function createTeam(
     members: normalizeMembers(members),
     createdAt: new Date(),
   }
-  const result = await teams.insertOne(team as Team)
+  const result = await sectors.insertOne(team as Sector)
   return { ...team, _id: result.insertedId }
 }
 
-export function listTeams(ownerId: string) {
-  return teams.find({ ownerId }).sort({ createdAt: -1 }).toArray()
+export function listSectors(ownerId: string) {
+  return sectors.find({ ownerId }).sort({ createdAt: -1 }).toArray()
 }
 
-export function getTeamById(ownerId: string, teamId: ObjectId) {
-  return teams.findOne({ _id: teamId, ownerId })
+export function getSectorById(ownerId: string, teamId: ObjectId) {
+  return sectors.findOne({ _id: teamId, ownerId })
 }
 
-export function updateTeam(
+export function updateSector(
   ownerId: string,
   teamId: ObjectId,
-  updates: { name?: string; mode?: TeamMode; members?: TeamMember[] },
+  updates: { name?: string; mode?: SectorMode; members?: SectorMember[] },
 ) {
   const normalized = updates.members ? { ...updates, members: normalizeMembers(updates.members) } : updates
-  return teams.findOneAndUpdate({ _id: teamId, ownerId }, { $set: normalized }, { returnDocument: 'after' })
+  return sectors.findOneAndUpdate({ _id: teamId, ownerId }, { $set: normalized }, { returnDocument: 'after' })
 }
 
-export function deleteTeam(ownerId: string, teamId: ObjectId) {
-  return teams.deleteOne({ _id: teamId, ownerId })
+export function deleteSector(ownerId: string, teamId: ObjectId) {
+  return sectors.deleteOne({ _id: teamId, ownerId })
 }
 
 // An agent belongs to at most one sector (parent-child). After adding agents to
@@ -101,11 +101,11 @@ export function deleteTeam(ownerId: string, teamId: ObjectId) {
 // are re-normalized (a pulled member could have been the default).
 export async function enforceSingleMembership(ownerId: string, keepTeamId: ObjectId, agentIds: ObjectId[]) {
   if (agentIds.length === 0) return
-  const affected = await teams
+  const affected = await sectors
     .find({ ownerId, _id: { $ne: keepTeamId }, 'members.agentId': { $in: agentIds } })
     .toArray()
   for (const t of affected) {
     const remaining = t.members.filter((m) => !agentIds.some((id) => id.equals(m.agentId)))
-    await teams.updateOne({ _id: t._id }, { $set: { members: normalizeMembers(remaining) } })
+    await sectors.updateOne({ _id: t._id }, { $set: { members: normalizeMembers(remaining) } })
   }
 }

@@ -8,20 +8,20 @@ import {
   buildStructuredMemoryUpdatePrompt,
   buildStructuredOutputExtractionPrompt,
   buildSystemPromptParts,
-  buildTeamPlannerPrompt,
+  buildSectorPlannerPrompt,
   GUARDRAIL_CHECK_SYSTEM_PROMPT,
   IDENTITY_EXTRACTION_SYSTEM_PROMPT,
   MEMORY_UPDATE_SYSTEM_PROMPT,
   parseInScopeResult,
   parseJsonObject,
   parseStageTransition,
-  parseTeamPlan,
+  parseSectorPlan,
   STAGE_TRANSITION_SYSTEM_PROMPT,
   STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT,
   STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT,
-  TEAM_PLANNER_SYSTEM_PROMPT,
+  SECTOR_PLANNER_SYSTEM_PROMPT,
 } from './systemPrompt.js'
-import type { ChatTurn, RouterOption, StageTransitionOption, TeamPlan } from './systemPrompt.js'
+import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
 import { MAX_TOOL_ITERATIONS, runResolvedTool } from './agentTools.js'
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
@@ -261,7 +261,7 @@ export async function checkGuardrail(
   return parseInScopeResult(textBlock.text)
 }
 
-export async function planTeamResponse(
+export async function planSectorResponse(
   options: RouterOption[],
   currentIndices: number[],
   defaultIndex: number,
@@ -269,24 +269,24 @@ export async function planTeamResponse(
   visitorMessage: string,
   model?: string | null,
   apiKey?: string | null,
-): Promise<TeamPlan> {
+): Promise<SectorPlan> {
   const response = await buildClient(apiKey).messages.create({
     model: model || DEFAULT_MODEL,
     max_tokens: 80,
-    system: TEAM_PLANNER_SYSTEM_PROMPT,
+    system: SECTOR_PLANNER_SYSTEM_PROMPT,
     thinking: { type: 'disabled' },
     output_config: { effort: 'low' },
     messages: [
       {
         role: 'user',
-        content: buildTeamPlannerPrompt(options, currentIndices, defaultIndex, recentMessages, visitorMessage),
+        content: buildSectorPlannerPrompt(options, currentIndices, defaultIndex, recentMessages, visitorMessage),
       },
     ],
   })
 
   const textBlock = response.content.find((block) => block.type === 'text')
   if (!textBlock || textBlock.type !== 'text') return { specialists: [defaultIndex], clarify: false }
-  return parseTeamPlan(textBlock.text, options.length, defaultIndex)
+  return parseSectorPlan(textBlock.text, options.length, defaultIndex)
 }
 
 export async function planStageTransition(

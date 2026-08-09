@@ -1,7 +1,7 @@
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 import * as anthropicProvider from './claude.js'
 import * as openaiProvider from './openai.js'
-import type { ChatTurn, RouterOption, StageTransitionOption, TeamPlan } from './systemPrompt.js'
+import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
 
 export type { ChatTurn }
 export type Provider = 'anthropic' | 'openai'
@@ -74,7 +74,7 @@ export function checkGuardrail(
   return providerFor(provider).checkGuardrail(objective, recentMessages, visitorMessage, model, apiKey)
 }
 
-export function planTeamResponse(
+export function planSectorResponse(
   options: RouterOption[],
   currentIndices: number[],
   defaultIndex: number,
@@ -83,8 +83,8 @@ export function planTeamResponse(
   provider: string | null | undefined,
   model: string | null | undefined,
   apiKey: string | null | undefined,
-): Promise<TeamPlan> {
-  return providerFor(provider).planTeamResponse(
+): Promise<SectorPlan> {
+  return providerFor(provider).planSectorResponse(
     options,
     currentIndices,
     defaultIndex,

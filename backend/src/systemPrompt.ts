@@ -9,12 +9,12 @@ export interface RouterOption {
   description: string
 }
 
-export interface TeamPlan {
+export interface SectorPlan {
   specialists: number[]
   clarify: boolean
 }
 
-export const TEAM_PLANNER_SYSTEM_PROMPT = `Você é o orquestrador de uma equipe de agentes especialistas de atendimento. Cada agente domina um assunto. Dada a mensagem mais recente do visitante, decida QUAIS especialistas têm a informação necessária para responder — pode ser um ou vários.
+export const SECTOR_PLANNER_SYSTEM_PROMPT = `Você é o orquestrador de um setor de agentes especialistas de atendimento. Cada agente domina um assunto. Dada a mensagem mais recente do visitante, decida QUAIS especialistas têm a informação necessária para responder — pode ser um ou vários.
 
 Regras:
 - Escolha todos os especialistas cujas áreas cobrem o que o visitante quer AGORA. Se a mensagem toca em mais de um assunto, inclua todos os relevantes.
@@ -25,7 +25,7 @@ Regras:
 
 Responda APENAS com um objeto JSON válido, sem comentários, sem markdown: {"specialists": [índices], "clarify": true|false}`
 
-export function buildTeamPlannerPrompt(
+export function buildSectorPlannerPrompt(
   options: RouterOption[],
   currentIndices: number[],
   defaultIndex: number,
@@ -44,7 +44,7 @@ export function buildTeamPlannerPrompt(
 
 // Parse the planner's decision, clamping indices to valid options. Falls back
 // to the default specialist when nothing usable comes back and no clarify.
-export function parseTeamPlan(text: string, optionCount: number, fallbackIndex: number): TeamPlan {
+export function parseSectorPlan(text: string, optionCount: number, fallbackIndex: number): SectorPlan {
   const cleaned = text
     .trim()
     .replace(/^```(?:json)?/i, '')
@@ -71,12 +71,12 @@ export function parseTeamPlan(text: string, optionCount: number, fallbackIndex: 
 
 // Reframes the chosen specialists' expertise into one unified assistant so the
 // visitor never perceives multiple agents.
-export function buildTeamObjective(
+export function buildSectorObjective(
   teamName: string,
   specialists: { name: string; objective: string }[],
 ): string {
   const areas = specialists.map((s) => `- ${s.name}: ${s.objective.trim() || s.name}`).join('\n')
-  return `Você é o assistente de atendimento${teamName ? ` de ${teamName}` : ''}. Responda como UM único assistente, de forma unificada e natural — nunca diga que consultou agentes ou especialistas diferentes, nem mencione uma "equipe". Use as áreas de especialidade abaixo, combinando-as quando a pergunta tocar em mais de uma:\n${areas}`
+  return `Você é o assistente de atendimento${teamName ? ` de ${teamName}` : ''}. Responda como UM único assistente, de forma unificada e natural — nunca diga que consultou agentes ou especialistas diferentes, nem mencione um "setor". Use as áreas de especialidade abaixo, combinando-as quando a pergunta tocar em mais de uma:\n${areas}`
 }
 
 export function buildClarificationInstruction(topics: string[]): string {
@@ -100,7 +100,7 @@ export function buildPipelineStageObjective(
   const goalLine = stage.stageGoal.trim()
     ? `\n\nNesta etapa do atendimento, seu foco é: ${stage.stageGoal.trim()}`
     : ''
-  return `Você é o assistente de atendimento${teamName ? ` de ${teamName}` : ''}. Fale como UM único assistente contínuo: o visitante conversa com você como se fosse uma só pessoa do começo ao fim. NUNCA diga que vai transferir, encaminhar, passar para outro setor, chamar outra pessoa ou consultar um especialista, e nunca mencione "etapas" ou "equipe" — a conversa deve fluir de forma natural e ininterrupta.\n\nSua área de atuação:\n${focus}${goalLine}`
+  return `Você é o assistente de atendimento${teamName ? ` de ${teamName}` : ''}. Fale como UM único assistente contínuo: o visitante conversa com você como se fosse uma só pessoa do começo ao fim. NUNCA diga que vai transferir, encaminhar, passar para outro setor, chamar outra pessoa ou consultar um especialista, e nunca mencione "etapas" ou "setor" — a conversa deve fluir de forma natural e ininterrupta.\n\nSua área de atuação:\n${focus}${goalLine}`
 }
 
 // A possible move out of the current stage: which stage to go to (by its index

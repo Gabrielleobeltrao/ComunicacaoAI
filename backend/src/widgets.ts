@@ -190,7 +190,7 @@ export async function deleteWidget(ownerId: string, widgetId: ObjectId) {
     widgetMessages.deleteMany({ widgetId }),
     db.collection('conversation_memories').deleteMany({ widgetId }),
     db.collection('conversation_turns').deleteMany({ widgetId }),
-    db.collection('team_decisions').deleteMany({ widgetId }),
+    db.collection('sector_decisions').deleteMany({ widgetId }),
     db.collection('agent_tool_calls').deleteMany({ widgetId }),
   ])
   await widgets.deleteOne({ _id: widgetId, ownerId })

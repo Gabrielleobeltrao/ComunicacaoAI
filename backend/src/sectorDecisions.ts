@@ -3,7 +3,7 @@ import { db } from './db.js'
 
 // Observability: one row per orchestration decision so owners can see which
 // specialists the supervisor consulted (and when it asked to clarify).
-export interface TeamDecision {
+export interface SectorDecision {
   _id: ObjectId
   ownerId: string
   teamId: ObjectId
@@ -21,9 +21,9 @@ export interface TeamDecision {
   createdAt: Date
 }
 
-const teamDecisions = db.collection<TeamDecision>('team_decisions')
+const sectorDecisions = db.collection<SectorDecision>('sector_decisions')
 
-export async function logTeamDecision(entry: {
+export async function logSectorDecision(entry: {
   ownerId: string
   teamId: ObjectId
   widgetId: ObjectId | null
@@ -34,16 +34,16 @@ export async function logTeamDecision(entry: {
   advanced?: boolean
   fromStage?: string | null
 }) {
-  await teamDecisions.insertOne({ ...entry, createdAt: new Date() } as TeamDecision)
+  await sectorDecisions.insertOne({ ...entry, createdAt: new Date() } as SectorDecision)
 }
 
 // Owner-facing observability: every orchestration decision in a conversation,
 // oldest first, so the owner can see how the supervisor/pipeline reasoned.
-export function listTeamDecisionsForConversation(ownerId: string, widgetId: ObjectId, conversationId: string) {
-  return teamDecisions.find({ ownerId, widgetId, conversationId }).sort({ createdAt: 1 }).toArray()
+export function listSectorDecisionsForConversation(ownerId: string, widgetId: ObjectId, conversationId: string) {
+  return sectorDecisions.find({ ownerId, widgetId, conversationId }).sort({ createdAt: 1 }).toArray()
 }
 
-export interface TeamDecisionAggregate {
+export interface SectorDecisionAggregate {
   totals: { _id: ObjectId; decisions: number; clarify: number; moved: number }[]
   // Times each specialist/stage handled a turn, per team.
   specialists: { _id: { teamId: ObjectId; name: string }; count: number }[]
@@ -53,9 +53,9 @@ export interface TeamDecisionAggregate {
 
 // Aggregate every orchestration decision for an owner into per-team rollups the
 // dashboard turns into analytics (top specialists, clarify rate, stage activity).
-export async function aggregateTeamDecisions(ownerId: string): Promise<TeamDecisionAggregate> {
+export async function aggregateSectorDecisions(ownerId: string): Promise<SectorDecisionAggregate> {
   const [totals, specialists, fromStages] = await Promise.all([
-    teamDecisions
+    sectorDecisions
       .aggregate([
         { $match: { ownerId } },
         {
@@ -68,14 +68,14 @@ export async function aggregateTeamDecisions(ownerId: string): Promise<TeamDecis
         },
       ])
       .toArray(),
-    teamDecisions
+    sectorDecisions
       .aggregate([
         { $match: { ownerId } },
         { $unwind: '$specialists' },
         { $group: { _id: { teamId: '$teamId', name: '$specialists' }, count: { $sum: 1 } } },
       ])
       .toArray(),
-    teamDecisions
+    sectorDecisions
       .aggregate([
         { $match: { ownerId, fromStage: { $type: 'string' } } },
         { $group: { _id: { teamId: '$teamId', name: '$fromStage' }, count: { $sum: 1 } } },
@@ -83,8 +83,8 @@ export async function aggregateTeamDecisions(ownerId: string): Promise<TeamDecis
       .toArray(),
   ])
   return {
-    totals: totals as TeamDecisionAggregate['totals'],
-    specialists: specialists as TeamDecisionAggregate['specialists'],
-    fromStages: fromStages as TeamDecisionAggregate['fromStages'],
+    totals: totals as SectorDecisionAggregate['totals'],
+    specialists: specialists as SectorDecisionAggregate['specialists'],
+    fromStages: fromStages as SectorDecisionAggregate['fromStages'],
   }
 }

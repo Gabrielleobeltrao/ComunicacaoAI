@@ -54,10 +54,10 @@ import {
   setStructuredMemory,
   setStructuredOutputData,
 } from './conversationMemory.js'
-import { createTeam, deleteTeam, enforceSingleMembership, getTeamById, listTeams, updateTeam } from './teams.js'
-import type { Team, TeamMember, TeamMode, TeamTransition } from './teams.js'
+import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, updateSector } from './sectors.js'
+import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
 import { ensureDefaultOffice } from './offices.js'
-import { migrateOfficeHierarchy } from './migrate.js'
+import { runMigrations } from './migrate.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
@@ -79,7 +79,7 @@ import {
   generateAgentReply,
   listModelsForProvider,
   planStageTransition,
-  planTeamResponse,
+  planSectorResponse,
   PROVIDER_IDS,
   PROVIDER_INFO,
   updateConversationMemory,
@@ -87,7 +87,7 @@ import {
 } from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
 import type { RouterOption, StageTransitionOption } from './systemPrompt.js'
-import { aggregateTeamDecisions, listTeamDecisionsForConversation, logTeamDecision } from './teamDecisions.js'
+import { aggregateSectorDecisions, listSectorDecisionsForConversation, logSectorDecision } from './sectorDecisions.js'
 import {
   buildClarificationInstruction,
   buildIdentityCaptureInstruction,
@@ -95,7 +95,7 @@ import {
   buildPipelineStageObjective,
   buildProactivityInstruction,
   buildResponseStyleInstruction,
-  buildTeamObjective,
+  buildSectorObjective,
   formatStructuredMemory,
   GUARDRAIL_REFUSAL_MESSAGE,
   GUARDRAIL_SCOPE_INSTRUCTION,
@@ -524,14 +524,14 @@ async function resolveOwnedAgentId(ownerId: string, agentId: unknown) {
   return { agentObjectId: agent._id, error: null }
 }
 
-async function resolveOwnedTeamId(ownerId: string, teamId: unknown) {
+async function resolveOwnedSectorId(ownerId: string, teamId: unknown) {
   if (!teamId) return { teamObjectId: null, error: null }
   if (typeof teamId !== 'string' || !ObjectId.isValid(teamId)) {
     return { teamObjectId: null, error: 'Invalid team id' }
   }
-  const team = await getTeamById(ownerId, new ObjectId(teamId))
+  const team = await getSectorById(ownerId, new ObjectId(teamId))
   if (!team) {
-    return { teamObjectId: null, error: 'Team not found' }
+    return { teamObjectId: null, error: 'Sector not found' }
   }
   return { teamObjectId: team._id, error: null }
 }
@@ -547,7 +547,7 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     return
   }
 
-  const { teamObjectId, error: teamError } = await resolveOwnedTeamId(res.locals.userId, teamId)
+  const { teamObjectId, error: teamError } = await resolveOwnedSectorId(res.locals.userId, teamId)
   if (teamError) {
     res.status(400).json({ error: teamError })
     return
@@ -606,7 +606,7 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
   }
   // The widget target: a team wins over a single agent when both are sent.
   if (teamId !== undefined) {
-    const { teamObjectId, error } = await resolveOwnedTeamId(res.locals.userId, teamId)
+    const { teamObjectId, error } = await resolveOwnedSectorId(res.locals.userId, teamId)
     if (error) {
       res.status(400).json({ error })
       return
@@ -691,12 +691,12 @@ app.delete('/api/widgets/:widgetId/avatar', requireAuth, async (req, res) => {
   res.json(widget)
 })
 
-// ---- Teams (agent orchestration) ----
+// ---- Sectors (agent orchestration) ----
 
-const MAX_TEAM_MEMBERS = 10
+const MAX_SECTOR_MEMBERS = 10
 const MAX_STAGE_TRANSITIONS = 5
 
-function serializeTeam(team: WithId<Team>) {
+function serializeSector(team: WithId<Sector>) {
   return {
     _id: team._id.toString(),
     name: team.name,
@@ -715,13 +715,13 @@ function serializeTeam(team: WithId<Team>) {
   }
 }
 
-async function resolveTeamMembers(
+async function resolveSectorMembers(
   ownerId: string,
   raw: unknown,
-): Promise<{ members?: TeamMember[]; error?: string }> {
+): Promise<{ members?: SectorMember[]; error?: string }> {
   if (!Array.isArray(raw)) return { error: 'members must be a list' }
-  if (raw.length > MAX_TEAM_MEMBERS) return { error: `A team can have at most ${MAX_TEAM_MEMBERS} agents` }
-  const members: TeamMember[] = []
+  if (raw.length > MAX_SECTOR_MEMBERS) return { error: `A team can have at most ${MAX_SECTOR_MEMBERS} agents` }
+  const members: SectorMember[] = []
   const rawTransitions: unknown[] = []
   const seen = new Set<string>()
   for (const m of raw) {
@@ -755,7 +755,7 @@ async function resolveTeamMembers(
     if (rt.length > MAX_STAGE_TRANSITIONS) {
       return { error: `A stage can have at most ${MAX_STAGE_TRANSITIONS} transitions` }
     }
-    const transitions: TeamTransition[] = []
+    const transitions: SectorTransition[] = []
     for (const t of rt) {
       if (typeof t !== 'object' || t === null) return { error: 'Invalid transition' }
       const condition = (t as { condition?: unknown }).condition
@@ -777,7 +777,7 @@ async function resolveTeamMembers(
   return { members }
 }
 
-function parseTeamMode(value: unknown): TeamMode | null {
+function parseSectorMode(value: unknown): SectorMode | null {
   if (value === undefined) return 'adaptive'
   return value === 'adaptive' || value === 'pipeline' ? value : null
 }
@@ -788,25 +788,25 @@ app.post('/api/teams', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'name is required' })
     return
   }
-  const parsedMode = parseTeamMode(mode)
+  const parsedMode = parseSectorMode(mode)
   if (parsedMode === null) {
     res.status(400).json({ error: 'Unknown team mode' })
     return
   }
-  const { members: parsed, error } = await resolveTeamMembers(res.locals.userId, members ?? [])
+  const { members: parsed, error } = await resolveSectorMembers(res.locals.userId, members ?? [])
   if (error) {
     res.status(400).json({ error })
     return
   }
   const office = await ensureDefaultOffice(res.locals.userId)
-  const team = await createTeam(res.locals.userId, office._id, name, parsedMode, parsed ?? [])
+  const team = await createSector(res.locals.userId, office._id, name, parsedMode, parsed ?? [])
   await enforceSingleMembership(res.locals.userId, team._id, (parsed ?? []).map((m) => m.agentId))
-  res.status(201).json(serializeTeam(team as WithId<Team>))
+  res.status(201).json(serializeSector(team as WithId<Sector>))
 })
 
 app.get('/api/teams', requireAuth, async (_req, res) => {
-  const teams = await listTeams(res.locals.userId)
-  res.json(teams.map(serializeTeam))
+  const teams = await listSectors(res.locals.userId)
+  res.json(teams.map(serializeSector))
 })
 
 app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
@@ -816,10 +816,10 @@ app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
     return
   }
   const { name, mode, members } = req.body ?? {}
-  const updates: { name?: string; mode?: TeamMode; members?: TeamMember[] } = {}
+  const updates: { name?: string; mode?: SectorMode; members?: SectorMember[] } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (mode !== undefined) {
-    const parsedMode = parseTeamMode(mode)
+    const parsedMode = parseSectorMode(mode)
     if (parsedMode === null) {
       res.status(400).json({ error: 'Unknown team mode' })
       return
@@ -827,7 +827,7 @@ app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
     updates.mode = parsedMode
   }
   if (members !== undefined) {
-    const { members: parsed, error } = await resolveTeamMembers(res.locals.userId, members)
+    const { members: parsed, error } = await resolveSectorMembers(res.locals.userId, members)
     if (error) {
       res.status(400).json({ error })
       return
@@ -838,15 +838,15 @@ app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Nothing to update' })
     return
   }
-  const team = await updateTeam(res.locals.userId, new ObjectId(teamId), updates)
+  const team = await updateSector(res.locals.userId, new ObjectId(teamId), updates)
   if (!team) {
-    res.status(404).json({ error: 'Team not found' })
+    res.status(404).json({ error: 'Sector not found' })
     return
   }
   if (updates.members) {
     await enforceSingleMembership(res.locals.userId, team._id, updates.members.map((m) => m.agentId))
   }
-  res.json(serializeTeam(team))
+  res.json(serializeSector(team))
 })
 
 app.delete('/api/teams/:teamId', requireAuth, async (req, res) => {
@@ -863,13 +863,13 @@ app.delete('/api/teams/:teamId', requireAuth, async (req, res) => {
   const usedByWidgets = widgets.filter((w) => w.teamId?.toString() === teamId).map((w) => w.name)
   if (usedByWidgets.length > 0) {
     res.status(409).json({
-      error: `Esta equipe está em uso por ${usedByWidgets.map((n) => `widget "${n}"`).join(', ')}. Desvincule antes de excluir.`,
+      error: `Este setor está em uso por ${usedByWidgets.map((n) => `widget "${n}"`).join(', ')}. Desvincule antes de excluir.`,
       widgets: usedByWidgets,
     })
     return
   }
 
-  await deleteTeam(ownerId, new ObjectId(teamId))
+  await deleteSector(ownerId, new ObjectId(teamId))
   res.status(204).end()
 })
 
@@ -882,13 +882,13 @@ app.get('/api/teams/:teamId/overview', requireAuth, async (req, res) => {
     return
   }
   const ownerId = res.locals.userId
-  const team = await getTeamById(ownerId, new ObjectId(teamId))
+  const team = await getSectorById(ownerId, new ObjectId(teamId))
   if (!team) {
-    res.status(404).json({ error: 'Team not found' })
+    res.status(404).json({ error: 'Sector not found' })
     return
   }
 
-  const [agg, widgets] = await Promise.all([aggregateTeamDecisions(ownerId), listWidgets(ownerId)])
+  const [agg, widgets] = await Promise.all([aggregateSectorDecisions(ownerId), listWidgets(ownerId)])
   const totals = agg.totals.find((t) => t._id.toString() === teamId) ?? { decisions: 0, clarify: 0, moved: 0 }
   const specialists = agg.specialists
     .filter((s) => s._id.teamId.toString() === teamId)
@@ -912,7 +912,7 @@ app.get('/api/teams/:teamId/overview', requireAuth, async (req, res) => {
       : null
 
   res.json({
-    team: serializeTeam(team),
+    team: serializeSector(team),
     analytics,
     linkedWidgets: widgets
       .filter((w) => w.teamId?.toString() === teamId)
@@ -930,9 +930,9 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid team id' })
     return
   }
-  const team = await getTeamById(res.locals.userId, new ObjectId(teamIdStr))
+  const team = await getSectorById(res.locals.userId, new ObjectId(teamIdStr))
   if (!team) {
-    res.status(404).json({ error: 'Team not found' })
+    res.status(404).json({ error: 'Sector not found' })
     return
   }
 
@@ -964,9 +964,9 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
     await Promise.all(
       team.members.map(async (m) => ({ member: m, agent: await getAgentById(res.locals.userId, m.agentId) })),
     )
-  ).filter((x): x is { member: TeamMember; agent: WithId<Agent> } => x.agent !== null)
+  ).filter((x): x is { member: SectorMember; agent: WithId<Agent> } => x.agent !== null)
   if (resolved.length === 0) {
-    res.status(400).json({ error: 'Team has no valid agents' })
+    res.status(400).json({ error: 'Sector has no valid agents' })
     return
   }
 
@@ -976,13 +976,13 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
   )
   const configAgent = resolved[defaultIndex].agent
   const apiKey = await getProviderApiKey(res.locals.userId, configAgent.provider)
-  const teamObjectiveFor = (chosen: { member: TeamMember; agent: WithId<Agent> }[]) =>
-    buildTeamObjective(
+  const teamObjectiveFor = (chosen: { member: SectorMember; agent: WithId<Agent> }[]) =>
+    buildSectorObjective(
       team.name,
       chosen.map((x) => ({ name: x.agent.name, objective: x.agent.objective })),
     )
 
-  const mode: TeamMode = team.mode ?? 'adaptive'
+  const mode: SectorMode = team.mode ?? 'adaptive'
   let replyObjective: string
   let knowledgeAgentIds: ObjectId[]
   let specialistNames: string[]
@@ -1019,7 +1019,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
           stageIndex = target
         }
       } catch (error) {
-        console.error('Team playground stage transition planning failed, staying on current stage:', error)
+        console.error('Sector playground stage transition planning failed, staying on current stage:', error)
       }
     }
     const stage = resolved[stageIndex]
@@ -1041,7 +1041,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
         description: memberRoutingLine(x.member, x.agent),
       }))
       try {
-        plan = await planTeamResponse(
+        plan = await planSectorResponse(
           options,
           [],
           defaultIndex,
@@ -1052,7 +1052,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
           apiKey,
         )
       } catch (error) {
-        console.error('Team playground planning failed, using default specialist:', error)
+        console.error('Sector playground planning failed, using default specialist:', error)
       }
     }
     clarify = plan.clarify
@@ -1076,7 +1076,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
       const results = await searchKnowledge(id, lastUser.content)
       knowledge.push(...results.map((r) => r.content))
     } catch (error) {
-      console.error('Team playground knowledge search failed:', error)
+      console.error('Sector playground knowledge search failed:', error)
     }
   }
 
@@ -1483,7 +1483,7 @@ app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
 
   // An agent in use can't be silently removed — deleting it would break the
   // widgets/teams pointing at it. Block and tell the owner what to unlink first.
-  const [widgets, teams] = await Promise.all([listWidgets(ownerId), listTeams(ownerId)])
+  const [widgets, teams] = await Promise.all([listWidgets(ownerId), listSectors(ownerId)])
   const usedByWidgets = widgets.filter((w) => w.agentId?.toString() === agentId).map((w) => w.name)
   const usedByTeams = teams
     .filter((t) => t.members.some((m) => m.agentId.toString() === agentId))
@@ -1491,7 +1491,7 @@ app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
   if (usedByWidgets.length > 0 || usedByTeams.length > 0) {
     const refs = [
       ...usedByWidgets.map((n) => `widget "${n}"`),
-      ...usedByTeams.map((n) => `equipe "${n}"`),
+      ...usedByTeams.map((n) => `setor "${n}"`),
     ]
     res.status(409).json({
       error: `Este agente está em uso por ${refs.join(', ')}. Desvincule antes de excluir.`,
@@ -1527,7 +1527,7 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   const [stats, widgets, teams, documents] = await Promise.all([
     getAgentStats(ownerId, agentObjectId),
     listWidgets(ownerId),
-    listTeams(ownerId),
+    listSectors(ownerId),
     listDocuments(agentObjectId),
   ])
 
@@ -1841,8 +1841,8 @@ app.get('/api/stats', requireAuth, async (_req, res) => {
 // and how many pipeline moves happened — so owners can tune their teams.
 app.get('/api/team-analytics', requireAuth, async (_req, res) => {
   const [teams, agg] = await Promise.all([
-    listTeams(res.locals.userId),
-    aggregateTeamDecisions(res.locals.userId),
+    listSectors(res.locals.userId),
+    aggregateSectorDecisions(res.locals.userId),
   ])
 
   const totalsByTeam = new Map(agg.totals.map((t) => [t._id.toString(), t]))
@@ -1954,7 +1954,7 @@ app.get(
       res.status(404).json({ error: 'Widget not found' })
       return
     }
-    const decisions = await listTeamDecisionsForConversation(res.locals.userId, widgetId, conversationId)
+    const decisions = await listSectorDecisionsForConversation(res.locals.userId, widgetId, conversationId)
     res.json(
       decisions.map((d) => ({
         specialists: d.specialists,
@@ -2065,7 +2065,7 @@ app.post(
 async function getWidgetConfigAgent(widget: WithId<Widget>) {
   if (widget.agentId) return getAgentById(widget.ownerId, widget.agentId)
   if (widget.teamId) {
-    const team = await getTeamById(widget.ownerId, widget.teamId)
+    const team = await getSectorById(widget.ownerId, widget.teamId)
     const member = team?.members.find((m) => m.isDefault) ?? team?.members[0]
     if (member) return getAgentById(widget.ownerId, member.agentId)
   }
@@ -2385,7 +2385,7 @@ function auxModelFor(agent: WithId<Agent>): string | null {
 
 // The line the adaptive planner reads for each specialist: its sector (if set)
 // plus its routing hint, so routing can lean on the department.
-function memberRoutingLine(member: TeamMember, agent: WithId<Agent>): string {
+function memberRoutingLine(member: SectorMember, agent: WithId<Agent>): string {
   const base = member.routingDescription.trim() || agent.objective.trim() || agent.name
   const sector = member.sector?.trim()
   return sector ? `[Setor: ${sector}] ${base}` : base
@@ -2395,7 +2395,7 @@ function memberRoutingLine(member: TeamMember, agent: WithId<Agent>): string {
 // (skip/branch/back) plus the implicit linear advance to the next stage. Targets
 // are indices into `resolved`; self-targets, out-of-range, and duplicates drop.
 function buildStageTransitionOptions(
-  resolved: { member: TeamMember; agent: WithId<Agent> }[],
+  resolved: { member: SectorMember; agent: WithId<Agent> }[],
   stageIndex: number,
 ): StageTransitionOption[] {
   const current = resolved[stageIndex]
@@ -2414,7 +2414,7 @@ function buildStageTransitionOptions(
   return options
 }
 
-interface TeamTurn {
+interface SectorTurn {
   // The default member supplies the team voice + memory/identity/guardrail config.
   configAgent: WithId<Agent>
   // A unified objective merging the consulted specialists' expertise.
@@ -2432,22 +2432,22 @@ interface TeamTurn {
 // The visitor always gets ONE unified reply in a single voice; the specialists
 // are internal. Sticky: the planner is told the current specialists so it keeps
 // them while the topic holds.
-async function resolveTeamTurn(
+async function resolveSectorTurn(
   widget: WithId<Widget>,
   teamId: ObjectId,
   conversationId: string,
   visitorContent: string,
-): Promise<TeamTurn | null> {
+): Promise<SectorTurn | null> {
   const ownerId = widget.ownerId
   const widgetId = widget._id
-  const team = await getTeamById(ownerId, teamId)
+  const team = await getSectorById(ownerId, teamId)
   if (!team || team.members.length === 0) return null
 
   const resolved = (
     await Promise.all(
       team.members.map(async (m) => ({ member: m, agent: await getAgentById(ownerId, m.agentId) })),
     )
-  ).filter((x): x is { member: TeamMember; agent: WithId<Agent> } => x.agent !== null)
+  ).filter((x): x is { member: SectorMember; agent: WithId<Agent> } => x.agent !== null)
   if (resolved.length === 0) return null
 
   const defaultIndex = Math.max(
@@ -2455,8 +2455,8 @@ async function resolveTeamTurn(
     resolved.findIndex((x) => x.member.isDefault),
   )
   const configAgent = resolved[defaultIndex].agent
-  const teamObjectiveFor = (chosen: { member: TeamMember; agent: WithId<Agent> }[]) =>
-    buildTeamObjective(
+  const teamObjectiveFor = (chosen: { member: SectorMember; agent: WithId<Agent> }[]) =>
+    buildSectorObjective(
       team.name,
       chosen.map((x) => ({ name: x.agent.name, objective: x.agent.objective })),
     )
@@ -2464,7 +2464,7 @@ async function resolveTeamTurn(
   // Single-member team: no planning needed.
   if (resolved.length === 1) {
     await setActiveAgentId(widgetId, conversationId, resolved[0].agent._id)
-    await logTeamDecision({
+    await logSectorDecision({
       ownerId,
       teamId,
       widgetId,
@@ -2524,7 +2524,7 @@ async function resolveTeamTurn(
 
     const stage = resolved[stageIndex]
     await setActiveAgentId(widgetId, conversationId, stage.agent._id)
-    await logTeamDecision({
+    await logSectorDecision({
       ownerId,
       teamId,
       widgetId,
@@ -2568,7 +2568,7 @@ async function resolveTeamTurn(
   const apiKey = await getProviderApiKey(ownerId, configAgent.provider)
   let plan = { specialists: [defaultIndex], clarify: false }
   try {
-    plan = await planTeamResponse(
+    plan = await planSectorResponse(
       options,
       currentIndices,
       defaultIndex,
@@ -2579,11 +2579,11 @@ async function resolveTeamTurn(
       apiKey,
     )
   } catch (error) {
-    console.error('Team planning failed, using default specialist:', error)
+    console.error('Sector planning failed, using default specialist:', error)
   }
 
   if (plan.clarify) {
-    await logTeamDecision({ ownerId, teamId, widgetId, conversationId, specialists: [], clarify: true })
+    await logSectorDecision({ ownerId, teamId, widgetId, conversationId, specialists: [], clarify: true })
     return {
       configAgent,
       replyObjective: teamObjectiveFor(resolved),
@@ -2596,7 +2596,7 @@ async function resolveTeamTurn(
   const chosen = plan.specialists.map((i) => resolved[i]).filter(Boolean)
   if (chosen.length === 0) chosen.push(resolved[defaultIndex])
   const names = chosen.map((x) => x.agent.name)
-  await logTeamDecision({ ownerId, teamId, widgetId, conversationId, specialists: names, clarify: false })
+  await logSectorDecision({ ownerId, teamId, widgetId, conversationId, specialists: names, clarify: false })
   await setActiveAgentId(widgetId, conversationId, chosen[0].agent._id)
 
   return {
@@ -2624,7 +2624,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     return
   }
 
-  // Resolve who answers. Single agent: itself. Team: the adaptive supervisor
+  // Resolve who answers. Single agent: itself. Sector: the adaptive supervisor
   // picks the specialists (or asks to clarify) and merges them into one voice.
   let agent: WithId<Agent>
   let replyObjective: string
@@ -2632,7 +2632,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   let replyAgentName: string | null
   let clarificationTopics: string[] | null
   if (widget.teamId) {
-    const turn = await resolveTeamTurn(widget, widget.teamId, conversationId, visitorContent)
+    const turn = await resolveSectorTurn(widget, widget.teamId, conversationId, visitorContent)
     if (!turn) return
     agent = turn.configAgent
     replyObjective = turn.replyObjective
@@ -2945,11 +2945,9 @@ async function sendStructuredOutputWebhook(url: string, payload: unknown) {
 async function start() {
   await mongoClient.connect()
 
-  // Backfill the Escritório → Setores → Agentes hierarchy onto existing data.
-  // Idempotent; a no-op once every doc has an officeId.
-  migrateOfficeHierarchy().catch((error) => {
-    console.error('migrateOfficeHierarchy failed:', error)
-  })
+  // Sector renames + Escritório hierarchy backfill. Awaited so a collection
+  // rename completes before we serve requests against the new names.
+  await runMigrations()
 
   // Don't hold up accepting connections on this — it's a one-time setup
   // step (a no-op after the first successful run) and unrelated routes
