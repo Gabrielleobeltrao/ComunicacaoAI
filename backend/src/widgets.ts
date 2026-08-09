@@ -226,6 +226,67 @@ export async function getAgentStats(ownerId: string, agentId: ObjectId): Promise
   return statsForWidgetIds(agentWidgets.map((w) => w._id))
 }
 
+export interface AgentCardStats {
+  conversations: number
+  attendedConversations: number
+  qualifiedLeads: number
+}
+
+// Per-agent stats for the whole roster in a few aggregations (instead of one
+// getAgentStats round-trip per agent). Only widgets an agent answers directly
+// are attributed; sector-answered widgets aren't tied to a single agent.
+export async function getAgentStatsBatch(ownerId: string): Promise<Record<string, AgentCardStats>> {
+  const ownerWidgets = await widgets.find({ ownerId, agentId: { $ne: null } }).project({ _id: 1, agentId: 1 }).toArray()
+  const widgetToAgent = new Map<string, string>()
+  for (const w of ownerWidgets) {
+    if (w.agentId) widgetToAgent.set(w._id.toString(), w.agentId.toString())
+  }
+  const widgetIds = ownerWidgets.map((w) => w._id)
+  const result: Record<string, AgentCardStats> = {}
+  if (widgetIds.length === 0) return result
+
+  const bump = (agentId: string) => (result[agentId] ??= { conversations: 0, attendedConversations: 0, qualifiedLeads: 0 })
+
+  const convGroups = await widgetMessages
+    .aggregate<{ _id: { widgetId: ObjectId; conversationId: string }; hasAgent: number }>([
+      { $match: { widgetId: { $in: widgetIds } } },
+      {
+        $group: {
+          _id: { widgetId: '$widgetId', conversationId: '$conversationId' },
+          hasAgent: { $max: { $cond: [{ $eq: ['$role', 'agent'] }, 1, 0] } },
+        },
+      },
+    ])
+    .toArray()
+  for (const g of convGroups) {
+    const agentId = widgetToAgent.get(g._id.widgetId.toString())
+    if (!agentId) continue
+    const s = bump(agentId)
+    s.conversations++
+    if (g.hasAgent) s.attendedConversations++
+  }
+
+  const leadGroups = await db
+    .collection('conversation_memories')
+    .aggregate<{ _id: ObjectId; count: number }>([
+      {
+        $match: {
+          widgetId: { $in: widgetIds },
+          $expr: { $gt: [{ $size: { $objectToArray: { $ifNull: ['$structuredOutputData', {}] } } }, 0] },
+        },
+      },
+      { $group: { _id: '$widgetId', count: { $sum: 1 } } },
+    ])
+    .toArray()
+  for (const g of leadGroups) {
+    const agentId = widgetToAgent.get(g._id.toString())
+    if (!agentId) continue
+    bump(agentId).qualifiedLeads += g.count
+  }
+
+  return result
+}
+
 async function statsForWidgetIds(widgetIds: ObjectId[]): Promise<OwnerStats> {
   if (widgetIds.length === 0) {
     return {

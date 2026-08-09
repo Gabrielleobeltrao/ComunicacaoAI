@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router'
-import { accentFor, placeholderStatsFor, portraitFor, statusFor } from '../lib/agentAvatar'
+import { accentFor, portraitFor, statusFor } from '../lib/agentAvatar'
 import type { AgentStat } from '../lib/agentAvatar'
 import { roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import type { AgentSummary } from '../lib/types'
@@ -7,14 +7,13 @@ import { AgentAvatar, Card, Icon, StatusPill, Tag } from '../ui'
 
 // A clickable agent card (design's AgentCard): avatar + name + role + status,
 // its sector (or "Sem setor" when orphan), a short objective, skill tags and a
-// small stats grid. Accent and character are stable per agent. `stats` defaults
-// to placeholders — pass real per-agent stats once the list endpoint returns them.
+// small stats grid (real per-agent stats passed in via `stats`).
 export function AgentCard({ agent, stats, sectorName }: { agent: AgentSummary; stats?: AgentStat[]; sectorName?: string | null }) {
   const navigate = useNavigate()
   const accent = accentFor(agent._id)
   const status = statusFor(agent._id)
   const skills = skillsOf(agent)
-  const metrics = stats ?? placeholderStatsFor(agent._id)
+  const metrics = stats ?? []
 
   return (
     <Card interactive accent={accent} onClick={() => navigate(`/agents/${agent._id}`)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>

@@ -134,6 +134,7 @@ import {
   deleteWhatsAppChannel,
   deleteWidget,
   getAgentStats,
+  getAgentStatsBatch,
   getConversationMessages,
   getOwnerStats,
   getWidgetById,
@@ -1270,6 +1271,12 @@ app.post('/api/agents', requireAuth, async (req, res) => {
 app.get('/api/agents', requireAuth, async (_req, res) => {
   const agents = await listAgents(res.locals.userId)
   res.json(agents)
+})
+
+// Per-agent roster stats for the Agentes cards (conversas/leads/atendimento).
+app.get('/api/agent-stats', requireAuth, async (_req, res) => {
+  const stats = await getAgentStatsBatch(res.locals.userId)
+  res.json(stats)
 })
 
 app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {

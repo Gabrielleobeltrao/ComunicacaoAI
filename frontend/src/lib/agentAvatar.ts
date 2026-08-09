@@ -42,14 +42,3 @@ export interface AgentStat {
   label: string
   value: string
 }
-
-// TODO: placeholder metrics, stable per agent, until the agents list endpoint
-// returns real per-agent stats — then pass them into <AgentCard stats={...} />.
-export function placeholderStatsFor(id: string): AgentStat[] {
-  const h = hash(id)
-  return [
-    { label: 'Conversas', value: (40 + (h % 280)).toLocaleString('pt-BR') },
-    { label: 'Leads', value: String(3 + (h % 55)) },
-    { label: 'Atend.', value: `${78 + (h % 21)}%` },
-  ]
-}

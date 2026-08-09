@@ -141,6 +141,13 @@ export interface AgentSummary {
   builtinTools: AgentBuiltinTool[]
 }
 
+// Per-agent roster stats for the Agentes cards (from /api/agent-stats).
+export interface AgentCardStats {
+  conversations: number
+  attendedConversations: number
+  qualifiedLeads: number
+}
+
 export interface AgentOverview {
   agent: AgentSummary
   stats: {
