@@ -148,9 +148,8 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   }
 
   return (
-    <OfficeMap cols={cols} rows={totalRows} tile={42} style={{ maxHeight: 600, background: 'var(--map-floor)' }}>
-      {/* Base: the common grid floor under everything */}
-      <MapZone x={0} y={0} w={cols} h={totalRows} floor="hall" walls={false} />
+    <OfficeMap cols={cols} rows={totalRows} tile={42} style={{ maxHeight: 600 }}>
+      {/* The grid floor is drawn by OfficeMap and fills the whole area. */}
 
       {/* Sector rooms */}
       {placed.map((p) => (
