@@ -3,7 +3,7 @@ body{margin:0;background:var(--surface-app);color:var(--text-body);font-family:v
 h1,h2,h3,h4{margin:0;font-family:var(--font-display);color:var(--text-heading);letter-spacing:var(--text-heading-ls)}
 p{margin:0}
 a{color:var(--text-link);text-decoration:none}
-a:hover{color:var(--text-link-hover);text-decoration:underline}
+a:hover{color:var(--text-link-hover)}
 button,input,select,textarea{font-family:inherit}
 :focus-visible{outline:none;box-shadow:var(--ring-focus)}
 @keyframes ds-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.8)}}
