@@ -47,10 +47,20 @@ export function Topbar({ title, subtitle, children, style }: TopbarProps) {
 
 // Lettermark: the wordmark's own capital T in the display face, knocked out of a
 // cobalt tile — no drawn symbol. Pass mark={false} for the type alone.
-export function Brand({ size = 20, mark = true, style }: { size?: number; mark?: boolean; style?: CSSProperties }) {
+export function Brand({
+  size = 20,
+  mark = true,
+  word = true,
+  style,
+}: {
+  size?: number
+  mark?: boolean
+  word?: boolean
+  style?: CSSProperties
+}) {
   const box = Math.round(size * 1.6)
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: mark ? Math.round(size * 0.42) : 0, ...style }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: mark && word ? Math.round(size * 0.42) : 0, ...style }}>
       {mark ? (
         <span
           style={{
@@ -72,17 +82,19 @@ export function Brand({ size = 20, mark = true, style }: { size?: number; mark?:
           T
         </span>
       ) : null}
-      <span
-        style={{
-          fontFamily: 'var(--font-display)',
-          fontWeight: 900,
-          fontSize: size,
-          letterSpacing: '-.03em',
-          color: 'var(--text-heading)',
-        }}
-      >
-        Tavorium
-      </span>
+      {word ? (
+        <span
+          style={{
+            fontFamily: 'var(--font-display)',
+            fontWeight: 900,
+            fontSize: size,
+            letterSpacing: '-.03em',
+            color: 'var(--text-heading)',
+          }}
+        >
+          Tavorium
+        </span>
+      ) : null}
     </span>
   )
 }
