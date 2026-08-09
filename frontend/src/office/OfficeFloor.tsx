@@ -139,7 +139,6 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
         facing={facing}
         seated
         department={accentFor(s.a._id)}
-        speaking={status === 'thinking'}
         hoverLift={false}
         style={{ zIndex }}
         onOpen={() => navigate(`/agents/${s.a._id}`)}
@@ -192,7 +191,6 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
             agent={characterFor(o.a._id)}
             facing="frente"
             department={accentFor(o.a._id)}
-            speaking={status === 'thinking'}
             style={{ zIndex: 3 }}
             onOpen={() => navigate(`/agents/${o.a._id}`)}
           />
