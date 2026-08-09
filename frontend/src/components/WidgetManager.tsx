@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { API_URL } from '../lib/api'
-import type { AgentSummary, TeamSummary, WidgetPosition, WidgetSummary } from '../lib/types'
+import type { AgentSummary, SectorSummary, WidgetPosition, WidgetSummary } from '../lib/types'
 import { Modal } from './Modal'
 
 const DEFAULT_COLOR = '#111827'
@@ -11,18 +11,18 @@ interface WidgetManagerProps {
   loading: boolean
   agents: AgentSummary[]
   agentsLoading: boolean
-  teams: TeamSummary[]
+  sectors: SectorSummary[]
   onChange: () => void | Promise<void>
 }
 
-// The "answered by" selector encodes the choice as agent:<id> or team:<id>.
-function parseTarget(target: string): { agentId: string | null; teamId: string | null } {
-  if (target.startsWith('team:')) return { agentId: null, teamId: target.slice(5) }
-  if (target.startsWith('agent:')) return { agentId: target.slice(6), teamId: null }
-  return { agentId: null, teamId: null }
+// The "answered by" selector encodes the choice as agent:<id> or sector:<id>.
+function parseTarget(target: string): { agentId: string | null; sectorId: string | null } {
+  if (target.startsWith('sector:')) return { agentId: null, sectorId: target.slice(5) }
+  if (target.startsWith('agent:')) return { agentId: target.slice(6), sectorId: null }
+  return { agentId: null, sectorId: null }
 }
 
-export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, onChange }: WidgetManagerProps) {
+export function WidgetManager({ widgets, loading, agents, agentsLoading, sectors, onChange }: WidgetManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
   const [deletingWidgetId, setDeletingWidgetId] = useState<string | null>(null)
   const [listError, setListError] = useState<string | null>(null)
@@ -62,7 +62,7 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
     setIsCreating(false)
     setEditingWidget(widget)
     setEditName(widget.name)
-    setEditTarget(widget.teamId ? `team:${widget.teamId}` : widget.agentId ? `agent:${widget.agentId}` : '')
+    setEditTarget(widget.sectorId ? `sector:${widget.sectorId}` : widget.agentId ? `agent:${widget.agentId}` : '')
     setEditPrimaryColor(widget.primaryColor)
     setEditWelcomeTitle(widget.welcomeTitle ?? '')
     setEditWelcomeMessage(widget.welcomeMessage ?? '')
@@ -147,7 +147,7 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
             welcomeMessage: editWelcomeMessage || null,
             position: editPosition,
             agentId: target.agentId,
-            teamId: target.teamId,
+            sectorId: target.sectorId,
           }),
         })
 
@@ -182,7 +182,7 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
           welcomeMessage: editWelcomeMessage || null,
           position: editPosition,
           agentId: target.agentId,
-          teamId: target.teamId,
+          sectorId: target.sectorId,
         }),
       })
 
@@ -257,10 +257,10 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
         <ul className="space-y-3">
           {widgets.map((widget) => {
             const snippet = `<script src="${window.location.origin}/widget-loader.js" data-widget-key="${widget.publicKey}"></script>`
-            const linkedTeam = teams.find((team) => team._id === widget.teamId)
+            const linkedTeam = sectors.find((sector) => sector._id === widget.sectorId)
             const linkedAgent = agents.find((agent) => agent._id === widget.agentId)
             const attendedBy = linkedTeam
-              ? `Equipe "${linkedTeam.name}"`
+              ? `Setor "${linkedTeam.name}"`
               : linkedAgent
                 ? `Agente "${linkedAgent.name}"`
                 : 'Sem atendimento'
@@ -330,11 +330,11 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, teams, 
               className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
             >
               <option value="">Sem atendimento</option>
-              {teams.length > 0 && (
-                <optgroup label="Equipes">
-                  {teams.map((team) => (
-                    <option key={team._id} value={`team:${team._id}`}>
-                      {team.name}
+              {sectors.length > 0 && (
+                <optgroup label="Setores">
+                  {sectors.map((sector) => (
+                    <option key={sector._id} value={`sector:${sector._id}`}>
+                      {sector.name}
                     </option>
                   ))}
                 </optgroup>

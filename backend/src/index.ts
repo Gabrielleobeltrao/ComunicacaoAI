@@ -524,20 +524,20 @@ async function resolveOwnedAgentId(ownerId: string, agentId: unknown) {
   return { agentObjectId: agent._id, error: null }
 }
 
-async function resolveOwnedSectorId(ownerId: string, teamId: unknown) {
-  if (!teamId) return { teamObjectId: null, error: null }
-  if (typeof teamId !== 'string' || !ObjectId.isValid(teamId)) {
-    return { teamObjectId: null, error: 'Invalid team id' }
+async function resolveOwnedSectorId(ownerId: string, sectorId: unknown) {
+  if (!sectorId) return { sectorObjectId: null, error: null }
+  if (typeof sectorId !== 'string' || !ObjectId.isValid(sectorId)) {
+    return { sectorObjectId: null, error: 'Invalid sector id' }
   }
-  const team = await getSectorById(ownerId, new ObjectId(teamId))
-  if (!team) {
-    return { teamObjectId: null, error: 'Sector not found' }
+  const sector = await getSectorById(ownerId, new ObjectId(sectorId))
+  if (!sector) {
+    return { sectorObjectId: null, error: 'Sector not found' }
   }
-  return { teamObjectId: team._id, error: null }
+  return { sectorObjectId: sector._id, error: null }
 }
 
 app.post('/api/widgets', requireAuth, async (req, res) => {
-  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId, teamId } = req.body ?? {}
+  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId, sectorId } = req.body ?? {}
   if (!name) {
     res.status(400).json({ error: 'name is required' })
     return
@@ -547,9 +547,9 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     return
   }
 
-  const { teamObjectId, error: teamError } = await resolveOwnedSectorId(res.locals.userId, teamId)
-  if (teamError) {
-    res.status(400).json({ error: teamError })
+  const { sectorObjectId, error: sectorError } = await resolveOwnedSectorId(res.locals.userId, sectorId)
+  if (sectorError) {
+    res.status(400).json({ error: sectorError })
     return
   }
   const { agentObjectId, error } = await resolveOwnedAgentId(res.locals.userId, agentId)
@@ -563,9 +563,9 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     welcomeTitle: typeof welcomeTitle === 'string' ? welcomeTitle : undefined,
     welcomeMessage: typeof welcomeMessage === 'string' ? welcomeMessage : undefined,
     position,
-    // A widget is answered by a team OR a single agent, never both.
-    teamId: teamObjectId,
-    agentId: teamObjectId ? null : agentObjectId,
+    // A widget is answered by a sector OR a single agent, never both.
+    sectorId: sectorObjectId,
+    agentId: sectorObjectId ? null : agentObjectId,
   })
   res.status(201).json(widget)
 })
@@ -581,7 +581,7 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid widget id' })
     return
   }
-  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId, teamId } = req.body ?? {}
+  const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId, sectorId } = req.body ?? {}
   const updates: {
     name?: string
     primaryColor?: string | null
@@ -589,7 +589,7 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     welcomeMessage?: string | null
     position?: WidgetPosition
     agentId?: ObjectId | null
-    teamId?: ObjectId | null
+    sectorId?: ObjectId | null
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof primaryColor === 'string' || primaryColor === null) updates.primaryColor = primaryColor || null
@@ -604,24 +604,24 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     }
     updates.position = position
   }
-  // The widget target: a team wins over a single agent when both are sent.
-  if (teamId !== undefined) {
-    const { teamObjectId, error } = await resolveOwnedSectorId(res.locals.userId, teamId)
+  // The widget target: a sector wins over a single agent when both are sent.
+  if (sectorId !== undefined) {
+    const { sectorObjectId, error } = await resolveOwnedSectorId(res.locals.userId, sectorId)
     if (error) {
       res.status(400).json({ error })
       return
     }
-    updates.teamId = teamObjectId
-    if (teamObjectId) updates.agentId = null
+    updates.sectorId = sectorObjectId
+    if (sectorObjectId) updates.agentId = null
   }
-  if (agentId !== undefined && !updates.teamId) {
+  if (agentId !== undefined && !updates.sectorId) {
     const { agentObjectId, error } = await resolveOwnedAgentId(res.locals.userId, agentId)
     if (error) {
       res.status(400).json({ error })
       return
     }
     updates.agentId = agentObjectId
-    if (agentObjectId) updates.teamId = null
+    if (agentObjectId) updates.sectorId = null
   }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -696,12 +696,12 @@ app.delete('/api/widgets/:widgetId/avatar', requireAuth, async (req, res) => {
 const MAX_SECTOR_MEMBERS = 10
 const MAX_STAGE_TRANSITIONS = 5
 
-function serializeSector(team: WithId<Sector>) {
+function serializeSector(sector: WithId<Sector>) {
   return {
-    _id: team._id.toString(),
-    name: team.name,
-    mode: team.mode ?? 'adaptive',
-    members: team.members.map((m) => ({
+    _id: sector._id.toString(),
+    name: sector.name,
+    mode: sector.mode ?? 'adaptive',
+    members: sector.members.map((m) => ({
       agentId: m.agentId.toString(),
       sector: m.sector ?? '',
       routingDescription: m.routingDescription,
@@ -720,7 +720,7 @@ async function resolveSectorMembers(
   raw: unknown,
 ): Promise<{ members?: SectorMember[]; error?: string }> {
   if (!Array.isArray(raw)) return { error: 'members must be a list' }
-  if (raw.length > MAX_SECTOR_MEMBERS) return { error: `A team can have at most ${MAX_SECTOR_MEMBERS} agents` }
+  if (raw.length > MAX_SECTOR_MEMBERS) return { error: `A sector can have at most ${MAX_SECTOR_MEMBERS} agents` }
   const members: SectorMember[] = []
   const rawTransitions: unknown[] = []
   const seen = new Set<string>()
@@ -728,7 +728,7 @@ async function resolveSectorMembers(
     if (typeof m !== 'object' || m === null) return { error: 'Invalid member' }
     const agentId = (m as { agentId?: unknown }).agentId
     if (typeof agentId !== 'string' || !ObjectId.isValid(agentId)) return { error: 'Invalid agent id in members' }
-    if (seen.has(agentId)) return { error: 'The same agent appears twice in the team' }
+    if (seen.has(agentId)) return { error: 'The same agent appears twice in the sector' }
     const agent = await getAgentById(ownerId, new ObjectId(agentId))
     if (!agent) return { error: 'Agent not found' }
     seen.add(agentId)
@@ -763,7 +763,7 @@ async function resolveSectorMembers(
       if (typeof targetAgentId !== 'string' || !ObjectId.isValid(targetAgentId)) {
         return { error: 'Invalid transition target' }
       }
-      if (!seen.has(targetAgentId)) return { error: 'Transition target is not a member of the team' }
+      if (!seen.has(targetAgentId)) return { error: 'Transition target is not a member of the sector' }
       if (targetAgentId === members[i].agentId.toString()) {
         return { error: 'A transition cannot target its own stage' }
       }
@@ -782,7 +782,7 @@ function parseSectorMode(value: unknown): SectorMode | null {
   return value === 'adaptive' || value === 'pipeline' ? value : null
 }
 
-app.post('/api/teams', requireAuth, async (req, res) => {
+app.post('/api/sectors', requireAuth, async (req, res) => {
   const { name, mode, members } = req.body ?? {}
   if (!name || typeof name !== 'string' || !name.trim()) {
     res.status(400).json({ error: 'name is required' })
@@ -790,7 +790,7 @@ app.post('/api/teams', requireAuth, async (req, res) => {
   }
   const parsedMode = parseSectorMode(mode)
   if (parsedMode === null) {
-    res.status(400).json({ error: 'Unknown team mode' })
+    res.status(400).json({ error: 'Unknown sector mode' })
     return
   }
   const { members: parsed, error } = await resolveSectorMembers(res.locals.userId, members ?? [])
@@ -799,20 +799,20 @@ app.post('/api/teams', requireAuth, async (req, res) => {
     return
   }
   const office = await ensureDefaultOffice(res.locals.userId)
-  const team = await createSector(res.locals.userId, office._id, name, parsedMode, parsed ?? [])
-  await enforceSingleMembership(res.locals.userId, team._id, (parsed ?? []).map((m) => m.agentId))
-  res.status(201).json(serializeSector(team as WithId<Sector>))
+  const sector = await createSector(res.locals.userId, office._id, name, parsedMode, parsed ?? [])
+  await enforceSingleMembership(res.locals.userId, sector._id, (parsed ?? []).map((m) => m.agentId))
+  res.status(201).json(serializeSector(sector as WithId<Sector>))
 })
 
-app.get('/api/teams', requireAuth, async (_req, res) => {
-  const teams = await listSectors(res.locals.userId)
-  res.json(teams.map(serializeSector))
+app.get('/api/sectors', requireAuth, async (_req, res) => {
+  const sectors = await listSectors(res.locals.userId)
+  res.json(sectors.map(serializeSector))
 })
 
-app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
-  const teamId = String(req.params.teamId)
-  if (!ObjectId.isValid(teamId)) {
-    res.status(400).json({ error: 'Invalid team id' })
+app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
+  const sectorId = String(req.params.sectorId)
+  if (!ObjectId.isValid(sectorId)) {
+    res.status(400).json({ error: 'Invalid sector id' })
     return
   }
   const { name, mode, members } = req.body ?? {}
@@ -821,7 +821,7 @@ app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
   if (mode !== undefined) {
     const parsedMode = parseSectorMode(mode)
     if (parsedMode === null) {
-      res.status(400).json({ error: 'Unknown team mode' })
+      res.status(400).json({ error: 'Unknown sector mode' })
       return
     }
     updates.mode = parsedMode
@@ -838,29 +838,29 @@ app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Nothing to update' })
     return
   }
-  const team = await updateSector(res.locals.userId, new ObjectId(teamId), updates)
-  if (!team) {
+  const sector = await updateSector(res.locals.userId, new ObjectId(sectorId), updates)
+  if (!sector) {
     res.status(404).json({ error: 'Sector not found' })
     return
   }
   if (updates.members) {
-    await enforceSingleMembership(res.locals.userId, team._id, updates.members.map((m) => m.agentId))
+    await enforceSingleMembership(res.locals.userId, sector._id, updates.members.map((m) => m.agentId))
   }
-  res.json(serializeSector(team))
+  res.json(serializeSector(sector))
 })
 
-app.delete('/api/teams/:teamId', requireAuth, async (req, res) => {
-  const teamId = String(req.params.teamId)
-  if (!ObjectId.isValid(teamId)) {
-    res.status(400).json({ error: 'Invalid team id' })
+app.delete('/api/sectors/:sectorId', requireAuth, async (req, res) => {
+  const sectorId = String(req.params.sectorId)
+  if (!ObjectId.isValid(sectorId)) {
+    res.status(400).json({ error: 'Invalid sector id' })
     return
   }
   const ownerId = res.locals.userId
 
-  // A team in use by a widget can't be silently removed — that widget would be
+  // A sector in use by a widget can't be silently removed — that widget would be
   // left with no attendant. Block and tell the owner what to unlink first.
   const widgets = await listWidgets(ownerId)
-  const usedByWidgets = widgets.filter((w) => w.teamId?.toString() === teamId).map((w) => w.name)
+  const usedByWidgets = widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => w.name)
   if (usedByWidgets.length > 0) {
     res.status(409).json({
       error: `Este setor está em uso por ${usedByWidgets.map((n) => `widget "${n}"`).join(', ')}. Desvincule antes de excluir.`,
@@ -869,40 +869,40 @@ app.delete('/api/teams/:teamId', requireAuth, async (req, res) => {
     return
   }
 
-  await deleteSector(ownerId, new ObjectId(teamId))
+  await deleteSector(ownerId, new ObjectId(sectorId))
   res.status(204).end()
 })
 
-// Per-team dashboard: the team config, its orchestration analytics and the
+// Per-sector dashboard: the sector config, its orchestration analytics and the
 // widgets it answers.
-app.get('/api/teams/:teamId/overview', requireAuth, async (req, res) => {
-  const teamId = String(req.params.teamId)
-  if (!ObjectId.isValid(teamId)) {
-    res.status(400).json({ error: 'Invalid team id' })
+app.get('/api/sectors/:sectorId/overview', requireAuth, async (req, res) => {
+  const sectorId = String(req.params.sectorId)
+  if (!ObjectId.isValid(sectorId)) {
+    res.status(400).json({ error: 'Invalid sector id' })
     return
   }
   const ownerId = res.locals.userId
-  const team = await getSectorById(ownerId, new ObjectId(teamId))
-  if (!team) {
+  const sector = await getSectorById(ownerId, new ObjectId(sectorId))
+  if (!sector) {
     res.status(404).json({ error: 'Sector not found' })
     return
   }
 
   const [agg, widgets] = await Promise.all([aggregateSectorDecisions(ownerId), listWidgets(ownerId)])
-  const totals = agg.totals.find((t) => t._id.toString() === teamId) ?? { decisions: 0, clarify: 0, moved: 0 }
+  const totals = agg.totals.find((t) => t._id.toString() === sectorId) ?? { decisions: 0, clarify: 0, moved: 0 }
   const specialists = agg.specialists
-    .filter((s) => s._id.teamId.toString() === teamId)
+    .filter((s) => s._id.sectorId.toString() === sectorId)
     .map((s) => ({ name: s._id.name, count: s.count }))
     .sort((a, b) => b.count - a.count)
   const left = new Map(
-    agg.fromStages.filter((f) => f._id.teamId.toString() === teamId).map((f) => [f._id.name, f.count]),
+    agg.fromStages.filter((f) => f._id.sectorId.toString() === sectorId).map((f) => [f._id.name, f.count]),
   )
   const analytics =
     totals.decisions > 0
       ? {
-          teamId,
-          teamName: team.name,
-          mode: team.mode ?? 'adaptive',
+          sectorId,
+          sectorName: sector.name,
+          mode: sector.mode ?? 'adaptive',
           decisions: totals.decisions,
           clarifyRate: totals.decisions > 0 ? totals.clarify / totals.decisions : 0,
           moves: totals.moved,
@@ -912,26 +912,26 @@ app.get('/api/teams/:teamId/overview', requireAuth, async (req, res) => {
       : null
 
   res.json({
-    team: serializeSector(team),
+    sector: serializeSector(sector),
     analytics,
     linkedWidgets: widgets
-      .filter((w) => w.teamId?.toString() === teamId)
+      .filter((w) => w.sectorId?.toString() === sectorId)
       .map((w) => ({ _id: w._id, name: w.name })),
   })
 })
 
-// Stateless team test chat: runs the supervisor (plan → merge specialists →
+// Stateless sector test chat: runs the supervisor (plan → merge specialists →
 // one unified reply, or a clarification) over the supplied history. Nothing is
 // persisted; also reports which specialists were consulted so the owner can see
 // the orchestration decision.
-app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
-  const teamIdStr = String(req.params.teamId)
-  if (!ObjectId.isValid(teamIdStr)) {
-    res.status(400).json({ error: 'Invalid team id' })
+app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
+  const sectorIdStr = String(req.params.sectorId)
+  if (!ObjectId.isValid(sectorIdStr)) {
+    res.status(400).json({ error: 'Invalid sector id' })
     return
   }
-  const team = await getSectorById(res.locals.userId, new ObjectId(teamIdStr))
-  if (!team) {
+  const sector = await getSectorById(res.locals.userId, new ObjectId(sectorIdStr))
+  if (!sector) {
     res.status(404).json({ error: 'Sector not found' })
     return
   }
@@ -962,7 +962,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
 
   const resolved = (
     await Promise.all(
-      team.members.map(async (m) => ({ member: m, agent: await getAgentById(res.locals.userId, m.agentId) })),
+      sector.members.map(async (m) => ({ member: m, agent: await getAgentById(res.locals.userId, m.agentId) })),
     )
   ).filter((x): x is { member: SectorMember; agent: WithId<Agent> } => x.agent !== null)
   if (resolved.length === 0) {
@@ -976,13 +976,13 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
   )
   const configAgent = resolved[defaultIndex].agent
   const apiKey = await getProviderApiKey(res.locals.userId, configAgent.provider)
-  const teamObjectiveFor = (chosen: { member: SectorMember; agent: WithId<Agent> }[]) =>
+  const sectorObjectiveFor = (chosen: { member: SectorMember; agent: WithId<Agent> }[]) =>
     buildSectorObjective(
-      team.name,
+      sector.name,
       chosen.map((x) => ({ name: x.agent.name, objective: x.agent.objective })),
     )
 
-  const mode: SectorMode = team.mode ?? 'adaptive'
+  const mode: SectorMode = sector.mode ?? 'adaptive'
   let replyObjective: string
   let knowledgeAgentIds: ObjectId[]
   let specialistNames: string[]
@@ -1023,7 +1023,7 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
       }
     }
     const stage = resolved[stageIndex]
-    replyObjective = buildPipelineStageObjective(team.name, {
+    replyObjective = buildPipelineStageObjective(sector.name, {
       name: stage.agent.name,
       objective: stage.agent.objective,
       stageGoal: stage.member.routingDescription,
@@ -1057,14 +1057,14 @@ app.post('/api/teams/:teamId/playground', requireAuth, async (req, res) => {
     }
     clarify = plan.clarify
     if (plan.clarify) {
-      replyObjective = teamObjectiveFor(resolved)
+      replyObjective = sectorObjectiveFor(resolved)
       knowledgeAgentIds = []
       specialistNames = []
       clarificationTopics = resolved.map((x) => x.member.routingDescription.trim() || x.agent.name)
     } else {
       const chosen = plan.specialists.map((i) => resolved[i]).filter(Boolean)
       if (chosen.length === 0) chosen.push(resolved[defaultIndex])
-      replyObjective = teamObjectiveFor(chosen)
+      replyObjective = sectorObjectiveFor(chosen)
       knowledgeAgentIds = chosen.map((x) => x.agent._id)
       specialistNames = chosen.map((x) => x.agent.name)
     }
@@ -1482,21 +1482,21 @@ app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
   }
 
   // An agent in use can't be silently removed — deleting it would break the
-  // widgets/teams pointing at it. Block and tell the owner what to unlink first.
-  const [widgets, teams] = await Promise.all([listWidgets(ownerId), listSectors(ownerId)])
+  // widgets/sectors pointing at it. Block and tell the owner what to unlink first.
+  const [widgets, sectors] = await Promise.all([listWidgets(ownerId), listSectors(ownerId)])
   const usedByWidgets = widgets.filter((w) => w.agentId?.toString() === agentId).map((w) => w.name)
-  const usedByTeams = teams
+  const usedBySectors = sectors
     .filter((t) => t.members.some((m) => m.agentId.toString() === agentId))
     .map((t) => t.name)
-  if (usedByWidgets.length > 0 || usedByTeams.length > 0) {
+  if (usedByWidgets.length > 0 || usedBySectors.length > 0) {
     const refs = [
       ...usedByWidgets.map((n) => `widget "${n}"`),
-      ...usedByTeams.map((n) => `setor "${n}"`),
+      ...usedBySectors.map((n) => `setor "${n}"`),
     ]
     res.status(409).json({
       error: `Este agente está em uso por ${refs.join(', ')}. Desvincule antes de excluir.`,
       widgets: usedByWidgets,
-      teams: usedByTeams,
+      sectors: usedBySectors,
     })
     return
   }
@@ -1507,7 +1507,7 @@ app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
 })
 
 // Per-agent dashboard: the agent config, its usage metrics (scoped to the
-// widgets it directly answers), where it's used (widgets/teams) and how many
+// widgets it directly answers), where it's used (widgets/sectors) and how many
 // knowledge documents it has.
 app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   const agentId = String(req.params.agentId)
@@ -1524,7 +1524,7 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
     return
   }
 
-  const [stats, widgets, teams, documents] = await Promise.all([
+  const [stats, widgets, sectors, documents] = await Promise.all([
     getAgentStats(ownerId, agentObjectId),
     listWidgets(ownerId),
     listSectors(ownerId),
@@ -1537,7 +1537,7 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
     linkedWidgets: widgets
       .filter((w) => w.agentId?.toString() === agentId)
       .map((w) => ({ _id: w._id, name: w.name })),
-    linkedTeams: teams
+    linkedSectors: sectors
       .filter((t) => t.members.some((m) => m.agentId.toString() === agentId))
       .map((t) => ({ _id: t._id, name: t.name })),
     knowledgeCount: documents.length,
@@ -1836,41 +1836,41 @@ app.get('/api/stats', requireAuth, async (_req, res) => {
   })
 })
 
-// Per-team analytics from the orchestration decision log: how often each
+// Per-sector analytics from the orchestration decision log: how often each
 // specialist/stage handled a turn, how often the supervisor asked to clarify,
-// and how many pipeline moves happened — so owners can tune their teams.
-app.get('/api/team-analytics', requireAuth, async (_req, res) => {
-  const [teams, agg] = await Promise.all([
+// and how many pipeline moves happened — so owners can tune their sectors.
+app.get('/api/sector-analytics', requireAuth, async (_req, res) => {
+  const [sectors, agg] = await Promise.all([
     listSectors(res.locals.userId),
     aggregateSectorDecisions(res.locals.userId),
   ])
 
-  const totalsByTeam = new Map(agg.totals.map((t) => [t._id.toString(), t]))
-  const specialistsByTeam = new Map<string, { name: string; count: number }[]>()
+  const totalsBySector = new Map(agg.totals.map((t) => [t._id.toString(), t]))
+  const specialistsBySector = new Map<string, { name: string; count: number }[]>()
   for (const s of agg.specialists) {
-    const key = s._id.teamId.toString()
-    const list = specialistsByTeam.get(key) ?? []
+    const key = s._id.sectorId.toString()
+    const list = specialistsBySector.get(key) ?? []
     list.push({ name: s._id.name, count: s.count })
-    specialistsByTeam.set(key, list)
+    specialistsBySector.set(key, list)
   }
-  const leftByTeam = new Map<string, Map<string, number>>()
+  const leftBySector = new Map<string, Map<string, number>>()
   for (const f of agg.fromStages) {
-    const key = f._id.teamId.toString()
-    const map = leftByTeam.get(key) ?? new Map<string, number>()
+    const key = f._id.sectorId.toString()
+    const map = leftBySector.get(key) ?? new Map<string, number>()
     map.set(f._id.name, f.count)
-    leftByTeam.set(key, map)
+    leftBySector.set(key, map)
   }
 
-  const analytics = teams
-    .map((team) => {
-      const id = team._id.toString()
-      const totals = totalsByTeam.get(id) ?? { decisions: 0, clarify: 0, moved: 0 }
-      const left = leftByTeam.get(id) ?? new Map<string, number>()
-      const specialists = (specialistsByTeam.get(id) ?? []).sort((a, b) => b.count - a.count)
+  const analytics = sectors
+    .map((sector) => {
+      const id = sector._id.toString()
+      const totals = totalsBySector.get(id) ?? { decisions: 0, clarify: 0, moved: 0 }
+      const left = leftBySector.get(id) ?? new Map<string, number>()
+      const specialists = (specialistsBySector.get(id) ?? []).sort((a, b) => b.count - a.count)
       return {
-        teamId: id,
-        teamName: team.name,
-        mode: team.mode ?? 'adaptive',
+        sectorId: id,
+        sectorName: sector.name,
+        mode: sector.mode ?? 'adaptive',
         decisions: totals.decisions,
         clarifyRate: totals.decisions > 0 ? totals.clarify / totals.decisions : 0,
         moves: totals.moved,
@@ -2061,12 +2061,12 @@ app.post(
 )
 
 // The agent that supplies widget-level settings (first message, conversation
-// persistence, daily limit): the single linked agent, or a team's default member.
+// persistence, daily limit): the single linked agent, or a sector's default member.
 async function getWidgetConfigAgent(widget: WithId<Widget>) {
   if (widget.agentId) return getAgentById(widget.ownerId, widget.agentId)
-  if (widget.teamId) {
-    const team = await getSectorById(widget.ownerId, widget.teamId)
-    const member = team?.members.find((m) => m.isDefault) ?? team?.members[0]
+  if (widget.sectorId) {
+    const sector = await getSectorById(widget.ownerId, widget.sectorId)
+    const member = sector?.members.find((m) => m.isDefault) ?? sector?.members[0]
     if (member) return getAgentById(widget.ownerId, member.agentId)
   }
   return null
@@ -2086,7 +2086,7 @@ function sanitizeChannel(channel: WithId<Widget>) {
     provider,
     number: channel.whatsapp?.number ?? null,
     agentId: channel.agentId,
-    teamId: channel.teamId,
+    sectorId: channel.sectorId,
     createdAt: channel.createdAt,
     webhookUrl: provider ? channelWebhookUrl(provider, channel._id) : null,
   }
@@ -2123,7 +2123,7 @@ app.get('/api/whatsapp/channels', requireAuth, async (_req, res) => {
 })
 
 app.post('/api/whatsapp/channels', requireAuth, async (req, res) => {
-  const { name, provider, config, agentId, teamId, number } = req.body ?? {}
+  const { name, provider, config, agentId, sectorId, number } = req.body ?? {}
   const adapter = typeof provider === 'string' ? getWhatsAppAdapter(provider) : undefined
   if (!adapter || !adapter.available) {
     res.status(400).json({ error: 'Provedor de WhatsApp inválido ou indisponível.' })
@@ -2137,8 +2137,8 @@ app.post('/api/whatsapp/channels', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Invalid agentId' })
     return
   }
-  if (teamId && !ObjectId.isValid(teamId)) {
-    res.status(400).json({ error: 'Invalid teamId' })
+  if (sectorId && !ObjectId.isValid(sectorId)) {
+    res.status(400).json({ error: 'Invalid sectorId' })
     return
   }
   const cleanConfig = readChannelConfig(adapter, config, res, { requireAll: true })
@@ -2154,7 +2154,7 @@ app.post('/api/whatsapp/channels', requireAuth, async (req, res) => {
     },
     {
       agentId: agentId ? new ObjectId(String(agentId)) : null,
-      teamId: teamId ? new ObjectId(String(teamId)) : null,
+      sectorId: sectorId ? new ObjectId(String(sectorId)) : null,
     },
   )
   res.status(201).json(sanitizeChannel(channel))
@@ -2166,11 +2166,11 @@ app.patch('/api/whatsapp/channels/:channelId', requireAuth, async (req, res) => 
     res.status(400).json({ error: 'Invalid channel id' })
     return
   }
-  const { name, agentId, teamId, number, config } = req.body ?? {}
+  const { name, agentId, sectorId, number, config } = req.body ?? {}
   const updates: Parameters<typeof updateWhatsAppChannel>[2] = {}
   if (typeof name === 'string') updates.name = name
   if (agentId !== undefined) updates.agentId = agentId ? new ObjectId(String(agentId)) : null
-  if (teamId !== undefined) updates.teamId = teamId ? new ObjectId(String(teamId)) : null
+  if (sectorId !== undefined) updates.sectorId = sectorId ? new ObjectId(String(sectorId)) : null
 
   // Re-encrypt config only when a new one is supplied; otherwise keep the stored one.
   if (config && typeof config === 'object') {
@@ -2415,7 +2415,7 @@ function buildStageTransitionOptions(
 }
 
 interface SectorTurn {
-  // The default member supplies the team voice + memory/identity/guardrail config.
+  // The default member supplies the sector voice + memory/identity/guardrail config.
   configAgent: WithId<Agent>
   // A unified objective merging the consulted specialists' expertise.
   replyObjective: string
@@ -2434,18 +2434,18 @@ interface SectorTurn {
 // them while the topic holds.
 async function resolveSectorTurn(
   widget: WithId<Widget>,
-  teamId: ObjectId,
+  sectorId: ObjectId,
   conversationId: string,
   visitorContent: string,
 ): Promise<SectorTurn | null> {
   const ownerId = widget.ownerId
   const widgetId = widget._id
-  const team = await getSectorById(ownerId, teamId)
-  if (!team || team.members.length === 0) return null
+  const sector = await getSectorById(ownerId, sectorId)
+  if (!sector || sector.members.length === 0) return null
 
   const resolved = (
     await Promise.all(
-      team.members.map(async (m) => ({ member: m, agent: await getAgentById(ownerId, m.agentId) })),
+      sector.members.map(async (m) => ({ member: m, agent: await getAgentById(ownerId, m.agentId) })),
     )
   ).filter((x): x is { member: SectorMember; agent: WithId<Agent> } => x.agent !== null)
   if (resolved.length === 0) return null
@@ -2455,18 +2455,18 @@ async function resolveSectorTurn(
     resolved.findIndex((x) => x.member.isDefault),
   )
   const configAgent = resolved[defaultIndex].agent
-  const teamObjectiveFor = (chosen: { member: SectorMember; agent: WithId<Agent> }[]) =>
+  const sectorObjectiveFor = (chosen: { member: SectorMember; agent: WithId<Agent> }[]) =>
     buildSectorObjective(
-      team.name,
+      sector.name,
       chosen.map((x) => ({ name: x.agent.name, objective: x.agent.objective })),
     )
 
-  // Single-member team: no planning needed.
+  // Single-member sector: no planning needed.
   if (resolved.length === 1) {
     await setActiveAgentId(widgetId, conversationId, resolved[0].agent._id)
     await logSectorDecision({
       ownerId,
-      teamId,
+      sectorId,
       widgetId,
       conversationId,
       specialists: [resolved[0].agent.name],
@@ -2474,7 +2474,7 @@ async function resolveSectorTurn(
     })
     return {
       configAgent,
-      replyObjective: teamObjectiveFor(resolved),
+      replyObjective: sectorObjectiveFor(resolved),
       knowledgeAgentIds: [resolved[0].agent._id],
       replyAgentName: resolved[0].agent.name,
       clarificationTopics: null,
@@ -2486,7 +2486,7 @@ async function resolveSectorTurn(
   // an alternative (branch), or an earlier one (back) — when a transition's
   // condition is met. At most one move per turn, and the visitor never perceives
   // the switch: each stage speaks as one continuous assistant.
-  if ((team.mode ?? 'adaptive') === 'pipeline') {
+  if ((sector.mode ?? 'adaptive') === 'pipeline') {
     const activeAgentId = await getActiveAgentId(widgetId, conversationId)
     let stageIndex = activeAgentId ? resolved.findIndex((x) => x.agent._id.equals(activeAgentId)) : 0
     if (stageIndex < 0) stageIndex = 0
@@ -2526,7 +2526,7 @@ async function resolveSectorTurn(
     await setActiveAgentId(widgetId, conversationId, stage.agent._id)
     await logSectorDecision({
       ownerId,
-      teamId,
+      sectorId,
       widgetId,
       conversationId,
       specialists: [stage.agent.name],
@@ -2537,7 +2537,7 @@ async function resolveSectorTurn(
     })
     return {
       configAgent,
-      replyObjective: buildPipelineStageObjective(team.name, {
+      replyObjective: buildPipelineStageObjective(sector.name, {
         name: stage.agent.name,
         objective: stage.agent.objective,
         stageGoal: stage.member.routingDescription,
@@ -2583,12 +2583,12 @@ async function resolveSectorTurn(
   }
 
   if (plan.clarify) {
-    await logSectorDecision({ ownerId, teamId, widgetId, conversationId, specialists: [], clarify: true })
+    await logSectorDecision({ ownerId, sectorId, widgetId, conversationId, specialists: [], clarify: true })
     return {
       configAgent,
-      replyObjective: teamObjectiveFor(resolved),
+      replyObjective: sectorObjectiveFor(resolved),
       knowledgeAgentIds: [],
-      replyAgentName: team.name,
+      replyAgentName: sector.name,
       clarificationTopics: resolved.map((x) => x.member.routingDescription.trim() || x.agent.name),
     }
   }
@@ -2596,12 +2596,12 @@ async function resolveSectorTurn(
   const chosen = plan.specialists.map((i) => resolved[i]).filter(Boolean)
   if (chosen.length === 0) chosen.push(resolved[defaultIndex])
   const names = chosen.map((x) => x.agent.name)
-  await logSectorDecision({ ownerId, teamId, widgetId, conversationId, specialists: names, clarify: false })
+  await logSectorDecision({ ownerId, sectorId, widgetId, conversationId, specialists: names, clarify: false })
   await setActiveAgentId(widgetId, conversationId, chosen[0].agent._id)
 
   return {
     configAgent,
-    replyObjective: teamObjectiveFor(chosen),
+    replyObjective: sectorObjectiveFor(chosen),
     knowledgeAgentIds: chosen.map((x) => x.agent._id),
     replyAgentName: names.join(' + '),
     clarificationTopics: null,
@@ -2631,8 +2631,8 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   let knowledgeAgentIds: ObjectId[]
   let replyAgentName: string | null
   let clarificationTopics: string[] | null
-  if (widget.teamId) {
-    const turn = await resolveSectorTurn(widget, widget.teamId, conversationId, visitorContent)
+  if (widget.sectorId) {
+    const turn = await resolveSectorTurn(widget, widget.sectorId, conversationId, visitorContent)
     if (!turn) return
     agent = turn.configAgent
     replyObjective = turn.replyObjective
@@ -2688,7 +2688,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   }
 
   // Ground the reply in the knowledge base(s) of the responding agent — or of
-  // every consulted specialist, for a team. Skipped when only clarifying.
+  // every consulted specialist, for a sector. Skipped when only clarifying.
   let knowledge: string[] = []
   for (const knowledgeAgentId of knowledgeAgentIds) {
     try {
@@ -2728,7 +2728,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     identityFields.length > 0 && !visitorProfile ? buildIdentityCaptureInstruction(identityFields) : ''
   // Handoff and proactivity ride in the same behavior-instruction slot as the
   // scope guardrail — they're all conduct rules layered onto the objective.
-  // For a team, a clarification instruction may override "answer" with "ask".
+  // For a sector, a clarification instruction may override "answer" with "ask".
   const behaviorInstruction = [
     guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : '',
     agent.handoffEnabled ? HANDOFF_INSTRUCTION : '',

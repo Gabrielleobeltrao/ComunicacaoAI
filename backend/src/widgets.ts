@@ -4,7 +4,7 @@ import { db } from './db.js'
 
 export type WidgetPosition = 'right' | 'left'
 
-// A widget is a conversation channel that links an agent/team to visitors.
+// A widget is a conversation channel that links an agent/sector to visitors.
 // 'web' is the embeddable chat; 'whatsapp' is a connected WhatsApp number that
 // reuses the same conversation/reply/Chats stack (see whatsapp.ts).
 export interface WhatsAppChannelConfig {
@@ -27,7 +27,7 @@ export interface Widget {
   position: WidgetPosition
   avatarUrl: string | null
   agentId: ObjectId | null
-  teamId: ObjectId | null
+  sectorId: ObjectId | null
   // Absent on legacy docs = 'web'.
   channel?: 'web' | 'whatsapp'
   whatsapp?: WhatsAppChannelConfig
@@ -39,7 +39,7 @@ export interface WidgetMessage {
   conversationId: string
   role: 'visitor' | 'agent'
   content: string
-  // For team-routed replies: which specialist agent answered (shown in Chats).
+  // For sector-routed replies: which specialist agent answered (shown in Chats).
   agentName?: string | null
   // Provider message id for inbound channel messages (dedupes webhook retries).
   externalId?: string | null
@@ -58,7 +58,7 @@ export async function createWidget(
     welcomeMessage?: string | null
     position?: WidgetPosition
     agentId?: ObjectId | null
-    teamId?: ObjectId | null
+    sectorId?: ObjectId | null
   } = {},
 ) {
   const widget: Omit<Widget, '_id'> = {
@@ -72,7 +72,7 @@ export async function createWidget(
     position: options.position ?? 'right',
     avatarUrl: null,
     agentId: options.agentId ?? null,
-    teamId: options.teamId ?? null,
+    sectorId: options.sectorId ?? null,
   }
   const result = await widgets.insertOne(widget as Widget)
   return { ...widget, _id: result.insertedId }
@@ -84,7 +84,7 @@ export async function createWhatsAppChannel(
   ownerId: string,
   name: string,
   whatsapp: WhatsAppChannelConfig,
-  options: { agentId?: ObjectId | null; teamId?: ObjectId | null } = {},
+  options: { agentId?: ObjectId | null; sectorId?: ObjectId | null } = {},
 ) {
   const widget: Omit<Widget, '_id'> = {
     ownerId,
@@ -97,7 +97,7 @@ export async function createWhatsAppChannel(
     position: 'right',
     avatarUrl: null,
     agentId: options.agentId ?? null,
-    teamId: options.teamId ?? null,
+    sectorId: options.sectorId ?? null,
     channel: 'whatsapp',
     whatsapp,
   }
@@ -115,14 +115,14 @@ export async function updateWhatsAppChannel(
   updates: {
     name?: string
     agentId?: ObjectId | null
-    teamId?: ObjectId | null
+    sectorId?: ObjectId | null
     whatsapp?: WhatsAppChannelConfig
   },
 ) {
   const set: Partial<Widget> = {}
   if (updates.name !== undefined) set.name = updates.name
   if (updates.agentId !== undefined) set.agentId = updates.agentId
-  if (updates.teamId !== undefined) set.teamId = updates.teamId
+  if (updates.sectorId !== undefined) set.sectorId = updates.sectorId
   if (updates.whatsapp !== undefined) set.whatsapp = updates.whatsapp
   if (Object.keys(set).length > 0) {
     await widgets.updateOne({ _id: channelId, ownerId, channel: 'whatsapp' }, { $set: set })
@@ -161,7 +161,7 @@ export function updateWidget(
     welcomeMessage?: string | null
     position?: WidgetPosition
     agentId?: ObjectId | null
-    teamId?: ObjectId | null
+    sectorId?: ObjectId | null
   },
 ) {
   return widgets.findOneAndUpdate(

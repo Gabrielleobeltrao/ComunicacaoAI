@@ -4,11 +4,11 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { AgentBadges } from '../components/AgentBadges'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
-import { TeamForm } from '../components/TeamForm'
-import { TeamPlayground } from '../components/TeamPlayground'
+import { SectorForm } from '../components/SectorForm'
+import { SectorPlayground } from '../components/SectorPlayground'
 import { API_URL } from '../lib/api'
-import { TEAM_SECTIONS } from '../lib/teamSections'
-import type { AgentSummary, TeamOverview } from '../lib/types'
+import { SECTOR_SECTIONS } from '../lib/sectorSections'
+import type { AgentSummary, SectorOverview } from '../lib/types'
 
 function Metric({ label, value, suffix, hint }: { label: string; value: number; suffix?: string; hint?: string }) {
   return (
@@ -29,14 +29,14 @@ function Badge({ children }: { children: ReactNode }) {
   )
 }
 
-function OverviewSection({ overview, agents }: { overview: TeamOverview; agents: AgentSummary[] }) {
-  const { team, analytics, linkedWidgets } = overview
+function OverviewSection({ overview, agents }: { overview: SectorOverview; agents: AgentSummary[] }) {
+  const { sector, analytics, linkedWidgets } = overview
   const nameById = new Map(agents.map((a) => [a._id, a.name]))
   const agentById = new Map(agents.map((a) => [a._id, a]))
-  const isPipeline = team.mode === 'pipeline'
+  const isPipeline = sector.mode === 'pipeline'
   const maxCount = Math.max(1, ...(analytics?.specialists.map((s) => s.count) ?? []))
 
-  const renderMember = (m: (typeof team.members)[number], index: number) => {
+  const renderMember = (m: (typeof sector.members)[number], index: number) => {
     const full = agentById.get(m.agentId)
     const inner = (
       <>
@@ -53,7 +53,7 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
           </div>
         )}
         {m.routingDescription && <p className="mt-2 text-sm text-(--text-muted)">{m.routingDescription}</p>}
-        {isPipeline && index < team.members.length - 1 && m.advanceWhen && (
+        {isPipeline && index < sector.members.length - 1 && m.advanceWhen && (
           <p className="mt-1 text-xs text-(--text-faint)">
             <span className="text-(--text-faint)">Avança quando:</span> {m.advanceWhen}
           </p>
@@ -74,7 +74,7 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
       <li key={m.agentId}>
         {full ? (
           <Link
-            to={`/agents/${m.agentId}?from=${encodeURIComponent(`/teams/${team._id}`)}`}
+            to={`/agents/${m.agentId}?from=${encodeURIComponent(`/setores/${sector._id}`)}`}
             className="block rounded-xl border border-(--border-subtle) bg-(--surface-card) p-3 transition hover:border-(--border-strong)"
           >
             {inner}
@@ -86,12 +86,12 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
     )
   }
 
-  // Adaptive teams group members by sector; pipelines stay in stage order. The
+  // Adaptive sectors group members by sector; pipelines stay in stage order. The
   // "no sector" group sorts last, and a single empty group means no headings.
-  const sectorGroups: [string, typeof team.members][] = []
+  const sectorGroups: [string, typeof sector.members][] = []
   if (!isPipeline) {
-    const map = new Map<string, typeof team.members>()
-    for (const m of team.members) {
+    const map = new Map<string, typeof sector.members>()
+    for (const m of sector.members) {
       const key = (m.sector ?? '').trim()
       if (!map.has(key)) map.set(key, [])
       map.get(key)?.push(m)
@@ -104,21 +104,21 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
     <div className="space-y-6">
       <section>
         <h3 className="mb-3 text-sm font-medium text-(--text-muted)">
-          {isPipeline ? 'Etapas do fluxo' : 'Agentes da equipe'}
+          {isPipeline ? 'Etapas do fluxo' : 'Agentes do setor'}
         </h3>
         {isPipeline || !showSectorHeadings ? (
           <ul className="space-y-2">
-            {team.members.map((m, index) => renderMember(m, index))}
+            {sector.members.map((m, index) => renderMember(m, index))}
           </ul>
         ) : (
           <div className="space-y-4">
-            {sectorGroups.map(([sector, members]) => (
-              <div key={sector || '_none'}>
+            {sectorGroups.map(([area, members]) => (
+              <div key={area || '_none'}>
                 <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-(--text-faint)">
-                  {sector || 'Sem setor'}
+                  {area || 'Sem área'}
                 </p>
                 <ul className="space-y-2">
-                  {members.map((m) => renderMember(m, team.members.indexOf(m)))}
+                  {members.map((m) => renderMember(m, sector.members.indexOf(m)))}
                 </ul>
               </div>
             ))}
@@ -166,7 +166,7 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
           </div>
         ) : (
           <p className="text-sm text-(--text-faint)">
-            Sem dados de orquestração ainda. Eles aparecem conforme a equipe responde conversas.
+            Sem dados de orquestração ainda. Eles aparecem conforme o setor responde conversas.
           </p>
         )}
       </section>
@@ -176,7 +176,7 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
         <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
           <p className="mb-2 text-xs font-medium uppercase tracking-wide text-(--text-faint)">Widgets</p>
           {linkedWidgets.length === 0 ? (
-            <p className="text-sm text-(--text-faint)">Nenhum widget usa esta equipe.</p>
+            <p className="text-sm text-(--text-faint)">Nenhum widget usa este setor.</p>
           ) : (
             <ul className="flex flex-wrap gap-1.5">
               {linkedWidgets.map((w) => (
@@ -192,10 +192,10 @@ function OverviewSection({ overview, agents }: { overview: TeamOverview; agents:
   )
 }
 
-export function TeamDetail() {
-  const { teamId, section } = useParams()
+export function SectorDetail() {
+  const { sectorId, section } = useParams()
   const navigate = useNavigate()
-  const [overview, setOverview] = useState<TeamOverview | null>(null)
+  const [overview, setOverview] = useState<SectorOverview | null>(null)
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
@@ -203,8 +203,8 @@ export function TeamDetail() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    if (!teamId) return
-    const res = await fetch(`${API_URL}/api/teams/${teamId}/overview`, { credentials: 'include' })
+    if (!sectorId) return
+    const res = await fetch(`${API_URL}/api/sectors/${sectorId}/overview`, { credentials: 'include' })
     if (res.status === 404) {
       setNotFound(true)
       setLoading(false)
@@ -212,13 +212,13 @@ export function TeamDetail() {
     }
     if (res.ok) setOverview(await res.json())
     setLoading(false)
-  }, [teamId])
+  }, [sectorId])
 
   useEffect(() => {
     load()
   }, [load])
 
-  // Agents are needed to name members and to edit the team.
+  // Agents are needed to name members and to edit the sector.
   useEffect(() => {
     let cancelled = false
     fetch(`${API_URL}/api/agents`, { credentials: 'include' })
@@ -234,43 +234,43 @@ export function TeamDetail() {
 
   async function handleDelete() {
     if (!overview || deleting) return
-    if (!window.confirm(`Excluir a equipe "${overview.team.name}"? Essa ação não pode ser desfeita.`)) return
+    if (!window.confirm(`Excluir o setor "${overview.sector.name}"? Essa ação não pode ser desfeita.`)) return
     setDeleteError(null)
     setDeleting(true)
     try {
-      const res = await fetch(`${API_URL}/api/teams/${overview.team._id}`, {
+      const res = await fetch(`${API_URL}/api/sectors/${overview.sector._id}`, {
         method: 'DELETE',
         credentials: 'include',
       })
       if (!res.ok && res.status !== 204) {
         const body = await res.json().catch(() => null)
-        setDeleteError(body?.error ?? 'Não foi possível excluir a equipe.')
+        setDeleteError(body?.error ?? 'Não foi possível excluir o setor.')
         return
       }
-      navigate('/teams')
+      navigate('/setores')
     } finally {
       setDeleting(false)
     }
   }
 
-  const team = overview?.team
+  const sector = overview?.sector
   const raw = section ?? ''
-  const active = TEAM_SECTIONS.some((s) => s.key === raw) ? raw : ''
-  const sectionLabel = TEAM_SECTIONS.find((s) => s.key === active)?.label ?? 'Visão geral'
+  const active = SECTOR_SECTIONS.some((s) => s.key === raw) ? raw : ''
+  const sectionLabel = SECTOR_SECTIONS.find((s) => s.key === active)?.label ?? 'Visão geral'
 
-  const titleExtra = team ? (
+  const titleExtra = sector ? (
     <>
-      <Badge>{team.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}</Badge>
-      <Badge>{`${team.members.length} ${team.members.length === 1 ? 'agente' : 'agentes'}`}</Badge>
+      <Badge>{sector.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}</Badge>
+      <Badge>{`${sector.members.length} ${sector.members.length === 1 ? 'agente' : 'agentes'}`}</Badge>
     </>
   ) : undefined
 
   return (
-    <AppLayout current="/teams" title={team?.name ?? 'Equipe'} titleExtra={titleExtra}>
+    <AppLayout current="/setores" title={sector?.name ?? 'Setor'} titleExtra={titleExtra}>
       {loading ? (
-        <p className="text-sm text-(--text-muted)">Carregando equipe...</p>
-      ) : notFound || !overview || !team ? (
-        <p className="text-sm text-(--text-muted)">Equipe não encontrada.</p>
+        <p className="text-sm text-(--text-muted)">Carregando setor...</p>
+      ) : notFound || !overview || !sector ? (
+        <p className="text-sm text-(--text-muted)">Setor não encontrado.</p>
       ) : (
         <div className="space-y-4">
           {active === '' ? (
@@ -280,16 +280,16 @@ export function TeamDetail() {
               <h3 className="text-lg font-semibold">{sectionLabel}</h3>
               <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
                 {active === 'configuracao' ? (
-                  <TeamForm key={team._id} team={team} agents={agents} onSaved={load} />
+                  <SectorForm key={sector._id} sector={sector} agents={agents} onSaved={load} />
                 ) : active === 'testar' ? (
-                  <TeamPlayground key={team._id} team={team} />
+                  <SectorPlayground key={sector._id} sector={sector} />
                 ) : null}
               </div>
               {active === 'configuracao' && (
                 <DangerZone
-                  title="Excluir esta equipe"
+                  title="Excluir este setor"
                   description="Não pode ser desfeito."
-                  buttonLabel="Excluir equipe"
+                  buttonLabel="Excluir setor"
                   onDelete={handleDelete}
                   deleting={deleting}
                   deleteError={deleteError}

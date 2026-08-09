@@ -8,8 +8,8 @@ import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { Settings } from './pages/Settings'
-import { TeamDetail } from './pages/TeamDetail'
-import { Teams } from './pages/Teams'
+import { SectorDetail } from './pages/SectorDetail'
+import { Setores } from './pages/Setores'
 import { Widget } from './pages/Widget'
 import { Widgets } from './pages/Widgets'
 
@@ -53,26 +53,26 @@ function App() {
         }
       />
       <Route
-        path="/teams"
+        path="/setores"
         element={
           <ProtectedRoute>
-            <Teams />
+            <Setores />
           </ProtectedRoute>
         }
       />
       <Route
-        path="/teams/:teamId"
+        path="/setores/:sectorId"
         element={
           <ProtectedRoute>
-            <TeamDetail />
+            <SectorDetail />
           </ProtectedRoute>
         }
       />
       <Route
-        path="/teams/:teamId/:section"
+        path="/setores/:sectorId/:section"
         element={
           <ProtectedRoute>
-            <TeamDetail />
+            <SectorDetail />
           </ProtectedRoute>
         }
       />
@@ -102,6 +102,9 @@ function App() {
       />
       {/* WhatsApp lives inside the Canais page now; keep the old link working. */}
       <Route path="/whatsapp" element={<Navigate to="/widgets" replace />} />
+      {/* Equipes was renamed to Setores; keep old bookmarks working. */}
+      <Route path="/teams" element={<Navigate to="/setores" replace />} />
+      <Route path="/teams/*" element={<Navigate to="/setores" replace />} />
       {/* Any unknown path falls back instead of rendering a blank screen. */}
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

@@ -79,17 +79,17 @@ export function Settings() {
   const { data: session } = useSession()
   const navigate = useNavigate()
   const [stats, setStats] = useState<DashboardStats | null>(null)
-  const [teamCount, setTeamCount] = useState<number | null>(null)
+  const [sectorCount, setSectorCount] = useState<number | null>(null)
 
   const loadStats = useCallback(async () => {
     const [statsRes, teamsRes] = await Promise.all([
       fetch(`${API_URL}/api/stats`, { credentials: 'include' }),
-      fetch(`${API_URL}/api/teams`, { credentials: 'include' }),
+      fetch(`${API_URL}/api/sectors`, { credentials: 'include' }),
     ])
     if (statsRes.ok) setStats(await statsRes.json())
     if (teamsRes.ok) {
-      const teams = await teamsRes.json()
-      setTeamCount(Array.isArray(teams) ? teams.length : 0)
+      const sectors = await teamsRes.json()
+      setSectorCount(Array.isArray(sectors) ? sectors.length : 0)
     }
   }, [])
 
@@ -142,7 +142,7 @@ export function Settings() {
         <Section title="Resumo da conta">
           <div className="grid gap-3 sm:grid-cols-3">
             <SummaryCard to="/agents" label="Agentes" value={stats?.agents ?? 0} />
-            <SummaryCard to="/teams" label="Equipes" value={teamCount ?? 0} />
+            <SummaryCard to="/setores" label="Setores" value={sectorCount ?? 0} />
             <SummaryCard to="/widgets" label="Widgets" value={stats?.widgets ?? 0} />
           </div>
         </Section>

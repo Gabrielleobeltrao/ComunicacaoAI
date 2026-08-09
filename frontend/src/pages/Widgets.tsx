@@ -11,17 +11,17 @@ const TABS: { key: Channel; label: string }[] = [
   { key: 'whatsapp', label: 'WhatsApp' },
 ]
 
-// The "Canais" page: the surfaces where an agent or team acts. Each tab is a
+// The "Canais" page: the surfaces where an agent or sector acts. Each tab is a
 // channel — the embeddable web widget and connected WhatsApp numbers.
 export function Widgets() {
   const [tab, setTab] = useState<Channel>('web')
-  const { widgets, widgetsLoading, loadWidgets, agents, agentsLoading, teams } = useAgentsAndWidgets()
+  const { widgets, widgetsLoading, loadWidgets, agents, agentsLoading, sectors } = useAgentsAndWidgets()
 
   return (
     <AppLayout current="/widgets" title="Canais">
       <div className="space-y-6">
         <p className="max-w-2xl text-sm text-(--text-muted)">
-          Onde seus agentes e equipes atendem — no site (widget de chat) e no WhatsApp.
+          Onde seus agentes e setores atendem — no site (widget de chat) e no WhatsApp.
         </p>
 
         <div className="flex gap-1 border-b border-(--border-subtle)">
@@ -45,7 +45,7 @@ export function Widgets() {
           <section className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
             <h2 className="mb-2 font-medium">Widget de chat</h2>
             <p className="mb-4 text-sm text-(--text-muted)">
-              Crie um widget, escolha qual agente ou equipe vai atendê-lo e cole o script abaixo no site
+              Crie um widget, escolha qual agente ou setor vai atendê-lo e cole o script abaixo no site
               do seu cliente.
             </p>
             <WidgetManager
@@ -53,12 +53,12 @@ export function Widgets() {
               loading={widgetsLoading}
               agents={agents}
               agentsLoading={agentsLoading}
-              teams={teams}
+              sectors={sectors}
               onChange={loadWidgets}
             />
           </section>
         ) : (
-          <WhatsAppManager agents={agents} teams={teams} />
+          <WhatsAppManager agents={agents} sectors={sectors} />
         )}
       </div>
     </AppLayout>

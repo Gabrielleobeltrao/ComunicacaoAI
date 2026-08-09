@@ -1,5 +1,5 @@
 // A destructive-action panel shown at the bottom of an entity's general
-// settings (delete the agent/team).
+// settings (delete the agent/sector).
 export function DangerZone({
   title,
   description,

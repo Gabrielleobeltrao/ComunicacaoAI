@@ -10,30 +10,30 @@ export interface WidgetSummary {
   position: WidgetPosition
   avatarUrl: string | null
   agentId: string | null
-  teamId: string | null
+  sectorId: string | null
 }
 
-export type TeamMode = 'adaptive' | 'pipeline'
+export type SectorMode = 'adaptive' | 'pipeline'
 
-export interface TeamTransition {
+export interface SectorTransition {
   condition: string
   targetAgentId: string
 }
 
-export interface TeamMemberSummary {
+export interface SectorMemberSummary {
   agentId: string
   sector: string
   routingDescription: string
   advanceWhen: string
-  transitions: TeamTransition[]
+  transitions: SectorTransition[]
   isDefault: boolean
 }
 
-export interface TeamSummary {
+export interface SectorSummary {
   _id: string
   name: string
-  mode: TeamMode
-  members: TeamMemberSummary[]
+  mode: SectorMode
+  members: SectorMemberSummary[]
 }
 
 export type ToolMethod = 'GET' | 'POST'
@@ -98,7 +98,7 @@ export interface WhatsAppChannel {
   provider: string | null
   number: string | null
   agentId: string | null
-  teamId: string | null
+  sectorId: string | null
   createdAt: string
   webhookUrl: string | null
 }
@@ -152,14 +152,14 @@ export interface AgentOverview {
     qualifiedLeads: number
   }
   linkedWidgets: { _id: string; name: string }[]
-  linkedTeams: { _id: string; name: string }[]
+  linkedSectors: { _id: string; name: string }[]
   knowledgeCount: number
 }
 
-export interface TeamAnalytics {
-  teamId: string
-  teamName: string
-  mode: TeamMode
+export interface SectorAnalytics {
+  sectorId: string
+  sectorName: string
+  mode: SectorMode
   decisions: number
   clarifyRate: number
   moves: number
@@ -167,9 +167,9 @@ export interface TeamAnalytics {
   stages: { name: string; handled: number; left: number }[]
 }
 
-export interface TeamOverview {
-  team: TeamSummary
-  analytics: TeamAnalytics | null
+export interface SectorOverview {
+  sector: SectorSummary
+  analytics: SectorAnalytics | null
   linkedWidgets: { _id: string; name: string }[]
 }
 

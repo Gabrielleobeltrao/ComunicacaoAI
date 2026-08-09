@@ -1,5 +1,5 @@
 // Shared rail item classes (Tavorium light rail), used by the app nav and the
-// agent/team section navs so they look and behave identically.
+// agent/sector section navs so they look and behave identically.
 // Collapsed, the item centers its icon (no gap, zero-width label); on hover the
 // gap and left alignment return so the label has room.
 export const ITEM_BASE =

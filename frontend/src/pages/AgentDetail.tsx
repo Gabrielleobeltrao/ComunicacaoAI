@@ -100,7 +100,7 @@ function ColleaguesCard({ agents, currentId }: { agents: AgentSummary[]; current
 }
 
 function UsageCard({ overview }: { overview: AgentOverview }) {
-  const { linkedWidgets, linkedTeams, knowledgeCount } = overview
+  const { linkedWidgets, linkedSectors, knowledgeCount } = overview
   return (
     <Card style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <span style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Onde é usado</span>
@@ -117,12 +117,12 @@ function UsageCard({ overview }: { overview: AgentOverview }) {
         )}
       </div>
       <div>
-        <p style={{ marginBottom: 6, fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>Equipes</p>
-        {linkedTeams.length === 0 ? (
-          <p style={{ fontSize: 13, color: 'var(--text-faint)' }}>Não faz parte de nenhuma equipe.</p>
+        <p style={{ marginBottom: 6, fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>Setores</p>
+        {linkedSectors.length === 0 ? (
+          <p style={{ fontSize: 13, color: 'var(--text-faint)' }}>Não faz parte de nenhum setor.</p>
         ) : (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {linkedTeams.map((t) => (
+            {linkedSectors.map((t) => (
               <Tag key={t._id}>{t.name}</Tag>
             ))}
           </div>

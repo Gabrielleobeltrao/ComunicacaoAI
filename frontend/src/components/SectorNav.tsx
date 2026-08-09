@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router'
-import { TEAM_SECTIONS } from '../lib/teamSections'
+import { SECTOR_SECTIONS } from '../lib/sectorSections'
 import { ACTIVE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
 import { Icon } from '../ui'
 
@@ -9,21 +9,21 @@ const SECTION_ICONS: Record<string, string> = {
   testar: 'flask-conical',
 }
 
-export function TeamNav() {
-  const { teamId, section } = useParams()
-  const base = `/teams/${teamId}`
+export function SectorNav() {
+  const { sectorId, section } = useParams()
+  const base = `/setores/${sectorId}`
   const active = section ?? ''
 
   return (
     <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-      <Link to="/teams" className={`${ITEM_BASE} ${INACTIVE}`}>
+      <Link to="/setores" className={`${ITEM_BASE} ${INACTIVE}`}>
         <Icon name="chevron-left" size={18} />
-        <span className={LABEL}>Equipes</span>
+        <span className={LABEL}>Setores</span>
       </Link>
 
       <div className="my-1 h-px bg-(--border-subtle)" />
 
-      {TEAM_SECTIONS.map((s) => (
+      {SECTOR_SECTIONS.map((s) => (
         <Link
           key={s.key}
           to={s.key ? `${base}/${s.key}` : base}

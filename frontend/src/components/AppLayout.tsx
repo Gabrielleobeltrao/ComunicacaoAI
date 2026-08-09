@@ -15,7 +15,7 @@ interface AppLayoutProps {
 export function AppLayout({ current, title, titleExtra, subtitle, actions, children }: AppLayoutProps) {
   return (
     // Fixed viewport height with no page scroll: the rail and topbar stay put
-    // while only the main area scrolls. The rail swaps to the agent/team nav on
+    // while only the main area scrolls. The rail swaps to the agent/sector nav on
     // those pages (see Sidebar).
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--surface-app)' }}>
       <Sidebar current={current} />

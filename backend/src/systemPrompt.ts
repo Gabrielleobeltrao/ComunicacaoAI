@@ -72,11 +72,11 @@ export function parseSectorPlan(text: string, optionCount: number, fallbackIndex
 // Reframes the chosen specialists' expertise into one unified assistant so the
 // visitor never perceives multiple agents.
 export function buildSectorObjective(
-  teamName: string,
+  sectorName: string,
   specialists: { name: string; objective: string }[],
 ): string {
   const areas = specialists.map((s) => `- ${s.name}: ${s.objective.trim() || s.name}`).join('\n')
-  return `Você é o assistente de atendimento${teamName ? ` de ${teamName}` : ''}. Responda como UM único assistente, de forma unificada e natural — nunca diga que consultou agentes ou especialistas diferentes, nem mencione um "setor". Use as áreas de especialidade abaixo, combinando-as quando a pergunta tocar em mais de uma:\n${areas}`
+  return `Você é o assistente de atendimento${sectorName ? ` de ${sectorName}` : ''}. Responda como UM único assistente, de forma unificada e natural — nunca diga que consultou agentes ou especialistas diferentes, nem mencione um "setor". Use as áreas de especialidade abaixo, combinando-as quando a pergunta tocar em mais de uma:\n${areas}`
 }
 
 export function buildClarificationInstruction(topics: string[]): string {
@@ -93,14 +93,14 @@ export function buildClarificationInstruction(topics: string[]): string {
 // this stage's job, and explicitly forbids announcing any transfer/handoff so
 // the flow stays invisible to the visitor.
 export function buildPipelineStageObjective(
-  teamName: string,
+  sectorName: string,
   stage: { name: string; objective: string; stageGoal: string },
 ): string {
   const focus = stage.objective.trim() || stage.name
   const goalLine = stage.stageGoal.trim()
     ? `\n\nNesta etapa do atendimento, seu foco é: ${stage.stageGoal.trim()}`
     : ''
-  return `Você é o assistente de atendimento${teamName ? ` de ${teamName}` : ''}. Fale como UM único assistente contínuo: o visitante conversa com você como se fosse uma só pessoa do começo ao fim. NUNCA diga que vai transferir, encaminhar, passar para outro setor, chamar outra pessoa ou consultar um especialista, e nunca mencione "etapas" ou "setor" — a conversa deve fluir de forma natural e ininterrupta.\n\nSua área de atuação:\n${focus}${goalLine}`
+  return `Você é o assistente de atendimento${sectorName ? ` de ${sectorName}` : ''}. Fale como UM único assistente contínuo: o visitante conversa com você como se fosse uma só pessoa do começo ao fim. NUNCA diga que vai transferir, encaminhar, passar para outro setor, chamar outra pessoa ou consultar um especialista, e nunca mencione "etapas" ou "setor" — a conversa deve fluir de forma natural e ininterrupta.\n\nSua área de atuação:\n${focus}${goalLine}`
 }
 
 // A possible move out of the current stage: which stage to go to (by its index

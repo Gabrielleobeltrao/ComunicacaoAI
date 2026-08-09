@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
-import type { AgentSummary, TeamMode, TeamSummary } from '../lib/types'
+import type { AgentSummary, SectorMode, SectorSummary } from '../lib/types'
 
 interface EditTransition {
   condition: string
@@ -19,17 +19,17 @@ interface EditMember {
 
 const DEFAULT_SECTORS = ['Suporte', 'Vendas', 'Desenvolvimento', 'Financeiro', 'Marketing']
 
-interface TeamFormProps {
-  // null = creating a new team; otherwise editing this one.
-  team: TeamSummary | null
+interface SectorFormProps {
+  // null = creating a new sector; otherwise editing this one.
+  sector: SectorSummary | null
   agents: AgentSummary[]
   onSaved: () => void
 }
 
-export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
-  const isCreating = team === null
+export function SectorForm({ sector, agents, onSaved }: SectorFormProps) {
+  const isCreating = sector === null
   const [editName, setEditName] = useState('')
-  const [editMode, setEditMode] = useState<TeamMode>('adaptive')
+  const [editMode, setEditMode] = useState<SectorMode>('adaptive')
   const [editMembers, setEditMembers] = useState<EditMember[]>([])
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
@@ -37,23 +37,23 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
   useEffect(() => {
     setEditError(null)
     setSaving(false)
-    if (team) {
-      setEditName(team.name)
-      setEditMode(team.mode)
-      setEditMembers(team.members.map((m) => ({ ...m, transitions: (m.transitions ?? []).map((t) => ({ ...t })) })))
+    if (sector) {
+      setEditName(sector.name)
+      setEditMode(sector.mode)
+      setEditMembers(sector.members.map((m) => ({ ...m, transitions: (m.transitions ?? []).map((t) => ({ ...t })) })))
     } else {
       setEditName('')
       setEditMode('adaptive')
       setEditMembers([])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [team?._id])
+  }, [sector?._id])
 
   const agentNameById = new Map(agents.map((a) => [a._id, a.name]))
   const isPipeline = editMode === 'pipeline'
   const usedAgentIds = new Set(editMembers.map((m) => m.agentId))
   const availableAgents = agents.filter((a) => !usedAgentIds.has(a._id))
-  // Suggest sectors already in use on this team plus a few common defaults.
+  // Suggest sectors already in use on this sector plus a few common defaults.
   const sectorSuggestions = Array.from(
     new Set([...editMembers.map((m) => m.sector.trim()).filter(Boolean), ...DEFAULT_SECTORS]),
   )
@@ -138,7 +138,7 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
       setEditError(
         isPipeline
           ? 'Um fluxo precisa de pelo menos 2 etapas.'
-          : 'Uma equipe precisa de pelo menos 2 agentes para o orquestrador fazer sentido.',
+          : 'Um setor precisa de pelo menos 2 agentes para o orquestrador fazer sentido.',
       )
       return
     }
@@ -148,7 +148,7 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
       mode: editMode,
       members: editMembers.map((m) => ({
         agentId: m.agentId,
-        // Sectors organize adaptive teams; they don't apply to ordered pipelines.
+        // Sectors organize adaptive sectors; they don't apply to ordered pipelines.
         sector: editMode === 'adaptive' ? m.sector.trim() : '',
         routingDescription: m.routingDescription.trim(),
         advanceWhen: m.advanceWhen.trim(),
@@ -163,20 +163,20 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
 
     try {
       const res = isCreating
-        ? await fetch(`${API_URL}/api/teams`, {
+        ? await fetch(`${API_URL}/api/sectors`, {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body,
           })
-        : await fetch(`${API_URL}/api/teams/${team?._id}`, {
+        : await fetch(`${API_URL}/api/sectors/${sector?._id}`, {
             method: 'PATCH',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body,
           })
       if (!res.ok) {
-        setEditError('Não foi possível salvar a equipe.')
+        setEditError('Não foi possível salvar o setor.')
         return
       }
       onSaved()
@@ -187,13 +187,13 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
 
   return (
     <form onSubmit={handleSave} className="space-y-4">
-      <datalist id="team-sector-suggestions">
+      <datalist id="sector-sector-suggestions">
         {sectorSuggestions.map((s) => (
           <option key={s} value={s} />
         ))}
       </datalist>
       <div>
-        <label className="mb-1 block text-sm text-(--text-muted)">Nome da equipe</label>
+        <label className="mb-1 block text-sm text-(--text-muted)">Nome do setor</label>
         <input
           value={editName}
           onChange={(e) => setEditName(e.target.value)}
@@ -235,11 +235,11 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
       </div>
 
       <div className="space-y-2">
-        <p className="text-sm font-medium">{isPipeline ? 'Etapas do fluxo' : 'Agentes da equipe'}</p>
+        <p className="text-sm font-medium">{isPipeline ? 'Etapas do fluxo' : 'Agentes do setor'}</p>
         <p className="text-xs text-(--text-faint)">
           {isPipeline
             ? 'As etapas são executadas na ordem abaixo. Descreva o que cada etapa faz e quando ela deve passar para a próxima. Marque uma etapa como padrão (voz, memória e configurações compartilhadas).'
-            : 'Descreva quando cada agente deve ser usado — é o que o orquestrador lê para decidir quais consultar. Marque um como padrão (voz da equipe e fallback para mensagens ambíguas).'}
+            : 'Descreva quando cada agente deve ser usado — é o que o orquestrador lê para decidir quais consultar. Marque um como padrão (voz do setor e fallback para mensagens ambíguas).'}
         </p>
 
         {editMembers.length === 0 ? (
@@ -298,8 +298,8 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
                   <input
                     value={m.sector}
                     onChange={(e) => setSector(m.agentId, e.target.value)}
-                    list="team-sector-suggestions"
-                    placeholder="Setor (ex: Suporte, Vendas) — opcional"
+                    list="sector-sector-suggestions"
+                    placeholder="Área (ex: Suporte, Vendas) — opcional"
                     className="mb-2 w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                   />
                 )}
@@ -401,7 +401,7 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
             }}
             className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
           >
-            <option value="">+ Adicionar {isPipeline ? 'etapa' : 'agente à equipe'}</option>
+            <option value="">+ Adicionar {isPipeline ? 'etapa' : 'agente ao setor'}</option>
             {availableAgents.map((a) => (
               <option key={a._id} value={a._id}>
                 {a.name}
@@ -419,7 +419,7 @@ export function TeamForm({ team, agents, onSaved }: TeamFormProps) {
           disabled={saving}
           className="rounded-lg bg-(--intent-brand) px-5 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
         >
-          {isCreating ? (saving ? 'Criando...' : 'Criar equipe') : saving ? 'Salvando...' : 'Salvar alterações'}
+          {isCreating ? (saving ? 'Criando...' : 'Criar setor') : saving ? 'Salvando...' : 'Salvar alterações'}
         </button>
       </div>
     </form>

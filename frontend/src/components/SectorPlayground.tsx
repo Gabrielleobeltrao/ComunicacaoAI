@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
-import type { TeamMode, TeamSummary, ToolCall } from '../lib/types'
+import type { SectorMode, SectorSummary, ToolCall } from '../lib/types'
 import { MessageContent } from './MessageContent'
 import { ToolCalls } from './ToolCalls'
 
@@ -13,14 +13,14 @@ interface PlayMessage {
   stage?: string | null
   advanced?: boolean
   fromStage?: string | null
-  mode?: TeamMode
+  mode?: SectorMode
   toolCalls?: ToolCall[]
 }
 
-// Stateless team test chat — nothing is persisted. Each reply shows which
+// Stateless sector test chat — nothing is persisted. Each reply shows which
 // specialists were consulted (adaptive) or the active stage (pipeline). Reused
-// by the Teams list modal and the team page.
-export function TeamPlayground({ team }: { team: TeamSummary }) {
+// by the Setores list modal and the sector page.
+export function SectorPlayground({ sector }: { sector: SectorSummary }) {
   const [messages, setMessages] = useState<PlayMessage[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -34,7 +34,7 @@ export function TeamPlayground({ team }: { team: TeamSummary }) {
     setInput('')
     setSending(true)
     try {
-      const res = await fetch(`${API_URL}/api/teams/${team._id}/playground`, {
+      const res = await fetch(`${API_URL}/api/sectors/${sector._id}/playground`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -74,7 +74,7 @@ export function TeamPlayground({ team }: { team: TeamSummary }) {
   return (
     <div>
       <p className="mb-3 text-xs text-(--text-faint)">
-        {team.mode === 'pipeline'
+        {sector.mode === 'pipeline'
           ? 'Conversa de teste — nada é salvo. Cada resposta mostra em qual etapa do fluxo o atendimento está.'
           : 'Conversa de teste — nada é salvo. Cada resposta mostra quais especialistas o orquestrador consultou.'}
       </p>

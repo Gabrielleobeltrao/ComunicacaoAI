@@ -2,7 +2,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { signOut, useSession } from '../lib/auth-client'
 import { ACTIVE, COLLAPSE_FADE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
 import { Brand, Icon, IconButton } from '../ui'
-import { TeamNav } from './TeamNav'
+import { SectorNav } from './SectorNav'
 
 // Lucide glyph names (via the Icon component), matching the design's Rail.
 interface NavLink {
@@ -14,15 +14,15 @@ interface NavLink {
 const NAV: NavLink[] = [
   { to: '/dashboard', label: 'Escritório', icon: 'layout-dashboard' },
   { to: '/agents', label: 'Agentes', icon: 'users-round' },
-  { to: '/teams', label: 'Equipes', icon: 'network' },
+  { to: '/setores', label: 'Setores', icon: 'network' },
   { to: '/widgets', label: 'Canais', icon: 'share-2' },
   { to: '/chats', label: 'Conversas', icon: 'message-circle' },
 ]
 
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
-  // On a team page the middle nav swaps to that team's own sections.
-  const { teamId } = useParams()
+  // On a sector page the middle nav swaps to that sector's own sections.
+  const { sectorId } = useParams()
   const { data: session } = useSession()
 
   const user = session?.user
@@ -51,8 +51,8 @@ export function Sidebar({ current }: { current: string }) {
           </span>
         </div>
 
-        {teamId ? (
-          <TeamNav />
+        {sectorId ? (
+          <SectorNav />
         ) : (
           <nav className="flex flex-col gap-1">
             {NAV.map((item) => (

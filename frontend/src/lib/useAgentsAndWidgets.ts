@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { API_URL } from './api'
-import type { AgentSummary, TeamSummary, WidgetSummary } from './types'
+import type { AgentSummary, SectorSummary, WidgetSummary } from './types'
 
 export function useAgentsAndWidgets() {
   const [widgets, setWidgets] = useState<WidgetSummary[]>([])
   const [widgetsLoading, setWidgetsLoading] = useState(true)
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [agentsLoading, setAgentsLoading] = useState(true)
-  const [teams, setTeams] = useState<TeamSummary[]>([])
-  const [teamsLoading, setTeamsLoading] = useState(true)
+  const [sectors, setSectors] = useState<SectorSummary[]>([])
+  const [sectorsLoading, setSectorsLoading] = useState(true)
 
   const loadWidgets = useCallback(async () => {
     const res = await fetch(`${API_URL}/api/widgets`, { credentials: 'include' })
@@ -22,17 +22,17 @@ export function useAgentsAndWidgets() {
     setAgentsLoading(false)
   }, [])
 
-  const loadTeams = useCallback(async () => {
-    const res = await fetch(`${API_URL}/api/teams`, { credentials: 'include' })
-    if (res.ok) setTeams(await res.json())
-    setTeamsLoading(false)
+  const loadSectors = useCallback(async () => {
+    const res = await fetch(`${API_URL}/api/sectors`, { credentials: 'include' })
+    if (res.ok) setSectors(await res.json())
+    setSectorsLoading(false)
   }, [])
 
   useEffect(() => {
     loadWidgets()
     loadAgents()
-    loadTeams()
-  }, [loadWidgets, loadAgents, loadTeams])
+    loadSectors()
+  }, [loadWidgets, loadAgents, loadSectors])
 
   return {
     widgets,
@@ -41,8 +41,8 @@ export function useAgentsAndWidgets() {
     agents,
     agentsLoading,
     loadAgents,
-    teams,
-    teamsLoading,
-    loadTeams,
+    sectors,
+    sectorsLoading,
+    loadSectors,
   }
 }

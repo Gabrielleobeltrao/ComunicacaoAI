@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { API_URL } from '../lib/api'
-import type { AgentSummary, TeamSummary, WhatsAppChannel, WhatsAppProviderCatalog } from '../lib/types'
+import type { AgentSummary, SectorSummary, WhatsAppChannel, WhatsAppProviderCatalog } from '../lib/types'
 import { Modal } from './Modal'
 
 const inputClass =
@@ -32,10 +32,10 @@ function CopyField({ value }: { value: string }) {
 // numbers and drives the connect flow (provider choice → config → webhook).
 export function WhatsAppManager({
   agents,
-  teams,
+  sectors,
 }: {
   agents: AgentSummary[]
-  teams: TeamSummary[]
+  sectors: SectorSummary[]
 }) {
   const [providers, setProviders] = useState<WhatsAppProviderCatalog[]>([])
   const [channels, setChannels] = useState<WhatsAppChannel[]>([])
@@ -45,7 +45,7 @@ export function WhatsAppManager({
   const [provider, setProvider] = useState<WhatsAppProviderCatalog | null>(null)
   const [name, setName] = useState('')
   const [draft, setDraft] = useState<Record<string, string>>({})
-  const [link, setLink] = useState('') // "agent:<id>" | "team:<id>"
+  const [link, setLink] = useState('') // "agent:<id>" | "sector:<id>"
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [created, setCreated] = useState<WhatsAppChannel | null>(null)
@@ -103,7 +103,7 @@ export function WhatsAppManager({
           provider: provider.key,
           config: draft,
           agentId: linkType === 'agent' ? linkId : null,
-          teamId: linkType === 'team' ? linkId : null,
+          sectorId: linkType === 'sector' ? linkId : null,
         }),
       })
       if (!res.ok) {
@@ -130,7 +130,7 @@ export function WhatsAppManager({
 
   function linkLabel(channel: WhatsAppChannel) {
     if (channel.agentId) return agents.find((a) => a._id === channel.agentId)?.name ?? 'Agente'
-    if (channel.teamId) return teams.find((t) => t._id === channel.teamId)?.name ?? 'Equipe'
+    if (channel.sectorId) return sectors.find((t) => t._id === channel.sectorId)?.name ?? 'Setor'
     return 'Sem vínculo'
   }
 
@@ -140,7 +140,7 @@ export function WhatsAppManager({
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
         <p className="max-w-2xl text-sm text-(--text-muted)">
-          Conecte um número de WhatsApp a um agente ou equipe. As conversas aparecem em Chats como
+          Conecte um número de WhatsApp a um agente ou setor. As conversas aparecem em Chats como
           qualquer outra, com atendimento humano incluso.
         </p>
         <button
@@ -262,7 +262,7 @@ export function WhatsAppManager({
             <div>
               <label className="mb-1 block text-sm text-(--text-muted)">Responder com</label>
               <select value={link} onChange={(e) => setLink(e.target.value)} className={inputClass}>
-                <option value="">Selecione um agente ou equipe</option>
+                <option value="">Selecione um agente ou setor</option>
                 {agents.length > 0 && (
                   <optgroup label="Agentes">
                     {agents.map((a) => (
@@ -272,10 +272,10 @@ export function WhatsAppManager({
                     ))}
                   </optgroup>
                 )}
-                {teams.length > 0 && (
-                  <optgroup label="Equipes">
-                    {teams.map((t) => (
-                      <option key={t._id} value={`team:${t._id}`}>
+                {sectors.length > 0 && (
+                  <optgroup label="Setores">
+                    {sectors.map((t) => (
+                      <option key={t._id} value={`sector:${t._id}`}>
                         {t.name}
                       </option>
                     ))}

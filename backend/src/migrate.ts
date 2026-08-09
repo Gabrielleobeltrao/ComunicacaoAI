@@ -17,6 +17,11 @@ export async function runMigrations(): Promise<void> {
   await renameCollectionIfNeeded('teams', 'sectors')
   await renameCollectionIfNeeded('team_decisions', 'sector_decisions')
 
+  // Team → Sector persisted field renames on existing docs (idempotent — only
+  // touches docs that still carry the old field).
+  await db.collection('widgets').updateMany({ teamId: { $exists: true } }, { $rename: { teamId: 'sectorId' } })
+  await db.collection('sector_decisions').updateMany({ teamId: { $exists: true } }, { $rename: { teamId: 'sectorId' } })
+
   const agentsCol = db.collection('agents')
   const sectorsCol = db.collection('sectors')
 

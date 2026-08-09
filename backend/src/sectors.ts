@@ -62,7 +62,7 @@ export async function createSector(
   mode: SectorMode,
   members: SectorMember[],
 ) {
-  const team: Omit<Sector, '_id'> = {
+  const sector: Omit<Sector, '_id'> = {
     ownerId,
     officeId,
     name,
@@ -70,29 +70,29 @@ export async function createSector(
     members: normalizeMembers(members),
     createdAt: new Date(),
   }
-  const result = await sectors.insertOne(team as Sector)
-  return { ...team, _id: result.insertedId }
+  const result = await sectors.insertOne(sector as Sector)
+  return { ...sector, _id: result.insertedId }
 }
 
 export function listSectors(ownerId: string) {
   return sectors.find({ ownerId }).sort({ createdAt: -1 }).toArray()
 }
 
-export function getSectorById(ownerId: string, teamId: ObjectId) {
-  return sectors.findOne({ _id: teamId, ownerId })
+export function getSectorById(ownerId: string, sectorId: ObjectId) {
+  return sectors.findOne({ _id: sectorId, ownerId })
 }
 
 export function updateSector(
   ownerId: string,
-  teamId: ObjectId,
+  sectorId: ObjectId,
   updates: { name?: string; mode?: SectorMode; members?: SectorMember[] },
 ) {
   const normalized = updates.members ? { ...updates, members: normalizeMembers(updates.members) } : updates
-  return sectors.findOneAndUpdate({ _id: teamId, ownerId }, { $set: normalized }, { returnDocument: 'after' })
+  return sectors.findOneAndUpdate({ _id: sectorId, ownerId }, { $set: normalized }, { returnDocument: 'after' })
 }
 
-export function deleteSector(ownerId: string, teamId: ObjectId) {
-  return sectors.deleteOne({ _id: teamId, ownerId })
+export function deleteSector(ownerId: string, sectorId: ObjectId) {
+  return sectors.deleteOne({ _id: sectorId, ownerId })
 }
 
 // An agent belongs to at most one sector (parent-child). After adding agents to
