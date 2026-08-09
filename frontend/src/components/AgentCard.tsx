@@ -3,13 +3,13 @@ import { accentFor, placeholderStatsFor, portraitFor, statusFor } from '../lib/a
 import type { AgentStat } from '../lib/agentAvatar'
 import { roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import type { AgentSummary } from '../lib/types'
-import { AgentAvatar, Card, StatusPill, Tag } from '../ui'
+import { AgentAvatar, Card, Icon, StatusPill, Tag } from '../ui'
 
 // A clickable agent card (design's AgentCard): avatar + name + role + status,
-// a short objective, skill tags and a small stats grid. Accent and character
-// are stable per agent. `stats` defaults to placeholders — pass real per-agent
-// stats once the list endpoint returns them.
-export function AgentCard({ agent, stats }: { agent: AgentSummary; stats?: AgentStat[] }) {
+// its sector (or "Sem setor" when orphan), a short objective, skill tags and a
+// small stats grid. Accent and character are stable per agent. `stats` defaults
+// to placeholders — pass real per-agent stats once the list endpoint returns them.
+export function AgentCard({ agent, stats, sectorName }: { agent: AgentSummary; stats?: AgentStat[]; sectorName?: string | null }) {
   const navigate = useNavigate()
   const accent = accentFor(agent._id)
   const status = statusFor(agent._id)
@@ -37,6 +37,21 @@ export function AgentCard({ agent, stats }: { agent: AgentSummary; stats?: Agent
           </span>
           <span style={{ fontSize: 13, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {roleLabelOf(agent)}
+          </span>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              fontSize: 12,
+              color: sectorName ? 'var(--text-muted)' : 'var(--text-faint)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <Icon name="network" size={12} color="currentColor" />
+            {sectorName || 'Sem setor'}
           </span>
           <StatusPill status={status} style={{ marginTop: 4, alignSelf: 'flex-start' }} />
         </div>

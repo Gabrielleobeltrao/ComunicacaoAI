@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { AgentCard } from '../components/AgentCard'
 import { AgentForm } from '../components/AgentForm'
 import { AppLayout } from '../components/AppLayout'
@@ -6,8 +6,16 @@ import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import { Button, Dialog, EmptyState } from '../ui'
 
 export function Agents() {
-  const { agents, agentsLoading, loadAgents } = useAgentsAndWidgets()
+  const { agents, agentsLoading, loadAgents, sectors } = useAgentsAndWidgets()
   const [isCreating, setIsCreating] = useState(false)
+
+  // An agent belongs to at most one sector — map agentId -> sector name so each
+  // card can show it (or "Sem setor" when orphan).
+  const sectorByAgent = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const s of sectors) for (const m of s.members) map.set(m.agentId, s.name)
+    return map
+  }, [sectors])
 
   return (
     <AppLayout
@@ -36,7 +44,7 @@ export function Agents() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
           {agents.map((agent) => (
-            <AgentCard key={agent._id} agent={agent} />
+            <AgentCard key={agent._id} agent={agent} sectorName={sectorByAgent.get(agent._id) ?? null} />
           ))}
         </div>
       )}
