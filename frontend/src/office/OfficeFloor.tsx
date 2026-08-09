@@ -148,7 +148,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   }
 
   return (
-    <OfficeMap cols={cols} rows={totalRows} tile={42} style={{ maxHeight: 600 }}>
+    <OfficeMap cols={cols} rows={totalRows} tile={42} style={{ height: 560 }}>
       {/* The grid floor is drawn by OfficeMap and fills the whole area. */}
 
       {/* Sector rooms */}
