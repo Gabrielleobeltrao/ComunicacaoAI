@@ -23,8 +23,6 @@ const STRIDE_Y = 6
 const DESK_ORIGIN_Y = 2 // top space inside a room for its label + far-agent heads
 const ROOM_PAD_X = 1
 const MARGIN = 1.0 // hard safety edge — nothing crosses it
-const PERIM = 2.5 // extra space around the rooms where loose agents can stand
-const TARGET_W = 24 // rough width a shelf tries to fill before wrapping
 const LABEL_OFFSET = 0.62
 
 const SLOTS = [
@@ -68,8 +66,8 @@ function sizeOf(room: Room, rng: () => number) {
   else deskCols = [2, 3][Math.floor(rng() * 2)]
   const deskRows = deskCount > 0 ? Math.ceil(deskCount / deskCols) : 0
   const innerW = deskCount > 0 ? deskCols * DESK_W + (deskCols - 1) * (STRIDE_X - DESK_W) : 3.5
-  const roomW = ROOM_PAD_X * 2 + Math.max(innerW, 3.5) + rng() * 2 // varied extra width
-  const roomH = (deskRows > 0 ? DESK_ORIGIN_Y + (deskRows - 1) * STRIDE_Y + 4 : 3) + rng() * 1.5
+  const roomW = ROOM_PAD_X * 2 + Math.max(innerW, 3.5) + rng() * 0.8 // small varied extra width
+  const roomH = (deskRows > 0 ? DESK_ORIGIN_Y + (deskRows - 1) * STRIDE_Y + 4 : 3) + rng() * 0.5
   return { roomW, roomH, deskCols, deskCount }
 }
 
@@ -85,31 +83,42 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   })
   const loose = agents.filter((a) => !used.has(a._id))
 
-  // Place rooms on jittered shelves — varied sizes, offsets and gaps, no grid.
-  const placed: { room: Room; x: number; y: number; w: number; h: number; deskCols: number; deskCount: number }[] = []
-  let shelfTop = MARGIN + PERIM
-  let cursorX = MARGIN + PERIM
-  let shelfBottom = shelfTop
-  let roomMaxX = MARGIN + PERIM
-  for (const room of rooms) {
+  // Size every room first, then pick an office width that scales with how much
+  // content there is (rooms + loose agents) — so the floor grows with the team
+  // instead of being a fixed, mostly-empty area.
+  const roomData = rooms.map((room) => {
     const rng = mulberry32(hash32(room.key))
-    const s = sizeOf(room, rng)
-    const gap = 0.8 + rng() * 1.8
-    if (cursorX > MARGIN + PERIM && cursorX + gap + s.roomW > MARGIN + PERIM + TARGET_W) {
-      shelfTop = shelfBottom + 0.9 + rng() * 1.6
-      cursorX = MARGIN + PERIM
+    return { room, size: sizeOf(room, rng), rng }
+  })
+  const sumArea = roomData.reduce((acc, d) => acc + d.size.roomW * d.size.roomH, 0)
+  const maxRoomW = roomData.reduce((m, d) => Math.max(m, d.size.roomW), 6)
+  // Aim for a roughly square footprint that scales with the content.
+  const targetW = Math.max(maxRoomW, Math.sqrt((sumArea + loose.length * 4) * 1.7))
+  const perim = loose.length > 0 ? 1.4 : 0.5
+
+  // Place rooms on lightly-jittered shelves — varied but compact, no grid.
+  const placed: { room: Room; x: number; y: number; w: number; h: number; deskCols: number; deskCount: number }[] = []
+  let shelfTop = MARGIN + perim
+  let cursorX = MARGIN + perim
+  let shelfBottom = shelfTop
+  let roomMaxX = MARGIN + perim
+  for (const { room, size: s, rng } of roomData) {
+    const gap = 0.5 + rng() * 0.7
+    if (cursorX > MARGIN + perim && cursorX + gap + s.roomW > MARGIN + perim + targetW) {
+      shelfTop = shelfBottom + 0.5 + rng() * 0.7
+      cursorX = MARGIN + perim
       shelfBottom = shelfTop
     }
-    const x = cursorX === MARGIN + PERIM ? cursorX : cursorX + gap
-    const y = shelfTop + rng() * 1.4 // vertical jitter within the shelf
+    const x = cursorX === MARGIN + perim ? cursorX : cursorX + gap
+    const y = shelfTop + rng() * 0.6 // small vertical jitter within the shelf
     placed.push({ room, x, y, w: s.roomW, h: s.roomH, deskCols: s.deskCols, deskCount: s.deskCount })
     cursorX = x + s.roomW
     roomMaxX = Math.max(roomMaxX, x + s.roomW)
     shelfBottom = Math.max(shelfBottom, y + s.roomH)
   }
-  const roomMaxY = placed.length > 0 ? shelfBottom : MARGIN + PERIM
-  const cols = Math.max(6, Math.ceil(roomMaxX + PERIM + MARGIN))
-  const totalRows = Math.max(6, Math.ceil(roomMaxY + PERIM + MARGIN))
+  const roomMaxY = placed.length > 0 ? shelfBottom : MARGIN + perim
+  const cols = Math.max(6, Math.ceil(roomMaxX + perim + MARGIN))
+  const totalRows = Math.max(6, Math.ceil(roomMaxY + perim + MARGIN))
 
   // Scatter loose agents in whatever space the rooms leave free (all sides + gaps).
   const roomRects = placed.map((p) => ({ x: p.x, y: p.y - LABEL_OFFSET - 0.5, x2: p.x + p.w, y2: p.y + p.h }))
