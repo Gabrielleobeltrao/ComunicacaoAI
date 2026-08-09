@@ -61,6 +61,21 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Fullscreen for the whole viewport.
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const [isFull, setIsFull] = useState(false)
+  useEffect(() => {
+    const onFs = () => setIsFull(document.fullscreenElement === wrapperRef.current)
+    document.addEventListener('fullscreenchange', onFs)
+    return () => document.removeEventListener('fullscreenchange', onFs)
+  }, [])
+  const toggleFull = () => {
+    const el = wrapperRef.current
+    if (!el) return
+    if (document.fullscreenElement) document.exitFullscreen()
+    else el.requestFullscreen?.()
+  }
+
   const onDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
     const el = ref.current
@@ -108,7 +123,17 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
   ;(inner as Record<string, string>)['--tile'] = `${t}px`
 
   return (
-    <div style={{ position: 'relative', overflow: 'hidden', background: 'var(--map-floor)', borderRadius: 'var(--radius-panel)', ...style }}>
+    <div
+      ref={wrapperRef}
+      style={{
+        position: 'relative',
+        overflow: 'hidden',
+        background: 'var(--map-floor)',
+        borderRadius: 'var(--radius-panel)',
+        ...style,
+        ...(isFull ? { width: '100%', height: '100%', borderRadius: 0 } : null),
+      }}
+    >
       <div
         ref={ref}
         onPointerDown={onDown}
@@ -121,8 +146,9 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
         <div style={inner}>{children}</div>
       </div>
 
-      {/* Zoom controls — fixed in the corner, above the panning floor. */}
+      {/* Zoom + fullscreen controls — fixed in the corner, above the panning floor. */}
       <div style={{ position: 'absolute', right: 12, bottom: 12, zIndex: 30, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <IconButton icon={isFull ? 'shrink' : 'expand'} variant="card" size="sm" label={isFull ? 'Sair da tela cheia' : 'Tela cheia'} onClick={toggleFull} />
         <IconButton icon="plus" variant="card" size="sm" label="Aproximar" onClick={() => zoomBy(ZOOM_STEP)} disabled={zoom >= MAX_ZOOM} />
         <IconButton icon="minus" variant="card" size="sm" label="Afastar" onClick={() => zoomBy(-ZOOM_STEP)} disabled={zoom <= MIN_ZOOM} />
         <IconButton icon="maximize" variant="card" size="sm" label="Redefinir zoom" onClick={() => zoomBy(1 - zoom)} disabled={zoom === 1} />
