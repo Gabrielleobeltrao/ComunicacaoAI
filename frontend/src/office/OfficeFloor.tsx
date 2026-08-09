@@ -92,25 +92,27 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   })
   const sumArea = roomData.reduce((acc, d) => acc + d.size.roomW * d.size.roomH, 0)
   const maxRoomW = roomData.reduce((m, d) => Math.max(m, d.size.roomW), 6)
-  // Aim for a roughly square footprint that scales with the content.
-  const targetW = Math.max(maxRoomW, Math.sqrt((sumArea + loose.length * 4) * 1.7))
-  const perim = loose.length > 0 ? 1.4 : 0.5
+  // Aim for a roughly square footprint that scales with the content — the extra
+  // area factor also leaves gaps between rooms wide enough for a loose agent.
+  const targetW = Math.max(maxRoomW + 3, Math.sqrt((sumArea + loose.length * 6) * 2.2))
+  const perim = loose.length > 0 ? 2.2 : 0.6
 
-  // Place rooms on lightly-jittered shelves — varied but compact, no grid.
+  // Place rooms on lightly-jittered shelves — varied, no grid, with roomy gaps
+  // (≈ a full-body agent wide) so loose agents can stand between the sectors.
   const placed: { room: Room; x: number; y: number; w: number; h: number; deskCols: number; deskCount: number }[] = []
   let shelfTop = MARGIN + perim
   let cursorX = MARGIN + perim
   let shelfBottom = shelfTop
   let roomMaxX = MARGIN + perim
   for (const { room, size: s, rng } of roomData) {
-    const gap = 0.5 + rng() * 0.7
+    const gap = 2.6 + rng() * 1.4
     if (cursorX > MARGIN + perim && cursorX + gap + s.roomW > MARGIN + perim + targetW) {
-      shelfTop = shelfBottom + 0.5 + rng() * 0.7
+      shelfTop = shelfBottom + 2.6 + rng() * 1.4
       cursorX = MARGIN + perim
       shelfBottom = shelfTop
     }
     const x = cursorX === MARGIN + perim ? cursorX : cursorX + gap
-    const y = shelfTop + rng() * 0.6 // small vertical jitter within the shelf
+    const y = shelfTop + rng() * 1.0 // vertical jitter within the shelf
     placed.push({ room, x, y, w: s.roomW, h: s.roomH, deskCols: s.deskCols, deskCount: s.deskCount })
     cursorX = x + s.roomW
     roomMaxX = Math.max(roomMaxX, x + s.roomW)
