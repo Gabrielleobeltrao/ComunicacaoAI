@@ -2,7 +2,6 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { signOut, useSession } from '../lib/auth-client'
 import { ACTIVE, COLLAPSE_FADE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
 import { Brand, Icon, IconButton } from '../ui'
-import { AgentNav } from './AgentNav'
 import { TeamNav } from './TeamNav'
 
 // Lucide glyph names (via the Icon component), matching the design's Rail.
@@ -22,8 +21,8 @@ const NAV: NavLink[] = [
 
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
-  // On an agent/team page the middle nav swaps to that entity's own sections.
-  const { agentId, teamId } = useParams()
+  // On a team page the middle nav swaps to that team's own sections.
+  const { teamId } = useParams()
   const { data: session } = useSession()
 
   const user = session?.user
@@ -52,9 +51,7 @@ export function Sidebar({ current }: { current: string }) {
           </span>
         </div>
 
-        {agentId ? (
-          <AgentNav />
-        ) : teamId ? (
+        {teamId ? (
           <TeamNav />
         ) : (
           <nav className="flex flex-col gap-1">
