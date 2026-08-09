@@ -36,6 +36,9 @@ export interface TeamMember {
 export interface Team {
   _id: ObjectId
   ownerId: string
+  // The Escritório this sector belongs to. Required — a sector is never an
+  // orphan (unlike agents, which may have no sector).
+  officeId: ObjectId
   name: string
   mode: TeamMode
   members: TeamMember[]
@@ -52,9 +55,16 @@ function normalizeMembers(members: TeamMember[]): TeamMember[] {
   return members.map((m, i) => ({ ...m, isDefault: i === chosen }))
 }
 
-export async function createTeam(ownerId: string, name: string, mode: TeamMode, members: TeamMember[]) {
+export async function createTeam(
+  ownerId: string,
+  officeId: ObjectId,
+  name: string,
+  mode: TeamMode,
+  members: TeamMember[],
+) {
   const team: Omit<Team, '_id'> = {
     ownerId,
+    officeId,
     name,
     mode,
     members: normalizeMembers(members),
@@ -83,4 +93,19 @@ export function updateTeam(
 
 export function deleteTeam(ownerId: string, teamId: ObjectId) {
   return teams.deleteOne({ _id: teamId, ownerId })
+}
+
+// An agent belongs to at most one sector (parent-child). After adding agents to
+// `keepTeamId`, remove them from every OTHER sector of the same owner, so moving
+// an agent into a sector transfers it out of its previous one. Affected sectors
+// are re-normalized (a pulled member could have been the default).
+export async function enforceSingleMembership(ownerId: string, keepTeamId: ObjectId, agentIds: ObjectId[]) {
+  if (agentIds.length === 0) return
+  const affected = await teams
+    .find({ ownerId, _id: { $ne: keepTeamId }, 'members.agentId': { $in: agentIds } })
+    .toArray()
+  for (const t of affected) {
+    const remaining = t.members.filter((m) => !agentIds.some((id) => id.equals(m.agentId)))
+    await teams.updateOne({ _id: t._id }, { $set: { members: normalizeMembers(remaining) } })
+  }
 }

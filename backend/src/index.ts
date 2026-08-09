@@ -54,8 +54,10 @@ import {
   setStructuredMemory,
   setStructuredOutputData,
 } from './conversationMemory.js'
-import { createTeam, deleteTeam, getTeamById, listTeams, updateTeam } from './teams.js'
+import { createTeam, deleteTeam, enforceSingleMembership, getTeamById, listTeams, updateTeam } from './teams.js'
 import type { Team, TeamMember, TeamMode, TeamTransition } from './teams.js'
+import { ensureDefaultOffice } from './offices.js'
+import { migrateOfficeHierarchy } from './migrate.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
@@ -796,7 +798,9 @@ app.post('/api/teams', requireAuth, async (req, res) => {
     res.status(400).json({ error })
     return
   }
-  const team = await createTeam(res.locals.userId, name, parsedMode, parsed ?? [])
+  const office = await ensureDefaultOffice(res.locals.userId)
+  const team = await createTeam(res.locals.userId, office._id, name, parsedMode, parsed ?? [])
+  await enforceSingleMembership(res.locals.userId, team._id, (parsed ?? []).map((m) => m.agentId))
   res.status(201).json(serializeTeam(team as WithId<Team>))
 })
 
@@ -838,6 +842,9 @@ app.patch('/api/teams/:teamId', requireAuth, async (req, res) => {
   if (!team) {
     res.status(404).json({ error: 'Team not found' })
     return
+  }
+  if (updates.members) {
+    await enforceSingleMembership(res.locals.userId, team._id, updates.members.map((m) => m.agentId))
   }
   res.json(serializeTeam(team))
 })
@@ -1224,7 +1231,8 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     return
   }
 
-  const agent = await createAgent(res.locals.userId, name, {
+  const office = await ensureDefaultOffice(res.locals.userId)
+  const agent = await createAgent(res.locals.userId, office._id, name, {
     objective: typeof objective === 'string' ? objective : undefined,
     provider,
     model: typeof model === 'string' || model === null ? model || null : undefined,
@@ -2936,6 +2944,12 @@ async function sendStructuredOutputWebhook(url: string, payload: unknown) {
 
 async function start() {
   await mongoClient.connect()
+
+  // Backfill the Escritório → Setores → Agentes hierarchy onto existing data.
+  // Idempotent; a no-op once every doc has an officeId.
+  migrateOfficeHierarchy().catch((error) => {
+    console.error('migrateOfficeHierarchy failed:', error)
+  })
 
   // Don't hold up accepting connections on this — it's a one-time setup
   // step (a no-op after the first successful run) and unrelated routes

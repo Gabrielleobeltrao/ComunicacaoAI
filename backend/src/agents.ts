@@ -65,6 +65,9 @@ export interface AgentBuiltinTool {
 export interface Agent {
   _id: ObjectId
   ownerId: string
+  // The Escritório this agent belongs to (children of the office). Every agent
+  // has one; a sector is optional (orphan agents are allowed).
+  officeId: ObjectId
   name: string
   objective: string
   provider: Provider
@@ -99,6 +102,7 @@ const agents = db.collection<Agent>('agents')
 
 export async function createAgent(
   ownerId: string,
+  officeId: ObjectId,
   name: string,
   options: {
     objective?: string
@@ -131,6 +135,7 @@ export async function createAgent(
 ) {
   const agent: Omit<Agent, '_id'> = {
     ownerId,
+    officeId,
     name,
     objective: options.objective ?? '',
     provider: options.provider ?? 'anthropic',
