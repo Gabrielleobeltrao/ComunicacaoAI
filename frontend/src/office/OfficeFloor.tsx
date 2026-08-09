@@ -4,6 +4,7 @@ import type { AgentSummary, SectorSummary } from '../lib/types'
 import { MapAgent } from './MapAgent'
 import { MapObject } from './MapObject'
 import { MapZone } from './MapZone'
+import { NamePill } from './NamePill'
 import { OfficeMap } from './OfficeMap'
 
 // The office is a floor plan on a common grid floor: one room per sector (tinted
@@ -27,6 +28,8 @@ const DESK_ORIGIN_Y = 2 // top space inside a room for its label + far-agent hea
 const ROOMS_PER_ROW = 2
 const MAP_PAD = 0.6
 const ROOM_GAP = 1.2
+const LABEL_H = 0.7 // space reserved above each room row for its label
+const LABEL_OFFSET = 0.62 // how far above the room's top edge the label sits
 const LOOSE_STRIDE_X = 2.4
 const LOOSE_STRIDE_Y = 2.7
 
@@ -71,7 +74,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
 
   // Pack sector rooms into rows; each room in a row shares that row's height.
   const placed: { room: Room; x: number; y: number; w: number; h: number; deskCount: number }[] = []
-  let cursorY = MAP_PAD
+  let cursorY = MAP_PAD + LABEL_H
   let mapW = MAP_PAD * 2
   for (let r = 0; r < rooms.length; r += ROOMS_PER_ROW) {
     const rowRooms = rooms.slice(r, r + ROOMS_PER_ROW)
@@ -152,7 +155,25 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
 
       {/* Sector rooms */}
       {placed.map((p) => (
-        <MapZone key={p.room.key} x={p.x} y={p.y} w={p.w} h={p.h} tint={p.room.color} label={p.room.name} />
+        <MapZone key={p.room.key} x={p.x} y={p.y} w={p.w} h={p.h} tint={p.room.color} />
+      ))}
+
+      {/* Sector labels — above each room (outside it), so they never cover agent names */}
+      {placed.map((p) => (
+        <NamePill
+          key={`lbl-${p.room.key}`}
+          name={p.room.name}
+          tone="light"
+          style={{
+            position: 'absolute',
+            left: `calc(var(--tile) * ${p.x + p.w / 2})`,
+            top: `calc(var(--tile) * ${p.y - LABEL_OFFSET})`,
+            transform: 'translateX(-50%)',
+            zIndex: 6,
+            whiteSpace: 'nowrap',
+            pointerEvents: 'none',
+          }}
+        />
       ))}
 
       {/* Far chairs — behind the far row (z0) */}
@@ -191,6 +212,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
             agent={characterFor(o.a._id)}
             facing="frente"
             department={accentFor(o.a._id)}
+            hoverLift={false}
             style={{ zIndex: 3 }}
             onOpen={() => navigate(`/agents/${o.a._id}`)}
           />
