@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 168" width="168" height="168">
+<rect x="8" y="110" width="152" height="14" rx="4" fill="#C9A06A"></rect>
+<rect x="8" y="26" width="152" height="84" rx="8" fill="#E3C89C"></rect>
+<rect x="11" y="29" width="146" height="9" rx="4" fill="#fff" opacity=".28"></rect><rect x="20" y="124" width="8" height="28" rx="2" fill="#9C7442"></rect><rect x="140" y="124" width="8" height="28" rx="2" fill="#9C7442"></rect><path d="M12 68 H156" stroke="#C9A06A" stroke-width="1.6" opacity=".55"></path>
+<rect x="49" y="47" width="6" height="8" rx="2" fill="#7C8394"></rect>
+<rect x="42" y="53" width="20" height="4" rx="2" fill="#A2A8B6"></rect>
+<rect x="35" y="26" width="34" height="21" rx="3" fill="#7C8394"></rect>
+<rect x="38" y="29" width="28" height="15" rx="2" fill="#A2A8B6"></rect>
+<rect x="38" y="29" width="28" height="5" rx="2" fill="#fff" opacity=".3"></rect>
+<circle cx="52" cy="40" r="3" fill="#7C8394" opacity=".7"></circle>
+<rect x="113" y="47" width="6" height="8" rx="2" fill="#7C8394"></rect>
+<rect x="106" y="53" width="20" height="4" rx="2" fill="#A2A8B6"></rect>
+<rect x="99" y="26" width="34" height="21" rx="3" fill="#7C8394"></rect>
+<rect x="102" y="29" width="28" height="15" rx="2" fill="#A2A8B6"></rect>
+<rect x="102" y="29" width="28" height="5" rx="2" fill="#fff" opacity=".3"></rect>
+<circle cx="116" cy="40" r="3" fill="#7C8394" opacity=".7"></circle>
+<rect x="49" y="85" width="6" height="8" rx="2" fill="#7C8394"></rect>
+<rect x="42" y="91" width="20" height="4" rx="2" fill="#A2A8B6"></rect>
+<rect x="35" y="64" width="34" height="21" rx="3" fill="#3A4356"></rect>
+<rect x="37" y="66" width="30" height="17" rx="2" fill="#8FB6E8"></rect>
+<path d="M37 66 L37 83 L52 83 L52 66 Z" fill="#fff" opacity=".25"></path>
+<rect x="113" y="85" width="6" height="8" rx="2" fill="#7C8394"></rect>
+<rect x="106" y="91" width="20" height="4" rx="2" fill="#A2A8B6"></rect>
+<rect x="99" y="64" width="34" height="21" rx="3" fill="#3A4356"></rect>
+<rect x="101" y="66" width="30" height="17" rx="2" fill="#8FB6E8"></rect>
+<path d="M101 66 L101 83 L116 83 L116 66 Z" fill="#fff" opacity=".25"></path><rect x="38" y="97" width="28" height="9" rx="3" fill="#C8CCD6"></rect><rect x="38" y="97" width="28" height="3.5" rx="2" fill="#fff" opacity=".45"></rect><rect x="102" y="97" width="28" height="9" rx="3" fill="#C8CCD6"></rect><rect x="102" y="97" width="28" height="3.5" rx="2" fill="#fff" opacity=".45"></rect></svg>
