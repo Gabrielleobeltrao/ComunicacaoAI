@@ -8,7 +8,7 @@ import { AgentAvatar, Card, Icon, StatusPill, Tag } from '../ui'
 // A clickable agent card (design's AgentCard): avatar + name + role + status,
 // its sector (or "Sem setor" when orphan), a short objective, skill tags and a
 // small stats grid (real per-agent stats passed in via `stats`).
-export function AgentCard({ agent, stats, sectorName }: { agent: AgentSummary; stats?: AgentStat[]; sectorName?: string | null }) {
+export function AgentCard({ agent, stats, sectorName, portrait }: { agent: AgentSummary; stats?: AgentStat[]; sectorName?: string | null; portrait?: string }) {
   const navigate = useNavigate()
   const accent = accentFor(agent._id)
   const status = statusFor(agent._id)
@@ -18,7 +18,7 @@ export function AgentCard({ agent, stats, sectorName }: { agent: AgentSummary; s
   return (
     <Card interactive accent={accent} onClick={() => navigate(`/agents/${agent._id}`)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-        <AgentAvatar name={agent.name} src={portraitFor(agent._id)} color={accent} size="lg" status={status} />
+        <AgentAvatar name={agent.name} src={portrait ?? portraitFor(agent._id)} color={accent} size="lg" status={status} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: 1 }}>
           <span
             style={{

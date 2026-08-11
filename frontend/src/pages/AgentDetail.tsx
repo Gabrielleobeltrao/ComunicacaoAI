@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
-import { accentFor, portraitFor } from '../lib/agentAvatar'
+import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
+import type { CharacterResolver } from '../lib/agentAvatar'
 import { roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import { API_URL } from '../lib/api'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
@@ -26,14 +27,14 @@ const TABS: { key: string; label: string }[] = [
 ]
 const TAB_KEYS = TABS.map((t) => t.key)
 
-function ProfileCard({ agent, stats, accent }: { agent: AgentSummary; stats: AgentOverview['stats']; accent: string }) {
+function ProfileCard({ agent, stats, accent, portrait }: { agent: AgentSummary; stats: AgentOverview['stats']; accent: string; portrait: string }) {
   const roleLabel = roleLabelOf(agent)
   const status: AgentStatus = stats.messagesThisWeek > 0 ? 'working' : 'idle'
   const skills = skillsOf(agent)
   return (
     <Card accent={accent} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }}>
       <Illustration
-        src={portraitFor(agent._id)}
+        src={portrait}
         alt={agent.name}
         fit="contain"
         ratio="3 / 4"
@@ -62,7 +63,7 @@ function ProfileCard({ agent, stats, accent }: { agent: AgentSummary; stats: Age
   )
 }
 
-function ColleaguesCard({ agents, currentId }: { agents: AgentSummary[]; currentId: string }) {
+function ColleaguesCard({ agents, currentId, chars }: { agents: AgentSummary[]; currentId: string; chars: CharacterResolver }) {
   const navigate = useNavigate()
   const colleagues = agents.filter((x) => x._id !== currentId).slice(0, 5)
   if (colleagues.length === 0) return null
@@ -85,7 +86,7 @@ function ColleaguesCard({ agents, currentId }: { agents: AgentSummary[]; current
               background: `color-mix(in oklab, ${accentFor(x._id)} 14%, var(--surface-card))`,
             }}
           >
-            <img src={portraitFor(x._id)} alt="" style={{ width: '100%', height: '150%', objectFit: 'cover', objectPosition: '50% 8%', display: 'block' }} />
+            <img src={chars.portrait(x._id)} alt="" style={{ width: '100%', height: '150%', objectFit: 'cover', objectPosition: '50% 8%', display: 'block' }} />
           </span>
           <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-heading)' }}>{x.name}</span>
@@ -139,6 +140,7 @@ export function AgentDetail() {
   const { agentId, section } = useParams()
   const navigate = useNavigate()
   const { agents } = useAgentsAndWidgets()
+  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
   const [overview, setOverview] = useState<AgentOverview | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
@@ -211,8 +213,8 @@ export function AgentDetail() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 300px) minmax(0, 1fr)', gap: 20, alignItems: 'start' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <ProfileCard agent={agent} stats={stats} accent={accent} />
-            <ColleaguesCard agents={agents} currentId={agent._id} />
+            <ProfileCard agent={agent} stats={stats} accent={accent} portrait={chars.portrait(agent._id)} />
+            <ColleaguesCard agents={agents} currentId={agent._id} chars={chars} />
             <UsageCard overview={overview} />
           </div>
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AgentCard } from '../components/AgentCard'
 import { AgentForm } from '../components/AgentForm'
 import { AppLayout } from '../components/AppLayout'
+import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentStat } from '../lib/agentAvatar'
 import { API_URL } from '../lib/api'
 import type { AgentCardStats } from '../lib/types'
@@ -55,6 +56,9 @@ export function Agents() {
     for (const s of sectors) for (const m of s.members) map.set(m.agentId, s.name)
     return map
   }, [sectors])
+
+  // Round-robin faces over the full team (built from all agents, not the filtered view).
+  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
 
   const activeFilters = (filterSector ? 1 : 0) + (filterProvider ? 1 : 0)
 
@@ -138,6 +142,7 @@ export function Agents() {
                 <AgentCard
                   key={agent._id}
                   agent={agent}
+                  portrait={chars.portrait(agent._id)}
                   sectorName={sectorByAgent.get(agent._id) ?? null}
                   stats={buildStats(agentStats ? (agentStats[agent._id] ?? EMPTY_STATS) : undefined)}
                 />
