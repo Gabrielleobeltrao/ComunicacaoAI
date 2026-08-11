@@ -8,6 +8,8 @@ interface OfficeMapProps {
   tile?: number
   zoom?: number
   fitToView?: boolean
+  labelsShown?: boolean
+  onToggleLabels?: () => void
   children?: ReactNode
   style?: CSSProperties
 }
@@ -21,7 +23,7 @@ const round2 = (z: number) => Math.round(z * 100) / 100
 // scrollbars/wheel-scroll), and zoom with the +/-/reset controls or Ctrl/Cmd +
 // wheel. The floor grid always fills the whole window; zooming out stops once
 // the entire office fits, so it never shrinks into a corner leaving empty space.
-export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom = 1, fitToView = false, children, style }: OfficeMapProps) {
+export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom = 1, fitToView = false, labelsShown = false, onToggleLabels, children, style }: OfficeMapProps) {
   const ref = useRef<HTMLDivElement>(null)
   const drag = useRef({ x: 0, y: 0, sl: 0, st: 0, active: false, moved: false })
   const userZoomed = useRef(false)
@@ -199,6 +201,17 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
 
       {/* Zoom + fullscreen controls — fixed in the corner, above the panning floor. */}
       <div style={{ position: 'absolute', right: 12, bottom: 12, zIndex: 30, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {onToggleLabels ? (
+          <IconButton
+            icon="tag"
+            variant="card"
+            size="sm"
+            label={labelsShown ? 'Ocultar nomes dos setores' : 'Mostrar nomes dos setores'}
+            aria-pressed={labelsShown}
+            onClick={onToggleLabels}
+            style={labelsShown ? { color: 'var(--text-on-brand)', background: 'var(--intent-brand)', borderColor: 'var(--intent-brand)' } : undefined}
+          />
+        ) : null}
         <IconButton icon={isFull ? 'shrink' : 'expand'} variant="card" size="sm" label={isFull ? 'Sair da tela cheia' : 'Tela cheia'} onClick={toggleFull} />
         <IconButton icon="plus" variant="card" size="sm" label="Aproximar" onClick={() => zoomBy(ZOOM_STEP)} disabled={zoom >= MAX_ZOOM} />
         <IconButton icon="minus" variant="card" size="sm" label="Afastar" onClick={() => zoomBy(-ZOOM_STEP)} disabled={zoom <= minZoom} />

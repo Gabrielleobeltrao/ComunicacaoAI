@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Illustration } from './Illustration'
 import { NamePill } from './NamePill'
+import { characterSrc } from '../lib/officeAssets'
+import type { CharacterView } from '../lib/officeAssets'
 import type { AgentStatus } from '../ui'
 
 interface MapAgentProps {
@@ -10,8 +12,8 @@ interface MapAgentProps {
   name?: string
   status?: AgentStatus
   facing?: 'frente' | 'costas'
+  pose?: 'parado' | 'ligacao'
   agent?: string
-  agentBase?: string
   art?: string
   seated?: boolean
   scale?: number
@@ -31,8 +33,8 @@ export function MapAgent({
   name,
   status = 'idle',
   facing = 'frente',
+  pose = 'parado',
   agent,
-  agentBase = '/illustrations/map/agents',
   art,
   seated,
   scale = 1.25,
@@ -45,7 +47,8 @@ export function MapAgent({
 }: MapAgentProps) {
   const [hovered, setHovered] = useState(false)
   const view = facing === 'costas' ? 'costas' : 'frente'
-  const src = art || (agent ? `${agentBase}/${agent}-${view}${seated ? '-sentado' : ''}.svg` : undefined)
+  const variant = `${view}${seated ? '-sentado' : ''}${pose === 'ligacao' ? '-ligacao' : ''}` as CharacterView
+  const src = art || (agent ? characterSrc(agent, variant) : undefined)
   const bottomAnchor = !!seated
   const w = scale
   const h = 1.5 * scale
@@ -78,6 +81,9 @@ export function MapAgent({
         cursor: 'pointer',
         transition: 'transform var(--dur-base) var(--ease-bounce)',
         ...style,
+        // While hovered, lift the whole agent (sprite + name pill) above the desks
+        // and chairs so the name is never covered.
+        ...(hovered ? { zIndex: 40 } : null),
       }}
     >
       {name && (showName === 'always' || (showName === 'hover' && hovered)) ? (
