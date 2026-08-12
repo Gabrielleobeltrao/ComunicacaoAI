@@ -1,6 +1,5 @@
-import { lookup } from 'node:dns/promises'
-import net from 'node:net'
 import type { AgentTool } from './agents.js'
+import { assertPublicUrl } from './net/safeHttp.js'
 
 // Cap how many tool round-trips a single reply may make before we force the
 // model to answer, so a misbehaving tool loop can't run forever.
@@ -43,46 +42,6 @@ export function toolInputSchema(tool: AgentTool) {
     if (p.required) required.push(p.name)
   }
   return { type: 'object' as const, properties, required, additionalProperties: false }
-}
-
-function isPrivateIp(ip: string): boolean {
-  if (net.isIPv4(ip)) {
-    const [a, b] = ip.split('.').map(Number)
-    if (a === 0 || a === 10 || a === 127) return true
-    if (a === 169 && b === 254) return true
-    if (a === 172 && b >= 16 && b <= 31) return true
-    if (a === 192 && b === 168) return true
-    return false
-  }
-  const v = ip.toLowerCase()
-  if (v === '::1' || v === '::') return true
-  if (v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe80')) return true
-  if (v.startsWith('::ffff:')) return isPrivateIp(v.slice('::ffff:'.length))
-  return false
-}
-
-// SSRF guard: only public http(s) endpoints. Blocks localhost, private ranges
-// and hostnames that resolve to a private IP.
-async function assertPublicUrl(rawUrl: string) {
-  let url: URL
-  try {
-    url = new URL(rawUrl)
-  } catch {
-    throw new Error('URL inválida')
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Só endereços http(s) são permitidos')
-  }
-  const host = url.hostname.toLowerCase()
-  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
-    throw new Error('Host não permitido')
-  }
-  if (net.isIP(host)) {
-    if (isPrivateIp(host)) throw new Error('Endereço de rede interna não é permitido')
-    return
-  }
-  const { address } = await lookup(host)
-  if (isPrivateIp(address)) throw new Error('Host aponta para uma rede interna')
 }
 
 async function executeTool(tool: AgentTool, args: Record<string, unknown>): Promise<{ ok: boolean; result: string }> {
