@@ -1,5 +1,7 @@
 import { db } from './db.js'
 import { ensureDefaultOffice } from './offices.js'
+import { ensureBuildingIndexes, ensureDefaultBuilding } from './building.js'
+import { ensureFloorIndexes } from './floors.js'
 
 async function renameCollectionIfNeeded(from: string, to: string): Promise<void> {
   const source = await db.listCollections({ name: from }).toArray()
@@ -47,5 +49,47 @@ export async function runMigrations(): Promise<void> {
     for (let i = 0; i < list.length; i++) {
       await sectorsCol.updateOne({ _id: list[i]._id }, { $set: { color: SECTOR_PALETTE[i % SECTOR_PALETTE.length] } })
     }
+  }
+
+  await backfillBuildingsAndFloors()
+}
+
+// AI-building pivot backfill (idempotent, additive). Ensures a Building per owner
+// and evolves each Office document into a Floor-shaped one. Never touches _id, so
+// existing agents/sectors (which reference officeId) keep working unchanged.
+// Each field is guarded by $exists:false, so a re-run produces zero changes.
+async function backfillBuildingsAndFloors(): Promise<void> {
+  await ensureBuildingIndexes()
+  await ensureFloorIndexes()
+
+  const officesCol = db.collection('offices')
+  const officeOwners = (await officesCol.distinct('ownerId')) as string[]
+
+  for (const ownerId of officeOwners) {
+    const building = await ensureDefaultBuilding(ownerId)
+    await officesCol.updateMany({ ownerId, buildingId: { $exists: false } }, { $set: { buildingId: building._id } })
+    await officesCol.updateMany({ ownerId, mission: { $exists: false } }, { $set: { mission: '' } })
+    await officesCol.updateMany({ ownerId, description: { $exists: false } }, { $set: { description: '' } })
+    await officesCol.updateMany({ ownerId, timezone: { $exists: false } }, { $set: { timezone: building.defaultTimezone } })
+    await officesCol.updateMany({ ownerId, defaultLanguage: { $exists: false } }, { $set: { defaultLanguage: building.defaultLanguage } })
+    await officesCol.updateMany({ ownerId, color: { $exists: false } }, { $set: { color: null } })
+    await officesCol.updateMany({ ownerId, icon: { $exists: false } }, { $set: { icon: null } })
+    await officesCol.updateMany({ ownerId, status: { $exists: false } }, { $set: { status: 'active' } })
+
+    // Stable order for docs that don't have one yet, continuing past any already set.
+    const needOrder = await officesCol.find({ ownerId, order: { $exists: false } }).sort({ createdAt: 1 }).toArray()
+    if (needOrder.length) {
+      const maxOrdered = await officesCol.find({ ownerId, order: { $exists: true } }).sort({ order: -1 }).limit(1).next()
+      let next = ((maxOrdered?.order as number | undefined) ?? -1) + 1
+      for (const doc of needOrder) {
+        await officesCol.updateOne(
+          { _id: doc._id },
+          { $set: { order: next, updatedAt: (doc.updatedAt as Date) ?? (doc.createdAt as Date) ?? new Date() } },
+        )
+        next++
+      }
+    }
+    // Any remaining docs without updatedAt inherit createdAt.
+    await officesCol.updateMany({ ownerId, updatedAt: { $exists: false } }, [{ $set: { updatedAt: '$createdAt' } }])
   }
 }

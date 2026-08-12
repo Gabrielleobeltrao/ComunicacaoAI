@@ -160,6 +160,8 @@ import {
 } from './whatsapp.js'
 import { encrypt } from './crypto.js'
 import { clientUrl, config, validateConfig } from './config.js'
+import { buildingRouter } from './routes/buildingRoutes.js'
+import { floorRouter } from './routes/floorRoutes.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -254,6 +256,11 @@ async function requireAuth(req: Request, res: Response, next: NextFunction) {
   res.locals.userId = session.user.id
   next()
 }
+
+// AI operational-building pivot — Building + Floors domain (additive; the
+// legacy /api/offices flow keeps working). Ownership enforced via requireAuth.
+app.use('/api/building', requireAuth, buildingRouter)
+app.use('/api/floors', requireAuth, floorRouter)
 
 app.get('/api/providers', requireAuth, async (_req, res) => {
   const results = await Promise.all(
