@@ -119,11 +119,12 @@ Mirror the current monorepo convention (work on `development`, promote to `main`
 ## 6. Wire each repo to its own Coolify resource (later)
 - One Coolify **application per repo**, each pointing at its repo + branch.
 - Frontend resource: build from repo root `Dockerfile`, set build arg
-  `VITE_API_URL=https://api.<domain>`; expose the container's `8080`.
+  `VITE_API_URL=https://api.comunicacaoai.onplataform.com`; expose the container's `8080`.
 - Backend resource: build from repo root `Dockerfile`; expose `4000`; set all
   runtime env from the matrix; health check `GET /api/ready`.
-- Put frontend and backend on **subdomains of the same registrable domain**
-  (`app.<domain>` / `api.<domain>`) to keep cookies simple (see report §cookies).
+- Frontend and backend share the registrable domain `onplataform.com`
+  (`comunicacaoai.onplataform.com` / `api.comunicacaoai.onplataform.com`), so they
+  are **same-site** and cookies stay simple (see report §cookies).
 
 ## 7. Coordinating contract changes across two repos
 Once split, a change touching both sides (new API field, new socket event) spans

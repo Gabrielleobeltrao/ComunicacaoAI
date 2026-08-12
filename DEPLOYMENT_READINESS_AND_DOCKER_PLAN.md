@@ -131,16 +131,19 @@ Criar no relatório uma tabela com:
 - Limites de payload/upload.
 - Chamadas para Anthropic, OpenAI, Voyage, Google, Meta e Twilio.
 
-## 7. Fase 2 — Contrato de URLs sem definir domínios reais
+## 7. Fase 2 — Contrato de URLs (domínios definitivos)
 
-Criar uma convenção documentada usando placeholders inequívocos:
+**Atualizado:** as URLs definitivas de produção foram fornecidas (ASCII, sem
+Punycode, sem barra final):
 
-- `FRONTEND_PUBLIC_URL=https://app.example.invalid`
-- `BACKEND_PUBLIC_URL=https://api.example.invalid`
+- `FRONTEND_PUBLIC_URL=https://comunicacaoai.onplataform.com`
+- `BACKEND_PUBLIC_URL=https://api.comunicacaoai.onplataform.com`
 
-Não usar `.com` ou outro endereço que possa parecer configuração real. Utilizar `.invalid` nos exemplos.
+> Histórico: durante a preparação os exemplos usavam o TLD reservado `.invalid`.
+> Agora substituídos pelos domínios reais acima. Não usar Punycode — o DNS é
+> totalmente ASCII, sem acento e sem cedilha.
 
-Mapear as variáveis existentes para o contrato futuro:
+Mapeamento das variáveis para o contrato:
 
 ### Frontend
 

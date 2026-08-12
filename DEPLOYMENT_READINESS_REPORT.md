@@ -41,7 +41,7 @@ domain, SSL, remote-repo creation, push or merge is performed here. All prior wo
 | Persistent data | none | MongoDB only (stateless process — see Fase 10) |
 | Required vars (prod) | `VITE_API_URL` (build-time) | `NODE_ENV`, `MONGODB_URI`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `CLIENT_URL`, `BETTER_AUTH_URL`, `PUBLIC_URL` |
 | Optional vars | — | `PORT`, provider keys/models, `GOOGLE_*` |
-| Future public URL | `https://app.example.invalid` | `https://api.example.invalid` |
+| Public URL (definitive) | `https://comunicacaoai.onplataform.com` | `https://api.comunicacaoai.onplataform.com` |
 | Callback integrations | — | Google OAuth redirect; WhatsApp inbound webhook (built from `PUBLIC_URL`) |
 
 ### Explicit audit (Fase 1 checklist)
@@ -83,9 +83,11 @@ domain, SSL, remote-repo creation, push or merge is performed here. All prior wo
 
 ## Fase 2 / 7 — URL contract & typed config
 
-New `backend/src/config.ts` centralizes runtime config:
-- URL placeholders use the reserved **`.invalid`** TLD (never real): frontend
-  `https://app.example.invalid`, backend `https://api.example.invalid`.
+New `backend/src/config.ts` centralizes runtime config. The **definitive**
+production origins (ASCII, no trailing slash) are now set:
+- Frontend `https://comunicacaoai.onplataform.com`; backend
+  `https://api.comunicacaoai.onplataform.com`. `VITE_API_URL` → backend origin;
+  `CLIENT_URL` → frontend origin; `BETTER_AUTH_URL`/`PUBLIC_URL` → backend origin.
 - URLs normalized (trailing slash stripped) in one place.
 - **Fail-fast in production only**: `validateConfig()` requires `MONGODB_URI`,
   `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `CLIENT_URL`, `BETTER_AUTH_URL`,
@@ -104,16 +106,26 @@ New `backend/src/config.ts` centralizes runtime config:
   origins.
 - Better Auth `baseURL` + `trustedOrigins` wired to the config.
 
-### Cookie decision — PENDING final URLs (documented as required)
+### Cookie decision — resolved by the definitive URLs
 
-The production cookie now defaults to `SameSite=None; Secure`, which works
-whether the frontend and backend end up **same-site** (subdomains of one
-registrable domain, e.g. `app.dominio` / `api.dominio`) or **cross-site**.
-**Recommendation:** put both services on subdomains of the **same registrable
-domain**; then, once URLs are fixed, consider setting an explicit cookie
-`domain`/`SameSite=Lax` for tighter scoping. Until the real domains exist we do
-**not** set a fictitious cookie domain. Two-origin login/session/logout must be
-validated on the real URLs (and in the compose harness meanwhile).
+The final origins are `https://comunicacaoai.onplataform.com` (frontend) and
+`https://api.comunicacaoai.onplataform.com` (backend). Both share the registrable
+domain `onplataform.com`, so requests between them are **same-site** (the backend
+host is even a subdomain of the frontend host).
+
+- **Current setting works as-is:** in production Better Auth issues cookies with
+  `SameSite=None; Secure`, which are sent on both same-site and cross-site
+  requests over HTTPS — so login works with no further change once TLS is live.
+- **Cookies are host-only** (no `Domain` attribute) on
+  `api.comunicacaoai.onplataform.com`; every private API/Socket.IO call targets
+  that host, so the cookie is always sent. The frontend never needs to read it
+  (HttpOnly).
+- **Optional tightening (post-deploy):** because the two are same-site, the
+  cookie could be narrowed to `SameSite=Lax` (still sent on the same-site XHR).
+  Not required; `None; Secure` is kept for robustness and future flexibility. No
+  fictitious cookie `Domain` is set.
+- Two-origin login/session/logout still needs a live check against the real URLs
+  (and can be exercised now in the compose harness on localhost).
 
 ## Fase 9 — Health, readiness & graceful shutdown
 
@@ -174,8 +186,8 @@ volume + ownership + backup/restore before deploying.
 - Isolated `npm ci` + `npm run build` for **backend** (168 pkgs) and **frontend**
   (193 pkgs) from copies **outside** the monorepo — proves independence + the new
   per-service locks.
-- Frontend build with `VITE_API_URL=https://api.example.invalid` → bundle
-  contains that public URL, no `localhost:4000`, `widget-loader.js` shipped, SPA
+- Frontend build with `VITE_API_URL=https://api.comunicacaoai.onplataform.com` →
+  bundle contains that public URL, no `localhost:4000`, `widget-loader.js`, SPA
   `index.html` present. Secret scan: only the string identifier
   `BETTER_AUTH_SECRET` from the Better Auth isomorphic client's env-getter (no
   value; returns undefined in the browser) — **no secret value leaks**.
@@ -212,8 +224,18 @@ typecheck + builds pass.
 Deferred to the Docker run (env has no daemon): containers-together bring-up and
 the two-origin/Socket.IO/upload/webhook behaviors that need running containers.
 
-## Values still waiting on the final URLs
+## Final URLs (resolved)
 
-`VITE_API_URL`, `CLIENT_URL`, `BETTER_AUTH_URL`, `PUBLIC_URL`, and (if Google is
-enabled) `GOOGLE_REDIRECT_URI`, plus the final cookie `domain`/`SameSite`
-tightening. All are `.invalid` placeholders until the real domains are chosen.
+The definitive ASCII origins are set (no trailing slash, no Punycode):
+
+```
+VITE_API_URL=https://api.comunicacaoai.onplataform.com          # frontend build-time
+CLIENT_URL=https://comunicacaoai.onplataform.com                # backend runtime
+BETTER_AUTH_URL=https://api.comunicacaoai.onplataform.com       # backend runtime
+PUBLIC_URL=https://api.comunicacaoai.onplataform.com            # backend runtime
+GOOGLE_REDIRECT_URI=https://api.comunicacaoai.onplataform.com/api/integrations/google/callback
+```
+
+`CLIENT_URLS` is **not** implemented — the allowlist is carried by `CLIENT_URL`.
+Nothing remains blocked on URLs. Still deploy-time only (not set here): real
+secrets, TLS, DNS/VPS/Coolify, and the live two-origin auth check.

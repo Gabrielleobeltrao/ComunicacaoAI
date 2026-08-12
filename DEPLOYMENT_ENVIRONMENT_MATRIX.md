@@ -4,8 +4,12 @@ Authoritative list of every environment variable the two services actually read
 (verified from source: `import.meta.env.*` in `frontend/src`, `process.env.*` in
 `backend/src`). No variable is listed that the code does not consume.
 
-**Example values use the reserved `.invalid` TLD and are never real.** Real
-values are supplied at deploy time and never committed.
+**Definitive production origins (ASCII, no trailing slash):**
+
+- Frontend: `https://comunicacaoai.onplataform.com`
+- Backend: `https://api.comunicacaoai.onplataform.com`
+
+Secrets are never real in this repo. URLs are public and are the real values above.
 
 ## Legend
 
@@ -18,22 +22,22 @@ values are supplied at deploy time and never committed.
 
 ## Frontend (`frontend/`)
 
-| Variable | Service | Required | Phase | Sensitivity | Safe example (`.invalid`) | Source of value | Rotate when | If missing |
+| Variable | Service | Required | Phase | Sensitivity | Example | Source of value | Rotate when | If missing |
 |---|---|---|---|---|---|---|---|---|
-| `VITE_API_URL` | frontend | Required | **Build-time** | **Public** (inlined in bundle) | `https://api.example.invalid` | Backend public origin | Backend domain changes | API calls have no base URL → app cannot reach the backend |
+| `VITE_API_URL` | frontend | Required | **Build-time** | **Public** (inlined in bundle) | `https://api.comunicacaoai.onplataform.com` | Backend public origin | Backend domain changes | API calls have no base URL → app cannot reach the backend |
 
 > `VITE_API_URL` is passed as a Docker `--build-arg`. Because Vite inlines it into
 > the bundle, it is public by definition — **never** put a secret in a `VITE_*` var.
 
 ## Backend (`backend/`)
 
-| Variable | Service | Required | Phase | Sensitivity | Safe example (`.invalid`) | Source of value | Rotate when | If missing |
+| Variable | Service | Required | Phase | Sensitivity | Example | Source of value | Rotate when | If missing |
 |---|---|---|---|---|---|---|---|---|
 | `NODE_ENV` | backend | Required (prod) | Runtime | Public | `production` | Deploy config | n/a | No fail-fast validation; cookies not marked Secure/SameSite=None |
 | `PORT` | backend | Optional (default `4000`) | Runtime | Public | `4000` | Deploy config | n/a | Defaults to `4000` |
-| `CLIENT_URL` | backend | Required (prod) | Runtime | Public | `https://app.example.invalid` | Frontend public origin(s), comma-separated | Frontend domain changes | Startup fails in prod; CORS + Socket.IO + cookies reject the frontend |
-| `BETTER_AUTH_URL` | backend | Required (prod) | Runtime | Public | `https://api.example.invalid` | Backend public origin | Backend domain changes | Startup fails; auth base + Google callback wrong |
-| `PUBLIC_URL` | backend | Required (prod) | Runtime | Public | `https://api.example.invalid` | Backend public origin | Backend domain changes | Startup fails; WhatsApp webhook URLs are wrong |
+| `CLIENT_URL` | backend | Required (prod) | Runtime | Public | `https://comunicacaoai.onplataform.com` | Frontend public origin(s), comma-separated | Frontend domain changes | Startup fails in prod; CORS + Socket.IO + cookies reject the frontend |
+| `BETTER_AUTH_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.onplataform.com` | Backend public origin | Backend domain changes | Startup fails; auth base + Google callback wrong |
+| `PUBLIC_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.onplataform.com` | Backend public origin | Backend domain changes | Startup fails; WhatsApp webhook URLs are wrong |
 | `MONGODB_URI` | backend | **Required** | Runtime | **Secret** | `mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/comunicacaoai` | MongoDB Atlas | DB credential suspected leaked / policy rotation | Startup fails; no persistence |
 | `BETTER_AUTH_SECRET` | backend | Required (prod) | Runtime | **Secret** | `openssl rand -hex 32` | Generated, unique per env | Periodic / on suspicion (invalidates sessions) | Startup fails; session cookies cannot be signed |
 | `ENCRYPTION_KEY` | backend | Required (prod) | Runtime | **Secret** | `openssl rand -hex 32` | Generated, unique per env | Rare — rotating requires re-encrypting stored secrets | Startup fails; stored provider/integration secrets cannot be decrypted |
@@ -47,7 +51,17 @@ values are supplied at deploy time and never committed.
 | `VOYAGE_MODEL` | backend | Optional | Runtime | Public | `voyage-4` | Fixed config | Model change | Uses built-in default |
 | `GOOGLE_CLIENT_ID` | backend | Optional | Runtime | Secret-ish | *(blank)* | Google Cloud OAuth client | Provider policy | Google Calendar integration hidden |
 | `GOOGLE_CLIENT_SECRET` | backend | Optional | Runtime | **Secret** | *(blank)* | Google Cloud OAuth client | Provider policy / on suspicion | Google OAuth callback fails |
-| `GOOGLE_REDIRECT_URI` | backend | Optional | Runtime | Public | `https://api.example.invalid/api/integrations/google/callback` | Derived from `BETTER_AUTH_URL` if unset | Backend domain changes | Defaults to `BETTER_AUTH_URL` + `/api/integrations/google/callback` |
+| `GOOGLE_REDIRECT_URI` | backend | Optional | Runtime | Public | `https://api.comunicacaoai.onplataform.com/api/integrations/google/callback` | Derived from `BETTER_AUTH_URL` if unset | Backend domain changes | Defaults to `BETTER_AUTH_URL` + `/api/integrations/google/callback` |
+
+## `CLIENT_URL` vs `CLIENT_URLS`
+
+The allowlist is carried by **`CLIENT_URL`**, which accepts a single origin or a
+comma-separated list. A separate `CLIENT_URLS` variable is **not implemented** —
+do not set it. Production uses exactly:
+
+```
+CLIENT_URL=https://comunicacaoai.onplataform.com
+```
 
 ## Credentials that are **not** environment variables
 
@@ -66,9 +80,23 @@ They are **different secrets with different blast radii** and must not be reused
   previously stored secrets undecryptable unless they are re-encrypted first —
   treat rotation as a data-migration, not a config flip.
 
-## Values still pending the final URLs
+## Definitive production values (URLs only; secrets generated at deploy)
 
-`VITE_API_URL`, `CLIENT_URL`, `BETTER_AUTH_URL`, `PUBLIC_URL` and (if Google is
-enabled) `GOOGLE_REDIRECT_URI` all resolve only once the real frontend/backend
-domains are chosen. Until then they stay as `.invalid` placeholders. See the
-cookie decision note in `DEPLOYMENT_READINESS_REPORT.md`.
+```
+# Contract (documentation names)
+FRONTEND_PUBLIC_URL=https://comunicacaoai.onplataform.com
+BACKEND_PUBLIC_URL=https://api.comunicacaoai.onplataform.com
+
+# Frontend (build-time)
+VITE_API_URL=https://api.comunicacaoai.onplataform.com
+
+# Backend (runtime)
+CLIENT_URL=https://comunicacaoai.onplataform.com
+BETTER_AUTH_URL=https://api.comunicacaoai.onplataform.com
+PUBLIC_URL=https://api.comunicacaoai.onplataform.com
+GOOGLE_REDIRECT_URI=https://api.comunicacaoai.onplataform.com/api/integrations/google/callback
+```
+
+`comunicacaoai.onplataform.com` and `api.comunicacaoai.onplataform.com` share the
+registrable domain `onplataform.com`, so they are **same-site** — see the cookie
+note in `DEPLOYMENT_READINESS_REPORT.md`.
