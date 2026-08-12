@@ -338,8 +338,18 @@ function startReturn(ctx: SimContext, m: AgentModel, now: number) {
   clearDest(ctx, m)
   releaseNext(ctx, m) // keep occupiedCell while we plan the way home
   const targetFoot = m.home ? m.home.exitFoot : footOf(m.baseRef)
-  if (!routeFrom(ctx, m, footOf(m.pos), targetFoot, now)) {
+  const at = cellOfPoint(ctx.grid, footOf(m.pos))
+  const tgt = cellOfPoint(ctx.grid, targetFoot)
+  if (at.i === tgt.i && at.j === tgt.j) {
+    // Physically at the chair exit already — only now is it safe to sit down.
     finishReturn(ctx, m)
+    return
+  }
+  if (!routeFrom(ctx, m, footOf(m.pos), targetFoot, now)) {
+    // Cannot route home right now — wait where we stand and retry; never teleport.
+    m.motion = 'waiting'
+    m.resume = 'returning'
+    m.timer = rand(m.rng, OFFICE_TIMING.waitRetry)
     return
   }
   m.motion = 'returning'
@@ -468,22 +478,31 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
     case 'waiting':
       m.timer -= dt
       if (m.timer <= 0) {
-        m.attempts++
-        if (m.attempts > OFFICE_TIMING.maxPathAttempts) {
+        if (m.resume === 'returning') {
+          // Heading home must never be abandoned — keep re-planning until a route
+          // opens up. The agent stays put (occupiedCell held), never teleports.
           m.attempts = 0
-          if (m.kind === 'seated') startReturn(ctx, m, now)
-          else {
-            clearDest(ctx, m)
-            releaseNext(ctx, m) // keep occupiedCell — the agent stays put
-            m.motion = 'pausing'
-            m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
-            ctx.moving.count = Math.max(0, ctx.moving.count - 1)
-          }
+          startReturn(ctx, m, now)
         } else {
-          const goal = m.route[m.route.length - 1]
-          if (goal && routeFrom(ctx, m, footOf(m.pos), pointOfCell(ctx.grid, goal.i, goal.j), now)) {
-            m.motion = m.resume
-            beginSeg(ctx, m, now)
+          m.attempts++
+          if (m.attempts > OFFICE_TIMING.maxPathAttempts) {
+            m.attempts = 0
+            if (m.kind === 'seated') startReturn(ctx, m, now)
+            else {
+              clearDest(ctx, m)
+              releaseNext(ctx, m) // keep occupiedCell — the agent stays put
+              m.motion = 'pausing'
+              m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
+              ctx.moving.count = Math.max(0, ctx.moving.count - 1)
+            }
+          } else {
+            const goal = m.route[m.route.length - 1]
+            if (goal && routeFrom(ctx, m, footOf(m.pos), pointOfCell(ctx.grid, goal.i, goal.j), now)) {
+              m.motion = m.resume
+              beginSeg(ctx, m, now)
+            } else {
+              m.timer = rand(m.rng, OFFICE_TIMING.waitRetry) // still blocked — keep waiting
+            }
           }
         }
       }

@@ -97,6 +97,29 @@ describe('officeSimCore', () => {
     }
   })
 
+  it('never teleports: per-frame displacement stays bounded after init', () => {
+    const models = createModels(layout, () => 'normal')
+    const ctx = createContext(layout, grid, models.size)
+    settleStartPositions(ctx, models) // init-only snapping happens before we watch
+    for (const m of models.values()) m.timer = Math.min(m.timer, 400) // cycle sit→walk→return often
+    const prev = new Map<string, { x: number; y: number }>()
+    for (const m of models.values()) prev.set(m.id, { ...m.pos })
+    const dt = 24
+    const MAX = 0.3 // tiles/frame at real time — a teleport (>= ~1 tile) fails this
+    let now = 0
+    for (let step = 0; step < 5000; step++) {
+      now += dt
+      for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+      for (const m of models.values()) {
+        stepAgent(m, dt, now, ctx)
+        const p = prev.get(m.id)!
+        const d = Math.hypot(m.pos.x - p.x, m.pos.y - p.y)
+        expect(d).toBeLessThanOrEqual(MAX)
+        prev.set(m.id, { ...m.pos })
+      }
+    }
+  })
+
   it('keeps every walking foot inside the activity envelope', () => {
     const env = buildActivityEnvelope(layout, grid)
     const models = createModels(layout, () => 'normal')
