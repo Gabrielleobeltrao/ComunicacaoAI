@@ -211,7 +211,7 @@ export function AgentDetail() {
       ) : notFound || !overview || !agent || !stats ? (
         <p className="text-sm text-(--text-muted)">Agente não encontrado.</p>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 300px) minmax(0, 1fr)', gap: 20, alignItems: 'start' }}>
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] lg:items-start">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <ProfileCard agent={agent} stats={stats} accent={accent} portrait={chars.portrait(agent._id)} />
             <ColleaguesCard agents={agents} currentId={agent._id} chars={chars} />

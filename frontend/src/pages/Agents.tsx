@@ -111,14 +111,14 @@ export function Agents() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* Toolbar: search + filter live in the page, not the topbar. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
             <Input
               icon="search"
               placeholder="Buscar agente"
               aria-label="Buscar agente"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              style={{ flex: 1 }}
+              style={{ flex: 1, minWidth: 180 }}
             />
             <Button variant="secondary" icon="sliders-horizontal" onClick={() => setFilterOpen(true)}>
               {activeFilters > 0 ? `Filtros · ${activeFilters}` : 'Filtros'}
@@ -137,7 +137,7 @@ export function Agents() {
               }
             />
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 300px), 1fr))', gap: 14 }}>
               {filtered.map((agent) => (
                 <AgentCard
                   key={agent._id}
