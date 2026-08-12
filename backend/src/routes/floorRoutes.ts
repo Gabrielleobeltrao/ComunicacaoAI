@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import type { Floor } from '../floors.js'
 import { createFloor, getFloor, getFloorActivity, listFloors, setFloorStatus, updateFloor } from '../floors.js'
-import { floorMetrics } from '../automations/metrics.js'
+import { agentStatesForFloor, floorMetrics } from '../automations/metrics.js'
 import { fail, notFound, oid } from './http.js'
 
 // Mounted at /api/floors behind requireAuth (res.locals.userId is the owner).
@@ -92,4 +92,13 @@ floorRouter.get('/:floorId/metrics', async (req, res) => {
   const floor = await getFloor(res.locals.userId, id)
   if (!floor) return notFound(res)
   res.json(await floorMetrics(res.locals.userId, id))
+})
+
+// Per-agent operational state for the live-map overlay (read-only reflection).
+floorRouter.get('/:floorId/agent-states', async (req, res) => {
+  const id = oid(req.params.floorId)
+  if (!id) return notFound(res)
+  const floor = await getFloor(res.locals.userId, id)
+  if (!floor) return notFound(res)
+  res.json(await agentStatesForFloor(res.locals.userId, id))
 })

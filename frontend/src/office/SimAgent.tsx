@@ -19,12 +19,15 @@ interface SimAgentProps {
   register: (id: string, el: HTMLElement | null) => void
   setHovered: (id: string | null) => void
   onOpen: () => void
+  // Live-map overlay: operational state from the backend (e.g. 'working'). When
+  // set, a discreet badge is shown. Never drives position/pathfinding.
+  opState?: string
 }
 
 // A simulated agent: a clickable wrapper whose position is driven by the sim via
 // the --ax/--ay CSS vars (so it scales with zoom/pan for free), containing the
 // animated AgentSprite, a contact shadow and a hover name pill.
-export function SimAgent({ agentId, name, character, status, view, initialX, initialY, register, setHovered, onOpen }: SimAgentProps) {
+export function SimAgent({ agentId, name, character, status, view, initialX, initialY, register, setHovered, onOpen, opState }: SimAgentProps) {
   const [hover, setHover] = useState(false)
   const seated = view.motion === 'seated'
   const headTop = seated ? '78.6%' : '100%'
@@ -62,6 +65,14 @@ export function SimAgent({ agentId, name, character, status, view, initialX, ini
       }
     >
       {hover ? <NamePill name={name} status={status} style={{ position: 'absolute', bottom: headTop, marginBottom: 4, zIndex: 5, whiteSpace: 'nowrap', pointerEvents: 'none' }} /> : null}
+      {opState ? (
+        <span
+          title={opState}
+          style={{ position: 'absolute', bottom: headTop, marginBottom: 22, fontSize: 9, fontWeight: 700, lineHeight: 1, padding: '2px 5px', borderRadius: 999, background: 'var(--intent-brand, #2e5bff)', color: '#fff', zIndex: 6, pointerEvents: 'none', whiteSpace: 'nowrap' }}
+        >
+          ⚙
+        </span>
+      ) : null}
       <span style={{ position: 'absolute', bottom: 4, width: '58%', height: 8, borderRadius: '50%', background: 'var(--map-shadow)', filter: 'blur(2px)' }} />
       <AgentSprite character={character} mode={view.mode} direction={view.direction} motion={view.motion} frame={view.frame} alt={name} style={{ position: 'relative', zIndex: 2 }} />
     </button>

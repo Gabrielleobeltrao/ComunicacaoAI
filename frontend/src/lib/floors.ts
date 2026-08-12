@@ -71,6 +71,9 @@ export interface FloorMetrics {
 export const getFloorMetrics = (floorId: string) =>
   fetch(`${API_URL}/api/floors/${floorId}/metrics`, opts('GET')).then(json<FloorMetrics>)
 
+export const getAgentStates = (floorId: string) =>
+  fetch(`${API_URL}/api/floors/${floorId}/agent-states`, opts('GET')).then(json<Record<string, string>>)
+
 // Choose the active floor: the saved id if it still points at an active floor,
 // otherwise the first active floor (floors arrive ordered), otherwise null.
 // Pure so the fallback rule (plan §14.5) is unit-testable.

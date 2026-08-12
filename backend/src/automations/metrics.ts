@@ -39,3 +39,21 @@ export async function floorMetrics(ownerId: string, floorId: ObjectId): Promise<
     recentArtifacts,
   }
 }
+
+// Coarse per-agent operational state for the live-map overlay: an agent
+// referenced by an agent.execute step of any active run is marked 'working'.
+// The map is read-only about this — the backend is the source of truth (§15.1).
+export async function agentStatesForFloor(ownerId: string, floorId: ObjectId): Promise<Record<string, 'working'>> {
+  const active = await db
+    .collection('automation_runs')
+    .find({ ownerId, floorId, status: { $in: ['queued', 'running'] } }, { projection: { definitionSnapshot: 1 } })
+    .toArray()
+  const states: Record<string, 'working'> = {}
+  for (const run of active) {
+    const steps = (run.definitionSnapshot as { steps?: Array<{ type?: string; config?: { agentId?: unknown } }> } | undefined)?.steps ?? []
+    for (const step of steps) {
+      if (step.type === 'agent.execute' && typeof step.config?.agentId === 'string') states[step.config.agentId] = 'working'
+    }
+  }
+  return states
+}

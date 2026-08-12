@@ -20,6 +20,8 @@ import { NamePill } from './NamePill'
 import { OfficeMap } from './OfficeMap'
 import { SimAgent } from './SimAgent'
 import { roundedPath, traceOutline } from './roomShape'
+import { featureFlags } from '../featureFlags'
+import { useAgentStates } from '../lib/useAgentStates'
 
 const VIEWPORT_H = 560 // reference map height (px) used as the aspect fallback
 // Responsive map height: never tiny on a phone, never taller than the reference,
@@ -100,6 +102,8 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   const envelope = useMemo(() => buildActivityEnvelope(layout, grid), [layout, grid])
 
   const reducedMotion = useReducedMotion()
+  // Live-map overlay (off unless the flag is on): read-only per-agent state.
+  const opStates = useAgentStates(featureFlags.aiOfficeLiveStatus)
   const simOn = OFFICE_FEATURES.simulation && (!reducedMotion || IGNORE_REDUCED_MOTION)
   const sim = useOfficeSimulation(layout, grid, {
     modeFor,
@@ -251,6 +255,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
                 initialY={a.y}
                 register={sim.register}
                 setHovered={sim.setHovered}
+                opState={opStates[a.id]}
                 onOpen={() => navigate(`/agents/${a.id}`)}
               />
             ))
