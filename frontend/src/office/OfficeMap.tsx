@@ -182,6 +182,9 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
       style={{
         position: 'relative',
         overflow: 'hidden',
+        // Contain the whole map as one stacking layer so agent z-indexes never
+        // leak onto the page (e.g. over the mobile bottom nav).
+        isolation: 'isolate',
         background: 'var(--map-floor)',
         borderRadius: 'var(--radius-panel)',
         ...style,
@@ -198,8 +201,9 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
         style={{ position: 'absolute', inset: 0, overflow: 'hidden', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
       >
         <div style={inner}>
-          {/* Content layer — centred within the floor when the office is small. */}
-          <div style={{ position: 'absolute', left: offX, top: offY, width: `${cw}px`, height: `${ch}px` }}>{children}</div>
+          {/* Content layer — centred within the floor when the office is small.
+              Isolated so agent/label z-indexes stay below the map controls. */}
+          <div style={{ position: 'absolute', left: offX, top: offY, width: `${cw}px`, height: `${ch}px`, isolation: 'isolate' }}>{children}</div>
         </div>
       </div>
 
