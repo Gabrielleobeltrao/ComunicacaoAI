@@ -52,7 +52,7 @@ function useReducedMotion(): boolean {
   return reduced
 }
 
-export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; sectors?: SectorSummary[] }) {
+export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSummary[]; sectors?: SectorSummary[]; floorId?: string }) {
   const navigate = useNavigate()
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
 
@@ -103,7 +103,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
 
   const reducedMotion = useReducedMotion()
   // Live-map overlay (off unless the flag is on): read-only per-agent state.
-  const opStates = useAgentStates(featureFlags.aiOfficeLiveStatus)
+  const opStates = useAgentStates(featureFlags.aiOfficeLiveStatus, floorId)
   const simOn = OFFICE_FEATURES.simulation && (!reducedMotion || IGNORE_REDUCED_MOTION)
   const sim = useOfficeSimulation(layout, grid, {
     modeFor,

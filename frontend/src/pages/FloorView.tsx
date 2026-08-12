@@ -4,6 +4,8 @@ import { AppLayout } from '../components/AppLayout'
 import { archiveFloor, getFloor, getFloorActivity, getFloorMetrics, restoreFloor } from '../lib/floors'
 import type { Floor, FloorMetrics } from '../lib/floors'
 import { featureFlags } from '../featureFlags'
+import { OfficeFloor } from '../office/OfficeFloor'
+import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import { Button } from '../ui'
 
 // Floor detail. Gated by featureFlags.aiFloors. Shows the floor's mission,
@@ -11,6 +13,8 @@ import { Button } from '../ui'
 // arrives with the office-live-status phase.
 export function FloorView() {
   const { floorId } = useParams<{ floorId: string }>()
+  // Agents + sectors of THIS floor drive the visual map (the office simulation).
+  const { agents, sectors } = useAgentsAndWidgets(floorId)
   const [floor, setFloor] = useState<Floor | null>(null)
   const [activity, setActivity] = useState<{ agentCount: number; sectorCount: number } | null>(null)
   const [metrics, setMetrics] = useState<FloorMetrics | null>(null)
@@ -68,6 +72,8 @@ export function FloorView() {
       {error && <p style={{ color: 'var(--intent-danger, #d92d20)' }}>Não foi possível carregar o andar.</p>}
       {!loading && !error && floor && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* The visual office map is the centre of the floor view (scoped). */}
+          <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
           <div style={panel}>
             <Row label="Status" value={floor.status === 'archived' ? 'Arquivado' : 'Ativo'} />
             <Row label="Fuso horário" value={floor.timezone} />
