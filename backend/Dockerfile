@@ -9,7 +9,10 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 # Install deps first (cache-friendly): needs backend/package-lock.json.
 COPY package.json package-lock.json ./
-RUN npm ci
+# --include=dev: the build needs devDependencies (typescript) even when the
+# platform injects NODE_ENV=production at build time, which would otherwise make
+# npm omit them and break `tsc`.
+RUN npm ci --include=dev
 COPY . .
 # Compile TypeScript (src -> dist).
 RUN npm run build

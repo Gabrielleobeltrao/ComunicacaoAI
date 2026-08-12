@@ -9,7 +9,9 @@ FROM node:22-bookworm-slim AS build
 WORKDIR /app
 # Install deps first (cache-friendly): needs frontend/package-lock.json.
 COPY package.json package-lock.json ./
-RUN npm ci
+# --include=dev: the build needs devDependencies (vite, typescript) even when the
+# platform injects NODE_ENV=production at build time.
+RUN npm ci --include=dev
 COPY . .
 # Default points at the production backend origin; override per environment.
 ARG VITE_API_URL=https://api.comunicacaoai.onplataform.com
