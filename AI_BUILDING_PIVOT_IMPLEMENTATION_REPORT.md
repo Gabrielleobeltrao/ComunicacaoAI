@@ -5,7 +5,7 @@ Execution report for `AI_BUILDING_PIVOT_IMPLEMENTATION_PLAN.md`.
 ## 1. Git state
 
 - **Base commit:** `6d4f809d1c3bfc5bc49e0ed725c13f68b0f2e10f` (matches the plan header; `origin/main` == base at start).
-- **Final commit:** `065b3a6` on branch **`development`** (not pushed).
+- **Final commit:** `e6a746b` on branch **`development`** (not pushed).
 - **Branch deviation:** the plan suggested a dedicated branch; per the user's standing workflow ("keep work on `development`, push to `main` only on request") all pivot work is committed on `development`. Nothing was pushed, deployed, or run against production.
 
 ### Commits added (small, semantic)
@@ -22,6 +22,8 @@ Execution report for `AI_BUILDING_PIVOT_IMPLEMENTATION_PLAN.md`.
 | `703ae01` | feat(runner): linear runner (retry/timeout/cancel/continueOnError) |
 | `7cc3dc3` | chore(dev): local Mongo+Redis compose, REDIS_URL config, runbook |
 | `065b3a6` | feat(runs): durable queue, worker process, run persistence + APIs |
+| `8e878e7` | feat(scheduler): recurrence→cron + BullMQ reconciler (tz/DST) |
+| `e6a746b` | feat(connections): encrypted connections + email/Telegram delivery |
 
 ## 2. Scope executed
 
@@ -35,9 +37,10 @@ Per the user's decision (this environment has **no running MongoDB, no Redis, no
 | 3 — Automation domain | ✅ Backend done | Definition/version domain, per-type validators, immutable versioning, CRUD APIs. **Wizard UI deferred** (large, needs browser) |
 | 4 — Queue + worker | ✅ Code done | Linear runner + **BullMQ queue** (idempotent enqueue by jobId) + separate **worker process** (`start:worker`) that executes runs with real adapters and persists Run/StepRun/Artifact; run APIs; graceful shutdown. Build-verified; a **guarded integration test** runs the idempotency check against Mongo+Redis when present. **Runtime verification pending your infra** (`compose.dev.yml`). |
 | 5 — Sources + steps | 🟡 Core done | SSRF-safe http (per-hop redirect revalidation, byte/content-type caps), RSS parse/dedupe/time-window, transform.template — unit-tested and wired into the runner/worker; `delivery.send` currently records intent (real email/Telegram send is Phase 7) |
-| 6 — Scheduler | ⛔ Not started | BullMQ repeatable jobs + timezone/DST reconciliation — needs Redis |
-| 7 — Connections + deliveries | ⛔ Not started | Encrypted Connections + email/Telegram adapters + delivery idempotency |
-| 8–10 | ⛔ Not started | Operational dashboard/live map, channels reframe, hardening — need browser/E2E |
+| 6 — Scheduler | ✅ Code done | Pure recurrence→cron (unit-tested) + BullMQ Job-Scheduler reconciler (add/remove diff, stable id, BullMQ owns cron+tz/DST); worker reconciles on startup + every 60s and creates one run per fire (idempotent by automationId+timestamp). Runtime needs Redis. |
+| 7 — Connections + deliveries | ✅ Code done | Encrypted Connections domain (AES via existing crypto, API never returns secrets) + email (nodemailer) & Telegram adapters (injectable IO, pure mask/chunk unit-tested) + idempotent Delivery persistence wired into the worker's delivery.send. Live SMTP/Telegram send needs credentials to verify. |
+| 3 — Wizard UI | ⛔ Not started | Automation creation wizard (frontend) — needs browser |
+| 8–10 | ⛔ Not started | Operational dashboard/live map, channels reframe, hardening/E2E — need browser |
 
 ## 3. Files created / changed
 
@@ -65,7 +68,7 @@ An idempotent boot backfill was added to `runMigrations()`:
 
 Run with `npm run build` first (suites consume `dist`).
 
-- **Backend:** `node --test` → **32 passed / 0 failed / 1 skipped** — config (5), floors/timezone (2), generic runtime with a mocked provider (7), automation validation + hashing (6), SSRF guard (3), RSS/template (4), linear runner (5). The skipped one is the **run-idempotency integration test**, which runs only when `MONGODB_URI` + `REDIS_URL` are set (against `compose.dev.yml`).
+- **Backend:** `node --test` → **41 passed / 0 failed / 1 skipped** — config (5), floors/timezone (2), generic runtime (7), automation validation + hashing (6), SSRF guard (3), RSS/template (4), linear runner (5), recurrence→cron (4), delivery adapters (5). The skipped one is the **run-idempotency integration test**, which runs only when `MONGODB_URI` + `REDIS_URL` are set (against `compose.dev.yml`).
 - **Frontend:** `vitest run` → **58 passed / 0 failed** (9 files) — baseline 55 (office 51 + others) + `resolveActiveFloor` (3).
 - **Lint:** `oxlint` clean. **Typecheck:** `tsc -b` clean (frontend + backend).
 
