@@ -1,841 +1,577 @@
-# Plano de implementação — Escritório virtual vivo
+# Office Visual Simulation V2
 
-> Projeto: ComunicacaoAI  
-> Branch-base analisado: `development`  
-> Commit-base analisado: `9b2274b99995ed5c960a4db8c8728f35e9917fb5`  
-> Escopo: somente frontend e experiência visual do escritório da página inicial autenticada  
-> Status inicial: planejamento aprovado; implementação pendente
+> **Projeto-alvo:** `https://github.com/Gabrielleobeltrao/ComunicacaoAI`
+>
+> **Branch-base:** `development`
+>
+> **Área exclusiva:** mapa visual do escritório virtual, personagens, movimentação, colisões, interações, controles e decoração.
+>
+> **Atenção:** este plano NÃO pertence ao Web Builder e não deve alterar nenhum recurso do Website Builder. O comando usado como referência em outra conversa serviu apenas para demonstrar o formato Base64 + Bzip2.
 
 ## 1. Objetivo
 
-Dar vida ao escritório virtual que aparece em **Dashboard → Sua equipe**, preservando integralmente o layout, a distribuição de personagens, o alinhamento com mesas e cadeiras, o mapa orgânico, o zoom, o pan, a tela cheia e a navegação que já funcionam.
+Aprimorar exclusivamente a experiência visual e a simulação do escritório virtual da página inicial/dashboard.
 
-A implementação deve acrescentar duas camadas visuais:
+A implementação deve tornar o escritório vivo imediatamente, permitir que os agentes caminhem de forma contínua e segura dentro e fora das salas, adicionar interações simples entre personagens, compactar moderadamente o cenário, enriquecer a decoração e disponibilizar controles de pausa e retorno às mesas.
 
-1. **Simulação dos agentes:** agentes levantam da cadeira, caminham pelo escritório em quatro direções, fazem pausas, visitam pontos válidos e retornam à própria mesa sem atravessar paredes, móveis ou outros agentes.
-2. **Composição do cenário:** objetos do catálogo visual são distribuídos de maneira estável e coerente nos setores e áreas externas, sem bloquear portas, corredores, cadeiras ou rotas.
+A alteração deve preservar:
 
-Este plano não autoriza mudanças no comportamento real dos agentes de IA, backend, banco de dados, APIs, autenticação, chats ou orquestração.
+- A composição atual das salas.
+- A posição centralizada do conjunto de salas.
+- O vínculo entre agente, departamento, sala, mesa e cadeira.
+- O rodízio visual de personagens.
+- Os recursos atuais de zoom, nomes, debug e acessibilidade.
+- O restante do dashboard e da aplicação.
+- Todas as integrações existentes.
 
----
+## 2. Escopo estritamente visual
 
-## 2. Estado atual que deve ser preservado
+Esta implementação pode alterar somente o frontend relacionado ao escritório virtual.
 
-### 2.1 Arquivos principais
+Pode alterar:
 
-- `frontend/src/pages/Dashboard.tsx`
-  - Renderiza a seção **Sua equipe**.
-  - Entrega `agents` e `sectors` para `OfficeFloor`.
-- `frontend/src/office/OfficeFloor.tsx`
-  - Calcula dimensões e posições dos setores.
-  - Calcula mesas, cadeiras, assentos e agentes sem setor.
-  - Usa PRNG baseado em IDs para produzir aleatoriedade visual estável.
-- `frontend/src/office/OfficeMap.tsx`
-  - Controla viewport, zoom, ajuste à tela, tela cheia e pan por arraste.
-- `frontend/src/office/MapAgent.tsx`
-  - Renderiza o personagem, sombra, nome e status.
-  - Mantém o clique que abre `/agents/:id`.
-- `frontend/src/office/MapObject.tsx`
-  - Renderiza objetos posicionados em coordenadas do mapa.
-- `frontend/src/office/MapZone.tsx`
-  - Renderiza os setores, pisos e paredes.
-- `frontend/src/lib/agentAvatar.ts`
-  - Escolhe personagem, cor e status decorativo de forma estável pelo ID.
-- `frontend/public/illustrations/map/agents/`
-  - Atualmente contém somente poses estáticas de frente/costas e sentado/em pé.
-- `frontend/public/illustrations/map/objects/`
-  - Atualmente contém mesas, cadeiras, planta e sofá.
+- Layout visual do escritório.
+- Espaçamento entre salas.
+- Limites da área de circulação.
+- Simulação local dos personagens.
+- Pathfinding e colisões.
+- Estados visuais dos agentes.
+- Sprites e animações.
+- Decoração visual.
+- Controles do mapa.
+- Testes do frontend relacionados ao escritório.
 
-### 2.2 Comportamentos que não podem regredir
+Não pode alterar:
 
-- O mesmo agente mantém o mesmo personagem depois de recarregar.
-- A rotação entre Bruno, Lia, Nina e Teo continua estável e com o mínimo possível de repetição.
-- Agentes de um setor continuam associados ao setor correto.
-- Agentes sentados continuam alinhados ao monitor, mesa e cadeira corretos.
-- Agentes do lado superior e inferior da mesa continuam com a orientação correta.
-- Agentes sem setor continuam distribuídos fora das salas sem sobreposição inicial.
-- Os setores continuam com formato orgânico e estável.
-- O mapa continua preenchendo o painel sem área vazia indevida no zoom mínimo.
-- Zoom, pan, ajuste à tela e tela cheia continuam funcionando.
-- Arrastar o mapa não abre acidentalmente a página do agente.
-- Clicar em um agente continua abrindo sua página.
-- O build atual precisa continuar passando.
+- Backend.
+- Banco de dados.
+- APIs.
+- Modelos persistidos.
+- Regras reais de negócio.
+- Execução dos agentes de IA.
+- Status reais dos agentes.
+- Autenticação.
+- Outras páginas da aplicação.
 
-Antes de modificar o código, registrar uma referência do comportamento atual e rodar o build de baseline.
+Qualquer status de trabalho, ligação, descanso ou conversa criado neste plano deve ser exclusivamente visual e local.
 
----
+## 3. Diagnóstico da implementação atual
 
-## 3. Restrições obrigatórias
+Antes de modificar, confirmar o estado atual da branch `development`.
 
-### 3.1 Limite de escopo
+A implementação existente já possui uma base adequada:
 
-Não modificar:
-
-- `backend/`;
-- modelos ou coleções do MongoDB;
-- endpoints da API;
-- autenticação;
-- execução de LLM;
-- widgets;
-- chats;
-- lógica de setores;
-- formato persistido de agentes ou setores.
-
-Não instalar uma engine de jogos. A solução deve usar React, TypeScript, CSS e APIs nativas do navegador. Uma biblioteca pequena só pode ser adicionada se houver justificativa técnica concreta e se não existir solução razoável com o stack atual.
-
-### 3.2 Segurança de implementação
-
-- Trabalhar a partir de `development`, em branch próprio.
-- Não substituir o layout atual por outro sistema antes de extrair e testar suas regras existentes.
-- Não apagar nem renomear os SVGs antigos.
-- Novos sprites precisam possuir fallback para as poses estáticas atuais.
-- Manter uma feature flag local para desativar toda a simulação sem remover código.
-- Fazer commits pequenos e separados por etapa.
-- Não usar aleatoriedade não determinística para layout ou decoração persistente.
-- Toda alteração deve continuar compilando antes de seguir para a próxima fase.
-- Não encerrar a execução deixando erros de TypeScript, lint ou build conhecidos.
-
-### 3.3 Feature flags
-
-Criar configuração central, por exemplo:
-
-```ts
-export const OFFICE_FEATURES = {
-  simulation: true,
-  decoration: true,
-  debug: import.meta.env.DEV,
-}
-```
-
-O modo `debug` deve estar desligado visualmente por padrão mesmo em desenvolvimento e ser ativado por parâmetro de URL ou controle interno de desenvolvimento.
-
----
-
-## 4. Arquitetura proposta
-
-Organizar a implementação sem transformar `OfficeFloor.tsx` em um arquivo ainda maior.
-
-```text
-frontend/src/office/
-├── OfficeFloor.tsx
-├── OfficeMap.tsx
-├── MapAgent.tsx
-├── MapObject.tsx
-├── MapZone.tsx
-├── AgentSprite.tsx
-├── officeConfig.ts
-├── officeTypes.ts
-├── officeAssets.ts
-├── buildOfficeLayout.ts
-├── buildNavigationGrid.ts
-├── findOfficePath.ts
-├── placeOfficeDecor.ts
-├── useOfficeSimulation.ts
-├── OfficeDebugOverlay.tsx
-└── __tests__/
-    ├── buildOfficeLayout.test.ts
-    ├── buildNavigationGrid.test.ts
-    ├── findOfficePath.test.ts
-    └── placeOfficeDecor.test.ts
-```
-
-Os nomes podem ser ajustados à convenção encontrada no projeto, desde que as responsabilidades continuem separadas.
-
-### 4.1 Responsabilidades
-
-- `officeTypes.ts`
-  - Tipos de coordenada, direção, pose, estado, assento, sala, objeto, obstáculo, ponto de interesse, rota e reserva.
-- `officeConfig.ts`
-  - Constantes de timing, escala, colisão, limites de simultaneidade, feature flags e debug.
-- `officeAssets.ts`
-  - Manifesto único dos personagens, sprites, objetos e fallbacks.
-- `buildOfficeLayout.ts`
-  - Extração pura do cálculo que hoje vive em `OfficeFloor.tsx`.
-  - Deve produzir o mesmo layout visual para as mesmas entradas.
-- `buildNavigationGrid.ts`
-  - Converte limites, salas, portas e objetos em células caminháveis ou bloqueadas.
-- `findOfficePath.ts`
-  - Pathfinding A* determinístico em quatro direções.
+- `OfficeFloor.tsx`
+- `officeSimCore.ts`
 - `useOfficeSimulation.ts`
-  - Controla as máquinas de estados, destinos, reservas, temporização e retorno à mesa.
-- `AgentSprite.tsx`
-  - Seleciona frame, direção, modo normal/telefone e fallback.
+- `buildOfficeLayout.ts`
+- `buildNavigationGrid.ts`
+- `findOfficePath.ts`
 - `placeOfficeDecor.ts`
-  - Distribui objetos por setor usando seed estável e regras de colisão.
+- `officeSprites.ts`
+- `AgentSprite.tsx`
+- `SimAgent.tsx`
 - `OfficeDebugOverlay.tsx`
-  - Exibe grade, obstáculos, portas, rotas e reservas somente em debug.
+- Sprites de caminhada normal e em ligação.
+- Grid de navegação.
+- Pathfinding.
+- Reservas de células.
+- Feature flags.
+- Testes automatizados.
 
----
+Entretanto, os seguintes problemas devem ser considerados abertos:
 
-## 5. Modelo de dados visual
+- Agentes parados podem deixar de ocupar formalmente sua célula.
+- Uma rota pode atravessar um agente pausado.
+- Agentes sem mesa podem começar sem célula ocupada.
+- Pontos de interação com capacidade maior que um podem sobrepor personagens.
+- O teste atual de colisão verifica reservas, mas não necessariamente a posição real dos pés.
+- O limite de agentes ativos pode momentaneamente ultrapassar a capacidade configurada.
+- Ao falhar uma rota de retorno, o agente pode ser teleportado para perto da cadeira.
+- A pausa no meio de um percurso foi configurada, mas não está totalmente implementada.
+- A saída da cadeira não apresenta uma caminhada visual completa de dentro da sala até a porta.
+- Os agentes quase não caminham dentro das próprias salas.
+- Os destinos externos podem levar os agentes longe demais do conjunto de salas.
+- A tela inicialmente parece parada e só ganha movimento gradualmente.
+- Direita e esquerda ainda podem reutilizar visualmente os sprites frontais.
+- A atribuição visual de personagens pode mudar quando a lista de agentes muda.
+- A instalação limpa em Linux precisa ser validada.
+- Alguns critérios do plano anterior foram marcados como concluídos sem testes suficientemente rigorosos.
 
-Criar tipos equivalentes aos seguintes:
+## 4. Regras gerais de implementação
 
-```ts
-export type OfficeDirection = 'front' | 'back' | 'left' | 'right'
-export type AgentVisualMode = 'normal' | 'phone'
-export type AgentMotionState =
-  | 'seated'
-  | 'standing-up'
-  | 'walking'
-  | 'pausing'
-  | 'waiting'
-  | 'returning'
-  | 'sitting-down'
+- Não reescrever o escritório inteiro.
+- Evoluir a arquitetura atual.
+- Manter a simulação determinística quando uma seed for fornecida.
+- Não usar movimento livre ignorando o grid.
+- Não usar teleporte durante uma simulação visível.
+- Não mascarar colisões apenas com `z-index`.
+- Não bloquear portas com decoração ou interações.
+- Não marcar tarefas como concluídas sem teste ou verificação.
+- Preservar as feature flags e o modo de debug existentes.
+- Separar lógica pura de simulação da camada React.
+- Evitar renderização React a cada frame quando não for necessária.
+- Respeitar `prefers-reduced-motion`.
+- Garantir funcionamento em diferentes tamanhos de tela.
 
-export interface OfficePoint {
-  x: number
-  y: number
-}
+## 5. Fase 0 — Baseline e proteção contra regressões
 
-export interface OfficeRect {
-  x: number
-  y: number
-  width: number
-  height: number
-}
+Antes das mudanças:
 
-export interface AgentHome {
-  seatId: string
-  seatedPoint: OfficePoint
-  exitPoint: OfficePoint
-  seatedFacing: OfficeDirection
-  sectorId?: string
-}
+1. Atualizar a branch local com a versão mais recente de `development`.
+2. Verificar o working tree e preservar alterações existentes do usuário.
+3. Registrar o commit-base usado na implementação.
+4. Executar os testes atuais do escritório.
+5. Executar build e lint do frontend.
+6. Executar o build geral do projeto.
+7. Registrar visualmente o estado atual do escritório em viewport desktop e menor.
+8. Mapear salas, portas, mesas, cadeiras, corredores, pontos de interação, área caminhável e objetos bloqueadores ou apenas decorativos.
 
-export interface InteractionPoint {
-  id: string
-  point: OfficePoint
-  facing?: OfficeDirection
-  categories: string[]
-  capacity: number
-}
+Se o baseline já estiver quebrado, documentar separadamente antes de modificar.
 
-export interface AgentSimulationState {
-  agentId: string
-  motion: AgentMotionState
-  mode: AgentVisualMode
-  direction: OfficeDirection
-  position: OfficePoint
-  route: OfficePoint[]
-  frame: number
-  home: AgentHome
-  destinationId?: string
-}
-```
+## 6. Fase 1 — Compactação moderada do mapa
 
-O estado da simulação é temporário e somente visual. Não persistir no backend.
+O espaço entre as salas está maior que o desejado. Reduzir moderadamente o espaçamento, sem alterar a organização central atual.
 
----
+### Requisitos
 
-## 6. Fase 0 — Baseline e inventário
+- Manter as salas nas mesmas posições relativas.
+- Não reconstruir o layout.
+- Não mudar a sala de departamento.
+- Não inverter ou reorganizar setores.
+- Reduzir os vãos aproximadamente entre 15% e 25%, sujeito à validação visual.
+- Usar como primeira tentativa a redução de `GAP_RINGS` de `3` para `2`, se esse ainda for o parâmetro vigente.
+- Não reduzir abaixo da largura segura exigida pelos personagens e pelo pathfinding.
+- Preservar corredores navegáveis e todas as portas acessíveis.
+- Impedir sobreposição de salas, paredes, móveis ou personagens.
+- Recalcular os bounds depois da compactação.
+- Centralizar novamente o conjunto completo sem mudar sua composição.
+- Validar zoom-to-fit e responsividade.
 
-### Tarefas
+O escritório deve parecer mais unido e menos espalhado, mas ainda deve existir separação clara entre as salas.
 
-- [x] Confirmar que o trabalho começou a partir do commit mais recente de `development` (HEAD `5cb232f`).
-- [x] Criar branch de implementação, por exemplo `feature/living-office`.
-- [x] Rodar `npm install` apenas se necessário (não necessário).
-- [x] Rodar `npm run build` antes das alterações (passa — 345 módulos).
-- [x] Rodar o lint disponível no frontend e registrar qualquer erro preexistente (`npm run lint -w frontend` = oxlint, limpo).
-- [x] Ler por completo os componentes atuais do escritório.
-- [x] Criar uma lista dos assets existentes com dimensões e `viewBox` (retrato 112×168, frente/costas 56×84, sentado 56×66; objetos por família).
-- [x] Identificar no Claude Design os blocos `Map agents — andando`, `Map agents — ligação`, `Map agents — facings`, `Sprite library` e o catálogo de cenários/objetos.
-- [x] Trazer os assets aprovados do Claude Design, sem redesenhá-los arbitrariamente (640 frames de walk gerados pelo gerador do design; frente/costas × andando1-4 × normal/telefone).
-- [x] Verificar se os pés permanecem no mesmo ponto entre todos os frames (baseline consistente, 56×84).
-- [x] Verificar se todos os personagens possuem o mesmo conjunto de direções e estados (40 personagens uniformes). Ressalva: o design **não tem perfil lateral** (esquerda/direita) — decisão do design ("a profile loses the face"); esquerda/direita usam frente com espelho como fallback documentado.
+## 7. Fase 2 — Limite invisível da área de atividade
 
-### Bloqueio controlado de assets
+Criar uma `activity envelope`, ou área invisível de atividade, para impedir que agentes caminhem para regiões vazias e muito afastadas.
 
-Se algum sprite do design ainda não estiver exportável:
+A área permitida deve ser formada pela união de:
 
-1. Não inventar uma versão definitiva.
-2. Criar o manifesto com fallback para o SVG estático correspondente.
-3. Continuar implementando layout, navegação, colisão e simulação.
-4. Registrar claramente no checklist qual asset falta.
-5. Substituir o fallback assim que o asset ficar disponível antes da validação final.
-
-### Resultado esperado
-
-Um inventário completo de assets e uma baseline compilável, sem mudança visual acidental.
-
----
-
-## 7. Fase 1 — Manifesto e normalização dos sprites
-
-### Estrutura lógica obrigatória
-
-Cada personagem deve oferecer:
-
-```text
-character
-├── normal
-│   ├── idle: front, back, left, right
-│   └── walk: front[], back[], left[], right[]
-└── phone
-    ├── idle: front, back, left, right
-    └── walk: front[], back[], left[], right[]
-```
+- Interior navegável das salas.
+- Corredores entre as salas.
+- Portas e células de transição.
+- Uma margem externa controlada ao redor do conjunto.
+- Pontos externos explicitamente aprovados.
 
 ### Regras
 
-- Preferir nomes em inglês no código e manter os nomes físicos dos assets quando renomeá-los puder quebrar referências.
-- Centralizar o mapeamento entre nome lógico e arquivo em `officeAssets.ts`.
-- Não espalhar caminhos de assets pelos componentes.
-- Todos os frames devem ter:
-  - fundo transparente;
-  - mesma escala;
-  - mesmo canvas lógico por categoria;
-  - pés alinhados no mesmo ponto de apoio;
-  - recorte sem cortar cabelo, mão ou telefone.
-- Se o design possui quatro frames de caminhada, preservar os quatro.
-- Fazer preload dos sprites necessários para evitar flashes ao trocar de frame.
-- Se um frame falhar, usar o idle equivalente; se o idle falhar, usar a pose estática legada.
+- Expandir o contorno das salas por uma margem aproximada de 2,5 a 4 células.
+- Intersectar essa área com o grid caminhável.
+- Não gerar destinos aleatórios em todo o retângulo do mapa.
+- Não utilizar extremidades vazias apenas porque são caminháveis.
+- Manter qualquer agente sem mesa dentro dessa área.
+- Pontos externos devem ser intencionais e próximos do escritório.
+- A borda deve ser invisível no modo normal e visível no debug.
+- Shrink-wrap dos bounds visuais pode ser aplicado se não cortar decoração ou controles.
 
-### Resultado esperado
+Durante uma simulação prolongada, nenhuma posição de destino ou posição real dos pés pode sair da `activity envelope`.
 
-`AgentSprite` recebe personagem, modo, direção, movimento e frame, e sempre consegue renderizar algo válido.
+## 8. Fase 3 — Ocupação física e colisões reais
 
----
+Separar formalmente:
 
-## 8. Fase 2 — Extração do layout atual
+- `occupiedCell`: célula atualmente ocupada pelos pés do agente.
+- `reservedNextCell`: próxima célula reservada durante o movimento.
 
-### Objetivo
-
-Transformar o cálculo de layout atual em funções puras sem alterar o resultado exibido.
+Todo agente em pé deve manter uma `occupiedCell`, inclusive quando estiver andando, esperando rota, pausado, conversando, esperando outro agente, levantando, retornando ou temporariamente bloqueado.
 
-### Tarefas
+A célula ocupada não pode expirar por timeout enquanto o agente estiver nela. Reservas futuras podem expirar ou ser recalculadas, mas nunca devem substituir o registro da posição física atual.
 
-- [x] Mover `hash32`, `mulberry32`, dimensionamento de salas, posicionamento de salas, mesas, assentos e agentes soltos para módulos puros.
-- [x] Fazer `OfficeFloor` consumir um objeto de layout calculado.
-- [x] Memorizar o layout com `useMemo` usando somente as dependências reais.
-- [x] Garantir que mudanças de frame, status ou posição não recalculem as salas.
-- [x] Preservar as seeds atuais baseadas nos IDs.
-- [x] Incluir no layout:
-  - limites totais;
-  - retângulos de salas;
-  - retângulos de mesas e cadeiras;
-  - assentos e pontos de saída;
-  - orientação sentada original;
-  - agentes soltos;
-  - labels;
-  - zonas externas;
-  - portas e corredores.
-- [x] Adicionar testes determinísticos para as mesmas entradas.
+O pathfinding deve evitar:
 
-### Regra de compatibilidade
-
-Com `simulation: false` e `decoration: false`, o resultado visual deve permanecer equivalente ao escritório anterior.
-
----
-
-## 9. Fase 3 — Portas e navegação
-
-### Problema atual
-
-Os setores são desenhados como retângulos com borda completa. Para um agente entrar e sair legitimamente, a sala precisa ter uma porta visual e uma abertura equivalente na malha de navegação.
+- Paredes.
+- Móveis bloqueadores.
+- Células ocupadas.
+- Células futuras reservadas por outro agente.
+- Slots de conversa reservados.
+- Portas temporariamente congestionadas, quando houver alternativa.
 
-### Implementação
-
-- Definir pelo menos uma porta por setor.
-- Posicionar a porta em uma borda que tenha acesso a um corredor válido.
-- Não colocar porta atrás de mesa, cadeira, label ou objeto.
-- Renderizar a abertura de maneira compatível com o estilo atual.
-- Criar dois pontos por porta:
-  - portal interno;
-  - portal externo.
-- Conectar ambos na grade de navegação.
-- Manter uma faixa livre entre toda cadeira e a porta do setor.
-
-### Grade
-
-- Trabalhar em coordenadas do escritório, não em pixels da tela.
-- Usar resolução inicial de `0.5 tile` ou outra resolução pequena validada visualmente.
-- Bloquear:
-  - paredes;
-  - limites do mapa;
-  - mesas;
-  - cadeiras;
-  - sofás;
-  - plantas grandes;
-  - objetos com colisão;
-  - espaços sem acesso por porta.
-- Inflar cada obstáculo pela área dos pés/corpo do personagem.
-- O ponto usado para colisão deve ser o apoio dos pés, não o retângulo completo da imagem.
-
-### Resultado esperado
-
-Todas as mesas possuem rota para a porta e toda porta possui rota para pelo menos um ponto do corredor.
-
----
-
-## 10. Fase 4 — Pathfinding e prevenção de colisões
-
-### Algoritmo
-
-Implementar A* em quatro direções:
-
-- esquerda;
-- direita;
-- cima;
-- baixo.
+Antes de iniciar a animação de levantar, o agente deve ocupar ou reservar corretamente sua célula de saída.
 
-Não usar diagonais nesta primeira versão.
+Corrigir a concorrência para que novos agentes só sejam iniciados quando `movingCount < movingCapacity`, nunca permitindo `movingCapacity + 1`.
 
-### Orientação visual
+Nenhum ponto com capacidade maior que um pode representar uma única coordenada física. Criar slots físicos distintos ou reduzir a capacidade para um.
 
-| Movimento na grade | Sprite |
-|---|---|
-| `x` diminui | `left` |
-| `x` aumenta | `right` |
-| `y` diminui | `back` |
-| `y` aumenta | `front` |
-
-### Reservas
-
-- Cada agente reserva seu destino.
-- Dois agentes não podem reservar o mesmo ponto com capacidade 1.
-- O próximo segmento da rota deve ser reservado por uma janela curta.
-- Se houver conflito, um agente entra em `waiting` e recalcula após um pequeno atraso com jitter.
-- Nunca empurrar ou teletransportar outro agente.
-- Se a rota ficar inválida, recalcular.
-- Depois de tentativas limitadas, escolher outro destino ou retornar à mesa.
-- O retorno à mesa tem prioridade sobre passeios decorativos.
-
-### Testes mínimos
-
-- [x] Encontra caminho em corredor simples.
-- [x] Contorna uma mesa.
-- [x] Passa por uma porta.
-- [x] Não atravessa parede.
-- [x] Retorna `null` quando não há rota.
-- [x] Não corta diagonalmente a quina.
-- [x] Reage a uma célula temporariamente reservada.
-- [x] Produz resultado determinístico quando entradas e seed são iguais.
-
----
+### Testes obrigatórios
 
-## 11. Fase 5 — Máquina de estados dos agentes
+- Comparar posições reais dos pés em cada tick.
+- Executar milhares de ticks com vários agentes.
+- Falhar se dois agentes ocuparem a mesma célula.
+- Incluir agentes andando, pausados, conversando e aguardando.
+- Incluir agentes com mesa e sem mesa.
+- Verificar ocupação durante a animação de levantar.
+- Verificar limite estrito de concorrência.
 
-### Fluxo principal
+## 9. Fase 4 — Saída contínua da cadeira e circulação dentro das salas
 
-```text
-seated
-  → standing-up
-  → walking
-  → pausing
-  → walking (opcional, outro ponto)
-  → returning
-  → sitting-down
-  → seated
-```
-
-`waiting` pode interromper `walking` ou `returning` quando a rota estiver ocupada.
-
-### Regras de comportamento
-
-- Todo agente vinculado a uma mesa começa sentado em sua cadeira atual.
-- Agente sem setor começa no ponto solto calculado atualmente.
-- Cada agente usa um PRNG próprio derivado de `agentId` mais um contador de ciclo.
-- O agente espera um tempo variável antes de se levantar.
-- Ao levantar, passa da posição sentada para o `exitPoint` da cadeira.
-- Escolhe somente destinos acessíveis.
-- Pode visitar um ou dois pontos antes de retornar.
-- Faz pequenas pausas no destino e, ocasionalmente, durante o caminho.
-- Retorna à cadeira exata de origem.
-- Recupera a orientação sentada original ao sentar.
-- Agentes sem assento podem alternar entre pausa e caminhada, sem executar retorno à cadeira.
-
-### Ritmo visual inicial
-
-Usar configuração central e ajustar visualmente:
-
-- pausa sentado: aproximadamente 20–70 segundos;
-- pausa em destino: aproximadamente 4–14 segundos;
-- pausa intermediária rara: aproximadamente 1–4 segundos;
-- máximo de visitas por passeio: 2;
-- simultaneidade: no máximo 25% dos agentes, com mínimo prático de 1 quando houver agentes suficientes;
-- velocidade: constante e calma, sem corrida;
-- início escalonado para evitar movimentos sincronizados.
-
-Não codificar esses tempos diretamente dentro dos componentes.
-
-### Estado visual normal versus telefone
-
-Nesta entrega, usar o status disponível como fonte visual:
-
-| Status | Modo do sprite |
-|---|---|
-| `working` | `phone` |
-| `thinking` | `phone` |
-| `calling` | `phone` |
-| `idle` | `normal` |
-| `break` | `normal` |
-| `blocked` | `normal` |
-
-O modo não controla a rota. Um agente pode caminhar ou ficar parado tanto no modo normal quanto no modo telefone.
-
-Preparar a interface para receber status real no futuro, mas não implementar integração de backend nesta tarefa.
-
----
-
-## 12. Fase 6 — Animação e renderização
-
-### Regras de performance
-
-- Não provocar renderização completa do escritório em cada frame.
-- React controla estados semânticos: sentado, andando, parado, direção e modo.
-- Usar `transform: translate3d(...)` para deslocamento.
-- Usar `requestAnimationFrame`, Web Animations API ou transições controladas para movimento contínuo.
-- Trocar frames de caminhada em baixa frequência coerente com o design.
-- Separar a frequência da simulação da frequência de pintura.
-- Atualizar `z-index` de maneira coerente com a coordenada dos pés quando o agente estiver solto.
-- Preservar as regras especiais de profundidade em relação às mesas e cadeiras.
-- Precarregar sprites antes de iniciar o primeiro ciclo.
-- Suspender animação e timers quando `document.visibilityState !== 'visible'`.
-- Liberar timers, animações e listeners no unmount.
-- Não gerar vazamentos ao trocar de página.
-
-### Acessibilidade
-
-- Respeitar `prefers-reduced-motion: reduce`.
-- Nesse modo, manter os agentes nas posições estáticas iniciais.
-- Manter o nome acessível e a ação de abrir a página do agente.
-- O movimento não pode impedir teclado, clique ou leitura do botão.
-
-### Interação com o mapa
-
-- Pan e zoom não podem alterar as coordenadas lógicas da simulação.
-- Arrastar o mapa continua tendo precedência sobre o clique.
-- Um agente em movimento continua clicável.
-- Ao abrir e voltar da página de um agente, reiniciar a simulação de forma limpa e estável.
-
----
-
-## 13. Fase 7 — Catálogo e composição do cenário
-
-Executar somente depois que pathfinding e retorno à mesa estiverem estáveis.
-
-### Catálogo
-
-Cada objeto deve possuir metadados equivalentes a:
-
-```ts
-export interface OfficeObjectDefinition {
-  id: string
-  asset: string
-  width: number
-  height: number
-  collision: OfficeRect
-  categories: Array<
-    | 'work'
-    | 'meeting'
-    | 'lounge'
-    | 'marketing'
-    | 'sales'
-    | 'support'
-    | 'finance'
-    | 'decoration'
-    | 'outdoor'
-  >
-  allowedZones: Array<'room' | 'hall' | 'outdoor'>
-  interactionPoints: InteractionPoint[]
-  placementWeight: number
-  maximumPerRoom: number
-  blocksNavigation: boolean
-}
-```
-
-### Ordem obrigatória de posicionamento
-
-1. Limites, paredes e portas.
-2. Mesas e cadeiras atuais.
-3. Saídas das cadeiras.
-4. Corredores obrigatórios.
-5. Objetos grandes.
-6. Objetos interativos.
-7. Objetos decorativos pequenos.
-8. Plantas e detalhes externos.
-
-### Validação de cada objeto
-
-Antes de aceitar uma posição, verificar:
-
-- não cruza parede;
-- não cruza outro objeto;
-- não cobre agente ou assento;
-- não bloqueia porta;
-- não bloqueia saída de cadeira;
-- não invade o label do setor;
-- não elimina a rota cadeira → porta;
-- não elimina a rota porta → corredor;
-- respeita margem visual;
-- não deixa o ambiente carregado demais;
-- possui ao menos um interaction point alcançável quando for interativo.
-
-Se a posição falhar, tentar outra posição por número limitado de vezes. Se nenhuma for válida, simplesmente não colocar aquele objeto.
-
-### Estabilidade
-
-Usar seed equivalente a:
-
-```text
-office-layout-version + sectorId + object-catalog-version
-```
-
-A decoração não pode trocar quando:
-
-- o componente renderiza novamente;
-- um sprite muda de frame;
-- um agente muda de status;
-- o usuário aplica zoom;
-- o painel é redimensionado.
-
-### Temas
-
-Selecionar objetos por nome/tipo do setor quando houver correspondência clara:
-
-- Marketing: quadro criativo, mídia, lounge e decoração.
-- Vendas: estações de trabalho e reunião.
-- Suporte: mesas, telas e espera.
-- Financeiro: ambiente mais organizado e discreto.
-- Desenvolvimento: estações e quadro técnico.
-- RH: reunião, espera e plantas.
-- Setor desconhecido: tema genérico equilibrado.
-
-O tema é apenas visual e não altera lógica de negócio.
-
----
-
-## 14. Fase 8 — Pontos de interesse
-
-Transformar objetos compatíveis em destinos opcionais:
-
-- sofá;
-- quadro;
-- máquina de café, se existir no design;
-- mesa compartilhada;
-- planta ou janela como ponto apenas de contemplação;
-- área externa;
-- pontos de encontro nos corredores.
+Eliminar completamente o teleporte visual quando o agente sai da mesa.
+
+### Sequência mínima
+
+1. Agente sentado na cadeira.
+2. Início da animação de levantar.
+3. Posicionamento ao lado ou à frente da cadeira.
+4. Caminhada dentro da própria sala.
+5. Aproximação interna da porta.
+6. Travessia da porta.
+7. Entrada no corredor.
+8. Continuação até o destino.
+
+Não pode haver salto direto da mesa para fora da sala.
+
+Cada sala deve possuir, quando possível: `seatExit`, `interiorWorkPoint`, `interiorIdlePoint`, `doorInside`, `doorOutside`, `socialSlots` e `decorSafePoints`. Rotas de entrada usam a sequência inversa.
+
+Se uma rota estiver temporariamente bloqueada, o agente deve esperar, manter sua célula ocupada, tentar novamente e procurar alternativa válida. Nunca finalizar o retorno enquanto não estiver fisicamente na saída da cadeira e nunca alterar diretamente a posição para simular chegada.
+
+Criar teste de continuidade que limite o deslocamento máximo por frame. Saltos só podem existir durante inicialização invisível, antes do primeiro paint.
+
+## 10. Fase 5 — Caminhada dentro da sala de origem
+
+Criar pontos navegáveis no interior das salas respeitando paredes, mesas, cadeiras, objetos, portas, circulação e células ocupadas.
+
+Aplicar pesos configuráveis, usando como referência inicial:
+
+- 50% a 65%: destinos dentro da sala do próprio departamento.
+- 20% a 30%: corredores e regiões próximas.
+- 10% a 20%: pontos externos aprovados ou interações.
+- Visitas a outras salas somente com destino permitido e rota segura.
+
+### Comportamento desejado
+
+- Mais agentes caminhando dentro das salas.
+- Um agente pode levantar, caminhar dentro da sala, parar e retornar sem sair dela.
+- Um agente pode atravessar a porta para outro destino.
+- A sala deve continuar legível, sem congestionamento permanente.
+- Portas nunca devem ser escolhidas como ponto de pausa.
+- Não obrigar todos os agentes a sair ao mesmo tempo.
+
+## 11. Fase 6 — Pausa durante o percurso
+
+Implementar de fato a pausa intermediária já prevista:
+
+- Pausar somente ao concluir uma célula ou segmento.
+- Nunca parar entre células.
+- Manter a célula atual ocupada.
+- Preservar o restante da rota.
+- Retomar a mesma rota se continuar válida.
+- Recalcular somente quando houver bloqueio real.
+- Não pausar em portas, passagens estreitas ou pontos de cadeira.
+- Variar duração e probabilidade com seed determinística.
+- Limitar pausas consecutivas.
+
+## 12. Fase 7 — Interação visual entre dois personagens
+
+Adicionar conversa visual simples sem exigir nova animação desenhada.
+
+### Funcionamento
+
+1. Selecionar dois agentes elegíveis, preferencialmente da mesma sala ou setor.
+2. Reservar dois slots físicos distintos.
+3. Levar cada agente ao seu slot.
+4. Aguardar ambos chegarem.
+5. Virar os agentes um de frente para o outro.
+6. Permanecer parados por um intervalo curto.
+7. Encerrar a interação e liberar os slots.
+8. Retomar uma rota ou retornar ao contexto anterior.
+
+Se alinhados verticalmente, um usa frente e o outro costas. Se alinhados horizontalmente, usar direita e esquerda. A distância sugerida é de 0,8 a 1,2 células visuais, adaptada aos sprites.
+
+Adicionar estados equivalentes a `social-requested`, `social-walking`, `social-waiting`, `socializing`, `social-finished` e `social-cancelled`, com `pairId`, `partnerId`, dois slots, timeouts e cancelamento seguro.
+
+Não iniciar conversa em portas ou corredores estreitos, com agente retornando à mesa ou já interagindo. Cancelar com segurança se um agente desaparecer. Nenhum cancelamento pode teleportar personagens. Limitar conversas simultâneas pela capacidade do escritório.
+
+## 13. Fase 8 — Escritório vivo desde o primeiro frame
+
+Implementar warm-start determinístico antes do primeiro paint visível:
+
+- Criar estado inicial puro da simulação.
+- Fazer pre-roll interno equivalente a aproximadamente 15 a 30 segundos.
+- Executar sem renderização DOM.
+- Usar a mesma seed.
+- Validar ocupações e reservas durante o pre-roll.
+- Renderizar diretamente o snapshot resultante.
+
+Ao abrir o dashboard já deve existir movimento. Alguns agentes podem estar dentro das salas, no corredor, pausados ou em conversa; os demais podem estar sentados ou trabalhando. Não deve existir uma onda artificial na qual todos começam um por um.
+
+Como referência, iniciar entre 35% e 50% dos agentes em estados visivelmente ativos, respeitando densidade e segurança. O objetivo é o escritório parecer vivo imediatamente, e não obrigar literalmente todos a caminhar simultaneamente.
+
+## 14. Fase 9 — Controle de pausar e retomar
+
+Adicionar ao conjunto de controles à direita, próximo ao zoom e aos nomes, um botão de pausa.
+
+Ao pausar:
+
+- Congelar agentes na posição exata.
+- Congelar o frame atual do sprite.
+- Congelar conversas e timers visuais.
+- Não avançar o relógio lógico.
+- Não deixar reservas expirarem.
+- Não recalcular destinos ou liberar células ocupadas.
+
+Ao retomar:
+
+- Reiniciar a referência de tempo para evitar salto de `deltaTime`.
+- Continuar do mesmo ponto.
+- Revalidar rotas apenas quando necessário.
+- Não acelerar para compensar o período pausado.
+
+Usar ícones de pausar/reproduzir, tooltip, `aria-label`, estado pressionado acessível e o padrão visual dos controles existentes. Essa pausa é diferente de `prefers-reduced-motion`.
+
+## 15. Fase 10 — Controle “retornar às mesas”
+
+Adicionar outro botão na mesma área. Ao clicar:
+
+1. Entrar no modo global `recall`.
+2. Impedir novas saídas e conversas.
+3. Cancelar interações com segurança.
+4. Preservar células fisicamente ocupadas.
+5. Calcular rotas de retorno.
+6. Distribuir partidas para evitar congestionamento.
+7. Fazer cada agente atravessar a porta correta.
+8. Caminhar até a saída da própria cadeira.
+9. Executar transição para sentado.
+10. Deixar o escritório estático/pausado quando todos chegarem.
+
+Agentes sem cadeira retornam a um `homePoint` válido e estável.
+
+Não teleportar. Se a rota estiver bloqueada, esperar e tentar novamente. Não colocar agentes na mesma porta ou cadeira. Exibir progresso no botão, indicar quando todos chegaram e permitir retomar a simulação pelo play.
+
+## 16. Fase 11 — Sprites direcionais e estados visuais
+
+### Quatro direções reais
+
+Verificar os recursos existentes do Claude Design e priorizar sprites reais de frente, costas e perfil lateral, usando espelhamento para o lado oposto quando adequado.
+
+Cada direção deve possuir, quando disponível:
+
+- Parado normal.
+- Caminhada normal de quatro frames.
+- Parado em ligação.
+- Caminhada em ligação de quatro frames.
+
+Não considerar concluído se direita e esquerda continuarem parecendo sprites frontais. Se só houver arte lateral para um lado, espelhar somente o perfil lateral. Revisar textos e acessórios assimétricos.
+
+### Estado visual local
+
+Criar controlador exclusivamente visual para `normal`, `working`, `thinking`, `phone` e `socializing`.
+
+- Trabalhando ou pensando pode usar a versão em ligação/telefone conforme a linguagem visual existente.
+- Ocioso usa a pose normal.
+- Conversando usa pose normal orientada ao parceiro.
+- O estado visual não altera status real no backend.
+- Manter interface preparada para futura fonte real de status.
+
+### Distribuição dos personagens
+
+- Evitar que todos troquem de aparência quando um agente é adicionado.
+- Usar atribuição determinística estável.
+- Usar mais personagens aprovados quando existirem.
+- Evitar repetição enquanto houver opções.
+- Pode haver mapeamento frontend-local persistido, sem alterar modelos ou backend.
+- Implementar fallback determinístico sem armazenamento local.
+
+## 17. Fase 12 — Mais detalhes no cenário
+
+Adicionar aproximadamente 20% a 35% mais detalhes visuais, ajustando pela área disponível.
+
+Separar objetos em bloqueadores, não bloqueadores, decoração de parede, fundo e piso.
+
+Exemplos: plantas, tapetes, quadros, murais, luminárias, prateleiras, armários pequenos, vasos, mesas laterais, placas de departamento, objetos temáticos, detalhes de corredor e elementos externos próximos.
 
 ### Regras
 
-- O agente caminha para o interaction point, nunca para o centro do objeto.
-- Ao chegar, assume a direção indicada pelo ponto.
-- Respeita `capacity`.
-- Não inventar animação de sentar, beber ou escrever se o sprite não existir.
-- Sem sprite específico, o agente apenas para e usa a pose idle adequada.
-- Após a pausa, libera a reserva.
+- Nunca bloquear portas, esconder agentes ou comprometer rotas.
+- Não preencher todos os espaços.
+- Manter áreas de respiro.
+- Preferir parede e fundo quando o piso já estiver ocupado.
+- Variar a decoração de forma coerente com cada setor.
+- Indicar bloqueadores no debug.
+- Manter decoração determinística pela seed.
+- Não expandir o mapa para acomodar decoração.
 
----
+## 18. Fase 13 — Desempenho
 
-## 15. Fase 9 — Debug e observabilidade visual
+- Manter o loop principal fora de rerenders React por frame quando possível.
+- Não executar A* para todos os agentes em todos os frames.
+- Usar cache ou invalidação somente quando seguro.
+- Limitar tentativas de destino e conversas simultâneas.
+- Manter warm-start como lógica pura.
+- Não carregar sprites nunca utilizados.
+- Revisar impacto dos assets no bundle.
+- Preservar carregamento progressivo.
+- Testar com número alto de agentes.
+- Não introduzir vazamentos de timers, listeners ou `requestAnimationFrame`.
 
-Criar overlay de desenvolvimento capaz de mostrar:
+## 19. Fase 14 — Acessibilidade e movimento reduzido
 
-- células navegáveis;
-- obstáculos permanentes;
-- reservas temporárias;
-- portas e portais;
-- ponto dos pés de cada agente;
-- rota atual;
-- destino;
-- assento e saída da cadeira;
-- interaction points;
-- estado da máquina;
-- colisões ou rotas inválidas em vermelho.
+Com `prefers-reduced-motion`, não executar caminhada contínua, manter o escritório funcional e legível, preservar controles e evitar flashes. O retorno pode usar transição simplificada.
 
-Ativação sugerida:
+Os botões novos devem possuir contraste, foco de teclado, `aria-label`, estado ativo identificável e área clicável consistente.
 
-```text
-/dashboard?officeDebug=1
-```
+## 20. Fase 15 — Debug visual
 
-O overlay não deve entrar visível em produção e não deve interceptar cliques.
+Expandir o `OfficeDebugOverlay` para visualizar opcionalmente:
 
----
+- Grid navegável.
+- Células bloqueadas.
+- `occupiedCell`.
+- `reservedNextCell`.
+- Rotas.
+- Portas.
+- Slots de conversa.
+- Interior das salas.
+- `activity envelope`.
+- Pontos de destino e retorno.
+- Estado atual do agente.
+- Pair ID de conversas.
+- Modo global pausado ou recall.
 
-## 16. Fase 10 — Testes e validação final
+O debug não pode aparecer em produção por padrão.
 
-### Testes automatizados
+## 21. Testes automatizados obrigatórios
 
-- [x] Layout é determinístico.
-- [x] Personagem e assento continuam estáveis pelo ID.
-- [x] Toda cadeira ocupada possui saída válida.
-- [x] Todo setor ocupado possui porta.
-- [x] Toda saída de cadeira alcança uma porta.
-- [x] Toda porta alcança o corredor.
-- [x] Pathfinding contorna obstáculos.
-- [x] Destinos não são duplicados quando a capacidade é 1.
-- [x] Decoração é determinística.
-- [x] Decoração não bloqueia rotas obrigatórias.
-- [x] Manifesto resolve fallback quando um frame não existe.
-- [x] A máquina retorna o agente ao assento de origem.
+### Colisão
 
-### Verificação manual
+- Nenhuma célula real dos pés compartilhada em milhares de ticks.
+- Agentes pausados e esperando continuam bloqueando a célula.
+- Conversas usam slots diferentes.
+- Agentes sem mesa ocupam uma célula.
+- Capacidade global nunca ultrapassada.
 
-Testar:
+### Continuidade
 
-- 1 agente e nenhum setor;
-- vários agentes sem setor;
-- setor vazio;
-- 1 setor com 1 agente;
-- 1 setor com 4 agentes;
-- setor com mais de uma mesa;
-- vários setores;
-- muitos agentes andando;
-- zoom mínimo e máximo;
-- pan durante caminhada;
-- entrada e saída de tela cheia;
-- resize do painel;
-- abrir um agente durante a caminhada;
-- navegar para outra tela e voltar;
-- aba escondida e reaberta;
-- `prefers-reduced-motion`;
-- asset ausente;
-- modo com simulação desativada;
-- modo com decoração desativada.
+- Nenhum teleporte ao sair da cadeira, retornar ou falhar uma rota.
+- Deslocamento por frame dentro do limite.
+- Retorno só termina ao chegar fisicamente ao ponto correto.
 
-### Comandos obrigatórios
+### Salas e portas
 
-Executar, corrigir e repetir até passarem:
+- Agentes caminham dentro da própria sala.
+- Rotas externas atravessam a porta correta.
+- Nenhuma rota atravessa paredes.
+- Portas acessíveis após compactação e decoração.
+- Pausas não acontecem em portas.
 
-```bash
-npm run build
-npm run lint -w frontend
-```
+### Área de atividade
 
-Executar também os testes adicionados usando o runner escolhido e documentado no projeto.
+- Nenhum destino ou posição real fora da `activity envelope`.
+- Agentes sem mesa iniciam dentro da área.
+- Destinos externos ficam próximos.
 
-Se o projeto ainda não tiver runner de testes, adicionar uma configuração pequena e compatível com Vite/TypeScript apenas para os módulos puros do escritório.
+### Conversas
 
----
+- Duas células distintas e orientações opostas.
+- Timeout e cancelamento seguros.
+- Reservas sempre liberadas.
+- Nenhuma conversa bloqueia porta.
 
-## 17. Critérios de aceite
+### Warm-start
 
-O trabalho só está concluído quando todos os itens abaixo forem verdadeiros:
+- Primeiro snapshot contém atividade.
+- Estado inicial determinístico pela seed.
+- Sem colisões após pre-roll.
+- Sem salto após primeiro paint.
 
-- [x] Nenhum agente atravessa mesa, cadeira, sofá, planta, parede ou limite do mapa.
-- [x] Agentes não passam visualmente por cima uns dos outros.
-- [x] Agentes saem e entram nos setores somente pelas portas.
-- [x] Frente, costas, esquerda e direita correspondem ao movimento real.
-- [x] O ciclo de frames não corta, pula ou faz os pés deslizarem de forma evidente.
-- [x] `working`, `thinking` e `calling` usam o conjunto visual de telefone.
-- [x] `idle`, `break` e `blocked` usam o conjunto visual normal.
-- [x] Todo agente com mesa volta para a cadeira exata de origem.
-- [x] Ao sentar, recupera a orientação e profundidade corretas em relação à mesa.
-- [x] A distribuição atual de personagens continua estável.
-- [x] O cenário permanece igual após recarregar.
-- [x] Nenhum objeto decorativo bloqueia rota obrigatória.
-- [x] O escritório continua funcionando com assets faltantes por meio de fallback.
-- [x] Zoom, pan, fullscreen e clique continuam funcionando.
-- [x] O movimento pausa quando a aba fica invisível.
-- [x] Reduced motion mantém uma versão estática funcional.
-- [x] Não há alteração de backend ou contrato de API.
-- [x] Não há erro conhecido de TypeScript, build, lint ou testes provocado pela implementação.
-- [x] O modo de debug comprova visualmente rotas e colisões.
-- [x] O documento foi atualizado com todos os checkboxes concluídos ou justificativa objetiva para algum item inaplicável.
+### Pausa
 
----
+- Posição, frame e estado lógico não mudam.
+- Reserva não expira.
+- Retomar não causa salto temporal.
 
-## 18. Ordem de commits sugerida
+### Recall
 
-1. `refactor(office): extract deterministic office layout`
-2. `feat(office): add sprite asset manifest and fallbacks`
-3. `feat(office): add doors and navigation grid`
-4. `feat(office): add collision-safe pathfinding`
-5. `feat(office): add agent simulation state machine`
-6. `feat(office): animate directional normal and phone sprites`
-7. `feat(office): add deterministic room decoration`
-8. `feat(office): add object interaction points`
-9. `test(office): cover layout navigation and simulation`
-10. `fix(office): complete visual QA and accessibility`
+- Todos retornam ao `home` e terminam sentados ou no `homePoint`.
+- Sem colisões ou teleporte.
+- Sem novas interações durante recall.
+- Estado final pausado.
 
-Não é obrigatório usar exatamente essas mensagens, mas os commits devem permanecer pequenos e revisáveis.
+### Layout
 
----
+- Espaçamento menor que o anterior, mas maior que o mínimo navegável.
+- Salas centralizadas, sem sobreposição.
+- Zoom-to-fit correto.
 
-## 19. Protocolo de execução autônoma
+## 22. Verificação técnica obrigatória
 
-Durante a execução deste plano:
+Executar ao final:
 
-1. Ler o arquivo inteiro antes de editar.
-2. Inspecionar o código real e adaptar nomes quando necessário, sem abandonar os requisitos.
-3. Criar e manter uma lista de tarefas baseada nas fases deste documento.
-4. Executar as fases em ordem.
-5. Após cada fase:
-   - revisar o diff;
-   - rodar validações relevantes;
-   - corrigir regressões;
-   - marcar os checkboxes concluídos;
-   - fazer um commit focado.
-6. Não pedir confirmação entre etapas para decisões técnicas reversíveis e claramente cobertas por este plano.
-7. Quando houver um problema, investigar e tentar alternativas seguras antes de interromper.
-8. Não contornar erros desabilitando TypeScript, lint, testes ou regras de segurança.
-9. Não declarar conclusão enquanto os critérios de aceite não forem verificados.
-10. Ao final, entregar um resumo com:
-    - arquivos criados e modificados;
-    - arquitetura implementada;
-    - sprites importados e fallbacks restantes;
-    - testes executados;
-    - resultado de build e lint;
-    - passos exatos para testar manualmente;
-    - limitações reais que ainda existirem.
+- Testes do frontend.
+- Testes específicos do escritório.
+- Lint do frontend.
+- Build do frontend.
+- Build geral do projeto.
+- Verificação TypeScript.
+- Instalação limpa em ambiente Linux.
 
----
+Corrigir o lockfile caso `npm ci` limpo não instale corretamente dependências opcionais como Tailwind Oxide para Linux, binding Oxc/Oxlint para Linux e binding TypeScript nativo para Linux.
 
-## 20. Fora de escopo desta entrega
+A validação deve ocorrer em clone ou diretório temporário limpo, sem depender de módulos instalados manualmente.
 
-- Status operacional real enviado pelo backend.
-- Persistência da posição atual de cada agente.
-- Sincronização da simulação entre usuários.
-- Multiplayer.
-- Editor manual de móveis.
-- Alteração da composição de setores.
-- Novos comportamentos de IA.
-- Sons ambientes.
-- Animações não existentes no Claude Design.
-- Mecânicas de jogo, pontuação ou recompensas.
+## 23. QA visual manual
 
-Esses itens podem ser planejados depois que a simulação visual estiver estável.
+Validar desktop largo, notebook, viewport menor, zoom mínimo e máximo, nomes ligados/desligados, pausa, movimento, conversa, recall, `prefers-reduced-motion`, poucos e muitos agentes, agentes com e sem mesa e entrada/saída de todas as salas.
 
----
+Observar profundidade, `z-index`, pés no piso, relação com mesa/cadeira, travessia das portas, direções dos sprites, imagens quebradas, flicker, congestionamento, espaços vazios e excesso de decoração.
 
-## 21. Notas de verificação da entrega
+## 24. Feature flags e rollback
 
-Implementado na branch `feature/living-office` (a partir de `development`), sem
-tocar backend, banco, APIs, autenticação, chats, widgets ou comportamento de IA.
+Preservar flags existentes e adicionar flags específicas quando necessário para simulação V2, conversas, warm-start, activity envelope, decoração expandida, sprites laterais e controles de pausa/recall.
 
-### Como cada checkbox foi comprovado
+Deve ser possível desativar a nova simulação sem afetar o dashboard. Não remover o fallback estático antes da validação final.
 
-- **Testes automatizados (Vitest):** 6 arquivos, 37 testes, todos passando —
-  `officeSprites`, `buildOfficeLayout`, `buildNavigationGrid`, `findOfficePath`,
-  `placeOfficeDecor`, `officeSimCore`. Cobrem: determinismo de layout e
-  decoração; estabilidade de personagem/assento por ID; toda cadeira com saída
-  válida; todo setor ocupado com porta; toda saída de cadeira alcança a porta do
-  próprio setor; toda porta alcança o corredor; A* contorna mesa/parede, passa
-  por porta, não corta quina, reage a reserva e retorna `null` sem rota;
-  decoração não quebra rota obrigatória e nunca cobre assento/saída; capacidade
-  dos pontos de interesse; retorno ao assento exato; fallback do manifesto.
-- **Comandos obrigatórios (verdes):** `npm run build` (frontend + backend),
-  `npm run lint -w frontend`, `npx tsc -b` e a suíte de testes.
-- **Anti-sobreposição** provada por teste (nenhuma célula é ocupada por dois
-  agentes) e por reservas de célula atual + próxima no núcleo.
-- **Pausa em aba oculta, reduced-motion e limpeza no unmount** implementadas no
-  hook de rAF; reduced-motion cai no render estático anterior (preservado).
-- **Debug** (`?officeDebug=1`) desenha mapa de colisão, portas, assentos/saídas,
-  pontos de interesse e, ao vivo, pés/rota/reservas/estado de cada agente.
+## 25. Ordem recomendada de commits
 
-### Decisões de design (compatíveis com o Claude Design)
+1. Baseline, tipos e testes de regressão.
+2. Compactação do layout e activity envelope.
+3. Ocupação física e reservas.
+4. Correção de teleporte e rotas de cadeira/porta.
+5. Destinos internos das salas.
+6. Pausas intermediárias.
+7. Conversas entre agentes.
+8. Warm-start.
+9. Controles de pausa e recall.
+10. Sprites direcionais e estados visuais.
+11. Decoração adicional.
+12. Acessibilidade, debug e desempenho.
+13. Lockfile, validação limpa e documentação.
 
-- **Perfil lateral:** o Claude Design não tem pose de perfil; `left` é o espelho
-  horizontal de `frente` e `right` usa `frente` — documentado no manifesto.
-- **`calling`/`blocked`:** `modeFor` já mapeia `working/thinking/calling` →
-  telefone e `idle/break/blocked` → normal, embora o gerador decorativo
-  (`statusFor`) hoje só emita `working/thinking/idle/break`.
-- **Pontos de interesse:** sem sprite específico de sentar/beber/escrever, o
-  agente apenas para e assume a direção do ponto (pose idle), conforme o plano.
-- **Flags:** `?officeSim=0` desliga a simulação, `?officeDecor=0` a decoração,
-  `?officeDebug=1` o overlay, `?officeSpeed=N` acelera o relógio e
-  `?officeForceMotion=1` roda a simulação sob reduced-motion (apenas QA).
+Cada commit deve ser pequeno, coerente e testável.
 
+## 26. Critérios finais de aceite
+
+- [ ] O mapa está moderadamente mais compacto.
+- [ ] As salas continuam centralizadas e na mesma composição.
+- [ ] Os agentes não caminham para áreas vazias distantes.
+- [ ] Existe uma área invisível de atividade.
+- [ ] Os agentes caminham dentro das próprias salas.
+- [ ] A saída da cadeira até a porta é contínua.
+- [ ] Não existe teleporte visível.
+- [ ] Nenhum agente atravessa paredes ou objetos.
+- [ ] Nenhum agente ocupa a mesma célula de outro.
+- [ ] Agentes parados continuam ocupando fisicamente suas células.
+- [ ] A capacidade de movimento nunca é ultrapassada.
+- [ ] Existem pausas intermediárias naturais.
+- [ ] Dois agentes conseguem conversar olhando um para o outro.
+- [ ] Conversas utilizam posições físicas distintas.
+- [ ] O dashboard abre visualmente ativo.
+- [ ] O botão de pausa congela toda a simulação.
+- [ ] Retomar não causa saltos.
+- [ ] O botão de retorno leva todos às cadeiras sem teleporte.
+- [ ] O cenário possui mais detalhes sem ficar poluído.
+- [ ] Portas e rotas permanecem livres.
+- [ ] Frente, costas e laterais funcionam visualmente.
+- [ ] A distribuição de personagens permanece estável.
+- [ ] `prefers-reduced-motion` funciona.
+- [ ] Debug e feature flags continuam disponíveis.
+- [ ] Testes, lint e builds passam.
+- [ ] `npm ci` funciona em ambiente Linux limpo.
+- [ ] Nenhuma alteração de backend, API ou banco foi realizada.
