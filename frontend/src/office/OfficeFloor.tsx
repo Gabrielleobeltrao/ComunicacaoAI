@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { accentFor, buildCharacterResolver, statusFor } from '../lib/agentAvatar'
 import { objectSrc } from '../lib/officeAssets'
@@ -6,37 +6,47 @@ import type { AgentSummary, SectorSummary } from '../lib/types'
 import { cozinha, lounge, reuniao } from './cenarios'
 import type { Cenario } from './cenarios'
 import { DESK_DEPTH, DESK_W, buildOfficeLayout, hash32, mulberry32 } from './buildOfficeLayout'
-import type { OfficeDirection, OfficeSeat } from './officeTypes'
+import { buildNavigationGrid } from './buildNavigationGrid'
+import type { AgentVisualMode, OfficeDirection, OfficeSeat } from './officeTypes'
+import { IGNORE_REDUCED_MOTION, OFFICE_FEATURES } from './officeConfig'
+import { preloadAgentSprites } from './officeSprites'
+import { useOfficeSimulation } from './useOfficeSimulation'
 import { MapAgent } from './MapAgent'
 import { MapObject } from './MapObject'
 import { NamePill } from './NamePill'
 import { OfficeMap } from './OfficeMap'
+import { SimAgent } from './SimAgent'
 import { roundedPath, traceOutline } from './roomShape'
 
-// The office is an organic, tetris-like floor plan (see buildOfficeLayout for the
-// geometry). Here we only turn the deterministic layout into DOM: room shapes,
-// desks, chairs, seated + loose agents, décor and labels. The walking simulation
-// is layered on separately.
 const VIEWPORT_H = 560 // map viewport height (px) — the floor's aspect follows the panel width
 
 const AMENITIES: Cenario[] = [reuniao, cozinha, lounge]
 const AMEN_TINT: Record<string, string> = { reuniao: '#38B6F0', cozinha: '#FFB53D', lounge: '#8B5CF6' }
 const DECOR = ['planta-grande-1.5x2', 'samambaia-1.5x1.5', 'estante-2x1', 'prateleira-pe-1.5x1.3', 'planta-1x1', 'vaso-1x1']
 
-// Static pose (normal / phone) per agent — stable via the id hash. The simulation
-// layer will later derive this from the agent's status instead.
-function poseFor(id: string): 'parado' | 'ligacao' {
-  return mulberry32(hash32(`${id}:pose`))() < 0.33 ? 'ligacao' : 'parado'
+// Visual mode from the agent's decorative status (working/thinking → on the phone).
+function modeFor(id: string): AgentVisualMode {
+  const s = statusFor(id)
+  return s === 'working' || s === 'thinking' ? 'phone' : 'normal'
 }
 const facingSvg = (d: OfficeDirection): 'frente' | 'costas' => (d === 'back' ? 'costas' : 'frente')
 
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches)
+  useEffect(() => {
+    if (typeof matchMedia === 'undefined') return
+    const mq = matchMedia('(prefers-reduced-motion: reduce)')
+    const on = () => setReduced(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  return reduced
+}
+
 export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; sectors?: SectorSummary[] }) {
   const navigate = useNavigate()
-  // Round-robin faces across the whole team, so no character repeats until the
-  // cast is exhausted (then the cycle restarts).
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
 
-  // Measure the panel width so the office footprint matches its aspect ratio.
   const hostRef = useRef<HTMLDivElement>(null)
   const [hostW, setHostW] = useState(0)
   const [hoveredRoom, setHoveredRoom] = useState<string | null>(null)
@@ -64,22 +74,35 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
       }),
     [agents, sectors, aspect],
   )
+  const grid = useMemo(() => buildNavigationGrid(layout), [layout])
+
+  const reducedMotion = useReducedMotion()
+  const simOn = OFFICE_FEATURES.simulation && (!reducedMotion || IGNORE_REDUCED_MOTION)
+  const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn })
+
+  // Preload the walk / idle frames for the faces actually in use.
+  const usedCharacters = useMemo(() => Array.from(new Set(agents.map((a) => chars.character(a._id)))), [agents, chars])
+  useEffect(() => {
+    preloadAgentSprites(usedCharacters)
+  }, [usedCharacters])
 
   const { rooms, seats, desks, decor, amenityItems, loose, cols, rows } = layout
   const agentName = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
+  const nameOf = useCallback((id: string) => (agentName.get(id) ?? '').split(' ')[0], [agentName])
   const farSeats = seats.filter((s) => !s.chair.near)
   const nearSeats = seats.filter((s) => s.chair.near)
 
-  const seatedAgentEl = (s: OfficeSeat, zIndex: number) => (
+  // Static (simulation off / reduced motion) seated + loose agents.
+  const staticSeatedEl = (s: OfficeSeat, zIndex: number) => (
     <MapAgent
       key={s.agentId}
       x={s.seatedPoint.x}
       y={s.seatedPoint.y}
-      name={(agentName.get(s.agentId) ?? '').split(' ')[0]}
+      name={nameOf(s.agentId)}
       status={statusFor(s.agentId)}
       agent={chars.character(s.agentId)}
       facing={facingSvg(s.facing)}
-      pose={poseFor(s.agentId)}
+      pose={modeFor(s.agentId) === 'phone' ? 'ligacao' : 'parado'}
       seated
       department={accentFor(s.agentId)}
       hoverLift={false}
@@ -118,7 +141,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
           />
         ))}
 
-        {/* Amenity furniture (from the cenário presets) — array order is paint order */}
+        {/* Amenity furniture */}
         {amenityItems.map((it) => (
           <MapObject key={`${it.roomKey}-obj-${it.index}`} x={it.x} y={it.y} w={it.w} h={it.h} art={objectSrc(it.art)} label={it.label} shadow={it.shadow} style={{ zIndex: 2, pointerEvents: 'none' }} />
         ))}
@@ -140,43 +163,57 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
             />
           ))}
 
-        {/* Far chairs (z0) */}
+        {/* Chairs + desks are always static furniture */}
         {farSeats.map((s) => (
           <MapObject key={`fc-${s.agentId}`} x={s.seatedPoint.x} y={s.seatedPoint.y + 0.5} w={1} h={1} art={objectSrc('cadeira-longe-1x1')} label="Cadeira" style={{ zIndex: 0, pointerEvents: 'none' }} />
         ))}
-        {/* Far-side agents (frente, z1) */}
-        {farSeats.map((s) => seatedAgentEl(s, 1))}
-        {/* Desks (z2) */}
         {desks.map((d, i) => (
           <MapObject key={`desk-${d.roomKey}-${i}`} x={d.x} y={d.y} w={DESK_W} h={DESK_DEPTH} art={objectSrc('mesa-4-3x3')} label="Mesa" style={{ zIndex: 2, pointerEvents: 'none' }} />
         ))}
-        {/* Near-side agents (costas, z3) */}
-        {nearSeats.map((s) => seatedAgentEl(s, 3))}
-        {/* Near chairs (z4) */}
         {nearSeats.map((s) => (
           <MapObject key={`nc-${s.agentId}`} x={s.seatedPoint.x - 0.075} y={s.seatedPoint.y + 1} w={1.15} h={1.3} art={objectSrc('cadeira-perto-1x1.15')} label="Cadeira" style={{ zIndex: 4, pointerEvents: 'none' }} />
         ))}
 
-        {/* Loose agents (no sector) — scattered full-body, some front, some back */}
-        {loose.map((o) => {
-          const facing = mulberry32(hash32(`${o.agentId}:facing`))() < 0.4 ? 'costas' : 'frente'
-          return (
-            <MapAgent
-              key={o.agentId}
-              x={o.point.x}
-              y={o.point.y}
-              name={(agentName.get(o.agentId) ?? '').split(' ')[0]}
-              status={statusFor(o.agentId)}
-              agent={chars.character(o.agentId)}
-              facing={facing}
-              pose={poseFor(o.agentId)}
-              department={accentFor(o.agentId)}
-              hoverLift={false}
-              style={{ zIndex: 3 }}
-              onOpen={() => navigate(`/agents/${o.agentId}`)}
-            />
-          )
-        })}
+        {/* Agents — simulated (walking) or static, depending on the flag / reduced-motion */}
+        {simOn
+          ? [...seats.map((s) => ({ id: s.agentId, x: s.seatedPoint.x, y: s.seatedPoint.y })), ...loose.map((o) => ({ id: o.agentId, x: o.point.x, y: o.point.y }))].map((a) => (
+              <SimAgent
+                key={a.id}
+                agentId={a.id}
+                name={nameOf(a.id)}
+                character={chars.character(a.id)}
+                status={statusFor(a.id)}
+                view={sim.viewOf(a.id)}
+                initialX={a.x}
+                initialY={a.y}
+                register={sim.register}
+                setHovered={sim.setHovered}
+                onOpen={() => navigate(`/agents/${a.id}`)}
+              />
+            ))
+          : [
+              ...farSeats.map((s) => staticSeatedEl(s, 1)),
+              ...nearSeats.map((s) => staticSeatedEl(s, 3)),
+              ...loose.map((o) => {
+                const facing = mulberry32(hash32(`${o.agentId}:facing`))() < 0.4 ? 'costas' : 'frente'
+                return (
+                  <MapAgent
+                    key={o.agentId}
+                    x={o.point.x}
+                    y={o.point.y}
+                    name={nameOf(o.agentId)}
+                    status={statusFor(o.agentId)}
+                    agent={chars.character(o.agentId)}
+                    facing={facing}
+                    pose={modeFor(o.agentId) === 'phone' ? 'ligacao' : 'parado'}
+                    department={accentFor(o.agentId)}
+                    hoverLift={false}
+                    style={{ zIndex: 3 }}
+                    onOpen={() => navigate(`/agents/${o.agentId}`)}
+                  />
+                )
+              }),
+            ]}
       </OfficeMap>
     </div>
   )

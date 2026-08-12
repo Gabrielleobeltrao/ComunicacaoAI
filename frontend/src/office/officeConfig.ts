@@ -23,6 +23,24 @@ export const OFFICE_FEATURES = {
   debug: readFlag('officeDebug', false),
 }
 
+function readNum(name: string, fallback: number): number {
+  if (typeof window === 'undefined') return fallback
+  try {
+    const v = new URLSearchParams(window.location.search).get(name)
+    if (v != null && Number.isFinite(Number(v))) return Number(v)
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+// Speed multiplier for the simulation clock — 1 = calm real-time. `?officeSpeed=6`
+// fast-forwards it (handy for QA / previewing the walk cycle).
+export const TIME_SCALE = Math.min(20, Math.max(0.25, readNum('officeSpeed', 1)))
+
+// QA-only: run the simulation even under prefers-reduced-motion (?officeForceMotion=1).
+export const IGNORE_REDUCED_MOTION = readFlag('officeForceMotion', false)
+
 // Navigation grid resolution, in tiles. Matches the layout cell size.
 export const NAV_RES = 0.5
 
