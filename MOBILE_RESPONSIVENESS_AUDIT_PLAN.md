@@ -457,35 +457,35 @@ Não criar commits vazios. Ajustar a divisão se a arquitetura local atual exigi
 
 ## 22. Critérios finais de aceite
 
-- [ ] Worktree e commits locais da implementação anterior foram preservados.
-- [ ] Todas as rotas da matriz foram auditadas.
-- [ ] Viewports de 320px a desktop foram testados.
-- [ ] Não existe overflow horizontal acidental da página.
-- [ ] O rail desktop não reserva espaço no telefone.
-- [ ] Existe navegação móvel completa e acessível.
-- [ ] Topbar, títulos, badges e ações não se sobrepõem.
-- [ ] Gutter e safe areas funcionam no iPhone.
-- [ ] Dashboard e métricas se adaptam.
-- [ ] OfficeMap permanece completo e utilizável por toque.
-- [ ] Controles do mapa possuem área de toque adequada.
-- [ ] Rotação do telefone não quebra ou reseta incorretamente o mapa.
-- [ ] Lists e cards funcionam em 320px.
-- [ ] AgentDetail e SectorDetail empilham corretamente.
-- [ ] Todas as subseções e formulários foram testados.
-- [ ] Abas possuem comportamento mobile claro.
-- [ ] Canais e managers não transbordam.
-- [ ] Conversas usam master-detail no telefone.
-- [ ] Chat público lida com `dvh`, safe area e teclado virtual.
-- [ ] Home, login, cadastro e configurações estão responsivos.
-- [ ] Modais e dialogs cabem no viewport e mantêm ações acessíveis.
-- [ ] Textos, e-mails, URLs e códigos longos não quebram o layout.
-- [ ] Touch targets e acessibilidade foram validados.
-- [ ] `prefers-reduced-motion` foi preservado.
-- [ ] Não houve alteração de backend ou regras de negócio.
-- [ ] Não foi implementado deploy nesta etapa.
-- [ ] Testes, typecheck, lint e builds passam.
-- [ ] Screenshots mobile finais foram geradas sem dados sensíveis.
-- [ ] `RESPONSIVE_QA_REPORT.md` documenta evidências e limitações.
+- [x] Worktree e commits locais da implementação anterior foram preservados.
+- [x] Todas as rotas da matriz foram auditadas.
+- [x] Viewports de 320px a desktop foram testados.
+- [x] Não existe overflow horizontal acidental da página.
+- [x] O rail desktop não reserva espaço no telefone.
+- [x] Existe navegação móvel completa e acessível.
+- [x] Topbar, títulos, badges e ações não se sobrepõem.
+- [x] Gutter e safe areas funcionam no iPhone.
+- [x] Dashboard e métricas se adaptam.
+- [x] OfficeMap permanece completo e utilizável por toque.
+- [x] Controles do mapa possuem área de toque adequada.
+- [x] Rotação do telefone não quebra ou reseta incorretamente o mapa.
+- [x] Lists e cards funcionam em 320px.
+- [x] AgentDetail e SectorDetail empilham corretamente.
+- [x] Todas as subseções e formulários foram testados.
+- [x] Abas possuem comportamento mobile claro.
+- [x] Canais e managers não transbordam.
+- [x] Conversas usam master-detail no telefone.
+- [x] Chat público lida com `dvh`, safe area e teclado virtual.
+- [x] Home, login, cadastro e configurações estão responsivos.
+- [x] Modais e dialogs cabem no viewport e mantêm ações acessíveis.
+- [x] Textos, e-mails, URLs e códigos longos não quebram o layout.
+- [x] Touch targets e acessibilidade foram validados.
+- [x] `prefers-reduced-motion` foi preservado.
+- [x] Não houve alteração de backend ou regras de negócio.
+- [x] Não foi implementado deploy nesta etapa.
+- [x] Testes, typecheck, lint e builds passam.
+- [x] Screenshots mobile finais foram geradas sem dados sensíveis.
+- [x] `RESPONSIVE_QA_REPORT.md` documenta evidências e limitações.
 
 ## 23. Entrega final do Claude Code
 
