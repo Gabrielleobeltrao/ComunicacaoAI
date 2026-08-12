@@ -6,7 +6,8 @@ import { buildNavigationGrid, cellOfPoint, isWalkable, nearestWalkable } from '.
 import { buildActivityEnvelope, inEnvelopeCell } from '../buildActivityEnvelope'
 import { findOfficePath } from '../findOfficePath'
 import { placeOfficeDecor } from '../placeOfficeDecor'
-import { createContext, createModels, footOf, recallComplete, setRecall, settleStartPositions, stepAgent, tickConversations, warmStart } from '../officeSimCore'
+import { buildSectorCells, createContext, createModels, footOf, recallComplete, seatGlideDur, setRecall, settleStartPositions, stepAgent, tickConversations, warmStart } from '../officeSimCore'
+import { NAV_RES, OFFICE_TIMING } from '../officeConfig'
 
 const OPP: Record<string, string> = { front: 'back', back: 'front', left: 'right', right: 'left' }
 
@@ -367,5 +368,41 @@ describe('officeSimCore', () => {
       }
     }
     expect(sawFacingMatch).toBe(true)
+  })
+})
+
+describe('seatGlideDur (no teleport out of the seat)', () => {
+  it('scales the seat<->exit glide with distance at walking pace, not a fixed tween', () => {
+    const perUnit = OFFICE_TIMING.stepMs / NAV_RES // ms to travel one layout unit at walking speed
+    // A far chair-exit (several cells) must take proportionally longer — the bug was
+    // a fixed short tween that flung the agent across/out of the sector.
+    expect(seatGlideDur({ x: 0, y: 0 }, { x: 0, y: 2.4 })).toBeCloseTo(2.4 * perUnit)
+    // Farther = longer (monotonic), never a constant.
+    expect(seatGlideDur({ x: 0, y: 0 }, { x: 0, y: 4 })).toBeGreaterThan(seatGlideDur({ x: 0, y: 0 }, { x: 0, y: 1.3 }))
+    // Floors at one step so a tiny move still animates.
+    expect(seatGlideDur({ x: 0, y: 0 }, { x: 0, y: 0 })).toBe(OFFICE_TIMING.stepMs)
+  })
+})
+
+describe('sector access (private sectors, public presets)', () => {
+  it('owns every private-sector cell but leaves preset/amenity rooms public', () => {
+    const cells = buildSectorCells(layout, grid)
+    const sectorRooms = layout.rooms.filter((r) => r.kind === 'sector')
+    const amenityRooms = layout.rooms.filter((r) => r.kind === 'amenity')
+    expect(sectorRooms.length).toBeGreaterThan(0)
+    expect(amenityRooms.length).toBeGreaterThan(0)
+
+    const cellsOf = (r: (typeof layout.rooms)[number]) => {
+      const bi = Math.round(r.x / grid.res)
+      const bj = Math.round(r.y / grid.res)
+      return [...r.cells].map((c) => {
+        const [ci, cj] = c.split(',').map(Number)
+        return `${bi + ci},${bj + cj}`
+      })
+    }
+    // Private sectors: every cell owned by its own sector key (only members pass).
+    for (const r of sectorRooms) for (const k of cellsOf(r)) expect(cells.get(k)).toBe(r.key)
+    // Presets: no cell is owned — any agent may route through them.
+    for (const r of amenityRooms) for (const k of cellsOf(r)) expect(cells.has(k)).toBe(false)
   })
 })

@@ -59,8 +59,6 @@ export const OFFICE_TIMING = {
   midwayPauseChance: 0.12, // rare pause while walking
   midwayPause: [1000, 4000] as [number, number],
   maxVisitsPerTrip: 2,
-  standUpMs: 520, // seated → exit point tween
-  sitDownMs: 520, // exit point → seated tween
   stepMs: 340, // time to cross one grid cell while walking
   walkFrameMs: 190, // walk-frame swap cadence
   reservationMs: 1400, // how long a claimed next cell stays reserved

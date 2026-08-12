@@ -160,8 +160,8 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
         onRecall={
           simOn
             ? () => {
-                setRecall(true)
-                setPaused(false) // let everyone walk home
+                setRecall((v) => !v) // toggle: send everyone home, or release them again
+                setPaused(false) // keep the office live either way
               }
             : undefined
         }
@@ -222,7 +222,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
               key={`lbl-${r.key}`}
               name={r.name}
               tone="light"
-              style={{ position: 'absolute', left: `calc(var(--tile) * ${r.x + r.w / 2})`, top: `calc(var(--tile) * ${r.y} - 3px)`, transform: 'translate(-50%, -100%)', zIndex: 6, whiteSpace: 'nowrap', pointerEvents: 'none' }}
+              style={{ position: 'absolute', left: `calc(var(--tile) * ${r.x + r.w / 2})`, top: `calc(var(--tile) * ${r.y} - 3px)`, transform: 'translate(-50%, -100%)', zIndex: 900, whiteSpace: 'nowrap', pointerEvents: 'none' }}
             />
           ))}
 

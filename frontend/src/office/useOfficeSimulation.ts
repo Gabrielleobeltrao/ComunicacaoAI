@@ -98,7 +98,9 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
             node.style.setProperty('--ax', String(m.pos.x))
             node.style.setProperty('--ay', String(m.pos.y))
             const baseZ = m.motion === 'seated' && m.home ? (m.home.facing === 'back' ? 3 : 1) : 20 + Math.round((m.pos.y + REF_DY) * 2)
-            node.style.zIndex = String(hovered.current === m.id ? 999 : baseZ)
+            // Hovering lifts a walking agent above furniture so its name shows; a
+            // seated agent must stay at its base z or it pops in front of the desk/chair.
+            node.style.zIndex = String(hovered.current === m.id && m.motion !== 'seated' ? 999 : baseZ)
           }
         }
         if (changed) bump()

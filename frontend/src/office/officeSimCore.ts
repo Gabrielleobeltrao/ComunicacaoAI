@@ -10,7 +10,7 @@ import { buildActivityEnvelope, inEnvelopeCell, inEnvelopePoint } from './buildA
 import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { findOfficePathCells } from './findOfficePath'
 import type { GridCell } from './findOfficePath'
-import { MAX_CONCURRENT_RATIO, OFFICE_TIMING, SOCIAL_ATTEMPT_MS, SOCIAL_MAX_RATIO } from './officeConfig'
+import { MAX_CONCURRENT_RATIO, NAV_RES, OFFICE_TIMING, SOCIAL_ATTEMPT_MS, SOCIAL_MAX_RATIO } from './officeConfig'
 import type { AgentMotionState, AgentVisualMode, InteractionPoint, OfficeDirection, OfficePoint } from './officeTypes'
 
 export const REF_DX = 0.5
@@ -69,6 +69,7 @@ export interface SimContext {
   waypoints: OfficePoint[]
   interactions: InteractionPoint[]
   roomInterior: Map<string, OfficePoint[]> // sectorId -> walkable interior points to wander to
+  sectorCells: Map<string, string> // cellKey -> owning private-sector id (amenity/preset rooms are public, so absent)
   doorCells: Set<string> // door threshold cells — never a mid-route pause spot
   occupancy: Map<string, number> // interactionId -> agents currently holding it
   occupiedCells: Map<string, string> // cellKey -> agentId physically standing there (never expires)
@@ -82,6 +83,12 @@ export interface SimContext {
 
 const rand = (rng: () => number, [a, b]: [number, number]) => a + rng() * (b - a)
 const keyOf = (c: GridCell) => `${c.i},${c.j}`
+// The chair sits deep at the desk, so its exit cell is several cells away (it must
+// clear the desk footprint). Glide seat<->exit at WALKING pace instead of a fixed
+// fast tween, so standing up / sitting down reads as walking out, not a teleport.
+// stepMs is the time to cross one NAV_RES-sized cell.
+export const seatGlideDur = (a: OfficePoint, b: OfficePoint) =>
+  Math.max(OFFICE_TIMING.stepMs, Math.hypot(b.x - a.x, b.y - a.y) * (OFFICE_TIMING.stepMs / NAV_RES))
 export function stepDir(from: GridCell, to: GridCell): OfficeDirection {
   if (to.i > from.i) return 'right'
   if (to.i < from.i) return 'left'
@@ -142,6 +149,23 @@ export function buildRoomInteriors(layout: BuiltOfficeLayout, grid: NavGrid, env
       pts.push(pointOfCell(grid, gi, gj))
     }
     if (pts.length) out.set(r.key, pts)
+  }
+  return out
+}
+
+// Cell ownership for PRIVATE sector rooms. Preset (amenity) rooms are public and
+// deliberately omitted, so any agent may route through them; a private sector's
+// cells are enterable only by its own members.
+export function buildSectorCells(layout: BuiltOfficeLayout, grid: NavGrid): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const r of layout.rooms) {
+    if (r.kind !== 'sector') continue
+    const bi = Math.round(r.x / grid.res)
+    const bj = Math.round(r.y / grid.res)
+    for (const c of r.cells) {
+      const [ci, cj] = c.split(',').map(Number)
+      out.set(`${bi + ci},${bj + cj}`, r.key)
+    }
   }
   return out
 }
@@ -264,6 +288,7 @@ export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAge
     waypoints: corridorWaypoints(grid, layout, envelope),
     interactions,
     roomInterior: buildRoomInteriors(layout, grid, envelope),
+    sectorCells: buildSectorCells(layout, grid),
     doorCells: new Set(grid.doors.flatMap((d) => [keyOf(cellOfPoint(grid, d.inner)), keyOf(cellOfPoint(grid, d.outer))])),
     occupancy: new Map(),
     occupiedCells: new Map(),
@@ -397,13 +422,20 @@ function chooseDestination(ctx: SimContext, m: AgentModel): OfficePoint | null {
   }
   return tryWaypoint(ctx, m)
 }
+// A cell is enterable if it's a public cell (corridor or preset/amenity room) or
+// belongs to the agent's own sector. Private sectors reject non-members.
+function sectorOk(ctx: SimContext, m: AgentModel, i: number, j: number): boolean {
+  const owner = ctx.sectorCells.get(`${i},${j}`)
+  return !owner || owner === m.sectorId
+}
 function routeFrom(ctx: SimContext, m: AgentModel, fromFoot: OfficePoint, goalFoot: OfficePoint, now: number): boolean {
   const from = nearestWalkable(ctx.grid, fromFoot, 3)
   const to = nearestWalkable(ctx.grid, goalFoot, 3)
   if (!from || !to) return false
   // Confine the route to the activity envelope (the goal cell is exempt so a
-  // just-outside target can still be reached), so feet never leave the area.
-  const path = findOfficePathCells(ctx.grid, from, to, { avoid: blockedByOthers(ctx, m.id, now), allowed: (i, j) => inEnvelopeCell(ctx.envelope, i, j) })
+  // just-outside target can still be reached), and keep non-members out of other
+  // agents' private sectors — preset (amenity) rooms and corridors stay open.
+  const path = findOfficePathCells(ctx.grid, from, to, { avoid: blockedByOthers(ctx, m.id, now), allowed: (i, j) => inEnvelopeCell(ctx.envelope, i, j) && sectorOk(ctx, m, i, j) })
   if (!path || path.length < 2) return false
   m.route = path
   m.routeIdx = 0
@@ -443,7 +475,7 @@ function finishReturn(ctx: SimContext, m: AgentModel) {
     // Sit down from the chair-exit cell (still physically occupied) to the seat.
     m.motion = 'sitting-down'
     m.pos = { ...m.home.exitRef }
-    m.seg = { from: { ...m.home.exitRef }, to: { ...m.home.seatRef }, t: 0, dur: OFFICE_TIMING.sitDownMs }
+    m.seg = { from: { ...m.home.exitRef }, to: { ...m.home.seatRef }, t: 0, dur: seatGlideDur(m.home.exitRef, m.home.seatRef) }
   } else {
     m.motion = 'pausing'
     m.seg = null
@@ -495,8 +527,10 @@ function startTrip(ctx: SimContext, m: AgentModel, now: number): boolean {
   if (m.home && exitCell) {
     occupy(ctx, m, keyOf(exitCell)) // hold the exit cell before the feet leave the chair
     m.motion = 'standing-up'
-    m.direction = 'front'
-    m.seg = { from: { ...m.home.seatRef }, to: { ...m.home.exitRef }, t: 0, dur: OFFICE_TIMING.standUpMs }
+    // Face the way we actually glide (exit is directly above/below the seat), so a
+    // far chair reads as walking out instead of moonwalking.
+    m.direction = m.home.exitRef.y < m.home.seatRef.y ? 'back' : 'front'
+    m.seg = { from: { ...m.home.seatRef }, to: { ...m.home.exitRef }, t: 0, dur: seatGlideDur(m.home.seatRef, m.home.exitRef) }
   } else {
     m.motion = 'walking'
     beginSeg(ctx, m, now)
