@@ -48,6 +48,19 @@ export const config = {
 // Backwards-compatible canonical client origin (first in the allowlist).
 export const clientUrl = config.clientOrigins[0]
 
+// Pivot feature flags (AI operational building). All default OFF so incomplete
+// capabilities never reach users until a phase is proven. Enable per env.
+const boolFlag = (name: string) => (process.env[name] ?? '').trim().toLowerCase() === 'true'
+export const flags = {
+  aiBuilding: boolFlag('AI_BUILDING_ENABLED'),
+  aiFloors: boolFlag('AI_FLOORS_ENABLED'),
+  aiAutomations: boolFlag('AI_AUTOMATIONS_ENABLED'),
+  aiScheduler: boolFlag('AI_SCHEDULER_ENABLED'),
+  aiDeliveries: boolFlag('AI_DELIVERIES_ENABLED'),
+  aiOfficeLiveStatus: boolFlag('AI_OFFICE_LIVE_STATUS_ENABLED'),
+} as const
+export type FeatureFlags = typeof flags
+
 // Validate deploy-critical configuration once, at startup. Only enforced in
 // production so local development and tests are never blocked.
 export function validateConfig(): void {
