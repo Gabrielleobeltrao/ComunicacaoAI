@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { API_URL } from './api'
 import type { AgentSummary, SectorSummary, WidgetSummary } from './types'
 
-export function useAgentsAndWidgets() {
+// floorId scopes agents + sectors to a floor (canonical floor pages). Omitted on
+// legacy routes → all (unchanged behavior). Widgets stay building-level.
+export function useAgentsAndWidgets(floorId?: string) {
   const [widgets, setWidgets] = useState<WidgetSummary[]>([])
   const [widgetsLoading, setWidgetsLoading] = useState(true)
   const [agents, setAgents] = useState<AgentSummary[]>([])
@@ -17,16 +19,16 @@ export function useAgentsAndWidgets() {
   }, [])
 
   const loadAgents = useCallback(async () => {
-    const res = await fetch(`${API_URL}/api/agents`, { credentials: 'include' })
+    const res = await fetch(`${API_URL}/api/agents${floorId ? `?floorId=${floorId}` : ''}`, { credentials: 'include' })
     if (res.ok) setAgents(await res.json())
     setAgentsLoading(false)
-  }, [])
+  }, [floorId])
 
   const loadSectors = useCallback(async () => {
-    const res = await fetch(`${API_URL}/api/sectors`, { credentials: 'include' })
+    const res = await fetch(`${API_URL}/api/sectors${floorId ? `?floorId=${floorId}` : ''}`, { credentials: 'include' })
     if (res.ok) setSectors(await res.json())
     setSectorsLoading(false)
-  }, [])
+  }, [floorId])
 
   useEffect(() => {
     loadWidgets()

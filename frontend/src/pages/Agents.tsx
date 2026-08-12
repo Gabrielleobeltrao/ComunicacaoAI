@@ -7,6 +7,7 @@ import type { AgentStat } from '../lib/agentAvatar'
 import { API_URL } from '../lib/api'
 import type { AgentCardStats } from '../lib/types'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
+import { useParams } from 'react-router'
 import { Button, Dialog, EmptyState, Field, Input, Select } from '../ui'
 
 const EMPTY_STATS: AgentCardStats = { conversations: 0, attendedConversations: 0, qualifiedLeads: 0 }
@@ -24,7 +25,8 @@ function buildStats(s: AgentCardStats | undefined): AgentStat[] {
 }
 
 export function Agents() {
-  const { agents, agentsLoading, loadAgents, sectors } = useAgentsAndWidgets()
+  const { floorId } = useParams()
+  const { agents, agentsLoading, loadAgents, sectors } = useAgentsAndWidgets(floorId)
   const [isCreating, setIsCreating] = useState(false)
   const [agentStats, setAgentStats] = useState<Record<string, AgentCardStats> | null>(null)
 
@@ -188,6 +190,7 @@ export function Agents() {
       <Dialog open={isCreating} onClose={() => setIsCreating(false)} title="Novo agente" width={680}>
         <AgentForm
           agent={null}
+          floorId={floorId}
           onSaved={async () => {
             setIsCreating(false)
             await loadAgents()

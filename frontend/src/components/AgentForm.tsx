@@ -28,6 +28,8 @@ interface AgentFormProps {
   // The form still holds and saves every field, so unshown fields keep their
   // saved values.
   section?: string
+  // Floor the new agent is created on (create only). Omitted → default office.
+  floorId?: string
 }
 
 // The agent page groups fields into blocks; each section shows a set of blocks.
@@ -138,7 +140,7 @@ function OptionSwitch<T extends string>({
   )
 }
 
-export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentFormProps) {
+export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId }: AgentFormProps) {
   const isCreating = agent === null
   const flat = layout === 'flat'
 
@@ -407,7 +409,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section }: AgentF
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...payload, floorId }),
         })
 
         if (!res.ok) {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { cancelRun, getRunSteps, listRuns } from '../lib/automations'
 import type { RunSummary } from '../lib/automations'
@@ -6,6 +7,7 @@ import { Button } from '../ui'
 
 // Runs list + inline step timeline. Gated by featureFlags.aiAutomations.
 export function Runs() {
+  const { floorId } = useParams()
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [openId, setOpenId] = useState<string | null>(null)
@@ -14,7 +16,7 @@ export function Runs() {
   async function load() {
     setLoading(true)
     try {
-      setRuns((await listRuns()).items)
+      setRuns((await listRuns(floorId ? { floorId } : undefined)).items)
     } catch {
       setRuns([])
     } finally {

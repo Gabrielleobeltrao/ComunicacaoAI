@@ -1,9 +1,11 @@
 import { AppLayout } from '../components/AppLayout'
 import { SectorManager } from '../components/SectorManager'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
+import { useParams } from 'react-router'
 
 export function Setores() {
-  const { agents, agentsLoading, sectors, sectorsLoading, loadSectors } = useAgentsAndWidgets()
+  const { floorId } = useParams()
+  const { agents, agentsLoading, sectors, sectorsLoading, loadSectors } = useAgentsAndWidgets(floorId)
 
   return (
     <AppLayout current="/setores" title="Setores" subtitle="Agentes que atendem juntos">

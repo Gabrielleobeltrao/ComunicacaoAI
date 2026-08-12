@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { Elevator } from '../components/Elevator'
 import { useFloors } from '../lib/useFloors'
@@ -7,20 +7,22 @@ import { createAutomation, listAutomations } from '../lib/automations'
 import type { Automation } from '../lib/automations'
 import { Button } from '../ui'
 
-// Automations list for the active floor + quick create. Gated by
-// featureFlags.aiAutomations. The structured editor lives at /automations/:id.
+// Automations of the floor in the URL (canonical /floors/:floorId/automations).
+// Falls back to the picked floor only on the legacy /automations route.
 export function Automations() {
+  const { floorId: urlFloorId } = useParams()
   const { floors, activeFloorId, selectFloor } = useFloors()
+  const floorId = urlFloorId ?? activeFloorId
   const [items, setItems] = useState<Automation[]>([])
   const [loading, setLoading] = useState(false)
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
 
   async function load() {
-    if (!activeFloorId) return
+    if (!floorId) return
     setLoading(true)
     try {
-      setItems((await listAutomations(activeFloorId)).items)
+      setItems((await listAutomations(floorId)).items)
     } catch {
       setItems([])
     } finally {
@@ -30,13 +32,13 @@ export function Automations() {
   useEffect(() => {
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFloorId])
+  }, [floorId])
 
   async function create() {
-    if (!activeFloorId || !name.trim()) return
+    if (!floorId || !name.trim()) return
     setCreating(true)
     try {
-      await createAutomation({ floorId: activeFloorId, name: name.trim() })
+      await createAutomation({ floorId, name: name.trim() })
       setName('')
       await load()
     } finally {
@@ -58,7 +60,7 @@ export function Automations() {
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {floors.length > 0 && <Elevator floors={floors} activeFloorId={activeFloorId} onSelect={selectFloor} />}
+        {!urlFloorId && floors.length > 0 && <Elevator floors={floors} activeFloorId={activeFloorId} onSelect={selectFloor} />}
 
         <div style={{ display: 'flex', gap: 8 }}>
           <input
