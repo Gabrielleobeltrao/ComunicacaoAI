@@ -305,12 +305,12 @@ Transformar o cálculo de layout atual em funções puras sem alterar o resultad
 
 ### Tarefas
 
-- [ ] Mover `hash32`, `mulberry32`, dimensionamento de salas, posicionamento de salas, mesas, assentos e agentes soltos para módulos puros.
-- [ ] Fazer `OfficeFloor` consumir um objeto de layout calculado.
-- [ ] Memorizar o layout com `useMemo` usando somente as dependências reais.
-- [ ] Garantir que mudanças de frame, status ou posição não recalculem as salas.
-- [ ] Preservar as seeds atuais baseadas nos IDs.
-- [ ] Incluir no layout:
+- [x] Mover `hash32`, `mulberry32`, dimensionamento de salas, posicionamento de salas, mesas, assentos e agentes soltos para módulos puros.
+- [x] Fazer `OfficeFloor` consumir um objeto de layout calculado.
+- [x] Memorizar o layout com `useMemo` usando somente as dependências reais.
+- [x] Garantir que mudanças de frame, status ou posição não recalculem as salas.
+- [x] Preservar as seeds atuais baseadas nos IDs.
+- [x] Incluir no layout:
   - limites totais;
   - retângulos de salas;
   - retângulos de mesas e cadeiras;
@@ -320,7 +320,7 @@ Transformar o cálculo de layout atual em funções puras sem alterar o resultad
   - labels;
   - zonas externas;
   - portas e corredores.
-- [ ] Adicionar testes determinísticos para as mesmas entradas.
+- [x] Adicionar testes determinísticos para as mesmas entradas.
 
 ### Regra de compatibilidade
 
