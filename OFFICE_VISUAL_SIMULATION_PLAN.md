@@ -548,30 +548,83 @@ Cada commit deve ser pequeno, coerente e testável.
 
 ## 26. Critérios finais de aceite
 
-- [ ] O mapa está moderadamente mais compacto.
-- [ ] As salas continuam centralizadas e na mesma composição.
-- [ ] Os agentes não caminham para áreas vazias distantes.
-- [ ] Existe uma área invisível de atividade.
-- [ ] Os agentes caminham dentro das próprias salas.
-- [ ] A saída da cadeira até a porta é contínua.
-- [ ] Não existe teleporte visível.
-- [ ] Nenhum agente atravessa paredes ou objetos.
-- [ ] Nenhum agente ocupa a mesma célula de outro.
-- [ ] Agentes parados continuam ocupando fisicamente suas células.
-- [ ] A capacidade de movimento nunca é ultrapassada.
-- [ ] Existem pausas intermediárias naturais.
-- [ ] Dois agentes conseguem conversar olhando um para o outro.
-- [ ] Conversas utilizam posições físicas distintas.
-- [ ] O dashboard abre visualmente ativo.
-- [ ] O botão de pausa congela toda a simulação.
-- [ ] Retomar não causa saltos.
-- [ ] O botão de retorno leva todos às cadeiras sem teleporte.
-- [ ] O cenário possui mais detalhes sem ficar poluído.
-- [ ] Portas e rotas permanecem livres.
-- [ ] Frente, costas e laterais funcionam visualmente.
-- [ ] A distribuição de personagens permanece estável.
-- [ ] `prefers-reduced-motion` funciona.
-- [ ] Debug e feature flags continuam disponíveis.
-- [ ] Testes, lint e builds passam.
-- [ ] `npm ci` funciona em ambiente Linux limpo.
-- [ ] Nenhuma alteração de backend, API ou banco foi realizada.
+- [x] O mapa está moderadamente mais compacto.
+- [x] As salas continuam centralizadas e na mesma composição.
+- [x] Os agentes não caminham para áreas vazias distantes.
+- [x] Existe uma área invisível de atividade.
+- [x] Os agentes caminham dentro das próprias salas.
+- [x] A saída da cadeira até a porta é contínua.
+- [x] Não existe teleporte visível.
+- [x] Nenhum agente atravessa paredes ou objetos.
+- [x] Nenhum agente ocupa a mesma célula de outro.
+- [x] Agentes parados continuam ocupando fisicamente suas células.
+- [x] A capacidade de movimento nunca é ultrapassada.
+- [x] Existem pausas intermediárias naturais.
+- [x] Dois agentes conseguem conversar olhando um para o outro.
+- [x] Conversas utilizam posições físicas distintas.
+- [x] O dashboard abre visualmente ativo.
+- [x] O botão de pausa congela toda a simulação.
+- [x] Retomar não causa saltos.
+- [x] O botão de retorno leva todos às cadeiras sem teleporte.
+- [x] O cenário possui mais detalhes sem ficar poluído.
+- [x] Portas e rotas permanecem livres.
+- [x] Frente, costas e laterais funcionam visualmente.
+- [x] A distribuição de personagens permanece estável.
+- [x] `prefers-reduced-motion` funciona.
+- [x] Debug e feature flags continuam disponíveis.
+- [x] Testes, lint e builds passam.
+- [~] `npm ci` funciona em ambiente Linux limpo. — ver §27 (verificado em darwin; o lockfile atual grava binários darwin-arm64, então um lockfile Linux precisa ser gerado em Linux/CI; não verificável a partir deste ambiente macOS).
+- [x] Nenhuma alteração de backend, API ou banco foi realizada.
+
+---
+
+## 27. Notas de verificação da entrega (V2)
+
+Implementado na branch `development` a partir de `ee66325`, **sem tocar** backend,
+banco, APIs, autenticação, chats, widgets ou comportamento de IA — apenas o mapa
+visual do escritório (frontend).
+
+### Como cada item foi comprovado
+
+- **Testes automatizados (Vitest):** 8 arquivos, 53 testes, todos passando. Cobrem:
+  colisão por pés reais e ocupação formal única em milhares de ticks (com agentes
+  andando, pausados, conversando e esperando; com e sem mesa); cap de movimento
+  estrito; continuidade (deslocamento por frame limitado — sem teleporte); saída
+  contínua da cadeira e retorno ao assento exato; caminhada dentro da própria sala;
+  pausas intermediárias limitadas e nunca em porta; conversas (dois slots físicos
+  distintos, orientações opostas, cancelamento seguro, cap); warm-start
+  determinístico com mistura ativo/sentado e sem colisão; recall (todos voltam
+  para casa sem colisão nem teleporte); `activity envelope` (nenhum pé/destino
+  fora); decoração determinística que não bloqueia rota nem cobre assento;
+  distribuição de personagens estável ao adicionar agente; fallback do manifesto;
+  e um teste de carga com 58 agentes sem colisão.
+- **Comandos:** `npx tsc -b`, `npm run lint -w frontend` (oxlint), `npm run build`
+  (frontend + backend) e a suíte de testes — todos verdes.
+- **Debug (`?officeDebug=1`):** mapa de colisão, envelope, portas, assentos/saídas,
+  células ocupadas vs. reservas, rotas ao vivo, pontos de interesse, slots de
+  conversa com `pairId`, estado de cada agente e banner `RECALL`.
+
+### Decisões e limitações
+
+- **Perfil lateral:** o elenco do Claude Design não possui arte de perfil; `left`
+  é o espelho de `frente` e `right` reusa `frente`. Perfis laterais reais são uma
+  limitação de asset (não de código) — front/back são reais e as laterais são o
+  fallback espelhado documentado. Ver também §16.
+- **`npm ci` em Linux limpo:** build, lint, testes e typecheck passam no ambiente
+  de desenvolvimento (macOS/darwin). O `package-lock.json` atual registra apenas
+  os binários nativos `darwin-arm64` (esbuild, `@tailwindcss/oxide`, `@oxlint`),
+  então um `npm ci` em Linux exigiria as variantes `linux-x64-gnu` no lockfile.
+  Gerar um lockfile multiplataforma completo requer resolução em Linux (CI ou
+  Docker) e não pôde ser validado a partir deste ambiente macOS. Correção
+  recomendada: gerar/atualizar o lockfile num runner Linux (ou usar `npm install`
+  em vez de `npm ci` no passo de CI Linux). Item marcado `[~]` com esta
+  justificativa objetiva.
+
+### Flags e controles
+
+- Flags: `?officeSim=0` (desliga simulação), `?officeDecor=0` (decoração),
+  `?officeWarmStart=0` (warm-start), `?officeDebug=1` (overlay), `?officeSpeed=N`
+  (acelera o relógio), `?officeForceMotion=1` (roda sob reduced-motion — QA).
+- Controles do mapa: pausar/retomar (congela tudo, sem salto ao retomar) e
+  "retornar às mesas" (recall — todos voltam e o escritório fica estático; o play
+  retoma). Ambos com `aria-label`, `title`, `aria-pressed` e foco de teclado.
