@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import type { ToolCall } from '../lib/types'
 import { socket } from '../lib/socket'
+import { Icon } from '../ui'
 import { MessageContent } from './MessageContent'
 import { ToolCalls } from './ToolCalls'
 
@@ -274,7 +275,9 @@ export function ConversationsPanel() {
 
   return (
     <div className="grid gap-4 md:grid-cols-[minmax(0,240px)_1fr]">
-      <div className="space-y-2">
+      {/* Mobile master-detail: the list hides once a conversation is open (a back
+          button returns to it); on md+ both columns show side by side. */}
+      <div className={`space-y-2 ${selected ? 'hidden md:block' : ''}`}>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -333,10 +336,18 @@ export function ConversationsPanel() {
         )}
       </div>
 
-      <div className="flex h-120 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50">
+      <div className={`flex h-[70dvh] flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50 md:h-120 ${selected ? '' : 'hidden md:flex'}`}>
         {selected && (
-          <div className="flex items-center justify-between gap-3 border-b border-(--border-subtle) px-3 py-2">
-            <p className="text-xs text-(--text-muted)">
+          <div className="flex items-center gap-2 border-b border-(--border-subtle) px-3 py-2">
+            <button
+              type="button"
+              onClick={() => setSelected(null)}
+              aria-label="Voltar às conversas"
+              className="ds-hit -ml-1 grid shrink-0 place-items-center rounded-md text-(--text-muted) hover:text-(--text-heading) md:hidden"
+            >
+              <Icon name="chevron-left" size={20} />
+            </button>
+            <p className="min-w-0 flex-1 text-xs text-(--text-muted)">
               {handoffActive ? (
                 <span className="font-medium text-amber-400">
                   Atendimento humano ativo — o agente não responde nesta conversa.

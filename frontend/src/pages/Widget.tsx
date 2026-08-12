@@ -160,7 +160,7 @@ export function Widget() {
 
   if (error) {
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-950 p-4 text-center text-sm text-slate-400">
+      <div className="flex h-[100dvh] items-center justify-center bg-slate-950 p-4 text-center text-sm text-slate-400">
         {error}
       </div>
     )
@@ -168,7 +168,7 @@ export function Widget() {
 
   if (!config) {
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-950 text-sm text-slate-400">
+      <div className="flex h-[100dvh] items-center justify-center bg-slate-950 text-sm text-slate-400">
         Carregando...
       </div>
     )
@@ -194,8 +194,8 @@ export function Widget() {
   const accentStyle = config.primaryColor ? { backgroundColor: config.primaryColor } : undefined
 
   return (
-    <div className="flex h-screen flex-col bg-slate-950 text-white">
-      <header className="border-b border-slate-800 px-4 py-3">
+    <div className="flex h-[100dvh] flex-col bg-slate-950 text-white">
+      <header className="border-b border-slate-800 px-4 py-3" style={{ paddingTop: 'max(12px, env(safe-area-inset-top))' }}>
         <h1 className="text-sm font-semibold">{config.welcomeTitle || config.name}</h1>
       </header>
 
@@ -222,12 +222,12 @@ export function Widget() {
         <p className="border-t border-slate-800 px-4 py-2 text-center text-xs text-amber-400">{notice}</p>
       )}
 
-      <form onSubmit={handleSubmit} className="flex gap-2 border-t border-slate-800 p-3">
+      <form onSubmit={handleSubmit} className="flex gap-2 border-t border-slate-800 p-3" style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom))' }}>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Escreva uma mensagem..."
-          className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-slate-500"
+          className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-slate-500"
         />
         <button
           type="submit"
