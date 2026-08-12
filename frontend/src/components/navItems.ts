@@ -6,7 +6,11 @@ export interface NavLink {
   icon: string // Lucide glyph name (via the Icon component)
 }
 
+import { featureFlags } from '../featureFlags'
+
 export const NAV: NavLink[] = [
+  // AI-building pivot: the Prédio (Térreo) entry appears only when its flag is on.
+  ...(featureFlags.aiBuilding ? [{ to: '/building', label: 'Prédio', icon: 'building-2' } as NavLink] : []),
   { to: '/dashboard', label: 'Escritório', icon: 'layout-dashboard' },
   { to: '/agents', label: 'Agentes', icon: 'users-round' },
   { to: '/setores', label: 'Setores', icon: 'network' },

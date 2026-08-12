@@ -1,5 +1,8 @@
 import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { featureFlags } from './featureFlags'
+import { Building } from './pages/Building'
+import { FloorView } from './pages/FloorView'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
 import { Chats } from './pages/Chats'
@@ -28,6 +31,26 @@ function App() {
           </ProtectedRoute>
         }
       />
+      {featureFlags.aiBuilding && (
+        <>
+          <Route
+            path="/building"
+            element={
+              <ProtectedRoute>
+                <Building />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/floors/:floorId"
+            element={
+              <ProtectedRoute>
+                <FloorView />
+              </ProtectedRoute>
+            }
+          />
+        </>
+      )}
       <Route
         path="/agents"
         element={
