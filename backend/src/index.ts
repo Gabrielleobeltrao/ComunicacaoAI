@@ -163,6 +163,7 @@ import { clientUrl, config, validateConfig } from './config.js'
 import { buildingRouter } from './routes/buildingRoutes.js'
 import { floorRouter } from './routes/floorRoutes.js'
 import { automationRouter } from './routes/automationRoutes.js'
+import { runRouter } from './routes/runRoutes.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -263,6 +264,7 @@ async function requireAuth(req: Request, res: Response, next: NextFunction) {
 app.use('/api/building', requireAuth, buildingRouter)
 app.use('/api/floors', requireAuth, floorRouter)
 app.use('/api/automations', requireAuth, automationRouter)
+app.use('/api/runs', requireAuth, runRouter)
 
 app.get('/api/providers', requireAuth, async (_req, res) => {
   const results = await Promise.all(

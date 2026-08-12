@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { ValidationError } from '../building.js'
 import { AutomationValidationError } from '../automations/service.js'
 import * as service from '../automations/service.js'
+import { createRun } from '../automations/runService.js'
 import type { Automation, AutomationVersion } from '../automations/types.js'
 import { fail, notFound, oid } from './http.js'
 
@@ -125,4 +126,16 @@ automationRouter.get('/:id/versions', async (req, res) => {
   if (!id) return notFound(res)
   const versions = await service.listVersions(res.locals.userId, id)
   res.json(versions.map(versionPublic))
+})
+
+// Create + enqueue a run (manual/test). Idempotent by idempotencyKey.
+automationRouter.post('/:id/runs', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const { run, created } = await createRun(res.locals.userId, id, req.body ?? {})
+    res.status(created ? 201 : 200).json({ id: run._id, status: run.status, idempotencyKey: run.idempotencyKey })
+  } catch (error) {
+    fail(res, error, next)
+  }
 })

@@ -30,7 +30,7 @@ export interface RunnerDeps {
   runAgent: (call: AgentCall) => Promise<{ output: string }>
   deliver: (call: DeliverCall) => Promise<{ providerMessageId: string | null }>
   now: () => number
-  isCanceled?: () => boolean
+  isCanceled?: () => boolean | Promise<boolean>
 }
 
 export type StepStatus = 'succeeded' | 'failed' | 'skipped' | 'canceled'
@@ -163,7 +163,7 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
       steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
       continue
     }
-    if (deps.isCanceled?.()) {
+    if (await deps.isCanceled?.()) {
       steps.push({ stepId: step.id, stepType: step.type, status: 'canceled', attempts: 0 })
       canceled = true
       continue
