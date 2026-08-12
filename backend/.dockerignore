@@ -1,0 +1,20 @@
+# Build context is the backend/ folder. Keep it minimal and secret-free.
+# (.git lives at the monorepo root, outside this context, so it is never copied.)
+node_modules
+dist
+npm-debug.log*
+*.log
+
+# Never ship real environment files or secrets into the image.
+.env
+.env.*
+!.env.example
+
+# Editor / OS cruft
+.DS_Store
+.vscode
+.idea
+
+# Docker files themselves don't need to be in the image
+Dockerfile
+.dockerignore
