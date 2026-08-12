@@ -56,7 +56,7 @@ services:
       context: ./frontend
       args:
         # Public build-time value: baked into the browser bundle. In a real deploy
-        # this is the backend's public origin (https://api.example.invalid).
+        # this is the backend's public origin (https://api.comunicacaoai.onplataform.com).
         VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
     ports:
       - "${FRONTEND_PORT:-8080}:8080"

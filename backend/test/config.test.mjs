@@ -41,14 +41,15 @@ function run(caseVars, { validate = true } = {}) {
   }
 }
 
+// The definitive production origins (ASCII, no trailing slash).
 const PROD_URLS = {
   NODE_ENV: 'production',
-  CLIENT_URL: 'https://app.example.invalid',
-  BETTER_AUTH_URL: 'https://api.example.invalid',
-  PUBLIC_URL: 'https://api.example.invalid',
+  CLIENT_URL: 'https://comunicacaoai.onplataform.com',
+  BETTER_AUTH_URL: 'https://api.comunicacaoai.onplataform.com',
+  PUBLIC_URL: 'https://api.comunicacaoai.onplataform.com',
 }
 const PROD_SECRETS = {
-  MONGODB_URI: 'mongodb+srv://u:p@c.example.invalid/db',
+  MONGODB_URI: 'mongodb://localhost:27017/comunicacaoai_test',
   BETTER_AUTH_SECRET: 'x'.repeat(40),
   ENCRYPTION_KEY: 'y'.repeat(40),
 }
@@ -69,7 +70,7 @@ test('production: a required URL var missing fails fast at import', () => {
 })
 
 test('production: non-https URL is rejected', () => {
-  const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS, BETTER_AUTH_URL: 'http://api.example.invalid' })
+  const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS, BETTER_AUTH_URL: 'http://api.comunicacaoai.onplataform.com' })
   assert.equal(ok, false)
   assert.match(out, /https/i)
 })
@@ -78,12 +79,13 @@ test('production: valid config passes, strips trailing slash, splits CSV origins
   const { ok, out } = run({
     ...PROD_URLS,
     ...PROD_SECRETS,
-    CLIENT_URL: 'https://app.example.invalid/, https://admin.example.invalid/',
+    // prod origin + local dev origin, both with a stray trailing slash to strip.
+    CLIENT_URL: 'https://comunicacaoai.onplataform.com/, http://localhost:5173/',
   })
   assert.equal(ok, true, out)
   const parsed = JSON.parse(out)
-  assert.deepEqual(parsed.origins, ['https://app.example.invalid', 'https://admin.example.invalid'])
-  assert.equal(parsed.publicUrl, 'https://api.example.invalid')
+  assert.deepEqual(parsed.origins, ['https://comunicacaoai.onplataform.com', 'http://localhost:5173'])
+  assert.equal(parsed.publicUrl, 'https://api.comunicacaoai.onplataform.com')
 })
 
 test('development: no env needed, falls back to localhost defaults', () => {
