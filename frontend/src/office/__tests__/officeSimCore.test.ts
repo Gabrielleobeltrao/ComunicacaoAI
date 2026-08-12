@@ -289,6 +289,39 @@ describe('officeSimCore', () => {
     expect(done).toBe(true)
   })
 
+  it('handles a high agent count without collisions (Phase 13 stress)', () => {
+    const mk = (n: number, p: string) => Array.from({ length: n }, (_, i) => ({ _id: `${p}-${i}` }))
+    const secs = ['dev', 'sup', 'mkt', 'fin', 'rh', 'ops']
+    const agents: { _id: string }[] = []
+    const sectors = secs.map((s) => {
+      const m = mk(8, s)
+      agents.push(...m)
+      return { _id: s, name: s, color: '#38B6F0', members: m.map((x) => ({ agentId: x._id })) }
+    })
+    agents.push(...mk(10, 'loose'))
+    const big = buildOfficeLayout({ agents, sectors, aspect: 2.6, amenities: [reuniao, cozinha, lounge], amenityTint: {}, decorArts: ['planta-grande-1.5x2'] })
+    const g = buildNavigationGrid(big)
+    const models = createModels(big, () => 'normal')
+    const ctx = createContext(big, g, models.size)
+    warmStart(ctx, models, 10000)
+    let now = 10000
+    for (let step = 0; step < 2000; step++) {
+      now += 32
+      for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+      tickConversations(ctx, models, now)
+      const cells = new Set<string>()
+      for (const m of models.values()) {
+        stepAgent(m, 32, now, ctx)
+        if (m.occupiedCell) {
+          expect(cells.has(m.occupiedCell)).toBe(false)
+          cells.add(m.occupiedCell)
+        }
+      }
+      expect(ctx.moving.count).toBeLessThanOrEqual(ctx.cap)
+    }
+    expect(models.size).toBe(58)
+  })
+
   it('respects the concurrency cap', () => {
     const models = createModels(layout, () => 'normal')
     const ctx = createContext(layout, grid, models.size)

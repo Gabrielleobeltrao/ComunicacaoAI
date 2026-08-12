@@ -33,6 +33,7 @@ const MOTION_COLOR: Record<string, string> = {
   waiting: '#ef4444',
   returning: '#14b8a6',
   'sitting-down': '#f59e0b',
+  socializing: '#ec4899',
 }
 
 export function OfficeDebugOverlay({ grid, layout, envelope, interactions, debug, live }: Props) {
@@ -79,12 +80,26 @@ export function OfficeDebugOverlay({ grid, layout, envelope, interactions, debug
       {/* walkable grid dots */}
       <g opacity={0.5}>{blockedRects}</g>
 
-      {/* live reservations */}
+      {/* physically occupied cells (never expire) */}
+      {ctx &&
+        [...ctx.occupiedCells.entries()].map(([k, id]) => {
+          const [i, j] = k.split(',').map(Number)
+          return <rect key={`occ${k}`} x={i * grid.res} y={j * grid.res} width={grid.res} height={grid.res} fill="rgba(139,92,246,0.30)" stroke="rgba(139,92,246,0.6)" strokeWidth={0.02} data-agent={id} />
+        })}
+
+      {/* reserved next cells (expire) */}
       {ctx &&
         [...ctx.reservations.entries()].map(([k, r]) => {
           const [i, j] = k.split(',').map(Number)
           return <rect key={`res${k}`} x={i * grid.res} y={j * grid.res} width={grid.res} height={grid.res} fill="rgba(245,158,11,0.35)" data-agent={r.agentId} />
         })}
+
+      {/* global mode banner (recall) */}
+      {ctx?.recall && (
+        <text x={0.4} y={0.7} fontSize={0.5} fill="#f59e0b" style={{ fontFamily: 'monospace', fontWeight: 700 }}>
+          RECALL
+        </text>
+      )}
 
       {/* doors */}
       {grid.doors.map((d) => (
@@ -121,9 +136,28 @@ export function OfficeDebugOverlay({ grid, layout, envelope, interactions, debug
         const foot = footOf(m.pos)
         const color = MOTION_COLOR[m.motion] ?? '#64748b'
         const routePts = m.route.slice(m.routeIdx).map((c) => pointOfCell(grid, c.i, c.j))
+        // conversation link: a line to the partner's slot + the pair id
+        let social: React.ReactNode = null
+        if (m.social) {
+          const partner = models.get(m.social.partnerId)
+          if (partner) {
+            const pf = footOf(partner.pos)
+            social = (
+              <>
+                <line x1={foot.x} y1={foot.y} x2={pf.x} y2={pf.y} stroke="#ec4899" strokeWidth={0.05} strokeDasharray="0.1 0.1" />
+                {m.social.talking && (
+                  <text x={foot.x} y={foot.y + 0.4} fontSize={0.28} fill="#ec4899" style={{ fontFamily: 'monospace' }}>
+                    {m.social.pairId}
+                  </text>
+                )}
+              </>
+            )
+          }
+        }
         return (
           <g key={`agent-${m.id}`}>
             {routePts.length > 1 && <polyline points={routePts.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={color} strokeWidth={0.06} strokeDasharray="0.2 0.15" opacity={0.9} />}
+            {social}
             <circle cx={foot.x} cy={foot.y} r={0.16} fill={color} />
             <text x={foot.x + 0.2} y={foot.y - 0.2} fontSize={0.35} fill={color} style={{ fontFamily: 'monospace' }}>
               {m.motion === 'seated' ? '' : m.motion}
