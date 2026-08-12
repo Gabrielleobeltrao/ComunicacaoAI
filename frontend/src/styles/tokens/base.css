@@ -14,3 +14,5 @@ button,input,select,textarea{font-family:inherit}
 @keyframes ds-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
 @keyframes ds-pop{0%{transform:scale(.94);opacity:0}100%{transform:scale(1);opacity:1}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition-duration:1ms!important}}
+/* On touch devices, keep form controls at >=16px so iOS never zooms on focus. */
+@media (pointer:coarse){input,textarea,select{font-size:16px!important}}
