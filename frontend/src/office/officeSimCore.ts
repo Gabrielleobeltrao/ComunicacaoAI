@@ -10,7 +10,7 @@ import { buildActivityEnvelope, inEnvelopeCell, inEnvelopePoint } from './buildA
 import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { findOfficePathCells } from './findOfficePath'
 import type { GridCell } from './findOfficePath'
-import { MAX_CONCURRENT_RATIO, OFFICE_TIMING } from './officeConfig'
+import { MAX_CONCURRENT_RATIO, OFFICE_TIMING, SOCIAL_ATTEMPT_MS, SOCIAL_MAX_RATIO } from './officeConfig'
 import type { AgentMotionState, AgentVisualMode, InteractionPoint, OfficeDirection, OfficePoint } from './officeTypes'
 
 export const REF_DX = 0.5
@@ -23,6 +23,15 @@ interface Home {
   exitFoot: OfficePoint
   exitRef: OfficePoint
   facing: OfficeDirection
+}
+// A live conversation slot the agent is committed to (Phase 7).
+interface SocialState {
+  pairId: string
+  partnerId: string
+  slot: GridCell // the distinct physical cell this agent stands on to talk
+  facing: OfficeDirection // direction to face the partner
+  talking: boolean // both partners have arrived and are conversing
+  deadline: number // give-up time while walking to the slot (now-based ms)
 }
 export interface AgentModel {
   id: string
@@ -49,6 +58,8 @@ export interface AgentModel {
   attempts: number
   midPauses: number // consecutive mid-route pauses (bounded)
   isMoving: boolean // currently counted against the away-from-desk cap
+  social: SocialState | null // active conversation, if any
+  socialUntil: number // when the current conversation ends (now-based ms)
   rng: () => number
 }
 
@@ -64,6 +75,8 @@ export interface SimContext {
   reservations: Map<string, { agentId: string; until: number }> // future cells (expire)
   moving: { count: number }
   cap: number
+  socialCap: number // max simultaneous conversations
+  nextSocialAttempt: number // next time (now-based) a new pair may be formed
 }
 
 const rand = (rng: () => number, [a, b]: [number, number]) => a + rng() * (b - a)
@@ -161,6 +174,8 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
       attempts: 0,
       midPauses: 0,
       isMoving: false,
+      social: null,
+      socialUntil: 0,
       rng,
     })
   }
@@ -191,6 +206,8 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
       attempts: 0,
       midPauses: 0,
       isMoving: false,
+      social: null,
+      socialUntil: 0,
       rng,
     })
   }
@@ -252,6 +269,8 @@ export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAge
     reservations: new Map(),
     moving: { count: 0 },
     cap: Math.max(1, Math.floor(totalAgents * MAX_CONCURRENT_RATIO)),
+    socialCap: Math.max(1, Math.floor((totalAgents * SOCIAL_MAX_RATIO) / 2)),
+    nextSocialAttempt: 0,
   }
 }
 
@@ -512,6 +531,102 @@ function advanceSeg(ctx: SimContext, m: AgentModel, dt: number, now: number) {
   beginSeg(ctx, m, now)
 }
 
+const OPP: Record<OfficeDirection, OfficeDirection> = { front: 'back', back: 'front', left: 'right', right: 'left' }
+// End a conversation for one agent without moving it (safe cancel / finish).
+function endSocial(m: AgentModel) {
+  if (!m.social) return
+  m.social = null
+  m.socialUntil = 0
+  if (m.motion === 'socializing') {
+    m.motion = 'pausing'
+    m.timer = 300 // resume normal life shortly
+  }
+}
+function socialEligible(ctx: SimContext, m: AgentModel): boolean {
+  if (m.social || m.motion !== 'pausing' || !m.occupiedCell) return false
+  if (m.route.length && m.routeIdx < m.route.length - 1) return false // mid-route
+  if (ctx.doorCells.has(m.occupiedCell)) return false
+  return true
+}
+function sameGroup(a: AgentModel, b: AgentModel): boolean {
+  if (a.sectorId && b.sectorId) return a.sectorId === b.sectorId
+  return a.sectorId === null && b.sectorId === null // both deskless
+}
+// A free, walkable, in-envelope, non-door cell orthogonally next to `cell`.
+function adjacentSlot(ctx: SimContext, cell: GridCell, forId: string, now: number): { slot: GridCell; facing: OfficeDirection } | null {
+  for (const [di, dj] of [[0, 1], [0, -1], [1, 0], [-1, 0]] as [number, number][]) {
+    const s = { i: cell.i + di, j: cell.j + dj }
+    const k = keyOf(s)
+    if (!isWalkable(ctx.grid, s.i, s.j) || !inEnvelopeCell(ctx.envelope, s.i, s.j)) continue
+    if (ctx.doorCells.has(k) || !cellFree(ctx, k, forId, now)) continue
+    return { slot: s, facing: stepDir(cell, s) }
+  }
+  return null
+}
+
+/** Advance every conversation and, occasionally, start a new one. Pure — call it
+ *  once per frame with the same `now` used for stepAgent. */
+export function tickConversations(ctx: SimContext, models: Map<string, AgentModel>, now: number): void {
+  const active = new Set<string>()
+  for (const m of models.values()) {
+    if (!m.social) continue
+    const partner = models.get(m.social.partnerId)
+    if (!partner || partner.social?.pairId !== m.social.pairId) {
+      endSocial(m) // partner vanished / desynced — cancel safely, no teleport
+      continue
+    }
+    active.add(m.social.pairId)
+    if (m.social.talking) {
+      if (now >= m.socialUntil) {
+        endSocial(m) // both partners leave together, so no one is left mid-talk
+        endSocial(partner)
+      }
+      continue
+    }
+    const meAt = m.occupiedCell === keyOf(m.social.slot)
+    if (meAt && m.motion !== 'socializing') {
+      m.motion = 'socializing' // reached the slot (from walking or its arrival pause) — stand and wait
+      m.seg = null
+    }
+    const partnerAt = partner.occupiedCell === keyOf(partner.social.slot)
+    if (meAt && partnerAt) {
+      m.social.talking = true
+      m.direction = m.social.facing // now turn to face the partner
+      m.socialUntil = now + rand(m.rng, OFFICE_TIMING.socialTalk)
+    } else if (!meAt && now > m.social.deadline) {
+      endSocial(m) // gave up approaching
+      endSocial(partner)
+    }
+  }
+
+  if (now < ctx.nextSocialAttempt) return
+  ctx.nextSocialAttempt = now + SOCIAL_ATTEMPT_MS
+  if (active.size >= ctx.socialCap) return
+
+  const elig = [...models.values()].filter((m) => socialEligible(ctx, m))
+  for (let a = 0; a < elig.length; a++)
+    for (let b = a + 1; b < elig.length; b++) {
+      const A = elig[a]
+      const B = elig[b]
+      if (!sameGroup(A, B)) continue
+      const aCell = cellOfPoint(ctx.grid, footOf(A.pos))
+      const found = adjacentSlot(ctx, aCell, B.id, now)
+      if (!found) continue
+      if (!routeFrom(ctx, B, footOf(B.pos), pointOfCell(ctx.grid, found.slot.i, found.slot.j), now)) continue
+      const pairId = `${A.id}~${B.id}`
+      const deadline = now + OFFICE_TIMING.socialApproachMs
+      A.social = { pairId, partnerId: B.id, slot: aCell, facing: found.facing, talking: false, deadline }
+      B.social = { pairId, partnerId: A.id, slot: found.slot, facing: OPP[found.facing], talking: false, deadline }
+      A.motion = 'socializing' // A holds its cell and waits for B
+      A.seg = null
+      clearDest(ctx, B)
+      B.motion = 'walking'
+      B.resume = 'walking'
+      beginSeg(ctx, B, now)
+      return // one new pair per attempt
+    }
+}
+
 /** Advance one agent by dt milliseconds at time `now`. Mutates the model. */
 export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContext): void {
   // Any standing agent must physically occupy a cell — seed it lazily (covers
@@ -535,6 +650,7 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
       if (m.timer <= 0 && !(ctx.moving.count < ctx.cap && startTrip(ctx, m, now))) m.timer = rand(m.rng, [1500, 4000])
       break
     case 'pausing':
+      if (m.social) break // committed to a conversation — tickConversations drives it
       m.timer -= dt
       if (m.timer <= 0) {
         // Mid-route pause: the route isn't finished — resume the very same route.

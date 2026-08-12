@@ -6,7 +6,9 @@ import { buildNavigationGrid, cellOfPoint, isWalkable, nearestWalkable } from '.
 import { buildActivityEnvelope, inEnvelopeCell } from '../buildActivityEnvelope'
 import { findOfficePath } from '../findOfficePath'
 import { placeOfficeDecor } from '../placeOfficeDecor'
-import { createContext, createModels, footOf, settleStartPositions, stepAgent } from '../officeSimCore'
+import { createContext, createModels, footOf, settleStartPositions, stepAgent, tickConversations } from '../officeSimCore'
+
+const OPP: Record<string, string> = { front: 'back', back: 'front', left: 'right', right: 'left' }
 
 function input(): LayoutInput {
   const mk = (n: number, p: string) => Array.from({ length: n }, (_, i) => ({ _id: `${p}-${i}` }))
@@ -193,6 +195,39 @@ describe('officeSimCore', () => {
       }
     }
     expect(inRoomWander).toBeGreaterThan(0)
+  })
+
+  it('forms conversations: two partners on distinct cells facing each other, then release', () => {
+    const models = createModels(layout, () => 'normal')
+    const ctx = createContext(layout, grid, models.size)
+    settleStartPositions(ctx, models)
+    for (const m of models.values()) m.timer = Math.min(m.timer, 300)
+    let now = 0
+    let sawTalking = false
+    let everPaired = false
+    for (let step = 0; step < 9000; step++) {
+      now += 30
+      for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+      tickConversations(ctx, models, now)
+      for (const m of models.values()) stepAgent(m, 30, now, ctx)
+      // active conversations never exceed the cap
+      const pairs = new Set<string>()
+      for (const m of models.values()) if (m.social) pairs.add(m.social.pairId)
+      expect(pairs.size).toBeLessThanOrEqual(ctx.socialCap)
+      for (const m of models.values()) {
+        if (m.social) everPaired = true
+        if (m.motion === 'socializing' && m.social?.talking) {
+          const p = models.get(m.social.partnerId)!
+          expect(p.social?.pairId).toBe(m.social.pairId) // symmetric pairing
+          expect(p.social?.talking).toBe(true)
+          expect(m.occupiedCell).not.toBe(p.occupiedCell) // two distinct physical slots
+          expect(m.direction).toBe(OPP[p.direction]) // facing each other
+          sawTalking = true
+        }
+      }
+    }
+    expect(everPaired).toBe(true)
+    expect(sawTalking).toBe(true)
   })
 
   it('respects the concurrency cap', () => {

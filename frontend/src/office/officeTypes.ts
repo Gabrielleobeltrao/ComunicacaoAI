@@ -11,6 +11,7 @@ export type AgentMotionState =
   | 'waiting'
   | 'returning'
   | 'sitting-down'
+  | 'socializing' // standing at a conversation slot, facing a partner
 
 export interface OfficePoint {
   x: number

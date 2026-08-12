@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef } from 'react'
 import type { BuiltOfficeLayout } from './buildOfficeLayout'
 import type { NavGrid } from './buildNavigationGrid'
-import { REF_DY, createContext, createModels, settleStartPositions, stepAgent } from './officeSimCore'
+import { REF_DY, createContext, createModels, settleStartPositions, stepAgent, tickConversations } from './officeSimCore'
 import type { AgentModel, SimContext } from './officeSimCore'
 import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { TIME_SCALE } from './officeConfig'
@@ -57,16 +57,16 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
         const dt = Math.min(80, ts - (lastTs.current || ts)) * TIME_SCALE
         lastTs.current = ts
         for (const [k, r] of ctx.reservations) if (r.until <= ts) ctx.reservations.delete(k)
+        tickConversations(ctx, models.current, ts) // advance/start conversations
         let changed = false
         for (const m of models.current.values()) {
-          const pm = m.motion
-          const pd = m.direction
-          const pf = m.frame
-          m.mode = optsRef.current.modeFor(m.id)
-          const pmode = m.mode
-          const prevMode = views.current.get(m.id)?.mode
           stepAgent(m, dt, ts, ctx)
-          if (m.motion !== pm || m.direction !== pd || m.frame !== pf || pmode !== prevMode) {
+          // conversing agents show the normal pose facing their partner, not phone
+          m.mode = m.social ? 'normal' : optsRef.current.modeFor(m.id)
+          // compare against the last rendered view so social/motion changes made by
+          // tickConversations are picked up too
+          const pv = views.current.get(m.id)
+          if (!pv || m.motion !== pv.motion || m.direction !== pv.direction || m.frame !== pv.frame || m.mode !== pv.mode) {
             views.current.set(m.id, { motion: m.motion, direction: m.direction, mode: m.mode, frame: m.frame })
             changed = true
           }

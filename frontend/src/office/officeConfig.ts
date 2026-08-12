@@ -62,7 +62,14 @@ export const OFFICE_TIMING = {
   waitRetry: [400, 1100] as [number, number], // jittered retry after a conflict
   maxPathAttempts: 4,
   staggerMs: [0, 9000] as [number, number], // start offset to avoid sync
+  socialTalk: [5000, 11000] as [number, number], // how long a conversation lasts
+  socialApproachMs: 9000, // give up walking to a conversation slot after this
 }
+
+// Deterministic conversations: how often a new pair is attempted and the max
+// fraction of the office talking at once.
+export const SOCIAL_ATTEMPT_MS = 4000
+export const SOCIAL_MAX_RATIO = 0.25
 
 // At most this share of agents move at once (with a practical minimum of 1).
 export const MAX_CONCURRENT_RATIO = 0.25
