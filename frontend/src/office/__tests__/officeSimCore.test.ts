@@ -140,6 +140,29 @@ describe('officeSimCore', () => {
     }
   })
 
+  it('takes bounded mid-route pauses, never on a door cell', () => {
+    const models = createModels(layout, () => 'normal')
+    const ctx = createContext(layout, grid, models.size)
+    settleStartPositions(ctx, models)
+    for (const m of models.values()) m.timer = Math.min(m.timer, 300)
+    let now = 0
+    let midPauses = 0
+    for (let step = 0; step < 6000; step++) {
+      now += 28
+      for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+      for (const m of models.values()) {
+        stepAgent(m, 28, now, ctx)
+        // a pausing agent whose route isn't finished is mid-route
+        if (m.motion === 'pausing' && m.route.length && m.routeIdx < m.route.length - 1) {
+          midPauses++
+          expect(m.occupiedCell && ctx.doorCells.has(m.occupiedCell)).toBeFalsy()
+        }
+        expect(m.midPauses).toBeLessThanOrEqual(2) // bounded consecutive pauses
+      }
+    }
+    expect(midPauses).toBeGreaterThan(0)
+  })
+
   it('sends seated agents wandering inside their own room', () => {
     const models = createModels(layout, () => 'normal')
     const ctx = createContext(layout, grid, models.size)
@@ -203,9 +226,11 @@ describe('officeSimCore', () => {
       for (const m of models.values()) stepAgent(m, 32, now, ctx)
       // occupancy never exceeds capacity
       for (const [id, n] of ctx.occupancy) expect(n).toBeLessThanOrEqual(capOf.get(id) ?? 0)
-      // an agent idling at an interaction faces the point's declared facing
+      // an agent that has ARRIVED at an interaction (route finished) faces the
+      // point's declared facing (a mid-route pause still faces its walk direction)
       for (const m of models.values()) {
-        if (m.motion === 'pausing' && m.destInteractionId) {
+        const arrived = m.route.length > 0 && m.routeIdx >= m.route.length - 1
+        if (m.motion === 'pausing' && m.destInteractionId && arrived) {
           const f = faceOf.get(m.destInteractionId)
           if (f) {
             expect(m.direction).toBe(f)

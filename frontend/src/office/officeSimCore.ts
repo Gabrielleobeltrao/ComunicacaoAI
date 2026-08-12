@@ -47,6 +47,8 @@ export interface AgentModel {
   timer: number
   visits: number
   attempts: number
+  midPauses: number // consecutive mid-route pauses (bounded)
+  isMoving: boolean // currently counted against the away-from-desk cap
   rng: () => number
 }
 
@@ -56,6 +58,7 @@ export interface SimContext {
   waypoints: OfficePoint[]
   interactions: InteractionPoint[]
   roomInterior: Map<string, OfficePoint[]> // sectorId -> walkable interior points to wander to
+  doorCells: Set<string> // door threshold cells — never a mid-route pause spot
   occupancy: Map<string, number> // interactionId -> agents currently holding it
   occupiedCells: Map<string, string> // cellKey -> agentId physically standing there (never expires)
   reservations: Map<string, { agentId: string; until: number }> // future cells (expire)
@@ -156,6 +159,8 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
       timer: rand(rng, OFFICE_TIMING.staggerMs) + rand(rng, OFFICE_TIMING.seatedPause),
       visits: 0,
       attempts: 0,
+      midPauses: 0,
+      isMoving: false,
       rng,
     })
   }
@@ -184,6 +189,8 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
       timer: rand(rng, OFFICE_TIMING.staggerMs) + rand(rng, OFFICE_TIMING.destinationPause),
       visits: 0,
       attempts: 0,
+      midPauses: 0,
+      isMoving: false,
       rng,
     })
   }
@@ -239,6 +246,7 @@ export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAge
     waypoints: corridorWaypoints(grid, layout, envelope),
     interactions,
     roomInterior: buildRoomInteriors(layout, grid, envelope),
+    doorCells: new Set(grid.doors.flatMap((d) => [keyOf(cellOfPoint(grid, d.inner)), keyOf(cellOfPoint(grid, d.outer))])),
     occupancy: new Map(),
     occupiedCells: new Map(),
     reservations: new Map(),
@@ -258,6 +266,13 @@ function occupy(ctx: SimContext, m: AgentModel, k: string) {
 function unoccupy(ctx: SimContext, m: AgentModel) {
   if (m.occupiedCell && ctx.occupiedCells.get(m.occupiedCell) === m.id) ctx.occupiedCells.delete(m.occupiedCell)
   m.occupiedCell = null
+}
+// The away-from-desk cap counts only seated-kind agents that are out of their
+// chair; loose agents wander freely and never count.
+function setMoving(ctx: SimContext, m: AgentModel, on: boolean) {
+  if (on === m.isMoving) return
+  m.isMoving = on
+  ctx.moving.count = Math.max(0, ctx.moving.count + (on ? 1 : -1))
 }
 function cellFree(ctx: SimContext, k: string, id: string, now: number): boolean {
   const occ = ctx.occupiedCells.get(k)
@@ -349,6 +364,7 @@ function routeFrom(ctx: SimContext, m: AgentModel, fromFoot: OfficePoint, goalFo
   if (!path || path.length < 2) return false
   m.route = path
   m.routeIdx = 0
+  m.midPauses = 0 // fresh route, fresh mid-pause budget
   return true
 }
 function beginSeg(ctx: SimContext, m: AgentModel, now: number): boolean {
@@ -364,7 +380,9 @@ function beginSeg(ctx: SimContext, m: AgentModel, now: number): boolean {
     return false
   }
   m.direction = stepDir(cur, nextCell)
-  m.seg = { from: refOf(pointOfCell(ctx.grid, cur.i, cur.j)), to: refOf(pointOfCell(ctx.grid, nextCell.i, nextCell.j)), t: 0, dur: OFFICE_TIMING.stepMs }
+  // Walk from the agent's actual position (usually already the cell centre) to the
+  // next cell centre — so a start that isn't grid-aligned glides instead of snapping.
+  m.seg = { from: { ...m.pos }, to: refOf(pointOfCell(ctx.grid, nextCell.i, nextCell.j)), t: 0, dur: OFFICE_TIMING.stepMs }
   return true
 }
 function arrive(ctx: SimContext, m: AgentModel) {
@@ -374,7 +392,6 @@ function arrive(ctx: SimContext, m: AgentModel) {
   // At an interaction point the agent assumes the point's facing and idles.
   if (m.destInteractionId && m.destFacing) m.direction = m.destFacing
   m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
-  if (m.kind === 'loose') ctx.moving.count = Math.max(0, ctx.moving.count - 1)
 }
 function finishReturn(ctx: SimContext, m: AgentModel) {
   releaseNext(ctx, m)
@@ -388,7 +405,6 @@ function finishReturn(ctx: SimContext, m: AgentModel) {
     m.motion = 'pausing'
     m.seg = null
     m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
-    ctx.moving.count = Math.max(0, ctx.moving.count - 1)
   }
 }
 function startReturn(ctx: SimContext, m: AgentModel, now: number) {
@@ -432,7 +448,6 @@ function startTrip(ctx: SimContext, m: AgentModel, now: number): boolean {
   }
   m.visits = 0
   m.attempts = 0
-  ctx.moving.count++
   m.resume = 'walking'
   if (m.home && exitCell) {
     occupy(ctx, m, keyOf(exitCell)) // hold the exit cell before the feet leave the chair
@@ -467,7 +482,6 @@ function advanceSeg(ctx: SimContext, m: AgentModel, dt: number, now: number) {
     m.direction = m.home ? m.home.facing : 'front'
     m.frame = 0
     m.timer = rand(m.rng, OFFICE_TIMING.seatedPause)
-    ctx.moving.count = Math.max(0, ctx.moving.count - 1)
     return
   }
   // We physically move onto the cell we reserved: it becomes the occupied cell.
@@ -481,7 +495,21 @@ function advanceSeg(ctx: SimContext, m: AgentModel, dt: number, now: number) {
   if (m.routeIdx >= m.route.length - 1) {
     if (m.motion === 'returning') finishReturn(ctx, m)
     else arrive(ctx, m)
-  } else beginSeg(ctx, m, now)
+    return
+  }
+  // Mid-route pause (Phase 6): only at a cell boundary, on a safe (non-door) cell,
+  // bounded to a couple consecutive. Keeps the cell occupied and the route intact.
+  const here = m.occupiedCell
+  if (here && !ctx.doorCells.has(here) && m.midPauses < 2 && m.rng() < OFFICE_TIMING.midwayPauseChance) {
+    m.midPauses++
+    m.resume = m.motion // walking or returning
+    m.seg = null
+    m.motion = 'pausing'
+    m.timer = rand(m.rng, OFFICE_TIMING.midwayPause)
+    return
+  }
+  m.midPauses = 0
+  beginSeg(ctx, m, now)
 }
 
 /** Advance one agent by dt milliseconds at time `now`. Mutates the model. */
@@ -509,6 +537,12 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
     case 'pausing':
       m.timer -= dt
       if (m.timer <= 0) {
+        // Mid-route pause: the route isn't finished — resume the very same route.
+        if (m.route.length && m.routeIdx < m.route.length - 1) {
+          m.motion = m.resume === 'returning' ? 'returning' : 'walking'
+          beginSeg(ctx, m, now) // re-reserves the next cell; falls to waiting if blocked
+          break
+        }
         if (m.kind === 'seated') {
           m.visits++
           const more = m.visits < OFFICE_TIMING.maxVisitsPerTrip && m.rng() < 0.5
@@ -519,9 +553,10 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
             beginSeg(ctx, m, now)
           } else startReturn(ctx, m, now)
         } else {
-          const dest = ctx.moving.count < ctx.cap ? chooseDestination(ctx, m) : null
+          // Deskless agents wander freely — they hold no desk, so they are not
+          // gated by the away-from-desk cap.
+          const dest = chooseDestination(ctx, m)
           if (dest && routeFrom(ctx, m, footOf(m.pos), dest, now)) {
-            ctx.moving.count++
             m.motion = 'walking'
             m.resume = 'walking'
             beginSeg(ctx, m, now)
@@ -550,7 +585,6 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
               releaseNext(ctx, m) // keep occupiedCell — the agent stays put
               m.motion = 'pausing'
               m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
-              ctx.moving.count = Math.max(0, ctx.moving.count - 1)
             }
           } else {
             const goal = m.route[m.route.length - 1]
@@ -571,4 +605,8 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
       advanceSeg(ctx, m, dt, now)
       break
   }
+
+  // Reconcile the away-from-desk cap: a seated-kind agent counts whenever it is
+  // out of its chair. This frees a slot the moment an agent sits, so others can go.
+  setMoving(ctx, m, m.kind === 'seated' && m.motion !== 'seated')
 }
