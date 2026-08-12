@@ -67,6 +67,9 @@ class Heap {
 export interface FindPathOptions {
   /** Cell keys ("i,j") that are temporarily reserved and should be avoided. */
   avoid?: ReadonlySet<string>
+  /** Optional gate: only cells for which this returns true may be traversed
+   *  (used to confine agents to the activity envelope). The goal is exempt. */
+  allowed?: (i: number, j: number) => boolean
 }
 
 /** A* from start cell to goal cell. Returns the cell path (inclusive of both
@@ -76,6 +79,7 @@ export function findOfficePathCells(grid: NavGrid, start: GridCell, goal: GridCe
   const { w } = grid
   const goalIdx = cellIndex(grid, goal.i, goal.j)
   const avoid = opts.avoid
+  const allowed = opts.allowed
   const h = (i: number, j: number) => Math.abs(i - goal.i) + Math.abs(j - goal.j)
 
   const gScore = new Map<number, number>()
@@ -101,6 +105,7 @@ export function findOfficePathCells(grid: NavGrid, start: GridCell, goal: GridCe
       if (!inBounds(grid, ni, nj) || !isWalkable(grid, ni, nj)) continue
       const nk = `${ni},${nj}`
       const nIdx = cellIndex(grid, ni, nj)
+      if (allowed && nIdx !== goalIdx && !allowed(ni, nj)) continue
       if (avoid && nIdx !== goalIdx && avoid.has(nk)) continue
       if (closed[nIdx]) continue
       const tentative = cg + 1

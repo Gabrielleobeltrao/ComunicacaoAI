@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import type { NavGrid } from './buildNavigationGrid'
 import { cellIndex, pointOfCell } from './buildNavigationGrid'
 import type { BuiltOfficeLayout } from './buildOfficeLayout'
+import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { footOf } from './officeSimCore'
 import type { AgentModel, SimContext } from './officeSimCore'
 import type { InteractionPoint } from './officeTypes'
@@ -18,6 +19,7 @@ interface DebugApi {
 interface Props {
   grid: NavGrid
   layout: BuiltOfficeLayout
+  envelope?: ActivityEnvelope
   interactions: InteractionPoint[]
   debug: DebugApi
   live: boolean
@@ -33,7 +35,7 @@ const MOTION_COLOR: Record<string, string> = {
   'sitting-down': '#f59e0b',
 }
 
-export function OfficeDebugOverlay({ grid, layout, interactions, debug, live }: Props) {
+export function OfficeDebugOverlay({ grid, layout, envelope, interactions, debug, live }: Props) {
   const [, setTick] = useState(0)
   useEffect(() => {
     if (!live) return
@@ -61,6 +63,19 @@ export function OfficeDebugOverlay({ grid, layout, interactions, debug, live }: 
 
   return (
     <svg viewBox={`0 0 ${grid.cols} ${grid.rows}`} preserveAspectRatio="none" style={{ position: 'absolute', left: 0, top: 0, width: `calc(var(--tile) * ${grid.cols})`, height: `calc(var(--tile) * ${grid.rows})`, overflow: 'visible', pointerEvents: 'none', zIndex: 900 }}>
+      {/* activity envelope (allowed walking area) */}
+      {envelope && (
+        <g opacity={0.5}>
+          {(() => {
+            const cells: React.ReactNode[] = []
+            for (let j = 0; j < grid.h; j++)
+              for (let i = 0; i < grid.w; i++)
+                if (envelope.mask[j * grid.w + i] === 1) cells.push(<rect key={`e${i}-${j}`} x={i * grid.res} y={j * grid.res} width={grid.res} height={grid.res} fill="rgba(56,189,248,0.10)" />)
+            return cells
+          })()}
+        </g>
+      )}
+
       {/* walkable grid dots */}
       <g opacity={0.5}>{blockedRects}</g>
 

@@ -11,7 +11,7 @@
 import type { BuiltAmenityItem, BuiltOfficeLayout } from './buildOfficeLayout'
 import { hash32, mulberry32 } from './buildOfficeLayout'
 import type { NavGrid } from './buildNavigationGrid'
-import { cellIndex, cellOfPoint, inBounds, isWalkable } from './buildNavigationGrid'
+import { buildNavigationGrid, cellIndex, cellOfPoint, inBounds, isWalkable } from './buildNavigationGrid'
 import { FOOT_RADIUS } from './officeConfig'
 import type { InteractionPoint, OfficeDirection, OfficeObstacle, OfficePoint } from './officeTypes'
 import { CATALOG_VERSION, OFFICE_OBJECT_CATALOG, categoriesForFamily, isInteractiveFamily, themeForSector } from './officeCatalog'
@@ -323,5 +323,18 @@ export function placeOfficeDecor(layout: BuiltOfficeLayout, grid: NavGrid): Offi
     interactionPoints.push({ id: `int:amen:${it.roomKey}:${it.index}`, point: ap.point, facing: ap.facing, categories: categoriesForFamily(it.art), capacity: cap })
   }
 
-  return { items, obstacles, interactionPoints }
+  // Final safety: validate every interaction point against the *merged* grid the
+  // simulation actually navigates (walls + desks + this decoration). Drop any that
+  // are not walkable/reachable there, so a point never sits inside an obstacle or
+  // in a pocket the door does not reach (important once the map is compacted).
+  const mergedGrid = buildNavigationGrid({ ...layout, obstacles: [...layout.obstacles, ...obstacles] })
+  const mAnchor = corridorAnchor(mergedGrid)
+  const mReach = mAnchor != null ? flood(new Uint8Array(mergedGrid.blocked), mergedGrid, mAnchor) : null
+  const validInteractions = interactionPoints.filter((ip) => {
+    const c = cellOfPoint(mergedGrid, ip.point)
+    if (!isWalkable(mergedGrid, c.i, c.j)) return false
+    return !mReach || mReach[cellIndex(mergedGrid, c.i, c.j)] === 1
+  })
+
+  return { items, obstacles, interactionPoints: validInteractions }
 }

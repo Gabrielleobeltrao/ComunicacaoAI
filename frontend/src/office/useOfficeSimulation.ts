@@ -3,6 +3,7 @@ import type { BuiltOfficeLayout } from './buildOfficeLayout'
 import type { NavGrid } from './buildNavigationGrid'
 import { REF_DY, createContext, createModels, stepAgent } from './officeSimCore'
 import type { AgentModel, SimContext } from './officeSimCore'
+import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { TIME_SCALE } from './officeConfig'
 import type { AgentMotionState, AgentVisualMode, InteractionPoint, OfficeDirection } from './officeTypes'
 
@@ -19,6 +20,7 @@ export interface SimOptions {
   modeFor: (agentId: string) => AgentVisualMode
   enabled: boolean
   interactions?: InteractionPoint[]
+  envelope?: ActivityEnvelope
 }
 
 // Thin React wrapper around the pure simulation core: it owns the rAF loop, the
@@ -41,7 +43,7 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
     for (const a of m.values()) v.set(a.id, { motion: a.motion, direction: a.direction, mode: a.mode, frame: a.frame })
     models.current = m
     views.current = v
-    ctxRef.current = createContext(layout, grid, m.size, optsRef.current.interactions ?? [])
+    ctxRef.current = createContext(layout, grid, m.size, optsRef.current.interactions ?? [], optsRef.current.envelope)
     bump()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, grid])

@@ -6,6 +6,8 @@ import type { BuiltOfficeLayout } from './buildOfficeLayout'
 import { hash32, mulberry32 } from './buildOfficeLayout'
 import type { NavGrid } from './buildNavigationGrid'
 import { isWalkable, nearestWalkable, pointOfCell } from './buildNavigationGrid'
+import { buildActivityEnvelope, inEnvelopeCell, inEnvelopePoint } from './buildActivityEnvelope'
+import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { findOfficePathCells } from './findOfficePath'
 import type { GridCell } from './findOfficePath'
 import { MAX_CONCURRENT_RATIO, OFFICE_TIMING } from './officeConfig'
@@ -49,6 +51,7 @@ export interface AgentModel {
 
 export interface SimContext {
   grid: NavGrid
+  envelope: ActivityEnvelope // invisible activity area — no foot/destination leaves it
   waypoints: OfficePoint[]
   interactions: InteractionPoint[]
   occupancy: Map<string, number> // interactionId -> agents currently holding it
@@ -66,7 +69,7 @@ export function stepDir(from: GridCell, to: GridCell): OfficeDirection {
   return 'front'
 }
 
-export function corridorWaypoints(grid: NavGrid, layout: BuiltOfficeLayout): OfficePoint[] {
+export function corridorWaypoints(grid: NavGrid, layout: BuiltOfficeLayout, envelope: ActivityEnvelope): OfficePoint[] {
   const inRoom = new Set<string>()
   for (const r of layout.rooms) {
     const bi = Math.round(r.x / grid.res)
@@ -79,10 +82,12 @@ export function corridorWaypoints(grid: NavGrid, layout: BuiltOfficeLayout): Off
   const pts: OfficePoint[] = []
   const rng = mulberry32(hash32('office-waypoints'))
   let guard = 0
+  // Corridor waypoints are walkable, outside rooms, and inside the activity
+  // envelope — never a far empty corner of the canvas.
   while (pts.length < 24 && guard++ < 6000) {
     const i = 1 + Math.floor(rng() * (grid.w - 2))
     const j = 1 + Math.floor(rng() * (grid.h - 2))
-    if (isWalkable(grid, i, j) && !inRoom.has(`${i},${j}`)) pts.push(pointOfCell(grid, i, j))
+    if (isWalkable(grid, i, j) && inEnvelopeCell(envelope, i, j) && !inRoom.has(`${i},${j}`)) pts.push(pointOfCell(grid, i, j))
   }
   for (const d of grid.doors) pts.push(d.outer)
   return pts
@@ -147,10 +152,11 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
   return out
 }
 
-export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAgents: number, interactions: InteractionPoint[] = []): SimContext {
+export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAgents: number, interactions: InteractionPoint[] = [], envelope: ActivityEnvelope = buildActivityEnvelope(layout, grid)): SimContext {
   return {
     grid,
-    waypoints: corridorWaypoints(grid, layout),
+    envelope,
+    waypoints: corridorWaypoints(grid, layout, envelope),
     interactions,
     occupancy: new Map(),
     reservations: new Map(),
@@ -199,6 +205,7 @@ function chooseDestination(ctx: SimContext, m: AgentModel): OfficePoint | null {
     for (let t = 0; t < 6; t++) {
       const it = ctx.interactions[Math.floor(m.rng() * ctx.interactions.length)]
       if ((ctx.occupancy.get(it.id) ?? 0) >= it.capacity) continue
+      if (!inEnvelopePoint(ctx.envelope, ctx.grid, it.point)) continue
       if (!nearestWalkable(ctx.grid, it.point, 2)) continue
       ctx.occupancy.set(it.id, (ctx.occupancy.get(it.id) ?? 0) + 1)
       m.destInteractionId = it.id
@@ -217,7 +224,9 @@ function routeFrom(ctx: SimContext, m: AgentModel, fromFoot: OfficePoint, goalFo
   const from = nearestWalkable(ctx.grid, fromFoot, 3)
   const to = nearestWalkable(ctx.grid, goalFoot, 3)
   if (!from || !to) return false
-  const path = findOfficePathCells(ctx.grid, from, to, { avoid: reservedBy(ctx, m.id, now) })
+  // Confine the route to the activity envelope (the goal cell is exempt so a
+  // just-outside target can still be reached), so feet never leave the area.
+  const path = findOfficePathCells(ctx.grid, from, to, { avoid: reservedBy(ctx, m.id, now), allowed: (i, j) => inEnvelopeCell(ctx.envelope, i, j) })
   if (!path || path.length < 2) return false
   m.route = path
   m.routeIdx = 0

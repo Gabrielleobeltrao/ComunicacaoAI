@@ -7,6 +7,7 @@ import { cozinha, lounge, reuniao } from './cenarios'
 import type { Cenario } from './cenarios'
 import { DESK_DEPTH, DESK_W, buildOfficeLayout, hash32, mulberry32 } from './buildOfficeLayout'
 import { buildNavigationGrid } from './buildNavigationGrid'
+import { buildActivityEnvelope } from './buildActivityEnvelope'
 import type { AgentVisualMode, OfficeDirection, OfficeSeat } from './officeTypes'
 import { IGNORE_REDUCED_MOTION, OFFICE_FEATURES } from './officeConfig'
 import { EMPTY_DECOR, placeOfficeDecor } from './placeOfficeDecor'
@@ -84,9 +85,12 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   const layout = useMemo(() => (decor.obstacles.length ? { ...baseLayout, obstacles: [...baseLayout.obstacles, ...decor.obstacles] } : baseLayout), [baseLayout, decor])
   const grid = useMemo(() => (decor.obstacles.length ? buildNavigationGrid(layout) : baseGrid), [layout, baseGrid, decor.obstacles.length])
 
+  // Invisible activity envelope (Phase 2): keeps destinations/feet near the cluster.
+  const envelope = useMemo(() => buildActivityEnvelope(layout, grid), [layout, grid])
+
   const reducedMotion = useReducedMotion()
   const simOn = OFFICE_FEATURES.simulation && (!reducedMotion || IGNORE_REDUCED_MOTION)
-  const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn, interactions: decor.interactionPoints })
+  const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn, interactions: decor.interactionPoints, envelope })
 
   // Preload the walk / idle frames for the faces actually in use.
   const usedCharacters = useMemo(() => Array.from(new Set(agents.map((a) => chars.character(a._id)))), [agents, chars])
@@ -228,7 +232,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
               }),
             ]}
 
-        {OFFICE_FEATURES.debug && <OfficeDebugOverlay grid={grid} layout={layout} interactions={decor.interactionPoints} debug={sim.debug} live={simOn} />}
+        {OFFICE_FEATURES.debug && <OfficeDebugOverlay grid={grid} layout={layout} envelope={envelope} interactions={decor.interactionPoints} debug={sim.debug} live={simOn} />}
       </OfficeMap>
     </div>
   )

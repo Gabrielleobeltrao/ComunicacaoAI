@@ -3,6 +3,7 @@ import { cozinha, lounge, reuniao } from '../cenarios'
 import { buildOfficeLayout } from '../buildOfficeLayout'
 import type { LayoutInput } from '../buildOfficeLayout'
 import { buildNavigationGrid, cellOfPoint, isWalkable, nearestWalkable } from '../buildNavigationGrid'
+import { buildActivityEnvelope, inEnvelopeCell } from '../buildActivityEnvelope'
 import { findOfficePath } from '../findOfficePath'
 import { placeOfficeDecor } from '../placeOfficeDecor'
 import { createContext, createModels, footOf, stepAgent } from '../officeSimCore'
@@ -77,6 +78,25 @@ describe('officeSimCore', () => {
         if (!m.reservedCur) continue
         expect(occupied.has(m.reservedCur)).toBe(false)
         occupied.set(m.reservedCur, m.id)
+      }
+    }
+  })
+
+  it('keeps every walking foot inside the activity envelope', () => {
+    const env = buildActivityEnvelope(layout, grid)
+    const models = createModels(layout, () => 'normal')
+    const ctx = createContext(layout, grid, models.size, [], env)
+    for (const m of models.values()) m.timer = Math.min(m.timer, 500)
+    let now = 0
+    for (let step = 0; step < 3000; step++) {
+      now += 28
+      for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+      for (const m of models.values()) {
+        stepAgent(m, 28, now, ctx)
+        if (m.motion === 'walking' || m.motion === 'returning' || m.motion === 'pausing') {
+          const c = cellOfPoint(grid, footOf(m.pos))
+          expect(inEnvelopeCell(env, c.i, c.j)).toBe(true)
+        }
       }
     }
   })

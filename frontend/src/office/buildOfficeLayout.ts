@@ -17,7 +17,7 @@ const STRIDE_Y = 6
 const DESK_ORIGIN_Y = 2 // top space inside a room for its label + far-agent heads
 const ROOM_PAD_X = 1
 export const MARGIN = 1.0 // hard safety edge — nothing crosses it
-const GAP_RINGS = 3 // cells of empty space kept around every room (× CELL_RES = tiles)
+const GAP_RINGS = 2 // cells of empty space kept around every room (× CELL_RES = tiles); V2: moderate compaction (was 3)
 
 const SLOTS = [
   { col: 0, top: true },
@@ -232,13 +232,14 @@ export function buildOfficeLayout(input: LayoutInput): BuiltOfficeLayout {
     roomMaxY = Math.max(roomMaxY, p.y + p.block.h)
   }
 
-  const scatterCols = Math.max(6, Math.ceil(roomMaxX + perim + MARGIN))
-  const scatterRows = Math.max(6, Math.ceil(roomMaxY + perim + MARGIN))
   const roomRects = placed.map((p) => ({ x: p.x, y: p.y - 1, x2: p.x + p.block.w, y2: p.y + p.block.h }))
-  const ax0 = MARGIN + 0.7
-  const ax1 = scatterCols - MARGIN - 0.7
-  const ay0 = MARGIN + 0.7
-  const ay1 = scatterRows - MARGIN - 1.6
+  // V2 Phase 2: keep loose agents inside the activity envelope — the room cluster
+  // expanded by a small margin — instead of scattering them across the whole map.
+  const ENV_TILES = 2.0
+  const ax0 = Math.max(MARGIN + 0.7, OX - ENV_TILES)
+  const ax1 = roomMaxX + ENV_TILES
+  const ay0 = Math.max(MARGIN + 0.7, OY - ENV_TILES)
+  const ay1 = roomMaxY + ENV_TILES
   const loosePos: { agentId: string; point: OfficePoint }[] = []
   for (const a of loose) {
     const rng = mulberry32(hash32(a._id))
