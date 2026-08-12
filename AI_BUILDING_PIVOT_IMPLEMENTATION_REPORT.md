@@ -5,7 +5,7 @@ Execution report for `AI_BUILDING_PIVOT_IMPLEMENTATION_PLAN.md`.
 ## 1. Git state
 
 - **Base commit:** `6d4f809d1c3bfc5bc49e0ed725c13f68b0f2e10f` (matches the plan header; `origin/main` == base at start).
-- **Final feature commit:** `8f9fe65` on branch **`development`** (not pushed; docs commits follow).
+- **Final feature commit:** `ebe0dec` on branch **`development`** (not pushed; docs commits follow).
 - **Branch deviation:** the plan suggested a dedicated branch; per the user's standing workflow ("keep work on `development`, push to `main` only on request") all pivot work is committed on `development`. Nothing was pushed, deployed, or run against production.
 
 ### Commits added (small, semantic)
@@ -42,9 +42,9 @@ Per the user's decision (this environment has **no running MongoDB, no Redis, no
 | 6 — Scheduler | ✅ Code done | Pure recurrence→cron (unit-tested) + BullMQ Job-Scheduler reconciler (add/remove diff, stable id, BullMQ owns cron+tz/DST); worker reconciles on startup + every 60s and creates one run per fire (idempotent by automationId+timestamp). Runtime needs Redis. |
 | 7 — Connections + deliveries | ✅ Code done | Encrypted Connections domain (AES via existing crypto, API never returns secrets) + email (nodemailer) & Telegram adapters (injectable IO, pure mask/chunk unit-tested) + idempotent Delivery persistence wired into the worker's delivery.send. Live SMTP/Telegram send needs credentials to verify. |
 | 3 — Automation UI | ✅ Code done | Automations list + structured linear editor (trigger, per-type steps, result format; save/validate/publish/activate/run surfacing backend issues) + Runs list with step timeline + cancel. Gated by `aiAutomations`, build/lint verified. Browser verification pending. |
-| 8 — Dashboard / live map | 🟡 Mostly done | Runs UI + **operational floor-metrics endpoint + dashboard tiles** (separate from conversational metrics) done. Only the **live-map overlay** (agent operational state on the office simulation) is deferred — it deeply touches the map rendering and needs a browser to build well and verify. |
+| 8 — Dashboard / live map | ✅ Code done | Runs UI + operational floor-metrics endpoint + dashboard tiles (separate from conversational metrics) + **live-map overlay** (per-agent state endpoint → `useAgentStates` poll → discreet SimAgent badge), gated by `aiOfficeLiveStatus` (OFF → the map is byte-for-byte unchanged; read-only, never drives pathfinding). Browser verification of the visual pending. |
 | 9 — Channels reframe | 🟡 Mostly done | "Canais" nav grouping + **README repositioned** to the operational-building framing. Only the deeper agent conversation-settings reorg is deferred (touches the live agent form, needs browser). |
-| 10 — Hardening + docs | 🟡 Mostly done | Architecture doc + local-dev runbook + rollback notes done. Only full **E2E** + a prod-copy **migration rehearsal** remain — both need running infra. |
+| 10 — Hardening + docs | 🟡 Mostly done | Architecture doc + local-dev runbook + rollback notes + an **automation-pivot E2E spec** (`frontend/e2e/automation-pivot.spec.ts`, guarded by `E2E_PIVOT`, runs against the dev stack) done. Only the live E2E run + a prod-copy migration rehearsal remain — both need running infra. |
 
 ## 3. Files created / changed
 
