@@ -164,6 +164,7 @@ import { buildingRouter } from './routes/buildingRoutes.js'
 import { floorRouter } from './routes/floorRoutes.js'
 import { automationRouter } from './routes/automationRoutes.js'
 import { runRouter } from './routes/runRoutes.js'
+import { connectionRouter } from './routes/connectionRoutes.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -265,6 +266,7 @@ app.use('/api/building', requireAuth, buildingRouter)
 app.use('/api/floors', requireAuth, floorRouter)
 app.use('/api/automations', requireAuth, automationRouter)
 app.use('/api/runs', requireAuth, runRouter)
+app.use('/api/connections', requireAuth, connectionRouter)
 
 app.get('/api/providers', requireAuth, async (_req, res) => {
   const results = await Promise.all(

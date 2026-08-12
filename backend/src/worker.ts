@@ -19,6 +19,10 @@ import { executeAgentTask } from './agentRuntime.js'
 import { safeFetch } from './net/safeHttp.js'
 import { getProviderApiKey } from './userSettings.js'
 import type { Provider } from './llm.js'
+import { decryptConfig, getConnection } from './connections/service.js'
+import { insertDeliveryIdempotent, updateDelivery } from './connections/repository.js'
+import { maskDestination, sendEmail, sendTelegram } from './connections/adapters.js'
+import type { Delivery, EmailConfig, TelegramConfig } from './connections/types.js'
 
 // Automation worker process (plan §10.1). Same image/codebase as the API, run
 // with `npm run start:worker`. Consumes the run queue, executes each run through
@@ -52,9 +56,41 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       })
       return { output: result.output }
     },
-    // Real email/Telegram delivery arrives in the connections/deliveries phase.
-    // Until then a delivery step records intent without sending.
-    deliver: async () => ({ providerMessageId: null }),
+    // Resolve the connection, record the delivery idempotently, then send.
+    deliver: async (call) => {
+      const conn = await getConnection(run.ownerId, new ObjectId(call.connectionId))
+      if (!conn) throw new Error(`conexão não encontrada: ${call.connectionId}`)
+      const idempotencyKey = `${run._id.toString()}:${call.connectionId}:${call.destination}`
+      const record: Delivery = {
+        _id: new ObjectId(),
+        ownerId: run.ownerId,
+        runId: run._id,
+        provider: conn.provider,
+        connectionId: conn._id,
+        destinationMasked: maskDestination(call.destination),
+        status: 'sending',
+        attempt: 1,
+        providerMessageId: null,
+        idempotencyKey,
+        error: null,
+        createdAt: new Date(),
+        sentAt: null,
+      }
+      const { delivery, created } = await insertDeliveryIdempotent(record)
+      if (!created && delivery.status === 'sent') return { providerMessageId: delivery.providerMessageId }
+      try {
+        const config = decryptConfig(conn)
+        const result =
+          conn.provider === 'email'
+            ? await sendEmail(config as EmailConfig, { to: call.destination, subject: call.subject, text: call.content })
+            : await sendTelegram(config as TelegramConfig, { chatId: call.destination, text: call.content })
+        await updateDelivery(delivery._id, { status: 'sent', providerMessageId: result.providerMessageId, sentAt: new Date() })
+        return { providerMessageId: result.providerMessageId }
+      } catch (error) {
+        await updateDelivery(delivery._id, { status: 'failed', error: { kind: 'delivery', message: (error as Error).message } })
+        throw error
+      }
+    },
     now: () => Date.now(),
     // Cooperative cancellation: re-read the run status between steps.
     isCanceled: async () => {

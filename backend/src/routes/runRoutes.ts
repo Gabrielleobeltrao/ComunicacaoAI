@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { findRun, listArtifacts, listRuns, listStepRuns, requestCancel } from '../automations/runRepository.js'
 import type { Artifact, AutomationRun, StepRun } from '../automations/runTypes.js'
+import { listDeliveries } from '../connections/repository.js'
 import { notFound, oid } from './http.js'
 
 // Mounted at /api/runs behind requireAuth. Listings never return the (large)
@@ -82,6 +83,27 @@ runRouter.get('/:id/artifacts', async (req, res) => {
   if (!run) return notFound(res)
   const artifacts = await listArtifacts(res.locals.userId, id)
   res.json(artifacts.map(artifactPublic))
+})
+
+runRouter.get('/:id/deliveries', async (req, res) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  const run = await findRun(res.locals.userId, id)
+  if (!run) return notFound(res)
+  const items = await listDeliveries(res.locals.userId, id)
+  res.json(
+    items.map((d) => ({
+      id: d._id,
+      provider: d.provider,
+      connectionId: d.connectionId,
+      destinationMasked: d.destinationMasked,
+      status: d.status,
+      providerMessageId: d.providerMessageId,
+      error: d.error,
+      createdAt: d.createdAt,
+      sentAt: d.sentAt,
+    })),
+  )
 })
 
 runRouter.post('/:id/cancel', async (req, res) => {

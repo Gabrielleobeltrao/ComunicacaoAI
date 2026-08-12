@@ -4,6 +4,7 @@ import { ensureBuildingIndexes, ensureDefaultBuilding } from './building.js'
 import { ensureFloorIndexes } from './floors.js'
 import { ensureAutomationIndexes } from './automations/repository.js'
 import { ensureRunIndexes } from './automations/runRepository.js'
+import { ensureConnectionIndexes } from './connections/repository.js'
 
 async function renameCollectionIfNeeded(from: string, to: string): Promise<void> {
   const source = await db.listCollections({ name: from }).toArray()
@@ -56,6 +57,7 @@ export async function runMigrations(): Promise<void> {
   await backfillBuildingsAndFloors()
   await ensureAutomationIndexes()
   await ensureRunIndexes()
+  await ensureConnectionIndexes()
 }
 
 // AI-building pivot backfill (idempotent, additive). Ensures a Building per owner

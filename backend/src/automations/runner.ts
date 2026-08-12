@@ -22,6 +22,8 @@ export interface AgentCall {
 }
 export interface DeliverCall {
   connectionId: string
+  destination: string
+  subject: string
   content: string
 }
 
@@ -142,9 +144,16 @@ async function executeStep(step: StepDefinition, ctx: Record<string, unknown>, d
     case 'delivery.send': {
       const fromStepId = String(cfg.fromStepId)
       const content = typeof ctx[fromStepId] === 'string' ? (ctx[fromStepId] as string) : JSON.stringify(ctx[fromStepId])
-      const res = await deps.deliver({ connectionId: String(cfg.connectionId), content }).catch((e) => {
-        throw new StepError('delivery', (e as Error).message, true)
-      })
+      const res = await deps
+        .deliver({
+          connectionId: String(cfg.connectionId),
+          destination: String(cfg.destination ?? ''),
+          subject: String(cfg.subject ?? 'Resultado da automação'),
+          content,
+        })
+        .catch((e) => {
+          throw new StepError('delivery', (e as Error).message, true)
+        })
       return { delivered: true, providerMessageId: res.providerMessageId }
     }
     default:
