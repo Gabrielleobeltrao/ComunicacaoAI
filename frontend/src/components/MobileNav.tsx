@@ -130,7 +130,7 @@ export function MobileNav({ current, open, onOpenChange }: { current: string; op
               </button>
             </div>
 
-            {bctx && <BuildingSwitcher />}
+            {bctx && <BuildingSwitcher expanded />}
             <nav className="flex flex-col gap-1">
               {bctx
                 ? (['general', 'floor', 'communication'] as NavScope[]).map((scope) => {

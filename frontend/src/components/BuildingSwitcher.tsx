@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useBuildingContext } from '../contexts/BuildingContext'
+import { COLLAPSE_FADE } from '../lib/sidebarStyles'
 import { Icon } from '../ui'
 
 // Building header + floor popover (UX reorg §6.2/§6.3). Represents the workspace
 // (not the logged-in account, which lives in the footer). Accessible: keyboard,
 // Escape and click-outside close.
-export function BuildingSwitcher() {
+// `expanded` forces the full switcher (label + chevron) always visible — used in
+// the mobile drawer, which has no hover-rail to reveal collapsed content.
+export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
   const { building, floors, activeFloor, selectFloor } = useBuildingContext()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -14,6 +17,8 @@ export function BuildingSwitcher() {
 
   const name = building?.name?.trim() || 'Meu prédio'
   const active = floors.filter((f) => f.status === 'active')
+  // When forced expanded, drop the rail collapse behaviour entirely.
+  const fade = expanded ? '' : COLLAPSE_FADE
 
   useEffect(() => {
     if (!open) return
@@ -38,15 +43,26 @@ export function BuildingSwitcher() {
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open} aria-label="Prédio e andares" style={headerBtn}>
+      {/* Rail-aware: collapsed to just the avatar in the slim rail, expanding to
+          the full switcher on hover (same COLLAPSE_FADE mechanism as nav items). */}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Prédio e andares"
+        className={`flex w-full items-center gap-2 ${expanded ? 'justify-start' : 'justify-center gap-0 group-hover:justify-start group-hover:gap-2'}`}
+        style={headerBtn}
+      >
         <span style={avatar}>{name.charAt(0).toUpperCase()}</span>
-        <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, textAlign: 'left', flex: 1 }}>
+        <span className={`flex min-w-0 flex-1 flex-col text-left ${fade}`}>
           <strong style={truncate}>{name}</strong>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {activeFloor ? activeFloor.name : 'Nenhum andar'} · {active.length} andar(es)
           </span>
         </span>
-        <Icon name="chevrons-up-down" size={14} />
+        <span className={fade}>
+          <Icon name="chevrons-up-down" size={14} />
+        </span>
       </button>
 
       {open && (
@@ -89,11 +105,7 @@ function Dot({ color }: { color: string | null }) {
 
 const truncate: React.CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }
 const headerBtn: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  width: '100%',
-  padding: '6px 8px',
+  padding: 6,
   borderRadius: 10,
   border: '1px solid var(--border-subtle)',
   background: 'var(--surface-sunken)',
@@ -119,6 +131,7 @@ const popover: React.CSSProperties = {
   left: 0,
   right: 0,
   zIndex: 50,
+  minWidth: 220,
   background: 'var(--paper-0, #fff)',
   border: '1px solid var(--border-subtle)',
   borderRadius: 12,
