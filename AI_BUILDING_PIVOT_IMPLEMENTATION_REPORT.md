@@ -5,7 +5,7 @@ Execution report for `AI_BUILDING_PIVOT_IMPLEMENTATION_PLAN.md`.
 ## 1. Git state
 
 - **Base commit:** `6d4f809d1c3bfc5bc49e0ed725c13f68b0f2e10f` (matches the plan header; `origin/main` == base at start).
-- **Final feature commit:** `0a40d1c` on branch **`development`** (not pushed; docs commits follow).
+- **Final feature commit:** `c94807d` on branch **`development`** (not pushed; docs commits follow).
 - **Branch deviation:** the plan suggested a dedicated branch; per the user's standing workflow ("keep work on `development`, push to `main` only on request") all pivot work is committed on `development`. Nothing was pushed, deployed, or run against production.
 
 ### Commits added (small, semantic)
@@ -25,6 +25,7 @@ Execution report for `AI_BUILDING_PIVOT_IMPLEMENTATION_PLAN.md`.
 | `8e878e7` | feat(scheduler): recurrence→cron + BullMQ reconciler (tz/DST) |
 | `e6a746b` | feat(connections): encrypted connections + email/Telegram delivery |
 | `0a40d1c` | feat(automations-ui): automations list, editor and runs pages (gated) |
+| `c94807d` | feat(webhook): signed webhook trigger endpoint (completes 3 triggers) |
 
 ## 2. Scope executed
 
@@ -71,7 +72,7 @@ An idempotent boot backfill was added to `runMigrations()`:
 
 Run with `npm run build` first (suites consume `dist`).
 
-- **Backend:** `node --test` → **41 passed / 0 failed / 1 skipped** — config (5), floors/timezone (2), generic runtime (7), automation validation + hashing (6), SSRF guard (3), RSS/template (4), linear runner (5), recurrence→cron (4), delivery adapters (5). The skipped one is the **run-idempotency integration test**, which runs only when `MONGODB_URI` + `REDIS_URL` are set (against `compose.dev.yml`).
+- **Backend:** `node --test` → **44 passed / 0 failed / 1 skipped** — config (5), floors/timezone (2), generic runtime (7), automation validation + hashing (6), SSRF guard (3), RSS/template (4), linear runner (5), recurrence→cron (4), delivery adapters (5), webhook HMAC (3). The skipped one is the **run-idempotency integration test**, which runs only when `MONGODB_URI` + `REDIS_URL` are set (against `compose.dev.yml`).
 - **Frontend:** `vitest run` → **58 passed / 0 failed** (9 files) — baseline 55 (office 51 + others) + `resolveActiveFloor` (3).
 - **Lint:** `oxlint` clean. **Typecheck:** `tsc -b` clean (frontend + backend).
 
