@@ -3,6 +3,8 @@ import { Worker } from 'bullmq'
 import { ObjectId } from 'mongodb'
 import { db, mongoClient } from './db.js'
 import { createConnection, RUN_QUEUE } from './automations/queue.js'
+import { SCHEDULE_QUEUE, reconcileSchedules } from './automations/scheduler.js'
+import { createRun } from './automations/runService.js'
 import {
   findRunUnscoped,
   insertArtifact,
@@ -123,20 +125,46 @@ async function processRun(runId: string): Promise<void> {
 async function main(): Promise<void> {
   await mongoClient.connect()
   const connection = createConnection()
+
+  // Run worker: executes each enqueued automation run.
   const worker = new Worker(RUN_QUEUE, async (job) => processRun(String(job.data.runId)), {
     connection,
     concurrency: CONCURRENCY,
   })
   worker.on('failed', (job, err) => console.error(`run job ${job?.id} failed:`, err.message))
-  console.log(`Automation worker up (concurrency ${CONCURRENCY})`)
+
+  // Scheduler: mirror Mongo schedules onto BullMQ, then keep them reconciled. A
+  // fired scheduler creates one run per scheduled instant (idempotency key =
+  // automationId + fire timestamp), so a re-fire never duplicates work.
+  await reconcileSchedules().catch((err) => console.error('schedule reconcile failed:', err))
+  const reconcileTimer = setInterval(() => {
+    void reconcileSchedules().catch((err) => console.error('schedule reconcile failed:', err))
+  }, 60_000)
+  reconcileTimer.unref()
+
+  const scheduleWorker = new Worker(
+    SCHEDULE_QUEUE,
+    async (job) => {
+      const { automationId, ownerId } = job.data as { automationId: string; ownerId: string }
+      await createRun(ownerId, new ObjectId(automationId), {
+        triggerType: 'schedule',
+        idempotencyKey: `${automationId}:${job.timestamp}`,
+      })
+    },
+    { connection: createConnection(), concurrency: CONCURRENCY },
+  )
+  scheduleWorker.on('failed', (job, err) => console.error(`schedule job ${job?.id} failed:`, err.message))
+
+  console.log(`Automation worker up (concurrency ${CONCURRENCY}) — runs + scheduler`)
 
   let shuttingDown = false
   const shutdown = async (signal: string) => {
     if (shuttingDown) return
     shuttingDown = true
     console.log(`Received ${signal}, draining worker...`)
+    clearInterval(reconcileTimer)
     try {
-      await worker.close() // stops taking jobs, waits for active ones
+      await Promise.all([worker.close(), scheduleWorker.close()])
       await connection.quit()
       await mongoClient.close()
       process.exit(0)
