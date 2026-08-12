@@ -1,0 +1,29 @@
+# Local DEVELOPMENT infrastructure only — MongoDB + Redis for the AI-building
+# pivot (queue/worker/scheduler). NOT for production (Coolify manages those).
+#
+#   docker compose -f compose.dev.yml up -d
+#   # then point backend/.env at them and run the API + worker (see
+#   # docs/operations/local-dev.md)
+#   docker compose -f compose.dev.yml down          # stop (keeps data)
+#   docker compose -f compose.dev.yml down -v       # stop + wipe the Mongo volume
+
+name: comunicacaoai-dev-infra
+
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - comunicacaoai_mongo:/data/db
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    restart: unless-stopped
+
+volumes:
+  comunicacaoai_mongo:

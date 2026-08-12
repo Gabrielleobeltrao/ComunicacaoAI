@@ -43,6 +43,9 @@ export const config = {
   publicUrl: urlVar('PUBLIC_URL', `http://localhost:${port}`),
   // Better Auth's public base origin (used to derive the Google OAuth callback).
   betterAuthUrl: urlVar('BETTER_AUTH_URL', `http://localhost:${port}`),
+  // Redis for the automation queue/worker/scheduler (AI-building pivot). Empty in
+  // production until provided; localhost default for local dev (compose.dev.yml).
+  redisUrl: process.env.REDIS_URL?.trim() || (isProduction ? '' : 'redis://localhost:6379'),
 } as const
 
 // Backwards-compatible canonical client origin (first in the allowlist).
