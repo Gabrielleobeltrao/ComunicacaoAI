@@ -1,11 +1,12 @@
 import { decrypt, encrypt } from './crypto.js'
 import { getIntegration, saveIntegration, updateAccessToken } from './integrations.js'
+import { config } from './config.js'
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? ''
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? ''
 const REDIRECT_URI =
   process.env.GOOGLE_REDIRECT_URI ??
-  `${process.env.BETTER_AUTH_URL ?? 'http://localhost:4000'}/api/integrations/google/callback`
+  `${config.betterAuthUrl}/api/integrations/google/callback`
 
 // calendar = read/create events + free/busy; spreadsheets = append rows;
 // openid+email to know the connected account.
