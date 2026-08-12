@@ -2,22 +2,8 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { signOut, useSession } from '../lib/auth-client'
 import { ACTIVE, COLLAPSE_FADE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
 import { Brand, Icon, IconButton } from '../ui'
+import { NAV } from './navItems'
 import { SectorNav } from './SectorNav'
-
-// Lucide glyph names (via the Icon component), matching the design's Rail.
-interface NavLink {
-  to: string
-  label: string
-  icon: string
-}
-
-const NAV: NavLink[] = [
-  { to: '/dashboard', label: 'Escritório', icon: 'layout-dashboard' },
-  { to: '/agents', label: 'Agentes', icon: 'users-round' },
-  { to: '/setores', label: 'Setores', icon: 'network' },
-  { to: '/widgets', label: 'Canais', icon: 'share-2' },
-  { to: '/chats', label: 'Conversas', icon: 'message-circle' },
-]
 
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
@@ -38,8 +24,9 @@ export function Sidebar({ current }: { current: string }) {
   return (
     // A slim rail (icons only) that expands to the full width on hover. The
     // outer wrapper keeps reserving the collapsed width so the page never
-    // reflows; the <aside> overlays the content when expanded.
-    <div className="group relative shrink-0" style={{ width: 'var(--rail-width-collapsed)' }}>
+    // reflows; the <aside> overlays the content when expanded. Desktop only —
+    // touch devices get MobileNav (bottom bar + drawer) instead of this hover rail.
+    <div className="group relative hidden shrink-0 lg:block" style={{ width: 'var(--rail-width-collapsed)' }}>
       <aside
         className="absolute inset-y-0 left-0 z-30 flex w-(--rail-width-collapsed) flex-col gap-4 overflow-hidden border-r px-3 py-4 transition-[width,box-shadow] duration-200 ease-out group-hover:w-(--rail-width) group-hover:overflow-y-auto group-hover:shadow-[0_16px_40px_rgba(22,24,31,.16)]"
         style={{ background: 'var(--surface-rail)', borderColor: 'var(--border-subtle)' }}
