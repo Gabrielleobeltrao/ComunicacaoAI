@@ -6,7 +6,7 @@ import { buildNavigationGrid, cellOfPoint, isWalkable, nearestWalkable } from '.
 import { buildActivityEnvelope, inEnvelopeCell } from '../buildActivityEnvelope'
 import { findOfficePath } from '../findOfficePath'
 import { placeOfficeDecor } from '../placeOfficeDecor'
-import { createContext, createModels, footOf, stepAgent } from '../officeSimCore'
+import { createContext, createModels, footOf, settleStartPositions, stepAgent } from '../officeSimCore'
 
 function input(): LayoutInput {
   const mk = (n: number, p: string) => Array.from({ length: n }, (_, i) => ({ _id: `${p}-${i}` }))
@@ -63,22 +63,37 @@ describe('officeSimCore', () => {
     expect(m.pos.y).toBeCloseTo(seat.y, 6)
   })
 
-  it('never lets two agents hold (occupy) the same cell', () => {
+  it('never lets two agents occupy the same cell (formal + real feet) and honours the cap', () => {
     const models = createModels(layout, () => 'normal')
     const ctx = createContext(layout, grid, models.size)
+    settleStartPositions(ctx, models)
     for (const m of models.values()) m.timer = Math.min(m.timer, 500) // get everyone moving sooner
     let now = 0
-    for (let step = 0; step < 3000; step++) {
+    for (let step = 0; step < 4000; step++) {
       now += 24
       for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
       for (const m of models.values()) stepAgent(m, 24, now, ctx)
-      // reservedCur is a unique reservation — no two agents can share one
-      const occupied = new Map<string, string>()
+
+      // 1. formal occupancy is unique
+      const byCell = new Map<string, string>()
       for (const m of models.values()) {
-        if (!m.reservedCur) continue
-        expect(occupied.has(m.reservedCur)).toBe(false)
-        occupied.set(m.reservedCur, m.id)
+        if (!m.occupiedCell) continue
+        expect(byCell.has(m.occupiedCell)).toBe(false)
+        byCell.set(m.occupiedCell, m.id)
       }
+      // 2. every standing agent actually holds a cell (never floats un-occupied)
+      for (const m of models.values()) if (m.motion !== 'seated') expect(m.occupiedCell).not.toBeNull()
+      // 3. real foot cells of walking/paused/waiting agents never collide
+      const feet = new Map<string, string>()
+      for (const m of models.values()) {
+        if (m.motion === 'seated' || m.motion === 'standing-up' || m.motion === 'sitting-down') continue
+        const c = cellOfPoint(grid, footOf(m.pos))
+        const key = `${c.i},${c.j}`
+        expect(feet.has(key)).toBe(false)
+        feet.set(key, m.id)
+      }
+      // 4. the concurrency cap is never exceeded
+      expect(ctx.moving.count).toBeLessThanOrEqual(ctx.cap)
     }
   })
 
@@ -86,6 +101,7 @@ describe('officeSimCore', () => {
     const env = buildActivityEnvelope(layout, grid)
     const models = createModels(layout, () => 'normal')
     const ctx = createContext(layout, grid, models.size, [], env)
+    settleStartPositions(ctx, models)
     for (const m of models.values()) m.timer = Math.min(m.timer, 500)
     let now = 0
     for (let step = 0; step < 3000; step++) {
@@ -111,9 +127,8 @@ describe('officeSimCore', () => {
       now += 32
       for (const m of models.values()) stepAgent(m, 32, now, ctx)
       maxMoving = Math.max(maxMoving, ctx.moving.count)
+      expect(ctx.moving.count).toBeLessThanOrEqual(ctx.cap) // strict: never cap + 1
     }
-    // the cap gates NEW trips; brief overshoot is impossible since starts check it
-    expect(ctx.moving.count).toBeLessThanOrEqual(ctx.cap + 1)
     expect(maxMoving).toBeGreaterThan(0)
   })
 

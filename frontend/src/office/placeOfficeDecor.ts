@@ -319,8 +319,9 @@ export function placeOfficeDecor(layout: BuiltOfficeLayout, grid: NavGrid): Offi
     const key = `${Math.round(ap.point.x * 2)},${Math.round(ap.point.y * 2)}`
     if (seenApproach.has(key)) continue
     seenApproach.add(key)
-    const cap = it.w >= 2 || it.h >= 2 ? 2 : 1
-    interactionPoints.push({ id: `int:amen:${it.roomKey}:${it.index}`, point: ap.point, facing: ap.facing, categories: categoriesForFamily(it.art), capacity: cap })
+    // One physical stand-point = capacity 1 (a >1 capacity would map two agents to
+    // the same coordinate); multi-agent gatherings use distinct conversation slots.
+    interactionPoints.push({ id: `int:amen:${it.roomKey}:${it.index}`, point: ap.point, facing: ap.facing, categories: categoriesForFamily(it.art), capacity: 1 })
   }
 
   // Final safety: validate every interaction point against the *merged* grid the

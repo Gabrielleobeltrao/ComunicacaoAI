@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef } from 'react'
 import type { BuiltOfficeLayout } from './buildOfficeLayout'
 import type { NavGrid } from './buildNavigationGrid'
-import { REF_DY, createContext, createModels, stepAgent } from './officeSimCore'
+import { REF_DY, createContext, createModels, settleStartPositions, stepAgent } from './officeSimCore'
 import type { AgentModel, SimContext } from './officeSimCore'
 import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { TIME_SCALE } from './officeConfig'
@@ -44,6 +44,7 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
     models.current = m
     views.current = v
     ctxRef.current = createContext(layout, grid, m.size, optsRef.current.interactions ?? [], optsRef.current.envelope)
+    settleStartPositions(ctxRef.current, m)
     bump()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, grid])

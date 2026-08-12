@@ -5,7 +5,7 @@
 import type { BuiltOfficeLayout } from './buildOfficeLayout'
 import { hash32, mulberry32 } from './buildOfficeLayout'
 import type { NavGrid } from './buildNavigationGrid'
-import { isWalkable, nearestWalkable, pointOfCell } from './buildNavigationGrid'
+import { cellOfPoint, isWalkable, nearestWalkable, pointOfCell } from './buildNavigationGrid'
 import { buildActivityEnvelope, inEnvelopeCell, inEnvelopePoint } from './buildActivityEnvelope'
 import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { findOfficePathCells } from './findOfficePath'
@@ -39,8 +39,8 @@ export interface AgentModel {
   route: GridCell[]
   routeIdx: number
   seg: { from: OfficePoint; to: OfficePoint; t: number; dur: number } | null
-  reservedNext: string | null
-  reservedCur: string | null
+  reservedNext: string | null // future cell reserved during a step (may expire)
+  occupiedCell: string | null // cell the feet physically hold — never expires while standing
   destInteractionId: string | null // interaction-point slot currently held
   destFacing: OfficeDirection | null // facing to assume on arrival
   timer: number
@@ -55,7 +55,8 @@ export interface SimContext {
   waypoints: OfficePoint[]
   interactions: InteractionPoint[]
   occupancy: Map<string, number> // interactionId -> agents currently holding it
-  reservations: Map<string, { agentId: string; until: number }>
+  occupiedCells: Map<string, string> // cellKey -> agentId physically standing there (never expires)
+  reservations: Map<string, { agentId: string; until: number }> // future cells (expire)
   moving: { count: number }
   cap: number
 }
@@ -113,7 +114,7 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
       routeIdx: 0,
       seg: null,
       reservedNext: null,
-      reservedCur: null,
+      occupiedCell: null,
       destInteractionId: null,
       destFacing: null,
       timer: rand(rng, OFFICE_TIMING.staggerMs) + rand(rng, OFFICE_TIMING.seatedPause),
@@ -140,7 +141,7 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
       routeIdx: 0,
       seg: null,
       reservedNext: null,
-      reservedCur: null,
+      occupiedCell: null,
       destInteractionId: null,
       destFacing: null,
       timer: rand(rng, OFFICE_TIMING.staggerMs) + rand(rng, OFFICE_TIMING.destinationPause),
@@ -152,6 +153,48 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
   return out
 }
 
+// Nearest walkable cell that is also inside the envelope, searched outward.
+function nearestEnvelopeCell(ctx: SimContext, p: OfficePoint, maxRings = 6): GridCell | null {
+  const c = cellOfPoint(ctx.grid, p)
+  if (isWalkable(ctx.grid, c.i, c.j) && inEnvelopeCell(ctx.envelope, c.i, c.j)) return c
+  for (let r = 1; r <= maxRings; r++)
+    for (let dj = -r; dj <= r; dj++)
+      for (let di = -r; di <= r; di++) {
+        if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue
+        const i = c.i + di
+        const j = c.j + dj
+        if (isWalkable(ctx.grid, i, j) && inEnvelopeCell(ctx.envelope, i, j)) return { i, j }
+      }
+  return null
+}
+
+/** Normalize each agent's start once, before the first paint (init only):
+ *  - seated: snap the chair-exit to a walkable envelope cell so standing up lands
+ *    the feet on a real, in-envelope cell (never inside a wall/desk inflation);
+ *  - loose: snap the start position onto a valid envelope cell. */
+export function settleStartPositions(ctx: SimContext, models: Map<string, AgentModel>): void {
+  for (const m of models.values()) {
+    if (m.home) {
+      const snapped = nearestEnvelopeCell(ctx, m.home.exitFoot, 4)
+      if (snapped) {
+        const foot = pointOfCell(ctx.grid, snapped.i, snapped.j)
+        m.home.exitFoot = foot
+        m.home.exitRef = refOf(foot)
+      }
+      continue
+    }
+    if (m.motion === 'seated') continue
+    const foot = footOf(m.pos)
+    const c = cellOfPoint(ctx.grid, foot)
+    if (isWalkable(ctx.grid, c.i, c.j) && inEnvelopeCell(ctx.envelope, c.i, c.j)) continue
+    const snapped = nearestEnvelopeCell(ctx, foot, 8)
+    if (snapped) {
+      m.pos = refOf(pointOfCell(ctx.grid, snapped.i, snapped.j))
+      m.baseRef = { ...m.pos }
+    }
+  }
+}
+
 export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAgents: number, interactions: InteractionPoint[] = [], envelope: ActivityEnvelope = buildActivityEnvelope(layout, grid)): SimContext {
   return {
     grid,
@@ -159,29 +202,48 @@ export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAge
     waypoints: corridorWaypoints(grid, layout, envelope),
     interactions,
     occupancy: new Map(),
+    occupiedCells: new Map(),
     reservations: new Map(),
     moving: { count: 0 },
     cap: Math.max(1, Math.floor(totalAgents * MAX_CONCURRENT_RATIO)),
   }
 }
 
-function reserve(ctx: SimContext, k: string, id: string, now: number): boolean {
+// Physical occupancy — the feet's cell. Never expires; released only when the
+// agent leaves the cell (moves on) or sits down.
+function occupy(ctx: SimContext, m: AgentModel, k: string) {
+  if (m.occupiedCell === k) return
+  if (m.occupiedCell && ctx.occupiedCells.get(m.occupiedCell) === m.id) ctx.occupiedCells.delete(m.occupiedCell)
+  ctx.occupiedCells.set(k, m.id)
+  m.occupiedCell = k
+}
+function unoccupy(ctx: SimContext, m: AgentModel) {
+  if (m.occupiedCell && ctx.occupiedCells.get(m.occupiedCell) === m.id) ctx.occupiedCells.delete(m.occupiedCell)
+  m.occupiedCell = null
+}
+function cellFree(ctx: SimContext, k: string, id: string, now: number): boolean {
+  const occ = ctx.occupiedCells.get(k)
+  if (occ && occ !== id) return false
   const held = ctx.reservations.get(k)
   if (held && held.until > now && held.agentId !== id) return false
-  ctx.reservations.set(k, { agentId: id, until: now + OFFICE_TIMING.reservationMs })
   return true
 }
-function release(ctx: SimContext, k: string | null, id: string) {
-  if (k && ctx.reservations.get(k)?.agentId === id) ctx.reservations.delete(k)
+// Reserve the next cell of a step. Fails if another agent occupies or reserves it.
+function reserveNext(ctx: SimContext, m: AgentModel, k: string, now: number): boolean {
+  if (!cellFree(ctx, k, m.id, now)) return false
+  ctx.reservations.set(k, { agentId: m.id, until: now + OFFICE_TIMING.reservationMs })
+  m.reservedNext = k
+  return true
 }
-function releaseAll(ctx: SimContext, m: AgentModel) {
-  release(ctx, m.reservedNext, m.id)
-  release(ctx, m.reservedCur, m.id)
+function releaseNext(ctx: SimContext, m: AgentModel) {
+  if (m.reservedNext && ctx.reservations.get(m.reservedNext)?.agentId === m.id) ctx.reservations.delete(m.reservedNext)
   m.reservedNext = null
-  m.reservedCur = null
 }
-function reservedBy(ctx: SimContext, excludeId: string, now: number): Set<string> {
+// Cells the pathfinder must avoid: everyone else's physical cell and reserved
+// next cell (the goal itself is exempt inside findOfficePath).
+function blockedByOthers(ctx: SimContext, excludeId: string, now: number): Set<string> {
   const s = new Set<string>()
+  for (const [k, id] of ctx.occupiedCells) if (id !== excludeId) s.add(k)
   for (const [k, r] of ctx.reservations) if (r.until > now && r.agentId !== excludeId) s.add(k)
   return s
 }
@@ -226,7 +288,7 @@ function routeFrom(ctx: SimContext, m: AgentModel, fromFoot: OfficePoint, goalFo
   if (!from || !to) return false
   // Confine the route to the activity envelope (the goal cell is exempt so a
   // just-outside target can still be reached), so feet never leave the area.
-  const path = findOfficePathCells(ctx.grid, from, to, { avoid: reservedBy(ctx, m.id, now), allowed: (i, j) => inEnvelopeCell(ctx.envelope, i, j) })
+  const path = findOfficePathCells(ctx.grid, from, to, { avoid: blockedByOthers(ctx, m.id, now), allowed: (i, j) => inEnvelopeCell(ctx.envelope, i, j) })
   if (!path || path.length < 2) return false
   m.route = path
   m.routeIdx = 0
@@ -235,25 +297,21 @@ function routeFrom(ctx: SimContext, m: AgentModel, fromFoot: OfficePoint, goalFo
 function beginSeg(ctx: SimContext, m: AgentModel, now: number): boolean {
   if (m.routeIdx >= m.route.length - 1) return false
   const cur = m.route[m.routeIdx]
-  if (m.reservedCur === null) {
-    reserve(ctx, keyOf(cur), m.id, now)
-    m.reservedCur = keyOf(cur)
-  }
+  occupy(ctx, m, keyOf(cur)) // feet physically hold the current cell
   const nextCell = m.route[m.routeIdx + 1]
   const k = keyOf(nextCell)
-  if (!reserve(ctx, k, m.id, now)) {
+  if (!reserveNext(ctx, m, k, now)) {
     m.resume = m.motion === 'waiting' ? m.resume : m.motion
     m.motion = 'waiting'
     m.timer = rand(m.rng, OFFICE_TIMING.waitRetry)
     return false
   }
-  m.reservedNext = k
   m.direction = stepDir(cur, nextCell)
   m.seg = { from: refOf(pointOfCell(ctx.grid, cur.i, cur.j)), to: refOf(pointOfCell(ctx.grid, nextCell.i, nextCell.j)), t: 0, dur: OFFICE_TIMING.stepMs }
   return true
 }
 function arrive(ctx: SimContext, m: AgentModel) {
-  releaseAll(ctx, m)
+  releaseNext(ctx, m) // keep occupiedCell — a paused agent still holds its cell
   m.seg = null
   m.motion = 'pausing'
   // At an interaction point the agent assumes the point's facing and idles.
@@ -262,9 +320,10 @@ function arrive(ctx: SimContext, m: AgentModel) {
   if (m.kind === 'loose') ctx.moving.count = Math.max(0, ctx.moving.count - 1)
 }
 function finishReturn(ctx: SimContext, m: AgentModel) {
-  releaseAll(ctx, m)
+  releaseNext(ctx, m)
   m.route = []
   if (m.home) {
+    // Sit down from the chair-exit cell (still physically occupied) to the seat.
     m.motion = 'sitting-down'
     m.pos = { ...m.home.exitRef }
     m.seg = { from: { ...m.home.exitRef }, to: { ...m.home.seatRef }, t: 0, dur: OFFICE_TIMING.sitDownMs }
@@ -277,7 +336,7 @@ function finishReturn(ctx: SimContext, m: AgentModel) {
 }
 function startReturn(ctx: SimContext, m: AgentModel, now: number) {
   clearDest(ctx, m)
-  releaseAll(ctx, m)
+  releaseNext(ctx, m) // keep occupiedCell while we plan the way home
   const targetFoot = m.home ? m.home.exitFoot : footOf(m.baseRef)
   if (!routeFrom(ctx, m, footOf(m.pos), targetFoot, now)) {
     finishReturn(ctx, m)
@@ -290,6 +349,15 @@ function startReturn(ctx: SimContext, m: AgentModel, now: number) {
 function startTrip(ctx: SimContext, m: AgentModel, now: number): boolean {
   const dest = chooseDestination(ctx, m)
   if (!dest) return false
+  // A seated agent may only stand up once its chair-exit cell is physically free.
+  let exitCell: GridCell | null = null
+  if (m.home) {
+    exitCell = nearestWalkable(ctx.grid, m.home.exitFoot, 2)
+    if (!exitCell || !cellFree(ctx, keyOf(exitCell), m.id, now)) {
+      clearDest(ctx, m)
+      return false
+    }
+  }
   const startFoot = m.home ? m.home.exitFoot : footOf(m.baseRef)
   if (!routeFrom(ctx, m, startFoot, dest, now)) {
     clearDest(ctx, m)
@@ -299,7 +367,8 @@ function startTrip(ctx: SimContext, m: AgentModel, now: number): boolean {
   m.attempts = 0
   ctx.moving.count++
   m.resume = 'walking'
-  if (m.home) {
+  if (m.home && exitCell) {
+    occupy(ctx, m, keyOf(exitCell)) // hold the exit cell before the feet leave the chair
     m.motion = 'standing-up'
     m.direction = 'front'
     m.seg = { from: { ...m.home.seatRef }, to: { ...m.home.exitRef }, t: 0, dur: OFFICE_TIMING.standUpMs }
@@ -327,16 +396,20 @@ function advanceSeg(ctx: SimContext, m: AgentModel, dt: number, now: number) {
   }
   if (m.motion === 'sitting-down') {
     m.motion = 'seated'
+    unoccupy(ctx, m) // back in the chair — no longer on a nav cell
     m.direction = m.home ? m.home.facing : 'front'
     m.frame = 0
     m.timer = rand(m.rng, OFFICE_TIMING.seatedPause)
     ctx.moving.count = Math.max(0, ctx.moving.count - 1)
     return
   }
-  // Shift reservations: we now occupy the cell we just reached.
-  release(ctx, m.reservedCur, m.id)
-  m.reservedCur = m.reservedNext
-  m.reservedNext = null
+  // We physically move onto the cell we reserved: it becomes the occupied cell.
+  if (m.reservedNext) {
+    const nextKey = m.reservedNext
+    occupy(ctx, m, nextKey)
+    if (ctx.reservations.get(nextKey)?.agentId === m.id) ctx.reservations.delete(nextKey)
+    m.reservedNext = null
+  }
   m.routeIdx++
   if (m.routeIdx >= m.route.length - 1) {
     if (m.motion === 'returning') finishReturn(ctx, m)
@@ -346,6 +419,13 @@ function advanceSeg(ctx: SimContext, m: AgentModel, dt: number, now: number) {
 
 /** Advance one agent by dt milliseconds at time `now`. Mutates the model. */
 export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContext): void {
+  // Any standing agent must physically occupy a cell — seed it lazily (covers
+  // loose agents that begin idle, so a route never passes through them).
+  if (m.motion !== 'seated' && m.occupiedCell === null) {
+    const c = nearestWalkable(ctx.grid, footOf(m.pos), 2)
+    if (c) occupy(ctx, m, keyOf(c))
+  }
+
   if (m.motion === 'walking' || m.motion === 'returning' || m.motion === 'standing-up' || m.motion === 'sitting-down') {
     m.frameTimer -= dt
     if (m.frameTimer <= 0) {
@@ -372,7 +452,7 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
             beginSeg(ctx, m, now)
           } else startReturn(ctx, m, now)
         } else {
-          const dest = ctx.moving.count <= ctx.cap ? chooseDestination(ctx, m) : null
+          const dest = ctx.moving.count < ctx.cap ? chooseDestination(ctx, m) : null
           if (dest && routeFrom(ctx, m, footOf(m.pos), dest, now)) {
             ctx.moving.count++
             m.motion = 'walking'
@@ -394,7 +474,7 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
           if (m.kind === 'seated') startReturn(ctx, m, now)
           else {
             clearDest(ctx, m)
-            releaseAll(ctx, m)
+            releaseNext(ctx, m) // keep occupiedCell — the agent stays put
             m.motion = 'pausing'
             m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
             ctx.moving.count = Math.max(0, ctx.moving.count - 1)
