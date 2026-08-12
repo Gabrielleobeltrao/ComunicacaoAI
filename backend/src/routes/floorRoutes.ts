@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import type { Floor } from '../floors.js'
 import { createFloor, getFloor, getFloorActivity, listFloors, setFloorStatus, updateFloor } from '../floors.js'
+import { floorMetrics } from '../automations/metrics.js'
 import { fail, notFound, oid } from './http.js'
 
 // Mounted at /api/floors behind requireAuth (res.locals.userId is the owner).
@@ -82,4 +83,13 @@ floorRouter.get('/:floorId/activity', async (req, res) => {
   if (!floor) return notFound(res)
   const activity = await getFloorActivity(res.locals.userId, id)
   res.json({ floorId: id, ...activity })
+})
+
+// Operational metrics (automations/runs) — separate from conversational metrics.
+floorRouter.get('/:floorId/metrics', async (req, res) => {
+  const id = oid(req.params.floorId)
+  if (!id) return notFound(res)
+  const floor = await getFloor(res.locals.userId, id)
+  if (!floor) return notFound(res)
+  res.json(await floorMetrics(res.locals.userId, id))
 })

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
-import { archiveFloor, getFloor, getFloorActivity, restoreFloor } from '../lib/floors'
-import type { Floor } from '../lib/floors'
+import { archiveFloor, getFloor, getFloorActivity, getFloorMetrics, restoreFloor } from '../lib/floors'
+import type { Floor, FloorMetrics } from '../lib/floors'
+import { featureFlags } from '../featureFlags'
 import { Button } from '../ui'
 
 // Floor detail. Gated by featureFlags.aiFloors. Shows the floor's mission,
@@ -12,6 +13,7 @@ export function FloorView() {
   const { floorId } = useParams<{ floorId: string }>()
   const [floor, setFloor] = useState<Floor | null>(null)
   const [activity, setActivity] = useState<{ agentCount: number; sectorCount: number } | null>(null)
+  const [metrics, setMetrics] = useState<FloorMetrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -24,6 +26,7 @@ export function FloorView() {
       const [f, a] = await Promise.all([getFloor(floorId), getFloorActivity(floorId)])
       setFloor(f)
       setActivity(a)
+      if (featureFlags.aiAutomations) setMetrics(await getFloorMetrics(floorId).catch(() => null))
     } catch {
       setError(true)
     } finally {
@@ -75,6 +78,16 @@ export function FloorView() {
             <Row label="Agentes" value={String(activity?.agentCount ?? '—')} />
             <Row label="Setores" value={String(activity?.sectorCount ?? '—')} />
           </div>
+          {metrics && (
+            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
+              <Tile label="Automações ativas" value={metrics.automationsActive} />
+              <Tile label="Runs (24h)" value={metrics.runsToday} />
+              <Tile label="Em andamento" value={metrics.running} />
+              <Tile label="Falhas (24h)" value={metrics.failures24h} />
+              <Tile label="Taxa de sucesso" value={metrics.successRate == null ? '—' : `${Math.round(metrics.successRate * 100)}%`} />
+              <Tile label="Entregáveis (24h)" value={metrics.recentArtifacts} />
+            </div>
+          )}
           <div>
             <Button variant={floor.status === 'archived' ? 'primary' : 'danger'} disabled={busy} onClick={toggleArchive}>
               {floor.status === 'archived' ? 'Restaurar andar' : 'Arquivar andar'}
@@ -91,6 +104,15 @@ function Row({ label, value }: { label: string; value: string }) {
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '4px 0' }}>
       <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{label}</span>
       <span style={{ fontSize: 13, textAlign: 'right' }}>{value}</span>
+    </div>
+  )
+}
+
+function Tile({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div style={{ ...panel, gap: 2 }}>
+      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{label}</span>
+      <strong style={{ fontSize: 20 }}>{value}</strong>
     </div>
   )
 }

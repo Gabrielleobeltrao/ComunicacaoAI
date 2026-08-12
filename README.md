@@ -2,6 +2,15 @@
 
 A SaaS platform for managing goal-oriented AI communication agents, connected to embeddable chat widgets that businesses drop into their own sites.
 
+> **Evolving into an operational building of AIs.** ComunicacaoAI is growing from a
+> chat/attendance platform into a *prédio operacional*: **floors** with missions,
+> **agents** that run **automations** (`trigger → run → deliverable → email/Telegram`)
+> on a durable worker, while chat/widget/WhatsApp remain first-class **conversational
+> channels**. The pivot ships behind feature flags (OFF by default) — nothing below
+> changes until they're enabled. See
+> [`docs/architecture/automation-pivot.md`](docs/architecture/automation-pivot.md) and
+> [`AI_BUILDING_PIVOT_IMPLEMENTATION_REPORT.md`](AI_BUILDING_PIVOT_IMPLEMENTATION_REPORT.md).
+
 ## What it does
 
 - **Agents** — create an AI agent with an objective/instructions, pick its LLM provider (Anthropic or OpenAI) and model, and give it a knowledge base (pasted text, `.txt`, `.pdf`, or images — extracted/transcribed automatically) for grounded, RAG-based answers.
