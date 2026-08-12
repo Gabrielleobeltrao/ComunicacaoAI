@@ -17,8 +17,14 @@ export type CharacterView =
   | 'frente-sentado-ligacao'
   | 'costas-sentado-ligacao'
 
-/** Path to one of a character's five versions. */
+/** Path to one of a character's known versions. */
 export function characterSrc(name: string, view: CharacterView): string {
+  return `${CHARACTERS}/${name}/${view}.svg`
+}
+
+/** Path to any character view by raw name (walk frames, poses…) — used by the
+ * sprite manifest, which owns the name→file mapping. */
+export function characterAsset(name: string, view: string): string {
   return `${CHARACTERS}/${name}/${view}.svg`
 }
 
