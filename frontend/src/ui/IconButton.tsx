@@ -19,7 +19,7 @@ interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 
   style?: CSSProperties
 }
 
-export function IconButton({ icon, size = 'md', variant = 'ghost', label, style, ...rest }: IconButtonProps) {
+export function IconButton({ icon, size = 'md', variant = 'ghost', label, style, className, ...rest }: IconButtonProps) {
   const d = sizes[size]
   const bg = bgFor[variant]
   const [hover, setHover] = useState(false)
@@ -27,6 +27,7 @@ export function IconButton({ icon, size = 'md', variant = 'ghost', label, style,
     <button
       aria-label={label}
       title={label}
+      className={['ds-hit', className].filter(Boolean).join(' ')}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{

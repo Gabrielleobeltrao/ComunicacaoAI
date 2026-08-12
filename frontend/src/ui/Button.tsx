@@ -37,6 +37,7 @@ export function Button({
   block,
   disabled,
   style,
+  className,
   ...rest
 }: ButtonProps) {
   const s = sizes[size]
@@ -69,6 +70,7 @@ export function Button({
         ...variants[variant],
         ...style,
       }}
+      className={['ds-hit', className].filter(Boolean).join(' ')}
       {...rest}
     >
       {icon ? <Icon name={icon} size={iconSize} /> : null}

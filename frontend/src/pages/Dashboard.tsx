@@ -65,18 +65,22 @@ export function Dashboard() {
 
   const headerActions = (
     <>
-      <Input
-        icon="search"
-        placeholder="Buscar agente"
-        aria-label="Buscar agente"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') navigate('/agents')
-        }}
-        style={{ width: 220 }}
-      />
+      {/* The wide search is hidden on phones (search lives on the Agents page); the
+          hire button collapses to an icon so the topbar never overflows. */}
+      <div className="hidden sm:block">
+        <Input
+          icon="search"
+          placeholder="Buscar agente"
+          aria-label="Buscar agente"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') navigate('/agents')
+          }}
+          style={{ width: 'clamp(140px, 24vw, 220px)' }}
+        />
+      </div>
       <IconButton icon="bell" label="Avisos" variant="soft" onClick={() => navigate('/chats')} />
-      <Button icon="plus" onClick={() => navigate('/agents')}>
-        Contratar agente
+      <Button icon="plus" aria-label="Contratar agente" onClick={() => navigate('/agents')}>
+        <span className="hidden sm:inline">Contratar agente</span>
       </Button>
     </>
   )

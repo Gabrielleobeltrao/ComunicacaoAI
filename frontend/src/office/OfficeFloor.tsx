@@ -21,7 +21,10 @@ import { OfficeMap } from './OfficeMap'
 import { SimAgent } from './SimAgent'
 import { roundedPath, traceOutline } from './roomShape'
 
-const VIEWPORT_H = 560 // map viewport height (px) — the floor's aspect follows the panel width
+const VIEWPORT_H = 560 // reference map height (px) used as the aspect fallback
+// Responsive map height: never tiny on a phone, never taller than the reference,
+// and a comfortable share of the dynamic viewport in between.
+const MAP_HEIGHT = 'clamp(340px, 60dvh, 560px)'
 
 const AMENITIES: Cenario[] = [reuniao, cozinha, lounge]
 const AMEN_TINT: Record<string, string> = { reuniao: '#38B6F0', cozinha: '#FFB53D', lounge: '#8B5CF6' }
@@ -53,6 +56,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
 
   const hostRef = useRef<HTMLDivElement>(null)
   const [hostW, setHostW] = useState(0)
+  const [hostH, setHostH] = useState(VIEWPORT_H)
   const [hoveredRoom, setHoveredRoom] = useState<string | null>(null)
   const [showLabels, setShowLabels] = useState(false)
   const [paused, setPaused] = useState(false)
@@ -60,13 +64,18 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   useEffect(() => {
     const el = hostRef.current
     if (!el) return
-    const measure = () => setHostW((w) => (w === el.clientWidth ? w : el.clientWidth))
+    // Measure both axes so the layout aspect tracks the actual (responsive) map box
+    // — after a phone rotates, this recomputes fit without a destructive reset.
+    const measure = () => {
+      setHostW((w) => (w === el.clientWidth ? w : el.clientWidth))
+      setHostH((h) => (h === el.clientHeight ? h : el.clientHeight))
+    }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  const aspect = Math.min(3.2, Math.max(1.4, (hostW || 1100) / VIEWPORT_H))
+  const aspect = Math.min(3.2, Math.max(1.4, (hostW || 1100) / (hostH || VIEWPORT_H)))
 
   const baseLayout = useMemo(
     () =>
@@ -156,7 +165,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
               }
             : undefined
         }
-        style={{ height: VIEWPORT_H }}
+        style={{ height: MAP_HEIGHT }}
       >
         {/* Room shapes — tetris outlines, drawn behind everything */}
         <svg
