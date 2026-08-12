@@ -23,7 +23,7 @@ playwright-report
 .vscode
 .idea
 
-# Docker files themselves don't need to be in the image
+# The Dockerfile/.dockerignore aren't needed inside the image. nginx.conf IS
+# copied into the runtime stage by the Dockerfile, so it must stay in context.
 Dockerfile
 .dockerignore
-nginx.conf
