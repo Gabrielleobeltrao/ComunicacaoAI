@@ -6,7 +6,7 @@ import { buildNavigationGrid, cellOfPoint, isWalkable, nearestWalkable } from '.
 import { buildActivityEnvelope, inEnvelopeCell } from '../buildActivityEnvelope'
 import { findOfficePath } from '../findOfficePath'
 import { placeOfficeDecor } from '../placeOfficeDecor'
-import { createContext, createModels, footOf, settleStartPositions, stepAgent, tickConversations } from '../officeSimCore'
+import { createContext, createModels, footOf, settleStartPositions, stepAgent, tickConversations, warmStart } from '../officeSimCore'
 
 const OPP: Record<string, string> = { front: 'back', back: 'front', left: 'right', right: 'left' }
 
@@ -228,6 +228,34 @@ describe('officeSimCore', () => {
     }
     expect(everPaired).toBe(true)
     expect(sawTalking).toBe(true)
+  })
+
+  it('warm-starts the office alive: deterministic, mixed activity, no shared cells', () => {
+    const a = createModels(layout, () => 'normal')
+    const ctxA = createContext(layout, grid, a.size)
+    warmStart(ctxA, a, 22000)
+    const b = createModels(layout, () => 'normal')
+    const ctxB = createContext(layout, grid, b.size)
+    warmStart(ctxB, b, 22000)
+    // deterministic: identical snapshot for the same layout + seed
+    for (const m of a.values()) {
+      const n = b.get(m.id)!
+      expect(n.motion).toBe(m.motion)
+      expect(n.pos.x).toBeCloseTo(m.pos.x, 6)
+      expect(n.pos.y).toBeCloseTo(m.pos.y, 6)
+    }
+    // a mix: some agents are active and some remain at their desks
+    const active = [...a.values()].filter((m) => m.motion !== 'seated').length
+    const seated = [...a.values()].filter((m) => m.motion === 'seated').length
+    expect(active).toBeGreaterThan(0)
+    expect(seated).toBeGreaterThan(0)
+    // the opening snapshot is collision-free
+    const cells = new Map<string, string>()
+    for (const m of a.values()) {
+      if (!m.occupiedCell) continue
+      expect(cells.has(m.occupiedCell)).toBe(false)
+      cells.set(m.occupiedCell, m.id)
+    }
   })
 
   it('respects the concurrency cap', () => {

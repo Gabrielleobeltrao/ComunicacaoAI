@@ -1,10 +1,10 @@
 import { useEffect, useReducer, useRef } from 'react'
 import type { BuiltOfficeLayout } from './buildOfficeLayout'
 import type { NavGrid } from './buildNavigationGrid'
-import { REF_DY, createContext, createModels, settleStartPositions, stepAgent, tickConversations } from './officeSimCore'
+import { REF_DY, createContext, createModels, settleStartPositions, stepAgent, tickConversations, warmStart } from './officeSimCore'
 import type { AgentModel, SimContext } from './officeSimCore'
 import type { ActivityEnvelope } from './buildActivityEnvelope'
-import { TIME_SCALE } from './officeConfig'
+import { OFFICE_FEATURES, TIME_SCALE, WARM_START_MS } from './officeConfig'
 import type { AgentMotionState, AgentVisualMode, InteractionPoint, OfficeDirection } from './officeTypes'
 
 // Per-agent semantic view — the only thing that re-renders React. Continuous
@@ -34,17 +34,21 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
   const hovered = useRef<string | null>(null)
   const rafRef = useRef(0)
   const lastTs = useRef(0)
+  const simNow = useRef(0) // monotonic sim clock (ms), continuous across warm-start
   const optsRef = useRef(opts)
   optsRef.current = opts
 
   useEffect(() => {
     const m = createModels(layout, optsRef.current.modeFor)
+    const ctx = createContext(layout, grid, m.size, optsRef.current.interactions ?? [], optsRef.current.envelope)
+    models.current = m
+    ctxRef.current = ctx
+    // Warm-start: pre-roll the sim so the office opens already alive; the render
+    // loop then continues from the same sim clock (so reservations/timers line up).
+    simNow.current = OFFICE_FEATURES.warmStart ? warmStart(ctx, m, WARM_START_MS) : (settleStartPositions(ctx, m), 0)
     const v = new Map<string, SimView>()
     for (const a of m.values()) v.set(a.id, { motion: a.motion, direction: a.direction, mode: a.mode, frame: a.frame })
-    models.current = m
     views.current = v
-    ctxRef.current = createContext(layout, grid, m.size, optsRef.current.interactions ?? [], optsRef.current.envelope)
-    settleStartPositions(ctxRef.current, m)
     bump()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, grid])
@@ -56,11 +60,13 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
       if (ctx) {
         const dt = Math.min(80, ts - (lastTs.current || ts)) * TIME_SCALE
         lastTs.current = ts
-        for (const [k, r] of ctx.reservations) if (r.until <= ts) ctx.reservations.delete(k)
-        tickConversations(ctx, models.current, ts) // advance/start conversations
+        simNow.current += dt
+        const now = simNow.current
+        for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+        tickConversations(ctx, models.current, now) // advance/start conversations
         let changed = false
         for (const m of models.current.values()) {
-          stepAgent(m, dt, ts, ctx)
+          stepAgent(m, dt, now, ctx)
           // conversing agents show the normal pose facing their partner, not phone
           m.mode = m.social ? 'normal' : optsRef.current.modeFor(m.id)
           // compare against the last rendered view so social/motion changes made by

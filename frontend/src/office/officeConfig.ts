@@ -17,11 +17,16 @@ function readFlag(name: string, fallback: boolean): boolean {
 export const OFFICE_FEATURES = {
   // The walking simulation. Can be turned off entirely with ?officeSim=0.
   simulation: readFlag('officeSim', true),
-  // Deterministic room decoration (Phase 7). Off with ?officeDecor=0.
+  // Deterministic room decoration. Off with ?officeDecor=0.
   decoration: readFlag('officeDecor', true),
+  // Warm-start: pre-roll the simulation so the office opens already alive.
+  warmStart: readFlag('officeWarmStart', true),
   // Debug overlay — off by default even in dev; on with ?officeDebug=1.
   debug: readFlag('officeDebug', false),
 }
+
+// Deterministic warm-start pre-roll length (ms of sim time) before the first paint.
+export const WARM_START_MS = 22000
 
 function readNum(name: string, fallback: number): number {
   if (typeof window === 'undefined') return fallback
@@ -71,8 +76,9 @@ export const OFFICE_TIMING = {
 export const SOCIAL_ATTEMPT_MS = 4000
 export const SOCIAL_MAX_RATIO = 0.25
 
-// At most this share of agents move at once (with a practical minimum of 1).
-export const MAX_CONCURRENT_RATIO = 0.25
+// At most this share of desk-owning agents are away from their desk at once
+// (with a practical minimum of 1). ~0.35 keeps the office visibly alive (Phase 8).
+export const MAX_CONCURRENT_RATIO = 0.35
 
 // Sprite scale (matches MapAgent).
 export const AGENT_SCALE = 1.25

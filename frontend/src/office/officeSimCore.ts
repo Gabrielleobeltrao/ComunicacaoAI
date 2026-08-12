@@ -627,6 +627,21 @@ export function tickConversations(ctx: SimContext, models: Map<string, AgentMode
     }
 }
 
+/** Deterministic warm-start (Phase 8): pre-roll the whole simulation for `ms` of
+ *  sim time with no rendering, so the office opens already alive. Returns the sim
+ *  clock value reached, which the render loop then continues from. */
+export function warmStart(ctx: SimContext, models: Map<string, AgentModel>, ms: number, dt = 60): number {
+  settleStartPositions(ctx, models)
+  let now = 0
+  for (let elapsed = 0; elapsed < ms; elapsed += dt) {
+    now += dt
+    for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+    tickConversations(ctx, models, now)
+    for (const m of models.values()) stepAgent(m, dt, now, ctx)
+  }
+  return now
+}
+
 /** Advance one agent by dt milliseconds at time `now`. Mutates the model. */
 export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContext): void {
   // Any standing agent must physically occupy a cell — seed it lazily (covers
