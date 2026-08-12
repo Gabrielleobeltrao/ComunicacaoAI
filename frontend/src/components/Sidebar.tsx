@@ -1,15 +1,22 @@
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { signOut, useSession } from '../lib/auth-client'
 import { ACTIVE, COLLAPSE_FADE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
 import { Brand, Icon, IconButton } from '../ui'
 import { NAV } from './navItems'
 import { SectorNav } from './SectorNav'
+import { useOptionalBuildingContext } from '../contexts/BuildingContext'
+import { isNavActive, navItemsFor, SCOPE_LABEL } from './navConfig'
+import type { NavScope } from './navConfig'
+import { BuildingSwitcher } from './BuildingSwitcher'
 
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
   // On a sector page the middle nav swaps to that sector's own sections.
   const { sectorId } = useParams()
   const { data: session } = useSession()
+  // Nav V2 (grouped, floor-aware) when the building context is present.
+  const bctx = useOptionalBuildingContext()
+  const { pathname } = useLocation()
 
   const user = session?.user
   const displayName = user?.name?.trim() || user?.email?.split('@')[0] || 'Você'
@@ -40,6 +47,36 @@ export function Sidebar({ current }: { current: string }) {
 
         {sectorId ? (
           <SectorNav />
+        ) : bctx ? (
+          <nav className="flex flex-col gap-2">
+            <BuildingSwitcher />
+            {(['general', 'floor', 'communication'] as NavScope[]).map((scope) => {
+              const items = navItemsFor(bctx.activeFloorId).filter((i) => i.scope === scope)
+              if (!items.length) return null
+              const label = scope === 'floor' && bctx.activeFloor ? `ANDAR · ${bctx.activeFloor.name.toUpperCase()}` : SCOPE_LABEL[scope]
+              return (
+                <div key={scope} className="flex flex-col gap-1">
+                  <span className={LABEL} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-muted)', paddingLeft: 10, paddingTop: 4 }}>
+                    {label}
+                  </span>
+                  {items.map((item) => {
+                    const disabled = scope === 'floor' && !bctx.activeFloorId
+                    return (
+                      <Link
+                        key={item.key}
+                        to={disabled ? '/dashboard' : item.path(bctx.activeFloorId)}
+                        className={`${ITEM_BASE} ${isNavActive(item, bctx.activeFloorId, pathname) ? ACTIVE : INACTIVE}`}
+                        style={disabled ? { opacity: 0.5 } : undefined}
+                      >
+                        <Icon name={item.icon} size={18} />
+                        <span className={LABEL}>{item.label}</span>
+                      </Link>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </nav>
         ) : (
           <nav className="flex flex-col gap-1">
             {NAV.map((item) => (

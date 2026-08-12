@@ -1,8 +1,12 @@
 import { useEffect } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link, useLocation, useNavigate } from 'react-router'
 import { signOut, useSession } from '../lib/auth-client'
 import { Brand, Icon } from '../ui'
 import { NAV } from './navItems'
+import { useOptionalBuildingContext } from '../contexts/BuildingContext'
+import { isNavActive, navItemsFor, SCOPE_LABEL } from './navConfig'
+import type { NavScope } from './navConfig'
+import { BuildingSwitcher } from './BuildingSwitcher'
 
 // Touch navigation for phones and small tablets (< lg): a fixed bottom bar for
 // the primary destinations plus a slide-in drawer (opened from the topbar) for
@@ -38,6 +42,13 @@ export function MobileNav({ current, open, onOpenChange }: { current: string; op
     navigate('/login')
   }
 
+  // Nav V2 (floor-aware). Bottom bar = up to 4 primary + a "Mais" button; the
+  // drawer holds the full grouped nav.
+  const bctx = useOptionalBuildingContext()
+  const { pathname } = useLocation()
+  const floorId = bctx?.activeFloorId ?? null
+  const primary = bctx ? navItemsFor(floorId).filter((i) => i.mobilePrimary).slice(0, 4) : null
+
   return (
     <>
       {/* Bottom navigation — primary destinations, safe-area aware, 44px targets */}
@@ -51,21 +62,49 @@ export function MobileNav({ current, open, onOpenChange }: { current: string; op
           borderTop: '1px solid var(--border-subtle)',
         }}
       >
-        {NAV.map((item) => {
-          const active = item.to === current
-          return (
-            <Link
-              key={item.to}
-              to={item.to}
-              aria-current={active ? 'page' : undefined}
+        {primary ? (
+          <>
+            {primary.map((item) => {
+              const active = isNavActive(item, floorId, pathname)
+              return (
+                <Link
+                  key={item.key}
+                  to={item.path(floorId)}
+                  aria-current={active ? 'page' : undefined}
+                  className="flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5"
+                  style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-muted)', textDecoration: 'none' }}
+                >
+                  <Icon name={item.icon} size={20} />
+                  <span style={{ fontSize: 10.5, fontWeight: active ? 700 : 500, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</span>
+                </Link>
+              )
+            })}
+            <button
+              onClick={() => onOpenChange(true)}
               className="flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5"
-              style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-muted)', textDecoration: 'none' }}
+              style={{ minHeight: 'var(--hit-min)', color: 'var(--text-muted)', background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit' }}
             >
-              <Icon name={item.icon} size={20} />
-              <span style={{ fontSize: 10.5, fontWeight: active ? 700 : 500, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</span>
-            </Link>
-          )
-        })}
+              <Icon name="menu" size={20} />
+              <span style={{ fontSize: 10.5, fontWeight: 500 }}>Mais</span>
+            </button>
+          </>
+        ) : (
+          NAV.map((item) => {
+            const active = item.to === current
+            return (
+              <Link
+                key={item.to}
+                to={item.to}
+                aria-current={active ? 'page' : undefined}
+                className="flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5"
+                style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-muted)', textDecoration: 'none' }}
+              >
+                <Icon name={item.icon} size={20} />
+                <span style={{ fontSize: 10.5, fontWeight: active ? 700 : 500, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</span>
+              </Link>
+            )
+          })
+        )}
       </nav>
 
       {/* Drawer — account + full menu + settings/sign-out */}
@@ -91,23 +130,51 @@ export function MobileNav({ current, open, onOpenChange }: { current: string; op
               </button>
             </div>
 
+            {bctx && <BuildingSwitcher />}
             <nav className="flex flex-col gap-1">
-              {NAV.map((item) => {
-                const active = item.to === current
-                return (
-                  <Link
-                    key={item.to}
-                    to={item.to}
-                    onClick={close}
-                    aria-current={active ? 'page' : undefined}
-                    className="flex items-center gap-3 rounded-md px-3"
-                    style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-body)', background: active ? 'var(--intent-brand-soft)' : 'transparent', fontWeight: active ? 700 : 500, textDecoration: 'none' }}
-                  >
-                    <Icon name={item.icon} size={18} />
-                    <span>{item.label}</span>
-                  </Link>
-                )
-              })}
+              {bctx
+                ? (['general', 'floor', 'communication'] as NavScope[]).map((scope) => {
+                    const items = navItemsFor(floorId).filter((i) => i.scope === scope)
+                    if (!items.length) return null
+                    const label = scope === 'floor' && bctx.activeFloor ? `ANDAR · ${bctx.activeFloor.name.toUpperCase()}` : SCOPE_LABEL[scope]
+                    return (
+                      <div key={scope} className="flex flex-col gap-1">
+                        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-muted)', padding: '8px 8px 2px' }}>{label}</span>
+                        {items.map((item) => {
+                          const active = isNavActive(item, floorId, pathname)
+                          return (
+                            <Link
+                              key={item.key}
+                              to={item.path(floorId)}
+                              onClick={close}
+                              aria-current={active ? 'page' : undefined}
+                              className="flex items-center gap-3 rounded-md px-3"
+                              style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-body)', background: active ? 'var(--intent-brand-soft)' : 'transparent', fontWeight: active ? 700 : 500, textDecoration: 'none' }}
+                            >
+                              <Icon name={item.icon} size={18} />
+                              <span>{item.label}</span>
+                            </Link>
+                          )
+                        })}
+                      </div>
+                    )
+                  })
+                : NAV.map((item) => {
+                    const active = item.to === current
+                    return (
+                      <Link
+                        key={item.to}
+                        to={item.to}
+                        onClick={close}
+                        aria-current={active ? 'page' : undefined}
+                        className="flex items-center gap-3 rounded-md px-3"
+                        style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-body)', background: active ? 'var(--intent-brand-soft)' : 'transparent', fontWeight: active ? 700 : 500, textDecoration: 'none' }}
+                      >
+                        <Icon name={item.icon} size={18} />
+                        <span>{item.label}</span>
+                      </Link>
+                    )
+                  })}
             </nav>
 
             <div className="mt-auto flex flex-col gap-1 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>

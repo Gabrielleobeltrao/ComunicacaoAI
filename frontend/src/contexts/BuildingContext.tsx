@@ -110,3 +110,9 @@ export function useBuildingContext(): BuildingContextValue {
   if (!ctx) throw new Error('useBuildingContext must be used within BuildingProvider')
   return ctx
 }
+
+// Safe variant for shared chrome (Sidebar/MobileNav) rendered in both nav modes:
+// returns null when there is no provider (nav V1) instead of throwing.
+export function useOptionalBuildingContext(): BuildingContextValue | null {
+  return useContext(Ctx)
+}
