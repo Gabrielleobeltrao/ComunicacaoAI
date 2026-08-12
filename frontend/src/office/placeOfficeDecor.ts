@@ -26,13 +26,40 @@ export interface PlacedDecor {
   h: number
   label: string
 }
+// Non-blocking ambient detail (wall art) — never an obstacle, drawn below agents.
+export interface AmbientDecor {
+  key: string
+  art: string
+  x: number
+  y: number
+  w: number
+  h: number
+}
 export interface OfficeDecorResult {
   items: PlacedDecor[]
   obstacles: OfficeObstacle[]
   interactionPoints: InteractionPoint[]
+  ambient: AmbientDecor[]
 }
 
-export const EMPTY_DECOR: OfficeDecorResult = { items: [], obstacles: [], interactionPoints: [] }
+export const EMPTY_DECOR: OfficeDecorResult = { items: [], obstacles: [], interactionPoints: [], ambient: [] }
+
+// Parse the `-WxH` suffix of an object art name into tile dimensions.
+function sizeOf(art: string): [number, number] {
+  const m = art.match(/-(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/)
+  return m ? [Number(m[1]), Number(m[2])] : [1, 1]
+}
+
+// Wall decorations per sector theme — non-blocking, mounted flat on the top wall.
+const WALL_DECOR: Record<string, string[]> = {
+  marketing: ['quadro-cavalete-1.2x1.5', 'mural-recados-1.5x1.4'],
+  sales: ['relogio-parede-1x1.4', 'mural-recados-1.5x1.4'],
+  support: ['mural-recados-1.5x1.4', 'relogio-parede-1x1.4'],
+  finance: ['relogio-parede-1x1.4', 'quadro-cavalete-1.2x1.5'],
+  work: ['mural-recados-1.5x1.4', 'relogio-parede-1x1.4'],
+  meeting: ['quadro-cavalete-1.2x1.5', 'relogio-parede-1x1.4'],
+  decoration: ['quadro-cavalete-1.2x1.5', 'relogio-parede-1x1.4'],
+}
 
 const LAYOUT_VERSION = 'office-layout-v1'
 const MAX_PER_SECTOR = 3 // hard ceiling so rooms never read as cluttered
@@ -138,7 +165,7 @@ export function placeOfficeDecor(layout: BuiltOfficeLayout, grid: NavGrid): Offi
   const interactionPoints: InteractionPoint[] = []
 
   const anchor = corridorAnchor(grid)
-  if (anchor == null) return { items, obstacles, interactionPoints }
+  if (anchor == null) return { items, obstacles, interactionPoints, ambient: [] }
 
   // Working grid we mutate as we accept objects, so later ones see earlier ones.
   const work = new Uint8Array(grid.blocked)
@@ -337,5 +364,19 @@ export function placeOfficeDecor(layout: BuiltOfficeLayout, grid: NavGrid): Offi
     return !mReach || mReach[cellIndex(mergedGrid, c.i, c.j)] === 1
   })
 
-  return { items, obstacles, interactionPoints: validInteractions }
+  // Phase 12: extra ambient detail — one non-blocking wall decoration per sector,
+  // themed, mounted on the top wall. It is never an obstacle (routes untouched)
+  // and draws below agents (never hides them). Deterministic per sector.
+  const ambient: AmbientDecor[] = []
+  for (const room of layout.rooms) {
+    if (room.kind !== 'sector') continue
+    const theme = themeForSector(room.name)
+    const pool = WALL_DECOR[theme.find((t) => WALL_DECOR[t]) ?? 'decoration'] ?? WALL_DECOR.decoration
+    const rng = mulberry32(hash32(`${LAYOUT_VERSION}:wall:${room.key}:${CATALOG_VERSION}`))
+    const art = pool[Math.floor(rng() * pool.length)]
+    const [w, h] = sizeOf(art)
+    ambient.push({ key: `wall-${room.key}`, art, x: room.x + room.w / 2 - w / 2, y: room.y + 0.25, w, h })
+  }
+
+  return { items, obstacles, interactionPoints: validInteractions, ambient }
 }

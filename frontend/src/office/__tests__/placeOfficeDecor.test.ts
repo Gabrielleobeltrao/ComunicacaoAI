@@ -70,6 +70,18 @@ describe('placeOfficeDecor', () => {
     }
   })
 
+  it('adds deterministic non-blocking ambient wall detail per sector', () => {
+    const a = placeOfficeDecor(layout, baseGrid)
+    const b = placeOfficeDecor(layout, baseGrid)
+    expect(JSON.stringify(a.ambient)).toBe(JSON.stringify(b.ambient)) // deterministic
+    const sectors = layout.rooms.filter((r) => r.kind === 'sector').length
+    expect(a.ambient.length).toBe(sectors) // one per sector
+    // ambient never becomes an obstacle (only placed blocking items do)
+    expect(a.obstacles.length).toBe(a.items.length)
+    // it is a real increase in scene detail (>= ~20%)
+    expect(a.ambient.length).toBeGreaterThanOrEqual(Math.ceil(a.items.length * 0.2))
+  })
+
   it('produces interaction points that stand on walkable, reachable cells', () => {
     const d = placeOfficeDecor(layout, baseGrid)
     const merged = buildNavigationGrid({ ...layout, obstacles: [...layout.obstacles, ...d.obstacles] })

@@ -200,6 +200,11 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
           <MapObject key={`dec-${it.key}`} x={it.x} y={it.y} w={it.w} h={it.h} art={objectSrc(it.art)} label={it.label} style={{ zIndex: 2, pointerEvents: 'none' }} />
         ))}
 
+        {/* Ambient wall detail (Phase 12) — non-blocking, drawn below agents */}
+        {decor.ambient.map((it) => (
+          <MapObject key={`amb-${it.key}`} x={it.x} y={it.y} w={it.w} h={it.h} art={objectSrc(it.art)} label="" style={{ zIndex: 1, pointerEvents: 'none' }} />
+        ))}
+
         {/* Labels — the hovered room always, or every room when toggled on */}
         {rooms
           .filter((r) => showLabels || r.key === hoveredRoom)
