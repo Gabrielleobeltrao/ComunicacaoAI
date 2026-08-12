@@ -57,11 +57,11 @@ export function FloorView() {
 
   return (
     <AppLayout
-      current="/building"
+      current="/dashboard"
       title={floor?.name ?? 'Andar'}
       subtitle={floor?.mission || 'Andar do prédio'}
       actions={
-        <Link to="/building" style={{ textDecoration: 'none' }}>
+        <Link to="/dashboard" style={{ textDecoration: 'none' }}>
           <Button variant="ghost" icon="arrow-left">
             Prédio
           </Button>
