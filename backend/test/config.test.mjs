@@ -44,9 +44,9 @@ function run(caseVars, { validate = true } = {}) {
 // The definitive production origins (ASCII, no trailing slash).
 const PROD_URLS = {
   NODE_ENV: 'production',
-  CLIENT_URL: 'https://comunicacaoai.onplataform.com',
-  BETTER_AUTH_URL: 'https://api.comunicacaoai.onplataform.com',
-  PUBLIC_URL: 'https://api.comunicacaoai.onplataform.com',
+  CLIENT_URL: 'https://comunicacaoai.oneplataforma.com',
+  BETTER_AUTH_URL: 'https://api.comunicacaoai.oneplataforma.com',
+  PUBLIC_URL: 'https://api.comunicacaoai.oneplataforma.com',
 }
 const PROD_SECRETS = {
   MONGODB_URI: 'mongodb://localhost:27017/comunicacaoai_test',
@@ -70,7 +70,7 @@ test('production: a required URL var missing fails fast at import', () => {
 })
 
 test('production: non-https URL is rejected', () => {
-  const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS, BETTER_AUTH_URL: 'http://api.comunicacaoai.onplataform.com' })
+  const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS, BETTER_AUTH_URL: 'http://api.comunicacaoai.oneplataforma.com' })
   assert.equal(ok, false)
   assert.match(out, /https/i)
 })
@@ -80,12 +80,12 @@ test('production: valid config passes, strips trailing slash, splits CSV origins
     ...PROD_URLS,
     ...PROD_SECRETS,
     // prod origin + local dev origin, both with a stray trailing slash to strip.
-    CLIENT_URL: 'https://comunicacaoai.onplataform.com/, http://localhost:5173/',
+    CLIENT_URL: 'https://comunicacaoai.oneplataforma.com/, http://localhost:5173/',
   })
   assert.equal(ok, true, out)
   const parsed = JSON.parse(out)
-  assert.deepEqual(parsed.origins, ['https://comunicacaoai.onplataform.com', 'http://localhost:5173'])
-  assert.equal(parsed.publicUrl, 'https://api.comunicacaoai.onplataform.com')
+  assert.deepEqual(parsed.origins, ['https://comunicacaoai.oneplataforma.com', 'http://localhost:5173'])
+  assert.equal(parsed.publicUrl, 'https://api.comunicacaoai.oneplataforma.com')
 })
 
 test('development: no env needed, falls back to localhost defaults', () => {

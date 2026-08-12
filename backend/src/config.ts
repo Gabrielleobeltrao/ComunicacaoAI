@@ -18,7 +18,7 @@ function urlVar(name: string, devDefault: string): string {
   return stripTrailingSlash(devDefault)
 }
 
-// CORS allowlist: comma-separated origins (e.g. "https://comunicacaoai.onplataform.com").
+// CORS allowlist: comma-separated origins (e.g. "https://comunicacaoai.oneplataforma.com").
 function originList(name: string, devDefault: string): string[] {
   const raw = process.env[name]?.trim()
   if (!raw) {

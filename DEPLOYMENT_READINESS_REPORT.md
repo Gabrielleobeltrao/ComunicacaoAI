@@ -41,7 +41,7 @@ domain, SSL, remote-repo creation, push or merge is performed here. All prior wo
 | Persistent data | none | MongoDB only (stateless process — see Fase 10) |
 | Required vars (prod) | `VITE_API_URL` (build-time) | `NODE_ENV`, `MONGODB_URI`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, `CLIENT_URL`, `BETTER_AUTH_URL`, `PUBLIC_URL` |
 | Optional vars | — | `PORT`, provider keys/models, `GOOGLE_*` |
-| Public URL (definitive) | `https://comunicacaoai.onplataform.com` | `https://api.comunicacaoai.onplataform.com` |
+| Public URL (definitive) | `https://comunicacaoai.oneplataforma.com` | `https://api.comunicacaoai.oneplataforma.com` |
 | Callback integrations | — | Google OAuth redirect; WhatsApp inbound webhook (built from `PUBLIC_URL`) |
 
 ### Explicit audit (Fase 1 checklist)
@@ -85,8 +85,8 @@ domain, SSL, remote-repo creation, push or merge is performed here. All prior wo
 
 New `backend/src/config.ts` centralizes runtime config. The **definitive**
 production origins (ASCII, no trailing slash) are now set:
-- Frontend `https://comunicacaoai.onplataform.com`; backend
-  `https://api.comunicacaoai.onplataform.com`. `VITE_API_URL` → backend origin;
+- Frontend `https://comunicacaoai.oneplataforma.com`; backend
+  `https://api.comunicacaoai.oneplataforma.com`. `VITE_API_URL` → backend origin;
   `CLIENT_URL` → frontend origin; `BETTER_AUTH_URL`/`PUBLIC_URL` → backend origin.
 - URLs normalized (trailing slash stripped) in one place.
 - **Fail-fast in production only**: `validateConfig()` requires `MONGODB_URI`,
@@ -108,16 +108,16 @@ production origins (ASCII, no trailing slash) are now set:
 
 ### Cookie decision — resolved by the definitive URLs
 
-The final origins are `https://comunicacaoai.onplataform.com` (frontend) and
-`https://api.comunicacaoai.onplataform.com` (backend). Both share the registrable
-domain `onplataform.com`, so requests between them are **same-site** (the backend
+The final origins are `https://comunicacaoai.oneplataforma.com` (frontend) and
+`https://api.comunicacaoai.oneplataforma.com` (backend). Both share the registrable
+domain `oneplataforma.com`, so requests between them are **same-site** (the backend
 host is even a subdomain of the frontend host).
 
 - **Current setting works as-is:** in production Better Auth issues cookies with
   `SameSite=None; Secure`, which are sent on both same-site and cross-site
   requests over HTTPS — so login works with no further change once TLS is live.
 - **Cookies are host-only** (no `Domain` attribute) on
-  `api.comunicacaoai.onplataform.com`; every private API/Socket.IO call targets
+  `api.comunicacaoai.oneplataforma.com`; every private API/Socket.IO call targets
   that host, so the cookie is always sent. The frontend never needs to read it
   (HttpOnly).
 - **Optional tightening (post-deploy):** because the two are same-site, the
@@ -186,7 +186,7 @@ volume + ownership + backup/restore before deploying.
 - Isolated `npm ci` + `npm run build` for **backend** (168 pkgs) and **frontend**
   (193 pkgs) from copies **outside** the monorepo — proves independence + the new
   per-service locks.
-- Frontend build with `VITE_API_URL=https://api.comunicacaoai.onplataform.com` →
+- Frontend build with `VITE_API_URL=https://api.comunicacaoai.oneplataforma.com` →
   bundle contains that public URL, no `localhost:4000`, `widget-loader.js`, SPA
   `index.html` present. Secret scan: only the string identifier
   `BETTER_AUTH_SECRET` from the Better Auth isomorphic client's env-getter (no
@@ -229,11 +229,11 @@ the two-origin/Socket.IO/upload/webhook behaviors that need running containers.
 The definitive ASCII origins are set (no trailing slash, no Punycode):
 
 ```
-VITE_API_URL=https://api.comunicacaoai.onplataform.com          # frontend build-time
-CLIENT_URL=https://comunicacaoai.onplataform.com                # backend runtime
-BETTER_AUTH_URL=https://api.comunicacaoai.onplataform.com       # backend runtime
-PUBLIC_URL=https://api.comunicacaoai.onplataform.com            # backend runtime
-GOOGLE_REDIRECT_URI=https://api.comunicacaoai.onplataform.com/api/integrations/google/callback
+VITE_API_URL=https://api.comunicacaoai.oneplataforma.com          # frontend build-time
+CLIENT_URL=https://comunicacaoai.oneplataforma.com                # backend runtime
+BETTER_AUTH_URL=https://api.comunicacaoai.oneplataforma.com       # backend runtime
+PUBLIC_URL=https://api.comunicacaoai.oneplataforma.com            # backend runtime
+GOOGLE_REDIRECT_URI=https://api.comunicacaoai.oneplataforma.com/api/integrations/google/callback
 ```
 
 `CLIENT_URLS` is **not** implemented — the allowlist is carried by `CLIENT_URL`.
