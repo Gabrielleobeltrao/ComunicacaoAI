@@ -159,13 +159,17 @@ import {
   whatsappProvidersCatalog,
 } from './whatsapp.js'
 import { encrypt } from './crypto.js'
+import { clientUrl, config, validateConfig } from './config.js'
 
 const app = express()
-const port = process.env.PORT ?? 4000
-const clientUrl = process.env.CLIENT_URL ?? 'http://localhost:5173'
+// Behind the Coolify reverse proxy in production: trust exactly the first proxy
+// hop so req.protocol/req.secure and client IPs reflect the X-Forwarded-* headers
+// the proxy sets, without blindly trusting an arbitrary forwarded chain.
+if (config.isProduction) app.set('trust proxy', 1)
+const port = config.port
 // The backend's own public base URL, used to build inbound webhook URLs the
 // owner pastes into their WhatsApp provider. Set PUBLIC_URL in production.
-const publicUrl = process.env.PUBLIC_URL ?? `http://localhost:${port}`
+const publicUrl = config.publicUrl
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } })
 const uploadAvatar = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } })
 const AVATAR_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
@@ -176,7 +180,8 @@ app.use(
     // customer domains, so they need to allow any origin. They don't use
     // cookies (no requireAuth), so credentials stay off for that reflection.
     const isPublicWidgetRoute = req.path.startsWith('/api/public/')
-    callback(null, isPublicWidgetRoute ? { origin: true, credentials: false } : { origin: clientUrl, credentials: true })
+    // Private routes: exact allowlist match (config.clientOrigins) with cookies.
+    callback(null, isPublicWidgetRoute ? { origin: true, credentials: false } : { origin: config.clientOrigins, credentials: true })
   }),
 )
 
@@ -195,7 +200,7 @@ app.use(express.urlencoded({ extended: false }))
 
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
-  cors: { origin: clientUrl, credentials: true },
+  cors: { origin: config.clientOrigins, credentials: true },
 })
 
 io.on('connection', (socket) => {
@@ -224,8 +229,20 @@ function broadcastMessage(message: WidgetMessage, ownerId: string) {
   io.to(`owner:${ownerId}`).emit('conversations-updated')
 }
 
+// Liveness: the process is up. Used by the container HEALTHCHECK / orchestrator.
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
+})
+
+// Readiness: the process can serve traffic — MongoDB answers a ping. 503 until
+// the database is reachable; never leaks any data.
+app.get('/api/ready', async (_req, res) => {
+  try {
+    await mongoClient.db().command({ ping: 1 })
+    res.json({ status: 'ready' })
+  } catch {
+    res.status(503).json({ status: 'unavailable' })
+  }
 })
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -2954,6 +2971,9 @@ async function sendStructuredOutputWebhook(url: string, payload: unknown) {
 }
 
 async function start() {
+  // Fail fast in production if a deploy-critical env var is missing/invalid.
+  validateConfig()
+
   await mongoClient.connect()
 
   // Sector renames + Escritório hierarchy backfill. Awaited so a collection
@@ -2971,8 +2991,37 @@ async function start() {
   })
 
   httpServer.listen(port, () => {
-    console.log(`Backend listening on http://localhost:${port}`)
+    console.log(`Backend listening on port ${port} (${config.nodeEnv})`)
   })
 }
 
-start()
+// Graceful shutdown: stop accepting connections, close Socket.IO, then Mongo, so
+// SIGTERM from the orchestrator drains cleanly instead of a hard kill.
+let shuttingDown = false
+async function shutdown(signal: string) {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log(`Received ${signal}, shutting down gracefully...`)
+  const forced = setTimeout(() => {
+    console.error('Shutdown timed out — forcing exit')
+    process.exit(1)
+  }, 10_000)
+  forced.unref()
+  try {
+    io.close()
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()))
+    await mongoClient.close()
+    console.log('Shutdown complete')
+    process.exit(0)
+  } catch (error) {
+    console.error('Error during shutdown:', error)
+    process.exit(1)
+  }
+}
+process.on('SIGTERM', () => void shutdown('SIGTERM'))
+process.on('SIGINT', () => void shutdown('SIGINT'))
+
+start().catch((error) => {
+  console.error('Fatal startup error:', error)
+  process.exit(1)
+})
