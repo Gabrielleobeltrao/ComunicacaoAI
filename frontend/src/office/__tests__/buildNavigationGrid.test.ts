@@ -39,10 +39,11 @@ describe('buildNavigationGrid', () => {
     expect(isWalkable(grid, c.i, c.j)).toBe(false)
   })
 
-  it('gives at least most sector rooms a door', () => {
-    const sectorCount = layout.rooms.filter((r) => r.kind === 'sector').length
-    const sectorDoors = grid.doors.filter((d) => layout.rooms.find((r) => r.key === d.sectorId)?.kind === 'sector')
-    expect(sectorDoors.length).toBeGreaterThanOrEqual(sectorCount - 1)
+  it('gives every occupied sector room a door', () => {
+    const sectorRooms = layout.rooms.filter((r) => r.kind === 'sector')
+    for (const r of sectorRooms) {
+      expect(grid.doors.some((d) => d.sectorId === r.key)).toBe(true)
+    }
     expect(grid.doors.length).toBeGreaterThan(0)
   })
 
@@ -63,17 +64,15 @@ describe('buildNavigationGrid', () => {
     }
   })
 
-  it('lets some seated agents reach a door from their exit point', () => {
-    let mobile = 0
+  it('lets every chair exit reach its own sector door', () => {
     for (const s of layout.seats) {
       const exit = nearestWalkable(grid, s.exitPoint, 3)
-      if (!exit) continue
-      const reaches = grid.doors.some((d) => isReachable(grid, exit, cellOfPoint(grid, d.outer)))
-      if (reaches) mobile++
+      const door = grid.doors.find((d) => d.sectorId === s.sectorId)
+      expect(exit).toBeTruthy()
+      expect(door).toBeTruthy()
+      const inner = nearestWalkable(grid, door!.inner, 3)
+      expect(exit && inner && isReachable(grid, exit, inner)).toBeTruthy()
     }
-    // Not every seat can necessarily leave (a far agent may be walled behind a
-    // wide desk), but the office must be alive — at least a few can.
-    expect(mobile).toBeGreaterThan(0)
   })
 
   it('encloses rooms — a corridor cell cannot reach a room interior except via its door', () => {

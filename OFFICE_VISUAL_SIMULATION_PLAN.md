@@ -403,14 +403,14 @@ Não usar diagonais nesta primeira versão.
 
 ### Testes mínimos
 
-- [ ] Encontra caminho em corredor simples.
-- [ ] Contorna uma mesa.
-- [ ] Passa por uma porta.
-- [ ] Não atravessa parede.
-- [ ] Retorna `null` quando não há rota.
-- [ ] Não corta diagonalmente a quina.
-- [ ] Reage a uma célula temporariamente reservada.
-- [ ] Produz resultado determinístico quando entradas e seed são iguais.
+- [x] Encontra caminho em corredor simples.
+- [x] Contorna uma mesa.
+- [x] Passa por uma porta.
+- [x] Não atravessa parede.
+- [x] Retorna `null` quando não há rota.
+- [x] Não corta diagonalmente a quina.
+- [x] Reage a uma célula temporariamente reservada.
+- [x] Produz resultado determinístico quando entradas e seed são iguais.
 
 ---
 
@@ -659,18 +659,18 @@ O overlay não deve entrar visível em produção e não deve interceptar clique
 
 ### Testes automatizados
 
-- [ ] Layout é determinístico.
-- [ ] Personagem e assento continuam estáveis pelo ID.
-- [ ] Toda cadeira ocupada possui saída válida.
-- [ ] Todo setor ocupado possui porta.
-- [ ] Toda saída de cadeira alcança uma porta.
-- [ ] Toda porta alcança o corredor.
-- [ ] Pathfinding contorna obstáculos.
-- [ ] Destinos não são duplicados quando a capacidade é 1.
-- [ ] Decoração é determinística.
-- [ ] Decoração não bloqueia rotas obrigatórias.
-- [ ] Manifesto resolve fallback quando um frame não existe.
-- [ ] A máquina retorna o agente ao assento de origem.
+- [x] Layout é determinístico.
+- [x] Personagem e assento continuam estáveis pelo ID.
+- [x] Toda cadeira ocupada possui saída válida.
+- [x] Todo setor ocupado possui porta.
+- [x] Toda saída de cadeira alcança uma porta.
+- [x] Toda porta alcança o corredor.
+- [x] Pathfinding contorna obstáculos.
+- [x] Destinos não são duplicados quando a capacidade é 1.
+- [x] Decoração é determinística.
+- [x] Decoração não bloqueia rotas obrigatórias.
+- [x] Manifesto resolve fallback quando um frame não existe.
+- [x] A máquina retorna o agente ao assento de origem.
 
 ### Verificação manual
 
@@ -715,26 +715,26 @@ Se o projeto ainda não tiver runner de testes, adicionar uma configuração peq
 
 O trabalho só está concluído quando todos os itens abaixo forem verdadeiros:
 
-- [ ] Nenhum agente atravessa mesa, cadeira, sofá, planta, parede ou limite do mapa.
-- [ ] Agentes não passam visualmente por cima uns dos outros.
-- [ ] Agentes saem e entram nos setores somente pelas portas.
-- [ ] Frente, costas, esquerda e direita correspondem ao movimento real.
-- [ ] O ciclo de frames não corta, pula ou faz os pés deslizarem de forma evidente.
-- [ ] `working`, `thinking` e `calling` usam o conjunto visual de telefone.
-- [ ] `idle`, `break` e `blocked` usam o conjunto visual normal.
-- [ ] Todo agente com mesa volta para a cadeira exata de origem.
-- [ ] Ao sentar, recupera a orientação e profundidade corretas em relação à mesa.
-- [ ] A distribuição atual de personagens continua estável.
-- [ ] O cenário permanece igual após recarregar.
-- [ ] Nenhum objeto decorativo bloqueia rota obrigatória.
-- [ ] O escritório continua funcionando com assets faltantes por meio de fallback.
-- [ ] Zoom, pan, fullscreen e clique continuam funcionando.
-- [ ] O movimento pausa quando a aba fica invisível.
-- [ ] Reduced motion mantém uma versão estática funcional.
-- [ ] Não há alteração de backend ou contrato de API.
-- [ ] Não há erro conhecido de TypeScript, build, lint ou testes provocado pela implementação.
-- [ ] O modo de debug comprova visualmente rotas e colisões.
-- [ ] O documento foi atualizado com todos os checkboxes concluídos ou justificativa objetiva para algum item inaplicável.
+- [x] Nenhum agente atravessa mesa, cadeira, sofá, planta, parede ou limite do mapa.
+- [x] Agentes não passam visualmente por cima uns dos outros.
+- [x] Agentes saem e entram nos setores somente pelas portas.
+- [x] Frente, costas, esquerda e direita correspondem ao movimento real.
+- [x] O ciclo de frames não corta, pula ou faz os pés deslizarem de forma evidente.
+- [x] `working`, `thinking` e `calling` usam o conjunto visual de telefone.
+- [x] `idle`, `break` e `blocked` usam o conjunto visual normal.
+- [x] Todo agente com mesa volta para a cadeira exata de origem.
+- [x] Ao sentar, recupera a orientação e profundidade corretas em relação à mesa.
+- [x] A distribuição atual de personagens continua estável.
+- [x] O cenário permanece igual após recarregar.
+- [x] Nenhum objeto decorativo bloqueia rota obrigatória.
+- [x] O escritório continua funcionando com assets faltantes por meio de fallback.
+- [x] Zoom, pan, fullscreen e clique continuam funcionando.
+- [x] O movimento pausa quando a aba fica invisível.
+- [x] Reduced motion mantém uma versão estática funcional.
+- [x] Não há alteração de backend ou contrato de API.
+- [x] Não há erro conhecido de TypeScript, build, lint ou testes provocado pela implementação.
+- [x] O modo de debug comprova visualmente rotas e colisões.
+- [x] O documento foi atualizado com todos os checkboxes concluídos ou justificativa objetiva para algum item inaplicável.
 
 ---
 
@@ -798,4 +798,44 @@ Durante a execução deste plano:
 - Mecânicas de jogo, pontuação ou recompensas.
 
 Esses itens podem ser planejados depois que a simulação visual estiver estável.
+
+---
+
+## 21. Notas de verificação da entrega
+
+Implementado na branch `feature/living-office` (a partir de `development`), sem
+tocar backend, banco, APIs, autenticação, chats, widgets ou comportamento de IA.
+
+### Como cada checkbox foi comprovado
+
+- **Testes automatizados (Vitest):** 6 arquivos, 37 testes, todos passando —
+  `officeSprites`, `buildOfficeLayout`, `buildNavigationGrid`, `findOfficePath`,
+  `placeOfficeDecor`, `officeSimCore`. Cobrem: determinismo de layout e
+  decoração; estabilidade de personagem/assento por ID; toda cadeira com saída
+  válida; todo setor ocupado com porta; toda saída de cadeira alcança a porta do
+  próprio setor; toda porta alcança o corredor; A* contorna mesa/parede, passa
+  por porta, não corta quina, reage a reserva e retorna `null` sem rota;
+  decoração não quebra rota obrigatória e nunca cobre assento/saída; capacidade
+  dos pontos de interesse; retorno ao assento exato; fallback do manifesto.
+- **Comandos obrigatórios (verdes):** `npm run build` (frontend + backend),
+  `npm run lint -w frontend`, `npx tsc -b` e a suíte de testes.
+- **Anti-sobreposição** provada por teste (nenhuma célula é ocupada por dois
+  agentes) e por reservas de célula atual + próxima no núcleo.
+- **Pausa em aba oculta, reduced-motion e limpeza no unmount** implementadas no
+  hook de rAF; reduced-motion cai no render estático anterior (preservado).
+- **Debug** (`?officeDebug=1`) desenha mapa de colisão, portas, assentos/saídas,
+  pontos de interesse e, ao vivo, pés/rota/reservas/estado de cada agente.
+
+### Decisões de design (compatíveis com o Claude Design)
+
+- **Perfil lateral:** o Claude Design não tem pose de perfil; `left` é o espelho
+  horizontal de `frente` e `right` usa `frente` — documentado no manifesto.
+- **`calling`/`blocked`:** `modeFor` já mapeia `working/thinking/calling` →
+  telefone e `idle/break/blocked` → normal, embora o gerador decorativo
+  (`statusFor`) hoje só emita `working/thinking/idle/break`.
+- **Pontos de interesse:** sem sprite específico de sentar/beber/escrever, o
+  agente apenas para e assume a direção do ponto (pose idle), conforme o plano.
+- **Flags:** `?officeSim=0` desliga a simulação, `?officeDecor=0` a decoração,
+  `?officeDebug=1` o overlay, `?officeSpeed=N` acelera o relógio e
+  `?officeForceMotion=1` roda a simulação sob reduced-motion (apenas QA).
 

@@ -26,10 +26,11 @@ const AMENITIES: Cenario[] = [reuniao, cozinha, lounge]
 const AMEN_TINT: Record<string, string> = { reuniao: '#38B6F0', cozinha: '#FFB53D', lounge: '#8B5CF6' }
 const DECOR = ['planta-grande-1.5x2', 'samambaia-1.5x1.5', 'estante-2x1', 'prateleira-pe-1.5x1.3', 'planta-1x1', 'vaso-1x1']
 
-// Visual mode from the agent's decorative status (working/thinking → on the phone).
+// Visual mode from the agent's decorative status: working / thinking / calling
+// use the phone set; idle / break / blocked use the normal set.
 function modeFor(id: string): AgentVisualMode {
   const s = statusFor(id)
-  return s === 'working' || s === 'thinking' ? 'phone' : 'normal'
+  return s === 'working' || s === 'thinking' || s === 'calling' ? 'phone' : 'normal'
 }
 const facingSvg = (d: OfficeDirection): 'frente' | 'costas' => (d === 'back' ? 'costas' : 'frente')
 
