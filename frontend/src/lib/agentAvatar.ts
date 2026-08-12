@@ -38,14 +38,56 @@ export interface CharacterResolver {
   portrait: (id: string) => string
 }
 
-// Round-robin assignment over the WHOLE team: sort the ids into a stable order,
-// then hand out characters in sequence — so no face repeats until the cast runs
-// out, at which point the cycle starts over. Same team list → same result on
-// every screen, so an agent keeps its face on the map, its card and its page.
+// Stable, low-repeat character assignment. Existing agents keep the face they
+// were given (from the `prior` map); each new agent takes the least-used face,
+// tie-broken deterministically by id. So adding one agent never reshuffles the
+// others, and faces don't repeat until the cast runs out. Pure and testable.
+export function assignCharacters(ids: string[], prior?: ReadonlyMap<string, string>): Map<string, string> {
+  const out = new Map<string, string>()
+  const count = new Map<string, number>(CHARACTERS.map((c) => [c, 0]))
+  const valid = new Set<string>(CHARACTERS)
+  if (prior)
+    for (const id of ids) {
+      const c = prior.get(id)
+      if (c && valid.has(c) && !out.has(id)) {
+        out.set(id, c)
+        count.set(c, (count.get(c) ?? 0) + 1)
+      }
+    }
+  for (const id of [...new Set(ids)].filter((id) => !out.has(id)).sort()) {
+    const min = Math.min(...CHARACTERS.map((c) => count.get(c)!))
+    const cands = CHARACTERS.filter((c) => count.get(c) === min)
+    const pick = cands[hash(id) % cands.length]
+    out.set(id, pick)
+    count.set(pick, min + 1)
+  }
+  return out
+}
+
+const CHARMAP_KEY = 'office:charmap:v1'
+function loadCharmap(): Map<string, string> | undefined {
+  try {
+    if (typeof localStorage === 'undefined') return undefined
+    const raw = localStorage.getItem(CHARMAP_KEY)
+    return raw ? new Map(Object.entries(JSON.parse(raw) as Record<string, string>)) : undefined
+  } catch {
+    return undefined
+  }
+}
+function saveCharmap(map: Map<string, string>) {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(CHARMAP_KEY, JSON.stringify(Object.fromEntries(map)))
+  } catch {
+    /* ignore */
+  }
+}
+
+// Same team → same faces on every screen. A locally-persisted map keeps each
+// agent's face stable across additions/reloads (no backend); without storage it
+// falls back to the deterministic assignment above.
 export function buildCharacterResolver(ids: string[]): CharacterResolver {
-  const order = [...new Set(ids)].sort()
-  const byId = new Map<string, string>()
-  order.forEach((id, i) => byId.set(id, CHARACTERS[i % CHARACTERS.length]))
+  const byId = assignCharacters(ids, loadCharmap())
+  saveCharmap(byId)
   const character = (id: string) => byId.get(id) ?? characterFor(id)
   return {
     character,
