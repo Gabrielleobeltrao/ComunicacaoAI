@@ -10,10 +10,23 @@
   --space-12:48px;
   --space-16:64px;
   --space-20:80px;
-  --gutter-card:20px;
-  --gutter-screen:28px;
+  /* Screen/card gutters shrink on small screens (phone default → tablet → desktop). */
+  --gutter-card:16px;
+  --gutter-screen:16px;
   --rail-width:248px;
   --rail-width-collapsed:72px;
   --topbar-height:64px;
   --hit-min:44px;
+  --bottom-nav-height:60px; /* mobile bottom navigation */
+  /* Notch / home-indicator safe areas (needs viewport-fit=cover). */
+  --safe-top:env(safe-area-inset-top,0px);
+  --safe-bottom:env(safe-area-inset-bottom,0px);
+  --safe-left:env(safe-area-inset-left,0px);
+  --safe-right:env(safe-area-inset-right,0px);
+}
+@media (min-width:768px){
+  :root{--gutter-card:18px;--gutter-screen:20px}
+}
+@media (min-width:1024px){
+  :root{--gutter-card:20px;--gutter-screen:28px}
 }

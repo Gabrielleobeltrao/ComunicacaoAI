@@ -1,5 +1,9 @@
 *,*::before,*::after{box-sizing:border-box}
-body{margin:0;background:var(--surface-app);color:var(--text-body);font-family:var(--font-ui);font-size:var(--text-body-size);line-height:var(--text-body-lh);letter-spacing:var(--text-body-ls);-webkit-font-smoothing:antialiased}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--surface-app);color:var(--text-body);font-family:var(--font-ui);font-size:var(--text-body-size);line-height:var(--text-body-lh);letter-spacing:var(--text-body-ls);-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
+/* Raster/media never overflow their container (office-map SVGs are intentionally
+   larger inside their own scroll/zoom container, so they are left untouched). */
+img,video{max-width:100%;height:auto}
 h1,h2,h3,h4{margin:0;font-family:var(--font-display);color:var(--text-heading);letter-spacing:var(--text-heading-ls)}
 p{margin:0}
 a{color:var(--text-link);text-decoration:none}
