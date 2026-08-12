@@ -57,6 +57,7 @@ import {
 import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, updateSector } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
 import { ensureDefaultOffice } from './offices.js'
+import { getFloor } from './floors.js'
 import { runMigrations } from './migrate.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
@@ -259,6 +260,20 @@ async function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
   res.locals.userId = session.user.id
   next()
+}
+
+// Floor-scoping helpers (UX reorg). Validate a client-sent floorId for ownership;
+// never trust it blindly. Legacy callers omit it → undefined (all) / default office.
+async function scopedFloorId(ownerId: string, raw: unknown): Promise<ObjectId | undefined> {
+  if (typeof raw === 'string' && ObjectId.isValid(raw)) {
+    const floor = await getFloor(ownerId, new ObjectId(raw))
+    if (floor) return floor._id
+  }
+  return undefined
+}
+async function resolveFloorOffice(ownerId: string, raw: unknown): Promise<ObjectId> {
+  const scoped = await scopedFloorId(ownerId, raw)
+  return scoped ?? (await ensureDefaultOffice(ownerId))._id
 }
 
 // AI operational-building pivot — Building + Floors domain (additive; the
@@ -734,6 +749,7 @@ const MAX_STAGE_TRANSITIONS = 5
 function serializeSector(sector: WithId<Sector>) {
   return {
     _id: sector._id.toString(),
+    floorId: sector.officeId?.toString() ?? null,
     name: sector.name,
     color: sector.color ?? DEFAULT_SECTOR_COLOR,
     mode: sector.mode ?? 'adaptive',
@@ -835,14 +851,15 @@ app.post('/api/sectors', requireAuth, async (req, res) => {
     return
   }
   const sectorColor = typeof color === 'string' && color.trim() ? color.trim() : DEFAULT_SECTOR_COLOR
-  const office = await ensureDefaultOffice(res.locals.userId)
-  const sector = await createSector(res.locals.userId, office._id, name, sectorColor, parsedMode, parsed ?? [])
+  const officeId = await resolveFloorOffice(res.locals.userId, req.body?.floorId)
+  const sector = await createSector(res.locals.userId, officeId, name, sectorColor, parsedMode, parsed ?? [])
   await enforceSingleMembership(res.locals.userId, sector._id, (parsed ?? []).map((m) => m.agentId))
   res.status(201).json(serializeSector(sector as WithId<Sector>))
 })
 
-app.get('/api/sectors', requireAuth, async (_req, res) => {
-  const sectors = await listSectors(res.locals.userId)
+app.get('/api/sectors', requireAuth, async (req, res) => {
+  const floorId = await scopedFloorId(res.locals.userId, req.query.floorId)
+  const sectors = await listSectors(res.locals.userId, floorId)
   res.json(sectors.map(serializeSector))
 })
 
@@ -1269,8 +1286,8 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     return
   }
 
-  const office = await ensureDefaultOffice(res.locals.userId)
-  const agent = await createAgent(res.locals.userId, office._id, name, {
+  const officeId = await resolveFloorOffice(res.locals.userId, req.body?.floorId)
+  const agent = await createAgent(res.locals.userId, officeId, name, {
     objective: typeof objective === 'string' ? objective : undefined,
     provider,
     model: typeof model === 'string' || model === null ? model || null : undefined,
@@ -1305,9 +1322,10 @@ app.post('/api/agents', requireAuth, async (req, res) => {
   res.status(201).json(agent)
 })
 
-app.get('/api/agents', requireAuth, async (_req, res) => {
-  const agents = await listAgents(res.locals.userId)
-  res.json(agents)
+app.get('/api/agents', requireAuth, async (req, res) => {
+  const floorId = await scopedFloorId(res.locals.userId, req.query.floorId)
+  const agents = await listAgents(res.locals.userId, floorId)
+  res.json(agents.map((a) => ({ ...a, floorId: a.officeId?.toString() ?? null })))
 })
 
 // Per-agent roster stats for the Agentes cards (conversas/leads/atendimento).

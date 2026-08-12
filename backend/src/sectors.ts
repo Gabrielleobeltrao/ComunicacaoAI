@@ -78,8 +78,10 @@ export async function createSector(
   return { ...sector, _id: result.insertedId }
 }
 
-export function listSectors(ownerId: string) {
-  return sectors.find({ ownerId }).sort({ createdAt: -1 }).toArray()
+export function listSectors(ownerId: string, floorId?: ObjectId) {
+  const filter: Record<string, unknown> = { ownerId }
+  if (floorId) filter.officeId = floorId
+  return sectors.find(filter).sort({ createdAt: -1 }).toArray()
 }
 
 export function getSectorById(ownerId: string, sectorId: ObjectId) {

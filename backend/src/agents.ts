@@ -169,8 +169,10 @@ export async function createAgent(
   return { ...agent, _id: result.insertedId }
 }
 
-export function listAgents(ownerId: string) {
-  return agents.find({ ownerId }).sort({ createdAt: -1 }).toArray()
+export function listAgents(ownerId: string, floorId?: ObjectId) {
+  const filter: Record<string, unknown> = { ownerId }
+  if (floorId) filter.officeId = floorId
+  return agents.find(filter).sort({ createdAt: -1 }).toArray()
 }
 
 export function getAgentById(ownerId: string, agentId: ObjectId) {
