@@ -5,7 +5,7 @@ Execution report for `AI_BUILDING_PIVOT_IMPLEMENTATION_PLAN.md`.
 ## 1. Git state
 
 - **Base commit:** `6d4f809d1c3bfc5bc49e0ed725c13f68b0f2e10f` (matches the plan header; `origin/main` == base at start).
-- **Final commit:** `e6a746b` on branch **`development`** (not pushed).
+- **Final feature commit:** `0a40d1c` on branch **`development`** (not pushed; docs commits follow).
 - **Branch deviation:** the plan suggested a dedicated branch; per the user's standing workflow ("keep work on `development`, push to `main` only on request") all pivot work is committed on `development`. Nothing was pushed, deployed, or run against production.
 
 ### Commits added (small, semantic)
@@ -24,6 +24,7 @@ Execution report for `AI_BUILDING_PIVOT_IMPLEMENTATION_PLAN.md`.
 | `065b3a6` | feat(runs): durable queue, worker process, run persistence + APIs |
 | `8e878e7` | feat(scheduler): recurrence→cron + BullMQ reconciler (tz/DST) |
 | `e6a746b` | feat(connections): encrypted connections + email/Telegram delivery |
+| `0a40d1c` | feat(automations-ui): automations list, editor and runs pages (gated) |
 
 ## 2. Scope executed
 
@@ -39,8 +40,10 @@ Per the user's decision (this environment has **no running MongoDB, no Redis, no
 | 5 — Sources + steps | 🟡 Core done | SSRF-safe http (per-hop redirect revalidation, byte/content-type caps), RSS parse/dedupe/time-window, transform.template — unit-tested and wired into the runner/worker; `delivery.send` currently records intent (real email/Telegram send is Phase 7) |
 | 6 — Scheduler | ✅ Code done | Pure recurrence→cron (unit-tested) + BullMQ Job-Scheduler reconciler (add/remove diff, stable id, BullMQ owns cron+tz/DST); worker reconciles on startup + every 60s and creates one run per fire (idempotent by automationId+timestamp). Runtime needs Redis. |
 | 7 — Connections + deliveries | ✅ Code done | Encrypted Connections domain (AES via existing crypto, API never returns secrets) + email (nodemailer) & Telegram adapters (injectable IO, pure mask/chunk unit-tested) + idempotent Delivery persistence wired into the worker's delivery.send. Live SMTP/Telegram send needs credentials to verify. |
-| 3 — Wizard UI | ⛔ Not started | Automation creation wizard (frontend) — needs browser |
-| 8–10 | ⛔ Not started | Operational dashboard/live map, channels reframe, hardening/E2E — need browser |
+| 3 — Automation UI | ✅ Code done | Automations list + structured linear editor (trigger, per-type steps, result format; save/validate/publish/activate/run surfacing backend issues) + Runs list with step timeline + cancel. Gated by `aiAutomations`, build/lint verified. Browser verification pending. |
+| 8 — Dashboard / live map | 🟡 Partial | Runs UI done; operational dashboard tiles + live-map overlay pending (browser). |
+| 9 — Channels reframe | 🟡 Light | "Canais" nav grouping already present; the deeper agent conversation-settings reorg is deferred (touches the live agent UI, needs browser). |
+| 10 — Hardening + docs | 🟡 Partial | Architecture doc (`docs/architecture/automation-pivot.md`) + local-dev runbook + rollback notes done; full E2E + prod-copy migration rehearsal pending infra. |
 
 ## 3. Files created / changed
 
