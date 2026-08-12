@@ -12,6 +12,7 @@ export const NAV: NavLink[] = [
   // AI-building pivot: the Prédio (Térreo) entry appears only when its flag is on.
   ...(featureFlags.aiBuilding ? [{ to: '/building', label: 'Prédio', icon: 'building-2' } as NavLink] : []),
   { to: '/dashboard', label: 'Escritório', icon: 'layout-dashboard' },
+  ...(featureFlags.aiAutomations ? [{ to: '/automations', label: 'Automações', icon: 'workflow' } as NavLink] : []),
   { to: '/agents', label: 'Agentes', icon: 'users-round' },
   { to: '/setores', label: 'Setores', icon: 'network' },
   { to: '/widgets', label: 'Canais', icon: 'share-2' },

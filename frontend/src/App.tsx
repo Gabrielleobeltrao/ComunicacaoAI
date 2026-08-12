@@ -3,6 +3,9 @@ import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { Building } from './pages/Building'
 import { FloorView } from './pages/FloorView'
+import { Automations } from './pages/Automations'
+import { AutomationEditor } from './pages/AutomationEditor'
+import { Runs } from './pages/Runs'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
 import { Chats } from './pages/Chats'
@@ -46,6 +49,34 @@ function App() {
             element={
               <ProtectedRoute>
                 <FloorView />
+              </ProtectedRoute>
+            }
+          />
+        </>
+      )}
+      {featureFlags.aiAutomations && (
+        <>
+          <Route
+            path="/automations"
+            element={
+              <ProtectedRoute>
+                <Automations />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/automations/:id"
+            element={
+              <ProtectedRoute>
+                <AutomationEditor />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/runs"
+            element={
+              <ProtectedRoute>
+                <Runs />
               </ProtectedRoute>
             }
           />
