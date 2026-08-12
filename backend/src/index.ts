@@ -165,6 +165,7 @@ import { floorRouter } from './routes/floorRoutes.js'
 import { automationRouter } from './routes/automationRoutes.js'
 import { runRouter } from './routes/runRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
+import { webhookRouter } from './routes/webhookRoutes.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -267,6 +268,8 @@ app.use('/api/floors', requireAuth, floorRouter)
 app.use('/api/automations', requireAuth, automationRouter)
 app.use('/api/runs', requireAuth, runRouter)
 app.use('/api/connections', requireAuth, connectionRouter)
+// PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
+app.use('/api/hooks', webhookRouter)
 
 app.get('/api/providers', requireAuth, async (_req, res) => {
   const results = await Promise.all(

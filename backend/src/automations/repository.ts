@@ -10,7 +10,13 @@ const versions = db.collection<AutomationVersion>('automation_versions')
 export async function ensureAutomationIndexes(): Promise<void> {
   await automations.createIndex({ ownerId: 1, floorId: 1, status: 1 })
   await automations.createIndex({ ownerId: 1, updatedAt: -1 })
+  await automations.createIndex({ webhookPublicKey: 1 }, { unique: true, sparse: true })
   await versions.createIndex({ automationId: 1, version: 1 }, { unique: true })
+}
+
+// Public lookup for the webhook receiver (no session — the request is signed).
+export function findByWebhookKey(publicKey: string): Promise<Automation | null> {
+  return automations.findOne({ webhookPublicKey: publicKey })
 }
 
 export function insertAutomation(doc: Automation): Promise<unknown> {

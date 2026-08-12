@@ -21,6 +21,7 @@ const toPublic = (a: Automation) => ({
   draftDefinition: a.draftDefinition,
   currentVersion: a.currentVersion,
   lastPublishedVersion: a.lastPublishedVersion,
+  webhookPublicKey: a.webhookPublicKey ?? null,
   createdAt: a.createdAt,
   updatedAt: a.updatedAt,
 })
@@ -126,6 +127,16 @@ automationRouter.get('/:id/versions', async (req, res) => {
   if (!id) return notFound(res)
   const versions = await service.listVersions(res.locals.userId, id)
   res.json(versions.map(versionPublic))
+})
+
+// Rotate (or create) the webhook signing secret — returns { publicKey, secret }
+// once (the plaintext secret is never returned again).
+automationRouter.post('/:id/webhook/rotate', async (req, res) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  const result = await service.rotateWebhookSecret(res.locals.userId, id)
+  if (!result) return notFound(res)
+  res.json(result)
 })
 
 // Create + enqueue a run (manual/test). Idempotent by idempotencyKey.

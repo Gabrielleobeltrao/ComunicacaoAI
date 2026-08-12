@@ -1,5 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { ensureDefaultBuilding, ValidationError } from '../building.js'
+import { encrypt } from '../crypto.js'
+import { generatePublicKey, generateSecret } from './webhook.js'
 import { getFloor } from '../floors.js'
 import { computeDefinitionHash, validateDefinition } from './validate.js'
 import type { ValidationIssue } from './validate.js'
@@ -68,6 +70,10 @@ export async function createAutomation(ownerId: string, input: CreateAutomationI
     createdAt: now,
     updatedAt: now,
   }
+  if (definition.trigger.type === 'webhook') {
+    doc.webhookPublicKey = generatePublicKey()
+    doc.webhookSecretEncrypted = encrypt(generateSecret())
+  }
   await repo.insertAutomation(doc)
   return doc
 }
@@ -94,8 +100,26 @@ export async function updateDraft(ownerId: string, id: ObjectId, patch: UpdateDr
   if (patch.definition !== undefined) {
     set.draftDefinition = patch.definition
     set.trigger = patch.definition.trigger
+    if (patch.definition.trigger.type === 'webhook') {
+      const existing = await repo.findAutomation(ownerId, id)
+      if (existing && !existing.webhookPublicKey) {
+        set.webhookPublicKey = generatePublicKey()
+        set.webhookSecretEncrypted = encrypt(generateSecret())
+      }
+    }
   }
   return repo.updateAutomation(ownerId, id, set)
+}
+
+// Rotate (or create) the webhook signing secret. The plaintext secret is
+// returned ONCE here and never again (only its encrypted form is stored).
+export async function rotateWebhookSecret(ownerId: string, id: ObjectId): Promise<{ publicKey: string; secret: string } | null> {
+  const automation = await repo.findAutomation(ownerId, id)
+  if (!automation) return null
+  const publicKey = automation.webhookPublicKey ?? generatePublicKey()
+  const secret = generateSecret()
+  await repo.updateAutomation(ownerId, id, { webhookPublicKey: publicKey, webhookSecretEncrypted: encrypt(secret) })
+  return { publicKey, secret }
 }
 
 export async function validateAutomation(ownerId: string, id: ObjectId): Promise<{ valid: boolean; errors: ValidationIssue[] } | null> {

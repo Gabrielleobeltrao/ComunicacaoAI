@@ -95,6 +95,9 @@ export interface Automation {
   draftDefinition: AutomationDefinition
   currentVersion: number
   lastPublishedVersion: number | null
+  // Webhook trigger: hard-to-guess public key + encrypted signing secret.
+  webhookPublicKey?: string
+  webhookSecretEncrypted?: string
   createdAt: Date
   updatedAt: Date
 }
