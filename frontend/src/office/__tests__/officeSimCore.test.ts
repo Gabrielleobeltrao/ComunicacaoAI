@@ -6,7 +6,7 @@ import { buildNavigationGrid, cellOfPoint, isWalkable, nearestWalkable } from '.
 import { buildActivityEnvelope, inEnvelopeCell } from '../buildActivityEnvelope'
 import { findOfficePath } from '../findOfficePath'
 import { placeOfficeDecor } from '../placeOfficeDecor'
-import { createContext, createModels, footOf, settleStartPositions, stepAgent, tickConversations, warmStart } from '../officeSimCore'
+import { createContext, createModels, footOf, recallComplete, setRecall, settleStartPositions, stepAgent, tickConversations, warmStart } from '../officeSimCore'
 
 const OPP: Record<string, string> = { front: 'back', back: 'front', left: 'right', right: 'left' }
 
@@ -256,6 +256,37 @@ describe('officeSimCore', () => {
       expect(cells.has(m.occupiedCell)).toBe(false)
       cells.set(m.occupiedCell, m.id)
     }
+  })
+
+  it('recall brings every agent home with no collisions or teleport', () => {
+    const models = createModels(layout, () => 'normal')
+    const ctx = createContext(layout, grid, models.size)
+    warmStart(ctx, models, 22000) // start from a busy, mid-activity state
+    setRecall(ctx, models, true)
+    for (const m of models.values()) expect(m.social).toBeNull() // conversations cancelled on recall
+    const prev = new Map<string, { x: number; y: number }>()
+    for (const m of models.values()) prev.set(m.id, { ...m.pos })
+    let now = 22000
+    let done = false
+    for (let step = 0; step < 8000 && !done; step++) {
+      now += 30
+      for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+      tickConversations(ctx, models, now) // no-op under recall
+      const cells = new Map<string, string>()
+      for (const m of models.values()) {
+        stepAgent(m, 30, now, ctx)
+        const p = prev.get(m.id)!
+        expect(Math.hypot(m.pos.x - p.x, m.pos.y - p.y)).toBeLessThanOrEqual(0.3) // no teleport
+        prev.set(m.id, { ...m.pos })
+        if (m.occupiedCell) {
+          expect(cells.has(m.occupiedCell)).toBe(false)
+          cells.set(m.occupiedCell, m.id)
+        }
+        expect(m.social).toBeNull() // no new conversations during recall
+      }
+      done = recallComplete(ctx, models)
+    }
+    expect(done).toBe(true)
   })
 
   it('respects the concurrency cap', () => {

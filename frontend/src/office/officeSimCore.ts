@@ -77,6 +77,7 @@ export interface SimContext {
   cap: number
   socialCap: number // max simultaneous conversations
   nextSocialAttempt: number // next time (now-based) a new pair may be formed
+  recall: boolean // "everyone back to their desks" mode — no new trips or conversations
 }
 
 const rand = (rng: () => number, [a, b]: [number, number]) => a + rng() * (b - a)
@@ -271,7 +272,30 @@ export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAge
     cap: Math.max(1, Math.floor(totalAgents * MAX_CONCURRENT_RATIO)),
     socialCap: Math.max(1, Math.floor((totalAgents * SOCIAL_MAX_RATIO) / 2)),
     nextSocialAttempt: 0,
+    recall: false,
   }
+}
+
+/** Toggle "return to desks" mode. Turning it on cancels every conversation safely
+ *  (no teleport); the state machine then walks each agent home and keeps it there. */
+export function setRecall(ctx: SimContext, models: Map<string, AgentModel>, on: boolean): void {
+  ctx.recall = on
+  if (on) for (const m of models.values()) endSocial(m)
+}
+
+/** True once every agent is home: seated agents in their chair, deskless agents
+ *  idle on their home cell. Used to know when the office can go static. */
+export function recallComplete(ctx: SimContext, models: Map<string, AgentModel>): boolean {
+  for (const m of models.values()) {
+    if (m.kind === 'seated') {
+      if (m.motion !== 'seated') return false
+    } else {
+      const at = cellOfPoint(ctx.grid, footOf(m.pos))
+      const home = cellOfPoint(ctx.grid, footOf(m.baseRef))
+      if (m.motion !== 'pausing' || at.i !== home.i || at.j !== home.j) return false
+    }
+  }
+  return true
 }
 
 // Physical occupancy — the feet's cell. Never expires; released only when the
@@ -567,6 +591,7 @@ function adjacentSlot(ctx: SimContext, cell: GridCell, forId: string, now: numbe
 /** Advance every conversation and, occasionally, start a new one. Pure — call it
  *  once per frame with the same `now` used for stepAgent. */
 export function tickConversations(ctx: SimContext, models: Map<string, AgentModel>, now: number): void {
+  if (ctx.recall) return // no conversations while everyone is heading back to their desks
   const active = new Set<string>()
   for (const m of models.values()) {
     if (!m.social) continue
@@ -661,6 +686,7 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
 
   switch (m.motion) {
     case 'seated':
+      if (ctx.recall) break // recall mode: stay in the chair
       m.timer -= dt
       if (m.timer <= 0 && !(ctx.moving.count < ctx.cap && startTrip(ctx, m, now))) m.timer = rand(m.rng, [1500, 4000])
       break
@@ -668,6 +694,17 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
       if (m.social) break // committed to a conversation — tickConversations drives it
       m.timer -= dt
       if (m.timer <= 0) {
+        // Recall: head home (to the chair, or the deskless home cell) and stay there.
+        if (ctx.recall) {
+          if (m.home) startReturn(ctx, m, now)
+          else {
+            const at = cellOfPoint(ctx.grid, footOf(m.pos))
+            const home = cellOfPoint(ctx.grid, footOf(m.baseRef))
+            if (at.i !== home.i || at.j !== home.j) startReturn(ctx, m, now)
+            else m.timer = 800 // already home — idle
+          }
+          break
+        }
         // Mid-route pause: the route isn't finished — resume the very same route.
         if (m.route.length && m.routeIdx < m.route.length - 1) {
           m.motion = m.resume === 'returning' ? 'returning' : 'walking'

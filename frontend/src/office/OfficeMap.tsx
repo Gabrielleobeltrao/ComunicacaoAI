@@ -10,6 +10,10 @@ interface OfficeMapProps {
   fitToView?: boolean
   labelsShown?: boolean
   onToggleLabels?: () => void
+  paused?: boolean
+  onTogglePause?: () => void
+  recallActive?: boolean
+  onRecall?: () => void
   children?: ReactNode
   style?: CSSProperties
 }
@@ -23,7 +27,7 @@ const round2 = (z: number) => Math.round(z * 100) / 100
 // scrollbars/wheel-scroll), and zoom with the +/-/reset controls or Ctrl/Cmd +
 // wheel. The floor grid always fills the whole window; zooming out stops once
 // the entire office fits, so it never shrinks into a corner leaving empty space.
-export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom = 1, fitToView = false, labelsShown = false, onToggleLabels, children, style }: OfficeMapProps) {
+export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom = 1, fitToView = false, labelsShown = false, onToggleLabels, paused = false, onTogglePause, recallActive = false, onRecall, children, style }: OfficeMapProps) {
   const ref = useRef<HTMLDivElement>(null)
   const drag = useRef({ x: 0, y: 0, sl: 0, st: 0, active: false, moved: false })
   const userZoomed = useRef(false)
@@ -201,6 +205,28 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
 
       {/* Zoom + fullscreen controls — fixed in the corner, above the panning floor. */}
       <div style={{ position: 'absolute', right: 12, bottom: 12, zIndex: 30, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {onTogglePause ? (
+          <IconButton
+            icon={paused ? 'play' : 'pause'}
+            variant="card"
+            size="sm"
+            label={paused ? 'Retomar a simulação' : 'Pausar a simulação'}
+            aria-pressed={paused}
+            onClick={onTogglePause}
+            style={paused ? { color: 'var(--text-on-brand)', background: 'var(--intent-brand)', borderColor: 'var(--intent-brand)' } : undefined}
+          />
+        ) : null}
+        {onRecall ? (
+          <IconButton
+            icon="armchair"
+            variant="card"
+            size="sm"
+            label={recallActive ? 'Voltando às mesas…' : 'Retornar às mesas'}
+            aria-pressed={recallActive}
+            onClick={onRecall}
+            style={recallActive ? { color: 'var(--text-on-brand)', background: 'var(--intent-brand)', borderColor: 'var(--intent-brand)' } : undefined}
+          />
+        ) : null}
         {onToggleLabels ? (
           <IconButton
             icon="tag"

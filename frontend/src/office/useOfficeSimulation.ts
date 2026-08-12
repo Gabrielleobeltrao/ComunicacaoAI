@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef } from 'react'
 import type { BuiltOfficeLayout } from './buildOfficeLayout'
 import type { NavGrid } from './buildNavigationGrid'
-import { REF_DY, createContext, createModels, settleStartPositions, stepAgent, tickConversations, warmStart } from './officeSimCore'
+import { REF_DY, createContext, createModels, recallComplete, setRecall, settleStartPositions, stepAgent, tickConversations, warmStart } from './officeSimCore'
 import type { AgentModel, SimContext } from './officeSimCore'
 import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { OFFICE_FEATURES, TIME_SCALE, WARM_START_MS } from './officeConfig'
@@ -21,6 +21,9 @@ export interface SimOptions {
   enabled: boolean
   interactions?: InteractionPoint[]
   envelope?: ActivityEnvelope
+  paused?: boolean // freeze the whole simulation (Phase 9)
+  recall?: boolean // send everyone back to their desks (Phase 10)
+  onRecallDone?: () => void // fired once when every agent is home
 }
 
 // Thin React wrapper around the pure simulation core: it owns the rAF loop, the
@@ -35,6 +38,7 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
   const rafRef = useRef(0)
   const lastTs = useRef(0)
   const simNow = useRef(0) // monotonic sim clock (ms), continuous across warm-start
+  const recallDone = useRef(false)
   const optsRef = useRef(opts)
   optsRef.current = opts
 
@@ -57,7 +61,20 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
     if (!opts.enabled) return
     const tick = (ts: number) => {
       const ctx = ctxRef.current
+      // Paused: hold everything exactly where it is. Keep lastTs current so resume
+      // doesn't apply a huge delta, and don't advance the sim clock.
+      if (ctx && optsRef.current.paused) {
+        lastTs.current = ts
+        rafRef.current = requestAnimationFrame(tick)
+        return
+      }
       if (ctx) {
+        // Reconcile recall mode with the control.
+        const wantRecall = !!optsRef.current.recall
+        if (ctx.recall !== wantRecall) {
+          setRecall(ctx, models.current, wantRecall)
+          recallDone.current = false
+        }
         const dt = Math.min(80, ts - (lastTs.current || ts)) * TIME_SCALE
         lastTs.current = ts
         simNow.current += dt
@@ -85,6 +102,11 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
           }
         }
         if (changed) bump()
+        // Notify once the "return to desks" run has fully completed.
+        if (ctx.recall && !recallDone.current && recallComplete(ctx, models.current)) {
+          recallDone.current = true
+          optsRef.current.onRecallDone?.()
+        }
       }
       rafRef.current = requestAnimationFrame(tick)
     }

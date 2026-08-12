@@ -55,6 +55,8 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   const [hostW, setHostW] = useState(0)
   const [hoveredRoom, setHoveredRoom] = useState<string | null>(null)
   const [showLabels, setShowLabels] = useState(false)
+  const [paused, setPaused] = useState(false)
+  const [recall, setRecall] = useState(false)
   useEffect(() => {
     const el = hostRef.current
     if (!el) return
@@ -90,7 +92,18 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
 
   const reducedMotion = useReducedMotion()
   const simOn = OFFICE_FEATURES.simulation && (!reducedMotion || IGNORE_REDUCED_MOTION)
-  const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn, interactions: decor.interactionPoints, envelope })
+  const sim = useOfficeSimulation(layout, grid, {
+    modeFor,
+    enabled: simOn,
+    interactions: decor.interactionPoints,
+    envelope,
+    paused,
+    recall,
+    onRecallDone: () => {
+      setPaused(true) // office goes static once everyone is back
+      setRecall(false)
+    },
+  })
 
   // Preload the walk / idle frames for the faces actually in use.
   const usedCharacters = useMemo(() => Array.from(new Set(agents.map((a) => chars.character(a._id)))), [agents, chars])
@@ -125,7 +138,26 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
 
   return (
     <div ref={hostRef}>
-      <OfficeMap cols={cols} rows={rows} tile={42} fitToView labelsShown={showLabels} onToggleLabels={() => setShowLabels((v) => !v)} style={{ height: VIEWPORT_H }}>
+      <OfficeMap
+        cols={cols}
+        rows={rows}
+        tile={42}
+        fitToView
+        labelsShown={showLabels}
+        onToggleLabels={() => setShowLabels((v) => !v)}
+        paused={paused}
+        onTogglePause={simOn ? () => setPaused((v) => !v) : undefined}
+        recallActive={recall}
+        onRecall={
+          simOn
+            ? () => {
+                setRecall(true)
+                setPaused(false) // let everyone walk home
+              }
+            : undefined
+        }
+        style={{ height: VIEWPORT_H }}
+      >
         {/* Room shapes — tetris outlines, drawn behind everything */}
         <svg
           viewBox={`0 0 ${cols} ${rows}`}
