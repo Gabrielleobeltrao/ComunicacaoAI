@@ -74,6 +74,23 @@ export const getFloorMetrics = (floorId: string) =>
 export const getAgentStates = (floorId: string) =>
   fetch(`${API_URL}/api/floors/${floorId}/agent-states`, opts('GET')).then(json<Record<string, string>>)
 
+// Aggregated dashboard overview (one call — KPIs + per-floor cards).
+export interface FloorOverview {
+  floor: Pick<Floor, 'id' | 'name' | 'mission' | 'color' | 'icon' | 'order' | 'status'>
+  agentCount: number
+  sectorCount: number
+  automationsActive: number
+  runsActive: number
+  failures24h: number
+}
+export interface BuildingOverview {
+  building: { id: string; name: string; description: string }
+  totals: { floors: number; agents: number; sectors: number; automationsActive: number; runsActive: number; failures24h: number }
+  floors: FloorOverview[]
+}
+export const getBuildingOverview = () =>
+  fetch(`${API_URL}/api/building/overview`, opts('GET')).then(json<BuildingOverview>)
+
 // Choose the active floor: the saved id if it still points at an active floor,
 // otherwise the first active floor (floors arrive ordered), otherwise null.
 // Pure so the fallback rule (plan §14.5) is unit-testable.

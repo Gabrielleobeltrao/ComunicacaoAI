@@ -1,5 +1,7 @@
-import type { ObjectId } from 'mongodb'
+import { ObjectId } from 'mongodb'
 import { db } from '../db.js'
+import { ensureDefaultBuilding } from '../building.js'
+import { getFloorActivity, listFloors } from '../floors.js'
 
 // Operational metrics for a floor (plan §16). Kept separate from conversational
 // metrics — runs and conversations are never summed as one unit.
@@ -37,6 +39,42 @@ export async function floorMetrics(ownerId: string, floorId: ObjectId): Promise<
     succeeded24h,
     successRate: finished > 0 ? succeeded24h / finished : null,
     recentArtifacts,
+  }
+}
+
+// Aggregated building overview (plan §8.7) — one call, no N+1 from the client.
+// Ownership is applied throughout (listFloors/floorMetrics are owner-scoped).
+export async function buildingOverview(ownerId: string) {
+  const building = await ensureDefaultBuilding(ownerId)
+  const floors = await listFloors(ownerId)
+  const perFloor = await Promise.all(
+    floors.map(async (f) => {
+      const [metrics, activity] = await Promise.all([floorMetrics(ownerId, f._id), getFloorActivity(ownerId, f._id)])
+      return {
+        floor: { id: f._id.toString(), name: f.name, mission: f.mission, color: f.color, icon: f.icon, order: f.order, status: f.status },
+        agentCount: activity.agentCount,
+        sectorCount: activity.sectorCount,
+        automationsActive: metrics.automationsActive,
+        runsActive: metrics.running,
+        failures24h: metrics.failures24h,
+      }
+    }),
+  )
+  const totals = perFloor.reduce(
+    (acc, d) => ({
+      floors: acc.floors + 1,
+      agents: acc.agents + d.agentCount,
+      sectors: acc.sectors + d.sectorCount,
+      automationsActive: acc.automationsActive + d.automationsActive,
+      runsActive: acc.runsActive + d.runsActive,
+      failures24h: acc.failures24h + d.failures24h,
+    }),
+    { floors: 0, agents: 0, sectors: 0, automationsActive: 0, runsActive: 0, failures24h: 0 },
+  )
+  return {
+    building: { id: building._id.toString(), name: building.name, description: building.description },
+    totals,
+    floors: perFloor,
   }
 }
 

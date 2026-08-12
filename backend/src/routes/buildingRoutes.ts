@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import type { Building } from '../building.js'
 import { ensureDefaultBuilding, updateBuilding } from '../building.js'
+import { buildingOverview } from '../automations/metrics.js'
 import { fail } from './http.js'
 
 // Mounted at /api/building behind requireAuth (res.locals.userId is the owner).
@@ -19,6 +20,15 @@ const toPublic = (b: Building) => ({
 buildingRouter.get('/', async (_req, res) => {
   const building = await ensureDefaultBuilding(res.locals.userId)
   res.json(toPublic(building))
+})
+
+// Aggregated overview for the unified dashboard (KPIs + per-floor cards).
+buildingRouter.get('/overview', async (_req, res, next) => {
+  try {
+    res.json(await buildingOverview(res.locals.userId))
+  } catch (error) {
+    fail(res, error, next)
+  }
 })
 
 buildingRouter.patch('/', async (req, res, next) => {
