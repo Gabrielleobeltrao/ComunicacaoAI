@@ -27,6 +27,7 @@ interface Home {
 export interface AgentModel {
   id: string
   kind: 'seated' | 'loose'
+  sectorId: string | null // the room this agent belongs to (for in-room wandering)
   mode: AgentVisualMode
   motion: AgentMotionState
   resume: AgentMotionState
@@ -54,6 +55,7 @@ export interface SimContext {
   envelope: ActivityEnvelope // invisible activity area — no foot/destination leaves it
   waypoints: OfficePoint[]
   interactions: InteractionPoint[]
+  roomInterior: Map<string, OfficePoint[]> // sectorId -> walkable interior points to wander to
   occupancy: Map<string, number> // interactionId -> agents currently holding it
   occupiedCells: Map<string, string> // cellKey -> agentId physically standing there (never expires)
   reservations: Map<string, { agentId: string; until: number }> // future cells (expire)
@@ -80,18 +82,51 @@ export function corridorWaypoints(grid: NavGrid, layout: BuiltOfficeLayout, enve
       inRoom.add(`${bi + ci},${bj + cj}`)
     }
   }
+  // Door thresholds must never be pause destinations, so keep them out.
+  const doorGuard = new Set<string>()
+  for (const d of grid.doors)
+    for (const p of [d.inner, d.outer]) {
+      const c = cellOfPoint(grid, p)
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) doorGuard.add(`${c.i + di},${c.j + dj}`)
+    }
   const pts: OfficePoint[] = []
   const rng = mulberry32(hash32('office-waypoints'))
   let guard = 0
-  // Corridor waypoints are walkable, outside rooms, and inside the activity
-  // envelope — never a far empty corner of the canvas.
+  // Corridor waypoints are walkable, outside rooms, inside the envelope, and not
+  // on/next to a door — never a far empty corner nor a doorway pause point.
   while (pts.length < 24 && guard++ < 6000) {
     const i = 1 + Math.floor(rng() * (grid.w - 2))
     const j = 1 + Math.floor(rng() * (grid.h - 2))
-    if (isWalkable(grid, i, j) && inEnvelopeCell(envelope, i, j) && !inRoom.has(`${i},${j}`)) pts.push(pointOfCell(grid, i, j))
+    if (isWalkable(grid, i, j) && inEnvelopeCell(envelope, i, j) && !inRoom.has(`${i},${j}`) && !doorGuard.has(`${i},${j}`)) pts.push(pointOfCell(grid, i, j))
   }
-  for (const d of grid.doors) pts.push(d.outer)
   return pts
+}
+
+// Walkable interior points of each sector room (away from doorways) so seated
+// agents can wander inside their own room without leaving it.
+export function buildRoomInteriors(layout: BuiltOfficeLayout, grid: NavGrid, envelope: ActivityEnvelope): Map<string, OfficePoint[]> {
+  const doorGuard = new Set<string>()
+  for (const d of grid.doors)
+    for (const p of [d.inner, d.outer]) {
+      const c = cellOfPoint(grid, p)
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) doorGuard.add(`${c.i + di},${c.j + dj}`)
+    }
+  const out = new Map<string, OfficePoint[]>()
+  for (const r of layout.rooms) {
+    if (r.kind !== 'sector') continue
+    const bi = Math.round(r.x / grid.res)
+    const bj = Math.round(r.y / grid.res)
+    const pts: OfficePoint[] = []
+    for (const c of r.cells) {
+      const [ci, cj] = c.split(',').map(Number)
+      const gi = bi + ci
+      const gj = bj + cj
+      if (!isWalkable(grid, gi, gj) || !inEnvelopeCell(envelope, gi, gj) || doorGuard.has(`${gi},${gj}`)) continue
+      pts.push(pointOfCell(grid, gi, gj))
+    }
+    if (pts.length) out.set(r.key, pts)
+  }
+  return out
 }
 
 export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) => AgentVisualMode): Map<string, AgentModel> {
@@ -101,6 +136,7 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
     out.set(s.agentId, {
       id: s.agentId,
       kind: 'seated',
+      sectorId: s.sectorId ?? null,
       mode: modeFor(s.agentId),
       motion: 'seated',
       resume: 'walking',
@@ -128,6 +164,7 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
     out.set(o.agentId, {
       id: o.agentId,
       kind: 'loose',
+      sectorId: null,
       mode: modeFor(o.agentId),
       motion: 'pausing',
       resume: 'walking',
@@ -201,6 +238,7 @@ export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAge
     envelope,
     waypoints: corridorWaypoints(grid, layout, envelope),
     interactions,
+    roomInterior: buildRoomInteriors(layout, grid, envelope),
     occupancy: new Map(),
     occupiedCells: new Map(),
     reservations: new Map(),
@@ -257,30 +295,49 @@ function clearDest(ctx: SimContext, m: AgentModel) {
     m.destFacing = null
   }
 }
-// Pick a destination: sometimes an interaction point with free capacity (whose
-// slot we reserve here and its facing we remember), otherwise a corridor
-// waypoint. Always releases any slot held before choosing.
-function chooseDestination(ctx: SimContext, m: AgentModel): OfficePoint | null {
-  clearDest(ctx, m)
-  const useInteraction = ctx.interactions.length > 0 && m.rng() < 0.5
-  if (useInteraction) {
-    for (let t = 0; t < 6; t++) {
-      const it = ctx.interactions[Math.floor(m.rng() * ctx.interactions.length)]
-      if ((ctx.occupancy.get(it.id) ?? 0) >= it.capacity) continue
-      if (!inEnvelopePoint(ctx.envelope, ctx.grid, it.point)) continue
-      if (!nearestWalkable(ctx.grid, it.point, 2)) continue
-      ctx.occupancy.set(it.id, (ctx.occupancy.get(it.id) ?? 0) + 1)
-      m.destInteractionId = it.id
-      m.destFacing = it.facing ?? null
-      return it.point
-    }
+function tryInteraction(ctx: SimContext, m: AgentModel): OfficePoint | null {
+  for (let t = 0; t < 6; t++) {
+    const it = ctx.interactions[Math.floor(m.rng() * ctx.interactions.length)]
+    if ((ctx.occupancy.get(it.id) ?? 0) >= it.capacity) continue
+    if (!inEnvelopePoint(ctx.envelope, ctx.grid, it.point)) continue
+    if (!nearestWalkable(ctx.grid, it.point, 2)) continue
+    ctx.occupancy.set(it.id, (ctx.occupancy.get(it.id) ?? 0) + 1)
+    m.destInteractionId = it.id
+    m.destFacing = it.facing ?? null
+    return it.point
   }
+  return null
+}
+function tryWaypoint(ctx: SimContext, m: AgentModel): OfficePoint | null {
   if (ctx.waypoints.length === 0) return null
   for (let t = 0; t < 6; t++) {
     const p = ctx.waypoints[Math.floor(m.rng() * ctx.waypoints.length)]
     if (nearestWalkable(ctx.grid, p, 2)) return p
   }
   return null
+}
+// Pick a destination with the plan's weighting: a seated agent mostly wanders its
+// own room (~58%), sometimes the corridor (~22%), sometimes an interaction (~20%);
+// a deskless agent alternates interactions and the corridor. Releases any held
+// interaction slot first. Interaction picks reserve their slot + remember facing.
+function chooseDestination(ctx: SimContext, m: AgentModel): OfficePoint | null {
+  clearDest(ctx, m)
+  const r = m.rng()
+  if (m.sectorId) {
+    const interior = ctx.roomInterior.get(m.sectorId)
+    if (interior && interior.length && r < 0.58) return interior[Math.floor(m.rng() * interior.length)]
+    if (ctx.interactions.length && r >= 0.8) {
+      const p = tryInteraction(ctx, m)
+      if (p) return p
+    }
+    return tryWaypoint(ctx, m)
+  }
+  // deskless agents: roughly half interactions, half corridor
+  if (ctx.interactions.length && m.rng() < 0.45) {
+    const p = tryInteraction(ctx, m)
+    if (p) return p
+  }
+  return tryWaypoint(ctx, m)
 }
 function routeFrom(ctx: SimContext, m: AgentModel, fromFoot: OfficePoint, goalFoot: OfficePoint, now: number): boolean {
   const from = nearestWalkable(ctx.grid, fromFoot, 3)

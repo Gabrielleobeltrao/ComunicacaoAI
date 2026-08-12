@@ -140,6 +140,38 @@ describe('officeSimCore', () => {
     }
   })
 
+  it('sends seated agents wandering inside their own room', () => {
+    const models = createModels(layout, () => 'normal')
+    const ctx = createContext(layout, grid, models.size)
+    settleStartPositions(ctx, models)
+    const interiorKeys = new Map<string, Set<string>>()
+    for (const [sid, pts] of ctx.roomInterior) {
+      const s = new Set<string>()
+      for (const p of pts) {
+        const c = cellOfPoint(grid, p)
+        s.add(`${c.i},${c.j}`)
+      }
+      interiorKeys.set(sid, s)
+    }
+    for (const m of models.values()) m.timer = Math.min(m.timer, 300)
+    let now = 0
+    let inRoomWander = 0
+    for (let step = 0; step < 6000; step++) {
+      now += 28
+      for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+      for (const m of models.values()) {
+        stepAgent(m, 28, now, ctx)
+        // a seated agent that pauses (not at an interaction) on its own room's
+        // interior cell has walked inside its room and stopped there
+        if (m.motion === 'pausing' && m.sectorId && !m.destInteractionId) {
+          const c = cellOfPoint(grid, footOf(m.pos))
+          if (interiorKeys.get(m.sectorId)?.has(`${c.i},${c.j}`)) inRoomWander++
+        }
+      }
+    }
+    expect(inRoomWander).toBeGreaterThan(0)
+  })
+
   it('respects the concurrency cap', () => {
     const models = createModels(layout, () => 'normal')
     const ctx = createContext(layout, grid, models.size)
