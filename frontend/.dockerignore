@@ -1,0 +1,29 @@
+# Build context is the frontend/ folder. Keep it minimal and secret-free.
+# (.git lives at the monorepo root, outside this context, so it is never copied.)
+node_modules
+dist
+npm-debug.log*
+*.log
+
+# Never ship environment files into the image. VITE_API_URL is passed as a
+# --build-arg instead (it is public and inlined into the bundle at build time).
+.env
+.env.*
+!.env.example
+
+# E2E tests and Playwright artifacts are not part of the production build.
+tests
+e2e
+playwright.config.*
+test-results
+playwright-report
+
+# Editor / OS cruft
+.DS_Store
+.vscode
+.idea
+
+# Docker files themselves don't need to be in the image
+Dockerfile
+.dockerignore
+nginx.conf
