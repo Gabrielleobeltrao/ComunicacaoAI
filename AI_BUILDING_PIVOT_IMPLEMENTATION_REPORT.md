@@ -5,7 +5,7 @@ Execution report for `AI_BUILDING_PIVOT_IMPLEMENTATION_PLAN.md`.
 ## 1. Git state
 
 - **Base commit:** `6d4f809d1c3bfc5bc49e0ed725c13f68b0f2e10f` (matches the plan header; `origin/main` == base at start).
-- **Final commit:** `4e6504f` on branch **`development`** (not pushed).
+- **Final commit:** `703ae01` on branch **`development`** (not pushed).
 - **Branch deviation:** the plan suggested a dedicated branch; per the user's standing workflow ("keep work on `development`, push to `main` only on request") all pivot work is committed on `development`. Nothing was pushed, deployed, or run against production.
 
 ### Commits added (small, semantic)
@@ -17,6 +17,9 @@ Execution report for `AI_BUILDING_PIVOT_IMPLEMENTATION_PLAN.md`.
 | `d44bc8a` | feat(floors): building overview, floor route, elevator navigation |
 | `6b7f689` | feat(runtime): generic agent execution layer (executeAgentTask) |
 | `4e6504f` | feat(automations): definition domain, immutable versions, scoped APIs |
+| `1c48e9b` | docs(pivot): plan + phase report |
+| `4a23a01` | feat(sources): SSRF-safe http, RSS parsing, template steps |
+| `703ae01` | feat(runner): linear runner (retry/timeout/cancel/continueOnError) |
 
 ## 2. Scope executed
 
@@ -28,12 +31,13 @@ Per the user's decision (this environment has **no running MongoDB, no Redis, no
 | 1 — Building + Floors | ✅ Code complete | Backend domain + idempotent backfill + APIs; frontend data-layer + Elevator + Térreo/floor routes (gated). Runtime gate (two floors end-to-end) pending Mongo/browser. Map-per-floor scoping deferred to the live-status phase. |
 | 2 — Generic runtime | ✅ Done | `executeAgentTask` additive over the existing provider dispatch; conversation path untouched |
 | 3 — Automation domain | ✅ Backend done | Definition/version domain, per-type validators, immutable versioning, CRUD APIs. **Wizard UI deferred** (large, needs browser) |
-| 4 — Queue + worker | ⛔ Blocked | Requires Redis/BullMQ — not available in this environment |
-| 5–10 | ⛔ Not started | Depend on Phase 4 and/or Mongo/browser/E2E infra |
+| 4 — Queue + worker | 🟡 Partial | Linear **runner** (steps in order, retry/timeout/cancel/continueOnError) done + tested; the BullMQ **queue transport + worker process** and Run/StepRun/Artifact **Mongo persistence** remain Redis/Mongo-pending |
+| 5 — Sources + steps | 🟡 Core done | SSRF-safe http (per-hop redirect revalidation, byte/content-type caps), RSS parse/dedupe/time-window, transform.template — done + unit-tested and wired into the runner; `delivery.send` adapter arrives with Phase 7 |
+| 6–10 | ⛔ Not started | Scheduler (Redis), connections/deliveries, operational dashboard, channels reframe, hardening — need infra/browser |
 
 ## 3. Files created / changed
 
-**Backend (new):** `src/building.ts`, `src/floors.ts`, `src/agentRuntime.ts`, `src/routes/http.ts`, `src/routes/buildingRoutes.ts`, `src/routes/floorRoutes.ts`, `src/routes/automationRoutes.ts`, `src/automations/{types,validate,repository,service}.ts`, `test/{floors,agentRuntime,automations}.test.mjs`.
+**Backend (new):** `src/building.ts`, `src/floors.ts`, `src/agentRuntime.ts`, `src/net/safeHttp.ts`, `src/routes/{http,buildingRoutes,floorRoutes,automationRoutes}.ts`, `src/automations/{types,validate,repository,service,sources,transform,runner}.ts`, `test/{floors,agentRuntime,automations,safeHttp,sources,runner}.test.mjs`.
 
 **Backend (edited):** `src/config.ts` (feature flags), `src/migrate.ts` (idempotent building/floor backfill + indexes), `src/index.ts` (mount `/api/building`, `/api/floors`, `/api/automations`), `.env.example` (flags).
 
@@ -57,7 +61,7 @@ An idempotent boot backfill was added to `runMigrations()`:
 
 Run with `npm run build` first (suites consume `dist`).
 
-- **Backend:** `node --test` → **20 passed / 0 failed** — config (5), floors pure/timezone (2), generic runtime with a mocked provider (7), automation validation + hashing (6).
+- **Backend:** `node --test` → **32 passed / 0 failed** — config (5), floors/timezone (2), generic runtime with a mocked provider (7), automation validation + hashing (6), SSRF guard (3), RSS/template (4), linear runner (5).
 - **Frontend:** `vitest run` → **58 passed / 0 failed** (9 files) — baseline 55 (office 51 + others) + `resolveActiveFloor` (3).
 - **Lint:** `oxlint` clean. **Typecheck:** `tsc -b` clean (frontend + backend).
 
@@ -107,8 +111,8 @@ Backend APIs are mounted unconditionally (auth + ownership enforced); the flags 
 - [x] Automation has draft, validation, publish and immutable version (backend + unit tests).
 - [ ] Run occurs on a worker / survives restart — **Phase 4 (Redis), not started**.
 - [ ] Manual/schedule/webhook with idempotency — Phase 4–6.
-- [ ] RSS/HTTP with SSRF/limits — Phase 5.
-- [ ] Artifacts, email/Telegram, retry idempotency — Phase 5–7.
+- [x] RSS/HTTP with SSRF, per-hop redirect revalidation, byte/content-type limits, untrusted-content handling — logic done + unit-tested (execution via worker pending).
+- [ ] Artifacts persistence, email/Telegram, retry idempotency — Phase 5–7 (runner retry logic done; delivery adapters + Mongo persistence pending).
 - [ ] Operational vs conversational dashboard split — Phase 8.
 - [x] All queries apply ownership (building → floor → automation) in the code paths added.
 - [x] No secret in any response/log/bundle/report added.
