@@ -3,5 +3,7 @@ dist
 .env
 .env.*
 !.env.example
+# Local, uncommitted env file for the production-like compose harness.
+compose.production-test.env
 *.log
 .DS_Store
