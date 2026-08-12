@@ -9,7 +9,9 @@ import { DESK_DEPTH, DESK_W, buildOfficeLayout, hash32, mulberry32 } from './bui
 import { buildNavigationGrid } from './buildNavigationGrid'
 import type { AgentVisualMode, OfficeDirection, OfficeSeat } from './officeTypes'
 import { IGNORE_REDUCED_MOTION, OFFICE_FEATURES } from './officeConfig'
+import { EMPTY_DECOR, placeOfficeDecor } from './placeOfficeDecor'
 import { preloadAgentSprites } from './officeSprites'
+import { OfficeDebugOverlay } from './OfficeDebugOverlay'
 import { useOfficeSimulation } from './useOfficeSimulation'
 import { MapAgent } from './MapAgent'
 import { MapObject } from './MapObject'
@@ -62,7 +64,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
   }, [])
   const aspect = Math.min(3.2, Math.max(1.4, (hostW || 1100) / VIEWPORT_H))
 
-  const layout = useMemo(
+  const baseLayout = useMemo(
     () =>
       buildOfficeLayout({
         agents: agents.map((a) => ({ _id: a._id })),
@@ -74,11 +76,16 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
       }),
     [agents, sectors, aspect],
   )
-  const grid = useMemo(() => buildNavigationGrid(layout), [layout])
+  const baseGrid = useMemo(() => buildNavigationGrid(baseLayout), [baseLayout])
+  // Deterministic decoration (Phase 7) — placed against the base grid so it never
+  // breaks a route, then folded back in so agents actually navigate around it.
+  const decor = useMemo(() => (OFFICE_FEATURES.decoration ? placeOfficeDecor(baseLayout, baseGrid) : EMPTY_DECOR), [baseLayout, baseGrid])
+  const layout = useMemo(() => (decor.obstacles.length ? { ...baseLayout, obstacles: [...baseLayout.obstacles, ...decor.obstacles] } : baseLayout), [baseLayout, decor])
+  const grid = useMemo(() => (decor.obstacles.length ? buildNavigationGrid(layout) : baseGrid), [layout, baseGrid, decor.obstacles.length])
 
   const reducedMotion = useReducedMotion()
   const simOn = OFFICE_FEATURES.simulation && (!reducedMotion || IGNORE_REDUCED_MOTION)
-  const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn })
+  const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn, interactions: decor.interactionPoints })
 
   // Preload the walk / idle frames for the faces actually in use.
   const usedCharacters = useMemo(() => Array.from(new Set(agents.map((a) => chars.character(a._id)))), [agents, chars])
@@ -86,7 +93,7 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
     preloadAgentSprites(usedCharacters)
   }, [usedCharacters])
 
-  const { rooms, seats, desks, decor, amenityItems, loose, cols, rows } = layout
+  const { rooms, seats, desks, amenityItems, loose, cols, rows } = layout
   const agentName = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
   const nameOf = useCallback((id: string) => (agentName.get(id) ?? '').split(' ')[0], [agentName])
   const farSeats = seats.filter((s) => !s.chair.near)
@@ -147,8 +154,13 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
         ))}
 
         {/* Sector décor (in the annex) */}
-        {decor.map((dc) => (
+        {layout.decor.map((dc) => (
           <MapObject key={`decor-${dc.roomKey}`} x={dc.x - 0.85} y={dc.y - 1.4} w={1.7} h={2} art={objectSrc(dc.art)} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
+        ))}
+
+        {/* Deterministic room decoration (Phase 7) */}
+        {decor.items.map((it) => (
+          <MapObject key={`dec-${it.key}`} x={it.x} y={it.y} w={it.w} h={it.h} art={objectSrc(it.art)} label={it.label} style={{ zIndex: 2, pointerEvents: 'none' }} />
         ))}
 
         {/* Labels — the hovered room always, or every room when toggled on */}
@@ -214,6 +226,8 @@ export function OfficeFloor({ agents, sectors = [] }: { agents: AgentSummary[]; 
                 )
               }),
             ]}
+
+        {OFFICE_FEATURES.debug && <OfficeDebugOverlay grid={grid} layout={layout} interactions={decor.interactionPoints} debug={sim.debug} live={simOn} />}
       </OfficeMap>
     </div>
   )

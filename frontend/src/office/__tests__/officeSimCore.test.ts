@@ -4,6 +4,7 @@ import { buildOfficeLayout } from '../buildOfficeLayout'
 import type { LayoutInput } from '../buildOfficeLayout'
 import { buildNavigationGrid, cellOfPoint, isWalkable, nearestWalkable } from '../buildNavigationGrid'
 import { findOfficePath } from '../findOfficePath'
+import { placeOfficeDecor } from '../placeOfficeDecor'
 import { createContext, createModels, footOf, stepAgent } from '../officeSimCore'
 
 function input(): LayoutInput {
@@ -94,5 +95,35 @@ describe('officeSimCore', () => {
     // the cap gates NEW trips; brief overshoot is impossible since starts check it
     expect(ctx.moving.count).toBeLessThanOrEqual(ctx.cap + 1)
     expect(maxMoving).toBeGreaterThan(0)
+  })
+
+  it('respects interaction-point capacity and adopts its facing on arrival', () => {
+    const decor = placeOfficeDecor(layout, grid)
+    const merged = buildNavigationGrid({ ...layout, obstacles: [...layout.obstacles, ...decor.obstacles] })
+    const capOf = new Map(decor.interactionPoints.map((i) => [i.id, i.capacity]))
+    const faceOf = new Map(decor.interactionPoints.map((i) => [i.id, i.facing]))
+    const models = createModels(layout, () => 'normal')
+    const ctx = createContext(layout, merged, models.size, decor.interactionPoints)
+    for (const m of models.values()) m.timer = Math.min(m.timer, 300)
+    let now = 0
+    let sawFacingMatch = false
+    for (let step = 0; step < 5000; step++) {
+      now += 32
+      for (const [k, r] of ctx.reservations) if (r.until <= now) ctx.reservations.delete(k)
+      for (const m of models.values()) stepAgent(m, 32, now, ctx)
+      // occupancy never exceeds capacity
+      for (const [id, n] of ctx.occupancy) expect(n).toBeLessThanOrEqual(capOf.get(id) ?? 0)
+      // an agent idling at an interaction faces the point's declared facing
+      for (const m of models.values()) {
+        if (m.motion === 'pausing' && m.destInteractionId) {
+          const f = faceOf.get(m.destInteractionId)
+          if (f) {
+            expect(m.direction).toBe(f)
+            sawFacingMatch = true
+          }
+        }
+      }
+    }
+    expect(sawFacingMatch).toBe(true)
   })
 })

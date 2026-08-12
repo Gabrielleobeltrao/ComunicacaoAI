@@ -4,7 +4,7 @@ import type { NavGrid } from './buildNavigationGrid'
 import { REF_DY, createContext, createModels, stepAgent } from './officeSimCore'
 import type { AgentModel, SimContext } from './officeSimCore'
 import { TIME_SCALE } from './officeConfig'
-import type { AgentMotionState, AgentVisualMode, OfficeDirection } from './officeTypes'
+import type { AgentMotionState, AgentVisualMode, InteractionPoint, OfficeDirection } from './officeTypes'
 
 // Per-agent semantic view — the only thing that re-renders React. Continuous
 // position is written to each node's CSS vars imperatively (see `register`).
@@ -18,6 +18,7 @@ export interface SimView {
 export interface SimOptions {
   modeFor: (agentId: string) => AgentVisualMode
   enabled: boolean
+  interactions?: InteractionPoint[]
 }
 
 // Thin React wrapper around the pure simulation core: it owns the rAF loop, the
@@ -40,7 +41,7 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
     for (const a of m.values()) v.set(a.id, { motion: a.motion, direction: a.direction, mode: a.mode, frame: a.frame })
     models.current = m
     views.current = v
-    ctxRef.current = createContext(layout, grid, m.size)
+    ctxRef.current = createContext(layout, grid, m.size, optsRef.current.interactions ?? [])
     bump()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, grid])
@@ -110,6 +111,8 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
   const setHovered = (agentId: string | null) => {
     hovered.current = agentId
   }
+  // Live read of the simulation for the debug overlay (never triggers a render).
+  const debug = { models: () => models.current, context: () => ctxRef.current }
 
-  return { register, viewOf, setHovered }
+  return { register, viewOf, setHovered, debug }
 }

@@ -9,7 +9,7 @@ import { isWalkable, nearestWalkable, pointOfCell } from './buildNavigationGrid'
 import { findOfficePathCells } from './findOfficePath'
 import type { GridCell } from './findOfficePath'
 import { MAX_CONCURRENT_RATIO, OFFICE_TIMING } from './officeConfig'
-import type { AgentMotionState, AgentVisualMode, OfficeDirection, OfficePoint } from './officeTypes'
+import type { AgentMotionState, AgentVisualMode, InteractionPoint, OfficeDirection, OfficePoint } from './officeTypes'
 
 export const REF_DX = 0.5
 export const REF_DY = 1.5
@@ -39,6 +39,8 @@ export interface AgentModel {
   seg: { from: OfficePoint; to: OfficePoint; t: number; dur: number } | null
   reservedNext: string | null
   reservedCur: string | null
+  destInteractionId: string | null // interaction-point slot currently held
+  destFacing: OfficeDirection | null // facing to assume on arrival
   timer: number
   visits: number
   attempts: number
@@ -48,6 +50,8 @@ export interface AgentModel {
 export interface SimContext {
   grid: NavGrid
   waypoints: OfficePoint[]
+  interactions: InteractionPoint[]
+  occupancy: Map<string, number> // interactionId -> agents currently holding it
   reservations: Map<string, { agentId: string; until: number }>
   moving: { count: number }
   cap: number
@@ -105,6 +109,8 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
       seg: null,
       reservedNext: null,
       reservedCur: null,
+      destInteractionId: null,
+      destFacing: null,
       timer: rand(rng, OFFICE_TIMING.staggerMs) + rand(rng, OFFICE_TIMING.seatedPause),
       visits: 0,
       attempts: 0,
@@ -130,6 +136,8 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
       seg: null,
       reservedNext: null,
       reservedCur: null,
+      destInteractionId: null,
+      destFacing: null,
       timer: rand(rng, OFFICE_TIMING.staggerMs) + rand(rng, OFFICE_TIMING.destinationPause),
       visits: 0,
       attempts: 0,
@@ -139,10 +147,12 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
   return out
 }
 
-export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAgents: number): SimContext {
+export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAgents: number, interactions: InteractionPoint[] = []): SimContext {
   return {
     grid,
     waypoints: corridorWaypoints(grid, layout),
+    interactions,
+    occupancy: new Map(),
     reservations: new Map(),
     moving: { count: 0 },
     cap: Math.max(1, Math.floor(totalAgents * MAX_CONCURRENT_RATIO)),
@@ -169,7 +179,33 @@ function reservedBy(ctx: SimContext, excludeId: string, now: number): Set<string
   for (const [k, r] of ctx.reservations) if (r.until > now && r.agentId !== excludeId) s.add(k)
   return s
 }
-function pickDestination(ctx: SimContext, m: AgentModel): OfficePoint | null {
+// Release the interaction slot this agent is holding (if any).
+function clearDest(ctx: SimContext, m: AgentModel) {
+  if (m.destInteractionId) {
+    const n = (ctx.occupancy.get(m.destInteractionId) ?? 0) - 1
+    if (n > 0) ctx.occupancy.set(m.destInteractionId, n)
+    else ctx.occupancy.delete(m.destInteractionId)
+    m.destInteractionId = null
+    m.destFacing = null
+  }
+}
+// Pick a destination: sometimes an interaction point with free capacity (whose
+// slot we reserve here and its facing we remember), otherwise a corridor
+// waypoint. Always releases any slot held before choosing.
+function chooseDestination(ctx: SimContext, m: AgentModel): OfficePoint | null {
+  clearDest(ctx, m)
+  const useInteraction = ctx.interactions.length > 0 && m.rng() < 0.5
+  if (useInteraction) {
+    for (let t = 0; t < 6; t++) {
+      const it = ctx.interactions[Math.floor(m.rng() * ctx.interactions.length)]
+      if ((ctx.occupancy.get(it.id) ?? 0) >= it.capacity) continue
+      if (!nearestWalkable(ctx.grid, it.point, 2)) continue
+      ctx.occupancy.set(it.id, (ctx.occupancy.get(it.id) ?? 0) + 1)
+      m.destInteractionId = it.id
+      m.destFacing = it.facing ?? null
+      return it.point
+    }
+  }
   if (ctx.waypoints.length === 0) return null
   for (let t = 0; t < 6; t++) {
     const p = ctx.waypoints[Math.floor(m.rng() * ctx.waypoints.length)]
@@ -211,6 +247,8 @@ function arrive(ctx: SimContext, m: AgentModel) {
   releaseAll(ctx, m)
   m.seg = null
   m.motion = 'pausing'
+  // At an interaction point the agent assumes the point's facing and idles.
+  if (m.destInteractionId && m.destFacing) m.direction = m.destFacing
   m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
   if (m.kind === 'loose') ctx.moving.count = Math.max(0, ctx.moving.count - 1)
 }
@@ -229,6 +267,7 @@ function finishReturn(ctx: SimContext, m: AgentModel) {
   }
 }
 function startReturn(ctx: SimContext, m: AgentModel, now: number) {
+  clearDest(ctx, m)
   releaseAll(ctx, m)
   const targetFoot = m.home ? m.home.exitFoot : footOf(m.baseRef)
   if (!routeFrom(ctx, m, footOf(m.pos), targetFoot, now)) {
@@ -240,10 +279,13 @@ function startReturn(ctx: SimContext, m: AgentModel, now: number) {
   beginSeg(ctx, m, now)
 }
 function startTrip(ctx: SimContext, m: AgentModel, now: number): boolean {
-  const dest = pickDestination(ctx, m)
+  const dest = chooseDestination(ctx, m)
   if (!dest) return false
   const startFoot = m.home ? m.home.exitFoot : footOf(m.baseRef)
-  if (!routeFrom(ctx, m, startFoot, dest, now)) return false
+  if (!routeFrom(ctx, m, startFoot, dest, now)) {
+    clearDest(ctx, m)
+    return false
+  }
   m.visits = 0
   m.attempts = 0
   ctx.moving.count++
@@ -314,20 +356,23 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
         if (m.kind === 'seated') {
           m.visits++
           const more = m.visits < OFFICE_TIMING.maxVisitsPerTrip && m.rng() < 0.5
-          const dest = more ? pickDestination(ctx, m) : null
+          const dest = more ? chooseDestination(ctx, m) : null
           if (dest && routeFrom(ctx, m, footOf(m.pos), dest, now)) {
             m.motion = 'walking'
             m.resume = 'walking'
             beginSeg(ctx, m, now)
           } else startReturn(ctx, m, now)
         } else {
-          const dest = ctx.moving.count <= ctx.cap ? pickDestination(ctx, m) : null
+          const dest = ctx.moving.count <= ctx.cap ? chooseDestination(ctx, m) : null
           if (dest && routeFrom(ctx, m, footOf(m.pos), dest, now)) {
             ctx.moving.count++
             m.motion = 'walking'
             m.resume = 'walking'
             beginSeg(ctx, m, now)
-          } else m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
+          } else {
+            clearDest(ctx, m)
+            m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
+          }
         }
       }
       break
@@ -339,6 +384,7 @@ export function stepAgent(m: AgentModel, dt: number, now: number, ctx: SimContex
           m.attempts = 0
           if (m.kind === 'seated') startReturn(ctx, m, now)
           else {
+            clearDest(ctx, m)
             releaseAll(ctx, m)
             m.motion = 'pausing'
             m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
