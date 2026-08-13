@@ -1,20 +1,43 @@
-import { buildCharacterResolver } from '../lib/agentAvatar'
-import { characterSrc, objectSrc } from '../lib/officeAssets'
+import { useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
+import { accentFor, buildCharacterResolver, statusFor } from '../lib/agentAvatar'
+import { objectSrc } from '../lib/officeAssets'
 import { DESK_DEPTH, DESK_W } from './buildOfficeLayout'
 import type { BuiltOfficeLayout } from './buildOfficeLayout'
 import type { OfficeSeat } from './officeTypes'
+import { MapAgent } from './MapAgent'
+import { MapObject } from './MapObject'
 import { roundedPath, traceOutline } from './roomShape'
 
 type Chars = ReturnType<typeof buildCharacterResolver>
+const TILE = 44 // base tile px inside the crop; the whole thing is scaled to fit
+const PAD = 1.1 // tiles of floor kept around the room
 
-// A real crop of the office map for one sector — the same room shape, furniture
-// (desks/chairs/plants) and seated character sprites the live "Visão do andar"
-// map draws, just clipped to this sector's room. Rendered as a single self-scaling
-// SVG (the illustrations are SVG files embedded via <image>), so it needs no
-// simulation, no measuring and no sprite preload. Layer order mirrors the map:
-// far chairs → far agents → desks/decor → near agents → near chairs.
+const facingSvg = (d: OfficeSeat['facing']): 'frente' | 'costas' => (d === 'back' ? 'costas' : 'frente')
+
+// A real crop of the office map for one sector. It renders with the SAME
+// components the live "Visão do andar" map uses (MapObject / MapAgent), so the
+// furniture and characters land in exactly the same spots — just clipped to this
+// sector's room and scaled to fit the card. Static (no simulation), click-through.
 export function SectorMapCrop({ layout, sectorId, color, chars }: { layout: BuiltOfficeLayout; sectorId: string; color: string; chars: Chars }) {
+  const boxRef = useRef<HTMLDivElement>(null)
   const room = layout.rooms.find((r) => r.kind === 'sector' && r.key === sectorId)
+  const [scale, setScale] = useState(0)
+
+  useLayoutEffect(() => {
+    const el = boxRef.current
+    if (!el || !room) return
+    const fit = () => {
+      const cw = (room.w + PAD * 2) * TILE
+      const ch = (room.h + PAD * 2) * TILE
+      setScale(Math.min(el.clientWidth / cw, el.clientHeight / ch))
+    }
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [room])
+
   if (!room) return <div style={{ width: '100%', height: '100%', background: `color-mix(in oklab, ${color} 14%, var(--surface-sunken, #f2efe9))` }} />
 
   const lx = (n: number) => n - room.x
@@ -25,69 +48,70 @@ export function SectorMapCrop({ layout, sectorId, color, chars }: { layout: Buil
   const seats = layout.seats.filter((s) => s.sectorId === sectorId)
   const farSeats = seats.filter((s) => !s.chair.near)
   const nearSeats = seats.filter((s) => s.chair.near)
+  const fill = `color-mix(in oklab, ${color} 15%, var(--paper-0, #fff))`
 
-  const pad = 1.4
-  const vb = { x: -pad, y: -pad, w: room.w + pad * 2, h: room.h + pad * 2 }
-  const fill = `color-mix(in oklab, ${color} 16%, var(--paper-0, #fff))`
-  const gid = `sc-grid-${sectorId}`
-  const sid = `sc-shadow-${sectorId}`
+  const seated = (s: OfficeSeat, zIndex: number) => (
+    <MapAgent
+      key={s.agentId}
+      x={lx(s.seatedPoint.x)}
+      y={ly(s.seatedPoint.y)}
+      status={statusFor(s.agentId)}
+      agent={chars.character(s.agentId)}
+      facing={facingSvg(s.facing)}
+      seated
+      department={accentFor(s.agentId)}
+      hoverLift={false}
+      showName="never"
+      style={{ zIndex }}
+    />
+  )
 
-  // Seated character sprite — same box maths as MapAgent (bottom-anchored).
-  const agentImg = (s: OfficeSeat) => {
-    const view = s.facing === 'back' ? 'costas' : 'frente'
-    const scale = 1.25
-    const w = scale
-    const h = 1.5 * scale
-    return (
-      <image
-        key={s.agentId}
-        href={characterSrc(chars.character(s.agentId), `${view}-sentado`)}
-        x={lx(s.seatedPoint.x) - (w - 1) / 2}
-        y={ly(s.seatedPoint.y) - (h - 1.5)}
-        width={w}
-        height={h}
-        preserveAspectRatio="xMidYMax meet"
-        filter={`url(#${sid})`}
-      />
-    )
+  // The scaled stage is sized to the padded room and centred in the box.
+  const stage: CSSProperties = {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    transform: `translate(-50%, -50%) scale(${scale})`,
+    transformOrigin: 'center',
+    width: `calc(var(--tile) * ${room.w + PAD * 2})`,
+    height: `calc(var(--tile) * ${room.h + PAD * 2})`,
+    backgroundImage:
+      'repeating-linear-gradient(90deg, transparent 0 calc(var(--tile) - 1px), var(--map-floor-line) calc(var(--tile) - 1px) var(--tile)), repeating-linear-gradient(0deg, transparent 0 calc(var(--tile) - 1px), var(--map-floor-line) calc(var(--tile) - 1px) var(--tile))',
   }
+  ;(stage as Record<string, string>)['--tile'] = `${TILE}px`
 
   return (
-    <svg viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', display: 'block' }} role="img" aria-label="Recorte do mapa do setor">
-      <defs>
-        <pattern id={gid} width="1" height="1" patternUnits="userSpaceOnUse">
-          <path d="M1 0V1M0 1H1" fill="none" stroke="var(--map-floor-line, rgba(0,0,0,.05))" strokeWidth={0.03} />
-        </pattern>
-        <filter id={sid} x="-25%" y="-25%" width="150%" height="150%">
-          <feDropShadow dx="0" dy="0.06" stdDeviation="0.05" floodColor="#000" floodOpacity="0.22" />
-        </filter>
-      </defs>
+    <div ref={boxRef} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', background: 'var(--map-floor)', pointerEvents: 'none' }}>
+      <div style={stage}>
+        {/* Room content, offset by PAD so the shape has floor around it */}
+        <div style={{ position: 'absolute', left: `calc(var(--tile) * ${PAD})`, top: `calc(var(--tile) * ${PAD})`, width: `calc(var(--tile) * ${room.w})`, height: `calc(var(--tile) * ${room.h})` }}>
+          {/* Room shape (tetris outline, tinted + wall stroke), like the map */}
+          <svg
+            viewBox={`0 0 ${room.w} ${room.h}`}
+            preserveAspectRatio="none"
+            style={{ position: 'absolute', left: 0, top: 0, width: `calc(var(--tile) * ${room.w})`, height: `calc(var(--tile) * ${room.h})`, overflow: 'visible' }}
+          >
+            <path d={path} fill={fill} stroke="var(--map-wall)" strokeWidth={4.5} vectorEffect="non-scaling-stroke" style={{ filter: 'drop-shadow(0 2px 6px var(--map-shadow))' }} />
+            <path d={path} fill="none" stroke="var(--map-wall-edge)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+          </svg>
 
-      {/* Floor + grid, exactly like the map ground */}
-      <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} fill="var(--map-floor, #f3ecdc)" />
-      <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} fill={`url(#${gid})`} />
-
-      {/* Room shape (tinted + wall stroke, matching the live map) */}
-      <path d={path} fill={fill} stroke="var(--map-wall, #cbb79a)" strokeWidth={0.14} strokeLinejoin="round" />
-
-      {/* Far chairs (behind the desks) */}
-      {farSeats.map((s, i) => (
-        <image key={`fc-${i}`} href={objectSrc('cadeira-longe-1x1')} x={lx(s.seatedPoint.x)} y={ly(s.seatedPoint.y) + 0.5} width={1} height={1} preserveAspectRatio="xMidYMid meet" />
-      ))}
-      {/* Far agents sit behind their desk */}
-      {farSeats.map(agentImg)}
-      {/* Desks + sector décor */}
-      {desks.map((d, i) => (
-        <image key={`dk-${i}`} href={objectSrc('mesa-4-3x3')} x={lx(d.x)} y={ly(d.y)} width={DESK_W} height={DESK_DEPTH} preserveAspectRatio="xMidYMid meet" filter={`url(#${sid})`} />
-      ))}
-      {decor.map((dc, i) => (
-        <image key={`de-${i}`} href={objectSrc(dc.art)} x={lx(dc.x) - 0.85} y={ly(dc.y) - 1.4} width={1.7} height={2} preserveAspectRatio="xMidYMax meet" filter={`url(#${sid})`} />
-      ))}
-      {/* Near agents, then the near chair drawn in front of them */}
-      {nearSeats.map(agentImg)}
-      {nearSeats.map((s, i) => (
-        <image key={`nc-${i}`} href={objectSrc('cadeira-perto-1x1.15')} x={lx(s.seatedPoint.x) - 0.075} y={ly(s.seatedPoint.y) + 1} width={1.15} height={1.3} preserveAspectRatio="xMidYMid meet" />
-      ))}
-    </svg>
+          {/* Furniture + agents in the map's layer order */}
+          {farSeats.map((s) => (
+            <MapObject key={`fc-${s.agentId}`} x={lx(s.seatedPoint.x)} y={ly(s.seatedPoint.y) + 0.5} w={1} h={1} art={objectSrc('cadeira-longe-1x1')} label="" style={{ zIndex: 0, pointerEvents: 'none' }} />
+          ))}
+          {farSeats.map((s) => seated(s, 1))}
+          {desks.map((d, i) => (
+            <MapObject key={`dk-${i}`} x={lx(d.x)} y={ly(d.y)} w={DESK_W} h={DESK_DEPTH} art={objectSrc('mesa-4-3x3')} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
+          ))}
+          {decor.map((dc, i) => (
+            <MapObject key={`de-${i}`} x={lx(dc.x) - 0.85} y={ly(dc.y) - 1.4} w={1.7} h={2} art={objectSrc(dc.art)} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
+          ))}
+          {nearSeats.map((s) => seated(s, 3))}
+          {nearSeats.map((s) => (
+            <MapObject key={`nc-${s.agentId}`} x={lx(s.seatedPoint.x) - 0.075} y={ly(s.seatedPoint.y) + 1} w={1.15} h={1.3} art={objectSrc('cadeira-perto-1x1.15')} label="" style={{ zIndex: 4, pointerEvents: 'none' }} />
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
