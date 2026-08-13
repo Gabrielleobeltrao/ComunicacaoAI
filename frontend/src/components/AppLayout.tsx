@@ -34,8 +34,10 @@ export function AppLayout({ current, title, titleExtra, subtitle, actions, child
       <Sidebar current={current} />
 
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* Mobile-only chrome: menu + one-tap floor switcher. The page title itself
+            now lives at the top of <main> (see the page header below), on every page. */}
         <header
-          className="flex items-center gap-3"
+          className="flex items-center gap-3 lg:hidden"
           style={{
             minHeight: 'var(--topbar-height)',
             paddingTop: 'var(--safe-top)',
@@ -54,37 +56,37 @@ export function AppLayout({ current, title, titleExtra, subtitle, actions, child
             aria-label="Abrir menu"
             aria-expanded={drawerOpen}
             aria-controls="mobile-drawer"
-            className="grid shrink-0 place-items-center rounded-md lg:hidden"
+            className="grid shrink-0 place-items-center rounded-md"
             style={{ width: 'var(--hit-min)', height: 'var(--hit-min)', marginLeft: -8, color: 'var(--text-heading)', background: 'transparent', border: 'none', cursor: 'pointer' }}
           >
             <Icon name="menu" size={22} />
           </button>
-
           <div className="flex min-w-0 flex-1 flex-col justify-center">
-            {/* Mobile floor context: one-tap switcher above the module title. */}
-            <div className="lg:hidden">
-              <MobileFloorTrigger onOpen={openFloorPicker} />
-            </div>
-            <div className="flex min-w-0 items-center gap-x-2.5">
-              <h1
-                className="truncate"
-                style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 800, letterSpacing: '-.015em', color: 'var(--text-heading)' }}
-              >
-                {title}
-              </h1>
-              {titleExtra ? <div className="hidden shrink-0 items-center gap-x-2 sm:flex">{titleExtra}</div> : null}
-            </div>
-            {subtitle ? <span className="truncate" style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{subtitle}</span> : null}
-            {/* Essential badges move below the title on phones so they aren't lost
-                to the topbar's sm:hidden (plan §9.7). */}
-            {titleExtra ? <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 sm:hidden">{titleExtra}</div> : null}
+            <MobileFloorTrigger onOpen={openFloorPicker} />
           </div>
-
-          {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
         </header>
 
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-5xl" style={{ padding: 'var(--gutter-screen)' }}>{children}</div>
+          <div className="mx-auto max-w-5xl" style={{ padding: 'var(--gutter-screen)' }}>
+            {/* Page header — the module title/subtitle live inside the content now. */}
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-x-2.5">
+                  <h1
+                    className="truncate"
+                    style={{ fontFamily: 'var(--font-display)', fontSize: 24, fontWeight: 800, letterSpacing: '-.02em', color: 'var(--text-heading)' }}
+                  >
+                    {title}
+                  </h1>
+                  {titleExtra ? <div className="hidden shrink-0 items-center gap-x-2 sm:flex">{titleExtra}</div> : null}
+                </div>
+                {subtitle ? <p className="truncate" style={{ margin: '3px 0 0', fontSize: 13.5, color: 'var(--text-muted)' }}>{subtitle}</p> : null}
+                {titleExtra ? <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 sm:hidden">{titleExtra}</div> : null}
+              </div>
+              {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+            </div>
+            {children}
+          </div>
           {/* Reserve room so content isn't hidden behind the fixed mobile bottom nav */}
           <div className="lg:hidden" aria-hidden style={{ height: 'calc(var(--bottom-nav-height) + var(--safe-bottom))' }} />
         </main>
