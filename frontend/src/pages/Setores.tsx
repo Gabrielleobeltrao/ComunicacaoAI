@@ -21,6 +21,7 @@ export function Setores() {
           loading={sectorsLoading}
           agents={agents}
           agentsLoading={agentsLoading}
+          floorId={floorId}
           onChange={loadSectors}
         />
       </div>

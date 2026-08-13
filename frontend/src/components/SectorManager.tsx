@@ -11,10 +11,11 @@ interface SectorManagerProps {
   loading: boolean
   agents: AgentSummary[]
   agentsLoading: boolean
+  floorId?: string
   onChange: () => void | Promise<void>
 }
 
-export function SectorManager({ sectors, loading, agents, agentsLoading, onChange }: SectorManagerProps) {
+export function SectorManager({ sectors, loading, agents, agentsLoading, floorId, onChange }: SectorManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
 
@@ -98,6 +99,7 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, onChang
         <SectorForm
           sector={null}
           agents={agents}
+          floorId={floorId}
           onSaved={async () => {
             setIsCreating(false)
             await onChange()

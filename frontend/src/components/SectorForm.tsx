@@ -24,10 +24,13 @@ interface SectorFormProps {
   // null = creating a new sector; otherwise editing this one.
   sector: SectorSummary | null
   agents: AgentSummary[]
+  // The floor to create the sector on (URL floor). Without it the backend falls
+  // back to the account default office — the "wrong floor" bug.
+  floorId?: string
   onSaved: () => void
 }
 
-export function SectorForm({ sector, agents, onSaved }: SectorFormProps) {
+export function SectorForm({ sector, agents, floorId, onSaved }: SectorFormProps) {
   const isCreating = sector === null
   const [editName, setEditName] = useState('')
   const [editColor, setEditColor] = useState(DEFAULT_SECTOR_COLOR)
@@ -151,6 +154,8 @@ export function SectorForm({ sector, agents, onSaved }: SectorFormProps) {
       name: editName,
       color: editColor,
       mode: editMode,
+      // Create on the current floor; on edit the sector keeps its office.
+      ...(isCreating && floorId ? { floorId } : {}),
       members: editMembers.map((m) => ({
         agentId: m.agentId,
         // Sectors organize adaptive sectors; they don't apply to ordered pipelines.
