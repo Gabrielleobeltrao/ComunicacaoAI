@@ -6,13 +6,12 @@ import { NAV } from './navItems'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { isNavActive, navItemsFor, SCOPE_LABEL } from './navConfig'
 import type { NavScope } from './navConfig'
-import { BuildingSwitcher } from './BuildingSwitcher'
 
 // Touch navigation for phones and small tablets (< lg): a fixed bottom bar for
 // the primary destinations plus a slide-in drawer (opened from the topbar) for
 // the account, every destination with labels, settings and sign-out. The desktop
 // hover rail (Sidebar) is hidden at this size.
-export function MobileNav({ current, open, onOpenChange }: { current: string; open: boolean; onOpenChange: (v: boolean) => void }) {
+export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { current: string; open: boolean; onOpenChange: (v: boolean) => void; onOpenFloorPicker: () => void }) {
   const navigate = useNavigate()
   const { data: session } = useSession()
   const user = session?.user
@@ -130,7 +129,25 @@ export function MobileNav({ current, open, onOpenChange }: { current: string; op
               </button>
             </div>
 
-            {bctx && <BuildingSwitcher expanded />}
+            {bctx && (
+              <div className="flex flex-col gap-2 rounded-xl p-3" style={{ background: 'var(--surface-sunken)' }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bctx.building?.name ?? 'Prédio'}</span>
+                <div className="flex items-center gap-2">
+                  <span style={{ width: 12, height: 12, borderRadius: 4, background: bctx.activeFloor?.color ?? 'var(--accent, #6b5cff)', flexShrink: 0 }} />
+                  <span style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    Andar atual: {bctx.activeFloor?.name ?? 'Nenhum'}
+                  </span>
+                </div>
+                <button
+                  onClick={onOpenFloorPicker}
+                  className="flex items-center justify-center gap-2 rounded-lg"
+                  style={{ minHeight: 40, padding: '0 12px', border: '1px solid var(--border-strong,#d0d5dd)', background: 'var(--surface-card,#fff)', color: 'var(--text-body)', cursor: 'pointer', font: 'inherit', fontWeight: 600 }}
+                >
+                  <Icon name="chevrons-up-down" size={16} />
+                  Trocar de andar
+                </button>
+              </div>
+            )}
             <nav className="flex flex-col gap-1">
               {bctx
                 ? (['general', 'floor', 'communication'] as NavScope[]).map((scope) => {

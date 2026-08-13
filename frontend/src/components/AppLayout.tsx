@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
+import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { Icon } from '../ui'
+import { MobileFloorPicker } from './MobileFloorPicker'
+import { MobileFloorTrigger } from './MobileFloorTrigger'
 import { MobileNav } from './MobileNav'
 import { Sidebar } from './Sidebar'
 
@@ -17,6 +20,13 @@ interface AppLayoutProps {
 
 export function AppLayout({ current, title, titleExtra, subtitle, actions, children }: AppLayoutProps) {
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [floorPickerOpen, setFloorPickerOpen] = useState(false)
+  const building = useOptionalBuildingContext()
+  // Only one overlay interactive at a time (§7.4): opening the picker closes the drawer.
+  const openFloorPicker = () => {
+    setDrawerOpen(false)
+    setFloorPickerOpen(true)
+  }
   return (
     // Full dynamic-viewport height with no page scroll: the rail (desktop) or the
     // bottom nav (mobile) and the topbar stay put while only the main area scrolls.
@@ -51,6 +61,10 @@ export function AppLayout({ current, title, titleExtra, subtitle, actions, child
           </button>
 
           <div className="flex min-w-0 flex-1 flex-col justify-center">
+            {/* Mobile floor context: one-tap switcher above the module title. */}
+            <div className="lg:hidden">
+              <MobileFloorTrigger onOpen={openFloorPicker} />
+            </div>
             <div className="flex min-w-0 items-center gap-x-2.5">
               <h1
                 className="truncate"
@@ -73,7 +87,8 @@ export function AppLayout({ current, title, titleExtra, subtitle, actions, child
         </main>
       </div>
 
-      <MobileNav current={current} open={drawerOpen} onOpenChange={setDrawerOpen} />
+      <MobileNav current={current} open={drawerOpen} onOpenChange={setDrawerOpen} onOpenFloorPicker={openFloorPicker} />
+      {building ? <MobileFloorPicker open={floorPickerOpen} onClose={() => setFloorPickerOpen(false)} /> : null}
     </div>
   )
 }
