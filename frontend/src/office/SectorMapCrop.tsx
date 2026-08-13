@@ -111,6 +111,9 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
   const seats = layout.seats.filter((s) => s.sectorId === sector._id)
   const farSeats = seats.filter((s) => !s.chair.near)
   const nearSeats = seats.filter((s) => s.chair.near)
+  const emptySeats = layout.emptySeats.filter((e) => e.sectorId === sector._id)
+  const farEmpty = emptySeats.filter((e) => !e.near)
+  const nearEmpty = emptySeats.filter((e) => e.near)
   const wallArt = ambient.filter((a) => a.key === `wall-${sector._id}`)
   const fill = `color-mix(in oklab, ${sector.color} 15%, var(--paper-0, #fff))`
 
@@ -175,6 +178,9 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
           {farSeats.map((s) => (
             <MapObject key={`fc-${s.agentId}`} x={lx(s.seatedPoint.x)} y={ly(s.seatedPoint.y) + 0.5} w={1} h={1} art={objectSrc('cadeira-longe-1x1')} label="" style={{ zIndex: 0, pointerEvents: 'none' }} />
           ))}
+          {farEmpty.map((e, i) => (
+            <MapObject key={`fce-${i}`} x={lx(e.x)} y={ly(e.y) + 0.5} w={1} h={1} art={objectSrc('cadeira-longe-1x1')} label="" style={{ zIndex: 0, pointerEvents: 'none' }} />
+          ))}
           {desks.map((d, i) => (
             <MapObject key={`dk-${i}`} x={lx(d.x)} y={ly(d.y)} w={d.w} h={d.h} art={objectSrc(d.art)} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
           ))}
@@ -186,6 +192,9 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
           ))}
           {nearSeats.map((s) => (
             <MapObject key={`nc-${s.agentId}`} x={lx(s.seatedPoint.x) - 0.075} y={ly(s.seatedPoint.y) + 1} w={1.15} h={1.3} art={objectSrc('cadeira-perto-1x1.15')} label="" style={{ zIndex: 4, pointerEvents: 'none' }} />
+          ))}
+          {nearEmpty.map((e, i) => (
+            <MapObject key={`nce-${i}`} x={lx(e.x) - 0.075} y={ly(e.y) + 1} w={1.15} h={1.3} art={objectSrc('cadeira-perto-1x1.15')} label="" style={{ zIndex: 4, pointerEvents: 'none' }} />
           ))}
 
           {/* Agents: walking (sim) when live, else seated. The sim writes absolute

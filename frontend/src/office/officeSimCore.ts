@@ -68,6 +68,7 @@ export interface SimContext {
   envelope: ActivityEnvelope // invisible activity area — no foot/destination leaves it
   waypoints: OfficePoint[]
   interactions: InteractionPoint[]
+  amenityInteractions: InteractionPoint[] // subset in the public presets (id `int:amen:`)
   roomInterior: Map<string, OfficePoint[]> // sectorId -> walkable interior points to wander to
   sectorCells: Map<string, string> // cellKey -> owning private-sector id (amenity/preset rooms are public, so absent)
   doorCells: Set<string> // door threshold cells — never a mid-route pause spot
@@ -287,6 +288,7 @@ export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAge
     envelope,
     waypoints: corridorWaypoints(grid, layout, envelope),
     interactions,
+    amenityInteractions: interactions.filter((it) => it.id.startsWith('int:amen:')),
     roomInterior: buildRoomInteriors(layout, grid, envelope),
     sectorCells: buildSectorCells(layout, grid),
     doorCells: new Set(grid.doors.flatMap((d) => [keyOf(cellOfPoint(grid, d.inner)), keyOf(cellOfPoint(grid, d.outer))])),
@@ -379,8 +381,13 @@ function clearDest(ctx: SimContext, m: AgentModel) {
   }
 }
 function tryInteraction(ctx: SimContext, m: AgentModel): OfficePoint | null {
+  // Prefer common-area (amenity) points most of the time, so the ready-made presets
+  // (kitchen, lounge, refeitório…) are actually used instead of losing every pick to
+  // sector decor. Amenity interaction ids are tagged `int:amen:` by the decorator.
+  const amenity = ctx.amenityInteractions
+  const pool = amenity.length && m.rng() < 0.72 ? amenity : ctx.interactions
   for (let t = 0; t < 6; t++) {
-    const it = ctx.interactions[Math.floor(m.rng() * ctx.interactions.length)]
+    const it = pool[Math.floor(m.rng() * pool.length)]
     if ((ctx.occupancy.get(it.id) ?? 0) >= it.capacity) continue
     if (!inEnvelopePoint(ctx.envelope, ctx.grid, it.point)) continue
     if (!nearestWalkable(ctx.grid, it.point, 2)) continue
@@ -466,7 +473,10 @@ function arrive(ctx: SimContext, m: AgentModel) {
   m.motion = 'pausing'
   // At an interaction point the agent assumes the point's facing and idles.
   if (m.destInteractionId && m.destFacing) m.direction = m.destFacing
-  m.timer = rand(m.rng, OFFICE_TIMING.destinationPause)
+  // Linger longer in a common area (a real coffee/lunch break) so the presets read
+  // as used, not just passed through.
+  const base = rand(m.rng, OFFICE_TIMING.destinationPause)
+  m.timer = m.destInteractionId?.startsWith('int:amen:') ? base * 2.4 : base
 }
 function finishReturn(ctx: SimContext, m: AgentModel) {
   releaseNext(ctx, m)

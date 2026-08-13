@@ -370,16 +370,27 @@ export function placeOfficeDecor(layout: BuiltOfficeLayout, grid: NavGrid): Offi
     placeFromPool(room.key, `${LAYOUT_VERSION}:${room.key}:${CATALOG_VERSION}`, themeForSector(room.name), 'room', spots, target)
   }
 
-  // Perimeter greenery in the open corners of the floor (outdoor/decoration).
-  const border: OfficePoint[] = []
-  for (let j = 0; j < grid.h; j++)
-    for (let i = 0; i < grid.w; i++) {
-      if (!isWalkable(grid, i, j)) continue
-      if (roomCellSet.has(cellIndex(grid, i, j))) continue
-      const nearEdge = i <= 2 || j <= 2 || i >= grid.w - 3 || j >= grid.h - 3
-      if (nearEdge) border.push({ x: (i + 0.5) * grid.res, y: (j + 0.5) * grid.res })
+  // A little greenery HUGGING the room cluster (not the empty canvas edges, which
+  // read as "lost plants" on a squarer, compact map). Candidates are open cells one
+  // ring outside a room; kept few so corners don't fill with scattered pots.
+  const near = new Set<number>()
+  for (const room of layout.rooms) {
+    const bi = Math.round(room.x / grid.res)
+    const bj = Math.round(room.y / grid.res)
+    for (const c of room.cells) {
+      const [ci, cj] = c.split(',').map(Number)
+      for (let dj = -2; dj <= 2; dj++)
+        for (let di = -2; di <= 2; di++) {
+          const ni = bi + ci + di
+          const nj = bj + cj + dj
+          if (!inBounds(grid, ni, nj) || !isWalkable(grid, ni, nj)) continue
+          const idx = cellIndex(grid, ni, nj)
+          if (!roomCellSet.has(idx)) near.add(idx)
+        }
     }
-  placeFromPool('perimeter', `${LAYOUT_VERSION}:perimeter:${CATALOG_VERSION}`, ['outdoor', 'decoration'], 'outdoor', border, Math.min(4, Math.max(1, Math.floor(border.length / 20))))
+  }
+  const border: OfficePoint[] = [...near].map((idx) => ({ x: ((idx % grid.w) + 0.5) * grid.res, y: (Math.floor(idx / grid.w) + 0.5) * grid.res }))
+  placeFromPool('perimeter', `${LAYOUT_VERSION}:perimeter:${CATALOG_VERSION}`, ['outdoor', 'decoration'], 'outdoor', border, Math.min(3, Math.max(1, Math.floor(border.length / 40))))
 
   // Phase 8: also expose fitting existing amenity furniture as interaction points.
   const reachNow = flood(work, grid, anchor)

@@ -47,6 +47,17 @@ const DESK_10: DeskType = { art: 'mesa-10-7.5x3', w: 7.5, h: 3, seats: [far(58),
 // always shows a desk sized to its team and COMBINES desks for the in-between
 // counts (3,5,7,8,9) instead of leaving empty seats. Sectors cap at 10 members, so
 // one desk usually suffices; k=1 randomly faces front or back for variety.
+// Real teams aren't packed to the last seat: some desks sit empty (people out,
+// growing team). Occasionally size a sector's desks for a FEW more seats than it
+// has members, so the map shows organic empty workstations. Deterministic per
+// sector; capped so a desk never exceeds the 10-seat max.
+function deskSlack(k: number, rng: () => number): number {
+  if (k <= 0) return 0
+  const r = rng()
+  const s = r < 0.5 ? 0 : r < 0.82 ? 1 : 2
+  return Math.max(0, Math.min(s, 10 - k))
+}
+
 export function planDesks(k: number, rng: () => number): DeskType[] {
   const out: DeskType[] = []
   let rem = k
@@ -147,6 +158,14 @@ export interface BuiltDesk {
   h: number
   art: string
 }
+// A desk seat with no agent (a present desk of someone who's out) — rendered as an
+// empty chair so sectors look organic instead of packed to the last seat.
+export interface BuiltEmptySeat {
+  x: number
+  y: number
+  near: boolean
+  sectorId: string
+}
 export interface BuiltDecor {
   roomKey: string
   x: number
@@ -169,6 +188,7 @@ export interface BuiltOfficeLayout {
   rows: number
   rooms: BuiltRoom[]
   seats: OfficeSeat[]
+  emptySeats: BuiltEmptySeat[]
   desks: BuiltDesk[]
   decor: BuiltDecor[]
   amenityItems: BuiltAmenityItem[]
@@ -180,7 +200,8 @@ export interface BuiltOfficeLayout {
 // breathing room so sectors don't all look like the same rigid box. The extra
 // space is filled by decor via shapeOf; desks stay centred inside it.
 function bodyOf(memberCount: number, rng: () => number) {
-  const plan = planDesks(memberCount, rng)
+  const capacity = memberCount > 0 ? memberCount + deskSlack(memberCount, rng) : 0
+  const plan = planDesks(capacity, rng)
   if (plan.length === 0) {
     return { plan, bodyW: ROOM_PAD_X * 2 + 3.5 + rng() * 1.5, bodyH: 3 + rng() * 1.5 }
   }
@@ -317,6 +338,7 @@ export function buildOfficeLayout(input: LayoutInput): BuiltOfficeLayout {
   const decor: BuiltDecor[] = []
   const amenityItems: BuiltAmenityItem[] = []
   const seats: OfficeSeat[] = []
+  const emptySeats: BuiltEmptySeat[] = []
   const obstacles: OfficeObstacle[] = []
 
   for (const p of placed) {
@@ -348,10 +370,10 @@ export function buildOfficeLayout(input: LayoutInput): BuiltOfficeLayout {
       obstacles.push({ rect: { x: dx, y: dy, width: d.w, height: d.h }, kind: 'desk' })
       for (const seat of d.seats) {
         const agentId = b.room.memberIds[seatIdx]
+        const sx = dx + seat.mx / PX_PER_TILE - 0.5
+        const isNear = seat.row === 'near'
+        const sy = isNear ? dy + d.h - 1.6 : dy - 0.78
         if (agentId !== undefined) {
-          const sx = dx + seat.mx / PX_PER_TILE - 0.5
-          const isNear = seat.row === 'near'
-          const sy = isNear ? dy + d.h - 1.6 : dy - 0.78
           const facing: OfficeDirection = isNear ? 'back' : 'front'
           // Exit point: a walkable cell just off the chair, into the room interior. A
           // front seat exits UP; clamp it below the top wall so a desk near the room's
@@ -367,6 +389,9 @@ export function buildOfficeLayout(input: LayoutInput): BuiltOfficeLayout {
             sectorId: b.key,
             chair: { near: isNear },
           })
+        } else {
+          // No member for this seat: an empty workstation (its chair still renders).
+          emptySeats.push({ x: sx, y: sy, near: isNear, sectorId: b.key })
         }
         seatIdx++
       }
@@ -380,5 +405,5 @@ export function buildOfficeLayout(input: LayoutInput): BuiltOfficeLayout {
     }
   }
 
-  return { cols, rows, rooms: builtRooms, seats, desks, decor, amenityItems, loose: loosePos, obstacles }
+  return { cols, rows, rooms: builtRooms, seats, emptySeats, desks, decor, amenityItems, loose: loosePos, obstacles }
 }

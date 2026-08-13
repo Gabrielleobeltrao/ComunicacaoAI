@@ -126,7 +126,9 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
     preloadAgentSprites(usedCharacters)
   }, [usedCharacters])
 
-  const { rooms, seats, desks, amenityItems, loose, cols, rows } = layout
+  const { rooms, seats, emptySeats, desks, amenityItems, loose, cols, rows } = layout
+  const farEmpty = emptySeats.filter((e) => !e.near)
+  const nearEmpty = emptySeats.filter((e) => e.near)
   const agentName = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
   const nameOf = useCallback((id: string) => (agentName.get(id) ?? '').split(' ')[0], [agentName])
   const farSeats = seats.filter((s) => !s.chair.near)
@@ -232,15 +234,21 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
             />
           ))}
 
-        {/* Chairs + desks are always static furniture */}
+        {/* Chairs + desks are always static furniture (empty seats keep their chair) */}
         {farSeats.map((s) => (
           <MapObject key={`fc-${s.agentId}`} x={s.seatedPoint.x} y={s.seatedPoint.y + 0.5} w={1} h={1} art={objectSrc('cadeira-longe-1x1')} label="Cadeira" style={{ zIndex: 0, pointerEvents: 'none' }} />
+        ))}
+        {farEmpty.map((e, i) => (
+          <MapObject key={`fce-${i}`} x={e.x} y={e.y + 0.5} w={1} h={1} art={objectSrc('cadeira-longe-1x1')} label="" style={{ zIndex: 0, pointerEvents: 'none' }} />
         ))}
         {desks.map((d, i) => (
           <MapObject key={`desk-${d.roomKey}-${i}`} x={d.x} y={d.y} w={d.w} h={d.h} art={objectSrc(d.art)} label="Mesa" style={{ zIndex: 2, pointerEvents: 'none' }} />
         ))}
         {nearSeats.map((s) => (
           <MapObject key={`nc-${s.agentId}`} x={s.seatedPoint.x - 0.075} y={s.seatedPoint.y + 1} w={1.15} h={1.3} art={objectSrc('cadeira-perto-1x1.15')} label="Cadeira" style={{ zIndex: 4, pointerEvents: 'none' }} />
+        ))}
+        {nearEmpty.map((e, i) => (
+          <MapObject key={`nce-${i}`} x={e.x - 0.075} y={e.y + 1} w={1.15} h={1.3} art={objectSrc('cadeira-perto-1x1.15')} label="" style={{ zIndex: 4, pointerEvents: 'none' }} />
         ))}
 
         {/* Agents — simulated (walking) or static, depending on the flag / reduced-motion */}
