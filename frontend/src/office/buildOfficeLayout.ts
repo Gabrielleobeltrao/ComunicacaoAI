@@ -8,23 +8,59 @@ import type { OfficeDirection, OfficeObstacle, OfficePoint, OfficeSeat } from '.
 import { CELL_RES, cellsOf, dilate, shapeOf } from './roomShape'
 import type { RoomShape } from './roomShape'
 
-export const DESK_W = 3
+export const DESK_W = 3 // legacy default (kept for callers); real desks carry their own w/h
 export const DESK_DEPTH = 3
-const SEAT_COLS = [52, 116] // monitor columns inside mesa-4-3x3 (56px per tile)
-const PER_DESK = 4
-const STRIDE_X = 4.5
-const STRIDE_Y = 6
 const DESK_ORIGIN_Y = 2 // top space inside a room for its label + far-agent heads
 const ROOM_PAD_X = 1
+const GAP_V = 3 // vertical gap between stacked desks (old STRIDE_Y − depth)
 export const MARGIN = 1.0 // hard safety edge — nothing crosses it
 const GAP_RINGS = 2 // cells of empty space kept around every room (× CELL_RES = tiles); V2: moderate compaction (was 3)
+const PX_PER_TILE = 56 // sprite viewBox scale (a 3×3 desk is 168×168)
 
-const SLOTS = [
-  { col: 0, top: true },
-  { col: 1, top: true },
-  { col: 0, top: false },
-  { col: 1, top: false },
-]
+// Worker-desk catalog. Each desk FULLY seats `seats.length` agents; a sector's
+// members are packed into an exact combination of these (planDesks), so a desk is
+// never partially filled. `mx` is a monitor's centre in px (measured from the SVG);
+// a 'far' seat faces the camera (front, its monitor drawn as a grey back), a 'near'
+// seat has its back to the camera (its monitor drawn as a blue screen).
+interface DeskSeat {
+  mx: number
+  row: 'far' | 'near'
+}
+export interface DeskType {
+  art: string
+  w: number
+  h: number
+  seats: DeskSeat[]
+}
+const far = (mx: number): DeskSeat => ({ mx, row: 'far' })
+const near = (mx: number): DeskSeat => ({ mx, row: 'near' })
+
+const DESK_1_FRONT: DeskType = { art: 'mesa-1-frente-2x2', w: 2, h: 2, seats: [far(56)] }
+const DESK_1_BACK: DeskType = { art: 'mesa-1-costas-2x2', w: 2, h: 2, seats: [near(56)] }
+const DESK_2: DeskType = { art: 'mesa-2-3x2', w: 3, h: 2, seats: [near(48), near(120)] }
+const DESK_4: DeskType = { art: 'mesa-4-3x3', w: 3, h: 3, seats: [far(52), far(116), near(52), near(116)] }
+const DESK_6: DeskType = { art: 'mesa-6-4.5x3', w: 4.5, h: 3, seats: [far(50), far(126), far(202), near(50), near(126), near(202)] }
+const DESK_10: DeskType = { art: 'mesa-10-7.5x3', w: 7.5, h: 3, seats: [far(58), far(134), far(210), far(286), far(362), near(58), near(134), near(210), near(286), near(362)] }
+
+// Exact-fill packing: decompose k members into desks (largest first), so a sector
+// always shows a desk sized to its team and COMBINES desks for the in-between
+// counts (3,5,7,8,9) instead of leaving empty seats. Sectors cap at 10 members, so
+// one desk usually suffices; k=1 randomly faces front or back for variety.
+export function planDesks(k: number, rng: () => number): DeskType[] {
+  const out: DeskType[] = []
+  let rem = k
+  for (const d of [DESK_10, DESK_6, DESK_4, DESK_2]) {
+    while (rem >= d.seats.length) {
+      out.push(d)
+      rem -= d.seats.length
+    }
+  }
+  while (rem >= 1) {
+    out.push(rng() < 0.5 ? DESK_1_FRONT : DESK_1_BACK)
+    rem -= 1
+  }
+  return out
+}
 
 export function hash32(s: string): number {
   let h = 2166136261 >>> 0
@@ -78,8 +114,7 @@ type SectorBlock = {
   offy: number
   w: number
   h: number
-  deskCols: number
-  deskCount: number
+  plan: DeskType[]
   decorArt: string
 }
 type AmenityBlock = { kind: 'amenity'; key: string; cenario: Cenario; cells: Set<string>; w: number; h: number }
@@ -101,6 +136,9 @@ export interface BuiltDesk {
   roomKey: string
   x: number
   y: number
+  w: number
+  h: number
+  art: string
 }
 export interface BuiltDecor {
   roomKey: string
@@ -131,19 +169,21 @@ export interface BuiltOfficeLayout {
   obstacles: OfficeObstacle[]
 }
 
+// Room body sized to the desk PLAN (stacked vertically), plus a varied amount of
+// breathing room so sectors don't all look like the same rigid box. The extra
+// space is filled by decor via shapeOf; desks stay centred inside it.
 function bodyOf(memberCount: number, rng: () => number) {
-  const k = memberCount
-  const deskCount = k > 0 ? Math.ceil(k / PER_DESK) : 0
-  let deskCols: number
-  if (deskCount <= 1) deskCols = 1
-  else if (deskCount === 2) deskCols = [1, 2, 2][Math.floor(rng() * 3)]
-  else if (deskCount === 3) deskCols = [1, 2, 3][Math.floor(rng() * 3)]
-  else deskCols = [2, 2, 3, 4][Math.floor(rng() * 4)]
-  const deskRows = deskCount > 0 ? Math.ceil(deskCount / deskCols) : 0
-  const innerW = deskCount > 0 ? deskCols * DESK_W + (deskCols - 1) * (STRIDE_X - DESK_W) : 3.5
-  const bodyW = ROOM_PAD_X * 2 + Math.max(innerW, 3.5) + rng() * 0.6
-  const bodyH = (deskRows > 0 ? DESK_ORIGIN_Y + (deskRows - 1) * STRIDE_Y + 4 : 3) + rng() * 0.6
-  return { bodyW, bodyH, deskCols, deskCount }
+  const plan = planDesks(memberCount, rng)
+  if (plan.length === 0) {
+    return { plan, bodyW: ROOM_PAD_X * 2 + 3.5 + rng() * 1.5, bodyH: 3 + rng() * 1.5 }
+  }
+  const maxDeskW = Math.max(...plan.map((d) => d.w))
+  const spanH = plan.reduce((a, d) => a + d.h, 0) + GAP_V * (plan.length - 1)
+  const extraW = 0.5 + rng() * 3 // 0.5–3.5 tiles of side room
+  const extraH = 0.5 + rng() * 2.5 // 0.5–3 tiles of extra depth
+  const bodyW = ROOM_PAD_X * 2 + Math.max(maxDeskW, 3.5) + extraW
+  const bodyH = DESK_ORIGIN_Y + spanH + 1.5 + extraH
+  return { plan, bodyW, bodyH }
 }
 
 /** Amenity furniture bigger than this (on either axis) blocks navigation. */
@@ -180,8 +220,7 @@ export function buildOfficeLayout(input: LayoutInput): BuiltOfficeLayout {
       offy: cc.offy,
       w: cc.wc * CELL_RES,
       h: cc.hc * CELL_RES,
-      deskCols: z.deskCols,
-      deskCount: z.deskCount,
+      plan: z.plan,
       decorArt: decorArts[hash32(room.key) % decorArts.length],
     })
   }
@@ -288,37 +327,42 @@ export function buildOfficeLayout(input: LayoutInput): BuiltOfficeLayout {
     const body = b.shape.rects[0]
     const bx = p.x + (body.x - b.offx)
     const by = p.y + (body.y - b.offy)
-    const deskRows = Math.max(1, Math.ceil(b.deskCount / b.deskCols))
-    const bw = (b.deskCols - 1) * STRIDE_X + DESK_W
-    const bh = (deskRows - 1) * STRIDE_Y + DESK_DEPTH
-    const padX = Math.max(ROOM_PAD_X, (body.w - bw) / 2)
-    const padY = Math.max(DESK_ORIGIN_Y, (body.h - bh) / 2)
-    const deskPos = (d: number) => ({ x: bx + padX + (d % b.deskCols) * STRIDE_X, y: by + padY + Math.floor(d / b.deskCols) * STRIDE_Y })
-    for (let d = 0; d < b.deskCount; d++) {
-      const dp = deskPos(d)
-      desks.push({ roomKey: b.key, x: dp.x, y: dp.y })
-      obstacles.push({ rect: { x: dp.x, y: dp.y, width: DESK_W, height: DESK_DEPTH }, kind: 'desk' })
+    // Desks stacked vertically, the whole stack centred in the room body.
+    const spanH = b.plan.reduce((a, d) => a + d.h, 0) + GAP_V * Math.max(0, b.plan.length - 1)
+    const maxDeskW = b.plan.length ? Math.max(...b.plan.map((d) => d.w)) : 0
+    const padX = Math.max(ROOM_PAD_X, (body.w - maxDeskW) / 2)
+    const padY = Math.max(DESK_ORIGIN_Y, (body.h - spanH) / 2)
+    let cy = padY
+    let seatIdx = 0
+    for (const d of b.plan) {
+      const dx = bx + padX + (maxDeskW - d.w) / 2
+      const dy = by + cy
+      desks.push({ roomKey: b.key, x: dx, y: dy, w: d.w, h: d.h, art: d.art })
+      obstacles.push({ rect: { x: dx, y: dy, width: d.w, height: d.h }, kind: 'desk' })
+      for (const seat of d.seats) {
+        const agentId = b.room.memberIds[seatIdx]
+        if (agentId !== undefined) {
+          const sx = dx + seat.mx / PX_PER_TILE - 0.5
+          const isNear = seat.row === 'near'
+          const sy = isNear ? dy + d.h - 1.6 : dy - 0.78
+          const facing: OfficeDirection = isNear ? 'back' : 'front'
+          // Exit point: a walkable cell just off the chair, into the room interior.
+          const exit: OfficePoint = isNear ? { x: sx, y: sy + 2.4 } : { x: sx, y: sy - 1.3 }
+          seats.push({
+            id: `${b.key}:${seatIdx}`,
+            agentId,
+            seatedPoint: { x: sx, y: sy },
+            exitPoint: exit,
+            facing,
+            zIndex: isNear ? 3 : 1,
+            sectorId: b.key,
+            chair: { near: isNear },
+          })
+        }
+        seatIdx++
+      }
+      cy += d.h + GAP_V
     }
-    b.room.memberIds.forEach((agentId, i) => {
-      const desk = deskPos(Math.floor(i / PER_DESK))
-      const slot = SLOTS[i % PER_DESK]
-      const sx = desk.x + SEAT_COLS[slot.col] / 56 - 0.5
-      const sy = slot.top ? desk.y - 0.78 : desk.y + DESK_DEPTH - 1.6
-      const near = !slot.top
-      const facing: OfficeDirection = near ? 'back' : 'front'
-      // Exit point: a walkable cell just off the chair, into the room interior.
-      const exit: OfficePoint = near ? { x: sx, y: sy + 2.4 } : { x: sx, y: sy - 1.3 }
-      seats.push({
-        id: `${b.key}:${i}`,
-        agentId,
-        seatedPoint: { x: sx, y: sy },
-        exitPoint: exit,
-        facing,
-        zIndex: near ? 3 : 1,
-        sectorId: b.key,
-        chair: { near },
-      })
-    })
     if (b.shape.decor) {
       const dx = p.x + (b.shape.decor.x - b.offx)
       const dy = p.y + (b.shape.decor.y - b.offy)

@@ -5,7 +5,7 @@ import { objectSrc } from '../lib/officeAssets'
 import type { AgentSummary, SectorSummary } from '../lib/types'
 import { cozinha, lounge, reuniao } from './cenarios'
 import type { Cenario } from './cenarios'
-import { DESK_DEPTH, DESK_W, buildOfficeLayout, hash32, mulberry32 } from './buildOfficeLayout'
+import { buildOfficeLayout, hash32, mulberry32 } from './buildOfficeLayout'
 import { buildNavigationGrid } from './buildNavigationGrid'
 import { buildActivityEnvelope } from './buildActivityEnvelope'
 import type { AgentVisualMode, OfficeDirection, OfficeSeat } from './officeTypes'
@@ -235,7 +235,7 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
           <MapObject key={`fc-${s.agentId}`} x={s.seatedPoint.x} y={s.seatedPoint.y + 0.5} w={1} h={1} art={objectSrc('cadeira-longe-1x1')} label="Cadeira" style={{ zIndex: 0, pointerEvents: 'none' }} />
         ))}
         {desks.map((d, i) => (
-          <MapObject key={`desk-${d.roomKey}-${i}`} x={d.x} y={d.y} w={DESK_W} h={DESK_DEPTH} art={objectSrc('mesa-4-3x3')} label="Mesa" style={{ zIndex: 2, pointerEvents: 'none' }} />
+          <MapObject key={`desk-${d.roomKey}-${i}`} x={d.x} y={d.y} w={d.w} h={d.h} art={objectSrc(d.art)} label="Mesa" style={{ zIndex: 2, pointerEvents: 'none' }} />
         ))}
         {nearSeats.map((s) => (
           <MapObject key={`nc-${s.agentId}`} x={s.seatedPoint.x - 0.075} y={s.seatedPoint.y + 1} w={1.15} h={1.3} art={objectSrc('cadeira-perto-1x1.15')} label="Cadeira" style={{ zIndex: 4, pointerEvents: 'none' }} />

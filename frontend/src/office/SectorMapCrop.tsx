@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react'
 import { accentFor, buildCharacterResolver, statusFor } from '../lib/agentAvatar'
 import { objectSrc } from '../lib/officeAssets'
 import type { AgentSummary, SectorSummary } from '../lib/types'
-import { DESK_DEPTH, DESK_W, buildOfficeLayout } from './buildOfficeLayout'
+import { buildOfficeLayout } from './buildOfficeLayout'
 import { buildNavigationGrid } from './buildNavigationGrid'
 import { buildActivityEnvelope } from './buildActivityEnvelope'
 import { placeOfficeDecor } from './placeOfficeDecor'
@@ -176,7 +176,7 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
             <MapObject key={`fc-${s.agentId}`} x={lx(s.seatedPoint.x)} y={ly(s.seatedPoint.y) + 0.5} w={1} h={1} art={objectSrc('cadeira-longe-1x1')} label="" style={{ zIndex: 0, pointerEvents: 'none' }} />
           ))}
           {desks.map((d, i) => (
-            <MapObject key={`dk-${i}`} x={lx(d.x)} y={ly(d.y)} w={DESK_W} h={DESK_DEPTH} art={objectSrc('mesa-4-3x3')} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
+            <MapObject key={`dk-${i}`} x={lx(d.x)} y={ly(d.y)} w={d.w} h={d.h} art={objectSrc(d.art)} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
           ))}
           {sectorDecor.map((dc, i) => (
             // Depth-sorted against the agents (same base-y formula the sim uses for a
