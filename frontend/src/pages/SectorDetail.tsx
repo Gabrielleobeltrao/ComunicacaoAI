@@ -9,6 +9,7 @@ import { SectorPlayground } from '../components/SectorPlayground'
 import { API_URL } from '../lib/api'
 import { SectorApiError, getSectorOverview } from '../lib/sectors'
 import { SectorHero } from '../components/SectorHero'
+import { SectorAgentsDialog } from '../components/SectorAgentsDialog'
 import { useActiveFloorId, useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { floorAgent, floorSector, floorSectors } from '../lib/floorRoutes'
 import { Button } from '../ui'
@@ -210,6 +211,7 @@ export function SectorDetail() {
   const [error, setError] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [manageOpen, setManageOpen] = useState(false)
 
   const load = useCallback(async () => {
     if (!sectorId) return
@@ -300,11 +302,18 @@ export function SectorDetail() {
             agents={agents}
             floorName={floorName}
             actions={
-              <Button variant="secondary" icon="pencil" onClick={() => navigate(tabHref('configuracao'))}>
-                Editar setor
-              </Button>
+              <>
+                <Button icon="users-round" onClick={() => setManageOpen(true)}>
+                  Gerenciar agentes
+                </Button>
+                <Button variant="secondary" icon="pencil" onClick={() => navigate(tabHref('configuracao'))}>
+                  Editar setor
+                </Button>
+              </>
             }
           />
+
+          <SectorAgentsDialog open={manageOpen} onClose={() => setManageOpen(false)} sector={sector} floorAgents={agents} onChanged={load} />
 
           {/* Visible in-page navigation (canonical, URL-active, scrolls on mobile). */}
           <nav aria-label="Seções do setor" style={{ display: 'flex', gap: 4, overflowX: 'auto', borderBottom: '1px solid var(--border-subtle)' }}>
