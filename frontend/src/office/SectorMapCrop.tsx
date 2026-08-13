@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { accentFor, buildCharacterResolver, statusFor } from '../lib/agentAvatar'
 import { objectSrc } from '../lib/officeAssets'
@@ -25,14 +25,26 @@ const modeFor = (id: string): AgentVisualMode => {
   const s = statusFor(id)
   return s === 'working' || s === 'thinking' || s === 'calling' ? 'phone' : 'normal'
 }
-const reducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches)
+  useEffect(() => {
+    if (typeof matchMedia === 'undefined') return
+    const mq = matchMedia('(prefers-reduced-motion: reduce)')
+    const on = () => setReduced(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  return reduced
+}
 
 // A real crop of the office map for one sector, built as a standalone single-room
 // office. Renders the same room shape, furniture and characters the live "Visão do
-// andar" map draws (via MapObject / MapAgent). When `live`, the same simulation
-// engine walks the agents — confined to the sector because the room is the only
-// place there is (the activity envelope keeps feet inside it). Static otherwise.
-export function SectorMapCrop({ sector, agents, chars, live }: { sector: SectorSummary; agents: AgentSummary[]; chars: Chars; live: boolean }) {
+// andar" map draws (via MapObject / MapAgent), and runs the SAME simulation engine
+// so the agents walk exactly like the map — just confined to the sector: the room
+// is the only place there is and the activity envelope (margin 0) keeps every foot
+// inside the room's cells, so no one ever steps out of the sector's area.
+export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary; agents: AgentSummary[]; chars: Chars }) {
   const boxRef = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(0)
   const nameOf = useMemo(() => {
@@ -53,13 +65,16 @@ export function SectorMapCrop({ sector, agents, chars, live }: { sector: SectorS
     [sector],
   )
   const grid = useMemo(() => buildNavigationGrid(layout), [layout])
-  const envelope = useMemo(() => buildActivityEnvelope(layout, grid, 1), [layout, grid])
+  // Margin 0 = the envelope is exactly the room's own walkable cells, so agents
+  // never leave the sector's area (the map uses a wider margin that spans corridors).
+  const envelope = useMemo(() => buildActivityEnvelope(layout, grid, 0), [layout, grid])
   const ambient = useMemo(() => (OFFICE_FEATURES.decoration ? placeOfficeDecor(layout, grid).ambient : []), [layout, grid])
 
-  const simOn = live && OFFICE_FEATURES.simulation && (!reducedMotion() || IGNORE_REDUCED_MOTION)
-  // The hook is always called (rules of hooks); `enabled` gates the rAF loop and
-  // `warmStart` the (expensive) pre-roll — both off unless this card is live.
-  const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn, warmStart: simOn, envelope })
+  // Same enable logic as the office map: on unless the sim is off or the user
+  // prefers reduced motion. Warm-started like the map so it opens already alive.
+  const reduced = useReducedMotion()
+  const simOn = OFFICE_FEATURES.simulation && (!reduced || IGNORE_REDUCED_MOTION)
+  const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn, warmStart: OFFICE_FEATURES.warmStart, envelope })
 
   const room = layout.rooms.find((r) => r.kind === 'sector')
   useLayoutEffect(() => {

@@ -17,8 +17,6 @@ interface SectorManagerProps {
 
 export function SectorManager({ sectors, loading, agents, agentsLoading, floorId, onChange }: SectorManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
-  // The card whose map crop is currently animated (hover brings the sector alive).
-  const [liveId, setLiveId] = useState<string | null>(null)
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
   // Character faces for the crop sprites (same resolver as the map).
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
@@ -46,24 +44,13 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
             const count = sector.members.length
             const modeLabel = sector.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'
             return (
-              <Link
-                key={sector._id}
-                to={`/setores/${sector._id}`}
-                style={{ textDecoration: 'none', color: 'inherit' }}
-                onMouseEnter={() => setLiveId(sector._id)}
-                onMouseLeave={() => setLiveId((id) => (id === sector._id ? null : id))}
-              >
+              <Link key={sector._id} to={`/setores/${sector._id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
                 <Card interactive accent={sector.color} padding="0" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                  {/* The "photo": a real crop of the office map where this sector sits.
-                      Hovering the card animates its characters (confined to the room). */}
+                  {/* The "photo": a live crop of the office map for this sector — the
+                      characters walk with the same logic as "Visão do andar", confined
+                      to the sector's room. */}
                   <div style={{ height: 150, background: 'var(--map-floor, #f3ecdc)', borderBottom: '1px solid var(--border-subtle)' }}>
-                    <SectorMapCrop
-                      key={liveId === sector._id ? 'live' : 'static'}
-                      sector={sector}
-                      agents={agents}
-                      chars={chars}
-                      live={liveId === sector._id}
-                    />
+                    <SectorMapCrop sector={sector} agents={agents} chars={chars} />
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 16 }}>
                     <p className="truncate" style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800, color: 'var(--text-heading)' }}>
