@@ -27,6 +27,7 @@ import {
   RESPONSE_TONES,
   updateAgent,
 } from './agents.js'
+import { AGENT_PRESET_SPECS } from './agentPresets.js'
 import type {
   Agent,
   AgentBuiltinTool,
@@ -1365,6 +1366,11 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     fromStage: pipelineFromStage,
     toolCalls,
   })
+})
+
+// Preset catalog for the hiring wizard (starting configs — the user edits after).
+app.get('/api/agent-presets', requireAuth, (_req, res) => {
+  res.json(AGENT_PRESET_SPECS)
 })
 
 app.post('/api/agents', requireAuth, async (req, res) => {
