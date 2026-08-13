@@ -9,3 +9,6 @@ dist
 compose.production-test.env
 *.log
 .DS_Store
+
+# Local Redis dump (dev only)
+dump.rdb
