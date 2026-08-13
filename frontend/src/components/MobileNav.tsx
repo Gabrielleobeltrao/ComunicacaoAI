@@ -41,12 +41,19 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
     navigate('/login')
   }
 
-  // Nav V2 (floor-aware). Bottom bar = up to 4 primary + a "Mais" button; the
-  // drawer holds the full grouped nav.
+  // Nav V2 (floor-aware). Bottom bar = 4 stable floor destinations + a "Mais"
+  // button (5 slots total, plan §6.5); the drawer holds the full grouped nav.
+  // Fixed order Andar · Agentes · Setores · Automações; if a flag drops one, the
+  // next available (Execuções) fills its place — never a gap, never > 5 slots.
   const bctx = useOptionalBuildingContext()
   const { pathname } = useLocation()
   const floorId = bctx?.activeFloorId ?? null
-  const primary = bctx ? navItemsFor(floorId).filter((i) => i.mobilePrimary).slice(0, 4) : null
+  const BOTTOM_KEYS = ['floor', 'agents', 'sectors', 'automations', 'runs']
+  const primary = bctx
+    ? BOTTOM_KEYS.map((k) => navItemsFor(floorId).find((i) => i.key === k))
+        .filter((i): i is NonNullable<typeof i> => Boolean(i))
+        .slice(0, 4)
+    : null
 
   return (
     <>
@@ -74,7 +81,7 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
                   style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-muted)', textDecoration: 'none' }}
                 >
                   <Icon name={item.icon} size={20} />
-                  <span style={{ fontSize: 10.5, fontWeight: active ? 700 : 500, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</span>
+                  <span style={{ fontSize: 10.5, fontWeight: active ? 700 : 500, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.shortLabel ?? item.label}</span>
                 </Link>
               )
             })}

@@ -8,6 +8,8 @@ export type NavScope = 'general' | 'floor' | 'communication'
 export interface NavItemDef {
   key: string
   label: string
+  // Compact label for the mobile bottom bar (falls back to `label`).
+  shortLabel?: string
   icon: string
   scope: NavScope
   path: (floorId: string | null) => string
@@ -25,7 +27,7 @@ const floorPath = (floorId: string | null, suffix: string, legacy: string) => (f
 export const NAV_V2: NavItemDef[] = [
   // The floor home is also the building home (the general overview was merged into
   // it) — exact match so it doesn't stay active on the floor's sub-pages.
-  { key: 'floor', label: 'Visão do andar', icon: 'building-2', scope: 'floor', path: (f) => floorPath(f, '', '/dashboard'), activePrefixes: (f) => (f ? [`/floors/${f}`] : ['/dashboard']), exact: true, mobilePrimary: true },
+  { key: 'floor', label: 'Visão do andar', shortLabel: 'Andar', icon: 'building-2', scope: 'floor', path: (f) => floorPath(f, '', '/dashboard'), activePrefixes: (f) => (f ? [`/floors/${f}`] : ['/dashboard']), exact: true, mobilePrimary: true },
   { key: 'automations', label: 'Automações', icon: 'workflow', scope: 'floor', path: (f) => floorPath(f, '/automations', '/automations'), activePrefixes: (f) => [floorPath(f, '/automations', '/automations')], mobilePrimary: true, featureFlag: 'aiAutomations' },
   { key: 'agents', label: 'Agentes', icon: 'users-round', scope: 'floor', path: (f) => floorPath(f, '/agents', '/agents'), activePrefixes: (f) => [floorPath(f, '/agents', '/agents')], mobilePrimary: true },
   { key: 'sectors', label: 'Setores', icon: 'network', scope: 'floor', path: (f) => floorPath(f, '/sectors', '/setores'), activePrefixes: (f) => [floorPath(f, '/sectors', '/setores')] },
