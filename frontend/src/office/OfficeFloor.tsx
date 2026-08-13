@@ -77,7 +77,9 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  const aspect = Math.min(3.2, Math.max(1.4, (hostW || 1100) / (hostH || VIEWPORT_H)))
+  // Bias the layout toward a near-square footprint (rooms wrap into more rows)
+  // instead of tracking a wide desktop panel 1:1, which read as "too horizontal".
+  const aspect = Math.min(1.2, Math.max(1.05, (hostW || 1100) / (hostH || VIEWPORT_H)))
 
   const baseLayout = useMemo(
     () =>

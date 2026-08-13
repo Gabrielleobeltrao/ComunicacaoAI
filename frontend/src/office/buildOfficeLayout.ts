@@ -37,7 +37,8 @@ const near = (mx: number): DeskSeat => ({ mx, row: 'near' })
 
 const DESK_1_FRONT: DeskType = { art: 'mesa-1-frente-2x2', w: 2, h: 2, seats: [far(56)] }
 const DESK_1_BACK: DeskType = { art: 'mesa-1-costas-2x2', w: 2, h: 2, seats: [near(56)] }
-const DESK_2: DeskType = { art: 'mesa-2-3x2', w: 3, h: 2, seats: [near(48), near(120)] }
+const DESK_2_FRONT: DeskType = { art: 'mesa-2-frente-3x2', w: 3, h: 2, seats: [far(48), far(120)] }
+const DESK_2_BACK: DeskType = { art: 'mesa-2-3x2', w: 3, h: 2, seats: [near(48), near(120)] }
 const DESK_4: DeskType = { art: 'mesa-4-3x3', w: 3, h: 3, seats: [far(52), far(116), near(52), near(116)] }
 const DESK_6: DeskType = { art: 'mesa-6-4.5x3', w: 4.5, h: 3, seats: [far(50), far(126), far(202), near(50), near(126), near(202)] }
 const DESK_10: DeskType = { art: 'mesa-10-7.5x3', w: 7.5, h: 3, seats: [far(58), far(134), far(210), far(286), far(362), near(58), near(134), near(210), near(286), near(362)] }
@@ -49,11 +50,17 @@ const DESK_10: DeskType = { art: 'mesa-10-7.5x3', w: 7.5, h: 3, seats: [far(58),
 export function planDesks(k: number, rng: () => number): DeskType[] {
   const out: DeskType[] = []
   let rem = k
-  for (const d of [DESK_10, DESK_6, DESK_4, DESK_2]) {
+  for (const d of [DESK_10, DESK_6, DESK_4]) {
     while (rem >= d.seats.length) {
       out.push(d)
       rem -= d.seats.length
     }
+  }
+  // 2- and 1-seat desks face front or back by chance, so a floor of small sectors
+  // isn't a wall of identical back-facing desks.
+  while (rem >= 2) {
+    out.push(rng() < 0.75 ? DESK_2_FRONT : DESK_2_BACK) // majority front — the back one looks worse en masse
+    rem -= 2
   }
   while (rem >= 1) {
     out.push(rng() < 0.5 ? DESK_1_FRONT : DESK_1_BACK)
@@ -179,8 +186,8 @@ function bodyOf(memberCount: number, rng: () => number) {
   }
   const maxDeskW = Math.max(...plan.map((d) => d.w))
   const spanH = plan.reduce((a, d) => a + d.h, 0) + GAP_V * (plan.length - 1)
-  const extraW = 0.5 + rng() * 3 // 0.5–3.5 tiles of side room
-  const extraH = 0.5 + rng() * 2.5 // 0.5–3 tiles of extra depth
+  const extraW = 0.5 + rng() * 2 // 0.5–2.5 tiles of side room
+  const extraH = 0.5 + rng() * 1.5 // 0.5–2 tiles of extra depth
   const bodyW = ROOM_PAD_X * 2 + Math.max(maxDeskW, 3.5) + extraW
   const bodyH = DESK_ORIGIN_Y + spanH + 1.5 + extraH
   return { plan, bodyW, bodyH }
@@ -346,8 +353,10 @@ export function buildOfficeLayout(input: LayoutInput): BuiltOfficeLayout {
           const isNear = seat.row === 'near'
           const sy = isNear ? dy + d.h - 1.6 : dy - 0.78
           const facing: OfficeDirection = isNear ? 'back' : 'front'
-          // Exit point: a walkable cell just off the chair, into the room interior.
-          const exit: OfficePoint = isNear ? { x: sx, y: sy + 2.4 } : { x: sx, y: sy - 1.3 }
+          // Exit point: a walkable cell just off the chair, into the room interior. A
+          // front seat exits UP; clamp it below the top wall so a desk near the room's
+          // top (small DESK_ORIGIN_Y) never puts the exit outside the room.
+          const exit: OfficePoint = isNear ? { x: sx, y: sy + 2.4 } : { x: sx, y: Math.max(sy - 1.3, by + 0.7) }
           seats.push({
             id: `${b.key}:${seatIdx}`,
             agentId,
