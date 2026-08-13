@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { blankStep, getAutomation, patchAutomation, publishAutomation, runAutomation, setAutomationStatus, validateAutomation } from '../lib/automations'
 import type { Automation, AutomationDefinition, StepType, ValidationIssue } from '../lib/automations'
+import { floorAutomations, floorRuns } from '../lib/floorRoutes'
 import { Button } from '../ui'
 
 const STEP_TYPES: StepType[] = ['source.rss', 'source.http', 'agent.execute', 'transform.template', 'delivery.send']
@@ -24,7 +25,7 @@ const CONFIG_FIELD: Record<StepType, { key: string; label: string }[]> = {
 }
 
 export function AutomationEditor() {
-  const { id } = useParams<{ id: string }>()
+  const { id, floorId } = useParams<{ id: string; floorId: string }>()
   const navigate = useNavigate()
   const [automation, setAutomation] = useState<Automation | null>(null)
   const [def, setDef] = useState<AutomationDefinition | null>(null)
@@ -87,7 +88,7 @@ export function AutomationEditor() {
   }
   async function run() {
     const r = await runAutomation(automation!.id)
-    navigate(`/runs?highlight=${r.id}`)
+    navigate(`${floorId ? floorRuns(floorId) : '/runs'}?highlight=${r.id}`)
   }
 
   return (
@@ -96,7 +97,7 @@ export function AutomationEditor() {
       title={automation.name}
       subtitle={`Status: ${automation.status} · versão publicada: ${automation.lastPublishedVersion ?? '—'}`}
       actions={
-        <Link to="/automations" style={{ textDecoration: 'none' }}>
+        <Link to={floorId ? floorAutomations(floorId) : '/automations'} style={{ textDecoration: 'none' }}>
           <Button variant="ghost" icon="arrow-left">
             Automações
           </Button>

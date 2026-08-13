@@ -7,6 +7,8 @@ import { DangerZone } from '../components/DangerZone'
 import { SectorForm } from '../components/SectorForm'
 import { SectorPlayground } from '../components/SectorPlayground'
 import { API_URL } from '../lib/api'
+import { useActiveFloorId } from '../contexts/BuildingContext'
+import { floorAgent, floorSector, floorSectors } from '../lib/floorRoutes'
 import { SECTOR_SECTIONS } from '../lib/sectorSections'
 import type { AgentSummary, SectorOverview } from '../lib/types'
 
@@ -31,6 +33,7 @@ function Badge({ children }: { children: ReactNode }) {
 
 function OverviewSection({ overview, agents }: { overview: SectorOverview; agents: AgentSummary[] }) {
   const { sector, analytics, linkedWidgets } = overview
+  const fid = useActiveFloorId()
   const nameById = new Map(agents.map((a) => [a._id, a.name]))
   const agentById = new Map(agents.map((a) => [a._id, a]))
   const isPipeline = sector.mode === 'pipeline'
@@ -74,7 +77,7 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
       <li key={m.agentId}>
         {full ? (
           <Link
-            to={`/agents/${m.agentId}?from=${encodeURIComponent(`/setores/${sector._id}`)}`}
+            to={`${fid ? floorAgent(fid, m.agentId) : `/agents/${m.agentId}`}?from=${encodeURIComponent(fid ? floorSector(fid, sector._id) : `/setores/${sector._id}`)}`}
             className="block rounded-xl border border-(--border-subtle) bg-(--surface-card) p-3 transition hover:border-(--border-strong)"
           >
             {inner}
@@ -194,6 +197,7 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
 
 export function SectorDetail() {
   const { sectorId, section } = useParams()
+  const fid = useActiveFloorId()
   const navigate = useNavigate()
   const [overview, setOverview] = useState<SectorOverview | null>(null)
   const [agents, setAgents] = useState<AgentSummary[]>([])
@@ -247,7 +251,7 @@ export function SectorDetail() {
         setDeleteError(body?.error ?? 'Não foi possível excluir o setor.')
         return
       }
-      navigate('/setores')
+      navigate(fid ? floorSectors(fid) : '/setores')
     } finally {
       setDeleting(false)
     }

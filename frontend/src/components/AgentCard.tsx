@@ -1,6 +1,8 @@
 import { useNavigate } from 'react-router'
 import { accentFor, portraitFor, statusFor } from '../lib/agentAvatar'
 import type { AgentStat } from '../lib/agentAvatar'
+import { useActiveFloorId } from '../contexts/BuildingContext'
+import { floorAgent } from '../lib/floorRoutes'
 import { roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import type { AgentSummary } from '../lib/types'
 import { AgentAvatar, Card, Icon, StatusPill, Tag } from '../ui'
@@ -10,13 +12,14 @@ import { AgentAvatar, Card, Icon, StatusPill, Tag } from '../ui'
 // small stats grid (real per-agent stats passed in via `stats`).
 export function AgentCard({ agent, stats, sectorName, portrait }: { agent: AgentSummary; stats?: AgentStat[]; sectorName?: string | null; portrait?: string }) {
   const navigate = useNavigate()
+  const fid = useActiveFloorId()
   const accent = accentFor(agent._id)
   const status = statusFor(agent._id)
   const skills = skillsOf(agent)
   const metrics = stats ?? []
 
   return (
-    <Card interactive accent={accent} onClick={() => navigate(`/agents/${agent._id}`)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <Card interactive accent={accent} onClick={() => navigate(fid ? floorAgent(fid, agent._id) : `/agents/${agent._id}`)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
         <AgentAvatar name={agent.name} src={portrait ?? portraitFor(agent._id)} color={accent} size="lg" status={status} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: 1 }}>

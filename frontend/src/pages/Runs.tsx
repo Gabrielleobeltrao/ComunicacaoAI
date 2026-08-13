@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { cancelRun, getRunSteps, listRuns } from '../lib/automations'
@@ -10,22 +10,27 @@ export function Runs() {
   const { floorId } = useParams()
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
   const [steps, setSteps] = useState<Array<{ id: string; stepId: string; stepType: string; status: string }>>([])
 
-  async function load() {
+  // Reload whenever the URL floor changes, so switching floors shows that floor's
+  // runs. A network failure is surfaced as an error state — never a false "empty".
+  const load = useCallback(async () => {
     setLoading(true)
+    setError(false)
     try {
       setRuns((await listRuns(floorId ? { floorId } : undefined)).items)
     } catch {
+      setError(true)
       setRuns([])
     } finally {
       setLoading(false)
     }
-  }
+  }, [floorId])
   useEffect(() => {
     void load()
-  }, [])
+  }, [load])
 
   async function toggle(id: string) {
     if (openId === id) {
@@ -49,7 +54,15 @@ export function Runs() {
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {loading && <p style={{ color: 'var(--text-muted)' }}>Carregando…</p>}
-        {!loading && runs.length === 0 && <p style={{ color: 'var(--text-muted)' }}>Nenhuma execução ainda.</p>}
+        {!loading && error && (
+          <p style={{ color: 'var(--intent-danger,#d92d20)' }}>
+            Não foi possível carregar as execuções.{' '}
+            <button onClick={load} style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--intent-brand,#2e5bff)', cursor: 'pointer', textDecoration: 'underline' }}>
+              Tentar novamente
+            </button>
+          </p>
+        )}
+        {!loading && !error && runs.length === 0 && <p style={{ color: 'var(--text-muted)' }}>Nenhuma execução ainda.</p>}
         {runs.map((r) => (
           <div key={r.id} style={panel}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>

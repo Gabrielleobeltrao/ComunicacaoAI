@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentSummary, SectorSummary } from '../lib/types'
+import { useActiveFloorId } from '../contexts/BuildingContext'
+import { floorSector } from '../lib/floorRoutes'
 import { SectorMapCrop } from '../office/SectorMapCrop'
 import { Button, Card, Dialog } from '../ui'
 import { SectorForm } from './SectorForm'
@@ -17,6 +19,7 @@ interface SectorManagerProps {
 
 export function SectorManager({ sectors, loading, agents, agentsLoading, floorId, onChange }: SectorManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
+  const fid = useActiveFloorId()
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
   // Character faces for the crop sprites (same resolver as the map).
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
@@ -44,7 +47,7 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
             const count = sector.members.length
             const modeLabel = sector.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'
             return (
-              <Link key={sector._id} to={`/setores/${sector._id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+              <Link key={sector._id} to={fid ? floorSector(fid, sector._id) : `/setores/${sector._id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
                 <Card interactive accent={sector.color} padding="0" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                   {/* The "photo": a live crop of the office map for this sector — the
                       characters walk with the same logic as "Visão do andar", confined

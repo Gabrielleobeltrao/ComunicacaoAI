@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useLocation, useNavigate } from 'react-router'
+import { useLocation, useNavigate, useParams } from 'react-router'
 import { getBuilding, listFloors, resolveActiveFloor } from '../lib/floors'
 import type { Building, Floor } from '../lib/floors'
+import { floorHome, parseFloorPath, switchFloorPath } from '../lib/floorRoutes'
 
 // Single global building/floor context (UX reorg §5.1). URL is the source of
 // truth for the active floor; localStorage is only a fallback. Replaces the
@@ -20,15 +21,6 @@ export interface BuildingContextValue {
 
 const STORAGE_KEY = 'ai.activeFloorId'
 const Ctx = createContext<BuildingContextValue | null>(null)
-
-// Sections preservable across floors (§6.5). Detail ids don't carry over.
-const FLOOR_SECTIONS = ['automations', 'agents', 'sectors', 'runs', 'artifacts']
-
-// Parse /floors/:floorId[/section...] from the current path.
-function parseFloorPath(pathname: string): { floorId: string | null; section: string | null } {
-  const m = pathname.match(/^\/floors\/([^/]+)(?:\/([^/]+))?/)
-  return { floorId: m?.[1] ?? null, section: m?.[2] ?? null }
-}
 
 export function BuildingProvider({ children }: { children: ReactNode }) {
   const location = useLocation()
@@ -81,11 +73,18 @@ export function BuildingProvider({ children }: { children: ReactNode }) {
     }
   }, [activeFloorId])
 
+  // Guard invalid floor URLs (§7.5): if the path names a floor that isn't in this
+  // account (deleted, archived, or foreign), don't render another floor's data
+  // under it — replace the URL with the resolved active floor, keeping the module.
+  useEffect(() => {
+    if (loading || !urlFloorId) return
+    if (floors.some((f) => f.id === urlFloorId)) return
+    if (activeFloorId && activeFloorId !== urlFloorId) navigate(switchFloorPath(location.pathname, activeFloorId), { replace: true })
+  }, [loading, urlFloorId, floors, activeFloorId, location.pathname, navigate])
+
   const selectFloor = useCallback(
     (floorId: string, options?: { preserveSection?: boolean }) => {
-      const { section } = parseFloorPath(location.pathname)
-      const keep = options?.preserveSection && section && FLOOR_SECTIONS.includes(section)
-      navigate(keep ? `/floors/${floorId}/${section}` : `/floors/${floorId}`)
+      navigate(options?.preserveSection ? switchFloorPath(location.pathname, floorId) : floorHome(floorId))
     },
     [location.pathname, navigate],
   )
@@ -115,4 +114,13 @@ export function useBuildingContext(): BuildingContextValue {
 // returns null when there is no provider (nav V1) instead of throwing.
 export function useOptionalBuildingContext(): BuildingContextValue | null {
   return useContext(Ctx)
+}
+
+// The floor a screen/component should scope to: the URL floor (authoritative when
+// inside a /floors/:floorId route) or, on a legacy flat route, the context's
+// resolved active floor. Lets shared cards/details build canonical floor paths.
+export function useActiveFloorId(): string | null {
+  const { floorId } = useParams()
+  const ctx = useContext(Ctx)
+  return floorId ?? ctx?.activeFloorId ?? null
 }

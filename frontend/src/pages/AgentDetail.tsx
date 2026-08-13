@@ -8,6 +8,8 @@ import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
 import type { CharacterResolver } from '../lib/agentAvatar'
 import { roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import { API_URL } from '../lib/api'
+import { useActiveFloorId } from '../contexts/BuildingContext'
+import { floorAgent, floorAgents } from '../lib/floorRoutes'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import type { AgentOverview, AgentSummary } from '../lib/types'
 import { Button, Card, MetricStat, StatusPill, Tag } from '../ui'
@@ -65,6 +67,7 @@ function ProfileCard({ agent, stats, accent, portrait }: { agent: AgentSummary; 
 
 function ColleaguesCard({ agents, currentId, chars }: { agents: AgentSummary[]; currentId: string; chars: CharacterResolver }) {
   const navigate = useNavigate()
+  const fid = useActiveFloorId()
   const colleagues = agents.filter((x) => x._id !== currentId).slice(0, 5)
   if (colleagues.length === 0) return null
   return (
@@ -73,7 +76,7 @@ function ColleaguesCard({ agents, currentId, chars }: { agents: AgentSummary[]; 
       {colleagues.map((x) => (
         <button
           key={x._id}
-          onClick={() => navigate(`/agents/${x._id}`)}
+          onClick={() => navigate(fid ? floorAgent(fid, x._id) : `/agents/${x._id}`)}
           style={{ display: 'flex', alignItems: 'center', gap: 10, border: 0, background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left' }}
         >
           <span
@@ -138,6 +141,7 @@ function UsageCard({ overview }: { overview: AgentOverview }) {
 
 export function AgentDetail() {
   const { agentId, section } = useParams()
+  const fid = useActiveFloorId()
   const navigate = useNavigate()
   const { agents } = useAgentsAndWidgets()
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
@@ -181,7 +185,7 @@ export function AgentDetail() {
         setDeleteError(body?.error ?? 'Não foi possível excluir o agente.')
         return
       }
-      navigate('/agents')
+      navigate(fid ? floorAgents(fid) : '/agents')
     } finally {
       setDeleting(false)
     }
@@ -242,7 +246,7 @@ export function AgentDetail() {
                     return (
                       <button
                         key={t.key}
-                        onClick={() => navigate(`/agents/${agent._id}/${t.key}`)}
+                        onClick={() => navigate(fid ? floorAgent(fid, agent._id, t.key) : `/agents/${agent._id}/${t.key}`)}
                         style={{
                           height: 32,
                           padding: '0 14px',

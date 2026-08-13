@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { Elevator } from '../components/Elevator'
 import { useFloors } from '../lib/useFloors'
+import { floorAutomation, floorRuns } from '../lib/floorRoutes'
 import { createAutomation, listAutomations } from '../lib/automations'
 import type { Automation } from '../lib/automations'
 import { Button } from '../ui'
@@ -52,7 +53,7 @@ export function Automations() {
       title="Automações"
       subtitle="Trabalhos que os agentes executam por gatilho, agenda ou webhook"
       actions={
-        <Link to="/runs" style={{ textDecoration: 'none' }}>
+        <Link to={floorId ? floorRuns(floorId) : '/runs'} style={{ textDecoration: 'none' }}>
           <Button variant="ghost" icon="history">
             Execuções
           </Button>
@@ -70,7 +71,7 @@ export function Automations() {
             maxLength={160}
             style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border-1, #d0d5dd)', font: 'inherit', background: 'var(--paper-0,#fff)', color: 'inherit' }}
           />
-          <Button icon="plus" disabled={creating || !name.trim() || !activeFloorId} onClick={create}>
+          <Button icon="plus" disabled={creating || !name.trim() || !floorId} onClick={create}>
             Criar
           </Button>
         </div>
@@ -82,7 +83,7 @@ export function Automations() {
           {items.map((a) => (
             <Link
               key={a.id}
-              to={`/automations/${a.id}`}
+              to={floorId ? floorAutomation(floorId, a.id) : `/automations/${a.id}`}
               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 14, borderRadius: 12, border: '1px solid var(--border-1,#e4e7ec)', background: 'var(--paper-0,#fff)', textDecoration: 'none', color: 'inherit' }}
             >
               <span style={{ fontWeight: 600 }}>{a.name}</span>
