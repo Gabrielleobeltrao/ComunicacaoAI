@@ -14,25 +14,39 @@ export interface RoomShape {
 
 const RES = 0.5 // cell size in tiles
 
-// Body rectangle + one annex bump on a random side → an L / T / step silhouette.
-// The annex is where a piece of décor goes, so it reads as part of the room.
+// Body rectangle plus 0, 1 or 2 annex bumps on distinct sides → a varied silhouette
+// (plain rect, L, T, step, U…), so no two sectors read as the same shape. The first
+// annex is where a piece of décor goes, so it reads as part of the room.
 export function shapeOf(bodyW: number, bodyH: number, rng: () => number): RoomShape {
   const rects: Rect[] = [{ x: 0, y: 0, w: bodyW, h: bodyH }]
-  const depth = 2.6 + rng() * 1.4
-  const side = ['top', 'bottom', 'left', 'right'][Math.floor(rng() * 4)]
-  let decor: { x: number; y: number } | null = null
-  if (side === 'top' || side === 'bottom') {
-    const len = Math.max(2.4, bodyW * (0.4 + rng() * 0.35))
-    const pos = [0, (bodyW - len) / 2, bodyW - len][Math.floor(rng() * 3)]
-    const y = side === 'top' ? -depth : bodyH
-    rects.push({ x: pos, y, w: len, h: depth })
-    decor = { x: pos + len / 2, y: y + depth / 2 }
-  } else {
-    const len = Math.max(2.4, bodyH * (0.4 + rng() * 0.3))
+  const roll = rng()
+  const annexCount = roll < 0.22 ? 0 : roll < 0.68 ? 1 : 2
+  const used = new Set<string>()
+  const sides = ['top', 'bottom', 'left', 'right']
+
+  const addAnnex = (): { x: number; y: number } => {
+    let side = sides[Math.floor(rng() * 4)]
+    for (let g = 0; used.has(side) && g < 8; g++) side = sides[Math.floor(rng() * 4)]
+    used.add(side)
+    const depth = 2.2 + rng() * 1.8
+    if (side === 'top' || side === 'bottom') {
+      const len = Math.max(2.4, bodyW * (0.35 + rng() * 0.4))
+      const pos = [0, (bodyW - len) / 2, bodyW - len][Math.floor(rng() * 3)]
+      const y = side === 'top' ? -depth : bodyH
+      rects.push({ x: pos, y, w: len, h: depth })
+      return { x: pos + len / 2, y: y + depth / 2 }
+    }
+    const len = Math.max(2.4, bodyH * (0.35 + rng() * 0.35))
     const pos = [0, (bodyH - len) / 2, bodyH - len][Math.floor(rng() * 3)]
     const x = side === 'left' ? -depth : bodyW
     rects.push({ x, y: pos, w: depth, h: len })
-    decor = { x: x + depth / 2, y: pos + len / 2 }
+    return { x: x + depth / 2, y: pos + len / 2 }
+  }
+
+  let decor: { x: number; y: number } | null = null
+  for (let i = 0; i < annexCount; i++) {
+    const d = addAnnex()
+    if (i === 0) decor = d
   }
   return { rects, decor }
 }

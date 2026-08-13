@@ -211,8 +211,11 @@ function bodyOf(memberCount: number, rng: () => number) {
   }
   const maxDeskW = Math.max(...plan.map((d) => d.w))
   const spanH = plan.reduce((a, d) => a + d.h, 0) + GAP_V * (plan.length - 1)
-  const extraW = 0.5 + rng() * 2 // 0.5–2.5 tiles of side room
-  const extraH = 0.5 + rng() * 1.5 // 0.5–2 tiles of extra depth
+  // Bias each room's proportions differently: some are wide, some deep, some snug —
+  // so the floor isn't a row of same-shaped tall boxes.
+  const shapeBias = rng()
+  const extraW = 0.5 + rng() * (shapeBias < 0.38 ? 5.5 : 2) // sometimes a wide room
+  const extraH = 0.5 + rng() * (shapeBias > 0.62 ? 3.5 : 1.5) // sometimes a deep one
   const bodyW = ROOM_PAD_X * 2 + Math.max(maxDeskW, 3.5) + extraW
   const bodyH = DESK_ORIGIN_Y + spanH + 1.5 + extraH
   return { plan, bodyW, bodyH }
