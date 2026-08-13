@@ -87,8 +87,8 @@ export function AppLayout({ current, title, titleExtra, subtitle, actions, child
             </div>
             {children}
           </div>
-          {/* Reserve room so content isn't hidden behind the fixed mobile bottom nav */}
-          <div className="lg:hidden" aria-hidden style={{ height: 'calc(var(--bottom-nav-height) + var(--safe-bottom))' }} />
+          {/* Clear the home-indicator safe area at the bottom on phones */}
+          <div className="lg:hidden" aria-hidden style={{ height: 'var(--safe-bottom)' }} />
         </main>
       </div>
 

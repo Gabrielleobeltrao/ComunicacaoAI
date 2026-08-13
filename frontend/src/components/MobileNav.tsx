@@ -4,12 +4,12 @@ import { signOut, useSession } from '../lib/auth-client'
 import { Brand, Icon } from '../ui'
 import { NAV } from './navItems'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
-import { isNavActive, navGroupsFor, navItemsFor } from './navConfig'
+import { isNavActive, navGroupsFor } from './navConfig'
 
-// Touch navigation for phones and small tablets (< lg): a fixed bottom bar for
-// the primary destinations plus a slide-in drawer (opened from the topbar) for
-// the account, every destination with labels, settings and sign-out. The desktop
-// hover rail (Sidebar) is hidden at this size.
+// Touch navigation for phones and small tablets (< lg): a single slide-in drawer
+// (opened from the topbar hamburger) with the account, every destination with
+// labels, the floor switcher, settings and sign-out. No bottom bar — it duplicated
+// the drawer. The desktop hover rail (Sidebar) is hidden at this size.
 export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { current: string; open: boolean; onOpenChange: (v: boolean) => void; onOpenFloorPicker: () => void }) {
   const navigate = useNavigate()
   const { data: session } = useSession()
@@ -40,78 +40,15 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
     navigate('/login')
   }
 
-  // Nav V2 (floor-aware). Bottom bar = 4 stable floor destinations + a "Mais"
-  // button (5 slots total, plan §6.5); the drawer holds the full grouped nav.
-  // Fixed order Andar · Agentes · Setores · Automações; if a flag drops one, the
-  // next available (Execuções) fills its place — never a gap, never > 5 slots.
+  // Nav V2 (floor-aware). The hamburger drawer is the single mobile navigation —
+  // it holds the full grouped menu, the floor switcher, account and sign-out. There
+  // is no bottom bar (it duplicated the drawer).
   const bctx = useOptionalBuildingContext()
   const { pathname } = useLocation()
   const floorId = bctx?.activeFloorId ?? null
-  const BOTTOM_KEYS = ['floor', 'agents', 'sectors', 'automations', 'runs']
-  const primary = bctx
-    ? BOTTOM_KEYS.map((k) => navItemsFor(floorId).find((i) => i.key === k))
-        .filter((i): i is NonNullable<typeof i> => Boolean(i))
-        .slice(0, 4)
-    : null
 
   return (
     <>
-      {/* Bottom navigation — primary destinations, safe-area aware, 44px targets */}
-      <nav
-        aria-label="Navegação principal"
-        className="fixed inset-x-0 bottom-0 z-40 flex items-stretch lg:hidden"
-        style={{
-          height: 'calc(var(--bottom-nav-height) + var(--safe-bottom))',
-          paddingBottom: 'var(--safe-bottom)',
-          background: 'var(--surface-rail)',
-          borderTop: '1px solid var(--border-subtle)',
-        }}
-      >
-        {primary ? (
-          <>
-            {primary.map((item) => {
-              const active = isNavActive(item, floorId, pathname)
-              return (
-                <Link
-                  key={item.key}
-                  to={item.path(floorId)}
-                  aria-current={active ? 'page' : undefined}
-                  className="flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5"
-                  style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-muted)', textDecoration: 'none' }}
-                >
-                  <Icon name={item.icon} size={20} />
-                  <span style={{ fontSize: 10.5, fontWeight: active ? 700 : 500, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.shortLabel ?? item.label}</span>
-                </Link>
-              )
-            })}
-            <button
-              onClick={() => onOpenChange(true)}
-              className="flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5"
-              style={{ minHeight: 'var(--hit-min)', color: 'var(--text-muted)', background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit' }}
-            >
-              <Icon name="menu" size={20} />
-              <span style={{ fontSize: 10.5, fontWeight: 500 }}>Mais</span>
-            </button>
-          </>
-        ) : (
-          NAV.map((item) => {
-            const active = item.to === current
-            return (
-              <Link
-                key={item.to}
-                to={item.to}
-                aria-current={active ? 'page' : undefined}
-                className="flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5"
-                style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-muted)', textDecoration: 'none' }}
-              >
-                <Icon name={item.icon} size={20} />
-                <span style={{ fontSize: 10.5, fontWeight: active ? 700 : 500, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</span>
-              </Link>
-            )
-          })
-        )}
-      </nav>
-
       {/* Drawer — account + full menu + settings/sign-out */}
       {open && (
         <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Menu">

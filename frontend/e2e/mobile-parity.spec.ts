@@ -22,13 +22,16 @@ async function login(page: Page) {
   await page.waitForURL('**/floors/**', { timeout: 15_000 }).catch(() => {})
 }
 
-test('login resolves to a floor and shows the mobile V2 chrome', async ({ page }) => {
+test('login resolves to a floor and the hamburger drawer holds the grouped nav', async ({ page }) => {
   await login(page)
   await expect(page).toHaveURL(/\/floors\/[a-f0-9]{24}/, { timeout: 10_000 })
-  // Bottom nav has the floor destination + Setores (not the old 4-item bar).
-  const nav = page.getByRole('navigation', { name: 'Navegação principal' })
-  await expect(nav.getByText('Andar')).toBeVisible()
-  await expect(nav.getByText('Setores')).toBeVisible()
+  // No bottom bar anymore — the single mobile nav is the drawer behind the menu button.
+  await expect(page.getByRole('navigation', { name: 'Navegação principal' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Abrir menu' }).click()
+  const drawer = page.getByRole('dialog', { name: 'Menu' })
+  await expect(drawer).toBeVisible()
+  await expect(drawer.getByText('Visão do andar')).toBeVisible()
+  await expect(drawer.getByText('Setores')).toBeVisible()
 })
 
 test('the topbar floor trigger opens the sheet and switches floors in one tap', async ({ page }) => {
