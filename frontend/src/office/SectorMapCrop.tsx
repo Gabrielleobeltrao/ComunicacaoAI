@@ -47,6 +47,16 @@ function useReducedMotion(): boolean {
 export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary; agents: AgentSummary[]; chars: Chars }) {
   const boxRef = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(0)
+  // Only animate cards that are actually on screen — off-screen cards run no
+  // simulation loop and never warm-start (the sim builds lazily on first enable).
+  const [onScreen, setOnScreen] = useState(false)
+  useEffect(() => {
+    const el = boxRef.current
+    if (!el) return
+    const io = new IntersectionObserver(([e]) => setOnScreen(e.isIntersecting), { rootMargin: '200px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [])
   const nameOf = useMemo(() => {
     const m = new Map(agents.map((a) => [a._id, a.name]))
     return (id: string) => (m.get(id) ?? '').split(' ')[0]
@@ -73,7 +83,7 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
   // Same enable logic as the office map: on unless the sim is off or the user
   // prefers reduced motion. Warm-started like the map so it opens already alive.
   const reduced = useReducedMotion()
-  const simOn = OFFICE_FEATURES.simulation && (!reduced || IGNORE_REDUCED_MOTION)
+  const simOn = onScreen && OFFICE_FEATURES.simulation && (!reduced || IGNORE_REDUCED_MOTION)
   const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn, warmStart: OFFICE_FEATURES.warmStart, envelope })
 
   const room = layout.rooms.find((r) => r.kind === 'sector')
@@ -169,7 +179,10 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
             <MapObject key={`dk-${i}`} x={lx(d.x)} y={ly(d.y)} w={DESK_W} h={DESK_DEPTH} art={objectSrc('mesa-4-3x3')} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
           ))}
           {sectorDecor.map((dc, i) => (
-            <MapObject key={`de-${i}`} x={lx(dc.x) - 0.85} y={ly(dc.y) - 1.4} w={1.7} h={2} art={objectSrc(dc.art)} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
+            // Depth-sorted against the agents (same base-y formula the sim uses for a
+            // walking agent), so an agent in front of the plant covers it and an agent
+            // behind it is covered — never always-on-top like a flat overlay.
+            <MapObject key={`de-${i}`} x={lx(dc.x) - 0.85} y={ly(dc.y) - 1.4} w={1.7} h={2} art={objectSrc(dc.art)} label="" style={{ zIndex: 20 + Math.round((dc.y + 0.6) * 2), pointerEvents: 'none' }} />
           ))}
           {nearSeats.map((s) => (
             <MapObject key={`nc-${s.agentId}`} x={lx(s.seatedPoint.x) - 0.075} y={ly(s.seatedPoint.y) + 1} w={1.15} h={1.3} art={objectSrc('cadeira-perto-1x1.15')} label="" style={{ zIndex: 4, pointerEvents: 'none' }} />

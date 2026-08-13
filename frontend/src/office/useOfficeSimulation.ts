@@ -40,21 +40,39 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
   const lastTs = useRef(0)
   const simNow = useRef(0) // monotonic sim clock (ms), continuous across warm-start
   const recallDone = useRef(false)
+  const readyRef = useRef(false)
   const optsRef = useRef(opts)
   optsRef.current = opts
 
-  useEffect(() => {
+  // Build (or rebuild) the models/context and pre-roll the warm-start.
+  const buildSim = () => {
     const m = createModels(layout, optsRef.current.modeFor)
     const ctx = createContext(layout, grid, m.size, optsRef.current.interactions ?? [], optsRef.current.envelope)
     models.current = m
     ctxRef.current = ctx
-    // Warm-start: pre-roll the sim so the office opens already alive; the render
-    // loop then continues from the same sim clock (so reservations/timers line up).
+    // Warm-start: pre-roll the sim so it opens already alive; the render loop then
+    // continues from the same sim clock (so reservations/timers line up).
     simNow.current = (optsRef.current.warmStart ?? OFFICE_FEATURES.warmStart) ? warmStart(ctx, m, WARM_START_MS) : (settleStartPositions(ctx, m), 0)
     const v = new Map<string, SimView>()
     for (const a of m.values()) v.set(a.id, { motion: a.motion, direction: a.direction, mode: a.mode, frame: a.frame })
     views.current = v
     bump()
+  }
+
+  // Lazy first build: nothing is created (and no warm-start runs) until the sim is
+  // first enabled. Off-screen / idle consumers therefore pay nothing at all — an
+  // always-enabled consumer (the office map) still builds on mount, as before.
+  useEffect(() => {
+    if (!opts.enabled || readyRef.current) return
+    buildSim()
+    readyRef.current = true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opts.enabled])
+
+  // Rebuild when the layout / grid change, but only once the sim has been built.
+  useEffect(() => {
+    if (!readyRef.current) return
+    buildSim()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, grid])
 
