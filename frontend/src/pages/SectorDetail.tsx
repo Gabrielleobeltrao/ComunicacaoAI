@@ -8,8 +8,10 @@ import { SectorForm } from '../components/SectorForm'
 import { SectorPlayground } from '../components/SectorPlayground'
 import { API_URL } from '../lib/api'
 import { SectorApiError, getSectorOverview } from '../lib/sectors'
-import { useActiveFloorId } from '../contexts/BuildingContext'
+import { SectorHero } from '../components/SectorHero'
+import { useActiveFloorId, useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { floorAgent, floorSector, floorSectors } from '../lib/floorRoutes'
+import { Button } from '../ui'
 import { SECTOR_SECTIONS } from '../lib/sectorSections'
 import type { AgentSummary, SectorOverview } from '../lib/types'
 
@@ -199,6 +201,7 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
 export function SectorDetail() {
   const { sectorId, section } = useParams()
   const fid = useActiveFloorId()
+  const building = useOptionalBuildingContext()
   const navigate = useNavigate()
   const [overview, setOverview] = useState<SectorOverview | null>(null)
   const [agents, setAgents] = useState<AgentSummary[]>([])
@@ -267,7 +270,8 @@ export function SectorDetail() {
   const sector = overview?.sector
   const raw = section ?? ''
   const active = SECTOR_SECTIONS.some((s) => s.key === raw) ? raw : ''
-  const sectionLabel = SECTOR_SECTIONS.find((s) => s.key === active)?.label ?? 'Visão geral'
+  const floorName = building?.floors.find((f) => f.id === sector?.floorId)?.name ?? 'este andar'
+  const tabHref = (key: string) => (fid ? (key ? floorSector(fid, sector!._id, key) : floorSector(fid, sector!._id)) : key ? `/setores/${sector!._id}/${key}` : `/setores/${sector!._id}`)
 
   const titleExtra = sector ? (
     <>
@@ -291,11 +295,38 @@ export function SectorDetail() {
         <p className="text-sm text-(--text-muted)">Setor não encontrado.</p>
       ) : (
         <div className="space-y-4">
+          <SectorHero
+            sector={sector}
+            agents={agents}
+            floorName={floorName}
+            actions={
+              <Button variant="secondary" icon="pencil" onClick={() => navigate(tabHref('configuracao'))}>
+                Editar setor
+              </Button>
+            }
+          />
+
+          {/* Visible in-page navigation (canonical, URL-active, scrolls on mobile). */}
+          <nav aria-label="Seções do setor" style={{ display: 'flex', gap: 4, overflowX: 'auto', borderBottom: '1px solid var(--border-subtle)' }}>
+            {SECTOR_SECTIONS.map((s) => {
+              const on = active === s.key
+              return (
+                <Link
+                  key={s.key || 'overview'}
+                  to={tabHref(s.key)}
+                  aria-current={on ? 'page' : undefined}
+                  style={{ flexShrink: 0, minHeight: 44, display: 'inline-flex', alignItems: 'center', padding: '0 14px', fontSize: 14, fontWeight: on ? 700 : 500, color: on ? 'var(--intent-brand)' : 'var(--text-muted)', borderBottom: on ? '2px solid var(--intent-brand)' : '2px solid transparent', textDecoration: 'none', whiteSpace: 'nowrap' }}
+                >
+                  {s.label}
+                </Link>
+              )
+            })}
+          </nav>
+
           {active === '' ? (
             <OverviewSection overview={overview} agents={agents} />
           ) : (
             <div className="space-y-4">
-              <h3 className="text-lg font-semibold">{sectionLabel}</h3>
               <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
                 {active === 'configuracao' ? (
                   <SectorForm key={sector._id} sector={sector} agents={agents} onSaved={load} />
