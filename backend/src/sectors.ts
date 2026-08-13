@@ -104,7 +104,7 @@ export function getSectorById(ownerId: string, sectorId: ObjectId) {
 export function updateSector(
   ownerId: string,
   sectorId: ObjectId,
-  updates: { name?: string; color?: string; mode?: SectorMode; members?: SectorMember[] },
+  updates: { name?: string; color?: string; mode?: SectorMode; members?: SectorMember[]; officeId?: ObjectId },
 ) {
   const base = updates.members ? { ...updates, members: normalizeMembers(updates.members) } : updates
   return sectors.findOneAndUpdate({ _id: sectorId, ownerId }, { $set: { ...base, updatedAt: new Date() } }, { returnDocument: 'after' })

@@ -10,6 +10,7 @@ import { API_URL } from '../lib/api'
 import { SectorApiError, getSectorOverview } from '../lib/sectors'
 import { SectorHero } from '../components/SectorHero'
 import { SectorAgentsDialog } from '../components/SectorAgentsDialog'
+import { MoveSectorWizard } from '../components/MoveSectorWizard'
 import { useActiveFloorId, useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { floorAgent, floorSector, floorSectors } from '../lib/floorRoutes'
 import { Button } from '../ui'
@@ -212,6 +213,7 @@ export function SectorDetail() {
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [manageOpen, setManageOpen] = useState(false)
+  const [moveOpen, setMoveOpen] = useState(false)
 
   const load = useCallback(async () => {
     if (!sectorId) return
@@ -315,6 +317,18 @@ export function SectorDetail() {
 
           <SectorAgentsDialog open={manageOpen} onClose={() => setManageOpen(false)} sector={sector} floorAgents={agents} onChanged={load} />
 
+          <MoveSectorWizard
+            open={moveOpen}
+            onClose={() => setMoveOpen(false)}
+            sector={sector}
+            floors={(building?.floors ?? []).map((f) => ({ id: f.id, name: f.name }))}
+            onMoved={(targetFloorId) => {
+              setMoveOpen(false)
+              navigate(floorSector(targetFloorId, sector._id))
+              void load()
+            }}
+          />
+
           {/* Visible in-page navigation (canonical, URL-active, scrolls on mobile). */}
           <nav aria-label="Seções do setor" style={{ display: 'flex', gap: 4, overflowX: 'auto', borderBottom: '1px solid var(--border-subtle)' }}>
             {SECTOR_SECTIONS.map((s) => {
@@ -344,14 +358,25 @@ export function SectorDetail() {
                 ) : null}
               </div>
               {active === 'configuracao' && (
-                <DangerZone
-                  title="Excluir este setor"
-                  description="Não pode ser desfeito."
-                  buttonLabel="Excluir setor"
-                  onDelete={handleDelete}
-                  deleting={deleting}
-                  deleteError={deleteError}
-                />
+                <>
+                  <div className="flex flex-col gap-2 rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="font-medium text-(--text-heading)">Mover de andar</p>
+                      <p className="text-sm text-(--text-muted)">Leva este setor para outro andar preservando histórico e canais. Os agentes atuais permanecem no andar de origem.</p>
+                    </div>
+                    <Button variant="secondary" icon="arrow-right-left" onClick={() => setMoveOpen(true)}>
+                      Mover de andar
+                    </Button>
+                  </div>
+                  <DangerZone
+                    title="Excluir este setor"
+                    description="Não pode ser desfeito."
+                    buttonLabel="Excluir setor"
+                    onDelete={handleDelete}
+                    deleting={deleting}
+                    deleteError={deleteError}
+                  />
+                </>
               )}
             </div>
           )}

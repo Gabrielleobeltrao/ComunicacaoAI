@@ -9,6 +9,9 @@ interface CheckboxProps {
   style?: CSSProperties
 }
 
+// A real (visually-hidden) native checkbox drives state, so it's keyboard-operable
+// and announced by screen readers; the styled box is the visual stand-in and shows
+// a focus ring when the input is focused via keyboard.
 export function Checkbox({ checked, label, onChange, disabled, style }: CheckboxProps) {
   return (
     <label
@@ -21,8 +24,16 @@ export function Checkbox({ checked, label, onChange, disabled, style }: Checkbox
         ...style,
       }}
     >
+      <input
+        type="checkbox"
+        className="peer sr-only"
+        checked={!!checked}
+        disabled={disabled}
+        onChange={(e) => onChange?.(e.target.checked)}
+      />
       <span
-        onClick={() => !disabled && onChange?.(!checked)}
+        aria-hidden="true"
+        className="peer-focus-visible:ring-2 peer-focus-visible:ring-(--intent-brand) peer-focus-visible:ring-offset-1"
         style={{
           display: 'inline-flex',
           alignItems: 'center',

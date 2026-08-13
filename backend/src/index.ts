@@ -996,6 +996,117 @@ app.put('/api/sectors/:sectorId/members', requireAuth, async (req, res) => {
   res.json(serializeSector(sector))
 })
 
+// Preflight for moving a sector to another floor (plan §10.2): a read-only report
+// of what changes. The sector keeps its _id, channels and analytics; only its
+// floor changes and its current (source-floor) members are dropped — they stay on
+// the source floor, since a sector and its members must share a floor. The caller
+// then re-picks members from the target floor.
+app.get('/api/sectors/:sectorId/move-impact', requireAuth, async (req, res) => {
+  const sectorId = String(req.params.sectorId)
+  if (!ObjectId.isValid(sectorId)) {
+    res.status(400).json({ error: 'Invalid sector id', code: 'INVALID_ID' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const sector = await getSectorById(ownerId, new ObjectId(sectorId))
+  if (!sector) {
+    res.status(404).json({ error: 'Sector not found', code: 'SECTOR_NOT_FOUND' })
+    return
+  }
+  const targetFloorRaw = String(req.query.targetFloorId ?? '')
+  if (!ObjectId.isValid(targetFloorRaw)) {
+    res.status(400).json({ error: 'Invalid target floor id', code: 'INVALID_ID' })
+    return
+  }
+  const targetFloor = await getFloor(ownerId, new ObjectId(targetFloorRaw))
+  if (!targetFloor) {
+    res.status(404).json({ error: 'Target floor not found', code: 'FLOOR_NOT_FOUND' })
+    return
+  }
+  if (sector.officeId.equals(targetFloor._id)) {
+    res.status(400).json({ error: 'O setor já está neste andar.', code: 'SAME_FLOOR' })
+    return
+  }
+
+  const [sourceFloor, sourceAgents, targetAgents, targetSectors, widgets] = await Promise.all([
+    getFloor(ownerId, sector.officeId),
+    listAgents(ownerId, sector.officeId),
+    listAgents(ownerId, targetFloor._id),
+    listSectors(ownerId, targetFloor._id),
+    listWidgets(ownerId),
+  ])
+  const sourceName = new Map(sourceAgents.map((a) => [a._id.toString(), a.name]))
+  // For each target-floor agent, the sector (if any) it currently belongs to.
+  const sectorOfTargetAgent = new Map<string, string>()
+  for (const s of targetSectors) for (const m of s.members) sectorOfTargetAgent.set(m.agentId.toString(), s.name)
+
+  res.json({
+    sector: { id: sector._id.toString(), name: sector.name },
+    sourceFloor: { id: sector.officeId.toString(), name: sourceFloor?.name ?? 'Andar' },
+    targetFloor: { id: targetFloor._id.toString(), name: targetFloor.name },
+    currentMembers: sector.members.map((m) => ({ id: m.agentId.toString(), name: sourceName.get(m.agentId.toString()) ?? 'Agente' })),
+    linkedChannels: widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => ({ id: w._id.toString(), name: w.name, type: 'web' as const })),
+    targetAgents: targetAgents.map((a) => ({ id: a._id.toString(), name: a.name, currentSector: sectorOfTargetAgent.get(a._id.toString()) ?? null })),
+    analyticsPreserved: true, // analytics key by sectorId — unaffected by the floor change.
+    agentsWillStayOnSourceFloor: true, // moving a sector never relocates its agents.
+  })
+})
+
+// Commit a sector move to another floor (plan §10.3). The backend is the
+// authority: it re-validates the target floor and validates the chosen members
+// against it (never trusting the URL/body floor), drops the source-floor members,
+// and updates officeId + members in one atomic document write.
+app.post('/api/sectors/:sectorId/move', requireAuth, async (req, res) => {
+  const sectorId = String(req.params.sectorId)
+  if (!ObjectId.isValid(sectorId)) {
+    res.status(400).json({ error: 'Invalid sector id', code: 'INVALID_ID' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const sector = await getSectorById(ownerId, new ObjectId(sectorId))
+  if (!sector) {
+    res.status(404).json({ error: 'Sector not found', code: 'SECTOR_NOT_FOUND' })
+    return
+  }
+  const body = req.body ?? {}
+  if (!ObjectId.isValid(String(body.targetFloorId ?? ''))) {
+    res.status(400).json({ error: 'Invalid target floor id', code: 'INVALID_ID' })
+    return
+  }
+  const targetFloor = await getFloor(ownerId, new ObjectId(String(body.targetFloorId)))
+  if (!targetFloor) {
+    res.status(404).json({ error: 'Target floor not found', code: 'FLOOR_NOT_FOUND' })
+    return
+  }
+  if (sector.officeId.equals(targetFloor._id)) {
+    res.status(400).json({ error: 'O setor já está neste andar.', code: 'SAME_FLOOR' })
+    return
+  }
+  // Members must belong to the TARGET floor (same-floor invariant). Empty is allowed
+  // (the sector arrives unconfigured); the owner staffs it after the move.
+  const { members: parsed, error, code } = await resolveSectorMembers(ownerId, body.members ?? [], targetFloor._id)
+  if (error) {
+    res.status(code === 'CROSS_FLOOR_ASSIGNMENT' || code === 'SECTOR_MEMBER_LIMIT' ? 409 : 400).json({ error, code })
+    return
+  }
+  // Moving with an incomplete team while a channel points here needs confirmation.
+  if (sectorReadiness(sector.mode, parsed ?? []) === 'incomplete' && body.confirmChannelImpact !== true) {
+    const widgets = await listWidgets(ownerId)
+    const channels = widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => ({ id: w._id.toString(), name: w.name, type: 'web' as const }))
+    if (channels.length > 0) {
+      res.status(409).json({ error: 'A mudança de andar deixa o setor sem equipe pronta e há canal vinculado a ele.', code: 'CHANNEL_IMPACT_CONFIRMATION_REQUIRED', channels })
+      return
+    }
+  }
+  const moved = await updateSector(ownerId, sector._id, { officeId: targetFloor._id, members: parsed })
+  if (!moved) {
+    res.status(404).json({ error: 'Sector not found', code: 'SECTOR_NOT_FOUND' })
+    return
+  }
+  await enforceSingleMembership(ownerId, moved._id, (parsed ?? []).map((m) => m.agentId))
+  res.json(serializeSector(moved))
+})
+
 // Per-sector dashboard: the sector config, its orchestration analytics and the
 // widgets it answers.
 app.get('/api/sectors/:sectorId/overview', requireAuth, async (req, res) => {
