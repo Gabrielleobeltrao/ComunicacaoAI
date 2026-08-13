@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent, ReactNode } from 'react'
 import { API_URL } from '../lib/api'
+import { randomAgentName } from '../lib/agentNames'
+import { Icon } from '../ui'
 import type {
   AgentBuiltinTool,
   AgentSummary,
@@ -262,7 +264,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
       setPendingDocs([])
       loadDocuments(agent._id)
     } else {
-      setEditName('')
+      // New agents get an auto-generated, gender-coherent name (no manual field).
+      setEditName(randomAgentName().name)
       setEditObjective('')
       setEditProvider('anthropic')
       setEditModel('')
@@ -653,13 +656,37 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
           <>
             <div>
               <label className="mb-1 block text-sm text-(--text-muted)">Nome</label>
-              <input
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                required
-                autoFocus
-                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-              />
+              {isCreating ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <div
+                      aria-live="polite"
+                      className="flex-1 truncate rounded-lg border border-(--border-strong) bg-(--surface-sunken) px-3 py-2 text-sm"
+                      style={{ fontWeight: 600, color: 'var(--text-heading)' }}
+                    >
+                      {editName}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEditName(randomAgentName(editName).name)}
+                      className="flex shrink-0 items-center gap-1.5 rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm"
+                      style={{ color: 'var(--text-body)', cursor: 'pointer', fontWeight: 600 }}
+                    >
+                      <Icon name="refresh-cw" size={14} />
+                      Gerar outro
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-(--text-faint)">Nome gerado automaticamente. Toque em “Gerar outro” para trocar.</p>
+                </>
+              ) : (
+                <input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  required
+                  autoFocus
+                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                />
+              )}
             </div>
             <div>
               <label className="mb-1 block text-sm text-(--text-muted)">O que este agente faz?</label>
