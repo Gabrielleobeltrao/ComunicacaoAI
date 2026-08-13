@@ -51,8 +51,17 @@ export interface Sector {
 
 const sectors = db.collection<Sector>('sectors')
 
+export const MAX_SECTOR_MEMBERS = 10
+
+// Operational readiness derived from mode + members (plan §7.5). No new field.
+export function sectorReadiness(mode: SectorMode, members: SectorMember[]): 'ready' | 'incomplete' {
+  const hasDefault = members.some((m) => m.isDefault)
+  if (mode === 'pipeline') return members.length >= 2 && hasDefault ? 'ready' : 'incomplete'
+  return members.length >= 1 && hasDefault ? 'ready' : 'incomplete'
+}
+
 // Exactly one member must be the default. If none/many are flagged, pick the first.
-function normalizeMembers(members: SectorMember[]): SectorMember[] {
+export function normalizeMembers(members: SectorMember[]): SectorMember[] {
   if (members.length === 0) return members
   const defaultIndex = members.findIndex((m) => m.isDefault)
   const chosen = defaultIndex >= 0 ? defaultIndex : 0

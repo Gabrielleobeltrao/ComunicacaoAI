@@ -54,8 +54,9 @@ import {
   setStructuredMemory,
   setStructuredOutputData,
 } from './conversationMemory.js'
-import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, updateSector } from './sectors.js'
+import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, sectorReadiness, updateSector } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
+import { assignAgentToSector } from './sectorMembership.js'
 import { ensureDefaultOffice } from './offices.js'
 import { getFloor } from './floors.js'
 import { runMigrations } from './migrate.js'
@@ -939,6 +940,60 @@ app.delete('/api/sectors/:sectorId', requireAuth, async (req, res) => {
 
   await deleteSector(ownerId, new ObjectId(sectorId))
   res.status(204).end()
+})
+
+// Explicit agent→sector association (plan §9.2). `{ sectorId: null }` removes the
+// agent from its sector. The service keeps one sector per agent and same-floor.
+app.put('/api/agents/:agentId/sector', requireAuth, async (req, res) => {
+  const raw = (req.body ?? {}).sectorId
+  if (raw !== null && typeof raw !== 'string') {
+    res.status(400).json({ error: 'sectorId must be a string or null' })
+    return
+  }
+  const outcome = await assignAgentToSector(res.locals.userId, String(req.params.agentId), (raw as string | null) ?? null)
+  if (!outcome.ok) {
+    res.status(outcome.status).json({ error: outcome.error, code: outcome.code })
+    return
+  }
+  res.json({ agentId: String(req.params.agentId), ...outcome.result })
+})
+
+// Replace a sector's members with a clear intent (plan §9.3). Validates members
+// against the sector's OWN floor; if the change leaves the sector operationally
+// incomplete AND a channel points at it, requires explicit confirmation.
+app.put('/api/sectors/:sectorId/members', requireAuth, async (req, res) => {
+  const sectorId = String(req.params.sectorId)
+  if (!ObjectId.isValid(sectorId)) {
+    res.status(400).json({ error: 'Invalid sector id' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const existing = await getSectorById(ownerId, new ObjectId(sectorId))
+  if (!existing) {
+    res.status(404).json({ error: 'Sector not found' })
+    return
+  }
+  const body = req.body ?? {}
+  const { members: parsed, error, code } = await resolveSectorMembers(ownerId, body.members ?? [], existing.officeId)
+  if (error) {
+    res.status(code === 'CROSS_FLOOR_ASSIGNMENT' || code === 'SECTOR_MEMBER_LIMIT' ? 409 : 400).json({ error, code })
+    return
+  }
+  if (sectorReadiness(existing.mode, parsed ?? []) === 'incomplete' && body.confirmChannelImpact !== true) {
+    const widgets = await listWidgets(ownerId)
+    const channels = widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => ({ id: w._id.toString(), name: w.name, type: 'web' as const }))
+    if (channels.length > 0) {
+      res.status(409).json({ error: 'Esta alteração deixa o setor sem equipe pronta e há canal vinculado a ele.', code: 'CHANNEL_IMPACT_CONFIRMATION_REQUIRED', channels })
+      return
+    }
+  }
+  const sector = await updateSector(ownerId, new ObjectId(sectorId), { members: parsed })
+  if (!sector) {
+    res.status(404).json({ error: 'Sector not found' })
+    return
+  }
+  await enforceSingleMembership(ownerId, sector._id, (parsed ?? []).map((m) => m.agentId))
+  res.json(serializeSector(sector))
 })
 
 // Per-sector dashboard: the sector config, its orchestration analytics and the
