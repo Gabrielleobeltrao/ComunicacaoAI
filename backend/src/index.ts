@@ -770,9 +770,10 @@ function serializeSector(sector: WithId<Sector>) {
 async function resolveSectorMembers(
   ownerId: string,
   raw: unknown,
-): Promise<{ members?: SectorMember[]; error?: string }> {
+  expectedFloorId: ObjectId,
+): Promise<{ members?: SectorMember[]; error?: string; code?: string }> {
   if (!Array.isArray(raw)) return { error: 'members must be a list' }
-  if (raw.length > MAX_SECTOR_MEMBERS) return { error: `A sector can have at most ${MAX_SECTOR_MEMBERS} agents` }
+  if (raw.length > MAX_SECTOR_MEMBERS) return { error: `A sector can have at most ${MAX_SECTOR_MEMBERS} agents`, code: 'SECTOR_MEMBER_LIMIT' }
   const members: SectorMember[] = []
   const rawTransitions: unknown[] = []
   const seen = new Set<string>()
@@ -782,7 +783,12 @@ async function resolveSectorMembers(
     if (typeof agentId !== 'string' || !ObjectId.isValid(agentId)) return { error: 'Invalid agent id in members' }
     if (seen.has(agentId)) return { error: 'The same agent appears twice in the sector' }
     const agent = await getAgentById(ownerId, new ObjectId(agentId))
-    if (!agent) return { error: 'Agent not found' }
+    if (!agent) return { error: 'Agent not found', code: 'AGENT_NOT_FOUND' }
+    // A sector and its members must live on the same floor — the backend is the
+    // authority, never the (filtered) UI list (§3.7).
+    if (!agent.officeId || !agent.officeId.equals(expectedFloorId)) {
+      return { error: 'Agent belongs to a different floor', code: 'CROSS_FLOOR_ASSIGNMENT' }
+    }
     seen.add(agentId)
     const desc = (m as { routingDescription?: unknown }).routingDescription
     const advanceWhen = (m as { advanceWhen?: unknown }).advanceWhen
@@ -845,13 +851,14 @@ app.post('/api/sectors', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Unknown sector mode' })
     return
   }
-  const { members: parsed, error } = await resolveSectorMembers(res.locals.userId, members ?? [])
+  // Resolve/validate the floor FIRST, then validate members against it (§9.4).
+  const officeId = await resolveFloorOffice(res.locals.userId, req.body?.floorId)
+  const { members: parsed, error, code } = await resolveSectorMembers(res.locals.userId, members ?? [], officeId)
   if (error) {
-    res.status(400).json({ error })
+    res.status(code === 'CROSS_FLOOR_ASSIGNMENT' || code === 'SECTOR_MEMBER_LIMIT' ? 409 : 400).json({ error, code })
     return
   }
   const sectorColor = typeof color === 'string' && color.trim() ? color.trim() : DEFAULT_SECTOR_COLOR
-  const officeId = await resolveFloorOffice(res.locals.userId, req.body?.floorId)
   const sector = await createSector(res.locals.userId, officeId, name, sectorColor, parsedMode, parsed ?? [])
   await enforceSingleMembership(res.locals.userId, sector._id, (parsed ?? []).map((m) => m.agentId))
   res.status(201).json(serializeSector(sector as WithId<Sector>))
@@ -870,6 +877,12 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     return
   }
   const { name, mode, members, color } = req.body ?? {}
+  // Fetch the sector FIRST so members validate against ITS floor, never the URL/body (§9.4).
+  const existing = await getSectorById(res.locals.userId, new ObjectId(sectorId))
+  if (!existing) {
+    res.status(404).json({ error: 'Sector not found' })
+    return
+  }
   const updates: { name?: string; color?: string; mode?: SectorMode; members?: SectorMember[] } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof color === 'string' && color.trim()) updates.color = color.trim()
@@ -882,9 +895,9 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     updates.mode = parsedMode
   }
   if (members !== undefined) {
-    const { members: parsed, error } = await resolveSectorMembers(res.locals.userId, members)
+    const { members: parsed, error, code } = await resolveSectorMembers(res.locals.userId, members, existing.officeId)
     if (error) {
-      res.status(400).json({ error })
+      res.status(code === 'CROSS_FLOOR_ASSIGNMENT' || code === 'SECTOR_MEMBER_LIMIT' ? 409 : 400).json({ error, code })
       return
     }
     updates.members = parsed

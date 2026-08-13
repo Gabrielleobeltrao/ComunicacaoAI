@@ -45,6 +45,8 @@ export interface Sector {
   mode: SectorMode
   members: SectorMember[]
   createdAt: Date
+  // Set on new writes/edits. Additive — old documents may lack it until edited.
+  updatedAt?: Date
 }
 
 const sectors = db.collection<Sector>('sectors')
@@ -65,6 +67,7 @@ export async function createSector(
   mode: SectorMode,
   members: SectorMember[],
 ) {
+  const now = new Date()
   const sector: Omit<Sector, '_id'> = {
     ownerId,
     officeId,
@@ -72,7 +75,8 @@ export async function createSector(
     color,
     mode,
     members: normalizeMembers(members),
-    createdAt: new Date(),
+    createdAt: now,
+    updatedAt: now,
   }
   const result = await sectors.insertOne(sector as Sector)
   return { ...sector, _id: result.insertedId }
@@ -93,8 +97,8 @@ export function updateSector(
   sectorId: ObjectId,
   updates: { name?: string; color?: string; mode?: SectorMode; members?: SectorMember[] },
 ) {
-  const normalized = updates.members ? { ...updates, members: normalizeMembers(updates.members) } : updates
-  return sectors.findOneAndUpdate({ _id: sectorId, ownerId }, { $set: normalized }, { returnDocument: 'after' })
+  const base = updates.members ? { ...updates, members: normalizeMembers(updates.members) } : updates
+  return sectors.findOneAndUpdate({ _id: sectorId, ownerId }, { $set: { ...base, updatedAt: new Date() } }, { returnDocument: 'after' })
 }
 
 export function deleteSector(ownerId: string, sectorId: ObjectId) {

@@ -31,6 +31,8 @@ export interface SectorMemberSummary {
 
 export interface SectorSummary {
   _id: string
+  // The floor (office) this sector lives on. Serialized by the backend.
+  floorId: string | null
   name: string
   // The room's base colour on the office map.
   color: string
@@ -114,6 +116,8 @@ export type Language = 'pt' | 'en' | 'es' | 'auto'
 
 export interface AgentSummary {
   _id: string
+  // The floor (office) this agent lives on. Serialized by the backend.
+  floorId?: string | null
   name: string
   objective: string
   provider: 'anthropic' | 'openai'
