@@ -3,9 +3,19 @@ import { Link } from 'react-router'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentSummary, SectorSummary } from '../lib/types'
 import { buildOfficeLayout } from '../office/buildOfficeLayout'
+import { buildNavigationGrid } from '../office/buildNavigationGrid'
+import { cozinha, lounge, reuniao } from '../office/cenarios'
+import { OFFICE_FEATURES } from '../office/officeConfig'
+import { EMPTY_DECOR, placeOfficeDecor } from '../office/placeOfficeDecor'
 import { SectorMapCrop } from '../office/SectorMapCrop'
 import { Button, Card, Dialog } from '../ui'
 import { SectorForm } from './SectorForm'
+
+// Same amenity/decor catalog the live office map (OfficeFloor) uses, so the crop
+// derives the exact same objects and placement per sector.
+const AMENITIES = [reuniao, cozinha, lounge]
+const AMEN_TINT: Record<string, string> = { reuniao: '#38B6F0', cozinha: '#FFB53D', lounge: '#8B5CF6' }
+const DECOR = ['planta-grande-1.5x2', 'samambaia-1.5x1.5', 'estante-2x1', 'prateleira-pe-1.5x1.3', 'planta-1x1', 'vaso-1x1']
 
 interface SectorManagerProps {
   sectors: SectorSummary[]
@@ -29,12 +39,14 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
         agents: agents.map((a) => ({ _id: a._id })),
         sectors: sectors.map((s) => ({ _id: s._id, name: s.name, color: s.color, members: s.members })),
         aspect: 2,
-        amenities: [],
-        amenityTint: {},
-        decorArts: ['planta-1x1'],
+        amenities: AMENITIES,
+        amenityTint: AMEN_TINT,
+        decorArts: DECOR,
       }),
     [agents, sectors],
   )
+  // Deterministic decoration (wall art + themed objects), identical to the map.
+  const decor = useMemo(() => (OFFICE_FEATURES.decoration ? placeOfficeDecor(layout, buildNavigationGrid(layout)) : EMPTY_DECOR), [layout])
   // Character faces for the seated sprites in each crop (same resolver as the map).
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
 
@@ -65,7 +77,7 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
                 <Card interactive accent={sector.color} padding="0" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                   {/* The "photo": a real crop of the office map where this sector sits. */}
                   <div style={{ height: 150, background: 'var(--map-floor, #f3ecdc)', borderBottom: '1px solid var(--border-subtle)' }}>
-                    <SectorMapCrop layout={layout} sectorId={sector._id} color={sector.color} chars={chars} />
+                    <SectorMapCrop layout={layout} decor={decor} sectorId={sector._id} color={sector.color} chars={chars} />
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 16 }}>
                     <p className="truncate" style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800, color: 'var(--text-heading)' }}>

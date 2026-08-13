@@ -4,6 +4,7 @@ import { accentFor, buildCharacterResolver, statusFor } from '../lib/agentAvatar
 import { objectSrc } from '../lib/officeAssets'
 import { DESK_DEPTH, DESK_W } from './buildOfficeLayout'
 import type { BuiltOfficeLayout } from './buildOfficeLayout'
+import type { OfficeDecorResult } from './placeOfficeDecor'
 import type { OfficeSeat } from './officeTypes'
 import { MapAgent } from './MapAgent'
 import { MapObject } from './MapObject'
@@ -11,7 +12,7 @@ import { roundedPath, traceOutline } from './roomShape'
 
 type Chars = ReturnType<typeof buildCharacterResolver>
 const TILE = 44 // base tile px inside the crop; the whole thing is scaled to fit
-const PAD = 1.1 // tiles of floor kept around the room
+const PAD = 1.4 // tiles of floor kept around the room (room its wall-adjacent decor)
 
 const facingSvg = (d: OfficeSeat['facing']): 'frente' | 'costas' => (d === 'back' ? 'costas' : 'frente')
 
@@ -19,7 +20,7 @@ const facingSvg = (d: OfficeSeat['facing']): 'frente' | 'costas' => (d === 'back
 // components the live "Visão do andar" map uses (MapObject / MapAgent), so the
 // furniture and characters land in exactly the same spots — just clipped to this
 // sector's room and scaled to fit the card. Static (no simulation), click-through.
-export function SectorMapCrop({ layout, sectorId, color, chars }: { layout: BuiltOfficeLayout; sectorId: string; color: string; chars: Chars }) {
+export function SectorMapCrop({ layout, decor, sectorId, color, chars }: { layout: BuiltOfficeLayout; decor: OfficeDecorResult; sectorId: string; color: string; chars: Chars }) {
   const boxRef = useRef<HTMLDivElement>(null)
   const room = layout.rooms.find((r) => r.kind === 'sector' && r.key === sectorId)
   const [scale, setScale] = useState(0)
@@ -44,10 +45,14 @@ export function SectorMapCrop({ layout, sectorId, color, chars }: { layout: Buil
   const ly = (n: number) => n - room.y
   const path = roundedPath(traceOutline(room.cells), 0, 0, 0.45)
   const desks = layout.desks.filter((d) => d.roomKey === sectorId)
-  const decor = layout.decor.filter((dc) => dc.roomKey === sectorId)
+  const sectorDecor = layout.decor.filter((dc) => dc.roomKey === sectorId)
   const seats = layout.seats.filter((s) => s.sectorId === sectorId)
   const farSeats = seats.filter((s) => !s.chair.near)
   const nearSeats = seats.filter((s) => s.chair.near)
+  // Deterministic decoration for this sector (same as the map): themed objects
+  // hugging the room's walls + one ambient wall piece on the top wall.
+  const decorItems = decor.items.filter((it) => it.key.startsWith(`${sectorId}:`))
+  const ambient = decor.ambient.filter((a) => a.key === `wall-${sectorId}`)
   const fill = `color-mix(in oklab, ${color} 15%, var(--paper-0, #fff))`
 
   const seated = (s: OfficeSeat, zIndex: number) => (
@@ -95,6 +100,10 @@ export function SectorMapCrop({ layout, sectorId, color, chars }: { layout: Buil
             <path d={path} fill="none" stroke="var(--map-wall-edge)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
           </svg>
 
+          {/* Ambient wall art (top wall) — drawn below agents, like the map */}
+          {ambient.map((a) => (
+            <MapObject key={a.key} x={lx(a.x)} y={ly(a.y)} w={a.w} h={a.h} art={objectSrc(a.art)} label="" shadow={false} style={{ zIndex: 1, pointerEvents: 'none' }} />
+          ))}
           {/* Furniture + agents in the map's layer order */}
           {farSeats.map((s) => (
             <MapObject key={`fc-${s.agentId}`} x={lx(s.seatedPoint.x)} y={ly(s.seatedPoint.y) + 0.5} w={1} h={1} art={objectSrc('cadeira-longe-1x1')} label="" style={{ zIndex: 0, pointerEvents: 'none' }} />
@@ -103,8 +112,12 @@ export function SectorMapCrop({ layout, sectorId, color, chars }: { layout: Buil
           {desks.map((d, i) => (
             <MapObject key={`dk-${i}`} x={lx(d.x)} y={ly(d.y)} w={DESK_W} h={DESK_DEPTH} art={objectSrc('mesa-4-3x3')} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
           ))}
-          {decor.map((dc, i) => (
+          {sectorDecor.map((dc, i) => (
             <MapObject key={`de-${i}`} x={lx(dc.x) - 0.85} y={ly(dc.y) - 1.4} w={1.7} h={2} art={objectSrc(dc.art)} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
+          ))}
+          {/* Themed objects placed by the same algorithm as the map */}
+          {decorItems.map((it) => (
+            <MapObject key={it.key} x={lx(it.x)} y={ly(it.y)} w={it.w} h={it.h} art={objectSrc(it.art)} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
           ))}
           {nearSeats.map((s) => seated(s, 3))}
           {nearSeats.map((s) => (
