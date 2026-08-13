@@ -6,7 +6,9 @@ import type { Floor, FloorMetrics } from '../lib/floors'
 import { featureFlags } from '../featureFlags'
 import { OfficeFloor } from '../office/OfficeFloor'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
-import { Button } from '../ui'
+import { sectorReadiness } from '../lib/sectors'
+import type { SectorSummary } from '../lib/types'
+import { Button, MetricStat } from '../ui'
 
 // Floor detail. Gated by featureFlags.aiFloors. Shows the floor's mission,
 // status and structural activity (agents + sectors); the visual map integration
@@ -65,6 +67,9 @@ export function FloorView() {
       {error && <p style={{ color: 'var(--intent-danger, #d92d20)' }}>Não foi possível carregar o andar.</p>}
       {!loading && !error && floor && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* The most relevant floor numbers sit ABOVE the map, so a glance at the
+              floor page reads its operational state before the visual. */}
+          <FloorSummary activity={activity} metrics={metrics} sectors={sectors} />
           {/* The visual office map is the centre of the floor view (scoped). */}
           <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
           <div style={panel}>
@@ -73,20 +78,6 @@ export function FloorView() {
             <Row label="Idioma" value={floor.defaultLanguage} />
             {floor.description && <Row label="Descrição" value={floor.description} />}
           </div>
-          <div style={panel}>
-            <Row label="Agentes" value={String(activity?.agentCount ?? '—')} />
-            <Row label="Setores" value={String(activity?.sectorCount ?? '—')} />
-          </div>
-          {metrics && (
-            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))' }}>
-              <Tile label="Automações ativas" value={metrics.automationsActive} />
-              <Tile label="Runs (24h)" value={metrics.runsToday} />
-              <Tile label="Em andamento" value={metrics.running} />
-              <Tile label="Falhas (24h)" value={metrics.failures24h} />
-              <Tile label="Taxa de sucesso" value={metrics.successRate == null ? '—' : `${Math.round(metrics.successRate * 100)}%`} />
-              <Tile label="Entregáveis (24h)" value={metrics.recentArtifacts} />
-            </div>
-          )}
           <div>
             <Button variant={floor.status === 'archived' ? 'primary' : 'danger'} disabled={busy} onClick={toggleArchive}>
               {floor.status === 'archived' ? 'Restaurar andar' : 'Arquivar andar'}
@@ -107,12 +98,48 @@ function Row({ label, value }: { label: string; value: string }) {
   )
 }
 
-function Tile({ label, value }: { label: string; value: number | string }) {
+// The relevant-numbers header above the map: structural stats always, plus
+// automation health when that module is on. Sector readiness is derived from the
+// scoped sectors (same rule the sector badge uses), so "X prontos" agrees with it.
+function FloorSummary({
+  activity,
+  metrics,
+  sectors,
+}: {
+  activity: { agentCount: number; sectorCount: number } | null
+  metrics: FloorMetrics | null
+  sectors: SectorSummary[]
+}) {
+  const readySectors = sectors.filter((s) => sectorReadiness(s.mode, s.members) === 'ready').length
+  const successPct = metrics?.successRate == null ? null : Math.round(metrics.successRate * 100)
   return (
-    <div style={{ ...panel, gap: 2 }}>
-      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{label}</span>
-      <strong style={{ fontSize: 20 }}>{value}</strong>
-    </div>
+    <section
+      aria-label="Resumo do andar"
+      style={{ ...panel, display: 'grid', gap: 18, gridTemplateColumns: 'repeat(auto-fit, minmax(116px, 1fr))', padding: 18 }}
+    >
+      <MetricStat icon="users-round" label="Agentes" value={activity?.agentCount ?? '—'} />
+      <MetricStat
+        icon="network"
+        label="Setores"
+        value={activity?.sectorCount ?? '—'}
+        delta={readySectors > 0 ? `${readySectors} pronto${readySectors === 1 ? '' : 's'}` : undefined}
+        deltaTone="success"
+      />
+      {metrics && (
+        <>
+          <MetricStat icon="loader" label="Rodando" value={metrics.running} />
+          <MetricStat icon="workflow" label="Runs 24h" value={metrics.runsToday} />
+          <MetricStat icon="circle-check" label="Sucesso" value={successPct ?? '—'} unit={successPct == null ? undefined : '%'} />
+          <MetricStat
+            icon="triangle-alert"
+            label="Falhas 24h"
+            value={metrics.failures24h}
+            delta={metrics.failures24h > 0 ? 'atenção' : undefined}
+            deltaTone="danger"
+          />
+        </>
+      )}
+    </section>
   )
 }
 
