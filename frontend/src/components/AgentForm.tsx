@@ -264,8 +264,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
       setPendingDocs([])
       loadDocuments(agent._id)
     } else {
-      // New agents get an auto-generated, gender-coherent name (no manual field).
-      setEditName(randomAgentName().name)
+      // New agents get an auto-generated, gender-coherent name in the default
+      // language (pt); it re-rolls if the language changes (no manual field).
+      setEditName(randomAgentName('pt').name)
       setEditObjective('')
       setEditProvider('anthropic')
       setEditModel('')
@@ -668,7 +669,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
                     </div>
                     <button
                       type="button"
-                      onClick={() => setEditName(randomAgentName(editName).name)}
+                      onClick={() => setEditName(randomAgentName(editLanguage, editName).name)}
                       className="flex shrink-0 items-center gap-1.5 rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm"
                       style={{ color: 'var(--text-body)', cursor: 'pointer', fontWeight: 600 }}
                     >
@@ -815,7 +816,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
               <label className="mb-1 block text-sm text-(--text-muted)">Idioma das respostas</label>
               <select
                 value={editLanguage}
-                onChange={(e) => setEditLanguage(e.target.value as Language)}
+                onChange={(e) => {
+                  const lang = e.target.value as Language
+                  setEditLanguage(lang)
+                  // Keep the auto-generated name in the chosen language while creating.
+                  if (isCreating) setEditName(randomAgentName(lang, editName).name)
+                }}
                 className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
               >
                 {LANGUAGE_OPTIONS.map((option) => (
