@@ -24,6 +24,7 @@ export interface SimOptions {
   paused?: boolean // freeze the whole simulation (Phase 9)
   recall?: boolean // send everyone back to their desks (Phase 10)
   onRecallDone?: () => void // fired once when every agent is home
+  warmStart?: boolean // override the global warm-start (e.g. off for small previews)
 }
 
 // Thin React wrapper around the pure simulation core: it owns the rAF loop, the
@@ -49,7 +50,7 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
     ctxRef.current = ctx
     // Warm-start: pre-roll the sim so the office opens already alive; the render
     // loop then continues from the same sim clock (so reservations/timers line up).
-    simNow.current = OFFICE_FEATURES.warmStart ? warmStart(ctx, m, WARM_START_MS) : (settleStartPositions(ctx, m), 0)
+    simNow.current = (optsRef.current.warmStart ?? OFFICE_FEATURES.warmStart) ? warmStart(ctx, m, WARM_START_MS) : (settleStartPositions(ctx, m), 0)
     const v = new Map<string, SimView>()
     for (const a of m.values()) v.set(a.id, { motion: a.motion, direction: a.direction, mode: a.mode, frame: a.frame })
     views.current = v
