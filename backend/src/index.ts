@@ -22,6 +22,7 @@ import {
   MAX_TOOL_PARAMS,
   MAX_TOOLS,
   MEMORY_TYPES,
+  parseAgentModelFields,
   RESPONSE_DETAILS,
   RESPONSE_TONES,
   updateAgent,
@@ -1464,6 +1465,11 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: builtinError })
     return
   }
+  const { fields: modelFields, error: modelError } = parseAgentModelFields(req.body ?? {})
+  if (modelError) {
+    res.status(400).json({ error: modelError })
+    return
+  }
 
   const officeId = await resolveFloorOffice(res.locals.userId, req.body?.floorId)
   const agent = await createAgent(res.locals.userId, officeId, name, {
@@ -1497,6 +1503,7 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     promptCaching: typeof promptCaching === 'boolean' ? promptCaching : undefined,
     tools: parsedTools,
     builtinTools: parsedBuiltins,
+    ...modelFields,
   })
   res.status(201).json(agent)
 })
@@ -1694,6 +1701,12 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     }
     updates.builtinTools = parsedBuiltins
   }
+  const { fields: modelFields, error: modelError } = parseAgentModelFields(req.body ?? {})
+  if (modelError) {
+    res.status(400).json({ error: modelError })
+    return
+  }
+  Object.assign(updates, modelFields)
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
     return

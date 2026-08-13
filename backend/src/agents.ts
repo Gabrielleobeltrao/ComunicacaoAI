@@ -22,6 +22,17 @@ export const RESPONSE_DETAILS: ResponseDetail[] = ['balanced', 'concise', 'detai
 export type Language = 'pt' | 'en' | 'es' | 'auto'
 export const LANGUAGES: Language[] = ['pt', 'en', 'es', 'auto']
 
+// The role preset an agent was created from — a STARTING configuration, never a hard
+// limit (every field stays editable afterwards). 'custom' = the old free-form agent.
+export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'custom'
+export const AGENT_PRESETS: AgentPreset[] = ['manager', 'secretary', 'researcher', 'analyst', 'operator', 'communicator', 'custom']
+
+// How an agent may be triggered. An agent can have several. 'agent_only' means it is
+// reachable ONLY by another agent/sector — it never starts a conversation, answers a
+// channel directly, or runs manually (typical for a researcher).
+export type ActivationMode = 'manual' | 'scheduled' | 'event' | 'channel' | 'agent_only'
+export const ACTIVATION_MODES: ActivationMode[] = ['manual', 'scheduled', 'event', 'channel', 'agent_only']
+
 export const MAX_DAILY_MESSAGE_LIMIT = 1000
 export const MAX_TOOLS = 10
 export const MAX_TOOL_PARAMS = 10
@@ -95,7 +106,73 @@ export interface Agent {
   promptCaching: boolean
   tools: AgentTool[]
   builtinTools: AgentBuiltinTool[]
+  // --- Agent-as-the-primary-unit model (additive; legacy agents get safe defaults
+  // via withAgentDefaults on read, so no destructive migration is needed) ---
+  preset: AgentPreset
+  capabilities: string[] // free-form competency tags used for capability-based discovery/delegation
+  activationModes: ActivationMode[] // how this agent may be triggered
+  inputContract: string // what data the agent expects to receive (free text)
+  outputContract: string // what result the agent must produce (free text)
+  callableAgentIds: string[] // agents this agent may delegate to (owner-scoped ids)
+  callableSectorIds: string[] // sectors this agent may delegate to (owner-scoped ids)
+  allowedCallerAgentIds: string[] // agents allowed to call this one ([] = any agent of the same owner)
   createdAt: Date
+}
+
+// Fill the agent-as-primary-unit fields for documents written before they existed,
+// so every reader sees a complete Agent without a destructive backfill.
+export function withAgentDefaults(a: Agent): Agent {
+  return {
+    ...a,
+    preset: a.preset ?? 'custom',
+    capabilities: a.capabilities ?? [],
+    activationModes: a.activationModes ?? ['manual', 'channel'],
+    inputContract: a.inputContract ?? '',
+    outputContract: a.outputContract ?? '',
+    callableAgentIds: a.callableAgentIds ?? [],
+    callableSectorIds: a.callableSectorIds ?? [],
+    allowedCallerAgentIds: a.allowedCallerAgentIds ?? [],
+  }
+}
+
+export interface AgentModelFields {
+  preset?: AgentPreset
+  capabilities?: string[]
+  activationModes?: ActivationMode[]
+  inputContract?: string
+  outputContract?: string
+  callableAgentIds?: string[]
+  callableSectorIds?: string[]
+  allowedCallerAgentIds?: string[]
+}
+
+// Parse + validate the agent-as-primary-unit fields from a request body. Only sets a
+// key when the client sent a valid value, so a PATCH stays a true partial update.
+// Returns an error string when a present value is the wrong type/shape.
+export function parseAgentModelFields(body: Record<string, unknown>): { fields: AgentModelFields; error?: string } {
+  const fields: AgentModelFields = {}
+  if (body.preset !== undefined) {
+    if (typeof body.preset !== 'string' || !(AGENT_PRESETS as string[]).includes(body.preset)) return { fields, error: 'Unknown preset' }
+    fields.preset = body.preset as AgentPreset
+  }
+  if (body.activationModes !== undefined) {
+    const v = body.activationModes
+    if (!Array.isArray(v) || !v.every((m) => typeof m === 'string' && (ACTIVATION_MODES as string[]).includes(m))) return { fields, error: 'activationModes must be a list of known modes' }
+    fields.activationModes = [...new Set(v as ActivationMode[])]
+  }
+  for (const key of ['capabilities', 'callableAgentIds', 'callableSectorIds', 'allowedCallerAgentIds'] as const) {
+    const v = body[key]
+    if (v === undefined) continue
+    if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) return { fields, error: `${key} must be a list of strings` }
+    fields[key] = [...new Set((v as string[]).map((s) => s.trim()).filter(Boolean))]
+  }
+  for (const key of ['inputContract', 'outputContract'] as const) {
+    const v = body[key]
+    if (v === undefined) continue
+    if (typeof v !== 'string') return { fields, error: `${key} must be a string` }
+    fields[key] = v.slice(0, 4000)
+  }
+  return { fields }
 }
 
 const agents = db.collection<Agent>('agents')
@@ -131,6 +208,14 @@ export async function createAgent(
     promptCaching?: boolean
     tools?: AgentTool[]
     builtinTools?: AgentBuiltinTool[]
+    preset?: AgentPreset
+    capabilities?: string[]
+    activationModes?: ActivationMode[]
+    inputContract?: string
+    outputContract?: string
+    callableAgentIds?: string[]
+    callableSectorIds?: string[]
+    allowedCallerAgentIds?: string[]
   } = {},
 ) {
   const agent: Omit<Agent, '_id'> = {
@@ -163,23 +248,33 @@ export async function createAgent(
     promptCaching: options.promptCaching ?? true,
     tools: options.tools ?? [],
     builtinTools: options.builtinTools ?? [],
+    preset: options.preset ?? 'custom',
+    capabilities: options.capabilities ?? [],
+    activationModes: options.activationModes ?? ['manual', 'channel'],
+    inputContract: options.inputContract ?? '',
+    outputContract: options.outputContract ?? '',
+    callableAgentIds: options.callableAgentIds ?? [],
+    callableSectorIds: options.callableSectorIds ?? [],
+    allowedCallerAgentIds: options.allowedCallerAgentIds ?? [],
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
   return { ...agent, _id: result.insertedId }
 }
 
-export function listAgents(ownerId: string, floorId?: ObjectId) {
+export async function listAgents(ownerId: string, floorId?: ObjectId): Promise<Agent[]> {
   const filter: Record<string, unknown> = { ownerId }
   if (floorId) filter.officeId = floorId
-  return agents.find(filter).sort({ createdAt: -1 }).toArray()
+  const docs = await agents.find(filter).sort({ createdAt: -1 }).toArray()
+  return docs.map(withAgentDefaults)
 }
 
-export function getAgentById(ownerId: string, agentId: ObjectId) {
-  return agents.findOne({ _id: agentId, ownerId })
+export async function getAgentById(ownerId: string, agentId: ObjectId): Promise<Agent | null> {
+  const doc = await agents.findOne({ _id: agentId, ownerId })
+  return doc ? withAgentDefaults(doc) : null
 }
 
-export function updateAgent(
+export async function updateAgent(
   ownerId: string,
   agentId: ObjectId,
   updates: {
@@ -210,13 +305,22 @@ export function updateAgent(
     promptCaching?: boolean
     tools?: AgentTool[]
     builtinTools?: AgentBuiltinTool[]
+    preset?: AgentPreset
+    capabilities?: string[]
+    activationModes?: ActivationMode[]
+    inputContract?: string
+    outputContract?: string
+    callableAgentIds?: string[]
+    callableSectorIds?: string[]
+    allowedCallerAgentIds?: string[]
   },
 ) {
-  return agents.findOneAndUpdate(
+  const doc = await agents.findOneAndUpdate(
     { _id: agentId, ownerId },
     { $set: updates },
     { returnDocument: 'after' },
   )
+  return doc ? withAgentDefaults(doc) : null
 }
 
 export async function deleteAgent(ownerId: string, agentId: ObjectId) {
