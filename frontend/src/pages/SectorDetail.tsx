@@ -7,6 +7,7 @@ import { DangerZone } from '../components/DangerZone'
 import { SectorForm } from '../components/SectorForm'
 import { SectorPlayground } from '../components/SectorPlayground'
 import { API_URL } from '../lib/api'
+import { SectorApiError, getSectorOverview } from '../lib/sectors'
 import { useActiveFloorId } from '../contexts/BuildingContext'
 import { floorAgent, floorSector, floorSectors } from '../lib/floorRoutes'
 import { SECTOR_SECTIONS } from '../lib/sectorSections'
@@ -203,29 +204,35 @@ export function SectorDetail() {
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [error, setError] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!sectorId) return
-    const res = await fetch(`${API_URL}/api/sectors/${sectorId}/overview`, { credentials: 'include' })
-    if (res.status === 404) {
-      setNotFound(true)
+    setLoading(true)
+    setError(false)
+    setNotFound(false)
+    try {
+      setOverview(await getSectorOverview(sectorId))
+    } catch (e) {
+      if (e instanceof SectorApiError && e.status === 404) setNotFound(true)
+      else setError(true)
+    } finally {
       setLoading(false)
-      return
     }
-    if (res.ok) setOverview(await res.json())
-    setLoading(false)
   }, [sectorId])
 
   useEffect(() => {
     load()
   }, [load])
 
-  // Agents are needed to name members and to edit the sector.
+  // Members + editing need agents of the SECTOR'S floor, not every floor (§3.8).
+  const sectorFloorId = overview?.sector.floorId ?? fid ?? null
   useEffect(() => {
+    if (!sectorFloorId) return
     let cancelled = false
-    fetch(`${API_URL}/api/agents`, { credentials: 'include' })
+    fetch(`${API_URL}/api/agents?floorId=${sectorFloorId}`, { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : []))
       .then((a) => {
         if (!cancelled) setAgents(a)
@@ -234,7 +241,7 @@ export function SectorDetail() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [sectorFloorId])
 
   async function handleDelete() {
     if (!overview || deleting) return
@@ -273,6 +280,13 @@ export function SectorDetail() {
     <AppLayout current="/setores" title={sector?.name ?? 'Setor'} titleExtra={titleExtra}>
       {loading ? (
         <p className="text-sm text-(--text-muted)">Carregando setor...</p>
+      ) : error ? (
+        <p className="text-sm" style={{ color: 'var(--coral-600, #d92d20)' }}>
+          Não foi possível carregar o setor.{' '}
+          <button onClick={() => void load()} style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--intent-brand,#2e5bff)', cursor: 'pointer', textDecoration: 'underline' }}>
+            Tentar novamente
+          </button>
+        </p>
       ) : notFound || !overview || !sector ? (
         <p className="text-sm text-(--text-muted)">Setor não encontrado.</p>
       ) : (
