@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
+import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentSummary, SectorSummary } from '../lib/types'
 import { buildOfficeLayout } from '../office/buildOfficeLayout'
-import { SectorThumbnail } from '../office/SectorThumbnail'
+import { SectorMapCrop } from '../office/SectorMapCrop'
 import { Button, Card, Dialog } from '../ui'
 import { SectorForm } from './SectorForm'
 
@@ -34,6 +35,8 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
       }),
     [agents, sectors],
   )
+  // Character faces for the seated sprites in each crop (same resolver as the map).
+  const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
 
   return (
     <div className="space-y-4">
@@ -60,9 +63,9 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
             return (
               <Link key={sector._id} to={`/setores/${sector._id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
                 <Card interactive accent={sector.color} padding="0" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                  {/* The "photo": a crop of the office map where this sector sits. */}
-                  <div style={{ height: 150, background: 'var(--surface-sunken)', borderBottom: '1px solid var(--border-subtle)' }}>
-                    <SectorThumbnail layout={layout} sectorId={sector._id} color={sector.color} />
+                  {/* The "photo": a real crop of the office map where this sector sits. */}
+                  <div style={{ height: 150, background: 'var(--map-floor, #f3ecdc)', borderBottom: '1px solid var(--border-subtle)' }}>
+                    <SectorMapCrop layout={layout} sectorId={sector._id} color={sector.color} chars={chars} />
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 16 }}>
                     <p className="truncate" style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800, color: 'var(--text-heading)' }}>
