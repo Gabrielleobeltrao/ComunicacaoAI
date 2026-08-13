@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
-import { archiveFloor, getFloor, getFloorActivity, getFloorMetrics, restoreFloor } from '../lib/floors'
+import { FloorSettingsDialog } from '../components/FloorSettingsDialog'
+import { getFloor, getFloorActivity, getFloorMetrics } from '../lib/floors'
 import type { Floor, FloorMetrics } from '../lib/floors'
 import { featureFlags } from '../featureFlags'
+import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { OfficeFloor } from '../office/OfficeFloor'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import { Button, MetricStat } from '../ui'
@@ -13,6 +15,8 @@ import { Button, MetricStat } from '../ui'
 // arrives with the office-live-status phase.
 export function FloorView() {
   const { floorId } = useParams<{ floorId: string }>()
+  const navigate = useNavigate()
+  const building = useOptionalBuildingContext()
   // Agents + sectors of THIS floor drive the visual map (the office simulation).
   const { agents, sectors } = useAgentsAndWidgets(floorId)
   const [floor, setFloor] = useState<Floor | null>(null)
@@ -20,7 +24,7 @@ export function FloorView() {
   const [metrics, setMetrics] = useState<FloorMetrics | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
-  const [busy, setBusy] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const load = useCallback(async () => {
     if (!floorId) return
@@ -42,24 +46,12 @@ export function FloorView() {
     void load()
   }, [load])
 
-  async function toggleArchive() {
-    if (!floor) return
-    setBusy(true)
-    try {
-      const updated = floor.status === 'archived' ? await restoreFloor(floor.id) : await archiveFloor(floor.id)
-      setFloor(updated)
-    } catch {
-      /* surfaced by the disabled state resetting */
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
     <AppLayout
       current="/dashboard"
       title={floor?.name ?? 'Andar'}
       subtitle={floor?.mission || 'Andar do prédio'}
+      actions={floor ? <Button variant="secondary" icon="settings" onClick={() => setSettingsOpen(true)}>Configurações do andar</Button> : undefined}
     >
       {loading && <p style={{ color: 'var(--text-muted)' }}>Carregando andar…</p>}
       {error && <p style={{ color: 'var(--intent-danger, #d92d20)' }}>Não foi possível carregar o andar.</p>}
@@ -70,12 +62,24 @@ export function FloorView() {
           <FloorSummary activity={activity} metrics={metrics} />
           {/* The visual office map is the centre of the floor view (scoped). */}
           <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
-          <div>
-            <Button variant={floor.status === 'archived' ? 'primary' : 'danger'} disabled={busy} onClick={toggleArchive}>
-              {floor.status === 'archived' ? 'Restaurar andar' : 'Arquivar andar'}
-            </Button>
-          </div>
         </div>
+      )}
+
+      {floor && (
+        <FloorSettingsDialog
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          floor={floor}
+          onSaved={(updated) => {
+            setFloor(updated)
+            void building?.reloadFloors()
+          }}
+          onDeleted={() => {
+            setSettingsOpen(false)
+            void building?.reloadFloors()
+            navigate('/dashboard')
+          }}
+        />
       )}
     </AppLayout>
   )

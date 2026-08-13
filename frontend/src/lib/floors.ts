@@ -56,6 +56,25 @@ export const patchFloor = (floorId: string, patch: Partial<Floor>) =>
   fetch(`${API_URL}/api/floors/${floorId}`, opts('PATCH', patch)).then(json<Floor>)
 export const archiveFloor = (floorId: string) => fetch(`${API_URL}/api/floors/${floorId}/archive`, opts('POST')).then(json<Floor>)
 export const restoreFloor = (floorId: string) => fetch(`${API_URL}/api/floors/${floorId}/restore`, opts('POST')).then(json<Floor>)
+
+// Surfaces the backend's guard message/code (LAST_FLOOR / FLOOR_NOT_EMPTY) instead
+// of a bare status, so the settings dialog can explain why a delete was refused.
+export class FloorApiError extends Error {
+  status: number
+  code?: string
+  constructor(status: number, message: string, code?: string) {
+    super(message)
+    this.name = 'FloorApiError'
+    this.status = status
+    this.code = code
+  }
+}
+export const deleteFloor = async (floorId: string): Promise<void> => {
+  const res = await fetch(`${API_URL}/api/floors/${floorId}`, opts('DELETE'))
+  if (res.ok || res.status === 204) return
+  const body = (await res.json().catch(() => ({}))) as { message?: string; code?: string }
+  throw new FloorApiError(res.status, body.message ?? `HTTP ${res.status}`, body.code)
+}
 export const getFloorActivity = (floorId: string) =>
   fetch(`${API_URL}/api/floors/${floorId}/activity`, opts('GET')).then(json<{ floorId: string; agentCount: number; sectorCount: number }>)
 

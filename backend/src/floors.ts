@@ -172,6 +172,26 @@ export async function setFloorStatus(ownerId: string, floorId: ObjectId, status:
   return getFloor(ownerId, floorId)
 }
 
+export type DeleteFloorResult =
+  | { ok: true }
+  | { ok: false; code: 'LAST_FLOOR' }
+  | { ok: false; code: 'FLOOR_NOT_EMPTY'; agentCount: number; sectorCount: number }
+
+// Deleting a floor is refused while anything still lives on it (its agents and
+// sectors reference officeId), and the last floor is never deletable. Returns
+// null when the floor doesn't exist for this owner (→ 404). No physical
+// migration — the office document is simply removed once it's empty.
+export async function deleteFloor(ownerId: string, floorId: ObjectId): Promise<DeleteFloorResult | null> {
+  const floor = await getFloor(ownerId, floorId)
+  if (!floor) return null
+  const totalFloors = await collection.countDocuments({ ownerId })
+  if (totalFloors <= 1) return { ok: false, code: 'LAST_FLOOR' }
+  const { agentCount, sectorCount } = await getFloorActivity(ownerId, floorId)
+  if (agentCount > 0 || sectorCount > 0) return { ok: false, code: 'FLOOR_NOT_EMPTY', agentCount, sectorCount }
+  await collection.deleteOne({ _id: floorId, ownerId })
+  return { ok: true }
+}
+
 // Lightweight activity summary for a floor. Run/automation counts arrive in later
 // phases; for now it reports the structural occupancy (agents + sectors).
 export async function getFloorActivity(ownerId: string, floorId: ObjectId): Promise<{

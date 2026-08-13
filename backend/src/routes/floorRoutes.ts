@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import type { Floor } from '../floors.js'
-import { createFloor, getFloor, getFloorActivity, listFloors, setFloorStatus, updateFloor } from '../floors.js'
+import { createFloor, deleteFloor, getFloor, getFloorActivity, listFloors, setFloorStatus, updateFloor } from '../floors.js'
 import { agentStatesForFloor, floorMetrics } from '../automations/metrics.js'
 import { fail, notFound, oid } from './http.js'
 
@@ -58,6 +58,22 @@ floorRouter.patch('/:floorId', async (req, res, next) => {
   } catch (error) {
     fail(res, error, next)
   }
+})
+
+floorRouter.delete('/:floorId', async (req, res) => {
+  const id = oid(req.params.floorId)
+  if (!id) return notFound(res)
+  const result = await deleteFloor(res.locals.userId, id)
+  if (result === null) return notFound(res)
+  if (!result.ok) {
+    const message =
+      result.code === 'LAST_FLOOR'
+        ? 'Não é possível excluir o único andar do prédio.'
+        : `Este andar tem ${result.agentCount} agente(s) e ${result.sectorCount} setor(es). Mova ou exclua antes de excluir o andar.`
+    res.status(409).json({ code: result.code, message })
+    return
+  }
+  res.status(204).end()
 })
 
 floorRouter.post('/:floorId/archive', async (req, res) => {
