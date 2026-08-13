@@ -1662,7 +1662,7 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   ])
 
   res.json({
-    agent,
+    agent: { ...agent, floorId: agent.officeId?.toString() ?? null },
     stats,
     linkedWidgets: widgets
       .filter((w) => w.agentId?.toString() === agentId)

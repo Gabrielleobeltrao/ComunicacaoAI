@@ -8,7 +8,8 @@ import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
 import type { CharacterResolver } from '../lib/agentAvatar'
 import { roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import { API_URL } from '../lib/api'
-import { useActiveFloorId } from '../contexts/BuildingContext'
+import { useActiveFloorId, useOptionalBuildingContext } from '../contexts/BuildingContext'
+import { AgentSectorAssignment } from '../components/AgentSectorAssignment'
 import { floorAgent, floorAgents } from '../lib/floorRoutes'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import type { AgentOverview, AgentSummary } from '../lib/types'
@@ -104,7 +105,7 @@ function ColleaguesCard({ agents, currentId, chars }: { agents: AgentSummary[]; 
 }
 
 function UsageCard({ overview }: { overview: AgentOverview }) {
-  const { linkedWidgets, linkedSectors, knowledgeCount } = overview
+  const { linkedWidgets, knowledgeCount } = overview
   return (
     <Card style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <span style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Onde é usado</span>
@@ -120,18 +121,6 @@ function UsageCard({ overview }: { overview: AgentOverview }) {
           </div>
         )}
       </div>
-      <div>
-        <p style={{ marginBottom: 6, fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>Setores</p>
-        {linkedSectors.length === 0 ? (
-          <p style={{ fontSize: 13, color: 'var(--text-faint)' }}>Não faz parte de nenhum setor.</p>
-        ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {linkedSectors.map((t) => (
-              <Tag key={t._id}>{t.name}</Tag>
-            ))}
-          </div>
-        )}
-      </div>
       <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
         <span style={{ fontWeight: 700, color: 'var(--text-heading)' }}>{knowledgeCount}</span> documento{knowledgeCount === 1 ? '' : 's'} na base
       </p>
@@ -142,6 +131,7 @@ function UsageCard({ overview }: { overview: AgentOverview }) {
 export function AgentDetail() {
   const { agentId, section } = useParams()
   const fid = useActiveFloorId()
+  const building = useOptionalBuildingContext()
   const navigate = useNavigate()
   const { agents } = useAgentsAndWidgets()
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
@@ -192,6 +182,8 @@ export function AgentDetail() {
   }
 
   const agent = overview?.agent
+  const agentFloorId = agent?.floorId ?? fid
+  const agentFloorName = building?.floors.find((f) => f.id === agentFloorId)?.name ?? 'Andar'
   const active = TAB_KEYS.includes(section ?? '') ? (section as string) : 'essencial'
   const accent = agent ? accentFor(agent._id) : 'var(--intent-brand)'
   const stats = overview?.stats
@@ -219,6 +211,7 @@ export function AgentDetail() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <ProfileCard agent={agent} stats={stats} accent={accent} portrait={chars.portrait(agent._id)} />
             <ColleaguesCard agents={agents} currentId={agent._id} chars={chars} />
+            <AgentSectorAssignment agentId={agent._id} floorId={agentFloorId} floorName={agentFloorName} onChanged={load} />
             <UsageCard overview={overview} />
           </div>
 
