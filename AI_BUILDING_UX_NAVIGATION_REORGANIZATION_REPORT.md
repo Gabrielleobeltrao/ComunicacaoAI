@@ -112,11 +112,12 @@ returns unchanged. See `docs/ux-nav/redirect-map.md`.
 
 Per user request, the separate *Visão geral* dashboard was merged into the floor
 home: there are no longer two "overview" destinations. `/dashboard` now resolves to
-the active floor; the floor home (`/floors/:id`) shows a compact **PRÉDIO** KPI strip
-(building-wide totals) above the **ESTE ANDAR** section (map + floor data). Floor
-switching is the sidebar building selector only — there are no floor-switch buttons on
-the page. The `Visão geral` nav item was removed; the building overview component
-survives only as the no-floor landing.
+the active floor; the floor home (`/floors/:id`) shows **only the floor's own data** —
+the scoped office map, status, agents/sectors and floor metrics. (An earlier revision
+also carried a building-wide KPI strip; per follow-up it was removed — the floor home
+is floor-only.) Floor switching is the sidebar building selector; there are no
+floor-switch buttons on the page. The `Visão geral` nav item was removed; the building
+overview component survives only as the no-floor landing.
 
 ## Follow-ups (out of scope, noted)
 

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
-import { archiveFloor, getBuildingOverview, getFloor, getFloorActivity, getFloorMetrics, restoreFloor } from '../lib/floors'
-import type { BuildingOverview, Floor, FloorMetrics } from '../lib/floors'
+import { archiveFloor, getFloor, getFloorActivity, getFloorMetrics, restoreFloor } from '../lib/floors'
+import type { Floor, FloorMetrics } from '../lib/floors'
 import { featureFlags } from '../featureFlags'
 import { OfficeFloor } from '../office/OfficeFloor'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
@@ -18,21 +18,9 @@ export function FloorView() {
   const [floor, setFloor] = useState<Floor | null>(null)
   const [activity, setActivity] = useState<{ agentCount: number; sectorCount: number } | null>(null)
   const [metrics, setMetrics] = useState<FloorMetrics | null>(null)
-  // Building-wide summary (the merged overview) shown compactly at the top.
-  const [overview, setOverview] = useState<BuildingOverview | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    let alive = true
-    getBuildingOverview()
-      .then((o) => alive && setOverview(o))
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [])
 
   const load = useCallback(async () => {
     if (!floorId) return
@@ -77,22 +65,6 @@ export function FloorView() {
       {error && <p style={{ color: 'var(--intent-danger, #d92d20)' }}>Não foi possível carregar o andar.</p>}
       {!loading && !error && floor && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Building-wide summary (merged overview). Switching floors is done from
-              the building selector in the sidebar — not from this page. */}
-          {overview && (
-            <div>
-              <SectionLabel>Prédio</SectionLabel>
-              <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))' }}>
-                <Tile label="Andares" value={overview.totals.floors} />
-                <Tile label="Agentes" value={overview.totals.agents} />
-                <Tile label="Setores" value={overview.totals.sectors} />
-                <Tile label="Automações ativas" value={overview.totals.automationsActive} />
-                <Tile label="Execuções ativas" value={overview.totals.runsActive} />
-                <Tile label="Falhas (24h)" value={overview.totals.failures24h} />
-              </div>
-            </div>
-          )}
-          <SectionLabel>Este andar</SectionLabel>
           {/* The visual office map is the centre of the floor view (scoped). */}
           <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
           <div style={panel}>
@@ -123,14 +95,6 @@ export function FloorView() {
         </div>
       )}
     </AppLayout>
-  )
-}
-
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <h2 style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>
-      {children}
-    </h2>
   )
 }
 

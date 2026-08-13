@@ -22,13 +22,13 @@ async function login(page: Page) {
   await page.waitForURL('**/dashboard', { timeout: 15_000 }).catch(() => {})
 }
 
-test('home is the floor page with the building summary merged in', async ({ page }) => {
+test('home resolves to the floor and shows only floor data', async ({ page }) => {
   await login(page)
-  // /dashboard resolves to the active floor (the overview was merged into it).
+  // /dashboard resolves to the active floor (the single overview is the floor home).
   await expect(page).toHaveURL(/\/floors\/[a-f0-9]{24}$/, { timeout: 10_000 })
-  // Building summary strip on top, the floor map below.
-  await expect(page.getByText('PRÉDIO')).toBeVisible()
-  await expect(page.getByText('ESTE ANDAR')).toBeVisible()
+  // Floor data is shown; building-wide summary is NOT on the floor page.
+  await expect(page.getByText('Status', { exact: true })).toBeVisible()
+  await expect(page.getByText('PRÉDIO')).toHaveCount(0)
 })
 
 test('the URL is the source of truth for the active floor', async ({ page }) => {
