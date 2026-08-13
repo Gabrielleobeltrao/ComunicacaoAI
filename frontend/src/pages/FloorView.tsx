@@ -6,8 +6,6 @@ import type { Floor, FloorMetrics } from '../lib/floors'
 import { featureFlags } from '../featureFlags'
 import { OfficeFloor } from '../office/OfficeFloor'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
-import { sectorReadiness } from '../lib/sectors'
-import type { SectorSummary } from '../lib/types'
 import { Button, MetricStat } from '../ui'
 
 // Floor detail. Gated by featureFlags.aiFloors. Shows the floor's mission,
@@ -69,7 +67,7 @@ export function FloorView() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* The most relevant floor numbers sit ABOVE the map, so a glance at the
               floor page reads its operational state before the visual. */}
-          <FloorSummary activity={activity} metrics={metrics} sectors={sectors} />
+          <FloorSummary activity={activity} metrics={metrics} />
           {/* The visual office map is the centre of the floor view (scoped). */}
           <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
           <div style={panel}>
@@ -99,18 +97,14 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 // The relevant-numbers header above the map: structural stats always, plus
-// automation health when that module is on. Sector readiness is derived from the
-// scoped sectors (same rule the sector badge uses), so "X prontos" agrees with it.
+// automation health when that module is on.
 function FloorSummary({
   activity,
   metrics,
-  sectors,
 }: {
   activity: { agentCount: number; sectorCount: number } | null
   metrics: FloorMetrics | null
-  sectors: SectorSummary[]
 }) {
-  const readySectors = sectors.filter((s) => sectorReadiness(s.mode, s.members) === 'ready').length
   const successPct = metrics?.successRate == null ? null : Math.round(metrics.successRate * 100)
   return (
     <section
@@ -118,13 +112,7 @@ function FloorSummary({
       style={{ ...panel, display: 'grid', gap: 18, gridTemplateColumns: 'repeat(auto-fit, minmax(116px, 1fr))', padding: 18 }}
     >
       <MetricStat icon="users-round" label="Agentes" value={activity?.agentCount ?? '—'} />
-      <MetricStat
-        icon="network"
-        label="Setores"
-        value={activity?.sectorCount ?? '—'}
-        delta={readySectors > 0 ? `${readySectors} pronto${readySectors === 1 ? '' : 's'}` : undefined}
-        deltaTone="success"
-      />
+      <MetricStat icon="network" label="Setores" value={activity?.sectorCount ?? '—'} />
       {metrics && (
         <>
           <MetricStat icon="loader" label="Rodando" value={metrics.running} />
