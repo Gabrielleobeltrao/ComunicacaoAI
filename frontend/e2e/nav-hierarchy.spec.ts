@@ -22,12 +22,13 @@ async function login(page: Page) {
   await page.waitForURL('**/dashboard', { timeout: 15_000 }).catch(() => {})
 }
 
-test('dashboard is the building overview (KPIs + floor cards), not the map', async ({ page }) => {
+test('home is the floor page with the building summary merged in', async ({ page }) => {
   await login(page)
-  await expect(page.getByText('OPERAÇÃO')).toBeVisible()
-  await expect(page.getByText('ANDARES', { exact: true })).toBeVisible()
-  // The office map must NOT be on the general dashboard anymore.
-  await expect(page.locator('canvas')).toHaveCount(0)
+  // /dashboard resolves to the active floor (the overview was merged into it).
+  await expect(page).toHaveURL(/\/floors\/[a-f0-9]{24}$/, { timeout: 10_000 })
+  // Building summary strip on top, the floor map below.
+  await expect(page.getByText('PRÉDIO')).toBeVisible()
+  await expect(page.getByText('ESTE ANDAR')).toBeVisible()
 })
 
 test('the URL is the source of truth for the active floor', async ({ page }) => {

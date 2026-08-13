@@ -2,12 +2,23 @@ import { useEffect, useState } from 'react'
 import { Navigate, useParams } from 'react-router'
 import { useBuildingContext } from '../contexts/BuildingContext'
 import { getAutomation } from '../lib/automations'
+import { Dashboard } from './Dashboard'
 
 // Legacy-route redirects (UX reorg §4.2). URLs stay working; they resolve to the
 // canonical floor-scoped route so bookmarks/links never break.
 
 export function BuildingToDashboard() {
   return <Navigate to="/dashboard" replace />
+}
+
+// /dashboard is no longer a page of its own: the building overview was merged into
+// the floor home. Send it to the active floor; only when there is no floor yet do
+// we fall back to the building landing (KPIs + create-your-first-floor).
+export function DashboardHome() {
+  const { activeFloorId, loading } = useBuildingContext()
+  if (loading) return null
+  if (activeFloorId) return <Navigate to={`/floors/${activeFloorId}`} replace />
+  return <Dashboard />
 }
 
 // A global module route (/automations, /agents, /setores, /runs) → the same

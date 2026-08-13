@@ -77,12 +77,12 @@ the three Vendas agents — no cross-floor leakage.
 
 | File | Shows |
 |---|---|
-| `desktop-01-dashboard.png` | Building dashboard: OPERAÇÃO KPIs, ANDARES cards, COMUNICAÇÃO |
-| `desktop-01b-sidebar-hover.png` | Expanded sidebar: switcher + GERAL / ANDAR · VENDAS / COMUNICAÇÃO |
-| `desktop-02-floor-map.png` | Floor overview: the scoped office map + status/metrics tiles |
+| `desktop-05-merged-home.png` | Floor home: **PRÉDIO** KPI strip + **ESTE ANDAR** scoped office map (the merged overview; no floor-switch buttons on the page) |
+| `desktop-01b-sidebar-hover.png` | Expanded sidebar: switcher + ANDAR · VENDAS / COMUNICAÇÃO (no separate "Visão geral") |
+| `desktop-02-floor-map.png` | The scoped office map + status/metrics tiles |
 | `desktop-03-floor-agents.png` | Agents scoped to Vendas (3) + live status badges |
 | `desktop-04-floor-automations.png` | Automations scoped to the floor |
-| `mobile-01-dashboard.png` | Mobile dashboard + bottom nav (5 items) |
+| `mobile-01-dashboard.png` | Mobile floor home: PRÉDIO KPIs + map, bottom nav (4 items) |
 | `mobile-02-drawer.png` | "Mais" drawer: full switcher + grouped nav + account footer |
 | `mobile-03-floor-map.png` | Floor map on mobile |
 
@@ -107,6 +107,16 @@ deploy, no production change, no push to `main`.
 `frontend/.env`: `VITE_AI_BUILDING_ENABLED=true` (already set locally), then restart
 vite (flags are build-time). Rollback: set it false / unset and rebuild — the V1 app
 returns unchanged. See `docs/ux-nav/redirect-map.md`.
+
+## Post-plan change — overview merged into the floor home
+
+Per user request, the separate *Visão geral* dashboard was merged into the floor
+home: there are no longer two "overview" destinations. `/dashboard` now resolves to
+the active floor; the floor home (`/floors/:id`) shows a compact **PRÉDIO** KPI strip
+(building-wide totals) above the **ESTE ANDAR** section (map + floor data). Floor
+switching is the sidebar building selector only — there are no floor-switch buttons on
+the page. The `Visão geral` nav item was removed; the building overview component
+survives only as the no-floor landing.
 
 ## Follow-ups (out of scope, noted)
 

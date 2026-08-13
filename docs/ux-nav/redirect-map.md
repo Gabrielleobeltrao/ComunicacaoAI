@@ -10,8 +10,8 @@ into the canonical route.
 
 | Route | Page | Scope |
 |---|---|---|
-| `/dashboard` | Building overview (KPIs + floor cards) | building |
-| `/floors/:floorId` | Floor overview (visual office map) | floor |
+| `/dashboard` | **Resolver** → the active floor (`/floors/:active`). The building overview was merged into the floor home; only when the account has no floor yet does it render the building landing (KPIs + create-first-floor). | building |
+| `/floors/:floorId` | **Floor home**: building summary strip (KPIs) + the floor's visual office map + floor data. This is the app home. | floor |
 | `/floors/:floorId/agents` | Agents of the floor | floor |
 | `/floors/:floorId/agents/:agentId[/:section]` | Agent detail | floor |
 | `/floors/:floorId/sectors` | Sectors of the floor | floor |

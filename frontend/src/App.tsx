@@ -3,7 +3,7 @@ import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
-import { AutomationDetailRedirect, BuildingToDashboard, LegacyModuleRedirect } from './pages/redirects'
+import { AutomationDetailRedirect, BuildingToDashboard, DashboardHome, LegacyModuleRedirect } from './pages/redirects'
 import { FloorView } from './pages/FloorView'
 import { Automations } from './pages/Automations'
 import { AutomationEditor } from './pages/AutomationEditor'
@@ -37,8 +37,10 @@ function App() {
       <Route path="/register" element={<Register />} />
       <Route path="/widget/:publicKey" element={<Widget />} />
 
-      {/* The single building overview */}
-      <Route path="/dashboard" element={<P><Dashboard /></P>} />
+      {/* Home. In V2 the building overview is merged into the floor home, so
+          /dashboard resolves to the active floor (or the building landing when
+          there is no floor yet). */}
+      <Route path="/dashboard" element={<P>{v2 ? <DashboardHome /> : <Dashboard />}</P>} />
 
       {v2 ? (
         <>

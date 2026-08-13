@@ -13,6 +13,9 @@ export interface NavItemDef {
   path: (floorId: string | null) => string
   // Route prefixes that keep this item active (details keep the parent active).
   activePrefixes: (floorId: string | null) => string[]
+  // Active only on an exact path match (the floor home must not stay lit on its
+  // own sub-pages like /agents).
+  exact?: boolean
   mobilePrimary?: boolean
   featureFlag?: keyof FeatureFlags
 }
@@ -20,8 +23,9 @@ export interface NavItemDef {
 const floorPath = (floorId: string | null, suffix: string, legacy: string) => (floorId ? `/floors/${floorId}${suffix}` : legacy)
 
 export const NAV_V2: NavItemDef[] = [
-  { key: 'overview', label: 'Visão geral', icon: 'layout-dashboard', scope: 'general', path: () => '/dashboard', activePrefixes: () => ['/dashboard'], mobilePrimary: true },
-  { key: 'floor', label: 'Visão do andar', icon: 'building-2', scope: 'floor', path: (f) => floorPath(f, '', '/dashboard'), activePrefixes: (f) => (f ? [`/floors/${f}`] : []), mobilePrimary: true },
+  // The floor home is also the building home (the general overview was merged into
+  // it) — exact match so it doesn't stay active on the floor's sub-pages.
+  { key: 'floor', label: 'Visão do andar', icon: 'building-2', scope: 'floor', path: (f) => floorPath(f, '', '/dashboard'), activePrefixes: (f) => (f ? [`/floors/${f}`] : ['/dashboard']), exact: true, mobilePrimary: true },
   { key: 'automations', label: 'Automações', icon: 'workflow', scope: 'floor', path: (f) => floorPath(f, '/automations', '/automations'), activePrefixes: (f) => [floorPath(f, '/automations', '/automations')], mobilePrimary: true, featureFlag: 'aiAutomations' },
   { key: 'agents', label: 'Agentes', icon: 'users-round', scope: 'floor', path: (f) => floorPath(f, '/agents', '/agents'), activePrefixes: (f) => [floorPath(f, '/agents', '/agents')], mobilePrimary: true },
   { key: 'sectors', label: 'Setores', icon: 'network', scope: 'floor', path: (f) => floorPath(f, '/sectors', '/setores'), activePrefixes: (f) => [floorPath(f, '/sectors', '/setores')] },
@@ -42,5 +46,5 @@ export const SCOPE_LABEL: Record<NavScope, string> = {
 
 // True when the current pathname matches one of an item's active prefixes.
 export function isNavActive(item: NavItemDef, floorId: string | null, pathname: string): boolean {
-  return item.activePrefixes(floorId).some((p) => pathname === p || pathname.startsWith(p + '/'))
+  return item.activePrefixes(floorId).some((p) => (item.exact ? pathname === p : pathname === p || pathname.startsWith(p + '/')))
 }

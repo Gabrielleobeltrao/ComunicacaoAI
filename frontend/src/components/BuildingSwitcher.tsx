@@ -68,7 +68,7 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
       {open && (
         <div role="menu" style={popover}>
           <button role="menuitem" style={menuItem} onClick={go(() => navigate('/dashboard'))}>
-            Visão geral
+            Início
           </button>
           <div style={sectionLabel}>ANDAR ATUAL</div>
           {activeFloor ? (
