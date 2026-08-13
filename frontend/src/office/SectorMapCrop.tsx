@@ -82,13 +82,27 @@ export function SectorMapCrop({ layout, decor, sectorId, color, chars }: { layou
     transformOrigin: 'center',
     width: `calc(var(--tile) * ${room.w + PAD * 2})`,
     height: `calc(var(--tile) * ${room.h + PAD * 2})`,
-    backgroundImage:
-      'repeating-linear-gradient(90deg, transparent 0 calc(var(--tile) - 1px), var(--map-floor-line) calc(var(--tile) - 1px) var(--tile)), repeating-linear-gradient(0deg, transparent 0 calc(var(--tile) - 1px), var(--map-floor-line) calc(var(--tile) - 1px) var(--tile))',
   }
   ;(stage as Record<string, string>)['--tile'] = `${TILE}px`
 
+  // The floor grid fills the WHOLE card (like the map ground), at the on-screen
+  // tile size (TILE·scale); the room's tinted fill covers it inside the room.
+  const box: CSSProperties = {
+    position: 'relative',
+    width: '100%',
+    height: '100%',
+    overflow: 'hidden',
+    background: 'var(--map-floor)',
+    backgroundImage:
+      scale > 0
+        ? 'repeating-linear-gradient(90deg, transparent 0 calc(var(--tile) - 1px), var(--map-floor-line) calc(var(--tile) - 1px) var(--tile)), repeating-linear-gradient(0deg, transparent 0 calc(var(--tile) - 1px), var(--map-floor-line) calc(var(--tile) - 1px) var(--tile))'
+        : undefined,
+    pointerEvents: 'none',
+  }
+  ;(box as Record<string, string>)['--tile'] = `${TILE * scale}px`
+
   return (
-    <div ref={boxRef} style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', background: 'var(--map-floor)', pointerEvents: 'none' }}>
+    <div ref={boxRef} style={box}>
       <div style={stage}>
         {/* Room content, offset by PAD so the shape has floor around it */}
         <div style={{ position: 'absolute', left: `calc(var(--tile) * ${PAD})`, top: `calc(var(--tile) * ${PAD})`, width: `calc(var(--tile) * ${room.w})`, height: `calc(var(--tile) * ${room.h})` }}>
