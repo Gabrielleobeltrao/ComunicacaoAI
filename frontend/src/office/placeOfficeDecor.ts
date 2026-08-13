@@ -61,8 +61,24 @@ const WALL_DECOR: Record<string, string[]> = {
   decoration: ['quadro-cavalete-1.2x1.5', 'relogio-parede-1x1.4'],
 }
 
-const LAYOUT_VERSION = 'office-layout-v1'
-const MAX_PER_SECTOR = 3 // hard ceiling so rooms never read as cluttered
+const LAYOUT_VERSION = 'office-layout-v2' // v2: interior spots + companion vignettes
+const MAX_PER_SECTOR = 4 // anchor objects per sector (companions add to this)
+
+// Mini-presets: after an anchor object lands, try to set a companion right next to
+// it so the room reads as arranged vignettes (a plant beside a bench) rather than
+// scattered props. Keyed by object family → companion families, in preference order.
+// Keys and values are placeable catalog ids (OFFICE_OBJECT_CATALOG), so both the
+// anchor and its companion are things the decorator actually places.
+const COMPANIONS: Record<string, string[]> = {
+  poltrona: ['luminaria', 'planta-grande', 'samambaia'],
+  puff: ['planta', 'samambaia'],
+  estante: ['planta', 'pilha-livros'],
+  'estante-alta': ['planta'],
+  arquivo: ['pilha-livros', 'planta'],
+  bebedouro: ['planta', 'vaso'],
+  prateleira: ['planta'],
+  gaveteiro: ['pilha-livros'],
+}
 
 // --- grid working copy helpers -------------------------------------------------
 
@@ -283,6 +299,23 @@ export function placeOfficeDecor(layout: BuiltOfficeLayout, grid: NavGrid): Offi
     const pool = (eligible.length ? eligible : OFFICE_OBJECT_CATALOG.filter((d) => d.allowedZones.includes(zone))).slice()
     const ordered = [...spots].sort((a, b) => mulberry32(hash32(`${seed}:${a.x},${a.y}`))() - mulberry32(hash32(`${seed}:${b.x},${b.y}`))())
     const perCount: Record<string, number> = {}
+    // ~65% of the time, drop a small companion right beside a just-placed anchor so
+    // it reads as an arranged vignette (a plant next to a bookshelf), not clutter.
+    const tryCompanion = (anchor: OfficeObjectDefinition, ax: number, ay: number) => {
+      const fams = COMPANIONS[anchor.id]
+      if (!fams || rng() > 0.65) return
+      for (const fam of fams) {
+        const cdef = OFFICE_OBJECT_CATALOG.find((d) => d.id === fam)
+        if (!cdef) continue
+        const near: [number, number][] = [
+          [ax + anchor.width + 0.15, ay + anchor.height - cdef.height],
+          [ax - cdef.width - 0.15, ay + anchor.height - cdef.height],
+          [ax + anchor.width - cdef.width, ay + anchor.height + 0.15],
+          [ax, ay - cdef.height - 0.15],
+        ]
+        for (const [cx, cy] of near) if (tryPlace(key, cdef, cx, cy, cdef.id)) return
+      }
+    }
     let placed = 0
     let guard = 0
     while (placed < target && pool.length && guard++ < 40) {
@@ -308,6 +341,7 @@ export function placeOfficeDecor(layout: BuiltOfficeLayout, grid: NavGrid): Offi
             perCount[def.id] = (perCount[def.id] ?? 0) + 1
             placed++
             done = true
+            tryCompanion(def, ax, ay)
             break
           }
         }
@@ -317,11 +351,22 @@ export function placeOfficeDecor(layout: BuiltOfficeLayout, grid: NavGrid): Offi
     }
   }
 
-  // Themed decoration hugging each sector's corridor-facing walls.
+  // Themed decoration: the sector's corridor-facing walls PLUS its own (now bigger)
+  // interior floor, so the extra room space fills with props instead of reading
+  // empty. tryPlace still guards seats/desks/routes, so nothing crowds an agent.
   for (const room of layout.rooms) {
     if (room.kind !== 'sector') continue
-    const spots = openCandidatesNear(room)
-    const target = Math.min(MAX_PER_SECTOR, Math.max(1, Math.floor(spots.length / 6)))
+    const bi = Math.round(room.x / grid.res)
+    const bj = Math.round(room.y / grid.res)
+    const interior: OfficePoint[] = []
+    for (const c of room.cells) {
+      const [ci, cj] = c.split(',').map(Number)
+      const gi = bi + ci
+      const gj = bj + cj
+      if (isWalkable(grid, gi, gj)) interior.push({ x: (gi + 0.5) * grid.res, y: (gj + 0.5) * grid.res })
+    }
+    const spots = [...openCandidatesNear(room), ...interior]
+    const target = Math.min(MAX_PER_SECTOR, Math.max(2, Math.floor(spots.length / 7)))
     placeFromPool(room.key, `${LAYOUT_VERSION}:${room.key}:${CATALOG_VERSION}`, themeForSector(room.name), 'room', spots, target)
   }
 

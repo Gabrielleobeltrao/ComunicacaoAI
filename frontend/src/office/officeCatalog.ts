@@ -91,7 +91,7 @@ export function themeForSector(name: string): OfficeCategory[] {
 
 // Existing amenity/furniture arts that make good interaction destinations, so the
 // ready-made presets (lounge, reunião, cozinha…) also draw agents to them.
-const INTERACTIVE_FAMILIES = new Set(['sofa', 'poltrona', 'poltrona-costas', 'puff', 'banco-espera', 'mesa-reuniao', 'mesa-reuniao-grande', 'mesa-redonda', 'mesa-cafe', 'mesa-centro', 'quadro-cavalete', 'lousa', 'flipchart', 'mural-recados', 'planta-grande', 'samambaia', 'bebedouro', 'galao-agua'])
+const INTERACTIVE_FAMILIES = new Set(['sofa', 'poltrona', 'poltrona-costas', 'puff', 'banco-espera', 'banqueta', 'mesa-reuniao', 'mesa-reuniao-grande', 'mesa-redonda', 'mesa-cafe', 'mesa-centro', 'mesa-alta', 'bancada-copa', 'geladeira', 'quadro-cavalete', 'lousa', 'flipchart', 'mural-recados', 'planta-grande', 'samambaia', 'bebedouro', 'galao-agua'])
 
 export function familyOf(art: string): string {
   return art.replace(/-\d.*$/, '') || art
