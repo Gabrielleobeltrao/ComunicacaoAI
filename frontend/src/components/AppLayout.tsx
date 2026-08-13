@@ -75,6 +75,9 @@ export function AppLayout({ current, title, titleExtra, subtitle, actions, child
               {titleExtra ? <div className="hidden shrink-0 items-center gap-x-2 sm:flex">{titleExtra}</div> : null}
             </div>
             {subtitle ? <span className="truncate" style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{subtitle}</span> : null}
+            {/* Essential badges move below the title on phones so they aren't lost
+                to the topbar's sm:hidden (plan §9.7). */}
+            {titleExtra ? <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 sm:hidden">{titleExtra}</div> : null}
           </div>
 
           {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}

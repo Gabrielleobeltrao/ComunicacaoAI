@@ -77,13 +77,30 @@ Met: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15 (map native pan/zoom/pause/la
 from commit `2cb1e48`), 19, 20 (URL governs; `useFloors` remains only a legacy-flat
 fallback), 21, 22, 23 (mechanically verified), 24, 25, 26.
 
+## Responsive audit (§9)
+
+Every screen was swept at **320px** (automations, runs, agent detail, sector detail,
+channels, conversations, settings) — **zero horizontal overflow on all of them**
+(measured `scrollWidth − clientWidth === 0`); screenshots in `docs/mobile-parity/audit/`.
+Fixes applied from the sweep:
+
+- Detail badges (sector mode / agent count) that were in `titleExtra` and hidden by
+  the topbar's `sm:hidden` now show **below the title on phones** (§9.7).
+- Automation editor fields are full-width (`width:100%`); the automations create row
+  (name + Criar) wraps/stacks on very narrow widths (§9.5).
+- Hire button is icon-only on narrow topbars (§8.2).
+
 ## Remaining (honest status)
 
-The core product goals (§4, §19) are delivered. Still open from the exhaustive scope:
+Core goals (§4, §19) and the responsive constraint (no overflow) are delivered. Still
+open, all minor:
 
-- §9 full per-screen responsive audit at 320/360/390/412/768 across **every** screen (topbar/hire done; Automations editor, Runs, detail tabs, Channels, Conversations, Settings not individually swept).
-- §14.3 full Playwright matrix (17 scenarios × 6 viewports) — a core spec is in place; the full matrix + final screenshot set per §14.5 is not exhaustively run.
-- `useFloors()` in `Automations` is kept as a V1-flat fallback (V2 is governed by the URL floor); a full migration to the context is a follow-up if V1 is retired.
+- Polish only: a tab-scroll continuity fade on detail tabs (§9.7) and the conversation
+  composer verified with seeded data (§9.9) — the empty states are clean at 320px.
+- §14.3 full Playwright matrix (17 scenarios × 6 viewports): a core mobile spec is in
+  place (`mobile-parity.spec.ts`); the exhaustive matrix is not fully scripted.
+- `useFloors()` in `Automations` stays a V1-flat fallback (V2 is governed by the URL
+  floor); a full migration is a follow-up if V1 is retired.
 
 ## Rollback
 

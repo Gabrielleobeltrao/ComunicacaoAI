@@ -201,4 +201,4 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 const panel: React.CSSProperties = { display: 'flex', flexDirection: 'column', padding: 14, borderRadius: 12, border: '1px solid var(--border-1,#e4e7ec)', background: 'var(--paper-0,#fff)' }
-const input: React.CSSProperties = { padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border-1,#d0d5dd)', font: 'inherit', background: 'var(--paper-0,#fff)', color: 'inherit' }
+const input: React.CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border-1,#d0d5dd)', font: 'inherit', background: 'var(--paper-0,#fff)', color: 'inherit' }

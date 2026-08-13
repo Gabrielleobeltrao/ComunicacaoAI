@@ -63,13 +63,13 @@ export function Automations() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {!urlFloorId && floors.length > 0 && <Elevator floors={floors} activeFloorId={activeFloorId} onSelect={selectFloor} />}
 
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Nome da nova automação"
             maxLength={160}
-            style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border-1, #d0d5dd)', font: 'inherit', background: 'var(--paper-0,#fff)', color: 'inherit' }}
+            style={{ flex: '1 1 160px', minWidth: 0, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--border-1, #d0d5dd)', font: 'inherit', background: 'var(--paper-0,#fff)', color: 'inherit' }}
           />
           <Button icon="plus" disabled={creating || !name.trim() || !floorId} onClick={create}>
             Criar
