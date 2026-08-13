@@ -407,6 +407,42 @@ export function placeOfficeDecor(layout: BuiltOfficeLayout, grid: NavGrid): Offi
     interactionPoints.push({ id: `int:amen:${it.roomKey}:${it.index}`, point: ap.point, facing: ap.facing, categories: categoriesForFamily(it.art), capacity: 1 })
   }
 
+  // Robustness: the running app navigates the grid REBUILT with decor (its doors are
+  // re-carved), so a decor obstacle must never sever a seat→door route that worked
+  // without it. Drop any offender (rare) so an agent is never boxed in at its desk.
+  {
+    const baseReachClean = flood(new Uint8Array(grid.blocked), grid, anchor)
+    const mustReach = layout.seats.filter((s) => {
+      const c = cellOfPoint(grid, s.exitPoint)
+      return inBounds(grid, c.i, c.j) && baseReachClean[cellIndex(grid, c.i, c.j)] === 1
+    })
+    for (let guard = 0; guard <= obstacles.length; guard++) {
+      const mg = buildNavigationGrid({ ...layout, obstacles: [...layout.obstacles, ...obstacles] })
+      const a = corridorAnchor(mg)
+      const rr = a == null ? null : flood(new Uint8Array(mg.blocked), mg, a)
+      const broken = mustReach.find((s) => {
+        const c = cellOfPoint(mg, s.exitPoint)
+        return !(rr && inBounds(mg, c.i, c.j) && rr[cellIndex(mg, c.i, c.j)] === 1)
+      })
+      if (!broken) break
+      // Remove the decor obstacle nearest the boxed-in seat + its rendered item.
+      let bi = -1
+      let bd = Infinity
+      for (let i = 0; i < obstacles.length; i++) {
+        const o = obstacles[i].rect
+        const d = Math.hypot(o.x + o.width / 2 - broken.exitPoint.x, o.y + o.height / 2 - broken.exitPoint.y)
+        if (d < bd) {
+          bd = d
+          bi = i
+        }
+      }
+      if (bi < 0) break
+      const rm = obstacles.splice(bi, 1)[0].rect
+      const ii = items.findIndex((it) => it.x === rm.x && it.y === rm.y && it.w === rm.width && it.h === rm.height)
+      if (ii >= 0) items.splice(ii, 1)
+    }
+  }
+
   // Final safety: validate every interaction point against the *merged* grid the
   // simulation actually navigates (walls + desks + this decoration). Drop any that
   // are not walkable/reachable there, so a point never sits inside an obstacle or

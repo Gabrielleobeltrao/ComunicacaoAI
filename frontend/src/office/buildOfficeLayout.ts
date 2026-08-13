@@ -47,21 +47,25 @@ const DESK_10: DeskType = { art: 'mesa-10-7.5x3', w: 7.5, h: 3, seats: [far(58),
 // always shows a desk sized to its team and COMBINES desks for the in-between
 // counts (3,5,7,8,9) instead of leaving empty seats. Sectors cap at 10 members, so
 // one desk usually suffices; k=1 randomly faces front or back for variety.
-// Real teams aren't packed to the last seat: some desks sit empty (people out,
-// growing team). Occasionally size a sector's desks for a FEW more seats than it
-// has members, so the map shows organic empty workstations. Deterministic per
-// sector; capped so a desk never exceeds the 10-seat max.
+// Real teams aren't packed to the last seat: most desks have a spare spot or two
+// (people out, a growing team). Size a sector's desks for a varied number of extra
+// seats than it has members, so the map shows organic empty workstations instead of
+// matching the headcount exactly. Deterministic per sector; capped at the 10 max.
 function deskSlack(k: number, rng: () => number): number {
   if (k <= 0) return 0
   const r = rng()
-  const s = r < 0.5 ? 0 : r < 0.82 ? 1 : 2
+  const s = r < 0.32 ? 0 : r < 0.7 ? 1 : 2 // ~68% get 1-2 empty seats
   return Math.max(0, Math.min(s, 10 - k))
 }
 
 export function planDesks(k: number, rng: () => number): DeskType[] {
   const out: DeskType[] = []
   let rem = k
-  for (const d of [DESK_10, DESK_6, DESK_4]) {
+  // Per-sector desk "style" so two same-size teams don't get the identical layout:
+  // sometimes one big shared bench, sometimes a mix, sometimes several small pods.
+  const style = rng()
+  const ladder = style < 0.4 ? [DESK_10, DESK_6, DESK_4] : style < 0.75 ? [DESK_6, DESK_4] : [DESK_4]
+  for (const d of ladder) {
     while (rem >= d.seats.length) {
       out.push(d)
       rem -= d.seats.length
