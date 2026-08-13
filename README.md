@@ -115,6 +115,15 @@ Requirements: Node.js 22+, npm, and a MongoDB Atlas cluster (a free tier works, 
    - Frontend: http://localhost:5173
    - Backend: http://localhost:4000
 
+## Navigation (building & floors)
+
+The app organizes work as a hierarchy — **Prédio → Andar → módulos** — with the URL as
+the source of truth for the active floor. Set `VITE_AI_BUILDING_ENABLED=true` in
+`frontend/.env` (flags are build-time; restart Vite). `/dashboard` is the building
+overview (KPIs + floor cards); each floor at `/floors/:floorId` owns its visual office
+map plus its agents, sectors, automations and runs, scoped by floor. Off/unset → the
+original flat app (also the rollback). See [`docs/ux-nav/redirect-map.md`](docs/ux-nav/redirect-map.md).
+
 ## Scripts
 
 Run from the repo root:
