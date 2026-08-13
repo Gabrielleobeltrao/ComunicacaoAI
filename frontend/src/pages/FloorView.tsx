@@ -70,12 +70,6 @@ export function FloorView() {
           <FloorSummary activity={activity} metrics={metrics} />
           {/* The visual office map is the centre of the floor view (scoped). */}
           <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
-          <div style={panel}>
-            <Row label="Status" value={floor.status === 'archived' ? 'Arquivado' : 'Ativo'} />
-            <Row label="Fuso horário" value={floor.timezone} />
-            <Row label="Idioma" value={floor.defaultLanguage} />
-            {floor.description && <Row label="Descrição" value={floor.description} />}
-          </div>
           <div>
             <Button variant={floor.status === 'archived' ? 'primary' : 'danger'} disabled={busy} onClick={toggleArchive}>
               {floor.status === 'archived' ? 'Restaurar andar' : 'Arquivar andar'}
@@ -84,15 +78,6 @@ export function FloorView() {
         </div>
       )}
     </AppLayout>
-  )
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '4px 0' }}>
-      <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{label}</span>
-      <span style={{ fontSize: 13, textAlign: 'right' }}>{value}</span>
-    </div>
   )
 }
 
