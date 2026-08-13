@@ -267,6 +267,20 @@ export function createModels(layout: BuiltOfficeLayout, modeFor: (id: string) =>
   return out
 }
 
+// Deskless (loose) agents have no desk to return to — make a common area their base,
+// so they hang out in the kitchen/lounge and any floor with a loose agent visibly has
+// someone using its presets. Deterministic per agent. Only the running app calls this
+// (the sim unit tests don't), so their fixed scenarios are unaffected.
+export function assignLooseHomes(ctx: SimContext, models: Map<string, AgentModel>): void {
+  if (!ctx.commons.length) return
+  for (const m of models.values()) {
+    if (m.kind !== 'loose') continue
+    const p = ctx.commons[hash32(m.id) % ctx.commons.length]
+    m.baseRef = refOf(p)
+    m.pos = { ...m.baseRef }
+  }
+}
+
 // Nearest walkable cell that is also inside the envelope, searched outward.
 function nearestEnvelopeCell(ctx: SimContext, p: OfficePoint, maxRings = 6): GridCell | null {
   const c = cellOfPoint(ctx.grid, p)
@@ -452,10 +466,10 @@ function chooseDestination(ctx: SimContext, m: AgentModel): OfficePoint | null {
     }
     return tryWaypoint(ctx, m)
   }
-  // deskless agents spend a lot of time in the common areas, then interactions/corridor.
+  // deskless agents mostly hang out in the common areas, then interactions/corridor.
   const d = m.rng()
-  if (ctx.commons.length && d < 0.4) return ctx.commons[Math.floor(m.rng() * ctx.commons.length)]
-  if (ctx.interactions.length && d < 0.68) {
+  if (ctx.commons.length && d < 0.6) return ctx.commons[Math.floor(m.rng() * ctx.commons.length)]
+  if (ctx.interactions.length && d < 0.82) {
     const p = tryInteraction(ctx, m)
     if (p) return p
   }
@@ -508,7 +522,7 @@ function arrive(ctx: SimContext, m: AgentModel) {
   // Linger longer in a common area (a real coffee/lunch break) so the presets read
   // as used, not just passed through.
   const base = rand(m.rng, OFFICE_TIMING.destinationPause)
-  m.timer = m.destInteractionId?.startsWith('int:amen:') ? base * 2.4 : base
+  m.timer = m.destInteractionId?.startsWith('int:amen:') ? base * 3.2 : base
 }
 function finishReturn(ctx: SimContext, m: AgentModel) {
   releaseNext(ctx, m)

@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef } from 'react'
 import type { BuiltOfficeLayout } from './buildOfficeLayout'
 import type { NavGrid } from './buildNavigationGrid'
-import { REF_DY, createContext, createModels, recallComplete, setRecall, settleStartPositions, stepAgent, tickConversations, warmStart } from './officeSimCore'
+import { REF_DY, assignLooseHomes, createContext, createModels, recallComplete, setRecall, settleStartPositions, stepAgent, tickConversations, warmStart } from './officeSimCore'
 import type { AgentModel, SimContext } from './officeSimCore'
 import type { ActivityEnvelope } from './buildActivityEnvelope'
 import { OFFICE_FEATURES, TIME_SCALE, WARM_START_MS } from './officeConfig'
@@ -48,6 +48,7 @@ export function useOfficeSimulation(layout: BuiltOfficeLayout, grid: NavGrid, op
   const buildSim = () => {
     const m = createModels(layout, optsRef.current.modeFor)
     const ctx = createContext(layout, grid, m.size, optsRef.current.interactions ?? [], optsRef.current.envelope)
+    assignLooseHomes(ctx, m) // deskless agents live in the common areas
     models.current = m
     ctxRef.current = ctx
     // Warm-start: pre-roll the sim so it opens already alive; the render loop then

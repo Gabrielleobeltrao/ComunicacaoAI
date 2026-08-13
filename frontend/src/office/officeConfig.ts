@@ -54,7 +54,7 @@ export const FOOT_RADIUS = 0.55 // tiles — obstacles are inflated by this
 
 // Simulation timing (milliseconds unless noted). Ranges are [min, max].
 export const OFFICE_TIMING = {
-  seatedPause: [20000, 70000] as [number, number], // idle at desk before standing
+  seatedPause: [14000, 46000] as [number, number], // idle at desk before standing (livelier office)
   destinationPause: [4000, 14000] as [number, number], // pause at a destination
   midwayPauseChance: 0.12, // rare pause while walking
   midwayPause: [1000, 4000] as [number, number],
