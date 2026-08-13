@@ -56,7 +56,9 @@ export function Sidebar({ current }: { current: string }) {
               const label = scope === 'floor' && bctx.activeFloor ? `ANDAR · ${bctx.activeFloor.name.toUpperCase()}` : SCOPE_LABEL[scope]
               return (
                 <div key={scope} className="flex flex-col gap-1">
-                  <span className={LABEL} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-muted)', paddingLeft: 10, paddingTop: 4 }}>
+                  {/* Hidden entirely (not just zero-width) in the slim rail so it
+                      leaves no phantom row between icon groups; revealed on hover. */}
+                  <span className="hidden truncate group-hover:block" style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-muted)', paddingLeft: 10, paddingTop: 4 }}>
                     {label}
                   </span>
                   {items.map((item) => {
