@@ -92,8 +92,10 @@ export function Agents() {
       title="Agentes"
       subtitle="Seu time de agentes de IA"
       actions={
-        <Button icon="plus" onClick={() => setIsCreating(true)}>
-          Contratar agente
+        <Button icon="plus" aria-label="Contratar agente" onClick={() => setIsCreating(true)}>
+          {/* Icon-only on narrow topbars so it never collides with the floor
+              context + module title (plan §8.2). */}
+          <span className="hidden sm:inline">Contratar agente</span>
         </Button>
       }
     >
