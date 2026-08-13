@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useId, useRef } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { IconButton } from './IconButton'
 import { useDialogA11y } from './useDialogA11y'
@@ -16,6 +16,7 @@ interface DialogProps {
 
 export function Dialog({ open = true, title, subtitle, children, footer, width = 480, onClose, style }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
   useDialogA11y(open, onClose, panelRef)
   if (!open) return null
   return (
@@ -39,6 +40,7 @@ export function Dialog({ open = true, title, subtitle, children, footer, width =
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
         onClick={(e) => e.stopPropagation()}
         style={{
           width,
@@ -55,7 +57,7 @@ export function Dialog({ open = true, title, subtitle, children, footer, width =
       >
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '22px 22px 0', flexShrink: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 0 }}>
-            <span style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, letterSpacing: '-.018em', color: 'var(--text-heading)' }}>{title}</span>
+            <span id={titleId} style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, letterSpacing: '-.018em', color: 'var(--text-heading)' }}>{title}</span>
             {subtitle ? <span style={{ fontSize: 13.5, color: 'var(--text-muted)' }}>{subtitle}</span> : null}
           </div>
           {onClose ? <IconButton icon="x" label="Fechar" size="sm" onClick={onClose} /> : null}
