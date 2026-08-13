@@ -5,8 +5,7 @@ import { Brand, Icon, IconButton } from '../ui'
 import { NAV } from './navItems'
 import { SectorNav } from './SectorNav'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
-import { isNavActive, navItemsFor, SCOPE_LABEL } from './navConfig'
-import type { NavScope } from './navConfig'
+import { isNavActive, navGroupsFor } from './navConfig'
 import { BuildingSwitcher } from './BuildingSwitcher'
 
 export function Sidebar({ current }: { current: string }) {
@@ -50,34 +49,29 @@ export function Sidebar({ current }: { current: string }) {
         ) : bctx ? (
           <nav className="flex flex-col gap-2">
             <BuildingSwitcher />
-            {(['general', 'floor', 'communication'] as NavScope[]).map((scope) => {
-              const items = navItemsFor(bctx.activeFloorId).filter((i) => i.scope === scope)
-              if (!items.length) return null
-              const label = scope === 'floor' && bctx.activeFloor ? `ANDAR · ${bctx.activeFloor.name.toUpperCase()}` : SCOPE_LABEL[scope]
-              return (
-                <div key={scope} className="flex flex-col gap-1">
-                  {/* Hidden entirely (not just zero-width) in the slim rail so it
-                      leaves no phantom row between icon groups; revealed on hover. */}
-                  <span className="hidden truncate group-hover:block" style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-muted)', paddingLeft: 10, paddingTop: 4 }}>
-                    {label}
-                  </span>
-                  {items.map((item) => {
-                    const disabled = scope === 'floor' && !bctx.activeFloorId
-                    return (
-                      <Link
-                        key={item.key}
-                        to={disabled ? '/dashboard' : item.path(bctx.activeFloorId)}
-                        className={`${ITEM_BASE} ${isNavActive(item, bctx.activeFloorId, pathname) ? ACTIVE : INACTIVE}`}
-                        style={disabled ? { opacity: 0.5 } : undefined}
-                      >
-                        <Icon name={item.icon} size={18} />
-                        <span className={LABEL}>{item.label}</span>
-                      </Link>
-                    )
-                  })}
-                </div>
-              )
-            })}
+            {navGroupsFor(bctx.activeFloorId, bctx.activeFloor?.name).map(({ group, label, items }) => (
+              <div key={group} className="flex flex-col gap-1">
+                {/* Hidden entirely (not just zero-width) in the slim rail so it
+                    leaves no phantom row between icon groups; revealed on hover. */}
+                <span className="hidden truncate group-hover:block" style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-muted)', paddingLeft: 10, paddingTop: 4 }}>
+                  {label}
+                </span>
+                {items.map((item) => {
+                  const disabled = item.scope === 'floor' && !bctx.activeFloorId
+                  return (
+                    <Link
+                      key={item.key}
+                      to={disabled ? '/dashboard' : item.path(bctx.activeFloorId)}
+                      className={`${ITEM_BASE} ${isNavActive(item, bctx.activeFloorId, pathname) ? ACTIVE : INACTIVE}`}
+                      style={disabled ? { opacity: 0.5 } : undefined}
+                    >
+                      <Icon name={item.icon} size={18} />
+                      <span className={LABEL}>{item.label}</span>
+                    </Link>
+                  )
+                })}
+              </div>
+            ))}
           </nav>
         ) : (
           <nav className="flex flex-col gap-1">

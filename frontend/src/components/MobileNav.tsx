@@ -4,8 +4,7 @@ import { signOut, useSession } from '../lib/auth-client'
 import { Brand, Icon } from '../ui'
 import { NAV } from './navItems'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
-import { isNavActive, navItemsFor, SCOPE_LABEL } from './navConfig'
-import type { NavScope } from './navConfig'
+import { isNavActive, navGroupsFor, navItemsFor } from './navConfig'
 
 // Touch navigation for phones and small tablets (< lg): a fixed bottom bar for
 // the primary destinations plus a slide-in drawer (opened from the topbar) for
@@ -157,12 +156,9 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
             )}
             <nav className="flex flex-col gap-1">
               {bctx
-                ? (['general', 'floor', 'communication'] as NavScope[]).map((scope) => {
-                    const items = navItemsFor(floorId).filter((i) => i.scope === scope)
-                    if (!items.length) return null
-                    const label = scope === 'floor' && bctx.activeFloor ? `ANDAR · ${bctx.activeFloor.name.toUpperCase()}` : SCOPE_LABEL[scope]
+                ? navGroupsFor(floorId, bctx.activeFloor?.name).map(({ group, label, items }) => {
                     return (
-                      <div key={scope} className="flex flex-col gap-1">
+                      <div key={group} className="flex flex-col gap-1">
                         <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-muted)', padding: '8px 8px 2px' }}>{label}</span>
                         {items.map((item) => {
                           const active = isNavActive(item, floorId, pathname)
