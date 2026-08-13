@@ -11,6 +11,11 @@ import type { OfficePoint } from './officeTypes'
 // Grid cells of margin to grow the room outline by (NAV_RES cells). ~4 cells = 2
 // tiles: enough to include the corridors between compacted rooms plus a small rim.
 export const ENVELOPE_MARGIN_CELLS = 4
+// Hard outer blocker: the walkable area is clipped to the room+loose cluster's
+// bounding box grown by this many cells (~1.5 tiles), so agents never wander off
+// into the empty canvas beyond the sectors. Interior corridors are inside the box,
+// so they stay connected — only the outer rim is trimmed.
+const CLUSTER_MARGIN_CELLS = 3
 
 export interface ActivityEnvelope {
   w: number
@@ -24,9 +29,19 @@ export function buildActivityEnvelope(layout: BuiltOfficeLayout, grid: NavGrid, 
   const dist = new Int16Array(w * h).fill(-1)
   const queue: number[] = []
 
+  // Bounding box of the seed cells (rooms + loose agents) — the cluster the walkable
+  // area is later clipped to.
+  let minI = w
+  let maxI = 0
+  let minJ = h
+  let maxJ = 0
   const seed = (gi: number, gj: number) => {
     if (!inBounds(grid, gi, gj)) return
     const idx = cellIndex(grid, gi, gj)
+    if (gi < minI) minI = gi
+    if (gi > maxI) maxI = gi
+    if (gj < minJ) minJ = gj
+    if (gj > maxJ) maxJ = gj
     if (dist[idx] === -1) {
       dist[idx] = 0
       queue.push(idx)
@@ -72,12 +87,19 @@ export function buildActivityEnvelope(layout: BuiltOfficeLayout, grid: NavGrid, 
       }
   }
 
-  // Allowed = reached within margin AND actually walkable.
+  // Allowed = reached within margin, actually walkable, AND inside the cluster's
+  // bounding box grown by CLUSTER_MARGIN_CELLS — the outer blocker that keeps agents
+  // off the empty canvas beyond the sectors.
+  const cx0 = minI - CLUSTER_MARGIN_CELLS
+  const cx1 = maxI + CLUSTER_MARGIN_CELLS
+  const cy0 = minJ - CLUSTER_MARGIN_CELLS
+  const cy1 = maxJ + CLUSTER_MARGIN_CELLS
   const mask = new Uint8Array(w * h)
   for (let idx = 0; idx < mask.length; idx++) {
     if (dist[idx] === -1) continue
     const i = idx % w
     const j = (idx - i) / w
+    if (i < cx0 || i > cx1 || j < cy0 || j > cy1) continue
     if (isWalkable(grid, i, j)) mask[idx] = 1
   }
   return { w, h, mask }
