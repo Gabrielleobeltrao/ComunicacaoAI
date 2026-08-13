@@ -12,7 +12,7 @@ import { roundedPath, traceOutline } from './roomShape'
 
 type Chars = ReturnType<typeof buildCharacterResolver>
 const TILE = 44 // base tile px inside the crop; the whole thing is scaled to fit
-const PAD = 1.4 // tiles of floor kept around the room (room its wall-adjacent decor)
+const PAD = 1.0 // tiles of floor kept around the room
 
 const facingSvg = (d: OfficeSeat['facing']): 'frente' | 'costas' => (d === 'back' ? 'costas' : 'frente')
 
@@ -49,9 +49,11 @@ export function SectorMapCrop({ layout, decor, sectorId, color, chars }: { layou
   const seats = layout.seats.filter((s) => s.sectorId === sectorId)
   const farSeats = seats.filter((s) => !s.chair.near)
   const nearSeats = seats.filter((s) => s.chair.near)
-  // Deterministic decoration for this sector (same as the map): themed objects
-  // hugging the room's walls + one ambient wall piece on the top wall.
-  const decorItems = decor.items.filter((it) => it.key.startsWith(`${sectorId}:`))
+  // Only room-anchored decoration is drawn: the ambient wall piece (top wall) and
+  // the sector's own plant. The themed *floor* objects (shelves/cactus/…) are
+  // placed by the map in the CORRIDOR between rooms — their spot depends on the
+  // whole floor's packing, so they can't be pinned in a single-room crop; drawing
+  // them would put them in a different place than "Visão do andar". So we skip them.
   const ambient = decor.ambient.filter((a) => a.key === `wall-${sectorId}`)
   const fill = `color-mix(in oklab, ${color} 15%, var(--paper-0, #fff))`
 
@@ -114,10 +116,6 @@ export function SectorMapCrop({ layout, decor, sectorId, color, chars }: { layou
           ))}
           {sectorDecor.map((dc, i) => (
             <MapObject key={`de-${i}`} x={lx(dc.x) - 0.85} y={ly(dc.y) - 1.4} w={1.7} h={2} art={objectSrc(dc.art)} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
-          ))}
-          {/* Themed objects placed by the same algorithm as the map */}
-          {decorItems.map((it) => (
-            <MapObject key={it.key} x={lx(it.x)} y={ly(it.y)} w={it.w} h={it.h} art={objectSrc(it.art)} label="" style={{ zIndex: 2, pointerEvents: 'none' }} />
           ))}
           {nearSeats.map((s) => seated(s, 3))}
           {nearSeats.map((s) => (
