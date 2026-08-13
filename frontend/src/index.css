@@ -10,3 +10,13 @@
 @import "./styles/tokens/motion.css";
 @import "./styles/tokens/illustration.css";
 @import "./styles/tokens/base.css";
+
+/* Office map viewport: native touch panning (reliable on iOS/Android) with no
+   visible scrollbar. Desktop still drags with the mouse (see OfficeMap). */
+.office-map-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.office-map-scroll::-webkit-scrollbar {
+  display: none;
+}

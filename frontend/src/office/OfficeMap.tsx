@@ -124,7 +124,10 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
   }
 
   const onDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return
+    // Touch (and pen) pan natively via the scroll container — far more reliable on
+    // mobile than a JS pointer-drag (iOS Safari drops pointer events mid-drag). The
+    // JS grab-drag is for the mouse only.
+    if (e.pointerType !== 'mouse' || e.button !== 0) return
     const el = ref.current
     if (!el) return
     drag.current = { x: e.clientX, y: e.clientY, sl: el.scrollLeft, st: el.scrollTop, active: true, moved: false }
@@ -193,12 +196,18 @@ export function OfficeMap({ cols = 26, rows = 16, tile = 56, zoom: initialZoom =
     >
       <div
         ref={ref}
+        className="office-map-scroll"
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
         onPointerLeave={onUp}
+        onPointerCancel={onUp}
         onClickCapture={onClickCapture}
-        style={{ position: 'absolute', inset: 0, overflow: 'hidden', cursor: 'grab', touchAction: 'none', userSelect: 'none' }}
+        // overflow:auto → the browser pans this container natively on touch; the
+        // mouse still grab-drags (onDown/onMove). pan-x pan-y allows both-axis
+        // touch panning but blocks pinch/double-tap zoom (the map has its own
+        // zoom controls). overscroll-contain stops the page from scrolling at the edge.
+        style={{ position: 'absolute', inset: 0, overflow: 'auto', overscrollBehavior: 'contain', cursor: 'grab', touchAction: 'pan-x pan-y', userSelect: 'none' }}
       >
         <div style={inner}>
           {/* Content layer — centred within the floor when the office is small.
