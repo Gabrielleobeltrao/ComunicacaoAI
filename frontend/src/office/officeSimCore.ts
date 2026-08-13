@@ -70,6 +70,7 @@ export interface SimContext {
   interactions: InteractionPoint[]
   amenityInteractions: InteractionPoint[] // subset in the public presets (id `int:amen:`)
   roomInterior: Map<string, OfficePoint[]> // sectorId -> walkable interior points to wander to
+  commons: OfficePoint[] // walkable INTERIOR points of public amenity rooms — agents mill inside them, not just at the counter
   sectorCells: Map<string, string> // cellKey -> owning private-sector id (amenity/preset rooms are public, so absent)
   doorCells: Set<string> // door threshold cells — never a mid-route pause spot
   occupancy: Map<string, number> // interactionId -> agents currently holding it
@@ -152,6 +153,32 @@ export function buildRoomInteriors(layout: BuiltOfficeLayout, grid: NavGrid, env
     if (pts.length) out.set(r.key, pts)
   }
   return out
+}
+
+// Walkable INTERIOR points of the public amenity rooms (kitchen, lounge, refeitório…),
+// away from doorways, so agents wander deep inside a common area instead of only
+// standing at a counter's interaction point on its edge. Same door/envelope guards.
+export function buildCommonsInteriors(layout: BuiltOfficeLayout, grid: NavGrid, envelope: ActivityEnvelope): OfficePoint[] {
+  const doorGuard = new Set<string>()
+  for (const d of grid.doors)
+    for (const p of [d.inner, d.outer]) {
+      const c = cellOfPoint(grid, p)
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) doorGuard.add(`${c.i + di},${c.j + dj}`)
+    }
+  const pts: OfficePoint[] = []
+  for (const r of layout.rooms) {
+    if (r.kind !== 'amenity') continue
+    const bi = Math.round(r.x / grid.res)
+    const bj = Math.round(r.y / grid.res)
+    for (const c of r.cells) {
+      const [ci, cj] = c.split(',').map(Number)
+      const gi = bi + ci
+      const gj = bj + cj
+      if (!isWalkable(grid, gi, gj) || !inEnvelopeCell(envelope, gi, gj) || doorGuard.has(`${gi},${gj}`)) continue
+      pts.push(pointOfCell(grid, gi, gj))
+    }
+  }
+  return pts
 }
 
 // Cell ownership for PRIVATE sector rooms. Preset (amenity) rooms are public and
@@ -289,6 +316,7 @@ export function createContext(layout: BuiltOfficeLayout, grid: NavGrid, totalAge
     waypoints: corridorWaypoints(grid, layout, envelope),
     interactions,
     amenityInteractions: interactions.filter((it) => it.id.startsWith('int:amen:')),
+    commons: buildCommonsInteriors(layout, grid, envelope),
     roomInterior: buildRoomInteriors(layout, grid, envelope),
     sectorCells: buildSectorCells(layout, grid),
     doorCells: new Set(grid.doors.flatMap((d) => [keyOf(cellOfPoint(grid, d.inner)), keyOf(cellOfPoint(grid, d.outer))])),
@@ -415,15 +443,19 @@ function chooseDestination(ctx: SimContext, m: AgentModel): OfficePoint | null {
   const r = m.rng()
   if (m.sectorId) {
     const interior = ctx.roomInterior.get(m.sectorId)
-    if (interior && interior.length && r < 0.58) return interior[Math.floor(m.rng() * interior.length)]
-    if (ctx.interactions.length && r >= 0.8) {
+    if (interior && interior.length && r < 0.5) return interior[Math.floor(m.rng() * interior.length)]
+    // ~18%: walk deep INTO a common area and mill around (not just its counter edge).
+    if (ctx.commons.length && r < 0.68) return ctx.commons[Math.floor(m.rng() * ctx.commons.length)]
+    if (ctx.interactions.length && r >= 0.82) {
       const p = tryInteraction(ctx, m)
       if (p) return p
     }
     return tryWaypoint(ctx, m)
   }
-  // deskless agents: roughly half interactions, half corridor
-  if (ctx.interactions.length && m.rng() < 0.45) {
+  // deskless agents spend a lot of time in the common areas, then interactions/corridor.
+  const d = m.rng()
+  if (ctx.commons.length && d < 0.4) return ctx.commons[Math.floor(m.rng() * ctx.commons.length)]
+  if (ctx.interactions.length && d < 0.68) {
     const p = tryInteraction(ctx, m)
     if (p) return p
   }
