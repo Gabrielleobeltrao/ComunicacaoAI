@@ -145,7 +145,20 @@ export interface AgentSummary {
   promptCaching: boolean
   tools: AgentTool[]
   builtinTools: AgentBuiltinTool[]
+  // Agent-as-the-primary-unit model (additive; legacy agents get safe defaults from
+  // the backend). Drive the hiring wizard, Acionamentos and delegation.
+  preset: AgentPreset
+  capabilities: string[]
+  activationModes: ActivationMode[]
+  inputContract: string
+  outputContract: string
+  callableAgentIds: string[]
+  callableSectorIds: string[]
+  allowedCallerAgentIds: string[]
 }
+
+export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'custom'
+export type ActivationMode = 'manual' | 'scheduled' | 'event' | 'channel' | 'agent_only'
 
 // Per-agent roster stats for the Agentes cards (from /api/agent-stats).
 export interface AgentCardStats {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
+import { AgentActivations, AgentHistoryPanel, AgentRoutines } from '../components/AgentWorkAreas'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
@@ -25,6 +26,9 @@ const TABS: { key: string; label: string }[] = [
   { key: 'essencial', label: 'Ajustes' },
   { key: 'ferramentas', label: 'Ferramentas' },
   { key: 'conhecimento', label: 'Conhecimento' },
+  { key: 'rotinas', label: 'Rotinas' },
+  { key: 'acionamentos', label: 'Acionamentos' },
+  { key: 'historico', label: 'Histórico' },
   { key: 'avancado', label: 'Avançado' },
   { key: 'testar', label: 'Testar' },
 ]
@@ -265,6 +269,12 @@ export function AgentDetail() {
               <div style={{ padding: 18 }}>
                 {active === 'testar' ? (
                   <AgentPlayground key={agent._id} agent={agent} />
+                ) : active === 'rotinas' ? (
+                  <AgentRoutines key={agent._id} agent={agent} />
+                ) : active === 'acionamentos' ? (
+                  <AgentActivations key={agent._id} agent={agent} agents={agents} />
+                ) : active === 'historico' ? (
+                  <AgentHistoryPanel key={agent._id} agent={agent} />
                 ) : (
                   <>
                     <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} />
