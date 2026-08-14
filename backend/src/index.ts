@@ -56,7 +56,7 @@ import {
   setStructuredMemory,
   setStructuredOutputData,
 } from './conversationMemory.js'
-import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, normalizeSectorMode, sectorReadiness, SECTOR_MODES, updateSector } from './sectors.js'
+import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, normalizeSectorMode, sectorIsExecutable, sectorReadiness, SECTOR_MODES, updateSector } from './sectors.js'
 import type { SectorStage, SectorTeamFields } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
 import { assignAgentToSector } from './sectorMembership.js'
@@ -867,6 +867,19 @@ function parseSectorMode(value: unknown): SectorMode | null {
   return (SECTOR_MODES as string[]).includes(value as string) ? (value as SectorMode) : null
 }
 
+// A callable-sector list may only hold EXECUTABLE sectors (orchestrated/pipeline).
+// Enforced server-side so an organization sector never becomes a delegation target,
+// even if a client sends it.
+async function filterExecutableSectorIds(ownerId: string, ids: string[]): Promise<string[]> {
+  const out: string[] = []
+  for (const id of ids) {
+    if (!ObjectId.isValid(id)) continue
+    const s = await getSectorById(ownerId, new ObjectId(id))
+    if (s && sectorIsExecutable(normalizeSectorMode(s.mode))) out.push(id)
+  }
+  return out
+}
+
 const MAX_SECTOR_STAGES = 12
 
 // Parse the orchestrated/pipeline team fields (coordinator + stages) from a request
@@ -1595,6 +1608,7 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: modelError })
     return
   }
+  if (modelFields.callableSectorIds) modelFields.callableSectorIds = await filterExecutableSectorIds(res.locals.userId, modelFields.callableSectorIds)
 
   const officeId = await resolveFloorOffice(res.locals.userId, req.body?.floorId)
   const agent = await createAgent(res.locals.userId, officeId, name, {
@@ -1831,6 +1845,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     res.status(400).json({ error: modelError })
     return
   }
+  if (modelFields.callableSectorIds) modelFields.callableSectorIds = await filterExecutableSectorIds(res.locals.userId, modelFields.callableSectorIds)
   Object.assign(updates, modelFields)
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
