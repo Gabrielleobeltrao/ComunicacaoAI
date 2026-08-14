@@ -53,7 +53,7 @@ test('the move wizard moves a sector to another floor and lands on it', async ({
   const { a, b } = await twoFloors(page)
   const id = await seedSector(page, a.id)
   try {
-    await page.goto(`/floors/${a.id}/sectors/${id}/configuracao`, { waitUntil: 'networkidle' })
+    await page.goto(`/floors/${a.id}/sectors/${id}/avancado`, { waitUntil: 'networkidle' })
     await page.getByRole('button', { name: /Mover de andar/i }).first().click()
     await expect(page.getByText('Passo 1 de 3')).toBeVisible()
 

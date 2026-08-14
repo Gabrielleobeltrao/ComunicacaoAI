@@ -11,7 +11,7 @@ import type { AgentSummary, SectorSummary } from '../lib/types'
 // the same information for screen readers (§6.4).
 export function SectorHero({ sector, agents, floorName, actions }: { sector: SectorSummary; agents: AgentSummary[]; floorName: string; actions?: ReactNode }) {
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
-  const readiness = sectorReadiness(sector.mode, sector.members, { coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages })
+  const readiness = sectorReadiness({ mode: sector.mode, members: sector.members, coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages })
   const modeLabel = sectorModeLabel(sector.mode)
   const count = sector.members.length
   const description = `Sala do setor ${sector.name} com ${count} ${count === 1 ? 'agente' : 'agentes'} no andar ${floorName}.`
@@ -46,8 +46,11 @@ export function SectorHero({ sector, agents, floorName, actions }: { sector: Sec
   )
 }
 
-function ReadinessBadge({ readiness }: { readiness: 'ready' | 'incomplete' }) {
-  const ready = readiness === 'ready'
+function ReadinessBadge({ readiness }: { readiness: { ready: boolean; issues: { message: string }[] } }) {
+  const ready = readiness.ready
+  // The first blocking issue IS the label — "Configuração incompleta" alone never
+  // told the user WHAT to do.
+  const label = ready ? 'Pronto' : (readiness.issues[0]?.message ?? 'Configuração incompleta')
   return (
     <span
       style={{
@@ -64,7 +67,7 @@ function ReadinessBadge({ readiness }: { readiness: 'ready' | 'incomplete' }) {
       }}
     >
       <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'currentColor' }} />
-      {ready ? 'Pronto' : 'Configuração incompleta'}
+      {label}
     </span>
   )
 }

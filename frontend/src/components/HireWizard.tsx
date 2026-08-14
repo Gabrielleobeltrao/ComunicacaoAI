@@ -129,16 +129,22 @@ export function HireWizard({
   sectors,
   onHired,
   onCancel,
+  // Hiring FOR something (a sector stage, a team slot): the role is pre-picked and
+  // the wizard opens on the work step, so the user answers only what is new.
+  initialPreset,
+  initialSectorId,
 }: {
   floorId?: string
   agents: AgentSummary[]
   sectors: SectorSummary[]
   onHired: (agent?: { _id: string; name: string }) => void
   onCancel: () => void
+  initialPreset?: AgentPreset
+  initialSectorId?: string
 }) {
-  const [step, setStep] = useState(0)
+  const [step, setStep] = useState(initialPreset ? 1 : 0)
   const [presets, setPresets] = useState<AgentPresetSpec[]>([])
-  const [preset, setPreset] = useState<AgentPreset>('custom')
+  const [preset, setPreset] = useState<AgentPreset>(initialPreset ?? 'custom')
 
   const [language, setLanguage] = useState('pt')
   const [name, setName] = useState(() => randomAgentName('pt').name)
@@ -148,7 +154,7 @@ export function HireWizard({
   const [tone, setTone] = useState('neutral')
   const [collaborators, setCollaborators] = useState<string[]>([])
   const [collaboratorSectors, setCollaboratorSectors] = useState<string[]>([])
-  const [sectorId, setSectorId] = useState('')
+  const [sectorId, setSectorId] = useState(initialSectorId ?? '')
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -156,8 +162,14 @@ export function HireWizard({
 
   useEffect(() => {
     listAgentPresets()
-      .then(setPresets)
+      .then((list) => {
+        setPresets(list)
+        // Pre-picked role: adopt its default objective as if the user had clicked it.
+        const picked = initialPreset ? list.find((p) => p.preset === initialPreset) : null
+        if (picked) setObjective((prev) => (prev.trim() ? prev : picked.objective))
+      })
       .catch(() => setPresets([]))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const spec = useMemo(() => presets.find((p) => p.preset === preset), [presets, preset])

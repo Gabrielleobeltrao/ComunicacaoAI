@@ -103,6 +103,48 @@ test('checkDelegation refuses once the shared budget is spent', () => {
   assert.equal(checkDelegation(a, mkAgent(), B, ctxFor(a, { budget: { tokenLimit: 100, tokensSpent: 100 } })).code, 'budget_exceeded')
 })
 
+// ---- sector context grant ---------------------------------------------------
+// Being in a sector must NOT rewrite the agents' own policies. Instead the
+// coordinator gets a narrow, one-level grant for THAT sector's members.
+
+test('sector grant lets a closed coordinator reach its own members, and nobody else', () => {
+  const coordinator = mkAgent({ delegationPolicy: 'none' })
+  const member = mkAgent({ callerPolicy: 'none' })
+  const outsider = mkAgent({ callerPolicy: 'none' })
+  const grant = { sectorId: new ObjectId().toString(), memberIds: [member._id.toString()] }
+
+  // without the grant both policies refuse
+  assert.equal(checkDelegation(coordinator, member, B, ctxFor(coordinator)).code, 'unauthorized')
+  // with it, only the listed member is reachable
+  assert.equal(checkDelegation(coordinator, member, B, ctxFor(coordinator, { sectorGrant: grant })).ok, true)
+  assert.equal(checkDelegation(coordinator, outsider, B, ctxFor(coordinator, { sectorGrant: grant })).code, 'unauthorized')
+})
+
+test('sector grant never overrides owner, building, cycle, depth or budget', () => {
+  const coordinator = mkAgent({ delegationPolicy: 'none' })
+  const member = mkAgent({ callerPolicy: 'none' })
+  const grant = { sectorId: new ObjectId().toString(), memberIds: [member._id.toString()] }
+  const withGrant = (over = {}) => ctxFor(coordinator, { sectorGrant: grant, ...over })
+
+  const foreign = mkAgent({ _id: member._id, ownerId: 'other', callerPolicy: 'none' })
+  assert.equal(checkDelegation(coordinator, foreign, B, withGrant()).code, 'forbidden')
+  assert.equal(checkDelegation(coordinator, member, new ObjectId().toString(), withGrant()).code, 'forbidden')
+  assert.equal(checkDelegation(coordinator, member, B, withGrant({ ancestry: [member._id.toString()] })).code, 'cycle')
+  assert.equal(checkDelegation(coordinator, member, B, withGrant({ depth: DELEGATION_MAX_DEPTH })).code, 'depth_exceeded')
+  assert.equal(checkDelegation(coordinator, member, B, withGrant({ budget: { tokenLimit: 10, tokensSpent: 10 } })).code, 'budget_exceeded')
+})
+
+test('the sector grant does not leak one level deeper', () => {
+  const coordinator = mkAgent({ delegationPolicy: 'none' })
+  const member = mkAgent({ callerPolicy: 'none', delegationPolicy: 'all' })
+  const grant = { sectorId: new ObjectId().toString(), memberIds: [member._id.toString()] }
+  const child = childContext(ctxFor(coordinator, { sectorGrant: grant }), coordinator, member)
+  assert.equal(child.sectorGrant, null)
+  // the member cannot re-use the coordinator's grant to call a closed sibling
+  const sibling = mkAgent({ callerPolicy: 'none' })
+  assert.equal(checkDelegation(member, sibling, B, child).code, 'unauthorized')
+})
+
 // ---- executor via injected deps --------------------------------------------
 function fakeDeps(agents, over = {}) {
   const byId = new Map(agents.map((a) => [a._id.toString(), a]))

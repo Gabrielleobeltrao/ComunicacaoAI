@@ -91,19 +91,70 @@ const sectors = db.collection<Sector>('sectors')
 
 export const MAX_SECTOR_MEMBERS = 10
 
-// Operational readiness derived from mode + shape:
-//   organization — ready as soon as it has at least one member (just a grouping).
-//   orchestrated — needs a coordinator and at least one member.
-//   pipeline     — needs at least one stage (each stage carries its own agent).
-export function sectorReadiness(
-  mode: SectorMode,
-  members: SectorMember[],
-  extra?: { coordinatorAgentId?: ObjectId | null; stages?: SectorStage[] },
-): 'ready' | 'incomplete' {
-  if (mode === 'organization') return members.length >= 1 ? 'ready' : 'incomplete'
-  if (mode === 'pipeline') return (extra?.stages?.length ?? 0) >= 1 ? 'ready' : 'incomplete'
-  // orchestrated
-  return extra?.coordinatorAgentId && members.length >= 1 ? 'ready' : 'incomplete'
+// Plain-language label for each mode, so the UI never has to invent its own copy.
+export const SECTOR_MODE_LABEL: Record<SectorMode, { title: string; help: string }> = {
+  organization: { title: 'Só organizar', help: 'Agrupa agentes no mapa. Não executa nada como equipe.' },
+  orchestrated: { title: 'Um gerente coordena', help: 'Um coordenador recebe o pedido, aciona quem precisa e junta a resposta.' },
+  pipeline: { title: 'Executar em etapas', help: 'As etapas rodam em ordem, cada uma usando o resultado da anterior.' },
+}
+
+export type SectorReadinessCode = 'no_members' | 'no_coordinator' | 'no_stages' | 'stage_without_agent' | 'agent_pending'
+
+export interface SectorReadinessIssue {
+  code: SectorReadinessCode
+  message: string
+  action: string
+  // A blocking issue stops the sector from running; a warning is worth showing but
+  // does not make the sector invalid (e.g. a member that still needs a tool).
+  severity: 'blocking' | 'warning'
+}
+
+export interface SectorReadiness {
+  ready: boolean
+  issues: SectorReadinessIssue[]
+}
+
+export interface SectorReadinessInput {
+  mode: SectorMode
+  members: { agentId: ObjectId }[]
+  coordinatorAgentId?: ObjectId | null
+  stages?: { id: string; name: string; agentId?: ObjectId | null }[]
+  // Agents referenced by this sector that still have their own pending setup, by name.
+  pendingAgentNames?: string[]
+  // Ids that exist in the account — a stage pointing at a removed agent is invalid.
+  knownAgentIds?: string[]
+}
+
+// Is this team able to work? One place, so the wizard, the sector page and the tests
+// agree. Legacy sectors (no stages/coordinator recorded) simply report what is
+// missing instead of being treated as broken.
+export function sectorReadiness(input: SectorReadinessInput): SectorReadiness {
+  const issues: SectorReadinessIssue[] = []
+  const known = input.knownAgentIds ? new Set(input.knownAgentIds) : null
+  const mode = normalizeSectorMode(input.mode)
+
+  if (mode === 'organization') {
+    if (input.members.length === 0) issues.push({ code: 'no_members', message: 'Este grupo ainda não tem nenhum agente.', action: 'Adicionar agentes', severity: 'blocking' })
+  } else if (mode === 'orchestrated') {
+    if (!input.coordinatorAgentId) issues.push({ code: 'no_coordinator', message: 'Falta escolher quem coordena a equipe.', action: 'Escolher coordenador', severity: 'blocking' })
+    if (input.members.length === 0) issues.push({ code: 'no_members', message: 'A equipe ainda não tem membros.', action: 'Adicionar membros', severity: 'blocking' })
+  } else {
+    const stages = input.stages ?? []
+    if (stages.length === 0) issues.push({ code: 'no_stages', message: 'O fluxo ainda não tem nenhuma etapa.', action: 'Adicionar etapa', severity: 'blocking' })
+    for (const stage of stages) {
+      const id = stage.agentId?.toString()
+      if (!id || (known && !known.has(id))) {
+        issues.push({ code: 'stage_without_agent', message: `A etapa “${stage.name || stage.id}” está sem um agente válido.`, action: 'Escolher agente', severity: 'blocking' })
+      }
+    }
+  }
+
+  // Agent-level gaps are surfaced, never hidden — but they do not invalidate the team.
+  for (const name of input.pendingAgentNames ?? []) {
+    issues.push({ code: 'agent_pending', message: `${name} ainda precisa de configuração para trabalhar.`, action: 'Abrir agente', severity: 'warning' })
+  }
+
+  return { ready: !issues.some((i) => i.severity === 'blocking'), issues }
 }
 
 // Assign stable ids to stages that lack one and clamp the retry policy.

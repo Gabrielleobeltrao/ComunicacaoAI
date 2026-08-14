@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
 import { AgentActivations, AgentHistoryPanel, AgentRoutines } from '../components/AgentWorkAreas'
@@ -13,7 +13,7 @@ import { getAgentStats, METRIC_KEY_LABEL, PERIOD_LABEL, type StatsPeriod } from 
 import { formatCount, formatDuration, formatPercent, formatTokens } from '../lib/metricFormat'
 import { useActiveFloorId, useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { AgentSectorAssignment } from '../components/AgentSectorAssignment'
-import { floorAgent, floorAgents } from '../lib/floorRoutes'
+import { floorAgent, floorAgents, floorSector } from '../lib/floorRoutes'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import type { AgentOverview, AgentStatsResponse, AgentSummary } from '../lib/types'
 import { Button, Card, MetricStat, StatusPill, Tag } from '../ui'
@@ -102,6 +102,38 @@ function TriggersPanel({ overview }: { overview: AgentOverview }) {
           )
         })}
       </div>
+    </div>
+  )
+}
+
+// Where this agent works as part of a team: which sectors, and in which role —
+// coordinator, member or a named pipeline stage. Answers "por que ele foi
+// acionado?" without opening every sector.
+function TeamsPanel({ overview, fid }: { overview: AgentOverview; fid: string | null }) {
+  const links = overview.linkedSectors ?? []
+  return (
+    <div data-testid="agent-teams">
+      <h3 style={{ margin: '0 0 4px', fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Onde este agente trabalha</h3>
+      {links.length === 0 ? (
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>Ele ainda não faz parte de nenhuma equipe.</p>
+      ) : (
+        <ul style={{ display: 'grid', gap: 8, margin: 0, padding: 0, listStyle: 'none' }}>
+          {links.map((l) => (
+            <li key={l._id}>
+              <Card padding="10px 14px">
+                <Link to={fid ? floorSector(fid, l._id) : `/setores/${l._id}`} style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--text-heading)', textDecoration: 'none' }}>
+                  {l.name}
+                </Link>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                  {(l.roles ?? []).map((r, i) => (
+                    <Tag key={`${r.role}-${r.stageId ?? i}`}>{r.role === 'coordinator' ? 'coordena' : r.role === 'member' ? 'membro' : `etapa: ${r.stageName || r.stageId}`}</Tag>
+                  ))}
+                </div>
+              </Card>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
@@ -441,6 +473,7 @@ export function AgentDetail() {
                   // and the relationships with other agents/sectors.
                   <div style={{ display: 'grid', gap: 20 }}>
                     <TriggersPanel overview={overview} />
+                    <TeamsPanel overview={overview} fid={fid} />
                     <AgentRoutines key={agent._id} agent={agent} />
                     <AgentActivations key={agent._id} agent={agent} agents={agents} />
                   </div>

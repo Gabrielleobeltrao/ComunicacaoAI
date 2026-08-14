@@ -31,21 +31,63 @@ const opts = (method: string, body?: unknown): RequestInit => ({
   body: body === undefined ? undefined : JSON.stringify(body),
 })
 
-// Operational readiness — mirrors the backend rule so the badge matches:
-//   organization → any member; orchestrated → a coordinator + a member;
-//   pipeline → at least one stage.
-export function sectorReadiness(
-  mode: SectorMode,
-  members: SectorMemberSummary[],
-  extra?: { coordinatorAgentId?: string | null; stages?: { id: string }[] },
-): 'ready' | 'incomplete' {
-  if (mode === 'organization') return members.length >= 1 ? 'ready' : 'incomplete'
-  if (mode === 'pipeline') return (extra?.stages?.length ?? 0) >= 1 ? 'ready' : 'incomplete'
-  return extra?.coordinatorAgentId && members.length >= 1 ? 'ready' : 'incomplete'
+// Legacy documents used 'adaptive'; anything unknown reads as 'orchestrated', the
+// historical executable default. Mirrors backend/src/sectors.ts — without it a
+// legacy sector indexes SECTOR_MODE_LABEL with a missing key and blows up the page.
+export function normalizeSectorMode(mode: unknown): SectorMode {
+  return mode === 'organization' || mode === 'orchestrated' || mode === 'pipeline' ? mode : 'orchestrated'
 }
 
-// Human label for a sector mode (organization / orchestrated / pipeline).
-export const sectorModeLabel = (mode: SectorMode): string => (mode === 'pipeline' ? 'Pipeline' : mode === 'organization' ? 'Organização' : 'Orquestrado')
+// Operational readiness — mirrors backend/src/sectors.ts (same codes, same copy),
+// so the wizard, the sector page and the API agree on what is missing.
+export type SectorReadinessCode = 'no_members' | 'no_coordinator' | 'no_stages' | 'stage_without_agent' | 'agent_pending'
+export interface SectorReadinessIssue {
+  code: SectorReadinessCode
+  message: string
+  action: string
+  severity: 'blocking' | 'warning'
+}
+export interface SectorReadinessInput {
+  mode: SectorMode
+  members: { agentId: string }[]
+  coordinatorAgentId?: string | null
+  stages?: { id: string; name?: string; agentId?: string | null }[]
+  pendingAgentNames?: string[]
+  knownAgentIds?: string[]
+}
+export function sectorReadiness(input: SectorReadinessInput): { ready: boolean; issues: SectorReadinessIssue[] } {
+  const issues: SectorReadinessIssue[] = []
+  const known = input.knownAgentIds ? new Set(input.knownAgentIds) : null
+  const mode = normalizeSectorMode(input.mode)
+  if (mode === 'organization') {
+    if (input.members.length === 0) issues.push({ code: 'no_members', message: 'Este grupo ainda não tem nenhum agente.', action: 'Adicionar agentes', severity: 'blocking' })
+  } else if (mode === 'pipeline') {
+    const stages = input.stages ?? []
+    if (stages.length === 0) issues.push({ code: 'no_stages', message: 'O fluxo ainda não tem nenhuma etapa.', action: 'Adicionar etapa', severity: 'blocking' })
+    for (const stage of stages) {
+      if (!stage.agentId || (known && !known.has(stage.agentId))) {
+        issues.push({ code: 'stage_without_agent', message: `A etapa “${stage.name || stage.id}” está sem um agente válido.`, action: 'Escolher agente', severity: 'blocking' })
+      }
+    }
+  } else {
+    if (!input.coordinatorAgentId) issues.push({ code: 'no_coordinator', message: 'Falta escolher quem coordena a equipe.', action: 'Escolher coordenador', severity: 'blocking' })
+    if (input.members.length === 0) issues.push({ code: 'no_members', message: 'A equipe ainda não tem membros.', action: 'Adicionar membros', severity: 'blocking' })
+  }
+  for (const name of input.pendingAgentNames ?? []) {
+    issues.push({ code: 'agent_pending', message: `${name} ainda precisa de configuração para trabalhar.`, action: 'Abrir agente', severity: 'warning' })
+  }
+  return { ready: !issues.some((i) => i.severity === 'blocking'), issues }
+}
+
+// Plain-language mode copy — the user picks what the team DOES, not a jargon word.
+export const SECTOR_MODE_LABEL: Record<SectorMode, { title: string; help: string }> = {
+  organization: { title: 'Só organizar', help: 'Agrupa agentes no mapa. Não executa nada como equipe.' },
+  orchestrated: { title: 'Um gerente coordena', help: 'Um coordenador recebe o pedido, aciona quem precisa e junta a resposta.' },
+  pipeline: { title: 'Executar em etapas', help: 'As etapas rodam em ordem, cada uma usando o resultado da anterior.' },
+}
+
+// Human label for a sector mode — the plain-language title, never the internal word.
+export const sectorModeLabel = (mode: SectorMode): string => SECTOR_MODE_LABEL[normalizeSectorMode(mode)].title
 
 export const getSectorOverview = (sectorId: string) => fetch(`${API_URL}/api/sectors/${sectorId}/overview`, opts('GET')).then(json<SectorOverview>)
 

@@ -122,6 +122,7 @@ import {
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
 import { agentReadiness, triggerStates } from './agentReadiness.js'
+import type { AgentWiring } from './agentReadiness.js'
 import { listRoutines } from './automations/routine.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
@@ -1143,7 +1144,7 @@ app.put('/api/sectors/:sectorId/members', requireAuth, async (req, res) => {
     res.status(code === 'CROSS_FLOOR_ASSIGNMENT' || code === 'SECTOR_MEMBER_LIMIT' ? 409 : 400).json({ error, code })
     return
   }
-  if (sectorReadiness(normalizeSectorMode(existing.mode), parsed ?? [], { coordinatorAgentId: existing.coordinatorAgentId, stages: existing.stages }) === 'incomplete' && body.confirmChannelImpact !== true) {
+  if (!sectorReadiness({ mode: normalizeSectorMode(existing.mode), members: parsed ?? [], coordinatorAgentId: existing.coordinatorAgentId, stages: existing.stages }).ready && body.confirmChannelImpact !== true) {
     const widgets = await listWidgets(ownerId)
     const channels = widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => ({ id: w._id.toString(), name: w.name, type: 'web' as const }))
     if (channels.length > 0) {
@@ -1254,7 +1255,7 @@ app.post('/api/sectors/:sectorId/move', requireAuth, async (req, res) => {
     return
   }
   // Moving with an incomplete team while a channel points here needs confirmation.
-  if (sectorReadiness(normalizeSectorMode(sector.mode), parsed ?? [], { coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages }) === 'incomplete' && body.confirmChannelImpact !== true) {
+  if (!sectorReadiness({ mode: normalizeSectorMode(sector.mode), members: parsed ?? [], coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages }).ready && body.confirmChannelImpact !== true) {
     const widgets = await listWidgets(ownerId)
     const channels = widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => ({ id: w._id.toString(), name: w.name, type: 'web' as const }))
     if (channels.length > 0) {
@@ -1309,8 +1310,37 @@ app.get('/api/sectors/:sectorId/overview', requireAuth, async (req, res) => {
         }
       : null
 
+  // Readiness for the team, including agents that are wired in but still need
+  // their OWN setup (a warning, never a block).
+  const mode = normalizeSectorMode(sector.mode)
+  const involvedIds = new Set<string>([
+    ...sector.members.map((m) => m.agentId.toString()),
+    ...(sector.coordinatorAgentId ? [sector.coordinatorAgentId.toString()] : []),
+    ...(sector.stages ?? []).map((st) => st.agentId?.toString()).filter((x): x is string => Boolean(x)),
+  ])
+  const allAgents = await listAgents(ownerId)
+  const known = new Map(allAgents.map((a) => [a._id.toString(), a]))
+  const involved = [...involvedIds].map((id) => known.get(id)).filter((a): a is NonNullable<typeof a> => Boolean(a))
+  const pendingAgentNames = (
+    await Promise.all(
+      involved.map(async (a) => {
+        const channels = widgets.filter((w) => w.agentId?.toString() === a._id.toString()).length
+        return agentReadiness(a, await wiringForAgent(ownerId, a, channels)).ready ? null : a.name
+      }),
+    )
+  ).filter((n): n is string => n !== null)
+  const readiness = sectorReadiness({
+    mode,
+    members: sector.members,
+    coordinatorAgentId: sector.coordinatorAgentId,
+    stages: sector.stages,
+    pendingAgentNames,
+    knownAgentIds: allAgents.map((a) => a._id.toString()),
+  })
+
   res.json({
     sector: serializeSector(sector),
+    readiness,
     analytics,
     linkedWidgets: widgets
       .filter((w) => w.sectorId?.toString() === sectorId)
@@ -1995,6 +2025,25 @@ app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
 // Per-agent dashboard: the agent config, its usage metrics (scoped to the
 // widgets it directly answers), where it's used (widgets/sectors) and how many
 // knowledge documents it has.
+// Real wiring around an agent: what EXISTS, not what is merely allowed. Shared by
+// the agent overview and the sector overview (which flags members that still need
+// their own setup), so both report the same pendencies.
+async function wiringForAgent(ownerId: string, agent: Agent, linkedChannelCount: number): Promise<AgentWiring> {
+  const [routines, documents] = await Promise.all([
+    listRoutines(ownerId, agent._id).catch(() => []),
+    listDocuments(agent._id).catch(() => []),
+  ])
+  return {
+    routineCount: routines.filter((r) => r.status === 'active').length,
+    channelCount: linkedChannelCount,
+    webhookCount: routines.filter((r) => r.draftDefinition?.trigger?.type === 'webhook').length,
+    collaboratorCount: (agent.callableAgentIds?.length ?? 0) + (agent.callableSectorIds?.length ?? 0),
+    toolCount: (agent.tools?.length ?? 0) + (agent.builtinTools?.length ?? 0),
+    knowledgeCount: documents.length,
+    deliveryConfigured: routines.some((r) => (r.draftDefinition?.deliveries?.length ?? 0) > 0),
+  }
+}
+
 app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   const agentId = String(req.params.agentId)
   if (!ObjectId.isValid(agentId)) {
@@ -2019,18 +2068,7 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
 
   const linkedWidgets = widgets.filter((w) => w.agentId?.toString() === agentId)
   const channelLinked = linkedWidgets.length > 0 || (agent.activationModes ?? []).includes('channel')
-  // Real wiring around this agent: what EXISTS, not what is merely allowed. Every
-  // count comes from owner-scoped queries.
-  const agentRoutines = await listRoutines(ownerId, agentObjectId).catch(() => [])
-  const wiring = {
-    routineCount: agentRoutines.filter((r) => r.status === 'active').length,
-    channelCount: linkedWidgets.length,
-    webhookCount: agentRoutines.filter((r) => r.draftDefinition?.trigger?.type === 'webhook').length,
-    collaboratorCount: (agent.callableAgentIds?.length ?? 0) + (agent.callableSectorIds?.length ?? 0),
-    toolCount: (agent.tools?.length ?? 0) + (agent.builtinTools?.length ?? 0),
-    knowledgeCount: documents.length,
-    deliveryConfigured: agentRoutines.some((r) => (r.draftDefinition?.deliveries?.length ?? 0) > 0),
-  }
+  const wiring = await wiringForAgent(ownerId, agent, linkedWidgets.length)
   const readiness = agentReadiness(agent, wiring)
   const triggers = triggerStates(agent, wiring)
   // "Entregas" is only offered when this agent really sent something.
@@ -2049,9 +2087,20 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
     availableMetrics: availableMetricKeys(agent, channelLinked, { hasDeliveries: agentHasDeliveries }),
     resolvedMetric: resolveMetricKey(agent, channelLinked, { hasDeliveries: agentHasDeliveries }),
     linkedWidgets: linkedWidgets.map((w) => ({ _id: w._id, name: w.name })),
+    // Where this agent is used as part of a team — coordinator, member or a named
+    // pipeline stage. A member row is not the whole story: a coordinator or a stage
+    // agent is often NOT in `members`, and the agent page used to show nothing.
     linkedSectors: sectors
-      .filter((t) => t.members.some((m) => m.agentId.toString() === agentId))
-      .map((t) => ({ _id: t._id, name: t.name })),
+      .map((t) => {
+        const roles: { role: 'coordinator' | 'member' | 'stage'; stageId?: string; stageName?: string }[] = []
+        if (t.coordinatorAgentId?.toString() === agentId) roles.push({ role: 'coordinator' })
+        if (t.members.some((m) => m.agentId.toString() === agentId)) roles.push({ role: 'member' })
+        for (const st of t.stages ?? []) {
+          if (st.agentId?.toString() === agentId) roles.push({ role: 'stage', stageId: st.id, stageName: st.name })
+        }
+        return roles.length > 0 ? { _id: t._id, name: t.name, mode: normalizeSectorMode(t.mode), roles } : null
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null),
     knowledgeCount: documents.length,
   })
 })

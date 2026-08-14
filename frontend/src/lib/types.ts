@@ -273,7 +273,9 @@ export interface AgentOverview {
   availableMetrics: MetricKey[]
   resolvedMetric: MetricKey
   linkedWidgets: { _id: string; name: string }[]
-  linkedSectors: { _id: string; name: string }[]
+  // Where this agent is used as part of a team, and in which role. A coordinator
+  // or a pipeline stage agent is often NOT in the sector's member list.
+  linkedSectors: { _id: string; name: string; mode: SectorMode; roles: { role: 'coordinator' | 'member' | 'stage'; stageId?: string; stageName?: string }[] }[]
   knowledgeCount: number
 }
 
@@ -288,8 +290,16 @@ export interface SectorAnalytics {
   stages: { name: string; handled: number; left: number }[]
 }
 
+export interface SectorReadinessIssueSummary {
+  code: 'no_members' | 'no_coordinator' | 'no_stages' | 'stage_without_agent' | 'agent_pending'
+  message: string
+  action: string
+  severity: 'blocking' | 'warning'
+}
+
 export interface SectorOverview {
   sector: SectorSummary
+  readiness: { ready: boolean; issues: SectorReadinessIssueSummary[] }
   analytics: SectorAnalytics | null
   linkedWidgets: { _id: string; name: string }[]
 }
