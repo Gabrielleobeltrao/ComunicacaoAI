@@ -116,13 +116,16 @@ import {
   setProviderApiKey,
 } from './userSettings.js'
 import { getMonthlyTokens, getUsageSummary, recordReplyUsage } from './tokenUsage.js'
+import { ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
+import { availableMetricKeys, composeAgentStats, getAgentEventMetricsBatch, periodSince, PERIODS, resolveMetricKey } from './agentMetrics.js'
+import type { Period } from './agentMetrics.js'
 import { listToolCalls, logToolCalls } from './toolCallLog.js'
 import { deleteIntegration } from './integrations.js'
 import { buildGoogleAuthUrl, connectGoogle, getGoogleStatus, googleConfigured } from './googleCalendar.js'
 import { builtinAppsCatalog, getBuiltinApp, resolveAgentTools } from './builtinTools.js'
 import { rootContext } from './delegation.js'
 import { productionDelegationDeps, resolveToolsWithDelegation } from './delegationWiring.js'
-import { ensureDelegationIndexes } from './delegationLog.js'
+import { ensureDelegationIndexes, succeededDelegationsByCaller } from './delegationLog.js'
 import {
   computeIdentityKey,
   findVisitorProfile,
@@ -1654,9 +1657,59 @@ app.get('/api/agents', requireAuth, async (req, res) => {
 })
 
 // Per-agent roster stats for the Agentes cards (conversas/leads/atendimento).
-app.get('/api/agent-stats', requireAuth, async (_req, res) => {
-  const stats = await getAgentStatsBatch(res.locals.userId)
-  res.json(stats)
+// Per-agent OPERATIONAL stats over a period (default 30d). One aggregation over
+// agent_execution_events for the core metrics, plus grouped delegation + widget
+// rollups for the specific KPIs — no N+1. Channel (conversations/leads) is returned
+// separately for the "Canais e atendimento" section and channel KPIs.
+app.get('/api/agent-stats', requireAuth, async (req, res) => {
+  const ownerId = res.locals.userId
+  const period: Period = (PERIODS as string[]).includes(String(req.query.period)) ? (req.query.period as Period) : '30d'
+  const since = periodSince(period)
+  const floorId = await scopedFloorId(ownerId, req.query.floorId)
+
+  const [agents, eventMetrics, delegationsByCaller, widgetStats, since0] = await Promise.all([
+    listAgents(ownerId, floorId),
+    getAgentEventMetricsBatch(ownerId, { floorId, since }),
+    succeededDelegationsByCaller(ownerId, since ?? undefined),
+    getAgentStatsBatch(ownerId), // widget-based conversations/leads (lifetime)
+    telemetrySince(ownerId),
+  ])
+
+  const stats: Record<string, unknown> = {}
+  const channel: Record<string, { linked: boolean; conversations: number; attendedConversations: number; qualifiedLeads: number }> = {}
+  for (const agent of agents) {
+    const id = agent._id.toString()
+    const w = widgetStats[id]
+    const channelLinked = !!w || (agent.activationModes ?? []).includes('channel')
+    const ev = eventMetrics.get(id)
+    const specificValue = (key: string): number | null => {
+      switch (key) {
+        case 'executions':
+          return ev && ev.executions > 0 ? ev.succeeded : null
+        case 'tool_actions':
+          return ev && ev.executions > 0 ? ev.toolActions : null
+        case 'delegations': {
+          const c = delegationsByCaller.get(id) ?? 0
+          return c === 0 && !(ev && ev.executions > 0) ? null : c
+        }
+        case 'conversations':
+          return w ? w.conversations : null
+        case 'leads':
+          return w ? w.qualifiedLeads : null
+        default:
+          return null
+      }
+    }
+    stats[id] = composeAgentStats(agent, ev, channelLinked, (k) => specificValue(k))
+    channel[id] = {
+      linked: channelLinked,
+      conversations: w?.conversations ?? 0,
+      attendedConversations: w?.attendedConversations ?? 0,
+      qualifiedLeads: w?.qualifiedLeads ?? 0,
+    }
+  }
+
+  res.json({ period, telemetrySince: since0 ? since0.toISOString() : null, stats, channel })
 })
 
 app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
@@ -1925,12 +1978,17 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
     listDocuments(agentObjectId),
   ])
 
+  const linkedWidgets = widgets.filter((w) => w.agentId?.toString() === agentId)
+  const channelLinked = linkedWidgets.length > 0 || (agent.activationModes ?? []).includes('channel')
   res.json({
     agent: { ...agent, floorId: agent.officeId?.toString() ?? null },
     stats,
-    linkedWidgets: widgets
-      .filter((w) => w.agentId?.toString() === agentId)
-      .map((w) => ({ _id: w._id, name: w.name })),
+    // KPI availability for the "Métrica do card" picker (data-source aware) and the
+    // currently-resolved card metric.
+    channelLinked,
+    availableMetrics: availableMetricKeys(agent, channelLinked),
+    resolvedMetric: resolveMetricKey(agent, channelLinked),
+    linkedWidgets: linkedWidgets.map((w) => ({ _id: w._id, name: w.name })),
     linkedSectors: sectors
       .filter((t) => t.members.some((m) => m.agentId.toString() === agentId))
       .map((t) => ({ _id: t._id, name: t.name })),
@@ -2023,6 +2081,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   // manager here can reach specialists on other floors of the same building.
   const playgroundFloor = await getFloor(res.locals.userId, agent.officeId)
   const playgroundBuildingId = playgroundFloor?.buildingId.toString() ?? agent.officeId.toString()
+  const manualStartedAt = new Date()
   const { text: generated, usage, toolCalls } = await generateAgentReply(
     agent.objective,
     knowledge,
@@ -2053,6 +2112,22 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
   )
+  // Manual test telemetry (a fresh key per test — these are never replayed).
+  recordAgentEventSafe({
+    eventKey: `manual:${new ObjectId().toString()}`,
+    ownerId: res.locals.userId,
+    agentId: agent._id,
+    buildingId: playgroundFloor?.buildingId ?? null,
+    floorId: agent.officeId,
+    source: 'manual',
+    preset: agent.preset,
+    status: 'succeeded',
+    startedAt: manualStartedAt,
+    finishedAt: new Date(),
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    toolCalls: toolCalls.length,
+  })
   let reply = generated
 
   let handoff = false
@@ -3150,6 +3225,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     ),
   ].join('\n\n')
 
+  const channelStartedAt = new Date()
   const { text: generatedReply, usage, toolCalls } = await generateAgentReply(
     replyObjective,
     knowledge,
@@ -3181,6 +3257,28 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
 
   const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText, replyAgentName)
   broadcastMessage(agentMessage, ownerId)
+  // Channel telemetry: attribute this reply to the answering agent (keyed by the
+  // agent message id, so a re-broadcast never double-counts).
+  getFloor(ownerId, agent.officeId)
+    .then((floor) =>
+      recordAgentEventSafe({
+        eventKey: `msg:${agentMessage._id.toString()}`,
+        ownerId,
+        agentId: agent._id,
+        buildingId: floor?.buildingId ?? null,
+        floorId: agent.officeId,
+        source: 'channel',
+        preset: agent.preset,
+        status: 'succeeded',
+        startedAt: channelStartedAt,
+        finishedAt: new Date(),
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        toolCalls: toolCalls.length,
+        metadata: { channel: widget.channel ?? 'web' },
+      }),
+    )
+    .catch(() => undefined)
   // On a WhatsApp channel the socket only feeds the owner's Chats view; the
   // customer gets the reply through the provider. conversationId is their number.
   if (widget.channel === 'whatsapp') {
@@ -3366,6 +3464,9 @@ async function start() {
   })
   ensureDelegationIndexes().catch((error) => {
     console.error('ensureDelegationIndexes failed:', error)
+  })
+  ensureAgentEventIndexes().catch((error) => {
+    console.error('ensureAgentEventIndexes failed:', error)
   })
 
   httpServer.listen(port, () => {

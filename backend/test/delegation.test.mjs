@@ -108,10 +108,13 @@ function fakeDeps(agents, over = {}) {
   const byId = new Map(agents.map((a) => [a._id.toString(), a]))
   const started = []
   const finished = []
+  const events = []
   return {
     started,
     finished,
+    events,
     deps: {
+      recordEvent: (e) => events.push(e),
       loadAgent: async (_o, id) => byId.get(id.toString()) ?? null,
       loadSector: async () => over.sector ?? null,
       listAgentsInBuilding: async () => agents,
@@ -299,6 +302,41 @@ test('delegate_to_sector denies when the caller is not authorized for the sector
   const tool = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_sector')
   const out = JSON.parse((await tool.run({ sectorId: sector._id.toString(), objective: 'x' })).result)
   assert.equal(out.code, 'unauthorized')
+})
+
+test('delegate_to_agent emits a per-agent telemetry event (source=delegation) for the target', async () => {
+  const a = mkAgent()
+  const b = mkAgent({ preset: 'researcher' })
+  const f = fakeDeps([a, b])
+  const del = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_agent')
+  await del.run({ agentId: b._id.toString(), objective: 'faça' })
+  assert.equal(f.events.length, 1)
+  const e = f.events[0]
+  assert.equal(e.source, 'delegation')
+  assert.equal(e.agentId.toString(), b._id.toString())
+  assert.equal(e.status, 'succeeded')
+  assert.equal(e.inputTokens, 10)
+  assert.equal(e.outputTokens, 5)
+  assert.ok(e.eventKey.startsWith('deleg:'))
+})
+
+test('delegate_to_sector emits a sector event per stage', async () => {
+  const a = mkAgent()
+  const s1 = mkAgent()
+  const s2 = mkAgent()
+  const sector = mkSector({
+    mode: 'pipeline',
+    stages: [
+      { id: 'a', name: 'A', agentId: s1._id, instruction: 'x', dependsOn: [], expectedOutput: '', onError: 'stop', retryPolicy: { maxAttempts: 1, backoffMs: 0 } },
+      { id: 'b', name: 'B', agentId: s2._id, instruction: 'y', dependsOn: ['a'], expectedOutput: '', onError: 'stop', retryPolicy: { maxAttempts: 1, backoffMs: 0 } },
+    ],
+  })
+  const f = fakeDeps([a, s1, s2], { sector })
+  const tool = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_sector')
+  await tool.run({ sectorId: sector._id.toString(), objective: 'go' })
+  const sectorEvents = f.events.filter((e) => e.source === 'sector')
+  assert.equal(sectorEvents.length, 2)
+  assert.ok(sectorEvents.every((e) => e.status === 'succeeded'))
 })
 
 test('childContext deepens the chain and shares the budget object', () => {

@@ -42,6 +42,13 @@ export const ACTIVATION_MODES: ActivationMode[] = ['manual', 'scheduled', 'event
 export type DelegationPolicy = 'none' | 'all' | 'selected'
 export const DELEGATION_POLICIES: DelegationPolicy[] = ['none', 'all', 'selected']
 
+// The card KPI an agent shows in position 3. A concrete key is a MANUAL choice and
+// is never overwritten by a preset change; 'auto' derives the key from the preset at
+// read time (so changing the preset moves only the automatic default).
+export type MetricKey = 'executions' | 'delegations' | 'tool_actions' | 'conversations' | 'leads'
+export type MetricProfile = 'auto' | MetricKey
+export const METRIC_PROFILES: MetricProfile[] = ['auto', 'executions', 'delegations', 'tool_actions', 'conversations', 'leads']
+
 export const MAX_DAILY_MESSAGE_LIMIT = 1000
 export const MAX_TOOLS = 10
 export const MAX_TOOL_PARAMS = 10
@@ -127,6 +134,7 @@ export interface Agent {
   callableAgentIds: string[] // when delegationPolicy='selected': the agents this one may call
   callableSectorIds: string[] // when delegationPolicy='selected': the sectors this one may call
   allowedCallerAgentIds: string[] // when callerPolicy='selected': the agents allowed to call this one
+  metricProfile: MetricProfile // which KPI the card shows ('auto' = derive from preset)
   createdAt: Date
 }
 
@@ -159,6 +167,7 @@ export function withAgentDefaults(a: Agent): Agent {
     allowedCallerAgentIds: a.allowedCallerAgentIds ?? [],
     delegationPolicy: deriveDelegationPolicy(a),
     callerPolicy: deriveCallerPolicy(a),
+    metricProfile: a.metricProfile ?? 'auto',
   }
 }
 
@@ -173,6 +182,7 @@ export interface AgentModelFields {
   callableAgentIds?: string[]
   callableSectorIds?: string[]
   allowedCallerAgentIds?: string[]
+  metricProfile?: MetricProfile
 }
 
 // Parse + validate the agent-as-primary-unit fields from a request body. Only sets a
@@ -206,6 +216,10 @@ export function parseAgentModelFields(body: Record<string, unknown>): { fields: 
     if (v === undefined) continue
     if (typeof v !== 'string' || !(DELEGATION_POLICIES as string[]).includes(v)) return { fields, error: `${key} must be one of ${DELEGATION_POLICIES.join(', ')}` }
     fields[key] = v as DelegationPolicy
+  }
+  if (body.metricProfile !== undefined) {
+    if (typeof body.metricProfile !== 'string' || !(METRIC_PROFILES as string[]).includes(body.metricProfile)) return { fields, error: `metricProfile must be one of ${METRIC_PROFILES.join(', ')}` }
+    fields.metricProfile = body.metricProfile as MetricProfile
   }
   return { fields }
 }
@@ -253,6 +267,7 @@ export async function createAgent(
     callableAgentIds?: string[]
     callableSectorIds?: string[]
     allowedCallerAgentIds?: string[]
+    metricProfile?: MetricProfile
   } = {},
 ) {
   const agent: Omit<Agent, '_id'> = {
@@ -298,6 +313,7 @@ export async function createAgent(
     // can reach a fresh specialist without extra wiring.
     delegationPolicy: options.delegationPolicy ?? (options.preset === 'manager' ? 'all' : 'none'),
     callerPolicy: options.callerPolicy ?? 'all',
+    metricProfile: options.metricProfile ?? 'auto',
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -357,6 +373,7 @@ export async function updateAgent(
     callableAgentIds?: string[]
     callableSectorIds?: string[]
     allowedCallerAgentIds?: string[]
+    metricProfile?: MetricProfile
   },
 ) {
   const doc = await agents.findOneAndUpdate(

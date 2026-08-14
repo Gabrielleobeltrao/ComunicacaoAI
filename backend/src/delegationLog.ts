@@ -100,3 +100,14 @@ export async function listDelegationsForAgent(ownerId: string, agentId: ObjectId
     .limit(Math.min(limit, 100))
     .toArray()
 }
+
+// How many delegations each agent INITIATED and completed (as caller), for the
+// manager/secretary card KPI. One aggregation for the whole roster — no N+1.
+export async function succeededDelegationsByCaller(ownerId: string, since?: Date): Promise<Map<string, number>> {
+  const match: Record<string, unknown> = { ownerId, status: 'succeeded' }
+  if (since) match.createdAt = { $gte: since }
+  const rows = await col
+    .aggregate<{ _id: ObjectId; count: number }>([{ $match: match }, { $group: { _id: '$callerAgentId', count: { $sum: 1 } } }])
+    .toArray()
+  return new Map(rows.map((r) => [r._id.toString(), r.count]))
+}

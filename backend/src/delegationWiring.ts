@@ -10,7 +10,9 @@ import { executeAgentTask } from './agentRuntime.js'
 import { getProviderApiKey } from './userSettings.js'
 import type { Provider } from './llm.js'
 import type { ResolvedTool } from './agentTools.js'
+import { ObjectId } from 'mongodb'
 import { finishDelegation, startDelegation } from './delegationLog.js'
+import { recordAgentEventSafe } from './agentEvents.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
 import type { DelegationContext, DelegationDeps } from './delegation.js'
 
@@ -65,6 +67,11 @@ export function productionDelegationDeps(): DelegationDeps {
     runTask: (req) => executeAgentTask(req),
     startDelegation,
     finishDelegation,
+    recordEvent: (e) =>
+      recordAgentEventSafe({
+        ...e,
+        buildingId: ObjectId.isValid(e.buildingId) ? new ObjectId(e.buildingId) : null,
+      }),
   }
   return deps
 }

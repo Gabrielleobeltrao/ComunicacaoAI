@@ -21,6 +21,8 @@ import { rootContext } from './delegation.js'
 import { productionDelegationDeps, resolveToolsWithDelegation } from './delegationWiring.js'
 import { safeFetch } from './net/safeHttp.js'
 import { getProviderApiKey } from './userSettings.js'
+import { recordReplyUsage } from './tokenUsage.js'
+import { recordAgentEventSafe, runEventKey } from './agentEvents.js'
 import { decryptConfig, getConnection } from './connections/service.js'
 import { insertDeliveryIdempotent, updateDelivery } from './connections/repository.js'
 import { maskDestination, sendEmail, sendTelegram } from './connections/adapters.js'
@@ -57,18 +59,55 @@ function buildDeps(run: AutomationRun): RunnerDeps {
         isCanceled: async () => (await findRunUnscoped(run._id))?.status === 'cancel_requested',
       })
       const tools = await resolveToolsWithDelegation(agent, run.ownerId, ctx, deps)
-      const result = await executeAgentTask({
-        objective: String(agent.objective ?? call.objective ?? ''),
-        instructions: call.instructions,
-        input: call.input,
-        context: call.context,
-        provider: agent.provider,
-        model: agent.model,
-        apiKey,
-        tools,
-        output: { format: call.format },
-      })
-      return { output: result.output }
+      const startedAt = new Date()
+      try {
+        const result = await executeAgentTask({
+          objective: String(agent.objective ?? call.objective ?? ''),
+          instructions: call.instructions,
+          input: call.input,
+          context: call.context,
+          provider: agent.provider,
+          model: agent.model,
+          apiKey,
+          tools,
+          output: { format: call.format },
+        })
+        // Propagate usage: owner-level accounting AND per-agent telemetry. Keyed by
+        // run+step+agent so a retried run never double-counts.
+        recordReplyUsage(run.ownerId, result.usage).catch((e) => console.error('recordReplyUsage failed:', (e as Error).message))
+        recordAgentEventSafe({
+          eventKey: runEventKey(run._id.toString(), call.stepId, agent._id.toString()),
+          ownerId: run.ownerId,
+          agentId: agent._id,
+          buildingId: run.buildingId,
+          floorId: run.floorId,
+          source: 'routine',
+          preset: agent.preset,
+          status: 'succeeded',
+          startedAt,
+          finishedAt: new Date(),
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          toolCalls: result.toolCalls.length,
+          metadata: { runId: run._id.toString(), stepId: call.stepId },
+        })
+        return { output: result.output }
+      } catch (error) {
+        recordAgentEventSafe({
+          eventKey: runEventKey(run._id.toString(), call.stepId, agent._id.toString()),
+          ownerId: run.ownerId,
+          agentId: agent._id,
+          buildingId: run.buildingId,
+          floorId: run.floorId,
+          source: 'routine',
+          preset: agent.preset,
+          status: 'failed',
+          startedAt,
+          finishedAt: new Date(),
+          metadata: { runId: run._id.toString(), stepId: call.stepId },
+        })
+        throw error
+      }
     },
     // Resolve the connection, record the delivery idempotently, then send.
     deliver: async (call) => {

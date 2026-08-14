@@ -19,6 +19,7 @@ export interface AgentCall {
   context: string[]
   format: 'text' | 'markdown' | 'json'
   agentId: string
+  stepId: string // the run step — part of the telemetry idempotency key
 }
 export interface DeliverCall {
   connectionId: string
@@ -127,6 +128,7 @@ async function executeStep(step: StepDefinition, ctx: Record<string, unknown>, d
           input: step.dependsOn?.length ? ctx[step.dependsOn[0]] : undefined,
           context,
           format: (cfg.format as 'text' | 'markdown' | 'json') ?? 'markdown',
+          stepId: step.id,
         })
         .catch((e) => {
           const kind = (e as { kind?: string }).kind ?? 'provider'
