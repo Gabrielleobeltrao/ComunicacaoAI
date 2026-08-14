@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { ObjectId } from 'mongodb'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
-const { checkDelegation, childContext, rootContext, buildDelegationTools, DELEGATION_MAX_DEPTH } = await import('../dist/delegation.js')
+const { checkDelegation, childContext, rootContext, buildDelegationTools, DELEGATION_MAX_DEPTH, buildCapabilityMissing, capabilityMissingTool } = await import('../dist/delegation.js')
 
 const OWNER = 'owner-1'
 const BUILDING = new ObjectId()
@@ -167,6 +167,22 @@ test('list_available_agents hides the caller and unauthorized agents, filters by
   const filtered = JSON.parse((await list.run({ capability: 'web' })).result).agents
   assert.equal(filtered.length, 1)
   assert.equal(JSON.parse((await list.run({ capability: 'inexistente' })).result).agents.length, 0)
+})
+
+test('capability_missing reports the gap with a suggested preset instead of inventing', async () => {
+  const cm = buildCapabilityMissing('Resumir notícias de ontem', 'pesquisa web')
+  assert.equal(cm.status, 'capability_missing')
+  assert.equal(cm.suggestedPreset, 'researcher')
+  assert.ok(cm.suggestedPresetLabel)
+  // delivery gap → communicator
+  assert.equal(buildCapabilityMissing('Enviar relatório', 'envio de e-mail').suggestedPreset, 'communicator')
+  // via the tool
+  const tool = capabilityMissingTool()
+  const out = JSON.parse((await tool.run({ task: 'X', missingCapability: 'orquestrar equipe' })).result)
+  assert.equal(out.status, 'capability_missing')
+  assert.equal(out.suggestedPreset, 'manager')
+  // missing required args → error, not a bogus report
+  assert.equal(JSON.parse((await tool.run({ task: 'X' })).result).status, 'error')
 })
 
 test('childContext deepens the chain and shares the budget object', () => {

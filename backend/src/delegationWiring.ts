@@ -11,15 +11,15 @@ import { getProviderApiKey } from './userSettings.js'
 import type { Provider } from './llm.js'
 import type { ResolvedTool } from './agentTools.js'
 import { finishDelegation, startDelegation } from './delegationLog.js'
-import { agentCanDelegate, buildDelegationTools } from './delegation.js'
+import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
 import type { DelegationContext, DelegationDeps } from './delegation.js'
 
 // The tool list an agent runs with in a delegation-aware context: its own tools,
-// plus the delegation tools bound to the child context when it may delegate.
+// the capability_missing escape hatch (every task agent), plus the delegation tools
+// bound to the child context when it may delegate.
 export async function resolveToolsWithDelegation(agent: Agent, ownerId: string, childCtx: DelegationContext, deps: DelegationDeps): Promise<ResolvedTool[]> {
   const base = await resolveAgentTools(agent, ownerId)
-  if (!agentCanDelegate(agent)) return base
-  return [...base, ...buildDelegationTools(childCtx, deps)]
+  return [...base, capabilityMissingTool(), ...(agentCanDelegate(agent) ? buildDelegationTools(childCtx, deps) : [])]
 }
 
 export function productionDelegationDeps(): DelegationDeps {

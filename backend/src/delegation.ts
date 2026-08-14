@@ -11,6 +11,7 @@ import { ObjectId } from 'mongodb'
 import type { Agent } from './agents.js'
 import type { ResolvedTool } from './agentTools.js'
 import type { AgentExecutionRequest, AgentExecutionResult, AgentOutputFormat } from './agentRuntime.js'
+import { presetSpec, suggestPresetForCapability } from './agentPresets.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -349,4 +350,56 @@ export function buildDelegationTools(ctx: DelegationContext, deps: DelegationDep
 // call someone (a manager/orchestrator) — keeps the toolset lean for leaf agents.
 export function agentCanDelegate(agent: Agent): boolean {
   return (agent.callableAgentIds?.length ?? 0) > 0 || (agent.callableSectorIds?.length ?? 0) > 0
+}
+
+// ---- capability_missing -----------------------------------------------------
+// When no capable agent or tool exists for a task, the model must NOT invent an
+// answer — it reports the gap here. Pure: task + missing capability → a structured
+// outcome carrying the preset to hire, which the UI turns into a prefilled
+// "Contratar agente" button. (goal §"Se não houver agente/ferramenta capaz")
+export interface CapabilityMissing {
+  status: 'capability_missing'
+  task: string
+  missingCapability: string
+  missingTool: string | null
+  suggestedPreset: string
+  suggestedPresetLabel: string
+}
+
+export function buildCapabilityMissing(task: string, capability: string, tool?: string | null): CapabilityMissing {
+  const preset = suggestPresetForCapability(capability || tool || '')
+  return {
+    status: 'capability_missing',
+    task: task.trim(),
+    missingCapability: capability.trim(),
+    missingTool: tool?.trim() || null,
+    suggestedPreset: preset,
+    suggestedPresetLabel: presetSpec(preset).label,
+  }
+}
+
+// Escape-hatch tool offered to every task-context agent (delegating or not).
+export function capabilityMissingTool(): ResolvedTool {
+  return {
+    name: 'report_capability_missing',
+    description:
+      'Use quando NÃO existir agente colaborador nem ferramenta capaz de cumprir a tarefa. Não invente: relate a lacuna. Informe a tarefa, a competência que falta e, se aplicável, a ferramenta ausente.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'a tarefa que não pôde ser cumprida' },
+        missingCapability: { type: 'string', description: 'a competência que falta (ex: pesquisa web, envio de e-mail)' },
+        missingTool: { type: 'string', description: 'ferramenta específica ausente (opcional)' },
+      },
+      required: ['task', 'missingCapability'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const task = typeof args.task === 'string' ? args.task : ''
+      const capability = typeof args.missingCapability === 'string' ? args.missingCapability : ''
+      const tool = typeof args.missingTool === 'string' ? args.missingTool : null
+      if (!task || !capability) return { ok: false, result: j({ status: 'error', reason: 'task e missingCapability são obrigatórios' }) }
+      return { ok: true, result: j(buildCapabilityMissing(task, capability, tool)) }
+    },
+  }
 }
