@@ -167,7 +167,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
   const [editResponseEmojis, setEditResponseEmojis] = useState(false)
   const [editResponseFormatting, setEditResponseFormatting] = useState(false)
   const [editHandoffEnabled, setEditHandoffEnabled] = useState(false)
-  const [editFirstMessage, setEditFirstMessage] = useState('')
   const [editProactivityEnabled, setEditProactivityEnabled] = useState(false)
   const [editProactivityGuidance, setEditProactivityGuidance] = useState('')
   const [editLanguage, setEditLanguage] = useState<Language>('pt')
@@ -252,7 +251,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
       setEditResponseEmojis(agent.responseEmojis ?? false)
       setEditResponseFormatting(agent.responseFormatting ?? false)
       setEditHandoffEnabled(agent.handoffEnabled ?? false)
-      setEditFirstMessage(agent.firstMessage ?? '')
       setEditProactivityEnabled(agent.proactivityEnabled ?? false)
       setEditProactivityGuidance(agent.proactivityGuidance ?? '')
       setEditLanguage(agent.language ?? 'pt')
@@ -284,7 +282,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
       setEditResponseEmojis(false)
       setEditResponseFormatting(false)
       setEditHandoffEnabled(false)
-      setEditFirstMessage('')
       setEditProactivityEnabled(false)
       setEditProactivityGuidance('')
       setEditLanguage('pt')
@@ -389,7 +386,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
       responseEmojis: editResponseEmojis,
       responseFormatting: editResponseFormatting,
       handoffEnabled: editHandoffEnabled,
-      firstMessage: editFirstMessage.trim() || null,
       proactivityEnabled: editProactivityEnabled,
       proactivityGuidance: editProactivityGuidance.trim(),
       language: editLanguage,
@@ -700,20 +696,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
               />
               <p className="mt-1 text-xs text-(--text-faint)">
                 Descreva o objetivo e como o agente deve agir — é a instrução principal dele.
-              </p>
-            </div>
-            <div>
-              <label className="mb-1 block text-sm text-(--text-muted)">Primeira mensagem</label>
-              <textarea
-                value={editFirstMessage}
-                onChange={(e) => setEditFirstMessage(e.target.value)}
-                rows={2}
-                placeholder="Ex: Oi! 👋 Quer ver o cardápio ou já fazer um pedido?"
-                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-              />
-              <p className="mt-1 text-xs text-(--text-faint)">
-                Mensagem que o agente mostra ao visitante assim que o chat abre. Se vazio, vale a
-                mensagem de boas-vindas configurada no widget.
               </p>
             </div>
           </>

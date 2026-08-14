@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AgentCard } from '../components/AgentCard'
-import { AgentForm } from '../components/AgentForm'
+import { HireWizard } from '../components/HireWizard'
 import { AppLayout } from '../components/AppLayout'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentStat } from '../lib/agentAvatar'
@@ -189,11 +189,13 @@ export function Agents() {
         </div>
       </Dialog>
 
-      <Dialog open={isCreating} onClose={() => setIsCreating(false)} title="Novo agente" width={680}>
-        <AgentForm
-          agent={null}
+      <Dialog open={isCreating} onClose={() => setIsCreating(false)} title="Contratar agente" width={680}>
+        <HireWizard
           floorId={floorId}
-          onSaved={async () => {
+          agents={agents}
+          sectors={sectors}
+          onCancel={() => setIsCreating(false)}
+          onHired={async () => {
             setIsCreating(false)
             await loadAgents()
           }}
