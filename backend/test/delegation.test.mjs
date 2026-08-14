@@ -113,7 +113,7 @@ function fakeDeps(agents, over = {}) {
     finished,
     deps: {
       loadAgent: async (_o, id) => byId.get(id.toString()) ?? null,
-      loadSector: async () => null,
+      loadSector: async () => over.sector ?? null,
       listAgentsInBuilding: async () => agents,
       buildingIdForFloor: async () => B,
       resolveTools: async (agent, ownerId, childCtx) => buildDelegationTools(childCtx, over.self),
@@ -217,6 +217,88 @@ test('capability_missing reports the gap with a suggested preset instead of inve
   assert.equal(out.status, 'capability_missing')
   assert.equal(out.suggestedPreset, 'manager')
   assert.equal(JSON.parse((await tool.run({ task: 'X' })).result).status, 'error')
+})
+
+// ---- delegate_to_sector by mode --------------------------------------------
+function mkSector(over = {}) {
+  return { _id: new ObjectId(), name: 'Equipe', officeId: FLOOR_A, mode: 'orchestrated', coordinatorAgentId: null, instruction: '', members: [], stages: [], ...over }
+}
+
+test('delegate_to_sector refuses an organization sector (not executable)', async () => {
+  const a = mkAgent()
+  const sector = mkSector({ mode: 'organization', members: [{ agentId: mkAgent()._id }] })
+  const f = fakeDeps([a], { sector })
+  const tool = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_sector')
+  const out = JSON.parse((await tool.run({ sectorId: sector._id.toString(), objective: 'x' })).result)
+  assert.equal(out.status, 'not_executable')
+})
+
+test('delegate_to_sector orchestrated runs the coordinator and records parent+child', async () => {
+  const a = mkAgent()
+  const coord = mkAgent({ name: 'Coord' })
+  const sector = mkSector({ mode: 'orchestrated', coordinatorAgentId: coord._id, members: [{ agentId: coord._id, isDefault: true }] })
+  const f = fakeDeps([a, coord], { sector })
+  const tool = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_sector')
+  const out = JSON.parse((await tool.run({ sectorId: sector._id.toString(), objective: 'faça' })).result)
+  assert.equal(out.status, 'ok')
+  assert.equal(out.output, 'done')
+  // one sector record + one child (coordinator) record
+  assert.equal(f.started.filter((s) => s.targetType === 'sector').length, 1)
+  assert.equal(f.started.filter((s) => s.targetType === 'agent' && s.targetAgentId.equals(coord._id)).length, 1)
+})
+
+test('delegate_to_sector pipeline runs stages in order, chaining outputs, one child per stage', async () => {
+  const a = mkAgent()
+  const s1 = mkAgent({ name: 'S1' })
+  const s2 = mkAgent({ name: 'S2' })
+  const sector = mkSector({
+    mode: 'pipeline',
+    stages: [
+      { id: 'a', name: 'Coleta', agentId: s1._id, instruction: 'coletar', dependsOn: [], expectedOutput: '', onError: 'stop', retryPolicy: { maxAttempts: 1, backoffMs: 0 } },
+      { id: 'b', name: 'Resumo', agentId: s2._id, instruction: 'resumir', dependsOn: ['a'], expectedOutput: '', onError: 'stop', retryPolicy: { maxAttempts: 1, backoffMs: 0 } },
+    ],
+  })
+  // runTask echoes which instruction + input it saw so we can prove chaining.
+  const runTask = async (req) => ({ output: `[${req.instructions}<=${req.input ?? ''}]`, usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] })
+  const f = fakeDeps([a, s1, s2], { sector, runTask })
+  const tool = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_sector')
+  const out = JSON.parse((await tool.run({ sectorId: sector._id.toString(), objective: 'go', input: 'seed' })).result)
+  assert.equal(out.status, 'ok')
+  // stage b consumed stage a's output
+  assert.equal(out.output, '[resumir<=[coletar<=seed]]')
+  assert.equal(f.started.filter((s) => s.targetType === 'agent').length, 2) // one child per stage
+})
+
+test('delegate_to_sector pipeline onError=continue skips a failing stage', async () => {
+  const a = mkAgent()
+  const bad = mkAgent({ name: 'Bad' })
+  const good = mkAgent({ name: 'Good' })
+  const sector = mkSector({
+    mode: 'pipeline',
+    stages: [
+      { id: 'a', name: 'Falha', agentId: bad._id, instruction: 'x', dependsOn: [], expectedOutput: '', onError: 'continue', retryPolicy: { maxAttempts: 1, backoffMs: 0 } },
+      { id: 'b', name: 'Segue', agentId: good._id, instruction: 'y', dependsOn: [], expectedOutput: '', onError: 'stop', retryPolicy: { maxAttempts: 1, backoffMs: 0 } },
+    ],
+  })
+  const runTask = async (req) => {
+    if (req.instructions === 'x') throw new Error('boom')
+    return { output: 'ok-good', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+  }
+  const f = fakeDeps([a, bad, good], { sector, runTask })
+  const tool = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_sector')
+  const out = JSON.parse((await tool.run({ sectorId: sector._id.toString(), objective: 'go' })).result)
+  assert.equal(out.status, 'ok')
+  assert.equal(out.output, 'ok-good')
+  assert.ok(out.warnings && out.warnings.length === 1)
+})
+
+test('delegate_to_sector denies when the caller is not authorized for the sector', async () => {
+  const a = mkAgent({ delegationPolicy: 'selected', callableSectorIds: [] }) // may call no sector
+  const sector = mkSector({ members: [{ agentId: mkAgent()._id }] })
+  const f = fakeDeps([a], { sector })
+  const tool = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_sector')
+  const out = JSON.parse((await tool.run({ sectorId: sector._id.toString(), objective: 'x' })).result)
+  assert.equal(out.code, 'unauthorized')
 })
 
 test('childContext deepens the chain and shares the budget object', () => {

@@ -4,7 +4,7 @@
 import { getAgentById, listAgents } from './agents.js'
 import type { Agent } from './agents.js'
 import { getFloor, listFloors } from './floors.js'
-import { getSectorById } from './sectors.js'
+import { getSectorById, normalizeSectorMode } from './sectors.js'
 import { resolveAgentTools } from './builtinTools.js'
 import { executeAgentTask } from './agentRuntime.js'
 import { getProviderApiKey } from './userSettings.js'
@@ -27,7 +27,26 @@ export function productionDelegationDeps(): DelegationDeps {
     loadAgent: (ownerId, id) => getAgentById(ownerId, id),
     loadSector: async (ownerId, id) => {
       const s = await getSectorById(ownerId, id)
-      return s ? { _id: s._id, name: s.name, officeId: s.officeId, mode: s.mode ?? 'adaptive', members: s.members } : null
+      if (!s) return null
+      return {
+        _id: s._id,
+        name: s.name,
+        officeId: s.officeId,
+        mode: normalizeSectorMode(s.mode),
+        coordinatorAgentId: s.coordinatorAgentId ?? null,
+        instruction: s.instruction ?? '',
+        members: s.members,
+        stages: (s.stages ?? []).map((st) => ({
+          id: st.id,
+          name: st.name,
+          agentId: st.agentId,
+          instruction: st.instruction,
+          dependsOn: st.dependsOn ?? [],
+          expectedOutput: st.expectedOutput ?? '',
+          onError: st.onError ?? 'stop',
+          retryPolicy: st.retryPolicy ?? { maxAttempts: 1, backoffMs: 2000 },
+        })),
+      }
     },
     // Every agent whose FLOOR belongs to this building — delegation spans floors of
     // the same building, not just one floor.

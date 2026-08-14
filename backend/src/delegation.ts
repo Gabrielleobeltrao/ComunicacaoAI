@@ -96,12 +96,26 @@ export function rootContext(opts: {
   }
 }
 
+export interface SectorStageLite {
+  id: string
+  name: string
+  agentId: ObjectId
+  instruction: string
+  dependsOn: string[]
+  expectedOutput: string
+  onError: 'stop' | 'continue'
+  retryPolicy: { maxAttempts: number; backoffMs: number }
+}
+
 export interface SectorLite {
   _id: ObjectId
   name: string
   officeId: ObjectId
-  mode: 'adaptive' | 'pipeline'
+  mode: 'organization' | 'orchestrated' | 'pipeline'
+  coordinatorAgentId?: ObjectId | null
+  instruction?: string
   members: { agentId: ObjectId; isDefault?: boolean }[]
+  stages?: SectorStageLite[]
 }
 
 // Injected IO. Production wiring in ./delegationWiring.ts binds these to the real
@@ -216,12 +230,64 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
   }
 }
 
+// Run a target with a bounded number of attempts (retryPolicy.maxAttempts). The last
+// error propagates when every attempt fails.
+async function runWithRetry(
+  deps: DelegationDeps,
+  ctx: DelegationContext,
+  target: Agent,
+  objective: string,
+  input: unknown,
+  format: AgentOutputFormat,
+  maxAttempts: number,
+): Promise<{ output: string; usage: { inputTokens: number; outputTokens: number } }> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
+    try {
+      return await runAgentTask(deps, ctx, target, objective, input, format)
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('falha na execução')
+}
+
+// Record a child delegation (caller = the agent that invoked the sector) so each
+// stage/coordinator run shows in both histories, one level below the sector record.
+async function recordChildRun(
+  deps: DelegationDeps,
+  ctx: DelegationContext,
+  target: Agent,
+  objective: string,
+  run: () => Promise<{ output: string }>,
+): Promise<string> {
+  const recId = await deps.startDelegation({
+    ownerId: ctx.ownerId,
+    correlationId: ctx.correlationId,
+    depth: ctx.depth + 2,
+    callerAgentId: new ObjectId(ctx.callerAgentId),
+    targetType: 'agent',
+    targetAgentId: target._id,
+    objective,
+  })
+  try {
+    const { output } = await run()
+    await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
+    return output
+  } catch (error) {
+    await deps.finishDelegation(recId, { status: 'failed', error: error instanceof Error ? error.message : 'falha' })
+    throw error
+  }
+}
+
 // ---- delegate_to_sector -----------------------------------------------------
-// Real, minimal team executor. pipeline: members run in order, each output feeding
-// the next input; the last output is returned. adaptive: the default member leads
-// and may sub-delegate to teammates via its own tools.
-// ponytail: adaptive routing = default-member-leads (no LLM supervisor pick in task
-// mode); upgrade to a planner if teams need per-task specialist routing.
+// Real team executor, by mode:
+//   organization — not executable (a visual grouping); returns not_executable.
+//   orchestrated — the coordinator runs the request; with delegation tools it calls
+//                  members itself and consolidates.
+//   pipeline     — the stages run in order, each stage's input chained from its
+//                  dependencies' outputs, honouring retryPolicy and onError.
+// Every stage/coordinator run is a child delegation (parent = the sector record).
 async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, args: Record<string, unknown>): Promise<{ ok: boolean; result: string }> {
   const sectorId = typeof args.sectorId === 'string' ? args.sectorId : ''
   const objective = typeof args.objective === 'string' ? args.objective.trim() : ''
@@ -230,20 +296,19 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
 
   const caller = await deps.loadAgent(ctx.ownerId, new ObjectId(ctx.callerAgentId))
   if (!caller) return { ok: false, result: j({ status: 'error', reason: 'agente chamador não encontrado' }) }
-  const callerCanCall = (caller.callableSectorIds ?? []).length === 0 || caller.callableSectorIds.includes(sectorId)
+  const callerCanCall = policyAllows(caller.delegationPolicy, caller.callableSectorIds, sectorId)
   if (!callerCanCall) return { ok: false, result: j({ status: 'denied', code: 'unauthorized', reason: 'setor não autorizado para este agente' }) }
   if (ctx.depth + 1 > DELEGATION_MAX_DEPTH) return { ok: false, result: j({ status: 'denied', code: 'depth_exceeded', reason: 'profundidade máxima atingida' }) }
   if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) return { ok: false, result: j({ status: 'denied', code: 'budget_exceeded', reason: 'orçamento esgotado' }) }
 
   const sector = await deps.loadSector(ctx.ownerId, new ObjectId(sectorId))
-  if (!sector || sector.members.length === 0) return { ok: false, result: j({ status: 'error', reason: 'setor não encontrado ou vazio' }) }
+  if (!sector) return { ok: false, result: j({ status: 'error', reason: 'setor não encontrado' }) }
   const sectorBuildingId = await deps.buildingIdForFloor(ctx.ownerId, sector.officeId)
   if (sectorBuildingId !== ctx.buildingId) return { ok: false, result: j({ status: 'denied', code: 'forbidden', reason: 'setor de outro prédio' }) }
+  if (sector.mode === 'organization') return { ok: false, result: j({ status: 'not_executable', reason: 'este setor apenas agrupa agentes; escolha um agente ou um setor orquestrado/pipeline' }) }
 
-  const members = (await Promise.all(sector.members.map((m) => deps.loadAgent(ctx.ownerId, m.agentId)))).filter((a): a is Agent => a !== null)
-  // Members already in the chain would loop — drop them.
-  const runnable = members.filter((a) => a._id.toString() !== ctx.callerAgentId && !ctx.ancestry.includes(a._id.toString()))
-  if (runnable.length === 0) return { ok: false, result: j({ status: 'denied', code: 'cycle', reason: 'todos os membros já estão na cadeia' }) }
+  const inChain = (id: ObjectId) => id.toString() === ctx.callerAgentId || ctx.ancestry.includes(id.toString())
+  const format = (args.format as AgentOutputFormat) || 'markdown'
 
   const recId = await deps.startDelegation({
     ownerId: ctx.ownerId,
@@ -255,22 +320,51 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
     objective,
   })
   try {
-    const format = (args.format as AgentOutputFormat) || 'markdown'
     let output = ''
-    if ((sector.mode ?? 'adaptive') === 'pipeline') {
-      let carry: unknown = args.input
-      for (const member of runnable) {
+    if (sector.mode === 'pipeline') {
+      const stages = sector.stages ?? []
+      if (stages.length === 0) throw new Error('pipeline sem etapas')
+      const outputs: Record<string, string> = {}
+      const failures: string[] = []
+      for (const stage of stages) {
         if (await isCanceled(ctx)) throw new Error('cancelado')
         if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) throw new Error('orçamento esgotado')
-        const step = await runAgentTask(deps, ctx, member, objective, carry, format)
-        output = step.output
-        carry = step.output
+        const agent = await deps.loadAgent(ctx.ownerId, stage.agentId)
+        const problem = !agent ? 'agente da etapa não encontrado' : inChain(stage.agentId) ? 'ciclo de delegação na etapa' : null
+        if (problem || !agent) {
+          if (stage.onError === 'continue') {
+            failures.push(`${stage.name}: ${problem}`)
+            continue
+          }
+          throw new Error(`${stage.name}: ${problem}`)
+        }
+        const input = stage.dependsOn.length ? stage.dependsOn.map((id) => outputs[id] ?? '').join('\n\n') : args.input
+        const instruction = stage.instruction || objective
+        try {
+          const out = await recordChildRun(deps, ctx, agent, instruction, () => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts))
+          outputs[stage.id] = out
+          output = out
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'falha'
+          if (stage.onError === 'continue') {
+            failures.push(`${stage.name}: ${message}`)
+            continue
+          }
+          throw new Error(`${stage.name}: ${message}`)
+        }
       }
-    } else {
-      const lead = runnable.find((a) => sector.members.find((m) => m.isDefault)?.agentId.equals(a._id)) ?? runnable[0]
-      const res = await runAgentTask(deps, ctx, lead, objective, args.input, format)
-      output = res.output
+      await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
+      return { ok: true, result: j({ status: 'ok', sector: sector.name, output, ...(failures.length ? { warnings: failures } : {}) }) }
     }
+
+    // orchestrated
+    const coordinatorId = sector.coordinatorAgentId ?? sector.members.find((m) => m.isDefault)?.agentId ?? sector.members[0]?.agentId
+    if (!coordinatorId) throw new Error('setor orquestrado sem coordenador nem membros')
+    if (inChain(coordinatorId)) throw new Error('ciclo de delegação: o coordenador já está na cadeia')
+    const coordinator = await deps.loadAgent(ctx.ownerId, coordinatorId)
+    if (!coordinator) throw new Error('coordenador não encontrado')
+    const instruction = sector.instruction ? `${sector.instruction}\n\n${objective}` : objective
+    output = await recordChildRun(deps, ctx, coordinator, instruction, () => runAgentTask(deps, ctx, coordinator, instruction, args.input, format))
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
     return { ok: true, result: j({ status: 'ok', sector: sector.name, output }) }
   } catch (error) {
@@ -347,7 +441,7 @@ export function buildDelegationTools(ctx: DelegationContext, deps: DelegationDep
     },
     {
       name: 'delegate_to_sector',
-      description: 'Delega uma tarefa a um setor (equipe). Em pipeline os membros rodam em sequência; em adaptativo o membro padrão conduz.',
+      description: 'Delega uma tarefa a um setor (equipe). Orquestrado: o coordenador conduz e aciona os membros. Pipeline: as etapas rodam em ordem encadeando resultados. Setores de organização não executam.',
       inputSchema: {
         type: 'object',
         properties: {

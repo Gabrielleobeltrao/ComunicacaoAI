@@ -1,46 +1,49 @@
-// Pure-logic tests for the sector invariants the accessible-management plan
-// relies on (plan §17.1): operational readiness and the "exactly one default"
-// normalization. DB-touching paths (membership transfer, cross-floor rejection,
-// move-between-floors) require MongoDB and are exercised by the guarded e2e spec
-// (frontend/e2e/sector-management.spec.ts) against a real stack. A dummy
-// MONGODB_URI lets sectors.js import without connecting (MongoClient is lazy).
+// Sector model (Phase C): mode normalization (legacy adaptive), per-mode readiness,
+// and stage normalization. Pure — dummy MONGODB_URI so the import doesn't connect.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { ObjectId } from 'mongodb'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
-const { sectorReadiness, normalizeMembers, MAX_SECTOR_MEMBERS } = await import('../dist/sectors.js')
+const { normalizeSectorMode, sectorIsExecutable, sectorReadiness, normalizeStages, SECTOR_MODES } = await import('../dist/sectors.js')
 
-const member = (isDefault = false) => ({ agentId: {}, sector: '', routingDescription: '', advanceWhen: '', transitions: [], isDefault })
-
-test('sectorReadiness — adaptive needs >= 1 member and a default', () => {
-  assert.equal(sectorReadiness('adaptive', []), 'incomplete')
-  assert.equal(sectorReadiness('adaptive', [member(false)]), 'incomplete') // no default
-  assert.equal(sectorReadiness('adaptive', [member(true)]), 'ready')
+test('normalizeSectorMode reads legacy adaptive as orchestrated and unknown as orchestrated', () => {
+  assert.equal(normalizeSectorMode('adaptive'), 'orchestrated')
+  assert.equal(normalizeSectorMode(undefined), 'orchestrated')
+  assert.equal(normalizeSectorMode('weird'), 'orchestrated')
+  assert.equal(normalizeSectorMode('organization'), 'organization')
+  assert.equal(normalizeSectorMode('pipeline'), 'pipeline')
+  assert.deepEqual([...SECTOR_MODES], ['organization', 'orchestrated', 'pipeline'])
 })
 
-test('sectorReadiness — pipeline needs >= 2 members and a default', () => {
-  assert.equal(sectorReadiness('pipeline', [member(true)]), 'incomplete') // single stage
-  assert.equal(sectorReadiness('pipeline', [member(false), member(false)]), 'incomplete') // no default
-  assert.equal(sectorReadiness('pipeline', [member(true), member(false)]), 'ready')
+test('sectorIsExecutable: only orchestrated/pipeline run', () => {
+  assert.equal(sectorIsExecutable('organization'), false)
+  assert.equal(sectorIsExecutable('orchestrated'), true)
+  assert.equal(sectorIsExecutable('pipeline'), true)
 })
 
-test('normalizeMembers — promotes exactly one default when none is flagged', () => {
-  const out = normalizeMembers([member(false), member(false), member(false)])
-  assert.equal(out.filter((m) => m.isDefault).length, 1)
-  assert.equal(out[0].isDefault, true) // first wins when none flagged
+test('sectorReadiness by mode', () => {
+  const member = { agentId: new ObjectId(), isDefault: true, sector: '', routingDescription: '', advanceWhen: '', transitions: [] }
+  // organization: any member is enough
+  assert.equal(sectorReadiness('organization', [member]), 'ready')
+  assert.equal(sectorReadiness('organization', []), 'incomplete')
+  // orchestrated: needs a coordinator AND a member
+  assert.equal(sectorReadiness('orchestrated', [member], { coordinatorAgentId: new ObjectId() }), 'ready')
+  assert.equal(sectorReadiness('orchestrated', [member], { coordinatorAgentId: null }), 'incomplete')
+  // pipeline: needs at least one stage
+  assert.equal(sectorReadiness('pipeline', [], { stages: [{ id: 'a' }] }), 'ready')
+  assert.equal(sectorReadiness('pipeline', [], { stages: [] }), 'incomplete')
 })
 
-test('normalizeMembers — keeps a single default and demotes extras', () => {
-  const out = normalizeMembers([member(false), member(true), member(true)])
-  assert.equal(out.filter((m) => m.isDefault).length, 1)
-  assert.equal(out[1].isDefault, true) // first flagged wins
-  assert.equal(out[2].isDefault, false)
-})
-
-test('normalizeMembers — empty stays empty (a sector may have no agents)', () => {
-  assert.deepEqual(normalizeMembers([]), [])
-})
-
-test('MAX_SECTOR_MEMBERS is the shared cap', () => {
-  assert.equal(MAX_SECTOR_MEMBERS, 10)
+test('normalizeStages assigns ids, clamps retries and defaults onError to stop', () => {
+  const out = normalizeStages([
+    { name: 'X', agentId: new ObjectId(), instruction: '', dependsOn: [], inputMapping: {}, expectedOutput: '', retryPolicy: { maxAttempts: 99 }, onError: 'bogus' },
+    { id: 'keep', name: 'Y', agentId: new ObjectId(), instruction: '', dependsOn: [], inputMapping: {}, expectedOutput: '', retryPolicy: { maxAttempts: 0 }, onError: 'continue' },
+  ])
+  assert.equal(out[0].id, 's1')
+  assert.equal(out[0].retryPolicy.maxAttempts, 5) // clamped to max
+  assert.equal(out[0].onError, 'stop') // unknown -> stop
+  assert.equal(out[1].id, 'keep')
+  assert.equal(out[1].retryPolicy.maxAttempts, 1) // clamped to min
+  assert.equal(out[1].onError, 'continue')
 })

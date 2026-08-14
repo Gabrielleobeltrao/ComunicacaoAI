@@ -56,7 +56,8 @@ import {
   setStructuredMemory,
   setStructuredOutputData,
 } from './conversationMemory.js'
-import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, sectorReadiness, updateSector } from './sectors.js'
+import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, normalizeSectorMode, sectorReadiness, SECTOR_MODES, updateSector } from './sectors.js'
+import type { SectorStage, SectorTeamFields } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
 import { assignAgentToSector } from './sectorMembership.js'
 import { ensureDefaultOffice } from './offices.js'
@@ -762,7 +763,22 @@ function serializeSector(sector: WithId<Sector>) {
     floorId: sector.officeId?.toString() ?? null,
     name: sector.name,
     color: sector.color ?? DEFAULT_SECTOR_COLOR,
-    mode: sector.mode ?? 'adaptive',
+    mode: normalizeSectorMode(sector.mode),
+    coordinatorAgentId: sector.coordinatorAgentId?.toString() ?? null,
+    instruction: sector.instruction ?? '',
+    inputContract: sector.inputContract ?? '',
+    outputContract: sector.outputContract ?? '',
+    stages: (sector.stages ?? []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      agentId: s.agentId.toString(),
+      instruction: s.instruction,
+      dependsOn: s.dependsOn ?? [],
+      inputMapping: s.inputMapping ?? {},
+      expectedOutput: s.expectedOutput ?? '',
+      retryPolicy: s.retryPolicy ?? { maxAttempts: 1, backoffMs: 2000 },
+      onError: s.onError ?? 'stop',
+    })),
     members: sector.members.map((m) => ({
       agentId: m.agentId.toString(),
       sector: m.sector ?? '',
@@ -846,8 +862,83 @@ async function resolveSectorMembers(
 }
 
 function parseSectorMode(value: unknown): SectorMode | null {
-  if (value === undefined) return 'adaptive'
-  return value === 'adaptive' || value === 'pipeline' ? value : null
+  if (value === undefined) return 'orchestrated'
+  if (value === 'adaptive') return 'orchestrated' // legacy alias
+  return (SECTOR_MODES as string[]).includes(value as string) ? (value as SectorMode) : null
+}
+
+const MAX_SECTOR_STAGES = 12
+
+// Parse the orchestrated/pipeline team fields (coordinator + stages) from a request
+// body, validating every referenced agent lives on the sector's floor. Absent keys
+// are simply not set (partial-safe). No IDs/contracts are exposed to the model — the
+// UI works in names; ids are resolved here.
+async function resolveSectorTeamFields(
+  ownerId: string,
+  body: Record<string, unknown>,
+  floorId: ObjectId,
+): Promise<{ fields?: SectorTeamFields; error?: string; code?: string }> {
+  const fields: SectorTeamFields = {}
+
+  if (body.coordinatorAgentId !== undefined) {
+    const raw = body.coordinatorAgentId
+    if (raw === null || raw === '') {
+      fields.coordinatorAgentId = null
+    } else if (typeof raw !== 'string' || !ObjectId.isValid(raw)) {
+      return { error: 'Invalid coordinator id' }
+    } else {
+      const coord = await getAgentById(ownerId, new ObjectId(raw))
+      if (!coord) return { error: 'Coordinator not found', code: 'AGENT_NOT_FOUND' }
+      if (!coord.officeId?.equals(floorId)) return { error: 'Coordinator belongs to a different floor', code: 'CROSS_FLOOR_ASSIGNMENT' }
+      fields.coordinatorAgentId = coord._id
+    }
+  }
+  for (const key of ['instruction', 'inputContract', 'outputContract'] as const) {
+    const v = body[key]
+    if (v === undefined) continue
+    if (typeof v !== 'string') return { error: `${key} must be a string` }
+    fields[key] = v.slice(0, 4000)
+  }
+
+  if (body.stages !== undefined) {
+    const raw = body.stages
+    if (!Array.isArray(raw)) return { error: 'stages must be a list' }
+    if (raw.length > MAX_SECTOR_STAGES) return { error: `A pipeline can have at most ${MAX_SECTOR_STAGES} stages` }
+    const stages: SectorStage[] = []
+    const ids = new Set<string>()
+    for (let i = 0; i < raw.length; i++) {
+      const s = raw[i]
+      if (typeof s !== 'object' || s === null) return { error: 'Invalid stage' }
+      const st = s as Record<string, unknown>
+      const agentId = st.agentId
+      if (typeof agentId !== 'string' || !ObjectId.isValid(agentId)) return { error: 'Invalid stage agent' }
+      const agent = await getAgentById(ownerId, new ObjectId(agentId))
+      if (!agent) return { error: 'Stage agent not found', code: 'AGENT_NOT_FOUND' }
+      if (!agent.officeId?.equals(floorId)) return { error: 'Stage agent belongs to a different floor', code: 'CROSS_FLOOR_ASSIGNMENT' }
+      const id = typeof st.id === 'string' && st.id.trim() ? st.id.trim() : `s${i + 1}`
+      if (ids.has(id)) return { error: 'Duplicate stage id' }
+      ids.add(id)
+      const dependsOn = Array.isArray(st.dependsOn) ? (st.dependsOn as unknown[]).filter((d): d is string => typeof d === 'string') : []
+      stages.push({
+        id,
+        name: typeof st.name === 'string' && st.name.trim() ? st.name.slice(0, 200) : `Etapa ${i + 1}`,
+        agentId: agent._id,
+        instruction: typeof st.instruction === 'string' ? st.instruction.slice(0, 4000) : '',
+        dependsOn,
+        inputMapping: typeof st.inputMapping === 'object' && st.inputMapping !== null ? (st.inputMapping as Record<string, string>) : {},
+        expectedOutput: typeof st.expectedOutput === 'string' ? st.expectedOutput.slice(0, 2000) : '',
+        retryPolicy: { maxAttempts: 1, backoffMs: 2000 },
+        onError: st.onError === 'continue' ? 'continue' : 'stop',
+      })
+    }
+    // Every dependency must reference an EARLIER stage id (no forward/cyclic refs).
+    for (let i = 0; i < stages.length; i++) {
+      const earlier = new Set(stages.slice(0, i).map((s) => s.id))
+      for (const dep of stages[i].dependsOn) if (!earlier.has(dep)) return { error: `Stage "${stages[i].name}" depends on an unknown/later stage` }
+    }
+    fields.stages = stages
+  }
+  return { fields }
 }
 
 app.post('/api/sectors', requireAuth, async (req, res) => {
@@ -868,8 +959,13 @@ app.post('/api/sectors', requireAuth, async (req, res) => {
     res.status(code === 'CROSS_FLOOR_ASSIGNMENT' || code === 'SECTOR_MEMBER_LIMIT' ? 409 : 400).json({ error, code })
     return
   }
+  const { fields: team, error: teamError, code: teamCode } = await resolveSectorTeamFields(res.locals.userId, req.body ?? {}, officeId)
+  if (teamError) {
+    res.status(teamCode === 'CROSS_FLOOR_ASSIGNMENT' ? 409 : 400).json({ error: teamError, code: teamCode })
+    return
+  }
   const sectorColor = typeof color === 'string' && color.trim() ? color.trim() : DEFAULT_SECTOR_COLOR
-  const sector = await createSector(res.locals.userId, officeId, name, sectorColor, parsedMode, parsed ?? [])
+  const sector = await createSector(res.locals.userId, officeId, name, sectorColor, parsedMode, parsed ?? [], team)
   await enforceSingleMembership(res.locals.userId, sector._id, (parsed ?? []).map((m) => m.agentId))
   res.status(201).json(serializeSector(sector as WithId<Sector>))
 })
@@ -893,7 +989,17 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Sector not found' })
     return
   }
-  const updates: { name?: string; color?: string; mode?: SectorMode; members?: SectorMember[] } = {}
+  const updates: {
+    name?: string
+    color?: string
+    mode?: SectorMode
+    members?: SectorMember[]
+    coordinatorAgentId?: ObjectId | null
+    instruction?: string
+    inputContract?: string
+    outputContract?: string
+    stages?: SectorStage[]
+  } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof color === 'string' && color.trim()) updates.color = color.trim()
   if (mode !== undefined) {
@@ -912,6 +1018,12 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     }
     updates.members = parsed
   }
+  const { fields: team, error: teamError, code: teamCode } = await resolveSectorTeamFields(res.locals.userId, req.body ?? {}, existing.officeId)
+  if (teamError) {
+    res.status(teamCode === 'CROSS_FLOOR_ASSIGNMENT' ? 409 : 400).json({ error: teamError, code: teamCode })
+    return
+  }
+  Object.assign(updates, team)
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
     return
@@ -988,7 +1100,7 @@ app.put('/api/sectors/:sectorId/members', requireAuth, async (req, res) => {
     res.status(code === 'CROSS_FLOOR_ASSIGNMENT' || code === 'SECTOR_MEMBER_LIMIT' ? 409 : 400).json({ error, code })
     return
   }
-  if (sectorReadiness(existing.mode, parsed ?? []) === 'incomplete' && body.confirmChannelImpact !== true) {
+  if (sectorReadiness(normalizeSectorMode(existing.mode), parsed ?? [], { coordinatorAgentId: existing.coordinatorAgentId, stages: existing.stages }) === 'incomplete' && body.confirmChannelImpact !== true) {
     const widgets = await listWidgets(ownerId)
     const channels = widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => ({ id: w._id.toString(), name: w.name, type: 'web' as const }))
     if (channels.length > 0) {
@@ -1099,7 +1211,7 @@ app.post('/api/sectors/:sectorId/move', requireAuth, async (req, res) => {
     return
   }
   // Moving with an incomplete team while a channel points here needs confirmation.
-  if (sectorReadiness(sector.mode, parsed ?? []) === 'incomplete' && body.confirmChannelImpact !== true) {
+  if (sectorReadiness(normalizeSectorMode(sector.mode), parsed ?? [], { coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages }) === 'incomplete' && body.confirmChannelImpact !== true) {
     const widgets = await listWidgets(ownerId)
     const channels = widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => ({ id: w._id.toString(), name: w.name, type: 'web' as const }))
     if (channels.length > 0) {
@@ -1145,7 +1257,7 @@ app.get('/api/sectors/:sectorId/overview', requireAuth, async (req, res) => {
       ? {
           sectorId,
           sectorName: sector.name,
-          mode: sector.mode ?? 'adaptive',
+          mode: normalizeSectorMode(sector.mode),
           decisions: totals.decisions,
           clarifyRate: totals.decisions > 0 ? totals.clarify / totals.decisions : 0,
           moves: totals.moved,
@@ -1225,7 +1337,7 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
       chosen.map((x) => ({ name: x.agent.name, objective: x.agent.objective })),
     )
 
-  const mode: SectorMode = sector.mode ?? 'adaptive'
+  const mode: SectorMode = normalizeSectorMode(sector.mode)
   let replyObjective: string
   let knowledgeAgentIds: ObjectId[]
   let specialistNames: string[]
@@ -2146,7 +2258,7 @@ app.get('/api/sector-analytics', requireAuth, async (_req, res) => {
       return {
         sectorId: id,
         sectorName: sector.name,
-        mode: sector.mode ?? 'adaptive',
+        mode: normalizeSectorMode(sector.mode),
         decisions: totals.decisions,
         clarifyRate: totals.decisions > 0 ? totals.clarify / totals.decisions : 0,
         moves: totals.moved,
@@ -2762,7 +2874,7 @@ async function resolveSectorTurn(
   // an alternative (branch), or an earlier one (back) — when a transition's
   // condition is met. At most one move per turn, and the visitor never perceives
   // the switch: each stage speaks as one continuous assistant.
-  if ((sector.mode ?? 'adaptive') === 'pipeline') {
+  if ((normalizeSectorMode(sector.mode)) === 'pipeline') {
     const activeAgentId = await getActiveAgentId(widgetId, conversationId)
     let stageIndex = activeAgentId ? resolved.findIndex((x) => x.agent._id.equals(activeAgentId)) : 0
     if (stageIndex < 0) stageIndex = 0

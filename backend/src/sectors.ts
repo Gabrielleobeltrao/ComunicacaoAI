@@ -1,10 +1,26 @@
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 
-// 'adaptive': a supervisor consults the right specialists per message.
-// 'pipeline': an ordered flow — each member handles one stage and hands off to
-// the next when its advance condition is met (member order = stage order).
-export type SectorMode = 'adaptive' | 'pipeline'
+// A sector is a TEAM (never a schedule). Its mode says how the team works:
+//   'organization' — only groups agents on the map; not executable as a unit.
+//   'orchestrated' — a coordinator receives the request, delegates to members and
+//                    consolidates the answer (this is the old 'adaptive').
+//   'pipeline'     — ordered stages, each an agent, chaining outputs to inputs.
+export type SectorMode = 'organization' | 'orchestrated' | 'pipeline'
+export const SECTOR_MODES: SectorMode[] = ['organization', 'orchestrated', 'pipeline']
+
+// Legacy documents used 'adaptive'; read it as 'orchestrated' without rewriting.
+// Anything unknown falls back to 'orchestrated' (the historical executable default).
+export function normalizeSectorMode(mode: unknown): SectorMode {
+  if (mode === 'organization' || mode === 'orchestrated' || mode === 'pipeline') return mode
+  return 'orchestrated' // covers legacy 'adaptive' and missing/unknown values
+}
+
+// Only orchestrated/pipeline sectors can actually run; an organization sector is a
+// visual grouping and is refused by delegate_to_sector.
+export function sectorIsExecutable(mode: SectorMode): boolean {
+  return mode === 'orchestrated' || mode === 'pipeline'
+}
 
 // Pipeline only: a conditional jump from this stage to another one (identified
 // by its agent). Lets a flow skip ahead, branch (A → B or C), or go back to an
@@ -12,6 +28,21 @@ export type SectorMode = 'adaptive' | 'pipeline'
 export interface SectorTransition {
   condition: string
   targetAgentId: ObjectId
+}
+
+// Pipeline execution stage — the REAL, deterministic flow (replaces the
+// conversational advanceWhen/transitions for the task path). Ordered by array
+// position; `dependsOn` chains a stage's input to earlier stages' outputs.
+export interface SectorStage {
+  id: string
+  name: string
+  agentId: ObjectId
+  instruction: string
+  dependsOn: string[] // stage ids whose outputs feed this one ([] = the sector input)
+  inputMapping: Record<string, string> // optional named-var mapping (kept simple)
+  expectedOutput: string
+  retryPolicy: { maxAttempts: number; backoffMs: number }
+  onError: 'stop' | 'continue'
 }
 
 export interface SectorMember {
@@ -44,6 +75,13 @@ export interface Sector {
   color: string
   mode: SectorMode
   members: SectorMember[]
+  // Orchestrated mode (all additive; absent on legacy/other modes):
+  coordinatorAgentId?: ObjectId // the agent that receives, delegates and consolidates
+  instruction?: string // how the coordinator should run the team
+  inputContract?: string // what the team expects to receive
+  outputContract?: string // what the team must produce
+  // Pipeline mode: the ordered execution stages (replaces advanceWhen/transitions).
+  stages?: SectorStage[]
   createdAt: Date
   // Set on new writes/edits. Additive — old documents may lack it until edited.
   updatedAt?: Date
@@ -53,11 +91,29 @@ const sectors = db.collection<Sector>('sectors')
 
 export const MAX_SECTOR_MEMBERS = 10
 
-// Operational readiness derived from mode + members (plan §7.5). No new field.
-export function sectorReadiness(mode: SectorMode, members: SectorMember[]): 'ready' | 'incomplete' {
-  const hasDefault = members.some((m) => m.isDefault)
-  if (mode === 'pipeline') return members.length >= 2 && hasDefault ? 'ready' : 'incomplete'
-  return members.length >= 1 && hasDefault ? 'ready' : 'incomplete'
+// Operational readiness derived from mode + shape:
+//   organization — ready as soon as it has at least one member (just a grouping).
+//   orchestrated — needs a coordinator and at least one member.
+//   pipeline     — needs at least one stage (each stage carries its own agent).
+export function sectorReadiness(
+  mode: SectorMode,
+  members: SectorMember[],
+  extra?: { coordinatorAgentId?: ObjectId | null; stages?: SectorStage[] },
+): 'ready' | 'incomplete' {
+  if (mode === 'organization') return members.length >= 1 ? 'ready' : 'incomplete'
+  if (mode === 'pipeline') return (extra?.stages?.length ?? 0) >= 1 ? 'ready' : 'incomplete'
+  // orchestrated
+  return extra?.coordinatorAgentId && members.length >= 1 ? 'ready' : 'incomplete'
+}
+
+// Assign stable ids to stages that lack one and clamp the retry policy.
+export function normalizeStages(stages: SectorStage[]): SectorStage[] {
+  return stages.map((s, i) => ({
+    ...s,
+    id: s.id && s.id.trim() ? s.id : `s${i + 1}`,
+    retryPolicy: { maxAttempts: Math.max(1, Math.min(s.retryPolicy?.maxAttempts ?? 1, 5)), backoffMs: s.retryPolicy?.backoffMs ?? 2000 },
+    onError: s.onError === 'continue' ? 'continue' : 'stop',
+  }))
 }
 
 // Exactly one member must be the default. If none/many are flagged, pick the first.
@@ -68,6 +124,14 @@ export function normalizeMembers(members: SectorMember[]): SectorMember[] {
   return members.map((m, i) => ({ ...m, isDefault: i === chosen }))
 }
 
+export interface SectorTeamFields {
+  coordinatorAgentId?: ObjectId | null
+  instruction?: string
+  inputContract?: string
+  outputContract?: string
+  stages?: SectorStage[]
+}
+
 export async function createSector(
   ownerId: string,
   officeId: ObjectId,
@@ -75,6 +139,7 @@ export async function createSector(
   color: string,
   mode: SectorMode,
   members: SectorMember[],
+  extra: SectorTeamFields = {},
 ) {
   const now = new Date()
   const sector: Omit<Sector, '_id'> = {
@@ -84,6 +149,11 @@ export async function createSector(
     color,
     mode,
     members: normalizeMembers(members),
+    ...(extra.coordinatorAgentId ? { coordinatorAgentId: extra.coordinatorAgentId } : {}),
+    ...(extra.instruction !== undefined ? { instruction: extra.instruction } : {}),
+    ...(extra.inputContract !== undefined ? { inputContract: extra.inputContract } : {}),
+    ...(extra.outputContract !== undefined ? { outputContract: extra.outputContract } : {}),
+    ...(extra.stages ? { stages: normalizeStages(extra.stages) } : {}),
     createdAt: now,
     updatedAt: now,
   }
@@ -104,10 +174,28 @@ export function getSectorById(ownerId: string, sectorId: ObjectId) {
 export function updateSector(
   ownerId: string,
   sectorId: ObjectId,
-  updates: { name?: string; color?: string; mode?: SectorMode; members?: SectorMember[]; officeId?: ObjectId },
+  updates: {
+    name?: string
+    color?: string
+    mode?: SectorMode
+    members?: SectorMember[]
+    officeId?: ObjectId
+    coordinatorAgentId?: ObjectId | null
+    instruction?: string
+    inputContract?: string
+    outputContract?: string
+    stages?: SectorStage[]
+  },
 ) {
-  const base = updates.members ? { ...updates, members: normalizeMembers(updates.members) } : updates
-  return sectors.findOneAndUpdate({ _id: sectorId, ownerId }, { $set: { ...base, updatedAt: new Date() } }, { returnDocument: 'after' })
+  const base: Record<string, unknown> = { ...updates }
+  if (updates.members) base.members = normalizeMembers(updates.members)
+  if (updates.stages) base.stages = normalizeStages(updates.stages)
+  // A null coordinator means "clear it" — $unset rather than storing null.
+  const unset = base.coordinatorAgentId === null ? { coordinatorAgentId: '' } : undefined
+  if (unset) delete base.coordinatorAgentId
+  const update: Record<string, unknown> = { $set: { ...base, updatedAt: new Date() } }
+  if (unset) update.$unset = unset
+  return sectors.findOneAndUpdate({ _id: sectorId, ownerId }, update, { returnDocument: 'after' })
 }
 
 export function deleteSector(ownerId: string, sectorId: ObjectId) {

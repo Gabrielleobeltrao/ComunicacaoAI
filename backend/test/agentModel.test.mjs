@@ -8,7 +8,7 @@ process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
 const { AGENT_PRESETS, ACTIVATION_MODES, parseAgentModelFields, withAgentDefaults } = await import('../dist/agents.js')
 
 test('AGENT_PRESETS + ACTIVATION_MODES expose the expected sets', () => {
-  assert.deepEqual(AGENT_PRESETS, ['manager', 'secretary', 'researcher', 'analyst', 'operator', 'communicator', 'custom'])
+  assert.deepEqual(AGENT_PRESETS, ['manager', 'secretary', 'researcher', 'analyst', 'operator', 'communicator', 'monitor', 'custom'])
   assert.deepEqual(ACTIVATION_MODES, ['manual', 'scheduled', 'event', 'channel', 'agent_only'])
 })
 
