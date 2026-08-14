@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent, ReactNode } from 'react'
 import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
+import { METRIC_KEY_LABEL } from '../lib/agentStats'
 import { Icon } from '../ui'
 import type {
   AgentBuiltinTool,
@@ -12,6 +13,8 @@ import type {
   KnowledgeDocumentSummary,
   Language,
   MemoryType,
+  MetricKey,
+  MetricProfile,
   ProviderInfo,
   ResponseDetail,
   ResponseTone,
@@ -32,6 +35,9 @@ interface AgentFormProps {
   section?: string
   // Floor the new agent is created on (create only). Omitted → default office.
   floorId?: string
+  // KPI keys with a real data source for this agent (from the overview), so the
+  // "Métrica do card" picker never offers a metric that would show nothing.
+  availableMetrics?: MetricKey[]
 }
 
 // The agent page groups fields into blocks; each section shows a set of blocks.
@@ -39,7 +45,7 @@ interface AgentFormProps {
 // is grouped under "avancado" so it stays out of the way with sensible defaults.
 const SECTION_BLOCKS: Record<string, string[]> = {
   essencial: ['identidade'],
-  avancado: ['modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados'],
+  avancado: ['metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados'],
   ferramentas: ['ferramentas'],
   conhecimento: ['conhecimento'],
 }
@@ -142,7 +148,7 @@ function OptionSwitch<T extends string>({
   )
 }
 
-export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId }: AgentFormProps) {
+export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId, availableMetrics }: AgentFormProps) {
   const isCreating = agent === null
   const flat = layout === 'flat'
 
@@ -173,6 +179,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
   const [editDailyMessageLimit, setEditDailyMessageLimit] = useState(0)
   const [editCheapAuxModel, setEditCheapAuxModel] = useState(true)
   const [editPromptCaching, setEditPromptCaching] = useState(true)
+  const [editMetricProfile, setEditMetricProfile] = useState<MetricProfile>('auto')
   const [editTools, setEditTools] = useState<AgentTool[]>([])
   const [editBuiltinTools, setEditBuiltinTools] = useState<AgentBuiltinTool[]>([])
   const [saving, setSaving] = useState(false)
@@ -257,6 +264,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
       setEditDailyMessageLimit(agent.dailyMessageLimit ?? 0)
       setEditCheapAuxModel(agent.cheapAuxModel ?? true)
       setEditPromptCaching(agent.promptCaching ?? true)
+      setEditMetricProfile(agent.metricProfile ?? 'auto')
       setEditTools(agent.tools ?? [])
       setEditBuiltinTools(agent.builtinTools ?? [])
       setPendingDocs([])
@@ -288,6 +296,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
       setEditDailyMessageLimit(0)
       setEditCheapAuxModel(true)
       setEditPromptCaching(true)
+      setEditMetricProfile('auto')
       setEditTools([])
       setEditBuiltinTools([])
       setDocuments([])
@@ -392,6 +401,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
       dailyMessageLimit: editDailyMessageLimit,
       cheapAuxModel: editCheapAuxModel,
       promptCaching: editPromptCaching,
+      metricProfile: editMetricProfile,
       tools: editTools,
       builtinTools: editBuiltinTools,
     }
@@ -722,6 +732,29 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId 
             !flat && advancedOpen ? 'mt-3 rounded-xl border border-(--border-subtle) bg-(--surface-card)/40 px-4 py-1' : ''
           }
         >
+          {showBlock('metrica') && (
+          <CollapsibleBlock title="Métrica do card" showHeader={stacked}>
+            <div>
+              <label className="mb-1 block text-sm text-(--text-muted)">KPI mostrado no card do agente</label>
+              <select
+                value={editMetricProfile}
+                onChange={(e) => setEditMetricProfile(e.target.value as MetricProfile)}
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+              >
+                <option value="auto">Automático (pelo perfil)</option>
+                {(availableMetrics ?? []).map((k) => (
+                  <option key={k} value={k}>
+                    {METRIC_KEY_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-(--text-faint)">
+                “Automático” usa o KPI do perfil do agente. Só aparecem métricas com dados reais disponíveis.
+              </p>
+            </div>
+          </CollapsibleBlock>
+          )}
+
           {showBlock('modelo') && (
           <CollapsibleBlock title="Modelo e custo" showHeader={stacked}>
             <div>

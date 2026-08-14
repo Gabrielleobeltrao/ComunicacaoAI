@@ -9,11 +9,13 @@ import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
 import type { CharacterResolver } from '../lib/agentAvatar'
 import { roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import { API_URL } from '../lib/api'
+import { getAgentStats, METRIC_KEY_LABEL, PERIOD_LABEL, type StatsPeriod } from '../lib/agentStats'
+import { formatCount, formatDuration, formatPercent, formatTokens } from '../lib/metricFormat'
 import { useActiveFloorId, useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { AgentSectorAssignment } from '../components/AgentSectorAssignment'
 import { floorAgent, floorAgents } from '../lib/floorRoutes'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
-import type { AgentOverview, AgentSummary } from '../lib/types'
+import type { AgentOverview, AgentStatsResponse, AgentSummary } from '../lib/types'
 import { Button, Card, MetricStat, StatusPill, Tag } from '../ui'
 import type { AgentStatus } from '../ui'
 import { Illustration } from '../office/Illustration'
@@ -144,6 +146,8 @@ export function AgentDetail() {
   const [notFound, setNotFound] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [period, setPeriod] = useState<StatsPeriod>('30d')
+  const [opStats, setOpStats] = useState<AgentStatsResponse | null>(null)
 
   const load = useCallback(async () => {
     if (!agentId) return
@@ -160,6 +164,19 @@ export function AgentDetail() {
   useEffect(() => {
     load()
   }, [load])
+
+  // Operational stats for the period — kept null (rendered "—") while loading so the
+  // metric grid never jumps.
+  useEffect(() => {
+    let cancelled = false
+    setOpStats(null)
+    getAgentStats(period)
+      .then((d) => !cancelled && setOpStats(d))
+      .catch(() => !cancelled && setOpStats(null))
+    return () => {
+      cancelled = true
+    }
+  }, [period, agentId])
 
   async function handleDelete() {
     if (!overview || deleting) return
@@ -192,6 +209,8 @@ export function AgentDetail() {
   const accent = agent ? accentFor(agent._id) : 'var(--intent-brand)'
   const stats = overview?.stats
   const attendanceRate = stats && stats.conversations > 0 ? Math.round((stats.attendedConversations / stats.conversations) * 100) : 0
+  const op = agent ? opStats?.stats[agent._id] : undefined
+  const chan = agent ? opStats?.channel[agent._id] : undefined
 
   return (
     <AppLayout
@@ -220,20 +239,60 @@ export function AgentDetail() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Operational metrics for the period. Null = no telemetry ("—"); the
+                grid renders all cards even while loading, so it never jumps. */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <h2 style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Desempenho operacional</h2>
+              <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 'var(--radius-control)', background: 'var(--surface-sunken)' }} title={opStats?.telemetrySince ? `Telemetria desde ${new Date(opStats.telemetrySince).toLocaleDateString('pt-BR')}` : 'Telemetria por agente'}>
+                {(['7d', '30d', 'all'] as StatsPeriod[]).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setPeriod(p)}
+                    style={{ height: 28, padding: '0 12px', borderRadius: 'var(--radius-xs)', border: 0, background: p === period ? 'var(--surface-card)' : 'transparent', boxShadow: p === period ? 'var(--shadow-flat)' : 'none', color: p === period ? 'var(--text-heading)' : 'var(--text-muted)', fontFamily: 'var(--font-ui)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}
+                  >
+                    {PERIOD_LABEL[p]}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 14 }}>
-              <Card padding="16px">
-                <MetricStat icon="messages-square" label="Conversas" value={stats.conversations.toLocaleString('pt-BR')} />
+              <Card padding="16px" title={`Execuções concluídas + iniciadas no período (${PERIOD_LABEL[period]})`}>
+                <MetricStat icon="activity" label="Execuções" value={formatCount(op ? op.executions : null)} />
               </Card>
-              <Card padding="16px">
-                <MetricStat icon="message-circle" label="Mensagens/sem" value={stats.messagesThisWeek.toLocaleString('pt-BR')} />
+              <Card padding="16px" title={`Tempo somado de execução no período (${PERIOD_LABEL[period]})`}>
+                <MetricStat icon="timer" label="Tempo ativo" value={formatDuration(op ? op.activeTimeMs : null)} />
               </Card>
-              <Card padding="16px">
-                <MetricStat icon="user-check" label="Leads" value={stats.qualifiedLeads.toLocaleString('pt-BR')} />
+              <Card padding="16px" title="Duração média de uma execução">
+                <MetricStat icon="gauge" label="Duração média" value={formatDuration(op?.avgDurationMs)} />
               </Card>
-              <Card padding="16px">
-                <MetricStat icon="percent" label="Atendimento" value={attendanceRate} unit="%" />
+              <Card padding="16px" title={`Tokens (entrada + saída) no período (${PERIOD_LABEL[period]})`}>
+                <MetricStat icon="coins" label="Tokens" value={formatTokens(op ? op.totalTokens : null)} />
+              </Card>
+              <Card padding="16px" title="Tokens médios por execução">
+                <MetricStat icon="calculator" label="Tokens médios" value={formatTokens(op?.avgTokensPerExecution)} />
+              </Card>
+              <Card padding="16px" title="Execuções bem-sucedidas / total">
+                <MetricStat icon="check-circle" label="Sucesso" value={formatPercent(op?.successRate)} />
               </Card>
             </div>
+
+            {/* The agent's specific KPI — its own section. */}
+            <Card padding="16px" title={`KPI do agente (${PERIOD_LABEL[period]})`}>
+              <MetricStat icon="target" label={op?.specific.label ?? METRIC_KEY_LABEL[overview.resolvedMetric]} value={formatCount(op?.specific.value)} />
+            </Card>
+
+            {/* Channel/attendance only when the agent actually answers a channel. */}
+            {(chan?.linked ?? overview.channelLinked) ? (
+              <Card padding="16px">
+                <p style={{ margin: '0 0 12px', fontFamily: 'var(--font-ui)', fontSize: 14, fontWeight: 800, color: 'var(--text-heading)' }}>Canais e atendimento</p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 14 }}>
+                  <MetricStat icon="messages-square" label="Conversas" value={stats.conversations.toLocaleString('pt-BR')} />
+                  <MetricStat icon="message-circle" label="Mensagens/sem" value={stats.messagesThisWeek.toLocaleString('pt-BR')} />
+                  <MetricStat icon="user-check" label="Leads" value={stats.qualifiedLeads.toLocaleString('pt-BR')} />
+                  <MetricStat icon="percent" label="Atendimento" value={attendanceRate} unit="%" />
+                </div>
+              </Card>
+            ) : null}
 
             <Card padding="0" style={{ overflow: 'hidden' }}>
               <div style={{ display: 'flex', padding: '14px 18px', borderBottom: '1px solid var(--border-subtle)', overflowX: 'auto' }}>
@@ -277,7 +336,7 @@ export function AgentDetail() {
                   <AgentHistoryPanel key={agent._id} agent={agent} />
                 ) : (
                   <>
-                    <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} />
+                    <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} availableMetrics={overview.availableMetrics} />
                     {active === 'essencial' ? (
                       <div style={{ marginTop: 20 }}>
                         <DangerZone

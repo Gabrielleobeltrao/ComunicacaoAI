@@ -4,23 +4,23 @@ import { HireWizard } from '../components/HireWizard'
 import { AppLayout } from '../components/AppLayout'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentStat } from '../lib/agentAvatar'
-import { API_URL } from '../lib/api'
-import type { AgentCardStats } from '../lib/types'
+import { getAgentStats } from '../lib/agentStats'
+import { formatCount, formatDuration, formatTokens } from '../lib/metricFormat'
+import type { AgentOperationalStats } from '../lib/types'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import { useParams } from 'react-router'
 import { Button, Dialog, EmptyState, Field, Input, Select } from '../ui'
 
-const EMPTY_STATS: AgentCardStats = { conversations: 0, attendedConversations: 0, qualifiedLeads: 0 }
 const NO_SECTOR = '__none__'
 
-// Undefined stats (still loading) render as "—"; a loaded agent with no
-// activity shows zeros.
-function buildStats(s: AgentCardStats | undefined): AgentStat[] {
-  const pct = s && s.conversations > 0 ? `${Math.round((s.attendedConversations / s.conversations) * 100)}%` : '—'
+// The three card metrics (fixed positions): average execution duration, tokens in
+// the period, and the agent's specific KPI. Undefined stats (still loading) render
+// as "—"; a null metric means "no telemetry" (also "—"), distinct from a real zero.
+function buildStats(s: AgentOperationalStats | undefined): AgentStat[] {
   return [
-    { label: 'Conversas', value: s ? s.conversations.toLocaleString('pt-BR') : '—' },
-    { label: 'Leads', value: s ? String(s.qualifiedLeads) : '—' },
-    { label: 'Atend.', value: pct },
+    { label: 'Tempo méd.', value: formatDuration(s?.avgDurationMs) },
+    { label: 'Tokens 30d', value: formatTokens(s?.totalTokens) },
+    { label: s?.specific.label ?? 'KPI', value: formatCount(s?.specific.value) },
   ]
 }
 
@@ -28,7 +28,7 @@ export function Agents() {
   const { floorId } = useParams()
   const { agents, agentsLoading, loadAgents, sectors } = useAgentsAndWidgets(floorId)
   const [isCreating, setIsCreating] = useState(false)
-  const [agentStats, setAgentStats] = useState<Record<string, AgentCardStats> | null>(null)
+  const [agentStats, setAgentStats] = useState<Record<string, AgentOperationalStats> | null>(null)
 
   // Search + filters.
   const [search, setSearch] = useState('')
@@ -38,10 +38,9 @@ export function Agents() {
 
   useEffect(() => {
     let cancelled = false
-    fetch(`${API_URL}/api/agent-stats`, { credentials: 'include' })
-      .then((res) => (res.ok ? res.json() : {}))
+    getAgentStats('30d', floorId)
       .then((data) => {
-        if (!cancelled) setAgentStats(data)
+        if (!cancelled) setAgentStats(data.stats)
       })
       .catch(() => {
         if (!cancelled) setAgentStats({})
@@ -49,7 +48,7 @@ export function Agents() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [floorId])
 
   // An agent belongs to at most one sector — map agentId -> sector name so each
   // card can show it (or "Sem setor" when orphan).
@@ -148,7 +147,7 @@ export function Agents() {
                   agent={agent}
                   portrait={chars.portrait(agent._id)}
                   sectorName={sectorByAgent.get(agent._id) ?? null}
-                  stats={buildStats(agentStats ? (agentStats[agent._id] ?? EMPTY_STATS) : undefined)}
+                  stats={buildStats(agentStats ? agentStats[agent._id] : undefined)}
                 />
               ))}
             </div>

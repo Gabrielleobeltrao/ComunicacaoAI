@@ -179,6 +179,7 @@ export interface AgentSummary {
   callableAgentIds: string[]
   callableSectorIds: string[]
   allowedCallerAgentIds: string[]
+  metricProfile: MetricProfile
 }
 
 export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'monitor' | 'custom'
@@ -186,6 +187,37 @@ export type ActivationMode = 'manual' | 'scheduled' | 'event' | 'channel' | 'age
 // Delegation permission (both directions): none = nobody, all = any agent in the
 // same building, selected = only the matching id list.
 export type DelegationPolicy = 'none' | 'all' | 'selected'
+
+// The card's third-metric KPI. 'auto' derives from the preset; a concrete key is a
+// manual choice that a preset change never overwrites.
+export type MetricKey = 'executions' | 'delegations' | 'tool_actions' | 'conversations' | 'leads'
+export type MetricProfile = 'auto' | MetricKey
+
+// Per-agent operational stats over a period (from /api/agent-stats). Derived metrics
+// are null when there is no telemetry — rendered "—", distinct from a real zero.
+export interface AgentOperationalStats {
+  executions: number
+  avgDurationMs: number | null
+  activeTimeMs: number
+  totalTokens: number
+  avgTokensPerExecution: number | null
+  successRate: number | null // 0..1
+  specific: { key: MetricKey; label: string; value: number | null }
+}
+
+export interface AgentChannelStats {
+  linked: boolean
+  conversations: number
+  attendedConversations: number
+  qualifiedLeads: number
+}
+
+export interface AgentStatsResponse {
+  period: '7d' | '30d' | 'all'
+  telemetrySince: string | null
+  stats: Record<string, AgentOperationalStats>
+  channel: Record<string, AgentChannelStats>
+}
 
 // Per-agent roster stats for the Agentes cards (from /api/agent-stats).
 export interface AgentCardStats {
@@ -204,6 +236,10 @@ export interface AgentOverview {
     handoffs: number
     qualifiedLeads: number
   }
+  // KPI availability for the "Métrica do card" picker (data-source aware).
+  channelLinked: boolean
+  availableMetrics: MetricKey[]
+  resolvedMetric: MetricKey
   linkedWidgets: { _id: string; name: string }[]
   linkedSectors: { _id: string; name: string }[]
   knowledgeCount: number
