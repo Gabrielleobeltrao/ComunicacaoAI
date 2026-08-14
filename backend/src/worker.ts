@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { Worker } from 'bullmq'
 import { ObjectId } from 'mongodb'
-import { db, mongoClient } from './db.js'
+import { mongoClient } from './db.js'
 import { createConnection, RUN_QUEUE } from './automations/queue.js'
 import { SCHEDULE_QUEUE, reconcileSchedules } from './automations/scheduler.js'
 import { createRun } from './automations/runService.js'
@@ -16,9 +16,11 @@ import type { RunnerDeps } from './automations/runner.js'
 import { preview } from './automations/runTypes.js'
 import type { AutomationRun, RunStatus, StepRun } from './automations/runTypes.js'
 import { executeAgentTask } from './agentRuntime.js'
+import { getAgentById } from './agents.js'
+import { rootContext } from './delegation.js'
+import { productionDelegationDeps, resolveToolsWithDelegation } from './delegationWiring.js'
 import { safeFetch } from './net/safeHttp.js'
 import { getProviderApiKey } from './userSettings.js'
-import type { Provider } from './llm.js'
 import { decryptConfig, getConnection } from './connections/service.js'
 import { insertDeliveryIdempotent, updateDelivery } from './connections/repository.js'
 import { maskDestination, sendEmail, sendTelegram } from './connections/adapters.js'
@@ -40,18 +42,30 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       return { body: res.body, contentType: res.contentType }
     },
     runAgent: async (call) => {
-      const agent = await db.collection('agents').findOne({ _id: new ObjectId(call.agentId), ownerId: run.ownerId })
+      const agent = await getAgentById(run.ownerId, new ObjectId(call.agentId))
       if (!agent) throw new Error(`agente não encontrado: ${call.agentId}`)
-      const provider = (agent.provider as Provider) ?? 'anthropic'
-      const apiKey = await getProviderApiKey(run.ownerId, provider)
+      const apiKey = await getProviderApiKey(run.ownerId, agent.provider)
+      // Delegation-aware context: the routine's agent may hand work to collaborators
+      // or a sector. Cancellation is cooperative — re-read the run status (same
+      // signal the runner polls between steps).
+      const deps = productionDelegationDeps()
+      const ctx = rootContext({
+        ownerId: run.ownerId,
+        buildingId: run.buildingId.toString(),
+        correlationId: run._id.toString(),
+        agent,
+        isCanceled: async () => (await findRunUnscoped(run._id))?.status === 'cancel_requested',
+      })
+      const tools = await resolveToolsWithDelegation(agent, run.ownerId, ctx, deps)
       const result = await executeAgentTask({
         objective: String(agent.objective ?? call.objective ?? ''),
         instructions: call.instructions,
         input: call.input,
         context: call.context,
-        provider,
-        model: (agent.model as string | null) ?? null,
+        provider: agent.provider,
+        model: agent.model,
         apiKey,
+        tools,
         output: { format: call.format },
       })
       return { output: result.output }

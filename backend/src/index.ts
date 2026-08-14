@@ -119,6 +119,9 @@ import { listToolCalls, logToolCalls } from './toolCallLog.js'
 import { deleteIntegration } from './integrations.js'
 import { buildGoogleAuthUrl, connectGoogle, getGoogleStatus, googleConfigured } from './googleCalendar.js'
 import { builtinAppsCatalog, getBuiltinApp, resolveAgentTools } from './builtinTools.js'
+import { rootContext } from './delegation.js'
+import { productionDelegationDeps, resolveToolsWithDelegation } from './delegationWiring.js'
+import { ensureDelegationIndexes } from './delegationLog.js'
 import {
   computeIdentityKey,
   findVisitorProfile,
@@ -1909,7 +1912,12 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       ),
     ].join('\n\n'),
     agent.promptCaching ?? true,
-    await resolveAgentTools(agent, res.locals.userId),
+    await resolveToolsWithDelegation(
+      agent,
+      res.locals.userId,
+      rootContext({ ownerId: res.locals.userId, buildingId: agent.officeId.toString(), correlationId: agent._id.toString(), agent }),
+      productionDelegationDeps(),
+    ),
   )
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
@@ -3224,6 +3232,9 @@ async function start() {
   })
   ensureConversationTurnsVectorIndex().catch((error) => {
     console.error('ensureConversationTurnsVectorIndex failed:', error)
+  })
+  ensureDelegationIndexes().catch((error) => {
+    console.error('ensureDelegationIndexes failed:', error)
   })
 
   httpServer.listen(port, () => {

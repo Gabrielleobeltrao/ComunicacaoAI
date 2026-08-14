@@ -8,6 +8,7 @@ import { setStatus } from '../automations/service.js'
 import { listRuns } from '../automations/runRepository.js'
 import { preview } from '../automations/runTypes.js'
 import type { Automation } from '../automations/types.js'
+import { listDelegationsForAgent } from '../delegationLog.js'
 import { oid } from './http.js'
 
 // Agent ROUTINES + HISTORY. Mounted at /api/agents/:agentId behind requireAuth
@@ -154,15 +155,16 @@ agentRoutineRouter.get('/history', async (req, res) => {
   const routines = await listRoutines(res.locals.userId, agentId)
   const ids = routines.map((r) => r._id)
   const limit = Math.min(Number(req.query.limit) || 25, 100)
-  if (ids.length === 0) {
-    res.json({ items: [], total: 0 })
-    return
-  }
-  const { items, total } = await listRuns(res.locals.userId, { automationIds: ids, limit, skip: 0 })
   const nameById = new Map(routines.map((r) => [r._id.toString(), r.name]))
+  // Two strands of history: scheduled routine runs, and delegations this agent took
+  // part in (as caller OR as target — so a delegated task shows on both agents).
+  const [runsResult, delegations] = await Promise.all([
+    ids.length ? listRuns(res.locals.userId, { automationIds: ids, limit, skip: 0 }) : Promise.resolve({ items: [], total: 0 }),
+    listDelegationsForAgent(res.locals.userId, agentId, limit),
+  ])
   res.json({
-    total,
-    items: items.map((run) => ({
+    total: runsResult.total,
+    items: runsResult.items.map((run) => ({
       id: run._id.toString(),
       routineId: run.automationId.toString(),
       routineName: nameById.get(run.automationId.toString()) ?? 'Rotina',
@@ -172,6 +174,20 @@ agentRoutineRouter.get('/history', async (req, res) => {
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
       error: run.error ? preview(run.error) : null,
+    })),
+    delegations: delegations.map((d) => ({
+      id: d._id.toString(),
+      direction: d.callerAgentId.equals(agentId) ? 'outgoing' : 'incoming',
+      targetType: d.targetType,
+      targetAgentId: d.targetAgentId?.toString() ?? null,
+      targetSectorId: d.targetSectorId?.toString() ?? null,
+      objective: d.objective,
+      status: d.status,
+      denyCode: d.denyCode,
+      outputPreview: d.outputPreview,
+      error: d.error,
+      createdAt: d.createdAt,
+      finishedAt: d.finishedAt,
     })),
   })
 })
