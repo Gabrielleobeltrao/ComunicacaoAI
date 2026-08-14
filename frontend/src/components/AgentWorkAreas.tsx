@@ -10,6 +10,7 @@ import {
   type Routine,
   type RoutineStatus,
 } from '../lib/agentRoutines'
+import { createSectorDocument } from '../lib/sectorKnowledge'
 import { Button, Card, EmptyState, Field, Input, Select, StatusPill, Tag, Textarea } from '../ui'
 import type { AgentStatus } from '../ui'
 
@@ -305,7 +306,64 @@ const RUN_PILL: Record<string, [AgentStatus, string]> = {
 
 const fmtWhen = (iso: string | null) => (iso ? new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—')
 
-export function AgentHistoryPanel({ agent }: { agent: AgentSummary }) {
+// Explicit, confirmed curation: turns a finished run's output into a sector
+// knowledge entry (title + content + source='run' + runId + author/date). NEVER
+// automatic — the user picks the sector and confirms.
+function SaveToSectorKnowledge({ sectors, title, content, runId }: { sectors: { _id: string; name: string }[]; title: string; content: string; runId: string }) {
+  const [open, setOpen] = useState(false)
+  const [sectorId, setSectorId] = useState(sectors[0]?._id ?? '')
+  const [docTitle, setDocTitle] = useState(title)
+  const [saving, setSaving] = useState(false)
+  const [done, setDone] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  if (sectors.length === 0 || !content) return null
+  if (done) return <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Salvo no conhecimento</span>
+
+  const save = async () => {
+    if (!sectorId || !docTitle.trim()) {
+      setError('Escolha o setor e informe um título.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await createSectorDocument(sectorId, { title: docTitle.trim(), content, source: 'run', sourceRef: runId })
+      setDone(true)
+    } catch {
+      setError('Não foi possível salvar.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open)
+    return (
+      <Button variant="ghost" size="sm" icon="book-plus" onClick={() => setOpen(true)}>
+        Salvar no conhecimento do setor
+      </Button>
+    )
+  return (
+    <Card padding="12px" style={{ display: 'grid', gap: 8, minWidth: 260 }}>
+      <Field label="Setor">
+        <Select value={sectorId} onChange={(e) => setSectorId(e.target.value)} options={sectors.map((s) => ({ value: s._id, label: s.name }))} />
+      </Field>
+      <Field label="Título">
+        <Input value={docTitle} onChange={(e) => setDocTitle(e.target.value)} />
+      </Field>
+      {error ? <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-blocked)' }}>{error}</p> : null}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <Button size="sm" onClick={save} disabled={saving}>
+          {saving ? 'Salvando…' : 'Confirmar'}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={saving}>
+          Cancelar
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+export function AgentHistoryPanel({ agent, sectors = [] }: { agent: AgentSummary; sectors?: { _id: string; name: string }[] }) {
   const [history, setHistory] = useState<AgentHistory | null>(null)
   const [loading, setLoading] = useState(true)
   useEffect(() => {
@@ -361,6 +419,11 @@ export function AgentHistoryPanel({ agent }: { agent: AgentSummary }) {
                     <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }}>{d.objective}</p>
                     <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>{fmtWhen(d.finishedAt ?? d.createdAt)}</p>
                     {d.error ? <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--status-blocked)' }}>{d.error}</p> : null}
+                    {d.status === 'succeeded' && d.outputPreview ? (
+                      <div style={{ marginTop: 8 }}>
+                        <SaveToSectorKnowledge sectors={sectors} title={d.objective.slice(0, 120)} content={d.outputPreview} runId={d.id} />
+                      </div>
+                    ) : null}
                   </div>
                   <StatusPill status={s} label={label} pulse={false} />
                 </Card>

@@ -333,7 +333,7 @@ export function AgentDetail() {
                 ) : active === 'acionamentos' ? (
                   <AgentActivations key={agent._id} agent={agent} agents={agents} />
                 ) : active === 'historico' ? (
-                  <AgentHistoryPanel key={agent._id} agent={agent} />
+                  <AgentHistoryPanel key={agent._id} agent={agent} sectors={overview.linkedSectors} />
                 ) : (
                   <>
                     <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} availableMetrics={overview.availableMetrics} />

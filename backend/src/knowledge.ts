@@ -87,7 +87,7 @@ export function chunkText(text: string): string[] {
 
 // A filter that matches rows written before the ownerType backfill as well as new
 // ones — the transition never hides a document.
-function ownerFilter(owner: KnowledgeOwner): Record<string, unknown> {
+export function ownerFilter(owner: KnowledgeOwner): Record<string, unknown> {
   if (owner.ownerType === 'agent') {
     return { $or: [{ ownerType: 'agent', ownerId: owner.ownerId }, { ownerType: { $exists: false }, agentId: owner.ownerId }] }
   }

@@ -37,6 +37,8 @@ export const createSectorDocument = (sectorId: string, input: { title: string; c
   fetch(base(sectorId), req('POST', input)).then(json<SectorDocument>)
 export const updateSectorDocument = (sectorId: string, documentId: string, input: { title?: string; content?: string }) =>
   fetch(`${base(sectorId)}/${documentId}`, req('PATCH', input)).then(json<SectorDocument>)
+export const reindexSectorDocument = (sectorId: string, documentId: string) =>
+  fetch(`${base(sectorId)}/${documentId}/reindex`, req('POST')).then(json<SectorDocument>)
 export const deleteSectorDocument = async (sectorId: string, documentId: string) => {
   const res = await fetch(`${base(sectorId)}/${documentId}`, req('DELETE'))
   if (!res.ok) throw new Error(String(res.status))

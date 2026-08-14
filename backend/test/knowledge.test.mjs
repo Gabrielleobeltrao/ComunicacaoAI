@@ -43,3 +43,28 @@ test('combineKnowledgeHits honours the character budget and skips oversized pass
 test('combineKnowledgeHits ignores empty passages', () => {
   assert.deepEqual(combineKnowledgeHits([hit('   ', 0.9), hit('real', 0.5)]), ['real'])
 })
+
+test('ownerFilter scopes strictly to one owner (no cross-tenant match)', async () => {
+  const { ownerFilter } = await import('../dist/knowledge.js')
+  const { ObjectId } = await import('mongodb')
+  const a = new ObjectId()
+  const b = new ObjectId()
+
+  // A sector filter is an exact (ownerType, ownerId) pair — nothing else matches.
+  const sector = ownerFilter({ ownerType: 'sector', ownerId: a })
+  assert.equal(sector.ownerType, 'sector')
+  assert.equal(String(sector.ownerId), String(a))
+  assert.notEqual(String(sector.ownerId), String(b))
+  // A sector filter must never fall back to the legacy agentId branch, which would
+  // let an agent id reach sector rows.
+  assert.equal('$or' in sector, false)
+
+  // An agent filter also matches legacy rows (no ownerType) by agentId — still that
+  // agent's own id only.
+  const agent = ownerFilter({ ownerType: 'agent', ownerId: a })
+  assert.ok(Array.isArray(agent.$or))
+  assert.equal(agent.$or.length, 2)
+  assert.equal(String(agent.$or[0].ownerId), String(a))
+  assert.equal(String(agent.$or[1].agentId), String(a))
+  assert.equal(agent.$or[0].ownerType, 'agent')
+})
