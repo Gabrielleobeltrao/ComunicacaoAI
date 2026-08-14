@@ -1,31 +1,63 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import { DEFAULT_SECTOR_COLOR, SECTOR_COLORS } from '../lib/sectorColors'
 import type { AgentSummary, SectorMode, SectorSummary } from '../lib/types'
 
-interface EditTransition {
-  condition: string
-  targetAgentId: string
-}
+// A sector is a TEAM (never a schedule). Three ways it can work:
+//   organization — only groups agents on the map.
+//   orchestrated — a coordinator receives the request, delegates and consolidates.
+//   pipeline     — ordered stages, each an agent, chaining outputs to inputs.
+// The form shows only the fields a mode needs, in plain language (no ids/cron).
 
+// Legacy conversational fields are carried through untouched so editing a legacy
+// sector never wipes its advanceWhen/transitions before a safe conversion.
 interface EditMember {
   agentId: string
   sector: string
   routingDescription: string
   advanceWhen: string
-  transitions: EditTransition[]
+  transitions: { condition: string; targetAgentId: string }[]
   isDefault: boolean
 }
 
-const DEFAULT_SECTORS = ['Suporte', 'Vendas', 'Desenvolvimento', 'Financeiro', 'Marketing']
+interface EditStage {
+  key: string // local-only React key
+  id: string // stable id sent to the backend (blank = backend assigns)
+  name: string
+  agentId: string
+  instruction: string
+  dependsOn: string[] // ids of earlier stages
+  expectedOutput: string
+  onError: 'stop' | 'continue'
+}
+
+const MODES: { value: SectorMode; label: string; example: string; how: string }[] = [
+  {
+    value: 'organization',
+    label: 'Organização',
+    example: 'Ex.: agrupar “Vendas” no mapa, sem executar como equipe.',
+    how: 'Apenas agrupa os agentes visualmente. Não é acionável como um time.',
+  },
+  {
+    value: 'orchestrated',
+    label: 'Orquestrado',
+    example: 'Ex.: um gerente recebe o pedido, aciona pesquisador e redator e junta tudo.',
+    how: 'O coordenador recebe a tarefa, aciona os membros que precisar e consolida a resposta.',
+  },
+  {
+    value: 'pipeline',
+    label: 'Pipeline',
+    example: 'Ex.: coletar → analisar → escrever, cada etapa usando o resultado da anterior.',
+    how: 'As etapas rodam em ordem. Cada etapa recebe o resultado das etapas de que depende.',
+  },
+]
+
+const inputCls = 'w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)'
 
 interface SectorFormProps {
-  // null = creating a new sector; otherwise editing this one.
   sector: SectorSummary | null
   agents: AgentSummary[]
-  // The floor to create the sector on (URL floor). Without it the backend falls
-  // back to the account default office — the "wrong floor" bug.
   floorId?: string
   onSaved: () => void
 }
@@ -34,8 +66,13 @@ export function SectorForm({ sector, agents, floorId, onSaved }: SectorFormProps
   const isCreating = sector === null
   const [editName, setEditName] = useState('')
   const [editColor, setEditColor] = useState(DEFAULT_SECTOR_COLOR)
-  const [editMode, setEditMode] = useState<SectorMode>('adaptive')
-  const [editMembers, setEditMembers] = useState<EditMember[]>([])
+  const [editMode, setEditMode] = useState<SectorMode>('orchestrated')
+  const [members, setMembers] = useState<EditMember[]>([])
+  const [coordinatorAgentId, setCoordinatorAgentId] = useState('')
+  const [instruction, setInstruction] = useState('')
+  const [inputContract, setInputContract] = useState('')
+  const [outputContract, setOutputContract] = useState('')
+  const [stages, setStages] = useState<EditStage[]>([])
   const [saving, setSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -46,147 +83,129 @@ export function SectorForm({ sector, agents, floorId, onSaved }: SectorFormProps
       setEditName(sector.name)
       setEditColor(sector.color ?? DEFAULT_SECTOR_COLOR)
       setEditMode(sector.mode)
-      setEditMembers(sector.members.map((m) => ({ ...m, transitions: (m.transitions ?? []).map((t) => ({ ...t })) })))
+      setMembers(sector.members.map((m) => ({ ...m, transitions: (m.transitions ?? []).map((t) => ({ ...t })) })))
+      setCoordinatorAgentId(sector.coordinatorAgentId ?? '')
+      setInstruction(sector.instruction ?? '')
+      setInputContract(sector.inputContract ?? '')
+      setOutputContract(sector.outputContract ?? '')
+      setStages(
+        (sector.stages ?? []).map((s, i) => ({ key: `k${i}`, id: s.id, name: s.name, agentId: s.agentId, instruction: s.instruction, dependsOn: s.dependsOn ?? [], expectedOutput: s.expectedOutput ?? '', onError: s.onError })),
+      )
     } else {
       setEditName('')
       setEditColor(DEFAULT_SECTOR_COLOR)
-      setEditMode('adaptive')
-      setEditMembers([])
+      setEditMode('orchestrated')
+      setMembers([])
+      setCoordinatorAgentId('')
+      setInstruction('')
+      setInputContract('')
+      setOutputContract('')
+      setStages([])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sector?._id])
 
-  const agentNameById = new Map(agents.map((a) => [a._id, a.name]))
-  const isPipeline = editMode === 'pipeline'
-  const usedAgentIds = new Set(editMembers.map((m) => m.agentId))
-  const availableAgents = agents.filter((a) => !usedAgentIds.has(a._id))
-  // Suggest sectors already in use on this sector plus a few common defaults.
-  const sectorSuggestions = Array.from(
-    new Set([...editMembers.map((m) => m.sector.trim()).filter(Boolean), ...DEFAULT_SECTORS]),
-  )
+  const agentNameById = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
+  const managerRecommended = useMemo(() => agents.filter((a) => a.preset === 'manager'), [agents])
+  const memberIds = new Set(members.map((m) => m.agentId))
+  const availableAgents = agents.filter((a) => !memberIds.has(a._id))
 
-  function addMember(agentId: string) {
+  // ----- members (organization / orchestrated) -----
+  const addMember = (agentId: string) => {
     if (!agentId) return
-    setEditMembers((prev) => [
-      ...prev,
-      { agentId, sector: '', routingDescription: '', advanceWhen: '', transitions: [], isDefault: prev.length === 0 },
-    ])
+    setMembers((prev) => [...prev, { agentId, sector: '', routingDescription: '', advanceWhen: '', transitions: [], isDefault: prev.length === 0 }])
   }
-
-  function removeMember(agentId: string) {
-    setEditMembers((prev) => {
-      const next = prev
-        .filter((m) => m.agentId !== agentId)
-        // Drop any transitions that pointed at the removed stage.
-        .map((m) => ({ ...m, transitions: m.transitions.filter((t) => t.targetAgentId !== agentId) }))
-      // Keep exactly one default.
+  const removeMember = (agentId: string) => {
+    setMembers((prev) => {
+      const next = prev.filter((m) => m.agentId !== agentId).map((m) => ({ ...m, transitions: m.transitions.filter((t) => t.targetAgentId !== agentId) }))
       if (next.length > 0 && !next.some((m) => m.isDefault)) next[0].isDefault = true
       return [...next]
     })
+    if (coordinatorAgentId === agentId) setCoordinatorAgentId('')
   }
+  const setDescription = (agentId: string, value: string) => setMembers((prev) => prev.map((m) => (m.agentId === agentId ? { ...m, routingDescription: value } : m)))
 
-  function moveMember(index: number, direction: -1 | 1) {
-    setEditMembers((prev) => {
-      const target = index + direction
-      if (target < 0 || target >= prev.length) return prev
+  // ----- stages (pipeline) -----
+  const addStage = (agentId: string) => {
+    if (!agentId) return
+    setStages((prev) => [...prev, { key: `k${Date.now()}-${prev.length}`, id: '', name: `Etapa ${prev.length + 1}`, agentId, instruction: '', dependsOn: prev.length ? [effectiveStageId(prev, prev.length - 1)] : [], expectedOutput: '', onError: 'stop' }])
+  }
+  const patchStage = (key: string, patch: Partial<EditStage>) => setStages((prev) => prev.map((s) => (s.key === key ? { ...s, ...patch } : s)))
+  const removeStage = (key: string) => setStages((prev) => prev.filter((s) => s.key !== key))
+  const moveStage = (index: number, dir: -1 | 1) =>
+    setStages((prev) => {
+      const t = index + dir
+      if (t < 0 || t >= prev.length) return prev
       const next = [...prev]
-      ;[next[index], next[target]] = [next[target], next[index]]
+      ;[next[index], next[t]] = [next[t], next[index]]
       return next
     })
-  }
 
-  function setSector(agentId: string, value: string) {
-    setEditMembers((prev) => prev.map((m) => (m.agentId === agentId ? { ...m, sector: value } : m)))
-  }
-
-  function setDescription(agentId: string, value: string) {
-    setEditMembers((prev) => prev.map((m) => (m.agentId === agentId ? { ...m, routingDescription: value } : m)))
-  }
-
-  function setAdvanceWhen(agentId: string, value: string) {
-    setEditMembers((prev) => prev.map((m) => (m.agentId === agentId ? { ...m, advanceWhen: value } : m)))
-  }
-
-  function addTransition(agentId: string, targetAgentId: string) {
-    if (!targetAgentId) return
-    setEditMembers((prev) =>
-      prev.map((m) =>
-        m.agentId === agentId ? { ...m, transitions: [...m.transitions, { condition: '', targetAgentId }] } : m,
-      ),
-    )
-  }
-
-  function removeTransition(agentId: string, index: number) {
-    setEditMembers((prev) =>
-      prev.map((m) =>
-        m.agentId === agentId ? { ...m, transitions: m.transitions.filter((_, i) => i !== index) } : m,
-      ),
-    )
-  }
-
-  function setTransitionCondition(agentId: string, index: number, value: string) {
-    setEditMembers((prev) =>
-      prev.map((m) =>
-        m.agentId === agentId
-          ? { ...m, transitions: m.transitions.map((t, i) => (i === index ? { ...t, condition: value } : t)) }
-          : m,
-      ),
-    )
-  }
-
-  function setDefault(agentId: string) {
-    setEditMembers((prev) => prev.map((m) => ({ ...m, isDefault: m.agentId === agentId })))
+  // A stage's effective id (assigned deterministically for dependency selection).
+  function effectiveStageId(list: EditStage[], i: number): string {
+    return list[i].id && list[i].id.trim() ? list[i].id : `s${i + 1}`
   }
 
   async function handleSave(event: FormEvent) {
     event.preventDefault()
     setEditError(null)
-    if (editMembers.length < 2) {
-      setEditError(
-        isPipeline
-          ? 'Um fluxo precisa de pelo menos 2 etapas.'
-          : 'Um setor precisa de pelo menos 2 agentes para o orquestrador fazer sentido.',
-      )
-      return
+    if (!editName.trim()) return setEditError('Dê um nome ao setor.')
+    if (editMode === 'organization' && members.length < 1) return setEditError('Adicione ao menos um agente ao grupo.')
+    if (editMode === 'orchestrated' && (!coordinatorAgentId || members.length < 1)) return setEditError('Escolha um coordenador e ao menos um membro.')
+    if (editMode === 'pipeline') {
+      if (stages.length < 1) return setEditError('Um pipeline precisa de ao menos uma etapa.')
+      if (stages.some((s) => !s.agentId)) return setEditError('Cada etapa precisa de um agente.')
     }
-    setSaving(true)
-    const body = JSON.stringify({
+
+    // Assign deterministic ids so dependencies resolve on the backend.
+    const withIds = stages.map((s, i) => ({ ...s, id: effectiveStageId(stages, i) }))
+
+    const body: Record<string, unknown> = {
       name: editName,
       color: editColor,
       mode: editMode,
-      // Create on the current floor; on edit the sector keeps its office.
       ...(isCreating && floorId ? { floorId } : {}),
-      members: editMembers.map((m) => ({
+    }
+    if (editMode === 'organization' || editMode === 'orchestrated') {
+      body.members = members.map((m) => ({
         agentId: m.agentId,
-        // Sectors organize adaptive sectors; they don't apply to ordered pipelines.
-        sector: editMode === 'adaptive' ? m.sector.trim() : '',
+        sector: m.sector.trim(),
         routingDescription: m.routingDescription.trim(),
-        advanceWhen: m.advanceWhen.trim(),
-        // Transitions only apply to the pipeline flow.
-        transitions:
-          editMode === 'pipeline'
-            ? m.transitions.map((t) => ({ condition: t.condition.trim(), targetAgentId: t.targetAgentId }))
-            : [],
+        advanceWhen: m.advanceWhen.trim(), // legacy, carried through untouched
+        transitions: m.transitions.map((t) => ({ condition: t.condition.trim(), targetAgentId: t.targetAgentId })),
         isDefault: m.isDefault,
-      })),
-    })
+      }))
+    }
+    if (editMode === 'orchestrated') {
+      body.coordinatorAgentId = coordinatorAgentId
+      body.instruction = instruction.trim()
+      body.inputContract = inputContract.trim()
+      body.outputContract = outputContract.trim()
+    }
+    if (editMode === 'pipeline') {
+      body.inputContract = inputContract.trim()
+      body.outputContract = outputContract.trim()
+      body.stages = withIds.map((s) => ({
+        id: s.id,
+        name: s.name.trim() || 'Etapa',
+        agentId: s.agentId,
+        instruction: s.instruction.trim(),
+        dependsOn: s.dependsOn,
+        expectedOutput: s.expectedOutput.trim(),
+        onError: s.onError,
+      }))
+      // Clearing a converted pipeline of legacy roster is intentional here.
+      body.members = []
+    }
 
+    setSaving(true)
     try {
       const res = isCreating
-        ? await fetch(`${API_URL}/api/sectors`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body,
-          })
-        : await fetch(`${API_URL}/api/sectors/${sector?._id}`, {
-            method: 'PATCH',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body,
-          })
+        ? await fetch(`${API_URL}/api/sectors`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        : await fetch(`${API_URL}/api/sectors/${sector?._id}`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       if (!res.ok) {
-        setEditError('Não foi possível salvar o setor.')
+        const data = await res.json().catch(() => ({}))
+        setEditError(data.error ?? 'Não foi possível salvar o setor.')
         return
       }
       onSaved()
@@ -197,259 +216,185 @@ export function SectorForm({ sector, agents, floorId, onSaved }: SectorFormProps
 
   return (
     <form onSubmit={handleSave} className="space-y-4">
-      <datalist id="sector-sector-suggestions">
-        {sectorSuggestions.map((s) => (
-          <option key={s} value={s} />
-        ))}
-      </datalist>
       <div>
         <label className="mb-1 block text-sm text-(--text-muted)">Nome do setor</label>
-        <input
-          value={editName}
-          onChange={(e) => setEditName(e.target.value)}
-          required
-          autoFocus
-          placeholder="Ex: Atendimento da barbearia"
-          className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-        />
+        <input value={editName} onChange={(e) => setEditName(e.target.value)} required autoFocus placeholder="Ex: Redação de conteúdo" className={inputCls} />
       </div>
 
       <div>
         <label className="mb-1 block text-sm text-(--text-muted)">Cor do setor (base da sala no mapa)</label>
         <div className="flex flex-wrap gap-2">
           {SECTOR_COLORS.map((c) => (
-            <button
-              key={c.value}
-              type="button"
-              onClick={() => setEditColor(c.value)}
-              title={c.name}
-              aria-label={c.name}
-              className="h-8 w-8 rounded-full transition"
-              style={{
-                background: c.value,
-                outline: editColor === c.value ? '2px solid var(--text-heading)' : '2px solid transparent',
-                outlineOffset: 2,
-              }}
-            />
+            <button key={c.value} type="button" onClick={() => setEditColor(c.value)} title={c.name} aria-label={c.name} className="h-8 w-8 rounded-full transition" style={{ background: c.value, outline: editColor === c.value ? '2px solid var(--text-heading)' : '2px solid transparent', outlineOffset: 2 }} />
           ))}
         </div>
       </div>
 
       <div>
-        <label className="mb-1 block text-sm text-(--text-muted)">Modo de orquestração</label>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => setEditMode('adaptive')}
-            className={`rounded-lg border p-3 text-left text-sm transition ${
-              editMode === 'adaptive' ? 'border-(--intent-brand) bg-(--surface-sunken)' : 'border-(--border-strong) hover:border-(--border-strong)'
-            }`}
-          >
-            <span className="font-medium">Adaptativo</span>
-            <span className="mt-1 block text-xs text-(--text-muted)">
-              Um supervisor consulta, a cada mensagem, os especialistas que têm a informação.
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setEditMode('pipeline')}
-            className={`rounded-lg border p-3 text-left text-sm transition ${
-              editMode === 'pipeline' ? 'border-(--intent-brand) bg-(--surface-sunken)' : 'border-(--border-strong) hover:border-(--border-strong)'
-            }`}
-          >
-            <span className="font-medium">Fluxo (pipeline)</span>
-            <span className="mt-1 block text-xs text-(--text-muted)">
-              Etapas em sequência: cada agente cuida de uma parte e passa para a próxima.
-            </span>
-          </button>
+        <label className="mb-1 block text-sm text-(--text-muted)">Como esta equipe trabalha</label>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {MODES.map((m) => (
+            <button key={m.value} type="button" onClick={() => setEditMode(m.value)} className={`rounded-lg border p-3 text-left text-sm transition ${editMode === m.value ? 'border-(--intent-brand) bg-(--surface-sunken)' : 'border-(--border-strong)'}`}>
+              <span className="font-medium">{m.label}</span>
+              <span className="mt-1 block text-xs text-(--text-muted)">{m.example}</span>
+            </button>
+          ))}
         </div>
+        <p className="mt-2 text-xs text-(--text-faint)">{MODES.find((m) => m.value === editMode)?.how}</p>
       </div>
 
-      <div className="space-y-2">
-        <p className="text-sm font-medium">{isPipeline ? 'Etapas do fluxo' : 'Agentes do setor'}</p>
-        <p className="text-xs text-(--text-faint)">
-          {isPipeline
-            ? 'As etapas são executadas na ordem abaixo. Descreva o que cada etapa faz e quando ela deve passar para a próxima. Marque uma etapa como padrão (voz, memória e configurações compartilhadas).'
-            : 'Descreva quando cada agente deve ser usado — é o que o orquestrador lê para decidir quais consultar. Marque um como padrão (voz do setor e fallback para mensagens ambíguas).'}
-        </p>
-
-        {editMembers.length === 0 ? (
-          <p className="text-sm text-(--text-muted)">Adicione pelo menos 2 {isPipeline ? 'etapas' : 'agentes'}.</p>
-        ) : (
-          <ul className="space-y-2">
-            {editMembers.map((m, index) => (
-              <li key={m.agentId} className="rounded-lg border border-(--border-subtle) p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium">
-                    {isPipeline && <span className="text-(--text-faint)">{index + 1}. </span>}
-                    {agentNameById.get(m.agentId) ?? 'Agente'}
-                  </span>
-                  <div className="flex items-center gap-3">
-                    {isPipeline && (
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => moveMember(index, -1)}
-                          disabled={index === 0}
-                          className="rounded border border-(--border-strong) px-1.5 text-xs text-(--text-muted) transition hover:bg-(--surface-sunken) disabled:opacity-30"
-                          aria-label="Subir etapa"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => moveMember(index, 1)}
-                          disabled={index === editMembers.length - 1}
-                          className="rounded border border-(--border-strong) px-1.5 text-xs text-(--text-muted) transition hover:bg-(--surface-sunken) disabled:opacity-30"
-                          aria-label="Descer etapa"
-                        >
-                          ↓
-                        </button>
-                      </div>
-                    )}
-                    <label className="flex items-center gap-1.5 text-xs text-(--text-muted)">
-                      <input
-                        type="radio"
-                        name="default-member"
-                        checked={m.isDefault}
-                        onChange={() => setDefault(m.agentId)}
-                      />
-                      Padrão
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => removeMember(m.agentId)}
-                      className="text-xs text-(--coral-600) underline transition hover:text-(--coral-600)"
-                    >
+      {/* Organization / Orchestrated: the team roster */}
+      {editMode !== 'pipeline' && (
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Membros da equipe</p>
+          {members.length === 0 ? (
+            <p className="text-sm text-(--text-muted)">Adicione os agentes que fazem parte deste setor.</p>
+          ) : (
+            <ul className="space-y-2">
+              {members.map((m) => (
+                <li key={m.agentId} className="rounded-lg border border-(--border-subtle) p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium">{agentNameById.get(m.agentId) ?? 'Agente'}</span>
+                    <button type="button" onClick={() => removeMember(m.agentId)} className="text-xs text-(--coral-600) underline">
                       Remover
                     </button>
                   </div>
-                </div>
-                {!isPipeline && (
-                  <input
-                    value={m.sector}
-                    onChange={(e) => setSector(m.agentId, e.target.value)}
-                    list="sector-sector-suggestions"
-                    placeholder="Área (ex: Suporte, Vendas) — opcional"
-                    className="mb-2 w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-                  />
-                )}
-                <input
-                  value={m.routingDescription}
-                  onChange={(e) => setDescription(m.agentId, e.target.value)}
-                  placeholder={
-                    isPipeline
-                      ? 'O que esta etapa faz (ex: qualificar o lead e coletar requisitos)'
-                      : 'Quando usar este agente (ex: reservas, horários e disponibilidade)'
-                  }
-                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-                />
-                {isPipeline &&
-                  (index === editMembers.length - 1 ? (
-                    <p className="mt-1.5 text-xs text-(--text-faint)">
-                      Última etapa — encerra o fluxo (mas ainda pode ter desvios abaixo).
-                    </p>
-                  ) : (
-                    <input
-                      value={m.advanceWhen}
-                      onChange={(e) => setAdvanceWhen(m.agentId, e.target.value)}
-                      placeholder="Quando avançar para a próxima etapa (ex: quando já tiver data e nº de pessoas)"
-                      className="mt-2 w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-                    />
-                  ))}
-                {isPipeline && (
-                  <div className="mt-2 rounded-lg border border-(--border-subtle)/70 bg-(--surface-card)/40 p-2">
-                    <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-(--text-faint)">
-                      Desvios (opcional)
-                    </p>
-                    {m.transitions.length === 0 ? (
-                      <p className="text-xs text-(--text-faint)">
-                        Pule, ramifique ou volte para outra etapa quando uma condição acontecer.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1.5">
-                        {m.transitions.map((t, ti) => (
-                          <li key={ti} className="flex items-center gap-1.5">
-                            <span className="shrink-0 text-xs text-(--text-faint)">Se</span>
-                            <input
-                              value={t.condition}
-                              onChange={(e) => setTransitionCondition(m.agentId, ti, e.target.value)}
-                              placeholder="ex: o grupo tiver mais de 8 pessoas"
-                              className="min-w-0 flex-1 rounded border border-(--border-strong) bg-(--surface-card) px-2 py-1 text-xs outline-none focus:border-(--border-focus)"
-                            />
-                            <span className="shrink-0 text-xs text-(--text-muted)">
-                              → {agentNameById.get(t.targetAgentId) ?? 'etapa'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => removeTransition(m.agentId, ti)}
-                              className="shrink-0 px-1 text-sm text-(--coral-600) transition hover:text-(--coral-600)"
-                              aria-label="Remover desvio"
-                            >
-                              ×
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {editMembers.some(
-                      (o) => o.agentId !== m.agentId && !m.transitions.some((t) => t.targetAgentId === o.agentId),
-                    ) && (
-                      <select
-                        value=""
-                        onChange={(e) => {
-                          addTransition(m.agentId, e.target.value)
-                          e.target.value = ''
-                        }}
-                        className="mt-1.5 w-full rounded border border-(--border-strong) bg-(--surface-card) px-2 py-1 text-xs outline-none focus:border-(--border-focus)"
-                      >
-                        <option value="">+ Adicionar desvio para outra etapa</option>
-                        {editMembers
-                          .filter(
-                            (o) =>
-                              o.agentId !== m.agentId && !m.transitions.some((t) => t.targetAgentId === o.agentId),
-                          )
-                          .map((o) => (
-                            <option key={o.agentId} value={o.agentId}>
-                              ir para {agentNameById.get(o.agentId) ?? 'etapa'}
-                            </option>
-                          ))}
-                      </select>
-                    )}
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
+                  {editMode === 'orchestrated' && (
+                    <input value={m.routingDescription} onChange={(e) => setDescription(m.agentId, e.target.value)} placeholder="No que este membro ajuda (ex: pesquisa de fontes)" className={inputCls} />
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          {availableAgents.length > 0 && (
+            <select value="" onChange={(e) => { addMember(e.target.value); e.target.value = '' }} className={inputCls}>
+              <option value="">+ Adicionar agente</option>
+              {availableAgents.map((a) => (
+                <option key={a._id} value={a._id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
 
-        {availableAgents.length > 0 && (
-          <select
-            value=""
-            onChange={(e) => {
-              addMember(e.target.value)
-              e.target.value = ''
-            }}
-            className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-          >
-            <option value="">+ Adicionar {isPipeline ? 'etapa' : 'agente ao setor'}</option>
-            {availableAgents.map((a) => (
-              <option key={a._id} value={a._id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
+      {/* Orchestrated: coordinator + instruction + contracts */}
+      {editMode === 'orchestrated' && (
+        <>
+          <div>
+            <label className="mb-1 block text-sm text-(--text-muted)">Coordenador {managerRecommended.length > 0 && <span className="text-(--text-faint)">(um gerente é recomendado)</span>}</label>
+            <select value={coordinatorAgentId} onChange={(e) => setCoordinatorAgentId(e.target.value)} className={inputCls}>
+              <option value="">Escolher coordenador…</option>
+              {members.map((m) => (
+                <option key={m.agentId} value={m.agentId}>
+                  {agentNameById.get(m.agentId) ?? 'Agente'}
+                  {agents.find((a) => a._id === m.agentId)?.preset === 'manager' ? ' — gerente' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-(--text-muted)">Instrução para a equipe (opcional)</label>
+            <textarea value={instruction} onChange={(e) => setInstruction(e.target.value)} rows={2} placeholder="Como o coordenador deve conduzir o time." className={inputCls} />
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm text-(--text-muted)">O que a equipe recebe</label>
+              <input value={inputContract} onChange={(e) => setInputContract(e.target.value)} placeholder="Ex.: um pedido de conteúdo" className={inputCls} />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-(--text-muted)">O que a equipe entrega</label>
+              <input value={outputContract} onChange={(e) => setOutputContract(e.target.value)} placeholder="Ex.: um texto final revisado" className={inputCls} />
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Pipeline: contracts + stage editor + flow preview */}
+      {editMode === 'pipeline' && (
+        <>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm text-(--text-muted)">Entrada do fluxo</label>
+              <input value={inputContract} onChange={(e) => setInputContract(e.target.value)} placeholder="Ex.: um tema" className={inputCls} />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-(--text-muted)">Saída do fluxo</label>
+              <input value={outputContract} onChange={(e) => setOutputContract(e.target.value)} placeholder="Ex.: um relatório pronto" className={inputCls} />
+            </div>
+          </div>
+
+          {stages.length > 0 && (
+            <div className="rounded-lg border border-(--border-subtle) bg-(--surface-sunken) p-2 text-xs text-(--text-muted)">
+              Fluxo: {stages.map((s, i) => `${i + 1}. ${s.name || agentNameById.get(s.agentId) || 'Etapa'}`).join('  →  ')}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Etapas</p>
+            {stages.length === 0 ? <p className="text-sm text-(--text-muted)">Adicione as etapas do fluxo, na ordem.</p> : null}
+            <ul className="space-y-2">
+              {stages.map((s, index) => (
+                <li key={s.key} className="rounded-lg border border-(--border-subtle) p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-(--text-faint)">{index + 1}.</span>
+                    <div className="flex items-center gap-1">
+                      <button type="button" onClick={() => moveStage(index, -1)} disabled={index === 0} className="rounded border border-(--border-strong) px-1.5 text-xs disabled:opacity-30" aria-label="Subir">↑</button>
+                      <button type="button" onClick={() => moveStage(index, 1)} disabled={index === stages.length - 1} className="rounded border border-(--border-strong) px-1.5 text-xs disabled:opacity-30" aria-label="Descer">↓</button>
+                      <button type="button" onClick={() => removeStage(s.key)} className="ml-2 text-xs text-(--coral-600) underline">Remover</button>
+                    </div>
+                  </div>
+                  <input value={s.name} onChange={(e) => patchStage(s.key, { name: e.target.value })} placeholder="Nome da etapa (ex: Coleta)" className={inputCls} />
+                  <select value={s.agentId} onChange={(e) => patchStage(s.key, { agentId: e.target.value })} className={inputCls}>
+                    <option value="">Escolher agente…</option>
+                    {agents.map((a) => (
+                      <option key={a._id} value={a._id}>{a.name}</option>
+                    ))}
+                  </select>
+                  <input value={s.instruction} onChange={(e) => patchStage(s.key, { instruction: e.target.value })} placeholder="O que esta etapa faz" className={inputCls} />
+                  {index > 0 && (
+                    <div>
+                      <label className="mb-1 block text-xs text-(--text-faint)">Usa o resultado de</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {stages.slice(0, index).map((prev, pi) => {
+                          const pid = effectiveStageId(stages, pi)
+                          const on = s.dependsOn.includes(pid)
+                          return (
+                            <button key={prev.key} type="button" onClick={() => patchStage(s.key, { dependsOn: on ? s.dependsOn.filter((d) => d !== pid) : [...s.dependsOn, pid] })} className={`rounded border px-2 py-1 text-xs ${on ? 'border-(--intent-brand) bg-(--surface-sunken)' : 'border-(--border-strong)'}`}>
+                              {prev.name || `Etapa ${pi + 1}`}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-1.5 text-xs text-(--text-muted)">
+                      Se falhar:
+                      <select value={s.onError} onChange={(e) => patchStage(s.key, { onError: e.target.value as 'stop' | 'continue' })} className="rounded border border-(--border-strong) bg-(--surface-card) px-2 py-1 text-xs">
+                        <option value="stop">parar o fluxo</option>
+                        <option value="continue">seguir para a próxima</option>
+                      </select>
+                    </label>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <select value="" onChange={(e) => { addStage(e.target.value); e.target.value = '' }} className={inputCls}>
+              <option value="">+ Adicionar etapa</option>
+              {agents.map((a) => (
+                <option key={a._id} value={a._id}>{a.name}</option>
+              ))}
+            </select>
+          </div>
+        </>
+      )}
 
       {editError && <p className="text-sm text-(--coral-600)">{editError}</p>}
 
       <div className="flex justify-end border-t border-(--border-subtle) pt-4">
-        <button
-          type="submit"
-          disabled={saving}
-          className="rounded-lg bg-(--intent-brand) px-5 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
-        >
+        <button type="submit" disabled={saving} className="rounded-lg bg-(--intent-brand) px-5 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50">
           {isCreating ? (saving ? 'Criando...' : 'Criar setor') : saving ? 'Salvando...' : 'Salvar alterações'}
         </button>
       </div>

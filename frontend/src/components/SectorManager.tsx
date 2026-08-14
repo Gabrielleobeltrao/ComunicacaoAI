@@ -4,6 +4,7 @@ import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentSummary, SectorSummary } from '../lib/types'
 import { useActiveFloorId } from '../contexts/BuildingContext'
 import { floorSector } from '../lib/floorRoutes'
+import { sectorModeLabel } from '../lib/sectors'
 import { SectorMapCrop } from '../office/SectorMapCrop'
 import { Button, Card, Dialog } from '../ui'
 import { SectorForm } from './SectorForm'
@@ -45,7 +46,7 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
             const defaultName = (defaultMember && agentNameById.get(defaultMember.agentId)) || null
             const names = sector.members.map((m) => agentNameById.get(m.agentId) ?? 'removido')
             const count = sector.members.length
-            const modeLabel = sector.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'
+            const modeLabel = sectorModeLabel(sector.mode)
             return (
               <Link key={sector._id} to={fid ? floorSector(fid, sector._id) : `/setores/${sector._id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
                 <Card interactive accent={sector.color} padding="0" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>

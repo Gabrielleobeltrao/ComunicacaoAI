@@ -7,15 +7,19 @@ import type { SectorMemberSummary } from './types'
 const member = (isDefault = false): SectorMemberSummary => ({ agentId: 'a', sector: '', routingDescription: '', advanceWhen: '', transitions: [], isDefault })
 
 describe('sectorReadiness', () => {
-  it('adaptive: ready needs >= 1 member AND a default', () => {
-    expect(sectorReadiness('adaptive', [])).toBe('incomplete')
-    expect(sectorReadiness('adaptive', [member(false)])).toBe('incomplete') // no default
-    expect(sectorReadiness('adaptive', [member(true)])).toBe('ready')
+  it('organization: ready with at least one member', () => {
+    expect(sectorReadiness('organization', [])).toBe('incomplete')
+    expect(sectorReadiness('organization', [member()])).toBe('ready')
   })
 
-  it('pipeline: ready needs >= 2 members AND a default', () => {
-    expect(sectorReadiness('pipeline', [member(true)])).toBe('incomplete') // only one stage
-    expect(sectorReadiness('pipeline', [member(false), member(false)])).toBe('incomplete') // no default
-    expect(sectorReadiness('pipeline', [member(true), member(false)])).toBe('ready')
+  it('orchestrated: ready needs a coordinator AND a member', () => {
+    expect(sectorReadiness('orchestrated', [member()])).toBe('incomplete') // no coordinator
+    expect(sectorReadiness('orchestrated', [], { coordinatorAgentId: 'c' })).toBe('incomplete') // no member
+    expect(sectorReadiness('orchestrated', [member()], { coordinatorAgentId: 'c' })).toBe('ready')
+  })
+
+  it('pipeline: ready needs at least one stage', () => {
+    expect(sectorReadiness('pipeline', [], { stages: [] })).toBe('incomplete')
+    expect(sectorReadiness('pipeline', [], { stages: [{ id: 's1' }] })).toBe('ready')
   })
 })

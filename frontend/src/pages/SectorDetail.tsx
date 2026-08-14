@@ -7,7 +7,7 @@ import { DangerZone } from '../components/DangerZone'
 import { SectorForm } from '../components/SectorForm'
 import { SectorPlayground } from '../components/SectorPlayground'
 import { API_URL } from '../lib/api'
-import { SectorApiError, getSectorOverview } from '../lib/sectors'
+import { SectorApiError, getSectorOverview, sectorModeLabel } from '../lib/sectors'
 import { SectorHero } from '../components/SectorHero'
 import { SectorAgentsDialog } from '../components/SectorAgentsDialog'
 import { MoveSectorWizard } from '../components/MoveSectorWizard'
@@ -279,7 +279,7 @@ export function SectorDetail() {
 
   const titleExtra = sector ? (
     <>
-      <Badge>{sector.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'}</Badge>
+      <Badge>{sectorModeLabel(sector.mode)}</Badge>
       <Badge>{`${sector.members.length} ${sector.members.length === 1 ? 'agente' : 'agentes'}`}</Badge>
     </>
   ) : undefined

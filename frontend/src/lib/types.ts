@@ -13,7 +13,10 @@ export interface WidgetSummary {
   sectorId: string | null
 }
 
-export type SectorMode = 'adaptive' | 'pipeline'
+// organization = only groups agents (not executable); orchestrated = a coordinator
+// leads and delegates; pipeline = ordered stages. Legacy 'adaptive' is served by the
+// backend as 'orchestrated'.
+export type SectorMode = 'organization' | 'orchestrated' | 'pipeline'
 
 export interface SectorTransition {
   condition: string
@@ -29,6 +32,20 @@ export interface SectorMemberSummary {
   isDefault: boolean
 }
 
+// Pipeline execution stage (serialized). Ids are backend-assigned; the UI works in
+// names/agents, never raw ids.
+export interface SectorStageSummary {
+  id: string
+  name: string
+  agentId: string
+  instruction: string
+  dependsOn: string[]
+  inputMapping: Record<string, string>
+  expectedOutput: string
+  retryPolicy: { maxAttempts: number; backoffMs: number }
+  onError: 'stop' | 'continue'
+}
+
 export interface SectorSummary {
   _id: string
   // The floor (office) this sector lives on. Serialized by the backend.
@@ -37,6 +54,11 @@ export interface SectorSummary {
   // The room's base colour on the office map.
   color: string
   mode: SectorMode
+  coordinatorAgentId?: string | null
+  instruction?: string
+  inputContract?: string
+  outputContract?: string
+  stages?: SectorStageSummary[]
   members: SectorMemberSummary[]
 }
 

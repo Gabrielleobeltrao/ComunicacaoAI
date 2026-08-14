@@ -3,31 +3,46 @@ import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
 import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
 import { assignAgentToSector } from '../lib/sectors'
-import type { ActivationMode, AgentPreset, AgentSummary, SectorSummary } from '../lib/types'
-import { Button, Card, Field, Input, Tag, Textarea } from '../ui'
+import type { AgentPreset, AgentSummary, DelegationPolicy, SectorSummary } from '../lib/types'
+import { Button, Card, Field, Input, Select, Tag, Textarea } from '../ui'
 
-// The 8-step hiring wizard. A preset seeds an editable starting configuration; the
-// remaining steps capture the agent-as-primary-unit fields (competencies,
-// activations, collaborators, placement) and create the agent. Tools are attached
-// afterwards in the agent's Ferramentas tab — kept out of hiring so a new agent is
-// never blocked on connecting an app.
-// ponytail: tools step is informational (config lives in Ferramentas), upgrade to
-// inline app-connect if hiring-time tool setup is ever needed.
+// The hiring wizard: 4 adaptive steps — Função, Configuração essencial,
+// Equipe/funcionamento, Revisão. Each preset shows ONLY its relevant fields;
+// everything else stays editable later on the agent page. No IDs, cron or raw
+// contracts are shown — the user works in names, presets and plain language.
 
-const STEPS = ['Perfil', 'Nome & objetivo', 'Competências', 'Ferramentas', 'Acionamentos', 'Colaboração', 'Setor & andar', 'Revisão']
+const STEPS = ['Função', 'Configuração', 'Equipe', 'Revisão']
 
-const ACTIVATION_OPTIONS: { value: ActivationMode; label: string; hint: string }[] = [
-  { value: 'manual', label: 'Manual', hint: 'Você aciona quando quiser' },
-  { value: 'scheduled', label: 'Agendado', hint: 'Roda em rotinas' },
-  { value: 'event', label: 'Evento', hint: 'Disparado por um webhook' },
-  { value: 'channel', label: 'Canal', hint: 'Responde em um canal' },
-  { value: 'agent_only', label: 'Só por agente', hint: 'Só outro agente aciona' },
+// Which essential fields each preset shows on step 2. subject → inputContract,
+// deliverable → outputContract, tone → responseTone, capabilities → free editor.
+const PRESET_ESSENTIALS: Record<AgentPreset, { subject?: string; deliverable?: string; tone?: boolean; capabilities?: boolean; note?: string }> = {
+  manager: { note: 'Os colaboradores que ele pode acionar você define no próximo passo.' },
+  researcher: { subject: 'Tema / assunto a pesquisar', deliverable: 'Formato do resultado (ex.: lista com fontes)' },
+  analyst: { subject: 'O que ele recebe para analisar', deliverable: 'Conclusão esperada' },
+  secretary: { note: 'Ele organiza e encaminha demandas — ajuste os detalhes depois em Ajustes.' },
+  operator: { subject: 'Ação principal que ele executa', note: 'Conecte a integração na aba Ferramentas do agente. Sem ela, ele fica incompleto.' },
+  communicator: { tone: true, deliverable: 'Formato / canal de entrega' },
+  monitor: { subject: 'Fonte a acompanhar', deliverable: 'Condição que dispara o alerta', note: 'Defina a frequência criando uma Rotina no agente depois.' },
+  custom: { capabilities: true },
+}
+
+const TONES: { value: string; label: string }[] = [
+  { value: 'neutral', label: 'Neutro' },
+  { value: 'friendly', label: 'Amigável' },
+  { value: 'formal', label: 'Formal' },
 ]
 
 const LANGS: { value: string; label: string }[] = [
   { value: 'pt', label: 'Português' },
   { value: 'en', label: 'Inglês' },
   { value: 'es', label: 'Espanhol' },
+]
+
+// none|all|selected in plain language.
+const POLICY_OPTIONS: { value: DelegationPolicy; label: string }[] = [
+  { value: 'none', label: 'Ninguém' },
+  { value: 'all', label: 'Qualquer agente do prédio' },
+  { value: 'selected', label: 'Apenas os que eu escolher' },
 ]
 
 function ChipToggle({ on, label, hint, onClick }: { on: boolean; label: string; hint?: string; onClick: () => void }) {
@@ -52,18 +67,50 @@ function ChipToggle({ on, label, hint, onClick }: { on: boolean; label: string; 
   )
 }
 
-const toggle = <T,>(list: T[], v: T): T[] => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
+// A 3-way none|all|selected picker with an optional agent multiselect for 'selected'.
+function PolicyPicker({
+  value,
+  onChange,
+  selectedIds,
+  onToggleId,
+  agents,
+}: {
+  value: DelegationPolicy
+  onChange: (v: DelegationPolicy) => void
+  selectedIds: string[]
+  onToggleId: (id: string) => void
+  agents: AgentSummary[]
+}) {
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {POLICY_OPTIONS.map((o) => (
+          <ChipToggle key={o.value} on={value === o.value} label={o.label} onClick={() => onChange(o.value)} />
+        ))}
+      </div>
+      {value === 'selected' ? (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, maxHeight: 150, overflowY: 'auto' }}>
+          {agents.length === 0 ? (
+            <span style={{ fontSize: 13, color: 'var(--text-subtle)' }}>Nenhum outro agente ainda.</span>
+          ) : (
+            agents.map((a) => <ChipToggle key={a._id} on={selectedIds.includes(a._id)} label={a.name} onClick={() => onToggleId(a._id)} />)
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+const toggle = (list: string[], v: string): string[] => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
 
 export function HireWizard({
   floorId,
-  floorName,
   agents,
   sectors,
   onHired,
   onCancel,
 }: {
   floorId?: string
-  floorName?: string
   agents: AgentSummary[]
   sectors: SectorSummary[]
   onHired: () => void
@@ -76,13 +123,17 @@ export function HireWizard({
   const [language, setLanguage] = useState('pt')
   const [name, setName] = useState(() => randomAgentName('pt').name)
   const [objective, setObjective] = useState('')
+  const [subject, setSubject] = useState('') // → inputContract
+  const [deliverable, setDeliverable] = useState('') // → outputContract
+  const [tone, setTone] = useState('neutral')
   const [capabilities, setCapabilities] = useState<string[]>([])
   const [capDraft, setCapDraft] = useState('')
-  const [activationModes, setActivationModes] = useState<ActivationMode[]>(['manual', 'channel'])
-  const [inputContract, setInputContract] = useState('')
-  const [outputContract, setOutputContract] = useState('')
+
+  // Team/operation
+  const [delegationPolicy, setDelegationPolicy] = useState<DelegationPolicy>('none')
   const [callableAgentIds, setCallableAgentIds] = useState<string[]>([])
   const [callableSectorIds, setCallableSectorIds] = useState<string[]>([])
+  const [callerPolicy, setCallerPolicy] = useState<DelegationPolicy>('all')
   const [allowedCallerAgentIds, setAllowedCallerAgentIds] = useState<string[]>([])
   const [sectorId, setSectorId] = useState('')
 
@@ -93,15 +144,20 @@ export function HireWizard({
     listAgentPresets().then(setPresets).catch(() => setPresets([]))
   }, [])
 
-  // Selecting a preset seeds the editable fields (only where still untouched-ish:
-  // we always overwrite from a preset pick, since it's an explicit choice).
+  const specOf = (p: AgentPreset) => presets.find((s) => s.preset === p)
+  const essentials = PRESET_ESSENTIALS[preset]
+  const otherAgents = useMemo(() => agents.filter((a) => a.name), [agents])
+  // Only executable teams (orchestrated/pipeline) can be delegated to.
+  const callableSectors = useMemo(() => sectors.filter((s) => s.mode !== 'organization'), [sectors])
+
   const applyPreset = (spec: AgentPresetSpec) => {
     setPreset(spec.preset)
     setObjective(spec.objective)
     setCapabilities(spec.capabilities)
-    setActivationModes(spec.activationModes)
-    setInputContract(spec.inputContract)
-    setOutputContract(spec.outputContract)
+    setSubject('')
+    setDeliverable('')
+    // A manager delegates by default; every other role starts as a leaf.
+    setDelegationPolicy(spec.preset === 'manager' ? 'all' : 'none')
   }
 
   const reroll = () => setName(randomAgentName(language, name).name)
@@ -109,14 +165,11 @@ export function HireWizard({
     setLanguage(lang)
     setName(randomAgentName(lang).name)
   }
-
   const addCapability = () => {
     const v = capDraft.trim()
     if (v && !capabilities.includes(v)) setCapabilities((c) => [...c, v])
     setCapDraft('')
   }
-
-  const otherAgents = useMemo(() => agents.filter((a) => a.name), [agents])
 
   const canNext = step !== 1 || name.trim().length > 0
 
@@ -124,6 +177,7 @@ export function HireWizard({
     setSaving(true)
     setError(null)
     try {
+      const spec = specOf(preset)
       const res = await fetch(`${API_URL}/api/agents`, {
         method: 'POST',
         credentials: 'include',
@@ -136,12 +190,15 @@ export function HireWizard({
           floorId,
           preset,
           capabilities,
-          activationModes,
-          inputContract: inputContract.trim(),
-          outputContract: outputContract.trim(),
-          callableAgentIds,
-          callableSectorIds,
-          allowedCallerAgentIds,
+          activationModes: spec?.activationModes ?? ['manual', 'channel'],
+          inputContract: subject.trim(),
+          outputContract: deliverable.trim(),
+          ...(essentials.tone ? { responseTone: tone } : {}),
+          delegationPolicy,
+          callableAgentIds: delegationPolicy === 'selected' ? callableAgentIds : [],
+          callableSectorIds: delegationPolicy === 'selected' ? callableSectorIds : [],
+          callerPolicy,
+          allowedCallerAgentIds: callerPolicy === 'selected' ? allowedCallerAgentIds : [],
         }),
       })
       if (!res.ok) throw new Error(String(res.status))
@@ -154,9 +211,10 @@ export function HireWizard({
     }
   }
 
+  const policyLabel = (p: DelegationPolicy, n: number) => (p === 'all' ? 'qualquer agente do prédio' : p === 'none' ? 'ninguém' : `${n} selecionado(s)`)
+
   return (
     <div style={{ display: 'grid', gap: 18 }}>
-      {/* Stepper */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {STEPS.map((label, i) => (
           <span
@@ -176,7 +234,8 @@ export function HireWizard({
         ))}
       </div>
 
-      <div style={{ minHeight: 240 }}>
+      <div style={{ minHeight: 250 }}>
+        {/* Step 1 — Função */}
         {step === 0 ? (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             {presets.map((spec) => (
@@ -185,6 +244,7 @@ export function HireWizard({
           </div>
         ) : null}
 
+        {/* Step 2 — Configuração essencial (preset-specific) */}
         {step === 1 ? (
           <div style={{ display: 'grid', gap: 14 }}>
             <Field label="Nome" hint="Gerado automaticamente conforme o idioma — gere outro se quiser.">
@@ -205,96 +265,72 @@ export function HireWizard({
             <Field label="Objetivo" hint="O que este agente faz — sua instrução principal.">
               <Textarea rows={3} value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Ex.: pesquisar notícias e entregar um resumo diário." />
             </Field>
+            {essentials.subject ? (
+              <Field label={essentials.subject}>
+                <Input value={subject} onChange={(e) => setSubject(e.target.value)} />
+              </Field>
+            ) : null}
+            {essentials.deliverable ? (
+              <Field label={essentials.deliverable}>
+                <Input value={deliverable} onChange={(e) => setDeliverable(e.target.value)} />
+              </Field>
+            ) : null}
+            {essentials.tone ? (
+              <Field label="Tom">
+                <Select value={tone} onChange={(e) => setTone(e.target.value)} options={TONES} />
+              </Field>
+            ) : null}
+            {essentials.capabilities ? (
+              <Field label="Competências" hint="Tags usadas por gerentes para achar este agente por competência.">
+                <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                  <Input
+                    value={capDraft}
+                    onChange={(e) => setCapDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        addCapability()
+                      }
+                    }}
+                    placeholder="Ex.: pesquisa web"
+                    style={{ flex: 1 }}
+                  />
+                  <Button variant="secondary" onClick={addCapability} type="button">
+                    Adicionar
+                  </Button>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {capabilities.map((c) => (
+                    <Tag key={c} onRemove={() => setCapabilities((list) => list.filter((x) => x !== c))}>
+                      {c}
+                    </Tag>
+                  ))}
+                </div>
+              </Field>
+            ) : null}
+            {essentials.note ? <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>{essentials.note}</p> : null}
           </div>
         ) : null}
 
+        {/* Step 3 — Equipe / funcionamento */}
         {step === 2 ? (
-          <Field label="Competências" hint="Tags usadas por gerentes para achar este agente por competência.">
-            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-              <Input
-                value={capDraft}
-                onChange={(e) => setCapDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    addCapability()
-                  }
-                }}
-                placeholder="Ex.: pesquisa web"
-                style={{ flex: 1 }}
-              />
-              <Button variant="secondary" onClick={addCapability} type="button">
-                Adicionar
-              </Button>
-            </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {capabilities.length === 0 ? (
-                <span style={{ fontSize: 13, color: 'var(--text-subtle)' }}>Nenhuma competência ainda.</span>
-              ) : (
-                capabilities.map((c) => (
-                  <Tag key={c} onRemove={() => setCapabilities((list) => list.filter((x) => x !== c))}>
-                    {c}
-                  </Tag>
-                ))
-              )}
-            </div>
-          </Field>
-        ) : null}
-
-        {step === 3 ? (
-          <div style={{ display: 'grid', gap: 12 }}>
-            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-heading)', fontWeight: 700 }}>Ferramentas</p>
-            <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)' }}>
-              As ferramentas (apps e integrações) são conectadas depois da contratação, na aba <strong>Ferramentas</strong> do agente. Quando faltar alguma
-              capacidade, o próprio agente sinaliza e sugere contratar quem falta.
-            </p>
-          </div>
-        ) : null}
-
-        {step === 4 ? (
-          <Field label="Acionamentos" hint="Como este agente pode ser disparado.">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {ACTIVATION_OPTIONS.map((o) => (
-                <ChipToggle key={o.value} on={activationModes.includes(o.value)} label={o.label} hint={o.hint} onClick={() => setActivationModes((m) => toggle(m, o.value))} />
-              ))}
-            </div>
-          </Field>
-        ) : null}
-
-        {step === 5 ? (
-          <div style={{ display: 'grid', gap: 16 }}>
-            <Field label="Pode acionar estes agentes" hint="Vazio = pode acionar qualquer agente do prédio (se o outro permitir).">
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, maxHeight: 160, overflowY: 'auto' }}>
-                {otherAgents.map((a) => (
-                  <ChipToggle key={a._id} on={callableAgentIds.includes(a._id)} label={a.name} onClick={() => setCallableAgentIds((l) => toggle(l, a._id))} />
-                ))}
-              </div>
+          <div style={{ display: 'grid', gap: 18 }}>
+            <Field label="Quem este agente pode acionar?" hint="Para delegar tarefas a colaboradores.">
+              <PolicyPicker value={delegationPolicy} onChange={setDelegationPolicy} selectedIds={callableAgentIds} onToggleId={(id) => setCallableAgentIds((l) => toggle(l, id))} agents={otherAgents} />
             </Field>
-            {sectors.length > 0 ? (
-              <Field label="Pode acionar estes setores">
+            {delegationPolicy === 'selected' && callableSectors.length > 0 ? (
+              <Field label="Equipes (setores) que ele pode acionar">
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                  {sectors.map((s) => (
+                  {callableSectors.map((s) => (
                     <ChipToggle key={s._id} on={callableSectorIds.includes(s._id)} label={s.name} onClick={() => setCallableSectorIds((l) => toggle(l, s._id))} />
                   ))}
                 </div>
               </Field>
             ) : null}
-            <Field label="Pode ser acionado por" hint="Vazio = qualquer agente do prédio.">
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, maxHeight: 160, overflowY: 'auto' }}>
-                {otherAgents.map((a) => (
-                  <ChipToggle key={a._id} on={allowedCallerAgentIds.includes(a._id)} label={a.name} onClick={() => setAllowedCallerAgentIds((l) => toggle(l, a._id))} />
-                ))}
-              </div>
+            <Field label="Quem pode acionar este agente?">
+              <PolicyPicker value={callerPolicy} onChange={setCallerPolicy} selectedIds={allowedCallerAgentIds} onToggleId={(id) => setAllowedCallerAgentIds((l) => toggle(l, id))} agents={otherAgents} />
             </Field>
-          </div>
-        ) : null}
-
-        {step === 6 ? (
-          <div style={{ display: 'grid', gap: 14 }}>
-            <Field label="Andar">
-              <Input value={floorName ?? 'Andar atual'} disabled />
-            </Field>
-            <Field label="Setor (opcional)" hint="Equipe onde o agente vai trabalhar. Pode definir depois.">
+            <Field label="Setor (opcional)" hint="Equipe onde ele aparece no mapa. Pode definir depois.">
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <ChipToggle on={sectorId === ''} label="Sem setor" onClick={() => setSectorId('')} />
                 {sectors.map((s) => (
@@ -305,15 +341,16 @@ export function HireWizard({
           </div>
         ) : null}
 
-        {step === 7 ? (
+        {/* Step 4 — Revisão */}
+        {step === 3 ? (
           <Card padding="16px" style={{ display: 'grid', gap: 8, fontSize: 13.5 }}>
-            <Row label="Perfil" value={presets.find((p) => p.preset === preset)?.label ?? preset} />
+            <Row label="Função" value={specOf(preset)?.label ?? preset} />
             <Row label="Nome" value={name} />
             <Row label="Objetivo" value={objective || '—'} />
-            <Row label="Competências" value={capabilities.join(', ') || '—'} />
-            <Row label="Acionamentos" value={activationModes.map((m) => ACTIVATION_OPTIONS.find((o) => o.value === m)?.label ?? m).join(', ') || '—'} />
-            <Row label="Pode acionar" value={`${callableAgentIds.length} agente(s), ${callableSectorIds.length} setor(es)`} />
-            <Row label="Acionado por" value={allowedCallerAgentIds.length === 0 ? 'Qualquer agente' : `${allowedCallerAgentIds.length} agente(s)`} />
+            {subject ? <Row label="Recebe" value={subject} /> : null}
+            {deliverable ? <Row label="Entrega" value={deliverable} /> : null}
+            <Row label="Pode acionar" value={policyLabel(delegationPolicy, callableAgentIds.length)} />
+            <Row label="Pode ser acionado por" value={policyLabel(callerPolicy, allowedCallerAgentIds.length)} />
             <Row label="Setor" value={sectors.find((s) => s._id === sectorId)?.name ?? 'Sem setor'} />
           </Card>
         ) : null}
@@ -342,7 +379,7 @@ export function HireWizard({
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ display: 'flex', gap: 12 }}>
-      <span style={{ minWidth: 130, color: 'var(--text-muted)' }}>{label}</span>
+      <span style={{ minWidth: 150, color: 'var(--text-muted)' }}>{label}</span>
       <span style={{ color: 'var(--text-heading)', fontWeight: 600 }}>{value}</span>
     </div>
   )

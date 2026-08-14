@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { buildCharacterResolver } from '../lib/agentAvatar'
-import { sectorReadiness } from '../lib/sectors'
+import { sectorModeLabel, sectorReadiness } from '../lib/sectors'
 import { SectorMapCrop } from '../office/SectorMapCrop'
 import type { AgentSummary, SectorSummary } from '../lib/types'
 
@@ -11,8 +11,8 @@ import type { AgentSummary, SectorSummary } from '../lib/types'
 // the same information for screen readers (§6.4).
 export function SectorHero({ sector, agents, floorName, actions }: { sector: SectorSummary; agents: AgentSummary[]; floorName: string; actions?: ReactNode }) {
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
-  const readiness = sectorReadiness(sector.mode, sector.members)
-  const modeLabel = sector.mode === 'pipeline' ? 'Fluxo' : 'Adaptativo'
+  const readiness = sectorReadiness(sector.mode, sector.members, { coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages })
+  const modeLabel = sectorModeLabel(sector.mode)
   const count = sector.members.length
   const description = `Sala do setor ${sector.name} com ${count} ${count === 1 ? 'agente' : 'agentes'} no andar ${floorName}.`
 

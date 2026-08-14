@@ -31,12 +31,21 @@ const opts = (method: string, body?: unknown): RequestInit => ({
   body: body === undefined ? undefined : JSON.stringify(body),
 })
 
-// Operational readiness — mirrors the backend rule (§7.5) so the badge matches.
-export function sectorReadiness(mode: SectorMode, members: SectorMemberSummary[]): 'ready' | 'incomplete' {
-  const hasDefault = members.some((m) => m.isDefault)
-  if (mode === 'pipeline') return members.length >= 2 && hasDefault ? 'ready' : 'incomplete'
-  return members.length >= 1 && hasDefault ? 'ready' : 'incomplete'
+// Operational readiness — mirrors the backend rule so the badge matches:
+//   organization → any member; orchestrated → a coordinator + a member;
+//   pipeline → at least one stage.
+export function sectorReadiness(
+  mode: SectorMode,
+  members: SectorMemberSummary[],
+  extra?: { coordinatorAgentId?: string | null; stages?: { id: string }[] },
+): 'ready' | 'incomplete' {
+  if (mode === 'organization') return members.length >= 1 ? 'ready' : 'incomplete'
+  if (mode === 'pipeline') return (extra?.stages?.length ?? 0) >= 1 ? 'ready' : 'incomplete'
+  return extra?.coordinatorAgentId && members.length >= 1 ? 'ready' : 'incomplete'
 }
+
+// Human label for a sector mode (organization / orchestrated / pipeline).
+export const sectorModeLabel = (mode: SectorMode): string => (mode === 'pipeline' ? 'Pipeline' : mode === 'organization' ? 'Organização' : 'Orquestrado')
 
 export const getSectorOverview = (sectorId: string) => fetch(`${API_URL}/api/sectors/${sectorId}/overview`, opts('GET')).then(json<SectorOverview>)
 
