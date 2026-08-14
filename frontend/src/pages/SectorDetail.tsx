@@ -6,6 +6,7 @@ import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { SectorForm } from '../components/SectorForm'
 import { SectorPlayground } from '../components/SectorPlayground'
+import { SectorKnowledge } from '../components/SectorKnowledge'
 import { API_URL } from '../lib/api'
 import { SectorApiError, getSectorOverview, sectorModeLabel } from '../lib/sectors'
 import { SectorHero } from '../components/SectorHero'
@@ -348,6 +349,8 @@ export function SectorDetail() {
               <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
                 {active === 'configuracao' ? (
                   <SectorForm key={sector._id} sector={sector} agents={agents} onSaved={load} />
+                ) : active === 'conhecimento' ? (
+                  <SectorKnowledge key={sector._id} sectorId={sector._id} />
                 ) : active === 'testar' ? (
                   <SectorPlayground key={sector._id} sector={sector} />
                 ) : null}

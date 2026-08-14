@@ -3,5 +3,6 @@
 export const SECTOR_SECTIONS: { key: string; label: string }[] = [
   { key: '', label: 'Visão geral' },
   { key: 'configuracao', label: 'Configuração' },
+  { key: 'conhecimento', label: 'Conhecimento' },
   { key: 'testar', label: 'Testar' },
 ]
