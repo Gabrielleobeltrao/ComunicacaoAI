@@ -183,7 +183,10 @@ export interface AgentSummary {
 }
 
 export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'monitor' | 'custom'
+// 'agent_only' is LEGACY and read-only — it is never written again, and is not an
+// option anywhere in the UI (callerPolicy models what it meant).
 export type ActivationMode = 'manual' | 'scheduled' | 'event' | 'channel' | 'agent_only'
+export const SETTABLE_ACTIVATION_MODES: ActivationMode[] = ['manual', 'scheduled', 'event', 'channel']
 // Delegation permission (both directions): none = nobody, all = any agent in the
 // same building, selected = only the matching id list.
 export type DelegationPolicy = 'none' | 'all' | 'selected'
@@ -234,6 +237,8 @@ export interface TriggerState {
   allowed: boolean
   // Configured = something real fires it (a routine, a channel, a webhook).
   configured: boolean
+  // Legacy rows only: something real fires it while the agent does not allow it.
+  inconsistent?: boolean
 }
 export interface AgentWiring {
   routineCount: number

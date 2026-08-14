@@ -10,9 +10,12 @@
 // DESTRUCTIVE. Everything below is scoped to the resolved ownerId: another tenant's
 // data is never touched. There is no undo.
 //
-//   npm run seed:demo -w backend                      # uses SEED_EMAIL or the default
-//   SEED_EMAIL=alguem@exemplo.com npm run seed:demo -w backend
-//   SEED_DRY_RUN=1 npm run seed:demo -w backend       # report what WOULD be deleted
+// It is DRY-RUN BY DEFAULT. A real wipe needs all three signals, and never runs
+// with NODE_ENV=production (see ./seedGuard.ts):
+//
+//   SEED_EMAIL=alguem@exemplo.com npm run seed:demo -w backend        # relatório, nada muda
+//   SEED_EMAIL=alguem@exemplo.com SEED_APPLY=1 \
+//     SEED_CONFIRM=RESET_RESTAURANT_DEMO npm run seed:demo -w backend # apaga e recria
 import 'dotenv/config'
 import { ObjectId } from 'mongodb'
 import { db, mongoClient } from '../db.js'
@@ -24,9 +27,10 @@ import type { Agent } from '../agents.js'
 import { createRoutine } from '../automations/routine.js'
 import { createDocumentFor } from '../knowledge.js'
 import { createWidget } from '../widgets.js'
+import { SEED_CONFIRM_PHRASE, seedGuard, seedMayWrite } from './seedGuard.js'
 
-const EMAIL = process.env.SEED_EMAIL ?? 'gabrielleoaus@gmail.com'
-const DRY_RUN = process.env.SEED_DRY_RUN === '1'
+// Resolved once, from the environment only — there is no default account in code.
+const PLAN = seedGuard(process.env)
 const TZ = 'America/Sao_Paulo'
 
 // Owner-scoped collections wiped before seeding. `user`/`session`/`account` are NOT
@@ -59,6 +63,9 @@ async function resolveOwnerId(email: string): Promise<string> {
 
 // Knowledge and conversation rows hang off agents/widgets rather than carrying an
 // ownerId, so they are removed by their parents' ids.
+// Counts every document the wipe WOULD remove, and (only in apply mode) removes it.
+// The report is printed before anything is deleted, so the operator sees the size of
+// the blast radius while it is still reversible.
 async function wipeAccount(ownerId: string): Promise<void> {
   const agentIds = (await db.collection('agents').find({ ownerId }, { projection: { _id: 1 } }).toArray()).map((a) => a._id)
   const sectorIds = (await db.collection('sectors').find({ ownerId }, { projection: { _id: 1 } }).toArray()).map((s) => s._id)
@@ -74,13 +81,25 @@ async function wipeAccount(ownerId: string): Promise<void> {
     ['tool_calls', { widgetId: { $in: widgetIds } }],
   ]
 
+  // Report first, delete after — and only if every guard passed.
+  const counted: [string, Record<string, unknown>, number][] = []
+  let total = 0
   for (const [name, filter] of plan) {
     const count = await db.collection(name).countDocuments(filter).catch(() => 0)
     if (!count) continue
-    if (DRY_RUN) {
-      console.log(`  [dry-run] ${name}: ${count} documento(s) seriam removidos`)
-      continue
-    }
+    counted.push([name, filter, count])
+    total += count
+    console.log(`  ${name}: ${count} documento(s)`)
+  }
+  console.log(`  TOTAL: ${total} documento(s) nesta conta`)
+
+  if (!seedMayWrite(PLAN)) {
+    console.log('\n  Nada foi alterado (dry-run).')
+    return
+  }
+
+  console.log('\nApagando…')
+  for (const [name, filter] of counted) {
     const { deletedCount } = await db.collection(name).deleteMany(filter)
     console.log(`  ${name}: ${deletedCount} removido(s)`)
   }
@@ -96,12 +115,23 @@ const member = (agentId: ObjectId, routingDescription: string, isDefault = false
 })
 
 async function main(): Promise<void> {
+  if (PLAN.mode === 'blocked') {
+    console.error(`Recusado: ${PLAN.reason}`)
+    console.error(`Uso: SEED_EMAIL=<conta> SEED_APPLY=1 SEED_CONFIRM=${SEED_CONFIRM_PHRASE} npm run seed:demo -w backend`)
+    process.exit(1)
+  }
+
   await mongoClient.connect()
-  const ownerId = await resolveOwnerId(EMAIL)
-  console.log(`Conta: ${EMAIL} (${ownerId})`)
-  console.log(DRY_RUN ? '\nMODO DRY-RUN — nada será alterado.\n' : '\nApagando dados da conta…')
+  const ownerId = await resolveOwnerId(PLAN.email)
+  console.log(`Conta: ${PLAN.email} (ownerId ${ownerId})`)
+  if (PLAN.mode === 'dry-run') {
+    console.log(`MODO DRY-RUN — nada será alterado. Motivo: ${PLAN.reason}`)
+  } else {
+    console.log('MODO APLICAR — os dados abaixo serão APAGADOS e recriados. Não há desfazer.')
+  }
+  console.log('\nDados atuais da conta:')
   await wipeAccount(ownerId)
-  if (DRY_RUN) {
+  if (!seedMayWrite(PLAN)) {
     await mongoClient.close()
     return
   }
@@ -148,7 +178,8 @@ async function main(): Promise<void> {
     objective:
       'Você cuida das reservas. Colete nome, telefone, data, horário, número de pessoas e a ocasião. Confirme a disponibilidade segundo a política de reservas e devolva a reserva resumida.',
     capabilities: ['reservas', 'agenda'],
-    activationModes: ['agent_only', 'channel'],
+    activationModes: ['channel'],
+    callerPolicy: 'all',
     inputContract: 'Um pedido de reserva em linguagem natural.',
     outputContract: 'Reserva estruturada: nome, telefone, data, horário, pessoas, ocasião.',
     structuredOutputEnabled: true,
@@ -160,7 +191,8 @@ async function main(): Promise<void> {
     objective:
       'Você conhece o cardápio de cor. Responda sobre pratos, preços, porções, ingredientes e restrições (vegano, sem glúten, alergênicos) usando SOMENTE a base de conhecimento do setor. Se algo não estiver lá, diga que vai confirmar com a cozinha.',
     capabilities: ['cardapio', 'alergenicos'],
-    activationModes: ['agent_only', 'channel'],
+    activationModes: ['channel'],
+    callerPolicy: 'all',
     language: 'pt',
     guardrailMode: 'prompt',
   })
@@ -169,7 +201,8 @@ async function main(): Promise<void> {
     objective:
       'Você cuida dos pedidos de delivery e retirada: registra o pedido, consulta o status e informa o prazo. Confirme exatamente o que foi feito; nunca simule uma ação que não conseguiu executar.',
     capabilities: ['pedidos', 'delivery'],
-    activationModes: ['agent_only', 'channel'],
+    activationModes: ['channel'],
+    callerPolicy: 'all',
     language: 'pt',
   })
 
@@ -179,7 +212,8 @@ async function main(): Promise<void> {
     objective:
       'Você acompanha o estoque da cozinha. Compare os níveis atuais com o mínimo de cada item e liste o que está abaixo ou perto do limite. Se estiver tudo certo, diga que está estável.',
     capabilities: ['monitoramento', 'estoque'],
-    activationModes: ['scheduled', 'agent_only'],
+    activationModes: ['scheduled'],
+    callerPolicy: 'all',
     outputContract: 'Lista dos itens abaixo do mínimo, com quantidade atual e mínima.',
     language: 'pt',
   })
@@ -188,7 +222,8 @@ async function main(): Promise<void> {
     objective:
       'Você analisa consumo. A partir da lista de itens em falta e do consumo recente, projete quanto comprar de cada item para a próxima semana, considerando o movimento de fim de semana.',
     capabilities: ['analise', 'previsao'],
-    activationModes: ['agent_only'],
+    activationModes: [],
+    callerPolicy: 'all',
     language: 'pt',
   })
   const compras = await hire(bastidores._id, 'Nina', {
@@ -196,7 +231,8 @@ async function main(): Promise<void> {
     objective:
       'Você monta a lista de compras final a partir da projeção recebida: item, quantidade e fornecedor sugerido, pronta para enviar.',
     capabilities: ['compras', 'fornecedores'],
-    activationModes: ['agent_only'],
+    activationModes: [],
+    callerPolicy: 'all',
     language: 'pt',
   })
   const mktGerente = await hire(bastidores._id, 'Rafa', {
@@ -213,7 +249,8 @@ async function main(): Promise<void> {
     objective:
       'Você pesquisa tendências de gastronomia e datas comemorativas relevantes para um restaurante italiano de bairro. Devolva o resultado com as fontes e a data da coleta.',
     capabilities: ['pesquisa', 'tendencias'],
-    activationModes: ['agent_only'],
+    activationModes: [],
+    callerPolicy: 'all',
     language: 'pt',
   })
   const redator = await hire(bastidores._id, 'Léo', {
@@ -221,7 +258,8 @@ async function main(): Promise<void> {
     objective:
       'Você escreve para as redes da cantina: legenda curta, tom caloroso de trattoria de bairro, com chamada para reserva. Nunca prometa promoção que não foi informada.',
     capabilities: ['redacao', 'redes'],
-    activationModes: ['agent_only'],
+    activationModes: [],
+    callerPolicy: 'all',
     responseTone: 'friendly',
     language: 'pt',
   })

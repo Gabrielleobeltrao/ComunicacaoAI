@@ -61,7 +61,7 @@ import type { SectorStage, SectorTeamFields } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
 import { assignAgentToSector } from './sectorMembership.js'
 import { ensureDefaultOffice } from './offices.js'
-import { getFloor } from './floors.js'
+import { getFloor, listFloors } from './floors.js'
 import { runMigrations } from './migrate.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
@@ -121,8 +121,8 @@ import {
 } from './userSettings.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
-import { agentReadiness, triggerStates } from './agentReadiness.js'
-import type { AgentWiring } from './agentReadiness.js'
+import { agentReadiness, callerPolicyFromLegacy, reachableCollaborators, triggerStates } from './agentReadiness.js'
+import type { AgentWiring, CollaboratorCandidate, SectorCandidate } from './agentReadiness.js'
 import { listRoutines } from './automations/routine.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
@@ -1321,11 +1321,12 @@ app.get('/api/sectors/:sectorId/overview', requireAuth, async (req, res) => {
   const allAgents = await listAgents(ownerId)
   const known = new Map(allAgents.map((a) => [a._id.toString(), a]))
   const involved = [...involvedIds].map((id) => known.get(id)).filter((a): a is NonNullable<typeof a> => Boolean(a))
+  const collabCtx = await collaboratorContext(ownerId)
   const pendingAgentNames = (
     await Promise.all(
       involved.map(async (a) => {
         const channels = widgets.filter((w) => w.agentId?.toString() === a._id.toString()).length
-        return agentReadiness(a, await wiringForAgent(ownerId, a, channels)).ready ? null : a.name
+        return agentReadiness(a, await wiringForAgent(ownerId, a, channels, collabCtx)).ready ? null : a.name
       }),
     )
   ).filter((n): n is string => n !== null)
@@ -1742,7 +1743,9 @@ app.get('/api/agent-stats', requireAuth, async (req, res) => {
   for (const agent of agents) {
     const id = agent._id.toString()
     const w = widgetStats[id]
-    const channelLinked = !!w || (agent.activationModes ?? []).includes('channel')
+    // A conversation metric requires a REAL channel. Accepting activationModes here
+    // showed "0 conversas" on agents that were merely allowed to answer a channel.
+    const channelLinked = !!w
     const ev = eventMetrics.get(id)
     const specificValue = (key: string): number | null => {
       switch (key) {
@@ -2028,16 +2031,63 @@ app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
 // Real wiring around an agent: what EXISTS, not what is merely allowed. Shared by
 // the agent overview and the sector overview (which flags members that still need
 // their own setup), so both report the same pendencies.
-async function wiringForAgent(ownerId: string, agent: Agent, linkedChannelCount: number): Promise<AgentWiring> {
+// Everything needed to answer "who can this agent actually reach?", loaded once so
+// a page listing many agents does not re-query per agent. Owner-scoped by construction.
+interface CollaboratorContext {
+  buildingOf: (floorId: string) => string
+  agents: CollaboratorCandidate[]
+  sectors: SectorCandidate[]
+}
+
+async function collaboratorContext(ownerId: string): Promise<CollaboratorContext> {
+  const [floors, all, sectors] = await Promise.all([
+    listFloors(ownerId, { includeArchived: true }).catch(() => []),
+    listAgents(ownerId).catch(() => []),
+    listSectors(ownerId).catch(() => []),
+  ])
+  const byFloor = new Map(floors.map((f) => [f._id.toString(), f.buildingId.toString()]))
+  // A floor we cannot resolve becomes its own building: isolated, never a false match.
+  const buildingOf = (floorId: string) => byFloor.get(floorId) ?? floorId
+  return {
+    buildingOf,
+    agents: all.map((a) => ({
+      id: a._id.toString(),
+      buildingId: buildingOf(a.officeId?.toString() ?? ''),
+      callerPolicy: callerPolicyFromLegacy(a),
+      allowedCallerAgentIds: a.allowedCallerAgentIds ?? [],
+    })),
+    sectors: sectors.map((t) => ({
+      id: t._id.toString(),
+      buildingId: buildingOf(t.officeId?.toString() ?? ''),
+      executable: sectorIsExecutable(normalizeSectorMode(t.mode)),
+    })),
+  }
+}
+
+const collaboratorCountFor = (agent: Agent, ctx: CollaboratorContext): number =>
+  reachableCollaborators(
+    { ...agent, id: agent._id.toString(), buildingId: ctx.buildingOf(agent.officeId?.toString() ?? '') },
+    ctx.agents,
+    ctx.sectors,
+  ).count
+
+async function wiringForAgent(ownerId: string, agent: Agent, linkedChannelCount: number, ctx: CollaboratorContext): Promise<AgentWiring> {
   const [routines, documents] = await Promise.all([
     listRoutines(ownerId, agent._id).catch(() => []),
     listDocuments(agent._id).catch(() => []),
   ])
+  // A trigger counts as CONFIGURED only when something active really fires it:
+  // a schedule routine that is running (a webhook routine is not a schedule), and a
+  // webhook routine that was actually activated (a draft never published is not a
+  // configured event trigger).
+  const active = routines.filter((r) => r.status === 'active')
+  const isWebhook = (r: (typeof routines)[number]) => r.draftDefinition?.trigger?.type === 'webhook'
   return {
-    routineCount: routines.filter((r) => r.status === 'active').length,
+    routineCount: active.filter((r) => !isWebhook(r)).length,
     channelCount: linkedChannelCount,
-    webhookCount: routines.filter((r) => r.draftDefinition?.trigger?.type === 'webhook').length,
-    collaboratorCount: (agent.callableAgentIds?.length ?? 0) + (agent.callableSectorIds?.length ?? 0),
+    webhookCount: active.filter(isWebhook).length,
+    // Real reachable colleagues — a policy of 'all' over an empty building is zero.
+    collaboratorCount: collaboratorCountFor(agent, ctx),
     toolCount: (agent.tools?.length ?? 0) + (agent.builtinTools?.length ?? 0),
     knowledgeCount: documents.length,
     deliveryConfigured: routines.some((r) => (r.draftDefinition?.deliveries?.length ?? 0) > 0),
@@ -2067,8 +2117,9 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   ])
 
   const linkedWidgets = widgets.filter((w) => w.agentId?.toString() === agentId)
-  const channelLinked = linkedWidgets.length > 0 || (agent.activationModes ?? []).includes('channel')
-  const wiring = await wiringForAgent(ownerId, agent, linkedWidgets.length)
+  // Same rule as the roster: only a linked widget/channel counts.
+  const channelLinked = linkedWidgets.length > 0
+  const wiring = await wiringForAgent(ownerId, agent, linkedWidgets.length, await collaboratorContext(ownerId))
   const readiness = agentReadiness(agent, wiring)
   const triggers = triggerStates(agent, wiring)
   // "Entregas" is only offered when this agent really sent something.

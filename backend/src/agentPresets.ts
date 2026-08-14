@@ -10,8 +10,11 @@ export interface AgentPresetSpec {
   // Suggested initial config the wizard pre-fills (all editable afterwards).
   objective: string
   capabilities: string[]
-  // REAL triggers only. Being reachable by other agents is a permission
-  // (callerPolicy), never an activation — see agentReadiness.normalizeActivation.
+  // REAL triggers only, and only the ones this role should have in PRODUCTION.
+  // Being reachable by other agents is a permission (callerPolicy), never an
+  // activation — see agentReadiness.normalizeActivation. An empty list is valid and
+  // means "only other agents start this one"; testing it never needs a trigger,
+  // because the playground runs the agent directly.
   activationModes: ActivationMode[]
   inputContract: string
   outputContract: string
@@ -56,7 +59,8 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     objective:
       'Você é um pesquisador. Não inicia conversa nem responde diretamente ao usuário. Recebe uma solicitação estruturada, pesquisa usando apenas as ferramentas autorizadas e devolve o resultado com as fontes e a data da pesquisa.',
     capabilities: ['pesquisa', 'web'],
-    activationModes: ['manual'],
+    // No operational trigger: a manager or a sector calls it. Use "Testar" to try it.
+    activationModes: [],
     delegationPolicy: 'none',
     callerPolicy: 'all', // exists to be called by a manager/sector
     requiresTool: true,
@@ -70,7 +74,7 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     objective:
       'Você é um analista. Recebe dados existentes e produz uma análise, comparação ou conclusão clara e fundamentada, apontando o raciocínio.',
     capabilities: ['analise', 'comparacao'],
-    activationModes: ['manual'],
+    activationModes: [],
     delegationPolicy: 'none',
     callerPolicy: 'all',
     inputContract: 'Dados ou resultados já coletados, para analisar.',
@@ -97,7 +101,7 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     objective:
       'Você é um comunicador. Transforma resultados em uma mensagem, relatório, e-mail ou conteúdo adequado ao canal e ao público.',
     capabilities: ['redacao', 'comunicacao'],
-    activationModes: ['manual'],
+    activationModes: [],
     delegationPolicy: 'none',
     callerPolicy: 'all',
     inputContract: 'Um resultado bruto a ser transformado em comunicação.',

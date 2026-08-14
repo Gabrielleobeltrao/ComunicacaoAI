@@ -30,10 +30,11 @@ const preset = (p: string, label: string, over: Record<string, unknown> = {}) =>
 const PRESETS = [
   preset('manager', 'Gerente / Orquestrador', { delegationPolicy: 'all', activationModes: ['manual', 'scheduled'] }),
   preset('secretary', 'Secretário', { delegationPolicy: 'all' }),
-  preset('researcher', 'Pesquisador', { requiresTool: true }),
-  preset('analyst', 'Analista'),
+  // Specialists ship with NO operational trigger: a manager or a sector calls them.
+  preset('researcher', 'Pesquisador', { requiresTool: true, activationModes: [] }),
+  preset('analyst', 'Analista', { activationModes: [] }),
   preset('operator', 'Executor / Operador', { requiresTool: true }),
-  preset('communicator', 'Comunicador'),
+  preset('communicator', 'Comunicador', { activationModes: [] }),
   preset('monitor', 'Monitor', { requiresTool: true, activationModes: ['scheduled'] }),
   preset('custom', 'Personalizado'),
 ]
@@ -286,4 +287,96 @@ test('a legacy agent_only agent opens normally', async ({ page }) => {
   const panel = page.getByTestId('agent-triggers')
   await expect(panel).toBeVisible()
   expect((await panel.innerText()).toLowerCase()).not.toContain('agent_only')
+})
+
+// ---------------------------------------------- corrective review regressions
+test('every pendency in the handover is a button to the exact section', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  await page.getByText('Monitor', { exact: true }).click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Contratar agente' }).last().click()
+  const checklist = page.getByTestId('hire-checklist')
+  await expect(checklist).toBeVisible()
+  // No pendency is text-only.
+  const items = await page.getByTestId('hire-pending-item').count()
+  expect(items).toBeGreaterThan(0)
+  await expect(page.getByTestId('hire-pending-action-source')).toBeVisible()
+  await page.getByTestId('hire-pending-action-routine').click()
+  await expect(page).toHaveURL(/\/fluxos$/)
+})
+
+test('a manager with nobody to call is still pending after hiring', async ({ page }) => {
+  // The floor has no other agent and no executable sector: 'all' reaches nobody.
+  await stubApi(page)
+  await openWizard(page)
+  await page.getByText('Gerente / Orquestrador').click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Contratar agente' }).last().click()
+  const checklist = page.getByTestId('hire-checklist')
+  await expect(checklist).toBeVisible()
+  await expect(checklist).toContainText('Escolher os colegas')
+  await page.getByTestId('hire-pending-action-collaborators').click()
+  await expect(page).toHaveURL(/\/fluxos$/)
+})
+
+test('a specialist is hired without any production trigger', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  await page.getByText('Pesquisador', { exact: true }).click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Contratar agente' }).last().click()
+  await expect.poll(() => created?.activationModes).toEqual([])
+  expect(created?.callerPolicy).toBe('all')
+})
+
+test('a live routine on an agent that forbids scheduling is flagged and fixable', async ({ page }) => {
+  const conflicted = overview({
+    triggers: [
+      { kind: 'manual', allowed: true, configured: true, inconsistent: false },
+      { kind: 'scheduled', allowed: false, configured: true, inconsistent: true },
+      { kind: 'channel', allowed: false, configured: false, inconsistent: false },
+      { kind: 'event', allowed: false, configured: false, inconsistent: false },
+    ],
+  })
+  await stubApi(page, { overview: conflicted })
+  let patched: Record<string, unknown> | null = null
+  await page.route(`**/api/agents/${AGENT_ID}`, async (r) => {
+    if (r.request().method() === 'PATCH') {
+      patched = JSON.parse(r.request().postData() ?? '{}')
+      return r.fulfill({ json: AGENT })
+    }
+    return r.fulfill({ json: AGENT })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  const card = page.getByTestId('trigger-scheduled')
+  await expect(card).toContainText('Configurado, mas não permitido')
+  await page.getByTestId('trigger-fix-scheduled').click()
+  await expect.poll(() => (patched?.activationModes as string[] | undefined)).toContain('scheduled')
+  // The legacy agent_only the stub carries is never written back.
+  expect(patched?.activationModes).not.toContain('agent_only')
+})
+
+test('a channel the agent merely accepts is not reported as configured', async ({ page }) => {
+  await stubApi(page, {
+    overview: overview({
+      triggers: [
+        { kind: 'manual', allowed: true, configured: true, inconsistent: false },
+        { kind: 'scheduled', allowed: false, configured: false, inconsistent: false },
+        { kind: 'channel', allowed: true, configured: false, inconsistent: false },
+        { kind: 'event', allowed: false, configured: false, inconsistent: false },
+      ],
+    }),
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await expect(page.getByTestId('trigger-channel')).toContainText('sem canal vinculado')
+})
+
+test('testing stays available and is never sold as production execution', async ({ page }) => {
+  await stubApi(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/atividade`)
+  await expect(page.getByTestId('playground-note')).toContainText('mesmo sem gatilho')
 })

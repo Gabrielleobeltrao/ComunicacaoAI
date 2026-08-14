@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
 import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
+import { reachableCollaboratorCount } from '../lib/agentReadiness'
 import { assignAgentToSector } from '../lib/sectors'
 import type { AgentPreset, AgentSummary, SectorSummary } from '../lib/types'
 import { Button, Card, Field, Input, Select, Textarea } from '../ui'
@@ -77,14 +78,24 @@ const ROLE_FORM: Record<AgentPreset, RoleForm> = {
   },
 }
 
-// What still has to be done after hiring, in the user's words.
-const PENDING_LABEL: Record<string, string> = {
-  research: 'Conectar uma fonte de pesquisa (app ou ferramenta)',
-  action: 'Conectar o app onde ele vai executar a ação',
-  source: 'Conectar a fonte que ele vai acompanhar',
-  routine: 'Criar a rotina que acorda ele',
-  destination: 'Definir para onde a entrega vai',
-  collaborators: 'Escolher os colegas que ele pode acionar',
+// What still has to be done after hiring, in the user's words — and WHERE it is
+// done, so every item is a button straight to that section instead of a sentence
+// the user has to go hunting for.
+interface PendingItem {
+  key: string
+  label: string
+  action: string
+  section: 'como-trabalha' | 'fluxos' | 'visao-geral'
+}
+const PENDING: Record<string, PendingItem> = {
+  research: { key: 'research', label: 'Conectar uma fonte de pesquisa (app ou ferramenta)', action: 'Conectar ferramenta', section: 'como-trabalha' },
+  action: { key: 'action', label: 'Conectar o app onde ele vai executar a ação', action: 'Conectar app', section: 'como-trabalha' },
+  source: { key: 'source', label: 'Conectar a fonte que ele vai acompanhar', action: 'Conectar fonte', section: 'como-trabalha' },
+  knowledge: { key: 'knowledge', label: 'Dar a ele o conhecimento que precisa consultar', action: 'Abrir conhecimento', section: 'como-trabalha' },
+  routine: { key: 'routine', label: 'Criar a rotina que acorda ele', action: 'Criar rotina', section: 'fluxos' },
+  channel: { key: 'channel', label: 'Vincular o canal onde ele vai atender', action: 'Vincular canal', section: 'fluxos' },
+  destination: { key: 'destination', label: 'Definir para onde a entrega vai', action: 'Definir destino', section: 'fluxos' },
+  collaborators: { key: 'collaborators', label: 'Escolher os colegas que ele pode acionar', action: 'Escolher colegas', section: 'fluxos' },
 }
 
 const TONES = [
@@ -137,7 +148,8 @@ export function HireWizard({
   floorId?: string
   agents: AgentSummary[]
   sectors: SectorSummary[]
-  onHired: (agent?: { _id: string; name: string }) => void
+  // `section` deep-links the agent page straight to where the pendency is solved.
+  onHired: (agent?: { _id: string; name: string }, section?: string) => void
   onCancel: () => void
   initialPreset?: AgentPreset
   initialSectorId?: string
@@ -184,15 +196,31 @@ export function HireWizard({
     setDeliverable('')
   }
 
+  // How many colleagues this agent could REALLY reach once hired — the same rule the
+  // API uses, so the wizard never promises a manager that is alone in the building.
+  const reachable = useMemo(() => {
+    const picked = collaborators.length > 0 || collaboratorSectors.length > 0
+    return reachableCollaboratorCount(
+      {
+        delegationPolicy: form.collaborators ? (picked ? 'selected' : (spec?.delegationPolicy ?? 'all')) : (spec?.delegationPolicy ?? 'none'),
+        callableAgentIds: collaborators,
+        callableSectorIds: collaboratorSectors,
+      },
+      otherAgents,
+      callableSectors,
+    )
+  }, [form.collaborators, spec, collaborators, collaboratorSectors, otherAgents, callableSectors])
+
   // What this agent will still be missing right after hiring.
   const pending = useMemo(() => {
-    const items: string[] = []
-    if (form.needsTool) items.push(PENDING_LABEL[form.needsTool])
-    if (form.needsRoutine) items.push(PENDING_LABEL.routine)
-    if (form.needsDestination) items.push(PENDING_LABEL.destination)
-    if (form.collaborators && collaborators.length === 0 && collaboratorSectors.length === 0 && preset !== 'manager') items.push(PENDING_LABEL.collaborators)
+    const items: PendingItem[] = []
+    if (form.needsTool) items.push(PENDING[form.needsTool])
+    if (form.needsRoutine) items.push(PENDING.routine)
+    if (form.needsDestination) items.push(PENDING.destination)
+    // A manager is no exception: a permission is not a colleague.
+    if (form.collaborators && reachable === 0) items.push(PENDING.collaborators)
     return items
-  }, [form, collaborators.length, collaboratorSectors.length, preset])
+  }, [form, reachable])
 
   const canAdvance = step !== 1 || name.trim().length > 0
 
@@ -217,7 +245,9 @@ export function HireWizard({
           floorId,
           preset,
           capabilities: spec?.capabilities ?? [],
-          activationModes: spec?.activationModes ?? ['manual'],
+          // A specialist ships with NO operational trigger: it is called by a manager
+          // or a sector, and "Testar" runs it without one.
+          activationModes: spec?.activationModes ?? [],
           inputContract: subject.trim(),
           outputContract: deliverable.trim(),
           ...(form.tone ? { responseTone: tone } : {}),
@@ -250,9 +280,13 @@ export function HireWizard({
         </div>
         <Card padding="14px 16px" style={{ display: 'grid', gap: 10 }}>
           {pending.map((item) => (
-            <div key={item} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-              <span style={{ width: 18, height: 18, borderRadius: 999, border: '1px solid var(--border-strong)', flexShrink: 0, marginTop: 1 }} />
-              <span style={{ fontSize: 13.5, color: 'var(--text-heading)' }}>{item}</span>
+            <div key={item.key} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }} data-testid="hire-pending-item">
+              <span style={{ width: 18, height: 18, borderRadius: 999, border: '1px solid var(--border-strong)', flexShrink: 0 }} />
+              <span style={{ fontSize: 13.5, color: 'var(--text-heading)', flex: 1, minWidth: 180 }}>{item.label}</span>
+              {/* Every pendency is one click from being solved, in the exact section. */}
+              <Button variant="ghost" onClick={() => onHired(hired, item.section)} data-testid={`hire-pending-action-${item.key}`}>
+                {item.action}
+              </Button>
             </div>
           ))}
         </Card>
@@ -385,8 +419,8 @@ export function HireWizard({
               <Card padding="14px 16px" style={{ display: 'grid', gap: 6 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-heading)' }}>Depois de contratar, falta:</span>
                 {pending.map((p) => (
-                  <span key={p} style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                    • {p}
+                  <span key={p.key} style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                    • {p.label}
                   </span>
                 ))}
               </Card>

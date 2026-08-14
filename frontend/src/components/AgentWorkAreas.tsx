@@ -32,7 +32,8 @@ const ACTIVATION_LABEL: Record<ActivationMode, string> = {
   scheduled: 'Agendado',
   event: 'Evento',
   channel: 'Canal',
-  agent_only: 'Só por outro agente',
+  // LEGACY, read-only: never offered as an option, only rendered for old agents.
+  agent_only: 'Legado: só por outro agente',
 }
 
 const sectionTitle = (text: string) => (

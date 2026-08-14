@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { reachableCollaboratorCount } from '../lib/agentReadiness'
 import { AgentCard } from '../components/AgentCard'
 import { HireWizard } from '../components/HireWizard'
 import { AppLayout } from '../components/AppLayout'
@@ -7,7 +8,7 @@ import type { AgentStat } from '../lib/agentAvatar'
 import { getAgentStats } from '../lib/agentStats'
 import { floorAgent } from '../lib/floorRoutes'
 import { formatCount, formatDuration, formatTokens } from '../lib/metricFormat'
-import type { AgentOperationalStats } from '../lib/types'
+import type { AgentOperationalStats, AgentSummary } from '../lib/types'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import { useNavigate, useParams } from 'react-router'
 import { Button, Dialog, EmptyState, Field, Input, Select } from '../ui'
@@ -52,6 +53,12 @@ export function Agents() {
       cancelled = true
     }
   }, [floorId])
+
+  // A manager with nobody to call cannot do its job — same rule as the API and the
+  // agent page (reachableCollaboratorCount), so the card never looks healthy while it
+  // is stuck. Other pendencies need per-agent wiring the roster does not load.
+  const managerWithoutColleagues = (agent: AgentSummary) =>
+    agent.preset === 'manager' && reachableCollaboratorCount({ id: agent._id, delegationPolicy: agent.delegationPolicy, callableAgentIds: agent.callableAgentIds, callableSectorIds: agent.callableSectorIds }, agents, sectors) === 0
 
   // An agent belongs to at most one sector — map agentId -> sector name so each
   // card can show it (or "Sem setor" when orphan).
@@ -151,6 +158,7 @@ export function Agents() {
                   portrait={chars.portrait(agent._id)}
                   sectorName={sectorByAgent.get(agent._id) ?? null}
                   stats={buildStats(agentStats ? agentStats[agent._id] : undefined)}
+                  needsSetup={managerWithoutColleagues(agent)}
                 />
               ))}
             </div>
@@ -197,11 +205,14 @@ export function Agents() {
           agents={agents}
           sectors={sectors}
           onCancel={() => setIsCreating(false)}
-          onHired={async (created) => {
+          onHired={async (created, section) => {
             setIsCreating(false)
             await loadAgents()
-            // Straight to the new agent when the user asked to open it.
-            if (created) navigate(floorId ? floorAgent(floorId, created._id) : `/agents/${created._id}`)
+            // Straight to the new agent — and to the exact section when the user
+            // clicked a pendency instead of "Abrir o agente".
+            if (created) {
+              navigate(floorId ? floorAgent(floorId, created._id, section) : `/agents/${created._id}${section ? `/${section}` : ''}`)
+            }
           }}
         />
       </Dialog>

@@ -10,7 +10,7 @@ import { AgentAvatar, Card, Icon, StatusPill, Tag } from '../ui'
 // A clickable agent card (design's AgentCard): avatar + name + role + status,
 // its sector (or "Sem setor" when orphan), a short objective, skill tags and a
 // small stats grid (real per-agent stats passed in via `stats`).
-export function AgentCard({ agent, stats, sectorName, portrait }: { agent: AgentSummary; stats?: AgentStat[]; sectorName?: string | null; portrait?: string }) {
+export function AgentCard({ agent, stats, sectorName, portrait, needsSetup }: { agent: AgentSummary; stats?: AgentStat[]; sectorName?: string | null; portrait?: string; needsSetup?: boolean }) {
   const navigate = useNavigate()
   const fid = useActiveFloorId()
   const accent = accentFor(agent._id)
@@ -65,7 +65,18 @@ export function AgentCard({ agent, stats, sectorName, portrait }: { agent: Agent
             <Icon name="network" size={12} color="currentColor" />
             {sectorName || 'Sem setor'}
           </span>
-          <StatusPill status={status} style={{ marginTop: 4, alignSelf: 'flex-start' }} />
+          {needsSetup ? (
+            // The same rule the agent page and the API use — a card must not look
+            // healthy while the agent cannot actually do its job.
+            <span
+              data-testid="agent-card-needs-setup"
+              style={{ marginTop: 4, alignSelf: 'flex-start', borderRadius: 999, padding: '2px 8px', fontSize: 11, fontWeight: 700, background: 'var(--mango-100, #fef3e6)', color: 'var(--mango-700, #b54708)' }}
+            >
+              Precisa de configuração
+            </span>
+          ) : (
+            <StatusPill status={status} style={{ marginTop: 4, alignSelf: 'flex-start' }} />
+          )}
         </div>
       </div>
 

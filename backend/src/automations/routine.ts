@@ -2,8 +2,9 @@
 // agent (never a standalone "Automação"). A routine compiles to an AutomationDefinition
 // (schedule trigger + one agent.execute step + optional delivery) so the existing
 // engine — scheduler, queue, worker, runs, artifacts, deliveries — runs it unchanged.
+import { TRIGGER_FOR_CONFIG } from '../agentReadiness.js'
 import { ObjectId } from 'mongodb'
-import { getAgentById } from '../agents.js'
+import { getAgentById, ensureActivationMode } from '../agents.js'
 import { recurrenceToCron, isValidRecurrence, describeRecurrence } from './schedule.js'
 import type { Recurrence } from './schedule.js'
 import { createAutomation, getAutomation, publishAutomation, setStatus, updateDraft } from './service.js'
@@ -93,6 +94,9 @@ export async function createRoutine(ownerId: string, agentId: ObjectId, spec: Ro
   })
   await publishAutomation(ownerId, created._id, ownerId)
   const active = await setStatus(ownerId, created._id, 'active')
+  // A configured trigger must also be an allowed one — otherwise the agent page
+  // would show a routine that runs while the schedule reads "desligado".
+  await ensureActivationMode(ownerId, agentId, TRIGGER_FOR_CONFIG.routine)
   return active ?? created
 }
 

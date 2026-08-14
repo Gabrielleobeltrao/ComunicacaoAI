@@ -33,6 +33,20 @@ export function normalizeActivation(modes: ActivationMode[] | undefined): Normal
   return { allowed, agentOnly }
 }
 
+// The WRITE path: agent_only is never stored again. Anything a client sends is
+// reduced to real triggers, and a legacy agent_only is converted into the incoming
+// permission it always meant (unless the caller stated one explicitly).
+export function sanitizeActivationWrite(
+  modes: readonly string[] | undefined,
+  explicitCallerPolicy?: DelegationPolicy,
+): { activationModes: TriggerKind[]; callerPolicy?: DelegationPolicy } {
+  const list = modes ?? []
+  const activationModes = TRIGGER_KINDS.filter((t) => list.includes(t))
+  // Only widen the incoming permission when the client did NOT decide for itself.
+  const callerPolicy = list.includes('agent_only') && !explicitCallerPolicy ? ('all' as DelegationPolicy) : explicitCallerPolicy
+  return { activationModes, callerPolicy }
+}
+
 // The incoming permission a legacy agent_only agent should have: reachable by other
 // agents. Only used when the stored callerPolicy is absent — an explicit choice always
 // wins, and this never widens an agent that already restricted itself.
@@ -69,6 +83,11 @@ export interface TriggerState {
   // Configured = something real fires it. 'manual' is configured whenever allowed:
   // pressing the button IS the configuration.
   configured: boolean
+  // Legacy inconsistency: something real fires this trigger while the agent does not
+  // allow it. New configuration syncs the permission (see ensureActivationMode), so
+  // this only ever describes rows written before that rule existed. The UI says
+  // "Configurado, mas não permitido" and offers the one-click fix.
+  inconsistent: boolean
 }
 
 // The four triggers with both truths, so the UI can say "permitido, mas não
@@ -76,12 +95,69 @@ export interface TriggerState {
 export function triggerStates(agent: Pick<Agent, 'activationModes'>, wiring: AgentWiring): TriggerState[] {
   const { allowed } = normalizeActivation(agent.activationModes)
   const isAllowed = (k: TriggerKind) => allowed.includes(k)
-  return [
-    { kind: 'manual', allowed: isAllowed('manual'), configured: isAllowed('manual') },
-    { kind: 'scheduled', allowed: isAllowed('scheduled'), configured: wiring.routineCount > 0 },
-    { kind: 'channel', allowed: isAllowed('channel'), configured: wiring.channelCount > 0 },
-    { kind: 'event', allowed: isAllowed('event'), configured: wiring.webhookCount > 0 },
+  // Manual is the one trigger with no external row: being allowed IS being configured.
+  // Every other one is configured only by something that really exists — a channel is
+  // never "configured" just because the agent accepts channels.
+  const raw: [TriggerKind, boolean, boolean][] = [
+    ['manual', isAllowed('manual'), isAllowed('manual')],
+    ['scheduled', isAllowed('scheduled'), wiring.routineCount > 0],
+    ['channel', isAllowed('channel'), wiring.channelCount > 0],
+    ['event', isAllowed('event'), wiring.webhookCount > 0],
   ]
+  return raw.map(([kind, allowedNow, configured]) => ({ kind, allowed: allowedNow, configured, inconsistent: configured && !allowedNow }))
+}
+
+// Which permission a piece of configuration implies. Used at the write site so
+// creating a routine/channel/webhook keeps activationModes — the single source of
+// truth for "allowed" — in sync instead of drifting from it.
+export const TRIGGER_FOR_CONFIG = { routine: 'scheduled', channel: 'channel', webhook: 'event' } as const
+
+// ------------------------------------------------------------ collaborators
+// Who this agent can REALLY reach right now. Mirrors checkDelegation: same owner
+// (the caller passes owner-scoped lists), same building, never itself, the target
+// must accept the call, and a sector only counts when it can actually execute.
+export interface CollaboratorCandidate {
+  id: string
+  buildingId: string
+  callerPolicy?: DelegationPolicy
+  allowedCallerAgentIds?: string[]
+}
+export interface SectorCandidate {
+  id: string
+  buildingId: string
+  executable: boolean
+}
+
+export function reachableCollaborators(
+  agent: Pick<Agent, 'delegationPolicy' | 'callableAgentIds' | 'callableSectorIds'> & { id: string; buildingId: string },
+  agents: CollaboratorCandidate[],
+  sectors: SectorCandidate[],
+): { agentIds: string[]; sectorIds: string[]; count: number } {
+  const policy = agent.delegationPolicy ?? 'none'
+  if (policy === 'none') return { agentIds: [], sectorIds: [], count: 0 }
+
+  const selectedAgents = new Set(agent.callableAgentIds ?? [])
+  const selectedSectors = new Set(agent.callableSectorIds ?? [])
+
+  const agentIds = agents
+    .filter((c) => c.id !== agent.id && c.buildingId === agent.buildingId)
+    .filter((c) => (policy === 'selected' ? selectedAgents.has(c.id) : true))
+    // The target's own incoming policy decides too — 'all' does not override a
+    // colleague that refuses calls.
+    .filter((c) => {
+      const incoming = c.callerPolicy ?? 'all'
+      if (incoming === 'none') return false
+      if (incoming === 'selected') return (c.allowedCallerAgentIds ?? []).includes(agent.id)
+      return true
+    })
+    .map((c) => c.id)
+
+  const sectorIds = sectors
+    .filter((s) => s.executable && s.buildingId === agent.buildingId)
+    .filter((s) => (policy === 'selected' ? selectedSectors.has(s.id) : true))
+    .map((s) => s.id)
+
+  return { agentIds, sectorIds, count: agentIds.length + sectorIds.length }
 }
 
 // ---------------------------------------------------------------- readiness
@@ -120,16 +196,12 @@ export function agentReadiness(agent: Pick<Agent, 'preset' | 'objective' | 'dele
 
   const preset: AgentPreset = agent.preset ?? 'custom'
   switch (preset) {
-    case 'manager': {
-      // 'all' means the whole building is reachable — that already counts as having
-      // collaborators; 'selected' must actually name someone.
-      const hasCollaborators =
-        agent.delegationPolicy === 'all' ||
-        (agent.delegationPolicy === 'selected' && (agent.callableAgentIds?.length ?? 0) + (agent.callableSectorIds?.length ?? 0) > 0) ||
-        wiring.collaboratorCount > 0
-      if (!hasCollaborators) issues.push(issue('no_collaborators'))
+    case 'manager':
+      // A policy is not a colleague: 'all' over an empty building reaches nobody.
+      // collaboratorCount is the REAL count (reachableCollaborators), so the manager
+      // is only ready once someone is actually callable.
+      if (wiring.collaboratorCount === 0) issues.push(issue('no_collaborators'))
       break
-    }
     case 'researcher':
       // Knowledge counts as a source: an agent that only reads a curated base is
       // still able to answer.

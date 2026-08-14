@@ -44,16 +44,18 @@ const LEGACY_SECTION: Record<string, string> = {
   testar: 'atividade',
 }
 
-const TRIGGER_LABEL: Record<string, { label: string; configured: string; pending: string }> = {
-  manual: { label: 'Execução manual', configured: 'Você pode rodar quando quiser', pending: 'Não permitido' },
-  scheduled: { label: 'Rotina', configured: 'Roda no horário definido', pending: 'Permitido, mas sem rotina criada' },
-  channel: { label: 'Canal', configured: 'Atende no canal vinculado', pending: 'Permitido, mas sem canal vinculado' },
-  event: { label: 'Evento', configured: 'Disparado por webhook', pending: 'Permitido, mas sem webhook configurado' },
+const TRIGGER_LABEL: Record<string, { label: string; configured: string; pending: string; conflict: string; fix: string }> = {
+  manual: { label: 'Execução manual', configured: 'Você pode rodar quando quiser', pending: 'Não permitido — use “Testar” para experimentar', conflict: 'Algo dispara este agente sem permissão.', fix: 'Permitir execução manual' },
+  scheduled: { label: 'Rotina', configured: 'Roda no horário definido', pending: 'Permitido, mas sem rotina criada', conflict: 'Existe rotina rodando, mas o agendamento não está permitido.', fix: 'Permitir agendamento' },
+  channel: { label: 'Canal', configured: 'Atende no canal vinculado', pending: 'Permitido, mas sem canal vinculado', conflict: 'Existe canal vinculado, mas o atendimento por canal não está permitido.', fix: 'Permitir canal' },
+  event: { label: 'Evento', configured: 'Disparado por webhook', pending: 'Permitido, mas sem webhook configurado', conflict: 'Existe webhook ativo, mas o gatilho por evento não está permitido.', fix: 'Permitir evento' },
 }
 
 // Ready or the exact pending items, each with the one action that fixes it.
 function ReadinessCard({ overview, onGo }: { overview: AgentOverview; onGo: (section: string) => void }) {
-  const { readiness } = overview
+  // A payload without readiness (an older server, a cached response) must degrade to
+  // "no pendency known", never blank the whole page.
+  const readiness = overview.readiness ?? { ready: true, issues: [] }
   if (readiness.ready)
     return (
       <Card padding="14px 16px" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -67,7 +69,7 @@ function ReadinessCard({ overview, onGo }: { overview: AgentOverview; onGo: (sec
         <StatusPill status="blocked" label="Falta configurar" pulse={false} />
         <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Ele ainda não consegue fazer o trabalho dele.</span>
       </div>
-      {readiness.issues.map((issue) => (
+      {(readiness.issues ?? []).map((issue) => (
         <div key={issue.code} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13.5, color: 'var(--text-heading)', minWidth: 0 }}>{issue.message}</span>
           <Button size="sm" variant="secondary" onClick={() => onGo(issue.section)}>
@@ -81,8 +83,28 @@ function ReadinessCard({ overview, onGo }: { overview: AgentOverview; onGo: (sec
 
 // What fires this agent: each trigger with BOTH truths — allowed by the agent, and
 // actually configured (a routine/channel/webhook that really exists).
-function TriggersPanel({ overview }: { overview: AgentOverview }) {
+function TriggersPanel({ overview, onFixed }: { overview: AgentOverview; onFixed: () => void }) {
   const triggers = overview.triggers ?? []
+  const [fixing, setFixing] = useState<string | null>(null)
+
+  // Legacy rows can have a live routine/channel/webhook while the agent never
+  // allowed that trigger. One click makes the permission match what already runs.
+  const allow = async (kind: string) => {
+    setFixing(kind)
+    try {
+      const modes = [...new Set([...(overview.agent.activationModes ?? []), kind])].filter((m) => m !== 'agent_only')
+      const res = await fetch(`${API_URL}/api/agents/${overview.agent._id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activationModes: modes }),
+      })
+      if (res.ok) onFixed()
+    } finally {
+      setFixing(null)
+    }
+  }
+
   return (
     <div data-testid="agent-triggers">
       <h3 style={{ margin: '0 0 4px', fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>O que aciona este agente</h3>
@@ -90,14 +112,36 @@ function TriggersPanel({ overview }: { overview: AgentOverview }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 10 }}>
         {triggers.map((t) => {
           const copy = TRIGGER_LABEL[t.kind]
-          const state = !t.allowed ? 'off' : t.configured ? 'on' : 'pending'
+          // 'conflict' is the legacy case: it really fires, but the agent says no.
+          const state = t.inconsistent ? 'conflict' : !t.allowed ? 'off' : t.configured ? 'on' : 'pending'
+          const pill =
+            state === 'conflict'
+              ? { status: 'break' as const, label: 'Configurado, mas não permitido' }
+              : state === 'on'
+                ? { status: 'working' as const, label: 'Configurado' }
+                : state === 'pending'
+                  ? { status: 'break' as const, label: 'Permitido' }
+                  : { status: 'idle' as const, label: 'Desligado' }
           return (
-            <Card key={t.kind} padding="12px 14px" style={{ display: 'grid', gap: 4, opacity: state === 'off' ? 0.55 : 1 }}>
+            <Card key={t.kind} padding="12px 14px" style={{ display: 'grid', gap: 4, opacity: state === 'off' ? 0.55 : 1 }} data-testid={`trigger-${t.kind}`}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <span style={{ fontFamily: 'var(--font-ui)', fontWeight: 700, fontSize: 13.5, color: 'var(--text-heading)' }}>{copy.label}</span>
-                <StatusPill status={state === 'on' ? 'working' : state === 'pending' ? 'break' : 'idle'} label={state === 'on' ? 'Configurado' : state === 'pending' ? 'Permitido' : 'Desligado'} pulse={false} />
+                <StatusPill status={pill.status} label={pill.label} pulse={false} />
               </div>
-              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{!t.allowed ? copy.pending : t.configured ? copy.configured : copy.pending}</span>
+              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                {state === 'conflict' ? copy.conflict : !t.allowed ? copy.pending : t.configured ? copy.configured : copy.pending}
+              </span>
+              {state === 'conflict' ? (
+                <button
+                  type="button"
+                  onClick={() => void allow(t.kind)}
+                  disabled={fixing === t.kind}
+                  data-testid={`trigger-fix-${t.kind}`}
+                  style={{ justifySelf: 'start', background: 'none', border: 0, padding: 0, font: 'inherit', fontSize: 12.5, color: 'var(--intent-brand)', textDecoration: 'underline', cursor: 'pointer' }}
+                >
+                  {fixing === t.kind ? 'Ajustando…' : copy.fix}
+                </button>
+              ) : null}
             </Card>
           )
         })}
@@ -464,7 +508,13 @@ export function AgentDetail() {
                   <div style={{ display: 'grid', gap: 20 }}>
                     <AgentHistoryPanel key={`${agent._id}:hist`} agent={agent} sectors={overview.linkedSectors} />
                     <div>
-                      <h3 style={{ margin: '0 0 12px', fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Testar</h3>
+                      <h3 style={{ margin: '0 0 4px', fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Testar</h3>
+                      {/* Testing is NOT a production trigger: it never needs "execução
+                          manual" to be permitted, and nothing here is scheduled or
+                          published. That is why a specialist ships without triggers. */}
+                      <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="playground-note">
+                        Teste é sempre possível, mesmo sem gatilho. Não é execução em produção: nada é agendado nem enviado a um canal.
+                      </p>
                       <AgentPlayground key={`${agent._id}:play`} agent={agent} />
                     </div>
                   </div>
@@ -472,7 +522,7 @@ export function AgentDetail() {
                   // What sets it in motion: triggers (allowed vs configured), routines
                   // and the relationships with other agents/sectors.
                   <div style={{ display: 'grid', gap: 20 }}>
-                    <TriggersPanel overview={overview} />
+                    <TriggersPanel overview={overview} onFixed={load} />
                     <TeamsPanel overview={overview} fid={fid} />
                     <AgentRoutines key={agent._id} agent={agent} />
                     <AgentActivations key={agent._id} agent={agent} agents={agents} />
