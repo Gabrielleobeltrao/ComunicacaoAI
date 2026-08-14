@@ -18,9 +18,10 @@ const NO_SECTOR = '__none__'
 // as "—"; a null metric means "no telemetry" (also "—"), distinct from a real zero.
 function buildStats(s: AgentOperationalStats | undefined): AgentStat[] {
   return [
-    { label: 'Tempo méd.', value: formatDuration(s?.avgDurationMs) },
-    { label: 'Tokens 30d', value: formatTokens(s?.totalTokens) },
-    { label: s?.specific.label ?? 'KPI', value: formatCount(s?.specific.value) },
+    { label: 'Tempo méd.', value: formatDuration(s?.avgDurationMs), title: 'Duração média de uma execução (30 dias)' },
+    { label: 'Tokens 30d', value: formatTokens(s?.totalTokens), title: 'Tokens de entrada + saída nos últimos 30 dias' },
+    // Compact label on the card; the full definition rides in the tooltip.
+    { label: s?.specific.shortLabel ?? 'KPI', value: formatCount(s?.specific.value), title: s?.specific.label ?? 'Indicador do agente (30 dias)' },
   ]
 }
 

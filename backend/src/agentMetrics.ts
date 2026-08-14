@@ -34,6 +34,19 @@ const GENERIC_LABEL: Record<MetricKey, string> = {
   leads: 'Leads',
 }
 
+// Compact label for the card (must fit a narrow mobile column); the full label goes
+// to the agent page and the card's tooltip.
+const SHORT_LABEL: Record<MetricKey, string> = {
+  executions: 'Execuções',
+  delegations: 'Delegações',
+  tool_actions: 'Ações',
+  conversations: 'Conversas',
+  leads: 'Leads',
+}
+export function kpiShortLabel(key: MetricKey): string {
+  return SHORT_LABEL[key]
+}
+
 // Does this agent have a real data source for a given KPI? Used to build the picker
 // and to refuse a manual choice that would show nothing.
 export function metricKeyAvailable(agent: Agent, key: MetricKey, channelLinked: boolean): boolean {
@@ -130,7 +143,8 @@ export interface AgentOperationalStats {
   totalTokens: number
   avgTokensPerExecution: number | null
   successRate: number | null // 0..1
-  specific: { key: MetricKey; label: string; value: number | null }
+  // label = full/verbose (agent page + tooltip); shortLabel = compact (card).
+  specific: { key: MetricKey; label: string; shortLabel: string; value: number | null }
 }
 
 // Compose the public stats for one agent from the event metrics + the specific-KPI
@@ -147,6 +161,6 @@ export function composeAgentStats(agent: Agent, ev: AgentEventMetrics | undefine
     totalTokens,
     avgTokensPerExecution: executions ? Math.round(totalTokens / executions) : null,
     successRate: executions ? (ev?.succeeded ?? 0) / executions : null,
-    specific: { key, label: kpiLabel(agent, key), value: specificValue(key) },
+    specific: { key, label: kpiLabel(agent, key), shortLabel: kpiShortLabel(key), value: specificValue(key) },
   }
 }

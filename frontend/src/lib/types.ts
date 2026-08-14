@@ -202,7 +202,8 @@ export interface AgentOperationalStats {
   totalTokens: number
   avgTokensPerExecution: number | null
   successRate: number | null // 0..1
-  specific: { key: MetricKey; label: string; value: number | null }
+  // label = full (agent page/tooltip); shortLabel = compact (card).
+  specific: { key: MetricKey; label: string; shortLabel: string; value: number | null }
 }
 
 export interface AgentChannelStats {

@@ -42,7 +42,7 @@ test('hire an agent, then create a routine inside it', async ({ page }) => {
   await page.getByRole('button', { name: 'Contratar agente' }).last().click()
 
   // Open the newly hired agent and go to its Rotinas area.
-  await page.locator('a[href*="/agents/"]').first().click()
+  await page.getByTestId('agent-card').first().click()
   await page.getByRole('button', { name: 'Rotinas' }).click()
   await page.getByRole('button', { name: 'Nova rotina' }).click()
   await page.getByPlaceholder(/consolidar as notícias/i).fill('Resumir as notícias de ontem')

@@ -19,7 +19,17 @@ export function AgentCard({ agent, stats, sectorName, portrait }: { agent: Agent
   const metrics = stats ?? []
 
   return (
-    <Card interactive accent={accent} onClick={() => navigate(fid ? floorAgent(fid, agent._id) : `/agents/${agent._id}`)} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    // The card navigates on click (it is not an <a>), so tests target it by role +
+    // data-testid instead of an href that does not exist.
+    <Card
+      interactive
+      accent={accent}
+      onClick={() => navigate(fid ? floorAgent(fid, agent._id) : `/agents/${agent._id}`)}
+      data-testid="agent-card"
+      role="link"
+      aria-label={agent.name}
+      style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+    >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
         <AgentAvatar name={agent.name} src={portrait ?? portraitFor(agent._id)} color={accent} size="lg" status={status} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: 1 }}>
@@ -97,8 +107,8 @@ export function AgentCard({ agent, stats, sectorName, portrait }: { agent: Agent
           }}
         >
           {metrics.map((m) => (
-            <div key={m.label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>
+            <div key={m.label} title={m.title ?? m.label} data-testid="agent-card-metric" style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+              <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {m.label}
               </span>
               <span style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{m.value}</span>

@@ -109,6 +109,9 @@ export function statusFor(id: string): AgentStatus {
 }
 
 export interface AgentStat {
+  // Compact label shown on the card (must fit a narrow mobile column).
   label: string
   value: string
+  // Full label/definition, surfaced as the tooltip.
+  title?: string
 }
