@@ -11,9 +11,12 @@ test('every AgentPreset has exactly one spec', () => {
   for (const p of AGENT_PRESETS) assert.ok(AGENT_PRESET_SPECS.some((s) => s.preset === p), `missing spec for ${p}`)
 })
 
-test('researcher is agent_only with research capabilities; manager is manual+scheduled', () => {
+test('researcher is reachable by agents via callerPolicy (not agent_only); manager is manual+scheduled', () => {
   const r = presetSpec('researcher')
-  assert.deepEqual(r.activationModes, ['agent_only'])
+  // Being callable by a manager is a PERMISSION now, not a fake trigger.
+  assert.ok(!r.activationModes.includes('agent_only'))
+  assert.equal(r.callerPolicy, 'all')
+  assert.equal(r.delegationPolicy, 'none') // a researcher does not coordinate
   assert.ok(r.capabilities.includes('pesquisa'))
   assert.deepEqual(presetSpec('manager').activationModes, ['manual', 'scheduled'])
 })

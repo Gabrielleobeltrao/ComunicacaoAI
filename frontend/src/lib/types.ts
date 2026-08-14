@@ -227,6 +227,34 @@ export interface AgentCardStats {
   qualifiedLeads: number
 }
 
+// The conceptual model the agent page renders (from the backend, never guessed).
+export type TriggerKind = 'manual' | 'scheduled' | 'channel' | 'event'
+export interface TriggerState {
+  kind: TriggerKind
+  allowed: boolean
+  // Configured = something real fires it (a routine, a channel, a webhook).
+  configured: boolean
+}
+export interface AgentWiring {
+  routineCount: number
+  channelCount: number
+  webhookCount: number
+  collaboratorCount: number
+  toolCount: number
+  knowledgeCount: number
+  deliveryConfigured: boolean
+}
+export interface ReadinessIssue {
+  code: string
+  message: string
+  action: string
+  section: 'como-trabalha' | 'fluxos' | 'visao-geral'
+}
+export interface AgentReadiness {
+  ready: boolean
+  issues: ReadinessIssue[]
+}
+
 export interface AgentOverview {
   agent: AgentSummary
   stats: {
@@ -239,6 +267,9 @@ export interface AgentOverview {
   }
   // KPI availability for the "Métrica do card" picker (data-source aware).
   channelLinked: boolean
+  wiring: AgentWiring
+  readiness: AgentReadiness
+  triggers: TriggerState[]
   availableMetrics: MetricKey[]
   resolvedMetric: MetricKey
   linkedWidgets: { _id: string; name: string }[]

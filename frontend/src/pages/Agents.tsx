@@ -5,10 +5,11 @@ import { AppLayout } from '../components/AppLayout'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentStat } from '../lib/agentAvatar'
 import { getAgentStats } from '../lib/agentStats'
+import { floorAgent } from '../lib/floorRoutes'
 import { formatCount, formatDuration, formatTokens } from '../lib/metricFormat'
 import type { AgentOperationalStats } from '../lib/types'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { Button, Dialog, EmptyState, Field, Input, Select } from '../ui'
 
 const NO_SECTOR = '__none__'
@@ -27,6 +28,7 @@ function buildStats(s: AgentOperationalStats | undefined): AgentStat[] {
 
 export function Agents() {
   const { floorId } = useParams()
+  const navigate = useNavigate()
   const { agents, agentsLoading, loadAgents, sectors } = useAgentsAndWidgets(floorId)
   const [isCreating, setIsCreating] = useState(false)
   const [agentStats, setAgentStats] = useState<Record<string, AgentOperationalStats> | null>(null)
@@ -195,9 +197,11 @@ export function Agents() {
           agents={agents}
           sectors={sectors}
           onCancel={() => setIsCreating(false)}
-          onHired={async () => {
+          onHired={async (created) => {
             setIsCreating(false)
             await loadAgents()
+            // Straight to the new agent when the user asked to open it.
+            if (created) navigate(floorId ? floorAgent(floorId, created._id) : `/agents/${created._id}`)
           }}
         />
       </Dialog>

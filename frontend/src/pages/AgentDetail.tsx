@@ -24,17 +24,116 @@ import { Illustration } from '../office/Illustration'
 // on the left, and metric cards over a tabbed panel on the right. Each tab hosts
 // a real section (the config form sections + the test playground), so nothing
 // loses functionality.
+// Five sections instead of eight: what it is, how it works, what triggers it, what it
+// did, and the technical knobs. Old links keep working through LEGACY_SECTION.
 const TABS: { key: string; label: string }[] = [
-  { key: 'essencial', label: 'Ajustes' },
-  { key: 'ferramentas', label: 'Ferramentas' },
-  { key: 'conhecimento', label: 'Conhecimento' },
-  { key: 'rotinas', label: 'Rotinas' },
-  { key: 'acionamentos', label: 'Acionamentos' },
-  { key: 'historico', label: 'Histórico' },
+  { key: 'visao-geral', label: 'Visão geral' },
+  { key: 'como-trabalha', label: 'Como trabalha' },
+  { key: 'fluxos', label: 'Fluxos' },
+  { key: 'atividade', label: 'Atividade' },
   { key: 'avancado', label: 'Avançado' },
-  { key: 'testar', label: 'Testar' },
 ]
 const TAB_KEYS = TABS.map((t) => t.key)
+const LEGACY_SECTION: Record<string, string> = {
+  essencial: 'visao-geral',
+  ferramentas: 'como-trabalha',
+  conhecimento: 'como-trabalha',
+  rotinas: 'fluxos',
+  acionamentos: 'fluxos',
+  historico: 'atividade',
+  testar: 'atividade',
+}
+
+const TRIGGER_LABEL: Record<string, { label: string; configured: string; pending: string }> = {
+  manual: { label: 'Execução manual', configured: 'Você pode rodar quando quiser', pending: 'Não permitido' },
+  scheduled: { label: 'Rotina', configured: 'Roda no horário definido', pending: 'Permitido, mas sem rotina criada' },
+  channel: { label: 'Canal', configured: 'Atende no canal vinculado', pending: 'Permitido, mas sem canal vinculado' },
+  event: { label: 'Evento', configured: 'Disparado por webhook', pending: 'Permitido, mas sem webhook configurado' },
+}
+
+// Ready or the exact pending items, each with the one action that fixes it.
+function ReadinessCard({ overview, onGo }: { overview: AgentOverview; onGo: (section: string) => void }) {
+  const { readiness } = overview
+  if (readiness.ready)
+    return (
+      <Card padding="14px 16px" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <StatusPill status="working" label="Pronto para trabalhar" pulse={false} />
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Este agente tem tudo o que precisa.</span>
+      </Card>
+    )
+  return (
+    <Card padding="14px 16px" style={{ display: 'grid', gap: 10 }} data-testid="agent-readiness">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <StatusPill status="blocked" label="Falta configurar" pulse={false} />
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Ele ainda não consegue fazer o trabalho dele.</span>
+      </div>
+      {readiness.issues.map((issue) => (
+        <div key={issue.code} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13.5, color: 'var(--text-heading)', minWidth: 0 }}>{issue.message}</span>
+          <Button size="sm" variant="secondary" onClick={() => onGo(issue.section)}>
+            {issue.action}
+          </Button>
+        </div>
+      ))}
+    </Card>
+  )
+}
+
+// What fires this agent: each trigger with BOTH truths — allowed by the agent, and
+// actually configured (a routine/channel/webhook that really exists).
+function TriggersPanel({ overview }: { overview: AgentOverview }) {
+  const triggers = overview.triggers ?? []
+  return (
+    <div data-testid="agent-triggers">
+      <h3 style={{ margin: '0 0 4px', fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>O que aciona este agente</h3>
+      <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--text-muted)' }}>“Permitido” é o que ele aceita. “Configurado” é o que já existe de verdade.</p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 10 }}>
+        {triggers.map((t) => {
+          const copy = TRIGGER_LABEL[t.kind]
+          const state = !t.allowed ? 'off' : t.configured ? 'on' : 'pending'
+          return (
+            <Card key={t.kind} padding="12px 14px" style={{ display: 'grid', gap: 4, opacity: state === 'off' ? 0.55 : 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ fontFamily: 'var(--font-ui)', fontWeight: 700, fontSize: 13.5, color: 'var(--text-heading)' }}>{copy.label}</span>
+                <StatusPill status={state === 'on' ? 'working' : state === 'pending' ? 'break' : 'idle'} label={state === 'on' ? 'Configurado' : state === 'pending' ? 'Permitido' : 'Desligado'} pulse={false} />
+              </div>
+              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{!t.allowed ? copy.pending : t.configured ? copy.configured : copy.pending}</span>
+            </Card>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// The four questions the overview must answer at a glance.
+function AgentSummaryCard({ agent, overview }: { agent: AgentSummary; overview: AgentOverview }) {
+  const rows: [string, string][] = [
+    ['Função', roleLabelOf(agent)],
+    ['O que faz', agent.objective || '—'],
+    ['Recebe', agent.inputContract || '—'],
+    ['Entrega', agent.outputContract || '—'],
+  ]
+  const w = overview.wiring
+  return (
+    <Card padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="agent-summary">
+      {rows.map(([label, value]) => (
+        <div key={label} style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ minWidth: 110, fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
+          <span style={{ fontSize: 13.5, color: 'var(--text-heading)', minWidth: 0, flex: 1 }}>{value}</span>
+        </div>
+      ))}
+      {w ? (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 4 }}>
+          <Tag>{w.toolCount} ferramenta(s)</Tag>
+          <Tag>{w.knowledgeCount} documento(s)</Tag>
+          <Tag>{w.routineCount} rotina(s)</Tag>
+          <Tag>{w.channelCount} canal(is)</Tag>
+        </div>
+      ) : null}
+    </Card>
+  )
+}
 
 function ProfileCard({ agent, stats, accent, portrait }: { agent: AgentSummary; stats: AgentOverview['stats']; accent: string; portrait: string }) {
   const roleLabel = roleLabelOf(agent)
@@ -205,7 +304,9 @@ export function AgentDetail() {
   const agent = overview?.agent
   const agentFloorId = agent?.floorId ?? fid
   const agentFloorName = building?.floors.find((f) => f.id === agentFloorId)?.name ?? 'Andar'
-  const active = TAB_KEYS.includes(section ?? '') ? (section as string) : 'essencial'
+  const raw = section ?? ''
+  const active = TAB_KEYS.includes(raw) ? raw : (LEGACY_SECTION[raw] ?? 'visao-geral')
+  const goToSection = (key: string) => navigate(fid ? floorAgent(fid, agentId!, key) : `/agents/${agentId}/${key}`)
   const accent = agent ? accentFor(agent._id) : 'var(--intent-brand)'
   const stats = overview?.stats
   const attendanceRate = stats && stats.conversations > 0 ? Math.round((stats.attendedConversations / stats.conversations) * 100) : 0
@@ -326,18 +427,33 @@ export function AgentDetail() {
                 </div>
               </div>
               <div style={{ padding: 18 }}>
-                {active === 'testar' ? (
-                  <AgentPlayground key={agent._id} agent={agent} />
-                ) : active === 'rotinas' ? (
-                  <AgentRoutines key={agent._id} agent={agent} />
-                ) : active === 'acionamentos' ? (
-                  <AgentActivations key={agent._id} agent={agent} agents={agents} />
-                ) : active === 'historico' ? (
-                  <AgentHistoryPanel key={agent._id} agent={agent} sectors={overview.linkedSectors} />
+                {active === 'atividade' ? (
+                  // What it did: metrics live above; here go history and the test bench.
+                  <div style={{ display: 'grid', gap: 20 }}>
+                    <AgentHistoryPanel key={`${agent._id}:hist`} agent={agent} sectors={overview.linkedSectors} />
+                    <div>
+                      <h3 style={{ margin: '0 0 12px', fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Testar</h3>
+                      <AgentPlayground key={`${agent._id}:play`} agent={agent} />
+                    </div>
+                  </div>
+                ) : active === 'fluxos' ? (
+                  // What sets it in motion: triggers (allowed vs configured), routines
+                  // and the relationships with other agents/sectors.
+                  <div style={{ display: 'grid', gap: 20 }}>
+                    <TriggersPanel overview={overview} />
+                    <AgentRoutines key={agent._id} agent={agent} />
+                    <AgentActivations key={agent._id} agent={agent} agents={agents} />
+                  </div>
                 ) : (
                   <>
+                    {active === 'visao-geral' ? (
+                      <div style={{ display: 'grid', gap: 14, marginBottom: 18 }}>
+                        <ReadinessCard overview={overview} onGo={goToSection} />
+                        <AgentSummaryCard agent={agent} overview={overview} />
+                      </div>
+                    ) : null}
                     <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} availableMetrics={overview.availableMetrics} />
-                    {active === 'essencial' ? (
+                    {active === 'visao-geral' ? (
                       <div style={{ marginTop: 20 }}>
                         <DangerZone
                           title="Excluir este agente"

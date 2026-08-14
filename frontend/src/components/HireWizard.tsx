@@ -3,105 +3,125 @@ import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
 import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
 import { assignAgentToSector } from '../lib/sectors'
-import type { AgentPreset, AgentSummary, DelegationPolicy, SectorSummary } from '../lib/types'
-import { Button, Card, Field, Input, Select, Tag, Textarea } from '../ui'
+import type { AgentPreset, AgentSummary, SectorSummary } from '../lib/types'
+import { Button, Card, Field, Input, Select, Textarea } from '../ui'
 
-// The hiring wizard: 4 adaptive steps — Função, Configuração essencial,
-// Equipe/funcionamento, Revisão. Each preset shows ONLY its relevant fields;
-// everything else stays editable later on the agent page. No IDs, cron or raw
-// contracts are shown — the user works in names, presets and plain language.
+// Hiring in three steps: Função → Trabalho → Revisar e contratar.
+//
+// Each role asks only for what IT needs, in plain language — never ids, contracts or
+// policy jargon. The safe permissions (who it may call, who may call it) come from
+// the preset and stay editable later under "Avançado".
+//
+// What a role cannot finish here (connecting an app, writing a routine) is not a
+// blocker: the agent is hired and the remaining steps are handed over as a checklist.
 
-const STEPS = ['Função', 'Configuração', 'Equipe', 'Revisão']
+const STEPS = ['Função', 'Trabalho', 'Revisar'] as const
 
-// Which essential fields each preset shows on step 2. subject → inputContract,
-// deliverable → outputContract, tone → responseTone, capabilities → free editor.
-const PRESET_ESSENTIALS: Record<AgentPreset, { subject?: string; deliverable?: string; tone?: boolean; capabilities?: boolean; note?: string }> = {
-  manager: { note: 'Os colaboradores que ele pode acionar você define no próximo passo.' },
-  researcher: { subject: 'Tema / assunto a pesquisar', deliverable: 'Formato do resultado (ex.: lista com fontes)' },
-  analyst: { subject: 'O que ele recebe para analisar', deliverable: 'Conclusão esperada' },
-  secretary: { note: 'Ele organiza e encaminha demandas — ajuste os detalhes depois em Ajustes.' },
-  operator: { subject: 'Ação principal que ele executa', note: 'Conecte a integração na aba Ferramentas do agente. Sem ela, ele fica incompleto.' },
-  communicator: { tone: true, deliverable: 'Formato / canal de entrega' },
-  monitor: { subject: 'Fonte a acompanhar', deliverable: 'Condição que dispara o alerta', note: 'Defina a frequência criando uma Rotina no agente depois.' },
-  custom: { capabilities: true },
+// The questions each role actually needs answered, in its own words.
+interface RoleForm {
+  // A short sentence describing what the role delivers, shown under the objective.
+  hint: string
+  subject?: { label: string; placeholder: string; help?: string } // → inputContract
+  deliverable?: { label: string; placeholder: string } // → outputContract
+  tone?: boolean
+  collaborators?: boolean // manager: who it coordinates
+  needsTool?: 'research' | 'action' | 'source' // finish later via checklist
+  needsRoutine?: boolean
+  needsDestination?: boolean
 }
 
-const TONES: { value: string; label: string }[] = [
+const ROLE_FORM: Record<AgentPreset, RoleForm> = {
+  manager: {
+    hint: 'Recebe um pedido, aciona quem sabe fazer e devolve uma resposta só.',
+    collaborators: true,
+  },
+  researcher: {
+    hint: 'Recebe um tema, pesquisa e devolve o resultado com as fontes.',
+    subject: { label: 'Tema que ele pesquisa', placeholder: 'Ex.: notícias do setor de alimentação' },
+    deliverable: { label: 'Formato da resposta', placeholder: 'Ex.: lista com 5 itens e o link de cada fonte' },
+    needsTool: 'research',
+  },
+  analyst: {
+    hint: 'Recebe dados prontos e devolve uma conclusão fundamentada.',
+    subject: { label: 'Dados que ele recebe', placeholder: 'Ex.: as vendas da semana por produto' },
+    deliverable: { label: 'Conclusão esperada', placeholder: 'Ex.: o que subiu, o que caiu e o porquê' },
+  },
+  operator: {
+    hint: 'Executa uma ação de verdade num app conectado e confirma o que fez.',
+    subject: { label: 'Ação que ele executa', placeholder: 'Ex.: registrar o pedido no sistema' },
+    needsTool: 'action',
+  },
+  communicator: {
+    hint: 'Transforma um resultado em texto pronto para o público certo.',
+    subject: { label: 'Para quem ele escreve', placeholder: 'Ex.: clientes do delivery, no Instagram' },
+    deliverable: { label: 'Formato da entrega', placeholder: 'Ex.: legenda curta com chamada para reserva' },
+    tone: true,
+    needsDestination: true,
+  },
+  monitor: {
+    hint: 'Olha uma fonte de tempos em tempos e avisa quando algo muda.',
+    subject: { label: 'O que ele acompanha', placeholder: 'Ex.: o estoque de massas e molhos' },
+    deliverable: { label: 'Quando deve avisar', placeholder: 'Ex.: quando algum item ficar abaixo do mínimo' },
+    needsTool: 'source',
+    needsRoutine: true,
+  },
+  secretary: {
+    hint: 'Recebe demandas, organiza e encaminha para quem resolve.',
+    subject: { label: 'Demandas que ele recebe', placeholder: 'Ex.: pedidos de orçamento e dúvidas gerais' },
+    collaborators: true,
+  },
+  custom: {
+    hint: 'Você define tudo do zero.',
+    subject: { label: 'O que ele recebe', placeholder: 'Ex.: uma mensagem do cliente' },
+    deliverable: { label: 'O que ele entrega', placeholder: 'Ex.: uma resposta curta e cordial' },
+  },
+}
+
+// What still has to be done after hiring, in the user's words.
+const PENDING_LABEL: Record<string, string> = {
+  research: 'Conectar uma fonte de pesquisa (app ou ferramenta)',
+  action: 'Conectar o app onde ele vai executar a ação',
+  source: 'Conectar a fonte que ele vai acompanhar',
+  routine: 'Criar a rotina que acorda ele',
+  destination: 'Definir para onde a entrega vai',
+  collaborators: 'Escolher os colegas que ele pode acionar',
+}
+
+const TONES = [
   { value: 'neutral', label: 'Neutro' },
   { value: 'friendly', label: 'Amigável' },
   { value: 'formal', label: 'Formal' },
 ]
-
-const LANGS: { value: string; label: string }[] = [
+const LANGS = [
   { value: 'pt', label: 'Português' },
   { value: 'en', label: 'Inglês' },
   { value: 'es', label: 'Espanhol' },
 ]
 
-// none|all|selected in plain language.
-const POLICY_OPTIONS: { value: DelegationPolicy; label: string }[] = [
-  { value: 'none', label: 'Ninguém' },
-  { value: 'all', label: 'Qualquer agente do prédio' },
-  { value: 'selected', label: 'Apenas os que eu escolher' },
-]
-
-function ChipToggle({ on, label, hint, onClick }: { on: boolean; label: string; hint?: string; onClick: () => void }) {
+function Choice({ on, label, hint, onClick }: { on: boolean; label: string; hint?: string; onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
       style={{
         textAlign: 'left',
-        padding: '8px 12px',
+        padding: '10px 12px',
         borderRadius: 'var(--radius-control)',
         border: `1px solid ${on ? 'var(--accent-500)' : 'var(--border-subtle)'}`,
         background: on ? 'var(--accent-50)' : 'var(--surface-card)',
         color: on ? 'var(--accent-700)' : 'var(--text-heading)',
         cursor: 'pointer',
         fontFamily: 'var(--font-ui)',
+        minWidth: 0,
       }}
     >
       <div style={{ fontSize: 13.5, fontWeight: 700 }}>{label}</div>
-      {hint ? <div style={{ fontSize: 12, color: on ? 'var(--accent-700)' : 'var(--text-muted)', marginTop: 2 }}>{hint}</div> : null}
+      {hint ? <div style={{ fontSize: 12, color: on ? 'var(--accent-700)' : 'var(--text-muted)', marginTop: 2, lineHeight: 1.4 }}>{hint}</div> : null}
     </button>
   )
 }
 
-// A 3-way none|all|selected picker with an optional agent multiselect for 'selected'.
-function PolicyPicker({
-  value,
-  onChange,
-  selectedIds,
-  onToggleId,
-  agents,
-}: {
-  value: DelegationPolicy
-  onChange: (v: DelegationPolicy) => void
-  selectedIds: string[]
-  onToggleId: (id: string) => void
-  agents: AgentSummary[]
-}) {
-  return (
-    <div style={{ display: 'grid', gap: 8 }}>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {POLICY_OPTIONS.map((o) => (
-          <ChipToggle key={o.value} on={value === o.value} label={o.label} onClick={() => onChange(o.value)} />
-        ))}
-      </div>
-      {value === 'selected' ? (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, maxHeight: 150, overflowY: 'auto' }}>
-          {agents.length === 0 ? (
-            <span style={{ fontSize: 13, color: 'var(--text-subtle)' }}>Nenhum outro agente ainda.</span>
-          ) : (
-            agents.map((a) => <ChipToggle key={a._id} on={selectedIds.includes(a._id)} label={a.name} onClick={() => onToggleId(a._id)} />)
-          )}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-const toggle = (list: string[], v: string): string[] => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
+const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v])
 
 export function HireWizard({
   floorId,
@@ -113,7 +133,7 @@ export function HireWizard({
   floorId?: string
   agents: AgentSummary[]
   sectors: SectorSummary[]
-  onHired: () => void
+  onHired: (agent?: { _id: string; name: string }) => void
   onCancel: () => void
 }) {
   const [step, setStep] = useState(0)
@@ -123,61 +143,56 @@ export function HireWizard({
   const [language, setLanguage] = useState('pt')
   const [name, setName] = useState(() => randomAgentName('pt').name)
   const [objective, setObjective] = useState('')
-  const [subject, setSubject] = useState('') // → inputContract
-  const [deliverable, setDeliverable] = useState('') // → outputContract
+  const [subject, setSubject] = useState('')
+  const [deliverable, setDeliverable] = useState('')
   const [tone, setTone] = useState('neutral')
-  const [capabilities, setCapabilities] = useState<string[]>([])
-  const [capDraft, setCapDraft] = useState('')
-
-  // Team/operation
-  const [delegationPolicy, setDelegationPolicy] = useState<DelegationPolicy>('none')
-  const [callableAgentIds, setCallableAgentIds] = useState<string[]>([])
-  const [callableSectorIds, setCallableSectorIds] = useState<string[]>([])
-  const [callerPolicy, setCallerPolicy] = useState<DelegationPolicy>('all')
-  const [allowedCallerAgentIds, setAllowedCallerAgentIds] = useState<string[]>([])
+  const [collaborators, setCollaborators] = useState<string[]>([])
+  const [collaboratorSectors, setCollaboratorSectors] = useState<string[]>([])
   const [sectorId, setSectorId] = useState('')
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [hired, setHired] = useState<{ _id: string; name: string } | null>(null)
 
   useEffect(() => {
-    listAgentPresets().then(setPresets).catch(() => setPresets([]))
+    listAgentPresets()
+      .then(setPresets)
+      .catch(() => setPresets([]))
   }, [])
 
-  const specOf = (p: AgentPreset) => presets.find((s) => s.preset === p)
-  const essentials = PRESET_ESSENTIALS[preset]
+  const spec = useMemo(() => presets.find((p) => p.preset === preset), [presets, preset])
+  const form = ROLE_FORM[preset]
   const otherAgents = useMemo(() => agents.filter((a) => a.name), [agents])
-  // Only executable teams (orchestrated/pipeline) can be delegated to.
   const callableSectors = useMemo(() => sectors.filter((s) => s.mode !== 'organization'), [sectors])
 
-  const applyPreset = (spec: AgentPresetSpec) => {
-    setPreset(spec.preset)
-    setObjective(spec.objective)
-    setCapabilities(spec.capabilities)
+  const applyPreset = (s: AgentPresetSpec) => {
+    setPreset(s.preset)
+    setObjective(s.objective)
     setSubject('')
     setDeliverable('')
-    // A manager delegates by default; every other role starts as a leaf.
-    setDelegationPolicy(spec.preset === 'manager' ? 'all' : 'none')
   }
 
-  const reroll = () => setName(randomAgentName(language, name).name)
-  const changeLang = (lang: string) => {
-    setLanguage(lang)
-    setName(randomAgentName(lang).name)
-  }
-  const addCapability = () => {
-    const v = capDraft.trim()
-    if (v && !capabilities.includes(v)) setCapabilities((c) => [...c, v])
-    setCapDraft('')
-  }
+  // What this agent will still be missing right after hiring.
+  const pending = useMemo(() => {
+    const items: string[] = []
+    if (form.needsTool) items.push(PENDING_LABEL[form.needsTool])
+    if (form.needsRoutine) items.push(PENDING_LABEL.routine)
+    if (form.needsDestination) items.push(PENDING_LABEL.destination)
+    if (form.collaborators && collaborators.length === 0 && collaboratorSectors.length === 0 && preset !== 'manager') items.push(PENDING_LABEL.collaborators)
+    return items
+  }, [form, collaborators.length, collaboratorSectors.length, preset])
 
-  const canNext = step !== 1 || name.trim().length > 0
+  const canAdvance = step !== 1 || name.trim().length > 0
 
   const submit = async () => {
     setSaving(true)
     setError(null)
     try {
-      const spec = specOf(preset)
+      // Permissions come from the ROLE, never from a checkbox the user had to
+      // understand. A manager that picked specific colleagues gets 'selected'.
+      const picked = collaborators.length > 0 || collaboratorSectors.length > 0
+      const delegationPolicy = form.collaborators ? (picked ? 'selected' : (spec?.delegationPolicy ?? 'all')) : (spec?.delegationPolicy ?? 'none')
+
       const res = await fetch(`${API_URL}/api/agents`, {
         method: 'POST',
         credentials: 'include',
@@ -189,32 +204,58 @@ export function HireWizard({
           language,
           floorId,
           preset,
-          capabilities,
-          activationModes: spec?.activationModes ?? ['manual', 'channel'],
+          capabilities: spec?.capabilities ?? [],
+          activationModes: spec?.activationModes ?? ['manual'],
           inputContract: subject.trim(),
           outputContract: deliverable.trim(),
-          ...(essentials.tone ? { responseTone: tone } : {}),
+          ...(form.tone ? { responseTone: tone } : {}),
           delegationPolicy,
-          callableAgentIds: delegationPolicy === 'selected' ? callableAgentIds : [],
-          callableSectorIds: delegationPolicy === 'selected' ? callableSectorIds : [],
-          callerPolicy,
-          allowedCallerAgentIds: callerPolicy === 'selected' ? allowedCallerAgentIds : [],
+          callableAgentIds: picked ? collaborators : [],
+          callableSectorIds: picked ? collaboratorSectors : [],
+          // Reachable by other agents — the permission that replaced agent_only.
+          callerPolicy: spec?.callerPolicy ?? 'all',
         }),
       })
       if (!res.ok) throw new Error(String(res.status))
-      const created = (await res.json()) as { _id: string }
+      const created = (await res.json()) as { _id: string; name: string }
       if (sectorId) await assignAgentToSector(created._id, sectorId).catch(() => undefined)
-      onHired()
+      // Nothing pending → close. Otherwise show the handover checklist.
+      if (pending.length === 0) onHired(created)
+      else setHired(created)
     } catch {
       setError('Não foi possível contratar o agente.')
       setSaving(false)
     }
   }
 
-  const policyLabel = (p: DelegationPolicy, n: number) => (p === 'all' ? 'qualquer agente do prédio' : p === 'none' ? 'ninguém' : `${n} selecionado(s)`)
+  // ------------------------------------------------- post-hire handover
+  if (hired) {
+    return (
+      <div style={{ display: 'grid', gap: 16 }} data-testid="hire-checklist">
+        <div>
+          <h3 style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{hired.name} foi contratado</h3>
+          <p style={{ margin: '6px 0 0', fontSize: 13.5, color: 'var(--text-muted)' }}>Falta pouco para ele começar a trabalhar:</p>
+        </div>
+        <Card padding="14px 16px" style={{ display: 'grid', gap: 10 }}>
+          {pending.map((item) => (
+            <div key={item} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <span style={{ width: 18, height: 18, borderRadius: 999, border: '1px solid var(--border-strong)', flexShrink: 0, marginTop: 1 }} />
+              <span style={{ fontSize: 13.5, color: 'var(--text-heading)' }}>{item}</span>
+            </div>
+          ))}
+        </Card>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button onClick={() => onHired(hired)}>Abrir o agente</Button>
+          <Button variant="ghost" onClick={() => onHired()}>
+            Depois
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div style={{ display: 'grid', gap: 18 }}>
+    <div style={{ display: 'grid', gap: 18 }} data-testid="hire-wizard">
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {STEPS.map((label, i) => (
           <span
@@ -234,140 +275,126 @@ export function HireWizard({
         ))}
       </div>
 
-      <div style={{ minHeight: 250 }}>
-        {/* Step 1 — Função */}
+      <div style={{ minHeight: 260 }}>
+        {/* 1 — Função */}
         {step === 0 ? (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {presets.map((spec) => (
-              <ChipToggle key={spec.preset} on={preset === spec.preset} label={spec.label} hint={spec.description} onClick={() => applyPreset(spec)} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 10 }} data-testid="role-picker">
+            {presets.map((s) => (
+              <Choice key={s.preset} on={preset === s.preset} label={s.label} hint={ROLE_FORM[s.preset]?.hint ?? s.description} onClick={() => applyPreset(s)} />
             ))}
           </div>
         ) : null}
 
-        {/* Step 2 — Configuração essencial (preset-specific) */}
+        {/* 2 — Trabalho (only what THIS role needs) */}
         {step === 1 ? (
-          <div style={{ display: 'grid', gap: 14 }}>
-            <Field label="Nome" hint="Gerado automaticamente conforme o idioma — gere outro se quiser.">
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Input value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 1 }} />
-                <Button variant="secondary" icon="dice-5" onClick={reroll} type="button">
+          <div style={{ display: 'grid', gap: 14 }} data-testid="work-step">
+            <Field label="Nome" hint="Gerado automaticamente conforme o idioma.">
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Input value={name} onChange={(e) => setName(e.target.value)} style={{ flex: '1 1 200px', minWidth: 0 }} />
+                <Button variant="secondary" icon="dice-5" type="button" onClick={() => setName(randomAgentName(language, name).name)}>
                   Outro
                 </Button>
               </div>
             </Field>
             <Field label="Idioma">
-              <div style={{ display: 'flex', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {LANGS.map((l) => (
-                  <ChipToggle key={l.value} on={language === l.value} label={l.label} onClick={() => changeLang(l.value)} />
+                  <Choice
+                    key={l.value}
+                    on={language === l.value}
+                    label={l.label}
+                    onClick={() => {
+                      setLanguage(l.value)
+                      setName(randomAgentName(l.value).name)
+                    }}
+                  />
                 ))}
               </div>
             </Field>
-            <Field label="Objetivo" hint="O que este agente faz — sua instrução principal.">
-              <Textarea rows={3} value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Ex.: pesquisar notícias e entregar um resumo diário." />
+            <Field label="O que ele faz" hint={form.hint}>
+              <Textarea rows={3} value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Descreva em uma ou duas frases." />
             </Field>
-            {essentials.subject ? (
-              <Field label={essentials.subject}>
-                <Input value={subject} onChange={(e) => setSubject(e.target.value)} />
+
+            {form.subject ? (
+              <Field label={form.subject.label} hint={form.subject.help}>
+                <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={form.subject.placeholder} />
               </Field>
             ) : null}
-            {essentials.deliverable ? (
-              <Field label={essentials.deliverable}>
-                <Input value={deliverable} onChange={(e) => setDeliverable(e.target.value)} />
+            {form.deliverable ? (
+              <Field label={form.deliverable.label}>
+                <Input value={deliverable} onChange={(e) => setDeliverable(e.target.value)} placeholder={form.deliverable.placeholder} />
               </Field>
             ) : null}
-            {essentials.tone ? (
-              <Field label="Tom">
+            {form.tone ? (
+              <Field label="Tom da escrita">
                 <Select value={tone} onChange={(e) => setTone(e.target.value)} options={TONES} />
               </Field>
             ) : null}
-            {essentials.capabilities ? (
-              <Field label="Competências" hint="Tags usadas por gerentes para achar este agente por competência.">
-                <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-                  <Input
-                    value={capDraft}
-                    onChange={(e) => setCapDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        addCapability()
-                      }
-                    }}
-                    placeholder="Ex.: pesquisa web"
-                    style={{ flex: 1 }}
-                  />
-                  <Button variant="secondary" onClick={addCapability} type="button">
-                    Adicionar
-                  </Button>
-                </div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {capabilities.map((c) => (
-                    <Tag key={c} onRemove={() => setCapabilities((list) => list.filter((x) => x !== c))}>
-                      {c}
-                    </Tag>
-                  ))}
-                </div>
-              </Field>
-            ) : null}
-            {essentials.note ? <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>{essentials.note}</p> : null}
-          </div>
-        ) : null}
 
-        {/* Step 3 — Equipe / funcionamento */}
-        {step === 2 ? (
-          <div style={{ display: 'grid', gap: 18 }}>
-            <Field label="Quem este agente pode acionar?" hint="Para delegar tarefas a colaboradores.">
-              <PolicyPicker value={delegationPolicy} onChange={setDelegationPolicy} selectedIds={callableAgentIds} onToggleId={(id) => setCallableAgentIds((l) => toggle(l, id))} agents={otherAgents} />
-            </Field>
-            {delegationPolicy === 'selected' && callableSectors.length > 0 ? (
-              <Field label="Equipes (setores) que ele pode acionar">
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            {form.collaborators ? (
+              <Field label="Quem ele pode acionar" hint="Deixe vazio para ele poder acionar qualquer colega do prédio.">
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 8, maxHeight: 190, overflowY: 'auto' }}>
+                  {otherAgents.map((a) => (
+                    <Choice key={a._id} on={collaborators.includes(a._id)} label={a.name} onClick={() => setCollaborators((l) => toggle(l, a._id))} />
+                  ))}
                   {callableSectors.map((s) => (
-                    <ChipToggle key={s._id} on={callableSectorIds.includes(s._id)} label={s.name} onClick={() => setCallableSectorIds((l) => toggle(l, s._id))} />
+                    <Choice key={s._id} on={collaboratorSectors.includes(s._id)} label={`Equipe ${s.name}`} onClick={() => setCollaboratorSectors((l) => toggle(l, s._id))} />
                   ))}
                 </div>
               </Field>
             ) : null}
-            <Field label="Quem pode acionar este agente?">
-              <PolicyPicker value={callerPolicy} onChange={setCallerPolicy} selectedIds={allowedCallerAgentIds} onToggleId={(id) => setAllowedCallerAgentIds((l) => toggle(l, id))} agents={otherAgents} />
-            </Field>
-            <Field label="Setor (opcional)" hint="Equipe onde ele aparece no mapa. Pode definir depois.">
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <ChipToggle on={sectorId === ''} label="Sem setor" onClick={() => setSectorId('')} />
+
+            <Field label="Setor (opcional)" hint="Onde ele aparece no mapa. Pode definir depois.">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 160px), 1fr))', gap: 8 }}>
+                <Choice on={sectorId === ''} label="Sem setor" onClick={() => setSectorId('')} />
                 {sectors.map((s) => (
-                  <ChipToggle key={s._id} on={sectorId === s._id} label={s.name} onClick={() => setSectorId(s._id)} />
+                  <Choice key={s._id} on={sectorId === s._id} label={s.name} onClick={() => setSectorId(s._id)} />
                 ))}
               </div>
             </Field>
           </div>
         ) : null}
 
-        {/* Step 4 — Revisão */}
-        {step === 3 ? (
-          <Card padding="16px" style={{ display: 'grid', gap: 8, fontSize: 13.5 }}>
-            <Row label="Função" value={specOf(preset)?.label ?? preset} />
-            <Row label="Nome" value={name} />
-            <Row label="Objetivo" value={objective || '—'} />
-            {subject ? <Row label="Recebe" value={subject} /> : null}
-            {deliverable ? <Row label="Entrega" value={deliverable} /> : null}
-            <Row label="Pode acionar" value={policyLabel(delegationPolicy, callableAgentIds.length)} />
-            <Row label="Pode ser acionado por" value={policyLabel(callerPolicy, allowedCallerAgentIds.length)} />
-            <Row label="Setor" value={sectors.find((s) => s._id === sectorId)?.name ?? 'Sem setor'} />
-          </Card>
+        {/* 3 — Revisar */}
+        {step === 2 ? (
+          <div style={{ display: 'grid', gap: 12 }} data-testid="review-step">
+            <Card padding="16px" style={{ display: 'grid', gap: 8, fontSize: 13.5 }}>
+              <Row label="Função" value={spec?.label ?? preset} />
+              <Row label="Nome" value={name} />
+              <Row label="O que faz" value={objective || '—'} />
+              {subject ? <Row label={form.subject?.label ?? 'Recebe'} value={subject} /> : null}
+              {deliverable ? <Row label={form.deliverable?.label ?? 'Entrega'} value={deliverable} /> : null}
+              {form.collaborators ? (
+                <Row label="Pode acionar" value={collaborators.length + collaboratorSectors.length > 0 ? `${collaborators.length + collaboratorSectors.length} escolhido(s)` : 'Qualquer colega do prédio'} />
+              ) : null}
+              <Row label="Setor" value={sectors.find((s) => s._id === sectorId)?.name ?? 'Sem setor'} />
+            </Card>
+            {pending.length > 0 ? (
+              <Card padding="14px 16px" style={{ display: 'grid', gap: 6 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-heading)' }}>Depois de contratar, falta:</span>
+                {pending.map((p) => (
+                  <span key={p} style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                    • {p}
+                  </span>
+                ))}
+              </Card>
+            ) : null}
+          </div>
         ) : null}
       </div>
 
       {error ? <p style={{ margin: 0, color: 'var(--status-blocked)', fontSize: 13 }}>{error}</p> : null}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-        <Button variant="ghost" onClick={step === 0 ? onCancel : () => setStep((s) => s - 1)} disabled={saving} type="button">
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+        <Button variant="ghost" type="button" disabled={saving} onClick={step === 0 ? onCancel : () => setStep((s) => s - 1)}>
           {step === 0 ? 'Cancelar' : 'Voltar'}
         </Button>
         {step < STEPS.length - 1 ? (
-          <Button onClick={() => setStep((s) => s + 1)} disabled={!canNext} type="button">
+          <Button type="button" disabled={!canAdvance} onClick={() => setStep((s) => s + 1)}>
             Próximo
           </Button>
         ) : (
-          <Button onClick={submit} disabled={saving} type="button">
+          <Button type="button" disabled={saving} onClick={submit}>
             Contratar agente
           </Button>
         )}
@@ -378,9 +405,9 @@ export function HireWizard({
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ display: 'flex', gap: 12 }}>
-      <span style={{ minWidth: 150, color: 'var(--text-muted)' }}>{label}</span>
-      <span style={{ color: 'var(--text-heading)', fontWeight: 600 }}>{value}</span>
+    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+      <span style={{ minWidth: 140, color: 'var(--text-muted)' }}>{label}</span>
+      <span style={{ color: 'var(--text-heading)', fontWeight: 600, minWidth: 0 }}>{value}</span>
     </div>
   )
 }

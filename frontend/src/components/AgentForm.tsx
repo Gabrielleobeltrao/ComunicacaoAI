@@ -43,9 +43,15 @@ interface AgentFormProps {
 // The agent page groups fields into blocks; each section shows a set of blocks.
 // "Essencial" is the only thing a common user must touch — everything technical
 // is grouped under "avancado" so it stays out of the way with sensible defaults.
+// Five sections now: Visão geral (identity + objective), Como trabalha (tools and
+// knowledge), Fluxos, Atividade and Avançado (everything technical). Legacy keys are
+// kept as aliases so an old bookmark still lands somewhere sensible.
 const SECTION_BLOCKS: Record<string, string[]> = {
-  essencial: ['identidade'],
+  'visao-geral': ['identidade'],
+  'como-trabalha': ['ferramentas', 'conhecimento'],
   avancado: ['metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados'],
+  // legacy aliases
+  essencial: ['identidade'],
   ferramentas: ['ferramentas'],
   conhecimento: ['conhecimento'],
 }
