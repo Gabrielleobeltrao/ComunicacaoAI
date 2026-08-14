@@ -4,9 +4,11 @@
 //   1. the referenced sector is authorised INSIDE this run's account — before any
 //      knowledge lookup, any tool resolution and any model call;
 //   2. only then the curated context is retrieved and the model runs;
-//   3. the charge and the telemetry are AWAITED (not fire-and-forget) with a bounded
-//      retry, so a step is never confirmed while its accounting is still in the air —
-//      and a persistence failure never turns into a second inference.
+//   3. the charge and the telemetry are persisted with a bounded retry and handed
+//      back as `settle`, which the RUNNER awaits OUTSIDE the step timeout. That is
+//      what guarantees a slow database can never be mistaken for a slow inference:
+//      the step is still not confirmed before its accounting finishes, but a
+//      persistence delay/failure can never trigger a second model call.
 import { ObjectId } from 'mongodb'
 import type { Agent } from '../agents.js'
 import type { AgentExecutionRequest, AgentExecutionResult } from '../agentRuntime.js'
@@ -89,9 +91,11 @@ async function persistWithRetry(what: string, fn: () => Promise<unknown>, sleep:
 export interface RoutineStepResult {
   output: string
   usage: StepUsage
-  // false when the charge or the telemetry could not be written even after retries.
-  // The step still succeeded — the caller decides how loudly to complain.
-  persisted: boolean
+  // Resolves when the charge + telemetry finished their attempts; false when they
+  // could not be written even after retries. NEVER rejects — the model already ran,
+  // so this must not look like a step failure. Awaited by the runner outside the
+  // step timeout.
+  settle: Promise<boolean>
 }
 
 export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunContext, deps: RoutineExecutionDeps): Promise<RoutineStepResult> {
@@ -154,25 +158,30 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
     throw error
   }
 
-  // (3) CRITICAL PERSISTENCE — awaited, idempotent, and never a reason to re-infer.
-  const charged = await persistWithRetry(
-    'recordReplyUsageOnce',
-    () => deps.charge(ctx.ownerId, result.usage, deps.chargeKeyFor(ctx.runId, call.stepId, agent._id.toString(), call.attempt)),
-    sleep,
-  )
-  const recorded = await persistWithRetry(
-    'finalizeAgentEvent',
-    () =>
-      deps.finalizeEvent({
-        ...baseEvent,
-        status: 'succeeded' as AgentEventStatus,
-        finishedAt: new Date(),
-        inputTokens: result.usage.inputTokens,
-        outputTokens: result.usage.outputTokens,
-        toolCalls: result.toolCalls.filter((c) => c.ok).length, // completed tool calls only
-      }),
-    sleep,
-  )
+  // (3) CRITICAL PERSISTENCE — started here, awaited by the runner OUTSIDE the step
+  // timeout. Idempotent (charge per attempt, telemetry per attempt) and it never
+  // rejects, so a slow or failing database is never read as a failed inference.
+  const settle = (async () => {
+    const charged = await persistWithRetry(
+      'recordReplyUsageOnce',
+      () => deps.charge(ctx.ownerId, result.usage, deps.chargeKeyFor(ctx.runId, call.stepId, agent._id.toString(), call.attempt)),
+      sleep,
+    )
+    const recorded = await persistWithRetry(
+      'finalizeAgentEvent',
+      () =>
+        deps.finalizeEvent({
+          ...baseEvent,
+          status: 'succeeded' as AgentEventStatus,
+          finishedAt: new Date(),
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          toolCalls: result.toolCalls.filter((c) => c.ok).length, // completed tool calls only
+        }),
+      sleep,
+    )
+    return charged && recorded
+  })()
 
-  return { output: result.output, usage: result.usage, persisted: charged && recorded }
+  return { output: result.output, usage: result.usage, settle }
 }

@@ -75,8 +75,14 @@ function buildDeps(run: AutomationRun): RunnerDeps {
           isCanceled,
         },
       )
-      if (!step.persisted) console.error(`run ${run._id.toString()} step ${call.stepId}: accounting/telemetry could not be persisted`)
-      return { output: step.output, usage: step.usage }
+      return {
+        output: step.output,
+        usage: step.usage,
+        // The runner awaits this outside the step timeout.
+        settle: step.settle.then((ok) => {
+          if (!ok) console.error(`run ${run._id.toString()} step ${call.stepId}: accounting/telemetry could not be persisted`)
+        }),
+      }
     },
     // Resolve the connection, record the delivery idempotently, then send.
     deliver: async (call) => {

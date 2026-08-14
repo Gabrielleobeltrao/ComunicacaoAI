@@ -364,8 +364,8 @@ test('a redelivered attempt does not charge again nor re-accumulate', async () =
   const f = execDeps(agent)
   const call = stepCall({ agentId: agent._id.toString() })
 
-  await executeRoutineStep(call, ctx, f.deps)
-  await executeRoutineStep(call, ctx, f.deps) // the SAME attempt, redelivered
+  await (await executeRoutineStep(call, ctx, f.deps)).settle
+  await (await executeRoutineStep(call, ctx, f.deps)).settle // the SAME attempt, redelivered
 
   assert.equal(f.calls.runTask, 2) // the model really ran twice (the job was redelivered)
   assert.equal(await getMonthlyTokens(owner), 15) // but it was billed ONCE
@@ -390,7 +390,7 @@ test('a transient persistence failure never triggers a second inference', async 
   const out = await executeRoutineStep(stepCall({ agentId: agent._id.toString() }), ctx, f.deps)
 
   assert.equal(out.output, 'ok')
-  assert.equal(out.persisted, true) // the retry succeeded
+  assert.equal(await out.settle, true) // the retry succeeded
   assert.equal(chargeCalls, 2) // charge retried...
   assert.equal(f.calls.runTask, 1) // ...WITHOUT calling the model again
   assert.equal(await getMonthlyTokens(owner), 15)
@@ -405,7 +405,7 @@ test('a step still completes (without re-inferring) when persistence keeps faili
   })
   const out = await executeRoutineStep(stepCall({ agentId: agent._id.toString() }), runCtx(), f.deps)
   assert.equal(out.output, 'ok') // the work is not thrown away
-  assert.equal(out.persisted, false) // and the caller is told accounting failed
+  assert.equal(await out.settle, false) // and the caller is told accounting failed
   assert.equal(f.calls.runTask, 1) // the model ran exactly once
 })
 
@@ -422,7 +422,7 @@ test('a late attempt-1 write never overwrites the newest attempt (through the ex
   })
   await assert.rejects(() => executeRoutineStep(stepCall({ agentId: agent._id.toString(), attempt: 1 }), ctx, failing.deps))
   const ok = execDeps(agent)
-  await executeRoutineStep(stepCall({ agentId: agent._id.toString(), attempt: 2 }), ctx, ok.deps)
+  await (await executeRoutineStep(stepCall({ agentId: agent._id.toString(), attempt: 2 }), ctx, ok.deps)).settle
 
   // a delayed duplicate of attempt 1 arrives afterwards
   await assert.rejects(() => executeRoutineStep(stepCall({ agentId: agent._id.toString(), attempt: 1 }), ctx, failing.deps))

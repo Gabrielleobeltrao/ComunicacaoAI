@@ -39,8 +39,11 @@ export interface StepUsage {
 
 export interface RunnerDeps {
   fetchUrl: (url: string, opts?: { contentTypeAllowlist?: string[] }) => Promise<FetchResult>
-  // Returns the model usage so it reaches the step record and the run total.
-  runAgent: (call: AgentCall) => Promise<{ output: string; usage?: StepUsage }>
+  // Returns the model usage so it reaches the step record and the run total, plus an
+  // optional `settle`: the accounting/telemetry that is still finishing. The runner
+  // awaits it OUTSIDE the step timeout, so a slow database can never be mistaken for
+  // a slow inference (which would retry the step and pay for a second call).
+  runAgent: (call: AgentCall) => Promise<{ output: string; usage?: StepUsage; settle?: Promise<unknown> }>
   deliver: (call: DeliverCall) => Promise<{ providerMessageId: string | null }>
   now: () => number
   isCanceled?: () => boolean | Promise<boolean>
@@ -116,7 +119,14 @@ function templateVars(ctx: Record<string, unknown>): Record<string, unknown> {
   return vars
 }
 
-async function executeStep(step: StepDefinition, ctx: Record<string, unknown>, deps: RunnerDeps, attempt = 1, usageSink?: StepUsage): Promise<unknown> {
+async function executeStep(
+  step: StepDefinition,
+  ctx: Record<string, unknown>,
+  deps: RunnerDeps,
+  attempt = 1,
+  usageSink?: StepUsage,
+  settleSink?: Promise<unknown>[],
+): Promise<unknown> {
   const cfg = step.config
   switch (step.type as StepType) {
     case 'source.rss': {
@@ -155,6 +165,9 @@ async function executeStep(step: StepDefinition, ctx: Record<string, unknown>, d
         usageSink.inputTokens += res.usage.inputTokens
         usageSink.outputTokens += res.usage.outputTokens
       }
+      // Accounting still in flight: hand it to the runner, which waits for it after
+      // the timeout window has closed.
+      if (settleSink && res.settle) settleSink.push(res.settle)
       return res.output
     }
     case 'transform.template': {
@@ -209,10 +222,17 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
     // Usage accumulates across this step's attempts — a retry really did consume
     // tokens, so the run total reflects it.
     const stepUsage: StepUsage = { inputTokens: 0, outputTokens: 0 }
+    // Accounting handed back by agent.execute; awaited OUTSIDE the timeout below.
+    const settlePending: Promise<unknown>[] = []
     for (;;) {
       attempt++
       try {
-        const output = await withTimeout(executeStep(step, ctx, deps, attempt, stepUsage), step.timeoutMs ?? 0)
+        // The timeout guards the EXTERNAL work only (the model call / fetch /
+        // delivery). Every other step type keeps its timeout unchanged.
+        const output = await withTimeout(executeStep(step, ctx, deps, attempt, stepUsage, settlePending), step.timeoutMs ?? 0)
+        // The inference succeeded: from here on nothing may cause another one, so the
+        // accounting finishes without any timeout over it.
+        if (settlePending.length) await Promise.allSettled(settlePending.splice(0))
         ctx[step.id] = output
         if (typeof output === 'string') finalOutput = output
         steps.push({ stepId: step.id, stepType: step.type, status: 'succeeded', attempts: attempt, output, usage: { ...stepUsage } })
@@ -225,6 +245,9 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
           await delay(backoff)
           continue
         }
+        // A step that failed may still have a settle in flight (a retried attempt
+        // that succeeded earlier); let it finish before moving on.
+        if (settlePending.length) await Promise.allSettled(settlePending.splice(0))
         steps.push({
           stepId: step.id,
           stepType: step.type,
