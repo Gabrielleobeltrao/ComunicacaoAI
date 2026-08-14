@@ -4,9 +4,9 @@ import type { FeatureFlags } from '../featureFlags'
 // Single scope-aware navigation source (UX reorg §15.1). Desktop sidebar, mobile
 // drawer and bottom bar all derive from this — never a raw NAV.map per surface.
 export type NavScope = 'general' | 'floor' | 'communication'
-// Visual grouping in the rail/drawer (finer than scope): the floor scope is split
-// into the operation surfaces and the automation surfaces.
-export type NavGroup = 'operation' | 'automation' | 'communication'
+// Visual grouping in the rail/drawer (finer than scope). Automation is NOT a group:
+// scheduled work lives inside each agent as Rotinas, never as a standalone surface.
+export type NavGroup = 'operation' | 'communication'
 
 export interface NavItemDef {
   key: string
@@ -35,9 +35,6 @@ export const NAV_V2: NavItemDef[] = [
   { key: 'floor', label: 'Visão do andar', shortLabel: 'Andar', icon: 'building-2', scope: 'floor', group: 'operation', path: (f) => floorPath(f, '', '/dashboard'), activePrefixes: (f) => (f ? [`/floors/${f}`] : ['/dashboard']), exact: true, mobilePrimary: true },
   { key: 'sectors', label: 'Setores', icon: 'network', scope: 'floor', group: 'operation', path: (f) => floorPath(f, '/sectors', '/setores'), activePrefixes: (f) => [floorPath(f, '/sectors', '/setores')] },
   { key: 'agents', label: 'Agentes', icon: 'users-round', scope: 'floor', group: 'operation', path: (f) => floorPath(f, '/agents', '/agents'), activePrefixes: (f) => [floorPath(f, '/agents', '/agents')], mobilePrimary: true },
-  // Automation surfaces: the workflows and their runs.
-  { key: 'automations', label: 'Automações', icon: 'workflow', scope: 'floor', group: 'automation', path: (f) => floorPath(f, '/automations', '/automations'), activePrefixes: (f) => [floorPath(f, '/automations', '/automations')], mobilePrimary: true, featureFlag: 'aiAutomations' },
-  { key: 'runs', label: 'Execuções', icon: 'history', scope: 'floor', group: 'automation', path: (f) => floorPath(f, '/runs', '/runs'), activePrefixes: (f) => [floorPath(f, '/runs', '/runs')], featureFlag: 'aiAutomations' },
   { key: 'channels', label: 'Canais', icon: 'share-2', scope: 'communication', group: 'communication', path: () => '/widgets', activePrefixes: () => ['/widgets'] },
   { key: 'conversations', label: 'Conversas', icon: 'message-circle', scope: 'communication', group: 'communication', path: () => '/chats', activePrefixes: () => ['/chats'] },
 ]
@@ -46,10 +43,9 @@ export function navItemsFor(_floorId: string | null): NavItemDef[] {
   return NAV_V2.filter((i) => !i.featureFlag || featureFlags[i.featureFlag])
 }
 
-const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'automation', 'communication']
+const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'communication']
 const NAV_GROUP_LABEL: Record<NavGroup, string> = {
   operation: 'ANDAR',
-  automation: 'AUTOMAÇÃO',
   communication: 'COMUNICAÇÃO',
 }
 

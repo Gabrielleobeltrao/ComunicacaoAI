@@ -3,11 +3,8 @@ import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
-import { AutomationDetailRedirect, BuildingToDashboard, DashboardHome, LegacyModuleRedirect } from './pages/redirects'
+import { BuildingToDashboard, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
 import { FloorView } from './pages/FloorView'
-import { Automations } from './pages/Automations'
-import { AutomationEditor } from './pages/AutomationEditor'
-import { Runs } from './pages/Runs'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
 import { Chats } from './pages/Chats'
@@ -46,21 +43,24 @@ function App() {
         <>
           {/* Canonical floor-scoped routes */}
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
-          <Route path="/floors/:floorId/automations" element={<P><Automations /></P>} />
-          <Route path="/floors/:floorId/automations/:id" element={<P><AutomationEditor /></P>} />
           <Route path="/floors/:floorId/agents" element={<P><Agents /></P>} />
           <Route path="/floors/:floorId/agents/:agentId" element={<P><AgentDetail /></P>} />
           <Route path="/floors/:floorId/agents/:agentId/:section" element={<P><AgentDetail /></P>} />
           <Route path="/floors/:floorId/sectors" element={<P><Setores /></P>} />
           <Route path="/floors/:floorId/sectors/:sectorId" element={<P><SectorDetail /></P>} />
           <Route path="/floors/:floorId/sectors/:sectorId/:section" element={<P><SectorDetail /></P>} />
-          <Route path="/floors/:floorId/runs" element={<P><Runs /></P>} />
+
+          {/* Retired automation surfaces → agents on the same floor (Rotinas live
+              inside each agent now). Bookmarks keep working. */}
+          <Route path="/floors/:floorId/automations" element={<P><FloorModuleRedirect to="agents" /></P>} />
+          <Route path="/floors/:floorId/automations/:id" element={<P><FloorModuleRedirect to="agents" /></P>} />
+          <Route path="/floors/:floorId/runs" element={<P><FloorModuleRedirect to="agents" /></P>} />
 
           {/* Legacy → canonical redirects (bookmarks keep working) */}
           <Route path="/building" element={<BuildingToDashboard />} />
-          <Route path="/automations" element={<P><LegacyModuleRedirect module="automations" /></P>} />
-          <Route path="/automations/:id" element={<P><AutomationDetailRedirect /></P>} />
-          <Route path="/runs" element={<P><LegacyModuleRedirect module="runs" /></P>} />
+          <Route path="/automations" element={<P><LegacyModuleRedirect module="agents" /></P>} />
+          <Route path="/automations/:id" element={<P><LegacyModuleRedirect module="agents" /></P>} />
+          <Route path="/runs" element={<P><LegacyModuleRedirect module="agents" /></P>} />
           <Route path="/agents" element={<P><LegacyModuleRedirect module="agents" /></P>} />
           <Route path="/agents/:agentId" element={<P><AgentDetail /></P>} />
           <Route path="/agents/:agentId/:section" element={<P><AgentDetail /></P>} />
@@ -70,14 +70,11 @@ function App() {
         </>
       ) : (
         <>
-          {/* Original flat routes (nav V1) */}
-          {featureFlags.aiAutomations && (
-            <>
-              <Route path="/automations" element={<P><Automations /></P>} />
-              <Route path="/automations/:id" element={<P><AutomationEditor /></P>} />
-              <Route path="/runs" element={<P><Runs /></P>} />
-            </>
-          )}
+          {/* Original flat routes (nav V1). Automation is retired as a surface —
+              old links land on agents. */}
+          <Route path="/automations" element={<Navigate to="/agents" replace />} />
+          <Route path="/automations/:id" element={<Navigate to="/agents" replace />} />
+          <Route path="/runs" element={<Navigate to="/agents" replace />} />
           <Route path="/agents" element={<P><Agents /></P>} />
           <Route path="/agents/:agentId" element={<P><AgentDetail /></P>} />
           <Route path="/agents/:agentId/:section" element={<P><AgentDetail /></P>} />
