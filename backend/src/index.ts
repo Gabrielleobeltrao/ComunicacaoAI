@@ -68,9 +68,7 @@ import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
 import {
   createDocument,
-  combineKnowledgeHits,
-  RETRIEVAL_TOP_K,
-  searchKnowledgeForOwners,
+  retrieveContext,
   deleteAllForAgent,
   deleteAllForSector,
   backfillKnowledgeOwners,
@@ -121,8 +119,9 @@ import {
   setMonthlyTokenCap,
   setProviderApiKey,
 } from './userSettings.js'
-import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage } from './tokenUsage.js'
+import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
+import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import type { KnowledgeOwner } from './knowledge.js'
 import { availableMetricKeys, composeAgentStats, getAgentEventMetricsBatch, periodSince, PERIODS, resolveMetricKey } from './agentMetrics.js'
@@ -1074,6 +1073,14 @@ app.delete('/api/sectors/:sectorId', requireAuth, async (req, res) => {
   }
   const ownerId = res.locals.userId
 
+  // OWNERSHIP FIRST: resolve the sector inside this account before touching any
+  // data. Another tenant's id must never reach the knowledge cleanup below.
+  const owned = await getSectorById(ownerId, new ObjectId(sectorId))
+  if (!owned) {
+    res.status(404).json({ error: 'Sector not found' })
+    return
+  }
+
   // A sector in use by a widget can't be silently removed — that widget would be
   // left with no attendant. Block and tell the owner what to unlink first.
   const widgets = await listWidgets(ownerId)
@@ -1086,10 +1093,14 @@ app.delete('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     return
   }
 
-  // A sector's shared knowledge belongs to the sector — remove its documents and
-  // chunks with it. Member agents keep their OWN bases untouched.
-  await deleteAllForSector(new ObjectId(sectorId))
-  await deleteSector(ownerId, new ObjectId(sectorId))
+  // Delete the sector first (owner-scoped); only once THAT succeeded do we drop the
+  // knowledge that belonged to it. Member agents keep their OWN bases untouched.
+  const deleted = await deleteSector(ownerId, owned._id)
+  if (!deleted.deletedCount) {
+    res.status(404).json({ error: 'Sector not found' })
+    return
+  }
+  await deleteAllForSector(owned._id)
   res.status(204).end()
 })
 
@@ -1458,17 +1469,9 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
   // Sector context: the consulted specialists' own bases PLUS the sector's shared
   // base, merged by relevance, deduped and capped by top-K/character budget. A
   // vector-search failure never breaks the turn — it just answers without grounding.
-  let knowledge: string[] = []
-  try {
-    const owners: KnowledgeOwner[] = [
-      ...knowledgeAgentIds.map((id) => ({ ownerType: 'agent' as const, ownerId: id })),
-      { ownerType: 'sector' as const, ownerId: sector._id },
-    ]
-    const hits = await searchKnowledgeForOwners(owners, lastUser.content, Math.max(RETRIEVAL_TOP_K, 5) * Math.max(owners.length, 1))
-    knowledge = combineKnowledgeHits(hits)
-  } catch (error) {
-    console.error('Sector playground knowledge search failed, continuing without context:', error)
-  }
+  // Canonical retrieval: the consulted specialists' bases + THIS sector's shared
+  // base, merged/deduped/capped. Never throws — an outage just means no grounding.
+  const { context: knowledge } = await retrieveContext(knowledgeAgentIds, lastUser.content, { sectorId: sector._id })
 
   const behaviorInstruction = [
     configAgent.guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : '',
@@ -1689,10 +1692,11 @@ app.get('/api/agent-stats', requireAuth, async (req, res) => {
   // Optional agentId: the agent page asks for ONE agent instead of the whole roster.
   const onlyAgentId = typeof req.query.agentId === 'string' && ObjectId.isValid(req.query.agentId) ? new ObjectId(req.query.agentId) : null
 
-  const [allAgents, eventMetrics, delegationsByCaller, widgetStats, since0] = await Promise.all([
+  const [allAgents, eventMetrics, delegationsByCaller, deliveriesByAgent, widgetStats, since0] = await Promise.all([
     listAgents(ownerId, floorId),
     getAgentEventMetricsBatch(ownerId, { floorId, since }),
     succeededDelegationsByCaller(ownerId, since ?? undefined),
+    sentDeliveriesByAgent(ownerId, since ?? undefined),
     // Conversations/leads scoped to the SAME period — never a lifetime total mixed
     // with a 7d/30d figure.
     getAgentStatsBatch(ownerId, { since, agentId: onlyAgentId }),
@@ -1722,6 +1726,9 @@ app.get('/api/agent-stats', requireAuth, async (req, res) => {
           if (c === undefined) return ev && ev.executions > 0 ? 0 : null
           return c
         }
+        case 'deliveries':
+          // Real sends only (delivery marked 'sent').
+          return deliveriesByAgent.get(id) ?? null
         case 'conversations':
           return w ? w.conversations : null
         case 'leads':
@@ -1730,7 +1737,7 @@ app.get('/api/agent-stats', requireAuth, async (req, res) => {
           return null
       }
     }
-    stats[id] = composeAgentStats(agent, ev, channelLinked, (k) => specificValue(k))
+    stats[id] = composeAgentStats(agent, ev, channelLinked, (k) => specificValue(k), { hasDeliveries: deliveriesByAgent.has(id) })
     channel[id] = {
       linked: channelLinked,
       conversations: w?.conversations ?? 0,
@@ -2010,14 +2017,16 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
 
   const linkedWidgets = widgets.filter((w) => w.agentId?.toString() === agentId)
   const channelLinked = linkedWidgets.length > 0 || (agent.activationModes ?? []).includes('channel')
+  // "Entregas" is only offered when this agent really sent something.
+  const agentHasDeliveries = (await sentDeliveriesByAgent(ownerId)).has(agentId)
   res.json({
     agent: { ...agent, floorId: agent.officeId?.toString() ?? null },
     stats,
     // KPI availability for the "Métrica do card" picker (data-source aware) and the
     // currently-resolved card metric.
     channelLinked,
-    availableMetrics: availableMetricKeys(agent, channelLinked),
-    resolvedMetric: resolveMetricKey(agent, channelLinked),
+    availableMetrics: availableMetricKeys(agent, channelLinked, { hasDeliveries: agentHasDeliveries }),
+    resolvedMetric: resolveMetricKey(agent, channelLinked, { hasDeliveries: agentHasDeliveries }),
     linkedWidgets: linkedWidgets.map((w) => ({ _id: w._id, name: w.name })),
     linkedSectors: sectors
       .filter((t) => t.members.some((m) => m.agentId.toString() === agentId))
@@ -2112,7 +2121,30 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   const playgroundFloor = await getFloor(res.locals.userId, agent.officeId)
   const playgroundBuildingId = playgroundFloor?.buildingId.toString() ?? agent.officeId.toString()
   const manualStartedAt = new Date()
-  const { text: generated, usage, toolCalls } = await generateAgentReply(
+  // Telemetry helper for this manual test: one event per test, whatever the outcome.
+  const manualEventKey = `manual:${new ObjectId().toString()}`
+  const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0) =>
+    recordAgentEventSafe({
+      eventKey: manualEventKey,
+      ownerId: res.locals.userId,
+      agentId: agent._id,
+      buildingId: playgroundFloor?.buildingId ?? null,
+      floorId: agent.officeId,
+      source: 'manual',
+      preset: agent.preset,
+      status,
+      startedAt: manualStartedAt,
+      finishedAt: new Date(),
+      inputTokens: u?.inputTokens ?? 0,
+      outputTokens: u?.outputTokens ?? 0,
+      toolCalls: okToolCalls,
+    })
+
+  let generated: string
+  let usage: { inputTokens: number; outputTokens: number }
+  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
+  try {
+    const result = await generateAgentReply(
     agent.objective,
     knowledge,
     '',
@@ -2138,26 +2170,21 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent }),
       productionDelegationDeps(),
     ),
-  )
+    )
+    generated = result.text
+    usage = result.usage
+    toolCalls = result.toolCalls
+  } catch (error) {
+    // The functional response is unchanged (the error still propagates); only the
+    // telemetry is added.
+    recordManual(/timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed')
+    throw error
+  }
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
   )
-  // Manual test telemetry (a fresh key per test — these are never replayed).
-  recordAgentEventSafe({
-    eventKey: `manual:${new ObjectId().toString()}`,
-    ownerId: res.locals.userId,
-    agentId: agent._id,
-    buildingId: playgroundFloor?.buildingId ?? null,
-    floorId: agent.officeId,
-    source: 'manual',
-    preset: agent.preset,
-    status: 'succeeded',
-    startedAt: manualStartedAt,
-    finishedAt: new Date(),
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    toolCalls: toolCalls.length,
-  })
+  // Only tool calls that actually COMPLETED count as tool actions.
+  recordManual('succeeded', usage, toolCalls.filter((c) => c.ok).length)
   let reply = generated
 
   let handoff = false
@@ -3197,19 +3224,9 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
 
   // Ground the reply in the knowledge base(s) of the responding agent — or of
   // every consulted specialist, for a sector. Skipped when only clarifying.
-  let knowledge: string[] = []
-  try {
-    const owners: KnowledgeOwner[] = knowledgeAgentIds.map((id) => ({ ownerType: 'agent' as const, ownerId: id }))
-    // Only a SECTOR-answered channel reads the sector's shared base; a widget wired
-    // straight to one agent stays on that agent's own knowledge.
-    if (widget.sectorId) owners.push({ ownerType: 'sector' as const, ownerId: widget.sectorId })
-    if (owners.length) {
-      const hits = await searchKnowledgeForOwners(owners, visitorContent, Math.max(RETRIEVAL_TOP_K, 5) * owners.length)
-      knowledge = combineKnowledgeHits(hits)
-    }
-  } catch (error) {
-    console.error('Knowledge search failed, replying without grounding:', error)
-  }
+  // Only a SECTOR-answered channel reads the sector's shared base; a widget wired
+  // straight to one agent stays on that agent's own knowledge.
+  const { context: knowledge } = await retrieveContext(knowledgeAgentIds, visitorContent, { sectorId: widget.sectorId ?? null })
 
   // If a previous turn in this conversation already resolved who the
   // visitor is, their memory lives on the profile (shared across every
@@ -3260,7 +3277,37 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   ].join('\n\n')
 
   const channelStartedAt = new Date()
-  const { text: generatedReply, usage, toolCalls } = await generateAgentReply(
+  // The sector path runs ONE inference with configAgent's provider/model/tools —
+  // that agent is the real executor; the consulted specialists are recorded as
+  // 'consulted' (sector decision log), never as executors.
+  const channelEventBase = {
+    ownerId,
+    agentId: agent._id,
+    floorId: agent.officeId,
+    source: 'channel' as const,
+    preset: agent.preset,
+    startedAt: channelStartedAt,
+  }
+  const recordChannel = async (eventKey: string, status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0, extra: Record<string, string | number | boolean> = {}) => {
+    const floor = await getFloor(ownerId, agent.officeId).catch(() => null)
+    recordAgentEventSafe({
+      ...channelEventBase,
+      eventKey,
+      buildingId: floor?.buildingId ?? null,
+      status,
+      finishedAt: new Date(),
+      inputTokens: u?.inputTokens ?? 0,
+      outputTokens: u?.outputTokens ?? 0,
+      toolCalls: okToolCalls,
+      metadata: { channel: widget.channel ?? 'web', ...(widget.sectorId ? { sectorId: widget.sectorId.toString(), consulted: replyAgentName ?? '' } : {}), ...extra },
+    })
+  }
+
+  let generatedReply: string
+  let usage: { inputTokens: number; outputTokens: number }
+  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
+  try {
+    const channelResult = await generateAgentReply(
     replyObjective,
     knowledge,
     memoryText,
@@ -3273,7 +3320,16 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     responseStyleInstruction,
     agent.promptCaching ?? true,
     await resolveAgentTools(agent, ownerId),
-  )
+    )
+    generatedReply = channelResult.text
+    usage = channelResult.usage
+    toolCalls = channelResult.toolCalls
+  } catch (error) {
+    // Functional behaviour unchanged (the caller still sees the failure); the
+    // outcome is simply no longer invisible in the agent's history.
+    void recordChannel(`msg-fail:${widgetId.toString()}:${conversationId}:${channelStartedAt.getTime()}`, /timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed')
+    throw error
+  }
   recordReplyUsage(ownerId, usage).catch((error) => console.error('Failed to record token usage:', error))
   logToolCalls(widgetId, conversationId, toolCalls).catch((error) =>
     console.error('Failed to log tool calls:', error),
@@ -3291,28 +3347,9 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
 
   const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText, replyAgentName)
   broadcastMessage(agentMessage, ownerId)
-  // Channel telemetry: attribute this reply to the answering agent (keyed by the
-  // agent message id, so a re-broadcast never double-counts).
-  getFloor(ownerId, agent.officeId)
-    .then((floor) =>
-      recordAgentEventSafe({
-        eventKey: `msg:${agentMessage._id.toString()}`,
-        ownerId,
-        agentId: agent._id,
-        buildingId: floor?.buildingId ?? null,
-        floorId: agent.officeId,
-        source: 'channel',
-        preset: agent.preset,
-        status: 'succeeded',
-        startedAt: channelStartedAt,
-        finishedAt: new Date(),
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        toolCalls: toolCalls.length,
-        metadata: { channel: widget.channel ?? 'web' },
-      }),
-    )
-    .catch(() => undefined)
+  // Channel telemetry: the REAL executor of this reply, keyed by the agent message
+  // id so a re-broadcast never double-counts. Only completed tool calls count.
+  void recordChannel(`msg:${agentMessage._id.toString()}`, 'succeeded', usage, toolCalls.filter((c) => c.ok).length)
   // On a WhatsApp channel the socket only feeds the owner's Chats view; the
   // customer gets the reply through the provider. conversationId is their number.
   if (widget.channel === 'whatsapp') {
@@ -3505,6 +3542,10 @@ async function start() {
   ensureTokenUsageIndexes().catch((error) => {
     console.error('ensureTokenUsageIndexes failed:', error)
   })
+  // Recover any charge whose key landed but whose daily rollup didn't (crash window).
+  settlePendingCharges()
+    .then((n) => n && console.log(`Settled ${n} pending token charge(s)`))
+    .catch((error) => console.error('settlePendingCharges failed:', error))
   ensureKnowledgeIndexes().catch((error) => {
     console.error('ensureKnowledgeIndexes failed:', error)
   })

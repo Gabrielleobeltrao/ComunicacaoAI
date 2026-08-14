@@ -45,9 +45,9 @@ export const DELEGATION_POLICIES: DelegationPolicy[] = ['none', 'all', 'selected
 // The card KPI an agent shows in position 3. A concrete key is a MANUAL choice and
 // is never overwritten by a preset change; 'auto' derives the key from the preset at
 // read time (so changing the preset moves only the automatic default).
-export type MetricKey = 'executions' | 'delegations' | 'tool_actions' | 'conversations' | 'leads'
+export type MetricKey = 'executions' | 'delegations' | 'tool_actions' | 'deliveries' | 'conversations' | 'leads'
 export type MetricProfile = 'auto' | MetricKey
-export const METRIC_PROFILES: MetricProfile[] = ['auto', 'executions', 'delegations', 'tool_actions', 'conversations', 'leads']
+export const METRIC_PROFILES: MetricProfile[] = ['auto', 'executions', 'delegations', 'tool_actions', 'deliveries', 'conversations', 'leads']
 
 export const MAX_DAILY_MESSAGE_LIMIT = 1000
 export const MAX_TOOLS = 10

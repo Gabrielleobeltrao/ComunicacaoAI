@@ -21,7 +21,9 @@ const PRESET_KPI: Record<AgentPreset, { key: MetricKey; label: string }> = {
   researcher: { key: 'executions', label: 'Pesquisas concluídas' },
   analyst: { key: 'executions', label: 'Análises concluídas' },
   operator: { key: 'tool_actions', label: 'Ações executadas com ferramenta' },
-  communicator: { key: 'executions', label: 'Entregas concluídas' },
+  // A communicator only claims "Entregas concluídas" when there IS a real send
+  // source (see resolveMetricKey); otherwise it honestly says executions.
+  communicator: { key: 'executions', label: 'Execuções concluídas' },
   monitor: { key: 'executions', label: 'Verificações realizadas' },
   custom: { key: 'executions', label: 'Execuções concluídas' },
 }
@@ -30,6 +32,7 @@ const GENERIC_LABEL: Record<MetricKey, string> = {
   executions: 'Execuções concluídas',
   delegations: 'Delegações concluídas',
   tool_actions: 'Ações com ferramenta',
+  deliveries: 'Entregas concluídas',
   conversations: 'Conversas',
   leads: 'Leads',
 }
@@ -40,6 +43,7 @@ const SHORT_LABEL: Record<MetricKey, string> = {
   executions: 'Execuções',
   delegations: 'Delegações',
   tool_actions: 'Ações',
+  deliveries: 'Entregas',
   conversations: 'Conversas',
   leads: 'Leads',
 }
@@ -49,8 +53,10 @@ export function kpiShortLabel(key: MetricKey): string {
 
 // Does this agent have a real data source for a given KPI? Used to build the picker
 // and to refuse a manual choice that would show nothing.
-export function metricKeyAvailable(agent: Agent, key: MetricKey, channelLinked: boolean): boolean {
+export function metricKeyAvailable(agent: Agent, key: MetricKey, channelLinked: boolean, opts: { hasDeliveries?: boolean } = {}): boolean {
   switch (key) {
+    case 'deliveries':
+      return opts.hasDeliveries === true // only with a real send source
     case 'executions':
       return true // any agent that runs produces execution events
     case 'delegations':
@@ -64,17 +70,19 @@ export function metricKeyAvailable(agent: Agent, key: MetricKey, channelLinked: 
   }
 }
 
-export function availableMetricKeys(agent: Agent, channelLinked: boolean): MetricKey[] {
-  return (['executions', 'delegations', 'tool_actions', 'conversations', 'leads'] as MetricKey[]).filter((k) => metricKeyAvailable(agent, k, channelLinked))
+export function availableMetricKeys(agent: Agent, channelLinked: boolean, opts: { hasDeliveries?: boolean } = {}): MetricKey[] {
+  return (['executions', 'delegations', 'tool_actions', 'deliveries', 'conversations', 'leads'] as MetricKey[]).filter((k) => metricKeyAvailable(agent, k, channelLinked, opts))
 }
 
 // The KPI actually shown: a manual metricProfile wins; 'auto' derives from the preset
 // (custom + channel prefers conversations). Falls back to 'executions' if a manual
 // choice lost its data source (e.g. the widget was unlinked).
-export function resolveMetricKey(agent: Agent, channelLinked: boolean): MetricKey {
+export function resolveMetricKey(agent: Agent, channelLinked: boolean, opts: { hasDeliveries?: boolean } = {}): MetricKey {
   if (agent.metricProfile && agent.metricProfile !== 'auto') {
-    return metricKeyAvailable(agent, agent.metricProfile, channelLinked) ? agent.metricProfile : 'executions'
+    return metricKeyAvailable(agent, agent.metricProfile, channelLinked, opts) ? agent.metricProfile : 'executions'
   }
+  // A communicator shows real deliveries when there is a real send source.
+  if (agent.preset === 'communicator' && opts.hasDeliveries) return 'deliveries'
   if (agent.preset === 'custom' && channelLinked) return 'conversations'
   return PRESET_KPI[agent.preset]?.key ?? 'executions'
 }
@@ -150,10 +158,16 @@ export interface AgentOperationalStats {
 // Compose the public stats for one agent from the event metrics + the specific-KPI
 // value already resolved by the route (delegations/conversations/leads come from
 // other sources; executions/tool_actions come from the events).
-export function composeAgentStats(agent: Agent, ev: AgentEventMetrics | undefined, channelLinked: boolean, specificValue: (key: MetricKey) => number | null): AgentOperationalStats {
+export function composeAgentStats(
+  agent: Agent,
+  ev: AgentEventMetrics | undefined,
+  channelLinked: boolean,
+  specificValue: (key: MetricKey) => number | null,
+  opts: { hasDeliveries?: boolean } = {},
+): AgentOperationalStats {
   const executions = ev?.executions ?? 0
   const totalTokens = (ev?.totalInputTokens ?? 0) + (ev?.totalOutputTokens ?? 0)
-  const key = resolveMetricKey(agent, channelLinked)
+  const key = resolveMetricKey(agent, channelLinked, opts)
   return {
     executions,
     avgDurationMs: executions ? Math.round((ev?.totalDurationMs ?? 0) / executions) : null,

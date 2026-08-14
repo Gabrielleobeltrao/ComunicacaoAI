@@ -39,6 +39,10 @@ interface UsageChargeDoc {
   ownerId: string
   inputTokens: number
   outputTokens: number
+  // false until the daily rollup actually incremented — an outbox flag, so a crash
+  // between "key written" and "total incremented" is recoverable instead of silently
+  // undercounting.
+  applied: boolean
   createdAt: Date
 }
 const usageCharges = db.collection<UsageChargeDoc>('token_usage_charges')
@@ -47,19 +51,41 @@ export async function ensureTokenUsageIndexes(): Promise<void> {
   // TTL keeps the ledger small: after 30 days a replay can no longer be deduped,
   // which is well past any retry/redelivery window.
   await usageCharges.createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 3600 })
+  await usageCharges.createIndex({ applied: 1 })
 }
 
 // Record owner-level usage exactly once for `chargeKey`. Returns true when it was
 // actually charged (false = duplicate, already accounted).
 export async function recordReplyUsageOnce(ownerId: string, usage: TokenUsage, chargeKey: string, now: Date = new Date()): Promise<boolean> {
   try {
-    await usageCharges.insertOne({ _id: chargeKey, ownerId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, createdAt: now })
+    await usageCharges.insertOne({ _id: chargeKey, ownerId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, applied: false, createdAt: now })
   } catch (error) {
-    if ((error as { code?: number }).code === 11000) return false // already charged
-    throw error
+    if ((error as { code?: number }).code !== 11000) throw error
+    // Key already exists: only re-apply when a previous attempt died before the
+    // rollup landed (applied:false). An applied row is a true duplicate.
+    const existing = await usageCharges.findOne({ _id: chargeKey })
+    if (!existing || existing.applied) return false
   }
   await recordReplyUsage(ownerId, usage, now)
+  await usageCharges.updateOne({ _id: chargeKey }, { $set: { applied: true } })
   return true
+}
+
+// Recover charges whose key was written but whose daily rollup never landed (process
+// died in between). Idempotent and safe to run on every boot.
+export async function settlePendingCharges(limit = 500): Promise<number> {
+  const pending = await usageCharges.find({ applied: false }).limit(limit).toArray()
+  let settled = 0
+  for (const charge of pending) {
+    try {
+      await recordReplyUsage(charge.ownerId, { inputTokens: charge.inputTokens, outputTokens: charge.outputTokens }, charge.createdAt)
+      await usageCharges.updateOne({ _id: charge._id }, { $set: { applied: true } })
+      settled++
+    } catch (error) {
+      console.error('settlePendingCharges failed for', charge._id, (error as Error).message)
+    }
+  }
+  return settled
 }
 
 // The charge key for one ATTEMPT of a routine step: a retry gets its own key (real

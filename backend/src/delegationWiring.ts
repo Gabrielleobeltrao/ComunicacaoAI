@@ -14,6 +14,7 @@ import { ObjectId } from 'mongodb'
 import { finishDelegation, startDelegation } from './delegationLog.js'
 import { recordAgentEventSafe } from './agentEvents.js'
 import { recordReplyUsageOnce } from './tokenUsage.js'
+import { retrieveContext } from './knowledge.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
 import type { DelegationContext, DelegationDeps } from './delegation.js'
 
@@ -75,6 +76,9 @@ export function productionDelegationDeps(): DelegationDeps {
       }),
     // Owner accounting for delegated/sector inferences — charged once per event key,
     // so a redelivered/replayed emit never bills twice.
+    // Canonical retrieval path: agent base + sector base (only with an explicit
+    // sector context). Never throws — a failure just means no grounding.
+    retrieveContext: async (agentId, query, opts) => (await retrieveContext(agentId, query, { sectorId: opts.sectorId ?? null })).context,
     chargeUsage: (ownerId, usage, chargeKey) => {
       recordReplyUsageOnce(ownerId, usage, chargeKey).catch((e) => console.error('recordReplyUsageOnce failed:', (e as Error).message))
     },

@@ -43,6 +43,10 @@ export interface KnowledgeChunk {
   ownerType: KnowledgeOwnerType
   ownerId: ObjectId
   documentId: ObjectId
+  // Indexing round that produced this chunk — a new generation only replaces the
+  // previous one after it is written, so a failed re-index keeps the old version
+  // searchable.
+  generation?: ObjectId
   content: string
   embedding: number[]
   createdAt: Date
@@ -129,31 +133,55 @@ export function createDocument(agentId: ObjectId, title: string, content: string
 // and an embedding failure marks the document 'error' instead of throwing away the
 // content the user already saved.
 async function indexDocumentChunks(owner: KnowledgeOwner, documentId: ObjectId, content: string): Promise<{ indexStatus: KnowledgeDocument['indexStatus']; chunkCount: number }> {
-  await chunks.deleteMany({ documentId })
   const pieces = chunkText(content)
   if (pieces.length === 0) {
+    await chunks.deleteMany({ documentId })
     await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: 0 } })
     return { indexStatus: 'indexed', chunkCount: 0 }
   }
+  // Embed FIRST, swap after: the previous chunks stay searchable until the new ones
+  // exist, so a failing embedding call never leaves the document unsearchable.
+  let embeddings: number[][]
   try {
-    const embeddings = await embedTexts(pieces, 'document')
-    const chunkDocs: Omit<KnowledgeChunk, '_id'>[] = pieces.map((piece, index) => ({
-      agentId: owner.ownerType === 'agent' ? owner.ownerId : null,
-      ownerType: owner.ownerType,
-      ownerId: owner.ownerId,
-      documentId,
-      content: piece,
-      embedding: embeddings[index],
-      createdAt: new Date(),
-    }))
-    await chunks.insertMany(chunkDocs as KnowledgeChunk[])
-    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: chunkDocs.length } })
-    return { indexStatus: 'indexed', chunkCount: chunkDocs.length }
+    embeddings = await embedTexts(pieces, 'document')
   } catch (error) {
-    console.error('knowledge indexing failed:', (error as Error).message)
-    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'error', chunkCount: 0 } })
-    return { indexStatus: 'error', chunkCount: 0 }
+    console.error('knowledge indexing failed (previous version kept searchable):', (error as Error).message)
+    const kept = await chunks.countDocuments({ documentId })
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'error', chunkCount: kept } })
+    return { indexStatus: 'error', chunkCount: kept }
   }
+  const generation = new ObjectId() // marks this indexing round
+  const chunkDocs: Omit<KnowledgeChunk, '_id'>[] = pieces.map((piece, index) => ({
+    agentId: owner.ownerType === 'agent' ? owner.ownerId : null,
+    ownerType: owner.ownerType,
+    ownerId: owner.ownerId,
+    documentId,
+    generation,
+    content: piece,
+    embedding: embeddings[index],
+    createdAt: new Date(),
+  }))
+  try {
+    await chunks.insertMany(chunkDocs as KnowledgeChunk[])
+  } catch (error) {
+    console.error('knowledge chunk write failed (previous version kept searchable):', (error as Error).message)
+    await chunks.deleteMany({ documentId, generation }) // roll back the partial write
+    const kept = await chunks.countDocuments({ documentId })
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'error', chunkCount: kept } })
+    return { indexStatus: 'error', chunkCount: kept }
+  }
+  // New generation is live — now drop the old one.
+  await chunks.deleteMany({ documentId, generation: { $ne: generation } })
+  await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: chunkDocs.length } })
+  return { indexStatus: 'indexed', chunkCount: chunkDocs.length }
+}
+
+// Re-run indexing for a document whose last attempt failed ("Tentar novamente").
+export async function reindexDocumentFor(owner: KnowledgeOwner, documentId: ObjectId) {
+  const doc = await documents.findOne({ _id: documentId, ...ownerFilter(owner) })
+  if (!doc) return null
+  const indexed = await indexDocumentChunks(owner, documentId, doc.content)
+  return { ...doc, ...indexed }
 }
 
 export function listDocumentsFor(owner: KnowledgeOwner) {
@@ -359,12 +387,16 @@ export function combineKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number
 // run happens in a sector context. A vector-search failure NEVER breaks the run — it
 // returns no context and logs, so the agent answers without grounding.
 export async function retrieveContext(
-  agentId: ObjectId,
+  agentIds: ObjectId | ObjectId[],
   query: string,
   opts: { sectorId?: ObjectId | null; topK?: number; charBudget?: number } = {},
 ): Promise<{ context: string[]; failed: boolean }> {
-  const owners: KnowledgeOwner[] = [{ ownerType: 'agent', ownerId: agentId }]
+  const ids = Array.isArray(agentIds) ? agentIds : [agentIds]
+  const owners: KnowledgeOwner[] = ids.map((id) => ({ ownerType: 'agent' as const, ownerId: id }))
+  // The sector base joins ONLY with an explicit sector context — never implied by
+  // the agent's home sector.
   if (opts.sectorId) owners.push({ ownerType: 'sector', ownerId: opts.sectorId })
+  if (owners.length === 0) return { context: [], failed: false }
   try {
     const hits = await searchKnowledgeForOwners(owners, query, Math.max(opts.topK ?? RETRIEVAL_TOP_K, 5) * owners.length)
     return { context: combineKnowledgeHits(hits, opts), failed: false }

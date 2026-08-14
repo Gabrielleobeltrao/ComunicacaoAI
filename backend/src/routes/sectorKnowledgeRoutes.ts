@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { ObjectId } from 'mongodb'
 import { getSectorById } from '../sectors.js'
-import { createDocumentFor, deleteDocumentFor, getDocumentFor, listDocumentsFor, updateDocumentFor } from '../knowledge.js'
+import { createDocumentFor, deleteDocumentFor, getDocumentFor, listDocumentsFor, reindexDocumentFor, updateDocumentFor } from '../knowledge.js'
 import type { KnowledgeDocument } from '../knowledge.js'
 import { oid } from './http.js'
 
@@ -125,6 +125,23 @@ sectorKnowledgeRouter.patch('/documents/:documentId', async (req, res) => {
     console.error('Failed to update sector knowledge document:', e)
     res.status(502).json({ error: 'Failed to process document.' })
   }
+})
+
+// "Tentar novamente": re-run indexing for a document whose last attempt failed.
+sectorKnowledgeRouter.post('/documents/:documentId/reindex', async (req, res) => {
+  const params = req.params as Record<string, string>
+  const sectorId = await requireSector(res.locals.userId, String(params.sectorId))
+  const documentId = oid(String(params.documentId))
+  if (!sectorId || !documentId) {
+    res.status(404).json({ error: 'not found' })
+    return
+  }
+  const doc = await reindexDocumentFor({ ownerType: 'sector', ownerId: sectorId }, documentId)
+  if (!doc) {
+    res.status(404).json({ error: 'Document not found' })
+    return
+  }
+  res.json(serialize(doc))
 })
 
 sectorKnowledgeRouter.delete('/documents/:documentId', async (req, res) => {

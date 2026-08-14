@@ -36,6 +36,9 @@ export interface AgentExecutionEvent {
   // How many attempts this logical execution took (a retried routine step stays ONE
   // event: the final status wins, usage/duration accumulate across attempts).
   attemptCount: number
+  // Attempt numbers already accounted for — the idempotency guard that keeps a
+  // redelivered write from inflating attemptCount/duration/tokens.
+  seenAttempts?: number[]
   // Delegation shape: the event that triggered this one, and the top of the chain.
   // A root event (parentEventKey null) is what "delegações concluídas" counts, so a
   // chain is never summed twice.
@@ -121,9 +124,20 @@ export async function recordAgentEvent(input: RecordAgentEventInput): Promise<bo
 // the first failure occupying the key and the success being dropped.
 export async function finalizeAgentEvent(input: RecordAgentEventInput): Promise<void> {
   const durationMs = input.durationMs ?? Math.max(0, input.finishedAt.getTime() - input.startedAt.getTime())
+  // Idempotent PER ATTEMPT: the attempt number is recorded, so re-finalizing the
+  // same attempt (a redelivered job replaying the write) is a no-op for the
+  // accumulators, while a genuine retry — a NEW attempt — accumulates.
+  const attempt = input.attemptCount ?? 1
+  const already = await events.findOne({ eventKey: input.eventKey, seenAttempts: attempt }, { projection: { _id: 1 } })
+  if (already) {
+    // Same attempt seen again: only the terminal status/timestamp may refresh.
+    await events.updateOne({ eventKey: input.eventKey }, { $set: { status: input.status, finishedAt: input.finishedAt } })
+    return
+  }
   await events.updateOne(
     { eventKey: input.eventKey },
     {
+      $addToSet: { seenAttempts: attempt },
       $setOnInsert: {
         _id: new ObjectId(),
         eventKey: input.eventKey,

@@ -53,3 +53,24 @@ export async function updateDelivery(id: ObjectId, set: Partial<Delivery>): Prom
 export function listDeliveries(ownerId: string, runId: ObjectId): Promise<Delivery[]> {
   return deliveries.find({ ownerId, runId }).sort({ createdAt: 1 }).toArray()
 }
+
+// Deliveries that were ACTUALLY sent, grouped by the agent whose routine produced
+// them (delivery → run → automation → agentId). This is the real source behind a
+// communicator's "Entregas concluídas" — an execution that produced no send is not a
+// delivery. One aggregation for the whole roster.
+export async function sentDeliveriesByAgent(ownerId: string, since?: Date): Promise<Map<string, number>> {
+  const match: Record<string, unknown> = { ownerId, status: 'sent' }
+  if (since) match.sentAt = { $gte: since }
+  const rows = await deliveries
+    .aggregate<{ _id: ObjectId | null; count: number }>([
+      { $match: match },
+      { $lookup: { from: 'automation_runs', localField: 'runId', foreignField: '_id', as: 'run' } },
+      { $unwind: '$run' },
+      { $lookup: { from: 'automations', localField: 'run.automationId', foreignField: '_id', as: 'automation' } },
+      { $unwind: '$automation' },
+      { $match: { 'automation.agentId': { $ne: null } } },
+      { $group: { _id: '$automation.agentId', count: { $sum: 1 } } },
+    ])
+    .toArray()
+  return new Map(rows.filter((r) => r._id).map((r) => [String(r._id), r.count]))
+}

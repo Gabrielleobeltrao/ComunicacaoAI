@@ -23,6 +23,7 @@ import { safeFetch } from './net/safeHttp.js'
 import { getProviderApiKey } from './userSettings.js'
 import { attemptChargeKey, recordReplyUsageOnce } from './tokenUsage.js'
 import { finalizeAgentEventSafe, runEventKey } from './agentEvents.js'
+import { retrieveContext } from './knowledge.js'
 import { decryptConfig, getConnection } from './connections/service.js'
 import { insertDeliveryIdempotent, updateDelivery } from './connections/repository.js'
 import { maskDestination, sendEmail, sendTelegram } from './connections/adapters.js'
@@ -59,6 +60,12 @@ function buildDeps(run: AutomationRun): RunnerDeps {
         isCanceled: async () => (await findRunUnscoped(run._id))?.status === 'cancel_requested',
       })
       const tools = await resolveToolsWithDelegation(agent, run.ownerId, ctx, deps)
+      // Curated grounding for the routine: the agent's own base, plus the sector's
+      // ONLY when the step declares an explicit sectorId.
+      const knowledgeQuery = [call.instructions, typeof call.input === 'string' ? call.input : ''].filter(Boolean).join('\n').slice(0, 2000)
+      const retrieved = knowledgeQuery
+        ? await retrieveContext(agent._id, knowledgeQuery, { sectorId: call.sectorId && ObjectId.isValid(call.sectorId) ? new ObjectId(call.sectorId) : null })
+        : { context: [], failed: false }
       const startedAt = new Date()
       const eventKey = runEventKey(run._id.toString(), call.stepId, agent._id.toString())
       const baseEvent = {
@@ -70,6 +77,9 @@ function buildDeps(run: AutomationRun): RunnerDeps {
         source: 'routine' as const,
         preset: agent.preset,
         startedAt,
+        // The attempt drives per-attempt idempotency: a redelivered write of the
+        // SAME attempt does not inflate the accumulators; a real retry does.
+        attemptCount: call.attempt,
         metadata: { runId: run._id.toString(), stepId: call.stepId, attempt: call.attempt },
       }
       try {
@@ -77,7 +87,8 @@ function buildDeps(run: AutomationRun): RunnerDeps {
           objective: String(agent.objective ?? call.objective ?? ''),
           instructions: call.instructions,
           input: call.input,
-          context: call.context,
+          // Step outputs + curated passages, both handled as untrusted data.
+          context: [...call.context, ...retrieved.context],
           provider: agent.provider,
           model: agent.model,
           apiKey,

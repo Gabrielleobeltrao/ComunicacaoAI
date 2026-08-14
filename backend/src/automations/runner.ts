@@ -21,6 +21,9 @@ export interface AgentCall {
   agentId: string
   stepId: string // the run step — part of the telemetry idempotency key
   attempt: number // 1-based; a retry charges separately but stays ONE logical event
+  // EXPLICIT sector context for knowledge retrieval. Absent = the routine reads only
+  // the agent's own base (an agent's home sector never grounds a run implicitly).
+  sectorId?: string | null
 }
 export interface DeliverCall {
   connectionId: string
@@ -141,6 +144,7 @@ async function executeStep(step: StepDefinition, ctx: Record<string, unknown>, d
           format: (cfg.format as 'text' | 'markdown' | 'json') ?? 'markdown',
           stepId: step.id,
           attempt,
+          sectorId: typeof cfg.sectorId === 'string' ? cfg.sectorId : null,
         })
         .catch((e) => {
           const kind = (e as { kind?: string }).kind ?? 'provider'
