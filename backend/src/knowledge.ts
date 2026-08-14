@@ -2,18 +2,46 @@ import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 import { embedText, embedTexts } from './voyage.js'
 
+// Curated knowledge base (RAG) shared by agents AND sectors. There is ONE store:
+// the same `knowledge_documents` / `knowledge_chunks` collections, the same Voyage
+// embeddings and the same Atlas Vector Search index — a document just belongs to an
+// owner, which is either an agent or a sector.
+//
+// Backwards compatibility: legacy rows only had `agentId`. Every row now also carries
+// `ownerType` + `ownerId`, backfilled as ('agent', agentId) — and `agentId` keeps
+// being written for agent-owned rows, so older code paths and any un-migrated reader
+// keep working during the transition.
+export type KnowledgeOwnerType = 'agent' | 'sector'
+
+export interface KnowledgeOwner {
+  ownerType: KnowledgeOwnerType
+  ownerId: ObjectId
+}
+
 export interface KnowledgeDocument {
   _id: ObjectId
-  agentId: ObjectId
+  // Legacy field: still written when ownerType === 'agent' (null for sector docs).
+  agentId: ObjectId | null
+  ownerType: KnowledgeOwnerType
+  ownerId: ObjectId
   title: string
   content: string
+  // Provenance for curated entries saved from a run/conversation (never automatic).
+  source: string | null // e.g. 'manual' | 'run' | 'conversation'
+  sourceRef: string | null // safe reference (runId / conversationId), never content
+  authorId: string | null // ownerId (account) that saved it
+  // Indexing state so the UI can show "indexando…" / "erro ao indexar".
+  indexStatus: 'indexed' | 'pending' | 'error'
+  chunkCount: number
   createdAt: Date
   updatedAt: Date
 }
 
 export interface KnowledgeChunk {
   _id: ObjectId
-  agentId: ObjectId
+  agentId: ObjectId | null
+  ownerType: KnowledgeOwnerType
+  ownerId: ObjectId
   documentId: ObjectId
   content: string
   embedding: number[]
@@ -53,90 +81,157 @@ export function chunkText(text: string): string[] {
   return result
 }
 
-export async function createDocument(agentId: ObjectId, title: string, content: string) {
+// A filter that matches rows written before the ownerType backfill as well as new
+// ones — the transition never hides a document.
+function ownerFilter(owner: KnowledgeOwner): Record<string, unknown> {
+  if (owner.ownerType === 'agent') {
+    return { $or: [{ ownerType: 'agent', ownerId: owner.ownerId }, { ownerType: { $exists: false }, agentId: owner.ownerId }] }
+  }
+  return { ownerType: 'sector', ownerId: owner.ownerId }
+}
+
+export interface CreateDocumentInput {
+  title: string
+  content: string
+  source?: string | null
+  sourceRef?: string | null
+  authorId?: string | null
+}
+
+export async function createDocumentFor(owner: KnowledgeOwner, input: CreateDocumentInput) {
   const now = new Date()
   const document: Omit<KnowledgeDocument, '_id'> = {
-    agentId,
-    title,
-    content,
+    agentId: owner.ownerType === 'agent' ? owner.ownerId : null,
+    ownerType: owner.ownerType,
+    ownerId: owner.ownerId,
+    title: input.title,
+    content: input.content,
+    source: input.source ?? 'manual',
+    sourceRef: input.sourceRef ?? null,
+    authorId: input.authorId ?? null,
+    indexStatus: 'pending',
+    chunkCount: 0,
     createdAt: now,
     updatedAt: now,
   }
   const result = await documents.insertOne(document as KnowledgeDocument)
   const documentId = result.insertedId
-
-  await indexDocumentChunks(agentId, documentId, content)
-
-  return { ...document, _id: documentId }
+  const indexed = await indexDocumentChunks(owner, documentId, input.content)
+  return { ...document, _id: documentId, ...indexed }
 }
 
-async function indexDocumentChunks(agentId: ObjectId, documentId: ObjectId, content: string) {
+// Backwards-compatible wrapper (agent-owned documents).
+export function createDocument(agentId: ObjectId, title: string, content: string) {
+  return createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title, content })
+}
+
+// Re-chunk + re-embed a document. Indexing state is persisted so the UI can show it,
+// and an embedding failure marks the document 'error' instead of throwing away the
+// content the user already saved.
+async function indexDocumentChunks(owner: KnowledgeOwner, documentId: ObjectId, content: string): Promise<{ indexStatus: KnowledgeDocument['indexStatus']; chunkCount: number }> {
   await chunks.deleteMany({ documentId })
-
   const pieces = chunkText(content)
-  if (pieces.length === 0) return
-
-  const embeddings = await embedTexts(pieces, 'document')
-
-  const chunkDocs: Omit<KnowledgeChunk, '_id'>[] = pieces.map((piece, index) => ({
-    agentId,
-    documentId,
-    content: piece,
-    embedding: embeddings[index],
-    createdAt: new Date(),
-  }))
-
-  await chunks.insertMany(chunkDocs as KnowledgeChunk[])
+  if (pieces.length === 0) {
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: 0 } })
+    return { indexStatus: 'indexed', chunkCount: 0 }
+  }
+  try {
+    const embeddings = await embedTexts(pieces, 'document')
+    const chunkDocs: Omit<KnowledgeChunk, '_id'>[] = pieces.map((piece, index) => ({
+      agentId: owner.ownerType === 'agent' ? owner.ownerId : null,
+      ownerType: owner.ownerType,
+      ownerId: owner.ownerId,
+      documentId,
+      content: piece,
+      embedding: embeddings[index],
+      createdAt: new Date(),
+    }))
+    await chunks.insertMany(chunkDocs as KnowledgeChunk[])
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: chunkDocs.length } })
+    return { indexStatus: 'indexed', chunkCount: chunkDocs.length }
+  } catch (error) {
+    console.error('knowledge indexing failed:', (error as Error).message)
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'error', chunkCount: 0 } })
+    return { indexStatus: 'error', chunkCount: 0 }
+  }
 }
 
-export function listDocuments(agentId: ObjectId) {
+export function listDocumentsFor(owner: KnowledgeOwner) {
   return documents
-    .find({ agentId }, { projection: { content: 0 } })
+    .find(ownerFilter(owner), { projection: { content: 0 } })
     .sort({ createdAt: -1 })
     .toArray()
 }
-
-export function getDocument(agentId: ObjectId, documentId: ObjectId) {
-  return documents.findOne({ _id: documentId, agentId })
+export function listDocuments(agentId: ObjectId) {
+  return listDocumentsFor({ ownerType: 'agent', ownerId: agentId })
 }
 
-export async function updateDocument(
-  agentId: ObjectId,
-  documentId: ObjectId,
-  updates: { title?: string; content?: string },
-) {
+export function getDocumentFor(owner: KnowledgeOwner, documentId: ObjectId) {
+  return documents.findOne({ _id: documentId, ...ownerFilter(owner) })
+}
+export function getDocument(agentId: ObjectId, documentId: ObjectId) {
+  return getDocumentFor({ ownerType: 'agent', ownerId: agentId }, documentId)
+}
+
+export async function updateDocumentFor(owner: KnowledgeOwner, documentId: ObjectId, updates: { title?: string; content?: string }) {
   const setFields: Partial<KnowledgeDocument> = { updatedAt: new Date() }
   if (updates.title !== undefined) setFields.title = updates.title
-  if (updates.content !== undefined) setFields.content = updates.content
-
-  const result = await documents.findOneAndUpdate(
-    { _id: documentId, agentId },
-    { $set: setFields },
-    { returnDocument: 'after' },
-  )
-  if (!result) return null
-
   if (updates.content !== undefined) {
-    await indexDocumentChunks(agentId, documentId, updates.content)
+    setFields.content = updates.content
+    setFields.indexStatus = 'pending'
   }
 
+  const result = await documents.findOneAndUpdate({ _id: documentId, ...ownerFilter(owner) }, { $set: setFields }, { returnDocument: 'after' })
+  if (!result) return null
+  if (updates.content !== undefined) {
+    const indexed = await indexDocumentChunks(owner, documentId, updates.content)
+    return { ...result, ...indexed }
+  }
   return result
 }
-
-export async function deleteDocument(agentId: ObjectId, documentId: ObjectId) {
-  await chunks.deleteMany({ agentId, documentId })
-  const result = await documents.deleteOne({ _id: documentId, agentId })
-  return result.deletedCount > 0
+export function updateDocument(agentId: ObjectId, documentId: ObjectId, updates: { title?: string; content?: string }) {
+  return updateDocumentFor({ ownerType: 'agent', ownerId: agentId }, documentId, updates)
 }
 
-// Wipe an agent's entire knowledge base (used when the agent itself is deleted).
-export async function deleteAllForAgent(agentId: ObjectId) {
-  await chunks.deleteMany({ agentId })
-  await documents.deleteMany({ agentId })
+export async function deleteDocumentFor(owner: KnowledgeOwner, documentId: ObjectId) {
+  const doc = await documents.findOne({ _id: documentId, ...ownerFilter(owner) }, { projection: { _id: 1 } })
+  if (!doc) return false
+  await chunks.deleteMany({ documentId })
+  const result = await documents.deleteOne({ _id: documentId })
+  return result.deletedCount > 0
+}
+export function deleteDocument(agentId: ObjectId, documentId: ObjectId) {
+  return deleteDocumentFor({ ownerType: 'agent', ownerId: agentId }, documentId)
+}
+
+// Wipe an owner's entire knowledge base (agent deleted / sector deleted).
+export async function deleteAllFor(owner: KnowledgeOwner) {
+  const docs = await documents.find(ownerFilter(owner), { projection: { _id: 1 } }).toArray()
+  const ids = docs.map((d) => d._id)
+  if (ids.length) await chunks.deleteMany({ documentId: { $in: ids } })
+  await documents.deleteMany(ownerFilter(owner))
+  return ids.length
+}
+export function deleteAllForAgent(agentId: ObjectId) {
+  return deleteAllFor({ ownerType: 'agent', ownerId: agentId })
+}
+export function deleteAllForSector(sectorId: ObjectId) {
+  return deleteAllFor({ ownerType: 'sector', ownerId: sectorId })
 }
 
 export const VECTOR_INDEX_NAME = 'knowledge_vector_index'
 export const EMBEDDING_DIMENSIONS = 1024
+
+// The index filters on ownerId/ownerType (the new model) AND agentId (legacy rows),
+// so search works during and after the transition.
+const VECTOR_INDEX_DEFINITION = {
+  fields: [
+    { type: 'vector', path: 'embedding', numDimensions: EMBEDDING_DIMENSIONS, similarity: 'cosine' },
+    { type: 'filter', path: 'agentId' },
+    { type: 'filter', path: 'ownerId' },
+    { type: 'filter', path: 'ownerType' },
+  ],
+}
 
 export async function ensureVectorIndex() {
   try {
@@ -148,38 +243,69 @@ export async function ensureVectorIndex() {
     })
 
     const existing = await chunks.listSearchIndexes(VECTOR_INDEX_NAME).toArray()
-    if (existing.length > 0) return
-
-    await chunks.createSearchIndex({
-      name: VECTOR_INDEX_NAME,
-      type: 'vectorSearch',
-      definition: {
-        fields: [
-          { type: 'vector', path: 'embedding', numDimensions: EMBEDDING_DIMENSIONS, similarity: 'cosine' },
-          { type: 'filter', path: 'agentId' },
-        ],
-      },
-    })
-    console.log(`Created Atlas Vector Search index "${VECTOR_INDEX_NAME}" (it can take a minute to finish building)`)
+    if (existing.length === 0) {
+      await chunks.createSearchIndex({ name: VECTOR_INDEX_NAME, type: 'vectorSearch', definition: VECTOR_INDEX_DEFINITION })
+      console.log(`Created Atlas Vector Search index "${VECTOR_INDEX_NAME}" (it can take a minute to finish building)`)
+      return
+    }
+    // Idempotent upgrade: add the ownerId/ownerType filters to an index created
+    // before shared sector knowledge existed.
+    const current = existing[0] as { latestDefinition?: { fields?: { path?: string }[] } }
+    const paths = new Set((current?.latestDefinition?.fields ?? []).map((f) => f.path))
+    if (!paths.has('ownerId') || !paths.has('ownerType')) {
+      await chunks.updateSearchIndex(VECTOR_INDEX_NAME, VECTOR_INDEX_DEFINITION)
+      console.log(`Updated Atlas Vector Search index "${VECTOR_INDEX_NAME}" with owner filters`)
+    }
   } catch (error) {
-    console.error(
-      'Could not create the Atlas Vector Search index — knowledge search will be unavailable until this is fixed:',
-      error,
-    )
+    console.error('Could not create/update the Atlas Vector Search index — knowledge search will be unavailable until this is fixed:', error)
   }
 }
 
-export async function searchKnowledge(agentId: ObjectId, query: string, limit = 5) {
+// Plain Mongo indexes for the CRUD/listing paths.
+export async function ensureKnowledgeIndexes(): Promise<void> {
+  await documents.createIndex({ ownerType: 1, ownerId: 1, createdAt: -1 })
+  await chunks.createIndex({ ownerType: 1, ownerId: 1 })
+  await chunks.createIndex({ documentId: 1 })
+}
+
+// Idempotent, non-destructive backfill: stamp ownerType/ownerId on rows written
+// before the shared-knowledge model. Safe to re-run; reversible by simply ignoring
+// the new fields (agentId is untouched).
+export async function backfillKnowledgeOwners(): Promise<{ documents: number; chunks: number }> {
+  const filter = { ownerType: { $exists: false }, agentId: { $ne: null } }
+  const [d, c] = await Promise.all([
+    documents.updateMany(filter, [{ $set: { ownerType: 'agent', ownerId: '$agentId' } }]),
+    chunks.updateMany(filter, [{ $set: { ownerType: 'agent', ownerId: '$agentId' } }]),
+  ])
+  return { documents: d.modifiedCount, chunks: c.modifiedCount }
+}
+
+export interface KnowledgeHit {
+  content: string
+  score: number
+  ownerType: KnowledgeOwnerType
+  ownerId: string
+}
+
+// Vector search across one or more owners (an agent plus, when the execution runs in
+// a sector context, that sector). Owners are resolved server-side from
+// ownership-checked ids, so a tenant can never reach another tenant's chunks.
+export async function searchKnowledgeForOwners(owners: KnowledgeOwner[], query: string, limit = 5): Promise<KnowledgeHit[]> {
+  if (owners.length === 0) return []
   const queryEmbedding = await embedText(query, 'query')
+  const ownerIds = owners.map((o) => o.ownerId)
+  // Legacy rows have no ownerId — match them by agentId for the agent owners.
+  const agentIds = owners.filter((o) => o.ownerType === 'agent').map((o) => o.ownerId)
+  const filter = agentIds.length ? { $or: [{ ownerId: { $in: ownerIds } }, { agentId: { $in: agentIds } }] } : { ownerId: { $in: ownerIds } }
 
   return chunks
-    .aggregate<{ content: string; score: number }>([
+    .aggregate<KnowledgeHit>([
       {
         $vectorSearch: {
           index: VECTOR_INDEX_NAME,
           path: 'embedding',
           queryVector: queryEmbedding,
-          filter: { agentId },
+          filter,
           limit,
           numCandidates: Math.max(limit * 10, 50),
         },
@@ -189,8 +315,61 @@ export async function searchKnowledge(agentId: ObjectId, query: string, limit = 
           _id: 0,
           content: 1,
           score: { $meta: 'vectorSearchScore' },
+          ownerType: { $ifNull: ['$ownerType', 'agent'] },
+          ownerId: { $toString: { $ifNull: ['$ownerId', '$agentId'] } },
         },
       },
     ])
     .toArray()
+}
+
+export function searchKnowledge(agentId: ObjectId, query: string, limit = 5) {
+  return searchKnowledgeForOwners([{ ownerType: 'agent', ownerId: agentId }], query, limit)
+}
+
+// Retrieval budget: how much context a single execution may inject. Configurable via
+// env so it can be tuned without a deploy of new code.
+export const RETRIEVAL_TOP_K = Number(process.env.KNOWLEDGE_TOP_K ?? 6)
+export const RETRIEVAL_CHAR_BUDGET = Number(process.env.KNOWLEDGE_CHAR_BUDGET ?? 6000)
+
+// Pure: merge hits from several owners by relevance, drop duplicates (the same
+// passage curated in both bases) and cut at top-K / the character budget. No LLM call
+// — ranking is the vector score only.
+export function combineKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number; charBudget?: number } = {}): string[] {
+  const topK = opts.topK ?? RETRIEVAL_TOP_K
+  const charBudget = opts.charBudget ?? RETRIEVAL_CHAR_BUDGET
+  const seen = new Set<string>()
+  const out: string[] = []
+  let used = 0
+  for (const hit of [...hits].sort((a, b) => b.score - a.score)) {
+    const content = (hit.content ?? '').trim()
+    if (!content) continue
+    const key = content.replace(/\s+/g, ' ').toLowerCase()
+    if (seen.has(key)) continue // same passage from agent + sector base
+    if (used + content.length > charBudget) continue
+    seen.add(key)
+    out.push(content)
+    used += content.length
+    if (out.length >= topK) break
+  }
+  return out
+}
+
+// Retrieve the context for an execution: the agent's base, plus the sector's when the
+// run happens in a sector context. A vector-search failure NEVER breaks the run — it
+// returns no context and logs, so the agent answers without grounding.
+export async function retrieveContext(
+  agentId: ObjectId,
+  query: string,
+  opts: { sectorId?: ObjectId | null; topK?: number; charBudget?: number } = {},
+): Promise<{ context: string[]; failed: boolean }> {
+  const owners: KnowledgeOwner[] = [{ ownerType: 'agent', ownerId: agentId }]
+  if (opts.sectorId) owners.push({ ownerType: 'sector', ownerId: opts.sectorId })
+  try {
+    const hits = await searchKnowledgeForOwners(owners, query, Math.max(opts.topK ?? RETRIEVAL_TOP_K, 5) * owners.length)
+    return { context: combineKnowledgeHits(hits, opts), failed: false }
+  } catch (error) {
+    console.error('knowledge retrieval failed (continuing without context):', (error as Error).message)
+    return { context: [], failed: true }
+  }
 }

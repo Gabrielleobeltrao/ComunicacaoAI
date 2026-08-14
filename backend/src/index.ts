@@ -68,7 +68,13 @@ import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
 import {
   createDocument,
+  combineKnowledgeHits,
+  RETRIEVAL_TOP_K,
+  searchKnowledgeForOwners,
   deleteAllForAgent,
+  deleteAllForSector,
+  backfillKnowledgeOwners,
+  ensureKnowledgeIndexes,
   deleteDocument,
   ensureVectorIndex,
   getDocument,
@@ -115,8 +121,10 @@ import {
   setMonthlyTokenCap,
   setProviderApiKey,
 } from './userSettings.js'
-import { getMonthlyTokens, getUsageSummary, recordReplyUsage } from './tokenUsage.js'
+import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage } from './tokenUsage.js'
 import { ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
+import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
+import type { KnowledgeOwner } from './knowledge.js'
 import { availableMetricKeys, composeAgentStats, getAgentEventMetricsBatch, periodSince, PERIODS, resolveMetricKey } from './agentMetrics.js'
 import type { Period } from './agentMetrics.js'
 import { listToolCalls, logToolCalls } from './toolCallLog.js'
@@ -296,6 +304,9 @@ app.use('/api/runs', requireAuth, runRouter)
 // Agent routines + history (agent-owned scheduled automations). Sub-paths that this
 // router doesn't handle fall through to the inline /api/agents/:agentId routes below.
 app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
+// Shared sector knowledge (same store as agent knowledge). Non-matching sub-paths
+// fall through to the inline /api/sectors/:sectorId routes below.
+app.use('/api/sectors/:sectorId', requireAuth, sectorKnowledgeRouter)
 app.use('/api/connections', requireAuth, connectionRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
 app.use('/api/hooks', webhookRouter)
@@ -1075,6 +1086,9 @@ app.delete('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     return
   }
 
+  // A sector's shared knowledge belongs to the sector — remove its documents and
+  // chunks with it. Member agents keep their OWN bases untouched.
+  await deleteAllForSector(new ObjectId(sectorId))
   await deleteSector(ownerId, new ObjectId(sectorId))
   res.status(204).end()
 })
@@ -1441,14 +1455,19 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     }
   }
 
+  // Sector context: the consulted specialists' own bases PLUS the sector's shared
+  // base, merged by relevance, deduped and capped by top-K/character budget. A
+  // vector-search failure never breaks the turn — it just answers without grounding.
   let knowledge: string[] = []
-  for (const id of knowledgeAgentIds) {
-    try {
-      const results = await searchKnowledge(id, lastUser.content)
-      knowledge.push(...results.map((r) => r.content))
-    } catch (error) {
-      console.error('Sector playground knowledge search failed:', error)
-    }
+  try {
+    const owners: KnowledgeOwner[] = [
+      ...knowledgeAgentIds.map((id) => ({ ownerType: 'agent' as const, ownerId: id })),
+      { ownerType: 'sector' as const, ownerId: sector._id },
+    ]
+    const hits = await searchKnowledgeForOwners(owners, lastUser.content, Math.max(RETRIEVAL_TOP_K, 5) * Math.max(owners.length, 1))
+    knowledge = combineKnowledgeHits(hits)
+  } catch (error) {
+    console.error('Sector playground knowledge search failed, continuing without context:', error)
   }
 
   const behaviorInstruction = [
@@ -3179,13 +3198,17 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // Ground the reply in the knowledge base(s) of the responding agent — or of
   // every consulted specialist, for a sector. Skipped when only clarifying.
   let knowledge: string[] = []
-  for (const knowledgeAgentId of knowledgeAgentIds) {
-    try {
-      const results = await searchKnowledge(knowledgeAgentId, visitorContent)
-      knowledge.push(...results.map((result) => result.content))
-    } catch (error) {
-      console.error('Knowledge search failed, replying without grounding:', error)
+  try {
+    const owners: KnowledgeOwner[] = knowledgeAgentIds.map((id) => ({ ownerType: 'agent' as const, ownerId: id }))
+    // Only a SECTOR-answered channel reads the sector's shared base; a widget wired
+    // straight to one agent stays on that agent's own knowledge.
+    if (widget.sectorId) owners.push({ ownerType: 'sector' as const, ownerId: widget.sectorId })
+    if (owners.length) {
+      const hits = await searchKnowledgeForOwners(owners, visitorContent, Math.max(RETRIEVAL_TOP_K, 5) * owners.length)
+      knowledge = combineKnowledgeHits(hits)
     }
+  } catch (error) {
+    console.error('Knowledge search failed, replying without grounding:', error)
   }
 
   // If a previous turn in this conversation already resolved who the
@@ -3479,6 +3502,19 @@ async function start() {
   ensureAgentEventIndexes().catch((error) => {
     console.error('ensureAgentEventIndexes failed:', error)
   })
+  ensureTokenUsageIndexes().catch((error) => {
+    console.error('ensureTokenUsageIndexes failed:', error)
+  })
+  ensureKnowledgeIndexes().catch((error) => {
+    console.error('ensureKnowledgeIndexes failed:', error)
+  })
+  // Idempotent, non-destructive: stamps ownerType/ownerId on knowledge written
+  // before sectors could own a base. Safe to run on every boot.
+  backfillKnowledgeOwners()
+    .then((r) => {
+      if (r.documents || r.chunks) console.log(`Knowledge owner backfill: ${r.documents} documents, ${r.chunks} chunks`)
+    })
+    .catch((error) => console.error('backfillKnowledgeOwners failed:', error))
 
   httpServer.listen(port, () => {
     console.log(`Backend listening on port ${port} (${config.nodeEnv})`)
