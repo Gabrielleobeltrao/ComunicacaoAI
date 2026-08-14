@@ -531,8 +531,8 @@ export function AgentDetail() {
                   <div style={{ display: 'grid', gap: 20 }}>
                     <TriggersPanel overview={overview} onFixed={load} />
                     <TeamsPanel overview={overview} fid={fid} />
-                    <AgentRoutines key={agent._id} agent={agent} />
-                    <AgentActivations key={agent._id} agent={agent} />
+                    <AgentRoutines key={`${agent._id}:routines`} agent={agent} />
+                    <AgentActivations key={`${agent._id}:activations`} agent={agent} />
                     {/* The pendency "sem colaboradores" is solved right here — the
                         checklist and the readiness card link straight to it. */}
                     <CollaborationEditor key={`${agent._id}:collab`} agent={agent} onSaved={load} />

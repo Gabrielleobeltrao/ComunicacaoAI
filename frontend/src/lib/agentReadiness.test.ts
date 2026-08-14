@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { reachableCollaboratorCount } from './agentReadiness'
+import { reachableCollaboratorCount, reachFromPool } from './agentReadiness'
 import type { AgentSummary, SectorSummary } from './types'
 
 // Must agree with backend/src/agentReadiness.ts: a policy is not a colleague, so the
@@ -39,5 +39,40 @@ describe('reachableCollaboratorCount', () => {
     const sectors = [sector('time', 'orchestrated'), sector('outro', 'pipeline')]
     expect(reachableCollaboratorCount({ id: 'm', delegationPolicy: 'selected', callableAgentIds: ['a'], callableSectorIds: ['time'] }, agents, sectors)).toBe(2)
     expect(reachableCollaboratorCount({ id: 'm', delegationPolicy: 'selected', callableAgentIds: [], callableSectorIds: [] }, agents, sectors)).toBe(0)
+  })
+})
+
+// The editor's counter must agree with the backend: a colleague listed as "não
+// aceita chamadas hoje" is visible, but never a promise.
+describe('reachFromPool', () => {
+  const pool = {
+    agents: [{ _id: 'a', acceptsCall: true }, { _id: 'b', acceptsCall: false }, { _id: 'c' }],
+    sectors: [{ _id: 's1' }, { _id: 's2' }],
+  }
+
+  it('none reaches nobody', () => {
+    expect(reachFromPool('none', pool, ['a'], ['s1'])).toBe(0)
+  })
+
+  it('all counts only colleagues that accept, plus every executable team', () => {
+    // 'a' accepts, 'c' has no flag (accepts), 'b' refuses → 2 agents + 2 teams.
+    expect(reachFromPool('all', pool, [], [])).toBe(4)
+  })
+
+  it('selected counts only the picked colleagues that accept', () => {
+    expect(reachFromPool('selected', pool, ['a'], [])).toBe(1)
+    expect(reachFromPool('selected', pool, ['a', 'c'], ['s1'])).toBe(3)
+  })
+
+  it('a manager that picked ONLY a colleague who refuses reaches nobody', () => {
+    expect(reachFromPool('selected', pool, ['b'], [])).toBe(0)
+  })
+
+  it('a stale selection that is no longer in the pool does not inflate the count', () => {
+    expect(reachFromPool('selected', pool, ['gone'], ['also-gone'])).toBe(0)
+  })
+
+  it('an empty pool reaches nobody, whatever the policy', () => {
+    expect(reachFromPool('all', { agents: [], sectors: [] }, [], [])).toBe(0)
   })
 })

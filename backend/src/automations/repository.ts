@@ -1,6 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { db } from '../db.js'
-import type { Automation, AutomationVersion } from './types.js'
+import type { Automation, AutomationDefinition, AutomationVersion } from './types.js'
 
 // Data access for the automation domain. Versions are insert-only (immutable);
 // the service never updates a version document.
@@ -54,6 +54,22 @@ export async function listAutomations(ownerId: string, q: ListAutomationsQuery):
 // standalone automations and agent routines alike.
 export function listActiveAutomations(ownerId: string): Promise<Automation[]> {
   return automations.find({ ownerId, status: 'active' }).toArray()
+}
+
+// Each ACTIVE automation paired with the definition it actually RUNS — the one of
+// its lastPublishedVersion, not the draft. Two queries, whatever the count.
+export async function listActivePublished(ownerId: string): Promise<{ automation: Automation; published: AutomationDefinition | null }[]> {
+  const items = await listActiveAutomations(ownerId)
+  const wanted = items.filter((a) => a.lastPublishedVersion != null)
+  if (wanted.length === 0) return items.map((automation) => ({ automation, published: null }))
+  const rows = await versions
+    .find({ ownerId, $or: wanted.map((a) => ({ automationId: a._id, version: a.lastPublishedVersion as number })) })
+    .toArray()
+  const byAutomation = new Map(rows.map((v) => [`${v.automationId.toString()}:${v.version}`, v.definition]))
+  return items.map((automation) => ({
+    automation,
+    published: automation.lastPublishedVersion == null ? null : (byAutomation.get(`${automation._id.toString()}:${automation.lastPublishedVersion}`) ?? null),
+  }))
 }
 
 export async function updateAutomation(ownerId: string, id: ObjectId, set: Partial<Automation>): Promise<Automation | null> {

@@ -155,15 +155,41 @@ export async function assertOwnedSectorRefs(ownerId: string, def: AutomationDefi
   }
 }
 
+// Every agent an `agent.execute` step names must exist, belong to THIS owner and
+// live in the same building as the automation. Anything else is refused with a
+// uniform message that never reveals whether the id belongs to someone else.
+export async function assertOwnedAgentRefs(ownerId: string, def: AutomationDefinition, buildingId: ObjectId): Promise<void> {
+  const refs = new Set<string>()
+  for (const step of def.steps ?? []) {
+    if (step.type !== 'agent.execute') continue
+    const id = step.config?.agentId
+    if (typeof id === 'string' && id.trim()) refs.add(id.trim())
+    // A step with no agent at all is a shape problem, reported by validateDefinition.
+  }
+  if (refs.size === 0) return
+
+  const fail = () => {
+    throw new AutomationValidationError([{ path: 'steps.config.agentId', message: 'agente indisponível para esta conta' }])
+  }
+  for (const raw of refs) {
+    if (!ObjectId.isValid(raw)) fail()
+    const agent = await getAgentById(ownerId, new ObjectId(raw))
+    if (!agent) fail() // another owner, or gone — indistinguishable on purpose
+    const floor = await getFloor(ownerId, agent!.officeId)
+    if (!floor || !floor.buildingId.equals(buildingId)) fail()
+  }
+}
+
 export async function validateAutomation(ownerId: string, id: ObjectId): Promise<{ valid: boolean; errors: ValidationIssue[] } | null> {
   const automation = await repo.findAutomation(ownerId, id)
   if (!automation) return null
   const result = validateDefinition(automation.draftDefinition)
-  // Ownership of referenced sectors is part of "is this definition valid?" — the
-  // validate endpoint must report the SAME uniform error create/update/publish use,
-  // instead of calling a draft valid that could never run.
+  // Ownership of referenced sectors AND agents is part of "is this definition
+  // valid?" — the validate endpoint must report the SAME uniform errors that
+  // create/update/publish use, instead of calling a draft valid that could never run.
   try {
     await assertOwnedSectorRefs(ownerId, automation.draftDefinition)
+    await assertOwnedAgentRefs(ownerId, automation.draftDefinition, automation.buildingId)
   } catch (error) {
     if (!(error instanceof AutomationValidationError)) throw error
     return { valid: false, errors: [...result.errors, ...error.issues] }
@@ -179,8 +205,10 @@ export async function publishAutomation(ownerId: string, id: ObjectId, createdBy
   const result = validateDefinition(automation.draftDefinition)
   if (!result.valid) throw new AutomationValidationError(result.errors)
   // Re-check on publish: a draft stored before this rule (or edited elsewhere) must
-  // not become an immutable version that references another account's sector.
+  // not become an immutable version that references another account's sector — or an
+  // agent that does not exist, belongs to someone else, or lives in another building.
   await assertOwnedSectorRefs(ownerId, automation.draftDefinition)
+  await assertOwnedAgentRefs(ownerId, automation.draftDefinition, automation.buildingId)
 
   const hash = computeDefinitionHash(automation.draftDefinition)
   if (automation.lastPublishedVersion != null) {
@@ -212,6 +240,14 @@ export async function setStatus(ownerId: string, id: ObjectId, status: Automatio
     const automation = await repo.findAutomation(ownerId, id)
     if (!automation) return null
     if (automation.lastPublishedVersion == null) throw new ValidationError('publish a version before activating')
+    // Activating is the moment it can really fire: the definition about to run is
+    // re-checked, so a version published before this rule cannot be switched on with
+    // a foreign or cross-building agent.
+    const published = await repo.findVersion(ownerId, automation._id, automation.lastPublishedVersion)
+    if (published) {
+      await assertOwnedSectorRefs(ownerId, published.definition)
+      await assertOwnedAgentRefs(ownerId, published.definition, automation.buildingId)
+    }
   }
   const updated = await repo.updateAutomation(ownerId, id, { status })
   if (updated) await syncEventTriggerFor(ownerId, updated)
@@ -224,8 +260,11 @@ export async function setStatus(ownerId: string, id: ObjectId, status: Automatio
 // Ownership and building are enforced by loading the agent owner-scoped and by
 // comparing it to the automation's own building.
 export async function syncEventTriggerFor(ownerId: string, automation: Automation): Promise<void> {
-  if (!isLiveWebhook(automation)) return
-  for (const agentId of agentsReferencedBy(automation)) {
+  // Reason about what RUNS: the published version, never the draft.
+  const published = automation.lastPublishedVersion == null ? null : ((await repo.findVersion(ownerId, automation._id, automation.lastPublishedVersion))?.definition ?? null)
+  const live = { automation, published }
+  if (!isLiveWebhook(live)) return
+  for (const agentId of agentsReferencedBy(live)) {
     if (!ObjectId.isValid(agentId)) continue
     const agent = await getAgentById(ownerId, new ObjectId(agentId))
     if (!agent) continue

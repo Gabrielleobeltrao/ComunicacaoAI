@@ -499,3 +499,27 @@ test('the collaboration editor works on a phone', async ({ page }) => {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
 })
+
+test('a colleague that refuses calls is listed but never counted', async ({ page }) => {
+  await stubCollaboration(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  // 'all': two colleagues accept, one refuses, plus one team → 3.
+  await page.getByTestId('can-call-options').getByRole('button', { name: 'Qualquer colega do prédio' }).click()
+  await expect(page.getByTestId('collaboration-reach')).toContainText('alcança 3')
+
+  // Picking ONLY the colleague that refuses is a reach of zero.
+  await page.getByTestId('can-call-options').getByRole('button', { name: 'Só quem eu escolher' }).click()
+  await page.getByTestId('pick-agents').getByText('Recusa Chamadas').click()
+  await expect(page.getByTestId('collaboration-reach')).toContainText('não alcança ninguém')
+
+  // Adding one that accepts moves it to one.
+  await page.getByTestId('pick-agents').getByText('Colega de Cima').click()
+  await expect(page.getByTestId('collaboration-reach')).toContainText('alcança 1')
+})
+
+test('choosing "ninguém" reaches nobody however many colleagues exist', async ({ page }) => {
+  await stubCollaboration(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await page.getByTestId('can-call-options').getByRole('button', { name: 'Ninguém' }).click()
+  await expect(page.getByTestId('collaboration-reach')).toContainText('não alcança ninguém')
+})

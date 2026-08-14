@@ -16,6 +16,29 @@ export interface ReachableInput {
   callableSectorIds?: string[]
 }
 
+// The same answer for the collaboration editor, whose candidates come from the
+// backend already carrying `acceptsCall` (it computed the target's incoming policy).
+// A colleague that refuses calls stays VISIBLE — hiding it would be confusing — but
+// it must never be counted, or the editor promises a reach the backend will not
+// confirm.
+export function reachFromPool(
+  policy: DelegationPolicy,
+  pool: { agents: { _id: string; acceptsCall?: boolean }[]; sectors: { _id: string }[] },
+  selectedAgentIds: string[],
+  selectedSectorIds: string[],
+): number {
+  if (policy === 'none') return 0
+  const accepts = (a: { acceptsCall?: boolean }) => a.acceptsCall !== false
+  if (policy === 'selected') {
+    const picked = new Set(selectedAgentIds)
+    const pickedSectors = new Set(selectedSectorIds)
+    // Only ids that are really in the pool count: the pool is already scoped to this
+    // building, so a stale selection cannot inflate the number.
+    return pool.agents.filter((a) => picked.has(a._id) && accepts(a)).length + pool.sectors.filter((s) => pickedSectors.has(s._id)).length
+  }
+  return pool.agents.filter(accepts).length + pool.sectors.length
+}
+
 export function reachableCollaboratorCount(agent: ReachableInput, agents: AgentSummary[], sectors: SectorSummary[]): number {
   if (agent.delegationPolicy === 'none') return 0
   const selectedAgents = new Set(agent.callableAgentIds ?? [])

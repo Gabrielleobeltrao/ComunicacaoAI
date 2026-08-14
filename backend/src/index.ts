@@ -127,7 +127,7 @@ import type { CollaboratorContext } from './collaboration.js'
 import type { AgentWiring } from './agentReadiness.js'
 import { listRoutines } from './automations/routine.js'
 import { liveWebhookCountByAgent } from './automations/webhookTriggers.js'
-import { listActiveAutomations } from './automations/repository.js'
+import { listActivePublished } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import type { KnowledgeOwner } from './knowledge.js'
@@ -1316,7 +1316,7 @@ app.get('/api/sectors/:sectorId/overview', requireAuth, async (req, res) => {
   const known = new Map(allAgents.map((a) => [a._id.toString(), a]))
   const involved = [...involvedIds].map((id) => known.get(id)).filter((a): a is NonNullable<typeof a> => Boolean(a))
   const collabCtx = await collaboratorContext(ownerId)
-  const liveWebhooks = liveWebhookCountByAgent(await listActiveAutomations(ownerId).catch(() => []))
+  const liveWebhooks = liveWebhookCountByAgent(await listActivePublished(ownerId).catch(() => []))
   const pendingAgentNames = (
     await Promise.all(
       involved.map(async (a) => {
@@ -2064,7 +2064,7 @@ async function wiringForAgent(ownerId: string, agent: Agent, linkedChannelCount:
   // through its own routine or through an agent.execute step of any automation.
   const active = routines.filter((r) => r.status === 'active')
   const isWebhook = (r: (typeof routines)[number]) => (r.trigger?.type ?? r.draftDefinition?.trigger?.type) === 'webhook'
-  const webhooks = liveWebhooks ?? liveWebhookCountByAgent(await listActiveAutomations(ownerId).catch(() => []))
+  const webhooks = liveWebhooks ?? liveWebhookCountByAgent(await listActivePublished(ownerId).catch(() => []))
   return {
     routineCount: active.filter((r) => !isWebhook(r)).length,
     channelCount: linkedChannelCount,

@@ -16,6 +16,7 @@ const { finalizeAgentEvent, backfillAgentEventAttempts, agentEventsCollection, e
 const { recordReplyUsageOnce, settlePendingCharges, ensureTokenUsageIndexes, getMonthlyTokens, attemptChargeKey } = await import('../dist/tokenUsage.js')
 const { createSector, resolveOwnedSectorId } = await import('../dist/sectors.js')
 const { createFloor } = await import('../dist/floors.js')
+const { createAgent } = await import('../dist/agents.js')
 const { createAutomation, publishAutomation, updateDraft, validateAutomation } = await import('../dist/automations/service.js')
 const { executeRoutineStep, RoutineConfigurationError } = await import('../dist/automations/routineExecution.js')
 const { resolveOwnedSectorId: ownedSector } = await import('../dist/sectors.js')
@@ -317,10 +318,13 @@ test('validate reports a foreign sector with the same uniform error', async () =
   const floorA = (await createFloor(A, { name: 'Andar validate' }))._id
   const floorB = (await createFloor(B, { name: 'Andar B validate' }))._id
   const sectorOfB = await createSector(B, floorB, 'B', '#fff', 'orchestrated', [])
+  // A REAL agent of owner A: a step naming an agent that does not exist is itself
+  // invalid now, so the fixture has to be one that could really run.
+  const agentOfA = await createAgent(A, floorA, 'Agente validate', { preset: 'operator', objective: 'x' })
   const clean = {
     trigger: { type: 'manual' },
     inputs: [],
-    steps: [{ id: 's1', name: 'run', type: 'agent.execute', enabled: true, dependsOn: [], inputMapping: {}, config: { agentId: new ObjectId().toString(), instruction: 'x', format: 'markdown' }, timeoutMs: 0, retryPolicy: { maxAttempts: 1, backoffMs: 0 }, continueOnError: false }],
+    steps: [{ id: 's1', name: 'run', type: 'agent.execute', enabled: true, dependsOn: [], inputMapping: {}, config: { agentId: agentOfA._id.toString(), instruction: 'x', format: 'markdown' }, timeoutMs: 0, retryPolicy: { maxAttempts: 1, backoffMs: 0 }, continueOnError: false }],
     resultFormat: 'markdown',
     deliveries: [],
     limits: { maxSteps: 10, maxToolCalls: 10, maxOutputChars: 1000, maxTokens: null },

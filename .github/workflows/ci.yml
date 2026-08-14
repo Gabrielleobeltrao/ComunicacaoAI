@@ -33,7 +33,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Pinned to 20.19+: rolldown (vite's bundler) declares
+          # engines.node "^20.19.0 || >=22.12.0", and on an older 20.x npm silently
+          # skips its native binding, so the build dies with "Cannot find native
+          # binding" instead of a useful error.
+          node-version: '20.19'
           cache: npm
 
       - name: Clean install

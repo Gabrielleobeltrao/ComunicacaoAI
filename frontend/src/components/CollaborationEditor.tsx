@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { API_URL } from '../lib/api'
 import type { AgentSummary, DelegationPolicy } from '../lib/types'
 import { Button, Card } from '../ui'
+import { reachFromPool } from '../lib/agentReadiness'
 
 // "Colaboração": who this agent can call, and who can call it — in the words the
 // user thinks in. The technical fields (delegationPolicy, callerPolicy and the id
@@ -141,13 +142,13 @@ export function CollaborationEditor({ agent, onSaved }: { agent: AgentSummary; o
     }
   }, [agent._id])
 
-  // How many colleagues this configuration really reaches — the same answer the card
-  // and the checklist give, so the user sees the pendency clear as they fix it.
-  const reach = useMemo(() => {
-    if (canCall === 'none') return 0
-    if (canCall === 'selected') return agentIds.length + sectorIds.length
-    return (pool?.agents.length ?? 0) + (pool?.sectors.length ?? 0)
-  }, [canCall, agentIds, sectorIds, pool])
+  // How many colleagues this configuration really reaches — the same rule the backend
+  // applies, so the editor never promises a reach readiness will refuse. A colleague
+  // that refuses calls is listed but not counted.
+  const reach = useMemo(
+    () => reachFromPool(canCall, pool ?? { agents: [], sectors: [] }, agentIds, sectorIds),
+    [canCall, pool, agentIds, sectorIds],
+  )
 
   const save = async () => {
     setSaving(true)
