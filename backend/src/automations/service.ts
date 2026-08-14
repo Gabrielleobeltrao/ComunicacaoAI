@@ -156,7 +156,17 @@ export async function assertOwnedSectorRefs(ownerId: string, def: AutomationDefi
 export async function validateAutomation(ownerId: string, id: ObjectId): Promise<{ valid: boolean; errors: ValidationIssue[] } | null> {
   const automation = await repo.findAutomation(ownerId, id)
   if (!automation) return null
-  return validateDefinition(automation.draftDefinition)
+  const result = validateDefinition(automation.draftDefinition)
+  // Ownership of referenced sectors is part of "is this definition valid?" — the
+  // validate endpoint must report the SAME uniform error create/update/publish use,
+  // instead of calling a draft valid that could never run.
+  try {
+    await assertOwnedSectorRefs(ownerId, automation.draftDefinition)
+  } catch (error) {
+    if (!(error instanceof AutomationValidationError)) throw error
+    return { valid: false, errors: [...result.errors, ...error.issues] }
+  }
+  return result
 }
 
 // Publish an immutable version from the current draft. Re-publishing an unchanged

@@ -23,7 +23,9 @@ import { productionDelegationDeps, resolveToolsWithDelegation } from './delegati
 import { safeFetch } from './net/safeHttp.js'
 import { getProviderApiKey } from './userSettings.js'
 import { attemptChargeKey, recordReplyUsageOnce } from './tokenUsage.js'
-import { finalizeAgentEventSafe, runEventKey } from './agentEvents.js'
+import { finalizeAgentEvent, runEventKey } from './agentEvents.js'
+import { executeRoutineStep } from './automations/routineExecution.js'
+import type { Provider } from './llm.js'
 import { retrieveContext } from './knowledge.js'
 import { decryptConfig, getConnection } from './connections/service.js'
 import { insertDeliveryIdempotent, updateDelivery } from './connections/repository.js'
@@ -46,88 +48,35 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       return { body: res.body, contentType: res.contentType }
     },
     runAgent: async (call) => {
-      const agent = await getAgentById(run.ownerId, new ObjectId(call.agentId))
-      if (!agent) throw new Error(`agente não encontrado: ${call.agentId}`)
-      const apiKey = await getProviderApiKey(run.ownerId, agent.provider)
-      // Delegation-aware context: the routine's agent may hand work to collaborators
-      // or a sector. Cancellation is cooperative — re-read the run status (same
-      // signal the runner polls between steps).
+      // The whole rule lives in executeRoutineStep (authorise sector → ground → run →
+      // await charge + telemetry). The worker only wires the real adapters.
       const deps = productionDelegationDeps()
-      const ctx = rootContext({
-        ownerId: run.ownerId,
-        buildingId: run.buildingId.toString(),
-        correlationId: run._id.toString(),
-        agent,
-        isCanceled: async () => (await findRunUnscoped(run._id))?.status === 'cancel_requested',
-      })
-      const tools = await resolveToolsWithDelegation(agent, run.ownerId, ctx, deps)
-      // DEFENSIVE: an old version or a tampered document can carry any sectorId, so
-      // it is re-resolved inside THIS run's account. A sector that does not exist or
-      // belongs to someone else is a configuration error — we fail before the AI
-      // runs and without revealing whether the id exists.
-      let verifiedSectorId: ObjectId | null = null
-      if (call.sectorId) {
-        verifiedSectorId = await resolveOwnedSectorId(run.ownerId, call.sectorId)
-        if (!verifiedSectorId) throw new Error('configuração inválida: setor indisponível para esta conta')
-      }
-      // Curated grounding for the routine: the agent's own base, plus the sector's
-      // ONLY when the step declares an explicit, verified sectorId.
-      const knowledgeQuery = [call.instructions, typeof call.input === 'string' ? call.input : ''].filter(Boolean).join('\n').slice(0, 2000)
-      const retrieved = knowledgeQuery ? await retrieveContext(agent._id, knowledgeQuery, { verifiedSectorId }) : { context: [], failed: false }
-      const startedAt = new Date()
-      const eventKey = runEventKey(run._id.toString(), call.stepId, agent._id.toString())
-      const baseEvent = {
-        eventKey,
-        ownerId: run.ownerId,
-        agentId: agent._id,
-        buildingId: run.buildingId,
-        floorId: run.floorId,
-        source: 'routine' as const,
-        preset: agent.preset,
-        startedAt,
-        // The attempt drives per-attempt idempotency: a redelivered write of the
-        // SAME attempt does not inflate the accumulators; a real retry does.
-        attemptCount: call.attempt,
-        metadata: { runId: run._id.toString(), stepId: call.stepId, attempt: call.attempt },
-      }
-      try {
-        const result = await executeAgentTask({
-          objective: String(agent.objective ?? call.objective ?? ''),
-          instructions: call.instructions,
-          input: call.input,
-          // Step outputs + curated passages, both handled as untrusted data.
-          context: [...call.context, ...retrieved.context],
-          provider: agent.provider,
-          model: agent.model,
-          apiKey,
-          tools,
-          output: { format: call.format },
-        })
-        // Owner accounting, charged exactly once per ATTEMPT: a genuine retry really
-        // consumed tokens (so it charges again), a redelivered job does not.
-        recordReplyUsageOnce(run.ownerId, result.usage, attemptChargeKey(run._id.toString(), call.stepId, agent._id.toString(), call.attempt)).catch((e) =>
-          console.error('recordReplyUsageOnce failed:', (e as Error).message),
-        )
-        // ONE logical event per run/step/agent: attempts accumulate usage/duration
-        // and the last outcome wins, so a failure→success ends as 'succeeded'.
-        finalizeAgentEventSafe({
-          ...baseEvent,
-          status: 'succeeded',
-          finishedAt: new Date(),
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          toolCalls: result.toolCalls.filter((c) => c.ok).length, // completed tool calls only
-        })
-        return { output: result.output, usage: result.usage }
-      } catch (error) {
-        const kind = (error as { kind?: string }).kind
-        finalizeAgentEventSafe({
-          ...baseEvent,
-          status: kind === 'timeout' ? 'timeout' : 'failed',
-          finishedAt: new Date(),
-        })
-        throw error
-      }
+      const isCanceled = async () => (await findRunUnscoped(run._id))?.status === 'cancel_requested'
+      const step = await executeRoutineStep(
+        call,
+        { ownerId: run.ownerId, runId: run._id.toString(), buildingId: run.buildingId, floorId: run.floorId },
+        {
+          loadAgent: getAgentById,
+          resolveOwnedSectorId,
+          retrieveContext,
+          resolveTools: (agent, ownerId) =>
+            resolveToolsWithDelegation(
+              agent,
+              ownerId,
+              rootContext({ ownerId, buildingId: run.buildingId.toString(), correlationId: run._id.toString(), agent, isCanceled }),
+              deps,
+            ),
+          apiKeyFor: (ownerId, provider) => getProviderApiKey(ownerId, provider as Provider),
+          runTask: executeAgentTask,
+          charge: recordReplyUsageOnce,
+          chargeKeyFor: attemptChargeKey,
+          finalizeEvent: finalizeAgentEvent,
+          eventKeyFor: runEventKey,
+          isCanceled,
+        },
+      )
+      if (!step.persisted) console.error(`run ${run._id.toString()} step ${call.stepId}: accounting/telemetry could not be persisted`)
+      return { output: step.output, usage: step.usage }
     },
     // Resolve the connection, record the delivery idempotently, then send.
     deliver: async (call) => {

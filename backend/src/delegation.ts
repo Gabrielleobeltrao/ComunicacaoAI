@@ -178,10 +178,10 @@ export interface DelegationDeps {
     parentEventKey: string | null
     rootEventKey: string
     metadata: Record<string, string | number | boolean>
-  }) => void
+  }) => Promise<void> | void
   // Owner-level token accounting for a delegated/sector inference, charged exactly
   // once for `chargeKey`.
-  chargeUsage?: (ownerId: string, usage: { inputTokens: number; outputTokens: number }, chargeKey: string) => void
+  chargeUsage?: (ownerId: string, usage: { inputTokens: number; outputTokens: number }, chargeKey: string) => Promise<void> | void
   // Curated knowledge for an execution: the agent's own base, plus the sector's when
   // the run happens in an EXPLICIT sector context. Returns passages only (no LLM
   // call); a failure returns none so the run continues ungrounded.
@@ -198,8 +198,13 @@ interface TaskRun {
 
 // Emit a per-agent telemetry event for a delegation/sector run (fire-and-forget via
 // the injected recordEvent).
-function emitAgentEvent(deps: DelegationDeps, ctx: DelegationContext, target: Agent, source: 'delegation' | 'sector', eventKey: string, run: { usage: { inputTokens: number; outputTokens: number }; toolCalls: number; startedAt: Date; finishedAt: Date }, status: 'succeeded' | 'failed' | 'timeout' | 'canceled'): void {
-  deps.recordEvent?.({
+// AWAITED (not fire-and-forget): a delegated attempt is only reported as finished
+// once its telemetry and its charge are persisted. Failures are settled, never
+// rethrown — the model already ran, so a persistence problem must not become a
+// second inference.
+async function emitAgentEvent(deps: DelegationDeps, ctx: DelegationContext, target: Agent, source: 'delegation' | 'sector', eventKey: string, run: { usage: { inputTokens: number; outputTokens: number }; toolCalls: number; startedAt: Date; finishedAt: Date }, status: 'succeeded' | 'failed' | 'timeout' | 'canceled'): Promise<void> {
+  const pending: (Promise<void> | void)[] = []
+  pending.push(deps.recordEvent?.({
     eventKey,
     ownerId: ctx.ownerId,
     agentId: target._id,
@@ -216,9 +221,11 @@ function emitAgentEvent(deps: DelegationDeps, ctx: DelegationContext, target: Ag
     parentEventKey: ctx.currentEventKey ?? null,
     rootEventKey: ctx.rootEventKey ?? eventKey,
     metadata: { correlationId: ctx.correlationId, depth: ctx.depth + 1 },
-  })
+  }))
   // Owner accounting for this delegated inference — once per event key.
-  if (run.usage.inputTokens || run.usage.outputTokens) deps.chargeUsage?.(ctx.ownerId, run.usage, `event:${eventKey}`)
+  if (run.usage.inputTokens || run.usage.outputTokens) pending.push(deps.chargeUsage?.(ctx.ownerId, run.usage, `event:${eventKey}`))
+  const settled = await Promise.allSettled(pending.map(async (p) => p))
+  for (const r of settled) if (r.status === 'rejected') console.error('delegation persistence failed (work kept, not re-run):', String(r.reason))
 }
 
 const TASK_TIMEOUT_MS = 120_000
@@ -303,7 +310,7 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
   try {
     const run = await runAgentTask(deps, ctx, target, objective, input, (args.format as AgentOutputFormat) || 'markdown', `deleg:${recId.toString()}`)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: run.output.slice(0, 500), usage: run.usage })
-    emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, run, 'succeeded')
+    await emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, run, 'succeeded')
     return { ok: true, result: j({ status: 'ok', agent: target.name, output: run.output }) }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'falha na delegação'
@@ -311,7 +318,7 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
     // telemetry record their own terminal status.
     const outcome = /cancel/i.test(message) || (await isCanceled(ctx)) ? 'canceled' : /timeout|exceeded/i.test(message) ? 'timeout' : 'failed'
     await deps.finishDelegation(recId, { status: outcome === 'timeout' ? 'failed' : outcome, error: message })
-    emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date() }, outcome)
+    await emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date() }, outcome)
     return { ok: false, result: j({ status: outcome === 'canceled' ? 'canceled' : 'error', reason: message }) }
   }
 }
@@ -349,13 +356,13 @@ async function recordChildRun(deps: DelegationDeps, ctx: DelegationContext, targ
   try {
     const r = await run(eventKey)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: r.output.slice(0, 500), usage: r.usage })
-    emitAgentEvent(deps, ctx, target, 'sector', eventKey, r, 'succeeded')
+    await emitAgentEvent(deps, ctx, target, 'sector', eventKey, r, 'succeeded')
     return r.output
   } catch (error) {
     const message = error instanceof Error ? error.message : 'falha'
     const outcome = /cancel/i.test(message) ? 'canceled' : /timeout|exceeded/i.test(message) ? 'timeout' : 'failed'
     await deps.finishDelegation(recId, { status: outcome === 'timeout' ? 'failed' : outcome, error: message })
-    emitAgentEvent(deps, ctx, target, 'sector', eventKey, { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date() }, outcome)
+    await emitAgentEvent(deps, ctx, target, 'sector', eventKey, { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date() }, outcome)
     throw error
   }
 }

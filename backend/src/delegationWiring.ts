@@ -12,7 +12,7 @@ import type { Provider } from './llm.js'
 import type { ResolvedTool } from './agentTools.js'
 import { ObjectId } from 'mongodb'
 import { finishDelegation, startDelegation } from './delegationLog.js'
-import { recordAgentEventSafe } from './agentEvents.js'
+import { recordAgentEvent } from './agentEvents.js'
 import { recordReplyUsageOnce } from './tokenUsage.js'
 import { retrieveContext } from './knowledge.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
@@ -69,19 +69,14 @@ export function productionDelegationDeps(): DelegationDeps {
     runTask: (req) => executeAgentTask(req),
     startDelegation,
     finishDelegation,
-    recordEvent: (e) =>
-      recordAgentEventSafe({
-        ...e,
-        buildingId: ObjectId.isValid(e.buildingId) ? new ObjectId(e.buildingId) : null,
-      }),
+    // Returns the promise so the caller can AWAIT it (no fire-and-forget).
+    recordEvent: (e) => recordAgentEvent({ ...e, buildingId: ObjectId.isValid(e.buildingId) ? new ObjectId(e.buildingId) : null }).then(() => undefined),
     // Owner accounting for delegated/sector inferences — charged once per event key,
     // so a redelivered/replayed emit never bills twice.
     // Canonical retrieval path: agent base + sector base (only with an explicit
     // sector context). Never throws — a failure just means no grounding.
     retrieveContext: async (agentId, query, opts) => (await retrieveContext(agentId, query, { verifiedSectorId: opts.sectorId ?? null })).context,
-    chargeUsage: (ownerId, usage, chargeKey) => {
-      recordReplyUsageOnce(ownerId, usage, chargeKey).catch((e) => console.error('recordReplyUsageOnce failed:', (e as Error).message))
-    },
+    chargeUsage: (ownerId, usage, chargeKey) => recordReplyUsageOnce(ownerId, usage, chargeKey).then(() => undefined),
   }
   return deps
 }

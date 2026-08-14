@@ -16,7 +16,9 @@ const { finalizeAgentEvent, backfillAgentEventAttempts, agentEventsCollection, e
 const { recordReplyUsageOnce, settlePendingCharges, ensureTokenUsageIndexes, getMonthlyTokens, attemptChargeKey } = await import('../dist/tokenUsage.js')
 const { createSector, resolveOwnedSectorId } = await import('../dist/sectors.js')
 const { createFloor } = await import('../dist/floors.js')
-const { createAutomation, publishAutomation, updateDraft } = await import('../dist/automations/service.js')
+const { createAutomation, publishAutomation, updateDraft, validateAutomation } = await import('../dist/automations/service.js')
+const { executeRoutineStep, RoutineConfigurationError } = await import('../dist/automations/routineExecution.js')
+const { resolveOwnedSectorId: ownedSector } = await import('../dist/sectors.js')
 const { createDocumentFor, listDocumentsFor, getDocumentFor, deleteDocumentFor, updateDocumentFor, ownerFilter } = await import('../dist/knowledge.js')
 
 const A = 'owner-A'
@@ -261,4 +263,172 @@ test('legacy events without seenAttempts are backfilled and then protected', asy
   assert.equal(after.attemptCount, 2)
   assert.equal(after.durationMs, 500)
   assert.equal(after.inputTokens, 50)
+})
+
+
+// ------------------------------------------------- 4. execution-path hardening
+// A minimal agent row the execution deps can return. No IO, no LLM.
+const stubAgent = (over = {}) => ({
+  _id: new ObjectId(),
+  ownerId: A,
+  officeId: new ObjectId(),
+  name: 'Agente',
+  objective: 'obj',
+  provider: 'anthropic',
+  model: null,
+  preset: 'custom',
+  ...over,
+})
+
+// Deps wired to REAL owner-scoped resolution, with spies on everything that costs.
+function execDeps(agent, over = {}) {
+  const calls = { runTask: 0, retrieve: 0, charge: [], events: [] }
+  return {
+    calls,
+    deps: {
+      loadAgent: async () => agent,
+      resolveOwnedSectorId: ownedSector, // the real rule, not a copy
+      retrieveContext: async () => {
+        calls.retrieve++
+        return { context: ['trecho'], failed: false }
+      },
+      resolveTools: async () => [],
+      apiKeyFor: async () => 'k',
+      runTask:
+        over.runTask ??
+        (async () => {
+          calls.runTask++
+          return { output: 'ok', usage: { inputTokens: 10, outputTokens: 5 }, toolCalls: [{ ok: true }, { ok: false }] }
+        }),
+      charge: over.charge ?? (async (ownerId, usage, key) => { calls.charge.push(key); return recordReplyUsageOnce(ownerId, usage, key) }),
+      chargeKeyFor: attemptChargeKey,
+      finalizeEvent: over.finalizeEvent ?? (async (input) => { calls.events.push(input.status); return finalizeAgentEvent(input) }),
+      eventKeyFor: (runId, stepId, agentId) => `run:${runId}:${stepId}:${agentId}`,
+      sleep: async () => {},
+      ...over.depsPatch,
+    },
+  }
+}
+
+const stepCall = (over = {}) => ({ agentId: '', objective: 'o', instructions: 'faça', input: 'x', context: [], format: 'markdown', stepId: 's1', attempt: 1, ...over })
+const runCtx = (over = {}) => ({ ownerId: A, runId: new ObjectId().toString(), buildingId: new ObjectId(), floorId: new ObjectId(), ...over })
+
+test('validate reports a foreign sector with the same uniform error', async () => {
+  const floorA = (await createFloor(A, { name: 'Andar validate' }))._id
+  const floorB = (await createFloor(B, { name: 'Andar B validate' }))._id
+  const sectorOfB = await createSector(B, floorB, 'B', '#fff', 'orchestrated', [])
+  const clean = {
+    trigger: { type: 'manual' },
+    inputs: [],
+    steps: [{ id: 's1', name: 'run', type: 'agent.execute', enabled: true, dependsOn: [], inputMapping: {}, config: { agentId: new ObjectId().toString(), instruction: 'x', format: 'markdown' }, timeoutMs: 0, retryPolicy: { maxAttempts: 1, backoffMs: 0 }, continueOnError: false }],
+    resultFormat: 'markdown',
+    deliveries: [],
+    limits: { maxSteps: 10, maxToolCalls: 10, maxOutputChars: 1000, maxTokens: null },
+  }
+  const created = await createAutomation(A, { floorId: floorA.toString(), name: 'v', description: '', definition: clean })
+  // A valid draft validates cleanly...
+  assert.equal((await validateAutomation(A, created._id)).valid, true)
+  // ...and the same draft tampered to point at B's sector is reported invalid with
+  // the SAME uniform message used by create/update/publish.
+  const tampered = structuredClone(clean)
+  tampered.steps[0].config.sectorId = sectorOfB._id.toString()
+  await db.collection('automations').updateOne({ _id: created._id }, { $set: { draftDefinition: tampered } })
+  const result = await validateAutomation(A, created._id)
+  assert.equal(result.valid, false)
+  assert.ok(sectorRefused({ issues: result.errors }))
+})
+
+test('a tampered automation fails BEFORE the LLM, knowledge or any charge', async () => {
+  const floorB = (await createFloor(B, { name: 'Andar B exec' }))._id
+  const sectorOfB = await createSector(B, floorB, 'B exec', '#fff', 'orchestrated', [])
+  const agent = stubAgent()
+  const f = execDeps(agent)
+  const ctx = runCtx()
+
+  await assert.rejects(
+    () => executeRoutineStep(stepCall({ agentId: agent._id.toString(), sectorId: sectorOfB._id.toString() }), ctx, f.deps),
+    (e) => e instanceof RoutineConfigurationError && !/exist|found|outra conta/i.test(e.message),
+  )
+  // Nothing was spent: no model call, no retrieval, no charge, no telemetry.
+  assert.equal(f.calls.runTask, 0)
+  assert.equal(f.calls.retrieve, 0)
+  assert.deepEqual(f.calls.charge, [])
+  assert.deepEqual(f.calls.events, [])
+  assert.equal(await db.collection('token_usage_charges').countDocuments({ ownerId: A, _id: new RegExp(ctx.runId) }), 0)
+})
+
+test('a redelivered attempt does not charge again nor re-accumulate', async () => {
+  const agent = stubAgent()
+  const owner = `redeliver-${new ObjectId()}`
+  const ctx = runCtx({ ownerId: owner })
+  const f = execDeps(agent)
+  const call = stepCall({ agentId: agent._id.toString() })
+
+  await executeRoutineStep(call, ctx, f.deps)
+  await executeRoutineStep(call, ctx, f.deps) // the SAME attempt, redelivered
+
+  assert.equal(f.calls.runTask, 2) // the model really ran twice (the job was redelivered)
+  assert.equal(await getMonthlyTokens(owner), 15) // but it was billed ONCE
+  const ev = await agentEventsCollection.findOne({ eventKey: `run:${ctx.runId}:s1:${agent._id.toString()}` })
+  assert.equal(ev.attemptCount, 1)
+  assert.equal(ev.inputTokens, 10)
+  assert.equal(ev.toolCalls, 1) // only the ok:true call
+})
+
+test('a transient persistence failure never triggers a second inference', async () => {
+  const agent = stubAgent()
+  const owner = `flaky-${new ObjectId()}`
+  let chargeCalls = 0
+  const f = execDeps(agent, {
+    charge: async (ownerId, usage, key) => {
+      chargeCalls++
+      if (chargeCalls === 1) throw new Error('temporary write failure')
+      return recordReplyUsageOnce(ownerId, usage, key)
+    },
+  })
+  const ctx = runCtx({ ownerId: owner })
+  const out = await executeRoutineStep(stepCall({ agentId: agent._id.toString() }), ctx, f.deps)
+
+  assert.equal(out.output, 'ok')
+  assert.equal(out.persisted, true) // the retry succeeded
+  assert.equal(chargeCalls, 2) // charge retried...
+  assert.equal(f.calls.runTask, 1) // ...WITHOUT calling the model again
+  assert.equal(await getMonthlyTokens(owner), 15)
+})
+
+test('a step still completes (without re-inferring) when persistence keeps failing', async () => {
+  const agent = stubAgent()
+  const f = execDeps(agent, {
+    charge: async () => {
+      throw new Error('down')
+    },
+  })
+  const out = await executeRoutineStep(stepCall({ agentId: agent._id.toString() }), runCtx(), f.deps)
+  assert.equal(out.output, 'ok') // the work is not thrown away
+  assert.equal(out.persisted, false) // and the caller is told accounting failed
+  assert.equal(f.calls.runTask, 1) // the model ran exactly once
+})
+
+test('a late attempt-1 write never overwrites the newest attempt (through the executor)', async () => {
+  const agent = stubAgent()
+  const ctx = runCtx({ ownerId: `late-${new ObjectId()}` })
+  const key = `run:${ctx.runId}:s1:${agent._id.toString()}`
+
+  // attempt 1 fails, attempt 2 succeeds
+  const failing = execDeps(agent, {
+    runTask: async () => {
+      throw new Error('provider blip')
+    },
+  })
+  await assert.rejects(() => executeRoutineStep(stepCall({ agentId: agent._id.toString(), attempt: 1 }), ctx, failing.deps))
+  const ok = execDeps(agent)
+  await executeRoutineStep(stepCall({ agentId: agent._id.toString(), attempt: 2 }), ctx, ok.deps)
+
+  // a delayed duplicate of attempt 1 arrives afterwards
+  await assert.rejects(() => executeRoutineStep(stepCall({ agentId: agent._id.toString(), attempt: 1 }), ctx, failing.deps))
+
+  const ev = await agentEventsCollection.findOne({ eventKey: key })
+  assert.equal(ev.status, 'succeeded') // attempt 2 still wins
+  assert.equal(ev.latestAttempt, 2)
+  assert.equal(ev.attemptCount, 2) // and nothing was re-accumulated
 })
