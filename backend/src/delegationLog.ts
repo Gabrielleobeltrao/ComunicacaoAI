@@ -16,6 +16,9 @@ export interface DelegationRecord {
   targetType: 'agent' | 'sector'
   targetAgentId: ObjectId | null
   targetSectorId: ObjectId | null
+  // The delegation this one is a child of (a sector's per-stage/coordinator run).
+  // null = a ROOT delegation, which is what the "delegações" KPI counts.
+  parentId: ObjectId | null
   objective: string
   status: DelegationStatus
   denyCode: string | null
@@ -42,6 +45,7 @@ export interface DelegationStart {
   targetType: 'agent' | 'sector'
   targetAgentId?: ObjectId | null
   targetSectorId?: ObjectId | null
+  parentId?: ObjectId | null
   objective: string
 }
 
@@ -56,6 +60,7 @@ export async function startDelegation(start: DelegationStart): Promise<ObjectId>
     targetType: start.targetType,
     targetAgentId: start.targetAgentId ?? null,
     targetSectorId: start.targetSectorId ?? null,
+    parentId: start.parentId ?? null,
     objective: start.objective.slice(0, 2000),
     status: 'running',
     denyCode: null,
@@ -101,10 +106,12 @@ export async function listDelegationsForAgent(ownerId: string, agentId: ObjectId
     .toArray()
 }
 
-// How many delegations each agent INITIATED and completed (as caller), for the
-// manager/secretary card KPI. One aggregation for the whole roster — no N+1.
+// How many ROOT delegations each agent INITIATED and completed (as caller), for the
+// manager/secretary card KPI. Child records (the per-stage/coordinator runs of a
+// sector delegation) are excluded, so a team run counts ONCE instead of summing its
+// children into the caller. One aggregation for the whole roster — no N+1.
 export async function succeededDelegationsByCaller(ownerId: string, since?: Date): Promise<Map<string, number>> {
-  const match: Record<string, unknown> = { ownerId, status: 'succeeded' }
+  const match: Record<string, unknown> = { ownerId, status: 'succeeded', parentId: null }
   if (since) match.createdAt = { $gte: since }
   const rows = await col
     .aggregate<{ _id: ObjectId; count: number }>([{ $match: match }, { $group: { _id: '$callerAgentId', count: { $sum: 1 } } }])

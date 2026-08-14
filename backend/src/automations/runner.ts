@@ -20,6 +20,7 @@ export interface AgentCall {
   format: 'text' | 'markdown' | 'json'
   agentId: string
   stepId: string // the run step — part of the telemetry idempotency key
+  attempt: number // 1-based; a retry charges separately but stays ONE logical event
 }
 export interface DeliverCall {
   connectionId: string
@@ -28,9 +29,15 @@ export interface DeliverCall {
   content: string
 }
 
+export interface StepUsage {
+  inputTokens: number
+  outputTokens: number
+}
+
 export interface RunnerDeps {
   fetchUrl: (url: string, opts?: { contentTypeAllowlist?: string[] }) => Promise<FetchResult>
-  runAgent: (call: AgentCall) => Promise<{ output: string }>
+  // Returns the model usage so it reaches the step record and the run total.
+  runAgent: (call: AgentCall) => Promise<{ output: string; usage?: StepUsage }>
   deliver: (call: DeliverCall) => Promise<{ providerMessageId: string | null }>
   now: () => number
   isCanceled?: () => boolean | Promise<boolean>
@@ -45,12 +52,16 @@ export interface StepRecord {
   output?: unknown
   errorKind?: string
   errorMessage?: string
+  // Real model consumption of this step, summed across its attempts.
+  usage?: StepUsage
 }
 export interface RunOutcome {
   status: 'succeeded' | 'failed' | 'canceled'
   steps: StepRecord[]
   finalOutput: string
   context: Record<string, unknown>
+  // Sum of every step's usage — what the run persists as automation_runs.usage.
+  usage: StepUsage
 }
 
 // A step failure with an explicit retryability classification. Transient errors
@@ -102,7 +113,7 @@ function templateVars(ctx: Record<string, unknown>): Record<string, unknown> {
   return vars
 }
 
-async function executeStep(step: StepDefinition, ctx: Record<string, unknown>, deps: RunnerDeps): Promise<unknown> {
+async function executeStep(step: StepDefinition, ctx: Record<string, unknown>, deps: RunnerDeps, attempt = 1, usageSink?: StepUsage): Promise<unknown> {
   const cfg = step.config
   switch (step.type as StepType) {
     case 'source.rss': {
@@ -129,11 +140,17 @@ async function executeStep(step: StepDefinition, ctx: Record<string, unknown>, d
           context,
           format: (cfg.format as 'text' | 'markdown' | 'json') ?? 'markdown',
           stepId: step.id,
+          attempt,
         })
         .catch((e) => {
           const kind = (e as { kind?: string }).kind ?? 'provider'
           throw new StepError(kind, (e as Error).message, kind === 'timeout' || kind === 'provider')
         })
+      // Usage flows up: step record → run total → owner accounting.
+      if (usageSink && res.usage) {
+        usageSink.inputTokens += res.usage.inputTokens
+        usageSink.outputTokens += res.usage.outputTokens
+      }
       return res.output
     }
     case 'transform.template': {
@@ -168,6 +185,7 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
   const steps: StepRecord[] = []
   let finalOutput = ''
   let canceled = false
+  const runUsage: StepUsage = { inputTokens: 0, outputTokens: 0 }
 
   for (const step of def.steps) {
     if (!step.enabled) {
@@ -184,13 +202,16 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
     const backoff = step.retryPolicy?.backoffMs ?? 0
     let attempt = 0
     let done = false
+    // Usage accumulates across this step's attempts — a retry really did consume
+    // tokens, so the run total reflects it.
+    const stepUsage: StepUsage = { inputTokens: 0, outputTokens: 0 }
     for (;;) {
       attempt++
       try {
-        const output = await withTimeout(executeStep(step, ctx, deps), step.timeoutMs ?? 0)
+        const output = await withTimeout(executeStep(step, ctx, deps, attempt, stepUsage), step.timeoutMs ?? 0)
         ctx[step.id] = output
         if (typeof output === 'string') finalOutput = output
-        steps.push({ stepId: step.id, stepType: step.type, status: 'succeeded', attempts: attempt, output })
+        steps.push({ stepId: step.id, stepType: step.type, status: 'succeeded', attempts: attempt, output, usage: { ...stepUsage } })
         done = true
         break
       } catch (error) {
@@ -207,16 +228,19 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
           attempts: attempt,
           errorKind: kind,
           errorMessage: (error as Error).message,
+          usage: { ...stepUsage },
         })
         break
       }
     }
+    runUsage.inputTokens += stepUsage.inputTokens
+    runUsage.outputTokens += stepUsage.outputTokens
     if (!done && !step.continueOnError) {
-      return { status: 'failed', steps, finalOutput, context: ctx }
+      return { status: 'failed', steps, finalOutput, context: ctx, usage: runUsage }
     }
   }
 
-  if (canceled) return { status: 'canceled', steps, finalOutput, context: ctx }
+  if (canceled) return { status: 'canceled', steps, finalOutput, context: ctx, usage: runUsage }
   const anyFailed = steps.some((s) => s.status === 'failed')
-  return { status: anyFailed ? 'failed' : 'succeeded', steps, finalOutput, context: ctx }
+  return { status: anyFailed ? 'failed' : 'succeeded', steps, finalOutput, context: ctx, usage: runUsage }
 }

@@ -30,6 +30,44 @@ export async function recordReplyUsage(ownerId: string, usage: TokenUsage, now: 
   )
 }
 
+// Idempotent charge ledger: one row per BILLED inference. The unique _id (chargeKey)
+// is what makes "charge exactly once" real — a redelivered job or a replayed write
+// with the same key is ignored, while a genuine retry uses a different key (it ran
+// the model again, so it really consumed tokens).
+interface UsageChargeDoc {
+  _id: string // the chargeKey
+  ownerId: string
+  inputTokens: number
+  outputTokens: number
+  createdAt: Date
+}
+const usageCharges = db.collection<UsageChargeDoc>('token_usage_charges')
+
+export async function ensureTokenUsageIndexes(): Promise<void> {
+  // TTL keeps the ledger small: after 30 days a replay can no longer be deduped,
+  // which is well past any retry/redelivery window.
+  await usageCharges.createIndex({ createdAt: 1 }, { expireAfterSeconds: 30 * 24 * 3600 })
+}
+
+// Record owner-level usage exactly once for `chargeKey`. Returns true when it was
+// actually charged (false = duplicate, already accounted).
+export async function recordReplyUsageOnce(ownerId: string, usage: TokenUsage, chargeKey: string, now: Date = new Date()): Promise<boolean> {
+  try {
+    await usageCharges.insertOne({ _id: chargeKey, ownerId, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, createdAt: now })
+  } catch (error) {
+    if ((error as { code?: number }).code === 11000) return false // already charged
+    throw error
+  }
+  await recordReplyUsage(ownerId, usage, now)
+  return true
+}
+
+// The charge key for one ATTEMPT of a routine step: a retry gets its own key (real
+// extra consumption), a redelivery of the same attempt does not.
+export function attemptChargeKey(runId: string, stepId: string, agentId: string, attempt: number): string {
+  return `run:${runId}:${stepId}:${agentId}:a${attempt}`
+}
+
 async function sumTokensSince(ownerId: string, sinceDate: string): Promise<number> {
   const result = await tokenUsage
     .aggregate<{ total: number }>([

@@ -31,6 +31,11 @@ export interface DelegationContext {
   depth: number // 0 at the top
   budget: DelegationBudget
   isCanceled?: () => boolean | Promise<boolean>
+  // Telemetry lineage: the event of the execution that is delegating right now, and
+  // the top of the chain. A KPI like "delegações concluídas" counts ROOT events only,
+  // so a chain is never summed twice.
+  currentEventKey?: string | null
+  rootEventKey?: string | null
 }
 
 export type DelegationDenyCode = 'forbidden' | 'unauthorized' | 'depth_exceeded' | 'cycle' | 'budget_exceeded' | 'canceled'
@@ -140,6 +145,7 @@ export interface DelegationDeps {
     targetType: 'agent' | 'sector'
     targetAgentId?: ObjectId | null
     targetSectorId?: ObjectId | null
+    parentId?: ObjectId | null
     objective: string
   }) => Promise<ObjectId>
   finishDelegation: (
@@ -163,14 +169,19 @@ export interface DelegationDeps {
     floorId: ObjectId
     source: 'delegation' | 'sector'
     preset: string
-    status: 'succeeded' | 'failed'
+    status: 'succeeded' | 'failed' | 'timeout' | 'canceled'
     startedAt: Date
     finishedAt: Date
     inputTokens: number
     outputTokens: number
     toolCalls: number
+    parentEventKey: string | null
+    rootEventKey: string
     metadata: Record<string, string | number | boolean>
   }) => void
+  // Owner-level token accounting for a delegated/sector inference, charged exactly
+  // once for `chargeKey`.
+  chargeUsage?: (ownerId: string, usage: { inputTokens: number; outputTokens: number }, chargeKey: string) => void
 }
 
 interface TaskRun {
@@ -183,7 +194,7 @@ interface TaskRun {
 
 // Emit a per-agent telemetry event for a delegation/sector run (fire-and-forget via
 // the injected recordEvent).
-function emitAgentEvent(deps: DelegationDeps, ctx: DelegationContext, target: Agent, source: 'delegation' | 'sector', eventKey: string, run: { usage: { inputTokens: number; outputTokens: number }; toolCalls: number; startedAt: Date; finishedAt: Date }, status: 'succeeded' | 'failed'): void {
+function emitAgentEvent(deps: DelegationDeps, ctx: DelegationContext, target: Agent, source: 'delegation' | 'sector', eventKey: string, run: { usage: { inputTokens: number; outputTokens: number }; toolCalls: number; startedAt: Date; finishedAt: Date }, status: 'succeeded' | 'failed' | 'timeout' | 'canceled'): void {
   deps.recordEvent?.({
     eventKey,
     ownerId: ctx.ownerId,
@@ -198,8 +209,12 @@ function emitAgentEvent(deps: DelegationDeps, ctx: DelegationContext, target: Ag
     inputTokens: run.usage.inputTokens,
     outputTokens: run.usage.outputTokens,
     toolCalls: run.toolCalls,
+    parentEventKey: ctx.currentEventKey ?? null,
+    rootEventKey: ctx.rootEventKey ?? eventKey,
     metadata: { correlationId: ctx.correlationId, depth: ctx.depth + 1 },
   })
+  // Owner accounting for this delegated inference — once per event key.
+  if (run.usage.inputTokens || run.usage.outputTokens) deps.chargeUsage?.(ctx.ownerId, run.usage, `event:${eventKey}`)
 }
 
 const TASK_TIMEOUT_MS = 120_000
@@ -216,8 +231,10 @@ async function isCanceled(ctx: DelegationContext): Promise<boolean> {
 // Run one target agent as a task under `ctx` (ctx.callerAgentId is the delegator).
 // Returns the model output, charging the shared budget. Assumes checkDelegation
 // already passed.
-async function runAgentTask(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, input: unknown, format: AgentOutputFormat): Promise<TaskRun> {
-  const cctx = childContext(ctx, target)
+async function runAgentTask(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, input: unknown, format: AgentOutputFormat, eventKey?: string): Promise<TaskRun> {
+  // The child runs under THIS execution's event, so anything it delegates chains to
+  // the same root (parent/root lineage).
+  const cctx = { ...childContext(ctx, target), currentEventKey: eventKey ?? ctx.currentEventKey ?? null, rootEventKey: ctx.rootEventKey ?? eventKey ?? null }
   const tools = await deps.resolveTools(target, ctx.ownerId, cctx)
   const apiKey = await deps.apiKeyFor(ctx.ownerId, target.provider)
   const startedAt = new Date()
@@ -233,7 +250,8 @@ async function runAgentTask(deps: DelegationDeps, ctx: DelegationContext, target
     limits: { timeoutMs: TASK_TIMEOUT_MS, maxOutputChars: MAX_OUTPUT_CHARS },
   })
   ctx.budget.tokensSpent += res.usage.inputTokens + res.usage.outputTokens
-  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.length, startedAt, finishedAt: new Date() }
+  // "Ações com ferramenta" counts calls that actually COMPLETED, not attempts.
+  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date() }
 }
 
 // ---- delegate_to_agent ------------------------------------------------------
@@ -263,7 +281,7 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
   })
   const startedAt = new Date()
   try {
-    const run = await runAgentTask(deps, ctx, target, objective, input, (args.format as AgentOutputFormat) || 'markdown')
+    const run = await runAgentTask(deps, ctx, target, objective, input, (args.format as AgentOutputFormat) || 'markdown', `deleg:${recId.toString()}`)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: run.output.slice(0, 500), usage: run.usage })
     emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, run, 'succeeded')
     return { ok: true, result: j({ status: 'ok', agent: target.name, output: run.output }) }
@@ -277,11 +295,11 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
 
 // Run a target with a bounded number of attempts (retryPolicy.maxAttempts). The last
 // error propagates when every attempt fails.
-async function runWithRetry(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, input: unknown, format: AgentOutputFormat, maxAttempts: number): Promise<TaskRun> {
+async function runWithRetry(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, input: unknown, format: AgentOutputFormat, maxAttempts: number, eventKey?: string): Promise<TaskRun> {
   let lastError: unknown
   for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
     try {
-      return await runAgentTask(deps, ctx, target, objective, input, format)
+      return await runAgentTask(deps, ctx, target, objective, input, format, eventKey)
     } catch (error) {
       lastError = error
     }
@@ -292,7 +310,7 @@ async function runWithRetry(deps: DelegationDeps, ctx: DelegationContext, target
 // Record a child delegation (caller = the agent that invoked the sector) so each
 // stage/coordinator run shows in both histories, one level below the sector record,
 // AND a per-agent 'sector' telemetry event.
-async function recordChildRun(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, run: () => Promise<TaskRun>): Promise<string> {
+async function recordChildRun(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, parentId: ObjectId, run: (eventKey: string) => Promise<TaskRun>): Promise<string> {
   const recId = await deps.startDelegation({
     ownerId: ctx.ownerId,
     correlationId: ctx.correlationId,
@@ -300,17 +318,20 @@ async function recordChildRun(deps: DelegationDeps, ctx: DelegationContext, targ
     callerAgentId: new ObjectId(ctx.callerAgentId),
     targetType: 'agent',
     targetAgentId: target._id,
+    parentId,
     objective,
   })
+  const eventKey = `deleg:${recId.toString()}`
   const startedAt = new Date()
   try {
-    const r = await run()
+    const r = await run(eventKey)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: r.output.slice(0, 500), usage: r.usage })
-    emitAgentEvent(deps, ctx, target, 'sector', `deleg:${recId.toString()}`, r, 'succeeded')
+    emitAgentEvent(deps, ctx, target, 'sector', eventKey, r, 'succeeded')
     return r.output
   } catch (error) {
-    await deps.finishDelegation(recId, { status: 'failed', error: error instanceof Error ? error.message : 'falha' })
-    emitAgentEvent(deps, ctx, target, 'sector', `deleg:${recId.toString()}`, { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date() }, 'failed')
+    const message = error instanceof Error ? error.message : 'falha'
+    await deps.finishDelegation(recId, { status: 'failed', error: message })
+    emitAgentEvent(deps, ctx, target, 'sector', eventKey, { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date() }, /timeout|exceeded/i.test(message) ? 'timeout' : 'failed')
     throw error
   }
 }
@@ -376,7 +397,7 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
         const input = stage.dependsOn.length ? stage.dependsOn.map((id) => outputs[id] ?? '').join('\n\n') : args.input
         const instruction = stage.instruction || objective
         try {
-          const out = await recordChildRun(deps, ctx, agent, instruction, () => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts))
+          const out = await recordChildRun(deps, ctx, agent, instruction, recId, (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k))
           outputs[stage.id] = out
           output = out
         } catch (error) {
@@ -399,7 +420,7 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
     const coordinator = await deps.loadAgent(ctx.ownerId, coordinatorId)
     if (!coordinator) throw new Error('coordenador não encontrado')
     const instruction = sector.instruction ? `${sector.instruction}\n\n${objective}` : objective
-    output = await recordChildRun(deps, ctx, coordinator, instruction, () => runAgentTask(deps, ctx, coordinator, instruction, args.input, format))
+    output = await recordChildRun(deps, ctx, coordinator, instruction, recId, (k) => runAgentTask(deps, ctx, coordinator, instruction, args.input, format, k))
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
     return { ok: true, result: j({ status: 'ok', sector: sector.name, output }) }
   } catch (error) {

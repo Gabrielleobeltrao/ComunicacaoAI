@@ -21,8 +21,8 @@ import { rootContext } from './delegation.js'
 import { productionDelegationDeps, resolveToolsWithDelegation } from './delegationWiring.js'
 import { safeFetch } from './net/safeHttp.js'
 import { getProviderApiKey } from './userSettings.js'
-import { recordReplyUsage } from './tokenUsage.js'
-import { recordAgentEventSafe, runEventKey } from './agentEvents.js'
+import { attemptChargeKey, recordReplyUsageOnce } from './tokenUsage.js'
+import { finalizeAgentEventSafe, runEventKey } from './agentEvents.js'
 import { decryptConfig, getConnection } from './connections/service.js'
 import { insertDeliveryIdempotent, updateDelivery } from './connections/repository.js'
 import { maskDestination, sendEmail, sendTelegram } from './connections/adapters.js'
@@ -60,6 +60,18 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       })
       const tools = await resolveToolsWithDelegation(agent, run.ownerId, ctx, deps)
       const startedAt = new Date()
+      const eventKey = runEventKey(run._id.toString(), call.stepId, agent._id.toString())
+      const baseEvent = {
+        eventKey,
+        ownerId: run.ownerId,
+        agentId: agent._id,
+        buildingId: run.buildingId,
+        floorId: run.floorId,
+        source: 'routine' as const,
+        preset: agent.preset,
+        startedAt,
+        metadata: { runId: run._id.toString(), stepId: call.stepId, attempt: call.attempt },
+      }
       try {
         const result = await executeAgentTask({
           objective: String(agent.objective ?? call.objective ?? ''),
@@ -72,39 +84,28 @@ function buildDeps(run: AutomationRun): RunnerDeps {
           tools,
           output: { format: call.format },
         })
-        // Propagate usage: owner-level accounting AND per-agent telemetry. Keyed by
-        // run+step+agent so a retried run never double-counts.
-        recordReplyUsage(run.ownerId, result.usage).catch((e) => console.error('recordReplyUsage failed:', (e as Error).message))
-        recordAgentEventSafe({
-          eventKey: runEventKey(run._id.toString(), call.stepId, agent._id.toString()),
-          ownerId: run.ownerId,
-          agentId: agent._id,
-          buildingId: run.buildingId,
-          floorId: run.floorId,
-          source: 'routine',
-          preset: agent.preset,
+        // Owner accounting, charged exactly once per ATTEMPT: a genuine retry really
+        // consumed tokens (so it charges again), a redelivered job does not.
+        recordReplyUsageOnce(run.ownerId, result.usage, attemptChargeKey(run._id.toString(), call.stepId, agent._id.toString(), call.attempt)).catch((e) =>
+          console.error('recordReplyUsageOnce failed:', (e as Error).message),
+        )
+        // ONE logical event per run/step/agent: attempts accumulate usage/duration
+        // and the last outcome wins, so a failure→success ends as 'succeeded'.
+        finalizeAgentEventSafe({
+          ...baseEvent,
           status: 'succeeded',
-          startedAt,
           finishedAt: new Date(),
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
-          toolCalls: result.toolCalls.length,
-          metadata: { runId: run._id.toString(), stepId: call.stepId },
+          toolCalls: result.toolCalls.filter((c) => c.ok).length, // completed tool calls only
         })
-        return { output: result.output }
+        return { output: result.output, usage: result.usage }
       } catch (error) {
-        recordAgentEventSafe({
-          eventKey: runEventKey(run._id.toString(), call.stepId, agent._id.toString()),
-          ownerId: run.ownerId,
-          agentId: agent._id,
-          buildingId: run.buildingId,
-          floorId: run.floorId,
-          source: 'routine',
-          preset: agent.preset,
-          status: 'failed',
-          startedAt,
+        const kind = (error as { kind?: string }).kind
+        finalizeAgentEventSafe({
+          ...baseEvent,
+          status: kind === 'timeout' ? 'timeout' : 'failed',
           finishedAt: new Date(),
-          metadata: { runId: run._id.toString(), stepId: call.stepId },
         })
         throw error
       }
@@ -207,6 +208,8 @@ async function processRun(runId: string): Promise<void> {
     status: outcome.status as RunStatus,
     finishedAt: now,
     finalOutput: outcome.finalOutput,
+    // Real consumption of the whole run (summed across steps and their attempts).
+    usage: outcome.usage,
     error: failed ? { kind: failed.errorKind ?? 'error', message: failed.errorMessage ?? 'step failed' } : null,
   })
 }

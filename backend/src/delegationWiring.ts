@@ -13,6 +13,7 @@ import type { ResolvedTool } from './agentTools.js'
 import { ObjectId } from 'mongodb'
 import { finishDelegation, startDelegation } from './delegationLog.js'
 import { recordAgentEventSafe } from './agentEvents.js'
+import { recordReplyUsageOnce } from './tokenUsage.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
 import type { DelegationContext, DelegationDeps } from './delegation.js'
 
@@ -72,6 +73,11 @@ export function productionDelegationDeps(): DelegationDeps {
         ...e,
         buildingId: ObjectId.isValid(e.buildingId) ? new ObjectId(e.buildingId) : null,
       }),
+    // Owner accounting for delegated/sector inferences — charged once per event key,
+    // so a redelivered/replayed emit never bills twice.
+    chargeUsage: (ownerId, usage, chargeKey) => {
+      recordReplyUsageOnce(ownerId, usage, chargeKey).catch((e) => console.error('recordReplyUsageOnce failed:', (e as Error).message))
+    },
   }
   return deps
 }

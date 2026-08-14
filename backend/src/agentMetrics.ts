@@ -95,7 +95,9 @@ export async function getAgentEventMetricsBatch(ownerId: string, opts: { floorId
           _id: '$agentId',
           executions: { $sum: 1 },
           succeeded: { $sum: { $cond: [{ $eq: ['$status', 'succeeded'] }, 1, 0] } },
-          toolActions: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'succeeded'] }, { $gt: ['$toolCalls', 0] }] }, 1, 0] } },
+          // Tool ACTIONS = tool calls that actually completed (the runtime only
+          // counts ok:true calls), summed — not "executions that used a tool".
+          toolActions: { $sum: { $cond: [{ $eq: ['$status', 'succeeded'] }, { $ifNull: ['$toolCalls', 0] }, 0] } },
           totalDurationMs: { $sum: '$durationMs' },
           totalInputTokens: { $sum: '$inputTokens' },
           totalOutputTokens: { $sum: '$outputTokens' },
@@ -103,7 +105,19 @@ export async function getAgentEventMetricsBatch(ownerId: string, opts: { floorId
       },
     ])
     .toArray()
-  return new Map(rows.map((r) => [r._id.toString(), { executions: r.executions, succeeded: r.succeeded, toolActions: r.toolActions, totalDurationMs: r.totalDurationMs, totalInputTokens: r.totalInputTokens, totalOutputTokens: r.totalOutputTokens }]))
+  return new Map(
+    rows.map((r) => [
+      r._id.toString(),
+      {
+        executions: r.executions,
+        succeeded: r.succeeded,
+        toolActions: r.toolActions,
+        totalDurationMs: r.totalDurationMs,
+        totalInputTokens: r.totalInputTokens,
+        totalOutputTokens: r.totalOutputTokens,
+      },
+    ]),
+  )
 }
 
 // The public per-agent stats shape (mirrored on the frontend). Derived metrics are

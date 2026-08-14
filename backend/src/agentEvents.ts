@@ -12,7 +12,10 @@ import { db } from './db.js'
 
 export type AgentEventSource = 'channel' | 'manual' | 'routine' | 'delegation' | 'sector'
 export const AGENT_EVENT_SOURCES: AgentEventSource[] = ['channel', 'manual', 'routine', 'delegation', 'sector']
-export type AgentEventStatus = 'succeeded' | 'failed'
+// Every terminal outcome is recorded, so a timeout or a cancellation is never
+// silently missing from an agent's history.
+export type AgentEventStatus = 'succeeded' | 'failed' | 'timeout' | 'canceled'
+export const AGENT_EVENT_STATUSES: AgentEventStatus[] = ['succeeded', 'failed', 'timeout', 'canceled']
 
 export interface AgentExecutionEvent {
   _id: ObjectId
@@ -30,6 +33,14 @@ export interface AgentExecutionEvent {
   inputTokens: number
   outputTokens: number
   toolCalls: number
+  // How many attempts this logical execution took (a retried routine step stays ONE
+  // event: the final status wins, usage/duration accumulate across attempts).
+  attemptCount: number
+  // Delegation shape: the event that triggered this one, and the top of the chain.
+  // A root event (parentEventKey null) is what "delegações concluídas" counts, so a
+  // chain is never summed twice.
+  parentEventKey: string | null
+  rootEventKey: string | null
   metadata: Record<string, string | number | boolean> // safe scalars only
 }
 
@@ -63,6 +74,9 @@ export interface RecordAgentEventInput {
   inputTokens?: number
   outputTokens?: number
   toolCalls?: number
+  attemptCount?: number
+  parentEventKey?: string | null
+  rootEventKey?: string | null
   metadata?: Record<string, string | number | boolean>
 }
 
@@ -86,6 +100,9 @@ export async function recordAgentEvent(input: RecordAgentEventInput): Promise<bo
     inputTokens: input.inputTokens ?? 0,
     outputTokens: input.outputTokens ?? 0,
     toolCalls: input.toolCalls ?? 0,
+    attemptCount: input.attemptCount ?? 1,
+    parentEventKey: input.parentEventKey ?? null,
+    rootEventKey: input.rootEventKey ?? input.eventKey,
     metadata: input.metadata ?? {},
   }
   try {
@@ -95,6 +112,47 @@ export async function recordAgentEvent(input: RecordAgentEventInput): Promise<bo
     if ((error as { code?: number }).code === 11000) return false // duplicate — already counted
     throw error
   }
+}
+
+// Finalize ONE logical execution that may span several attempts (a retried routine
+// step). The first attempt creates the row; later attempts accumulate the real
+// consumption (they DID run) and overwrite the status with the latest outcome — so a
+// failure followed by a success ends as 'succeeded' with attemptCount=2, instead of
+// the first failure occupying the key and the success being dropped.
+export async function finalizeAgentEvent(input: RecordAgentEventInput): Promise<void> {
+  const durationMs = input.durationMs ?? Math.max(0, input.finishedAt.getTime() - input.startedAt.getTime())
+  await events.updateOne(
+    { eventKey: input.eventKey },
+    {
+      $setOnInsert: {
+        _id: new ObjectId(),
+        eventKey: input.eventKey,
+        ownerId: input.ownerId,
+        buildingId: input.buildingId ?? null,
+        floorId: input.floorId ?? null,
+        agentId: input.agentId,
+        source: input.source,
+        preset: input.preset ?? 'custom',
+        startedAt: input.startedAt,
+        parentEventKey: input.parentEventKey ?? null,
+        rootEventKey: input.rootEventKey ?? input.eventKey,
+      },
+      // The latest attempt decides the final status; timing/metadata follow it.
+      $set: { status: input.status, finishedAt: input.finishedAt, metadata: input.metadata ?? {} },
+      $inc: {
+        durationMs,
+        inputTokens: input.inputTokens ?? 0,
+        outputTokens: input.outputTokens ?? 0,
+        toolCalls: input.toolCalls ?? 0,
+        attemptCount: 1,
+      },
+    },
+    { upsert: true },
+  )
+}
+
+export function finalizeAgentEventSafe(input: RecordAgentEventInput): void {
+  finalizeAgentEvent(input).catch((error) => console.error('finalizeAgentEvent failed:', (error as Error).message))
 }
 
 // Fire-and-forget wrapper: telemetry must never break or slow the real work.

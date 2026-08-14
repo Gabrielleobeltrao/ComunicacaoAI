@@ -235,8 +235,14 @@ export interface AgentCardStats {
 // Per-agent stats for the whole roster in a few aggregations (instead of one
 // getAgentStats round-trip per agent). Only widgets an agent answers directly
 // are attributed; sector-answered widgets aren't tied to a single agent.
-export async function getAgentStatsBatch(ownerId: string): Promise<Record<string, AgentCardStats>> {
-  const ownerWidgets = await widgets.find({ ownerId, agentId: { $ne: null } }).project({ _id: 1, agentId: 1 }).toArray()
+// `opts.since` scopes conversations/leads to the SAME period as the operational
+// metrics (a lifetime total must never be mixed with a 7d/30d figure); `opts.agentId`
+// narrows the whole aggregation to one agent, so the agent page doesn't fetch the
+// entire roster.
+export async function getAgentStatsBatch(ownerId: string, opts: { since?: Date | null; agentId?: ObjectId | null } = {}): Promise<Record<string, AgentCardStats>> {
+  const widgetFilter: Record<string, unknown> = { ownerId, agentId: { $ne: null } }
+  if (opts.agentId) widgetFilter.agentId = opts.agentId
+  const ownerWidgets = await widgets.find(widgetFilter).project({ _id: 1, agentId: 1 }).toArray()
   const widgetToAgent = new Map<string, string>()
   for (const w of ownerWidgets) {
     if (w.agentId) widgetToAgent.set(w._id.toString(), w.agentId.toString())
@@ -246,10 +252,11 @@ export async function getAgentStatsBatch(ownerId: string): Promise<Record<string
   if (widgetIds.length === 0) return result
 
   const bump = (agentId: string) => (result[agentId] ??= { conversations: 0, attendedConversations: 0, qualifiedLeads: 0 })
+  const sinceMatch = opts.since ? { createdAt: { $gte: opts.since } } : {}
 
   const convGroups = await widgetMessages
     .aggregate<{ _id: { widgetId: ObjectId; conversationId: string }; hasAgent: number }>([
-      { $match: { widgetId: { $in: widgetIds } } },
+      { $match: { widgetId: { $in: widgetIds }, ...sinceMatch } },
       {
         $group: {
           _id: { widgetId: '$widgetId', conversationId: '$conversationId' },
@@ -272,6 +279,8 @@ export async function getAgentStatsBatch(ownerId: string): Promise<Record<string
       {
         $match: {
           widgetId: { $in: widgetIds },
+          // Same period as the operational metrics (memories carry updatedAt).
+          ...(opts.since ? { updatedAt: { $gte: opts.since } } : {}),
           $expr: { $gt: [{ $size: { $objectToArray: { $ifNull: ['$structuredOutputData', {}] } } }, 0] },
         },
       },

@@ -1667,13 +1667,20 @@ app.get('/api/agent-stats', requireAuth, async (req, res) => {
   const since = periodSince(period)
   const floorId = await scopedFloorId(ownerId, req.query.floorId)
 
-  const [agents, eventMetrics, delegationsByCaller, widgetStats, since0] = await Promise.all([
+  // Optional agentId: the agent page asks for ONE agent instead of the whole roster.
+  const onlyAgentId = typeof req.query.agentId === 'string' && ObjectId.isValid(req.query.agentId) ? new ObjectId(req.query.agentId) : null
+
+  const [allAgents, eventMetrics, delegationsByCaller, widgetStats, since0] = await Promise.all([
     listAgents(ownerId, floorId),
     getAgentEventMetricsBatch(ownerId, { floorId, since }),
     succeededDelegationsByCaller(ownerId, since ?? undefined),
-    getAgentStatsBatch(ownerId), // widget-based conversations/leads (lifetime)
+    // Conversations/leads scoped to the SAME period — never a lifetime total mixed
+    // with a 7d/30d figure.
+    getAgentStatsBatch(ownerId, { since, agentId: onlyAgentId }),
     telemetrySince(ownerId),
   ])
+  // Ownership is enforced by listAgents (owner-scoped); an id outside it yields none.
+  const agents = onlyAgentId ? allAgents.filter((a) => a._id.equals(onlyAgentId)) : allAgents
 
   const stats: Record<string, unknown> = {}
   const channel: Record<string, { linked: boolean; conversations: number; attendedConversations: number; qualifiedLeads: number }> = {}
@@ -1689,8 +1696,12 @@ app.get('/api/agent-stats', requireAuth, async (req, res) => {
         case 'tool_actions':
           return ev && ev.executions > 0 ? ev.toolActions : null
         case 'delegations': {
-          const c = delegationsByCaller.get(id) ?? 0
-          return c === 0 && !(ev && ev.executions > 0) ? null : c
+          // ROOT delegations this agent initiated and completed. A sector run counts
+          // once (its per-stage child records are excluded), so children are never
+          // summed into the parent.
+          const c = delegationsByCaller.get(id)
+          if (c === undefined) return ev && ev.executions > 0 ? 0 : null
+          return c
         }
         case 'conversations':
           return w ? w.conversations : null
