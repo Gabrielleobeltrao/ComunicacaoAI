@@ -121,6 +121,8 @@ import {
 } from './userSettings.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
+import { agentReadiness, triggerStates } from './agentReadiness.js'
+import { listRoutines } from './automations/routine.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import type { KnowledgeOwner } from './knowledge.js'
@@ -2017,6 +2019,20 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
 
   const linkedWidgets = widgets.filter((w) => w.agentId?.toString() === agentId)
   const channelLinked = linkedWidgets.length > 0 || (agent.activationModes ?? []).includes('channel')
+  // Real wiring around this agent: what EXISTS, not what is merely allowed. Every
+  // count comes from owner-scoped queries.
+  const agentRoutines = await listRoutines(ownerId, agentObjectId).catch(() => [])
+  const wiring = {
+    routineCount: agentRoutines.filter((r) => r.status === 'active').length,
+    channelCount: linkedWidgets.length,
+    webhookCount: agentRoutines.filter((r) => r.draftDefinition?.trigger?.type === 'webhook').length,
+    collaboratorCount: (agent.callableAgentIds?.length ?? 0) + (agent.callableSectorIds?.length ?? 0),
+    toolCount: (agent.tools?.length ?? 0) + (agent.builtinTools?.length ?? 0),
+    knowledgeCount: documents.length,
+    deliveryConfigured: agentRoutines.some((r) => (r.draftDefinition?.deliveries?.length ?? 0) > 0),
+  }
+  const readiness = agentReadiness(agent, wiring)
+  const triggers = triggerStates(agent, wiring)
   // "Entregas" is only offered when this agent really sent something.
   const agentHasDeliveries = (await sentDeliveriesByAgent(ownerId)).has(agentId)
   res.json({
@@ -2025,6 +2041,11 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
     // KPI availability for the "Métrica do card" picker (data-source aware) and the
     // currently-resolved card metric.
     channelLinked,
+    // The conceptual model the UI renders: what fires this agent (allowed vs
+    // configured) and whether it can actually do its job.
+    wiring,
+    readiness,
+    triggers,
     availableMetrics: availableMetricKeys(agent, channelLinked, { hasDeliveries: agentHasDeliveries }),
     resolvedMetric: resolveMetricKey(agent, channelLinked, { hasDeliveries: agentHasDeliveries }),
     linkedWidgets: linkedWidgets.map((w) => ({ _id: w._id, name: w.name })),
