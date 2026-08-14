@@ -49,6 +49,13 @@ export async function listAutomations(ownerId: string, q: ListAutomationsQuery):
   return { items, total }
 }
 
+// Every ACTIVE automation of this owner, whatever floor or agent it belongs to.
+// Used to answer "which agents does a live webhook fire?" — a question that spans
+// standalone automations and agent routines alike.
+export function listActiveAutomations(ownerId: string): Promise<Automation[]> {
+  return automations.find({ ownerId, status: 'active' }).toArray()
+}
+
 export async function updateAutomation(ownerId: string, id: ObjectId, set: Partial<Automation>): Promise<Automation | null> {
   const result = await automations.findOneAndUpdate(
     { _id: id, ownerId },

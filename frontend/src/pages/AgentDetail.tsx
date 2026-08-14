@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
 import { AgentActivations, AgentHistoryPanel, AgentRoutines } from '../components/AgentWorkAreas'
+import { CollaborationEditor } from '../components/CollaborationEditor'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
@@ -382,7 +383,13 @@ export function AgentDetail() {
   const agentFloorName = building?.floors.find((f) => f.id === agentFloorId)?.name ?? 'Andar'
   const raw = section ?? ''
   const active = TAB_KEYS.includes(raw) ? raw : (LEGACY_SECTION[raw] ?? 'visao-geral')
-  const goToSection = (key: string) => navigate(fid ? floorAgent(fid, agentId!, key) : `/agents/${agentId}/${key}`)
+  // A key may carry an anchor ("fluxos#colaboracao") so an action opens the exact
+  // editor that solves the pendency, not just the tab that contains it.
+  const goToSection = (key: string) => {
+    const [section, anchor] = key.split('#')
+    const base = fid ? floorAgent(fid, agentId!, section) : `/agents/${agentId}/${section}`
+    navigate(anchor ? `${base}#${anchor}` : base)
+  }
   const accent = agent ? accentFor(agent._id) : 'var(--intent-brand)'
   const stats = overview?.stats
   const attendanceRate = stats && stats.conversations > 0 ? Math.round((stats.attendedConversations / stats.conversations) * 100) : 0
@@ -525,7 +532,10 @@ export function AgentDetail() {
                     <TriggersPanel overview={overview} onFixed={load} />
                     <TeamsPanel overview={overview} fid={fid} />
                     <AgentRoutines key={agent._id} agent={agent} />
-                    <AgentActivations key={agent._id} agent={agent} agents={agents} />
+                    <AgentActivations key={agent._id} agent={agent} />
+                    {/* The pendency "sem colaboradores" is solved right here — the
+                        checklist and the readiness card link straight to it. */}
+                    <CollaborationEditor key={`${agent._id}:collab`} agent={agent} onSaved={load} />
                   </div>
                 ) : (
                   <>

@@ -3,6 +3,7 @@ import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
 import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
 import { reachableCollaboratorCount } from '../lib/agentReadiness'
+import { useBuildingPeers } from '../lib/useBuildingPeers'
 import { assignAgentToSector } from '../lib/sectors'
 import type { AgentPreset, AgentSummary, SectorSummary } from '../lib/types'
 import { Button, Card, Field, Input, Select, Textarea } from '../ui'
@@ -85,7 +86,7 @@ interface PendingItem {
   key: string
   label: string
   action: string
-  section: 'como-trabalha' | 'fluxos' | 'visao-geral'
+  section: 'como-trabalha' | 'fluxos' | 'visao-geral' | 'fluxos#colaboracao'
 }
 const PENDING: Record<string, PendingItem> = {
   research: { key: 'research', label: 'Conectar uma fonte de pesquisa (app ou ferramenta)', action: 'Conectar ferramenta', section: 'como-trabalha' },
@@ -95,7 +96,7 @@ const PENDING: Record<string, PendingItem> = {
   routine: { key: 'routine', label: 'Criar a rotina que acorda ele', action: 'Criar rotina', section: 'fluxos' },
   channel: { key: 'channel', label: 'Vincular o canal onde ele vai atender', action: 'Vincular canal', section: 'fluxos' },
   destination: { key: 'destination', label: 'Definir para onde a entrega vai', action: 'Definir destino', section: 'fluxos' },
-  collaborators: { key: 'collaborators', label: 'Escolher os colegas que ele pode acionar', action: 'Escolher colegas', section: 'fluxos' },
+  collaborators: { key: 'collaborators', label: 'Escolher os colegas que ele pode acionar', action: 'Escolher colegas', section: 'fluxos#colaboracao' },
 }
 
 const TONES = [
@@ -186,8 +187,11 @@ export function HireWizard({
 
   const spec = useMemo(() => presets.find((p) => p.preset === preset), [presets, preset])
   const form = ROLE_FORM[preset]
-  const otherAgents = useMemo(() => agents.filter((a) => a.name), [agents])
-  const callableSectors = useMemo(() => sectors.filter((s) => s.mode !== 'organization'), [sectors])
+  // Collaboration spans the whole building: a colleague one floor up is a real
+  // collaborator, and the backend has always counted it as one.
+  const peers = useBuildingPeers()
+  const otherAgents = useMemo(() => (peers.agents.length > 0 ? peers.agents : agents).filter((a) => a.name), [peers.agents, agents])
+  const callableSectors = useMemo(() => (peers.sectors.length > 0 ? peers.sectors : sectors.filter((s) => s.mode !== 'organization')), [peers.sectors, sectors])
 
   const applyPreset = (s: AgentPresetSpec) => {
     setPreset(s.preset)

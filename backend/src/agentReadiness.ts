@@ -128,6 +128,25 @@ export interface SectorCandidate {
   executable: boolean
 }
 
+// The same rule applied to what the CLIENT sent: any id that is not a real,
+// same-building, owner-scoped target is dropped instead of being stored. A sector
+// that cannot execute is never a collaborator. Returns only the keys it was given,
+// so a partial update stays partial.
+export function sanitizeCollaborationRefs(
+  self: { id: string; buildingId: string },
+  fields: { callableAgentIds?: string[]; callableSectorIds?: string[]; allowedCallerAgentIds?: string[] },
+  agents: CollaboratorCandidate[],
+  sectors: SectorCandidate[],
+): { callableAgentIds?: string[]; callableSectorIds?: string[]; allowedCallerAgentIds?: string[] } {
+  const agentOk = new Set(agents.filter((a) => a.buildingId === self.buildingId && a.id !== self.id).map((a) => a.id))
+  const sectorOk = new Set(sectors.filter((t) => t.buildingId === self.buildingId && t.executable).map((t) => t.id))
+  const out: { callableAgentIds?: string[]; callableSectorIds?: string[]; allowedCallerAgentIds?: string[] } = {}
+  if (fields.callableAgentIds) out.callableAgentIds = [...new Set(fields.callableAgentIds)].filter((id) => agentOk.has(id))
+  if (fields.allowedCallerAgentIds) out.allowedCallerAgentIds = [...new Set(fields.allowedCallerAgentIds)].filter((id) => agentOk.has(id))
+  if (fields.callableSectorIds) out.callableSectorIds = [...new Set(fields.callableSectorIds)].filter((id) => sectorOk.has(id))
+  return out
+}
+
 export function reachableCollaborators(
   agent: Pick<Agent, 'delegationPolicy' | 'callableAgentIds' | 'callableSectorIds'> & { id: string; buildingId: string },
   agents: CollaboratorCandidate[],
@@ -169,7 +188,8 @@ export interface ReadinessIssue {
   message: string
   action: string
   // Where the action lives in the agent page, so the UI can deep-link.
-  section: 'como-trabalha' | 'fluxos' | 'visao-geral'
+  // A section key, optionally with the anchor of the exact editor inside it.
+  section: 'como-trabalha' | 'fluxos' | 'visao-geral' | 'fluxos#colaboracao'
 }
 
 export interface Readiness {
@@ -179,7 +199,8 @@ export interface Readiness {
 
 const ISSUE: Record<ReadinessCode, Omit<ReadinessIssue, 'code'>> = {
   no_objective: { message: 'Este agente ainda não tem um objetivo descrito.', action: 'Descrever o objetivo', section: 'visao-geral' },
-  no_collaborators: { message: 'Um gerente precisa de colegas para acionar.', action: 'Adicionar colaboradores', section: 'fluxos' },
+  // 'fluxos#colaboracao' opens the editor that actually solves it.
+  no_collaborators: { message: 'Um gerente precisa de colegas para acionar.', action: 'Adicionar colaboradores', section: 'fluxos#colaboracao' },
   no_research_source: { message: 'Este pesquisador não tem nenhuma fonte para consultar.', action: 'Adicionar ferramenta', section: 'como-trabalha' },
   no_tool: { message: 'Um operador precisa de uma integração para executar a ação.', action: 'Adicionar ferramenta', section: 'como-trabalha' },
   no_monitor_source: { message: 'Um monitor precisa de uma fonte e de uma rotina que o acorde.', action: 'Criar rotina', section: 'fluxos' },

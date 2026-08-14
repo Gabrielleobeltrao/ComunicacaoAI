@@ -121,9 +121,13 @@ import {
 } from './userSettings.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
-import { agentReadiness, callerPolicyFromLegacy, reachableCollaborators, triggerStates } from './agentReadiness.js'
-import type { AgentWiring, CollaboratorCandidate, SectorCandidate } from './agentReadiness.js'
+import { agentReadiness, callerPolicyFromLegacy, sanitizeCollaborationRefs, triggerStates } from './agentReadiness.js'
+import { collaboratorContext, collaboratorCountFor } from './collaboration.js'
+import type { CollaboratorContext } from './collaboration.js'
+import type { AgentWiring } from './agentReadiness.js'
 import { listRoutines } from './automations/routine.js'
+import { liveWebhookCountByAgent } from './automations/webhookTriggers.js'
+import { listActiveAutomations } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import type { KnowledgeOwner } from './knowledge.js'
@@ -886,16 +890,6 @@ function parseSectorMode(value: unknown): SectorMode | null {
 // A callable-sector list may only hold EXECUTABLE sectors (orchestrated/pipeline).
 // Enforced server-side so an organization sector never becomes a delegation target,
 // even if a client sends it.
-async function filterExecutableSectorIds(ownerId: string, ids: string[]): Promise<string[]> {
-  const out: string[] = []
-  for (const id of ids) {
-    if (!ObjectId.isValid(id)) continue
-    const s = await getSectorById(ownerId, new ObjectId(id))
-    if (s && sectorIsExecutable(normalizeSectorMode(s.mode))) out.push(id)
-  }
-  return out
-}
-
 const MAX_SECTOR_STAGES = 12
 
 // Parse the orchestrated/pipeline team fields (coordinator + stages) from a request
@@ -1322,11 +1316,12 @@ app.get('/api/sectors/:sectorId/overview', requireAuth, async (req, res) => {
   const known = new Map(allAgents.map((a) => [a._id.toString(), a]))
   const involved = [...involvedIds].map((id) => known.get(id)).filter((a): a is NonNullable<typeof a> => Boolean(a))
   const collabCtx = await collaboratorContext(ownerId)
+  const liveWebhooks = liveWebhookCountByAgent(await listActiveAutomations(ownerId).catch(() => []))
   const pendingAgentNames = (
     await Promise.all(
       involved.map(async (a) => {
         const channels = widgets.filter((w) => w.agentId?.toString() === a._id.toString()).length
-        return agentReadiness(a, await wiringForAgent(ownerId, a, channels, collabCtx)).ready ? null : a.name
+        return agentReadiness(a, await wiringForAgent(ownerId, a, channels, collabCtx, liveWebhooks)).ready ? null : a.name
       }),
     )
   ).filter((n): n is string => n !== null)
@@ -1666,9 +1661,17 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: modelError })
     return
   }
-  if (modelFields.callableSectorIds) modelFields.callableSectorIds = await filterExecutableSectorIds(res.locals.userId, modelFields.callableSectorIds)
-
   const officeId = await resolveFloorOffice(res.locals.userId, req.body?.floorId)
+  // Same validation as the update path: a new agent can only be wired to colleagues
+  // and teams that really exist in ITS building.
+  if (modelFields.callableAgentIds || modelFields.callableSectorIds || modelFields.allowedCallerAgentIds) {
+    const ctx = await collaboratorContext(res.locals.userId)
+    Object.assign(
+      modelFields,
+      sanitizeCollaborationRefs({ id: '', buildingId: ctx.buildingOf(officeId.toString()) }, modelFields, ctx.agents, ctx.sectors),
+    )
+  }
+
   const agent = await createAgent(res.locals.userId, officeId, name, {
     objective: typeof objective === 'string' ? objective : undefined,
     provider,
@@ -1970,7 +1973,26 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     res.status(400).json({ error: modelError })
     return
   }
-  if (modelFields.callableSectorIds) modelFields.callableSectorIds = await filterExecutableSectorIds(res.locals.userId, modelFields.callableSectorIds)
+  // Collaboration references are validated against reality: same owner, same
+  // building, agent/sector actually exists, sector actually executes. Anything else
+  // is dropped rather than stored — a foreign id must never end up in the document.
+  if (modelFields.callableAgentIds || modelFields.callableSectorIds || modelFields.allowedCallerAgentIds) {
+    const existing = await getAgentById(res.locals.userId, new ObjectId(agentId))
+    if (!existing) {
+      res.status(404).json({ error: 'Agent not found' })
+      return
+    }
+    const ctx = await collaboratorContext(res.locals.userId)
+    Object.assign(
+      modelFields,
+      sanitizeCollaborationRefs(
+        { id: agentId, buildingId: ctx.buildingOf(existing.officeId?.toString() ?? '') },
+        modelFields,
+        ctx.agents,
+        ctx.sectors,
+      ),
+    )
+  }
   Object.assign(updates, modelFields)
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -2031,61 +2053,22 @@ app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
 // Real wiring around an agent: what EXISTS, not what is merely allowed. Shared by
 // the agent overview and the sector overview (which flags members that still need
 // their own setup), so both report the same pendencies.
-// Everything needed to answer "who can this agent actually reach?", loaded once so
-// a page listing many agents does not re-query per agent. Owner-scoped by construction.
-interface CollaboratorContext {
-  buildingOf: (floorId: string) => string
-  agents: CollaboratorCandidate[]
-  sectors: SectorCandidate[]
-}
-
-async function collaboratorContext(ownerId: string): Promise<CollaboratorContext> {
-  const [floors, all, sectors] = await Promise.all([
-    listFloors(ownerId, { includeArchived: true }).catch(() => []),
-    listAgents(ownerId).catch(() => []),
-    listSectors(ownerId).catch(() => []),
-  ])
-  const byFloor = new Map(floors.map((f) => [f._id.toString(), f.buildingId.toString()]))
-  // A floor we cannot resolve becomes its own building: isolated, never a false match.
-  const buildingOf = (floorId: string) => byFloor.get(floorId) ?? floorId
-  return {
-    buildingOf,
-    agents: all.map((a) => ({
-      id: a._id.toString(),
-      buildingId: buildingOf(a.officeId?.toString() ?? ''),
-      callerPolicy: callerPolicyFromLegacy(a),
-      allowedCallerAgentIds: a.allowedCallerAgentIds ?? [],
-    })),
-    sectors: sectors.map((t) => ({
-      id: t._id.toString(),
-      buildingId: buildingOf(t.officeId?.toString() ?? ''),
-      executable: sectorIsExecutable(normalizeSectorMode(t.mode)),
-    })),
-  }
-}
-
-const collaboratorCountFor = (agent: Agent, ctx: CollaboratorContext): number =>
-  reachableCollaborators(
-    { ...agent, id: agent._id.toString(), buildingId: ctx.buildingOf(agent.officeId?.toString() ?? '') },
-    ctx.agents,
-    ctx.sectors,
-  ).count
-
-async function wiringForAgent(ownerId: string, agent: Agent, linkedChannelCount: number, ctx: CollaboratorContext): Promise<AgentWiring> {
+async function wiringForAgent(ownerId: string, agent: Agent, linkedChannelCount: number, ctx: CollaboratorContext, liveWebhooks?: Map<string, number>): Promise<AgentWiring> {
   const [routines, documents] = await Promise.all([
     listRoutines(ownerId, agent._id).catch(() => []),
     listDocuments(agent._id).catch(() => []),
   ])
   // A trigger counts as CONFIGURED only when something active really fires it:
-  // a schedule routine that is running (a webhook routine is not a schedule), and a
-  // webhook routine that was actually activated (a draft never published is not a
-  // configured event trigger).
+  // a schedule routine that is running (a webhook is not a schedule), and — for
+  // events — a PUBLISHED, ACTIVE webhook that really references this agent, whether
+  // through its own routine or through an agent.execute step of any automation.
   const active = routines.filter((r) => r.status === 'active')
-  const isWebhook = (r: (typeof routines)[number]) => r.draftDefinition?.trigger?.type === 'webhook'
+  const isWebhook = (r: (typeof routines)[number]) => (r.trigger?.type ?? r.draftDefinition?.trigger?.type) === 'webhook'
+  const webhooks = liveWebhooks ?? liveWebhookCountByAgent(await listActiveAutomations(ownerId).catch(() => []))
   return {
     routineCount: active.filter((r) => !isWebhook(r)).length,
     channelCount: linkedChannelCount,
-    webhookCount: active.filter(isWebhook).length,
+    webhookCount: webhooks.get(agent._id.toString()) ?? 0,
     // Real reachable colleagues — a policy of 'all' over an empty building is zero.
     collaboratorCount: collaboratorCountFor(agent, ctx),
     toolCount: (agent.tools?.length ?? 0) + (agent.builtinTools?.length ?? 0),
@@ -2093,6 +2076,57 @@ async function wiringForAgent(ownerId: string, agent: Agent, linkedChannelCount:
     deliveryConfigured: routines.some((r) => (r.draftDefinition?.deliveries?.length ?? 0) > 0),
   }
 }
+
+// Who this agent may be wired to work with — everyone in the SAME BUILDING (any
+// floor), owner-scoped, itself excluded, and only sectors that can really execute.
+// The roster page still lists one floor; collaboration is a building-wide decision,
+// so the editor asks the backend instead of guessing from the floor it happens to
+// have loaded.
+app.get('/api/agents/:agentId/collaborators', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  if (!ObjectId.isValid(agentId)) {
+    res.status(400).json({ error: 'Invalid agent id' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const agent = await getAgentById(ownerId, new ObjectId(agentId))
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const ctx = await collaboratorContext(ownerId)
+  const buildingId = ctx.buildingOf(agent.officeId?.toString() ?? '')
+  const floors = await listFloors(ownerId, { includeArchived: true }).catch(() => [])
+  const floorName = new Map(floors.map((f) => [f._id.toString(), f.name]))
+  const all = await listAgents(ownerId)
+  const sectors = await listSectors(ownerId)
+
+  res.json({
+    buildingId,
+    agents: all
+      .filter((a) => !a._id.equals(agent._id))
+      .filter((a) => ctx.buildingOf(a.officeId?.toString() ?? '') === buildingId)
+      .map((a) => ({
+        _id: a._id.toString(),
+        name: a.name,
+        preset: a.preset ?? 'custom',
+        floorId: a.officeId?.toString() ?? null,
+        floorName: floorName.get(a.officeId?.toString() ?? '') ?? null,
+        // Whether this colleague currently accepts a call FROM this agent, so the
+        // editor can say so instead of letting the user pick someone unreachable.
+        acceptsCall: (() => {
+          const incoming = callerPolicyFromLegacy(a)
+          if (incoming === 'none') return false
+          if (incoming === 'selected') return (a.allowedCallerAgentIds ?? []).includes(agentId)
+          return true
+        })(),
+      })),
+    sectors: sectors
+      .filter((t) => ctx.buildingOf(t.officeId?.toString() ?? '') === buildingId)
+      .filter((t) => sectorIsExecutable(normalizeSectorMode(t.mode)))
+      .map((t) => ({ _id: t._id.toString(), name: t.name, mode: normalizeSectorMode(t.mode), floorName: floorName.get(t.officeId?.toString() ?? '') ?? null })),
+  })
+})
 
 app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   const agentId = String(req.params.agentId)

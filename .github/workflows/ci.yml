@@ -1,0 +1,57 @@
+# Every push and pull request on main/development gets the same checks a developer
+# runs locally: a clean install, typecheck, build and both test suites.
+#
+# Deliberately hermetic: no secrets, no deploy, no seed, no external service. The
+# backend integration tests start their own mongod through mongodb-memory-server,
+# and the E2E suite is not run here (it needs browsers and a built app; it stays a
+# local/manual gate for now — see README of this workflow below).
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main, development]
+
+# A new push supersedes the previous run for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # A syntactically valid URI so modules that read it at import time can load.
+      # Nothing connects to it: the integration tests override it with their own
+      # in-process mongod.
+      MONGODB_URI: mongodb://127.0.0.1:27017/comunicacaoai_ci
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Clean install
+        run: npm ci
+
+      - name: Typecheck (backend)
+        run: npx tsc --noEmit
+        working-directory: backend
+
+      - name: Typecheck (frontend)
+        run: npx tsc -b --noEmit
+        working-directory: frontend
+
+      - name: Build
+        run: npm run build
+
+      - name: Backend tests
+        run: npm test -w backend
+
+      - name: Frontend unit tests
+        run: npm test -w frontend

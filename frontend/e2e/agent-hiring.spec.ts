@@ -319,7 +319,8 @@ test('a manager with nobody to call is still pending after hiring', async ({ pag
   await expect(checklist).toBeVisible()
   await expect(checklist).toContainText('Escolher os colegas')
   await page.getByTestId('hire-pending-action-collaborators').click()
-  await expect(page).toHaveURL(/\/fluxos$/)
+  // The action opens the editor itself, not just the tab that contains it.
+  await expect(page).toHaveURL(/\/fluxos#colaboracao$/)
 })
 
 test('a specialist is hired without any production trigger', async ({ page }) => {
@@ -379,4 +380,122 @@ test('testing stays available and is never sold as production execution', async 
   await stubApi(page)
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/atividade`)
   await expect(page.getByTestId('playground-note')).toContainText('mesmo sem gatilho')
+})
+
+// ------------------------------------------------- collaboration editor (Fluxos)
+const POOL = {
+  buildingId: 'b1',
+  agents: [
+    { _id: '000000000000000000000a22', name: 'Colega do Térreo', preset: 'operator', floorName: 'Térreo', acceptsCall: true },
+    // A colleague on ANOTHER FLOOR of the same building is a real collaborator.
+    { _id: '000000000000000000000a33', name: 'Colega de Cima', preset: 'analyst', floorName: 'Primeiro andar', acceptsCall: true },
+    { _id: '000000000000000000000a44', name: 'Recusa Chamadas', preset: 'operator', floorName: 'Térreo', acceptsCall: false },
+  ],
+  sectors: [{ _id: '000000000000000000000501', name: 'Equipe de Vendas', mode: 'orchestrated', floorName: 'Primeiro andar' }],
+}
+
+async function stubCollaboration(page: Page, opts: { overview?: Record<string, unknown> } = {}) {
+  await stubApi(page, opts)
+  await page.route('**/api/agents/*/collaborators', (r) => r.fulfill({ json: POOL }))
+}
+
+test('the collaboration editor lives in Fluxos and speaks plain language', async ({ page }) => {
+  await stubCollaboration(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  const editor = page.getByTestId('collaboration-editor')
+  await expect(editor).toBeVisible()
+  await expect(editor).toContainText('Quem este agente pode acionar')
+  await expect(editor).toContainText('Quem pode acionar este agente')
+  const body = (await editor.innerText()).toLowerCase()
+  for (const jargon of ['delegationpolicy', 'callerpolicy', 'callableagentids', 'allowedcalleragentids', 'callablesectorids']) {
+    expect(body, `"${jargon}" leaked into the editor`).not.toContain(jargon)
+  }
+})
+
+test('picking specific colleagues persists every collaboration field', async ({ page }) => {
+  await stubCollaboration(page)
+  let patched: Record<string, unknown> | null = null
+  await page.route(`**/api/agents/${AGENT_ID}`, async (r) => {
+    if (r.request().method() === 'PATCH') {
+      patched = JSON.parse(r.request().postData() ?? '{}')
+      return r.fulfill({ json: { ...AGENT, ...patched } })
+    }
+    return r.fulfill({ json: AGENT })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await page.getByTestId('can-call-options').getByRole('button', { name: 'Só quem eu escolher' }).click()
+  // The colleague upstairs is offered — collaboration spans the building.
+  await page.getByTestId('pick-agents').getByText('Colega de Cima').click()
+  await page.getByTestId('pick-sectors').getByText('Equipe de Vendas').click()
+  await page.getByTestId('called-by-options').getByRole('button', { name: 'Ninguém' }).click()
+  await page.getByTestId('collaboration-save').click()
+
+  await expect(page.getByTestId('collaboration-result')).toContainText('salva')
+  expect(patched?.delegationPolicy).toBe('selected')
+  expect(patched?.callableAgentIds).toEqual(['000000000000000000000a33'])
+  expect(patched?.callableSectorIds).toEqual(['000000000000000000000501'])
+  expect(patched?.callerPolicy).toBe('none')
+  expect(patched?.allowedCallerAgentIds).toEqual([])
+})
+
+test('a colleague that refuses calls is shown as such instead of being hidden', async ({ page }) => {
+  await stubCollaboration(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await page.getByTestId('can-call-options').getByRole('button', { name: 'Só quem eu escolher' }).click()
+  await expect(page.getByTestId('pick-agents')).toContainText('não aceita chamadas hoje')
+})
+
+test('only executable teams are offered as collaborators', async ({ page }) => {
+  await stubCollaboration(page)
+  await page.route('**/api/agents/*/collaborators', (r) => r.fulfill({ json: { ...POOL, sectors: [] } }))
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await page.getByTestId('can-call-options').getByRole('button', { name: 'Só quem eu escolher' }).click()
+  await expect(page.getByText('Nenhuma equipe que execute trabalho neste prédio.')).toBeVisible()
+})
+
+test('a save failure is reported, never swallowed', async ({ page }) => {
+  await stubCollaboration(page)
+  await page.route(`**/api/agents/${AGENT_ID}`, (r) =>
+    r.request().method() === 'PATCH' ? r.fulfill({ status: 400, json: { error: 'Referência inválida' } }) : r.fulfill({ json: AGENT }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await page.getByTestId('collaboration-save').click()
+  await expect(page.getByTestId('collaboration-result')).toContainText('Referência inválida')
+})
+
+test('the readiness action opens the collaboration editor itself', async ({ page }) => {
+  await stubCollaboration(page, {
+    overview: overview({
+      readiness: { ready: false, issues: [{ code: 'no_collaborators', message: 'Um gerente precisa de colegas para acionar.', action: 'Adicionar colaboradores', section: 'fluxos#colaboracao' }] },
+    }),
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}`)
+  await page.getByTestId('agent-readiness').getByRole('button', { name: 'Adicionar colaboradores' }).click()
+  await expect(page).toHaveURL(/\/fluxos#colaboracao$/)
+  await expect(page.getByTestId('collaboration-editor')).toBeVisible()
+})
+
+test('the hire checklist lands on the collaboration editor', async ({ page }) => {
+  await stubCollaboration(page)
+  await openWizard(page)
+  await page.getByText('Gerente / Orquestrador').click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Contratar agente' }).last().click()
+  await page.getByTestId('hire-pending-action-collaborators').click()
+  await expect(page).toHaveURL(/\/fluxos#colaboracao$/)
+  await expect(page.getByTestId('collaboration-editor')).toBeVisible()
+})
+
+test('the collaboration editor works on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await stubCollaboration(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await expect(page.getByTestId('collaboration-editor')).toBeVisible()
+  await page.getByTestId('can-call-options').getByRole('button', { name: 'Só quem eu escolher' }).click()
+  await expect(page.getByTestId('pick-agents')).toBeVisible()
+  await page.getByTestId('collaboration-save').click()
+  await expect(page.getByTestId('collaboration-result')).toBeVisible()
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
 })

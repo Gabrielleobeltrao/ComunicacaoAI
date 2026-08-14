@@ -7,6 +7,8 @@ import { getFloor } from '../floors.js'
 import { computeDefinitionHash, validateDefinition } from './validate.js'
 import type { ValidationIssue } from './validate.js'
 import * as repo from './repository.js'
+import { ensureActivationMode, getAgentById } from '../agents.js'
+import { agentsReferencedBy, isLiveWebhook } from './webhookTriggers.js'
 import { DEFAULT_LIMITS } from './types.js'
 import type { Automation, AutomationDefinition, AutomationStatus, AutomationVersion } from './types.js'
 
@@ -198,7 +200,10 @@ export async function publishAutomation(ownerId: string, id: ObjectId, createdBy
     createdBy,
   }
   await repo.insertVersion(doc)
-  await repo.updateAutomation(ownerId, id, { lastPublishedVersion: version, currentVersion: version })
+  const published = await repo.updateAutomation(ownerId, id, { lastPublishedVersion: version, currentVersion: version })
+  // Publishing an already-active webhook makes it live right now — the permission
+  // has to follow, not wait for the next status change.
+  if (published) await syncEventTriggerFor(ownerId, published)
   return doc
 }
 
@@ -208,7 +213,26 @@ export async function setStatus(ownerId: string, id: ObjectId, status: Automatio
     if (!automation) return null
     if (automation.lastPublishedVersion == null) throw new ValidationError('publish a version before activating')
   }
-  return repo.updateAutomation(ownerId, id, { status })
+  const updated = await repo.updateAutomation(ownerId, id, { status })
+  if (updated) await syncEventTriggerFor(ownerId, updated)
+  return updated
+}
+
+// Keep the 'event' permission in step with the webhooks that really exist. Only
+// GRANTS: a paused/removed webhook never strips the permission, because another live
+// webhook may still fire the same agent (and the UI reports the mismatch anyway).
+// Ownership and building are enforced by loading the agent owner-scoped and by
+// comparing it to the automation's own building.
+export async function syncEventTriggerFor(ownerId: string, automation: Automation): Promise<void> {
+  if (!isLiveWebhook(automation)) return
+  for (const agentId of agentsReferencedBy(automation)) {
+    if (!ObjectId.isValid(agentId)) continue
+    const agent = await getAgentById(ownerId, new ObjectId(agentId))
+    if (!agent) continue
+    const floor = await getFloor(ownerId, agent.officeId)
+    if (!floor || !floor.buildingId.equals(automation.buildingId)) continue
+    await ensureActivationMode(ownerId, agent._id, 'event')
+  }
 }
 
 export function listVersions(ownerId: string, id: ObjectId): Promise<AutomationVersion[]> {
