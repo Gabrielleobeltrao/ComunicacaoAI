@@ -304,14 +304,9 @@ export function SectorDetail() {
             agents={agents}
             floorName={floorName}
             actions={
-              <>
-                <Button icon="users-round" onClick={() => setManageOpen(true)}>
-                  Gerenciar agentes
-                </Button>
-                <Button variant="secondary" icon="pencil" onClick={() => navigate(tabHref('configuracao'))}>
-                  Editar setor
-                </Button>
-              </>
+              <Button icon="users-round" onClick={() => setManageOpen(true)}>
+                Gerenciar agentes
+              </Button>
             }
           />
 

@@ -1,17 +1,14 @@
-import { Link, useLocation, useNavigate, useParams } from 'react-router'
+import { Link, useLocation, useNavigate } from 'react-router'
 import { signOut, useSession } from '../lib/auth-client'
 import { ACTIVE, COLLAPSE_FADE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sidebarStyles'
 import { Brand, Icon, IconButton } from '../ui'
 import { NAV } from './navItems'
-import { SectorNav } from './SectorNav'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { isNavActive, navGroupsFor } from './navConfig'
 import { BuildingSwitcher } from './BuildingSwitcher'
 
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
-  // On a sector page the middle nav swaps to that sector's own sections.
-  const { sectorId } = useParams()
   const { data: session } = useSession()
   // Nav V2 (grouped, floor-aware) when the building context is present.
   const bctx = useOptionalBuildingContext()
@@ -44,9 +41,7 @@ export function Sidebar({ current }: { current: string }) {
           </span>
         </div>
 
-        {sectorId ? (
-          <SectorNav />
-        ) : bctx ? (
+        {bctx ? (
           <nav className="flex flex-col gap-2">
             <BuildingSwitcher />
             {navGroupsFor(bctx.activeFloorId, bctx.activeFloor?.name).map(({ group, label, items }) => (
