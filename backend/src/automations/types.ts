@@ -88,6 +88,9 @@ export interface Automation {
   ownerId: string
   buildingId: ObjectId
   floorId: ObjectId
+  // When set, this automation is an agent ROUTINE — owned by and surfaced inside the
+  // agent, not a standalone "Automação". Absent for legacy standalone automations.
+  agentId?: ObjectId
   name: string
   description: string
   status: AutomationStatus

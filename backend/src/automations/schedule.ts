@@ -53,3 +53,27 @@ export function describeRecurrence(r: Recurrence): string {
   const names = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb']
   return `Toda semana (${[...new Set(r.weekdays)].sort((a, b) => a - b).map((d) => names[d]).join(', ')}) às ${t}`
 }
+
+// Best-effort inverse of recurrenceToCron for the friendly patterns this module
+// generates (daily / weekly / monthly at HH:MM). Returns null for anything richer,
+// so the UI can fall back to showing the raw cron.
+export function cronToRecurrence(cron: string): Recurrence | null {
+  const parts = String(cron).trim().split(/\s+/)
+  if (parts.length !== 5) return null
+  const [min, hr, dom, mon, dow] = parts
+  const m = Number(min)
+  const h = Number(hr)
+  if (!Number.isInteger(m) || !Number.isInteger(h) || m < 0 || m > 59 || h < 0 || h > 23) return null
+  if (mon !== '*') return null
+  const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+  if (dom === '*' && dow === '*') return { kind: 'daily', time }
+  if (dom !== '*' && dow === '*') {
+    const day = Number(dom)
+    return Number.isInteger(day) && day >= 1 && day <= 31 ? { kind: 'monthly', time, day } : null
+  }
+  if (dom === '*' && dow !== '*') {
+    const weekdays = dow.split(',').map(Number)
+    return weekdays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6) ? { kind: 'weekly', time, weekdays } : null
+  }
+  return null
+}

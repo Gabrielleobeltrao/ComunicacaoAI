@@ -168,6 +168,7 @@ import { buildingRouter } from './routes/buildingRoutes.js'
 import { floorRouter } from './routes/floorRoutes.js'
 import { automationRouter } from './routes/automationRoutes.js'
 import { runRouter } from './routes/runRoutes.js'
+import { agentRoutineRouter } from './routes/agentRoutineRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
 
@@ -285,6 +286,9 @@ app.use('/api/building', requireAuth, buildingRouter)
 app.use('/api/floors', requireAuth, floorRouter)
 app.use('/api/automations', requireAuth, automationRouter)
 app.use('/api/runs', requireAuth, runRouter)
+// Agent routines + history (agent-owned scheduled automations). Sub-paths that this
+// router doesn't handle fall through to the inline /api/agents/:agentId routes below.
+app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
 app.use('/api/connections', requireAuth, connectionRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
 app.use('/api/hooks', webhookRouter)

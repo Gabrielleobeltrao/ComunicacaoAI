@@ -44,11 +44,12 @@ export async function updateRun(id: ObjectId, set: Partial<AutomationRun>): Prom
 
 export async function listRuns(
   ownerId: string,
-  q: { floorId?: ObjectId; automationId?: ObjectId; status?: string; limit: number; skip: number },
+  q: { floorId?: ObjectId; automationId?: ObjectId; automationIds?: ObjectId[]; status?: string; limit: number; skip: number },
 ): Promise<{ items: AutomationRun[]; total: number }> {
   const filter: Record<string, unknown> = { ownerId }
   if (q.floorId) filter.floorId = q.floorId
   if (q.automationId) filter.automationId = q.automationId
+  else if (q.automationIds) filter.automationId = { $in: q.automationIds }
   if (q.status) filter.status = q.status
   const [items, total] = await Promise.all([
     runs.find(filter).sort({ queuedAt: -1 }).skip(q.skip).limit(q.limit).toArray(),

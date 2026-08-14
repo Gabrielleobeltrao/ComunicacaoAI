@@ -47,6 +47,7 @@ export interface CreateAutomationInput {
   name: string
   description?: string
   definition?: AutomationDefinition
+  agentId?: ObjectId // set when this automation is an agent routine
 }
 
 export async function createAutomation(ownerId: string, input: CreateAutomationInput): Promise<Automation> {
@@ -60,6 +61,7 @@ export async function createAutomation(ownerId: string, input: CreateAutomationI
     ownerId,
     buildingId: building._id,
     floorId,
+    ...(input.agentId ? { agentId: input.agentId } : {}),
     name,
     description: String(input.description ?? '').slice(0, 2000),
     status: 'draft',

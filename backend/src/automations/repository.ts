@@ -32,12 +32,16 @@ export interface ListAutomationsQuery {
   status?: string
   limit: number
   skip: number
+  agentId?: ObjectId // list only this agent's routines
+  standaloneOnly?: boolean // exclude agent-owned routines (legacy standalone automations)
 }
 
 export async function listAutomations(ownerId: string, q: ListAutomationsQuery): Promise<{ items: Automation[]; total: number }> {
   const filter: Record<string, unknown> = { ownerId }
   if (q.floorId) filter.floorId = q.floorId
   if (q.status) filter.status = q.status
+  if (q.agentId) filter.agentId = q.agentId
+  else if (q.standaloneOnly) filter.agentId = { $exists: false }
   const [items, total] = await Promise.all([
     automations.find(filter).sort({ updatedAt: -1 }).skip(q.skip).limit(q.limit).toArray(),
     automations.countDocuments(filter),
