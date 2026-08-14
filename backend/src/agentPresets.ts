@@ -83,6 +83,17 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     outputContract: 'A comunicação final formatada para o canal.',
   },
   {
+    preset: 'monitor',
+    label: 'Monitor',
+    description: 'Acompanha uma fonte com uma frequência definida e emite um alerta quando uma condição acontece.',
+    objective:
+      'Você é um monitor. Acompanha uma fonte específica na frequência definida, compara com o estado anterior e, quando a condição de alerta acontece, emite um aviso claro dizendo o que mudou. Se nada relevante mudou, informe que está tudo estável.',
+    capabilities: ['monitoramento', 'alerta'],
+    activationModes: ['scheduled', 'agent_only'],
+    inputContract: 'Uma fonte a acompanhar e a condição que dispara o alerta.',
+    outputContract: 'Um alerta com o que mudou (ou a confirmação de que nada relevante mudou).',
+  },
+  {
     preset: 'custom',
     label: 'Personalizado',
     description: 'Começa em branco — você define tudo.',
@@ -105,6 +116,7 @@ export function presetSpec(preset: AgentPreset): AgentPresetSpec {
 // gap: a task needing web research).
 const CAPABILITY_HINTS: [RegExp, AgentPreset][] = [
   [/orquestr|deleg|coorden|gerenc|manager/i, 'manager'],
+  [/monitor|vigi|acompanh|alerta|watch|observ/i, 'monitor'],
   [/pesquis|research|web|busca|notic/i, 'researcher'],
   [/analis|analy|compar|conclus/i, 'analyst'],
   [/execu|integr|\bapi\b|acao|operat|automat/i, 'operator'],

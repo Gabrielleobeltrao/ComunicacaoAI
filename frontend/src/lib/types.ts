@@ -152,13 +152,18 @@ export interface AgentSummary {
   activationModes: ActivationMode[]
   inputContract: string
   outputContract: string
+  delegationPolicy: DelegationPolicy
+  callerPolicy: DelegationPolicy
   callableAgentIds: string[]
   callableSectorIds: string[]
   allowedCallerAgentIds: string[]
 }
 
-export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'custom'
+export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'monitor' | 'custom'
 export type ActivationMode = 'manual' | 'scheduled' | 'event' | 'channel' | 'agent_only'
+// Delegation permission (both directions): none = nobody, all = any agent in the
+// same building, selected = only the matching id list.
+export type DelegationPolicy = 'none' | 'all' | 'selected'
 
 // Per-agent roster stats for the Agentes cards (from /api/agent-stats).
 export interface AgentCardStats {

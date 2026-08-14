@@ -24,8 +24,8 @@ export const LANGUAGES: Language[] = ['pt', 'en', 'es', 'auto']
 
 // The role preset an agent was created from — a STARTING configuration, never a hard
 // limit (every field stays editable afterwards). 'custom' = the old free-form agent.
-export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'custom'
-export const AGENT_PRESETS: AgentPreset[] = ['manager', 'secretary', 'researcher', 'analyst', 'operator', 'communicator', 'custom']
+export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'monitor' | 'custom'
+export const AGENT_PRESETS: AgentPreset[] = ['manager', 'secretary', 'researcher', 'analyst', 'operator', 'communicator', 'monitor', 'custom']
 
 // How an agent may be triggered. An agent can have several. 'agent_only' means it is
 // reachable ONLY by another agent/sector — it never starts a conversation, answers a
