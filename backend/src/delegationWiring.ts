@@ -78,7 +78,7 @@ export function productionDelegationDeps(): DelegationDeps {
     // so a redelivered/replayed emit never bills twice.
     // Canonical retrieval path: agent base + sector base (only with an explicit
     // sector context). Never throws — a failure just means no grounding.
-    retrieveContext: async (agentId, query, opts) => (await retrieveContext(agentId, query, { sectorId: opts.sectorId ?? null })).context,
+    retrieveContext: async (agentId, query, opts) => (await retrieveContext(agentId, query, { verifiedSectorId: opts.sectorId ?? null })).context,
     chargeUsage: (ownerId, usage, chargeKey) => {
       recordReplyUsageOnce(ownerId, usage, chargeKey).catch((e) => console.error('recordReplyUsageOnce failed:', (e as Error).message))
     },

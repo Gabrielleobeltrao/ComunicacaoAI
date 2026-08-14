@@ -386,16 +386,19 @@ export function combineKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number
 // Retrieve the context for an execution: the agent's base, plus the sector's when the
 // run happens in a sector context. A vector-search failure NEVER breaks the run — it
 // returns no context and logs, so the agent answers without grounding.
+// `verifiedSectorId` MUST come from an owner-scoped resolution (resolveOwnedSectorId
+// or a sector loaded through getSectorById): this function does not — and cannot —
+// check ownership, so passing a raw client-supplied id here is a bug.
 export async function retrieveContext(
   agentIds: ObjectId | ObjectId[],
   query: string,
-  opts: { sectorId?: ObjectId | null; topK?: number; charBudget?: number } = {},
+  opts: { verifiedSectorId?: ObjectId | null; topK?: number; charBudget?: number } = {},
 ): Promise<{ context: string[]; failed: boolean }> {
   const ids = Array.isArray(agentIds) ? agentIds : [agentIds]
   const owners: KnowledgeOwner[] = ids.map((id) => ({ ownerType: 'agent' as const, ownerId: id }))
   // The sector base joins ONLY with an explicit sector context — never implied by
   // the agent's home sector.
-  if (opts.sectorId) owners.push({ ownerType: 'sector', ownerId: opts.sectorId })
+  if (opts.verifiedSectorId) owners.push({ ownerType: 'sector', ownerId: opts.verifiedSectorId })
   if (owners.length === 0) return { context: [], failed: false }
   try {
     const hits = await searchKnowledgeForOwners(owners, query, Math.max(opts.topK ?? RETRIEVAL_TOP_K, 5) * owners.length)

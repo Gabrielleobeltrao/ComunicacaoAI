@@ -171,6 +171,16 @@ export function getSectorById(ownerId: string, sectorId: ObjectId) {
   return sectors.findOne({ _id: sectorId, ownerId })
 }
 
+// Resolve a raw sector id INSIDE an account. Returns null both when the id is
+// malformed and when it belongs to someone else — callers must not distinguish the
+// two, so an id is never confirmed to exist across tenants. This is the only way a
+// sectorId may enter an execution.
+export async function resolveOwnedSectorId(ownerId: string, raw: unknown): Promise<ObjectId | null> {
+  if (typeof raw !== 'string' || !ObjectId.isValid(raw)) return null
+  const sector = await sectors.findOne({ _id: new ObjectId(raw), ownerId }, { projection: { _id: 1 } })
+  return sector ? sector._id : null
+}
+
 export function updateSector(
   ownerId: string,
   sectorId: ObjectId,

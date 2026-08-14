@@ -21,6 +21,10 @@ export interface RoutineSpec {
   delivery?: { provider: 'email' | 'telegram'; connectionId: string } | null
   retryMaxAttempts?: number
   maxOutputChars?: number
+  // Optional EXPLICIT sector context for knowledge grounding. Authorised
+  // owner-scoped by the service before the definition is stored/published, and
+  // re-checked defensively by the worker.
+  sectorId?: string | null
 }
 
 const STEP_AGENT = 'run'
@@ -38,7 +42,7 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
       enabled: true,
       dependsOn: [],
       inputMapping: {},
-      config: { agentId: agentId.toString(), objective: spec.objective, instruction, format },
+      config: { agentId: agentId.toString(), objective: spec.objective, instruction, format, ...(spec.sectorId ? { sectorId: spec.sectorId } : {}) },
       timeoutMs: 120_000,
       retryPolicy: { maxAttempts: Math.max(1, Math.min(spec.retryMaxAttempts ?? 1, 5)), backoffMs: 2000 },
       continueOnError: false,

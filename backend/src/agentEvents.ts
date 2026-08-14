@@ -39,6 +39,9 @@ export interface AgentExecutionEvent {
   // Attempt numbers already accounted for — the idempotency guard that keeps a
   // redelivered write from inflating attemptCount/duration/tokens.
   seenAttempts?: number[]
+  // Highest attempt whose terminal state was applied; a lower (late) attempt can
+  // never overwrite it.
+  latestAttempt?: number
   // Delegation shape: the event that triggered this one, and the top of the chain.
   // A root event (parentEventKey null) is what "delegações concluídas" counts, so a
   // chain is never summed twice.
@@ -124,45 +127,82 @@ export async function recordAgentEvent(input: RecordAgentEventInput): Promise<bo
 // the first failure occupying the key and the success being dropped.
 export async function finalizeAgentEvent(input: RecordAgentEventInput): Promise<void> {
   const durationMs = input.durationMs ?? Math.max(0, input.finishedAt.getTime() - input.startedAt.getTime())
-  // Idempotent PER ATTEMPT: the attempt number is recorded, so re-finalizing the
-  // same attempt (a redelivered job replaying the write) is a no-op for the
-  // accumulators, while a genuine retry — a NEW attempt — accumulates.
   const attempt = input.attemptCount ?? 1
-  const already = await events.findOne({ eventKey: input.eventKey, seenAttempts: attempt }, { projection: { _id: 1 } })
-  if (already) {
-    // Same attempt seen again: only the terminal status/timestamp may refresh.
-    await events.updateOne({ eventKey: input.eventKey }, { $set: { status: input.status, finishedAt: input.finishedAt } })
-    return
-  }
-  await events.updateOne(
-    { eventKey: input.eventKey },
-    {
-      $addToSet: { seenAttempts: attempt },
-      $setOnInsert: {
-        _id: new ObjectId(),
-        eventKey: input.eventKey,
-        ownerId: input.ownerId,
-        buildingId: input.buildingId ?? null,
-        floorId: input.floorId ?? null,
-        agentId: input.agentId,
-        source: input.source,
-        preset: input.preset ?? 'custom',
-        startedAt: input.startedAt,
-        parentEventKey: input.parentEventKey ?? null,
-        rootEventKey: input.rootEventKey ?? input.eventKey,
+
+  // (1) ACCUMULATE — exactly once per attempt. Atomic: the filter itself carries the
+  // guard (`seenAttempts` must not already contain this attempt), so matching and
+  // applying happen in one document-level operation. No read-then-write, therefore no
+  // race window: a redelivery of the SAME attempt simply matches nothing.
+  const accumulate = () =>
+    events.updateOne(
+      { eventKey: input.eventKey, seenAttempts: { $ne: attempt } },
+      {
+        $setOnInsert: {
+          ownerId: input.ownerId,
+          buildingId: input.buildingId ?? null,
+          floorId: input.floorId ?? null,
+          agentId: input.agentId,
+          source: input.source,
+          preset: input.preset ?? 'custom',
+          startedAt: input.startedAt,
+          parentEventKey: input.parentEventKey ?? null,
+          rootEventKey: input.rootEventKey ?? input.eventKey,
+        },
+        $addToSet: { seenAttempts: attempt },
+        $inc: {
+          durationMs,
+          inputTokens: input.inputTokens ?? 0,
+          outputTokens: input.outputTokens ?? 0,
+          toolCalls: input.toolCalls ?? 0,
+          attemptCount: 1,
+        },
       },
-      // The latest attempt decides the final status; timing/metadata follow it.
-      $set: { status: input.status, finishedAt: input.finishedAt, metadata: input.metadata ?? {} },
-      $inc: {
-        durationMs,
-        inputTokens: input.inputTokens ?? 0,
-        outputTokens: input.outputTokens ?? 0,
-        toolCalls: input.toolCalls ?? 0,
-        attemptCount: 1,
+      { upsert: true },
+    )
+  // An upsert whose filter carries a NEGATIVE guard cannot match an existing row that
+  // already has this attempt, so Mongo attempts an insert and the unique eventKey
+  // raises 11000. That duplicate is precisely the signal "this attempt is already
+  // accounted" — either by an earlier call or by a concurrent one. Retry once (the
+  // racing creator may have recorded a DIFFERENT attempt, which this call must still
+  // accumulate); a second duplicate means it is definitively accounted.
+  try {
+    await accumulate()
+  } catch (error) {
+    if ((error as { code?: number }).code !== 11000) throw error
+    try {
+      await accumulate()
+    } catch (retryError) {
+      if ((retryError as { code?: number }).code !== 11000) throw retryError
+    }
+  }
+
+  // (2) TERMINAL STATE — only an attempt >= the latest one already applied may move
+  // status/finishedAt/metadata. A late write from attempt 1 can never overwrite the
+  // success of attempt 2. Legacy rows (no latestAttempt) accept the first write.
+  await events.updateOne(
+    { eventKey: input.eventKey, $or: [{ latestAttempt: { $exists: false } }, { latestAttempt: { $lte: attempt } }] },
+    { $set: { status: input.status, finishedAt: input.finishedAt, metadata: input.metadata ?? {}, latestAttempt: attempt } },
+  )
+}
+
+// Compatibility for events written before per-attempt accounting existed: stamp
+// seenAttempts/latestAttempt from the attemptCount they already carry, so the atomic
+// guards above work on them too. Idempotent — only touches rows missing the fields.
+export async function backfillAgentEventAttempts(): Promise<number> {
+  const result = await events.updateMany({ seenAttempts: { $exists: false } }, [
+    {
+      $set: {
+        attemptCount: { $ifNull: ['$attemptCount', 1] },
+        latestAttempt: { $ifNull: ['$attemptCount', 1] },
+        // Historical attempts are unknown individually; record the range they cover
+        // so a replay of any of them is treated as already accounted.
+        seenAttempts: {
+          $map: { input: { $range: [1, { $add: [{ $ifNull: ['$attemptCount', 1] }, 1] }] }, as: 'n', in: '$$n' },
+        },
       },
     },
-    { upsert: true },
-  )
+  ])
+  return result.modifiedCount
 }
 
 export function finalizeAgentEventSafe(input: RecordAgentEventInput): void {

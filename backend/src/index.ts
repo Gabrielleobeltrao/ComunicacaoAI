@@ -120,7 +120,7 @@ import {
   setProviderApiKey,
 } from './userSettings.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
-import { ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
+import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import type { KnowledgeOwner } from './knowledge.js'
@@ -1471,7 +1471,7 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
   // vector-search failure never breaks the turn — it just answers without grounding.
   // Canonical retrieval: the consulted specialists' bases + THIS sector's shared
   // base, merged/deduped/capped. Never throws — an outage just means no grounding.
-  const { context: knowledge } = await retrieveContext(knowledgeAgentIds, lastUser.content, { sectorId: sector._id })
+  const { context: knowledge } = await retrieveContext(knowledgeAgentIds, lastUser.content, { verifiedSectorId: sector._id })
 
   const behaviorInstruction = [
     configAgent.guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : '',
@@ -3226,7 +3226,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // every consulted specialist, for a sector. Skipped when only clarifying.
   // Only a SECTOR-answered channel reads the sector's shared base; a widget wired
   // straight to one agent stays on that agent's own knowledge.
-  const { context: knowledge } = await retrieveContext(knowledgeAgentIds, visitorContent, { sectorId: widget.sectorId ?? null })
+  const { context: knowledge } = await retrieveContext(knowledgeAgentIds, visitorContent, { verifiedSectorId: widget.sectorId ?? null })
 
   // If a previous turn in this conversation already resolved who the
   // visitor is, their memory lives on the profile (shared across every
@@ -3539,6 +3539,11 @@ async function start() {
   ensureAgentEventIndexes().catch((error) => {
     console.error('ensureAgentEventIndexes failed:', error)
   })
+  // Legacy events predate per-attempt accounting; stamp seenAttempts/latestAttempt so
+  // the atomic guards apply to them too. Idempotent.
+  backfillAgentEventAttempts()
+    .then((n) => n && console.log(`Backfilled attempt bookkeeping on ${n} agent event(s)`))
+    .catch((error) => console.error('backfillAgentEventAttempts failed:', error))
   ensureTokenUsageIndexes().catch((error) => {
     console.error('ensureTokenUsageIndexes failed:', error)
   })

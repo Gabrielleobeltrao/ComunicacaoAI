@@ -17,6 +17,7 @@ import { preview } from './automations/runTypes.js'
 import type { AutomationRun, RunStatus, StepRun } from './automations/runTypes.js'
 import { executeAgentTask } from './agentRuntime.js'
 import { getAgentById } from './agents.js'
+import { resolveOwnedSectorId } from './sectors.js'
 import { rootContext } from './delegation.js'
 import { productionDelegationDeps, resolveToolsWithDelegation } from './delegationWiring.js'
 import { safeFetch } from './net/safeHttp.js'
@@ -60,12 +61,19 @@ function buildDeps(run: AutomationRun): RunnerDeps {
         isCanceled: async () => (await findRunUnscoped(run._id))?.status === 'cancel_requested',
       })
       const tools = await resolveToolsWithDelegation(agent, run.ownerId, ctx, deps)
+      // DEFENSIVE: an old version or a tampered document can carry any sectorId, so
+      // it is re-resolved inside THIS run's account. A sector that does not exist or
+      // belongs to someone else is a configuration error — we fail before the AI
+      // runs and without revealing whether the id exists.
+      let verifiedSectorId: ObjectId | null = null
+      if (call.sectorId) {
+        verifiedSectorId = await resolveOwnedSectorId(run.ownerId, call.sectorId)
+        if (!verifiedSectorId) throw new Error('configuração inválida: setor indisponível para esta conta')
+      }
       // Curated grounding for the routine: the agent's own base, plus the sector's
-      // ONLY when the step declares an explicit sectorId.
+      // ONLY when the step declares an explicit, verified sectorId.
       const knowledgeQuery = [call.instructions, typeof call.input === 'string' ? call.input : ''].filter(Boolean).join('\n').slice(0, 2000)
-      const retrieved = knowledgeQuery
-        ? await retrieveContext(agent._id, knowledgeQuery, { sectorId: call.sectorId && ObjectId.isValid(call.sectorId) ? new ObjectId(call.sectorId) : null })
-        : { context: [], failed: false }
+      const retrieved = knowledgeQuery ? await retrieveContext(agent._id, knowledgeQuery, { verifiedSectorId }) : { context: [], failed: false }
       const startedAt = new Date()
       const eventKey = runEventKey(run._id.toString(), call.stepId, agent._id.toString())
       const baseEvent = {

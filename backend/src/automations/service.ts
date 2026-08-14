@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb'
+import { resolveOwnedSectorId } from '../sectors.js'
 import { ensureDefaultBuilding, ValidationError } from '../building.js'
 import { encrypt } from '../crypto.js'
 import { generatePublicKey, generateSecret } from './webhook.js'
@@ -51,6 +52,7 @@ export interface CreateAutomationInput {
 }
 
 export async function createAutomation(ownerId: string, input: CreateAutomationInput): Promise<Automation> {
+  if (input.definition) await assertOwnedSectorRefs(ownerId, input.definition)
   const building = await ensureDefaultBuilding(ownerId)
   const floorId = await requireFloor(ownerId, input.floorId)
   const name = normalizeName(input.name)
@@ -96,6 +98,7 @@ export interface UpdateDraftPatch {
 }
 
 export async function updateDraft(ownerId: string, id: ObjectId, patch: UpdateDraftPatch): Promise<Automation | null> {
+  if (patch.definition) await assertOwnedSectorRefs(ownerId, patch.definition)
   const set: Partial<Automation> = {}
   if (patch.name !== undefined) set.name = normalizeName(patch.name)
   if (patch.description !== undefined) set.description = String(patch.description).slice(0, 2000)
@@ -124,6 +127,32 @@ export async function rotateWebhookSecret(ownerId: string, id: ObjectId): Promis
   return { publicKey, secret }
 }
 
+
+// Every sectorId a definition references, so it can be authorised before the
+// definition is ever stored or published. Pure.
+export function collectSectorRefs(def: AutomationDefinition): string[] {
+  const ids = new Set<string>()
+  for (const step of def?.steps ?? []) {
+    const raw = (step?.config ?? {}).sectorId
+    if (typeof raw === 'string' && raw.trim()) ids.add(raw.trim())
+  }
+  return [...ids]
+}
+
+// EARLY AUTHORISATION: a definition may only reference sectors of the SAME account.
+// Being a syntactically valid ObjectId is never enough. The error is deliberately
+// uniform so it never reveals whether the id exists elsewhere.
+export async function assertOwnedSectorRefs(ownerId: string, def: AutomationDefinition): Promise<void> {
+  const refs = collectSectorRefs(def)
+  if (refs.length === 0) return
+  for (const raw of refs) {
+    const owned = await resolveOwnedSectorId(ownerId, raw)
+    if (!owned) {
+      throw new AutomationValidationError([{ path: 'steps.config.sectorId', message: 'setor indisponível para esta conta' }])
+    }
+  }
+}
+
 export async function validateAutomation(ownerId: string, id: ObjectId): Promise<{ valid: boolean; errors: ValidationIssue[] } | null> {
   const automation = await repo.findAutomation(ownerId, id)
   if (!automation) return null
@@ -137,6 +166,9 @@ export async function publishAutomation(ownerId: string, id: ObjectId, createdBy
   if (!automation) return null
   const result = validateDefinition(automation.draftDefinition)
   if (!result.valid) throw new AutomationValidationError(result.errors)
+  // Re-check on publish: a draft stored before this rule (or edited elsewhere) must
+  // not become an immutable version that references another account's sector.
+  await assertOwnedSectorRefs(ownerId, automation.draftDefinition)
 
   const hash = computeDefinitionHash(automation.draftDefinition)
   if (automation.lastPublishedVersion != null) {
