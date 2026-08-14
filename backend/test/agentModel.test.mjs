@@ -48,3 +48,24 @@ test('withAgentDefaults backfills legacy agents but preserves set values', () =>
   assert.deepEqual(set.capabilities, ['orquestrar'])
   assert.deepEqual(set.activationModes, ['manual', 'scheduled'])
 })
+
+test('withAgentDefaults derives none|all|selected policies compatibly for legacy docs', () => {
+  // legacy leaf (no preset, empty lists): cannot delegate, but is callable by anyone
+  const leaf = withAgentDefaults({ name: 'Leaf' })
+  assert.equal(leaf.delegationPolicy, 'none')
+  assert.equal(leaf.callerPolicy, 'all')
+  // legacy manager: delegates to anyone
+  assert.equal(withAgentDefaults({ name: 'Mgr', preset: 'manager' }).delegationPolicy, 'all')
+  // legacy agent with an outgoing allowlist -> selected
+  assert.equal(withAgentDefaults({ name: 'Sel', callableAgentIds: ['x'] }).delegationPolicy, 'selected')
+  // legacy agent with an incoming allowlist -> selected caller policy
+  assert.equal(withAgentDefaults({ name: 'Inc', allowedCallerAgentIds: ['y'] }).callerPolicy, 'selected')
+  // an explicitly set policy is preserved
+  assert.equal(withAgentDefaults({ name: 'X', delegationPolicy: 'selected', callerPolicy: 'none' }).callerPolicy, 'none')
+})
+
+test('parseAgentModelFields validates none|all|selected policies', () => {
+  assert.equal(parseAgentModelFields({ delegationPolicy: 'all' }).fields.delegationPolicy, 'all')
+  assert.equal(parseAgentModelFields({ callerPolicy: 'selected' }).fields.callerPolicy, 'selected')
+  assert.ok(parseAgentModelFields({ delegationPolicy: 'everyone' }).error)
+})

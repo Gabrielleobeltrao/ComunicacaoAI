@@ -23,7 +23,7 @@ export interface DelegationBudget {
 
 export interface DelegationContext {
   ownerId: string
-  buildingId: string // caller's officeId; every target must share it
+  buildingId: string // caller's REAL building id (resolved from its floor); targets must share it
   correlationId: string
   callerAgentId: string // the agent that owns the delegate tools in this context
   callerAgentName: string
@@ -36,19 +36,28 @@ export interface DelegationContext {
 export type DelegationDenyCode = 'forbidden' | 'unauthorized' | 'depth_exceeded' | 'cycle' | 'budget_exceeded' | 'canceled'
 export type DelegationCheck = { ok: true } | { ok: false; code: DelegationDenyCode; reason: string }
 
-// Pure safety gate for caller→target. No IO. Default-deny is impossible to bypass:
-// wrong owner/building, over-depth, a cycle, an exhausted budget, or a side that
-// doesn't authorize the pairing all fail here before anything runs.
-export function checkDelegation(caller: Agent, target: Agent, ctx: DelegationContext): DelegationCheck {
+// True when `policy`/`list` authorize acting on `id`. none → never; all → always;
+// selected → only when the id is in the explicit list.
+function policyAllows(policy: Agent['delegationPolicy'], list: string[], id: string): boolean {
+  if (policy === 'all') return true
+  if (policy === 'selected') return (list ?? []).includes(id)
+  return false // 'none'
+}
+
+// Pure safety gate for caller→target. No IO — `targetBuildingId` is resolved by the
+// caller so this stays synchronous and unit-testable. Default-deny is impossible to
+// bypass: wrong owner/building, over-depth, a cycle, an exhausted budget, or a side
+// whose policy doesn't authorize the pairing all fail here before anything runs.
+// Cross-FLOOR delegation within the SAME building is allowed; another building or
+// owner is refused.
+export function checkDelegation(caller: Agent, target: Agent, targetBuildingId: string, ctx: DelegationContext): DelegationCheck {
   const tid = target._id.toString()
   if (target.ownerId !== caller.ownerId) return { ok: false, code: 'forbidden', reason: 'agente de outro proprietário' }
-  if (target.officeId.toString() !== ctx.buildingId) return { ok: false, code: 'forbidden', reason: 'agente de outro prédio' }
+  if (targetBuildingId !== ctx.buildingId) return { ok: false, code: 'forbidden', reason: 'agente de outro prédio' }
   if (ctx.depth + 1 > DELEGATION_MAX_DEPTH) return { ok: false, code: 'depth_exceeded', reason: `profundidade máxima (${DELEGATION_MAX_DEPTH}) atingida` }
   if (tid === ctx.callerAgentId || ctx.ancestry.includes(tid)) return { ok: false, code: 'cycle', reason: 'ciclo de delegação detectado' }
-  // [] on either list = "any agent of the same owner" (see Agent field docs); a
-  // non-empty list is an allowlist. Both sides must permit the pairing.
-  const callerAllows = (caller.callableAgentIds ?? []).length === 0 || caller.callableAgentIds.includes(tid)
-  const targetAllows = (target.allowedCallerAgentIds ?? []).length === 0 || target.allowedCallerAgentIds.includes(caller._id.toString())
+  const callerAllows = policyAllows(caller.delegationPolicy, caller.callableAgentIds, tid)
+  const targetAllows = policyAllows(target.callerPolicy, target.allowedCallerAgentIds, caller._id.toString())
   if (!callerAllows || !targetAllows) return { ok: false, code: 'unauthorized', reason: 'delegação não autorizada entre estes agentes' }
   if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) return { ok: false, code: 'budget_exceeded', reason: 'orçamento de tokens da cadeia esgotado' }
   return { ok: true }
@@ -101,6 +110,9 @@ export interface DelegationDeps {
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
+  // The REAL building a floor (office) belongs to — used to authorize cross-floor,
+  // same-building delegation. null when the floor is gone.
+  buildingIdForFloor: (ownerId: string, floorId: ObjectId) => Promise<string | null>
   // Resolve the target's tools INCLUDING its own delegation tools bound to `childCtx`,
   // so a delegated agent can (safely) delegate further.
   resolveTools: (agent: Agent, ownerId: string, childCtx: DelegationContext) => Promise<ResolvedTool[]>
@@ -180,7 +192,8 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
   if (!caller) return { ok: false, result: j({ status: 'error', reason: 'agente chamador não encontrado' }) }
   if (!target) return { ok: false, result: j({ status: 'error', reason: 'agente alvo não encontrado' }) }
 
-  const check = checkDelegation(caller, target, ctx)
+  const targetBuildingId = await deps.buildingIdForFloor(ctx.ownerId, target.officeId)
+  const check = checkDelegation(caller, target, targetBuildingId ?? '', ctx)
   if (!check.ok) return { ok: false, result: j({ status: 'denied', code: check.code, reason: check.reason }) }
 
   const recId = await deps.startDelegation({
@@ -224,7 +237,8 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
 
   const sector = await deps.loadSector(ctx.ownerId, new ObjectId(sectorId))
   if (!sector || sector.members.length === 0) return { ok: false, result: j({ status: 'error', reason: 'setor não encontrado ou vazio' }) }
-  if (sector.officeId.toString() !== ctx.buildingId) return { ok: false, result: j({ status: 'denied', code: 'forbidden', reason: 'setor de outro prédio' }) }
+  const sectorBuildingId = await deps.buildingIdForFloor(ctx.ownerId, sector.officeId)
+  if (sectorBuildingId !== ctx.buildingId) return { ok: false, result: j({ status: 'denied', code: 'forbidden', reason: 'setor de outro prédio' }) }
 
   const members = (await Promise.all(sector.members.map((m) => deps.loadAgent(ctx.ownerId, m.agentId)))).filter((a): a is Agent => a !== null)
   // Members already in the chain would loop — drop them.
@@ -278,7 +292,9 @@ async function listAvailable(deps: DelegationDeps, ctx: DelegationContext, args:
   if (!caller) return { ok: false, result: j({ status: 'error', reason: 'agente chamador não encontrado' }) }
   const all = await deps.listAgentsInBuilding(ctx.ownerId, ctx.buildingId)
   const need = typeof args.capability === 'string' ? args.capability.toLowerCase() : ''
-  const available = all.filter((t) => t._id.toString() !== caller._id.toString() && checkDelegation(caller, t, ctx).ok)
+  // Candidates already share the caller's building (listAgentsInBuilding), so the
+  // building check is satisfied by construction — pass ctx.buildingId as the target's.
+  const available = all.filter((t) => t._id.toString() !== caller._id.toString() && checkDelegation(caller, t, ctx.buildingId, ctx).ok)
   const filtered = need ? available.filter((t) => (t.capabilities ?? []).some((c) => c.toLowerCase().includes(need)) || t.name.toLowerCase().includes(need)) : available
   return { ok: true, result: j({ status: 'ok', agents: filtered.map(agentCard) }) }
 }
@@ -288,7 +304,8 @@ async function getCapabilities(deps: DelegationDeps, ctx: DelegationContext, arg
   if (!ObjectId.isValid(id)) return { ok: false, result: j({ status: 'error', reason: 'agentId inválido' }) }
   const [caller, target] = await Promise.all([deps.loadAgent(ctx.ownerId, new ObjectId(ctx.callerAgentId)), deps.loadAgent(ctx.ownerId, new ObjectId(id))])
   if (!caller || !target) return { ok: false, result: j({ status: 'error', reason: 'agente não encontrado' }) }
-  const check = checkDelegation(caller, target, ctx)
+  const targetBuildingId = await deps.buildingIdForFloor(ctx.ownerId, target.officeId)
+  const check = checkDelegation(caller, target, targetBuildingId ?? '', ctx)
   if (!check.ok) return { ok: false, result: j({ status: 'denied', code: check.code, reason: check.reason }) }
   return {
     ok: true,
@@ -346,10 +363,11 @@ export function buildDelegationTools(ctx: DelegationContext, deps: DelegationDep
   ]
 }
 
-// Whether an agent should be offered delegation tools at all: only agents wired to
-// call someone (a manager/orchestrator) — keeps the toolset lean for leaf agents.
+// Whether an agent should be offered delegation tools at all. Driven by the explicit
+// outgoing policy, so a fresh manager (delegationPolicy='all') can delegate even with
+// empty id lists, and a leaf ('none') never gets the tools.
 export function agentCanDelegate(agent: Agent): boolean {
-  return (agent.callableAgentIds?.length ?? 0) > 0 || (agent.callableSectorIds?.length ?? 0) > 0
+  return agent.delegationPolicy !== 'none'
 }
 
 // ---- capability_missing -----------------------------------------------------

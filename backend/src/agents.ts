@@ -33,6 +33,15 @@ export const AGENT_PRESETS: AgentPreset[] = ['manager', 'secretary', 'researcher
 export type ActivationMode = 'manual' | 'scheduled' | 'event' | 'channel' | 'agent_only'
 export const ACTIVATION_MODES: ActivationMode[] = ['manual', 'scheduled', 'event', 'channel', 'agent_only']
 
+// Delegation permission, modelled explicitly so an empty list is never ambiguous
+// (it used to mean both "anyone" and "no one"). Applies to BOTH directions:
+//   outgoing (delegationPolicy): whom this agent may delegate to.
+//   incoming (callerPolicy): who may call this agent.
+// 'none' = nobody; 'all' = any agent in the SAME BUILDING; 'selected' = only the
+// matching id list (callableAgentIds / allowedCallerAgentIds).
+export type DelegationPolicy = 'none' | 'all' | 'selected'
+export const DELEGATION_POLICIES: DelegationPolicy[] = ['none', 'all', 'selected']
+
 export const MAX_DAILY_MESSAGE_LIMIT = 1000
 export const MAX_TOOLS = 10
 export const MAX_TOOL_PARAMS = 10
@@ -113,10 +122,26 @@ export interface Agent {
   activationModes: ActivationMode[] // how this agent may be triggered
   inputContract: string // what data the agent expects to receive (free text)
   outputContract: string // what result the agent must produce (free text)
-  callableAgentIds: string[] // agents this agent may delegate to (owner-scoped ids)
-  callableSectorIds: string[] // sectors this agent may delegate to (owner-scoped ids)
-  allowedCallerAgentIds: string[] // agents allowed to call this one ([] = any agent of the same owner)
+  delegationPolicy: DelegationPolicy // outgoing: whom this agent may delegate to
+  callerPolicy: DelegationPolicy // incoming: who may call this agent
+  callableAgentIds: string[] // when delegationPolicy='selected': the agents this one may call
+  callableSectorIds: string[] // when delegationPolicy='selected': the sectors this one may call
+  allowedCallerAgentIds: string[] // when callerPolicy='selected': the agents allowed to call this one
   createdAt: Date
+}
+
+// Legacy documents predate the explicit policy fields. Derive a compatible policy
+// from the old id lists + preset so behaviour is preserved: a manager could always
+// delegate, a non-empty list meant "these only", and an empty allowedCaller list
+// meant "any caller".
+function deriveDelegationPolicy(a: Agent): DelegationPolicy {
+  if (a.delegationPolicy) return a.delegationPolicy
+  if ((a.callableAgentIds?.length ?? 0) > 0 || (a.callableSectorIds?.length ?? 0) > 0) return 'selected'
+  return a.preset === 'manager' ? 'all' : 'none'
+}
+function deriveCallerPolicy(a: Agent): DelegationPolicy {
+  if (a.callerPolicy) return a.callerPolicy
+  return (a.allowedCallerAgentIds?.length ?? 0) > 0 ? 'selected' : 'all'
 }
 
 // Fill the agent-as-primary-unit fields for documents written before they existed,
@@ -132,6 +157,8 @@ export function withAgentDefaults(a: Agent): Agent {
     callableAgentIds: a.callableAgentIds ?? [],
     callableSectorIds: a.callableSectorIds ?? [],
     allowedCallerAgentIds: a.allowedCallerAgentIds ?? [],
+    delegationPolicy: deriveDelegationPolicy(a),
+    callerPolicy: deriveCallerPolicy(a),
   }
 }
 
@@ -141,6 +168,8 @@ export interface AgentModelFields {
   activationModes?: ActivationMode[]
   inputContract?: string
   outputContract?: string
+  delegationPolicy?: DelegationPolicy
+  callerPolicy?: DelegationPolicy
   callableAgentIds?: string[]
   callableSectorIds?: string[]
   allowedCallerAgentIds?: string[]
@@ -171,6 +200,12 @@ export function parseAgentModelFields(body: Record<string, unknown>): { fields: 
     if (v === undefined) continue
     if (typeof v !== 'string') return { fields, error: `${key} must be a string` }
     fields[key] = v.slice(0, 4000)
+  }
+  for (const key of ['delegationPolicy', 'callerPolicy'] as const) {
+    const v = body[key]
+    if (v === undefined) continue
+    if (typeof v !== 'string' || !(DELEGATION_POLICIES as string[]).includes(v)) return { fields, error: `${key} must be one of ${DELEGATION_POLICIES.join(', ')}` }
+    fields[key] = v as DelegationPolicy
   }
   return { fields }
 }
@@ -213,6 +248,8 @@ export async function createAgent(
     activationModes?: ActivationMode[]
     inputContract?: string
     outputContract?: string
+    delegationPolicy?: DelegationPolicy
+    callerPolicy?: DelegationPolicy
     callableAgentIds?: string[]
     callableSectorIds?: string[]
     allowedCallerAgentIds?: string[]
@@ -256,6 +293,11 @@ export async function createAgent(
     callableAgentIds: options.callableAgentIds ?? [],
     callableSectorIds: options.callableSectorIds ?? [],
     allowedCallerAgentIds: options.allowedCallerAgentIds ?? [],
+    // A manager delegates by default; every other role starts as a leaf (none) and
+    // opts in. Any agent can be called by default (callerPolicy='all') so a manager
+    // can reach a fresh specialist without extra wiring.
+    delegationPolicy: options.delegationPolicy ?? (options.preset === 'manager' ? 'all' : 'none'),
+    callerPolicy: options.callerPolicy ?? 'all',
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
@@ -310,6 +352,8 @@ export async function updateAgent(
     activationModes?: ActivationMode[]
     inputContract?: string
     outputContract?: string
+    delegationPolicy?: DelegationPolicy
+    callerPolicy?: DelegationPolicy
     callableAgentIds?: string[]
     callableSectorIds?: string[]
     allowedCallerAgentIds?: string[]

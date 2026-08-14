@@ -1,21 +1,24 @@
-// Delegation safety (Phase 4): the pure gate (owner/building/depth/cycle/auth/budget)
-// and the injected executor (real run, cycle refusal, depth cap, shared budget,
-// cooperative cancellation, both-sides history). No DB/provider — deps are fakes.
+// Delegation safety (Phase 4 + policy/building fix): the pure gate (owner / real
+// building / depth / cycle / none|all|selected policy / budget) and the injected
+// executor (real run, cycle refusal, depth cap, shared budget, cooperative
+// cancellation, both-sides history). No DB/provider — deps are fakes.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ObjectId } from 'mongodb'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
-const { checkDelegation, childContext, rootContext, buildDelegationTools, DELEGATION_MAX_DEPTH, buildCapabilityMissing, capabilityMissingTool } = await import('../dist/delegation.js')
+const { checkDelegation, childContext, rootContext, buildDelegationTools, agentCanDelegate, DELEGATION_MAX_DEPTH, buildCapabilityMissing, capabilityMissingTool } = await import('../dist/delegation.js')
 
 const OWNER = 'owner-1'
-const BUILDING = new ObjectId()
+const BUILDING = new ObjectId() // the real building id (agents live on floors of it)
+const FLOOR_A = new ObjectId()
+const FLOOR_B = new ObjectId() // a different floor of the SAME building
 
 function mkAgent(over = {}) {
   return {
     _id: new ObjectId(),
     ownerId: OWNER,
-    officeId: BUILDING,
+    officeId: FLOOR_A, // the floor the agent lives on
     name: 'A',
     objective: 'obj',
     provider: 'anthropic',
@@ -25,6 +28,8 @@ function mkAgent(over = {}) {
     activationModes: ['manual'],
     inputContract: '',
     outputContract: '',
+    delegationPolicy: 'all', // open by default in tests; override per case
+    callerPolicy: 'all',
     callableAgentIds: [],
     callableSectorIds: [],
     allowedCallerAgentIds: [],
@@ -36,44 +41,66 @@ function ctxFor(agent, over = {}) {
   return { ...rootContext({ ownerId: OWNER, buildingId: BUILDING.toString(), correlationId: 'corr', agent }), ...over }
 }
 
-test('checkDelegation allows same owner+building when both lists are open', () => {
+const B = BUILDING.toString()
+
+test('checkDelegation allows same owner + same building when both policies are open', () => {
   const a = mkAgent()
   const b = mkAgent()
-  assert.equal(checkDelegation(a, b, ctxFor(a)).ok, true)
+  assert.equal(checkDelegation(a, b, B, ctxFor(a)).ok, true)
 })
 
-test('checkDelegation denies cross-owner and cross-building', () => {
-  const a = mkAgent()
-  assert.equal(checkDelegation(a, mkAgent({ ownerId: 'other' }), ctxFor(a)).code, 'forbidden')
-  assert.equal(checkDelegation(a, mkAgent({ officeId: new ObjectId() }), ctxFor(a)).code, 'forbidden')
+test('checkDelegation allows a different FLOOR of the SAME building', () => {
+  const a = mkAgent({ officeId: FLOOR_A })
+  const b = mkAgent({ officeId: FLOOR_B })
+  // target resolves to the same building id -> allowed
+  assert.equal(checkDelegation(a, b, B, ctxFor(a)).ok, true)
 })
 
-test('checkDelegation enforces allowlists on either side', () => {
+test('checkDelegation denies cross-owner and a different building', () => {
   const a = mkAgent()
-  const b = mkAgent()
-  // caller restricted to someone else
-  assert.equal(checkDelegation(mkAgent({ callableAgentIds: [new ObjectId().toString()] }), b, ctxFor(a)).code, 'unauthorized')
-  // target only allows a specific other caller
-  assert.equal(checkDelegation(a, mkAgent({ allowedCallerAgentIds: [new ObjectId().toString()] }), ctxFor(a)).code, 'unauthorized')
-  // explicit pairing works
-  const ok = checkDelegation(a, mkAgent({ allowedCallerAgentIds: [a._id.toString()] }), ctxFor(a))
-  assert.equal(ok.ok, true)
+  assert.equal(checkDelegation(a, mkAgent({ ownerId: 'other' }), B, ctxFor(a)).code, 'forbidden')
+  assert.equal(checkDelegation(a, mkAgent(), new ObjectId().toString(), ctxFor(a)).code, 'forbidden')
+})
+
+test('checkDelegation enforces none|all|selected on both sides', () => {
+  const a = mkAgent()
+  // caller policy none -> cannot delegate at all
+  assert.equal(checkDelegation(mkAgent({ delegationPolicy: 'none' }), mkAgent(), B, ctxFor(a)).code, 'unauthorized')
+  // caller selected but target not listed -> unauthorized
+  assert.equal(checkDelegation(mkAgent({ delegationPolicy: 'selected', callableAgentIds: [new ObjectId().toString()] }), mkAgent(), B, ctxFor(a)).code, 'unauthorized')
+  // target callerPolicy none -> nobody may call it
+  assert.equal(checkDelegation(a, mkAgent({ callerPolicy: 'none' }), B, ctxFor(a)).code, 'unauthorized')
+  // target selected with the caller listed -> allowed
+  const target = mkAgent({ callerPolicy: 'selected', allowedCallerAgentIds: [a._id.toString()] })
+  assert.equal(checkDelegation(a, target, B, ctxFor(a)).ok, true)
+  // caller selected WITH the target listed -> allowed
+  const t2 = mkAgent()
+  assert.equal(checkDelegation(mkAgent({ delegationPolicy: 'selected', callableAgentIds: [t2._id.toString()] }), t2, B, ctxFor(a)).ok, true)
+})
+
+test('a fresh manager (delegationPolicy=all, empty lists) can delegate', () => {
+  const manager = mkAgent({ preset: 'manager', delegationPolicy: 'all', callableAgentIds: [] })
+  assert.equal(agentCanDelegate(manager), true)
+  assert.equal(checkDelegation(manager, mkAgent(), B, ctxFor(manager)).ok, true)
+})
+
+test('agentCanDelegate follows the outgoing policy', () => {
+  assert.equal(agentCanDelegate(mkAgent({ delegationPolicy: 'none' })), false)
+  assert.equal(agentCanDelegate(mkAgent({ delegationPolicy: 'all' })), true)
+  assert.equal(agentCanDelegate(mkAgent({ delegationPolicy: 'selected' })), true)
 })
 
 test('checkDelegation catches cycles and the depth ceiling', () => {
   const a = mkAgent()
   const b = mkAgent()
-  // b already in the chain → cycle
-  assert.equal(checkDelegation(a, b, ctxFor(a, { ancestry: [b._id.toString()] })).code, 'cycle')
-  // self → cycle
-  assert.equal(checkDelegation(a, a, ctxFor(a)).code, 'cycle')
-  // at max depth, one more level is refused
-  assert.equal(checkDelegation(a, b, ctxFor(a, { depth: DELEGATION_MAX_DEPTH })).code, 'depth_exceeded')
+  assert.equal(checkDelegation(a, b, B, ctxFor(a, { ancestry: [b._id.toString()] })).code, 'cycle')
+  assert.equal(checkDelegation(a, a, B, ctxFor(a)).code, 'cycle')
+  assert.equal(checkDelegation(a, b, B, ctxFor(a, { depth: DELEGATION_MAX_DEPTH })).code, 'depth_exceeded')
 })
 
 test('checkDelegation refuses once the shared budget is spent', () => {
   const a = mkAgent()
-  assert.equal(checkDelegation(a, mkAgent(), ctxFor(a, { budget: { tokenLimit: 100, tokensSpent: 100 } })).code, 'budget_exceeded')
+  assert.equal(checkDelegation(a, mkAgent(), B, ctxFor(a, { budget: { tokenLimit: 100, tokensSpent: 100 } })).code, 'budget_exceeded')
 })
 
 // ---- executor via injected deps --------------------------------------------
@@ -88,6 +115,7 @@ function fakeDeps(agents, over = {}) {
       loadAgent: async (_o, id) => byId.get(id.toString()) ?? null,
       loadSector: async () => null,
       listAgentsInBuilding: async () => agents,
+      buildingIdForFloor: async () => B,
       resolveTools: async (agent, ownerId, childCtx) => buildDelegationTools(childCtx, over.self),
       apiKeyFor: async () => 'k',
       runTask: over.runTask ?? (async () => ({ output: 'done', usage: { inputTokens: 10, outputTokens: 5 }, toolCalls: [] })),
@@ -107,8 +135,7 @@ test('delegate_to_agent runs the target and records start+finish (both-sides his
   const b = mkAgent()
   const f = fakeDeps([a, b])
   const ctx = ctxFor(a)
-  const tools = buildDelegationTools(ctx, f.deps)
-  const del = tools.find((t) => t.name === 'delegate_to_agent')
+  const del = buildDelegationTools(ctx, f.deps).find((t) => t.name === 'delegate_to_agent')
   const out = await del.run({ agentId: b._id.toString(), objective: 'faça X' })
   assert.equal(out.ok, true)
   const parsed = JSON.parse(out.result)
@@ -121,20 +148,30 @@ test('delegate_to_agent runs the target and records start+finish (both-sides his
   assert.deepEqual(f.finished[0].usage, { inputTokens: 10, outputTokens: 5 })
 })
 
+test('delegate_to_agent denies an unauthorized pairing without running it', async () => {
+  const a = mkAgent({ delegationPolicy: 'selected', callableAgentIds: [] }) // may call nobody
+  const b = mkAgent()
+  const f = fakeDeps([a, b])
+  const del = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_agent')
+  const out = await del.run({ agentId: b._id.toString(), objective: 'x' })
+  assert.equal(out.ok, false)
+  assert.equal(JSON.parse(out.result).code, 'unauthorized')
+  assert.equal(f.started.length, 0)
+})
+
 test('delegate_to_agent refuses a cycle back to an ancestor without running it', async () => {
   const a = mkAgent()
   const b = mkAgent()
   const f = fakeDeps([a, b])
-  // ctx where b is already an ancestor (a was called by b)
   const ctx = ctxFor(a, { ancestry: [b._id.toString()] })
   const del = buildDelegationTools(ctx, f.deps).find((t) => t.name === 'delegate_to_agent')
   const out = await del.run({ agentId: b._id.toString(), objective: 'loop' })
   assert.equal(out.ok, false)
   assert.equal(JSON.parse(out.result).code, 'cycle')
-  assert.equal(f.started.length, 0) // nothing ran
+  assert.equal(f.started.length, 0)
 })
 
-test('delegate_to_agent stops when the shared budget is exhausted mid-chain', async () => {
+test('delegate_to_agent stops when the shared budget is exhausted', async () => {
   const a = mkAgent()
   const b = mkAgent()
   const f = fakeDeps([a, b])
@@ -158,7 +195,7 @@ test('cooperative cancellation refuses before running', async () => {
 test('list_available_agents hides the caller and unauthorized agents, filters by capability', async () => {
   const a = mkAgent({ capabilities: ['gestao'] })
   const reachable = mkAgent({ capabilities: ['pesquisa', 'web'] })
-  const locked = mkAgent({ capabilities: ['pesquisa'], allowedCallerAgentIds: [new ObjectId().toString()] })
+  const locked = mkAgent({ capabilities: ['pesquisa'], callerPolicy: 'none' }) // nobody may call it
   const f = fakeDeps([a, reachable, locked])
   const ctx = ctxFor(a)
   const list = buildDelegationTools(ctx, f.deps).find((t) => t.name === 'list_available_agents')
@@ -174,14 +211,11 @@ test('capability_missing reports the gap with a suggested preset instead of inve
   assert.equal(cm.status, 'capability_missing')
   assert.equal(cm.suggestedPreset, 'researcher')
   assert.ok(cm.suggestedPresetLabel)
-  // delivery gap → communicator
   assert.equal(buildCapabilityMissing('Enviar relatório', 'envio de e-mail').suggestedPreset, 'communicator')
-  // via the tool
   const tool = capabilityMissingTool()
   const out = JSON.parse((await tool.run({ task: 'X', missingCapability: 'orquestrar equipe' })).result)
   assert.equal(out.status, 'capability_missing')
   assert.equal(out.suggestedPreset, 'manager')
-  // missing required args → error, not a bogus report
   assert.equal(JSON.parse((await tool.run({ task: 'X' })).result).status, 'error')
 })
 
@@ -193,5 +227,5 @@ test('childContext deepens the chain and shares the budget object', () => {
   assert.equal(child.depth, 1)
   assert.equal(child.callerAgentId, b._id.toString())
   assert.deepEqual(child.ancestry, [a._id.toString()])
-  assert.equal(child.budget, ctx.budget) // same reference → tree-wide accounting
+  assert.equal(child.budget, ctx.budget)
 })

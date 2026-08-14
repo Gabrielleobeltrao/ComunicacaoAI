@@ -1,9 +1,9 @@
 // Production wiring for delegation: binds the injected DelegationDeps to the real
 // agent store, tool resolver, task runtime, provider keys and delegation log. Kept
 // separate from ./delegation.ts so that module stays IO-free and unit-testable.
-import { ObjectId } from 'mongodb'
 import { getAgentById, listAgents } from './agents.js'
 import type { Agent } from './agents.js'
+import { getFloor, listFloors } from './floors.js'
 import { getSectorById } from './sectors.js'
 import { resolveAgentTools } from './builtinTools.js'
 import { executeAgentTask } from './agentRuntime.js'
@@ -29,7 +29,18 @@ export function productionDelegationDeps(): DelegationDeps {
       const s = await getSectorById(ownerId, id)
       return s ? { _id: s._id, name: s.name, officeId: s.officeId, mode: s.mode ?? 'adaptive', members: s.members } : null
     },
-    listAgentsInBuilding: (ownerId, buildingId) => listAgents(ownerId, new ObjectId(buildingId)),
+    // Every agent whose FLOOR belongs to this building — delegation spans floors of
+    // the same building, not just one floor.
+    listAgentsInBuilding: async (ownerId, buildingId) => {
+      const floors = await listFloors(ownerId, { includeArchived: true })
+      const floorIds = new Set(floors.filter((f) => f.buildingId.toString() === buildingId).map((f) => f._id.toString()))
+      const all = await listAgents(ownerId)
+      return all.filter((a) => floorIds.has(a.officeId.toString()))
+    },
+    buildingIdForFloor: async (ownerId, floorId) => {
+      const floor = await getFloor(ownerId, floorId)
+      return floor ? floor.buildingId.toString() : null
+    },
     resolveTools: (agent, ownerId, childCtx) => resolveToolsWithDelegation(agent, ownerId, childCtx, deps),
     apiKeyFor: (ownerId, provider) => getProviderApiKey(ownerId, provider as Provider),
     runTask: (req) => executeAgentTask(req),

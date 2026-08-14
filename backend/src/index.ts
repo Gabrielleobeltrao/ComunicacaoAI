@@ -1892,6 +1892,10 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     .filter(Boolean)
     .join('\n\n')
 
+  // Delegation authorizes by the agent's REAL building (its floor's building), so a
+  // manager here can reach specialists on other floors of the same building.
+  const playgroundFloor = await getFloor(res.locals.userId, agent.officeId)
+  const playgroundBuildingId = playgroundFloor?.buildingId.toString() ?? agent.officeId.toString()
   const { text: generated, usage, toolCalls } = await generateAgentReply(
     agent.objective,
     knowledge,
@@ -1915,7 +1919,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     await resolveToolsWithDelegation(
       agent,
       res.locals.userId,
-      rootContext({ ownerId: res.locals.userId, buildingId: agent.officeId.toString(), correlationId: agent._id.toString(), agent }),
+      rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent }),
       productionDelegationDeps(),
     ),
   )
