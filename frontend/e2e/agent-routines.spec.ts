@@ -35,10 +35,10 @@ test('hire an agent, then create a routine inside it', async ({ page }) => {
   await login(page)
   await page.goto('/agents')
 
-  // Hire via the 8-step wizard: pick a preset, keep the generated name, finish.
+  // Hire via the 4-step wizard: pick a role, keep the generated name, finish.
   await page.getByRole('button', { name: 'Contratar agente' }).first().click()
   await page.getByText('Pesquisador').click()
-  for (let i = 0; i < 7; i++) await page.getByRole('button', { name: 'Próximo' }).click()
+  for (let i = 0; i < 3; i++) await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Contratar agente' }).last().click()
 
   // Open the newly hired agent and go to its Rotinas area.
