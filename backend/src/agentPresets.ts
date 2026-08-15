@@ -1,7 +1,7 @@
 // Role presets — a STARTING configuration for a new agent, never a hard limit
 // (the user edits everything after hiring). The catalog is the single source of
 // truth: the hiring wizard pre-fills from it, and capability_missing suggests one.
-import type { ActivationMode, AgentPreset } from './agents.js'
+import type { ActivationMode, AgentPreset, DelegationPolicy } from './agents.js'
 
 export interface AgentPresetSpec {
   preset: AgentPreset
@@ -10,9 +10,19 @@ export interface AgentPresetSpec {
   // Suggested initial config the wizard pre-fills (all editable afterwards).
   objective: string
   capabilities: string[]
+  // REAL triggers only, and only the ones this role should have in PRODUCTION.
+  // Being reachable by other agents is a permission (callerPolicy), never an
+  // activation — see agentReadiness.normalizeActivation. An empty list is valid and
+  // means "only other agents start this one"; testing it never needs a trigger,
+  // because the playground runs the agent directly.
   activationModes: ActivationMode[]
   inputContract: string
   outputContract: string
+  // Safe defaults per role, editable later under "Avançado".
+  delegationPolicy: DelegationPolicy // whom it may call
+  callerPolicy: DelegationPolicy // who may call it
+  // Does this role need a tool/app to do its job at all?
+  requiresTool?: boolean
 }
 
 export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
@@ -24,6 +34,8 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
       'Você é um gerente/orquestrador. Entenda o pedido, descubra quais agentes da equipe têm a competência necessária, delegue as tarefas, combine os resultados e entregue uma resposta final. Se faltar competência ou ferramenta para concluir algo, não invente: relate exatamente o que faltou.',
     capabilities: ['orquestracao', 'delegacao', 'planejamento'],
     activationModes: ['manual', 'scheduled'],
+    delegationPolicy: 'all',
+    callerPolicy: 'all',
     inputContract: 'Um pedido em linguagem natural, do usuário ou de uma rotina.',
     outputContract: 'Uma resposta final consolidada a partir do trabalho dos agentes delegados.',
   },
@@ -35,6 +47,8 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
       'Você é um secretário. Receba demandas, organize as informações, agende rotinas quando fizer sentido, acompanhe resultados e encaminhe cada tarefa para o agente mais adequado.',
     capabilities: ['organizacao', 'agendamento', 'roteamento'],
     activationModes: ['manual', 'channel', 'scheduled'],
+    delegationPolicy: 'all',
+    callerPolicy: 'all',
     inputContract: 'Uma demanda ou mensagem a ser organizada e encaminhada.',
     outputContract: 'Um encaminhamento organizado (para quem/qual rotina) e/ou um resumo do estado.',
   },
@@ -45,7 +59,11 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     objective:
       'Você é um pesquisador. Não inicia conversa nem responde diretamente ao usuário. Recebe uma solicitação estruturada, pesquisa usando apenas as ferramentas autorizadas e devolve o resultado com as fontes e a data da pesquisa.',
     capabilities: ['pesquisa', 'web'],
-    activationModes: ['agent_only'],
+    // No operational trigger: a manager or a sector calls it. Use "Testar" to try it.
+    activationModes: [],
+    delegationPolicy: 'none',
+    callerPolicy: 'all', // exists to be called by a manager/sector
+    requiresTool: true,
     inputContract: 'Uma solicitação estruturada de pesquisa (tema, período, restrições).',
     outputContract: 'Resultado da pesquisa + fontes + data da coleta.',
   },
@@ -56,7 +74,9 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     objective:
       'Você é um analista. Recebe dados existentes e produz uma análise, comparação ou conclusão clara e fundamentada, apontando o raciocínio.',
     capabilities: ['analise', 'comparacao'],
-    activationModes: ['agent_only'],
+    activationModes: [],
+    delegationPolicy: 'none',
+    callerPolicy: 'all',
     inputContract: 'Dados ou resultados já coletados, para analisar.',
     outputContract: 'Uma análise/comparação/conclusão fundamentada.',
   },
@@ -67,7 +87,10 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     objective:
       'Você é um executor/operador. Realiza ações reais em apps, APIs e integrações autorizadas e confirma exatamente o que foi feito. Nunca simule uma ação que não conseguiu executar.',
     capabilities: ['execucao', 'integracoes'],
-    activationModes: ['manual', 'event', 'agent_only'],
+    activationModes: ['manual', 'event'],
+    delegationPolicy: 'none',
+    callerPolicy: 'all',
+    requiresTool: true,
     inputContract: 'Uma instrução de ação a ser executada em uma integração autorizada.',
     outputContract: 'Confirmação da ação realizada (ou o motivo estruturado de não ter sido possível).',
   },
@@ -78,7 +101,9 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     objective:
       'Você é um comunicador. Transforma resultados em uma mensagem, relatório, e-mail ou conteúdo adequado ao canal e ao público.',
     capabilities: ['redacao', 'comunicacao'],
-    activationModes: ['agent_only'],
+    activationModes: [],
+    delegationPolicy: 'none',
+    callerPolicy: 'all',
     inputContract: 'Um resultado bruto a ser transformado em comunicação.',
     outputContract: 'A comunicação final formatada para o canal.',
   },
@@ -89,7 +114,10 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     objective:
       'Você é um monitor. Acompanha uma fonte específica na frequência definida, compara com o estado anterior e, quando a condição de alerta acontece, emite um aviso claro dizendo o que mudou. Se nada relevante mudou, informe que está tudo estável.',
     capabilities: ['monitoramento', 'alerta'],
-    activationModes: ['scheduled', 'agent_only'],
+    activationModes: ['scheduled'],
+    delegationPolicy: 'none',
+    callerPolicy: 'all',
+    requiresTool: true,
     inputContract: 'Uma fonte a acompanhar e a condição que dispara o alerta.',
     outputContract: 'Um alerta com o que mudou (ou a confirmação de que nada relevante mudou).',
   },
@@ -100,6 +128,8 @@ export const AGENT_PRESET_SPECS: AgentPresetSpec[] = [
     objective: '',
     capabilities: [],
     activationModes: ['manual', 'channel'],
+    delegationPolicy: 'none',
+    callerPolicy: 'all',
     inputContract: '',
     outputContract: '',
   },

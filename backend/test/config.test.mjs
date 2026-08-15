@@ -48,6 +48,9 @@ const PROD_URLS = {
   BETTER_AUTH_URL: 'https://api.comunicacaoai.oneplataforma.com',
   PUBLIC_URL: 'https://api.comunicacaoai.oneplataforma.com',
 }
+// The non-URL variables a production deploy must carry. There is no REDIS_URL any
+// more: the automation queue and scheduler live in MongoDB, so a deploy needs one
+// database and nothing else.
 const PROD_SECRETS = {
   MONGODB_URI: 'mongodb://localhost:27017/comunicacaoai_test',
   BETTER_AUTH_SECRET: 'x'.repeat(40),
@@ -94,4 +97,12 @@ test('development: no env needed, falls back to localhost defaults', () => {
   const parsed = JSON.parse(out)
   assert.deepEqual(parsed.origins, ['http://localhost:5173'])
   assert.match(parsed.betterAuthUrl, /^http:\/\/localhost:/)
+})
+
+test('production needs NO broker: a complete config without REDIS_URL is accepted', () => {
+  // The automation engine polls MongoDB, so there is nothing else to configure.
+  // This used to fail on purpose; keeping the case documents the removal.
+  const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS })
+  assert.equal(ok, true, out)
+  assert.ok(!out.includes('REDIS_URL'), 'REDIS_URL must not be demanded any more')
 })

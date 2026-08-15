@@ -4,7 +4,7 @@ import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentSummary, SectorSummary } from '../lib/types'
 import { useActiveFloorId } from '../contexts/BuildingContext'
 import { floorSector } from '../lib/floorRoutes'
-import { sectorModeLabel } from '../lib/sectors'
+import { SECTOR_MODE_LABEL, normalizeSectorMode, sectorReadiness } from '../lib/sectors'
 import { SectorMapCrop } from '../office/SectorMapCrop'
 import { Button, Card, Dialog } from '../ui'
 import { SectorForm } from './SectorForm'
@@ -16,9 +16,11 @@ interface SectorManagerProps {
   agentsLoading: boolean
   floorId?: string
   onChange: () => void | Promise<void>
+  // Reload the agent roster after a contextual hire from inside the sector form.
+  onAgentsChanged?: () => void | Promise<void>
 }
 
-export function SectorManager({ sectors, loading, agents, agentsLoading, floorId, onChange }: SectorManagerProps) {
+export function SectorManager({ sectors, loading, agents, agentsLoading, floorId, onChange, onAgentsChanged }: SectorManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
   const fid = useActiveFloorId()
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
@@ -28,16 +30,15 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
   return (
     <div className="space-y-4">
       <Button icon="plus" disabled={agentsLoading} onClick={() => setIsCreating(true)}>
-        Novo setor
+        Nova equipe
       </Button>
 
       {loading ? (
         <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>Carregando setores...</p>
       ) : sectors.length === 0 ? (
         <p style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 640 }}>
-          Nenhum setor ainda. Um setor junta vários agentes especialistas — no modo adaptativo um
-          orquestrador consulta os que fazem sentido em cada mensagem; no modo fluxo, o atendimento passa
-          por etapas em sequência. Sempre com uma voz única para o visitante.
+          Nenhum setor ainda. Um setor é uma equipe: pode só organizar agentes no mapa, ter um gerente
+          que coordena o time, ou executar um trabalho em etapas, uma depois da outra.
         </p>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))', gap: 14 }}>
@@ -46,7 +47,9 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
             const defaultName = (defaultMember && agentNameById.get(defaultMember.agentId)) || null
             const names = sector.members.map((m) => agentNameById.get(m.agentId) ?? 'removido')
             const count = sector.members.length
-            const modeLabel = sectorModeLabel(sector.mode)
+            const modeLabel = SECTOR_MODE_LABEL[normalizeSectorMode(sector.mode)].title
+            // Same rule as the backend: the card says outright when the team cannot work yet.
+            const ready = sectorReadiness({ mode: sector.mode, members: sector.members, coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages }).ready
             return (
               <Link key={sector._id} to={fid ? floorSector(fid, sector._id) : `/setores/${sector._id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
                 <Card interactive accent={sector.color} padding="0" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -57,9 +60,16 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
                     <SectorMapCrop sector={sector} agents={agents} chars={chars} />
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 16 }}>
-                    <p className="truncate" style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800, color: 'var(--text-heading)' }}>
-                      {sector.name}
-                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <p className="truncate" style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 800, color: 'var(--text-heading)' }}>
+                        {sector.name}
+                      </p>
+                      {!ready && (
+                        <span style={{ flexShrink: 0, borderRadius: 999, padding: '2px 8px', fontSize: 11, fontWeight: 700, background: 'var(--mango-100, #fef3e6)', color: 'var(--mango-700, #b54708)' }} data-testid="sector-card-incomplete">
+                          Incompleto
+                        </span>
+                      )}
+                    </div>
                     <p
                       style={{
                         margin: 0,
@@ -87,11 +97,13 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
         </div>
       )}
 
-      <Dialog open={isCreating} onClose={() => setIsCreating(false)} title="Novo setor" width={680}>
+      <Dialog open={isCreating} onClose={() => setIsCreating(false)} title="Nova equipe" width={680}>
         <SectorForm
           sector={null}
           agents={agents}
+          sectors={sectors}
           floorId={floorId}
+          onAgentsChanged={onAgentsChanged ?? onChange}
           onSaved={async () => {
             setIsCreating(false)
             await onChange()

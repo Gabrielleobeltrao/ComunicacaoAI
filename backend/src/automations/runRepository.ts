@@ -8,6 +8,8 @@ const artifacts = db.collection<Artifact>('artifacts')
 
 export async function ensureRunIndexes(): Promise<void> {
   await runs.createIndex({ ownerId: 1, idempotencyKey: 1 }, { unique: true })
+  // The claim query: queued runs oldest-first, plus expired leases to reclaim.
+  await runs.createIndex({ status: 1, leaseUntil: 1, queuedAt: 1 })
   await runs.createIndex({ ownerId: 1, floorId: 1, queuedAt: -1 })
   await runs.createIndex({ ownerId: 1, automationId: 1, queuedAt: -1 })
   await stepRuns.createIndex({ runId: 1, stepId: 1, attempt: 1 })
@@ -28,6 +30,70 @@ export async function insertRunIdempotent(run: AutomationRun): Promise<{ run: Au
     }
     throw error
   }
+}
+
+// How long a claim is held before another worker may take the run over. Long
+// enough for a slow multi-step run, short enough that a crashed process does not
+// strand work for the rest of the day.
+export const RUN_LEASE_MS = Number(process.env.RUN_LEASE_MS ?? 10 * 60_000)
+// A run claimed this many times without finishing is parked as failed instead of
+// cycling forever (a poison job must not block the queue).
+export const MAX_RUN_CLAIMS = Number(process.env.MAX_RUN_CLAIMS ?? 3)
+
+// Atomically take ONE run off the queue. This is the whole queue: a single
+// findOneAndUpdate means two workers — or two API replicas — can never get the same
+// run, without any external broker.
+//
+// It picks up two kinds of work:
+//   - 'queued'  : never started;
+//   - 'running' : claimed by a process that died, once its lease expired.
+export async function claimNextRun(workerId: string, now = new Date()): Promise<AutomationRun | null> {
+  const claimed = await runs.findOneAndUpdate(
+    {
+      $or: [
+        { status: 'queued', $or: [{ leaseUntil: null }, { leaseUntil: { $exists: false } }, { leaseUntil: { $lte: now } }] },
+        // Abandoned: still marked running but nobody renewed the lease.
+        { status: 'running', leaseUntil: { $lte: now } },
+      ],
+    },
+    {
+      $set: { status: 'running', claimedBy: workerId, claimedAt: now, leaseUntil: new Date(now.getTime() + RUN_LEASE_MS) },
+      $inc: { claims: 1 },
+    },
+    { sort: { queuedAt: 1 }, returnDocument: 'after' },
+  )
+  if (!claimed) return null
+
+  // Poison guard: give up loudly instead of reclaiming the same run forever.
+  if ((claimed.claims ?? 1) > MAX_RUN_CLAIMS) {
+    await runs.updateOne(
+      { _id: claimed._id },
+      {
+        $set: {
+          status: 'failed',
+          finishedAt: now,
+          leaseUntil: null,
+          error: { kind: 'error', message: `run abandonado após ${MAX_RUN_CLAIMS} tentativas` },
+        },
+      },
+    )
+    return null
+  }
+  return claimed
+}
+
+// Keep a long run's claim alive while it is genuinely progressing.
+export async function renewLease(id: ObjectId, workerId: string, now = new Date()): Promise<boolean> {
+  const res = await runs.updateOne(
+    { _id: id, claimedBy: workerId, status: 'running' },
+    { $set: { leaseUntil: new Date(now.getTime() + RUN_LEASE_MS) } },
+  )
+  return res.matchedCount === 1
+}
+
+// Release the claim when the run reaches a terminal state, so nothing reclaims it.
+export async function releaseRun(id: ObjectId): Promise<void> {
+  await runs.updateOne({ _id: id }, { $set: { leaseUntil: null, claimedBy: null } })
 }
 
 export function findRun(ownerId: string, id: ObjectId): Promise<AutomationRun | null> {

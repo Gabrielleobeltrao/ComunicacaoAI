@@ -1,4 +1,6 @@
 import 'dotenv/config'
+import { embeddedEngineEnabled, startAutomationEngine } from './automations/engine.js'
+import type { EngineHandle } from './automations/engine.js'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import cors from 'cors'
@@ -61,7 +63,7 @@ import type { SectorStage, SectorTeamFields } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
 import { assignAgentToSector } from './sectorMembership.js'
 import { ensureDefaultOffice } from './offices.js'
-import { getFloor } from './floors.js'
+import { getFloor, listFloors } from './floors.js'
 import { runMigrations } from './migrate.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
@@ -121,6 +123,13 @@ import {
 } from './userSettings.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
+import { agentReadiness, callerPolicyFromLegacy, sanitizeCollaborationRefs, triggerStates } from './agentReadiness.js'
+import { collaboratorContext, collaboratorCountFor } from './collaboration.js'
+import type { CollaboratorContext } from './collaboration.js'
+import type { AgentWiring } from './agentReadiness.js'
+import { listRoutines } from './automations/routine.js'
+import { liveWebhookCountByAgent } from './automations/webhookTriggers.js'
+import { listActivePublished } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import type { KnowledgeOwner } from './knowledge.js'
@@ -883,16 +892,6 @@ function parseSectorMode(value: unknown): SectorMode | null {
 // A callable-sector list may only hold EXECUTABLE sectors (orchestrated/pipeline).
 // Enforced server-side so an organization sector never becomes a delegation target,
 // even if a client sends it.
-async function filterExecutableSectorIds(ownerId: string, ids: string[]): Promise<string[]> {
-  const out: string[] = []
-  for (const id of ids) {
-    if (!ObjectId.isValid(id)) continue
-    const s = await getSectorById(ownerId, new ObjectId(id))
-    if (s && sectorIsExecutable(normalizeSectorMode(s.mode))) out.push(id)
-  }
-  return out
-}
-
 const MAX_SECTOR_STAGES = 12
 
 // Parse the orchestrated/pipeline team fields (coordinator + stages) from a request
@@ -1141,7 +1140,7 @@ app.put('/api/sectors/:sectorId/members', requireAuth, async (req, res) => {
     res.status(code === 'CROSS_FLOOR_ASSIGNMENT' || code === 'SECTOR_MEMBER_LIMIT' ? 409 : 400).json({ error, code })
     return
   }
-  if (sectorReadiness(normalizeSectorMode(existing.mode), parsed ?? [], { coordinatorAgentId: existing.coordinatorAgentId, stages: existing.stages }) === 'incomplete' && body.confirmChannelImpact !== true) {
+  if (!sectorReadiness({ mode: normalizeSectorMode(existing.mode), members: parsed ?? [], coordinatorAgentId: existing.coordinatorAgentId, stages: existing.stages }).ready && body.confirmChannelImpact !== true) {
     const widgets = await listWidgets(ownerId)
     const channels = widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => ({ id: w._id.toString(), name: w.name, type: 'web' as const }))
     if (channels.length > 0) {
@@ -1252,7 +1251,7 @@ app.post('/api/sectors/:sectorId/move', requireAuth, async (req, res) => {
     return
   }
   // Moving with an incomplete team while a channel points here needs confirmation.
-  if (sectorReadiness(normalizeSectorMode(sector.mode), parsed ?? [], { coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages }) === 'incomplete' && body.confirmChannelImpact !== true) {
+  if (!sectorReadiness({ mode: normalizeSectorMode(sector.mode), members: parsed ?? [], coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages }).ready && body.confirmChannelImpact !== true) {
     const widgets = await listWidgets(ownerId)
     const channels = widgets.filter((w) => w.sectorId?.toString() === sectorId).map((w) => ({ id: w._id.toString(), name: w.name, type: 'web' as const }))
     if (channels.length > 0) {
@@ -1307,8 +1306,39 @@ app.get('/api/sectors/:sectorId/overview', requireAuth, async (req, res) => {
         }
       : null
 
+  // Readiness for the team, including agents that are wired in but still need
+  // their OWN setup (a warning, never a block).
+  const mode = normalizeSectorMode(sector.mode)
+  const involvedIds = new Set<string>([
+    ...sector.members.map((m) => m.agentId.toString()),
+    ...(sector.coordinatorAgentId ? [sector.coordinatorAgentId.toString()] : []),
+    ...(sector.stages ?? []).map((st) => st.agentId?.toString()).filter((x): x is string => Boolean(x)),
+  ])
+  const allAgents = await listAgents(ownerId)
+  const known = new Map(allAgents.map((a) => [a._id.toString(), a]))
+  const involved = [...involvedIds].map((id) => known.get(id)).filter((a): a is NonNullable<typeof a> => Boolean(a))
+  const collabCtx = await collaboratorContext(ownerId)
+  const liveWebhooks = liveWebhookCountByAgent(await listActivePublished(ownerId).catch(() => []))
+  const pendingAgentNames = (
+    await Promise.all(
+      involved.map(async (a) => {
+        const channels = widgets.filter((w) => w.agentId?.toString() === a._id.toString()).length
+        return agentReadiness(a, await wiringForAgent(ownerId, a, channels, collabCtx, liveWebhooks)).ready ? null : a.name
+      }),
+    )
+  ).filter((n): n is string => n !== null)
+  const readiness = sectorReadiness({
+    mode,
+    members: sector.members,
+    coordinatorAgentId: sector.coordinatorAgentId,
+    stages: sector.stages,
+    pendingAgentNames,
+    knownAgentIds: allAgents.map((a) => a._id.toString()),
+  })
+
   res.json({
     sector: serializeSector(sector),
+    readiness,
     analytics,
     linkedWidgets: widgets
       .filter((w) => w.sectorId?.toString() === sectorId)
@@ -1633,9 +1663,17 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: modelError })
     return
   }
-  if (modelFields.callableSectorIds) modelFields.callableSectorIds = await filterExecutableSectorIds(res.locals.userId, modelFields.callableSectorIds)
-
   const officeId = await resolveFloorOffice(res.locals.userId, req.body?.floorId)
+  // Same validation as the update path: a new agent can only be wired to colleagues
+  // and teams that really exist in ITS building.
+  if (modelFields.callableAgentIds || modelFields.callableSectorIds || modelFields.allowedCallerAgentIds) {
+    const ctx = await collaboratorContext(res.locals.userId)
+    Object.assign(
+      modelFields,
+      sanitizeCollaborationRefs({ id: '', buildingId: ctx.buildingOf(officeId.toString()) }, modelFields, ctx.agents, ctx.sectors),
+    )
+  }
+
   const agent = await createAgent(res.locals.userId, officeId, name, {
     objective: typeof objective === 'string' ? objective : undefined,
     provider,
@@ -1710,7 +1748,9 @@ app.get('/api/agent-stats', requireAuth, async (req, res) => {
   for (const agent of agents) {
     const id = agent._id.toString()
     const w = widgetStats[id]
-    const channelLinked = !!w || (agent.activationModes ?? []).includes('channel')
+    // A conversation metric requires a REAL channel. Accepting activationModes here
+    // showed "0 conversas" on agents that were merely allowed to answer a channel.
+    const channelLinked = !!w
     const ev = eventMetrics.get(id)
     const specificValue = (key: string): number | null => {
       switch (key) {
@@ -1935,7 +1975,26 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     res.status(400).json({ error: modelError })
     return
   }
-  if (modelFields.callableSectorIds) modelFields.callableSectorIds = await filterExecutableSectorIds(res.locals.userId, modelFields.callableSectorIds)
+  // Collaboration references are validated against reality: same owner, same
+  // building, agent/sector actually exists, sector actually executes. Anything else
+  // is dropped rather than stored — a foreign id must never end up in the document.
+  if (modelFields.callableAgentIds || modelFields.callableSectorIds || modelFields.allowedCallerAgentIds) {
+    const existing = await getAgentById(res.locals.userId, new ObjectId(agentId))
+    if (!existing) {
+      res.status(404).json({ error: 'Agent not found' })
+      return
+    }
+    const ctx = await collaboratorContext(res.locals.userId)
+    Object.assign(
+      modelFields,
+      sanitizeCollaborationRefs(
+        { id: agentId, buildingId: ctx.buildingOf(existing.officeId?.toString() ?? '') },
+        modelFields,
+        ctx.agents,
+        ctx.sectors,
+      ),
+    )
+  }
   Object.assign(updates, modelFields)
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -1993,6 +2052,84 @@ app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
 // Per-agent dashboard: the agent config, its usage metrics (scoped to the
 // widgets it directly answers), where it's used (widgets/sectors) and how many
 // knowledge documents it has.
+// Real wiring around an agent: what EXISTS, not what is merely allowed. Shared by
+// the agent overview and the sector overview (which flags members that still need
+// their own setup), so both report the same pendencies.
+async function wiringForAgent(ownerId: string, agent: Agent, linkedChannelCount: number, ctx: CollaboratorContext, liveWebhooks?: Map<string, number>): Promise<AgentWiring> {
+  const [routines, documents] = await Promise.all([
+    listRoutines(ownerId, agent._id).catch(() => []),
+    listDocuments(agent._id).catch(() => []),
+  ])
+  // A trigger counts as CONFIGURED only when something active really fires it:
+  // a schedule routine that is running (a webhook is not a schedule), and — for
+  // events — a PUBLISHED, ACTIVE webhook that really references this agent, whether
+  // through its own routine or through an agent.execute step of any automation.
+  const active = routines.filter((r) => r.status === 'active')
+  const isWebhook = (r: (typeof routines)[number]) => (r.trigger?.type ?? r.draftDefinition?.trigger?.type) === 'webhook'
+  const webhooks = liveWebhooks ?? liveWebhookCountByAgent(await listActivePublished(ownerId).catch(() => []))
+  return {
+    routineCount: active.filter((r) => !isWebhook(r)).length,
+    channelCount: linkedChannelCount,
+    webhookCount: webhooks.get(agent._id.toString()) ?? 0,
+    // Real reachable colleagues — a policy of 'all' over an empty building is zero.
+    collaboratorCount: collaboratorCountFor(agent, ctx),
+    toolCount: (agent.tools?.length ?? 0) + (agent.builtinTools?.length ?? 0),
+    knowledgeCount: documents.length,
+    deliveryConfigured: routines.some((r) => (r.draftDefinition?.deliveries?.length ?? 0) > 0),
+  }
+}
+
+// Who this agent may be wired to work with — everyone in the SAME BUILDING (any
+// floor), owner-scoped, itself excluded, and only sectors that can really execute.
+// The roster page still lists one floor; collaboration is a building-wide decision,
+// so the editor asks the backend instead of guessing from the floor it happens to
+// have loaded.
+app.get('/api/agents/:agentId/collaborators', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  if (!ObjectId.isValid(agentId)) {
+    res.status(400).json({ error: 'Invalid agent id' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const agent = await getAgentById(ownerId, new ObjectId(agentId))
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const ctx = await collaboratorContext(ownerId)
+  const buildingId = ctx.buildingOf(agent.officeId?.toString() ?? '')
+  const floors = await listFloors(ownerId, { includeArchived: true }).catch(() => [])
+  const floorName = new Map(floors.map((f) => [f._id.toString(), f.name]))
+  const all = await listAgents(ownerId)
+  const sectors = await listSectors(ownerId)
+
+  res.json({
+    buildingId,
+    agents: all
+      .filter((a) => !a._id.equals(agent._id))
+      .filter((a) => ctx.buildingOf(a.officeId?.toString() ?? '') === buildingId)
+      .map((a) => ({
+        _id: a._id.toString(),
+        name: a.name,
+        preset: a.preset ?? 'custom',
+        floorId: a.officeId?.toString() ?? null,
+        floorName: floorName.get(a.officeId?.toString() ?? '') ?? null,
+        // Whether this colleague currently accepts a call FROM this agent, so the
+        // editor can say so instead of letting the user pick someone unreachable.
+        acceptsCall: (() => {
+          const incoming = callerPolicyFromLegacy(a)
+          if (incoming === 'none') return false
+          if (incoming === 'selected') return (a.allowedCallerAgentIds ?? []).includes(agentId)
+          return true
+        })(),
+      })),
+    sectors: sectors
+      .filter((t) => ctx.buildingOf(t.officeId?.toString() ?? '') === buildingId)
+      .filter((t) => sectorIsExecutable(normalizeSectorMode(t.mode)))
+      .map((t) => ({ _id: t._id.toString(), name: t.name, mode: normalizeSectorMode(t.mode), floorName: floorName.get(t.officeId?.toString() ?? '') ?? null })),
+  })
+})
+
 app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   const agentId = String(req.params.agentId)
   if (!ObjectId.isValid(agentId)) {
@@ -2016,7 +2153,11 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   ])
 
   const linkedWidgets = widgets.filter((w) => w.agentId?.toString() === agentId)
-  const channelLinked = linkedWidgets.length > 0 || (agent.activationModes ?? []).includes('channel')
+  // Same rule as the roster: only a linked widget/channel counts.
+  const channelLinked = linkedWidgets.length > 0
+  const wiring = await wiringForAgent(ownerId, agent, linkedWidgets.length, await collaboratorContext(ownerId))
+  const readiness = agentReadiness(agent, wiring)
+  const triggers = triggerStates(agent, wiring)
   // "Entregas" is only offered when this agent really sent something.
   const agentHasDeliveries = (await sentDeliveriesByAgent(ownerId)).has(agentId)
   res.json({
@@ -2025,12 +2166,28 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
     // KPI availability for the "Métrica do card" picker (data-source aware) and the
     // currently-resolved card metric.
     channelLinked,
+    // The conceptual model the UI renders: what fires this agent (allowed vs
+    // configured) and whether it can actually do its job.
+    wiring,
+    readiness,
+    triggers,
     availableMetrics: availableMetricKeys(agent, channelLinked, { hasDeliveries: agentHasDeliveries }),
     resolvedMetric: resolveMetricKey(agent, channelLinked, { hasDeliveries: agentHasDeliveries }),
     linkedWidgets: linkedWidgets.map((w) => ({ _id: w._id, name: w.name })),
+    // Where this agent is used as part of a team — coordinator, member or a named
+    // pipeline stage. A member row is not the whole story: a coordinator or a stage
+    // agent is often NOT in `members`, and the agent page used to show nothing.
     linkedSectors: sectors
-      .filter((t) => t.members.some((m) => m.agentId.toString() === agentId))
-      .map((t) => ({ _id: t._id, name: t.name })),
+      .map((t) => {
+        const roles: { role: 'coordinator' | 'member' | 'stage'; stageId?: string; stageName?: string }[] = []
+        if (t.coordinatorAgentId?.toString() === agentId) roles.push({ role: 'coordinator' })
+        if (t.members.some((m) => m.agentId.toString() === agentId)) roles.push({ role: 'member' })
+        for (const st of t.stages ?? []) {
+          if (st.agentId?.toString() === agentId) roles.push({ role: 'stage', stageId: st.id, stageName: st.name })
+        }
+        return roles.length > 0 ? { _id: t._id, name: t.name, mode: normalizeSectorMode(t.mode), roles } : null
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null),
     knowledgeCount: documents.length,
   })
 })
@@ -3562,6 +3719,18 @@ async function start() {
     })
     .catch((error) => console.error('backfillKnowledgeOwners failed:', error))
 
+  // The automation engine runs INSIDE the API by default: one deployable service,
+  // and no way to deploy a system whose routines silently never fire. Set
+  // EMBEDDED_WORKER=false to run `npm run start:worker` as a separate process.
+  if (embeddedEngineEnabled()) {
+    automationEngine = await startAutomationEngine().catch((error) => {
+      console.error('Automation engine failed to start:', error)
+      return null
+    })
+  } else {
+    console.log('Automation engine disabled here (EMBEDDED_WORKER=false) — run npm run start:worker')
+  }
+
   httpServer.listen(port, () => {
     console.log(`Backend listening on port ${port} (${config.nodeEnv})`)
   })
@@ -3569,6 +3738,9 @@ async function start() {
 
 // Graceful shutdown: stop accepting connections, close Socket.IO, then Mongo, so
 // SIGTERM from the orchestrator drains cleanly instead of a hard kill.
+// Held so shutdown can drain in-flight automation runs before closing MongoDB.
+let automationEngine: EngineHandle | null = null
+
 let shuttingDown = false
 async function shutdown(signal: string) {
   if (shuttingDown) return
@@ -3582,6 +3754,8 @@ async function shutdown(signal: string) {
   try {
     io.close()
     await new Promise<void>((resolve) => httpServer.close(() => resolve()))
+    // Stop polling and let running automations finish before the database goes.
+    if (automationEngine) await automationEngine.stop()
     await mongoClient.close()
     console.log('Shutdown complete')
     process.exit(0)

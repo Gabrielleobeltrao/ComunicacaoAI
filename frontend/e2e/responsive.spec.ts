@@ -51,18 +51,20 @@ test('mobile navigation opens, navigates and closes', async ({ page }) => {
   await page.setViewportSize(PHONE)
   await login(page)
   await page.goto('/dashboard', { waitUntil: 'networkidle' })
-  // The desktop rail is hidden; the bottom nav is visible.
-  await expect(page.getByRole('navigation', { name: 'Navegação principal' })).toBeVisible()
-  // Open the drawer from the topbar hamburger.
-  await page.click('button[aria-label="Abrir menu"]')
+  // On a phone the navigation lives in the drawer behind the topbar hamburger
+  // (there is no separate bottom bar — the drawer IS the mobile navigation).
+  const opener = page.locator('button[aria-label="Abrir menu"]')
+  await expect(opener).toBeVisible()
+  await opener.click()
   const drawer = page.locator('#mobile-drawer')
   await expect(drawer).toBeVisible()
   // Navigate to Agentes from the drawer; it should close and the route change.
   await drawer.getByRole('link', { name: 'Agentes' }).click()
   await page.waitForURL('**/agents')
   await expect(drawer).toHaveCount(0)
-  // Bottom nav marks the active route.
-  await expect(page.getByRole('link', { name: 'Agentes' }).first()).toHaveAttribute('aria-current', 'page')
+  // Re-opening it marks the active route.
+  await opener.click()
+  await expect(page.locator('#mobile-drawer').getByRole('link', { name: 'Agentes' })).toHaveAttribute('aria-current', 'page')
 })
 
 test('office map controls meet the touch-target minimum on touch devices', async ({ browser }) => {

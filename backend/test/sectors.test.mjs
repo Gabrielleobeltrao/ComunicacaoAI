@@ -24,15 +24,44 @@ test('sectorIsExecutable: only orchestrated/pipeline run', () => {
 
 test('sectorReadiness by mode', () => {
   const member = { agentId: new ObjectId(), isDefault: true, sector: '', routingDescription: '', advanceWhen: '', transitions: [] }
+  const agentId = new ObjectId()
   // organization: any member is enough
-  assert.equal(sectorReadiness('organization', [member]), 'ready')
-  assert.equal(sectorReadiness('organization', []), 'incomplete')
+  assert.equal(sectorReadiness({ mode: 'organization', members: [member] }).ready, true)
+  assert.equal(sectorReadiness({ mode: 'organization', members: [] }).ready, false)
   // orchestrated: needs a coordinator AND a member
-  assert.equal(sectorReadiness('orchestrated', [member], { coordinatorAgentId: new ObjectId() }), 'ready')
-  assert.equal(sectorReadiness('orchestrated', [member], { coordinatorAgentId: null }), 'incomplete')
-  // pipeline: needs at least one stage
-  assert.equal(sectorReadiness('pipeline', [], { stages: [{ id: 'a' }] }), 'ready')
-  assert.equal(sectorReadiness('pipeline', [], { stages: [] }), 'incomplete')
+  assert.equal(sectorReadiness({ mode: 'orchestrated', members: [member], coordinatorAgentId: new ObjectId() }).ready, true)
+  assert.equal(sectorReadiness({ mode: 'orchestrated', members: [member], coordinatorAgentId: null }).ready, false)
+  assert.equal(sectorReadiness({ mode: 'orchestrated', members: [], coordinatorAgentId: new ObjectId() }).ready, false)
+  // pipeline: needs stages, and every stage needs an agent
+  assert.equal(sectorReadiness({ mode: 'pipeline', members: [], stages: [{ id: 'a', name: 'A', agentId }] }).ready, true)
+  assert.equal(sectorReadiness({ mode: 'pipeline', members: [], stages: [] }).ready, false)
+  assert.equal(sectorReadiness({ mode: 'pipeline', members: [], stages: [{ id: 'a', name: 'A', agentId: null }] }).ready, false)
+})
+
+test('sectorReadiness: legacy adaptive sectors are read as orchestrated, never as broken', () => {
+  const member = { agentId: new ObjectId() }
+  const r = sectorReadiness({ mode: 'adaptive', members: [member], coordinatorAgentId: new ObjectId() })
+  assert.equal(r.ready, true)
+  assert.deepEqual(r.issues, [])
+})
+
+test('sectorReadiness: a stage pointing at a removed agent is blocking and names the stage', () => {
+  const r = sectorReadiness({
+    mode: 'pipeline',
+    members: [],
+    stages: [{ id: 's1', name: 'Triagem', agentId: new ObjectId() }],
+    knownAgentIds: [new ObjectId().toString()],
+  })
+  assert.equal(r.ready, false)
+  assert.equal(r.issues[0].code, 'stage_without_agent')
+  assert.match(r.issues[0].message, /Triagem/)
+})
+
+test('sectorReadiness: an agent with its own pending setup warns but never blocks the sector', () => {
+  const r = sectorReadiness({ mode: 'organization', members: [{ agentId: new ObjectId() }], pendingAgentNames: ['Ana'] })
+  assert.equal(r.ready, true)
+  assert.deepEqual(r.issues.map((i) => i.code), ['agent_pending'])
+  assert.deepEqual(r.issues.map((i) => i.severity), ['warning'])
 })
 
 test('normalizeStages assigns ids, clamps retries and defaults onError to stop', () => {

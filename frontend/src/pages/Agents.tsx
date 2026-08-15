@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
+import { reachableCollaboratorCount } from '../lib/agentReadiness'
+import { useBuildingPeers } from '../lib/useBuildingPeers'
 import { AgentCard } from '../components/AgentCard'
 import { HireWizard } from '../components/HireWizard'
 import { AppLayout } from '../components/AppLayout'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentStat } from '../lib/agentAvatar'
 import { getAgentStats } from '../lib/agentStats'
+import { floorAgent } from '../lib/floorRoutes'
 import { formatCount, formatDuration, formatTokens } from '../lib/metricFormat'
-import type { AgentOperationalStats } from '../lib/types'
+import type { AgentOperationalStats, AgentSummary } from '../lib/types'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
-import { useParams } from 'react-router'
+import { useNavigate, useParams } from 'react-router'
 import { Button, Dialog, EmptyState, Field, Input, Select } from '../ui'
 
 const NO_SECTOR = '__none__'
@@ -27,7 +30,10 @@ function buildStats(s: AgentOperationalStats | undefined): AgentStat[] {
 
 export function Agents() {
   const { floorId } = useParams()
+  const navigate = useNavigate()
   const { agents, agentsLoading, loadAgents, sectors } = useAgentsAndWidgets(floorId)
+  // Collaboration is building-wide; the roster below stays scoped to this floor.
+  const peers = useBuildingPeers()
   const [isCreating, setIsCreating] = useState(false)
   const [agentStats, setAgentStats] = useState<Record<string, AgentOperationalStats> | null>(null)
 
@@ -50,6 +56,17 @@ export function Agents() {
       cancelled = true
     }
   }, [floorId])
+
+  // A manager with nobody to call cannot do its job — same rule and same SCOPE as the
+  // API and the agent page: the whole building, not the floor being listed. Other
+  // pendencies need per-agent wiring the roster does not load.
+  const managerWithoutColleagues = (agent: AgentSummary) =>
+    agent.preset === 'manager' &&
+    reachableCollaboratorCount(
+      { id: agent._id, delegationPolicy: agent.delegationPolicy, callableAgentIds: agent.callableAgentIds, callableSectorIds: agent.callableSectorIds },
+      peers.agents,
+      peers.sectors,
+    ) === 0
 
   // An agent belongs to at most one sector — map agentId -> sector name so each
   // card can show it (or "Sem setor" when orphan).
@@ -149,6 +166,7 @@ export function Agents() {
                   portrait={chars.portrait(agent._id)}
                   sectorName={sectorByAgent.get(agent._id) ?? null}
                   stats={buildStats(agentStats ? agentStats[agent._id] : undefined)}
+                  needsSetup={managerWithoutColleagues(agent)}
                 />
               ))}
             </div>
@@ -195,9 +213,18 @@ export function Agents() {
           agents={agents}
           sectors={sectors}
           onCancel={() => setIsCreating(false)}
-          onHired={async () => {
+          onHired={async (created, section) => {
             setIsCreating(false)
             await loadAgents()
+            // Straight to the new agent — and to the exact section when the user
+            // clicked a pendency instead of "Abrir o agente".
+            if (created) {
+              // The section may carry an anchor ("fluxos#colaboracao"), so the user
+              // lands on the editor that solves the pendency.
+              const [tab, anchor] = (section ?? '').split('#')
+              const base = floorId ? floorAgent(floorId, created._id, tab || undefined) : `/agents/${created._id}${tab ? `/${tab}` : ''}`
+              navigate(anchor ? `${base}#${anchor}` : base)
+            }
           }}
         />
       </Dialog>

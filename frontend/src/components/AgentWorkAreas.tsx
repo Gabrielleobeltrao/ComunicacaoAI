@@ -32,7 +32,8 @@ const ACTIVATION_LABEL: Record<ActivationMode, string> = {
   scheduled: 'Agendado',
   event: 'Evento',
   channel: 'Canal',
-  agent_only: 'Só por outro agente',
+  // LEGACY, read-only: never offered as an option, only rendered for old agents.
+  agent_only: 'Legado: só por outro agente',
 }
 
 const sectionTitle = (text: string) => (
@@ -244,24 +245,8 @@ export function AgentRoutines({ agent }: { agent: AgentSummary }) {
 }
 
 // ---- Acionamentos -----------------------------------------------------------
-export function AgentActivations({ agent, agents }: { agent: AgentSummary; agents: AgentSummary[] }) {
-  const nameOf = (id: string) => agents.find((a) => a._id === id)?.name ?? 'Agente removido'
+export function AgentActivations({ agent }: { agent: AgentSummary }) {
   const modes = agent.activationModes ?? []
-
-  // Describe a none|all|selected policy in plain language (never a raw list-length).
-  const describePolicy = (policy: string, ids: string[], allText: string) => {
-    if (policy === 'none') return <p style={{ margin: 0, fontSize: 13, color: 'var(--text-subtle)' }}>Ninguém.</p>
-    if (policy === 'all') return <p style={{ margin: 0, fontSize: 13, color: 'var(--text-subtle)' }}>{allText}</p>
-    return ids.length === 0 ? (
-      <p style={{ margin: 0, fontSize: 13, color: 'var(--text-subtle)' }}>Nenhum selecionado.</p>
-    ) : (
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {ids.map((id) => (
-          <Tag key={id}>{nameOf(id)}</Tag>
-        ))}
-      </div>
-    )
-  }
 
   return (
     <div style={{ display: 'grid', gap: 18 }}>
@@ -277,18 +262,7 @@ export function AgentActivations({ agent, agents }: { agent: AgentSummary; agent
           </div>
         )}
       </div>
-      <div>
-        {sectionTitle('Pode acionar')}
-        {describePolicy(agent.delegationPolicy, agent.callableAgentIds ?? [], 'Qualquer agente do prédio.')}
-        {agent.delegationPolicy === 'selected' && (agent.callableSectorIds ?? []).length > 0 ? (
-          <p style={{ margin: '8px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>Equipes: {agent.callableSectorIds.length}</p>
-        ) : null}
-      </div>
-      <div>
-        {sectionTitle('Pode ser acionado por')}
-        {describePolicy(agent.callerPolicy, agent.allowedCallerAgentIds ?? [], 'Qualquer agente do prédio.')}
-      </div>
-      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-subtle)' }}>Ajuste competências, acionamentos e colaboradores em “Ajustes”.</p>
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-subtle)' }}>Com quem ele trabalha fica em “Colaboração”, logo abaixo. Competências ficam em “Ajustes”.</p>
     </div>
   )
 }

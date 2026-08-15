@@ -1,5 +1,5 @@
 import { API_URL } from './api'
-import type { ActivationMode, AgentPreset } from './types'
+import type { ActivationMode, AgentPreset, DelegationPolicy } from './types'
 
 // The role-preset catalog (GET /api/agent-presets) that seeds the hiring wizard.
 // A preset is a STARTING configuration — every field stays editable afterwards.
@@ -12,6 +12,10 @@ export interface AgentPresetSpec {
   activationModes: ActivationMode[]
   inputContract: string
   outputContract: string
+  // Safe per-role defaults applied at hiring; editable later under "Avançado".
+  delegationPolicy: DelegationPolicy
+  callerPolicy: DelegationPolicy
+  requiresTool?: boolean
 }
 
 export const listAgentPresets = () =>

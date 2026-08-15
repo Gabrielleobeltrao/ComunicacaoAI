@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
 import { AgentActivations, AgentHistoryPanel, AgentRoutines } from '../components/AgentWorkAreas'
+import { CollaborationEditor } from '../components/CollaborationEditor'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
@@ -13,7 +14,7 @@ import { getAgentStats, METRIC_KEY_LABEL, PERIOD_LABEL, type StatsPeriod } from 
 import { formatCount, formatDuration, formatPercent, formatTokens } from '../lib/metricFormat'
 import { useActiveFloorId, useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { AgentSectorAssignment } from '../components/AgentSectorAssignment'
-import { floorAgent, floorAgents } from '../lib/floorRoutes'
+import { floorAgent, floorAgents, floorSector } from '../lib/floorRoutes'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import type { AgentOverview, AgentStatsResponse, AgentSummary } from '../lib/types'
 import { Button, Card, MetricStat, StatusPill, Tag } from '../ui'
@@ -24,17 +25,192 @@ import { Illustration } from '../office/Illustration'
 // on the left, and metric cards over a tabbed panel on the right. Each tab hosts
 // a real section (the config form sections + the test playground), so nothing
 // loses functionality.
+// Five sections instead of eight: what it is, how it works, what triggers it, what it
+// did, and the technical knobs. Old links keep working through LEGACY_SECTION.
 const TABS: { key: string; label: string }[] = [
-  { key: 'essencial', label: 'Ajustes' },
-  { key: 'ferramentas', label: 'Ferramentas' },
-  { key: 'conhecimento', label: 'Conhecimento' },
-  { key: 'rotinas', label: 'Rotinas' },
-  { key: 'acionamentos', label: 'Acionamentos' },
-  { key: 'historico', label: 'Histórico' },
+  { key: 'visao-geral', label: 'Visão geral' },
+  { key: 'como-trabalha', label: 'Como trabalha' },
+  { key: 'fluxos', label: 'Fluxos' },
+  { key: 'atividade', label: 'Atividade' },
   { key: 'avancado', label: 'Avançado' },
-  { key: 'testar', label: 'Testar' },
 ]
 const TAB_KEYS = TABS.map((t) => t.key)
+const LEGACY_SECTION: Record<string, string> = {
+  essencial: 'visao-geral',
+  ferramentas: 'como-trabalha',
+  conhecimento: 'como-trabalha',
+  rotinas: 'fluxos',
+  acionamentos: 'fluxos',
+  historico: 'atividade',
+  testar: 'atividade',
+}
+
+const TRIGGER_LABEL: Record<string, { label: string; configured: string; pending: string; conflict: string; fix: string }> = {
+  manual: { label: 'Execução manual', configured: 'Você pode rodar quando quiser', pending: 'Não permitido — use “Testar” para experimentar', conflict: 'Algo dispara este agente sem permissão.', fix: 'Permitir execução manual' },
+  scheduled: { label: 'Rotina', configured: 'Roda no horário definido', pending: 'Permitido, mas sem rotina criada', conflict: 'Existe rotina rodando, mas o agendamento não está permitido.', fix: 'Permitir agendamento' },
+  channel: { label: 'Canal', configured: 'Atende no canal vinculado', pending: 'Permitido, mas sem canal vinculado', conflict: 'Existe canal vinculado, mas o atendimento por canal não está permitido.', fix: 'Permitir canal' },
+  event: { label: 'Evento', configured: 'Disparado por webhook', pending: 'Permitido, mas sem webhook configurado', conflict: 'Existe webhook ativo, mas o gatilho por evento não está permitido.', fix: 'Permitir evento' },
+}
+
+// Ready or the exact pending items, each with the one action that fixes it.
+function ReadinessCard({ overview, onGo }: { overview: AgentOverview; onGo: (section: string) => void }) {
+  // A payload without readiness (an older server, a cached response) must degrade to
+  // "no pendency known", never blank the whole page.
+  const readiness = overview.readiness ?? { ready: true, issues: [] }
+  if (readiness.ready)
+    return (
+      <Card padding="14px 16px" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <StatusPill status="working" label="Pronto para trabalhar" pulse={false} />
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Este agente tem tudo o que precisa.</span>
+      </Card>
+    )
+  return (
+    <Card padding="14px 16px" style={{ display: 'grid', gap: 10 }} data-testid="agent-readiness">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <StatusPill status="blocked" label="Falta configurar" pulse={false} />
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Ele ainda não consegue fazer o trabalho dele.</span>
+      </div>
+      {(readiness.issues ?? []).map((issue) => (
+        <div key={issue.code} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13.5, color: 'var(--text-heading)', minWidth: 0 }}>{issue.message}</span>
+          <Button size="sm" variant="secondary" onClick={() => onGo(issue.section)}>
+            {issue.action}
+          </Button>
+        </div>
+      ))}
+    </Card>
+  )
+}
+
+// What fires this agent: each trigger with BOTH truths — allowed by the agent, and
+// actually configured (a routine/channel/webhook that really exists).
+function TriggersPanel({ overview, onFixed }: { overview: AgentOverview; onFixed: () => void }) {
+  const triggers = overview.triggers ?? []
+  const [fixing, setFixing] = useState<string | null>(null)
+
+  // Legacy rows can have a live routine/channel/webhook while the agent never
+  // allowed that trigger. One click makes the permission match what already runs.
+  const allow = async (kind: string) => {
+    setFixing(kind)
+    try {
+      const modes = [...new Set([...(overview.agent.activationModes ?? []), kind])].filter((m) => m !== 'agent_only')
+      const res = await fetch(`${API_URL}/api/agents/${overview.agent._id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activationModes: modes }),
+      })
+      if (res.ok) onFixed()
+    } finally {
+      setFixing(null)
+    }
+  }
+
+  return (
+    <div data-testid="agent-triggers">
+      <h3 style={{ margin: '0 0 4px', fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>O que aciona este agente</h3>
+      <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--text-muted)' }}>“Permitido” é o que ele aceita. “Configurado” é o que já existe de verdade.</p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 10 }}>
+        {triggers.map((t) => {
+          const copy = TRIGGER_LABEL[t.kind]
+          // 'conflict' is the legacy case: it really fires, but the agent says no.
+          const state = t.inconsistent ? 'conflict' : !t.allowed ? 'off' : t.configured ? 'on' : 'pending'
+          const pill =
+            state === 'conflict'
+              ? { status: 'break' as const, label: 'Configurado, mas não permitido' }
+              : state === 'on'
+                ? { status: 'working' as const, label: 'Configurado' }
+                : state === 'pending'
+                  ? { status: 'break' as const, label: 'Permitido' }
+                  : { status: 'idle' as const, label: 'Desligado' }
+          return (
+            <Card key={t.kind} padding="12px 14px" style={{ display: 'grid', gap: 4, opacity: state === 'off' ? 0.55 : 1 }} data-testid={`trigger-${t.kind}`}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ fontFamily: 'var(--font-ui)', fontWeight: 700, fontSize: 13.5, color: 'var(--text-heading)' }}>{copy.label}</span>
+                <StatusPill status={pill.status} label={pill.label} pulse={false} />
+              </div>
+              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                {state === 'conflict' ? copy.conflict : !t.allowed ? copy.pending : t.configured ? copy.configured : copy.pending}
+              </span>
+              {state === 'conflict' ? (
+                <button
+                  type="button"
+                  onClick={() => void allow(t.kind)}
+                  disabled={fixing === t.kind}
+                  data-testid={`trigger-fix-${t.kind}`}
+                  style={{ justifySelf: 'start', background: 'none', border: 0, padding: 0, font: 'inherit', fontSize: 12.5, color: 'var(--intent-brand)', textDecoration: 'underline', cursor: 'pointer' }}
+                >
+                  {fixing === t.kind ? 'Ajustando…' : copy.fix}
+                </button>
+              ) : null}
+            </Card>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// Where this agent works as part of a team: which sectors, and in which role —
+// coordinator, member or a named pipeline stage. Answers "por que ele foi
+// acionado?" without opening every sector.
+function TeamsPanel({ overview, fid }: { overview: AgentOverview; fid: string | null }) {
+  const links = overview.linkedSectors ?? []
+  return (
+    <div data-testid="agent-teams">
+      <h3 style={{ margin: '0 0 4px', fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Onde este agente trabalha</h3>
+      {links.length === 0 ? (
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>Ele ainda não faz parte de nenhuma equipe.</p>
+      ) : (
+        <ul style={{ display: 'grid', gap: 8, margin: 0, padding: 0, listStyle: 'none' }}>
+          {links.map((l) => (
+            <li key={l._id}>
+              <Card padding="10px 14px">
+                <Link to={fid ? floorSector(fid, l._id) : `/setores/${l._id}`} style={{ fontWeight: 700, fontSize: 13.5, color: 'var(--text-heading)', textDecoration: 'none' }}>
+                  {l.name}
+                </Link>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                  {(l.roles ?? []).map((r, i) => (
+                    <Tag key={`${r.role}-${r.stageId ?? i}`}>{r.role === 'coordinator' ? 'coordena' : r.role === 'member' ? 'membro' : `etapa: ${r.stageName || r.stageId}`}</Tag>
+                  ))}
+                </div>
+              </Card>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// The four questions the overview must answer at a glance.
+function AgentSummaryCard({ agent, overview }: { agent: AgentSummary; overview: AgentOverview }) {
+  const rows: [string, string][] = [
+    ['Função', roleLabelOf(agent)],
+    ['O que faz', agent.objective || '—'],
+    ['Recebe', agent.inputContract || '—'],
+    ['Entrega', agent.outputContract || '—'],
+  ]
+  const w = overview.wiring
+  return (
+    <Card padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="agent-summary">
+      {rows.map(([label, value]) => (
+        <div key={label} style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ minWidth: 110, fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
+          <span style={{ fontSize: 13.5, color: 'var(--text-heading)', minWidth: 0, flex: 1 }}>{value}</span>
+        </div>
+      ))}
+      {w ? (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 4 }}>
+          <Tag>{w.toolCount} ferramenta(s)</Tag>
+          <Tag>{w.knowledgeCount} documento(s)</Tag>
+          <Tag>{w.routineCount} rotina(s)</Tag>
+          <Tag>{w.channelCount} canal(is)</Tag>
+        </div>
+      ) : null}
+    </Card>
+  )
+}
 
 function ProfileCard({ agent, stats, accent, portrait }: { agent: AgentSummary; stats: AgentOverview['stats']; accent: string; portrait: string }) {
   const roleLabel = roleLabelOf(agent)
@@ -205,7 +381,15 @@ export function AgentDetail() {
   const agent = overview?.agent
   const agentFloorId = agent?.floorId ?? fid
   const agentFloorName = building?.floors.find((f) => f.id === agentFloorId)?.name ?? 'Andar'
-  const active = TAB_KEYS.includes(section ?? '') ? (section as string) : 'essencial'
+  const raw = section ?? ''
+  const active = TAB_KEYS.includes(raw) ? raw : (LEGACY_SECTION[raw] ?? 'visao-geral')
+  // A key may carry an anchor ("fluxos#colaboracao") so an action opens the exact
+  // editor that solves the pendency, not just the tab that contains it.
+  const goToSection = (key: string) => {
+    const [section, anchor] = key.split('#')
+    const base = fid ? floorAgent(fid, agentId!, section) : `/agents/${agentId}/${section}`
+    navigate(anchor ? `${base}#${anchor}` : base)
+  }
   const accent = agent ? accentFor(agent._id) : 'var(--intent-brand)'
   const stats = overview?.stats
   const attendanceRate = stats && stats.conversations > 0 ? Math.round((stats.attendedConversations / stats.conversations) * 100) : 0
@@ -326,18 +510,43 @@ export function AgentDetail() {
                 </div>
               </div>
               <div style={{ padding: 18 }}>
-                {active === 'testar' ? (
-                  <AgentPlayground key={agent._id} agent={agent} />
-                ) : active === 'rotinas' ? (
-                  <AgentRoutines key={agent._id} agent={agent} />
-                ) : active === 'acionamentos' ? (
-                  <AgentActivations key={agent._id} agent={agent} agents={agents} />
-                ) : active === 'historico' ? (
-                  <AgentHistoryPanel key={agent._id} agent={agent} sectors={overview.linkedSectors} />
+                {active === 'atividade' ? (
+                  // What it did: metrics live above; here go history and the test bench.
+                  <div style={{ display: 'grid', gap: 20 }}>
+                    <AgentHistoryPanel key={`${agent._id}:hist`} agent={agent} sectors={overview.linkedSectors} />
+                    <div>
+                      <h3 style={{ margin: '0 0 4px', fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Testar</h3>
+                      {/* Testing is NOT a production trigger: it never needs "execução
+                          manual" to be permitted, and nothing here is scheduled or
+                          published. That is why a specialist ships without triggers. */}
+                      <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="playground-note">
+                        Teste é sempre possível, mesmo sem gatilho. Não é execução em produção: nada é agendado nem enviado a um canal.
+                      </p>
+                      <AgentPlayground key={`${agent._id}:play`} agent={agent} />
+                    </div>
+                  </div>
+                ) : active === 'fluxos' ? (
+                  // What sets it in motion: triggers (allowed vs configured), routines
+                  // and the relationships with other agents/sectors.
+                  <div style={{ display: 'grid', gap: 20 }}>
+                    <TriggersPanel overview={overview} onFixed={load} />
+                    <TeamsPanel overview={overview} fid={fid} />
+                    <AgentRoutines key={`${agent._id}:routines`} agent={agent} />
+                    <AgentActivations key={`${agent._id}:activations`} agent={agent} />
+                    {/* The pendency "sem colaboradores" is solved right here — the
+                        checklist and the readiness card link straight to it. */}
+                    <CollaborationEditor key={`${agent._id}:collab`} agent={agent} onSaved={load} />
+                  </div>
                 ) : (
                   <>
+                    {active === 'visao-geral' ? (
+                      <div style={{ display: 'grid', gap: 14, marginBottom: 18 }}>
+                        <ReadinessCard overview={overview} onGo={goToSection} />
+                        <AgentSummaryCard agent={agent} overview={overview} />
+                      </div>
+                    ) : null}
                     <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} availableMetrics={overview.availableMetrics} />
-                    {active === 'essencial' ? (
+                    {active === 'visao-geral' ? (
                       <div style={{ marginTop: 20 }}>
                         <DangerZone
                           title="Excluir este agente"

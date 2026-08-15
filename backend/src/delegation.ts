@@ -36,6 +36,12 @@ export interface DelegationContext {
   // so a chain is never summed twice.
   currentEventKey?: string | null
   rootEventKey?: string | null
+  // SECTOR CONTEXT GRANT. While a coordinator runs a sector, it may call THAT
+  // sector's members without the user having to repeat the relationship on each
+  // agent's policies. It is deliberately narrow: one sector, one explicit member
+  // list, one level deep (childContext drops it), and every other guard —
+  // owner, building, depth, cycle, budget — still applies.
+  sectorGrant?: { sectorId: string; memberIds: string[] } | null
 }
 
 export type DelegationDenyCode = 'forbidden' | 'unauthorized' | 'depth_exceeded' | 'cycle' | 'budget_exceeded' | 'canceled'
@@ -61,9 +67,14 @@ export function checkDelegation(caller: Agent, target: Agent, targetBuildingId: 
   if (targetBuildingId !== ctx.buildingId) return { ok: false, code: 'forbidden', reason: 'agente de outro prédio' }
   if (ctx.depth + 1 > DELEGATION_MAX_DEPTH) return { ok: false, code: 'depth_exceeded', reason: `profundidade máxima (${DELEGATION_MAX_DEPTH}) atingida` }
   if (tid === ctx.callerAgentId || ctx.ancestry.includes(tid)) return { ok: false, code: 'cycle', reason: 'ciclo de delegação detectado' }
-  const callerAllows = policyAllows(caller.delegationPolicy, caller.callableAgentIds, tid)
-  const targetAllows = policyAllows(target.callerPolicy, target.allowedCallerAgentIds, caller._id.toString())
-  if (!callerAllows || !targetAllows) return { ok: false, code: 'unauthorized', reason: 'delegação não autorizada entre estes agentes' }
+  // Being teammates in the sector being executed IS the authorisation — configuring
+  // the sector must not require configuring the same relation on both agents.
+  const grantedBySector = ctx.sectorGrant?.memberIds.includes(tid) ?? false
+  if (!grantedBySector) {
+    const callerAllows = policyAllows(caller.delegationPolicy, caller.callableAgentIds, tid)
+    const targetAllows = policyAllows(target.callerPolicy, target.allowedCallerAgentIds, caller._id.toString())
+    if (!callerAllows || !targetAllows) return { ok: false, code: 'unauthorized', reason: 'delegação não autorizada entre estes agentes' }
+  }
   if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) return { ok: false, code: 'budget_exceeded', reason: 'orçamento de tokens da cadeia esgotado' }
   return { ok: true }
 }
@@ -77,6 +88,9 @@ export function childContext(ctx: DelegationContext, target: Agent): DelegationC
     callerAgentName: target.name,
     ancestry: [...ctx.ancestry, ctx.callerAgentId],
     depth: ctx.depth + 1,
+    // A sector grant belongs to the coordinator's own turn — a member called by it
+    // does not inherit the right to call the rest of the team.
+    sectorGrant: null,
   }
 }
 
@@ -251,10 +265,17 @@ async function runAgentTask(
   format: AgentOutputFormat,
   eventKey?: string,
   sectorId?: ObjectId | null,
+  grant?: { sectorId: string; memberIds: string[] } | null,
 ): Promise<TaskRun> {
   // The child runs under THIS execution's event, so anything it delegates chains to
   // the same root (parent/root lineage).
-  const cctx = { ...childContext(ctx, target), currentEventKey: eventKey ?? ctx.currentEventKey ?? null, rootEventKey: ctx.rootEventKey ?? eventKey ?? null }
+  const cctx = {
+    ...childContext(ctx, target),
+    currentEventKey: eventKey ?? ctx.currentEventKey ?? null,
+    rootEventKey: ctx.rootEventKey ?? eventKey ?? null,
+    // Only the coordinator receives it (see delegate_to_sector).
+    sectorGrant: grant ?? null,
+  }
   const tools = await deps.resolveTools(target, ctx.ownerId, cctx)
   const apiKey = await deps.apiKeyFor(ctx.ownerId, target.provider)
   // Curated grounding: the executor's own base, plus the sector's ONLY when this run
@@ -451,7 +472,13 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
     const coordinator = await deps.loadAgent(ctx.ownerId, coordinatorId)
     if (!coordinator) throw new Error('coordenador não encontrado')
     const instruction = sector.instruction ? `${sector.instruction}\n\n${objective}` : objective
-    output = await recordChildRun(deps, ctx, coordinator, instruction, recId, (k) => runAgentTask(deps, ctx, coordinator, instruction, args.input, format, k, sector._id))
+    // The team the coordinator may reach during THIS run: the sector's own members,
+    // minus itself. Nothing global is opened.
+    const grant = {
+      sectorId: sector._id.toString(),
+      memberIds: sector.members.map((m) => m.agentId.toString()).filter((id) => id !== coordinator._id.toString()),
+    }
+    output = await recordChildRun(deps, ctx, coordinator, instruction, recId, (k) => runAgentTask(deps, ctx, coordinator, instruction, args.input, format, k, sector._id, grant))
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
     return { ok: true, result: j({ status: 'ok', sector: sector.name, output }) }
   } catch (error) {

@@ -5,18 +5,27 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
-const { AGENT_PRESETS, ACTIVATION_MODES, parseAgentModelFields, withAgentDefaults } = await import('../dist/agents.js')
+const { AGENT_PRESETS, ACTIVATION_MODES, LEGACY_ACTIVATION_MODES, parseAgentModelFields, withAgentDefaults } = await import('../dist/agents.js')
 
 test('AGENT_PRESETS + ACTIVATION_MODES expose the expected sets', () => {
   assert.deepEqual(AGENT_PRESETS, ['manager', 'secretary', 'researcher', 'analyst', 'operator', 'communicator', 'monitor', 'custom'])
-  assert.deepEqual(ACTIVATION_MODES, ['manual', 'scheduled', 'event', 'channel', 'agent_only'])
+  // agent_only is legacy: still READ, never settable.
+  assert.deepEqual(ACTIVATION_MODES, ['manual', 'scheduled', 'event', 'channel'])
+  assert.deepEqual(LEGACY_ACTIVATION_MODES, ['agent_only'])
 })
 
-test('parseAgentModelFields accepts a valid preset + activation modes (deduped)', () => {
+test('parseAgentModelFields converts a legacy agent_only instead of storing it', () => {
   const { fields, error } = parseAgentModelFields({ preset: 'researcher', activationModes: ['agent_only', 'agent_only', 'manual'] })
   assert.equal(error, undefined)
   assert.equal(fields.preset, 'researcher')
-  assert.deepEqual(fields.activationModes, ['agent_only', 'manual'])
+  assert.deepEqual(fields.activationModes, ['manual'])
+  // The permission it meant is preserved on the model that owns it.
+  assert.equal(fields.callerPolicy, 'all')
+
+  // An explicit callerPolicy in the same payload always wins.
+  const explicit = parseAgentModelFields({ activationModes: ['agent_only'], callerPolicy: 'none' })
+  assert.deepEqual(explicit.fields.activationModes, [])
+  assert.equal(explicit.fields.callerPolicy, 'none')
 })
 
 test('parseAgentModelFields rejects an unknown preset / bad activation mode', () => {

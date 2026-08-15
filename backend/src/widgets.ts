@@ -1,4 +1,6 @@
 import { randomBytes } from 'crypto'
+import { ensureActivationMode } from './agents.js'
+import { TRIGGER_FOR_CONFIG } from './agentReadiness.js'
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 
@@ -75,6 +77,9 @@ export async function createWidget(
     sectorId: options.sectorId ?? null,
   }
   const result = await widgets.insertOne(widget as Widget)
+  // A channel that really points at an agent also makes 'channel' an allowed trigger,
+  // so the agent page never shows a live channel as "desligado".
+  if (widget.agentId) await ensureActivationMode(ownerId, widget.agentId, TRIGGER_FOR_CONFIG.channel)
   return { ...widget, _id: result.insertedId }
 }
 
@@ -102,6 +107,7 @@ export async function createWhatsAppChannel(
     whatsapp,
   }
   const result = await widgets.insertOne(widget as Widget)
+  if (widget.agentId) await ensureActivationMode(ownerId, widget.agentId, TRIGGER_FOR_CONFIG.channel)
   return { ...widget, _id: result.insertedId }
 }
 
@@ -126,6 +132,7 @@ export async function updateWhatsAppChannel(
   if (updates.whatsapp !== undefined) set.whatsapp = updates.whatsapp
   if (Object.keys(set).length > 0) {
     await widgets.updateOne({ _id: channelId, ownerId, channel: 'whatsapp' }, { $set: set })
+    if (set.agentId) await ensureActivationMode(ownerId, set.agentId, TRIGGER_FOR_CONFIG.channel)
   }
   return widgets.findOne({ _id: channelId, ownerId, channel: 'whatsapp' })
 }
@@ -151,7 +158,7 @@ export function getWidgetById(widgetId: ObjectId) {
   return widgets.findOne({ _id: widgetId })
 }
 
-export function updateWidget(
+export async function updateWidget(
   ownerId: string,
   widgetId: ObjectId,
   updates: {
@@ -164,11 +171,13 @@ export function updateWidget(
     sectorId?: ObjectId | null
   },
 ) {
-  return widgets.findOneAndUpdate(
+  const doc = await widgets.findOneAndUpdate(
     { _id: widgetId, ownerId },
     { $set: updates },
     { returnDocument: 'after' },
   )
+  if (updates.agentId) await ensureActivationMode(ownerId, updates.agentId, TRIGGER_FOR_CONFIG.channel)
+  return doc
 }
 
 export function setWidgetAvatar(ownerId: string, widgetId: ObjectId, avatarUrl: string | null) {

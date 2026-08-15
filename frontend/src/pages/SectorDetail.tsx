@@ -10,12 +10,13 @@ import { SectorKnowledge } from '../components/SectorKnowledge'
 import { API_URL } from '../lib/api'
 import { SectorApiError, getSectorOverview, sectorModeLabel } from '../lib/sectors'
 import { SectorHero } from '../components/SectorHero'
+import { SectorFlow } from '../components/SectorFlow'
 import { SectorAgentsDialog } from '../components/SectorAgentsDialog'
 import { MoveSectorWizard } from '../components/MoveSectorWizard'
 import { useActiveFloorId, useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { floorAgent, floorSector, floorSectors } from '../lib/floorRoutes'
 import { Button } from '../ui'
-import { SECTOR_SECTIONS } from '../lib/sectorSections'
+import { LEGACY_SECTOR_SECTION, SECTOR_SECTIONS } from '../lib/sectorSections'
 import type { AgentSummary, SectorOverview } from '../lib/types'
 
 function Metric({ label, value, suffix, hint }: { label: string; value: number; suffix?: string; hint?: string }) {
@@ -37,12 +38,34 @@ function Badge({ children }: { children: ReactNode }) {
   )
 }
 
+function ReadinessPanel({ overview, onFix }: { overview: SectorOverview; onFix: () => void }) {
+  const issues = overview.readiness?.issues ?? []
+  if (issues.length === 0) return null
+  return (
+    <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4" data-testid="sector-readiness-panel">
+      <ul className="space-y-1">
+        {issues.map((i, idx) => (
+          <li key={`${i.code}-${idx}`} className={`text-sm ${i.severity === 'blocking' ? 'text-(--coral-600)' : 'text-(--mango-700)'}`}>
+            {i.message}
+          </li>
+        ))}
+      </ul>
+      <button type="button" onClick={onFix} className="mt-2 text-xs underline" style={{ color: 'var(--intent-brand)' }}>
+        {issues[0].action}
+      </button>
+    </div>
+  )
+}
+
 function OverviewSection({ overview, agents }: { overview: SectorOverview; agents: AgentSummary[] }) {
   const { sector, analytics, linkedWidgets } = overview
   const fid = useActiveFloorId()
   const nameById = new Map(agents.map((a) => [a._id, a.name]))
   const agentById = new Map(agents.map((a) => [a._id, a]))
   const isPipeline = sector.mode === 'pipeline'
+  // Agents that are wired in but still need their OWN setup — the backend reports
+  // them by name, so the card can say so instead of failing silently at run time.
+  const pendingNames = new Set((overview.readiness?.issues ?? []).filter((i) => i.code === 'agent_pending').map((i) => i.message.split(' ainda precisa')[0]))
   const maxCount = Math.max(1, ...(analytics?.specialists.map((s) => s.count) ?? []))
 
   const renderMember = (m: (typeof sector.members)[number], index: number) => {
@@ -55,6 +78,12 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
             {full ? full.name : 'Agente removido'}
           </span>
           {m.isDefault && <Badge>Padrão</Badge>}
+          {sector.coordinatorAgentId === m.agentId && <Badge>Coordena</Badge>}
+          {full && pendingNames.has(full.name) && (
+            <span className="rounded-full px-2 py-0.5 text-xs" style={{ background: 'var(--mango-100, #fef3e6)', color: 'var(--mango-700, #b54708)' }} data-testid="member-pending">
+              Precisa de configuração
+            </span>
+          )}
         </div>
         {full && (
           <div className="mt-2">
@@ -111,6 +140,13 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
 
   return (
     <div className="space-y-6">
+      <section>
+        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Como o trabalho anda</h3>
+        <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
+          <SectorFlow sector={sector} agents={agents} />
+        </div>
+      </section>
+
       <section>
         <h3 className="mb-3 text-sm font-medium text-(--text-muted)">
           {isPipeline ? 'Etapas do fluxo' : 'Agentes do setor'}
@@ -237,19 +273,16 @@ export function SectorDetail() {
 
   // Members + editing need agents of the SECTOR'S floor, not every floor (§3.8).
   const sectorFloorId = overview?.sector.floorId ?? fid ?? null
-  useEffect(() => {
+  const loadAgents = useCallback(async () => {
     if (!sectorFloorId) return
-    let cancelled = false
-    fetch(`${API_URL}/api/agents?floorId=${sectorFloorId}`, { credentials: 'include' })
+    const list = await fetch(`${API_URL}/api/agents?floorId=${sectorFloorId}`, { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : []))
-      .then((a) => {
-        if (!cancelled) setAgents(a)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
+      .catch(() => [])
+    setAgents(list)
   }, [sectorFloorId])
+  useEffect(() => {
+    void loadAgents()
+  }, [loadAgents])
 
   async function handleDelete() {
     if (!overview || deleting) return
@@ -273,7 +306,7 @@ export function SectorDetail() {
   }
 
   const sector = overview?.sector
-  const raw = section ?? ''
+  const raw = LEGACY_SECTOR_SECTION[section ?? ''] ?? section ?? ''
   const active = SECTOR_SECTIONS.some((s) => s.key === raw) ? raw : ''
   const floorName = building?.floors.find((f) => f.id === sector?.floorId)?.name ?? 'este andar'
   const tabHref = (key: string) => (fid ? (key ? floorSector(fid, sector!._id, key) : floorSector(fid, sector!._id)) : key ? `/setores/${sector!._id}/${key}` : `/setores/${sector!._id}`)
@@ -343,19 +376,26 @@ export function SectorDetail() {
           </nav>
 
           {active === '' ? (
-            <OverviewSection overview={overview} agents={agents} />
+            <div className="space-y-4">
+              <ReadinessPanel overview={overview} onFix={() => navigate(tabHref('equipe'))} />
+              <OverviewSection overview={overview} agents={agents} />
+            </div>
           ) : (
             <div className="space-y-4">
-              <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
-                {active === 'configuracao' ? (
-                  <SectorForm key={sector._id} sector={sector} agents={agents} onSaved={load} />
-                ) : active === 'conhecimento' ? (
-                  <SectorKnowledge key={sector._id} sectorId={sector._id} />
-                ) : active === 'testar' ? (
-                  <SectorPlayground key={sector._id} sector={sector} />
-                ) : null}
-              </div>
-              {active === 'configuracao' && (
+              {active !== 'avancado' && (
+                <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
+                  {active === 'equipe' ? (
+                    // Inline editing: the team and its flow are changed right here,
+                    // no separate "edit sector" screen.
+                    <SectorForm key={sector._id} sector={sector} agents={agents} sectors={[sector]} onSaved={load} onAgentsChanged={loadAgents} />
+                  ) : active === 'conhecimento' ? (
+                    <SectorKnowledge key={sector._id} sectorId={sector._id} />
+                  ) : active === 'execucoes' ? (
+                    <SectorPlayground key={sector._id} sector={sector} />
+                  ) : null}
+                </div>
+              )}
+              {active === 'avancado' && (
                 <>
                   <div className="flex flex-col gap-2 rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>

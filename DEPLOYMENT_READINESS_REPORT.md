@@ -5,6 +5,19 @@ and backend so each is independently installable/buildable. **No** deploy, DNS,
 domain, SSL, remote-repo creation, push or merge is performed here. All prior work
 (Office Visual Simulation V2 + mobile responsiveness) is preserved.
 
+> **Correction (worker/Redis gap — resolved).** Earlier phases describe production
+> as two services, then briefly as four. The history matters because it cost real
+> behaviour: the backend image defaulted to the API only, so a deploy that created
+> just the backend served HTTP while the automation worker never existed — the
+> database showed 3 active scheduled routines and **zero runs ever**.
+>
+> The fix was not more resources but fewer moving parts. BullMQ and Redis were
+> removed: the `automation_runs` collection IS the queue (claimed with one atomic
+> `findOneAndUpdate`), each automation carries its own `nextRunAt`, and the engine
+> runs inside the API process. Production is **two** resources again — frontend and
+> backend — and a deployment whose routines never fire is no longer expressible.
+> See `COOLIFY_DEPLOYMENT.md`.
+
 ## Fase 0 — Local audit (baseline)
 
 | Item | Value |
@@ -160,7 +173,10 @@ volume + ownership + backup/restore before deploying.
   each service from its **own folder** as Docker context, runs them on an internal
   network with health/readiness gating, backend against **external** MongoDB (no
   local Mongo added). Env comes from a git-ignored local file. Local validation
-  only — Coolify manages the two services separately later.
+  only — Coolify manages the resources separately later.
+  **Two services**: `frontend` and `backend`. No broker: the automation engine
+  polls MongoDB from inside the backend process, and `stop_grace_period` gives
+  in-flight runs room to drain on SIGTERM.
 - `DEPLOYMENT_ENVIRONMENT_MATRIX.md`: every consumed variable with
   service/required/build-vs-runtime/sensitivity/`.invalid` example/source/rotation/
   consequence. `VITE_API_URL` explicitly marked build-time & public;

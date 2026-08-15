@@ -1,6 +1,8 @@
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 import type { Provider } from './llm.js'
+// Type-only cycle back to agents.ts, so there is no runtime import loop.
+import { sanitizeActivationWrite } from './agentReadiness.js'
 
 export const DEFAULT_HISTORY_LIMIT = 6
 
@@ -27,11 +29,17 @@ export const LANGUAGES: Language[] = ['pt', 'en', 'es', 'auto']
 export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'monitor' | 'custom'
 export const AGENT_PRESETS: AgentPreset[] = ['manager', 'secretary', 'researcher', 'analyst', 'operator', 'communicator', 'monitor', 'custom']
 
-// How an agent may be triggered. An agent can have several. 'agent_only' means it is
-// reachable ONLY by another agent/sector — it never starts a conversation, answers a
-// channel directly, or runs manually (typical for a researcher).
+// How an agent may be triggered. An agent can have several.
+//
+// 'agent_only' is LEGACY and read-only: it never was a trigger, it meant "reachable
+// only by another agent", which callerPolicy models. Old documents still carry it and
+// keep working (normalizeActivation drops it, callerPolicyFromLegacy preserves the
+// permission); nothing writes it again — see sanitizeActivationWrite.
 export type ActivationMode = 'manual' | 'scheduled' | 'event' | 'channel' | 'agent_only'
-export const ACTIVATION_MODES: ActivationMode[] = ['manual', 'scheduled', 'event', 'channel', 'agent_only']
+// The modes a client may SET. agent_only is deliberately absent.
+export const ACTIVATION_MODES: ActivationMode[] = ['manual', 'scheduled', 'event', 'channel']
+// Accepted on input for backward compatibility, then converted, never stored.
+export const LEGACY_ACTIVATION_MODES: ActivationMode[] = ['agent_only']
 
 // Delegation permission, modelled explicitly so an empty list is never ambiguous
 // (it used to mean both "anyone" and "no one"). Applies to BOTH directions:
@@ -196,8 +204,13 @@ export function parseAgentModelFields(body: Record<string, unknown>): { fields: 
   }
   if (body.activationModes !== undefined) {
     const v = body.activationModes
-    if (!Array.isArray(v) || !v.every((m) => typeof m === 'string' && (ACTIVATION_MODES as string[]).includes(m))) return { fields, error: 'activationModes must be a list of known modes' }
-    fields.activationModes = [...new Set(v as ActivationMode[])]
+    const accepted = [...ACTIVATION_MODES, ...LEGACY_ACTIVATION_MODES] as string[]
+    if (!Array.isArray(v) || !v.every((m) => typeof m === 'string' && accepted.includes(m))) return { fields, error: 'activationModes must be a list of known modes' }
+    // A legacy agent_only in the payload is converted here and never stored.
+    const explicit = typeof body.callerPolicy === 'string' && (DELEGATION_POLICIES as string[]).includes(body.callerPolicy) ? (body.callerPolicy as DelegationPolicy) : undefined
+    const sanitized = sanitizeActivationWrite(v as string[], explicit)
+    fields.activationModes = sanitized.activationModes
+    if (sanitized.callerPolicy) fields.callerPolicy = sanitized.callerPolicy
   }
   for (const key of ['capabilities', 'callableAgentIds', 'callableSectorIds', 'allowedCallerAgentIds'] as const) {
     const v = body[key]
@@ -302,7 +315,8 @@ export async function createAgent(
     builtinTools: options.builtinTools ?? [],
     preset: options.preset ?? 'custom',
     capabilities: options.capabilities ?? [],
-    activationModes: options.activationModes ?? ['manual', 'channel'],
+    // agent_only is never stored, whatever the caller passed.
+    activationModes: sanitizeActivationWrite(options.activationModes ?? ['manual', 'channel']).activationModes,
     inputContract: options.inputContract ?? '',
     outputContract: options.outputContract ?? '',
     callableAgentIds: options.callableAgentIds ?? [],
@@ -376,12 +390,28 @@ export async function updateAgent(
     metricProfile?: MetricProfile
   },
 ) {
+  // Same rule as creation: a legacy agent_only coming back in an update is converted
+  // to the incoming permission it meant and dropped from the stored triggers.
+  const patch = { ...updates }
+  if (patch.activationModes) {
+    const sanitized = sanitizeActivationWrite(patch.activationModes, patch.callerPolicy)
+    patch.activationModes = sanitized.activationModes
+    if (sanitized.callerPolicy) patch.callerPolicy = sanitized.callerPolicy
+  }
   const doc = await agents.findOneAndUpdate(
     { _id: agentId, ownerId },
-    { $set: updates },
+    { $set: patch },
     { returnDocument: 'after' },
   )
   return doc ? withAgentDefaults(doc) : null
+}
+
+// Keep the "allowed" side in sync when a trigger is really configured: creating a
+// routine implies scheduled, linking a widget implies channel, a webhook implies
+// event. activationModes stays the single source of truth for what is allowed, and
+// new configuration can never contradict it. Idempotent.
+export async function ensureActivationMode(ownerId: string, agentId: ObjectId, mode: ActivationMode): Promise<void> {
+  await agents.updateOne({ _id: agentId, ownerId }, { $addToSet: { activationModes: mode } })
 }
 
 export async function deleteAgent(ownerId: string, agentId: ObjectId) {

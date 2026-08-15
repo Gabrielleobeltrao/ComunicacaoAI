@@ -183,7 +183,10 @@ export interface AgentSummary {
 }
 
 export type AgentPreset = 'manager' | 'secretary' | 'researcher' | 'analyst' | 'operator' | 'communicator' | 'monitor' | 'custom'
+// 'agent_only' is LEGACY and read-only — it is never written again, and is not an
+// option anywhere in the UI (callerPolicy models what it meant).
 export type ActivationMode = 'manual' | 'scheduled' | 'event' | 'channel' | 'agent_only'
+export const SETTABLE_ACTIVATION_MODES: ActivationMode[] = ['manual', 'scheduled', 'event', 'channel']
 // Delegation permission (both directions): none = nobody, all = any agent in the
 // same building, selected = only the matching id list.
 export type DelegationPolicy = 'none' | 'all' | 'selected'
@@ -227,6 +230,36 @@ export interface AgentCardStats {
   qualifiedLeads: number
 }
 
+// The conceptual model the agent page renders (from the backend, never guessed).
+export type TriggerKind = 'manual' | 'scheduled' | 'channel' | 'event'
+export interface TriggerState {
+  kind: TriggerKind
+  allowed: boolean
+  // Configured = something real fires it (a routine, a channel, a webhook).
+  configured: boolean
+  // Legacy rows only: something real fires it while the agent does not allow it.
+  inconsistent?: boolean
+}
+export interface AgentWiring {
+  routineCount: number
+  channelCount: number
+  webhookCount: number
+  collaboratorCount: number
+  toolCount: number
+  knowledgeCount: number
+  deliveryConfigured: boolean
+}
+export interface ReadinessIssue {
+  code: string
+  message: string
+  action: string
+  section: 'como-trabalha' | 'fluxos' | 'visao-geral'
+}
+export interface AgentReadiness {
+  ready: boolean
+  issues: ReadinessIssue[]
+}
+
 export interface AgentOverview {
   agent: AgentSummary
   stats: {
@@ -239,10 +272,15 @@ export interface AgentOverview {
   }
   // KPI availability for the "Métrica do card" picker (data-source aware).
   channelLinked: boolean
+  wiring: AgentWiring
+  readiness: AgentReadiness
+  triggers: TriggerState[]
   availableMetrics: MetricKey[]
   resolvedMetric: MetricKey
   linkedWidgets: { _id: string; name: string }[]
-  linkedSectors: { _id: string; name: string }[]
+  // Where this agent is used as part of a team, and in which role. A coordinator
+  // or a pipeline stage agent is often NOT in the sector's member list.
+  linkedSectors: { _id: string; name: string; mode: SectorMode; roles: { role: 'coordinator' | 'member' | 'stage'; stageId?: string; stageName?: string }[] }[]
   knowledgeCount: number
 }
 
@@ -257,8 +295,16 @@ export interface SectorAnalytics {
   stages: { name: string; handled: number; left: number }[]
 }
 
+export interface SectorReadinessIssueSummary {
+  code: 'no_members' | 'no_coordinator' | 'no_stages' | 'stage_without_agent' | 'agent_pending'
+  message: string
+  action: string
+  severity: 'blocking' | 'warning'
+}
+
 export interface SectorOverview {
   sector: SectorSummary
+  readiness: { ready: boolean; issues: SectorReadinessIssueSummary[] }
   analytics: SectorAnalytics | null
   linkedWidgets: { _id: string; name: string }[]
 }

@@ -9,8 +9,17 @@
 #   # edit compose.production-test.env with TEST values (never real prod secrets)
 #   docker compose -f compose.production-test.yml --env-file compose.production-test.env up --build
 #
-# Coolify will create and manage the two services separately later; this file is
-# only a local integration harness and never ships to the VPS.
+# TWO services, mirroring what Coolify must create (see COOLIFY_DEPLOYMENT.md):
+#   frontend — static bundle behind nginx
+#   backend  — HTTP API **and** the automation engine, in one process
+#
+# There is no queue broker: the automation engine polls MongoDB (the runs
+# collection IS the queue, and each automation carries its own `nextRunAt`). One
+# database is the whole infrastructure.
+#
+# A dedicated worker process is still possible for a bigger install — set
+# EMBEDDED_WORKER=false on the API and run a second container with
+# `npm run start:worker` from this same image — but it is not needed here.
 
 name: comunicacaoai-prod-test
 
@@ -18,7 +27,8 @@ services:
   backend:
     build:
       context: ./backend
-    # PID-1 reaping + clean SIGTERM forwarding so graceful shutdown works.
+    # PID-1 reaping + clean SIGTERM forwarding so graceful shutdown works: the
+    # engine drains in-flight automation runs before the process exits.
     init: true
     environment:
       NODE_ENV: production
@@ -37,6 +47,8 @@ services:
     ports:
       - "${BACKEND_PORT:-4000}:4000"
     networks: [appnet]
+    # Give in-flight automation runs room to drain before SIGKILL.
+    stop_grace_period: 30s
     # Readiness gate: healthy only once MongoDB answers a ping (uses Node's global
     # fetch; no curl/wget needed in the slim image).
     healthcheck:

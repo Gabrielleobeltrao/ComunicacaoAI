@@ -23,7 +23,13 @@ import type { DelegationContext, DelegationDeps } from './delegation.js'
 // bound to the child context when it may delegate.
 export async function resolveToolsWithDelegation(agent: Agent, ownerId: string, childCtx: DelegationContext, deps: DelegationDeps): Promise<ResolvedTool[]> {
   const base = await resolveAgentTools(agent, ownerId)
-  return [...base, capabilityMissingTool(), ...(agentCanDelegate(agent) ? buildDelegationTools(childCtx, deps) : [])]
+  // An agent coordinating a sector RIGHT NOW gets the delegation tools even when its
+  // own policy is 'none': the sector grant is the authorisation, and without the
+  // tools it could not reach the team it was put in charge of. The grant itself stays
+  // narrow (that sector's members, one level).
+  const coordinatingNow = Boolean(childCtx.sectorGrant?.memberIds.length)
+  const canDelegate = agentCanDelegate(agent) || coordinatingNow
+  return [...base, capabilityMissingTool(), ...(canDelegate ? buildDelegationTools(childCtx, deps) : [])]
 }
 
 export function productionDelegationDeps(): DelegationDeps {
