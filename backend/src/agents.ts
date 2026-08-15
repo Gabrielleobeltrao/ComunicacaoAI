@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
+import { isValidToolSchema } from './jsonSchema.js'
 import type { Provider } from './llm.js'
 // Type-only cycle back to agents.ts, so there is no runtime import loop.
 import { sanitizeActivationWrite } from './agentReadiness.js'
@@ -79,8 +80,14 @@ export interface AgentToolHeader {
   value: string
 }
 
-// A custom HTTP tool the agent can call: the model decides when to call it based
-// on name/description/parameters, and the backend makes the request to `url`.
+// DEPRECATED per-agent HTTP tool. Superseded by the reusable Custom Tools
+// (collection `tools`, assigned by id), which carry an encrypted credential, a
+// domain allow list, per-run call limits and an explicit authorisation for
+// state-changing methods.
+//
+// Existing tools keep working untouched: agentTools.legacyToolToExecutable adapts
+// this shape at resolution time so it runs through the SAME executor as everything
+// else. Nothing new should be written in this format.
 export interface AgentTool {
   name: string
   description: string
@@ -141,6 +148,18 @@ export interface Agent {
   activationModes: ActivationMode[] // how this agent may be triggered
   inputContract: string // what data the agent expects to receive (free text)
   outputContract: string // what result the agent must produce (free text)
+  // --- executable side of the contract (all optional, all additive) --------------
+  // The format a task produces when the caller does not ask for a specific one.
+  // Absent = the previous behaviour (whatever the caller requested, else text).
+  defaultOutputFormat?: 'text' | 'markdown' | 'json'
+  // For JSON: the schema the answer must satisfy. Validated with the same validator
+  // the tools use; an invalid answer earns ONE correction and then fails as
+  // `validation` instead of being delivered.
+  outputJsonSchema?: Record<string, unknown> | null
+  // When true, a task refuses to run without curated knowledge (the retrieval
+  // failed or found nothing above the relevance floor). Default false: the agent
+  // answers anyway and is told the base was unavailable.
+  requireGrounding?: boolean
   delegationPolicy: DelegationPolicy // outgoing: whom this agent may delegate to
   callerPolicy: DelegationPolicy // incoming: who may call this agent
   callableAgentIds: string[] // when delegationPolicy='selected': the agents this one may call
@@ -192,6 +211,9 @@ export interface AgentModelFields {
   activationModes?: ActivationMode[]
   inputContract?: string
   outputContract?: string
+  defaultOutputFormat?: 'text' | 'markdown' | 'json'
+  outputJsonSchema?: Record<string, unknown> | null
+  requireGrounding?: boolean
   delegationPolicy?: DelegationPolicy
   callerPolicy?: DelegationPolicy
   callableAgentIds?: string[]
@@ -241,6 +263,26 @@ export function parseAgentModelFields(body: Record<string, unknown>): { fields: 
   if (body.metricProfile !== undefined) {
     if (typeof body.metricProfile !== 'string' || !(METRIC_PROFILES as string[]).includes(body.metricProfile)) return { fields, error: `metricProfile must be one of ${METRIC_PROFILES.join(', ')}` }
     fields.metricProfile = body.metricProfile as MetricProfile
+  }
+  // --- executable contract (optional; absent leaves the agent exactly as it was) ---
+  if (body.defaultOutputFormat !== undefined) {
+    if (body.defaultOutputFormat === null || body.defaultOutputFormat === '') fields.defaultOutputFormat = undefined
+    else if (typeof body.defaultOutputFormat !== 'string' || !['text', 'markdown', 'json'].includes(body.defaultOutputFormat)) {
+      return { fields, error: 'defaultOutputFormat must be text, markdown or json' }
+    } else fields.defaultOutputFormat = body.defaultOutputFormat as 'text' | 'markdown' | 'json'
+  }
+  if (body.outputJsonSchema !== undefined) {
+    if (body.outputJsonSchema === null || body.outputJsonSchema === '') fields.outputJsonSchema = null
+    else {
+      // The same validator the tools use: a schema that cannot be enforced is not
+      // accepted, so an agent can never promise a shape nothing checks.
+      if (!isValidToolSchema(body.outputJsonSchema)) return { fields, error: 'outputJsonSchema must be an object JSON Schema' }
+      fields.outputJsonSchema = body.outputJsonSchema as Record<string, unknown>
+    }
+  }
+  if (body.requireGrounding !== undefined) {
+    if (typeof body.requireGrounding !== 'boolean') return { fields, error: 'requireGrounding must be a boolean' }
+    fields.requireGrounding = body.requireGrounding
   }
   return { fields }
 }

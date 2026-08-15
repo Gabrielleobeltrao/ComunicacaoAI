@@ -1,11 +1,13 @@
 import type { AgentTool } from './agents.js'
-import { assertPublicUrl } from './net/safeHttp.js'
+import { executeToolCall } from './toolExecution.js'
+import type { ExecutableTool } from './toolExecution.js'
+import { TOOL_DEFAULTS } from './tools.js'
+import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
 
 // Cap how many tool round-trips a single reply may make before we force the
-// model to answer, so a misbehaving tool loop can't run forever.
+// model to answer, so a misbehaving tool loop can't run forever. Enforced by BOTH
+// provider loops (claude.ts / openai.ts), for every kind of tool.
 export const MAX_TOOL_ITERATIONS = 6
-const TIMEOUT_MS = 8000
-const MAX_RESULT_CHARS = 4000
 
 export interface ToolCallRecord {
   name: string
@@ -14,9 +16,9 @@ export interface ToolCallRecord {
   result: string
 }
 
-// A tool the model can call, decoupled from how it runs. Custom HTTP tools and
-// built-in integrations (Google, etc.) both resolve to this shape, so the
-// provider loop only ever deals with name + schema + run().
+// A tool the model can call, decoupled from how it runs. Custom HTTP tools,
+// legacy per-agent HTTP tools, built-in integrations and delegation all resolve to
+// this shape, so the provider loop only ever deals with name + schema + run().
 export interface ResolvedTool {
   name: string
   description: string
@@ -24,16 +26,80 @@ export interface ResolvedTool {
   run: (args: Record<string, unknown>) => Promise<{ ok: boolean; result: string }>
 }
 
-export function resolveHttpTool(tool: AgentTool): ResolvedTool {
+// A refusal the model cannot mistake for a result. It is structured on purpose: a
+// prose "não foi possível" reads like an outcome, and agents have been observed
+// reporting those as if the action had happened. `executed: false` is explicit.
+export function missingCapability(name: string, reason: string, detail?: string): { ok: false; result: string } {
   return {
-    name: tool.name,
-    description: tool.description,
-    inputSchema: toolInputSchema(tool),
-    run: (args) => executeTool(tool, args),
+    ok: false,
+    result: JSON.stringify({
+      status: 'capability_unavailable',
+      executed: false,
+      tool: name,
+      reason,
+      ...(detail ? { detail } : {}),
+      instruction: 'A ação NÃO foi executada. Não afirme que foi. Informe a limitação a quem pediu.',
+    }),
   }
 }
 
-// JSON Schema for a tool's arguments, shared by both providers' tool defs.
+// --- legacy per-agent HTTP tools ---------------------------------------------------
+// The old `agent.tools[]` format predates Custom Tools and used to be executed by a
+// second, weaker implementation (a bare fetch with no schema validation, no domain
+// allow list, no response cap and no masking). That executor is GONE: a legacy tool
+// is now adapted into the canonical shape and runs through executeToolCall, so every
+// HTTP call the model makes takes exactly one path.
+//
+// Deliberate consequence: a legacy tool with a state-changing method now requires the
+// same explicit authorisation as any other, and reports a missing capability without
+// it. Nothing is deleted or migrated in the database — the adaptation happens at
+// resolution time, so an owner's data keeps working as it is.
+export function legacyToolToExecutable(tool: AgentTool): ExecutableTool {
+  const url = String(tool.url ?? '')
+  let host = ''
+  try {
+    host = new URL(url).hostname.toLowerCase()
+  } catch {
+    host = ''
+  }
+  return {
+    name: tool.name,
+    description: tool.description,
+    method: tool.method,
+    url,
+    headers: tool.headers ?? [],
+    inputSchema: toolInputSchema(tool),
+    bodyTemplate: null,
+    // The legacy format has no credential store: a secret, if any, sits in a plain
+    // header. It is masked on the way out like any other (toolExecution's rules).
+    auth: { kind: 'none' },
+    timeoutMs: TOOL_DEFAULTS.timeoutMs,
+    maxResponseChars: TOOL_DEFAULTS.maxResponseChars,
+    // Its own host only, exactly like a Custom Tool created from this URL.
+    allowedDomains: host ? [host] : [],
+    maxCallsPerRun: TOOL_DEFAULTS.maxCallsPerRun,
+    // Never inferred: acting on its own is a decision the owner takes per tool.
+    allowAutonomousExecution: false,
+    enabled: true,
+  }
+}
+
+export function resolveHttpTool(tool: AgentTool): ResolvedTool {
+  const executable = legacyToolToExecutable(tool)
+  let callsSoFar = 0
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: executable.inputSchema,
+    run: async (args) => {
+      const outcome = await executeToolCall(executable, args, { callsSoFar, autonomous: true })
+      callsSoFar++
+      return { ok: outcome.ok, result: outcome.result }
+    },
+  }
+}
+
+// JSON Schema for a legacy tool's arguments, shared by both providers' tool defs.
 export function toolInputSchema(tool: AgentTool) {
   const properties: Record<string, { type: string; description: string }> = {}
   const required: string[] = []
@@ -44,41 +110,14 @@ export function toolInputSchema(tool: AgentTool) {
   return { type: 'object' as const, properties, required, additionalProperties: false }
 }
 
-async function executeTool(tool: AgentTool, args: Record<string, unknown>): Promise<{ ok: boolean; result: string }> {
-  try {
-    await assertPublicUrl(tool.url)
-    const url = new URL(tool.url)
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    for (const h of tool.headers ?? []) {
-      if (h.key.trim()) headers[h.key] = h.value
-    }
-
-    let body: string | undefined
-    if (tool.method === 'GET') {
-      for (const [key, value] of Object.entries(args)) url.searchParams.set(key, String(value))
-    } else {
-      body = JSON.stringify(args)
-    }
-
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
-    let res: Response
-    try {
-      res = await fetch(url, { method: tool.method, headers, body, signal: controller.signal })
-    } finally {
-      clearTimeout(timer)
-    }
-
-    const text = (await res.text()).slice(0, MAX_RESULT_CHARS)
-    if (!res.ok) return { ok: false, result: `HTTP ${res.status}: ${text}` }
-    return { ok: true, result: text || '(resposta vazia)' }
-  } catch (error) {
-    return { ok: false, result: `Não foi possível chamar a ferramenta: ${(error as Error).message}` }
-  }
-}
-
 // Look up a tool the model asked for by name and run it, returning a record the
 // loop feeds back to the model and the UI shows for observability.
+//
+// This is the ONE dispatcher every tool goes through — custom, legacy, built-in and
+// delegation alike — so the argument check lives here: a built-in adapter can no
+// longer receive a field it never declared, and a hallucinated tool name comes back
+// as a structured missing capability rather than a sentence the model may read as
+// success.
 export async function runResolvedTool(
   tools: ResolvedTool[],
   name: string,
@@ -86,8 +125,28 @@ export async function runResolvedTool(
 ): Promise<ToolCallRecord> {
   const tool = tools.find((t) => t.name === name)
   if (!tool) {
-    return { name, arguments: args, ok: false, result: `A ferramenta "${name}" não existe.` }
+    const { result } = missingCapability(name, 'tool_not_available', 'A ferramenta não está atribuída a este agente ou não existe.')
+    return { name, arguments: args, ok: false, result }
   }
+
+  // Runtime validation for EVERY tool. Custom tools validate again inside the
+  // executor (defence in depth); built-ins and delegation get it only here.
+  const validation = validateAgainstSchema(tool.inputSchema, args)
+  if (!validation.valid) {
+    return {
+      name,
+      arguments: args,
+      ok: false,
+      result: JSON.stringify({
+        status: 'invalid_arguments',
+        executed: false,
+        tool: name,
+        detail: describeErrors(validation.errors),
+        instruction: 'Corrija os argumentos e chame novamente, ou informe a limitação.',
+      }),
+    }
+  }
+
   const { ok, result } = await tool.run(args)
   return { name, arguments: args, ok, result }
 }

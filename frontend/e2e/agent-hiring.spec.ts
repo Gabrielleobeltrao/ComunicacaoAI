@@ -523,3 +523,48 @@ test('choosing "ninguém" reaches nobody however many colleagues exist', async (
   await page.getByTestId('can-call-options').getByRole('button', { name: 'Ninguém' }).click()
   await expect(page.getByTestId('collaboration-reach')).toContainText('não alcança ninguém')
 })
+
+// --- executable output contract (advanced, optional) ---------------------------------
+// Everything here is opt-in: an agent that never opens this block keeps behaving
+// exactly as before, which is why the default is "quem pedir decide".
+
+// On the Avançado page each technical group is collapsed until asked for — the same
+// convention every other advanced block follows.
+const openOutputContract = async (page: Page) => {
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
+  await page.getByRole('button', { name: 'Contrato de saída' }).click()
+}
+
+test('the output contract lives in Avançado and defaults to nothing', async ({ page }) => {
+  await stubApi(page)
+  await openOutputContract(page)
+  const block = page.getByTestId('output-contract-block')
+  await expect(block).toBeVisible()
+  await expect(page.getByTestId('default-output-format')).toHaveValue('')
+  // The schema field only exists once JSON is the chosen shape.
+  await expect(page.getByTestId('output-json-schema')).toHaveCount(0)
+  await expect(page.getByTestId('require-grounding')).not.toBeChecked()
+})
+
+test('choosing JSON reveals the schema field and validates what is typed', async ({ page }) => {
+  await stubApi(page)
+  await openOutputContract(page)
+  await page.getByTestId('default-output-format').selectOption('json')
+
+  const schema = page.getByTestId('output-json-schema')
+  await expect(schema).toBeVisible()
+  await schema.fill('{ isso não é json }')
+  await expect(page.getByTestId('schema-error')).toBeVisible()
+
+  await schema.fill('{"type":"object","properties":{"titulo":{"type":"string"}}}')
+  await expect(page.getByTestId('schema-error')).toHaveCount(0)
+  await expect(page.getByTestId('output-contract-block')).toContainText('UMA chance de corrigir')
+})
+
+test('the simple sections stay simple — no schema in sight', async ({ page }) => {
+  await stubApi(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/visao-geral`)
+  await expect(page.getByTestId('output-contract-block')).toHaveCount(0)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await expect(page.getByTestId('output-contract-block')).toHaveCount(0)
+})

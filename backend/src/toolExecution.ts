@@ -15,6 +15,11 @@ import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
 import { SENSITIVE_HEADER, UNSAFE_METHODS } from './tools.js'
 import type { Tool } from './tools.js'
 
+// What this executor actually needs to run a call. A stored Custom Tool satisfies it,
+// and so does a legacy per-agent tool adapted at resolution time — which is how BOTH
+// end up on this single path instead of two implementations with different rules.
+export type ExecutableTool = Omit<Tool, '_id' | 'ownerId' | 'createdAt' | 'updatedAt'>
+
 export interface ToolExecutionResult {
   ok: boolean
   // What goes back to the model. Never contains a credential.
@@ -96,7 +101,7 @@ export interface ExecuteToolOptions {
   autonomous?: boolean
 }
 
-export async function executeToolCall(tool: Tool, rawArgs: unknown, options: ExecuteToolOptions = {}): Promise<ToolExecutionResult> {
+export async function executeToolCall(tool: ExecutableTool, rawArgs: unknown, options: ExecuteToolOptions = {}): Promise<ToolExecutionResult> {
   const started = Date.now()
   const fail = (error: string, extra: Partial<ToolExecutionResult['detail']> = {}): ToolExecutionResult => ({
     ok: false,
@@ -104,13 +109,24 @@ export async function executeToolCall(tool: Tool, rawArgs: unknown, options: Exe
     detail: { toolName: tool.name, durationMs: Date.now() - started, request: { method: tool.method, url: maskUrl(tool.url), headers: {} }, truncated: false, error, ...extra },
   })
 
-  if (!tool.enabled) return fail(`A ferramenta "${tool.name}" está desativada.`)
+  // A capability that is not available is reported as a STRUCTURED refusal: the model
+  // must not be able to read "não foi possível" as an action it completed.
+  const unavailable = (reason: string, detail: string): ToolExecutionResult => ({
+    ok: false,
+    result: JSON.stringify({ status: 'capability_unavailable', executed: false, tool: tool.name, reason, detail, instruction: 'A ação NÃO foi executada. Não afirme que foi.' }),
+    detail: { toolName: tool.name, durationMs: Date.now() - started, request: { method: tool.method, url: maskUrl(tool.url), headers: {} }, truncated: false, error: reason },
+  })
+
+  if (!tool.enabled) return unavailable('tool_disabled', `A ferramenta "${tool.name}" está desativada.`)
 
   // Reading on its own is one decision; acting on its own is another. Without the
   // explicit authorisation the agent is refused here — the single choke point every
   // caller goes through — rather than at each call site.
   if (options.autonomous && UNSAFE_METHODS.includes(tool.method) && !tool.allowAutonomousExecution) {
-    return fail(`"${tool.name}" usa ${tool.method} e não está autorizada a executar sozinha. O proprietário precisa liberar a execução autônoma nas configurações da ferramenta.`)
+    return unavailable(
+      'autonomous_execution_not_authorized',
+      `"${tool.name}" usa ${tool.method} e não está autorizada a executar sozinha. O proprietário precisa liberar a execução autônoma nas configurações da ferramenta.`,
+    )
   }
 
   if (typeof options.callsSoFar === 'number' && options.callsSoFar >= tool.maxCallsPerRun) {

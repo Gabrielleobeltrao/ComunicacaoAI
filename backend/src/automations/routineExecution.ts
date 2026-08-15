@@ -15,6 +15,19 @@ import type { AgentExecutionRequest, AgentExecutionResult } from '../agentRuntim
 import type { ResolvedTool } from '../agentTools.js'
 import type { AgentEventStatus, RecordAgentEventInput } from '../agentEvents.js'
 import type { StepUsage } from './runner.js'
+import { buildRetrievalQuery } from '../retrievalQuery.js'
+
+// The knowledge the step requires could not be consulted (the embedding or the
+// vector search failed), and this agent is configured to refuse rather than answer
+// ungrounded. Retryable: the base may well answer on the next attempt.
+export class KnowledgeUnavailableError extends Error {
+  readonly kind = 'knowledge_unavailable'
+  readonly retryable = true
+  constructor(message = 'a base de conhecimento não pôde ser consultada') {
+    super(message)
+    this.name = 'KnowledgeUnavailableError'
+  }
+}
 
 // A configuration problem (not a transient failure): the step must NOT be retried,
 // because retrying cannot fix a sector that does not belong to this account. The
@@ -51,7 +64,11 @@ export interface RoutineExecutionDeps {
   loadAgent: (ownerId: string, agentId: ObjectId) => Promise<Agent | null>
   // Owner-scoped: returns null both for a foreign and for a malformed id.
   resolveOwnedSectorId: (ownerId: string, raw: unknown) => Promise<ObjectId | null>
-  retrieveContext: (agentId: ObjectId, query: string, opts: { verifiedSectorId: ObjectId | null }) => Promise<{ context: string[]; failed: boolean }>
+  retrieveContext: (
+    agentId: ObjectId,
+    query: string,
+    opts: { verifiedSectorId: ObjectId | null },
+  ) => Promise<{ context: string[]; failed: boolean; status?: string; sources?: unknown[] }>
   resolveTools: (agent: Agent, ownerId: string) => Promise<ResolvedTool[]>
   apiKeyFor: (ownerId: string, provider: string) => Promise<string | null>
   runTask: (req: AgentExecutionRequest) => Promise<AgentExecutionResult>
@@ -112,9 +129,18 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
     if (!verifiedSectorId) throw new RoutineConfigurationError()
   }
 
-  // (2) Grounding + model.
-  const knowledgeQuery = [call.instructions, typeof call.input === 'string' ? call.input : ''].filter(Boolean).join('\n').slice(0, 2000)
-  const retrieved = knowledgeQuery ? await deps.retrieveContext(agent._id, knowledgeQuery, { verifiedSectorId }) : { context: [], failed: false }
+  // (2) Grounding + model. The question includes the objective, the instructions AND
+  // the input — serialized when it is an object, which used to retrieve nothing.
+  const knowledgeQuery = buildRetrievalQuery({ objective: agent.objective ?? call.objective, instructions: call.instructions, input: call.input })
+  const retrieved = knowledgeQuery ? await deps.retrieveContext(agent._id, knowledgeQuery, { verifiedSectorId }) : { context: [], failed: false, status: 'no_base' }
+  const grounding = (retrieved.status as string | undefined) ?? (retrieved.failed ? 'unavailable' : retrieved.context.length ? 'ok' : 'empty')
+  // An agent told to answer only from curated knowledge does NOT answer when the base
+  // could not be consulted. Nothing is invented, and nothing is spent.
+  if (agent.requireGrounding && grounding !== 'ok') {
+    throw new KnowledgeUnavailableError(
+      grounding === 'unavailable' ? 'a base de conhecimento não pôde ser consultada' : 'nenhum trecho relevante foi encontrado na base',
+    )
+  }
   const tools = await deps.resolveTools(agent, ctx.ownerId)
   const apiKey = await deps.apiKeyFor(ctx.ownerId, agent.provider)
 
@@ -132,8 +158,20 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
     // Drives per-attempt idempotency: a redelivered write of the SAME attempt does
     // not inflate the accumulators; a real retry does.
     attemptCount: call.attempt,
-    metadata: { runId: ctx.runId, stepId: call.stepId, attempt: call.attempt },
+    // Safe scalars only: counts and statuses, never a prompt, a passage or an output.
+    metadata: {
+      runId: ctx.runId,
+      stepId: call.stepId,
+      attempt: call.attempt,
+      grounding,
+      ragChunks: retrieved.context.length,
+      toolsAvailable: 0,
+    },
   }
+
+  // The routine's own choice, then the agent's default, then text.
+  const outputFormat = call.format ?? agent.defaultOutputFormat ?? 'text'
+  baseEvent.metadata.toolsAvailable = tools.length
 
   let result: AgentExecutionResult
   try {
@@ -147,7 +185,11 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       model: agent.model,
       apiKey,
       tools,
-      output: { format: call.format },
+      // What the agent promised to receive and produce reaches the model now.
+      contracts: { input: agent.inputContract, output: agent.outputContract },
+      // The step's own format wins; the agent's default is the fallback for a step
+      // that never expressed one. The schema only applies to JSON.
+      output: { format: outputFormat, jsonSchema: outputFormat === 'json' ? (agent.outputJsonSchema ?? null) : null },
     })
   } catch (error) {
     const kind = (error as { kind?: string }).kind
@@ -177,6 +219,13 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
           toolCalls: result.toolCalls.filter((c) => c.ok).length, // completed tool calls only
+          metadata: {
+            ...baseEvent.metadata,
+            // The shape that was asked for and whether it had to be corrected —
+            // never the answer itself.
+            outputFormat,
+            outputRepaired: result.format?.repaired === true,
+          },
         }),
       sleep,
     )

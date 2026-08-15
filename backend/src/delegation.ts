@@ -8,6 +8,7 @@
 // Pure + dependency-injected: no DB/provider imports here, so the safety logic is
 // unit-tested without IO. Production wiring lives in ./delegationWiring.ts.
 import { ObjectId } from 'mongodb'
+import { buildRetrievalQuery } from './retrievalQuery.js'
 import type { Agent } from './agents.js'
 import type { ResolvedTool } from './agentTools.js'
 import type { AgentExecutionRequest, AgentExecutionResult, AgentOutputFormat } from './agentRuntime.js'
@@ -253,6 +254,17 @@ async function isCanceled(ctx: DelegationContext): Promise<boolean> {
   return ctx.isCanceled ? Boolean(await ctx.isCanceled()) : false
 }
 
+// A format a caller asked for, or undefined to let the target decide.
+function asOutputFormat(value: unknown): AgentOutputFormat | undefined {
+  return value === 'text' || value === 'markdown' || value === 'json' ? value : undefined
+}
+
+// A pipeline stage says what it must hand over; the model has to be told.
+export function stageInstruction(instruction: string, expectedOutput?: string): string {
+  const expected = (expectedOutput ?? '').trim()
+  return expected ? `${instruction}\n\nO resultado desta etapa deve ser: ${expected}` : instruction
+}
+
 // Run one target agent as a task under `ctx` (ctx.callerAgentId is the delegator).
 // Returns the model output, charging the shared budget. Assumes checkDelegation
 // already passed.
@@ -262,7 +274,8 @@ async function runAgentTask(
   target: Agent,
   objective: string,
   input: unknown,
-  format: AgentOutputFormat,
+  // Undefined = "the target decides" (its own default, else markdown).
+  format: AgentOutputFormat | undefined,
   eventKey?: string,
   sectorId?: ObjectId | null,
   grant?: { sectorId: string; memberIds: string[] } | null,
@@ -280,9 +293,14 @@ async function runAgentTask(
   const apiKey = await deps.apiKeyFor(ctx.ownerId, target.provider)
   // Curated grounding: the executor's own base, plus the sector's ONLY when this run
   // has an explicit sector context (never implied by the agent's home sector).
-  const query = [objective, typeof input === 'string' ? input : ''].filter(Boolean).join('\n').slice(0, 2000)
+  // The question includes the objective AND the input, serialized when it is an
+  // object — a delegation that hands over JSON used to retrieve nothing.
+  const query = buildRetrievalQuery({ objective, input })
   const context = query ? await deps.retrieveContext?.(target._id, query, { sectorId: sectorId ?? null }).catch(() => []) : undefined
   const startedAt = new Date()
+  // The TARGET decides how it answers: an agent configured to produce JSON is not
+  // forced into Markdown because the caller did not think about it.
+  const effectiveFormat: AgentOutputFormat = format ?? target.defaultOutputFormat ?? 'markdown'
   const res = await deps.runTask({
     objective: target.objective || objective,
     instructions: objective,
@@ -294,7 +312,9 @@ async function runAgentTask(
     model: target.model,
     apiKey,
     tools,
-    output: { format },
+    // What the target promised to receive and produce, in its own words.
+    contracts: { input: target.inputContract, output: target.outputContract },
+    output: { format: effectiveFormat, jsonSchema: effectiveFormat === 'json' ? (target.outputJsonSchema ?? null) : null },
     limits: { timeoutMs: TASK_TIMEOUT_MS, maxOutputChars: MAX_OUTPUT_CHARS },
   })
   ctx.budget.tokensSpent += res.usage.inputTokens + res.usage.outputTokens
@@ -329,7 +349,7 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
   })
   const startedAt = new Date()
   try {
-    const run = await runAgentTask(deps, ctx, target, objective, input, (args.format as AgentOutputFormat) || 'markdown', `deleg:${recId.toString()}`)
+    const run = await runAgentTask(deps, ctx, target, objective, input, asOutputFormat(args.format), `deleg:${recId.toString()}`)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: run.output.slice(0, 500), usage: run.usage })
     await emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, run, 'succeeded')
     return { ok: true, result: j({ status: 'ok', agent: target.name, output: run.output }) }
@@ -346,7 +366,7 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
 
 // Run a target with a bounded number of attempts (retryPolicy.maxAttempts). The last
 // error propagates when every attempt fails.
-async function runWithRetry(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, input: unknown, format: AgentOutputFormat, maxAttempts: number, eventKey?: string, sectorId?: ObjectId | null): Promise<TaskRun> {
+async function runWithRetry(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, input: unknown, format: AgentOutputFormat | undefined, maxAttempts: number, eventKey?: string, sectorId?: ObjectId | null): Promise<TaskRun> {
   let lastError: unknown
   for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
     try {
@@ -416,7 +436,7 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
   if (sector.mode === 'organization') return { ok: false, result: j({ status: 'not_executable', reason: 'este setor apenas agrupa agentes; escolha um agente ou um setor orquestrado/pipeline' }) }
 
   const inChain = (id: ObjectId) => id.toString() === ctx.callerAgentId || ctx.ancestry.includes(id.toString())
-  const format = (args.format as AgentOutputFormat) || 'markdown'
+  const format = asOutputFormat(args.format)
 
   const recId = await deps.startDelegation({
     ownerId: ctx.ownerId,
@@ -447,9 +467,14 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
           throw new Error(`${stage.name}: ${problem}`)
         }
         const input = stage.dependsOn.length ? stage.dependsOn.map((id) => outputs[id] ?? '').join('\n\n') : args.input
-        const instruction = stage.instruction || objective
+        // What this stage owes the next one is part of its instruction, not folklore.
+        const instruction = stageInstruction(stage.instruction || objective, stage.expectedOutput)
         try {
           const out = await recordChildRun(deps, ctx, agent, instruction, recId, (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id))
+          // Checked BEFORE the next stage consumes it: an empty hand-off used to
+          // propagate silently down the pipeline. Retries already happened inside
+          // runWithRetry, so nothing completed is called twice here.
+          if (!out.trim()) throw new Error('a etapa não produziu resultado')
           outputs[stage.id] = out
           output = out
         } catch (error) {
