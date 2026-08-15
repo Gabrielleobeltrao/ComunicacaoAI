@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Tools } from './pages/Tools'
 import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
@@ -41,6 +42,9 @@ function App() {
 
       {v2 ? (
         <>
+          {/* Tools are owner-scoped, not floor-scoped: one catalogue for the
+              whole account, assigned per agent. */}
+          <Route path="/tools" element={<P><Tools /></P>} />
           {/* Canonical floor-scoped routes */}
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
           <Route path="/floors/:floorId/agents" element={<P><Agents /></P>} />
@@ -78,6 +82,7 @@ function App() {
           <Route path="/agents" element={<P><Agents /></P>} />
           <Route path="/agents/:agentId" element={<P><AgentDetail /></P>} />
           <Route path="/agents/:agentId/:section" element={<P><AgentDetail /></P>} />
+          <Route path="/tools" element={<P><Tools /></P>} />
           <Route path="/setores" element={<P><Setores /></P>} />
           <Route path="/setores/:sectorId" element={<P><SectorDetail /></P>} />
           <Route path="/setores/:sectorId/:section" element={<P><SectorDetail /></P>} />

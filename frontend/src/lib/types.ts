@@ -178,6 +178,8 @@ export interface AgentSummary {
   callerPolicy: DelegationPolicy
   callableAgentIds: string[]
   callableSectorIds: string[]
+  // Ids of the reusable Custom Tools this agent may call.
+  toolIds?: string[]
   allowedCallerAgentIds: string[]
   metricProfile: MetricProfile
 }

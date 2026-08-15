@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AgentToolsPicker } from '../components/AgentToolsPicker'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
@@ -546,6 +547,13 @@ export function AgentDetail() {
                       </div>
                     ) : null}
                     <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} availableMetrics={overview.availableMetrics} />
+                    {/* Which reusable Custom Tools this agent may call. Assignment
+                        IS the permission — the backend refuses anything not here. */}
+                    {active === 'como-trabalha' ? (
+                      <div style={{ marginTop: 20 }}>
+                        <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
+                      </div>
+                    ) : null}
                     {active === 'visao-geral' ? (
                       <div style={{ marginTop: 20 }}>
                         <DangerZone
