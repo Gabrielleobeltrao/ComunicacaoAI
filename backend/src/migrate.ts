@@ -5,6 +5,9 @@ import { ensureFloorIndexes } from './floors.js'
 import { ensureAutomationIndexes } from './automations/repository.js'
 import { ensureRunIndexes } from './automations/runRepository.js'
 import { ensureConnectionIndexes } from './connections/repository.js'
+import { ensureInstallationIndexes } from './apps/installations.js'
+import { ensureAppActionIndexes } from './apps/grants.js'
+import { migrateAppsAndInstallations } from './apps/migration.js'
 
 async function renameCollectionIfNeeded(from: string, to: string): Promise<void> {
   const source = await db.listCollections({ name: from }).toArray()
@@ -58,6 +61,16 @@ export async function runMigrations(): Promise<void> {
   await ensureAutomationIndexes()
   await ensureRunIndexes()
   await ensureConnectionIndexes()
+  await ensureInstallationIndexes()
+  await ensureAppActionIndexes()
+
+  // Apps: connections learn their appKey, Google gains an installation, and every
+  // credential still sitting in an agent document moves into an encrypted one.
+  const apps = await migrateAppsAndInstallations()
+  if (apps.installationsCreated || apps.agentsMigrated || apps.googleInstallations || apps.connectionsBackfilled) {
+    // Counts only — never a value.
+    console.log('[migrate] apps', JSON.stringify(apps))
+  }
 }
 
 // AI-building pivot backfill (idempotent, additive). Ensures a Building per owner

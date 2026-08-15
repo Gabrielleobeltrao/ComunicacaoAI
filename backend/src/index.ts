@@ -498,7 +498,12 @@ function parseTools(raw: unknown, existing: AgentTool[] = []): { tools?: AgentTo
 }
 
 // Validate the built-in integrations enabled on an agent against the catalog.
-function parseBuiltinTools(raw: unknown): { builtinTools?: AgentBuiltinTool[]; error?: string } {
+//
+// DEPRECATED shape (see AgentBuiltinTool). Two things must survive a save here: a
+// masked secret must not overwrite the stored one, and `migratedAt` must not be
+// dropped — losing it would send the runtime back to reading a credential that has
+// already moved into an encrypted installation.
+function parseBuiltinTools(raw: unknown, existing: AgentBuiltinTool[] = []): { builtinTools?: AgentBuiltinTool[]; error?: string } {
   if (raw === undefined) return { builtinTools: undefined }
   if (!Array.isArray(raw)) return { error: 'builtinTools must be a list' }
 
@@ -512,14 +517,18 @@ function parseBuiltinTools(raw: unknown): { builtinTools?: AgentBuiltinTool[]; e
     if (seen.has(key)) return { error: `Integração "${key}" duplicada` }
     seen.add(key)
 
+    const stored = existing.find((e) => e.key === key)
     const rawConfig = (typeof o.config === 'object' && o.config !== null ? o.config : {}) as Record<string, unknown>
     const config: Record<string, string> = {}
     for (const field of app.configFields) {
-      const value = typeof rawConfig[field.key] === 'string' ? (rawConfig[field.key] as string) : ''
-      if (field.required && !value.trim()) return { error: `${app.label}: "${field.label}" é obrigatório.` }
+      const incoming = typeof rawConfig[field.key] === 'string' ? (rawConfig[field.key] as string) : ''
+      // The API masks secrets on the way out; the same mask coming back means
+      // "keep what is stored", exactly like a legacy tool header.
+      const value = incoming === MASKED_HEADER_VALUE ? (stored?.config?.[field.key] ?? '') : incoming
+      if (field.required && !value.trim() && !stored?.migratedAt) return { error: `${app.label}: "${field.label}" é obrigatório.` }
       config[field.key] = value
     }
-    result.push({ key, config })
+    result.push({ key, config, ...(stored?.migratedAt ? { migratedAt: stored.migratedAt } : {}) })
   }
   return { builtinTools: result }
 }
@@ -2096,7 +2105,8 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     updates.tools = parsedTools
   }
   if (builtinTools !== undefined) {
-    const { builtinTools: parsedBuiltins, error } = parseBuiltinTools(builtinTools)
+    const current = await getAgentById(res.locals.userId, new ObjectId(agentId))
+    const { builtinTools: parsedBuiltins, error } = parseBuiltinTools(builtinTools, current?.builtinTools ?? [])
     if (error) {
       res.status(400).json({ error })
       return

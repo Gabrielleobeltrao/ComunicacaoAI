@@ -177,6 +177,9 @@ export interface AppInstallationPublic {
 
 export interface AgentAppGrant {
   installationId: string
+  // Kept on the grant so a REVOKED or deleted installation still produces an honest
+  // refusal naming the App, instead of the action silently disappearing.
+  appKey: string
   actionKeys: string[]
   // Non-secret per-agent resource selection (calendarId, spreadsheetId, …).
   resourceConfig: Record<string, string>

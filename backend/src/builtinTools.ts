@@ -3,6 +3,7 @@ import { getToolsByIds } from './tools.js'
 import { executeToolCall } from './toolExecution.js'
 import type { ResolvedTool } from './agentTools.js'
 import { resolveHttpTool } from './agentTools.js'
+import { resolveAppGrantTools } from './apps/grants.js'
 import { getGoogleStatus } from './googleCalendar.js'
 import { googleCalendarTools, googleSheetsTools } from './googleTools.js'
 import {
@@ -255,8 +256,15 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
       }
     })
 
-  const enabled = agent.builtinTools ?? []
-  if (enabled.length === 0) return [...http, ...custom]
+  // Apps the owner connected once on the account, granted to this agent action by
+  // action. The credential lives in the encrypted installation — never here.
+  const fromGrants = await resolveAppGrantTools(agent, ownerId)
+
+  // DEPRECATED path, kept for agents not migrated yet. An entry the migration has
+  // already moved carries `migratedAt`: its credential is gone from this document
+  // and resolving it here would silently produce a tool that cannot authenticate.
+  const enabled = (agent.builtinTools ?? []).filter((entry) => !entry.migratedAt)
+  if (enabled.length === 0) return [...http, ...custom, ...fromGrants]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')
   const googleConnected = needsGoogle ? (await getGoogleStatus(ownerId)).connected : false
@@ -268,5 +276,5 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
     if (app.connection === 'google' && !googleConnected) continue
     builtins.push(...app.resolve(ownerId, entry.config ?? {}))
   }
-  return [...http, ...custom, ...builtins]
+  return [...http, ...custom, ...fromGrants, ...builtins]
 }
