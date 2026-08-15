@@ -14,3 +14,12 @@ compose.production-test.env
 
 # Local Redis dump (dev only)
 dump.rdb
+
+# Grafo de conhecimento (graphify). Só o relatório legível é versionado:
+# graph.json + graph.html somam ~2,3 MB de artefato DERIVADO, regenerável em
+# segundos e sem token nenhum (a extração é AST), e ficariam desatualizados a cada
+# commit de código. Os dotfiles guardam caminhos absolutos da máquina que gerou, e
+# cache/ é índice de mtime local.
+graphify-out/*
+!graphify-out/GRAPH_REPORT.md
+backend/src/graphify-out/
