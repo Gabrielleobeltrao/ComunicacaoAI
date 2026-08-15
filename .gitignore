@@ -20,6 +20,8 @@ dump.rdb
 # segundos e sem token nenhum (a extração é AST), e ficariam desatualizados a cada
 # commit de código. Os dotfiles guardam caminhos absolutos da máquina que gerou, e
 # cache/ é índice de mtime local.
-graphify-out/*
-!graphify-out/GRAPH_REPORT.md
-backend/src/graphify-out/
+# O grafo vive em backend/graphify-out/ porque o graphify sempre escreve a saída
+# dentro do diretório que escaneia — e o hook de post-commit depende disso para
+# reconstruir o grafo certo.
+backend/graphify-out/*
+!backend/graphify-out/GRAPH_REPORT.md
