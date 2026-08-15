@@ -196,7 +196,7 @@ import { runRouter } from './routes/runRoutes.js'
 import { executionRouter } from './routes/executionRoutes.js'
 import { ensureExecutionIndexes } from './automations/executionCenter.js'
 import { logRouter } from './routes/logRoutes.js'
-import { auditRequests } from './routes/auditMiddleware.js'
+import { auditEntity, auditRequests } from './routes/auditMiddleware.js'
 import { ensureAuditIndexes } from './audit.js'
 import { agentRoutineRouter } from './routes/agentRoutineRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
@@ -673,6 +673,7 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     sectorId: sectorObjectId,
     agentId: sectorObjectId ? null : agentObjectId,
   })
+  auditEntity(res, { id: widget._id.toString(), label: widget.name })
   res.status(201).json(widget)
 })
 
@@ -1016,6 +1017,7 @@ app.post('/api/sectors', requireAuth, async (req, res) => {
   const sectorColor = typeof color === 'string' && color.trim() ? color.trim() : DEFAULT_SECTOR_COLOR
   const sector = await createSector(res.locals.userId, officeId, name, sectorColor, parsedMode, parsed ?? [], team)
   await enforceSingleMembership(res.locals.userId, sector._id, (parsed ?? []).map((m) => m.agentId))
+  auditEntity(res, { id: sector._id.toString(), label: sector.name, floorId: sector.officeId?.toString() })
   res.status(201).json(serializeSector(sector as WithId<Sector>))
 })
 
@@ -1607,6 +1609,7 @@ const toolError = (res: Response, error: unknown): boolean => {
 app.post('/api/tools', requireAuth, async (req, res) => {
   try {
     const tool = await createTool(res.locals.userId, req.body ?? {})
+    auditEntity(res, { id: tool._id.toString(), label: tool.name })
     res.status(201).json(toPublicTool(tool))
   } catch (error) {
     if (!toolError(res, error)) throw error
@@ -1826,6 +1829,8 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     builtinTools: parsedBuiltins,
     ...modelFields,
   })
+  // Name the new agent in the audit trail (id + name only — never the body).
+  auditEntity(res, { id: agent._id.toString(), label: agent.name, floorId: agent.officeId?.toString() })
   res.status(201).json(agent)
 })
 

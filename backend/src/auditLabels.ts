@@ -103,3 +103,33 @@ export const labelKeyFor = (entityType: AuditEntityType, entityId: string): stri
   const source = SOURCES[entityType]
   return source ? `${source.collection}:${entityId}` : null
 }
+
+// Searching by NAME has to find what still exists, not only what was deleted (the
+// deleted ones are the only rows carrying `entityLabel`). So the term is resolved to
+// entity ids first: one owner-scoped query per collection, bounded, with the user's
+// text ESCAPED — a search box never becomes a regular expression.
+const SEARCH_LIMIT = 100
+
+export const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+export async function findEntityIdsByName(ownerId: string, term: string, entityType?: AuditEntityType): Promise<string[]> {
+  const needle = term.trim().slice(0, 120)
+  if (!needle) return []
+  const collections = entityType
+    ? (SOURCES[entityType] ? [SOURCES[entityType]!] : [])
+    : // De-duplicated: several entity types share the automations collection.
+      [...new Map(Object.values(SOURCES).map((s) => [`${s!.collection}:${s!.field}`, s!])).values()]
+
+  const found = new Set<string>()
+  await Promise.all(
+    collections.map(async ({ collection, field }) => {
+      const docs = await db
+        .collection(collection)
+        .find({ ownerId, [field]: { $regex: escapeRegex(needle), $options: 'i' } }, { projection: { _id: 1 } })
+        .limit(SEARCH_LIMIT)
+        .toArray()
+      for (const doc of docs) found.add((doc as { _id: ObjectId })._id.toString())
+    }),
+  )
+  return [...found]
+}

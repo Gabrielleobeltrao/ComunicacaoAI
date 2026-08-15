@@ -170,7 +170,43 @@ async function stubApi(page: Page, opts: { connections?: 'ok' | 'fail' | 'slow' 
   await page.route('**/api/agents', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents/*/overview', (r) => r.fulfill({ json: overview() }))
   await page.route('**/api/agents/*/documents', (r) => r.fulfill({ json: [] }))
-  await page.route('**/api/agents/*/history**', (r) => r.fulfill({ json: { total: 0, items: [], delegations: [] } }))
+  await page.route('**/api/agents/*/history**', (r) =>
+    r.fulfill({
+      json: {
+        total: 1,
+        items: [
+          {
+            id: 'run-1',
+            routineId: 'rot-1',
+            routineName: 'Resumo diário',
+            status: 'failed',
+            triggerType: 'schedule',
+            queuedAt: NOW,
+            startedAt: NOW,
+            finishedAt: NOW,
+            // As the API returns it now: a category and a controlled sentence.
+            error: { kind: 'provider', message: 'O provedor de IA recusou ou não conseguiu concluir a chamada.' },
+          },
+        ],
+        delegations: [
+          {
+            id: 'del-1',
+            direction: 'outgoing',
+            targetType: 'agent',
+            targetAgentId: AGENT_ID,
+            targetSectorId: null,
+            objective: 'Resumir o relatório',
+            status: 'denied',
+            denyCode: 'budget_exceeded',
+            outputPreview: null,
+            error: { kind: 'denied', message: 'O orçamento de tokens da cadeia acabou.' },
+            createdAt: NOW,
+            finishedAt: NOW,
+          },
+        ],
+      },
+    }),
+  )
   await page.route('**/api/agent-stats**', (r) => r.fulfill({ json: { period: '30d', telemetrySince: null, stats: {}, channel: {} } }))
   await page.route('**/api/widgets', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
@@ -336,4 +372,31 @@ test('choosing "Nenhum" is the one thing that removes the destination', async ({
   await page.getByTestId('save-routine').click()
   await expect.poll(() => patched?.body).toBeTruthy()
   expect(patched?.body.delivery).toBeNull()
+})
+
+// --- the failed history must render, not crash --------------------------------------
+
+test('a failed routine renders its reason instead of crashing the page', async ({ page }) => {
+  // React refuses to render an object as a child: the old contract (string) against
+  // the new payload ({ kind, message }) took the whole tab down.
+  const crashes: string[] = []
+  page.on('pageerror', (error) => crashes.push(error.message))
+
+  await stubApi(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/atividade`)
+
+  const error = page.getByTestId('run-history-error').first()
+  await expect(error).toContainText('O provedor de IA recusou')
+  // The message, never the object.
+  await expect(error).not.toContainText('[object Object]')
+  await expect(error).not.toContainText('kind')
+  expect(crashes.filter((m) => /valid as a React child/i.test(m))).toEqual([])
+})
+
+test('a denied delegation shows which rule refused it, with no raw error', async ({ page }) => {
+  await stubApi(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/atividade`)
+  const error = page.getByTestId('delegation-error').first()
+  await expect(error).toContainText('orçamento de tokens')
+  await expect(error).not.toContainText('[object Object]')
 })

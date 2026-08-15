@@ -14,7 +14,7 @@
 // operator decision, never by a silent deletion inside the app.
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
-import { normalizeLabel, resolveEntityLabels, labelKeyFor } from './auditLabels.js'
+import { escapeRegex, findEntityIdsByName, normalizeLabel, resolveEntityLabels, labelKeyFor } from './auditLabels.js'
 
 export type AuditActorType = 'user' | 'system' | 'agent'
 export const AUDIT_ACTOR_TYPES: AuditActorType[] = ['user', 'system', 'agent']
@@ -280,9 +280,16 @@ export async function listAuditEvents(
   if (f.result) base.result = f.result
   if (f.from || f.to) base.occurredAt = { ...(f.from ? { $gte: f.from } : {}), ...(f.to ? { $lte: f.to } : {}) }
   if (f.q) {
-    // Escaped: a search box is not a place to accept a regular expression.
-    const needle = f.q.trim().slice(0, 120).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    base.$or = [{ entityId: needle }, { entityLabel: { $regex: needle, $options: 'i' } }]
+    const needle = f.q.trim().slice(0, 120)
+    // A name search must find what still EXISTS too — only deleted entities carry a
+    // stored label. The term is resolved to ids first, owner-scoped and in batch,
+    // and the text is escaped: a search box is not a regular expression.
+    const liveIds = await findEntityIdsByName(ownerId, needle, f.entityType)
+    base.$or = [
+      { entityId: needle },
+      ...(liveIds.length ? [{ entityId: { $in: liveIds } }] : []),
+      { entityLabel: { $regex: escapeRegex(needle), $options: 'i' } },
+    ]
   }
 
   const after = decodeAuditCursor(page.cursor)

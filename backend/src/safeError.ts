@@ -41,8 +41,9 @@ const ALIAS: Record<string, SafeErrorKind> = {
 }
 
 export interface PublicError {
-  kind: SafeErrorKind
-  // Chosen from the table above — NEVER derived from the stored message.
+  // 'denied' only comes from the delegation table below; the rest are engine kinds.
+  kind: SafeErrorKind | 'denied'
+  // Chosen from a fixed table — NEVER derived from the stored message.
   message: string
 }
 
@@ -59,4 +60,33 @@ export function publicError(error: { kind?: unknown } | null | undefined): Publi
   if (!error) return null
   const kind = safeErrorKind((error as { kind?: unknown }).kind)
   return { kind, message: MESSAGE[kind] }
+}
+
+// --- delegation ---------------------------------------------------------------------
+// A delegation's stored `error` is whatever the target agent's failure produced — a
+// provider string, a tool response, a quoted objective. It is never sent out either.
+// What a person needs to know is WHY it did not happen, and that is fully described
+// by the status plus the deny code the gate itself chose.
+
+export type DelegationDenyCode = 'forbidden' | 'depth_exceeded' | 'cycle' | 'unauthorized' | 'budget_exceeded'
+
+const DENY_MESSAGE: Record<DelegationDenyCode, string> = {
+  forbidden: 'O agente de destino não pertence a este prédio ou a esta conta.',
+  depth_exceeded: 'A cadeia de delegações passou do limite de profundidade.',
+  cycle: 'A delegação formaria um ciclo entre os agentes.',
+  unauthorized: 'Os agentes envolvidos não estão autorizados a delegar entre si.',
+  budget_exceeded: 'O orçamento de tokens da cadeia acabou.',
+}
+
+const DENIED_FALLBACK = 'A delegação foi recusada pelas regras de autorização.'
+
+// status + denyCode → what may be shown. The stored message is never read.
+export function publicDelegationError(status: unknown, denyCode: unknown): PublicError | null {
+  if (status === 'denied') {
+    const code = String(denyCode ?? '') as DelegationDenyCode
+    return { kind: 'denied', message: DENY_MESSAGE[code] ?? DENIED_FALLBACK }
+  }
+  if (status === 'failed') return { kind: 'error', message: MESSAGE.error }
+  if (status === 'canceled') return { kind: 'canceled', message: MESSAGE.canceled }
+  return null
 }

@@ -3,6 +3,7 @@ import * as service from '../connections/service.js'
 import { CONNECTION_CATALOG } from '../connections/service.js'
 import type { Connection } from '../connections/types.js'
 import { fail, notFound, oid } from './http.js'
+import { auditEntity } from './auditMiddleware.js'
 
 // Mounted at /api/connections behind requireAuth. The API NEVER returns
 // encryptedConfig or any decrypted secret — only publicMetadata.
@@ -31,6 +32,8 @@ connectionRouter.get('/', async (_req, res) => {
 connectionRouter.post('/', async (req, res, next) => {
   try {
     const created = await service.createConnection(res.locals.userId, req.body ?? {})
+    // Identify the new row in the audit trail (id + name only).
+    auditEntity(res, { id: created._id.toString(), label: created.name })
     res.status(201).json(toPublic(created))
   } catch (error) {
     fail(res, error, next)

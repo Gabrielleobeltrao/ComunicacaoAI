@@ -39,6 +39,13 @@ export interface RoutineInput {
   retryMaxAttempts?: number
 }
 
+// A failure as the API reports it: a category and a controlled sentence. NEVER the
+// engine's stored message, which can quote the prompt, the payload or a credential.
+export interface PublicError {
+  kind: string
+  message: string
+}
+
 export interface RunHistoryItem {
   id: string
   routineId: string
@@ -48,7 +55,7 @@ export interface RunHistoryItem {
   queuedAt: string | null
   startedAt: string | null
   finishedAt: string | null
-  error: string | null
+  error: PublicError | null
 }
 
 export interface DelegationHistoryItem {
@@ -61,7 +68,7 @@ export interface DelegationHistoryItem {
   status: 'running' | 'succeeded' | 'failed' | 'denied' | 'canceled'
   denyCode: string | null
   outputPreview: string | null
-  error: string | null
+  error: PublicError | null
   createdAt: string
   finishedAt: string | null
 }

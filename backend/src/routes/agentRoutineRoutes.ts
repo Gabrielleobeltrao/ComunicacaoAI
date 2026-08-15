@@ -17,8 +17,9 @@ import { rotateWebhookSecret, setStatus } from '../automations/service.js'
 import { listRuns } from '../automations/runRepository.js'
 import type { Automation } from '../automations/types.js'
 import { listDelegationsForAgent } from '../delegationLog.js'
-import { publicError } from '../safeError.js'
+import { publicDelegationError, publicError } from '../safeError.js'
 import { oid } from './http.js'
+import { auditEntity } from './auditMiddleware.js'
 
 // Agent ROUTINES + HISTORY. Mounted at /api/agents/:agentId behind requireAuth
 // (mergeParams so :agentId is visible). A routine is an agent-owned scheduled
@@ -121,6 +122,7 @@ agentRoutineRouter.post('/routines', async (req, res) => {
   }
   try {
     const routine = await createRoutine(res.locals.userId, agentId, spec!)
+    auditEntity(res, { id: routine._id.toString(), label: routine.name, floorId: routine.floorId.toString() })
     res.status(201).json(serializeRoutine(routine))
   } catch (e) {
     res.status(e instanceof RoutineError ? 400 : 500).json({ error: e instanceof Error ? e.message : 'failed' })
@@ -220,6 +222,7 @@ agentRoutineRouter.post('/event-triggers', async (req, res) => {
       name: typeof body.name === 'string' ? body.name : '',
       objective,
     })
+    auditEntity(res, { id: trigger._id.toString(), label: trigger.name, floorId: trigger.floorId.toString() })
     // The ONLY moment the plaintext secret exists outside the database.
     res.status(201).json({ ...serializeTrigger(trigger), secret })
   } catch (e) {
@@ -341,8 +344,12 @@ agentRoutineRouter.get('/history', async (req, res) => {
       objective: d.objective,
       status: d.status,
       denyCode: d.denyCode,
+      // Kept: the agent's own history offers it for "salvar no conhecimento". It is
+      // the one place it appears — the Central de logs never carries it.
       outputPreview: d.outputPreview,
-      error: d.error,
+      // The stored message is a target agent's raw failure; what leaves is the
+      // reason, derived from the status and the deny code the gate chose.
+      error: publicDelegationError(d.status, d.denyCode),
       createdAt: d.createdAt,
       finishedAt: d.finishedAt,
     })),

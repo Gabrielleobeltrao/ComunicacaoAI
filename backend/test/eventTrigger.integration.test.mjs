@@ -272,11 +272,42 @@ test('a webhook run correlates without carrying anything from the event', async 
     await post(port, publicKey, body, { 'x-signature': signBody(secret, body), 'x-event-id': 'evt-do-provedor' })
     const [run] = await db.collection('automation_runs').find({ automationId: trigger._id }).toArray()
 
-    assert.equal(run.requestId, `webhook:${trigger._id.toString()}`)
-    // Neither the caller's event id nor the body's hash belongs in a field the UI shows.
+    assert.match(run.requestId, /^webhook:[0-9a-f-]{36}$/, 'generated here, per delivery')
+    // Neither the caller's event id nor the body belongs in a field the UI shows.
     assert.ok(!run.requestId.includes('evt-do-provedor'))
     assert.ok(!run.requestId.includes('DADO-PRIVADO'))
+    assert.ok(!run.requestId.includes('A-1'))
     assert.notEqual(run.requestId, run.idempotencyKey, 'the idempotency key is built from the payload; the correlation is not')
+  } finally {
+    server.close()
+    await db.collection('automation_runs').deleteMany({})
+  }
+})
+
+test('each event gets its OWN correlation, and a redelivery keeps the first one', async () => {
+  const { trigger, publicKey, secret } = await createEventTrigger(OWNER, AGENT, spec())
+  const { server, port } = await startReceiver()
+  try {
+    const sign = (body) => ({ 'x-signature': signBody(secret, body) })
+    const first = JSON.stringify({ pedido: 'A-1' })
+    const second = JSON.stringify({ pedido: 'A-2' })
+
+    await post(port, publicKey, first, { ...sign(first), 'x-event-id': 'evt-1' })
+    await post(port, publicKey, second, { ...sign(second), 'x-event-id': 'evt-2' })
+
+    const runs = await db.collection('automation_runs').find({ automationId: trigger._id }).sort({ queuedAt: 1 }).toArray()
+    assert.equal(runs.length, 2)
+    // Two different events must not share a correlation — that was the bug: every
+    // execution of the same trigger reported the same string.
+    assert.notEqual(runs[0].requestId, runs[1].requestId)
+
+    // A redelivery of evt-1 creates NO run and keeps the original correlation.
+    const original = runs[0].requestId
+    const replay = await post(port, publicKey, first, { ...sign(first), 'x-event-id': 'evt-1' })
+    assert.equal(replay.status, 202)
+    const after = await db.collection('automation_runs').find({ automationId: trigger._id }).sort({ queuedAt: 1 }).toArray()
+    assert.equal(after.length, 2, 'idempotency still holds')
+    assert.equal(after[0].requestId, original, 'the existing execution keeps its own correlation')
   } finally {
     server.close()
     await db.collection('automation_runs').deleteMany({})

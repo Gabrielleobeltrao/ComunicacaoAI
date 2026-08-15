@@ -199,18 +199,26 @@ export function auditRequests(req: Request, res: Response, next: NextFunction): 
     const relevantFailure = status >= 500 || status === 403 || status === 409
     if (status >= 400 && !relevantFailure) return
 
+    // What a handler may add, and NOTHING else: three scalars it has already
+    // validated as the owner's. The response body is never read — an id and a short
+    // name are the only things a log entry needs that the URL cannot give.
+    const declaredId = typeof res.locals.auditEntityId === 'string' ? res.locals.auditEntityId : null
+    const declaredLabel = typeof res.locals.auditEntityLabel === 'string' ? res.locals.auditEntityLabel : null
+    // On a DELETE the label was read before the handler ran, so it is trusted only
+    // when the document really belonged to this owner. A label a handler declared
+    // came from its own owner-scoped write, and needs no such check.
+    const label = res.locals.auditEntityOwner === undefined ? declaredLabel : res.locals.auditEntityOwner === ownerId ? declaredLabel : null
+
     void recordAudit({
       ownerId,
       actorType: 'user',
       actorId: ownerId,
       action: target.action,
       entityType: target.entityType,
-      entityId: target.entityId,
-      // Captured BEFORE the handler ran, because after a delete there is nothing
-      // left to name. Short, plain, and only for entities whose name is a label.
-      // Captured before the handler ran; kept ONLY if the document belonged to the
-      // owner this event is being written for.
-      entityLabel: res.locals.auditEntityOwner === ownerId && typeof res.locals.auditEntityLabel === 'string' ? res.locals.auditEntityLabel : null,
+      // The URL wins when it names the entity; a creation has no id in the path, so
+      // what the handler declared is what identifies it.
+      entityId: target.entityId ?? declaredId,
+      entityLabel: label,
       floorId: typeof res.locals.auditFloorId === 'string' ? res.locals.auditFloorId : null,
       result: status < 400 ? 'success' : 'failure',
       requestId,
@@ -234,4 +242,13 @@ export function auditRequests(req: Request, res: Response, next: NextFunction): 
     return
   }
   next()
+}
+
+// The ONLY way a handler contributes to its own audit event: three validated,
+// owner-scoped scalars. No body is read, and nothing else is accepted — a handler
+// cannot smuggle content into the trail through this door.
+export function auditEntity(res: Response, entity: { id?: unknown; label?: unknown; floorId?: unknown }): void {
+  if (typeof entity.id === 'string' && entity.id) res.locals.auditEntityId = entity.id
+  if (typeof entity.label === 'string' && entity.label.trim()) res.locals.auditEntityLabel = entity.label
+  if (typeof entity.floorId === 'string' && entity.floorId) res.locals.auditFloorId = entity.floorId
 }

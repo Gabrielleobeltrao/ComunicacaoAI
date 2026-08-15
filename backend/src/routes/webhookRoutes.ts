@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import { decrypt } from '../crypto.js'
 import { findByWebhookKey } from '../automations/repository.js'
@@ -33,10 +34,11 @@ webhookRouter.post('/automations/:publicKey', async (req, res, next) => {
       triggerType: 'webhook',
       input: req.body,
       idempotencyKey: key,
-      // Correlation only, derived from ids we already own. Deliberately NOT the
-      // idempotency key: that one is built from the caller's event id or a hash of
-      // its body, and neither belongs in a field the UI displays.
-      requestId: `webhook:${automation._id.toString()}`,
+      // ONE correlation per delivery, generated here: nothing from the body, the
+      // headers or the secret goes into it. A redelivery of the same event does NOT
+      // create a run (the idempotency key holds), and `createRun` returns the
+      // existing one — so the original correlation is what survives, not this.
+      requestId: `webhook:${randomUUID()}`,
     })
     res.status(202).json({ runId: run._id, status: run.status })
   } catch (error) {

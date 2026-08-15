@@ -53,3 +53,39 @@ test('kinds written before this table are still recognised', () => {
   assert.equal(safeErrorKind('http'), 'fetch')
   assert.equal(safeErrorKind('PROVIDER'), 'provider')
 })
+
+// --- delegation ------------------------------------------------------------------
+// A delegation's stored `error` is the target agent's raw failure. What leaves is
+// derived from the status and the deny code the authorisation gate itself chose.
+
+const { publicDelegationError } = await import('../dist/safeError.js')
+
+test('a denied delegation explains the rule, never the stored message', () => {
+  const codes = ['forbidden', 'depth_exceeded', 'cycle', 'unauthorized', 'budget_exceeded']
+  const messages = codes.map((code) => publicDelegationError('denied', code).message)
+  assert.equal(new Set(messages).size, codes.length, 'each refusal says something different')
+  for (const message of messages) assert.ok(message.length > 10)
+  for (const code of codes) assert.equal(publicDelegationError('denied', code).kind, 'denied')
+})
+
+test('an unknown deny code degrades to the generic refusal', () => {
+  const out = publicDelegationError('denied', 'codigo-novo')
+  assert.equal(out.kind, 'denied')
+  assert.match(out.message, /recusada/i)
+})
+
+test('a failed delegation never carries the provider text', () => {
+  // Whatever the engine stored is irrelevant: the function only reads status/code.
+  const out = publicDelegationError('failed', null)
+  assert.equal(out.kind, 'error')
+  assert.equal(out.message, publicDelegationError('failed', 'qualquer-coisa').message)
+})
+
+test('a running or succeeded delegation has no error at all', () => {
+  assert.equal(publicDelegationError('running', null), null)
+  assert.equal(publicDelegationError('succeeded', null), null)
+})
+
+test('a canceled delegation says so', () => {
+  assert.equal(publicDelegationError('canceled', null).kind, 'canceled')
+})

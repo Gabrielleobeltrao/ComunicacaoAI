@@ -15,7 +15,7 @@ process.env.ENCRYPTION_KEY = 'test-encryption-key'
 
 const { mongoClient, db } = await import('../dist/db.js')
 const { ensureAuditIndexes } = await import('../dist/audit.js')
-const { auditRequests } = await import('../dist/routes/auditMiddleware.js')
+const { auditEntity, auditRequests } = await import('../dist/routes/auditMiddleware.js')
 const { logRouter } = await import('../dist/routes/logRoutes.js')
 const express = (await import('express')).default
 
@@ -54,7 +54,12 @@ before(async () => {
   }
   // Stand-ins for the real mutating routes: the middleware must audit them
   // WITHOUT any cooperation from the handler.
-  app.post('/api/agents', auth, (_req, res) => res.status(201).json({ ok: true }))
+  // The real create route. When the body asks it to, it declares the identity of
+  // what it created the only way allowed: three validated scalars, never the body.
+  app.post('/api/agents', auth, (req, res) => {
+    if (req.body?.declare) auditEntity(res, { id: req.body.id, label: req.body.label, floorId: FLOOR.toString() })
+    res.status(201).json({ ok: true })
+  })
   app.patch('/api/agents/:id', auth, (_req, res) => res.json({ ok: true }))
   app.delete('/api/tools/:id', auth, (_req, res) => res.status(204).end())
   // A real delete, so the label captured BEFORE the handler can be asserted.
@@ -490,4 +495,91 @@ test('a stored error message never reaches the log, at any level', async () => {
   assert.equal(detail.steps[0].error.kind, 'fetch')
   assert.equal(detail.deliveries[0].error.kind, 'delivery')
   assert.ok(detail.error.message.length > 0, 'and it still says something useful')
+})
+
+// --- final round: living names, created entities, unique webhook correlation --------
+
+test('the search finds an entity that still exists, not only a deleted one', async () => {
+  // Nothing is deleted here: the name lives on the agent itself.
+  await agents().insertOne({ _id: new ObjectId(), ownerId: OWNER, name: 'Pesquisador Político', objective: '', officeId: FLOOR })
+  const live = await agents().findOne({ name: 'Pesquisador Político' })
+  await call('PATCH', `/api/agents/${live._id.toString()}`, { name: 'Pesquisador Político' })
+  await settle()
+
+  const found = await json('/api/logs/audit?q=Pesquisador')
+  assert.equal(found.items.length, 1, 'a living entity has no stored label — the name must be resolved')
+  assert.equal(found.items[0].entityId, live._id.toString())
+  assert.equal(found.items[0].entityLabel, 'Pesquisador Político')
+})
+
+test('the search combines with every other filter, and pages', async () => {
+  const target = new ObjectId()
+  await agents().insertOne({ _id: target, ownerId: OWNER, name: 'Analista de Dados', objective: '', officeId: FLOOR })
+  await call('PATCH', `/api/agents/${target.toString()}`, { name: 'x' })
+  await call('PATCH', `/api/agents/${target.toString()}`, { name: 'y' })
+  await call('DELETE', '/api/tools/000000000000000000000701')
+  await settle()
+
+  assert.equal((await json('/api/logs/audit?q=Analista')).items.length, 2)
+  assert.equal((await json('/api/logs/audit?q=Analista&action=update')).items.length, 2)
+  assert.equal((await json('/api/logs/audit?q=Analista&action=delete')).items.length, 0)
+  assert.equal((await json('/api/logs/audit?q=Analista&entityType=agent')).items.length, 2)
+  assert.equal((await json('/api/logs/audit?q=Analista&entityType=tool')).items.length, 0)
+  assert.equal((await json('/api/logs/audit?q=Analista&result=success')).items.length, 2)
+  assert.equal((await json(`/api/logs/audit?q=Analista&actorId=${OWNER}`)).items.length, 2)
+  assert.equal((await json('/api/logs/audit?q=Analista&from=2099-01-01T00:00:00Z')).items.length, 0)
+
+  // And the cursor still works with a search applied.
+  const first = await json('/api/logs/audit?q=Analista&limit=1')
+  assert.equal(first.items.length, 1)
+  assert.ok(first.nextCursor)
+  const second = await json(`/api/logs/audit?q=Analista&limit=1&cursor=${encodeURIComponent(first.nextCursor)}`)
+  assert.equal(second.items.length, 1)
+  assert.notEqual(second.items[0].id, first.items[0].id)
+})
+
+test('the search never reaches another owner, by name or by id', async () => {
+  const foreign = new ObjectId()
+  await agents().insertOne({ _id: foreign, ownerId: OTHER, name: 'Segredo Alheio', objective: '', officeId: FLOOR })
+  sessionOwner = OTHER
+  await call('PATCH', `/api/agents/${foreign.toString()}`, { name: 'x' })
+  await settle()
+  sessionOwner = OWNER
+
+  assert.equal((await json('/api/logs/audit?q=Segredo')).items.length, 0)
+  assert.equal((await json(`/api/logs/audit?q=${foreign.toString()}`)).items.length, 0)
+})
+
+test('a creation is identified by the id and label the handler declared', async () => {
+  const created = new ObjectId()
+  await call('POST', '/api/agents', { declare: true, id: created.toString(), label: 'Agente Novo' })
+  await settle()
+
+  const [event] = (await json('/api/logs/audit?limit=25')).items
+  assert.equal(event.action, 'create')
+  assert.equal(event.entityId, created.toString(), 'the URL has no id on a creation — the handler supplies it')
+  assert.equal(event.entityLabel, 'Agente Novo')
+  assert.equal(event.floorId, FLOOR.toString())
+  // And the request body it came from is still nowhere near the record.
+  assert.deepEqual(Object.keys(event.metadata).sort(), ['method', 'statusCode'])
+})
+
+test('a creation with nothing declared is still recorded, just unnamed', async () => {
+  await call('POST', '/api/agents', { name: 'Sem identidade' })
+  await settle()
+  const [event] = (await json('/api/logs/audit?limit=25')).items
+  assert.equal(event.action, 'create')
+  assert.equal(event.entityId, null)
+  assert.equal(event.entityLabel, null)
+})
+
+test('a search term is never executed as a regular expression', async () => {
+  await agents().insertOne({ _id: new ObjectId(), ownerId: OWNER, name: 'Analista', objective: '', officeId: FLOOR })
+  const live = await agents().findOne({ name: 'Analista' })
+  await call('PATCH', `/api/agents/${live._id.toString()}`, { name: 'x' })
+  await settle()
+  for (const attempt of ['.*', '^A', 'Anal.st.']) {
+    assert.equal((await json(`/api/logs/audit?q=${encodeURIComponent(attempt)}`)).items.length, 0, `${attempt} must be matched literally`)
+  }
+  assert.equal((await json('/api/logs/audit?q=Analista')).items.length, 1)
 })

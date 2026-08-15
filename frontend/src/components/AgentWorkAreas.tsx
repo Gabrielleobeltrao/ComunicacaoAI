@@ -466,7 +466,7 @@ export function AgentHistoryPanel({ agent, sectors = [] }: { agent: AgentSummary
                   <div style={{ minWidth: 0 }}>
                     <span style={{ fontFamily: 'var(--font-ui)', fontWeight: 700, color: 'var(--text-heading)' }}>{r.routineName}</span>
                     <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>{fmtWhen(r.finishedAt ?? r.startedAt ?? r.queuedAt)}</p>
-                    {r.error ? <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--status-blocked)' }}>{r.error}</p> : null}
+                    {r.error ? <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--status-blocked)' }} data-testid="run-history-error">{r.error.message}</p> : null}
                   </div>
                   <StatusPill status={s} label={label} pulse={false} />
                 </Card>
@@ -490,7 +490,7 @@ export function AgentHistoryPanel({ agent, sectors = [] }: { agent: AgentSummary
                     </div>
                     <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-heading)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }}>{d.objective}</p>
                     <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>{fmtWhen(d.finishedAt ?? d.createdAt)}</p>
-                    {d.error ? <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--status-blocked)' }}>{d.error}</p> : null}
+                    {d.error ? <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--status-blocked)' }} data-testid="delegation-error">{d.error.message}</p> : null}
                     {d.status === 'succeeded' && d.outputPreview ? (
                       <div style={{ marginTop: 8 }}>
                         <SaveToSectorKnowledge sectors={sectors} title={d.objective.slice(0, 120)} content={d.outputPreview} runId={d.id} />
