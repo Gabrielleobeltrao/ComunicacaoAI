@@ -1,4 +1,6 @@
 import 'dotenv/config'
+import { embeddedEngineEnabled, startAutomationEngine } from './automations/engine.js'
+import type { EngineHandle } from './automations/engine.js'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import cors from 'cors'
@@ -3717,6 +3719,18 @@ async function start() {
     })
     .catch((error) => console.error('backfillKnowledgeOwners failed:', error))
 
+  // The automation engine runs INSIDE the API by default: one deployable service,
+  // and no way to deploy a system whose routines silently never fire. Set
+  // EMBEDDED_WORKER=false to run `npm run start:worker` as a separate process.
+  if (embeddedEngineEnabled()) {
+    automationEngine = await startAutomationEngine().catch((error) => {
+      console.error('Automation engine failed to start:', error)
+      return null
+    })
+  } else {
+    console.log('Automation engine disabled here (EMBEDDED_WORKER=false) — run npm run start:worker')
+  }
+
   httpServer.listen(port, () => {
     console.log(`Backend listening on port ${port} (${config.nodeEnv})`)
   })
@@ -3724,6 +3738,9 @@ async function start() {
 
 // Graceful shutdown: stop accepting connections, close Socket.IO, then Mongo, so
 // SIGTERM from the orchestrator drains cleanly instead of a hard kill.
+// Held so shutdown can drain in-flight automation runs before closing MongoDB.
+let automationEngine: EngineHandle | null = null
+
 let shuttingDown = false
 async function shutdown(signal: string) {
   if (shuttingDown) return
@@ -3737,6 +3754,8 @@ async function shutdown(signal: string) {
   try {
     io.close()
     await new Promise<void>((resolve) => httpServer.close(() => resolve()))
+    // Stop polling and let running automations finish before the database goes.
+    if (automationEngine) await automationEngine.stop()
     await mongoClient.close()
     console.log('Shutdown complete')
     process.exit(0)

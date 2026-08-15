@@ -30,8 +30,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-# --- runtime stage -------------------------------------------------------------
-FROM node:22-bookworm-slim AS runtime
+# --- app stage (shared layers, no command) -------------------------------------
+# Everything both processes need. The two stages below differ ONLY in which
+# process they start, so the API and the worker really are the same image.
+FROM node:22-bookworm-slim AS app
 ENV NODE_ENV=production
 WORKDIR /app
 # Production dependencies + compiled output + package metadata only. No source,
@@ -41,6 +43,19 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 # Drop privileges: the official node image ships a non-root `node` user (uid 1000).
 USER node
+
+# --- worker stage --------------------------------------------------------------
+# For platforms whose UI cannot override the container command: build with
+# `--target worker` (Coolify: "Docker Build Stage Target" = worker) and the image
+# starts the automation worker instead of the API. Equivalent to overriding the
+# command with `npm run start:worker`.
+FROM app AS worker
+CMD ["node", "dist/worker.js"]
+
+# --- runtime stage (LAST on purpose = the default target) ----------------------
+# Building without an explicit target yields the API, so the existing API service
+# keeps working with no configuration change.
+FROM app AS runtime
 # Internal port only; the orchestrator maps/proxies it. Kept in sync with PORT.
 EXPOSE 4000
 # Exec form so Node is the signal target and receives SIGTERM directly (the app

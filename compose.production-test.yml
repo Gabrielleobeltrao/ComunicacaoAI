@@ -9,66 +9,46 @@
 #   # edit compose.production-test.env with TEST values (never real prod secrets)
 #   docker compose -f compose.production-test.yml --env-file compose.production-test.env up --build
 #
-# FOUR services, mirroring what Coolify must create (see COOLIFY_DEPLOYMENT.md):
-#   frontend         — static bundle behind nginx
-#   backend-api      — HTTP API, the only one with a published port
-#   backend-worker   — automations: run queue + scheduler. SAME image as the API,
-#                      different command. Without it, scheduled routines never run.
-#   redis            — private queue broker; no published port, no public access.
+# TWO services, mirroring what Coolify must create (see COOLIFY_DEPLOYMENT.md):
+#   frontend — static bundle behind nginx
+#   backend  — HTTP API **and** the automation engine, in one process
 #
-# API and worker are separate processes on purpose: never `concurrently` inside one
-# production container, so each can be restarted, scaled and observed on its own.
+# There is no queue broker: the automation engine polls MongoDB (the runs
+# collection IS the queue, and each automation carries its own `nextRunAt`). One
+# database is the whole infrastructure.
+#
+# A dedicated worker process is still possible for a bigger install — set
+# EMBEDDED_WORKER=false on the API and run a second container with
+# `npm run start:worker` from this same image — but it is not needed here.
 
 name: comunicacaoai-prod-test
 
-# Everything the API and the worker both need. YAML anchors keep the two service
-# definitions honest — a variable added here reaches both, so they can never drift.
-x-backend-env: &backend-env
-  NODE_ENV: production
-  MONGODB_URI: ${MONGODB_URI:?set MONGODB_URI in compose.production-test.env}
-  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET}
-  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
-  # Internal hostname on the compose network — Redis is never reachable from outside.
-  REDIS_URL: redis://redis:6379
-  CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
-  BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:4000}
-  PUBLIC_URL: ${PUBLIC_URL:-http://localhost:4000}
-  # Optional providers — blank is fine, the app starts without them.
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
-
 services:
-  redis:
-    image: redis:7-alpine
-    # Private by design: attached to the internal network with NO ports mapping, so
-    # it is reachable only as `redis:6379` from the other containers.
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
-    networks: [appnet]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-    restart: unless-stopped
-
-  backend-api:
+  backend:
     build:
       context: ./backend
-    # PID-1 reaping + clean SIGTERM forwarding so graceful shutdown works.
+    # PID-1 reaping + clean SIGTERM forwarding so graceful shutdown works: the
+    # engine drains in-flight automation runs before the process exits.
     init: true
-    command: ["npm", "run", "start:api"]
     environment:
-      <<: *backend-env
+      NODE_ENV: production
       PORT: "4000"
-    # The ONLY service with a published port.
+      MONGODB_URI: ${MONGODB_URI:?set MONGODB_URI in compose.production-test.env}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
+      # Default to the frontend container's published origin for a two-origin test.
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:8080}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:4000}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:4000}
+      # Optional providers — blank is fine, the app starts without them.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
     ports:
       - "${BACKEND_PORT:-4000}:4000"
     networks: [appnet]
-    depends_on:
-      redis:
-        condition: service_healthy
+    # Give in-flight automation runs room to drain before SIGKILL.
+    stop_grace_period: 30s
     # Readiness gate: healthy only once MongoDB answers a ping (uses Node's global
     # fetch; no curl/wget needed in the slim image).
     healthcheck:
@@ -83,26 +63,6 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  backend-worker:
-    # Same image as the API — only the command differs.
-    build:
-      context: ./backend
-    init: true
-    command: ["npm", "run", "start:worker"]
-    environment: *backend-env
-    # No `ports`: the worker serves no HTTP and must never be publicly reachable.
-    networks: [appnet]
-    depends_on:
-      redis:
-        condition: service_healthy
-    # Give in-flight automation runs room to drain before SIGKILL (the worker's own
-    # emergency brake fires at 20s).
-    stop_grace_period: 30s
-    # The worker exits loudly when Mongo or Redis is unreachable (bounded startup
-    # probe), so "running" already means "connected". Liveness is the process
-    # itself; progress is visible in its logs.
-    restart: unless-stopped
-
   frontend:
     build:
       context: ./frontend
@@ -114,7 +74,7 @@ services:
       - "${FRONTEND_PORT:-8080}:8080"
     networks: [appnet]
     depends_on:
-      backend-api:
+      backend:
         condition: service_healthy
     # busybox wget ships in the nginx-unprivileged alpine image.
     healthcheck:

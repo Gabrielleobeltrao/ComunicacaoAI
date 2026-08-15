@@ -31,6 +31,16 @@ export interface AutomationRun {
   usage: { inputTokens: number; outputTokens: number }
   finalOutput: string
   error: SafeRunError | null
+  // --- queue bookkeeping (the runs collection IS the queue) --------------------
+  // A worker claims a queued run by stamping these atomically. `leaseUntil` is what
+  // makes a crash recoverable: once it passes, another worker may claim the run
+  // again. Absent on runs written before the Redis queue was removed.
+  claimedBy?: string | null
+  claimedAt?: Date | null
+  leaseUntil?: Date | null
+  // How many times this run was claimed. A run that keeps dying is parked instead
+  // of being retried forever.
+  claims?: number
 }
 
 export interface StepRun {

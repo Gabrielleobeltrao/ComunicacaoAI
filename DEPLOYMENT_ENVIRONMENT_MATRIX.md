@@ -4,12 +4,12 @@ Authoritative list of every environment variable the services actually read
 (verified from source: `import.meta.env.*` in `frontend/src`, `process.env.*` in
 `backend/src`). No variable is listed that the code does not consume.
 
-**Production runs FOUR resources, not two** (see `COOLIFY_DEPLOYMENT.md`):
-frontend, backend **API**, backend **worker** and a **private Redis**. The API and
-the worker are the same image with different start commands — `npm run start:api`
-and `npm run start:worker` — and read the SAME backend variables below (the worker
-ignores `PORT`, since it serves no HTTP). Deploying the API alone leaves the site
-working while every scheduled routine silently never runs.
+**Production runs TWO resources** (see `COOLIFY_DEPLOYMENT.md`): frontend and
+backend. The automation engine — the scheduler and the run queue — lives INSIDE the
+backend process and stores everything in MongoDB, so there is no broker and no
+separate worker to forget. An earlier design used a private Redis plus a dedicated
+worker; it was removed after a deploy that created only the API left every
+scheduled routine silently unexecuted.
 
 **Definitive production origins (ASCII, no trailing slash):**
 
@@ -46,9 +46,10 @@ Secrets are never real in this repo. URLs are public and are the real values abo
 | `BETTER_AUTH_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.oneplataforma.com` | Backend public origin | Backend domain changes | Startup fails; auth base + Google callback wrong |
 | `PUBLIC_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.oneplataforma.com` | Backend public origin | Backend domain changes | Startup fails; WhatsApp webhook URLs are wrong |
 | `MONGODB_URI` | backend API + worker | **Required** | Runtime | **Secret** | `mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/comunicacaoai` | MongoDB Atlas | DB credential suspected leaked / policy rotation | Startup fails; no persistence |
-| `REDIS_URL` | backend API + worker | **Required (prod)** | Runtime | Secret-ish (internal) | `redis://redis:6379` | Private Redis on the internal network — never published | Redis moved/recreated | Startup fails in prod. Before this was enforced, the API booted fine while the worker could not connect, so **routines silently never ran** |
-| `WORKER_CONCURRENCY` | backend worker | Optional (default `4`) | Runtime | Public | `4` | Deploy config | Tuning throughput | Defaults to 4 concurrent runs |
-| `WORKER_STARTUP_PROBE_MS` | backend worker | Optional (default `10000`) | Runtime | Public | `10000` | Deploy config | Slow infra | Worker waits 10s for Mongo/Redis before failing loudly |
+| `EMBEDDED_WORKER` | backend | Optional (default `true`) | Runtime | Public | `true` | Deploy config | Splitting the worker out at scale | The automation engine runs inside the API. `false` disables it, and a separate `npm run start:worker` process must then exist |
+| `WORKER_CONCURRENCY` | backend | Optional (default `4`) | Runtime | Public | `4` | Deploy config | Tuning throughput | Defaults to 4 concurrent runs |
+| `RUN_POLL_MS` / `SCHEDULER_POLL_MS` | backend | Optional (`3000` / `15000`) | Runtime | Public | `3000` | Deploy config | Tuning latency vs. DB load | Routines fire within one scheduler tick |
+| `RUN_LEASE_MS` / `MAX_RUN_CLAIMS` | backend | Optional (`600000` / `3`) | Runtime | Public | `600000` | Deploy config | Very long runs | A crashed instance's run is reclaimed after the lease; a run that keeps dying is parked as failed |
 | `BETTER_AUTH_SECRET` | backend | Required (prod) | Runtime | **Secret** | `openssl rand -hex 32` | Generated, unique per env | Periodic / on suspicion (invalidates sessions) | Startup fails; session cookies cannot be signed |
 | `ENCRYPTION_KEY` | backend | Required (prod) | Runtime | **Secret** | `openssl rand -hex 32` | Generated, unique per env | Rare — rotating requires re-encrypting stored secrets | Startup fails; stored provider/integration secrets cannot be decrypted |
 | `ANTHROPIC_API_KEY` | backend | Optional | Runtime | **Secret** | *(blank)* | Anthropic Console | Provider policy / on suspicion | Anthropic RAG replies unavailable (per-account keys still work) |

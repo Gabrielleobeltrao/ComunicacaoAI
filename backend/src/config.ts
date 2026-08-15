@@ -43,9 +43,6 @@ export const config = {
   publicUrl: urlVar('PUBLIC_URL', `http://localhost:${port}`),
   // Better Auth's public base origin (used to derive the Google OAuth callback).
   betterAuthUrl: urlVar('BETTER_AUTH_URL', `http://localhost:${port}`),
-  // Redis for the automation queue/worker/scheduler (AI-building pivot). Empty in
-  // production until provided; localhost default for local dev (compose.dev.yml).
-  redisUrl: process.env.REDIS_URL?.trim() || (isProduction ? '' : 'redis://localhost:6379'),
 } as const
 
 // Backwards-compatible canonical client origin (first in the allowlist).
@@ -75,9 +72,6 @@ export function validateConfig(): void {
     CLIENT_URL: process.env.CLIENT_URL,
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
     PUBLIC_URL: process.env.PUBLIC_URL,
-    // Without it the API still boots but the worker cannot connect, so routines and
-    // scheduled automations silently never run. Fail the deploy instead.
-    REDIS_URL: process.env.REDIS_URL,
   }
   const missing = Object.entries(required)
     .filter(([, v]) => !v || !v.trim())

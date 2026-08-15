@@ -5,7 +5,6 @@ import { getAutomation } from './service.js'
 import { findVersion } from './repository.js'
 import { computeDefinitionHash } from './validate.js'
 import { insertRunIdempotent } from './runRepository.js'
-import { enqueueRun } from './queue.js'
 import type { AutomationRun } from './runTypes.js'
 import type { TriggerType } from './types.js'
 
@@ -60,7 +59,8 @@ export async function createRun(
     error: null,
   }
 
-  const result = await insertRunIdempotent(run)
-  if (result.created) await enqueueRun(idempotencyKey, result.run._id.toString())
-  return result
+  // Inserting IS enqueuing: a run with status 'queued' is the queue entry. There
+  // is no second system that could disagree with the database, and no enqueue that
+  // could fail after the row was already written.
+  return insertRunIdempotent(run)
 }

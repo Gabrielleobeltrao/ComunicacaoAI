@@ -29,10 +29,11 @@ executed now** — no remote repos, no pushes, no Coolify. This is the runbook.
 
 ### `comunicacaoai-backend` (from `backend/`)
 
-> One repository, **two runtime services** in Coolify: the API
-> (`npm run start:api`) and the automation worker (`npm run start:worker`), built
-> from the same `Dockerfile`. Plus a **private Redis** resource they share. Wiring
-> only the API leaves scheduled routines dead — see `COOLIFY_DEPLOYMENT.md`.
+> One repository, **one runtime service**: the API also runs the automation engine
+> (scheduler + run queue) on MongoDB, so there is no broker and no second process
+> to wire. `npm run start:worker` still exists for installs that prefer a dedicated
+> worker (`EMBEDDED_WORKER=false`), but it is not part of the standard deploy —
+> see `COOLIFY_DEPLOYMENT.md`.
 ```
 .
 ├── src/
