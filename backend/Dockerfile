@@ -1,6 +1,13 @@
 # Backend production image — multi-stage. Build context is THIS folder only:
 #   docker build -t comunicacaoai-backend:test backend
 #
+# ONE image, TWO production services (override the command per service):
+#   API    -> npm run start:api      (HTTP, port 4000)
+#   worker -> npm run start:worker   (automation runs + scheduler, no HTTP)
+# The default CMD below is the API, so a platform that ignores the command still
+# serves traffic — but a deploy WITHOUT the worker never executes a routine. See
+# COOLIFY_DEPLOYMENT.md. Never run both in one container via `concurrently`.
+#
 # No real secrets are baked in: MONGODB_URI, BETTER_AUTH_SECRET, ENCRYPTION_KEY,
 # provider keys, etc. are all injected at RUN time by the orchestrator.
 
@@ -39,6 +46,7 @@ EXPOSE 4000
 # Exec form so Node is the signal target and receives SIGTERM directly (the app
 # installs SIGTERM/SIGINT handlers for graceful shutdown). Run the orchestrator/
 # compose with init:true for PID-1 reaping. No watcher in production.
+# Default = API. The worker service overrides this with `npm run start:worker`.
 CMD ["node", "dist/index.js"]
 # HEALTHCHECK is defined at the orchestration layer (compose/Coolify) hitting
 # GET /api/ready — this slim image has no guaranteed curl/wget to script one here.

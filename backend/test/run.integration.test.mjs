@@ -43,7 +43,7 @@ process.env.MONGODB_URI = await startMongo()
 const { ObjectId } = await import('mongodb')
 const { mongoClient, db } = await import('../dist/db.js')
 const { ensureRunIndexes, insertRunIdempotent } = await import('../dist/automations/runRepository.js')
-const { getRunQueue, enqueueRun, closeRunQueue } = await import('../dist/automations/queue.js')
+const { getRunQueue, enqueueRun, closeRunQueue, jobIdFor } = await import('../dist/automations/queue.js')
 const { getScheduleQueue, reconcileSchedules, closeScheduleQueue } = await import('../dist/automations/scheduler.js')
 
 // Everything this file creates is namespaced, so a shared Redis is never polluted.
@@ -60,7 +60,7 @@ after(async () => {
   if (hasRedis) {
     // Safe because this database is exclusive to the test (see ISOLATION above).
     const runQueue = getRunQueue()
-    await runQueue.remove(KEY).catch(() => undefined)
+    await runQueue.remove(jobIdFor(KEY)).catch(() => undefined)
     const scheduleQueue = getScheduleQueue()
     for (const s of await scheduleQueue.getJobSchedulers().catch(() => [])) {
       await scheduleQueue.removeJobScheduler(s.key).catch(() => undefined)
@@ -107,7 +107,7 @@ test('the same idempotency key inserts ONE run and enqueues ONE job', { skip }, 
   const queue = getRunQueue()
   await enqueueRun(KEY, a.run._id.toString())
   await enqueueRun(KEY, a.run._id.toString())
-  const job = await queue.getJob(KEY)
+  const job = await queue.getJob(jobIdFor(KEY))
   assert.ok(job, 'a job exists for the idempotency key')
   assert.equal(job.data.runId, a.run._id.toString())
 })
@@ -144,4 +144,90 @@ test('an ACTIVE schedule automation is registered with the scheduler; a paused o
   await reconcileSchedules()
   const after = new Set((await getScheduleQueue().getJobSchedulers()).map((s) => s.key))
   assert.ok(!after.has(active.toString()), 'pausing must unregister the schedule')
+})
+
+test('the queue delivers a job to a worker, which consumes it exactly once', { skip }, async () => {
+  const { Worker } = await import('bullmq')
+  const { createConnection } = await import('../dist/automations/queue.js')
+
+  const seen = []
+  const connection = createConnection()
+  const worker = new Worker(
+    'automation-runs',
+    async (job) => {
+      seen.push(String(job.data.runId))
+    },
+    { connection, concurrency: 1 },
+  )
+
+  const runId = new ObjectId().toString()
+  const key = `${OWNER}-consumed`
+  // Enqueue TWICE with the same idempotency key: BullMQ must hand it over once.
+  await enqueueRun(key, runId)
+  await enqueueRun(key, runId)
+
+  const mine = () => seen.filter((x) => x === runId)
+  const deadline = Date.now() + 10_000
+  while (mine().length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+  // Give a redelivery a fair chance to show up before asserting it did not.
+  await new Promise((r) => setTimeout(r, 500))
+
+  // The queue is shared with the earlier test, so count only this run's deliveries.
+  assert.deepEqual(mine(), [runId], 'the worker must consume the job exactly once')
+
+  await worker.close()
+  await connection.quit().catch(() => connection.disconnect())
+  await getRunQueue().remove(jobIdFor(key)).catch(() => undefined)
+})
+
+test('a scheduled automation creates exactly ONE run per fire instant', { skip }, async () => {
+  const { createRun } = await import('../dist/automations/runService.js')
+  const automations = db.collection('automations')
+  const id = new ObjectId()
+  await automations.insertOne({
+    _id: id,
+    ownerId: OWNER,
+    buildingId: new ObjectId(),
+    floorId: new ObjectId(),
+    name: 'agendada',
+    description: '',
+    status: 'active',
+    trigger: { type: 'schedule', timezone: 'America/Sao_Paulo', cron: '0 7 * * *' },
+    draftDefinition: { trigger: { type: 'schedule', timezone: 'America/Sao_Paulo', cron: '0 7 * * *' }, inputs: [], steps: [], resultFormat: 'markdown', deliveries: [], limits: {} },
+    currentVersion: 1,
+    lastPublishedVersion: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
+
+  // The scheduler's key is automationId + fire timestamp, WITH a colon — the exact
+  // shape BullMQ rejects as a job id. Enqueuing used to throw here after the run
+  // row was written, stranding it in 'queued'. Two fires of the same instant (a
+  // replica, a re-delivery) must produce exactly one run.
+  const fired = `${id.toString()}:1700000000000`
+  const first = await createRun(OWNER, id, { triggerType: 'schedule', idempotencyKey: fired })
+  const second = await createRun(OWNER, id, { triggerType: 'schedule', idempotencyKey: fired })
+  assert.equal(first.created, true)
+  assert.equal(second.created, false, 'a re-fire must never duplicate the run')
+  assert.equal(first.run._id.toString(), second.run._id.toString())
+
+  const count = await db.collection('automation_runs').countDocuments({ idempotencyKey: fired })
+  assert.equal(count, 1, 'exactly one run row for one fire instant')
+})
+
+test('closing the queues leaves no open Redis connection behind', { skip }, async () => {
+  // Open both producers, then close them the way the worker does on SIGTERM.
+  getRunQueue()
+  getScheduleQueue()
+  await closeRunQueue()
+  await closeScheduleQueue()
+
+  // A closed singleton must be re-creatable — proving close() dropped it rather
+  // than leaving a half-dead client around.
+  const reopened = getRunQueue()
+  assert.ok(reopened, 'the queue can be opened again after closing')
+  await closeRunQueue()
+
+  // The real proof that nothing is left open is the process exiting on its own:
+  // node:test would hang forever otherwise, and this file has no forced exit.
 })

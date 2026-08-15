@@ -5,6 +5,17 @@ and backend so each is independently installable/buildable. **No** deploy, DNS,
 domain, SSL, remote-repo creation, push or merge is performed here. All prior work
 (Office Visual Simulation V2 + mobile responsiveness) is preserved.
 
+> **Correction (worker/Redis gap).** Earlier phases of this report describe
+> production as **two** services. That was incomplete and it cost real behaviour:
+> the backend image defaulted to the API only, so a deploy that created just the
+> backend served HTTP while the automation worker never existed — the database
+> showed 3 active scheduled routines and **zero runs ever**. Production is
+> **four** resources: frontend, backend **API**, backend **worker** and a
+> **private Redis**. API and worker are the same image with different start
+> commands (`npm run start:api` / `npm run start:worker`), and `REDIS_URL` is now
+> required in production so the deploy fails loudly instead of running half a
+> system. See `COOLIFY_DEPLOYMENT.md`.
+
 ## Fase 0 — Local audit (baseline)
 
 | Item | Value |
@@ -160,7 +171,12 @@ volume + ownership + backup/restore before deploying.
   each service from its **own folder** as Docker context, runs them on an internal
   network with health/readiness gating, backend against **external** MongoDB (no
   local Mongo added). Env comes from a git-ignored local file. Local validation
-  only — Coolify manages the two services separately later.
+  only — Coolify manages the resources separately later.
+  **Now four services**: `frontend`, `backend-api`, `backend-worker` and `redis`.
+  Only `backend-api` publishes a port; `redis` and `backend-worker` publish none.
+  `redis` has a `redis-cli ping` healthcheck and both backend services wait for it.
+  API and worker share one YAML anchor for their environment, so the two can never
+  drift apart on a required variable.
 - `DEPLOYMENT_ENVIRONMENT_MATRIX.md`: every consumed variable with
   service/required/build-vs-runtime/sensitivity/`.invalid` example/source/rotation/
   consequence. `VITE_API_URL` explicitly marked build-time & public;

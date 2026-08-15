@@ -37,8 +37,17 @@ export async function closeRunQueue(): Promise<void> {
   if (c) await c.quit().catch(() => c.disconnect())
 }
 
-// Idempotent enqueue: jobId = idempotencyKey, so a duplicate trigger (webhook
-// replay, scheduler re-fire) reuses the same job instead of duplicating work.
+// BullMQ refuses a custom job id containing ':' ("Custom Id cannot contain :"),
+// and the scheduler's key is `${automationId}:${fireTimestamp}` — so enqueuing a
+// scheduled run used to THROW after the run row had already been inserted, leaving
+// it stuck in 'queued' forever while the schedule job failed. Percent-encoding is
+// a bijection, so the id stays deterministic (same key -> same job) and no two
+// distinct keys can collide into one.
+export const jobIdFor = (idempotencyKey: string): string => encodeURIComponent(idempotencyKey)
+
+// Idempotent enqueue: jobId derives from the idempotencyKey, so a duplicate trigger
+// (webhook replay, scheduler re-fire, a second worker replica) reuses the same job
+// instead of duplicating work.
 export async function enqueueRun(idempotencyKey: string, runId: string): Promise<void> {
-  await getRunQueue().add('run', { runId }, { jobId: idempotencyKey, removeOnComplete: 1000, removeOnFail: 5000 })
+  await getRunQueue().add('run', { runId }, { jobId: jobIdFor(idempotencyKey), removeOnComplete: 1000, removeOnFail: 5000 })
 }

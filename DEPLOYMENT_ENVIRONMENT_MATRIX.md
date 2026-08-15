@@ -1,8 +1,15 @@
 # Deployment Environment Matrix
 
-Authoritative list of every environment variable the two services actually read
+Authoritative list of every environment variable the services actually read
 (verified from source: `import.meta.env.*` in `frontend/src`, `process.env.*` in
 `backend/src`). No variable is listed that the code does not consume.
+
+**Production runs FOUR resources, not two** (see `COOLIFY_DEPLOYMENT.md`):
+frontend, backend **API**, backend **worker** and a **private Redis**. The API and
+the worker are the same image with different start commands — `npm run start:api`
+and `npm run start:worker` — and read the SAME backend variables below (the worker
+ignores `PORT`, since it serves no HTTP). Deploying the API alone leaves the site
+working while every scheduled routine silently never runs.
 
 **Definitive production origins (ASCII, no trailing slash):**
 
@@ -38,7 +45,10 @@ Secrets are never real in this repo. URLs are public and are the real values abo
 | `CLIENT_URL` | backend | Required (prod) | Runtime | Public | `https://comunicacaoai.oneplataforma.com` | Frontend public origin(s), comma-separated | Frontend domain changes | Startup fails in prod; CORS + Socket.IO + cookies reject the frontend |
 | `BETTER_AUTH_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.oneplataforma.com` | Backend public origin | Backend domain changes | Startup fails; auth base + Google callback wrong |
 | `PUBLIC_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.oneplataforma.com` | Backend public origin | Backend domain changes | Startup fails; WhatsApp webhook URLs are wrong |
-| `MONGODB_URI` | backend | **Required** | Runtime | **Secret** | `mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/comunicacaoai` | MongoDB Atlas | DB credential suspected leaked / policy rotation | Startup fails; no persistence |
+| `MONGODB_URI` | backend API + worker | **Required** | Runtime | **Secret** | `mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/comunicacaoai` | MongoDB Atlas | DB credential suspected leaked / policy rotation | Startup fails; no persistence |
+| `REDIS_URL` | backend API + worker | **Required (prod)** | Runtime | Secret-ish (internal) | `redis://redis:6379` | Private Redis on the internal network — never published | Redis moved/recreated | Startup fails in prod. Before this was enforced, the API booted fine while the worker could not connect, so **routines silently never ran** |
+| `WORKER_CONCURRENCY` | backend worker | Optional (default `4`) | Runtime | Public | `4` | Deploy config | Tuning throughput | Defaults to 4 concurrent runs |
+| `WORKER_STARTUP_PROBE_MS` | backend worker | Optional (default `10000`) | Runtime | Public | `10000` | Deploy config | Slow infra | Worker waits 10s for Mongo/Redis before failing loudly |
 | `BETTER_AUTH_SECRET` | backend | Required (prod) | Runtime | **Secret** | `openssl rand -hex 32` | Generated, unique per env | Periodic / on suspicion (invalidates sessions) | Startup fails; session cookies cannot be signed |
 | `ENCRYPTION_KEY` | backend | Required (prod) | Runtime | **Secret** | `openssl rand -hex 32` | Generated, unique per env | Rare — rotating requires re-encrypting stored secrets | Startup fails; stored provider/integration secrets cannot be decrypted |
 | `ANTHROPIC_API_KEY` | backend | Optional | Runtime | **Secret** | *(blank)* | Anthropic Console | Provider policy / on suspicion | Anthropic RAG replies unavailable (per-account keys still work) |

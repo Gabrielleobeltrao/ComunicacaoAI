@@ -2,8 +2,8 @@ import 'dotenv/config'
 import { Worker } from 'bullmq'
 import { ObjectId } from 'mongodb'
 import { mongoClient } from './db.js'
-import { createConnection, RUN_QUEUE } from './automations/queue.js'
-import { SCHEDULE_QUEUE, reconcileSchedules } from './automations/scheduler.js'
+import { closeRunQueue, createConnection, RUN_QUEUE } from './automations/queue.js'
+import { closeScheduleQueue, SCHEDULE_QUEUE, reconcileSchedules } from './automations/scheduler.js'
 import { createRun } from './automations/runService.js'
 import {
   findRunUnscoped,
@@ -188,24 +188,61 @@ async function processRun(runId: string): Promise<void> {
   })
 }
 
+// A dependency that is merely SLOW must not look like one that is down, and a
+// dependency that is down must not let the worker report itself up. ioredis keeps
+// retrying forever by design (maxRetriesPerRequest: null is required by BullMQ), so
+// a plain await would hang instead of failing — hence a bounded probe.
+const STARTUP_PROBE_MS = Number(process.env.WORKER_STARTUP_PROBE_MS ?? 10_000)
+
+async function withinTimeout<T>(what: string, ms: number, work: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms}ms`)), ms)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 async function main(): Promise<void> {
-  await mongoClient.connect()
-  const connection = createConnection()
+  // Fail VISIBLY when a dependency is missing: a worker that prints "up" but can
+  // reach neither Mongo nor Redis is worse than one that dies, because the routines
+  // it should run just silently never happen.
+  await withinTimeout('MongoDB', STARTUP_PROBE_MS, mongoClient.connect().then(() => mongoClient.db().command({ ping: 1 })))
+  console.log('Worker: MongoDB reachable')
+
+  // Two connections on purpose (BullMQ blocks on one per worker), both owned here
+  // so shutdown can quit them — BullMQ never quits a connection handed to it.
+  const runConnection = createConnection()
+  const scheduleConnection = createConnection()
+  await withinTimeout('Redis', STARTUP_PROBE_MS, runConnection.ping())
+  console.log(`Worker: Redis reachable (${RUN_QUEUE} / ${SCHEDULE_QUEUE})`)
 
   // Run worker: executes each enqueued automation run.
   const worker = new Worker(RUN_QUEUE, async (job) => processRun(String(job.data.runId)), {
-    connection,
+    connection: runConnection,
     concurrency: CONCURRENCY,
   })
   worker.on('failed', (job, err) => console.error(`run job ${job?.id} failed:`, err.message))
 
   // Scheduler: mirror Mongo schedules onto BullMQ, then keep them reconciled. A
   // fired scheduler creates one run per scheduled instant (idempotency key =
-  // automationId + fire timestamp), so a re-fire never duplicates work.
-  await reconcileSchedules().catch((err) => console.error('schedule reconcile failed:', err))
-  const reconcileTimer = setInterval(() => {
-    void reconcileSchedules().catch((err) => console.error('schedule reconcile failed:', err))
-  }, 60_000)
+  // automationId + fire timestamp), so a re-fire — or a second worker replica —
+  // never duplicates work.
+  const reconcile = async () => {
+    try {
+      const { added, removed, total } = await reconcileSchedules()
+      if (added || removed) console.log(`Schedules reconciled: +${added} -${removed} (${total} active)`)
+    } catch (err) {
+      console.error('schedule reconcile failed:', err instanceof Error ? err.message : err)
+    }
+  }
+  await reconcile()
+  const reconcileTimer = setInterval(() => void reconcile(), 60_000)
   reconcileTimer.unref()
 
   const scheduleWorker = new Worker(
@@ -217,7 +254,7 @@ async function main(): Promise<void> {
         idempotencyKey: `${automationId}:${job.timestamp}`,
       })
     },
-    { connection: createConnection(), concurrency: CONCURRENCY },
+    { connection: scheduleConnection, concurrency: CONCURRENCY },
   )
   scheduleWorker.on('failed', (job, err) => console.error(`schedule job ${job?.id} failed:`, err.message))
 
@@ -228,15 +265,28 @@ async function main(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
     console.log(`Received ${signal}, draining worker...`)
+    // Emergency brake only: it fires solely if the orderly close below hangs, so
+    // resources are never abandoned just because a signal arrived.
+    const forced = setTimeout(() => {
+      console.error('Worker shutdown timed out — forcing exit')
+      process.exit(1)
+    }, 20_000)
+    forced.unref()
+
     clearInterval(reconcileTimer)
     try {
+      // Stop consuming and let in-flight jobs finish before anything is torn down.
       await Promise.all([worker.close(), scheduleWorker.close()])
-      await connection.quit()
+      // The producer side: queues opened lazily by enqueueRun/reconcileSchedules.
+      await Promise.all([closeRunQueue(), closeScheduleQueue()])
+      // Our own connections — BullMQ does not own them.
+      await Promise.all([runConnection.quit().catch(() => runConnection.disconnect()), scheduleConnection.quit().catch(() => scheduleConnection.disconnect())])
       await mongoClient.close()
-      process.exit(0)
+      clearTimeout(forced)
+      console.log('Worker shutdown complete')
     } catch (err) {
       console.error('Worker shutdown error:', err)
-      process.exit(1)
+      process.exitCode = 1
     }
   }
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
