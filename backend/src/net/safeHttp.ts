@@ -25,6 +25,13 @@ export function isPrivateIp(ip: string): boolean {
 
 // Throws if the URL is not a public http(s) endpoint. Resolves DNS for hostnames
 // so a name pointing at an internal IP (DNS rebinding) is rejected too.
+// Tests need to talk to a server they started on 127.0.0.1. This opens LOOPBACK
+// ONLY — every other private range (10/8, 192.168, and above all 169.254 metadata)
+// stays blocked, so an SSRF test remains a real test. validateConfig() refuses to
+// boot production with this set, so it cannot be turned on where it would matter.
+const loopbackAllowed = (): boolean => process.env.ALLOW_LOOPBACK_HTTP_TARGETS === '1'
+const isLoopback = (ip: string): boolean => ip === '127.0.0.1' || ip.startsWith('127.') || ip === '::1'
+
 export async function assertPublicUrl(rawUrl: string): Promise<URL> {
   let url: URL
   try {
@@ -40,16 +47,16 @@ export async function assertPublicUrl(rawUrl: string): Promise<URL> {
     throw new Error('Host não permitido')
   }
   if (net.isIP(host)) {
-    if (isPrivateIp(host)) throw new Error('Endereço de rede interna não é permitido')
+    if (isPrivateIp(host) && !(loopbackAllowed() && isLoopback(host))) throw new Error('Endereço de rede interna não é permitido')
     return url
   }
   const { address } = await lookup(host)
-  if (isPrivateIp(address)) throw new Error('Host aponta para uma rede interna')
+  if (isPrivateIp(address) && !(loopbackAllowed() && isLoopback(address))) throw new Error('Host aponta para uma rede interna')
   return url
 }
 
 export interface SafeFetchOptions {
-  method?: 'GET' | 'POST'
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   headers?: Record<string, string>
   body?: string
   timeoutMs?: number
@@ -95,6 +102,10 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location')
       if (!location) throw new Error(`Redirecionamento sem destino (${res.status})`)
+      // A body is not replayed across a redirect: 307/308 would require resending
+      // it, and silently re-POSTing to a host chosen by the FIRST server is not a
+      // risk worth taking. GET/DELETE follow; anything with a body stops here.
+      if (opts.body !== undefined) throw new Error(`Redirecionamento não seguido para requisição com corpo (${res.status})`)
       current = new URL(location, url).toString()
       continue // re-assert the next hop
     }

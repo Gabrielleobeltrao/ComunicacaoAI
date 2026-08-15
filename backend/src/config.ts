@@ -73,6 +73,11 @@ export function validateConfig(): void {
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
     PUBLIC_URL: process.env.PUBLIC_URL,
   }
+  // A test-only escape hatch must never be live in production.
+  if (process.env.ALLOW_LOOPBACK_HTTP_TARGETS === '1') {
+    throw new Error('ALLOW_LOOPBACK_HTTP_TARGETS is a test-only flag and must not be set in production')
+  }
+
   const missing = Object.entries(required)
     .filter(([, v]) => !v || !v.trim())
     .map(([k]) => k)

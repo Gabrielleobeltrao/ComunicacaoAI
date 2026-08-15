@@ -90,6 +90,10 @@ export interface AgentTool {
   parameters: AgentToolParam[]
 }
 
+// Reusable Custom Tools (collection `tools`) this agent is allowed to call, by id.
+// An agent can ONLY call what is listed here — assignment is the permission.
+// The legacy per-agent `tools` array below still works and is resolved alongside.
+
 // A built-in integration ("app") enabled on the agent, with its per-agent config
 // (e.g. which spreadsheet). See builtinTools.ts for the catalog.
 export interface AgentBuiltinTool {
@@ -141,6 +145,8 @@ export interface Agent {
   callerPolicy: DelegationPolicy // incoming: who may call this agent
   callableAgentIds: string[] // when delegationPolicy='selected': the agents this one may call
   callableSectorIds: string[] // when delegationPolicy='selected': the sectors this one may call
+  // Ids from the `tools` collection this agent may call.
+  toolIds: string[]
   allowedCallerAgentIds: string[] // when callerPolicy='selected': the agents allowed to call this one
   metricProfile: MetricProfile // which KPI the card shows ('auto' = derive from preset)
   createdAt: Date
@@ -172,6 +178,7 @@ export function withAgentDefaults(a: Agent): Agent {
     outputContract: a.outputContract ?? '',
     callableAgentIds: a.callableAgentIds ?? [],
     callableSectorIds: a.callableSectorIds ?? [],
+    toolIds: a.toolIds ?? [],
     allowedCallerAgentIds: a.allowedCallerAgentIds ?? [],
     delegationPolicy: deriveDelegationPolicy(a),
     callerPolicy: deriveCallerPolicy(a),
@@ -190,6 +197,7 @@ export interface AgentModelFields {
   callableAgentIds?: string[]
   callableSectorIds?: string[]
   allowedCallerAgentIds?: string[]
+  toolIds?: string[]
   metricProfile?: MetricProfile
 }
 
@@ -212,7 +220,7 @@ export function parseAgentModelFields(body: Record<string, unknown>): { fields: 
     fields.activationModes = sanitized.activationModes
     if (sanitized.callerPolicy) fields.callerPolicy = sanitized.callerPolicy
   }
-  for (const key of ['capabilities', 'callableAgentIds', 'callableSectorIds', 'allowedCallerAgentIds'] as const) {
+  for (const key of ['capabilities', 'callableAgentIds', 'callableSectorIds', 'allowedCallerAgentIds', 'toolIds'] as const) {
     const v = body[key]
     if (v === undefined) continue
     if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) return { fields, error: `${key} must be a list of strings` }
@@ -280,6 +288,7 @@ export async function createAgent(
     callableAgentIds?: string[]
     callableSectorIds?: string[]
     allowedCallerAgentIds?: string[]
+    toolIds?: string[]
     metricProfile?: MetricProfile
   } = {},
 ) {
@@ -321,6 +330,7 @@ export async function createAgent(
     outputContract: options.outputContract ?? '',
     callableAgentIds: options.callableAgentIds ?? [],
     callableSectorIds: options.callableSectorIds ?? [],
+    toolIds: options.toolIds ?? [],
     allowedCallerAgentIds: options.allowedCallerAgentIds ?? [],
     // A manager delegates by default; every other role starts as a leaf (none) and
     // opts in. Any agent can be called by default (callerPolicy='all') so a manager
@@ -387,6 +397,7 @@ export async function updateAgent(
     callableAgentIds?: string[]
     callableSectorIds?: string[]
     allowedCallerAgentIds?: string[]
+    toolIds?: string[]
     metricProfile?: MetricProfile
   },
 ) {
@@ -412,6 +423,13 @@ export async function updateAgent(
 // new configuration can never contradict it. Idempotent.
 export async function ensureActivationMode(ownerId: string, agentId: ObjectId, mode: ActivationMode): Promise<void> {
   await agents.updateOne({ _id: agentId, ownerId }, { $addToSet: { activationModes: mode } })
+}
+
+// A deleted tool must not linger in any agent's allow list: an id that resolves
+// to nothing is confusing in the UI and pointless at execution time.
+export async function pullToolFromAgents(ownerId: string, toolId: string): Promise<number> {
+  const res = await agents.updateMany({ ownerId, toolIds: toolId }, { $pull: { toolIds: toolId } })
+  return res.modifiedCount
 }
 
 export async function deleteAgent(ownerId: string, agentId: ObjectId) {

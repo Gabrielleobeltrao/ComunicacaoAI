@@ -1,4 +1,6 @@
 import type { Agent } from './agents.js'
+import { getToolsByIds } from './tools.js'
+import { executeToolCall } from './toolExecution.js'
 import type { ResolvedTool } from './agentTools.js'
 import { resolveHttpTool } from './agentTools.js'
 import { getGoogleStatus } from './googleCalendar.js'
@@ -228,10 +230,32 @@ export function builtinAppsCatalog() {
 // unified tool list the reply loop uses. Built-in apps whose account isn't
 // connected are skipped so the model isn't offered a tool that would fail.
 export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<ResolvedTool[]> {
+  // Legacy per-agent HTTP tools, kept working untouched.
   const http = (agent.tools ?? []).map(resolveHttpTool)
 
+  // Reusable Custom Tools: the agent may call ONLY the ones assigned to it, and
+  // getToolsByIds is owner-scoped, so a stale or foreign id resolves to nothing.
+  // Each tool gets its own per-run counter, which is what stops a model from
+  // hammering the same endpoint in a loop.
+  const assigned = await getToolsByIds(ownerId, agent.toolIds ?? [])
+  const custom: ResolvedTool[] = assigned
+    .filter((tool) => tool.enabled)
+    .map((tool) => {
+      let callsSoFar = 0
+      return {
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        run: async (args) => {
+          const outcome = await executeToolCall(tool, args, { callsSoFar })
+          callsSoFar++
+          return { ok: outcome.ok, result: outcome.result }
+        },
+      }
+    })
+
   const enabled = agent.builtinTools ?? []
-  if (enabled.length === 0) return http
+  if (enabled.length === 0) return [...http, ...custom]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')
   const googleConnected = needsGoogle ? (await getGoogleStatus(ownerId)).connected : false
@@ -243,5 +267,5 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
     if (app.connection === 'google' && !googleConnected) continue
     builtins.push(...app.resolve(ownerId, entry.config ?? {}))
   }
-  return [...http, ...builtins]
+  return [...http, ...custom, ...builtins]
 }

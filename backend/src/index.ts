@@ -1,4 +1,7 @@
 import 'dotenv/config'
+import { createTool, deleteTool, getTool, listTools, toPublicTool, ToolValidationError, updateTool } from './tools.js'
+import { executeToolCall } from './toolExecution.js'
+import { pullToolFromAgents } from './agents.js'
 import { embeddedEngineEnabled, startAutomationEngine } from './automations/engine.js'
 import type { EngineHandle } from './automations/engine.js'
 import { createServer } from 'node:http'
@@ -1553,6 +1556,94 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     fromStage: pipelineFromStage,
     toolCalls,
   })
+})
+
+// --- Custom Tools -------------------------------------------------------------
+// Reusable HTTP integrations. Everything is owner-scoped, and a stored credential
+// is never returned: toPublicTool strips it in one place so no route can leak it.
+app.get('/api/tools', requireAuth, async (_req, res) => {
+  const ownerId = res.locals.userId
+  const [tools, agents] = await Promise.all([listTools(ownerId), listAgents(ownerId)])
+  // "Where is this used" comes from the agents themselves, so it can never drift.
+  const usedBy = new Map<string, { _id: string; name: string }[]>()
+  for (const agent of agents) {
+    for (const id of agent.toolIds ?? []) {
+      if (!usedBy.has(id)) usedBy.set(id, [])
+      usedBy.get(id)?.push({ _id: agent._id.toString(), name: agent.name })
+    }
+  }
+  res.json(tools.map((t) => ({ ...toPublicTool(t), usedBy: usedBy.get(t._id.toString()) ?? [] })))
+})
+
+const toolError = (res: Response, error: unknown): boolean => {
+  if (error instanceof ToolValidationError) {
+    res.status(400).json({ error: error.message, field: error.field })
+    return true
+  }
+  return false
+}
+
+app.post('/api/tools', requireAuth, async (req, res) => {
+  try {
+    const tool = await createTool(res.locals.userId, req.body ?? {})
+    res.status(201).json(toPublicTool(tool))
+  } catch (error) {
+    if (!toolError(res, error)) throw error
+  }
+})
+
+app.patch('/api/tools/:toolId', requireAuth, async (req, res) => {
+  const toolId = String(req.params.toolId)
+  if (!ObjectId.isValid(toolId)) {
+    res.status(400).json({ error: 'Invalid tool id' })
+    return
+  }
+  try {
+    const tool = await updateTool(res.locals.userId, new ObjectId(toolId), req.body ?? {})
+    if (!tool) {
+      res.status(404).json({ error: 'Tool not found' })
+      return
+    }
+    res.json(toPublicTool(tool))
+  } catch (error) {
+    if (!toolError(res, error)) throw error
+  }
+})
+
+app.delete('/api/tools/:toolId', requireAuth, async (req, res) => {
+  const toolId = String(req.params.toolId)
+  if (!ObjectId.isValid(toolId)) {
+    res.status(400).json({ error: 'Invalid tool id' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const removed = await deleteTool(ownerId, new ObjectId(toolId))
+  if (!removed) {
+    res.status(404).json({ error: 'Tool not found' })
+    return
+  }
+  // Leave no dangling reference behind: an agent must never carry an id that no
+  // longer resolves.
+  await pullToolFromAgents(ownerId, toolId)
+  res.status(204).end()
+})
+
+// Run the tool once, by hand, with the operator's own arguments. Same executor
+// the agents use — so what is proven here is what will happen in production —
+// and the same masking, so credentials stay invisible even to the owner.
+app.post('/api/tools/:toolId/test', requireAuth, async (req, res) => {
+  const toolId = String(req.params.toolId)
+  if (!ObjectId.isValid(toolId)) {
+    res.status(400).json({ error: 'Invalid tool id' })
+    return
+  }
+  const tool = await getTool(res.locals.userId, new ObjectId(toolId))
+  if (!tool) {
+    res.status(404).json({ error: 'Tool not found' })
+    return
+  }
+  const outcome = await executeToolCall(tool, req.body?.arguments ?? {})
+  res.json({ ok: outcome.ok, result: outcome.result, detail: outcome.detail })
 })
 
 // Preset catalog for the hiring wizard (starting configs — the user edits after).
