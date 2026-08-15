@@ -14,9 +14,27 @@ export function createConnection(): Redis {
 }
 
 let queue: Queue | null = null
+// BullMQ does NOT own a connection instance handed to it, so closing the queue
+// leaves the socket open and the process alive. We keep the reference and quit it.
+let connection: Redis | null = null
 export function getRunQueue(): Queue {
-  if (!queue) queue = new Queue(RUN_QUEUE, { connection: createConnection() })
+  if (!queue) {
+    connection = createConnection()
+    queue = new Queue(RUN_QUEUE, { connection })
+  }
   return queue
+}
+
+// Close the queue, quit its connection and drop the singletons, so nothing holds the
+// event loop open. Needed by anything that must exit cleanly — tests and graceful
+// shutdown alike. Safe to call when nothing was ever opened.
+export async function closeRunQueue(): Promise<void> {
+  const q = queue
+  const c = connection
+  queue = null
+  connection = null
+  if (q) await q.close().catch(() => undefined)
+  if (c) await c.quit().catch(() => c.disconnect())
 }
 
 // Idempotent enqueue: jobId = idempotencyKey, so a duplicate trigger (webhook

@@ -1,59 +1,147 @@
-// Integration test for run idempotency (plan §10.4). GUARDED: it runs only when
-// both MONGODB_URI and REDIS_URL are set (e.g. against compose.dev.yml), and is
-// skipped otherwise — so `npm test` stays green with no infra. Bring infra up
-// and run: MONGODB_URI=... REDIS_URL=... npm test -w backend
-import { test } from 'node:test'
+// INTEGRATION: the automation machinery — run idempotency, the run queue and the
+// scheduler — against a REAL mongod (started here) and a REAL Redis.
+//
+// It brings its own MongoDB, so the only external requirement is Redis. When no
+// Redis answers, the file skips with a message saying exactly what to start,
+// instead of pretending the pipeline is covered.
+//
+// ISOLATION: it always uses a DEDICATED Redis database (index 15) and ignores any
+// ambient REDIS_URL. The queues and the scheduler are global by name, so sharing a
+// database with a running worker would let this file's reconcile wipe real
+// schedules. Point TEST_REDIS_URL somewhere else if 15 is taken.
+import { test, after, before } from 'node:test'
 import assert from 'node:assert/strict'
+import net from 'node:net'
+import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
-const hasInfra = Boolean(process.env.MONGODB_URI && process.env.REDIS_URL)
+const REDIS_URL = process.env.TEST_REDIS_URL ?? 'redis://127.0.0.1:6379/15'
 
-test('same idempotencyKey inserts one run and enqueues one job', { skip: !hasInfra }, async () => {
-  const { ObjectId } = await import('mongodb')
-  const { mongoClient } = await import('../dist/db.js')
-  const { ensureRunIndexes, insertRunIdempotent } = await import('../dist/automations/runRepository.js')
-  const { getRunQueue, enqueueRun } = await import('../dist/automations/queue.js')
+// A plain TCP probe: cheap, and it never leaves a client connected.
+async function redisReachable(url) {
+  const { hostname, port } = new URL(url)
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: hostname || '127.0.0.1', port: Number(port) || 6379 })
+    const done = (ok) => {
+      socket.destroy()
+      resolve(ok)
+    }
+    socket.setTimeout(1500)
+    socket.once('connect', () => done(true))
+    socket.once('error', () => done(false))
+    socket.once('timeout', () => done(false))
+  })
+}
 
+const hasRedis = await redisReachable(REDIS_URL)
+const skip = hasRedis ? false : `Redis não respondeu em ${REDIS_URL} — suba um (docker run -p 6379:6379 redis) para exercitar a fila`
+
+// Never let an ambient value leak in: the isolated database is the whole point.
+process.env.REDIS_URL = REDIS_URL
+
+process.env.MONGODB_URI = await startMongo()
+
+const { ObjectId } = await import('mongodb')
+const { mongoClient, db } = await import('../dist/db.js')
+const { ensureRunIndexes, insertRunIdempotent } = await import('../dist/automations/runRepository.js')
+const { getRunQueue, enqueueRun, closeRunQueue } = await import('../dist/automations/queue.js')
+const { getScheduleQueue, reconcileSchedules, closeScheduleQueue } = await import('../dist/automations/scheduler.js')
+
+// Everything this file creates is namespaced, so a shared Redis is never polluted.
+const OWNER = `itest-${process.pid}`
+const KEY = `${OWNER}-run`
+
+before(async () => {
+  if (skip) return
   await mongoClient.connect()
   await ensureRunIndexes()
+})
 
-  const key = `itest-${Date.now()}`
-  const base = {
-    ownerId: 'itest',
-    buildingId: new ObjectId(),
-    floorId: new ObjectId(),
-    automationId: new ObjectId(),
-    automationVersion: 0,
-    definitionHash: 'h',
-    definitionSnapshot: { trigger: { type: 'manual' }, inputs: [], steps: [], resultFormat: 'markdown', deliveries: [], limits: {} },
-    triggerType: 'manual',
-    triggerPayload: null,
-    idempotencyKey: key,
-    status: 'queued',
-    currentStepId: null,
-    queuedAt: new Date(),
-    startedAt: null,
-    finishedAt: null,
-    cancelRequestedAt: null,
-    usage: { inputTokens: 0, outputTokens: 0 },
-    finalOutput: '',
-    error: null,
+after(async () => {
+  if (hasRedis) {
+    // Safe because this database is exclusive to the test (see ISOLATION above).
+    const runQueue = getRunQueue()
+    await runQueue.remove(KEY).catch(() => undefined)
+    const scheduleQueue = getScheduleQueue()
+    for (const s of await scheduleQueue.getJobSchedulers().catch(() => [])) {
+      await scheduleQueue.removeJobScheduler(s.key).catch(() => undefined)
+    }
+    // Drops the singletons too, so the Redis connections stop holding the process.
+    await closeRunQueue()
+    await closeScheduleQueue()
   }
+  await mongoClient.close().catch(() => undefined)
+  await stopMongo()
+})
 
-  const a = await insertRunIdempotent({ ...base, _id: new ObjectId() })
-  const b = await insertRunIdempotent({ ...base, _id: new ObjectId() })
+const runDoc = (over = {}) => ({
+  _id: new ObjectId(),
+  ownerId: OWNER,
+  buildingId: new ObjectId(),
+  floorId: new ObjectId(),
+  automationId: new ObjectId(),
+  automationVersion: 1,
+  definitionHash: 'h',
+  definitionSnapshot: { trigger: { type: 'manual' }, inputs: [], steps: [], resultFormat: 'markdown', deliveries: [], limits: {} },
+  triggerType: 'manual',
+  triggerPayload: null,
+  idempotencyKey: KEY,
+  status: 'queued',
+  currentStepId: null,
+  queuedAt: new Date(),
+  startedAt: null,
+  finishedAt: null,
+  cancelRequestedAt: null,
+  usage: { inputTokens: 0, outputTokens: 0 },
+  finalOutput: '',
+  error: null,
+  ...over,
+})
+
+test('the same idempotency key inserts ONE run and enqueues ONE job', { skip }, async () => {
+  const a = await insertRunIdempotent(runDoc())
+  const b = await insertRunIdempotent(runDoc())
   assert.equal(a.created, true)
-  assert.equal(b.created, false)
+  assert.equal(b.created, false, 'a redelivered trigger must not create a second run')
   assert.equal(a.run._id.toString(), b.run._id.toString())
 
   const queue = getRunQueue()
-  await enqueueRun(key, a.run._id.toString())
-  await enqueueRun(key, a.run._id.toString())
-  const job = await queue.getJob(key)
+  await enqueueRun(KEY, a.run._id.toString())
+  await enqueueRun(KEY, a.run._id.toString())
+  const job = await queue.getJob(KEY)
   assert.ok(job, 'a job exists for the idempotency key')
+  assert.equal(job.data.runId, a.run._id.toString())
+})
 
-  // cleanup
-  await queue.remove(key)
-  await mongoClient.db().collection('automation_runs').deleteMany({ ownerId: 'itest' })
-  await queue.close()
-  await mongoClient.close()
+test('an ACTIVE schedule automation is registered with the scheduler; a paused one is not', { skip }, async () => {
+  const automations = db.collection('automations')
+  const active = new ObjectId()
+  const paused = new ObjectId()
+  const base = {
+    ownerId: OWNER,
+    buildingId: new ObjectId(),
+    floorId: new ObjectId(),
+    name: 'itest',
+    description: '',
+    trigger: { type: 'schedule', timezone: 'America/Sao_Paulo', cron: '0 7 * * *' },
+    draftDefinition: { trigger: { type: 'schedule', timezone: 'America/Sao_Paulo', cron: '0 7 * * *' }, inputs: [], steps: [], resultFormat: 'markdown', deliveries: [], limits: {} },
+    currentVersion: 1,
+    lastPublishedVersion: 1,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }
+  await automations.insertMany([
+    { ...base, _id: active, status: 'active' },
+    { ...base, _id: paused, status: 'paused' },
+  ])
+
+  await reconcileSchedules()
+  const keys = new Set((await getScheduleQueue().getJobSchedulers()).map((s) => s.key))
+  assert.ok(keys.has(active.toString()), 'an active schedule must be registered — otherwise routines never fire')
+  assert.ok(!keys.has(paused.toString()), 'a paused automation must never be scheduled')
+
+  // Pausing it removes the registration on the next reconcile.
+  await automations.updateOne({ _id: active }, { $set: { status: 'paused' } })
+  await reconcileSchedules()
+  const after = new Set((await getScheduleQueue().getJobSchedulers()).map((s) => s.key))
+  assert.ok(!after.has(active.toString()), 'pausing must unregister the schedule')
 })

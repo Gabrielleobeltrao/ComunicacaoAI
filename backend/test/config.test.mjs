@@ -48,10 +48,13 @@ const PROD_URLS = {
   BETTER_AUTH_URL: 'https://api.comunicacaoai.oneplataforma.com',
   PUBLIC_URL: 'https://api.comunicacaoai.oneplataforma.com',
 }
+// The non-URL variables a production deploy must carry. REDIS_URL belongs here:
+// without it the worker cannot connect and every routine silently stops.
 const PROD_SECRETS = {
   MONGODB_URI: 'mongodb://localhost:27017/comunicacaoai_test',
   BETTER_AUTH_SECRET: 'x'.repeat(40),
   ENCRYPTION_KEY: 'y'.repeat(40),
+  REDIS_URL: 'redis://localhost:6379',
 }
 
 test('production: missing MONGODB_URI fails fast and names the variable', () => {
@@ -94,4 +97,17 @@ test('development: no env needed, falls back to localhost defaults', () => {
   const parsed = JSON.parse(out)
   assert.deepEqual(parsed.origins, ['http://localhost:5173'])
   assert.match(parsed.betterAuthUrl, /^http:\/\/localhost:/)
+})
+
+test('production: missing REDIS_URL fails fast — routines would silently never run', () => {
+  // Everything else present: the API would boot happily while the worker could
+  // never connect, so scheduled automations would disappear without a trace.
+  const { REDIS_URL: _omitted, ...withoutRedis } = PROD_SECRETS
+  const { ok, out } = run({ ...PROD_URLS, ...withoutRedis })
+  assert.equal(ok, false, 'should have thrown')
+  assert.match(out, /REDIS_URL/)
+
+  // With it, the same configuration is accepted.
+  const good = run({ ...PROD_URLS, ...PROD_SECRETS })
+  assert.equal(good.ok, true, good.out)
 })

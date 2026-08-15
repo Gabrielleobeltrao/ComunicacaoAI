@@ -1,6 +1,7 @@
 import { Queue } from 'bullmq'
 import { db } from '../db.js'
 import { createConnection } from './queue.js'
+import type { Redis } from 'ioredis'
 
 // Scheduler reconciliation (plan §10.3). The desired set lives in Mongo (active
 // automations with a schedule trigger); a reconciler mirrors it onto BullMQ Job
@@ -9,9 +10,23 @@ import { createConnection } from './queue.js'
 export const SCHEDULE_QUEUE = 'automation-schedules'
 
 let queue: Queue | null = null
+let connection: Redis | null = null
 export function getScheduleQueue(): Queue {
-  if (!queue) queue = new Queue(SCHEDULE_QUEUE, { connection: createConnection() })
+  if (!queue) {
+    connection = createConnection()
+    queue = new Queue(SCHEDULE_QUEUE, { connection })
+  }
   return queue
+}
+
+// See closeRunQueue: the connection is ours to quit, not BullMQ's.
+export async function closeScheduleQueue(): Promise<void> {
+  const q = queue
+  const c = connection
+  queue = null
+  connection = null
+  if (q) await q.close().catch(() => undefined)
+  if (c) await c.quit().catch(() => c.disconnect())
 }
 
 interface DesiredSchedule {

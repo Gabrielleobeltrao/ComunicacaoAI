@@ -75,6 +75,9 @@ export function validateConfig(): void {
     CLIENT_URL: process.env.CLIENT_URL,
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
     PUBLIC_URL: process.env.PUBLIC_URL,
+    // Without it the API still boots but the worker cannot connect, so routines and
+    // scheduled automations silently never run. Fail the deploy instead.
+    REDIS_URL: process.env.REDIS_URL,
   }
   const missing = Object.entries(required)
     .filter(([, v]) => !v || !v.trim())
