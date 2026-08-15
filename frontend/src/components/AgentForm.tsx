@@ -49,7 +49,7 @@ interface AgentFormProps {
 const SECTION_BLOCKS: Record<string, string[]> = {
   'visao-geral': ['identidade'],
   'como-trabalha': ['ferramentas', 'conhecimento'],
-  avancado: ['metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados'],
+  avancado: ['metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
   // legacy aliases
   essencial: ['identidade'],
   ferramentas: ['ferramentas'],
@@ -215,6 +215,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   const [viewingDocLoading, setViewingDocLoading] = useState(false)
   const [savingDocView, setSavingDocView] = useState(false)
   const [docViewError, setDocViewError] = useState<string | null>(null)
+  // Executable contract (advanced, all optional): the shape a task produces and,
+  // for JSON, the schema it must satisfy. Absent = exactly today's behaviour.
+  const [editDefaultOutputFormat, setEditDefaultOutputFormat] = useState<'' | 'text' | 'markdown' | 'json'>('')
+  const [editOutputJsonSchema, setEditOutputJsonSchema] = useState('')
+  const [editRequireGrounding, setEditRequireGrounding] = useState(false)
+  const [schemaError, setSchemaError] = useState<string | null>(null)
 
   useEffect(() => {
     async function loadProviders() {
@@ -272,6 +278,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       setEditPromptCaching(agent.promptCaching ?? true)
       setEditMetricProfile(agent.metricProfile ?? 'auto')
       setEditTools(agent.tools ?? [])
+    setEditDefaultOutputFormat(agent.defaultOutputFormat ?? '')
+    setEditOutputJsonSchema(agent.outputJsonSchema ? JSON.stringify(agent.outputJsonSchema, null, 2) : '')
+    setEditRequireGrounding(agent.requireGrounding === true)
       setEditBuiltinTools(agent.builtinTools ?? [])
       setPendingDocs([])
       loadDocuments(agent._id)
@@ -410,6 +419,24 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       metricProfile: editMetricProfile,
       tools: editTools,
       builtinTools: editBuiltinTools,
+      // Optional and only sent when set, so an agent that never opened this block is
+      // saved exactly as it always was.
+      defaultOutputFormat: editDefaultOutputFormat || null,
+      outputJsonSchema: parseSchemaField(editOutputJsonSchema),
+      requireGrounding: editRequireGrounding,
+    }
+  }
+
+  // The typed schema → what the API receives. Invalid JSON keeps the previous value
+  // out of the payload instead of sending something the backend would reject.
+  function parseSchemaField(raw: string): Record<string, unknown> | null {
+    const text = raw.trim()
+    if (!text) return null
+    try {
+      const parsed = JSON.parse(text)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
+    } catch {
+      return null
     }
   }
 
@@ -1140,6 +1167,65 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                 navegador. Com "sempre nova", cada vez que o chat é aberto começa do zero.
               </p>
             </div>
+            </div>
+          </CollapsibleBlock>
+        )}
+
+        {showBlock('contrato') && (
+          <CollapsibleBlock title="Contrato de saída" showHeader={stacked}>
+            <div className="space-y-3 rounded-lg border border-(--border-subtle) p-3" data-testid="output-contract-block">
+              <p className="text-sm text-(--text-muted)">
+                Para tarefas automáticas (rotinas, gatilhos e delegações). Deixe em branco para manter o comportamento atual.
+              </p>
+              <div>
+                <label className="mb-1 block text-sm text-(--text-muted)">Formato padrão do resultado</label>
+                <select
+                  value={editDefaultOutputFormat}
+                  onChange={(e) => setEditDefaultOutputFormat(e.target.value as '' | 'text' | 'markdown' | 'json')}
+                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                  data-testid="default-output-format"
+                >
+                  <option value="">Quem pedir decide (padrão)</option>
+                  <option value="text">Texto</option>
+                  <option value="markdown">Markdown</option>
+                  <option value="json">JSON</option>
+                </select>
+              </div>
+              {editDefaultOutputFormat === 'json' && (
+                <div>
+                  <label className="mb-1 block text-sm text-(--text-muted)">Estrutura do JSON (JSON Schema, opcional)</label>
+                  <textarea
+                    value={editOutputJsonSchema}
+                    onChange={(e) => {
+                      setEditOutputJsonSchema(e.target.value)
+                      setSchemaError(e.target.value.trim() && !parseSchemaField(e.target.value) ? 'Isso não é um objeto JSON válido.' : null)
+                    }}
+                    rows={5}
+                    spellCheck={false}
+                    placeholder={'{\n  "type": "object",\n  "properties": { "titulo": { "type": "string" } },\n  "required": ["titulo"]\n}'}
+                    className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 font-mono text-xs outline-none focus:border-(--border-focus)"
+                    data-testid="output-json-schema"
+                  />
+                  {schemaError ? (
+                    <p className="mt-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid="schema-error">
+                      {schemaError}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-(--text-faint)">
+                      A resposta é validada. Se não bater, o agente tem UMA chance de corrigir; persistindo, a execução falha em vez de entregar algo fora do formato.
+                    </p>
+                  )}
+                </div>
+              )}
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" checked={editRequireGrounding} onChange={(e) => setEditRequireGrounding(e.target.checked)} data-testid="require-grounding" />
+                <span>
+                  Responder apenas com base no conhecimento
+                  <span className="block text-xs text-(--text-faint)">
+                    Se a base não puder ser consultada ou nada relevante for encontrado, a execução falha em vez de responder sem fundamento.
+                  </span>
+                </span>
+              </label>
             </div>
           </CollapsibleBlock>
         )}

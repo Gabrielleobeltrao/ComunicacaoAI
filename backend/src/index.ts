@@ -1,6 +1,8 @@
 import 'dotenv/config'
-import { embeddedEngineEnabled, startAutomationEngine } from './automations/engine.js'
-import type { EngineHandle } from './automations/engine.js'
+import { createTool, deleteTool, getTool, listTools, toPublicTool, ToolValidationError, UNSAFE_METHODS, updateTool } from './tools.js'
+import { executeToolCall } from './toolExecution.js'
+import { MASKED_HEADER_VALUE, pullToolFromAgents, toPublicAgent } from './agents.js'
+import { readiness, startEmbeddedEngine, stopEmbeddedEngine } from './automations/engine.js'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import cors from 'cors'
@@ -191,6 +193,11 @@ import { buildingRouter } from './routes/buildingRoutes.js'
 import { floorRouter } from './routes/floorRoutes.js'
 import { automationRouter } from './routes/automationRoutes.js'
 import { runRouter } from './routes/runRoutes.js'
+import { executionRouter } from './routes/executionRoutes.js'
+import { ensureExecutionIndexes } from './automations/executionCenter.js'
+import { logRouter } from './routes/logRoutes.js'
+import { auditEntity, auditRequests } from './routes/auditMiddleware.js'
+import { ensureAuditIndexes } from './audit.js'
 import { agentRoutineRouter } from './routes/agentRoutineRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
@@ -232,6 +239,11 @@ app.use(
 // Twilio posts its webhooks as application/x-www-form-urlencoded.
 app.use(express.urlencoded({ extended: false }))
 
+// Every change to the account is recorded ONCE, here: the middleware sees the
+// request line and the response status, never the body. It also stamps the request
+// id that correlates whatever a single request produced.
+app.use(auditRequests)
+
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
   cors: { origin: config.clientOrigins, credentials: true },
@@ -268,15 +280,21 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
-// Readiness: the process can serve traffic — MongoDB answers a ping. 503 until
-// the database is reachable; never leaks any data.
+// Readiness: this instance can do its whole job — MongoDB answers a ping AND the
+// automation engine is running here (when it is meant to be). A backend that serves
+// HTTP with a dead engine accepts routines it will never execute, so it must not
+// report ready. With EMBEDDED_WORKER=false the engine lives in its own process and
+// readiness only covers the database. 503 otherwise; never leaks any data.
 app.get('/api/ready', async (_req, res) => {
-  try {
-    await mongoClient.db().command({ ping: 1 })
-    res.json({ status: 'ready' })
-  } catch {
-    res.status(503).json({ status: 'unavailable' })
-  }
+  const mongoOk = await mongoClient
+    .db()
+    .command({ ping: 1 })
+    .then(
+      () => true,
+      () => false,
+    )
+  const { code, body } = readiness(mongoOk)
+  res.status(code).json(body)
 })
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -309,6 +327,12 @@ app.use('/api/building', requireAuth, buildingRouter)
 app.use('/api/floors', requireAuth, floorRouter)
 app.use('/api/automations', requireAuth, automationRouter)
 app.use('/api/runs', requireAuth, runRouter)
+// Central de execuções: one owner-scoped read model over scheduled work, armed
+// triggers, work in flight and history. Read-only — it starts nothing.
+app.use('/api/executions', requireAuth, executionRouter)
+// Logs e auditoria: read-only timelines (executions + changes). No write route
+// exists here on purpose — an audit trail that can be edited is not one.
+app.use('/api/logs', requireAuth, logRouter)
 // Agent routines + history (agent-owned scheduled automations). Sub-paths that this
 // router doesn't handle fall through to the inline /api/agents/:agentId routes below.
 app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
@@ -404,7 +428,7 @@ function isValidWebhookUrl(value: unknown): value is string {
 
 // Validate + normalize the agent's custom HTTP tools from the request body.
 // Returns { tools: undefined } when the field wasn't sent (leave as-is).
-function parseTools(raw: unknown): { tools?: AgentTool[]; error?: string } {
+function parseTools(raw: unknown, existing: AgentTool[] = []): { tools?: AgentTool[]; error?: string } {
   if (raw === undefined) return { tools: undefined }
   if (!Array.isArray(raw)) return { error: 'tools must be a list' }
   if (raw.length > MAX_TOOLS) return { error: `An agent can have at most ${MAX_TOOLS} tools` }
@@ -432,7 +456,13 @@ function parseTools(raw: unknown): { tools?: AgentTool[]; error?: string } {
         if (typeof ho.key !== 'string' || typeof ho.value !== 'string') {
           return { error: `Tool "${name}": header key/value must be text` }
         }
-        if (ho.key.trim()) headers.push({ key: ho.key.trim(), value: ho.value })
+        if (ho.key.trim()) {
+          // The API never returns a legacy header value, so the browser can only
+          // send back the mask: that means "leave it as it is", never "erase it".
+          const key = ho.key.trim()
+          const stored = existing.find((t) => t.name === name)?.headers?.find((h) => h.key === key)?.value
+          headers.push({ key, value: ho.value === MASKED_HEADER_VALUE && stored !== undefined ? stored : ho.value })
+        }
       }
     }
 
@@ -649,6 +679,7 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     sectorId: sectorObjectId,
     agentId: sectorObjectId ? null : agentObjectId,
   })
+  auditEntity(res, { id: widget._id.toString(), label: widget.name })
   res.status(201).json(widget)
 })
 
@@ -992,6 +1023,7 @@ app.post('/api/sectors', requireAuth, async (req, res) => {
   const sectorColor = typeof color === 'string' && color.trim() ? color.trim() : DEFAULT_SECTOR_COLOR
   const sector = await createSector(res.locals.userId, officeId, name, sectorColor, parsedMode, parsed ?? [], team)
   await enforceSingleMembership(res.locals.userId, sector._id, (parsed ?? []).map((m) => m.agentId))
+  auditEntity(res, { id: sector._id.toString(), label: sector.name, floorId: sector.officeId?.toString() })
   res.status(201).json(serializeSector(sector as WithId<Sector>))
 })
 
@@ -1555,6 +1587,102 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
   })
 })
 
+// --- Custom Tools -------------------------------------------------------------
+// Reusable HTTP integrations. Everything is owner-scoped, and a stored credential
+// is never returned: toPublicTool strips it in one place so no route can leak it.
+app.get('/api/tools', requireAuth, async (_req, res) => {
+  const ownerId = res.locals.userId
+  const [tools, agents] = await Promise.all([listTools(ownerId), listAgents(ownerId)])
+  // "Where is this used" comes from the agents themselves, so it can never drift.
+  const usedBy = new Map<string, { _id: string; name: string }[]>()
+  for (const agent of agents) {
+    for (const id of agent.toolIds ?? []) {
+      if (!usedBy.has(id)) usedBy.set(id, [])
+      usedBy.get(id)?.push({ _id: agent._id.toString(), name: agent.name })
+    }
+  }
+  res.json(tools.map((t) => ({ ...toPublicTool(t), usedBy: usedBy.get(t._id.toString()) ?? [] })))
+})
+
+const toolError = (res: Response, error: unknown): boolean => {
+  if (error instanceof ToolValidationError) {
+    res.status(400).json({ error: error.message, field: error.field })
+    return true
+  }
+  return false
+}
+
+app.post('/api/tools', requireAuth, async (req, res) => {
+  try {
+    const tool = await createTool(res.locals.userId, req.body ?? {})
+    auditEntity(res, { id: tool._id.toString(), label: tool.name })
+    res.status(201).json(toPublicTool(tool))
+  } catch (error) {
+    if (!toolError(res, error)) throw error
+  }
+})
+
+app.patch('/api/tools/:toolId', requireAuth, async (req, res) => {
+  const toolId = String(req.params.toolId)
+  if (!ObjectId.isValid(toolId)) {
+    res.status(400).json({ error: 'Invalid tool id' })
+    return
+  }
+  try {
+    const tool = await updateTool(res.locals.userId, new ObjectId(toolId), req.body ?? {})
+    if (!tool) {
+      res.status(404).json({ error: 'Tool not found' })
+      return
+    }
+    res.json(toPublicTool(tool))
+  } catch (error) {
+    if (!toolError(res, error)) throw error
+  }
+})
+
+app.delete('/api/tools/:toolId', requireAuth, async (req, res) => {
+  const toolId = String(req.params.toolId)
+  if (!ObjectId.isValid(toolId)) {
+    res.status(400).json({ error: 'Invalid tool id' })
+    return
+  }
+  const ownerId = res.locals.userId
+  const removed = await deleteTool(ownerId, new ObjectId(toolId))
+  if (!removed) {
+    res.status(404).json({ error: 'Tool not found' })
+    return
+  }
+  // Leave no dangling reference behind: an agent must never carry an id that no
+  // longer resolves.
+  await pullToolFromAgents(ownerId, toolId)
+  res.status(204).end()
+})
+
+// Run the tool once, by hand, with the operator's own arguments. Same executor
+// the agents use — so what is proven here is what will happen in production —
+// and the same masking, so credentials stay invisible even to the owner.
+app.post('/api/tools/:toolId/test', requireAuth, async (req, res) => {
+  const toolId = String(req.params.toolId)
+  if (!ObjectId.isValid(toolId)) {
+    res.status(400).json({ error: 'Invalid tool id' })
+    return
+  }
+  const tool = await getTool(res.locals.userId, new ObjectId(toolId))
+  if (!tool) {
+    res.status(404).json({ error: 'Tool not found' })
+    return
+  }
+  // The owner may test any method by hand — but one that can change something on
+  // the far side only with an explicit confirmation, so a stray click never fires a
+  // real POST/DELETE at a live system.
+  if (UNSAFE_METHODS.includes(tool.method) && req.body?.confirm !== true) {
+    res.status(400).json({ error: `Este teste executa um ${tool.method} real no sistema de destino. Confirme para continuar.`, field: 'confirm' })
+    return
+  }
+  const outcome = await executeToolCall(tool, req.body?.arguments ?? {})
+  res.json({ ok: outcome.ok, result: outcome.result, detail: outcome.detail })
+})
+
 // Preset catalog for the hiring wizard (starting configs — the user edits after).
 app.get('/api/agent-presets', requireAuth, (_req, res) => {
   res.json(AGENT_PRESET_SPECS)
@@ -1707,13 +1835,15 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     builtinTools: parsedBuiltins,
     ...modelFields,
   })
-  res.status(201).json(agent)
+  // Name the new agent in the audit trail (id + name only — never the body).
+  auditEntity(res, { id: agent._id.toString(), label: agent.name, floorId: agent.officeId?.toString() })
+  res.status(201).json(toPublicAgent(agent))
 })
 
 app.get('/api/agents', requireAuth, async (req, res) => {
   const floorId = await scopedFloorId(res.locals.userId, req.query.floorId)
   const agents = await listAgents(res.locals.userId, floorId)
-  res.json(agents.map((a) => ({ ...a, floorId: a.officeId?.toString() ?? null })))
+  res.json(agents.map((a) => toPublicAgent({ ...a, floorId: a.officeId?.toString() ?? null })))
 })
 
 // Per-agent roster stats for the Agentes cards (conversas/leads/atendimento).
@@ -1955,7 +2085,10 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
   if (typeof cheapAuxModel === 'boolean') updates.cheapAuxModel = cheapAuxModel
   if (typeof promptCaching === 'boolean') updates.promptCaching = promptCaching
   if (tools !== undefined) {
-    const { tools: parsedTools, error } = parseTools(tools)
+    // The current tools are needed to restore a header value the browser could only
+    // have received masked.
+    const current = await getAgentById(res.locals.userId, new ObjectId(agentId))
+    const { tools: parsedTools, error } = parseTools(tools, current?.tools ?? [])
     if (error) {
       res.status(400).json({ error })
       return
@@ -2006,7 +2139,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Agent not found' })
     return
   }
-  res.json(agent)
+  res.json(toPublicAgent(agent))
 })
 
 app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
@@ -2161,7 +2294,7 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   // "Entregas" is only offered when this agent really sent something.
   const agentHasDeliveries = (await sentDeliveriesByAgent(ownerId)).has(agentId)
   res.json({
-    agent: { ...agent, floorId: agent.officeId?.toString() ?? null },
+    agent: toPublicAgent({ ...agent, floorId: agent.officeId?.toString() ?? null }),
     stats,
     // KPI availability for the "Métrica do card" picker (data-source aware) and the
     // currently-resolved card metric.
@@ -3711,6 +3844,13 @@ async function start() {
   ensureKnowledgeIndexes().catch((error) => {
     console.error('ensureKnowledgeIndexes failed:', error)
   })
+  // Indexes behind the Central de execuções listings.
+  ensureExecutionIndexes().catch((error) => {
+    console.error('ensureExecutionIndexes failed:', error)
+  })
+  ensureAuditIndexes().catch((error) => {
+    console.error('ensureAuditIndexes failed:', error)
+  })
   // Idempotent, non-destructive: stamps ownerType/ownerId on knowledge written
   // before sectors could own a base. Safe to run on every boot.
   backfillKnowledgeOwners()
@@ -3722,14 +3862,9 @@ async function start() {
   // The automation engine runs INSIDE the API by default: one deployable service,
   // and no way to deploy a system whose routines silently never fire. Set
   // EMBEDDED_WORKER=false to run `npm run start:worker` as a separate process.
-  if (embeddedEngineEnabled()) {
-    automationEngine = await startAutomationEngine().catch((error) => {
-      console.error('Automation engine failed to start:', error)
-      return null
-    })
-  } else {
-    console.log('Automation engine disabled here (EMBEDDED_WORKER=false) — run npm run start:worker')
-  }
+  // A failure here is NEVER swallowed: it is logged and it keeps /api/ready red, so
+  // an instance that cannot run routines never takes traffic as if it could.
+  await startEmbeddedEngine()
 
   httpServer.listen(port, () => {
     console.log(`Backend listening on port ${port} (${config.nodeEnv})`)
@@ -3738,24 +3873,26 @@ async function start() {
 
 // Graceful shutdown: stop accepting connections, close Socket.IO, then Mongo, so
 // SIGTERM from the orchestrator drains cleanly instead of a hard kill.
-// Held so shutdown can drain in-flight automation runs before closing MongoDB.
-let automationEngine: EngineHandle | null = null
-
 let shuttingDown = false
 async function shutdown(signal: string) {
   if (shuttingDown) return
   shuttingDown = true
-  console.log(`Received ${signal}, shutting down gracefully...`)
+  console.log(`Received ${signal}, shutting down gracefully (up to ${config.shutdownTimeoutMs}ms)...`)
+  // Emergency brake, deliberately below the orchestrator's stop_grace_period. If it
+  // ever fires, in-flight runs stay RECOVERABLE: they keep their lease, it expires,
+  // and another instance reclaims them — accounting is keyed per attempt, so a
+  // reclaim never charges twice.
   const forced = setTimeout(() => {
     console.error('Shutdown timed out — forcing exit')
     process.exit(1)
-  }, 10_000)
+  }, config.shutdownTimeoutMs)
   forced.unref()
   try {
     io.close()
     await new Promise<void>((resolve) => httpServer.close(() => resolve()))
-    // Stop polling and let running automations finish before the database goes.
-    if (automationEngine) await automationEngine.stop()
+    // Stop claiming new runs and let the in-flight ones finish (their leases are
+    // renewed meanwhile, so nothing steals them) before the database goes.
+    await stopEmbeddedEngine()
     await mongoClient.close()
     console.log('Shutdown complete')
     process.exit(0)

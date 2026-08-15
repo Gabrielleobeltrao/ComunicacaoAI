@@ -16,6 +16,9 @@ export const NAV: NavLink[] = [
   // as Rotinas, so there is no standalone Automações nav entry.
   { to: '/agents', label: 'Agentes', icon: 'users-round' },
   { to: '/setores', label: 'Setores', icon: 'network' },
+  { to: '/tools', label: 'Ferramentas', icon: 'wrench' },
   { to: '/widgets', label: 'Canais', icon: 'share-2' },
   { to: '/chats', label: 'Conversas', icon: 'message-circle' },
+  // Not a builder: one place to SEE the automatic work the agents already do.
+  { to: '/executions', label: 'Execuções', icon: 'activity' },
 ]

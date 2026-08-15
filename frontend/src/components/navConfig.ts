@@ -5,8 +5,10 @@ import type { FeatureFlags } from '../featureFlags'
 // drawer and bottom bar all derive from this — never a raw NAV.map per surface.
 export type NavScope = 'general' | 'floor' | 'communication'
 // Visual grouping in the rail/drawer (finer than scope). Automation is NOT a group:
-// scheduled work lives inside each agent as Rotinas, never as a standalone surface.
-export type NavGroup = 'operation' | 'communication'
+// scheduled work is CREATED inside each agent as Rotinas/Gatilhos, never in a
+// standalone builder. 'control' is the opposite direction — one building-wide place
+// to SEE that work: what is scheduled, armed, running and done.
+export type NavGroup = 'operation' | 'communication' | 'control'
 
 export interface NavItemDef {
   key: string
@@ -37,16 +39,20 @@ export const NAV_V2: NavItemDef[] = [
   { key: 'agents', label: 'Agentes', icon: 'users-round', scope: 'floor', group: 'operation', path: (f) => floorPath(f, '/agents', '/agents'), activePrefixes: (f) => [floorPath(f, '/agents', '/agents')], mobilePrimary: true },
   { key: 'channels', label: 'Canais', icon: 'share-2', scope: 'communication', group: 'communication', path: () => '/widgets', activePrefixes: () => ['/widgets'] },
   { key: 'conversations', label: 'Conversas', icon: 'message-circle', scope: 'communication', group: 'communication', path: () => '/chats', activePrefixes: () => ['/chats'] },
+  // Building-wide observability over the agents' automatic work. It is a control
+  // surface, not an editor: every row links back to the agent that owns the work.
+  { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
 ]
 
 export function navItemsFor(_floorId: string | null): NavItemDef[] {
   return NAV_V2.filter((i) => !i.featureFlag || featureFlags[i.featureFlag])
 }
 
-const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'communication']
+const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'communication', 'control']
 const NAV_GROUP_LABEL: Record<NavGroup, string> = {
   operation: 'ANDAR',
   communication: 'COMUNICAÇÃO',
+  control: 'CONTROLE',
 }
 
 // Ordered, non-empty nav groups for the rail/drawer. The operation group shows the

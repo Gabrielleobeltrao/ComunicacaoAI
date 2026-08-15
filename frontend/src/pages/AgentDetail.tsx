@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AgentToolsPicker } from '../components/AgentToolsPicker'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
 import { AgentActivations, AgentHistoryPanel, AgentRoutines } from '../components/AgentWorkAreas'
+import { AgentEventTriggers } from '../components/AgentEventTriggers'
 import { CollaborationEditor } from '../components/CollaborationEditor'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
@@ -532,6 +534,9 @@ export function AgentDetail() {
                     <TriggersPanel overview={overview} onFixed={load} />
                     <TeamsPanel overview={overview} fid={fid} />
                     <AgentRoutines key={`${agent._id}:routines`} agent={agent} />
+                    {/* The other half of "what sets it in motion": an endpoint another
+                        system calls. Same agent-native shape as Rotinas. */}
+                    <AgentEventTriggers key={`${agent._id}:triggers`} agent={agent} />
                     <AgentActivations key={`${agent._id}:activations`} agent={agent} />
                     {/* The pendency "sem colaboradores" is solved right here — the
                         checklist and the readiness card link straight to it. */}
@@ -546,6 +551,13 @@ export function AgentDetail() {
                       </div>
                     ) : null}
                     <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} availableMetrics={overview.availableMetrics} />
+                    {/* Which reusable Custom Tools this agent may call. Assignment
+                        IS the permission — the backend refuses anything not here. */}
+                    {active === 'como-trabalha' ? (
+                      <div style={{ marginTop: 20 }}>
+                        <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
+                      </div>
+                    ) : null}
                     {active === 'visao-geral' ? (
                       <div style={{ marginTop: 20 }}>
                         <DangerZone

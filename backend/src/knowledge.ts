@@ -1,5 +1,8 @@
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
+// Re-exported so every caller keeps importing it from here; it lives apart because
+// the routine step needs it without pulling in the database.
+export { buildRetrievalQuery } from './retrievalQuery.js'
 import { embedText, embedTexts } from './voyage.js'
 
 // Curated knowledge base (RAG) shared by agents AND sectors. There is ONE store:
@@ -313,6 +316,19 @@ export interface KnowledgeHit {
   score: number
   ownerType: KnowledgeOwnerType
   ownerId: string
+  // Provenance, so an answer can cite where a passage came from. Safe by shape: an
+  // id and a short title, both from the owner's own documents.
+  documentId?: string
+  title?: string
+}
+
+// Where a passage came from. Never crosses accounts: the hits it is built from are
+// already restricted to owner-resolved bases.
+export interface KnowledgeSource {
+  documentId: string | null
+  title: string | null
+  ownerType: KnowledgeOwnerType
+  ownerId: string
 }
 
 // Vector search across one or more owners (an agent plus, when the execution runs in
@@ -345,8 +361,14 @@ export async function searchKnowledgeForOwners(owners: KnowledgeOwner[], query: 
           score: { $meta: 'vectorSearchScore' },
           ownerType: { $ifNull: ['$ownerType', 'agent'] },
           ownerId: { $toString: { $ifNull: ['$ownerId', '$agentId'] } },
+          documentId: { $toString: '$documentId' },
         },
       },
+      // The document's title, for provenance. A lookup bounded to the page of hits,
+      // and the base filter above already restricted them to this owner's chunks.
+      { $lookup: { from: 'knowledge_documents', localField: 'documentId', foreignField: '_id', as: 'doc' } },
+      { $set: { title: { $ifNull: [{ $first: '$doc.title' }, null] } } },
+      { $unset: 'doc' },
     ])
     .toArray()
 }
@@ -359,24 +381,38 @@ export function searchKnowledge(agentId: ObjectId, query: string, limit = 5) {
 // env so it can be tuned without a deploy of new code.
 export const RETRIEVAL_TOP_K = Number(process.env.KNOWLEDGE_TOP_K ?? 6)
 export const RETRIEVAL_CHAR_BUDGET = Number(process.env.KNOWLEDGE_CHAR_BUDGET ?? 6000)
+// Relevance floor. A passage the vector search ranks below this is NOT context, it is
+// noise that would be presented to the model as if it were curated knowledge. 0
+// keeps the previous behaviour for an install that wants it.
+export const RETRIEVAL_MIN_SCORE = Number(process.env.KNOWLEDGE_MIN_SCORE ?? 0.5)
 
 // Pure: merge hits from several owners by relevance, drop duplicates (the same
 // passage curated in both bases) and cut at top-K / the character budget. No LLM call
 // — ranking is the vector score only.
-export function combineKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number; charBudget?: number } = {}): string[] {
+export function combineKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number; charBudget?: number; minScore?: number } = {}): string[] {
+  return selectKnowledgeHits(hits, opts).map((hit) => (hit.content ?? '').trim())
+}
+
+// The selection itself, keeping the hit (so provenance survives): relevance floor,
+// then dedup, then top-K within the character budget.
+export function selectKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number; charBudget?: number; minScore?: number } = {}): KnowledgeHit[] {
   const topK = opts.topK ?? RETRIEVAL_TOP_K
   const charBudget = opts.charBudget ?? RETRIEVAL_CHAR_BUDGET
+  const minScore = opts.minScore ?? RETRIEVAL_MIN_SCORE
   const seen = new Set<string>()
-  const out: string[] = []
+  const out: KnowledgeHit[] = []
   let used = 0
   for (const hit of [...hits].sort((a, b) => b.score - a.score)) {
     const content = (hit.content ?? '').trim()
     if (!content) continue
+    // Below the floor it never reaches the prompt: a weak match presented as curated
+    // knowledge is worse than no knowledge at all.
+    if (typeof hit.score === 'number' && hit.score < minScore) continue
     const key = content.replace(/\s+/g, ' ').toLowerCase()
     if (seen.has(key)) continue // same passage from agent + sector base
     if (used + content.length > charBudget) continue
     seen.add(key)
-    out.push(content)
+    out.push({ ...hit, content })
     used += content.length
     if (out.length >= topK) break
   }
@@ -389,22 +425,52 @@ export function combineKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number
 // `verifiedSectorId` MUST come from an owner-scoped resolution (resolveOwnedSectorId
 // or a sector loaded through getSectorById): this function does not — and cannot —
 // check ownership, so passing a raw client-supplied id here is a bug.
+// What happened to the grounding, in a word. Recorded as telemetry and, when the
+// caller requires grounding, the difference between running and refusing.
+//   ok          — passages above the floor were found;
+//   empty       — the bases answered, and nothing was relevant enough;
+//   no_base     — there was nothing to search;
+//   unavailable — embedding/vector search FAILED. Never confused with 'empty': the
+//                 model must not be told "there is no knowledge" when the truth is
+//                 "we could not look".
+export type GroundingStatus = 'ok' | 'empty' | 'no_base' | 'unavailable'
+
+export interface RetrievalResult {
+  context: string[]
+  sources: KnowledgeSource[]
+  status: GroundingStatus
+  failed: boolean
+}
+
 export async function retrieveContext(
   agentIds: ObjectId | ObjectId[],
   query: string,
-  opts: { verifiedSectorId?: ObjectId | null; topK?: number; charBudget?: number } = {},
-): Promise<{ context: string[]; failed: boolean }> {
+  opts: { verifiedSectorId?: ObjectId | null; topK?: number; charBudget?: number; minScore?: number } = {},
+): Promise<RetrievalResult> {
   const ids = Array.isArray(agentIds) ? agentIds : [agentIds]
   const owners: KnowledgeOwner[] = ids.map((id) => ({ ownerType: 'agent' as const, ownerId: id }))
   // The sector base joins ONLY with an explicit sector context — never implied by
   // the agent's home sector.
   if (opts.verifiedSectorId) owners.push({ ownerType: 'sector', ownerId: opts.verifiedSectorId })
-  if (owners.length === 0) return { context: [], failed: false }
+  if (owners.length === 0 || !query.trim()) return { context: [], sources: [], status: 'no_base', failed: false }
   try {
     const hits = await searchKnowledgeForOwners(owners, query, Math.max(opts.topK ?? RETRIEVAL_TOP_K, 5) * owners.length)
-    return { context: combineKnowledgeHits(hits, opts), failed: false }
+    const selected = selectKnowledgeHits(hits, opts)
+    return {
+      context: selected.map((hit) => hit.content),
+      sources: selected.map((hit) => ({
+        documentId: hit.documentId ?? null,
+        // Short by construction: a title is a label, not a document.
+        title: hit.title ? String(hit.title).slice(0, 120) : null,
+        ownerType: hit.ownerType,
+        ownerId: hit.ownerId,
+      })),
+      status: selected.length ? 'ok' : 'empty',
+      failed: false,
+    }
   } catch (error) {
-    console.error('knowledge retrieval failed (continuing without context):', (error as Error).message)
-    return { context: [], failed: true }
+    // A failure NEVER becomes invented context, and never reads as "no knowledge".
+    console.error('knowledge retrieval failed:', (error as Error).message)
+    return { context: [], sources: [], status: 'unavailable', failed: true }
   }
 }

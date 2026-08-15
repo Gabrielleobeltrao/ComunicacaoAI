@@ -94,10 +94,19 @@ export interface Automation {
   name: string
   description: string
   status: AutomationStatus
+  // The DRAFT's trigger — what the editor shows. Never what the scheduler reads.
   trigger: AutomationTrigger
   draftDefinition: AutomationDefinition
   currentVersion: number
   lastPublishedVersion: number | null
+  // The trigger of the last published version: the only one allowed to fire.
+  // Absent on automations published before this field existed (backfilled by the
+  // scheduler); null when nothing is published or the version row is gone.
+  publishedTrigger?: AutomationTrigger | null
+  // Next fire instant for a published schedule. Owned by the scheduler; cleared on
+  // publish when the cron/timezone/type changed, so the old time cannot fire once
+  // more after the change.
+  nextRunAt?: Date | null
   // Webhook trigger: hard-to-guess public key + encrypted signing secret.
   webhookPublicKey?: string
   webhookSecretEncrypted?: string

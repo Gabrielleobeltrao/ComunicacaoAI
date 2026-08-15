@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { LOCALE_LABEL, LOCALES, useI18n } from '../i18n'
 import type { ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { ApiKeysPanel, GoogleIntegration, MonthlyCapField } from '../components/ApiKeySettings'
@@ -102,11 +103,34 @@ export function Settings() {
     navigate('/login')
   }
 
+  const { locale, setLocale, t } = useI18n()
   const memberSince = formatDate(session?.user.createdAt)
 
   return (
     <AppLayout current="/settings" title="Configurações">
       <div className="max-w-3xl space-y-10">
+        <Section title={t('common.language')}>
+          <div className="flex flex-wrap gap-2 rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4" data-testid="locale-switcher">
+            {LOCALES.map((code) => (
+              <button
+                key={code}
+                type="button"
+                onClick={() => setLocale(code)}
+                aria-pressed={locale === code}
+                className="rounded-lg border px-3 py-2 text-sm"
+                style={{
+                  borderColor: locale === code ? 'var(--intent-brand)' : 'var(--border-strong)',
+                  background: locale === code ? 'var(--surface-sunken)' : 'transparent',
+                  fontWeight: locale === code ? 700 : 500,
+                  cursor: 'pointer',
+                }}
+              >
+                {LOCALE_LABEL[code]}
+              </button>
+            ))}
+          </div>
+        </Section>
+
         <Section title="Conta">
           <div className="space-y-3 rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
             <div>
@@ -145,6 +169,16 @@ export function Settings() {
             <SummaryCard to="/setores" label="Setores" value={sectorCount ?? 0} />
             <SummaryCard to="/widgets" label="Widgets" value={stats?.widgets ?? 0} />
           </div>
+        </Section>
+
+        <Section title="Logs e auditoria" description="Tudo o que foi executado e tudo o que foi alterado nesta conta, com quem fez e quando.">
+          <Link
+            to="/settings/logs"
+            className="inline-flex items-center gap-2 rounded-xl border border-(--border-subtle) bg-(--surface-card) px-4 py-3 text-sm transition hover:border-(--border-strong)"
+            data-testid="settings-logs-link"
+          >
+            Abrir logs e auditoria
+          </Link>
         </Section>
 
         <Section title="Chaves de API">

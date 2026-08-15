@@ -22,6 +22,11 @@ export interface AutomationRun {
   triggerType: TriggerType
   triggerPayload: unknown
   idempotencyKey: string
+  // Correlates this execution with the request (or the fire) that started it, so a
+  // run in the log can be traced back to the change beside it. Safe by construction:
+  // a request id for manual runs, and a derived, payload-free string for the
+  // scheduler and the webhook receiver. Optional — runs created before it exist.
+  requestId?: string | null
   status: RunStatus
   currentStepId: string | null
   queuedAt: Date

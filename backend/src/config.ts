@@ -43,6 +43,11 @@ export const config = {
   publicUrl: urlVar('PUBLIC_URL', `http://localhost:${port}`),
   // Better Auth's public base origin (used to derive the Google OAuth callback).
   betterAuthUrl: urlVar('BETTER_AUTH_URL', `http://localhost:${port}`),
+  // How long SIGTERM may take before the process forces itself out. It MUST stay
+  // below the orchestrator's stop_grace_period (30s in compose and Coolify), so the
+  // engine finishes draining its in-flight runs instead of being SIGKILLed
+  // mid-execution. Raise both together, never just this one.
+  shutdownTimeoutMs: Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 25_000),
 } as const
 
 // Backwards-compatible canonical client origin (first in the allowlist).
@@ -73,6 +78,11 @@ export function validateConfig(): void {
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
     PUBLIC_URL: process.env.PUBLIC_URL,
   }
+  // A test-only escape hatch must never be live in production.
+  if (process.env.ALLOW_LOOPBACK_HTTP_TARGETS === '1') {
+    throw new Error('ALLOW_LOOPBACK_HTTP_TARGETS is a test-only flag and must not be set in production')
+  }
+
   const missing = Object.entries(required)
     .filter(([, v]) => !v || !v.trim())
     .map(([k]) => k)

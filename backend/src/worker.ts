@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { mongoClient } from './db.js'
+import { config } from './config.js'
 import { startAutomationEngine } from './automations/engine.js'
 
 // Standalone automation worker. NOT required in a normal deployment: the same
@@ -40,11 +41,12 @@ async function main(): Promise<void> {
     shuttingDown = true
     console.log(`Received ${signal}, draining worker...`)
     // Emergency brake only: it fires solely if the orderly close below hangs, so
-    // in-flight runs are never abandoned just because a signal arrived.
+    // in-flight runs are never abandoned just because a signal arrived. Same budget
+    // as the API, and below the orchestrator's stop_grace_period on purpose.
     const forced = setTimeout(() => {
-      console.error('Worker shutdown timed out — forcing exit')
+      console.error(`Worker shutdown timed out after ${config.shutdownTimeoutMs}ms — forcing exit (in-flight runs stay recoverable: their lease expires and another worker reclaims them)`)
       process.exit(1)
-    }, 20_000)
+    }, config.shutdownTimeoutMs)
     forced.unref()
     try {
       await engine.stop()

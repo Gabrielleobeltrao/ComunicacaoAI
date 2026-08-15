@@ -79,9 +79,11 @@ export function productionDelegationDeps(): DelegationDeps {
     recordEvent: (e) => recordAgentEvent({ ...e, buildingId: ObjectId.isValid(e.buildingId) ? new ObjectId(e.buildingId) : null }).then(() => undefined),
     // Owner accounting for delegated/sector inferences — charged once per event key,
     // so a redelivered/replayed emit never bills twice.
-    // Canonical retrieval path: agent base + sector base (only with an explicit
-    // sector context). Never throws — a failure just means no grounding.
-    retrieveContext: async (agentId, query, opts) => (await retrieveContext(agentId, query, { verifiedSectorId: opts.sectorId ?? null })).context,
+    // Canonical retrieval path: agent base + sector base (ONLY with an explicit,
+    // already owner-verified sector context). The WHOLE result travels — status and
+    // provenance included — so a delegation can tell "found nothing" from "could not
+    // look", and can cite what it used.
+    retrieveContext: (agentId, query, opts) => retrieveContext(agentId, query, { verifiedSectorId: opts.sectorId ?? null }),
     chargeUsage: (ownerId, usage, chargeKey) => recordReplyUsageOnce(ownerId, usage, chargeKey).then(() => undefined),
   }
   return deps

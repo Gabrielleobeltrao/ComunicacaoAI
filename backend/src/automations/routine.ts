@@ -19,6 +19,8 @@ export interface RoutineSpec {
   timezone: string
   input?: string // static input text handed to the agent every run
   outputFormat?: OutputFormat
+  // null = "no destination"; UNDEFINED on an update = "keep whatever it has", so an
+  // edit made while the connections were still loading cannot erase one.
   delivery?: { provider: 'email' | 'telegram'; connectionId: string } | null
   retryMaxAttempts?: number
   maxOutputChars?: number
@@ -43,7 +45,16 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
       enabled: true,
       dependsOn: [],
       inputMapping: {},
-      config: { agentId: agentId.toString(), objective: spec.objective, instruction, format, ...(spec.sectorId ? { sectorId: spec.sectorId } : {}) },
+      config: {
+        agentId: agentId.toString(),
+        objective: spec.objective,
+        instruction,
+        format,
+        // Kept apart from the composed instruction so the editor can prefill the
+        // field the user actually typed, instead of re-parsing prose.
+        ...(spec.input ? { input: spec.input } : {}),
+        ...(spec.sectorId ? { sectorId: spec.sectorId } : {}),
+      },
       timeoutMs: 120_000,
       retryPolicy: { maxAttempts: Math.max(1, Math.min(spec.retryMaxAttempts ?? 1, 5)), backoffMs: 2000 },
       continueOnError: false,
@@ -106,15 +117,32 @@ export async function updateRoutine(ownerId: string, agentId: ObjectId, routineI
   const existing = await getAutomation(ownerId, routineId)
   if (!existing || existing.agentId?.toString() !== agentId.toString()) return null
   if (!isValidRecurrence(spec.recurrence)) throw new RoutineError('invalid recurrence')
-  const definition = buildRoutineDefinition(spec, agentId)
+  // An omitted delivery keeps the current one: only an explicit null removes it.
+  const current = (existing.draftDefinition?.deliveries ?? [])[0]
+  const delivery =
+    spec.delivery !== undefined
+      ? spec.delivery
+      : current
+        ? { provider: current.provider, connectionId: current.connectionId.toString() }
+        : null
+  const definition = buildRoutineDefinition({ ...spec, delivery }, agentId)
   await updateDraft(ownerId, routineId, { name: spec.name || describeRecurrence(spec.recurrence), description: spec.objective.slice(0, 2000), definition })
   await publishAutomation(ownerId, routineId, ownerId)
   return getAutomation(ownerId, routineId)
 }
 
-export async function listRoutines(ownerId: string, agentId: ObjectId): Promise<Automation[]> {
+// Everything this agent owns — scheduled routines AND event triggers. Used where
+// the agent's whole automatic work matters (its history).
+export async function listAgentAutomations(ownerId: string, agentId: ObjectId): Promise<Automation[]> {
   const { items } = await repoListAutomations(ownerId, { agentId, limit: 100, skip: 0 })
   return items
+}
+
+// Only the SCHEDULED ones: an event trigger is a different surface (Gatilhos) and
+// must not show up as a routine with an empty recurrence.
+export async function listRoutines(ownerId: string, agentId: ObjectId): Promise<Automation[]> {
+  const items = await listAgentAutomations(ownerId, agentId)
+  return items.filter((a) => (a.publishedTrigger?.type ?? a.trigger?.type) === 'schedule')
 }
 
 // Guard that a routine belongs to the given agent before status/delete actions.

@@ -3,6 +3,7 @@ import type { Floor } from '../floors.js'
 import { createFloor, deleteFloor, getFloor, getFloorActivity, listFloors, setFloorStatus, updateFloor } from '../floors.js'
 import { agentStatesForFloor, floorMetrics } from '../automations/metrics.js'
 import { fail, notFound, oid } from './http.js'
+import { auditEntity } from './auditMiddleware.js'
 
 // Mounted at /api/floors behind requireAuth (res.locals.userId is the owner).
 // floorId is the legacy officeId — never trusted from the client without an
@@ -34,6 +35,7 @@ floorRouter.get('/', async (req, res) => {
 floorRouter.post('/', async (req, res, next) => {
   try {
     const floor = await createFloor(res.locals.userId, req.body ?? {})
+    auditEntity(res, { id: floor._id.toString(), label: floor.name, floorId: floor._id.toString() })
     res.status(201).json(toPublic(floor))
   } catch (error) {
     fail(res, error, next)

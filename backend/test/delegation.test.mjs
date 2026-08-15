@@ -391,3 +391,127 @@ test('childContext deepens the chain and shares the budget object', () => {
   assert.deepEqual(child.ancestry, [a._id.toString()])
   assert.equal(child.budget, ctx.budget)
 })
+
+// ---- the target's contract governs the delegation --------------------------------
+// A delegation used to force Markdown on whatever it called, drop a JSON input from
+// the retrieval question, and never tell the target what it had promised to produce.
+
+test('the target decides the format when the caller does not ask for one', async () => {
+  const a = mkAgent()
+  const b = mkAgent({ defaultOutputFormat: 'json', outputJsonSchema: { type: 'object', properties: { total: { type: 'number' } } } })
+  let request = null
+  const f = fakeDeps([a, b], {
+    runTask: async (req) => ((request = req), { output: '{"total":1}', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
+  })
+  const del = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_agent')
+  await del.run({ agentId: b._id.toString(), objective: 'some totals' })
+  assert.equal(request.output.format, 'json', 'no Markdown forced on a JSON agent')
+  assert.ok(request.output.jsonSchema, 'and its schema travels with it')
+})
+
+test('an explicit format from the caller still wins', async () => {
+  const a = mkAgent()
+  const b = mkAgent({ defaultOutputFormat: 'json' })
+  let request = null
+  const f = fakeDeps([a, b], { runTask: async (req) => ((request = req), { output: 'texto', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }) })
+  const del = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_agent')
+  await del.run({ agentId: b._id.toString(), objective: 'x', format: 'markdown' })
+  assert.equal(request.output.format, 'markdown')
+})
+
+test("the target's contracts are part of what it is asked", async () => {
+  const a = mkAgent()
+  const b = mkAgent({ inputContract: 'um tema', outputContract: 'lista com fontes' })
+  let request = null
+  const f = fakeDeps([a, b], { runTask: async (req) => ((request = req), { output: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }) })
+  const del = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_agent')
+  await del.run({ agentId: b._id.toString(), objective: 'pesquise' })
+  assert.equal(request.contracts.input, 'um tema')
+  assert.equal(request.contracts.output, 'lista com fontes')
+})
+
+test('a JSON input is delegated as data and is part of the retrieval question', async () => {
+  const a = mkAgent()
+  const b = mkAgent()
+  let request = null
+  let askedQuery = ''
+  const f = fakeDeps([a, b], {
+    runTask: async (req) => ((request = req), { output: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
+    depsPatch: { retrieveContext: async (_id, query) => ((askedQuery = query), { context: [], sources: [], status: 'empty', failed: false }) },
+  })
+  const del = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_agent')
+  const payload = { pedido: 'A-1', itens: [1, 2] }
+  await del.run({ agentId: b._id.toString(), objective: 'resuma o pedido', input: payload })
+  assert.deepEqual(request.input, payload, 'the object is handed over as it is')
+  assert.match(askedQuery, /A-1/, 'and it is part of what the base is asked about')
+})
+
+// ---- pipeline: a stage says what it owes the next one ------------------------------
+
+test('stageInstruction adds the expected output to the instruction', async () => {
+  const { stageInstruction } = await import('../dist/delegation.js')
+  assert.equal(stageInstruction('Resuma o texto'), 'Resuma o texto')
+  const withExpected = stageInstruction('Resuma o texto', 'Um parágrafo com no máximo 3 frases')
+  assert.match(withExpected, /Resuma o texto/)
+  assert.match(withExpected, /O resultado desta etapa deve ser: Um parágrafo com no máximo 3 frases/)
+})
+
+test('a pipeline stage is told what it owes, and an empty hand-off stops the chain', async () => {
+  const a = mkAgent()
+  const first = mkAgent()
+  const second = mkAgent()
+  const instructions = []
+  const sector = {
+    _id: new ObjectId(),
+    name: 'Pipeline',
+    officeId: FLOOR_A,
+    mode: 'pipeline',
+    members: [{ agentId: first._id }, { agentId: second._id }],
+    stages: [
+      { id: 'e1', name: 'Coleta', agentId: first._id, instruction: 'Colete os dados', dependsOn: [], expectedOutput: 'uma lista de itens', retryPolicy: { maxAttempts: 1, backoffMs: 0 }, onError: 'stop' },
+      { id: 'e2', name: 'Resumo', agentId: second._id, instruction: 'Resuma', dependsOn: ['e1'], expectedOutput: 'um parágrafo', retryPolicy: { maxAttempts: 1, backoffMs: 0 }, onError: 'stop' },
+    ],
+  }
+  const f = fakeDeps([a, first, second], {
+    sector,
+    runTask: async (req) => {
+      instructions.push(req.instructions)
+      // The FIRST stage produces nothing: the second must never run on emptiness.
+      return { output: instructions.length === 1 ? '   ' : 'resumo final', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  const del = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_sector')
+  const out = await del.run({ sectorId: sector._id.toString(), objective: 'processe' })
+
+  assert.match(instructions[0], /O resultado desta etapa deve ser: uma lista de itens/)
+  assert.equal(instructions.length, 1, 'the second stage never ran on an empty hand-off')
+  assert.equal(out.ok, false)
+  assert.equal(f.finished.at(-1).status, 'failed')
+})
+
+test('a pipeline that produces real output runs every stage once', async () => {
+  const a = mkAgent()
+  const first = mkAgent()
+  const second = mkAgent()
+  const calls = []
+  const sector = {
+    _id: new ObjectId(),
+    name: 'Pipeline',
+    officeId: FLOOR_A,
+    mode: 'pipeline',
+    members: [{ agentId: first._id }, { agentId: second._id }],
+    stages: [
+      { id: 'e1', name: 'Coleta', agentId: first._id, instruction: 'Colete', dependsOn: [], expectedOutput: 'itens', retryPolicy: { maxAttempts: 2, backoffMs: 0 }, onError: 'stop' },
+      { id: 'e2', name: 'Resumo', agentId: second._id, instruction: 'Resuma', dependsOn: ['e1'], expectedOutput: '', retryPolicy: { maxAttempts: 2, backoffMs: 0 }, onError: 'stop' },
+    ],
+  }
+  const f = fakeDeps([a, first, second], {
+    sector,
+    runTask: async (req) => (calls.push(req.instructions), { output: `saída ${calls.length}`, usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
+  })
+  const del = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_sector')
+  const out = await del.run({ sectorId: sector._id.toString(), objective: 'processe' })
+  assert.equal(out.ok, true)
+  assert.equal(calls.length, 2, 'no completed stage is called twice')
+  assert.equal(JSON.parse(out.result).output, 'saída 2')
+})

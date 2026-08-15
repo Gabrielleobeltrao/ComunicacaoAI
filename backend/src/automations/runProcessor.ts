@@ -123,6 +123,9 @@ function buildDeps(run: AutomationRun): RunnerDeps {
 export async function processRun(runId: string): Promise<void> {
   const run = await findRunUnscoped(new ObjectId(runId))
   if (!run) return
+  // Already finished: a lease that expired during the final write must never turn
+  // into a second execution (which would deliver twice and charge twice).
+  if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'canceled') return
   if (run.status === 'cancel_requested') {
     await updateRun(run._id, { status: 'canceled', finishedAt: new Date() })
     return

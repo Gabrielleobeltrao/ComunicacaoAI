@@ -96,6 +96,35 @@ export async function releaseRun(id: ObjectId): Promise<void> {
   await runs.updateOne({ _id: id }, { $set: { leaseUntil: null, claimedBy: null } })
 }
 
+// The processor threw where it should not have. Without this the run would stay
+// 'running' with no lease — invisible to the claim query and stuck forever.
+//
+// The outcome is deliberate, not silent: back to 'queued' while it still has claims
+// left (a transient fault deserves another go), 'failed' once it has burned them
+// (a poison run must not cycle). Either way the error is recorded and the claim is
+// dropped. A run that already finished is left exactly as it is.
+export async function recoverRun(id: ObjectId, message: string, now = new Date()): Promise<'queued' | 'failed' | 'noop'> {
+  const run = await runs.findOne({ _id: id })
+  if (!run) return 'noop'
+  if (run.status !== 'running' && run.status !== 'cancel_requested') return 'noop'
+
+  const terminal = (run.claims ?? 1) >= MAX_RUN_CLAIMS
+  const status: RunStatus = terminal ? 'failed' : 'queued'
+  const res = await runs.updateOne(
+    { _id: id, status: run.status },
+    {
+      $set: {
+        status,
+        leaseUntil: null,
+        claimedBy: null,
+        error: { kind: 'error', message: message.slice(0, 500) },
+        ...(terminal ? { finishedAt: now } : {}),
+      },
+    },
+  )
+  return res.modifiedCount === 1 ? status : 'noop'
+}
+
 export function findRun(ownerId: string, id: ObjectId): Promise<AutomationRun | null> {
   return runs.findOne({ _id: id, ownerId })
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import { decrypt } from '../crypto.js'
 import { findByWebhookKey } from '../automations/repository.js'
@@ -11,17 +12,16 @@ export const webhookRouter = Router()
 webhookRouter.post('/automations/:publicKey', async (req, res, next) => {
   try {
     const automation = await findByWebhookKey(req.params.publicKey)
-    if (
-      !automation ||
-      automation.status !== 'active' ||
-      automation.trigger.type !== 'webhook' ||
-      !automation.webhookSecretEncrypted
-    ) {
+    // What may fire is the PUBLISHED trigger, never the draft: a half-edited
+    // definition in the editor must not open — or close — a live endpoint. Older
+    // documents that predate publishedTrigger fall back to their own trigger.
+    const live = (automation?.publishedTrigger ?? automation?.trigger) as { type?: string; requireSignature?: boolean } | undefined
+    if (!automation || automation.status !== 'active' || live?.type !== 'webhook' || !automation.webhookSecretEncrypted) {
       res.status(404).json({ code: 'not_found', message: 'not found' })
       return
     }
     const raw = (req as { rawBody?: Buffer }).rawBody?.toString('utf8') ?? ''
-    const requireSignature = (automation.trigger as { requireSignature?: boolean }).requireSignature !== false
+    const requireSignature = live.requireSignature !== false
     if (requireSignature) {
       const secret = decrypt(automation.webhookSecretEncrypted)
       if (!verifySignature(secret, raw, req.header('x-signature'))) {
@@ -34,6 +34,11 @@ webhookRouter.post('/automations/:publicKey', async (req, res, next) => {
       triggerType: 'webhook',
       input: req.body,
       idempotencyKey: key,
+      // ONE correlation per delivery, generated here: nothing from the body, the
+      // headers or the secret goes into it. A redelivery of the same event does NOT
+      // create a run (the idempotency key holds), and `createRun` returns the
+      // existing one — so the original correlation is what survives, not this.
+      requestId: `webhook:${randomUUID()}`,
     })
     res.status(202).json({ runId: run._id, status: run.status })
   } catch (error) {

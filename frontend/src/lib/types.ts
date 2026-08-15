@@ -174,10 +174,17 @@ export interface AgentSummary {
   activationModes: ActivationMode[]
   inputContract: string
   outputContract: string
+  // Executable contract (optional, advanced): the shape automatic tasks produce and,
+  // for JSON, the schema the answer must satisfy.
+  defaultOutputFormat?: 'text' | 'markdown' | 'json' | null
+  outputJsonSchema?: Record<string, unknown> | null
+  requireGrounding?: boolean
   delegationPolicy: DelegationPolicy
   callerPolicy: DelegationPolicy
   callableAgentIds: string[]
   callableSectorIds: string[]
+  // Ids of the reusable Custom Tools this agent may call.
+  toolIds?: string[]
   allowedCallerAgentIds: string[]
   metricProfile: MetricProfile
 }

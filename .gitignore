@@ -1,5 +1,7 @@
 node_modules
 dist
+# TypeScript incremental build cache — a local artifact, never source.
+*.tsbuildinfo
 # Local Claude Code settings (personal permission config) — never commit.
 .claude/settings.local.json
 .env

@@ -10,7 +10,7 @@ import * as repo from './repository.js'
 import { ensureActivationMode, getAgentById } from '../agents.js'
 import { agentsReferencedBy, isLiveWebhook } from './webhookTriggers.js'
 import { DEFAULT_LIMITS } from './types.js'
-import type { Automation, AutomationDefinition, AutomationStatus, AutomationVersion } from './types.js'
+import type { Automation, AutomationDefinition, AutomationStatus, AutomationTrigger, AutomationVersion } from './types.js'
 
 // Raised when a publish is attempted on an invalid definition; carries the
 // structured issues for a 400 response.
@@ -197,6 +197,13 @@ export async function validateAutomation(ownerId: string, id: ObjectId): Promise
   return result
 }
 
+// Same schedule, or a different one? Only the fields that decide WHEN it fires.
+function sameTrigger(a: AutomationTrigger | null, b: AutomationTrigger | null): boolean {
+  const shape = (t: AutomationTrigger | null) =>
+    t ? `${t.type}|${(t as { cron?: string }).cron ?? ''}|${(t as { timezone?: string }).timezone ?? ''}` : ''
+  return shape(a) === shape(b)
+}
+
 // Publish an immutable version from the current draft. Re-publishing an unchanged
 // draft returns the existing version (idempotent); any change creates a new one.
 export async function publishAutomation(ownerId: string, id: ObjectId, createdBy: string): Promise<AutomationVersion | null> {
@@ -228,7 +235,18 @@ export async function publishAutomation(ownerId: string, id: ObjectId, createdBy
     createdBy,
   }
   await repo.insertVersion(doc)
-  const published = await repo.updateAutomation(ownerId, id, { lastPublishedVersion: version, currentVersion: version })
+  // The scheduler reads `publishedTrigger`, never the draft. When the cron, the
+  // timezone or the trigger type changed, the pending fire is DROPPED here: without
+  // this the automation would fire one last time at the old hour before the new
+  // plan took effect. The next scheduler tick re-plans from the new trigger.
+  const trigger = automation.draftDefinition.trigger
+  const changed = !sameTrigger(automation.publishedTrigger ?? null, trigger)
+  const published = await repo.updateAutomation(ownerId, id, {
+    lastPublishedVersion: version,
+    currentVersion: version,
+    publishedTrigger: trigger,
+    ...(changed ? { nextRunAt: null } : {}),
+  })
   // Publishing an already-active webhook makes it live right now — the permission
   // has to follow, not wait for the next status change.
   if (published) await syncEventTriggerFor(ownerId, published)

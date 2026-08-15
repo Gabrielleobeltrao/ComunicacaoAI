@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
-const { chunkText, combineKnowledgeHits, RETRIEVAL_TOP_K } = await import('../dist/knowledge.js')
+const { chunkText, combineKnowledgeHits, selectKnowledgeHits, RETRIEVAL_TOP_K, RETRIEVAL_MIN_SCORE } = await import('../dist/knowledge.js')
 
 const hit = (content, score, ownerType = 'agent') => ({ content, score, ownerType, ownerId: 'o1' })
 
@@ -18,8 +18,33 @@ test('chunkText splits paragraphs and long text with overlap', () => {
 })
 
 test('combineKnowledgeHits orders by relevance across owners', () => {
-  const out = combineKnowledgeHits([hit('menos relevante', 0.2), hit('mais relevante', 0.9, 'sector'), hit('meio', 0.5)])
+  const out = combineKnowledgeHits([hit('menos relevante', 0.6), hit('mais relevante', 0.9, 'sector'), hit('meio', 0.7)])
   assert.deepEqual(out, ['mais relevante', 'meio', 'menos relevante'])
+})
+
+// A weak match presented as curated knowledge is worse than no knowledge: below the
+// floor it never reaches the prompt.
+test('a passage below the relevance floor is not context', () => {
+  const out = combineKnowledgeHits([hit('quase nada a ver', 0.1), hit('relevante', 0.9)])
+  assert.deepEqual(out, ['relevante'])
+})
+
+test('the floor is configurable, and 0 keeps everything', () => {
+  const hits = [hit('fraco', 0.05), hit('forte', 0.95)]
+  assert.equal(combineKnowledgeHits(hits, { minScore: 0 }).length, 2)
+  assert.equal(combineKnowledgeHits(hits, { minScore: 0.9 }).length, 1)
+  assert.ok(RETRIEVAL_MIN_SCORE > 0, 'the default floor is on')
+})
+
+test('selectKnowledgeHits keeps provenance for the passages it chose', () => {
+  const selected = selectKnowledgeHits([
+    { content: 'trecho A', score: 0.9, ownerType: 'agent', ownerId: 'a1', documentId: 'd1', title: 'Política de trocas' },
+    { content: 'trecho B', score: 0.1, ownerType: 'sector', ownerId: 's1', documentId: 'd2', title: 'Outro' },
+  ])
+  assert.equal(selected.length, 1, 'the weak one is dropped')
+  assert.equal(selected[0].documentId, 'd1')
+  assert.equal(selected[0].title, 'Política de trocas')
+  assert.equal(selected[0].ownerType, 'agent')
 })
 
 test('combineKnowledgeHits dedupes the same passage curated in both bases', () => {
@@ -41,7 +66,7 @@ test('combineKnowledgeHits honours the character budget and skips oversized pass
 })
 
 test('combineKnowledgeHits ignores empty passages', () => {
-  assert.deepEqual(combineKnowledgeHits([hit('   ', 0.9), hit('real', 0.5)]), ['real'])
+  assert.deepEqual(combineKnowledgeHits([hit('   ', 0.9), hit('real', 0.6)]), ['real'])
 })
 
 test('ownerFilter scopes strictly to one owner (no cross-tenant match)', async () => {
