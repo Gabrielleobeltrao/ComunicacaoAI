@@ -212,19 +212,32 @@ async function agentIdsInSector(ownerId: string, sectorId: ObjectId): Promise<Ob
   return (sector?.members ?? []).map((m) => m.agentId).filter(Boolean)
 }
 
+// The agents a filter selects, as a CONJUNCTION: an agent filter narrows, a sector
+// filter narrows, and both together mean "this agent, in that sector". Returns:
+//   undefined — no agent constraint at all;
+//   []        — the constraint can match nobody (empty sector, or an agent that is
+//               not in the chosen sector), so the caller must answer an empty page
+//               instead of silently dropping the filter.
+async function agentConstraint(ownerId: string, f: ExecutionFilters): Promise<ObjectId[] | undefined> {
+  if (!f.agentId && !f.sectorId) return undefined
+  if (!f.sectorId) return [f.agentId!]
+  const inSector = await agentIdsInSector(ownerId, f.sectorId)
+  if (!f.agentId) return inSector
+  // Both: the agent must really belong to that sector. Ignoring one of the two
+  // would answer a question nobody asked.
+  return inSector.some((id) => id.equals(f.agentId!)) ? [f.agentId] : []
+}
+
 // The automation-side filter, owner-scoped. Returns null when the filter can match
-// nothing at all (a sector with no members), so the caller answers an empty page
-// instead of a query that would ignore it.
+// nothing at all, so the caller answers an empty page.
 async function automationFilter(ownerId: string, triggerType: 'schedule' | 'webhook', f: ExecutionFilters): Promise<Record<string, unknown> | null> {
   const filter: Record<string, unknown> = { ownerId, 'publishedTrigger.type': triggerType, status: { $ne: 'archived' } }
   if (f.floorId) filter.floorId = f.floorId
   if (f.status) filter.status = f.status
-  if (f.agentId) {
-    filter.agentId = f.agentId
-  } else if (f.sectorId) {
-    const ids = await agentIdsInSector(ownerId, f.sectorId)
-    if (!ids.length) return null
-    filter.agentId = { $in: ids }
+  const agentIds = await agentConstraint(ownerId, f)
+  if (agentIds) {
+    if (!agentIds.length) return null
+    filter.agentId = agentIds.length === 1 ? agentIds[0] : { $in: agentIds }
   }
   return filter
 }
@@ -384,6 +397,32 @@ export interface RunItem {
   errorKind: string | null
 }
 
+// The run-side filter, owner-scoped and conjunctive. A run does not carry the agent,
+// so an agent/sector constraint is resolved to the automations that belong to them —
+// one extra query, still not one per row. null = matches nothing.
+async function runFilter(
+  ownerId: string,
+  f: ExecutionFilters,
+  extra: { status?: RunStatus[]; triggerType?: string; from?: Date; to?: Date } = {},
+): Promise<Record<string, unknown> | null> {
+  const filter: Record<string, unknown> = { ownerId }
+  if (extra.status) filter.status = { $in: extra.status }
+  if (extra.triggerType) filter.triggerType = extra.triggerType
+  if (extra.from || extra.to) {
+    filter.queuedAt = { ...(extra.from ? { $gte: extra.from } : {}), ...(extra.to ? { $lte: extra.to } : {}) }
+  }
+  if (f.floorId) filter.floorId = f.floorId
+
+  const agentIds = await agentConstraint(ownerId, f)
+  if (agentIds) {
+    if (!agentIds.length) return null
+    const owned = await automations.find({ ownerId, agentId: { $in: agentIds } }).project({ _id: 1 }).toArray()
+    if (!owned.length) return null
+    filter.automationId = { $in: owned.map((a) => a._id) }
+  }
+  return filter
+}
+
 export async function listRunsForCenter(
   ownerId: string,
   phase: 'active' | 'history',
@@ -393,17 +432,8 @@ export async function listRunsForCenter(
   const allowed = phase === 'active' ? ACTIVE_RUN_STATUSES : HISTORY_RUN_STATUSES
   const status = f.status && (allowed as string[]).includes(f.status) ? [f.status as RunStatus] : allowed
 
-  const filter: Record<string, unknown> = { ownerId, status: { $in: status } }
-  if (f.floorId) filter.floorId = f.floorId
-  // A run does not carry the agent, so an agent/sector filter is resolved to the
-  // automations that belong to them — one extra query, still not per row.
-  if (f.agentId || f.sectorId) {
-    const agentIds = f.agentId ? [f.agentId] : await agentIdsInSector(ownerId, f.sectorId!)
-    if (!agentIds.length) return { items: [], total: 0, ...page }
-    const owned = await automations.find({ ownerId, agentId: { $in: agentIds } }).project({ _id: 1 }).toArray()
-    if (!owned.length) return { items: [], total: 0, ...page }
-    filter.automationId = { $in: owned.map((a) => a._id) }
-  }
+  const filter = await runFilter(ownerId, f, { status })
+  if (!filter) return { items: [], total: 0, ...page }
 
   const [docs, total] = await Promise.all([
     runs.find(filter).sort({ queuedAt: -1 }).skip(page.skip).limit(page.limit).toArray(),
@@ -443,6 +473,120 @@ export async function listRunsForCenter(
   return { items, total, ...page }
 }
 
+// --- Linha do tempo de execuções (Logs) --------------------------------------------
+// The same read model as the Central, over EVERY status and with a stable cursor, so
+// an audit trail can be paged without rows shifting under the reader. It carries
+// what a person needs to judge an execution — timings, tokens, how many steps,
+// deliveries and artifacts it produced — and never the content of any of them.
+
+export interface RunTimelineItem extends RunItem {
+  durationMs: number | null
+  steps: number
+  deliveries: number
+  artifacts: number
+}
+
+export interface RunTimelineFilters extends ExecutionFilters {
+  triggerType?: string
+  from?: Date
+  to?: Date
+}
+
+// (queuedAt, _id): the sort key and a tiebreak, so two runs queued in the same
+// millisecond can never make a page repeat or skip a row.
+export const encodeRunCursor = (item: { queuedAt: string; id: string }): string => `${new Date(item.queuedAt).getTime()}_${item.id}`
+
+function decodeRunCursor(raw: string | undefined): { queuedAt: Date; id: ObjectId } | null {
+  if (!raw) return null
+  const [time, id] = raw.split('_')
+  if (!time || !ObjectId.isValid(id ?? '')) return null
+  const queuedAt = new Date(Number(time))
+  return Number.isNaN(queuedAt.getTime()) ? null : { queuedAt, id: new ObjectId(id) }
+}
+
+export async function listRunTimeline(
+  ownerId: string,
+  f: RunTimelineFilters,
+  page: { limit: number; cursor?: string },
+): Promise<{ items: RunTimelineItem[]; nextCursor: string | null }> {
+  const status = f.status ? [f.status as RunStatus] : undefined
+  const base = await runFilter(ownerId, f, { status, triggerType: f.triggerType, from: f.from, to: f.to })
+  if (!base) return { items: [], nextCursor: null }
+
+  const after = decodeRunCursor(page.cursor)
+  const filter = after
+    ? { $and: [base, { $or: [{ queuedAt: { $lt: after.queuedAt } }, { queuedAt: after.queuedAt, _id: { $lt: after.id } }] }] }
+    : base
+
+  // One extra row tells us whether there is a next page, without a count.
+  const docs = await runs.find(filter).sort({ queuedAt: -1, _id: -1 }).limit(page.limit + 1).toArray()
+  const pageDocs = docs.slice(0, page.limit)
+
+  const automationDocs = pageDocs.length
+    ? await automations
+        .find({ ownerId, _id: { $in: [...new Set(pageDocs.map((r) => r.automationId.toString()))].map((id) => new ObjectId(id)) } })
+        .project({ name: 1, agentId: 1, floorId: 1, publishedTrigger: 1 })
+        .toArray()
+    : []
+  const automationById = new Map(automationDocs.map((a) => [a._id.toString(), a as { _id: ObjectId; name?: string; agentId?: ObjectId }]))
+  const joins = await loadJoins(
+    ownerId,
+    automationDocs.map((a) => (a as { agentId?: ObjectId }).agentId).filter((x): x is ObjectId => Boolean(x)),
+    pageDocs.map((r) => r.floorId),
+  )
+  const counts = await loadRunCounts(ownerId, pageDocs.map((r) => r._id))
+
+  const items = pageDocs.map((r) => {
+    const automation = automationById.get(r.automationId.toString())
+    const c = counts.get(r._id.toString())
+    return {
+      id: r._id.toString(),
+      automationId: r.automationId.toString(),
+      name: automation?.name ?? 'Trabalho automático',
+      status: r.status,
+      triggerType: r.triggerType,
+      agent: automation?.agentId ? (joins.agentById.get(automation.agentId.toString()) ?? null) : null,
+      place: placeOf(joins, r.floorId, automation?.agentId),
+      queuedAt: r.queuedAt.toISOString(),
+      startedAt: r.startedAt ? r.startedAt.toISOString() : null,
+      finishedAt: r.finishedAt ? r.finishedAt.toISOString() : null,
+      durationMs: r.startedAt && r.finishedAt ? r.finishedAt.getTime() - r.startedAt.getTime() : null,
+      tokens: tokensOf(r.usage),
+      errorKind: r.error?.kind ?? null,
+      steps: c?.steps ?? 0,
+      deliveries: c?.deliveries ?? 0,
+      artifacts: c?.artifacts ?? 0,
+    }
+  })
+  const nextCursor = docs.length > page.limit && items.length ? encodeRunCursor(items[items.length - 1]) : null
+  return { items, nextCursor }
+}
+
+// How much each run produced — three grouped counts for the whole page, not three
+// queries per row.
+async function loadRunCounts(ownerId: string, runIds: ObjectId[]): Promise<Map<string, { steps: number; deliveries: number; artifacts: number }>> {
+  const out = new Map<string, { steps: number; deliveries: number; artifacts: number }>()
+  if (!runIds.length) return out
+  const countBy = async (name: string) =>
+    db
+      .collection(name)
+      .aggregate<{ _id: ObjectId; n: number }>([{ $match: { ownerId, runId: { $in: runIds } } }, { $group: { _id: '$runId', n: { $sum: 1 } } }])
+      .toArray()
+  const [steps, deliveries, artifacts] = await Promise.all([countBy('step_runs'), countBy('deliveries'), countBy('artifacts')])
+  const put = (rows: { _id: ObjectId; n: number }[], key: 'steps' | 'deliveries' | 'artifacts') => {
+    for (const row of rows) {
+      const id = row._id.toString()
+      const current = out.get(id) ?? { steps: 0, deliveries: 0, artifacts: 0 }
+      current[key] = row.n
+      out.set(id, current)
+    }
+  }
+  put(steps, 'steps')
+  put(deliveries, 'deliveries')
+  put(artifacts, 'artifacts')
+  return out
+}
+
 // --- Contadores ------------------------------------------------------------------
 
 export interface ExecutionSummary {
@@ -455,16 +599,29 @@ export interface ExecutionSummary {
   windowDays: number
 }
 
-export async function executionSummary(ownerId: string, now = new Date()): Promise<ExecutionSummary> {
+// The counters answer the question the page is currently asking: the SAME filters
+// the list uses narrow them too, so the header can never describe a different set
+// from the rows underneath it. The `status` filter is deliberately not applied —
+// each counter is about its own state.
+export async function executionSummary(ownerId: string, now = new Date(), f: ExecutionFilters = {}): Promise<ExecutionSummary> {
   const since = windowStart(now)
   const in24h = new Date(now.getTime() + 24 * 60 * 60_000)
+
+  const scope = await automationFilter(ownerId, 'schedule', { ...f, status: undefined })
+  const triggerScope = await automationFilter(ownerId, 'webhook', { ...f, status: undefined })
+  const runScope = await runFilter(ownerId, { ...f, status: undefined })
+  // A filter that can match nobody yields zeros, never the unfiltered totals.
+  if (!scope || !triggerScope || !runScope) {
+    return { next24h: 0, activeTriggers: 0, inFlight: 0, tokensWindow: 0, runsWindow: 0, windowDays: USAGE_WINDOW_DAYS }
+  }
+
   const [next24h, activeTriggers, inFlight, usage] = await Promise.all([
-    automations.countDocuments({ ownerId, status: 'active', 'publishedTrigger.type': 'schedule', nextRunAt: { $gt: now, $lte: in24h } }),
-    automations.countDocuments({ ownerId, status: 'active', 'publishedTrigger.type': 'webhook' }),
-    runs.countDocuments({ ownerId, status: { $in: ACTIVE_RUN_STATUSES } }),
+    automations.countDocuments({ ...scope, status: 'active', nextRunAt: { $gt: now, $lte: in24h } }),
+    automations.countDocuments({ ...triggerScope, status: 'active' }),
+    runs.countDocuments({ ...runScope, status: { $in: ACTIVE_RUN_STATUSES } }),
     runs
       .aggregate<{ tokens: number; count: number }>([
-        { $match: { ownerId, queuedAt: { $gte: since } } },
+        { $match: { ...runScope, queuedAt: { $gte: since } } },
         {
           $group: {
             _id: null,

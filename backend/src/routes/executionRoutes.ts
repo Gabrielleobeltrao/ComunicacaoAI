@@ -28,8 +28,10 @@ const parseFilters = (query: Record<string, unknown>): ExecutionFilters => ({
   status: typeof query.status === 'string' && query.status ? query.status : undefined,
 })
 
-executionRouter.get('/summary', async (_req, res) => {
-  res.json(await executionSummary(res.locals.userId))
+// The counters describe the SAME set the list is showing, so the header and the
+// rows can never tell two different stories.
+executionRouter.get('/summary', async (req, res) => {
+  res.json(await executionSummary(res.locals.userId, new Date(), parseFilters(req.query as Record<string, unknown>)))
 })
 
 executionRouter.get('/', async (req, res) => {

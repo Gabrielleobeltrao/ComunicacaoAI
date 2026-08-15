@@ -6,8 +6,10 @@ import {
   executionsQuery,
   relativeWhen,
   statusOptionsFor,
+  summaryQuery,
   tokensLabel,
 } from './executions'
+import { activeFilterCount, agentsFor, narrowFilters } from '../pages/Executions'
 
 // The Central de execuções shows facts, not guesses. These pin the rules that keep
 // it honest: an average says it is an average, a missing value stays "—", and the
@@ -115,5 +117,87 @@ describe('agentFlowPath', () => {
 
   it('falls back to the flat route when the row has no floor', () => {
     expect(agentFlowPath({ floorId: null, floorName: null, sectorId: null, sectorName: null }, 'a1')).toBe('/agents/a1/fluxos')
+  })
+})
+
+// The pickers must be conjunctive the way the API is: a wider choice narrows the
+// narrower ones, and a selection that no longer fits is cleared instead of being
+// sent as a combination that can only answer nothing.
+describe('narrowFilters', () => {
+  const options = {
+    floors: [
+      { id: 'f1', name: 'Térreo' },
+      { id: 'f2', name: 'Primeiro' },
+    ],
+    sectors: [
+      { _id: 's1', name: 'Atendimento', floorId: 'f1', members: [{ agentId: 'a1' }] },
+      { _id: 's2', name: 'Compras', floorId: 'f2', members: [{ agentId: 'a2' }] },
+    ],
+    agents: [
+      { _id: 'a1', name: 'Ana', floorId: 'f1' },
+      { _id: 'a2', name: 'Bruno', floorId: 'f2' },
+    ],
+  }
+
+  it('changing floor drops a sector and an agent from another floor', () => {
+    const next = narrowFilters({ floorId: 'f2', sectorId: 's1', agentId: 'a1' }, options)
+    expect(next).toEqual({ floorId: 'f2', sectorId: undefined, agentId: undefined })
+  })
+
+  it('keeps what still fits', () => {
+    const next = narrowFilters({ floorId: 'f1', sectorId: 's1', agentId: 'a1' }, options)
+    expect(next).toEqual({ floorId: 'f1', sectorId: 's1', agentId: 'a1' })
+  })
+
+  it('choosing a sector drops an agent that is not in it', () => {
+    const next = narrowFilters({ sectorId: 's1', agentId: 'a2' }, options)
+    expect(next.sectorId).toBe('s1')
+    expect(next.agentId).toBeUndefined()
+  })
+
+  it('never touches the status', () => {
+    expect(narrowFilters({ floorId: 'f1', status: 'paused' }, options).status).toBe('paused')
+  })
+})
+
+describe('agentsFor', () => {
+  const options = {
+    floors: [],
+    sectors: [{ _id: 's1', name: 'Atendimento', floorId: 'f1', members: [{ agentId: 'a1' }] }],
+    agents: [
+      { _id: 'a1', name: 'Ana', floorId: 'f1' },
+      { _id: 'a2', name: 'Bruno', floorId: 'f1' },
+      { _id: 'a3', name: 'Carla', floorId: 'f2' },
+    ],
+  }
+
+  it('offers only the chosen floor', () => {
+    expect(agentsFor({ floorId: 'f1' }, options).map((a) => a._id)).toEqual(['a1', 'a2'])
+  })
+
+  it('offers only the chosen sector', () => {
+    expect(agentsFor({ sectorId: 's1' }, options).map((a) => a._id)).toEqual(['a1'])
+  })
+
+  it('offers everyone when nothing narrows it', () => {
+    expect(agentsFor({}, options)).toHaveLength(3)
+  })
+})
+
+describe('activeFilterCount', () => {
+  it('counts what the mobile button has to announce', () => {
+    expect(activeFilterCount({})).toBe(0)
+    expect(activeFilterCount({ floorId: 'f1' })).toBe(1)
+    expect(activeFilterCount({ floorId: 'f1', sectorId: 's1', agentId: 'a1', status: 'active' })).toBe(4)
+  })
+})
+
+describe('summaryQuery', () => {
+  it('asks the counters the same question the list was asked', () => {
+    expect(summaryQuery({ floorId: 'f1', agentId: 'a1' })).toBe('/api/executions/summary?floorId=f1&agentId=a1')
+  })
+
+  it('has no query string when nothing is filtered', () => {
+    expect(summaryQuery({})).toBe('/api/executions/summary')
   })
 })

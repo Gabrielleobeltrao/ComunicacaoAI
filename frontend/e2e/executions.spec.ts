@@ -68,14 +68,22 @@ const RUN = {
 const SUMMARY = { next24h: 3, activeTriggers: 1, inFlight: 2, tokensWindow: 42_000, runsWindow: 17, windowDays: 30 }
 
 let lastAction: string | null = null
+let lastListUrl: string | null = null
+let lastSummaryUrl: string | null = null
 
 async function stub(page: Page, opts: { items?: Record<string, unknown[]>; fail?: boolean } = {}) {
   lastAction = null
+  lastListUrl = null
+  lastSummaryUrl = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   const items = opts.items ?? { scheduled: [SCHEDULED], triggers: [TRIGGER], active: [RUN], history: [{ ...RUN, id: 'run-2', status: 'succeeded', finishedAt: NOW }] }
 
-  await page.route('**/api/executions/summary', (r) => (opts.fail ? r.fulfill({ status: 500, json: {} }) : r.fulfill({ json: SUMMARY })))
+  await page.route('**/api/executions/summary**', (r) => {
+    lastSummaryUrl = r.request().url()
+    return opts.fail ? r.fulfill({ status: 500, json: {} }) : r.fulfill({ json: SUMMARY })
+  })
   await page.route('**/api/executions?**', (r) => {
+    lastListUrl = r.request().url()
     if (opts.fail) return r.fulfill({ status: 500, json: {} })
     const tab = new URL(r.request().url()).searchParams.get('tab') ?? 'scheduled'
     const list = items[tab] ?? []
@@ -91,7 +99,14 @@ async function stub(page: Page, opts: { items?: Record<string, unknown[]>; fail?
   })
   await page.route('**/api/agents?**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents', (r) => r.fulfill({ json: [{ _id: AGENT_ID, name: 'Ana', floorId: FLOOR_ID }] }))
-  await page.route('**/api/sectors**', (r) => r.fulfill({ json: [{ _id: 's1', name: 'Atendimento', floorId: FLOOR_ID, mode: 'orchestrated' }] }))
+  await page.route('**/api/sectors**', (r) =>
+    r.fulfill({
+      json: [
+        { _id: 's1', name: 'Atendimento', floorId: FLOOR_ID, mode: 'orchestrated', members: [{ agentId: AGENT_ID }] },
+        { _id: 's2', name: 'Compras', floorId: 'outro-andar', mode: 'orchestrated', members: [] },
+      ],
+    }),
+  )
   await page.route('**/api/widgets', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/building', (r) => r.fulfill({ json: BUILDING }))
   await page.route('**/api/floors**', (r) => r.fulfill({ json: [FLOOR] }))
@@ -198,9 +213,10 @@ test('on a phone the drawer carries it, filters hide behind a toggle and nothing
   await expect(page.getByTestId('executions-list')).toBeVisible()
 
   // Filters are behind the sheet toggle until asked for.
-  await expect(page.getByTestId('execution-filters')).toBeHidden()
+  await expect(page.getByTestId('filter-sheet')).toHaveCount(0)
   await page.getByTestId('toggle-filters').click()
-  await expect(page.getByTestId('execution-filters')).toBeVisible()
+  await expect(page.getByTestId('filter-sheet').getByTestId('execution-filters')).toBeVisible()
+  await page.keyboard.press('Escape')
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
@@ -208,4 +224,101 @@ test('on a phone the drawer carries it, filters hide behind a toggle and nothing
   // Same destination, same config: the drawer lists it too.
   await page.getByRole('button', { name: 'Abrir menu' }).click()
   await expect(page.getByRole('link', { name: 'Execuções' })).toBeVisible()
+})
+
+test('the filters are sent together, and the counters are asked the same question', async ({ page }) => {
+  await stub(page)
+  await page.goto('/executions')
+  await page.getByLabel('Filtrar por andar').selectOption(FLOOR_ID)
+  await page.getByLabel('Filtrar por setor').selectOption('s1')
+  await page.getByLabel('Filtrar por agente').selectOption(AGENT_ID)
+
+  await expect.poll(() => lastListUrl).toContain(`agentId=${AGENT_ID}`)
+  expect(lastListUrl).toContain(`floorId=${FLOOR_ID}`)
+  expect(lastListUrl).toContain('sectorId=s1')
+  // The header describes the same set as the rows.
+  await expect.poll(() => lastSummaryUrl).toContain(`agentId=${AGENT_ID}`)
+  expect(lastSummaryUrl).toContain('sectorId=s1')
+})
+
+test('changing the floor clears a sector that belongs to another one', async ({ page }) => {
+  await stub(page)
+  await page.goto('/executions')
+  await page.getByLabel('Filtrar por setor').selectOption('s2')
+  await expect(page.getByLabel('Filtrar por setor')).toHaveValue('s2')
+
+  await page.getByLabel('Filtrar por andar').selectOption(FLOOR_ID)
+  // s2 lives on another floor: it cannot survive the change.
+  await expect(page.getByLabel('Filtrar por setor')).toHaveValue('')
+  await expect.poll(() => lastListUrl).not.toContain('sectorId=s2')
+})
+
+test('choosing a sector offers only its agents', async ({ page }) => {
+  await stub(page)
+  await page.goto('/executions')
+  const agentPicker = page.getByLabel('Filtrar por agente')
+  await expect(agentPicker.getByRole('option')).toHaveCount(2) // "todos" + Ana
+
+  await page.getByLabel('Filtrar por setor').selectOption('s2') // a sector with no members
+  await expect(agentPicker.getByRole('option')).toHaveCount(1) // only "todos"
+})
+
+test('the mobile filters are a real sheet: overlay, Escape, Aplicar and Limpar', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await stub(page)
+  await page.goto('/executions')
+  await expect(page.getByTestId('filter-sheet')).toHaveCount(0)
+
+  await page.getByTestId('toggle-filters').click()
+  const sheet = page.getByTestId('filter-sheet')
+  await expect(sheet).toBeVisible()
+  await expect(sheet).toHaveAttribute('aria-modal', 'true')
+  // The page behind it must not scroll while it is open.
+  await expect.poll(() => page.evaluate(() => document.body.style.overflow)).toBe('hidden')
+
+  // Escape closes it and restores the scroll.
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('filter-sheet')).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => document.body.style.overflow)).not.toBe('hidden')
+
+  // Choosing inside the sheet does nothing until "Aplicar".
+  await page.getByTestId('toggle-filters').click()
+  await sheet.getByLabel('Filtrar por andar').selectOption(FLOOR_ID)
+  expect(lastListUrl).not.toContain('floorId=')
+  await page.getByTestId('apply-filters').click()
+  await expect(page.getByTestId('filter-sheet')).toHaveCount(0)
+  await expect.poll(() => lastListUrl).toContain(`floorId=${FLOOR_ID}`)
+
+  // The button announces how many are on, and "Limpar" empties them.
+  await expect(page.getByTestId('toggle-filters')).toContainText('(1)')
+  await page.getByTestId('toggle-filters').click()
+  await page.getByTestId('clear-filters').click()
+  await page.getByTestId('apply-filters').click()
+  await expect.poll(() => lastListUrl).not.toContain('floorId=')
+  await expect(page.getByTestId('toggle-filters')).not.toContainText('(')
+})
+
+test('the backdrop closes the sheet without applying', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await stub(page)
+  await page.goto('/executions')
+  await page.getByTestId('toggle-filters').click()
+  await page.getByTestId('filter-sheet').getByLabel('Filtrar por andar').selectOption(FLOOR_ID)
+  await page.getByTestId('filter-sheet-backdrop').click()
+  await expect(page.getByTestId('filter-sheet')).toHaveCount(0)
+  expect(lastListUrl).not.toContain('floorId=')
+})
+
+test('desktop keeps the filters visible, with no sheet at all', async ({ page }) => {
+  await stub(page)
+  await page.goto('/executions')
+  await expect(page.getByTestId('execution-filters')).toBeVisible()
+  await expect(page.getByTestId('filter-sheet')).toHaveCount(0)
+})
+
+test('the Central links to the full log', async ({ page }) => {
+  await stub(page)
+  await page.goto('/executions')
+  await page.getByTestId('open-logs').click()
+  await expect(page).toHaveURL(/\/settings\/logs$/)
 })

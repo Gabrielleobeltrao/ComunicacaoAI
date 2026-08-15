@@ -367,3 +367,131 @@ test('the header counters are measurements, not estimates', async () => {
   assert.equal(summary.runsWindow, 3, 'the sample behind the total, so it reads as a measurement')
   assert.equal(summary.windowDays, 30)
 })
+
+// --- filtros conjuntivos ------------------------------------------------------------
+// floor + sector + agent + status describe ONE set together. The bug this closes:
+// choosing an agent used to make the sector filter disappear, so the page answered a
+// question nobody asked.
+
+test('an agent filter and a sector filter narrow together, never one instead of the other', async () => {
+  const inSector = await seedAutomation({ name: 'Da Ana (no setor)' })
+  const outOfSector = await seedAutomation({ agentId: AGENT_B, floorId: FLOOR_B, name: 'Do Bruno (fora do setor)' })
+
+  // Agent A is in the sector, agent B is not.
+  const both = await listScheduled(OWNER, { sectorId: SECTOR, agentId: AGENT_A }, PAGE, NOW)
+  assert.equal(both.total, 1)
+  assert.equal(both.items[0].id, inSector.toString())
+
+  // The agent is real, the sector is real, but the agent is NOT in that sector:
+  // the honest answer is nothing, not "ignore the sector".
+  const contradictory = await listScheduled(OWNER, { sectorId: SECTOR, agentId: AGENT_B }, PAGE, NOW)
+  assert.equal(contradictory.total, 0, 'the sector must not be dropped just because an agent was chosen')
+  assert.ok(outOfSector)
+})
+
+test('every combination of floor, sector, agent and status is conjunctive', async () => {
+  await seedAutomation({ name: 'A ativa' })
+  await seedAutomation({ name: 'A pausada', status: 'paused', nextRunAt: null })
+  await seedAutomation({ name: 'B ativa', agentId: AGENT_B, floorId: FLOOR_B })
+
+  const count = async (f) => (await listScheduled(OWNER, f, PAGE, NOW)).total
+  assert.equal(await count({}), 3)
+  assert.equal(await count({ floorId: FLOOR_A }), 2)
+  assert.equal(await count({ floorId: FLOOR_A, status: 'active' }), 1)
+  assert.equal(await count({ floorId: FLOOR_A, agentId: AGENT_A, status: 'paused' }), 1)
+  assert.equal(await count({ floorId: FLOOR_A, sectorId: SECTOR, agentId: AGENT_A }), 2)
+  assert.equal(await count({ floorId: FLOOR_A, sectorId: SECTOR, agentId: AGENT_A, status: 'active' }), 1)
+  // A floor that contradicts the agent's floor: nothing, not "the floor wins".
+  assert.equal(await count({ floorId: FLOOR_B, agentId: AGENT_A }), 0)
+  // A sector that contradicts the floor: also nothing.
+  assert.equal(await count({ floorId: FLOOR_B, sectorId: SECTOR }), 0)
+})
+
+test('the run tabs filter conjunctively too', async () => {
+  const a = await seedAutomation()
+  const b = await seedAutomation({ agentId: AGENT_B, floorId: FLOOR_B })
+  await seedRun(a, { status: 'running' })
+  await seedRun(b, { status: 'running', floorId: FLOOR_B })
+
+  const count = async (f) => (await listRunsForCenter(OWNER, 'active', f, PAGE)).total
+  assert.equal(await count({}), 2)
+  assert.equal(await count({ agentId: AGENT_A }), 1)
+  assert.equal(await count({ sectorId: SECTOR }), 1)
+  assert.equal(await count({ sectorId: SECTOR, agentId: AGENT_B }), 0, 'Bruno is not in that sector')
+  assert.equal(await count({ floorId: FLOOR_B, agentId: AGENT_B }), 1)
+  assert.equal(await count({ floorId: FLOOR_A, agentId: AGENT_B }), 0)
+})
+
+test('the counters describe the SAME set the list is showing', async () => {
+  const a = await seedAutomation({ nextRunAt: new Date('2026-08-15T15:00:00Z') })
+  await seedAutomation({ agentId: AGENT_B, floorId: FLOOR_B, nextRunAt: new Date('2026-08-15T16:00:00Z'), name: 'Do Bruno' })
+  await seedAutomation({ publishedTrigger: { type: 'webhook', requireSignature: true }, webhookPublicKey: 'pk-a', nextRunAt: null, name: 'Gatilho da Ana' })
+  await seedAutomation({ publishedTrigger: { type: 'webhook', requireSignature: true }, webhookPublicKey: 'pk-b', nextRunAt: null, name: 'Gatilho do Bruno', agentId: AGENT_B, floorId: FLOOR_B })
+  await seedRun(a, { status: 'running', usage: { inputTokens: 10, outputTokens: 10 } })
+
+  const all = await executionSummary(OWNER, NOW, {})
+  assert.equal(all.next24h, 2)
+  assert.equal(all.activeTriggers, 2)
+  assert.equal(all.inFlight, 1)
+  assert.equal(all.tokensWindow, 20)
+
+  // Filtered to agent A's floor: the header must shrink with the list.
+  const scoped = await executionSummary(OWNER, NOW, { floorId: FLOOR_A })
+  assert.equal(scoped.next24h, 1)
+  assert.equal(scoped.activeTriggers, 1)
+  assert.equal(scoped.inFlight, 1)
+  assert.equal(scoped.tokensWindow, 20)
+
+  // Filtered to the other floor: same rule, other numbers.
+  const other = await executionSummary(OWNER, NOW, { floorId: FLOOR_B })
+  assert.equal(other.next24h, 1)
+  assert.equal(other.activeTriggers, 1)
+  assert.equal(other.inFlight, 0)
+  assert.equal(other.tokensWindow, 0)
+
+  // A combination that matches nobody yields zeros — never the unfiltered totals.
+  const impossible = await executionSummary(OWNER, NOW, { sectorId: SECTOR, agentId: AGENT_B })
+  assert.deepEqual(
+    { next24h: impossible.next24h, activeTriggers: impossible.activeTriggers, inFlight: impossible.inFlight, tokens: impossible.tokensWindow },
+    { next24h: 0, activeTriggers: 0, inFlight: 0, tokens: 0 },
+  )
+})
+
+test('a status filter never leaks into the counters', async () => {
+  await seedAutomation({ nextRunAt: new Date('2026-08-15T15:00:00Z') })
+  await seedAutomation({ publishedTrigger: { type: 'webhook', requireSignature: true }, webhookPublicKey: 'pk-c', nextRunAt: null })
+  // Looking at the paused rows must not claim there are no armed triggers.
+  const summary = await executionSummary(OWNER, NOW, { status: 'paused' })
+  assert.equal(summary.next24h, 1)
+  assert.equal(summary.activeTriggers, 1)
+})
+
+test('filters never cross the owner boundary', async () => {
+  await seedAutomation()
+  // Another account with the SAME sector and agent ids would be the worst case.
+  await automations().insertOne({
+    _id: new ObjectId(),
+    ownerId: OTHER,
+    buildingId: new ObjectId(),
+    floorId: FLOOR_A,
+    agentId: AGENT_A,
+    name: 'De outra conta',
+    description: '',
+    status: 'active',
+    trigger: { type: 'schedule', timezone: 'UTC', cron: '0 9 * * *' },
+    draftDefinition: {},
+    publishedTrigger: { type: 'schedule', timezone: 'UTC', cron: '0 9 * * *' },
+    nextRunAt: new Date('2026-08-15T13:00:00Z'),
+    currentVersion: 1,
+    lastPublishedVersion: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  })
+
+  const mine = await listScheduled(OWNER, { sectorId: SECTOR, agentId: AGENT_A, floorId: FLOOR_A }, PAGE, NOW)
+  assert.equal(mine.total, 1)
+  assert.equal(mine.items[0].name, 'Resumo diário')
+  // And the other owner's sector cannot be used to read into this one.
+  const theirs = await listScheduled(OTHER, { sectorId: SECTOR }, PAGE, NOW)
+  assert.equal(theirs.total, 0, 'the sector belongs to the other account, so it resolves to no agents')
+})

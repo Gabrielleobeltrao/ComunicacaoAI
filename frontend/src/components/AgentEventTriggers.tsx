@@ -5,6 +5,7 @@ import {
   eventTriggerExample,
   listEventTriggers,
   rotateEventTriggerSecret,
+  updateEventTrigger,
   type EventTrigger,
   type RoutineStatus,
 } from '../lib/agentRoutines'
@@ -138,9 +139,60 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
   )
 }
 
+// Editing is about the WORDS, never about the wiring: it PATCHes name and purpose,
+// and the endpoint, the credential, the signature requirement and the status are not
+// even fields here. Rotating a credential stays its own, confirmed action.
+function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: string; trigger: EventTrigger; onDone: () => void; onCancel: () => void }) {
+  const [name, setName] = useState(trigger.name)
+  const [objective, setObjective] = useState(trigger.objective)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async () => {
+    if (!objective.trim()) {
+      setError('Descreva o que o agente deve fazer quando o evento chegar.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await updateEventTrigger(agentId, trigger.id, { name: name.trim() || undefined, objective: objective.trim() })
+      onDone()
+    } catch {
+      setError('Não foi possível salvar as alterações.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card padding="16px" style={{ display: 'grid', gap: 12 }} data-testid="edit-trigger-form">
+      <Field label="O que o agente faz com o evento">
+        <Textarea rows={2} value={objective} onChange={(e) => setObjective(e.target.value)} data-testid="edit-trigger-objective" />
+      </Field>
+      <Field label="Nome">
+        <Input value={name} onChange={(e) => setName(e.target.value)} data-testid="edit-trigger-name" />
+      </Field>
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
+        O endereço, a credencial, a assinatura e o estado (ativo/pausado) não mudam ao salvar.
+      </p>
+      {error ? <p style={{ margin: 0, fontSize: 13, color: 'var(--status-blocked)' }} data-testid="edit-trigger-error">{error}</p> : null}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button onClick={() => void submit()} disabled={saving} data-testid="save-edit-trigger">
+          {saving ? 'Salvando…' : 'Salvar alterações'}
+        </Button>
+        <Button variant="ghost" onClick={onCancel} disabled={saving}>
+          Cancelar
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
 function TriggerCard({ agentId, trigger, onChanged, onSecret }: { agentId: string; trigger: EventTrigger; onChanged: () => void; onSecret: (secret: string) => void }) {
   const [busy, setBusy] = useState(false)
   const [showExample, setShowExample] = useState(false)
+  const [editing, setEditing] = useState(false)
   const [error, setError] = useState(false)
   const [pill, pillLabel] = PILL[trigger.status]
 
@@ -172,6 +224,19 @@ function TriggerCard({ agentId, trigger, onChanged, onSecret }: { agentId: strin
     }
   }
 
+  if (editing)
+    return (
+      <EditTriggerForm
+        agentId={agentId}
+        trigger={trigger}
+        onDone={() => {
+          setEditing(false)
+          onChanged()
+        }}
+        onCancel={() => setEditing(false)}
+      />
+    )
+
   return (
     <Card padding="14px 16px" style={{ display: 'grid', gap: 10 }} data-testid="event-trigger-card">
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -184,6 +249,9 @@ function TriggerCard({ agentId, trigger, onChanged, onSecret }: { agentId: strin
           <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>{trigger.objective}</p>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flexShrink: 0 }}>
+          <Button size="sm" variant="secondary" icon="pencil" onClick={() => setEditing(true)} disabled={busy} data-testid="edit-trigger">
+            Editar nome e finalidade
+          </Button>
           {trigger.status === 'active' ? (
             <Button size="sm" variant="ghost" icon="pause" onClick={() => void act('pause')} disabled={busy} data-testid="pause-trigger">
               Pausar

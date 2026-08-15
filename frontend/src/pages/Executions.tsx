@@ -230,9 +230,42 @@ function RunRow({ item }: { item: RunItem }) {
 
 interface FilterOptions {
   floors: { id: string; name: string }[]
-  sectors: { _id: string; name: string; floorId?: string }[]
+  sectors: { _id: string; name: string; floorId?: string; members?: { agentId: string }[] }[]
   agents: { _id: string; name: string; floorId?: string }[]
 }
+
+// The filters are conjunctive on the server, so the pickers must be conjunctive
+// here too: choosing a floor or a sector NARROWS what an agent can be, and a
+// selection that no longer fits is cleared instead of being sent as an impossible
+// combination.
+export function narrowFilters(next: ExecutionFilters, options: FilterOptions): ExecutionFilters {
+  const out: ExecutionFilters = { ...next }
+  if (out.floorId) {
+    const sector = options.sectors.find((s) => s._id === out.sectorId)
+    if (sector && sector.floorId && sector.floorId !== out.floorId) out.sectorId = undefined
+    const agent = options.agents.find((a) => a._id === out.agentId)
+    if (agent && agent.floorId && agent.floorId !== out.floorId) out.agentId = undefined
+  }
+  if (out.sectorId && out.agentId) {
+    const sector = options.sectors.find((s) => s._id === out.sectorId)
+    const members = sector?.members?.map((m) => m.agentId) ?? []
+    // A sector we know the membership of, that does not contain this agent: the
+    // agent goes, because the sector is the wider choice the user just made.
+    if (sector && !members.includes(out.agentId)) out.agentId = undefined
+  }
+  return out
+}
+
+// Agents the current floor/sector selection allows.
+export function agentsFor(filters: ExecutionFilters, options: FilterOptions): FilterOptions['agents'] {
+  const sector = filters.sectorId ? options.sectors.find((s) => s._id === filters.sectorId) : undefined
+  const members = sector?.members?.map((m) => m.agentId)
+  return options.agents
+    .filter((a) => !filters.floorId || !a.floorId || a.floorId === filters.floorId)
+    .filter((a) => !members || members.includes(a._id))
+}
+
+export const activeFilterCount = (f: ExecutionFilters): number => [f.floorId, f.sectorId, f.agentId, f.status].filter(Boolean).length
 
 function Filters({
   tab,
@@ -245,15 +278,15 @@ function Filters({
   options: FilterOptions
   onChange: (next: ExecutionFilters) => void
 }) {
-  const set = (key: keyof ExecutionFilters, value: string) => onChange({ ...filters, [key]: value || undefined })
-  // Narrow the pickers to the chosen floor, so the lists stay short and coherent.
+  const set = (key: keyof ExecutionFilters, value: string) => onChange(narrowFilters({ ...filters, [key]: value || undefined }, options))
+  // Narrow the pickers to what the wider choices already allow.
   const sectors = filters.floorId ? options.sectors.filter((s) => !s.floorId || s.floorId === filters.floorId) : options.sectors
-  const agents = filters.floorId ? options.agents.filter((a) => !a.floorId || a.floorId === filters.floorId) : options.agents
+  const agents = agentsFor(filters, options)
   return (
     <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))' }} data-testid="execution-filters">
       <Select
         value={filters.floorId ?? ''}
-        onChange={(e) => onChange({ ...filters, floorId: e.target.value || undefined, sectorId: undefined, agentId: undefined })}
+        onChange={(e) => onChange(narrowFilters({ ...filters, floorId: e.target.value || undefined }, options))}
         options={[{ value: '', label: 'Todos os andares' }, ...options.floors.map((f) => ({ value: f.id, label: f.name }))]}
         aria-label="Filtrar por andar"
       />
@@ -270,6 +303,106 @@ function Filters({
         aria-label="Filtrar por agente"
       />
       <Select value={filters.status ?? ''} onChange={(e) => set('status', e.target.value)} options={statusOptionsFor(tab)} aria-label="Filtrar por estado" />
+    </div>
+  )
+}
+
+// The mobile filter SHEET — a real overlay, not a hidden div: it dims the page,
+// closes on Escape or on the backdrop, locks the background scroll while it is open,
+// and only applies what the user chose when they say so. Desktop never sees it; the
+// filters stay inline there.
+function FilterSheet({
+  open,
+  tab,
+  filters,
+  options,
+  onApply,
+  onClose,
+}: {
+  open: boolean
+  tab: ExecutionTab
+  filters: ExecutionFilters
+  options: FilterOptions
+  onApply: (next: ExecutionFilters) => void
+  onClose: () => void
+}) {
+  // Edited in the sheet, committed on "Aplicar" — a phone should not refetch on
+  // every tap of a picker.
+  const [draft, setDraft] = useState<ExecutionFilters>(filters)
+  useEffect(() => {
+    if (open) setDraft(filters)
+  }, [open, filters])
+
+  useEffect(() => {
+    if (!open) return
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = previous
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, onClose])
+
+  if (!open) return null
+  return (
+    <div className="lg:hidden" role="dialog" aria-modal="true" aria-label="Filtros" data-testid="filter-sheet" style={{ position: 'fixed', inset: 0, zIndex: 60 }}>
+      <div onClick={onClose} data-testid="filter-sheet-backdrop" style={{ position: 'absolute', inset: 0, background: 'rgba(15,20,32,.5)' }} />
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          maxHeight: '85dvh',
+          overflowY: 'auto',
+          display: 'grid',
+          gap: 14,
+          padding: '18px 16px calc(18px + var(--safe-bottom))',
+          background: 'var(--surface-card)',
+          borderTopLeftRadius: 'var(--radius-panel)',
+          borderTopRightRadius: 'var(--radius-panel)',
+          boxShadow: '0 -16px 40px rgba(22,24,31,.24)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 800, color: 'var(--text-heading)' }}>Filtros</span>
+          <button
+            onClick={onClose}
+            aria-label="Fechar filtros"
+            data-testid="close-filter-sheet"
+            style={{ display: 'grid', placeItems: 'center', width: 'var(--hit-min)', height: 'var(--hit-min)', background: 'transparent', border: 0, color: 'var(--text-muted)', cursor: 'pointer' }}
+          >
+            <Icon name="x" size={20} />
+          </button>
+        </div>
+
+        <Filters tab={tab} filters={draft} options={options} onChange={setDraft} />
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button
+            block
+            onClick={() => {
+              onApply(draft)
+              onClose()
+            }}
+            data-testid="apply-filters"
+          >
+            Aplicar
+          </Button>
+          <Button
+            block
+            variant="ghost"
+            onClick={() => setDraft({})}
+            data-testid="clear-filters"
+          >
+            Limpar
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -294,7 +427,8 @@ export function Executions() {
     try {
       const [listed, counters] = await Promise.all([
         listExecutions<ScheduledItem | TriggerItem | RunItem>(tab, filters, { limit: PAGE_SIZE, skip: page * PAGE_SIZE }),
-        getExecutionSummary(),
+        // The same filters: the header describes the set the rows come from.
+        getExecutionSummary(filters),
       ])
       setItems(listed.items)
       setTotal(listed.total)
@@ -369,9 +503,16 @@ export function Executions() {
       title="Execuções"
       subtitle="Tudo o que os agentes fazem sozinhos: agendado, aguardando evento, em andamento e concluído."
       actions={
-        <Button variant="secondary" size="sm" icon="refresh-cw" onClick={() => void load()} data-testid="refresh-executions">
-          Atualizar
-        </Button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Link to="/settings/logs" style={{ textDecoration: 'none' }}>
+            <Button variant="ghost" size="sm" icon="scroll-text" data-testid="open-logs">
+              Ver logs
+            </Button>
+          </Link>
+          <Button variant="secondary" size="sm" icon="refresh-cw" onClick={() => void load()} data-testid="refresh-executions">
+            Atualizar
+          </Button>
+        </div>
       }
     >
       <div style={{ display: 'grid', gap: 16 }}>
@@ -414,15 +555,16 @@ export function Executions() {
               </button>
             ))}
           </div>
-          <Button variant="ghost" size="sm" icon="sliders-horizontal" onClick={() => setFiltersOpen((v) => !v)} className="lg:hidden" data-testid="toggle-filters">
-            Filtros
+          <Button variant="secondary" size="sm" icon="sliders-horizontal" onClick={() => setFiltersOpen(true)} className="lg:hidden" data-testid="toggle-filters">
+            Filtros{activeFilterCount(filters) ? ` (${activeFilterCount(filters)})` : ''}
           </Button>
         </div>
 
-        {/* Desktop: filters always visible. Mobile: behind the sheet toggle. */}
-        <div className={filtersOpen ? '' : 'hidden lg:block'}>
+        {/* Desktop: filters always visible. Mobile: inside the sheet below. */}
+        <div className="hidden lg:block">
           <Filters tab={tab} filters={filters} options={options} onChange={changeFilters} />
         </div>
+        <FilterSheet open={filtersOpen} tab={tab} filters={filters} options={options} onApply={changeFilters} onClose={() => setFiltersOpen(false)} />
 
         {loading ? (
           <p style={{ fontSize: 14, color: 'var(--text-muted)' }} data-testid="executions-loading">

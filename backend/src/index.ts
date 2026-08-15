@@ -195,6 +195,9 @@ import { automationRouter } from './routes/automationRoutes.js'
 import { runRouter } from './routes/runRoutes.js'
 import { executionRouter } from './routes/executionRoutes.js'
 import { ensureExecutionIndexes } from './automations/executionCenter.js'
+import { logRouter } from './routes/logRoutes.js'
+import { auditRequests } from './routes/auditMiddleware.js'
+import { ensureAuditIndexes } from './audit.js'
 import { agentRoutineRouter } from './routes/agentRoutineRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
@@ -235,6 +238,11 @@ app.use(
 )
 // Twilio posts its webhooks as application/x-www-form-urlencoded.
 app.use(express.urlencoded({ extended: false }))
+
+// Every change to the account is recorded ONCE, here: the middleware sees the
+// request line and the response status, never the body. It also stamps the request
+// id that correlates whatever a single request produced.
+app.use(auditRequests)
 
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
@@ -322,6 +330,9 @@ app.use('/api/runs', requireAuth, runRouter)
 // Central de execuções: one owner-scoped read model over scheduled work, armed
 // triggers, work in flight and history. Read-only — it starts nothing.
 app.use('/api/executions', requireAuth, executionRouter)
+// Logs e auditoria: read-only timelines (executions + changes). No write route
+// exists here on purpose — an audit trail that can be edited is not one.
+app.use('/api/logs', requireAuth, logRouter)
 // Agent routines + history (agent-owned scheduled automations). Sub-paths that this
 // router doesn't handle fall through to the inline /api/agents/:agentId routes below.
 app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
@@ -3822,6 +3833,9 @@ async function start() {
   // Indexes behind the Central de execuções listings.
   ensureExecutionIndexes().catch((error) => {
     console.error('ensureExecutionIndexes failed:', error)
+  })
+  ensureAuditIndexes().catch((error) => {
+    console.error('ensureAuditIndexes failed:', error)
   })
   // Idempotent, non-destructive: stamps ownerType/ownerId on knowledge written
   // before sectors could own a base. Safe to run on every boot.

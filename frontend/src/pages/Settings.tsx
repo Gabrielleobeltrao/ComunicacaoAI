@@ -171,6 +171,16 @@ export function Settings() {
           </div>
         </Section>
 
+        <Section title="Logs e auditoria" description="Tudo o que foi executado e tudo o que foi alterado nesta conta, com quem fez e quando.">
+          <Link
+            to="/settings/logs"
+            className="inline-flex items-center gap-2 rounded-xl border border-(--border-subtle) bg-(--surface-card) px-4 py-3 text-sm transition hover:border-(--border-strong)"
+            data-testid="settings-logs-link"
+          >
+            Abrir logs e auditoria
+          </Link>
+        </Section>
+
         <Section title="Chaves de API">
           <ApiKeysPanel />
         </Section>

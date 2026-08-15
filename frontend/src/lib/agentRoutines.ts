@@ -18,7 +18,12 @@ export interface Routine {
   cron: string
   recurrence: Recurrence | null
   scheduleLabel: string
+  // What the edit form opens with.
+  input: string
+  outputFormat: 'text' | 'markdown' | 'json'
+  delivery: { provider: 'email' | 'telegram'; connectionId: string } | null
   lastPublishedVersion: number | null
+  nextRunAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -128,3 +133,16 @@ export function eventTriggerExample(endpoint: string | null, requireSignature: b
   lines.push(`  -d '{"exemplo":"dados do evento"}'`)
   return lines.join('\n')
 }
+
+// Delivery destinations available to a routine. The API returns public metadata
+// only — a connection's credentials never reach the browser.
+export interface DeliveryConnection {
+  id: string
+  provider: 'email' | 'telegram'
+  name: string
+  status: string
+}
+export const listDeliveryConnections = () =>
+  fetch(`${API_URL}/api/connections`, req('GET'))
+    .then(json<DeliveryConnection[]>)
+    .then((list) => list.filter((c) => c.provider === 'email' || c.provider === 'telegram'))

@@ -3,9 +3,12 @@ import type { AgentSummary, ActivationMode } from '../lib/types'
 import {
   createRoutine,
   getAgentHistory,
+  listDeliveryConnections,
   listRoutines,
   routineAction,
+  updateRoutine,
   type AgentHistory,
+  type DeliveryConnection,
   type Recurrence,
   type Routine,
   type RoutineStatus,
@@ -41,31 +44,32 @@ const sectionTitle = (text: string) => (
 )
 
 // ---- Rotinas ----------------------------------------------------------------
-function NewRoutineForm({ agentId, onCreated }: { agentId: string; onCreated: () => void }) {
-  const [open, setOpen] = useState(false)
-  const [objective, setObjective] = useState('')
-  const [name, setName] = useState('')
-  const [kind, setKind] = useState<Recurrence['kind']>('daily')
-  const [time, setTime] = useState('07:00')
-  const [weekdays, setWeekdays] = useState<number[]>([1])
-  const [day, setDay] = useState(1)
-  const [timezone, setTimezone] = useState('America/Sao_Paulo')
-  const [input, setInput] = useState('')
-  const [outputFormat, setOutputFormat] = useState<'text' | 'markdown' | 'json'>('markdown')
+// ONE form for creating and editing: an edit that could drift from a create is how
+// a field ends up saveable only on the way in. Editing PATCHes the same routine —
+// the backend rebuilds and republishes the definition and never touches the
+// active/paused status, so a paused routine stays paused after a change.
+function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; routine?: Routine; onDone: () => void; onCancel: () => void }) {
+  const editing = Boolean(routine)
+  const [objective, setObjective] = useState(routine?.objective ?? '')
+  const [name, setName] = useState(routine?.name ?? '')
+  const [kind, setKind] = useState<Recurrence['kind']>(routine?.recurrence?.kind ?? 'daily')
+  const [time, setTime] = useState(routine?.recurrence?.time ?? '07:00')
+  const [weekdays, setWeekdays] = useState<number[]>(routine?.recurrence?.kind === 'weekly' ? routine.recurrence.weekdays : [1])
+  const [day, setDay] = useState(routine?.recurrence?.kind === 'monthly' ? routine.recurrence.day : 1)
+  const [timezone, setTimezone] = useState(routine?.timezone || 'America/Sao_Paulo')
+  const [input, setInput] = useState(routine?.input ?? '')
+  const [outputFormat, setOutputFormat] = useState<'text' | 'markdown' | 'json'>(routine?.outputFormat ?? 'markdown')
+  const [connectionId, setConnectionId] = useState(routine?.delivery?.connectionId ?? '')
+  const [connections, setConnections] = useState<DeliveryConnection[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const reset = () => {
-    setObjective('')
-    setName('')
-    setInput('')
-    setKind('daily')
-    setTime('07:00')
-    setWeekdays([1])
-    setDay(1)
-    setOpen(false)
-    setError(null)
-  }
+  // Destinations are optional: with none configured the field simply says so.
+  useEffect(() => {
+    listDeliveryConnections()
+      .then(setConnections)
+      .catch(() => setConnections([]))
+  }, [])
 
   const buildRecurrence = (): Recurrence =>
     kind === 'daily' ? { kind, time } : kind === 'weekly' ? { kind, time, weekdays: [...weekdays].sort((a, b) => a - b) } : { kind, time, day }
@@ -81,44 +85,47 @@ function NewRoutineForm({ agentId, onCreated }: { agentId: string; onCreated: ()
     }
     setSaving(true)
     setError(null)
+    const chosen = connections.find((c) => c.id === connectionId)
+    const payload = {
+      name: name.trim() || undefined,
+      objective: objective.trim(),
+      recurrence: buildRecurrence(),
+      timezone,
+      input: input.trim() || undefined,
+      outputFormat,
+      delivery: chosen ? { provider: chosen.provider, connectionId: chosen.id } : null,
+    }
     try {
-      await createRoutine(agentId, { name: name.trim() || undefined, objective: objective.trim(), recurrence: buildRecurrence(), timezone, input: input.trim() || undefined, outputFormat })
-      reset()
-      onCreated()
+      if (routine) await updateRoutine(agentId, routine.id, payload)
+      else await createRoutine(agentId, payload)
+      onDone()
     } catch {
-      setError('Não foi possível criar a rotina.')
+      setError(editing ? 'Não foi possível salvar as alterações.' : 'Não foi possível criar a rotina.')
     } finally {
       setSaving(false)
     }
   }
 
-  if (!open)
-    return (
-      <Button variant="secondary" icon="plus" onClick={() => setOpen(true)}>
-        Nova rotina
-      </Button>
-    )
-
   return (
-    <Card padding="16px" style={{ display: 'grid', gap: 12 }}>
+    <Card padding="16px" style={{ display: 'grid', gap: 12 }} data-testid="routine-form">
       <Field label="Objetivo" hint="O que o agente deve fazer a cada execução.">
-        <Textarea rows={2} value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Ex.: consolidar as notícias políticas de ontem em um relatório." />
+        <Textarea rows={2} value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Ex.: consolidar as notícias políticas de ontem em um relatório." data-testid="routine-objective" />
       </Field>
       <Field label="Nome (opcional)">
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Relatório diário de notícias" />
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Relatório diário de notícias" data-testid="routine-name" />
       </Field>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <Field label="Frequência">
           <Select value={kind} onChange={(e) => setKind(e.target.value as Recurrence['kind'])} options={[{ value: 'daily', label: 'Todo dia' }, { value: 'weekly', label: 'Toda semana' }, { value: 'monthly', label: 'Todo mês' }]} />
         </Field>
         <Field label="Horário">
-          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} data-testid="routine-time" />
         </Field>
       </div>
       {kind === 'weekly' ? (
         <Field label="Dias da semana">
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {WEEKDAYS.map((label, i) => {
+            {WEEKDAYS.map((weekdayLabel, i) => {
               const on = weekdays.includes(i)
               return (
                 <button
@@ -127,7 +134,7 @@ function NewRoutineForm({ agentId, onCreated }: { agentId: string; onCreated: ()
                   onClick={() => setWeekdays((w) => (on ? w.filter((d) => d !== i) : [...w, i]))}
                   style={{ height: 34, padding: '0 12px', borderRadius: 'var(--radius-control)', border: `1px solid ${on ? 'var(--accent-500)' : 'var(--border-subtle)'}`, background: on ? 'var(--accent-50)' : 'var(--surface-card)', color: on ? 'var(--accent-700)' : 'var(--text-muted)', fontFamily: 'var(--font-ui)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
                 >
-                  {label}
+                  {weekdayLabel}
                 </button>
               )
             })}
@@ -141,21 +148,29 @@ function NewRoutineForm({ agentId, onCreated }: { agentId: string; onCreated: ()
       ) : null}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <Field label="Fuso horário">
-          <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} />
+          <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} data-testid="routine-timezone" />
         </Field>
         <Field label="Formato de saída">
           <Select value={outputFormat} onChange={(e) => setOutputFormat(e.target.value as 'text' | 'markdown' | 'json')} options={[{ value: 'markdown', label: 'Markdown' }, { value: 'text', label: 'Texto' }, { value: 'json', label: 'JSON' }]} />
         </Field>
       </div>
       <Field label="Entrada fixa (opcional)" hint="Texto entregue ao agente em toda execução.">
-        <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ex.: foco em política nacional" />
+        <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ex.: foco em política nacional" data-testid="routine-input" />
       </Field>
-      {error ? <p style={{ margin: 0, color: 'var(--status-blocked)', fontSize: 13 }}>{error}</p> : null}
+      <Field label="Destino do resultado (opcional)" hint={connections.length ? 'Para onde o resultado é enviado ao terminar.' : 'Nenhum destino conectado ainda — o resultado fica no histórico.'}>
+        <Select
+          value={connectionId}
+          onChange={(e) => setConnectionId(e.target.value)}
+          options={[{ value: '', label: 'Nenhum — guardar no histórico' }, ...connections.map((c) => ({ value: c.id, label: `${c.name} (${c.provider === 'email' ? 'e-mail' : 'Telegram'})` }))]}
+          aria-label="Destino do resultado"
+        />
+      </Field>
+      {error ? <p style={{ margin: 0, color: 'var(--status-blocked)', fontSize: 13 }} data-testid="routine-error">{error}</p> : null}
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={submit} disabled={saving}>
-          Criar rotina
+        <Button onClick={() => void submit()} disabled={saving} data-testid="save-routine">
+          {saving ? 'Salvando…' : editing ? 'Salvar alterações' : 'Criar rotina'}
         </Button>
-        <Button variant="ghost" onClick={reset} disabled={saving}>
+        <Button variant="ghost" onClick={onCancel} disabled={saving}>
           Cancelar
         </Button>
       </div>
@@ -165,50 +180,77 @@ function NewRoutineForm({ agentId, onCreated }: { agentId: string; onCreated: ()
 
 function RoutineRow({ agentId, routine, onChanged }: { agentId: string; routine: Routine; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [failed, setFailed] = useState(false)
   const [pill, pillLabel] = ROUTINE_PILL[routine.status]
   const act = async (action: 'activate' | 'pause' | 'archive') => {
     setBusy(true)
+    setFailed(false)
     try {
       await routineAction(agentId, routine.id, action)
       onChanged()
+    } catch {
+      setFailed(true)
     } finally {
       setBusy(false)
     }
   }
+
+  // The editor opens in place, filled with what this routine actually is.
+  if (editing)
+    return (
+      <RoutineForm
+        agentId={agentId}
+        routine={routine}
+        onDone={() => {
+          setEditing(false)
+          onChanged()
+        }}
+        onCancel={() => setEditing(false)}
+      />
+    )
+
   return (
-    <Card padding="14px 16px" style={{ display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'space-between' }}>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontFamily: 'var(--font-ui)', fontWeight: 700, color: 'var(--text-heading)' }}>{routine.name}</span>
-          <StatusPill status={pill} label={pillLabel} pulse={false} />
+    <Card padding="14px 16px" style={{ display: 'grid', gap: 8 }} data-testid="routine-row">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontFamily: 'var(--font-ui)', fontWeight: 700, color: 'var(--text-heading)' }}>{routine.name}</span>
+            <StatusPill status={pill} label={pillLabel} pulse={false} />
+          </div>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>
+            {routine.scheduleLabel} · {routine.timezone}
+          </p>
+          <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-subtle)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }}>{routine.objective}</p>
         </div>
-        <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>
-          {routine.scheduleLabel} · {routine.timezone}
-        </p>
-        <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-subtle)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }}>{routine.objective}</p>
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
+          <Button variant="secondary" size="sm" icon="pencil" onClick={() => setEditing(true)} disabled={busy} data-testid="edit-routine">
+            Editar
+          </Button>
+          {routine.status === 'active' ? (
+            <Button variant="ghost" size="sm" icon="pause" onClick={() => void act('pause')} disabled={busy}>
+              Pausar
+            </Button>
+          ) : routine.status !== 'archived' ? (
+            <Button variant="ghost" size="sm" icon="play" onClick={() => void act('activate')} disabled={busy}>
+              Ativar
+            </Button>
+          ) : null}
+          {routine.status !== 'archived' ? (
+            <Button variant="ghost" size="sm" icon="archive" onClick={() => void act('archive')} disabled={busy}>
+              Arquivar
+            </Button>
+          ) : null}
+        </div>
       </div>
-      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-        {routine.status === 'active' ? (
-          <Button variant="secondary" size="sm" icon="pause" onClick={() => act('pause')} disabled={busy}>
-            Pausar
-          </Button>
-        ) : routine.status !== 'archived' ? (
-          <Button variant="secondary" size="sm" icon="play" onClick={() => act('activate')} disabled={busy}>
-            Ativar
-          </Button>
-        ) : null}
-        {routine.status !== 'archived' ? (
-          <Button variant="ghost" size="sm" icon="archive" onClick={() => act('archive')} disabled={busy}>
-            Arquivar
-          </Button>
-        ) : null}
-      </div>
+      {failed ? <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-blocked)' }}>Não foi possível concluir. Tente de novo.</p> : null}
     </Card>
   )
 }
 
 export function AgentRoutines({ agent }: { agent: AgentSummary }) {
   const [routines, setRoutines] = useState<Routine[]>([])
+  const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(true)
   const load = useCallback(() => {
     setLoading(true)
@@ -227,8 +269,22 @@ export function AgentRoutines({ agent }: { agent: AgentSummary }) {
           {sectionTitle('Rotinas')}
           <p style={{ margin: '-6px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>Tarefas agendadas que este agente executa sozinho.</p>
         </div>
-        <NewRoutineForm agentId={agent._id} onCreated={load} />
+        {creating ? null : (
+          <Button variant="secondary" icon="plus" onClick={() => setCreating(true)} data-testid="new-routine">
+            Nova rotina
+          </Button>
+        )}
       </div>
+      {creating ? (
+        <RoutineForm
+          agentId={agent._id}
+          onDone={() => {
+            setCreating(false)
+            load()
+          }}
+          onCancel={() => setCreating(false)}
+        />
+      ) : null}
       {loading ? (
         <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Carregando…</p>
       ) : visible.length === 0 ? (

@@ -27,10 +27,21 @@ import { oid } from './http.js'
 export const agentRoutineRouter = Router({ mergeParams: true })
 
 function serializeRoutine(a: Automation) {
-  const trigger = a.draftDefinition.trigger
-  const cron = trigger.type === 'schedule' ? trigger.cron : ''
-  const timezone = trigger.type === 'schedule' ? trigger.timezone : ''
+  // WHEN it fires is read from the published trigger — the draft is only a fallback
+  // for a routine created before that field existed. The rest of the shape comes
+  // from the draft, which a routine keeps identical to its published version:
+  // createRoutine and updateRoutine always publish immediately.
+  const trigger = a.publishedTrigger ?? a.draftDefinition.trigger
+  const cron = trigger?.type === 'schedule' ? trigger.cron : ''
+  const timezone = trigger?.type === 'schedule' ? trigger.timezone : ''
   const recurrence = cron ? cronToRecurrence(cron) : null
+  const definition = a.draftDefinition
+  const agentStep = (definition?.steps ?? []).find((s) => s.type === 'agent.execute')
+  const config = (agentStep?.config ?? {}) as { input?: unknown; instruction?: unknown; objective?: unknown }
+  // Routines written before `input` was stored on its own carry it inside the
+  // composed instruction; recover it so the editor never loses what the user typed.
+  const legacyInput = typeof config.instruction === 'string' ? config.instruction.split('\n\nEntrada: ')[1] : undefined
+  const delivery = (definition?.deliveries ?? [])[0]
   return {
     id: a._id.toString(),
     name: a.name,
@@ -40,7 +51,12 @@ function serializeRoutine(a: Automation) {
     cron,
     recurrence,
     scheduleLabel: recurrence ? describeRecurrence(recurrence) : cron,
+    // Everything the edit form needs to open already filled in.
+    input: typeof config.input === 'string' ? config.input : (legacyInput ?? ''),
+    outputFormat: definition?.resultFormat ?? 'markdown',
+    delivery: delivery ? { provider: delivery.provider, connectionId: delivery.connectionId.toString() } : null,
     lastPublishedVersion: a.lastPublishedVersion,
+    nextRunAt: a.nextRunAt ?? null,
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,
   }

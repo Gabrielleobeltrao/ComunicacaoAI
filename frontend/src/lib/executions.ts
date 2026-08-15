@@ -114,7 +114,18 @@ export function executionsQuery(tab: ExecutionTab, filters: ExecutionFilters, pa
 export const listExecutions = <T>(tab: ExecutionTab, filters: ExecutionFilters, page: { limit: number; skip: number }) =>
   get<ExecutionPage<T>>(executionsQuery(tab, filters, page))
 
-export const getExecutionSummary = () => get<ExecutionSummary>('/api/executions/summary')
+// The counters answer for the CURRENT filters, so the header and the list can never
+// describe two different sets.
+export function summaryQuery(filters: ExecutionFilters): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(filters)) {
+    if (value) params.set(key, value)
+  }
+  const query = params.toString()
+  return `/api/executions/summary${query ? `?${query}` : ''}`
+}
+
+export const getExecutionSummary = (filters: ExecutionFilters = {}) => get<ExecutionSummary>(summaryQuery(filters))
 
 // --- presentation ---------------------------------------------------------------
 

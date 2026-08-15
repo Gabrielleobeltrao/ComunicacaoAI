@@ -43,7 +43,16 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
       enabled: true,
       dependsOn: [],
       inputMapping: {},
-      config: { agentId: agentId.toString(), objective: spec.objective, instruction, format, ...(spec.sectorId ? { sectorId: spec.sectorId } : {}) },
+      config: {
+        agentId: agentId.toString(),
+        objective: spec.objective,
+        instruction,
+        format,
+        // Kept apart from the composed instruction so the editor can prefill the
+        // field the user actually typed, instead of re-parsing prose.
+        ...(spec.input ? { input: spec.input } : {}),
+        ...(spec.sectorId ? { sectorId: spec.sectorId } : {}),
+      },
       timeoutMs: 120_000,
       retryPolicy: { maxAttempts: Math.max(1, Math.min(spec.retryMaxAttempts ?? 1, 5)), backoffMs: 2000 },
       continueOnError: false,
