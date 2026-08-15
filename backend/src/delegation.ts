@@ -8,7 +8,8 @@
 // Pure + dependency-injected: no DB/provider imports here, so the safety logic is
 // unit-tested without IO. Production wiring lives in ./delegationWiring.ts.
 import { ObjectId } from 'mongodb'
-import { buildRetrievalQuery } from './retrievalQuery.js'
+import { buildRetrievalQuery, formatContextWithSources } from './retrievalQuery.js'
+import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
 import type { Agent } from './agents.js'
 import type { ResolvedTool } from './agentTools.js'
 import type { AgentExecutionRequest, AgentExecutionResult, AgentOutputFormat } from './agentRuntime.js'
@@ -200,7 +201,13 @@ export interface DelegationDeps {
   // Curated knowledge for an execution: the agent's own base, plus the sector's when
   // the run happens in an EXPLICIT sector context. Returns passages only (no LLM
   // call); a failure returns none so the run continues ungrounded.
-  retrieveContext?: (agentId: ObjectId, query: string, opts: { sectorId?: ObjectId | null }) => Promise<string[]>
+  // The WHOLE result: turning a failure into [] hid the difference between "the
+  // base said nothing" and "the base could not be consulted".
+  retrieveContext?: (
+    agentId: ObjectId,
+    query: string,
+    opts: { sectorId?: ObjectId | null },
+  ) => Promise<{ context: string[]; sources?: { documentId: string | null; title: string | null }[]; status?: string; failed?: boolean }>
 }
 
 interface TaskRun {
@@ -209,6 +216,8 @@ interface TaskRun {
   toolCalls: number
   startedAt: Date
   finishedAt: Date
+  // Safe scalars for the telemetry: statuses and counts, never content.
+  telemetry?: Record<string, string | number | boolean>
 }
 
 // Emit a per-agent telemetry event for a delegation/sector run (fire-and-forget via
@@ -217,7 +226,22 @@ interface TaskRun {
 // once its telemetry and its charge are persisted. Failures are settled, never
 // rethrown — the model already ran, so a persistence problem must not become a
 // second inference.
-async function emitAgentEvent(deps: DelegationDeps, ctx: DelegationContext, target: Agent, source: 'delegation' | 'sector', eventKey: string, run: { usage: { inputTokens: number; outputTokens: number }; toolCalls: number; startedAt: Date; finishedAt: Date }, status: 'succeeded' | 'failed' | 'timeout' | 'canceled'): Promise<void> {
+async function emitAgentEvent(
+  deps: DelegationDeps,
+  ctx: DelegationContext,
+  target: Agent,
+  source: 'delegation' | 'sector',
+  eventKey: string,
+  run: {
+    usage: { inputTokens: number; outputTokens: number }
+    toolCalls: number
+    startedAt: Date
+    finishedAt: Date
+    // Safe operational facts, the same vocabulary the routine step records.
+    telemetry?: Record<string, string | number | boolean>
+  },
+  status: 'succeeded' | 'failed' | 'timeout' | 'canceled',
+): Promise<void> {
   const pending: (Promise<void> | void)[] = []
   pending.push(deps.recordEvent?.({
     eventKey,
@@ -235,7 +259,12 @@ async function emitAgentEvent(deps: DelegationDeps, ctx: DelegationContext, targ
     toolCalls: run.toolCalls,
     parentEventKey: ctx.currentEventKey ?? null,
     rootEventKey: ctx.rootEventKey ?? eventKey,
-    metadata: { correlationId: ctx.correlationId, depth: ctx.depth + 1 },
+    metadata: {
+      correlationId: ctx.correlationId,
+      depth: ctx.depth + 1,
+      durationMs: run.finishedAt.getTime() - run.startedAt.getTime(),
+      ...(run.telemetry ?? {}),
+    },
   }))
   // Owner accounting for this delegated inference — once per event key.
   if (run.usage.inputTokens || run.usage.outputTokens) pending.push(deps.chargeUsage?.(ctx.ownerId, run.usage, `event:${eventKey}`))
@@ -254,6 +283,24 @@ async function isCanceled(ctx: DelegationContext): Promise<boolean> {
   return ctx.isCanceled ? Boolean(await ctx.isCanceled()) : false
 }
 
+// The target requires curated knowledge and it was not available. Structured on
+// purpose: 'unavailable' (we could not look), 'empty' (we looked and found nothing
+// relevant) and 'no_base' (there is nothing to look in) are different problems with
+// different fixes.
+export class GroundingRequiredError extends Error {
+  readonly code = 'knowledge_unavailable'
+  constructor(readonly grounding: string) {
+    super(`o agente exige base de conhecimento (${grounding})`)
+    this.name = 'GroundingRequiredError'
+  }
+}
+
+const GROUNDING_REASON: Record<string, string> = {
+  unavailable: 'a base de conhecimento não pôde ser consultada',
+  empty: 'nenhum trecho relevante foi encontrado na base',
+  no_base: 'o agente não tem base de conhecimento configurada',
+}
+
 // A format a caller asked for, or undefined to let the target decide.
 function asOutputFormat(value: unknown): AgentOutputFormat | undefined {
   return value === 'text' || value === 'markdown' || value === 'json' ? value : undefined
@@ -263,6 +310,34 @@ function asOutputFormat(value: unknown): AgentOutputFormat | undefined {
 export function stageInstruction(instruction: string, expectedOutput?: string): string {
   const expected = (expectedOutput ?? '').trim()
   return expected ? `${instruction}\n\nO resultado desta etapa deve ser: ${expected}` : instruction
+}
+
+// What a stage's hand-off is checked for, honestly.
+//
+// With a JSON contract the check is STRUCTURAL: the output must parse and, when the
+// agent declares a schema, satisfy it — the next stage is not released otherwise.
+// With a free-text contract the only deterministic check possible is that something
+// was produced: `expectedOutput` is prose, and nothing here claims to have verified
+// that the prose was honoured. That limitation is deliberate and documented.
+export function checkStageOutput(
+  output: string,
+  target: Pick<Agent, 'defaultOutputFormat' | 'outputJsonSchema'>,
+  format?: AgentOutputFormat,
+): { ok: true } | { ok: false; problem: string } {
+  if (!output.trim()) return { ok: false, problem: 'a etapa não produziu resultado' }
+  const effective = format ?? target.defaultOutputFormat
+  if (effective !== 'json') return { ok: true }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(output.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim())
+  } catch {
+    return { ok: false, problem: 'a etapa deveria produzir JSON e não produziu' }
+  }
+  if (target.outputJsonSchema) {
+    const validation = validateAgainstSchema(target.outputJsonSchema, parsed)
+    if (!validation.valid) return { ok: false, problem: `o JSON da etapa não cumpre o contrato: ${describeErrors(validation.errors)}` }
+  }
+  return { ok: true }
 }
 
 // Run one target agent as a task under `ctx` (ctx.callerAgentId is the delegator).
@@ -296,7 +371,21 @@ async function runAgentTask(
   // The question includes the objective AND the input, serialized when it is an
   // object — a delegation that hands over JSON used to retrieve nothing.
   const query = buildRetrievalQuery({ objective, input })
-  const context = query ? await deps.retrieveContext?.(target._id, query, { sectorId: sectorId ?? null }).catch(() => []) : undefined
+  // A rejected promise is 'unavailable', not "no knowledge": the two must never be
+  // confused, and only the first one is a reason to refuse.
+  const retrieved = query && deps.retrieveContext
+    ? await deps.retrieveContext(target._id, query, { sectorId: sectorId ?? null }).catch(() => ({ context: [], sources: [], status: 'unavailable', failed: true }))
+    : { context: [], sources: [], status: 'no_base' as const, failed: false }
+  const passages = Array.isArray(retrieved) ? (retrieved as string[]) : (retrieved.context ?? [])
+  const sources = Array.isArray(retrieved) ? [] : (retrieved.sources ?? [])
+  const grounding = (Array.isArray(retrieved) ? undefined : retrieved.status) ?? (!Array.isArray(retrieved) && retrieved.failed ? 'unavailable' : passages.length ? 'ok' : 'empty')
+  // The target's own rule, honoured wherever it runs: a delegated agent that must
+  // answer from curated knowledge does not answer without it, and nothing is spent.
+  if (target.requireGrounding && grounding !== 'ok') {
+    throw new GroundingRequiredError(grounding)
+  }
+  // Numbered references, so the answer can cite what it used. The owner is not named.
+  const context = formatContextWithSources(passages, sources)
   const startedAt = new Date()
   // The TARGET decides how it answers: an agent configured to produce JSON is not
   // forced into Markdown because the caller did not think about it.
@@ -306,7 +395,7 @@ async function runAgentTask(
     instructions: objective,
     // Passages are untrusted DATA (agentRuntime marks them as such), never system
     // instructions.
-    context: context && context.length ? context : undefined,
+    context: context.length ? context : undefined,
     input,
     provider: target.provider,
     model: target.model,
@@ -318,8 +407,18 @@ async function runAgentTask(
     limits: { timeoutMs: TASK_TIMEOUT_MS, maxOutputChars: MAX_OUTPUT_CHARS },
   })
   ctx.budget.tokensSpent += res.usage.inputTokens + res.usage.outputTokens
+  const telemetry: Record<string, string | number | boolean> = {
+    grounding,
+    ragChunks: passages.length,
+    ragSources: new Set(sources.map((source) => source.documentId).filter(Boolean)).size,
+    outputFormat: effectiveFormat,
+    outputValid: res.format?.valid !== false,
+    outputRepaired: res.format?.repaired === true,
+    toolsAvailable: tools.length,
+    toolsExecuted: res.toolCalls.filter((c) => c.ok).length,
+  }
   // "Ações com ferramenta" counts calls that actually COMPLETED, not attempts.
-  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date() }
+  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry }
 }
 
 // ---- delegate_to_agent ------------------------------------------------------
@@ -354,6 +453,16 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
     await emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, run, 'succeeded')
     return { ok: true, result: j({ status: 'ok', agent: target.name, output: run.output }) }
   } catch (error) {
+    // The target requires curated knowledge and there was none: a distinct outcome,
+    // reported with WHICH of the three problems it was, and with no inference spent.
+    if (error instanceof GroundingRequiredError) {
+      await deps.finishDelegation(recId, { status: 'failed', error: error.message })
+      await emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date() }, 'failed')
+      return {
+        ok: false,
+        result: j({ status: 'knowledge_unavailable', code: error.code, grounding: error.grounding, agent: target.name, reason: GROUNDING_REASON[error.grounding] ?? error.message }),
+      }
+    }
     const message = error instanceof Error ? error.message : 'falha na delegação'
     // A cancellation or a timeout is not a plain failure — both the log and the
     // telemetry record their own terminal status.
@@ -373,6 +482,9 @@ async function runWithRetry(deps: DelegationDeps, ctx: DelegationContext, target
       return await runAgentTask(deps, ctx, target, objective, input, format, eventKey, sectorId)
     } catch (error) {
       lastError = error
+      // 'empty' and 'no_base' are configuration, not weather: retrying them cannot
+      // change the answer. 'unavailable' can, so it keeps its attempts.
+      if (error instanceof GroundingRequiredError && error.grounding !== 'unavailable') break
     }
   }
   throw lastError instanceof Error ? lastError : new Error('falha na execução')
@@ -471,10 +583,12 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
         const instruction = stageInstruction(stage.instruction || objective, stage.expectedOutput)
         try {
           const out = await recordChildRun(deps, ctx, agent, instruction, recId, (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id))
-          // Checked BEFORE the next stage consumes it: an empty hand-off used to
-          // propagate silently down the pipeline. Retries already happened inside
-          // runWithRetry, so nothing completed is called twice here.
-          if (!out.trim()) throw new Error('a etapa não produziu resultado')
+          // Checked BEFORE the next stage consumes it. Structural when the stage
+          // produces JSON; otherwise only that something came out (see
+          // checkStageOutput). Retries already happened inside runWithRetry, so
+          // nothing completed is called twice here.
+          const verdict = checkStageOutput(out, agent, format)
+          if (!verdict.ok) throw new Error(verdict.problem)
           outputs[stage.id] = out
           output = out
         } catch (error) {
@@ -572,7 +686,11 @@ export function buildDelegationTools(ctx: DelegationContext, deps: DelegationDep
         properties: {
           agentId: { type: 'string', description: 'id do agente alvo' },
           objective: { type: 'string', description: 'o que o agente deve fazer' },
-          input: { type: 'string', description: 'dados de entrada (opcional)' },
+          // Any JSON value: a string, or the object/array the caller already has.
+          // `additionalProperties: true` is what lets an OBJECT through — the
+          // validator refuses unknown keys by default.
+          input: { description: 'dados de entrada (texto ou JSON, opcional)', additionalProperties: true },
+          format: { type: 'string', enum: ['text', 'markdown', 'json'], description: 'formato da resposta (opcional; padrão: o do agente alvo)' },
         },
         required: ['agentId', 'objective'],
         additionalProperties: false,
@@ -587,7 +705,8 @@ export function buildDelegationTools(ctx: DelegationContext, deps: DelegationDep
         properties: {
           sectorId: { type: 'string', description: 'id do setor' },
           objective: { type: 'string', description: 'o que a equipe deve fazer' },
-          input: { type: 'string', description: 'dados de entrada (opcional)' },
+          input: { description: 'dados de entrada (texto ou JSON, opcional)', additionalProperties: true },
+          format: { type: 'string', enum: ['text', 'markdown', 'json'], description: 'formato da resposta (opcional)' },
         },
         required: ['sectorId', 'objective'],
         additionalProperties: false,

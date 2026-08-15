@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { createTool, deleteTool, getTool, listTools, toPublicTool, ToolValidationError, UNSAFE_METHODS, updateTool } from './tools.js'
 import { executeToolCall } from './toolExecution.js'
-import { pullToolFromAgents } from './agents.js'
+import { MASKED_HEADER_VALUE, pullToolFromAgents, toPublicAgent } from './agents.js'
 import { readiness, startEmbeddedEngine, stopEmbeddedEngine } from './automations/engine.js'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
@@ -428,7 +428,7 @@ function isValidWebhookUrl(value: unknown): value is string {
 
 // Validate + normalize the agent's custom HTTP tools from the request body.
 // Returns { tools: undefined } when the field wasn't sent (leave as-is).
-function parseTools(raw: unknown): { tools?: AgentTool[]; error?: string } {
+function parseTools(raw: unknown, existing: AgentTool[] = []): { tools?: AgentTool[]; error?: string } {
   if (raw === undefined) return { tools: undefined }
   if (!Array.isArray(raw)) return { error: 'tools must be a list' }
   if (raw.length > MAX_TOOLS) return { error: `An agent can have at most ${MAX_TOOLS} tools` }
@@ -456,7 +456,13 @@ function parseTools(raw: unknown): { tools?: AgentTool[]; error?: string } {
         if (typeof ho.key !== 'string' || typeof ho.value !== 'string') {
           return { error: `Tool "${name}": header key/value must be text` }
         }
-        if (ho.key.trim()) headers.push({ key: ho.key.trim(), value: ho.value })
+        if (ho.key.trim()) {
+          // The API never returns a legacy header value, so the browser can only
+          // send back the mask: that means "leave it as it is", never "erase it".
+          const key = ho.key.trim()
+          const stored = existing.find((t) => t.name === name)?.headers?.find((h) => h.key === key)?.value
+          headers.push({ key, value: ho.value === MASKED_HEADER_VALUE && stored !== undefined ? stored : ho.value })
+        }
       }
     }
 
@@ -1831,13 +1837,13 @@ app.post('/api/agents', requireAuth, async (req, res) => {
   })
   // Name the new agent in the audit trail (id + name only — never the body).
   auditEntity(res, { id: agent._id.toString(), label: agent.name, floorId: agent.officeId?.toString() })
-  res.status(201).json(agent)
+  res.status(201).json(toPublicAgent(agent))
 })
 
 app.get('/api/agents', requireAuth, async (req, res) => {
   const floorId = await scopedFloorId(res.locals.userId, req.query.floorId)
   const agents = await listAgents(res.locals.userId, floorId)
-  res.json(agents.map((a) => ({ ...a, floorId: a.officeId?.toString() ?? null })))
+  res.json(agents.map((a) => toPublicAgent({ ...a, floorId: a.officeId?.toString() ?? null })))
 })
 
 // Per-agent roster stats for the Agentes cards (conversas/leads/atendimento).
@@ -2079,7 +2085,10 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
   if (typeof cheapAuxModel === 'boolean') updates.cheapAuxModel = cheapAuxModel
   if (typeof promptCaching === 'boolean') updates.promptCaching = promptCaching
   if (tools !== undefined) {
-    const { tools: parsedTools, error } = parseTools(tools)
+    // The current tools are needed to restore a header value the browser could only
+    // have received masked.
+    const current = await getAgentById(res.locals.userId, new ObjectId(agentId))
+    const { tools: parsedTools, error } = parseTools(tools, current?.tools ?? [])
     if (error) {
       res.status(400).json({ error })
       return
@@ -2130,7 +2139,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Agent not found' })
     return
   }
-  res.json(agent)
+  res.json(toPublicAgent(agent))
 })
 
 app.delete('/api/agents/:agentId', requireAuth, async (req, res) => {
@@ -2285,7 +2294,7 @@ app.get('/api/agents/:agentId/overview', requireAuth, async (req, res) => {
   // "Entregas" is only offered when this agent really sent something.
   const agentHasDeliveries = (await sentDeliveriesByAgent(ownerId)).has(agentId)
   res.json({
-    agent: { ...agent, floorId: agent.officeId?.toString() ?? null },
+    agent: toPublicAgent({ ...agent, floorId: agent.officeId?.toString() ?? null }),
     stats,
     // KPI availability for the "Métrica do card" picker (data-source aware) and the
     // currently-resolved card metric.

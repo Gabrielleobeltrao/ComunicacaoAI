@@ -437,7 +437,7 @@ test('a JSON input is delegated as data and is part of the retrieval question', 
   let askedQuery = ''
   const f = fakeDeps([a, b], {
     runTask: async (req) => ((request = req), { output: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
-    depsPatch: { retrieveContext: async (_id, query) => ((askedQuery = query), []) },
+    depsPatch: { retrieveContext: async (_id, query) => ((askedQuery = query), { context: [], sources: [], status: 'empty', failed: false }) },
   })
   const del = buildDelegationTools(ctxFor(a), f.deps).find((t) => t.name === 'delegate_to_agent')
   const payload = { pedido: 'A-1', itens: [1, 2] }

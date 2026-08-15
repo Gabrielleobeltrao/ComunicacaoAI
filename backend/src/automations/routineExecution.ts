@@ -15,7 +15,7 @@ import type { AgentExecutionRequest, AgentExecutionResult } from '../agentRuntim
 import type { ResolvedTool } from '../agentTools.js'
 import type { AgentEventStatus, RecordAgentEventInput } from '../agentEvents.js'
 import type { StepUsage } from './runner.js'
-import { buildRetrievalQuery } from '../retrievalQuery.js'
+import { buildRetrievalQuery, formatContextWithSources } from '../retrievalQuery.js'
 
 // The knowledge the step requires could not be consulted (the embedding or the
 // vector search failed), and this agent is configured to refuse rather than answer
@@ -68,7 +68,7 @@ export interface RoutineExecutionDeps {
     agentId: ObjectId,
     query: string,
     opts: { verifiedSectorId: ObjectId | null },
-  ) => Promise<{ context: string[]; failed: boolean; status?: string; sources?: unknown[] }>
+  ) => Promise<{ context: string[]; failed: boolean; status?: string; sources?: { documentId: string | null; title: string | null }[] }>
   resolveTools: (agent: Agent, ownerId: string) => Promise<ResolvedTool[]>
   apiKeyFor: (ownerId: string, provider: string) => Promise<string | null>
   runTask: (req: AgentExecutionRequest) => Promise<AgentExecutionResult>
@@ -165,6 +165,8 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       attempt: call.attempt,
       grounding,
       ragChunks: retrieved.context.length,
+      // How many DISTINCT documents backed the answer — a count, never a title.
+      ragSources: new Set((retrieved.sources ?? []).map((s) => s.documentId).filter(Boolean)).size,
       toolsAvailable: 0,
     },
   }
@@ -179,8 +181,10 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       objective: String(agent.objective ?? call.objective ?? ''),
       instructions: call.instructions,
       input: call.input,
-      // Step outputs + curated passages, both handled as untrusted data.
-      context: [...call.context, ...retrieved.context],
+      // Step outputs + curated passages, both handled as untrusted data. The curated
+      // ones carry a numbered reference (title + document id) so the answer can cite
+      // them; the owner is never named to the model.
+      context: [...call.context, ...formatContextWithSources(retrieved.context, retrieved.sources ?? [])],
       provider: agent.provider,
       model: agent.model,
       apiKey,
@@ -224,7 +228,10 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
             // The shape that was asked for and whether it had to be corrected —
             // never the answer itself.
             outputFormat,
+            outputValid: result.format?.valid !== false,
             outputRepaired: result.format?.repaired === true,
+            toolsExecuted: result.toolCalls.filter((c) => c.ok).length,
+            durationMs: Date.now() - startedAt.getTime(),
           },
         }),
       sleep,

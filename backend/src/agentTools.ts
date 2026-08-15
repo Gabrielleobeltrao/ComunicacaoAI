@@ -92,7 +92,14 @@ export function resolveHttpTool(tool: AgentTool): ResolvedTool {
     description: tool.description,
     inputSchema: executable.inputSchema,
     run: async (args) => {
-      const outcome = await executeToolCall(executable, args, { callsSoFar, autonomous: true })
+      const outcome = await executeToolCall(executable, args, {
+        callsSoFar,
+        autonomous: true,
+        // The legacy format keeps its credential in a plain header of any name, so
+        // every header it carries is treated as one: masked in the detail and
+        // redacted from the body, the response and any error.
+        allHeadersAreSecret: true,
+      })
       callsSoFar++
       return { ok: outcome.ok, result: outcome.result }
     },

@@ -26,3 +26,23 @@ export function buildRetrievalQuery(
     .join('\n')
     .slice(0, maxChars)
 }
+
+// A passage the model can CITE. The reference carries the document's title and its
+// id and nothing else: the owner is never named to the model, and the passage itself
+// stays marked as untrusted data by the objective (agentRuntime).
+export interface CitableSource {
+  documentId: string | null
+  title: string | null
+}
+
+export function formatContextWithSources(context: string[], sources: CitableSource[] = []): string[] {
+  return context.map((passage, index) => {
+    const source = sources[index]
+    const title = source?.title ? String(source.title).replace(/\s+/g, ' ').slice(0, 120) : null
+    const documentId = source?.documentId ? String(source.documentId) : null
+    // Without provenance the passage is still numbered, so a citation can refer to
+    // it — it just has nothing to name.
+    const label = [title, documentId ? `doc ${documentId}` : null].filter(Boolean).join(' · ')
+    return `[${index + 1}]${label ? ` ${label}` : ''}\n${passage}`
+  })
+}

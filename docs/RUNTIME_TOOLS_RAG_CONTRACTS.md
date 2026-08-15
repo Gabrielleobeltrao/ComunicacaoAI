@@ -104,3 +104,79 @@ no teste.
 - `knowledge.test.mjs` — score mínimo, proveniência preservada.
 - E2E — bloco "Contrato de saída" em Avançado, schema só em JSON, seções simples
   sem schema.
+
+---
+
+# Correções de produção (rodada final)
+
+Seis defeitos encontrados na revisão do runtime autônomo. Nenhum contrato público
+mudou; os campos novos continuam opcionais.
+
+## 1. A correção de JSON não repete efeitos
+
+A segunda chamada existe só para reformatar a resposta que já existe. Ela agora roda
+**sem ferramenta nenhuma** — antes recebia a mesma lista e podia repetir um POST, um
+GET ou uma delegação enquanto "consertava" o JSON. Os tokens das duas chamadas
+continuam cobrados; os `toolCalls` reportados são apenas os da execução original,
+porque a correção não fez nenhum.
+
+## 2. O contrato declarado das delegações
+
+`delegate_to_agent` e `delegate_to_sector` declaravam `input: { type: 'string' }` e
+nem declaravam `format`, enquanto o código já aceitava JSON e um formato. Agora
+`input` aceita texto ou qualquer valor JSON (`additionalProperties: true` no
+sub-schema é o que deixa um OBJETO passar pelo validador) e `format` é um enum
+`text|markdown|json`. `additionalProperties: false` na raiz continua: um campo
+inventado é recusado. Os testes passam pelo `runResolvedTool`, o mesmo despachante
+que os dois provedores usam.
+
+## 3. requireGrounding vale em delegação e setor
+
+`DelegationDeps.retrieveContext` devolvia `string[]`, o que transformava falha em
+lista vazia e apagava a diferença entre "não achei" e "não consegui procurar". Agora
+o `RetrievalResult` inteiro viaja (context, sources, status, failed). Antes de
+chamar o modelo, um alvo com `requireGrounding` e status diferente de `ok` encerra
+sem inferência e devolve `{"status":"knowledge_unavailable","grounding":...}`
+distinguindo `unavailable`, `empty` e `no_base`. No pipeline, `empty` e `no_base` não
+consomem tentativas do `retryPolicy` (repetir não muda a resposta); `unavailable`
+sim. O setor continua entrando apenas quando já validado no escopo do owner.
+
+## 4. Credenciais de ferramentas legadas
+
+O formato antigo guarda a credencial num header comum, que pode se chamar qualquer
+coisa — a heurística por nome não bastava. Toda ferramenta legada agora executa com
+`allHeadersAreSecret`: **todos** os seus headers entram na máscara forçada do detalhe
+e seus valores na redaction do corpo, da resposta ecoada e da mensagem de erro. Na
+saída da API o valor é substituído por `***` (`toPublicAgent`, aplicado nas quatro
+rotas que devolvem o agente) e, no salvamento, um valor que volta mascarado significa
+"mantenha o guardado" — nada é apagado. Escrita legada (POST/PUT/PATCH/DELETE)
+continua bloqueada até autorização explícita, e a recusa aponta a conversão segura
+para Custom Tool, onde a credencial fica criptografada.
+
+## 5. Procedência utilizável
+
+Cada trecho vai ao modelo como `[n] Título · doc <id>` seguido do texto, mantendo a
+marcação de dado não confiável. O `ownerId` nunca aparece. Na telemetria vai apenas
+a contagem de documentos distintos (`ragSources`) — nunca título, trecho, prompt ou
+resposta.
+
+## 6. Pipeline e observabilidade, sem exagero na promessa
+
+`expectedOutput` entra na instrução da etapa. A verificação antes da próxima etapa é:
+
+- **estrutural** quando a etapa produz JSON — parse e, havendo `outputJsonSchema`,
+  validação contra ele;
+- **apenas não-vazio** para contratos em texto. `expectedOutput` é prosa e não há
+  como verificar deterministicamente que foi cumprida; o código não afirma que
+  verificou. Essa é a limitação, declarada.
+
+Rotina, delegação e setor registram os mesmos escalares seguros: `grounding`,
+`ragChunks`, `ragSources`, `outputFormat`, `outputValid`, `outputRepaired`,
+`toolsAvailable`, `toolsExecuted`, `durationMs` e tokens.
+
+## Caminhos de chamada auditados
+
+`claude.ts` e `openai.ts` despacham exclusivamente por `runResolvedTool`; toda
+ferramenta HTTP (custom, legada) executa por `executeToolCall`. Built-ins e
+delegação têm adapters próprios, mas passam pela validação de argumentos do
+despachante e pelo teto de 6 iterações.

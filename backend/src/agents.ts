@@ -185,6 +185,23 @@ function deriveCallerPolicy(a: Agent): DelegationPolicy {
   return (a.allowedCallerAgentIds?.length ?? 0) > 0 ? 'selected' : 'all'
 }
 
+// The legacy per-agent tool format keeps its credential in a plain header, and that
+// header can be called anything. Nothing outside the executor may see those values:
+// they are masked on every way out of the API, and a masked value sent back on save
+// means "keep the stored one" (see parseTools).
+export const MASKED_HEADER_VALUE = '***'
+
+export function toPublicAgent<T extends { tools?: AgentTool[] }>(agent: T): T {
+  if (!agent.tools?.length) return agent
+  return {
+    ...agent,
+    tools: agent.tools.map((tool) => ({
+      ...tool,
+      headers: (tool.headers ?? []).map((header) => ({ key: header.key, value: header.value ? MASKED_HEADER_VALUE : '' })),
+    })),
+  }
+}
+
 // Fill the agent-as-primary-unit fields for documents written before they existed,
 // so every reader sees a complete Agent without a destructive backfill.
 export function withAgentDefaults(a: Agent): Agent {

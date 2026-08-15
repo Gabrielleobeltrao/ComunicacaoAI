@@ -174,6 +174,8 @@ export function AgentToolsEditor({
                   placeholder="Authorization"
                   className={`${miniInput} flex-1`}
                 />
+                {/* The API never returns a stored header value — it arrives masked.
+                    Leaving the mask untouched keeps what is saved; typing replaces it. */}
                 <input
                   value={h.value}
                   onChange={(e) =>
@@ -181,8 +183,13 @@ export function AgentToolsEditor({
                       headers: tool.headers.map((x, i) => (i === hi ? { ...x, value: e.target.value } : x)),
                     })
                   }
+                  onFocus={(e) => {
+                    if (e.target.value === '***') e.target.select()
+                  }}
                   placeholder="Bearer ..."
+                  title={h.value === '***' ? 'Valor guardado. Digite para substituir.' : undefined}
                   className={`${miniInput} flex-1`}
+                  data-testid="legacy-header-value"
                 />
                 <button
                   type="button"

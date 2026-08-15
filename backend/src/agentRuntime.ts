@@ -234,7 +234,10 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
   ]
   let repairResult: AgentReplyResult
   try {
-    const repairCall = reply(objective, req.context ?? [], '', repairHistory, req.provider ?? null, req.model ?? null, req.apiKey ?? null, '', '', '', req.enableCaching ?? true, req.tools ?? [])
+    // NO TOOLS. This second call exists only to reformat the answer the model has
+    // already produced; giving it the tool list again would let it repeat a POST, a
+    // delegation or any other side effect while "fixing" the JSON.
+    const repairCall = reply(objective, req.context ?? [], '', repairHistory, req.provider ?? null, req.model ?? null, req.apiKey ?? null, '', '', '', req.enableCaching ?? true, [])
     const ms = req.limits?.timeoutMs
     repairResult = ms && ms > 0 ? await withTimeout(repairCall, ms) : await repairCall
   } catch (error) {
@@ -251,7 +254,9 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
     output: second.output,
     json: second.json,
     usage,
-    toolCalls: [...result.toolCalls, ...repairResult.toolCalls],
+    // Only the original execution's calls: the repair ran without tools, so it has
+    // none, and inventing entries here would misreport what happened.
+    toolCalls: result.toolCalls,
     format: { requested, valid: true, repaired: true },
   }
 }

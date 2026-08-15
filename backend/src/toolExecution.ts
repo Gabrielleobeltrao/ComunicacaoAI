@@ -94,6 +94,12 @@ function fillTemplate(template: string, args: Record<string, unknown>, encode: b
 export interface ExecuteToolOptions {
   // Enforced by the caller's counter; passed in so the message can be specific.
   callsSoFar?: number
+  // Treat EVERY header this tool carries as a credential: mask the values wherever
+  // the request is shown, and redact them from anything echoed back. Used by the
+  // legacy per-agent format, which has no credential store — its secret sits in a
+  // plain header that may be called anything at all ("X-Minha-Chave"), so a
+  // name-based heuristic cannot be trusted to find it.
+  allHeadersAreSecret?: boolean
   // True when an AGENT is calling on its own initiative. A method that can change
   // something on the far side then requires the tool's explicit
   // `allowAutonomousExecution`. The owner's manual test leaves this false — that
@@ -125,7 +131,7 @@ export async function executeToolCall(tool: ExecutableTool, rawArgs: unknown, op
   if (options.autonomous && UNSAFE_METHODS.includes(tool.method) && !tool.allowAutonomousExecution) {
     return unavailable(
       'autonomous_execution_not_authorized',
-      `"${tool.name}" usa ${tool.method} e não está autorizada a executar sozinha. O proprietário precisa liberar a execução autônoma nas configurações da ferramenta.`,
+      `"${tool.name}" usa ${tool.method} e não está autorizada a executar sozinha. O proprietário precisa liberar a execução autônoma nas configurações da ferramenta — ou recriá-la como Ferramenta (Custom Tool), onde a credencial fica guardada criptografada e a autorização é explícita.`,
     )
   }
 
@@ -165,6 +171,14 @@ export async function executeToolCall(tool: ExecutableTool, rawArgs: unknown, op
   const secrets: string[] = []
   // Whatever these are called, they carry a credential and are never displayed.
   const credentialHeaders: string[] = []
+  if (options.allHeadersAreSecret) {
+    for (const [key, value] of Object.entries(headers)) {
+      credentialHeaders.push(key)
+      // Redacted from the body, the response and any error message too — an API that
+      // echoes what it received must not become the leak.
+      if (value) secrets.push(value)
+    }
+  }
   const auth = tool.auth ?? { kind: 'none' as const }
   if (auth.kind !== 'none') {
     let secret: string
