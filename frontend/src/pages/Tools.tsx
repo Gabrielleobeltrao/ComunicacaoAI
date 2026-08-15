@@ -9,7 +9,19 @@ import { Button, Card, Dialog, Tag } from '../ui'
 // The Tools area: create, edit, duplicate, test, enable/disable, delete, and see
 // which agents use each one. Every string comes from the dictionary — this page
 // is the pattern for the rest of the UI to follow.
+//
+// It is also the "Personalizados" tab of the Apps page: the panel below is the whole
+// surface, so the two places are literally the same code rather than two that drift.
 export function Tools() {
+  const t = useT()
+  return (
+    <AppLayout current="/apps" title={t('tools.title')} subtitle={t('tools.subtitle')}>
+      <CustomToolsPanel />
+    </AppLayout>
+  )
+}
+
+export function CustomToolsPanel() {
   const t = useT()
   const [tools, setTools] = useState<Tool[]>([])
   const [loading, setLoading] = useState(true)
@@ -62,7 +74,7 @@ export function Tools() {
   const sorted = useMemo(() => [...tools].sort((a, b) => a.name.localeCompare(b.name)), [tools])
 
   return (
-    <AppLayout current="/tools" title={t('tools.title')} subtitle={t('tools.subtitle')}>
+    <>
       <div style={{ display: 'grid', gap: 16 }}>
         <div>
           <Button icon="plus" onClick={() => setCreating(true)} data-testid="new-tool">
@@ -117,6 +129,6 @@ export function Tools() {
       <Dialog open={creating || editing !== null} onClose={close} title={editing ? t('common.edit') : t('tools.new')} width={720}>
         <ToolForm key={editing?._id ?? draft?.name ?? 'new'} tool={editing ?? draft} onSaved={onSaved} onCancel={close} />
       </Dialog>
-    </AppLayout>
+    </>
   )
 }

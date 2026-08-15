@@ -41,6 +41,8 @@ export const NAV_V2: NavItemDef[] = [
   { key: 'conversations', label: 'Conversas', icon: 'message-circle', scope: 'communication', group: 'communication', path: () => '/chats', activePrefixes: () => ['/chats'] },
   // Building-wide observability over the agents' automatic work. It is a control
   // surface, not an editor: every row links back to the agent that owns the work.
+  // What the account can reach: connected once here, granted per agent.
+  { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'control', path: () => '/apps', activePrefixes: () => ['/apps'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
 ]
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { LOCALE_LABEL, LOCALES, useI18n } from '../i18n'
 import type { ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { ApiKeysPanel, GoogleIntegration, MonthlyCapField } from '../components/ApiKeySettings'
+import { ApiKeysPanel, MonthlyCapField } from '../components/ApiKeySettings'
 import { AppLayout } from '../components/AppLayout'
 import { API_URL } from '../lib/api'
 import { signOut, useSession } from '../lib/auth-client'
@@ -185,8 +185,17 @@ export function Settings() {
           <ApiKeysPanel />
         </Section>
 
-        <Section title="Integrações">
-          <GoogleIntegration />
+        <Section
+          title="Apps e integrações"
+          description="Conectar contas externas, ver o que cada App acessa e definir o que cada agente pode usar."
+        >
+          <Link
+            to="/apps"
+            className="inline-flex items-center gap-2 rounded-xl border border-(--border-subtle) bg-(--surface-card) px-4 py-3 text-sm transition hover:border-(--border-strong)"
+            data-testid="settings-apps-link"
+          >
+            Abrir Apps
+          </Link>
         </Section>
       </div>
     </AppLayout>

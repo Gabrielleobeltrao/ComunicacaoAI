@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Tools } from './pages/Tools'
+import { Apps } from './pages/Apps'
 import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
@@ -44,9 +44,11 @@ function App() {
 
       {v2 ? (
         <>
-          {/* Tools are owner-scoped, not floor-scoped: one catalogue for the
-              whole account, assigned per agent. */}
-          <Route path="/tools" element={<P><Tools /></P>} />
+          {/* Apps are owner-scoped, not floor-scoped: one catalogue for the whole
+              account, connected once and granted per agent. /tools keeps working
+              and lands on the Personalizados tab, favourites intact. */}
+          <Route path="/apps" element={<P><Apps /></P>} />
+          <Route path="/tools" element={<Navigate to="/apps?tab=custom" replace />} />
           {/* The Central de execuções covers the WHOLE building (it filters by
               floor, it is not scoped to one), so it lives at the top level. */}
           <Route path="/executions" element={<P><Executions /></P>} />
@@ -89,7 +91,8 @@ function App() {
           <Route path="/agents" element={<P><Agents /></P>} />
           <Route path="/agents/:agentId" element={<P><AgentDetail /></P>} />
           <Route path="/agents/:agentId/:section" element={<P><AgentDetail /></P>} />
-          <Route path="/tools" element={<P><Tools /></P>} />
+          <Route path="/apps" element={<P><Apps /></P>} />
+          <Route path="/tools" element={<Navigate to="/apps?tab=custom" replace />} />
           {/* Same canonical addresses with the pivot flag off, so no link dies. */}
           <Route path="/executions" element={<P><Executions /></P>} />
           <Route path="/settings/logs" element={<P><Logs /></P>} />
