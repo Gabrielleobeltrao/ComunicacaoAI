@@ -68,32 +68,55 @@ async function backfillConnectionAppKeys(): Promise<number> {
 // the same change. The installation MIRRORS the connection so Apps can show it,
 // grant it and revoke it; `publicMetadata.tokenStore` records where the tokens live
 // so the next round can move them without guessing.
-async function ensureGoogleInstallations(): Promise<number> {
+export async function ensureGoogleInstallation(ownerId: string): Promise<boolean> {
   const google = getApp('google')
-  if (!google) return 0
+  const integration = google ? await integrations.findOne({ ownerId, provider: 'google' }) : null
+  if (!google || !integration) return false
+
+  const publicMetadata = { tokenStore: 'integrations', ...(integration.accountEmail ? { account: integration.accountEmail } : {}) }
+  const grantedScopes = integration.scope ? integration.scope.split(' ').filter(Boolean) : (google.auth.scopes ?? [])
+  const existing = await installations.findOne({ ownerId, appKey: 'google' })
+  if (existing) {
+    // Reconnecting an account that was revoked must bring it back, with the scopes
+    // Google actually granted this time.
+    await installations.updateOne(
+      { _id: existing._id, ownerId },
+      { $set: { status: 'connected', publicMetadata, grantedScopes, appVersion: google.version, updatedAt: new Date() } },
+    )
+    return false
+  }
+
+  const now = new Date()
+  await installations.insertOne({
+    _id: new ObjectId(),
+    ownerId,
+    buildingId: null,
+    appKey: 'google',
+    appVersion: google.version,
+    name: integration.accountEmail ? `Google (${integration.accountEmail})` : 'Google',
+    status: 'connected',
+    // The credential is NOT copied: it stays in `integrations`.
+    encryptedConfig: encrypt('{}'),
+    publicMetadata,
+    grantedScopes,
+    createdAt: integration.createdAt ?? now,
+    updatedAt: now,
+    lastTestedAt: null,
+  })
+  return true
+}
+
+// Disconnecting the Google account must invalidate every grant pointing at it — the
+// installation stays as history, revoked.
+export async function revokeGoogleInstallation(ownerId: string): Promise<void> {
+  await installations.updateMany({ ownerId, appKey: 'google' }, { $set: { status: 'revoked', updatedAt: new Date() } })
+}
+
+async function ensureGoogleInstallations(): Promise<number> {
   let created = 0
-  const docs = await integrations.find({ provider: 'google' }).toArray()
-  for (const integration of docs) {
-    const existing = await installations.findOne({ ownerId: integration.ownerId, appKey: 'google' })
-    if (existing) continue
-    const now = new Date()
-    await installations.insertOne({
-      _id: new ObjectId(),
-      ownerId: integration.ownerId,
-      buildingId: null,
-      appKey: 'google',
-      appVersion: google.version,
-      name: integration.accountEmail ? `Google (${integration.accountEmail})` : 'Google',
-      status: 'connected',
-      // The credential is NOT copied: it stays in `integrations`.
-      encryptedConfig: encrypt('{}'),
-      publicMetadata: { tokenStore: 'integrations', ...(integration.accountEmail ? { account: integration.accountEmail } : {}) },
-      grantedScopes: integration.scope ? integration.scope.split(' ').filter(Boolean) : (google.auth.scopes ?? []),
-      createdAt: integration.createdAt ?? now,
-      updatedAt: now,
-      lastTestedAt: null,
-    })
-    created++
+  const owners = (await integrations.distinct('ownerId', { provider: 'google' })) as string[]
+  for (const ownerId of owners) {
+    if (await ensureGoogleInstallation(ownerId)) created++
   }
   return created
 }

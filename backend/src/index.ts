@@ -200,6 +200,10 @@ import { auditEntity, auditRequests } from './routes/auditMiddleware.js'
 import { ensureAuditIndexes } from './audit.js'
 import { agentRoutineRouter } from './routes/agentRoutineRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
+import { appCatalogRouter } from './routes/appRoutes.js'
+import { appInstallationRouter } from './routes/appInstallationRoutes.js'
+import { appGrantRouter } from './routes/appGrantRoutes.js'
+import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
 
 const app = express()
@@ -340,6 +344,10 @@ app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
 // fall through to the inline /api/sectors/:sectorId routes below.
 app.use('/api/sectors/:sectorId', requireAuth, sectorKnowledgeRouter)
 app.use('/api/connections', requireAuth, connectionRouter)
+// Apps: the catalog, the owner's installations and each agent's grants.
+app.use('/api/apps', requireAuth, appCatalogRouter)
+app.use('/api/app-installations', requireAuth, appInstallationRouter)
+app.use('/api/agents/:agentId', requireAuth, appGrantRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
 app.use('/api/hooks', webhookRouter)
 
@@ -617,6 +625,9 @@ app.get('/api/integrations/google/callback', requireAuth, async (req, res) => {
   }
   try {
     await connectGoogle(res.locals.userId, code)
+    // Mirror the connected account as an installation so Apps can show, grant and
+    // revoke it. The tokens themselves stay in the integration store.
+    await ensureGoogleInstallation(res.locals.userId)
     res.redirect(`${clientUrl}/dashboard?integration=google_connected`)
   } catch (error) {
     console.error('Google connect failed:', error)
@@ -626,6 +637,9 @@ app.get('/api/integrations/google/callback', requireAuth, async (req, res) => {
 
 app.delete('/api/integrations/google', requireAuth, async (_req, res) => {
   await deleteIntegration(res.locals.userId, 'google')
+  // Every grant pointing at Google stops working immediately; the installation stays
+  // as history, revoked.
+  await revokeGoogleInstallation(res.locals.userId)
   res.status(204).end()
 })
 

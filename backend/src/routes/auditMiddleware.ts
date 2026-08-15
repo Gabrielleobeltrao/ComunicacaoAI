@@ -118,6 +118,15 @@ const RULES: Rule[] = [
   R('POST', 'api/whatsapp/channels', { entityType: 'channel', action: 'create' }),
   R('PATCH', 'api/whatsapp/channels/:', { entityType: 'channel', action: 'update' }, { idAt: 3 }),
   R('DELETE', 'api/whatsapp/channels/:', { entityType: 'channel', action: 'delete' }, { idAt: 3 }),
+  // Apps: connecting, renaming, testing, reconnecting and disconnecting an
+  // installation are all changes to what this account can reach.
+  R('POST', 'api/app-installations', { entityType: 'connection', action: 'create' }),
+  R('PATCH', 'api/app-installations/:', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/app-installations/:/test', { entityType: 'connection', action: 'test' }, { idAt: 2 }),
+  R('POST', 'api/app-installations/:/reconnect', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/app-installations/:', { entityType: 'connection', action: 'disconnect' }, { idAt: 2 }),
+  // Granting or revoking an App on an agent changes what that agent may do.
+  R('PATCH', 'api/agents/:/app-grants', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/connections', { entityType: 'connection', action: 'create' }),
   R('PATCH', 'api/connections/:', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/connections/:', { entityType: 'connection', action: 'delete' }, { idAt: 2 }),
