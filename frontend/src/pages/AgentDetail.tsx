@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
 import { AgentActivations, AgentHistoryPanel, AgentRoutines } from '../components/AgentWorkAreas'
+import { AgentEventTriggers } from '../components/AgentEventTriggers'
 import { CollaborationEditor } from '../components/CollaborationEditor'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
@@ -533,6 +534,9 @@ export function AgentDetail() {
                     <TriggersPanel overview={overview} onFixed={load} />
                     <TeamsPanel overview={overview} fid={fid} />
                     <AgentRoutines key={`${agent._id}:routines`} agent={agent} />
+                    {/* The other half of "what sets it in motion": an endpoint another
+                        system calls. Same agent-native shape as Rotinas. */}
+                    <AgentEventTriggers key={`${agent._id}:triggers`} agent={agent} />
                     <AgentActivations key={`${agent._id}:activations`} agent={agent} />
                     {/* The pendency "sem colaboradores" is solved right here — the
                         checklist and the readiness card link straight to it. */}

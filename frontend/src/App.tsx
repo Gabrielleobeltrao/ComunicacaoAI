@@ -10,6 +10,7 @@ import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
 import { Chats } from './pages/Chats'
 import { Dashboard } from './pages/Dashboard'
+import { Executions } from './pages/Executions'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
@@ -45,6 +46,9 @@ function App() {
           {/* Tools are owner-scoped, not floor-scoped: one catalogue for the
               whole account, assigned per agent. */}
           <Route path="/tools" element={<P><Tools /></P>} />
+          {/* The Central de execuções covers the WHOLE building (it filters by
+              floor, it is not scoped to one), so it lives at the top level. */}
+          <Route path="/executions" element={<P><Executions /></P>} />
           {/* Canonical floor-scoped routes */}
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
           <Route path="/floors/:floorId/agents" element={<P><Agents /></P>} />
@@ -83,6 +87,8 @@ function App() {
           <Route path="/agents/:agentId" element={<P><AgentDetail /></P>} />
           <Route path="/agents/:agentId/:section" element={<P><AgentDetail /></P>} />
           <Route path="/tools" element={<P><Tools /></P>} />
+          {/* Same canonical address with the pivot flag off, so the link never dies. */}
+          <Route path="/executions" element={<P><Executions /></P>} />
           <Route path="/setores" element={<P><Setores /></P>} />
           <Route path="/setores/:sectorId" element={<P><SectorDetail /></P>} />
           <Route path="/setores/:sectorId/:section" element={<P><SectorDetail /></P>} />

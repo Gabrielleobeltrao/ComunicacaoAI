@@ -112,9 +112,18 @@ export async function updateRoutine(ownerId: string, agentId: ObjectId, routineI
   return getAutomation(ownerId, routineId)
 }
 
-export async function listRoutines(ownerId: string, agentId: ObjectId): Promise<Automation[]> {
+// Everything this agent owns — scheduled routines AND event triggers. Used where
+// the agent's whole automatic work matters (its history).
+export async function listAgentAutomations(ownerId: string, agentId: ObjectId): Promise<Automation[]> {
   const { items } = await repoListAutomations(ownerId, { agentId, limit: 100, skip: 0 })
   return items
+}
+
+// Only the SCHEDULED ones: an event trigger is a different surface (Gatilhos) and
+// must not show up as a routine with an empty recurrence.
+export async function listRoutines(ownerId: string, agentId: ObjectId): Promise<Automation[]> {
+  const items = await listAgentAutomations(ownerId, agentId)
+  return items.filter((a) => (a.publishedTrigger?.type ?? a.trigger?.type) === 'schedule')
 }
 
 // Guard that a routine belongs to the given agent before status/delete actions.

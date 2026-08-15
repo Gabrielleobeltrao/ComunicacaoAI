@@ -22,8 +22,10 @@ async function login(page: Page) {
 
 test('Automação is not a nav surface and /automations redirects to agents', async ({ page }) => {
   await login(page)
-  // No Automações / Execuções entries anywhere in the nav.
-  await expect(page.getByRole('link', { name: /Automaç|Execuç/i })).toHaveCount(0)
+  // No Automações builder anywhere in the nav. "Execuções" is a different thing and
+  // it IS expected: an observability surface over work created inside the agents.
+  await expect(page.getByRole('link', { name: /Automaç/i })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Execuções' })).toHaveCount(1)
   // Legacy routes keep working — they land on agents, never a standalone page.
   await page.goto('/automations')
   await expect(page).toHaveURL(/\/agents$|\/floors\/.+\/agents$/)

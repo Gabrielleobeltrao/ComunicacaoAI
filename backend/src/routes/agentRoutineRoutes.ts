@@ -1,10 +1,19 @@
 import { Router } from 'express'
 import { ObjectId } from 'mongodb'
+import { config } from '../config.js'
 import { getAgentById } from '../agents.js'
-import { createRoutine, getRoutineForAgent, listRoutines, RoutineError, updateRoutine } from '../automations/routine.js'
+import { createRoutine, getRoutineForAgent, listAgentAutomations, listRoutines, RoutineError, updateRoutine } from '../automations/routine.js'
 import type { RoutineSpec } from '../automations/routine.js'
+import {
+  createEventTrigger,
+  EventTriggerError,
+  getEventTriggerForAgent,
+  listEventTriggers,
+  updateEventTrigger,
+} from '../automations/eventTrigger.js'
+import { webhookEndpoint } from '../automations/executionCenter.js'
 import { cronToRecurrence, describeRecurrence, isValidRecurrence } from '../automations/schedule.js'
-import { setStatus } from '../automations/service.js'
+import { rotateWebhookSecret, setStatus } from '../automations/service.js'
 import { listRuns } from '../automations/runRepository.js'
 import { preview } from '../automations/runTypes.js'
 import type { Automation } from '../automations/types.js'
@@ -145,6 +154,132 @@ agentRoutineRouter.post('/routines/:routineId/:action', async (req, res) => {
   res.json(serializeRoutine(updated))
 })
 
+// --- Event triggers (webhooks that belong to THIS agent) ------------------------
+// Agent-native on purpose: the user creates "um gatilho por evento", not an
+// automation with a webhook trigger and an agent.execute step. The secret is never
+// part of this shape — it is returned once, by create and by rotate, and nowhere else.
+function serializeTrigger(a: Automation) {
+  const trigger = (a.publishedTrigger ?? a.trigger) as { type?: string; requireSignature?: boolean }
+  return {
+    id: a._id.toString(),
+    name: a.name,
+    objective: a.description,
+    status: a.status,
+    endpoint: a.webhookPublicKey ? webhookEndpoint(config.publicUrl, a.webhookPublicKey) : null,
+    requireSignature: trigger?.requireSignature !== false,
+    hasSecret: Boolean(a.webhookSecretEncrypted),
+    createdAt: a.createdAt,
+    updatedAt: a.updatedAt,
+  }
+}
+
+agentRoutineRouter.get('/event-triggers', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  if (!agentId) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const triggers = await listEventTriggers(res.locals.userId, agentId)
+  res.json(triggers.map(serializeTrigger))
+})
+
+agentRoutineRouter.post('/event-triggers', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  if (!agentId) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const objective = typeof body.objective === 'string' ? body.objective.trim() : ''
+  if (!objective) {
+    res.status(400).json({ error: 'objective is required' })
+    return
+  }
+  try {
+    const { trigger, secret } = await createEventTrigger(res.locals.userId, agentId, {
+      name: typeof body.name === 'string' ? body.name : '',
+      objective,
+    })
+    // The ONLY moment the plaintext secret exists outside the database.
+    res.status(201).json({ ...serializeTrigger(trigger), secret })
+  } catch (e) {
+    res.status(e instanceof EventTriggerError ? 400 : 500).json({ error: e instanceof Error ? e.message : 'failed' })
+  }
+})
+
+agentRoutineRouter.patch('/event-triggers/:triggerId', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  const triggerId = oid(String((req.params as Record<string, string>).triggerId))
+  if (!agentId || !triggerId) {
+    res.status(404).json({ error: 'not found' })
+    return
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const objective = typeof body.objective === 'string' ? body.objective.trim() : ''
+  if (!objective) {
+    res.status(400).json({ error: 'objective is required' })
+    return
+  }
+  try {
+    const updated = await updateEventTrigger(res.locals.userId, agentId, triggerId, {
+      name: typeof body.name === 'string' ? body.name : '',
+      objective,
+    })
+    if (!updated) {
+      res.status(404).json({ error: 'trigger not found' })
+      return
+    }
+    res.json(serializeTrigger(updated))
+  } catch (e) {
+    res.status(e instanceof EventTriggerError ? 400 : 500).json({ error: e instanceof Error ? e.message : 'failed' })
+  }
+})
+
+// A new credential, shown once. The old one stops working immediately — which is
+// the whole point of a rotation.
+agentRoutineRouter.post('/event-triggers/:triggerId/rotate', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  const triggerId = oid(String((req.params as Record<string, string>).triggerId))
+  if (!agentId || !triggerId) {
+    res.status(404).json({ error: 'not found' })
+    return
+  }
+  const owned = await getEventTriggerForAgent(res.locals.userId, agentId, triggerId)
+  if (!owned) {
+    res.status(404).json({ error: 'trigger not found' })
+    return
+  }
+  const rotated = await rotateWebhookSecret(res.locals.userId, triggerId)
+  if (!rotated) {
+    res.status(409).json({ error: 'could not rotate' })
+    return
+  }
+  const fresh = await getEventTriggerForAgent(res.locals.userId, agentId, triggerId)
+  res.json({ ...serializeTrigger(fresh ?? owned), secret: rotated.secret })
+})
+
+agentRoutineRouter.post('/event-triggers/:triggerId/:action', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  const triggerId = oid(String((req.params as Record<string, string>).triggerId))
+  const action = String((req.params as Record<string, string>).action)
+  const status = action === 'activate' ? 'active' : action === 'pause' ? 'paused' : action === 'archive' ? 'archived' : null
+  if (!agentId || !triggerId || !status) {
+    res.status(400).json({ error: 'invalid request' })
+    return
+  }
+  const owned = await getEventTriggerForAgent(res.locals.userId, agentId, triggerId)
+  if (!owned) {
+    res.status(404).json({ error: 'trigger not found' })
+    return
+  }
+  const updated = await setStatus(res.locals.userId, triggerId, status)
+  if (!updated) {
+    res.status(409).json({ error: 'could not change status' })
+    return
+  }
+  res.json(serializeTrigger(updated))
+})
+
 // Run history for the agent: the runs of all its routines, newest first.
 agentRoutineRouter.get('/history', async (req, res) => {
   const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
@@ -152,10 +287,11 @@ agentRoutineRouter.get('/history', async (req, res) => {
     res.status(404).json({ error: 'Agent not found' })
     return
   }
-  const routines = await listRoutines(res.locals.userId, agentId)
-  const ids = routines.map((r) => r._id)
+  // The agent's WHOLE automatic history: scheduled routines and event triggers alike.
+  const owned = await listAgentAutomations(res.locals.userId, agentId)
+  const ids = owned.map((r) => r._id)
   const limit = Math.min(Number(req.query.limit) || 25, 100)
-  const nameById = new Map(routines.map((r) => [r._id.toString(), r.name]))
+  const nameById = new Map(owned.map((r) => [r._id.toString(), r.name]))
   // Two strands of history: scheduled routine runs, and delegations this agent took
   // part in (as caller OR as target — so a delegated task shows on both agents).
   const [runsResult, delegations] = await Promise.all([

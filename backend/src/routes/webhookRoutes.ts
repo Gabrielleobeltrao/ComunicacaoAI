@@ -11,17 +11,16 @@ export const webhookRouter = Router()
 webhookRouter.post('/automations/:publicKey', async (req, res, next) => {
   try {
     const automation = await findByWebhookKey(req.params.publicKey)
-    if (
-      !automation ||
-      automation.status !== 'active' ||
-      automation.trigger.type !== 'webhook' ||
-      !automation.webhookSecretEncrypted
-    ) {
+    // What may fire is the PUBLISHED trigger, never the draft: a half-edited
+    // definition in the editor must not open — or close — a live endpoint. Older
+    // documents that predate publishedTrigger fall back to their own trigger.
+    const live = (automation?.publishedTrigger ?? automation?.trigger) as { type?: string; requireSignature?: boolean } | undefined
+    if (!automation || automation.status !== 'active' || live?.type !== 'webhook' || !automation.webhookSecretEncrypted) {
       res.status(404).json({ code: 'not_found', message: 'not found' })
       return
     }
     const raw = (req as { rawBody?: Buffer }).rawBody?.toString('utf8') ?? ''
-    const requireSignature = (automation.trigger as { requireSignature?: boolean }).requireSignature !== false
+    const requireSignature = live.requireSignature !== false
     if (requireSignature) {
       const secret = decrypt(automation.webhookSecretEncrypted)
       if (!verifySignature(secret, raw, req.header('x-signature'))) {
