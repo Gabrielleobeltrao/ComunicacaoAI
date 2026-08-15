@@ -31,10 +31,12 @@ beforeEach(async () => {
   await runs().deleteMany({ ownerId: OWNER })
 })
 
-// A published, active daily schedule at 09:00 São Paulo.
+// A published, active daily schedule at 09:00 São Paulo. `publishedTrigger` is what
+// the scheduler reads — the draft `trigger` is only what the editor shows.
 async function seedSchedule(over = {}) {
   const id = new ObjectId()
-  const definition = { trigger: { type: 'schedule', timezone: 'America/Sao_Paulo', cron: '0 9 * * *' }, inputs: [], steps: [], resultFormat: 'markdown', deliveries: [], limits: {} }
+  const trigger = over.trigger ?? { type: 'schedule', timezone: 'America/Sao_Paulo', cron: '0 9 * * *' }
+  const definition = { trigger, inputs: [], steps: [], resultFormat: 'markdown', deliveries: [], limits: {} }
   await automations().insertOne({
     _id: id,
     ownerId: OWNER,
@@ -43,10 +45,11 @@ async function seedSchedule(over = {}) {
     name: 'rotina',
     description: '',
     status: 'active',
-    trigger: definition.trigger,
+    trigger,
     draftDefinition: definition,
+    publishedTrigger: trigger,
     currentVersion: 1,
-    lastPublishedVersion: null,
+    lastPublishedVersion: 1,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...over,

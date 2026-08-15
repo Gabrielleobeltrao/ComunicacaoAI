@@ -12,7 +12,7 @@
 import { decrypt } from './crypto.js'
 import { safeFetch } from './net/safeHttp.js'
 import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
-import { UNSAFE_METHODS } from './tools.js'
+import { SENSITIVE_HEADER, UNSAFE_METHODS } from './tools.js'
 import type { Tool } from './tools.js'
 
 export interface ToolExecutionResult {
@@ -33,12 +33,11 @@ export interface ToolExecutionResult {
 
 const MASK = '***'
 
-// A name-based heuristic catches the usual suspects a user might type by hand.
-// It is NOT sufficient on its own: a header called "X-Minha-Chave" carries a
-// credential and matches nothing here — which is why the caller also passes the
-// header names it injected a secret into, and those are masked unconditionally.
-const SENSITIVE_HEADER = /(authorization|api[-_]?key|token|secret|password|cookie|chave|senha)/i
-
+// The name-based heuristic (defined next to the tool model, where saving such a
+// header is refused) catches the usual suspects. It is NOT sufficient on its own: a
+// header called "X-Minha-Chave" carries a credential and matches nothing — which is
+// why the caller also passes the header names it injected a secret into, and those
+// are masked unconditionally.
 export function maskHeaders(headers: Record<string, string>, alwaysMask: string[] = []): Record<string, string> {
   const forced = new Set(alwaysMask.map((h) => h.toLowerCase()))
   const out: Record<string, string> = {}
@@ -90,6 +89,11 @@ function fillTemplate(template: string, args: Record<string, unknown>, encode: b
 export interface ExecuteToolOptions {
   // Enforced by the caller's counter; passed in so the message can be specific.
   callsSoFar?: number
+  // True when an AGENT is calling on its own initiative. A method that can change
+  // something on the far side then requires the tool's explicit
+  // `allowAutonomousExecution`. The owner's manual test leaves this false — that
+  // path is confirmed in the UI instead.
+  autonomous?: boolean
 }
 
 export async function executeToolCall(tool: Tool, rawArgs: unknown, options: ExecuteToolOptions = {}): Promise<ToolExecutionResult> {
@@ -101,6 +105,13 @@ export async function executeToolCall(tool: Tool, rawArgs: unknown, options: Exe
   })
 
   if (!tool.enabled) return fail(`A ferramenta "${tool.name}" está desativada.`)
+
+  // Reading on its own is one decision; acting on its own is another. Without the
+  // explicit authorisation the agent is refused here — the single choke point every
+  // caller goes through — rather than at each call site.
+  if (options.autonomous && UNSAFE_METHODS.includes(tool.method) && !tool.allowAutonomousExecution) {
+    return fail(`"${tool.name}" usa ${tool.method} e não está autorizada a executar sozinha. O proprietário precisa liberar a execução autônoma nas configurações da ferramenta.`)
+  }
 
   if (typeof options.callsSoFar === 'number' && options.callsSoFar >= tool.maxCallsPerRun) {
     // A loop guard the model can understand and stop pushing against.

@@ -43,6 +43,11 @@ export const config = {
   publicUrl: urlVar('PUBLIC_URL', `http://localhost:${port}`),
   // Better Auth's public base origin (used to derive the Google OAuth callback).
   betterAuthUrl: urlVar('BETTER_AUTH_URL', `http://localhost:${port}`),
+  // How long SIGTERM may take before the process forces itself out. It MUST stay
+  // below the orchestrator's stop_grace_period (30s in compose and Coolify), so the
+  // engine finishes draining its in-flight runs instead of being SIGKILLed
+  // mid-execution. Raise both together, never just this one.
+  shutdownTimeoutMs: Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 25_000),
 } as const
 
 // Backwards-compatible canonical client origin (first in the allowlist).

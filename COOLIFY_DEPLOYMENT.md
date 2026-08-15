@@ -47,7 +47,7 @@ VITE_API_URL=https://api.comunicacaoai.oneplataforma.com
 | Start command | (padrão da imagem — não precisa mexer) |
 | Porta interna | `4000` |
 | Domínio | `https://api.comunicacaoai.oneplataforma.com` |
-| Healthcheck | `GET /api/ready` (200 só quando o MongoDB responde) |
+| Healthcheck | `GET /api/ready` (200 só quando o MongoDB responde **e** o motor de automações está de pé) |
 
 Variáveis obrigatórias:
 
@@ -82,7 +82,17 @@ Schedules: 1 disparada(s)        # quando alguma vence
 ```
 
 E no encerramento, `Automation engine stopped` — ele espera as execuções em
-andamento terminarem antes de fechar.
+andamento terminarem antes de fechar (até `SHUTDOWN_TIMEOUT_MS`, 25s por padrão,
+sempre abaixo do `stop_grace_period` de 30s do orquestrador).
+
+Se o motor **não** subir, o `/api/ready` responde `503` com `{"engine":"down"}` e o
+recurso fica vermelho: um backend que aceita rotinas sem conseguir executá-las não
+pode passar por saudável. O motivo da falha sai no log como
+`Automation engine failed to start`.
+
+Com `EMBEDDED_WORKER=false` o motor roda em um processo separado
+(`npm run start:worker`); aí o `/api/ready` responde `{"engine":"separate"}` e passa
+a cobrir só o banco — o log deixa isso explícito no boot.
 
 Confirmação pelo produto: crie uma rotina para daqui a poucos minutos na página do
 agente e veja a execução aparecer em **Execuções**. O disparo tem precisão de

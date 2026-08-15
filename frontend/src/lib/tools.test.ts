@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { paramsToSchema, schemaToParams } from './tools'
+import { isUnsafe, paramsToSchema, schemaToParams, TOOL_METHODS } from './tools'
 
 // The form edits fields; the wire format is JSON Schema. A mistake in this mapping
 // means the model is told the wrong thing about a tool, so the round trip is
@@ -49,5 +49,18 @@ describe('schemaToParams', () => {
   it('an absent or empty schema yields no fields', () => {
     expect(schemaToParams(undefined)).toEqual([])
     expect(schemaToParams({ type: 'object' })).toEqual([])
+  })
+})
+
+// Which methods need the owner's explicit permission before an agent may use them.
+// The form asks for that authorisation (and for a confirmation on a manual test)
+// off this predicate, so it has to agree with the backend's UNSAFE_METHODS.
+describe('isUnsafe', () => {
+  it('flags exactly the methods that change something on the far side', () => {
+    expect(TOOL_METHODS.filter(isUnsafe)).toEqual(['POST', 'PUT', 'PATCH', 'DELETE'])
+  })
+
+  it('reading is never gated', () => {
+    expect(isUnsafe('GET')).toBe(false)
   })
 })

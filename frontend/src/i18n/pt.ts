@@ -65,7 +65,11 @@ export const pt = {
   'tools.testRequest': 'O que foi enviado',
   'tools.testResponse': 'O que voltou',
   'tools.testHint': 'Credenciais aparecem mascaradas — nem aqui elas são reveladas.',
+  'tools.testConfirm': 'Este teste faz um {{method}} de verdade no sistema de destino. Continuar?',
   'tools.deleteConfirm': 'Excluir “{{name}}”? Os agentes que a usam perdem o acesso.',
+  'tools.autonomy': 'Permitir que o agente execute sozinho',
+  'tools.autonomyWarning': 'Este método ({{method}}) altera dados no sistema de destino. Marcado, o agente pode fazer isso por conta própria, sem pedir confirmação a ninguém.',
+  'tools.autonomyBlocked': 'Sem esta autorização o agente não executa a ação — só você, testando aqui e confirmando.',
 
   // --- agentes -----------------------------------------------------------------
   'agents.tools': 'Ferramentas',

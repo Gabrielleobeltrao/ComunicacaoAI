@@ -9,7 +9,7 @@
 // differently. Several instances are safe: claiming is a single atomic update and
 // every scheduled fire carries a unique idempotency key.
 import { randomUUID } from 'node:crypto'
-import { claimNextRun, ensureRunIndexes, releaseRun, renewLease } from './runRepository.js'
+import { claimNextRun, ensureRunIndexes, recoverRun, releaseRun, renewLease } from './runRepository.js'
 import { ensureSchedulerIndexes, tickScheduler } from './scheduler.js'
 import { processRun } from './runProcessor.js'
 
@@ -48,18 +48,31 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
 
   const executeClaimed = async (run: Awaited<ReturnType<typeof claimNextRun>>) => {
     if (!run) return
-    // Keep the claim alive while a long run is genuinely progressing.
+    const runId = run._id.toString()
+    // Keep the claim alive while a long run is genuinely progressing. A renewal that
+    // does not land is REPORTED (the run is about to be reclaimed by someone else),
+    // with the run id only — never the payload it is working on.
     const renew = setInterval(() => {
-      void renewLease(run._id, id).catch(() => undefined)
+      void renewLease(run._id, id).then(
+        (held) => {
+          if (!held) onError(`run ${runId} lease`, new Error('lease renewal did not match this worker'))
+        },
+        (error) => onError(`run ${runId} lease`, error),
+      )
     }, LEASE_RENEW_MS)
     renew.unref()
     try {
-      await processRun(run._id.toString())
+      await processRun(runId)
+      // processRun wrote the terminal status; drop the claim so nothing reclaims it.
+      await releaseRun(run._id).catch((error) => onError(`run ${runId} release`, error))
     } catch (error) {
-      onError(`run ${run._id.toString()}`, error)
+      onError(`run ${runId}`, error)
+      // An unexpected throw must NEVER leave the run stuck in 'running' with no
+      // lease — nothing would ever pick it up again. Requeue it (or park it as
+      // failed once it has burned its claims) with the reason recorded.
+      await recoverRun(run._id, error instanceof Error ? error.message : 'erro inesperado').catch((e) => onError(`run ${runId} recovery`, e))
     } finally {
       clearInterval(renew)
-      await releaseRun(run._id).catch(() => undefined)
     }
   }
 
@@ -113,3 +126,70 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
 // class of bug this replaced was a deployment where nobody ran the worker and
 // every routine silently never fired.
 export const embeddedEngineEnabled = (): boolean => (process.env.EMBEDDED_WORKER ?? 'true').trim().toLowerCase() !== 'false'
+
+// --- lifecycle owned by the API process --------------------------------------
+// One place knows whether the embedded engine is actually up, so /api/ready can
+// answer honestly. An API serving HTTP with a dead engine is NOT a healthy backend:
+// it accepts routines it will never run.
+let embedded: EngineHandle | null = null
+let startError: string | null = null
+
+export interface EngineStatus {
+  mode: 'embedded' | 'separate'
+  running: boolean
+  error: string | null
+  // Readiness verdict for this mode: embedded requires a live engine here;
+  // 'separate' trusts the dedicated worker process (it has its own health).
+  ok: boolean
+}
+
+export function engineStatus(): EngineStatus {
+  const mode: EngineStatus['mode'] = embeddedEngineEnabled() ? 'embedded' : 'separate'
+  const running = embedded !== null
+  return { mode, running, error: startError, ok: mode === 'separate' || running }
+}
+
+// The /api/ready verdict, as a pure function of the only two things that matter —
+// so the route is a two-liner and the rule itself is unit-testable. Nothing about
+// the failure is echoed back to the caller beyond "down".
+export function readiness(mongoOk: boolean): { code: 200 | 503; body: { status: string; mongo: string; engine: string } } {
+  const engine = engineStatus()
+  const ok = mongoOk && engine.ok
+  return {
+    code: ok ? 200 : 503,
+    body: { status: ok ? 'ready' : 'unavailable', mongo: mongoOk ? 'ok' : 'down', engine: engine.ok ? engine.mode : 'down' },
+  }
+}
+
+// Start it (or explain, loudly, why it is not running here). Never throws: a
+// failure is recorded and turns readiness red instead of being swallowed.
+// `starter` is injectable so the failure path is testable.
+export async function startEmbeddedEngine(
+  options: EngineOptions = {},
+  starter: (o: EngineOptions) => Promise<EngineHandle> = startAutomationEngine,
+): Promise<EngineHandle | null> {
+  if (!embeddedEngineEnabled()) {
+    embedded = null
+    startError = null
+    console.warn(
+      'Automation engine NOT embedded here (EMBEDDED_WORKER=false): a separate `npm run start:worker` process MUST be running, otherwise no routine will ever fire. Readiness accepts this mode by design.',
+    )
+    return null
+  }
+  try {
+    embedded = await starter(options)
+    startError = null
+    return embedded
+  } catch (error) {
+    embedded = null
+    startError = error instanceof Error ? error.message : String(error)
+    console.error('Automation engine failed to start — this instance will report NOT READY:', startError)
+    return null
+  }
+}
+
+export async function stopEmbeddedEngine(): Promise<void> {
+  const handle = embedded
+  embedded = null
+  if (handle) await handle.stop()
+}

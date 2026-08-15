@@ -247,7 +247,8 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
         description: tool.description,
         inputSchema: tool.inputSchema,
         run: async (args) => {
-          const outcome = await executeToolCall(tool, args, { callsSoFar })
+          // autonomous: this is the model deciding to call, not the owner testing.
+          const outcome = await executeToolCall(tool, args, { callsSoFar, autonomous: true })
           callsSoFar++
           return { ok: outcome.ok, result: outcome.result }
         },

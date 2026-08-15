@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useT } from '../i18n'
-import { createTool, paramsToSchema, schemaToParams, testTool, TOOL_AUTH_KINDS, TOOL_METHODS, ToolApiError, updateTool } from '../lib/tools'
+import { createTool, isUnsafe, paramsToSchema, schemaToParams, testTool, TOOL_AUTH_KINDS, TOOL_METHODS, ToolApiError, updateTool } from '../lib/tools'
 import type { Tool, ToolAuthKind, ToolMethod, ToolParam, ToolTestResult } from '../lib/tools'
 import { Button, Card } from '../ui'
 
@@ -29,6 +29,9 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
   const [secret, setSecret] = useState('')
   const [timeoutSeconds, setTimeoutSeconds] = useState(Math.round((tool?.timeoutMs ?? 8000) / 1000))
   const [enabled, setEnabled] = useState(tool?.enabled ?? true)
+  // Acting on its own is a separate, explicit decision from reading.
+  const [allowAutonomousExecution, setAllowAutonomousExecution] = useState(tool?.allowAutonomousExecution === true)
+  const mutates = isUnsafe(method)
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<{ message: string; field?: string } | null>(null)
@@ -46,6 +49,8 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
     url: url.trim(),
     inputSchema: paramsToSchema(params),
     enabled,
+    // Only meaningful for a state-changing method; never carried over from a GET.
+    allowAutonomousExecution: mutates && allowAutonomousExecution,
     timeoutMs: Math.round(timeoutSeconds * 1000),
     auth: {
       kind: authKind,
@@ -83,7 +88,9 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
         setError({ message: 'JSON inválido', field: 'testArgs' })
         return
       }
-      setTestResult(await testTool(tool._id, parsed))
+      // A state-changing test really happens on the other side: ask first.
+      if (mutates && !window.confirm(t('tools.testConfirm', { method }))) return
+      setTestResult(await testTool(tool._id, parsed, mutates))
     } finally {
       setTesting(false)
     }
@@ -183,6 +190,25 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
           </div>
         )}
       </Card>
+
+      {/* Autonomous execution — only for a method that changes something */}
+      {mutates && (
+        <Card padding="12px 14px" style={{ display: 'grid', gap: 6 }} data-testid="tool-autonomy">
+          <label style={{ display: 'flex', alignItems: 'start', gap: 8, fontSize: 13.5 }}>
+            <input
+              type="checkbox"
+              checked={allowAutonomousExecution}
+              onChange={(e) => setAllowAutonomousExecution(e.target.checked)}
+              data-testid="tool-allow-autonomous"
+            />
+            <span>
+              <strong>{t('tools.autonomy')}</strong>
+              <span style={{ display: 'block', marginTop: 2, color: 'var(--text-muted)' }}>{t('tools.autonomyWarning', { method })}</span>
+            </span>
+          </label>
+          {!allowAutonomousExecution && <p style={{ margin: 0, fontSize: 12, color: 'var(--text-faint)' }}>{t('tools.autonomyBlocked')}</p>}
+        </Card>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 10, alignItems: 'end' }}>
         <div>

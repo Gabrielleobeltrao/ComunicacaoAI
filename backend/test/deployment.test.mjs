@@ -58,6 +58,26 @@ test('the backend publishes its port and drains on shutdown', () => {
   assert.match(backend, /init: true/, 'PID-1 reaping + signal forwarding')
 })
 
+test('the internal drain budget stays below the orchestrator grace period', async () => {
+  // Backwards, these two kill the very thing the grace period exists for: the
+  // process would give up (or be SIGKILLed) with runs still in flight.
+  const grace = /stop_grace_period:\s*(\d+)s/.exec(serviceBlock('backend'))
+  assert.ok(grace, 'the backend must declare a stop_grace_period')
+
+  const { config } = await import('../dist/config.js')
+  assert.ok(
+    config.shutdownTimeoutMs < Number(grace[1]) * 1000,
+    `SHUTDOWN_TIMEOUT_MS (${config.shutdownTimeoutMs}ms) must be under stop_grace_period (${grace[1]}s)`,
+  )
+  assert.match(envExample, /SHUTDOWN_TIMEOUT_MS/, '.env.example must document the knob so the two are raised together')
+})
+
+test('readiness covers the engine, not just the port', () => {
+  // The healthcheck has to hit /api/ready: /api/health is liveness only and would
+  // stay green on an instance whose automation engine never started.
+  assert.match(serviceBlock('backend'), /\/api\/ready/, 'the healthcheck must probe readiness')
+})
+
 test('the automation engine is documented as part of the backend', () => {
   // A reader must not have to discover that routines need something extra.
   assert.match(coolify, /dois recursos/i)

@@ -7,6 +7,11 @@ import { API_URL } from './api'
 export type ToolMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 export const TOOL_METHODS: ToolMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 
+// Methods that can change something on the far side. They need the owner's explicit
+// permission before an agent may use them, and a confirmation for a manual test.
+export const UNSAFE_METHODS: ToolMethod[] = ['POST', 'PUT', 'PATCH', 'DELETE']
+export const isUnsafe = (method: ToolMethod): boolean => UNSAFE_METHODS.includes(method)
+
 export type ToolAuthKind = 'none' | 'bearer' | 'api_key' | 'basic'
 export const TOOL_AUTH_KINDS: ToolAuthKind[] = ['none', 'bearer', 'api_key', 'basic']
 
@@ -37,6 +42,8 @@ export interface Tool {
   maxResponseChars: number
   allowedDomains: string[]
   maxCallsPerRun: number
+  // Whether an agent may run this tool by itself when the method changes state.
+  allowAutonomousExecution?: boolean
   enabled: boolean
   usedBy?: { _id: string; name: string }[]
 }
@@ -82,8 +89,10 @@ const opts = (method: string, body?: unknown): RequestInit => ({
 export const listTools = () => fetch(`${API_URL}/api/tools`, opts('GET')).then(json<Tool[]>)
 export const createTool = (input: unknown) => fetch(`${API_URL}/api/tools`, opts('POST', input)).then(json<Tool>)
 export const updateTool = (id: string, input: unknown) => fetch(`${API_URL}/api/tools/${id}`, opts('PATCH', input)).then(json<Tool>)
-export const testTool = (id: string, args: Record<string, unknown>) =>
-  fetch(`${API_URL}/api/tools/${id}/test`, opts('POST', { arguments: args })).then(json<ToolTestResult>)
+// `confirm` is required by the backend for a state-changing method: the operator
+// has to say yes to a real POST/DELETE against a live system.
+export const testTool = (id: string, args: Record<string, unknown>, confirm = false) =>
+  fetch(`${API_URL}/api/tools/${id}/test`, opts('POST', { arguments: args, confirm })).then(json<ToolTestResult>)
 
 export async function deleteTool(id: string): Promise<void> {
   const res = await fetch(`${API_URL}/api/tools/${id}`, opts('DELETE'))

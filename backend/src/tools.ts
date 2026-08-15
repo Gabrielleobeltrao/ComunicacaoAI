@@ -10,8 +10,14 @@
 //      as it is concerned.
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
+import { isProduction } from './config.js'
 import { encrypt } from './crypto.js'
 import { isValidToolSchema } from './jsonSchema.js'
+
+// Header names that carry a credential. Anything matching this belongs in `auth`
+// (encrypted at rest, never read back) and is refused as a plain header — a stored
+// header is returned to the UI and written to the run log in clear text.
+export const SENSITIVE_HEADER = /(authorization|api[-_]?key|token|secret|password|cookie|chave|senha)/i
 
 export type ToolMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 export const TOOL_METHODS: ToolMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
@@ -61,6 +67,11 @@ export interface Tool {
   allowedDomains: string[]
   // How many times ONE run may call this tool, so a loop cannot bill forever.
   maxCallsPerRun: number
+  // Explicit permission for an AGENT to run this tool on its own when the method
+  // can change something on the far side (POST/PUT/PATCH/DELETE). Default false:
+  // reading is one decision, acting is another. The owner's manual test is not
+  // affected — that one is confirmed in the UI instead.
+  allowAutonomousExecution: boolean
   enabled: boolean
   createdAt: Date
   updatedAt: Date
@@ -110,6 +121,7 @@ export interface ToolInput {
   maxResponseChars?: number
   allowedDomains?: string[]
   maxCallsPerRun?: number
+  allowAutonomousExecution?: boolean
   enabled?: boolean
 }
 
@@ -152,12 +164,26 @@ function normalize(input: ToolInput): Omit<Tool, '_id' | 'ownerId' | 'createdAt'
   }
 
   const headers = (input.headers ?? []).filter((h) => h && String(h.key ?? '').trim()).slice(0, TOOL_LIMITS.maxHeaders)
+  // A credential in a plain header would be stored in clear text and echoed back to
+  // the UI. It goes to the encrypted auth section instead — refused, not silently
+  // accepted, because the user has to move it somewhere safe.
+  for (const h of headers) {
+    const key = String(h.key).trim()
+    if (SENSITIVE_HEADER.test(key)) {
+      throw new ToolValidationError('headers', `O cabeçalho "${key}" carrega uma credencial. Use a seção Autenticação: o valor é guardado criptografado e nunca é exibido.`)
+    }
+  }
   const kind: ToolAuthKind = TOOL_AUTH_KINDS.includes(input.auth?.kind as ToolAuthKind) ? (input.auth!.kind as ToolAuthKind) : 'none'
   if (kind === 'api_key' && !String(input.auth?.headerName ?? '').trim()) {
     throw new ToolValidationError('auth.headerName', 'Informe o nome do cabeçalho da chave.')
   }
   if (kind === 'basic' && !String(input.auth?.username ?? '').trim()) {
     throw new ToolValidationError('auth.username', 'Informe o usuário.')
+  }
+  // In production a credential may only travel over TLS: plain http would put the
+  // secret on the wire in clear text. Local/dev keeps http for testing.
+  if (isProduction && kind !== 'none' && parsed.protocol !== 'https:') {
+    throw new ToolValidationError('url', 'Uma ferramenta com credencial precisa de um endereço https:// — em http a credencial trafega aberta.')
   }
 
   // The tool's own host is always allowed; extra hosts are opt-in.
@@ -175,6 +201,8 @@ function normalize(input: ToolInput): Omit<Tool, '_id' | 'ownerId' | 'createdAt'
     maxResponseChars: clamp(input.maxResponseChars, TOOL_DEFAULTS.maxResponseChars, TOOL_LIMITS.minResponseChars, TOOL_LIMITS.maxResponseChars),
     allowedDomains,
     maxCallsPerRun: clamp(input.maxCallsPerRun, TOOL_DEFAULTS.maxCallsPerRun, 1, TOOL_LIMITS.maxCallsPerRun),
+    // Opt-in, never inferred: anything but an explicit true is a no.
+    allowAutonomousExecution: input.allowAutonomousExecution === true,
     enabled: input.enabled !== false,
     authPublic: {
       kind,
@@ -266,6 +294,11 @@ export function toPublicTool(tool: Tool): ToolPublic {
   return {
     ...tool,
     _id: tool._id.toString(),
+    // Saving one is refused now, but a tool stored before that rule may still carry
+    // a credential-bearing header: it is masked on the way out, so it cannot be read
+    // back from the API.
+    headers: (tool.headers ?? []).map((h) => (SENSITIVE_HEADER.test(String(h.key)) ? { key: h.key, value: '***' } : h)),
+    allowAutonomousExecution: tool.allowAutonomousExecution === true,
     auth: { ...authPublic, hasSecret: Boolean(secretEncrypted) },
   }
 }

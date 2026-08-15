@@ -1,9 +1,8 @@
 import 'dotenv/config'
-import { createTool, deleteTool, getTool, listTools, toPublicTool, ToolValidationError, updateTool } from './tools.js'
+import { createTool, deleteTool, getTool, listTools, toPublicTool, ToolValidationError, UNSAFE_METHODS, updateTool } from './tools.js'
 import { executeToolCall } from './toolExecution.js'
 import { pullToolFromAgents } from './agents.js'
-import { embeddedEngineEnabled, startAutomationEngine } from './automations/engine.js'
-import type { EngineHandle } from './automations/engine.js'
+import { readiness, startEmbeddedEngine, stopEmbeddedEngine } from './automations/engine.js'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import cors from 'cors'
@@ -271,15 +270,21 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
-// Readiness: the process can serve traffic — MongoDB answers a ping. 503 until
-// the database is reachable; never leaks any data.
+// Readiness: this instance can do its whole job — MongoDB answers a ping AND the
+// automation engine is running here (when it is meant to be). A backend that serves
+// HTTP with a dead engine accepts routines it will never execute, so it must not
+// report ready. With EMBEDDED_WORKER=false the engine lives in its own process and
+// readiness only covers the database. 503 otherwise; never leaks any data.
 app.get('/api/ready', async (_req, res) => {
-  try {
-    await mongoClient.db().command({ ping: 1 })
-    res.json({ status: 'ready' })
-  } catch {
-    res.status(503).json({ status: 'unavailable' })
-  }
+  const mongoOk = await mongoClient
+    .db()
+    .command({ ping: 1 })
+    .then(
+      () => true,
+      () => false,
+    )
+  const { code, body } = readiness(mongoOk)
+  res.status(code).json(body)
 })
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -1640,6 +1645,13 @@ app.post('/api/tools/:toolId/test', requireAuth, async (req, res) => {
   const tool = await getTool(res.locals.userId, new ObjectId(toolId))
   if (!tool) {
     res.status(404).json({ error: 'Tool not found' })
+    return
+  }
+  // The owner may test any method by hand — but one that can change something on
+  // the far side only with an explicit confirmation, so a stray click never fires a
+  // real POST/DELETE at a live system.
+  if (UNSAFE_METHODS.includes(tool.method) && req.body?.confirm !== true) {
+    res.status(400).json({ error: `Este teste executa um ${tool.method} real no sistema de destino. Confirme para continuar.`, field: 'confirm' })
     return
   }
   const outcome = await executeToolCall(tool, req.body?.arguments ?? {})
@@ -3813,14 +3825,9 @@ async function start() {
   // The automation engine runs INSIDE the API by default: one deployable service,
   // and no way to deploy a system whose routines silently never fire. Set
   // EMBEDDED_WORKER=false to run `npm run start:worker` as a separate process.
-  if (embeddedEngineEnabled()) {
-    automationEngine = await startAutomationEngine().catch((error) => {
-      console.error('Automation engine failed to start:', error)
-      return null
-    })
-  } else {
-    console.log('Automation engine disabled here (EMBEDDED_WORKER=false) — run npm run start:worker')
-  }
+  // A failure here is NEVER swallowed: it is logged and it keeps /api/ready red, so
+  // an instance that cannot run routines never takes traffic as if it could.
+  await startEmbeddedEngine()
 
   httpServer.listen(port, () => {
     console.log(`Backend listening on port ${port} (${config.nodeEnv})`)
@@ -3829,24 +3836,26 @@ async function start() {
 
 // Graceful shutdown: stop accepting connections, close Socket.IO, then Mongo, so
 // SIGTERM from the orchestrator drains cleanly instead of a hard kill.
-// Held so shutdown can drain in-flight automation runs before closing MongoDB.
-let automationEngine: EngineHandle | null = null
-
 let shuttingDown = false
 async function shutdown(signal: string) {
   if (shuttingDown) return
   shuttingDown = true
-  console.log(`Received ${signal}, shutting down gracefully...`)
+  console.log(`Received ${signal}, shutting down gracefully (up to ${config.shutdownTimeoutMs}ms)...`)
+  // Emergency brake, deliberately below the orchestrator's stop_grace_period. If it
+  // ever fires, in-flight runs stay RECOVERABLE: they keep their lease, it expires,
+  // and another instance reclaims them — accounting is keyed per attempt, so a
+  // reclaim never charges twice.
   const forced = setTimeout(() => {
     console.error('Shutdown timed out — forcing exit')
     process.exit(1)
-  }, 10_000)
+  }, config.shutdownTimeoutMs)
   forced.unref()
   try {
     io.close()
     await new Promise<void>((resolve) => httpServer.close(() => resolve()))
-    // Stop polling and let running automations finish before the database goes.
-    if (automationEngine) await automationEngine.stop()
+    // Stop claiming new runs and let the in-flight ones finish (their leases are
+    // renewed meanwhile, so nothing steals them) before the database goes.
+    await stopEmbeddedEngine()
     await mongoClient.close()
     console.log('Shutdown complete')
     process.exit(0)

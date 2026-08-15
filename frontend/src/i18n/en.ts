@@ -64,7 +64,11 @@ export const en: Record<keyof typeof pt, string> = {
   'tools.testRequest': 'What was sent',
   'tools.testResponse': 'What came back',
   'tools.testHint': 'Credentials appear masked — they are not revealed even here.',
+  'tools.testConfirm': 'This test performs a real {{method}} against the target system. Continue?',
   'tools.deleteConfirm': 'Delete “{{name}}”? Agents using it lose access.',
+  'tools.autonomy': 'Let the agent run this on its own',
+  'tools.autonomyWarning': 'This method ({{method}}) changes data on the target system. Once checked, the agent may do it by itself, without asking anyone.',
+  'tools.autonomyBlocked': 'Without this authorisation the agent cannot perform the action — only you can, testing here and confirming.',
 
   // --- agents ------------------------------------------------------------------
   'agents.tools': 'Tools',
