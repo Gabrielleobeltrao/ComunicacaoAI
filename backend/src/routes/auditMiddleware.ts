@@ -2,61 +2,148 @@ import { randomUUID } from 'node:crypto'
 import type { NextFunction, Request, Response } from 'express'
 import { recordAudit } from '../audit.js'
 import type { AuditAction, AuditEntityType } from '../audit.js'
+import { entityLabelWithOwner } from '../auditLabels.js'
 
 // ONE place instruments changes: this middleware. Every mutating API request passes
-// through it, so a new route is audited the day it is written and no handler has to
-// remember — and nothing is recorded twice, because there is no second call site.
+// through it, so nothing is recorded twice and no handler has to remember.
 //
 // What it reads is the REQUEST LINE and the RESPONSE STATUS. Never the body: a body
-// is where prompts, payloads, credentials and content live. The path already says
-// what was touched, and the status says whether it worked.
+// is where prompts, payloads, credentials and content live.
+//
+// The mapping below is EXPLICIT, one rule per route. It used to be inferred from the
+// path shape, and inference got things wrong in ways that matter: a playground call
+// was recorded as "created an agent", validating a definition as "created an
+// automation", a visitor's message as a change to the channel. A route that is not
+// in this table is simply not audited — adding one is a decision, and the test suite
+// asserts that every mutating route the app exposes has a rule here.
 
-// Where the audit trail starts and ends: everything else is out of scope on purpose.
-// - auth: sessions, passwords and tokens must never be described here, not even by
-//   their shape.
-// - hooks: the public webhook receiver is an EXECUTION (it lands in automation_runs),
-//   not a change to the account — and its body is a third party's payload.
+// `null` target = a real route that is deliberately NOT a change to the account.
+interface Rule {
+  methods: string[]
+  // Path segments; ':' matches any single segment.
+  pattern: string[]
+  target: { entityType: AuditEntityType; action: AuditAction } | null
+  // Where the entity's id sits in the pattern (index), when it has one.
+  idAt?: number
+  why?: string
+}
+
+const R = (methods: string, pattern: string, target: Rule['target'], extra: Partial<Rule> = {}): Rule => ({
+  methods: methods.split('|'),
+  pattern: pattern.split('/').filter(Boolean),
+  target,
+  ...extra,
+})
+
+// Ordered: the FIRST match wins, so a specific rule is written above the generic one.
+const RULES: Rule[] = [
+  // --- not a change to the account ------------------------------------------------
+  // Testing an agent or a sector is an execution, not a mutation. It used to be
+  // recorded as "created an agent", which is exactly backwards.
+  R('POST', 'api/agents/:/playground', null, { why: 'test execution, no mutation' }),
+  R('POST', 'api/sectors/:/playground', null, { why: 'test execution, no mutation' }),
+  // Validating a draft only reads it.
+  R('POST', 'api/automations/:/validate', null, { why: 'read-only check' }),
+  // Runs belong to the EXECUTION history (automation_runs), which is its own
+  // timeline — recording them again as "changes" would double-count them.
+  R('POST', 'api/automations/:/runs', null, { why: 'execution, tracked in automation_runs' }),
+  R('POST', 'api/runs/:/cancel', null, { why: 'execution state, tracked in automation_runs' }),
+  // Conversation traffic: a message or a handoff is not a configuration change, and
+  // the public one is a visitor's.
+  R('POST', 'api/widgets/:/conversations/:/messages', null, { why: 'conversation traffic' }),
+  R('POST', 'api/widgets/:/conversations/:/handoff', null, { why: 'conversation traffic' }),
+  R('POST', 'api/public/widgets/:/messages', null, { why: 'public visitor traffic' }),
+  // A provider's inbound webhook: third-party payload, and an execution.
+  R('POST', 'api/whatsapp/:/webhook/:', null, { why: 'inbound provider event' }),
+
+  // --- agents -----------------------------------------------------------------------
+  R('POST', 'api/agents', { entityType: 'agent', action: 'create' }),
+  R('PATCH', 'api/agents/:', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/agents/:', { entityType: 'agent', action: 'delete' }, { idAt: 2 }),
+  // Moving an agent between sectors is a move, not a plain edit.
+  R('PUT', 'api/agents/:/sector', { entityType: 'agent', action: 'move' }, { idAt: 2 }),
+
+  // --- routines + event triggers (agent-owned) --------------------------------------
+  R('POST', 'api/agents/:/routines', { entityType: 'routine', action: 'create' }),
+  R('PATCH', 'api/agents/:/routines/:', { entityType: 'routine', action: 'update' }, { idAt: 4 }),
+  R('POST', 'api/agents/:/routines/:/activate', { entityType: 'routine', action: 'activate' }, { idAt: 4 }),
+  R('POST', 'api/agents/:/routines/:/pause', { entityType: 'routine', action: 'pause' }, { idAt: 4 }),
+  R('POST', 'api/agents/:/routines/:/archive', { entityType: 'routine', action: 'archive' }, { idAt: 4 }),
+  R('POST', 'api/agents/:/event-triggers', { entityType: 'event_trigger', action: 'create' }),
+  R('PATCH', 'api/agents/:/event-triggers/:', { entityType: 'event_trigger', action: 'update' }, { idAt: 4 }),
+  R('POST', 'api/agents/:/event-triggers/:/rotate', { entityType: 'event_trigger', action: 'rotate' }, { idAt: 4 }),
+  R('POST', 'api/agents/:/event-triggers/:/activate', { entityType: 'event_trigger', action: 'activate' }, { idAt: 4 }),
+  R('POST', 'api/agents/:/event-triggers/:/pause', { entityType: 'event_trigger', action: 'pause' }, { idAt: 4 }),
+  R('POST', 'api/agents/:/event-triggers/:/archive', { entityType: 'event_trigger', action: 'archive' }, { idAt: 4 }),
+
+  // --- agent knowledge ---------------------------------------------------------------
+  R('POST', 'api/agents/:/documents/upload', { entityType: 'knowledge', action: 'create' }),
+  R('POST', 'api/agents/:/documents', { entityType: 'knowledge', action: 'create' }),
+  R('PATCH', 'api/agents/:/documents/:', { entityType: 'knowledge', action: 'update' }, { idAt: 4 }),
+  R('DELETE', 'api/agents/:/documents/:', { entityType: 'knowledge', action: 'delete' }, { idAt: 4 }),
+
+  // --- sectors -------------------------------------------------------------------------
+  R('POST', 'api/sectors', { entityType: 'sector', action: 'create' }),
+  R('PATCH', 'api/sectors/:', { entityType: 'sector', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/sectors/:', { entityType: 'sector', action: 'delete' }, { idAt: 2 }),
+  R('PUT', 'api/sectors/:/members', { entityType: 'sector', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/sectors/:/move', { entityType: 'sector', action: 'move' }, { idAt: 2 }),
+  R('POST', 'api/sectors/:/documents/:/reindex', { entityType: 'knowledge', action: 'update' }, { idAt: 4 }),
+  R('POST', 'api/sectors/:/documents', { entityType: 'knowledge', action: 'create' }),
+  R('PATCH', 'api/sectors/:/documents/:', { entityType: 'knowledge', action: 'update' }, { idAt: 4 }),
+  R('DELETE', 'api/sectors/:/documents/:', { entityType: 'knowledge', action: 'delete' }, { idAt: 4 }),
+
+  // --- floors + building -----------------------------------------------------------------
+  R('POST', 'api/floors', { entityType: 'floor', action: 'create' }),
+  R('PATCH', 'api/floors/:', { entityType: 'floor', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/floors/:', { entityType: 'floor', action: 'delete' }, { idAt: 2 }),
+  R('POST', 'api/floors/:/archive', { entityType: 'floor', action: 'archive' }, { idAt: 2 }),
+  // Restoring is its own verb: it used to fall through to "created a floor".
+  R('POST', 'api/floors/:/restore', { entityType: 'floor', action: 'restore' }, { idAt: 2 }),
+  R('PATCH', 'api/building', { entityType: 'building', action: 'update' }),
+
+  // --- tools ---------------------------------------------------------------------------
+  R('POST', 'api/tools', { entityType: 'tool', action: 'create' }),
+  R('PATCH', 'api/tools/:', { entityType: 'tool', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/tools/:', { entityType: 'tool', action: 'delete' }, { idAt: 2 }),
+  // A manual test really calls the far side, so it IS worth a record — as a test.
+  R('POST', 'api/tools/:/test', { entityType: 'tool', action: 'test' }, { idAt: 2 }),
+
+  // --- channels + connections -------------------------------------------------------------
+  R('POST', 'api/widgets', { entityType: 'channel', action: 'create' }),
+  R('PATCH', 'api/widgets/:', { entityType: 'channel', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/widgets/:', { entityType: 'channel', action: 'delete' }, { idAt: 2 }),
+  R('POST', 'api/widgets/:/avatar', { entityType: 'channel', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/widgets/:/avatar', { entityType: 'channel', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/whatsapp/channels', { entityType: 'channel', action: 'create' }),
+  R('PATCH', 'api/whatsapp/channels/:', { entityType: 'channel', action: 'update' }, { idAt: 3 }),
+  R('DELETE', 'api/whatsapp/channels/:', { entityType: 'channel', action: 'delete' }, { idAt: 3 }),
+  R('POST', 'api/connections', { entityType: 'connection', action: 'create' }),
+  R('PATCH', 'api/connections/:', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/connections/:', { entityType: 'connection', action: 'delete' }, { idAt: 2 }),
+  R('POST', 'api/connections/:/test', { entityType: 'connection', action: 'test' }, { idAt: 2 }),
+  // Disconnecting Google is a real change to what the account can reach.
+  R('DELETE', 'api/integrations/google', { entityType: 'connection', action: 'disconnect' }),
+
+  // --- automations (legacy surface, still reachable by API) ---------------------------------
+  R('POST', 'api/automations', { entityType: 'automation', action: 'create' }),
+  R('PATCH', 'api/automations/:', { entityType: 'automation', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/automations/:/publish', { entityType: 'automation', action: 'publish' }, { idAt: 2 }),
+  R('POST', 'api/automations/:/activate', { entityType: 'automation', action: 'activate' }, { idAt: 2 }),
+  R('POST', 'api/automations/:/pause', { entityType: 'automation', action: 'pause' }, { idAt: 2 }),
+  R('POST', 'api/automations/:/archive', { entityType: 'automation', action: 'archive' }, { idAt: 2 }),
+  R('POST', 'api/automations/:/webhook/rotate', { entityType: 'automation', action: 'rotate' }, { idAt: 2 }),
+
+  // --- settings ---------------------------------------------------------------------------
+  R('PUT', 'api/settings/monthly-token-cap', { entityType: 'settings', action: 'update' }),
+  R('PUT', 'api/settings/:/key', { entityType: 'settings', action: 'update' }),
+  R('DELETE', 'api/settings/:/key', { entityType: 'settings', action: 'delete' }),
+]
+
+// Never audited, whatever the rules say: sessions carry passwords and tokens, the
+// public webhook receiver carries a third party's payload, and reading the log is
+// not a change.
 const SKIP_PREFIXES = ['/api/auth', '/api/hooks', '/api/logs']
-
-// URL segment → the entity that segment addresses. A resource that is not here is
-// not audited: adding one is a decision, never an accident.
-const ENTITY_BY_RESOURCE: Record<string, AuditEntityType> = {
-  agents: 'agent',
-  sectors: 'sector',
-  floors: 'floor',
-  offices: 'floor',
-  building: 'building',
-  tools: 'tool',
-  widgets: 'channel',
-  whatsapp: 'channel',
-  connections: 'connection',
-  automations: 'automation',
-  documents: 'knowledge',
-  knowledge: 'knowledge',
-  settings: 'settings',
-  'user-settings': 'settings',
-  providers: 'settings',
-}
-
-// Sub-resources that are their own entity in the log, even though they hang off an
-// agent's URL.
-const SPECIAL_RESOURCES: Record<string, AuditEntityType> = {
-  routines: 'routine',
-  'event-triggers': 'event_trigger',
-}
-
-// A trailing verb segment (…/routines/:id/pause) names the action outright.
-const ACTION_BY_VERB: Record<string, AuditAction> = {
-  activate: 'activate',
-  pause: 'pause',
-  archive: 'archive',
-  rotate: 'rotate',
-  publish: 'publish',
-  move: 'move',
-  test: 'test',
-}
-
-const isObjectIdLike = (segment: string): boolean => /^[a-f0-9]{24}$/i.test(segment)
 
 export interface AuditTarget {
   entityType: AuditEntityType
@@ -64,49 +151,29 @@ export interface AuditTarget {
   action: AuditAction
 }
 
-// Pure: the request line → what to record (or null for "not an audited change").
-// Exported because this mapping is the whole risk surface of the middleware, and it
-// deserves to be tested without a server.
+const matches = (rule: Rule, segments: string[]): boolean =>
+  rule.pattern.length === segments.length && rule.pattern.every((p, i) => p === ':' || p === segments[i])
+
+// Pure: the request line → what to record, or null for "not an audited change".
+// Exported because this mapping is the whole risk surface of the middleware.
 export function auditTargetFor(method: string, path: string): AuditTarget | null {
   const verb = method.toUpperCase()
   if (verb === 'GET' || verb === 'HEAD' || verb === 'OPTIONS') return null
   if (SKIP_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))) return null
 
   const segments = path.split('?')[0].split('/').filter(Boolean)
-  if (segments[0] !== 'api') return null
-  const rest = segments.slice(1)
-  if (!rest.length) return null
-
-  // The LAST named resource in the path is what was acted on: for
-  // /api/agents/:id/routines/:rid that is the routine, not the agent.
-  const last = rest[rest.length - 1]
-  const tail = ACTION_BY_VERB[last]
-  const withoutVerb = tail ? rest.slice(0, -1) : rest
-
-  let entityType: AuditEntityType | undefined
-  let entityId: string | null = null
-  for (let i = 0; i < withoutVerb.length; i++) {
-    const segment = withoutVerb[i]
-    if (isObjectIdLike(segment)) {
-      entityId = segment
-      continue
-    }
-    const mapped = ENTITY_BY_RESOURCE[segment] ?? SPECIAL_RESOURCES[segment]
-    if (mapped) {
-      entityType = mapped
-      // A new resource segment replaces the id that belonged to the previous one.
-      entityId = null
-    }
+  for (const rule of RULES) {
+    if (!rule.methods.includes(verb) || !matches(rule, segments)) continue
+    if (!rule.target) return null
+    const entityId = rule.idAt !== undefined ? (segments[rule.idAt] ?? null) : null
+    return { entityType: rule.target.entityType, entityId, action: rule.target.action }
   }
-  if (!entityType) return null
-
-  // The id of THIS entity, when the path carries one after its resource segment.
-  const lastSegment = withoutVerb[withoutVerb.length - 1]
-  entityId = isObjectIdLike(lastSegment) ? lastSegment : entityId
-
-  const action: AuditAction = tail ?? (verb === 'POST' ? 'create' : verb === 'DELETE' ? 'delete' : 'update')
-  return { entityType, entityId, action }
+  return null
 }
+
+// Every rule, for the test that checks the app's routes against this table.
+export const auditRules = (): { methods: string[]; path: string; audited: boolean }[] =>
+  RULES.map((r) => ({ methods: r.methods, path: `/${r.pattern.join('/')}`, audited: r.target !== null }))
 
 // Attach a request id (also returned as a header, so a support conversation can
 // quote it) and record the change once the response is known.
@@ -123,12 +190,12 @@ export function auditRequests(req: Request, res: Response, next: NextFunction): 
 
   res.on('finish', () => {
     const ownerId = res.locals.userId
-    // No session, no owner to attribute it to: an unauthenticated attempt is a
-    // security concern for the access log, not an entry in this owner-scoped trail.
+    // No session, no owner to attribute it to: an unauthenticated attempt belongs to
+    // the access log, not to this owner-scoped trail.
     if (typeof ownerId !== 'string' || !ownerId) return
+    const status = res.statusCode
     // 4xx that mean "invalid input" are noise; what matters is the change that
     // happened, and the failure of one that should have worked.
-    const status = res.statusCode
     const relevantFailure = status >= 500 || status === 403 || status === 409
     if (status >= 400 && !relevantFailure) return
 
@@ -139,6 +206,11 @@ export function auditRequests(req: Request, res: Response, next: NextFunction): 
       action: target.action,
       entityType: target.entityType,
       entityId: target.entityId,
+      // Captured BEFORE the handler ran, because after a delete there is nothing
+      // left to name. Short, plain, and only for entities whose name is a label.
+      // Captured before the handler ran; kept ONLY if the document belonged to the
+      // owner this event is being written for.
+      entityLabel: res.locals.auditEntityOwner === ownerId && typeof res.locals.auditEntityLabel === 'string' ? res.locals.auditEntityLabel : null,
       floorId: typeof res.locals.auditFloorId === 'string' ? res.locals.auditFloorId : null,
       result: status < 400 ? 'success' : 'failure',
       requestId,
@@ -146,5 +218,20 @@ export function auditRequests(req: Request, res: Response, next: NextFunction): 
       metadata: { method: req.method, statusCode: status },
     })
   })
+
+  // A deletion is the only case that must read the entity BEFORE the handler: the
+  // label would be gone afterwards. One lookup, on deletes only, and the owner comes
+  // back with it so the finish handler can refuse a label that is not this owner's.
+  if (target.action === 'delete' && target.entityId) {
+    void entityLabelWithOwner(target.entityType, target.entityId)
+      .then((found) => {
+        if (!found) return
+        res.locals.auditEntityOwner = found.ownerId
+        res.locals.auditEntityLabel = found.label
+      })
+      .catch(() => undefined)
+      .finally(() => next())
+    return
+  }
   next()
 }

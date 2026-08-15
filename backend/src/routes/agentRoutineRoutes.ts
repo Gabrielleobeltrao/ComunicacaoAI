@@ -15,9 +15,9 @@ import { webhookEndpoint } from '../automations/executionCenter.js'
 import { cronToRecurrence, describeRecurrence, isValidRecurrence } from '../automations/schedule.js'
 import { rotateWebhookSecret, setStatus } from '../automations/service.js'
 import { listRuns } from '../automations/runRepository.js'
-import { preview } from '../automations/runTypes.js'
 import type { Automation } from '../automations/types.js'
 import { listDelegationsForAgent } from '../delegationLog.js'
+import { publicError } from '../safeError.js'
 import { oid } from './http.js'
 
 // Agent ROUTINES + HISTORY. Mounted at /api/agents/:agentId behind requireAuth
@@ -66,10 +66,14 @@ function parseRoutineSpec(body: Record<string, unknown>): { spec?: RoutineSpec; 
   const objective = typeof body.objective === 'string' ? body.objective.trim() : ''
   if (!objective) return { error: 'objective is required' }
   if (!isValidRecurrence(body.recurrence)) return { error: 'invalid recurrence' }
+  // ABSENT vs null is a real distinction here: an absent `delivery` means "leave the
+  // destination as it is" (the editor could not load the connections, so it must not
+  // silently drop one), while an explicit null means the user chose "Nenhum".
   const d = body.delivery as { provider?: unknown; connectionId?: unknown } | null | undefined
   const provider = d?.provider
-  const delivery =
-    d && (provider === 'email' || provider === 'telegram') && typeof d.connectionId === 'string' && d.connectionId
+  const delivery = !('delivery' in body)
+    ? undefined
+    : d && (provider === 'email' || provider === 'telegram') && typeof d.connectionId === 'string' && d.connectionId
       ? { provider: provider as 'email' | 'telegram', connectionId: d.connectionId }
       : null
   const fmt = body.outputFormat
@@ -325,7 +329,8 @@ agentRoutineRouter.get('/history', async (req, res) => {
       queuedAt: run.queuedAt,
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
-      error: run.error ? preview(run.error) : null,
+      // Categorised: an engine message can quote the very input that failed.
+      error: publicError(run.error),
     })),
     delegations: delegations.map((d) => ({
       id: d._id.toString(),

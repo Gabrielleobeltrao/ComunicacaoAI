@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { findRun, listArtifacts, listRuns, listStepRuns, requestCancel } from '../automations/runRepository.js'
 import type { Artifact, AutomationRun, StepRun } from '../automations/runTypes.js'
 import { listDeliveries } from '../connections/repository.js'
+import { publicError } from '../safeError.js'
 import { notFound, oid } from './http.js'
 
 // Mounted at /api/runs behind requireAuth. Listings never return the (large)
@@ -25,7 +26,8 @@ const runSummary = (r: AutomationRun) => ({
   startedAt: r.startedAt,
   finishedAt: r.finishedAt,
   usage: r.usage,
-  error: r.error,
+  // Categorised, never the stored text: it can quote the input that caused it.
+  error: publicError(r.error),
 })
 const stepPublic = (s: StepRun) => ({
   id: s._id,
@@ -34,7 +36,7 @@ const stepPublic = (s: StepRun) => ({
   attempt: s.attempt,
   status: s.status,
   outputPreview: s.outputPreview,
-  error: s.error,
+  error: publicError(s.error),
 })
 const artifactPublic = (a: Artifact) => ({
   id: a._id,
@@ -99,7 +101,7 @@ runRouter.get('/:id/deliveries', async (req, res) => {
       destinationMasked: d.destinationMasked,
       status: d.status,
       providerMessageId: d.providerMessageId,
-      error: d.error,
+      error: publicError(d.error),
       createdAt: d.createdAt,
       sentAt: d.sentAt,
     })),

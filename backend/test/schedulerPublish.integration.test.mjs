@@ -287,3 +287,17 @@ test('an automation published before publishedTrigger existed is healed, not str
   assert.equal(planned, 1, 'the backfill stamps the published trigger and it plans normally')
   assert.equal((await automations().findOne({ _id: id })).publishedTrigger.cron, '0 9 * * *')
 })
+
+test('a scheduled fire carries a stable correlation, derived only from ids and time', async () => {
+  const id = await seedPublished()
+  await planSchedules(new Date('2026-08-15T01:00:00Z'))
+  const instant = (await automations().findOne({ _id: id })).nextRunAt
+
+  await runDueSchedules(new Date('2026-08-15T12:00:30Z'))
+  const [run] = await runs().find({ ownerId: OWNER, automationId: id }).toArray()
+
+  // Stable for THIS fire: the same automation and the same instant always produce it.
+  assert.equal(run.requestId, `schedule:${id.toString()}:${instant.getTime()}`)
+  // And it is derived from what we already own — nothing about the definition.
+  assert.ok(!run.requestId.includes(' '))
+})

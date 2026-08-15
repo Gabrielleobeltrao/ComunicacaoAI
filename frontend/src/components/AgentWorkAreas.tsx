@@ -59,16 +59,38 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
   const [timezone, setTimezone] = useState(routine?.timezone || 'America/Sao_Paulo')
   const [input, setInput] = useState(routine?.input ?? '')
   const [outputFormat, setOutputFormat] = useState<'text' | 'markdown' | 'json'>(routine?.outputFormat ?? 'markdown')
+  // '' means "no destination"; the sentinel means "whatever it already has" — the
+  // two are NOT the same, and telling them apart is what keeps an edit made before
+  // the connections arrived from erasing one.
+  const KEEP = '__keep__'
   const [connectionId, setConnectionId] = useState(routine?.delivery?.connectionId ?? '')
   const [connections, setConnections] = useState<DeliveryConnection[]>([])
+  const [connectionsState, setConnectionsState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Destinations are optional: with none configured the field simply says so.
+  // Destinations are optional: with none configured the field simply says so. Until
+  // the list is known the picker cannot represent the current destination, so it
+  // shows "keep" instead of pretending the routine has none.
   useEffect(() => {
+    let cancelled = false
     listDeliveryConnections()
-      .then(setConnections)
-      .catch(() => setConnections([]))
+      .then((list) => {
+        if (cancelled) return
+        setConnections(list)
+        setConnectionsState('ready')
+        // The stored destination is gone from the list (revoked, or another
+        // account's): keep it rather than silently dropping it.
+        setConnectionId((current) => (current && !list.some((c) => c.id === current) ? KEEP : current))
+      })
+      .catch(() => {
+        if (cancelled) return
+        setConnectionsState('error')
+        setConnectionId((current) => (current ? KEEP : current))
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const buildRecurrence = (): Recurrence =>
@@ -86,6 +108,9 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
     setSaving(true)
     setError(null)
     const chosen = connections.find((c) => c.id === connectionId)
+    // OMITTING delivery tells the backend to keep the current one. It is sent as
+    // null only when the user actually picked "Nenhum" with the list in hand.
+    const keepDestination = connectionId === KEEP || connectionsState !== 'ready'
     const payload = {
       name: name.trim() || undefined,
       objective: objective.trim(),
@@ -93,7 +118,7 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
       timezone,
       input: input.trim() || undefined,
       outputFormat,
-      delivery: chosen ? { provider: chosen.provider, connectionId: chosen.id } : null,
+      ...(keepDestination ? {} : { delivery: chosen ? { provider: chosen.provider, connectionId: chosen.id } : null }),
     }
     try {
       if (routine) await updateRoutine(agentId, routine.id, payload)
@@ -157,18 +182,35 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
       <Field label="Entrada fixa (opcional)" hint="Texto entregue ao agente em toda execução.">
         <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ex.: foco em política nacional" data-testid="routine-input" />
       </Field>
-      <Field label="Destino do resultado (opcional)" hint={connections.length ? 'Para onde o resultado é enviado ao terminar.' : 'Nenhum destino conectado ainda — o resultado fica no histórico.'}>
+      <Field
+        label="Destino do resultado (opcional)"
+        hint={
+          connectionsState === 'loading'
+            ? 'Carregando os destinos…'
+            : connectionsState === 'error'
+              ? 'Não foi possível carregar os destinos — o atual será mantido como está.'
+              : connections.length
+                ? 'Para onde o resultado é enviado ao terminar.'
+                : 'Nenhum destino conectado ainda — o resultado fica no histórico.'
+        }
+      >
         <Select
           value={connectionId}
           onChange={(e) => setConnectionId(e.target.value)}
-          options={[{ value: '', label: 'Nenhum — guardar no histórico' }, ...connections.map((c) => ({ value: c.id, label: `${c.name} (${c.provider === 'email' ? 'e-mail' : 'Telegram'})` }))]}
+          disabled={connectionsState === 'loading'}
+          data-testid="routine-delivery"
+          options={[
+            ...(connectionId === KEEP || connectionsState !== 'ready' ? [{ value: KEEP, label: 'Manter o destino atual' }] : []),
+            { value: '', label: 'Nenhum — guardar no histórico' },
+            ...connections.map((c) => ({ value: c.id, label: `${c.name} (${c.provider === 'email' ? 'e-mail' : 'Telegram'})` })),
+          ]}
           aria-label="Destino do resultado"
         />
       </Field>
       {error ? <p style={{ margin: 0, color: 'var(--status-blocked)', fontSize: 13 }} data-testid="routine-error">{error}</p> : null}
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => void submit()} disabled={saving} data-testid="save-routine">
-          {saving ? 'Salvando…' : editing ? 'Salvar alterações' : 'Criar rotina'}
+        <Button onClick={() => void submit()} disabled={saving || connectionsState === 'loading'} data-testid="save-routine">
+          {saving ? 'Salvando…' : connectionsState === 'loading' ? 'Carregando…' : editing ? 'Salvar alterações' : 'Criar rotina'}
         </Button>
         <Button variant="ghost" onClick={onCancel} disabled={saving}>
           Cancelar

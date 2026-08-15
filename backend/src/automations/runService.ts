@@ -12,6 +12,9 @@ export interface CreateRunInput {
   triggerType?: TriggerType
   input?: unknown
   idempotencyKey?: string
+  // Where this execution came from: the API request id for a manual run, or a
+  // derived, payload-free correlation for the scheduler / webhook receiver.
+  requestId?: string | null
 }
 
 // Create a run from an automation and enqueue it. Prefers the last published
@@ -48,6 +51,7 @@ export async function createRun(
     triggerType: input.triggerType ?? 'manual',
     triggerPayload: input.input ?? null,
     idempotencyKey,
+    requestId: input.requestId ?? null,
     status: 'queued',
     currentStepId: null,
     queuedAt: new Date(),

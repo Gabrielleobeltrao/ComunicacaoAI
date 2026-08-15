@@ -144,7 +144,12 @@ automationRouter.post('/:id/runs', async (req, res, next) => {
   const id = oid(req.params.id)
   if (!id) return notFound(res)
   try {
-    const { run, created } = await createRun(res.locals.userId, id, req.body ?? {})
+    // The request that asked for it, so the execution and the audit events of the
+    // same request line up in the log.
+    const { run, created } = await createRun(res.locals.userId, id, {
+      ...(req.body ?? {}),
+      requestId: typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined,
+    })
     res.status(created ? 201 : 200).json({ id: run._id, status: run.status, idempotencyKey: run.idempotencyKey })
   } catch (error) {
     fail(res, error, next)

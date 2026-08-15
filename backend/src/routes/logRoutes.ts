@@ -6,6 +6,7 @@ import { listRunTimeline } from '../automations/executionCenter.js'
 import type { RunTimelineFilters } from '../automations/executionCenter.js'
 import { findRun, listArtifacts, listStepRuns } from '../automations/runRepository.js'
 import { listDeliveries } from '../connections/repository.js'
+import { publicError } from '../safeError.js'
 import { notFound, oid } from './http.js'
 
 // Mounted at /api/logs behind requireAuth. READ ONLY: there is no PATCH and no
@@ -73,6 +74,8 @@ logRouter.get('/runs/:id', async (req, res) => {
     id: run._id.toString(),
     automationId: run.automationId.toString(),
     automationVersion: run.automationVersion,
+    // Safe by construction: a request id, or a correlation derived from ids only.
+    requestId: run.requestId ?? null,
     status: run.status,
     triggerType: run.triggerType,
     queuedAt: run.queuedAt,
@@ -80,9 +83,8 @@ logRouter.get('/runs/:id', async (req, res) => {
     finishedAt: run.finishedAt,
     durationMs: run.startedAt && run.finishedAt ? run.finishedAt.getTime() - run.startedAt.getTime() : null,
     usage: run.usage,
-    // Only the kind and a bounded message the app itself wrote — never a provider
-    // string that could quote the input that caused it.
-    error: run.error ? { kind: run.error.kind, message: String(run.error.message ?? '').slice(0, 300) } : null,
+    // The stored message is never returned: the kind selects a fixed sentence.
+    error: publicError(run.error),
     steps: steps.map((s) => ({
       id: s._id.toString(),
       stepId: s.stepId,
@@ -91,7 +93,7 @@ logRouter.get('/runs/:id', async (req, res) => {
       status: s.status,
       startedAt: s.startedAt,
       finishedAt: s.finishedAt,
-      error: s.error ? { kind: s.error.kind, message: String(s.error.message ?? '').slice(0, 300) } : null,
+      error: publicError(s.error),
     })),
     deliveries: deliveries.map((d) => ({
       id: d._id.toString(),
@@ -102,7 +104,7 @@ logRouter.get('/runs/:id', async (req, res) => {
       attempt: d.attempt,
       createdAt: d.createdAt,
       sentAt: d.sentAt,
-      error: d.error ? { kind: d.error.kind, message: String(d.error.message ?? '').slice(0, 300) } : null,
+      error: publicError(d.error),
     })),
     // Metadata only: the artifact's CONTENT is not part of an audit view.
     artifacts: artifacts.map((a) => ({
@@ -123,6 +125,7 @@ logRouter.get('/audit', async (req, res) => {
   const filters: AuditFilters = {
     actorId: asString(q.actorId),
     actorType: oneOf<AuditActorType>(q.actorType, AUDIT_ACTOR_TYPES),
+    q: asString(q.q),
     action: oneOf<AuditAction>(q.action, AUDIT_ACTIONS),
     entityType: oneOf<AuditEntityType>(q.entityType, AUDIT_ENTITY_TYPES),
     entityId: asString(q.entityId),

@@ -11,6 +11,7 @@ const event = (over: Partial<AuditLogItem> = {}): AuditLogItem => ({
   action: 'update',
   entityType: 'routine',
   entityId: 'r1',
+  entityLabel: null,
   floorId: 'f1',
   result: 'success',
   occurredAt: '2026-08-15T12:00:00Z',
@@ -20,10 +21,21 @@ const event = (over: Partial<AuditLogItem> = {}): AuditLogItem => ({
 })
 
 describe('describeAudit', () => {
-  it('reads as a sentence', () => {
+  it('names the entity when its name is known', () => {
+    expect(describeAudit(event({ entityType: 'agent', entityLabel: 'Pesquisador Político' }))).toBe('Você editou o agente Pesquisador Político')
+    // A deleted entity keeps the name captured before it went.
+    expect(describeAudit(event({ action: 'delete', entityType: 'tool', entityLabel: 'consultar_pedido' }))).toBe('Você excluiu a ferramenta consultar_pedido')
+  })
+
+  it('degrades to the plain form instead of inventing a name', () => {
     expect(describeAudit(event())).toBe('Você editou rotina')
-    expect(describeAudit(event({ action: 'delete', entityType: 'agent' }))).toBe('Você excluiu agente')
     expect(describeAudit(event({ actorType: 'system', action: 'pause', entityType: 'event_trigger' }))).toBe('Sistema pausou gatilho')
+  })
+
+  it('covers the verbs the explicit route table added', () => {
+    expect(describeAudit(event({ action: 'restore', entityType: 'floor', entityLabel: 'Térreo' }))).toBe('Você restaurou o andar Térreo')
+    expect(describeAudit(event({ action: 'update', entityType: 'routine', entityLabel: 'Resumo diário' }))).toBe('Você editou a rotina Resumo diário')
+    expect(describeAudit(event({ action: 'disconnect', entityType: 'connection' }))).toBe('Você desconectou conexão')
   })
 })
 

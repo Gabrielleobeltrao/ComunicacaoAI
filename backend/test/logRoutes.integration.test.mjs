@@ -57,6 +57,11 @@ before(async () => {
   app.post('/api/agents', auth, (_req, res) => res.status(201).json({ ok: true }))
   app.patch('/api/agents/:id', auth, (_req, res) => res.json({ ok: true }))
   app.delete('/api/tools/:id', auth, (_req, res) => res.status(204).end())
+  // A real delete, so the label captured BEFORE the handler can be asserted.
+  app.delete('/api/agents/:id', auth, async (req, res) => {
+    await db.collection('agents').deleteOne({ _id: new ObjectId(req.params.id), ownerId: res.locals.userId })
+    res.status(204).end()
+  })
   app.post('/api/agents/:id/routines/:rid/pause', auth, (_req, res) => res.json({ ok: true }))
   app.post('/api/sectors', auth, (_req, res) => res.status(500).json({ error: 'boom' }))
   app.patch('/api/floors/:id', auth, (_req, res) => res.status(400).json({ error: 'nome inválido' }))
@@ -351,4 +356,138 @@ test('the audit trail has no write surface at all', async () => {
     assert.ok(res.status === 404 || res.status === 405, `${method} on an audit event must not be routed (got ${res.status})`)
   }
   assert.equal(await audit().countDocuments({ ownerId: OWNER }), 1, 'and nothing was removed')
+})
+
+// --- hardening round: names, new filters, correlation, safe errors -------------------
+
+test('a change names the entity it touched, resolved in batch at read time', async () => {
+  await call('PATCH', `/api/agents/${AGENT.toString()}`, { name: 'novo' })
+  await settle()
+  const [event] = (await json('/api/logs/audit?limit=25')).items
+  assert.equal(event.entityType, 'agent')
+  assert.equal(event.entityLabel, 'Ana', 'the CURRENT name, read from the agent itself')
+})
+
+test('a deleted entity keeps the short name captured before it went', async () => {
+  const doomed = new ObjectId()
+  await agents().insertOne({ _id: doomed, ownerId: OWNER, name: 'Pesquisador Político', objective: 'x', officeId: FLOOR })
+  await call('DELETE', `/api/agents/${doomed.toString()}`)
+  await settle()
+  assert.equal(await agents().countDocuments({ _id: doomed }), 0, 'it really is gone')
+
+  const [event] = (await json('/api/logs/audit?limit=25')).items
+  assert.equal(event.action, 'delete')
+  assert.equal(event.entityLabel, 'Pesquisador Político', 'captured before the deletion, since afterwards there is nothing to read')
+  // A label is a NAME, never content: short and single-line.
+  assert.ok(event.entityLabel.length <= 80)
+  assert.ok(!event.entityLabel.includes('\n'))
+})
+
+test('a label is never read across owners', async () => {
+  const foreign = new ObjectId()
+  await agents().insertOne({ _id: foreign, ownerId: OTHER, name: 'Agente da outra conta', objective: '', officeId: FLOOR })
+  await call('PATCH', `/api/agents/${foreign.toString()}`, { name: 'x' })
+  await settle()
+  const [event] = (await json('/api/logs/audit?limit=25')).items
+  assert.equal(event.entityId, foreign.toString())
+  assert.equal(event.entityLabel, null, "another owner's name must not be resolved")
+})
+
+test('the changes tab filters by actor and searches the entity', async () => {
+  await call('PATCH', `/api/agents/${AGENT.toString()}`, { name: 'novo' })
+  await call('DELETE', '/api/tools/000000000000000000000701')
+  await settle()
+
+  assert.equal((await json('/api/logs/audit?actorType=user')).items.length, 2)
+  assert.equal((await json('/api/logs/audit?actorType=system')).items.length, 0)
+  assert.equal((await json(`/api/logs/audit?actorId=${OWNER}`)).items.length, 2)
+
+  // By id…
+  const byId = await json(`/api/logs/audit?q=${AGENT.toString()}`)
+  assert.equal(byId.items.length, 1)
+  assert.equal(byId.items[0].entityType, 'agent')
+  // …and combined with another filter, still conjunctive.
+  assert.equal((await json(`/api/logs/audit?q=${AGENT.toString()}&action=delete`)).items.length, 0)
+})
+
+test('the search matches the name kept for a deleted entity, and never runs as a regex', async () => {
+  const doomed = new ObjectId()
+  await agents().insertOne({ _id: doomed, ownerId: OWNER, name: 'Pesquisador Político', objective: '', officeId: FLOOR })
+  await call('DELETE', `/api/agents/${doomed.toString()}`)
+  await settle()
+
+  assert.equal((await json('/api/logs/audit?q=Pesquisador')).items.length, 1)
+  assert.equal((await json('/api/logs/audit?q=pesquisador')).items.length, 1, 'case-insensitive')
+  // A search box is not a place to accept a regular expression.
+  assert.equal((await json('/api/logs/audit?q=.*')).items.length, 0)
+})
+
+test('the execution timeline filters by sector, combined with the rest', async () => {
+  await db.collection('sectors').insertOne({ _id: new ObjectId('000000000000000000000c33'), ownerId: OWNER, name: 'Atendimento', officeId: FLOOR, members: [{ agentId: AGENT }] })
+  await seedRun()
+  try {
+    assert.equal((await json('/api/logs/runs?sectorId=000000000000000000000c33')).items.length, 1)
+    assert.equal((await json(`/api/logs/runs?sectorId=000000000000000000000c33&agentId=${AGENT.toString()}`)).items.length, 1)
+    // An agent outside that sector, with the sector still applied: nothing.
+    assert.equal((await json(`/api/logs/runs?sectorId=000000000000000000000c33&agentId=${new ObjectId().toString()}`)).items.length, 0)
+    assert.equal((await json('/api/logs/runs?sectorId=000000000000000000000c99')).items.length, 0, 'a sector that is not ours resolves to nobody')
+  } finally {
+    await db.collection('sectors').deleteMany({})
+  }
+})
+
+test('an execution carries a safe correlation, and the detail shows it', async () => {
+  const runId = await seedRun({ requestId: 'schedule:aut-1:1755259200000' })
+  const detail = await json(`/api/logs/runs/${runId.toString()}`)
+  assert.equal(detail.requestId, 'schedule:aut-1:1755259200000')
+  // A run written before the field existed simply has none.
+  const legacy = await seedRun()
+  assert.equal((await json(`/api/logs/runs/${legacy.toString()}`)).requestId, null)
+})
+
+test('a stored error message never reaches the log, at any level', async () => {
+  const runId = await seedRun({
+    status: 'failed',
+    error: { kind: 'provider', message: 'recusou o prompt "CPF 000.000.000-00" com a chave sk-live-XYZ' },
+  })
+  await stepRuns().insertOne({
+    _id: new ObjectId(),
+    ownerId: OWNER,
+    runId,
+    stepId: 'run',
+    stepType: 'agent.execute',
+    attempt: 1,
+    status: 'failed',
+    outputPreview: '',
+    artifactIds: [],
+    startedAt: new Date(),
+    finishedAt: new Date(),
+    error: { kind: 'fetch', message: 'GET https://api.x/y?api_key=sk-live-XYZ falhou' },
+  })
+  await deliveries().insertOne({
+    _id: new ObjectId(),
+    ownerId: OWNER,
+    runId,
+    provider: 'email',
+    connectionId: new ObjectId(),
+    destinationMasked: 'jo***@exemplo.com',
+    status: 'failed',
+    attempt: 1,
+    providerMessageId: null,
+    idempotencyKey: `d-${runId.toString()}`,
+    error: { kind: 'delivery', message: 'SMTP 535 auth failed for joao@exemplo.com senha=hunter2' },
+    createdAt: new Date(),
+    sentAt: null,
+  })
+
+  const serialized = JSON.stringify(await json(`/api/logs/runs/${runId.toString()}`))
+  for (const secret of ['sk-live-XYZ', 'CPF', 'hunter2', 'joao@exemplo.com', 'api_key', 'https://api.x']) {
+    assert.ok(!serialized.includes(secret), `${secret} leaked through an error message`)
+  }
+  const detail = await json(`/api/logs/runs/${runId.toString()}`)
+  // The category still tells an operator what kind of failure it was.
+  assert.equal(detail.error.kind, 'provider')
+  assert.equal(detail.steps[0].error.kind, 'fetch')
+  assert.equal(detail.deliveries[0].error.kind, 'delivery')
+  assert.ok(detail.error.message.length > 0, 'and it still says something useful')
 })

@@ -33,6 +33,10 @@ webhookRouter.post('/automations/:publicKey', async (req, res, next) => {
       triggerType: 'webhook',
       input: req.body,
       idempotencyKey: key,
+      // Correlation only, derived from ids we already own. Deliberately NOT the
+      // idempotency key: that one is built from the caller's event id or a hash of
+      // its body, and neither belongs in a field the UI displays.
+      requestId: `webhook:${automation._id.toString()}`,
     })
     res.status(202).json({ runId: run._id, status: run.status })
   } catch (error) {

@@ -19,6 +19,8 @@ export interface RoutineSpec {
   timezone: string
   input?: string // static input text handed to the agent every run
   outputFormat?: OutputFormat
+  // null = "no destination"; UNDEFINED on an update = "keep whatever it has", so an
+  // edit made while the connections were still loading cannot erase one.
   delivery?: { provider: 'email' | 'telegram'; connectionId: string } | null
   retryMaxAttempts?: number
   maxOutputChars?: number
@@ -115,7 +117,15 @@ export async function updateRoutine(ownerId: string, agentId: ObjectId, routineI
   const existing = await getAutomation(ownerId, routineId)
   if (!existing || existing.agentId?.toString() !== agentId.toString()) return null
   if (!isValidRecurrence(spec.recurrence)) throw new RoutineError('invalid recurrence')
-  const definition = buildRoutineDefinition(spec, agentId)
+  // An omitted delivery keeps the current one: only an explicit null removes it.
+  const current = (existing.draftDefinition?.deliveries ?? [])[0]
+  const delivery =
+    spec.delivery !== undefined
+      ? spec.delivery
+      : current
+        ? { provider: current.provider, connectionId: current.connectionId.toString() }
+        : null
+  const definition = buildRoutineDefinition({ ...spec, delivery }, agentId)
   await updateDraft(ownerId, routineId, { name: spec.name || describeRecurrence(spec.recurrence), description: spec.objective.slice(0, 2000), definition })
   await publishAutomation(ownerId, routineId, ownerId)
   return getAutomation(ownerId, routineId)

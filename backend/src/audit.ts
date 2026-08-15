@@ -14,6 +14,7 @@
 // operator decision, never by a silent deletion inside the app.
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
+import { normalizeLabel, resolveEntityLabels, labelKeyFor } from './auditLabels.js'
 
 export type AuditActorType = 'user' | 'system' | 'agent'
 export const AUDIT_ACTOR_TYPES: AuditActorType[] = ['user', 'system', 'agent']
@@ -22,8 +23,36 @@ export type AuditResult = 'success' | 'failure'
 
 // What happened. Deliberately a small, closed vocabulary: a new verb is a decision,
 // not something a route can invent by accident.
-export type AuditAction = 'create' | 'update' | 'delete' | 'activate' | 'pause' | 'archive' | 'move' | 'rotate' | 'publish' | 'test'
-export const AUDIT_ACTIONS: AuditAction[] = ['create', 'update', 'delete', 'activate', 'pause', 'archive', 'move', 'rotate', 'publish', 'test']
+// 'restore' and 'disconnect' were added when the route table became explicit: a
+// restored floor used to be recorded as a creation, and disconnecting Google as
+// nothing at all. Additive — older events keep their verbs.
+export type AuditAction =
+  | 'create'
+  | 'update'
+  | 'delete'
+  | 'activate'
+  | 'pause'
+  | 'archive'
+  | 'restore'
+  | 'move'
+  | 'rotate'
+  | 'publish'
+  | 'test'
+  | 'disconnect'
+export const AUDIT_ACTIONS: AuditAction[] = [
+  'create',
+  'update',
+  'delete',
+  'activate',
+  'pause',
+  'archive',
+  'restore',
+  'move',
+  'rotate',
+  'publish',
+  'test',
+  'disconnect',
+]
 
 // What it happened to.
 export type AuditEntityType =
@@ -69,6 +98,10 @@ export interface AuditEvent {
   action: AuditAction
   entityType: AuditEntityType
   entityId: string | null
+  // A SHORT, plain name captured before a deletion — the only moment it can be read.
+  // Live entities are named at read time instead, so the timeline shows the current
+  // name. Never content: see auditLabels.ts for which entities are covered.
+  entityLabel?: string | null
   floorId?: string | null
   result: AuditResult
   occurredAt: Date
@@ -86,6 +119,7 @@ export async function ensureAuditIndexes(): Promise<void> {
   await events.createIndex({ ownerId: 1, entityType: 1, occurredAt: -1 })
   await events.createIndex({ ownerId: 1, action: 1, occurredAt: -1 })
   await events.createIndex({ ownerId: 1, actorId: 1, occurredAt: -1 })
+  await events.createIndex({ ownerId: 1, entityId: 1, occurredAt: -1 })
   await events.createIndex({ ownerId: 1, requestId: 1 })
 }
 
@@ -146,6 +180,7 @@ export interface RecordAuditInput {
   action: AuditAction
   entityType: AuditEntityType
   entityId?: string | null
+  entityLabel?: string | null
   floorId?: string | null
   result: AuditResult
   requestId: string
@@ -166,6 +201,7 @@ export async function recordAudit(input: RecordAuditInput): Promise<void> {
       action: input.action,
       entityType: input.entityType,
       entityId: input.entityId ?? null,
+      entityLabel: normalizeLabel(input.entityLabel),
       floorId: input.floorId ?? null,
       result: input.result,
       occurredAt: input.occurredAt ?? new Date(),
@@ -195,6 +231,9 @@ export interface AuditFilters {
   result?: AuditResult
   from?: Date
   to?: Date
+  // Free text over the entity: its id, or the name captured when it was deleted.
+  // Matched server-side, inside the owner's own events.
+  q?: string
 }
 
 // (occurredAt, _id): the sort key plus a tiebreak, so two events in the same
@@ -216,6 +255,9 @@ export interface AuditEventPublic {
   action: AuditAction
   entityType: AuditEntityType
   entityId: string | null
+  // The current name when the entity still exists, else the one captured before it
+  // was deleted, else null.
+  entityLabel: string | null
   floorId: string | null
   result: AuditResult
   occurredAt: string
@@ -237,6 +279,11 @@ export async function listAuditEvents(
   if (f.floorId) base.floorId = f.floorId
   if (f.result) base.result = f.result
   if (f.from || f.to) base.occurredAt = { ...(f.from ? { $gte: f.from } : {}), ...(f.to ? { $lte: f.to } : {}) }
+  if (f.q) {
+    // Escaped: a search box is not a place to accept a regular expression.
+    const needle = f.q.trim().slice(0, 120).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    base.$or = [{ entityId: needle }, { entityLabel: { $regex: needle, $options: 'i' } }]
+  }
 
   const after = decodeAuditCursor(page.cursor)
   const filter = after
@@ -244,21 +291,27 @@ export async function listAuditEvents(
     : base
 
   const docs = await events.find(filter).sort({ occurredAt: -1, _id: -1 }).limit(page.limit + 1).toArray()
-  const items = docs.slice(0, page.limit).map(
-    (e): AuditEventPublic => ({
+  const pageDocs = docs.slice(0, page.limit)
+  // ONE batch for the whole page, owner-scoped, so a name never costs a query per row.
+  const labels = await resolveEntityLabels(ownerId, pageDocs)
+  const items = pageDocs.map((e): AuditEventPublic => {
+    const key = e.entityId ? labelKeyFor(e.entityType, e.entityId) : null
+    return {
       id: e._id.toString(),
       actorType: e.actorType,
       actorId: e.actorId ?? null,
       action: e.action,
       entityType: e.entityType,
       entityId: e.entityId ?? null,
+      // Current name first; the captured one is what survives a deletion.
+      entityLabel: (key ? labels.get(key) : null) ?? e.entityLabel ?? null,
       floorId: e.floorId ?? null,
       result: e.result,
       occurredAt: e.occurredAt.toISOString(),
       requestId: e.requestId,
       metadata: e.metadata ?? {},
-    }),
-  )
+    }
+  })
   const nextCursor = docs.length > page.limit && items.length ? encodeAuditCursor(items[items.length - 1]) : null
   return { items, nextCursor }
 }

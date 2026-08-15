@@ -41,6 +41,7 @@ const RUN_DETAIL = {
   startedAt: RUN.startedAt,
   finishedAt: RUN.finishedAt,
   durationMs: 3000,
+  requestId: 'schedule:aut-1:1755259200000',
   usage: { inputTokens: 120, outputTokens: 80 },
   error: null,
   steps: [
@@ -58,6 +59,7 @@ const AUDIT = {
   action: 'pause',
   entityType: 'routine',
   entityId: 'rot-1',
+  entityLabel: 'Resumo diário',
   floorId: FLOOR_ID,
   result: 'success',
   occurredAt: new Date(Date.now() - 600_000).toISOString(),
@@ -88,7 +90,7 @@ async function stub(page: Page, opts: { runs?: unknown[]; audit?: unknown[]; fai
   })
   await page.route('**/api/agents?**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents', (r) => r.fulfill({ json: [{ _id: AGENT_ID, name: 'Ana', floorId: FLOOR_ID }] }))
-  await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
+  await page.route('**/api/sectors**', (r) => r.fulfill({ json: [{ _id: 's1', name: 'Atendimento', floorId: FLOOR_ID, members: [{ agentId: AGENT_ID }] }] }))
   await page.route('**/api/widgets', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/building', (r) => r.fulfill({ json: BUILDING }))
   await page.route('**/api/floors**', (r) => r.fulfill({ json: [FLOOR] }))
@@ -131,7 +133,8 @@ test('the changes timeline reads as a sentence and links back', async ({ page })
   await page.goto('/settings/logs')
   await page.getByTestId('log-tab-audit').click()
   const row = page.getByTestId('audit-log-row').first()
-  await expect(row).toContainText('Você pausou rotina')
+  // Named, not just typed: "a rotina Resumo diário", never "rotina".
+  await expect(row).toContainText('Você pausou a rotina Resumo diário')
   await expect(row).toContainText('status: paused')
   await expect(row).toContainText('requisição abcdef12')
   await expect(row.getByTestId('audit-link')).toBeVisible()
@@ -203,4 +206,45 @@ test('the log works on a phone without overflowing', async ({ page }) => {
   await expect(page.getByTestId('run-log-row').first()).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
+})
+
+test('the execution detail shows the correlation of the run', async ({ page }) => {
+  await stub(page)
+  await page.goto('/settings/logs')
+  await page.getByTestId('open-run-detail').first().click()
+  await expect(page.getByTestId('run-detail-request')).toContainText('schedule:aut-1')
+})
+
+test('executions can be filtered by sector, combined with the rest', async ({ page }) => {
+  await stub(page)
+  await page.goto('/settings/logs')
+  await page.getByTestId('log-sector').selectOption('s1')
+  await expect.poll(() => lastRunsUrl).toContain('sectorId=s1')
+
+  await page.getByTestId('log-origin').selectOption('schedule')
+  await expect.poll(() => lastRunsUrl).toContain('triggerType=schedule')
+  expect(lastRunsUrl).toContain('sectorId=s1')
+})
+
+test('changes can be filtered by who did it and searched by entity', async ({ page }) => {
+  await stub(page)
+  await page.goto('/settings/logs')
+  await page.getByTestId('log-tab-audit').click()
+
+  await page.getByTestId('log-actor').selectOption('user')
+  await expect.poll(() => lastAuditUrl).toContain('actorType=user')
+
+  await page.getByTestId('log-search').fill('Pesquisador')
+  await expect.poll(() => lastAuditUrl).toContain('q=Pesquisador')
+  // Combined, not replaced.
+  expect(lastAuditUrl).toContain('actorType=user')
+})
+
+test('clearing the filters drops the new ones too', async ({ page }) => {
+  await stub(page)
+  await page.goto('/settings/logs')
+  await page.getByTestId('log-sector').selectOption('s1')
+  await expect.poll(() => lastRunsUrl).toContain('sectorId=s1')
+  await page.getByTestId('clear-log-filters').click()
+  await expect.poll(() => lastRunsUrl).not.toContain('sectorId')
 })

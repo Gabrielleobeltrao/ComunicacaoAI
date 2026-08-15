@@ -9,7 +9,19 @@ export type LogTab = 'runs' | 'audit'
 
 export type AuditActorType = 'user' | 'system' | 'agent'
 export type AuditResult = 'success' | 'failure'
-export type AuditAction = 'create' | 'update' | 'delete' | 'activate' | 'pause' | 'archive' | 'move' | 'rotate' | 'publish' | 'test'
+export type AuditAction =
+  | 'create'
+  | 'update'
+  | 'delete'
+  | 'activate'
+  | 'pause'
+  | 'archive'
+  | 'restore'
+  | 'move'
+  | 'rotate'
+  | 'publish'
+  | 'test'
+  | 'disconnect'
 export type AuditEntityType =
   | 'agent'
   | 'sector'
@@ -65,6 +77,7 @@ export interface RunLogDetail {
   startedAt: string | null
   finishedAt: string | null
   durationMs: number | null
+  requestId: string | null
   usage: { inputTokens: number; outputTokens: number }
   error: { kind: string; message: string } | null
   steps: { id: string; stepId: string; stepType: string; attempt: number; status: string; startedAt: string | null; finishedAt: string | null; error: { kind: string; message: string } | null }[]
@@ -79,6 +92,8 @@ export interface AuditLogItem {
   action: AuditAction
   entityType: AuditEntityType
   entityId: string | null
+  // The entity's current name, or the one captured before it was deleted.
+  entityLabel: string | null
   floorId: string | null
   result: AuditResult
   occurredAt: string
@@ -111,6 +126,8 @@ export interface AuditLogFilters {
   result?: string
   from?: string
   to?: string
+  // Free text over the entity: its id, or the name kept for a deleted one.
+  q?: string
 }
 
 const get = async <T>(path: string): Promise<T> => {
@@ -151,10 +168,12 @@ export const ACTION_LABEL: Record<AuditAction, string> = {
   activate: 'ativou',
   pause: 'pausou',
   archive: 'arquivou',
+  restore: 'restaurou',
   move: 'moveu',
   rotate: 'gerou nova credencial de',
   publish: 'publicou',
   test: 'testou',
+  disconnect: 'desconectou',
 }
 
 export const ENTITY_LABEL: Record<AuditEntityType, string> = {
@@ -172,16 +191,39 @@ export const ENTITY_LABEL: Record<AuditEntityType, string> = {
   settings: 'configurações',
 }
 
+// Portuguese needs the article to agree with the noun; without it the sentence reads
+// broken ("o ferramenta"). Kept beside the labels so the two never drift.
+export const ENTITY_ARTICLE: Record<AuditEntityType, string> = {
+  agent: 'o',
+  sector: 'o',
+  floor: 'o',
+  building: 'o',
+  tool: 'a',
+  channel: 'o',
+  connection: 'a',
+  routine: 'a',
+  event_trigger: 'o',
+  automation: 'a',
+  knowledge: 'o',
+  settings: 'as',
+}
+
 export const ACTOR_LABEL: Record<AuditActorType, string> = {
   user: 'Você',
   system: 'Sistema',
   agent: 'Agente',
 }
 
-// "Você editou a rotina" — the sentence a person reads, built from the closed
-// vocabulary the backend stores.
-export const describeAudit = (event: AuditLogItem): string =>
-  `${ACTOR_LABEL[event.actorType] ?? 'Alguém'} ${ACTION_LABEL[event.action] ?? event.action} ${ENTITY_LABEL[event.entityType] ?? event.entityType}`
+// "Você editou o agente Pesquisador Político" — the sentence a person reads, built
+// from the closed vocabulary the backend stores plus the entity's own name when
+// there is one. Without a name it degrades to the plain form instead of inventing.
+export function describeAudit(event: AuditLogItem): string {
+  const actor = ACTOR_LABEL[event.actorType] ?? 'Alguém'
+  const action = ACTION_LABEL[event.action] ?? event.action
+  const entity = ENTITY_LABEL[event.entityType] ?? event.entityType
+  const named = event.entityLabel ? `${ENTITY_ARTICLE[event.entityType] ?? 'o'} ${entity} ${event.entityLabel}` : entity
+  return `${actor} ${action} ${named}`
+}
 
 // Where an audited entity can be opened, when the app has a page for it. null keeps
 // the row as a plain record — a deleted entity has nowhere to go.

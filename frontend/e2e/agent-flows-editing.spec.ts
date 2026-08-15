@@ -118,7 +118,7 @@ const ROUTINE = {
   scheduleLabel: 'Todo dia às 09:00',
   input: 'foco em política nacional',
   outputFormat: 'markdown',
-  delivery: null,
+  delivery: { provider: 'email', connectionId: 'conn-1' },
   lastPublishedVersion: 2,
   nextRunAt: null,
   createdAt: NOW,
@@ -139,11 +139,15 @@ const TRIGGER = {
 
 let patched: { url: string; body: Record<string, unknown> } | null = null
 
-async function stubApi(page: Page) {
+async function stubApi(page: Page, opts: { connections?: 'ok' | 'fail' | 'slow' | 'missing' } = {}) {
   patched = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   await page.route('**/api/agent-presets', (r) => r.fulfill({ json: PRESETS }))
-  await page.route('**/api/connections', (r) => r.fulfill({ json: [{ id: 'conn-1', provider: 'email', name: 'E-mail da equipe', status: 'active' }] }))
+  await page.route('**/api/connections', async (r) => {
+    if (opts.connections === 'fail') return r.fulfill({ status: 500, json: {} })
+    if (opts.connections === 'slow') await new Promise((resolve) => setTimeout(resolve, 1500))
+    return r.fulfill({ json: opts.connections === 'missing' ? [] : [{ id: 'conn-1', provider: 'email', name: 'E-mail da equipe', status: 'active' }] })
+  })
   await page.route('**/api/agents/*/routines/*', (r) => {
     if (r.request().method() === 'PATCH') {
       patched = { url: r.request().url(), body: JSON.parse(r.request().postData() ?? '{}') }
@@ -274,4 +278,62 @@ test('rotating stays a separate, confirmed action', async ({ page }) => {
   await page.getByTestId('edit-trigger').click()
   // No credential button inside the edit form: rotating is not part of renaming.
   await expect(page.getByTestId('edit-trigger-form').getByTestId('rotate-secret')).toHaveCount(0)
+})
+
+// --- the destination must survive an edit that is not about it ----------------------
+
+test('a save while the destinations are still loading cannot drop one', async ({ page }) => {
+  await stubApi(page, { connections: 'slow' })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await page.getByTestId('edit-routine').click()
+
+  // While the list is unknown the form says so and refuses to save.
+  await expect(page.getByTestId('save-routine')).toBeDisabled()
+  await expect(page.getByTestId('routine-form')).toContainText('Carregando os destinos')
+
+  await expect(page.getByTestId('save-routine')).toBeEnabled({ timeout: 5000 })
+  await page.getByTestId('routine-objective').fill('Só mudando o texto')
+  await page.getByTestId('save-routine').click()
+
+  await expect.poll(() => patched?.body).toMatchObject({ objective: 'Só mudando o texto' })
+  // The destination was not part of this edit, so it is not part of the payload.
+  expect(patched?.body.delivery).toMatchObject({ connectionId: 'conn-1' })
+})
+
+test('when the destinations fail to load, the edit keeps the current one', async ({ page }) => {
+  await stubApi(page, { connections: 'fail' })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await page.getByTestId('edit-routine').click()
+
+  await expect(page.getByTestId('routine-form')).toContainText('Não foi possível carregar os destinos')
+  await expect(page.getByTestId('routine-delivery')).toHaveValue('__keep__')
+
+  await page.getByTestId('routine-objective').fill('Editando mesmo assim')
+  await page.getByTestId('save-routine').click()
+  await expect.poll(() => patched?.body).toMatchObject({ objective: 'Editando mesmo assim' })
+  // Absent means "keep it": the backend leaves the destination untouched.
+  expect(patched?.body).not.toHaveProperty('delivery')
+})
+
+test('a destination that is no longer in the list is kept, not silently dropped', async ({ page }) => {
+  await stubApi(page, { connections: 'missing' })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await page.getByTestId('edit-routine').click()
+
+  await expect(page.getByTestId('routine-delivery')).toHaveValue('__keep__')
+  await page.getByTestId('save-routine').click()
+  await expect.poll(() => patched?.body).toBeTruthy()
+  expect(patched?.body).not.toHaveProperty('delivery')
+})
+
+test('choosing "Nenhum" is the one thing that removes the destination', async ({ page }) => {
+  await stubApi(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/fluxos`)
+  await page.getByTestId('edit-routine').click()
+  await expect(page.getByTestId('routine-delivery')).toHaveValue('conn-1')
+
+  await page.getByTestId('routine-delivery').selectOption('')
+  await page.getByTestId('save-routine').click()
+  await expect.poll(() => patched?.body).toBeTruthy()
+  expect(patched?.body.delivery).toBeNull()
 })

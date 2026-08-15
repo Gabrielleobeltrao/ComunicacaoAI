@@ -73,6 +73,11 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
               <Tag>{TRIGGER_LABEL[detail.triggerType] ?? detail.triggerType}</Tag>
               <Tag>versão {detail.automationVersion}</Tag>
             </div>
+            {detail.requestId ? (
+              <p style={faint} data-testid="run-detail-request">
+                Correlação: {detail.requestId}
+              </p>
+            ) : null}
             <p style={muted}>
               Fila: {absoluteWhen(detail.queuedAt)} · Início: {absoluteWhen(detail.startedAt)} · Fim: {absoluteWhen(detail.finishedAt)}
             </p>
@@ -214,13 +219,17 @@ export function Logs() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [openRun, setOpenRun] = useState<string | null>(null)
-  const [agents, setAgents] = useState<{ _id: string; name: string }[]>([])
+  const [agents, setAgents] = useState<{ _id: string; name: string; floorId?: string }[]>([])
+  const [sectors, setSectors] = useState<{ _id: string; name: string; floorId?: string; members?: { agentId: string }[] }[]>([])
 
   // Shared period + scope; each tab adds its own.
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [floorId, setFloorId] = useState('')
+  const [sectorId, setSectorId] = useState('')
   const [agentId, setAgentId] = useState('')
+  const [actorType, setActorType] = useState('')
+  const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [triggerType, setTriggerType] = useState('')
   const [action, setAction] = useState('')
@@ -229,9 +238,15 @@ export function Logs() {
 
   useEffect(() => {
     let cancelled = false
-    fetch(`${API_URL}/api/agents`, { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((list) => !cancelled && setAgents(list))
+    Promise.all([
+      fetch(`${API_URL}/api/agents`, { credentials: 'include' }).then((r) => (r.ok ? r.json() : [])),
+      fetch(`${API_URL}/api/sectors`, { credentials: 'include' }).then((r) => (r.ok ? r.json() : [])),
+    ])
+      .then(([agentList, sectorList]) => {
+        if (cancelled) return
+        setAgents(agentList)
+        setSectors(sectorList)
+      })
       .catch(() => undefined)
     return () => {
       cancelled = true
@@ -244,12 +259,29 @@ export function Logs() {
       setError(false)
       try {
         if (tab === 'runs') {
-          const filters: RunLogFilters = { floorId: floorId || undefined, agentId: agentId || undefined, status: status || undefined, triggerType: triggerType || undefined, from: startOf(from), to: endOf(to) }
+          const filters: RunLogFilters = {
+            floorId: floorId || undefined,
+            sectorId: sectorId || undefined,
+            agentId: agentId || undefined,
+            status: status || undefined,
+            triggerType: triggerType || undefined,
+            from: startOf(from),
+            to: endOf(to),
+          }
           const page = await listRunLogs(filters, { limit: PAGE_SIZE, cursor: nextCursor })
           setRuns((prev) => (nextCursor ? [...prev, ...page.items] : page.items))
           setCursor(page.nextCursor)
         } else {
-          const filters: AuditLogFilters = { floorId: floorId || undefined, action: action || undefined, entityType: entityType || undefined, result: result || undefined, from: startOf(from), to: endOf(to) }
+          const filters: AuditLogFilters = {
+            floorId: floorId || undefined,
+            actorType: actorType || undefined,
+            action: action || undefined,
+            entityType: entityType || undefined,
+            result: result || undefined,
+            q: search.trim() || undefined,
+            from: startOf(from),
+            to: endOf(to),
+          }
           const page = await listAuditLogs(filters, { limit: PAGE_SIZE, cursor: nextCursor })
           setAudit((prev) => (nextCursor ? [...prev, ...page.items] : page.items))
           setCursor(page.nextCursor)
@@ -260,7 +292,7 @@ export function Logs() {
         setLoading(false)
       }
     },
-    [tab, floorId, agentId, status, triggerType, action, entityType, result, from, to],
+    [tab, floorId, sectorId, agentId, actorType, status, triggerType, action, entityType, result, search, from, to],
   )
 
   useEffect(() => {
@@ -282,7 +314,10 @@ export function Logs() {
     setFrom('')
     setTo('')
     setFloorId('')
+    setSectorId('')
     setAgentId('')
+    setActorType('')
+    setSearch('')
     setStatus('')
     setTriggerType('')
     setAction('')
@@ -354,6 +389,14 @@ export function Logs() {
             </Field>
             {tab === 'runs' ? (
               <>
+                <Field label="Setor">
+                  <Select
+                    value={sectorId}
+                    onChange={(e) => setSectorId(e.target.value)}
+                    options={[{ value: '', label: 'Todos' }, ...sectors.filter((sec) => !floorId || !sec.floorId || sec.floorId === floorId).map((sec) => ({ value: sec._id, label: sec.name }))]}
+                    data-testid="log-sector"
+                  />
+                </Field>
                 <Field label="Agente">
                   <Select value={agentId} onChange={(e) => setAgentId(e.target.value)} options={[{ value: '', label: 'Todos' }, ...agents.map((a) => ({ value: a._id, label: a.name }))]} />
                 </Field>
@@ -382,6 +425,22 @@ export function Logs() {
               </>
             ) : (
               <>
+                <Field label="Quem fez">
+                  <Select
+                    value={actorType}
+                    onChange={(e) => setActorType(e.target.value)}
+                    options={[
+                      { value: '', label: 'Todos' },
+                      { value: 'user', label: 'Pessoa' },
+                      { value: 'system', label: 'Sistema' },
+                      { value: 'agent', label: 'Agente' },
+                    ]}
+                    data-testid="log-actor"
+                  />
+                </Field>
+                <Field label="Buscar entidade" hint="Nome ou identificador.">
+                  <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Ex.: Pesquisador Político" data-testid="log-search" />
+                </Field>
                 <Field label="Ação">
                   <Select
                     value={action}

@@ -34,7 +34,7 @@ export interface SchedulerDeps {
   createRun: (
     ownerId: string,
     automationId: ObjectId,
-    input: { triggerType: 'schedule'; idempotencyKey: string },
+    input: { triggerType: 'schedule'; idempotencyKey: string; requestId?: string | null },
   ) => Promise<{ created: boolean }>
 }
 const defaultDeps: SchedulerDeps = { createRun }
@@ -130,6 +130,9 @@ export async function runDueSchedules(now = new Date(), deps: SchedulerDeps = de
       const { created } = await deps.createRun(due.ownerId, due._id, {
         triggerType: 'schedule',
         idempotencyKey: `${due._id.toString()}:${fireInstant.getTime()}`,
+        // Stable for THIS fire instant: a redelivery correlates to the same string,
+        // and it is derived only from ids and a timestamp.
+        requestId: `schedule:${due._id.toString()}:${fireInstant.getTime()}`,
       })
       if (created) fired++
       skipped += missed

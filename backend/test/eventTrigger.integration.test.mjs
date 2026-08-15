@@ -263,3 +263,22 @@ test('an unpublished draft change never opens or closes a live endpoint', async 
     await db.collection('automation_runs').deleteMany({})
   }
 })
+
+test('a webhook run correlates without carrying anything from the event', async () => {
+  const { trigger, publicKey, secret } = await createEventTrigger(OWNER, AGENT, spec())
+  const { server, port } = await startReceiver()
+  try {
+    const body = JSON.stringify({ pedido: 'A-1', cliente: 'DADO-PRIVADO' })
+    await post(port, publicKey, body, { 'x-signature': signBody(secret, body), 'x-event-id': 'evt-do-provedor' })
+    const [run] = await db.collection('automation_runs').find({ automationId: trigger._id }).toArray()
+
+    assert.equal(run.requestId, `webhook:${trigger._id.toString()}`)
+    // Neither the caller's event id nor the body's hash belongs in a field the UI shows.
+    assert.ok(!run.requestId.includes('evt-do-provedor'))
+    assert.ok(!run.requestId.includes('DADO-PRIVADO'))
+    assert.notEqual(run.requestId, run.idempotencyKey, 'the idempotency key is built from the payload; the correlation is not')
+  } finally {
+    server.close()
+    await db.collection('automation_runs').deleteMany({})
+  }
+})
