@@ -145,6 +145,8 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
       agent={chars.character(s.agentId)}
       facing={facingSvg(s.facing)}
       pose={modeFor(s.agentId) === 'phone' ? 'ligacao' : 'parado'}
+      opState={opStates[s.agentId]?.state}
+      opDetail={opStates[s.agentId]?.safeDetail}
       seated
       department={accentFor(s.agentId)}
       hoverLift={false}
@@ -265,7 +267,8 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
                 initialY={a.y}
                 register={sim.register}
                 setHovered={sim.setHovered}
-                opState={opStates[a.id]}
+                opState={opStates[a.id]?.state}
+                opDetail={opStates[a.id]?.safeDetail}
                 onOpen={() => navigate(`/agents/${a.id}`)}
               />
             ))
@@ -284,6 +287,8 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
                     agent={chars.character(o.agentId)}
                     facing={facing}
                     pose={modeFor(o.agentId) === 'phone' ? 'ligacao' : 'parado'}
+                    opState={opStates[o.agentId]?.state}
+                    opDetail={opStates[o.agentId]?.safeDetail}
                     department={accentFor(o.agentId)}
                     hoverLift={false}
                     style={{ zIndex: 3 }}

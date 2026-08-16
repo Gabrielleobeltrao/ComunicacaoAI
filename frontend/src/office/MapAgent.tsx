@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Illustration } from './Illustration'
+import { AgentActivityBubble } from '../components/AgentActivityBubble'
 import { NamePill } from './NamePill'
 import { characterSrc } from '../lib/officeAssets'
 import type { CharacterView } from '../lib/officeAssets'
@@ -19,6 +20,10 @@ interface MapAgentProps {
   scale?: number
   department?: string
   speaking?: boolean
+  // The operational state the RUNTIME reported, for the static fallback map. Same
+  // rule as the animated one: no execution, no bubble.
+  opState?: string
+  opDetail?: { appKey?: string; actionLabel?: string; targetType?: string }
   showName?: 'hover' | 'always' | 'never'
   hoverLift?: boolean
   onOpen?: () => void
@@ -40,6 +45,8 @@ export function MapAgent({
   scale = 1.25,
   department = 'var(--dept-dev)',
   speaking,
+  opState,
+  opDetail,
   showName = 'hover',
   hoverLift = true,
   onOpen,
@@ -90,8 +97,14 @@ export function MapAgent({
         <NamePill
           name={name}
           status={status}
-          style={{ position: 'absolute', bottom: headTop, marginBottom: 4, zIndex: 5, whiteSpace: 'nowrap', pointerEvents: 'none' }}
+          // The name rises above the bubble when both are on screen.
+          style={{ position: 'absolute', bottom: headTop, marginBottom: opState ? 40 : 4, zIndex: 7, whiteSpace: 'nowrap', pointerEvents: 'none' }}
         />
+      ) : null}
+      {opState ? (
+        <span style={{ position: 'absolute', bottom: headTop, marginBottom: 8, zIndex: 6, pointerEvents: 'none' }}>
+          <AgentActivityBubble state={opState} agentName={name ?? ''} safeDetail={opDetail} size="sm" />
+        </span>
       ) : null}
       {speaking ? (
         <span
