@@ -22,7 +22,6 @@ import { SimAgent } from './SimAgent'
 import { roundedPath, traceOutline } from './roomShape'
 import { featureFlags } from '../featureFlags'
 import { useAgentStates } from '../lib/useAgentStates'
-import { assignBubbleLanes } from '../lib/agentActivityAssets'
 
 const VIEWPORT_H = 560 // reference map height (px) used as the aspect fallback
 // Responsive map height: never tiny on a phone, never taller than the reference,
@@ -132,17 +131,6 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
   const nearEmpty = emptySeats.filter((e) => e.near)
   const agentName = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
   const nameOf = useCallback((id: string) => (agentName.get(id) ?? '').split(' ')[0], [agentName])
-  // Quem sobe de faixa, a partir de quem está DE FATO ao lado de quem. Antes vinha
-  // da paridade da coluna, e um agente sozinho num canto tinha o balão levantado à
-  // toa, pairando uma altura de personagem acima da cabeça.
-  const lanes = useMemo(
-    () =>
-      assignBubbleLanes([
-        ...seats.map((s) => ({ id: s.agentId, x: s.seatedPoint.x, y: s.seatedPoint.y })),
-        ...loose.map((o) => ({ id: o.agentId, x: o.point.x, y: o.point.y })),
-      ]),
-    [seats, loose],
-  )
   const farSeats = seats.filter((s) => !s.chair.near)
   const nearSeats = seats.filter((s) => s.chair.near)
 
@@ -159,7 +147,6 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
       pose={modeFor(s.agentId) === 'phone' ? 'ligacao' : 'parado'}
       opState={opStates[s.agentId]?.state}
       opDetail={opStates[s.agentId]?.safeDetail}
-      lane={lanes[s.agentId]}
       seated
       department={accentFor(s.agentId)}
       hoverLift={false}
@@ -282,7 +269,6 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
                 setHovered={sim.setHovered}
                 opState={opStates[a.id]?.state}
                 opDetail={opStates[a.id]?.safeDetail}
-                lane={lanes[a.id]}
                 onOpen={() => navigate(`/agents/${a.id}`)}
               />
             ))
@@ -303,7 +289,6 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
                     pose={modeFor(o.agentId) === 'phone' ? 'ligacao' : 'parado'}
                     opState={opStates[o.agentId]?.state}
                     opDetail={opStates[o.agentId]?.safeDetail}
-                    lane={lanes[o.agentId]}
                     department={accentFor(o.agentId)}
                     hoverLift={false}
                     style={{ zIndex: 3 }}

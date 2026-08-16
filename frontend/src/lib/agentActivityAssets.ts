@@ -135,79 +135,33 @@ export const BUBBLE_TAIL_HEIGHT = 14
 // which hangs down towards its character and would otherwise cross the neighbour's
 // bubble. Anything smaller leaves the lower one partly hidden, which is the bug this
 // exists to fix.
-export const BUBBLE_LANE_OFFSET = BUBBLE_CAPSULE_HEIGHT + BUBBLE_TAIL_HEIGHT
-
-export const bubbleLane = (x: number): 0 | 1 => (Math.round(x) % 2 === 0 ? 0 : 1)
-
-/** Quão perto dois personagens precisam estar, em tiles, para os balões se cobrirem. */
-export const BUBBLE_NEIGHBOUR_X = 1.6
-export const BUBBLE_NEIGHBOUR_Y = 1.0
-
-/**
- * Quem precisa subir de faixa, olhando quem está de fato ao lado.
- *
- * A faixa vinha da paridade da coluna: metade dos agentes era levantada SEMPRE,
- * inclusive quem estava sozinho num canto do mapa. O balão ficava pairando uma
- * altura de personagem acima da cabeça, sem vizinho nenhum para justificar.
- *
- * Aqui só sobe quem tem vizinho perto o bastante para colidir — e sobe um só do par,
- * porque levantar os dois recria a colisão numa altura mais alta.
- */
-export function assignBubbleLanes(points: { id: string; x: number; y: number }[]): Record<string, 0 | 1> {
-  const lanes: Record<string, 0 | 1> = {}
-  // Ordem estável por posição: dois renders do mesmo mapa dão o mesmo resultado.
-  const ordered = [...points].sort((a, b) => a.x - b.x || a.y - b.y || a.id.localeCompare(b.id))
-  for (const p of ordered) {
-    const colide = ordered.some(
-      (o) =>
-        o.id !== p.id &&
-        lanes[o.id] === 0 &&
-        Math.abs(o.x - p.x) < BUBBLE_NEIGHBOUR_X &&
-        Math.abs(o.y - p.y) < BUBBLE_NEIGHBOUR_Y,
-    )
-    lanes[p.id] = colide ? 1 : 0
-  }
-  return lanes
-}
 
 /**
  * Distância entre o topo do personagem e a base do balão, como PORCENTAGEM da caixa
  * do agente.
  *
  * Porcentagem porque a caixa do agente é dimensionada em tiles e o personagem
- * preenche ela: assim o afastamento encolhe exatamente junto com a cabeça, em
- * qualquer mapa. Era 8px fixo — e no recorte do setor, onde o palco inteiro é
- * reduzido por `transform`, esses 8px viravam 5, e o balão de um agente SENTADO
- * (âncora mais baixa, 78,6%) acabava cinco pixels DENTRO da cabeça.
+ * preenche ela: assim o afastamento encolhe junto com a cabeça, em qualquer mapa. Em
+ * px fixo, o recorte do setor — que reduz o palco inteiro por `transform` — colocava
+ * o balão dentro da cabeça.
  */
 const HEAD_CLEARANCE_PCT = 15
 
 /**
- * Onde o balão fica acima da cabeça, e como ele se empilha com o do vizinho.
+ * Onde o balão fica: rente à cabeça do dono, sempre.
  *
- * As duas distâncias têm donos diferentes, e por isso unidades diferentes:
- *
- * - limpar a CABEÇA é proporcional ao personagem → porcentagem da caixa dele;
- * - limpar o balão do VIZINHO é proporcional ao balão → pixel, que dentro de cada
- *   mapa já acompanha o balão.
- *
- * Misturar as duas foi o que quebrou: primeiro um px tentando limpar algo que
- * encolhe, depois um tile tentando limpar algo que não encolhe.
+ * Existiu aqui um sistema de duas faixas, que levantava um dos balões quando dois
+ * personagens ficavam lado a lado. Ele resolvia a sobreposição e criava um problema
+ * pior: o balão levantado ficava com a cauda longe da cabeça, boiando, sem deixar
+ * claro de quem era. Sobrepor é o menor dos dois males — o dono ficou explícito.
  */
-export function bubblePlacement(
-  x: number,
-  headTop: string,
-  // A faixa vem do mapa, que sabe quem está ao lado de quem. Sem ela, cai na
-  // paridade da coluna — o palpite antigo, mantido só como último recurso.
-  lane: 0 | 1 = bubbleLane(x),
-): { bottom: string; marginBottom: number; zIndex: number; nameMarginBottom: number } {
+export function bubblePlacement(x: number, headTop: string): { bottom: string; marginBottom: number; zIndex: number; nameMarginBottom: number } {
+  void x
   return {
     bottom: `calc(${headTop} + ${HEAD_CLEARANCE_PCT}%)`,
-    marginBottom: lane * BUBBLE_LANE_OFFSET,
-    // The raised one draws over its neighbour, so its tail is never cut by the
-    // capsule below it.
-    zIndex: 6 + lane,
-    // On hover the name still has to clear the bubble — including a raised one.
-    nameMarginBottom: 32 + lane * BUBBLE_LANE_OFFSET,
+    marginBottom: 0,
+    zIndex: 6,
+    // No hover, o nome sobe acima do balão para os dois não se cruzarem.
+    nameMarginBottom: 32,
   }
 }

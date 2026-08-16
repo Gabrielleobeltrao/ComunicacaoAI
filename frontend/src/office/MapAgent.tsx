@@ -25,8 +25,6 @@ interface MapAgentProps {
   // The operational state the RUNTIME reported, for the static fallback map. Same
   // rule as the animated one: no execution, no bubble.
   opState?: AgentBubbleState
-  // Faixa do balão, decidida pelo mapa a partir de quem está ao lado.
-  lane?: 0 | 1
   opDetail?: { appKey?: string; actionLabel?: string; targetType?: string }
   showName?: 'hover' | 'always' | 'never'
   hoverLift?: boolean
@@ -55,7 +53,6 @@ export function MapAgent({
   hoverLift = true,
   onOpen,
   style,
-  lane,
 }: MapAgentProps) {
   const [hovered, setHovered] = useState(false)
   const view = facing === 'costas' ? 'costas' : 'frente'
@@ -67,7 +64,7 @@ export function MapAgent({
   const dx = (w - 1) / 2
   const dy = h - 1.5
   const headTop = seated ? '78.6%' : '100%'
-  const placement = bubblePlacement(x, headTop, lane)
+  const placement = bubblePlacement(x, headTop)
   return (
     <button
       onClick={onOpen}

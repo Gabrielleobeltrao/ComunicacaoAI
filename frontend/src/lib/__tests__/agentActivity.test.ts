@@ -5,15 +5,10 @@ import {
   AGENT_BUBBLE_STATES,
   bubbleAssetFor,
   bubbleLabel,
-  bubbleLane,
   bubblePlacement,
-  BUBBLE_CAPSULE_HEIGHT,
-  BUBBLE_LANE_OFFSET,
-  BUBBLE_TAIL_HEIGHT,
   DEBOUNCE_MS,
   MIN_VISIBLE_MS,
   TRANSIENT_MS,
-  assignBubbleLanes,
 } from '../agentActivityAssets'
 import type { AgentBubbleState } from '../agentActivityAssets'
 import { reconcile } from '../useAgentStates'
@@ -121,39 +116,6 @@ describe('o rótulo diz o TIPO de trabalho, nunca o conteúdo', () => {
 
 // --- posicionamento ----------------------------------------------------------------
 
-describe('balões vizinhos não caem na mesma altura', () => {
-  it('colunas adjacentes usam faixas diferentes', () => {
-    // O passo entre assentos lado a lado é ~1.14 tile: a paridade alterna.
-    const seats = [1.729, 2.871, 4.013, 5.155]
-    const lanes = seats.map(bubbleLane)
-    for (let i = 1; i < lanes.length; i++) {
-      expect(lanes[i], `assentos ${seats[i - 1]} e ${seats[i]} colidiriam`).not.toBe(lanes[i - 1])
-    }
-  })
-
-  it('a faixa levantada sobe o suficiente para o balão de baixo aparecer INTEIRO', () => {
-    const step = Math.abs(bubblePlacement(3, '100%').marginBottom - bubblePlacement(2, '100%').marginBottom)
-    // Não basta passar da cápsula: a cauda da que sobe desce em direção ao personagem
-    // dela e cruzaria a cápsula de baixo. O degrau cobre os dois.
-    expect(step).toBeGreaterThanOrEqual(BUBBLE_CAPSULE_HEIGHT + BUBBLE_TAIL_HEIGHT)
-    expect(step).toBe(BUBBLE_LANE_OFFSET)
-  })
-
-  it('a que sobe desenha por cima, para a cauda dela não ser cortada', () => {
-    expect(bubblePlacement(3, '100%').zIndex).toBeGreaterThan(bubblePlacement(2, '100%').zIndex)
-  })
-
-  it('o nome no hover limpa o balão, inclusive o levantado', () => {
-    for (const x of [2, 3]) {
-      const p = bubblePlacement(x, '100%')
-      expect(p.nameMarginBottom).toBeGreaterThan(p.marginBottom)
-    }
-  })
-
-  it('a faixa é estável para o mesmo agente', () => {
-    expect(bubbleLane(2.871)).toBe(bubbleLane(2.871))
-  })
-})
 
 // --- anti-flicker ---------------------------------------------------------------
 
@@ -252,56 +214,27 @@ describe('cada afastamento na unidade do que ele precisa limpar', () => {
     expect(bubblePlacement(2, '78.6%').bottom).toContain('78.6%')
   })
 
-  it('limpar o vizinho continua em px, que acompanha o balão dentro de cada mapa', () => {
-    expect(typeof bubblePlacement(3, '100%').marginBottom).toBe('number')
-    expect(bubblePlacement(3, '100%').marginBottom - bubblePlacement(2, '100%').marginBottom).toBe(BUBBLE_LANE_OFFSET)
-  })
 })
 
-describe('quem sobe de faixa é quem tem vizinho', () => {
-  it('agente sozinho fica na faixa baixa — o balão não paira longe da cabeça', () => {
-    const lanes = assignBubbleLanes([{ id: 'sozinho', x: 9.4, y: 3 }])
-    expect(lanes.sozinho).toBe(0)
+describe('o balão é do dono, sempre rente à cabeça', () => {
+  it('todo balão fica na mesma altura, sem faixa levantada', () => {
+    // Havia duas faixas: com dois personagens lado a lado, uma delas subia. Isso
+    // evitava a sobreposição e criava algo pior — um balão boiando longe da cabeça,
+    // sem dono visível. Sobrepor é o menor dos dois males.
+    const alturas = [2, 3, 4.5, 9.4].map((x) => bubblePlacement(x, '100%'))
+    expect(new Set(alturas.map((p) => p.marginBottom))).toEqual(new Set([0]))
+    expect(new Set(alturas.map((p) => p.bottom)).size).toBe(1)
   })
 
-  it('dois lado a lado: um sobe, o outro não', () => {
-    const lanes = assignBubbleLanes([
-      { id: 'a', x: 3.0, y: 5 },
-      { id: 'b', x: 4.0, y: 5 },
-    ])
-    expect(new Set(Object.values(lanes))).toEqual(new Set([0, 1]))
+  it('a âncora do sentado continua sendo respeitada', () => {
+    // A cabeça de quem está sentado é mais baixa no quadro: o afastamento soma à
+    // âncora dele, em vez de assumir que todo mundo está de pé.
+    expect(bubblePlacement(2, '78.6%').bottom).toContain('78.6%')
+    expect(bubblePlacement(2, '100%').bottom).toContain('100%')
   })
 
-  it('longe um do outro, os dois ficam embaixo', () => {
-    const lanes = assignBubbleLanes([
-      { id: 'a', x: 3, y: 5 },
-      { id: 'b', x: 9, y: 5 },
-    ])
-    expect(lanes).toEqual({ a: 0, b: 0 })
-  })
-
-  it('mesma coluna, linhas distantes: não é vizinhança', () => {
-    const lanes = assignBubbleLanes([
-      { id: 'a', x: 3, y: 2 },
-      { id: 'b', x: 3, y: 8 },
-    ])
-    expect(lanes).toEqual({ a: 0, b: 0 })
-  })
-
-  it('numa fileira colada, dois vizinhos nunca ficam na mesma faixa', () => {
-    const fila = [0, 1, 2, 3, 4].map((i) => ({ id: `a${i}`, x: 2 + i * 1.14, y: 5 }))
-    const lanes = assignBubbleLanes(fila)
-    for (let i = 1; i < fila.length; i++) {
-      expect(lanes[fila[i].id], `${fila[i - 1].id} e ${fila[i].id} colidiriam`).not.toBe(lanes[fila[i - 1].id])
-    }
-  })
-
-  it('a atribuição é estável: mesma entrada em outra ordem, mesmo resultado', () => {
-    const pts = [
-      { id: 'b', x: 4.0, y: 5 },
-      { id: 'a', x: 3.0, y: 5 },
-      { id: 'c', x: 9.0, y: 5 },
-    ]
-    expect(assignBubbleLanes(pts)).toEqual(assignBubbleLanes([...pts].reverse()))
+  it('no hover o nome ainda passa por cima do balão', () => {
+    const p = bubblePlacement(2, '100%')
+    expect(p.nameMarginBottom).toBeGreaterThan(p.marginBottom)
   })
 })

@@ -355,7 +355,7 @@ test('balões de personagens lado a lado não se cobrem', async ({ page }) => {
   }
 })
 
-test('a cápsula tem a altura que o cálculo das faixas assume', async ({ page }) => {
+test('a cápsula tem a altura que o afastamento assume', async ({ page }) => {
   await stub(page, { states: [liveState({ state: 'thinking' })] })
   await page.goto(`/floors/${FLOOR_ID}`)
   const bubble = bubbles(page).first()
@@ -376,45 +376,7 @@ test('a cápsula tem a altura que o cálculo das faixas assume', async ({ page }
   expect(tail).toBe(14)
 })
 
-test('quem tem vizinho ao lado sobe; quem está sozinho, não', async ({ page }) => {
-  // Todos no MESMO setor: sentados lado a lado é onde os balões de fato colidem.
-  const juntos = CROWD.slice(0, 4)
-  await stub(page, {
-    agents: CROWD,
-    sectors: [{ _id: 'c11', floorId: FLOOR_ID, name: 'Cozinha', color: '#88a', mode: 'organization', members: juntos.map((a) => ({ agentId: a._id, transitions: [] })), stages: [] }],
-    states: CROWD.map((a, i) => liveState({ agentId: a._id, state: 'thinking', rootExecutionId: `run-${i}` })),
-  })
-  await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto(`/floors/${FLOOR_ID}`)
-  await expect(bubbles(page).first()).toBeVisible()
 
-  // Cada balão é posicionado pelo wrapper: o marginBottom revela a faixa.
-  const offsets = await bubbles(page).evaluateAll((els) =>
-    [...new Set(els.map((el) => Number.parseInt(getComputedStyle(el.parentElement as HTMLElement).marginBottom, 10)))].sort((a, b) => a - b),
-  )
-  expect(offsets.length, 'com gente lado a lado, as duas faixas entram em uso').toBe(2)
-  // A que sobe tem que limpar a cápsula E a cauda da de baixo.
-  expect(offsets[1] - offsets[0]).toBeGreaterThanOrEqual(22 + 14)
-  // E a faixa baixa é rente à cabeça: zero de margem extra.
-  expect(offsets[0]).toBe(0)
-})
-
-test('agentes espalhados não têm balão levantado à toa', async ({ page }) => {
-  // Sem setor: o mapa espalha os seis pelo andar, longe uns dos outros. Antes a
-  // faixa vinha da paridade da coluna e metade deles subia sem vizinho nenhum —
-  // o balão pairava uma altura de personagem acima da cabeça.
-  await stub(page, {
-    agents: CROWD,
-    states: CROWD.map((a, i) => liveState({ agentId: a._id, state: 'thinking', rootExecutionId: `run-${i}` })),
-  })
-  await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto(`/floors/${FLOOR_ID}`)
-  await expect(bubbles(page).first()).toBeVisible()
-  const offsets = await bubbles(page).evaluateAll((els) =>
-    [...new Set(els.map((el) => Number.parseInt(getComputedStyle(el.parentElement as HTMLElement).marginBottom, 10)))],
-  )
-  expect(offsets).toEqual([0])
-})
 
 // --- os mesmos balões nos mapas de setor ---------------------------------------------
 
@@ -454,38 +416,32 @@ test('vários mapas do mesmo andar dividem UMA sondagem', async ({ page }) => {
   expect(emDoisCiclos).toBeLessThanOrEqual(4)
 })
 
-test('no recorte do setor o balão não entra na cabeça, e as faixas ficam separadas', async ({ page }) => {
-  const ids = [A1, A2, '000000000000000000000a33', '000000000000000000000a44']
-  const roster = ids.map((id, i) => ({ ...AGENTS[0], _id: id, name: `Ag ${i}` }))
-  await stub(page, { agents: roster, states: ids.map((id) => liveState({ agentId: id, state: 'thinking' })) })
-  await page.route('**/api/sectors/*/overview', (r) =>
-    r.fulfill({
-      json: {
-        sector: { _id: 'c11', floorId: FLOOR_ID, name: 'Cozinha', color: '#88a', mode: 'organization', members: ids.map((id) => ({ agentId: id, transitions: [] })), stages: [] },
-        agents: roster, readiness: { ready: true, issues: [] }, knowledgeCount: 0, memberIssues: [], analytics: null, linkedWidgets: [],
-      },
+test('todo balão fica rente à cabeça do seu dono, em qualquer mapa', async ({ page }) => {
+  await stub(page, {
+    agents: CROWD,
+    states: CROWD.map((a, i) => liveState({ agentId: a._id, state: 'thinking', rootExecutionId: `run-${i}` })),
+  })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(bubbles(page).first()).toBeVisible()
+
+  // Uma altura só. A faixa levantada saiu: ela evitava a sobreposição de dois
+  // vizinhos e deixava o balão de cima boiando longe da cabeça, sem dono visível.
+  const offsets = await bubbles(page).evaluateAll((els) => [
+    ...new Set(els.map((el) => Number.parseInt(getComputedStyle(el.parentElement as HTMLElement).marginBottom, 10))),
+  ])
+  expect(offsets).toEqual([0])
+
+  // E cada um está logo acima do SEU personagem, não pairando.
+  const distancias = await bubbles(page).evaluateAll((els) =>
+    els.map((el) => {
+      const sprite = el.closest('button')?.querySelector('img')
+      if (!sprite) return null
+      return Math.round(sprite.getBoundingClientRect().top - el.getBoundingClientRect().bottom)
     }),
   )
-  await page.route('**/api/sectors/*/executions/summary**', (r) => r.fulfill({ json: { byParticipant: [] } }))
-  await page.route('**/api/sectors/*/documents**', (r) => r.fulfill({ json: [] }))
-  await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto(`/floors/${FLOOR_ID}/sectors/c11`)
-  await expect(page.getByTestId('sector-hero')).toBeVisible()
-  await expect(page.getByTestId('sector-hero').getByTestId('agent-activity-bubble').first()).toBeVisible()
-
-  const medidas = await page.evaluate(() => {
-    const out: { faixa: number; alturaBalao: number; base: number }[] = []
-    for (const b of document.querySelectorAll('[data-testid="sector-hero"] [data-testid="agent-activity-bubble"]')) {
-      const r = b.getBoundingClientRect()
-      out.push({ faixa: Number(getComputedStyle(b.parentElement as Element).zIndex), alturaBalao: Math.round(r.height), base: Math.round(r.bottom) })
-    }
-    return out
-  })
-  expect(medidas.length).toBeGreaterThan(1)
-
-  // O recorte reduz o palco inteiro por `transform`. A separação entre as faixas tem
-  // que continuar proporcional ao BALÃO, senão duas cápsulas vizinhas se cobrem.
-  const baixa = medidas.find((m) => m.faixa === 6)!
-  const alta = medidas.find((m) => m.faixa === 7)!
-  expect(baixa.base - alta.base).toBeGreaterThan(baixa.alturaBalao)
+  for (const d of distancias) {
+    expect(d).not.toBeNull()
+    expect(Math.abs(d as number)).toBeLessThan(20)
+  }
 })
