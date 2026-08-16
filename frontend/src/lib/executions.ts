@@ -7,6 +7,9 @@ import type { AgentStatus } from '../ui'
 
 export type ExecutionTab = 'scheduled' | 'triggers' | 'active' | 'history'
 export const EXECUTION_TABS: ExecutionTab[] = ['scheduled', 'triggers', 'active', 'history']
+// 'analysis' is a VIEW over the same executions, not a fifth list from the backend —
+// it reads the analytics service, so it never re-implements a formula.
+export const EXECUTION_VIEWS = [...EXECUTION_TABS, 'analysis'] as const
 
 export type AutomationStatus = 'draft' | 'active' | 'paused' | 'archived'
 export type RunStatus = 'queued' | 'running' | 'cancel_requested' | 'succeeded' | 'failed' | 'canceled'

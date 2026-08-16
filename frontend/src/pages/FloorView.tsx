@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { FloorSettingsDialog } from '../components/FloorSettingsDialog'
 import { FloorWorkSection } from '../components/FloorWorkSection'
+import { ExecutionAnalytics } from '../components/ExecutionAnalytics'
 import { getFloor, getFloorActivity, getFloorMetrics } from '../lib/floors'
 import type { Floor, FloorMetrics } from '../lib/floors'
 import { featureFlags } from '../featureFlags'
@@ -65,6 +66,13 @@ export function FloorView() {
           <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
           {/* How the floor works: free, or coordinated by one of its agents. */}
           <FloorWorkSection floor={floor} agents={agents} onSaved={() => void load()} />
+          {/* The SAME analytics service the building view reads, scoped to this
+              floor — never a second formula. */}
+          <ExecutionAnalytics
+            floorId={floor.id}
+            floors={[{ id: floor.id, name: floor.name }]}
+            agents={agents.map((a) => ({ _id: a._id, name: a.name }))}
+          />
         </div>
       )}
 
