@@ -227,7 +227,10 @@ export function validateAppManifest(input: unknown): ManifestValidation {
 
   // --- surfaces ---------------------------------------------------------------
   const surfaces = Array.isArray(app.surfaces) ? app.surfaces : []
-  if (app.surfaces !== undefined && !Array.isArray(app.surfaces)) {
+  // `null` means absent: a driver that stores an explicit `undefined` writes null,
+  // and a manifest that came back from the database must validate exactly like the
+  // one that went in.
+  if (app.surfaces !== undefined && app.surfaces !== null && !Array.isArray(app.surfaces)) {
     errors.push({ path: 'surfaces', message: 'surfaces deve ser uma lista' })
   } else if (surfaces.length > MAX_SURFACES) {
     errors.push({ path: 'surfaces', message: `no máximo ${MAX_SURFACES} páginas` })
@@ -272,7 +275,7 @@ export function validateAppManifest(input: unknown): ManifestValidation {
   }
 
   // --- sidebar ----------------------------------------------------------------
-  if (app.sidebar !== undefined) {
+  if (app.sidebar !== undefined && app.sidebar !== null) {
     if (!isRecord(app.sidebar)) {
       errors.push({ path: 'sidebar', message: 'sidebar deve ser um objeto' })
     } else {

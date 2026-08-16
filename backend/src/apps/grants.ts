@@ -18,6 +18,7 @@ import type { ExecutableTool } from '../toolExecution.js'
 import { googleCalendarTools, googleSheetsTools } from '../googleTools.js'
 import { hubspotTools, mercadoPagoTools, nuvemshopTools, rdStationTools, slackTools, stripeTools } from '../providerApps.js'
 import { getApp } from './registry.js'
+import { isUsableManifest, resolveAppForOwner } from './privateApps.js'
 import type { AppDefinition, AppActionDefinition, AppInstallation, AgentAppGrant } from './types.js'
 import { decryptInstallationConfig, getInstallation, isInstallationUsable } from './installations.js'
 
@@ -133,8 +134,10 @@ export async function resolveGrant(
   grant: AgentAppGrant,
   options: { agentId?: ObjectId | null } = {},
 ): Promise<ResolvedTool[]> {
-  const app = getApp(grant.appKey)
-  if (!app) return []
+  // System first, then the owner's own private Apps. A manifest that no longer
+  // validates resolves to nothing rather than to a weaker execution path.
+  const app = await resolveAppForOwner(ownerId, grant.appKey)
+  if (!app || !isUsableManifest(app)) return []
 
   const granted = app.actions.filter((a) => (grant.actionKeys ?? []).includes(a.key))
   if (granted.length === 0) return []

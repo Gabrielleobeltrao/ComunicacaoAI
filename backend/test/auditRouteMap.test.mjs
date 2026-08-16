@@ -115,6 +115,7 @@ const ROUTER_PREFIX = {
   'routes/agentRoutineRoutes.ts': '/api/agents/:agentId',
   'routes/connectionRoutes.ts': '/api/connections',
   'routes/appInstallationRoutes.ts': '/api/app-installations',
+  'routes/privateAppRoutes.ts': '/api/private-apps',
   'routes/appGrantRoutes.ts': '/api/agents/:agentId',
   'routes/floorRoutes.ts': '/api/floors',
   'routes/runRoutes.ts': '/api/runs',

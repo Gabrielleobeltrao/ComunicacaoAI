@@ -122,6 +122,12 @@ const RULES: Rule[] = [
   R('DELETE', 'api/whatsapp/channels/:', { entityType: 'channel', action: 'delete' }, { idAt: 3 }),
   // Apps: connecting, renaming, testing, reconnecting and disconnecting an
   // installation are all changes to what this account can reach.
+  // A private App is a capability the account gains: creating, changing and deleting
+  // one are changes to what agents can be authorised to do.
+  R('POST', 'api/private-apps', { entityType: 'tool', action: 'create' }),
+  R('POST', 'api/private-apps/import', { entityType: 'tool', action: 'create' }),
+  R('PATCH', 'api/private-apps/:', { entityType: 'tool', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/private-apps/:', { entityType: 'tool', action: 'delete' }, { idAt: 2 }),
   R('POST', 'api/app-installations', { entityType: 'connection', action: 'create' }),
   R('PATCH', 'api/app-installations/:', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/app-installations/:/test', { entityType: 'connection', action: 'test' }, { idAt: 2 }),

@@ -7,6 +7,7 @@ import { ensureRunIndexes } from './automations/runRepository.js'
 import { ensureConnectionIndexes } from './connections/repository.js'
 import { ensureInstallationIndexes } from './apps/installations.js'
 import { ensureNavigationIndexes } from './apps/navigation.js'
+import { ensurePrivateAppIndexes } from './apps/privateApps.js'
 import { ensureAgentLiveStateIndexes } from './agentLiveState.js'
 import { ensureSectorExecutionIndexes } from './sectorExecutions.js'
 import { ensureExecutionRootIndexes } from './executionRoots.js'
@@ -68,6 +69,7 @@ export async function runMigrations(): Promise<void> {
   await ensureConnectionIndexes()
   await ensureInstallationIndexes()
   await ensureNavigationIndexes()
+  await ensurePrivateAppIndexes()
   await ensureAgentLiveStateIndexes()
   await ensureSectorExecutionIndexes()
   await ensureExecutionRootIndexes()

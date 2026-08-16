@@ -203,6 +203,7 @@ import { ensureAuditIndexes } from './audit.js'
 import { agentRoutineRouter } from './routes/agentRoutineRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
 import { appCatalogRouter, navigationPreferencesRouter } from './routes/appRoutes.js'
+import { privateAppRouter } from './routes/privateAppRoutes.js'
 import { appInstallationRouter } from './routes/appInstallationRoutes.js'
 import { appGrantRouter } from './routes/appGrantRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
@@ -350,6 +351,7 @@ app.use('/api/connections', requireAuth, connectionRouter)
 // Apps: the catalog, the owner's installations and each agent's grants.
 app.use('/api/apps', requireAuth, appCatalogRouter)
 app.use('/api/me', requireAuth, navigationPreferencesRouter)
+app.use('/api/private-apps', requireAuth, privateAppRouter)
 app.use('/api/app-installations', requireAuth, appInstallationRouter)
 app.use('/api/agents/:agentId', requireAuth, appGrantRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
