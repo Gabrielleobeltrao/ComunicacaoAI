@@ -54,10 +54,15 @@ async function subirMongo() {
   const { MongoMemoryReplSet } = await import(exigir.resolve('mongodb-memory-server'))
   log('subindo mongod isolado…')
   const servidor = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
-  encerrar.push(async () => servidor.stop())
-  const uri = servidor.getUri()
+  let parado = false
+  const parar = async () => {
+    if (parado) return
+    parado = true
+    await servidor.stop()
+  }
+  encerrar.push(parar)
   log(`mongod pronto`)
-  return uri
+  return { uri: servidor.getUri(), parar }
 }
 
 // --- backend -------------------------------------------------------------------------
@@ -243,14 +248,63 @@ async function rodarSmoke() {
   return codigo
 }
 
+// --- prontidão e encerramento --------------------------------------------------------
+
+// O banco cai DEPOIS do boot: é o caso que o orquestrador vê em produção, e o que
+// `COOLIFY_DEPLOYMENT.md` promete. `/api/ready` tem que virar 503 — um backend que
+// aceita rotinas sem conseguir executá-las não pode passar por saudável.
+//
+// (Com o banco fora JÁ NO BOOT o processo nem chega a escutar: `start()` falha em
+// `mongoClient.connect()`. O healthcheck recebe conexão recusada em vez de 503, e o
+// recurso fica vermelho do mesmo jeito.)
+async function verificarProntidaoComBancoFora(pararMongo) {
+  log('derrubando o banco para conferir /api/ready…')
+  await pararMongo()
+  let status = null
+  await esperar(
+    '/api/ready virar 503',
+    async () => {
+      const res = await fetch(`http://localhost:${PORTA_API}/api/ready`).catch(() => null)
+      if (!res) return false
+      status = res.status
+      return status === 503
+    },
+    { timeoutMs: 60_000, intervaloMs: 1000 },
+  ).catch(() => undefined)
+  if (status !== 503) throw new Error(`/api/ready devolveu ${status ?? 'nada'} com o banco fora — tinha que ser 503`)
+  log('prontidão correta: 503 depois que o banco caiu')
+}
+
+// SIGTERM é como o orquestrador encerra. O motor precisa drenar o que está em
+// andamento antes de o processo sair, e dizer isso no log.
+async function verificarEncerramento(proc, linhas) {
+  log('conferindo o encerramento por SIGTERM…')
+  const saiu = new Promise((r) => proc.once('exit', (codigo, sinal) => r({ codigo, sinal })))
+  proc.kill('SIGTERM')
+  const forcado = setTimeout(() => proc.kill('SIGKILL'), 20_000)
+  const { codigo, sinal } = await saiu
+  clearTimeout(forcado)
+  const registro = linhas.join('\n')
+  if (sinal === 'SIGKILL') throw new Error('o processo não saiu sozinho com SIGTERM — foi preciso SIGKILL')
+  if (!/Automation engine stopped/.test(registro)) throw new Error('o motor não registrou encerramento limpo')
+  log(`encerrou sozinho com SIGTERM (código ${codigo ?? 0}) e o motor drenou`)
+}
+
 // --- orquestração --------------------------------------------------------------------
 
 try {
   await compilarFrontend()
-  const uri = await subirMongo()
-  const { linhas } = await subirBackend(uri)
+  const { uri, parar: pararMongo } = await subirMongo()
+  const { proc, linhas } = await subirBackend(uri)
   await subirFrontend()
   saida = await rodarSmoke()
+
+  // O motor tem que ter subido: um backend que aceita rotinas sem conseguir
+  // executá-las é o defeito que este projeto já teve uma vez.
+  if (!/Automation engine up/.test(linhas.join('\n'))) {
+    console.error('[smoke] FALHA: o motor de automações não subiu')
+    saida = 1
+  }
 
   // O que o log do backend NÃO pode ter. O smoke exercita registro, execução e
   // webhook — se algo desses vazasse credencial ou conteúdo, vazaria aqui.
@@ -267,6 +321,13 @@ try {
     }
   }
   if (saida === 0) log('log do backend limpo: sem credencial e sem conteúdo de execução')
+
+  if (saida === 0) {
+    // Nesta ordem: primeiro o banco cai com o processo vivo, depois o processo é
+    // encerrado. O contrário derrubaria o processo antes de haver o que medir.
+    await verificarProntidaoComBancoFora(pararMongo)
+    await verificarEncerramento(proc, linhas)
+  }
 } catch (erro) {
   console.error(`[smoke] ${erro.message}`)
   saida = 1
