@@ -5,6 +5,13 @@ import { defineConfig, devices } from '@playwright/test'
 // and the QA login with E2E_BASE_URL / E2E_EMAIL / E2E_PASSWORD if needed.
 export default defineConfig({
   testDir: './e2e',
+  // O smoke de MVP NÃO roda aqui. Ele exige a pilha que `npm run smoke` monta —
+  // mongod limpo, backend com o adaptador falso de LLM, frontend compilado com as
+  // flags de produção — e o orquestrador o chama pelo nome. Sem isto ele entraria
+  // na varredura padrão e falharia por falta de ambiente, o que se lê como "o
+  // produto quebrou" quando não é. Não é `skip`: o arquivo simplesmente não é
+  // coletado por esta configuração.
+  testIgnore: process.env.SMOKE ? [] : ['**/mvp-smoke.spec.ts'],
   timeout: 45_000,
   expect: { timeout: 8_000 },
   retries: 0,
