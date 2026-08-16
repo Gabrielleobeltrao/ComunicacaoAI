@@ -23,7 +23,9 @@ const SECTOR = {
   name: 'Cozinha',
   color: '#88a',
   mode: 'pipeline',
-  members: [{ agentId: A1 }, { agentId: A2 }],
+  // O segundo membro NÃO tem `transitions`: é um documento gravado antes do campo
+  // existir, e a página tem que continuar de pé com ele.
+  members: [{ agentId: A1, transitions: [] }, { agentId: A2 }],
   stages: [
     { id: 'e1', name: 'Anotar pedido', agentId: A1, instruction: '', dependsOn: [], retryPolicy: { maxAttempts: 1 }, onError: 'stop' },
     { id: 'e2', name: 'Preparar', agentId: A2, instruction: '', dependsOn: ['e1'], retryPolicy: { maxAttempts: 1 }, onError: 'stop' },
@@ -111,9 +113,16 @@ const open = async (page: Page) => {
   await expect(page.getByTestId('sector-executions')).toBeVisible()
 }
 
+// Os KPIs moram na Visão geral: é lá que se pergunta "isto está funcionando?".
+const openOverview = async (page: Page) => {
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  await expect(page.getByTestId('sector-performance')).toBeVisible()
+}
+
+
 test('as métricas do setor contam o fluxo uma vez e separam tempo ativo de duração', async ({ page }) => {
   await stub(page)
-  await open(page)
+  await openOverview(page)
   const metrics = page.getByTestId('sector-metrics')
   await expect(metrics).toContainText('Execuções')
   await expect(metrics).toContainText('2')
@@ -127,7 +136,7 @@ test('as métricas do setor contam o fluxo uma vez e separam tempo ativo de dura
 
 test('a origem da telemetria é declarada, sem zeros históricos inventados', async ({ page }) => {
   await stub(page)
-  await open(page)
+  await openOverview(page)
   await expect(page.getByTestId('telemetry-since')).toContainText('Telemetria disponível desde')
 })
 
@@ -136,15 +145,16 @@ test('sem telemetria, a página diz isso em vez de mostrar zeros', async ({ page
     summary: { ...SUMMARY, executions: 0, succeeded: 0, failed: 0, successRate: null, avgDurationMs: null, avgTokensPerExecution: null, avgParticipants: null, byParticipant: [], telemetrySince: null },
     rows: [],
   })
-  await open(page)
+  await openOverview(page)
   await expect(page.getByTestId('telemetry-since')).toContainText('Ainda não há telemetria')
   await expect(page.getByTestId('sector-metrics')).toContainText('—')
+  await open(page)
   await expect(page.getByTestId('history-empty')).toBeVisible()
 })
 
 test('o detalhamento por agente/etapa mostra participações sem inflar execuções', async ({ page }) => {
   await stub(page)
-  await open(page)
+  await openOverview(page)
   const table = page.getByTestId('by-participant')
   await expect(table).toContainText('Anotador')
   await expect(table).toContainText('Anotar pedido')
@@ -153,11 +163,17 @@ test('o detalhamento por agente/etapa mostra participações sem inflar execuç�
   await expect(table.locator('tbody tr')).toHaveCount(2)
 })
 
-test('trocar o período refaz a consulta no backend', async ({ page }) => {
+test('trocar o período do Desempenho refaz a consulta no backend', async ({ page }) => {
   await stub(page)
-  await open(page)
+  await openOverview(page)
   await page.getByTestId('period-7d').click()
   await expect.poll(() => summaryUrls.some((u) => u.includes('period=7d'))).toBe(true)
+})
+
+test('o histórico tem o período dele, independente do Desempenho', async ({ page }) => {
+  await stub(page)
+  await open(page)
+  await page.getByTestId('filter-period').selectOption('7d')
   await expect.poll(() => listUrls.some((u) => u.includes('period=7d'))).toBe(true)
 })
 
@@ -200,15 +216,15 @@ test('a timeline liga cada etapa ao agente correspondente', async ({ page }) => 
   await expect(page).toHaveURL(new RegExp(`/floors/${FLOOR_ID}/agents/${A1}`))
 })
 
-test('o teste fica no fim e diz que não entra nas métricas', async ({ page }) => {
+test('o teste fica no fim e diz que não entra no que é medido', async ({ page }) => {
   await stub(page)
   await open(page)
-  await expect(page.getByTestId('playground-note')).toContainText('fica fora das métricas')
-  const [metricsBox, noteBox] = await Promise.all([
-    page.getByTestId('sector-metrics').boundingBox(),
+  await expect(page.getByTestId('playground-note')).toContainText('fica fora do Desempenho e do histórico')
+  const [historyBox, noteBox] = await Promise.all([
+    page.getByTestId('execution-history').boundingBox(),
     page.getByTestId('playground-note').boundingBox(),
   ])
-  expect(noteBox!.y).toBeGreaterThan(metricsBox!.y)
+  expect(noteBox!.y).toBeGreaterThan(historyBox!.y)
 })
 
 test('um erro de carga oferece tentar de novo em vez de tela quebrada', async ({ page }) => {

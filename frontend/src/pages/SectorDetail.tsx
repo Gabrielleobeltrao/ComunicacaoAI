@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AgentBadges } from '../components/AgentBadges'
+import { SectorPerformance } from '../components/SectorPerformance'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { SectorAccessSection } from '../components/SectorAccessSection'
@@ -19,19 +20,6 @@ import { floorAgent, floorSector, floorSectors } from '../lib/floorRoutes'
 import { Button } from '../ui'
 import { LEGACY_SECTOR_SECTION, SECTOR_SECTIONS } from '../lib/sectorSections'
 import type { AgentSummary, SectorOverview } from '../lib/types'
-
-function Metric({ label, value, suffix, hint }: { label: string; value: number; suffix?: string; hint?: string }) {
-  return (
-    <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
-      <p className="text-2xl font-semibold">
-        {value.toLocaleString('pt-BR')}
-        {suffix}
-      </p>
-      <p className="mt-1 text-sm text-(--text-muted)">{label}</p>
-      {hint && <p className="mt-0.5 text-xs text-(--text-faint)">{hint}</p>}
-    </div>
-  )
-}
 
 function Badge({ children }: { children: ReactNode }) {
   return (
@@ -59,7 +47,7 @@ function ReadinessPanel({ overview, onFix }: { overview: SectorOverview; onFix: 
 }
 
 function OverviewSection({ overview, agents }: { overview: SectorOverview; agents: AgentSummary[] }) {
-  const { sector, analytics, linkedWidgets } = overview
+  const { sector } = overview
   const fid = useActiveFloorId()
   const nameById = new Map(agents.map((a) => [a._id, a.name]))
   const agentById = new Map(agents.map((a) => [a._id, a]))
@@ -67,7 +55,6 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
   // Agents that are wired in but still need their OWN setup — the backend reports
   // them by name, so the card can say so instead of failing silently at run time.
   const pendingNames = new Set((overview.readiness?.issues ?? []).filter((i) => i.code === 'agent_pending').map((i) => i.message.split(' ainda precisa')[0]))
-  const maxCount = Math.max(1, ...(analytics?.specialists.map((s) => s.count) ?? []))
 
   const renderMember = (m: (typeof sector.members)[number], index: number) => {
     const full = agentById.get(m.agentId)
@@ -97,9 +84,11 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
             <span className="text-(--text-faint)">Avança quando:</span> {m.advanceWhen}
           </p>
         )}
-        {isPipeline && m.transitions.length > 0 && (
+        {/* `transitions` chegou depois: um membro gravado antes dela não tem o
+            campo, e ler `.length` dele derrubava a página inteira do setor. */}
+        {isPipeline && (m.transitions?.length ?? 0) > 0 && (
           <ul className="mt-1.5 space-y-0.5">
-            {m.transitions.map((t, ti) => (
+            {(m.transitions ?? []).map((t, ti) => (
               <li key={ti} className="text-xs text-(--text-faint)">
                 <span className="text-(--text-faint)">Se</span> {t.condition || '…'}{' '}
                 <span className="text-(--text-muted)">→ {nameById.get(t.targetAgentId) ?? 'etapa'}</span>
@@ -141,99 +130,42 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
 
   return (
     <div className="space-y-6">
+      {/* O desenho do fluxo e quem faz cada parte são a MESMA pergunta. Separá-los
+          em duas seções obrigava a olhar para cima e para baixo para responder
+          "quem é essa etapa?". */}
       <section>
         <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Como o trabalho anda</h3>
-        <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
-          <SectorFlow sector={sector} agents={agents} />
-        </div>
-      </section>
-
-      <section>
-        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">
-          {isPipeline ? 'Etapas do fluxo' : 'Agentes do setor'}
-        </h3>
-        {isPipeline || !showSectorHeadings ? (
-          <ul className="space-y-2">
-            {sector.members.map((m, index) => renderMember(m, index))}
-          </ul>
-        ) : (
-          <div className="space-y-4">
-            {sectorGroups.map(([area, members]) => (
-              <div key={area || '_none'}>
-                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-(--text-faint)">
-                  {area || 'Sem área'}
-                </p>
-                <ul className="space-y-2">
-                  {members.map((m) => renderMember(m, sector.members.indexOf(m)))}
-                </ul>
-              </div>
-            ))}
+        <div className="space-y-3">
+          <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
+            <SectorFlow sector={sector} agents={agents} />
           </div>
-        )}
-      </section>
-
-      <section>
-        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Desempenho</h3>
-        {analytics ? (
-          <div className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <Metric label="Turnos orquestrados" value={analytics.decisions} />
-              {isPipeline ? (
-                <Metric label="Avanços/desvios" value={analytics.moves} />
-              ) : (
-                <Metric
-                  label="Pediu esclarecimento"
-                  value={Math.round(analytics.clarifyRate * 100)}
-                  suffix="%"
-                />
-              )}
-            </div>
-            <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-(--text-faint)">
-                {isPipeline ? 'Atividade por etapa' : 'Mais consultados'}
-              </p>
-              <ul className="space-y-1.5">
-                {analytics.specialists.map((s) => (
-                  <li key={s.name}>
-                    <div className="mb-0.5 flex items-center justify-between text-xs">
-                      <span className="text-(--text-body)">{s.name}</span>
-                      <span className="text-(--text-faint)">{s.count}</span>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-(--surface-sunken)">
-                      <div
-                        className="h-1.5 rounded-full bg-(--intent-brand)"
-                        style={{ width: `${(s.count / maxCount) * 100}%` }}
-                      />
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        ) : (
-          <p className="text-sm text-(--text-faint)">
-            Sem dados de orquestração ainda. Eles aparecem conforme o setor responde conversas.
-          </p>
-        )}
-      </section>
-
-      <section>
-        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Onde é usado</h3>
-        <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-(--text-faint)">Widgets</p>
-          {linkedWidgets.length === 0 ? (
-            <p className="text-sm text-(--text-faint)">Nenhum widget usa este setor.</p>
-          ) : (
-            <ul className="flex flex-wrap gap-1.5">
-              {linkedWidgets.map((w) => (
-                <li key={w._id}>
-                  <Badge>{w.name}</Badge>
-                </li>
-              ))}
+          {isPipeline || !showSectorHeadings ? (
+            <ul className="space-y-2">
+              {sector.members.map((m, index) => renderMember(m, index))}
             </ul>
+          ) : (
+            <div className="space-y-4">
+              {sectorGroups.map(([area, members]) => (
+                <div key={area || '_none'}>
+                  {/* A área continua rotulada: num setor adaptativo ela é o que
+                      explica por que um agente está no grupo. */}
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-(--text-faint)">
+                    {area || 'Sem área'}
+                  </p>
+                  <ul className="space-y-2">
+                    {members.map((m) => renderMember(m, sector.members.indexOf(m)))}
+                  </ul>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </section>
+
+      {/* Os KPIs reais de execução, no lugar onde a pergunta é feita. O bloco de
+          orquestração que ficava aqui media outra coisa (turnos, desvios) e
+          competia com este pelo mesmo nome. */}
+      <SectorPerformance sector={sector} agents={agents} />
     </div>
   )
 }

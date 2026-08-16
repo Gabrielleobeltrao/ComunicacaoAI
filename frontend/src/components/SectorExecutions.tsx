@@ -6,28 +6,21 @@ import { SectorPlayground } from './SectorPlayground'
 import {
   duration,
   getSectorExecution,
-  getSectorSummary,
   listSectorExecutions,
-  num,
-  percent,
   tokens as fmtTokens,
   PERIOD_LABEL,
   ROLE_LABEL,
   STATUS_LABEL,
 } from '../lib/sectorExecutions'
-import type { ExecutionPeriod, SectorExecutionRow, SectorExecutionSummary, SectorTimelineStep } from '../lib/sectorExecutions'
+import type { ExecutionPeriod, SectorExecutionRow, SectorTimelineStep } from '../lib/sectorExecutions'
 import type { AgentSummary, SectorSummary } from '../lib/types'
-import { Card, MetricStat } from '../ui'
 
-// The sector's Execuções tab: Desempenho, Histórico and — last, clearly labelled —
-// Testar. Every number comes from telemetry the backend measured; nothing is
-// estimated, and a missing measurement is "—" rather than a zero.
-
-const PERIODS: ExecutionPeriod[] = ['7d', '30d', 'all']
+// The sector's Execuções tab: what actually ran, and — last, clearly labelled — a
+// way to try it. The KPI block that used to open this tab now lives on Visão geral,
+// where the question "is this working?" is asked.
 
 export function SectorExecutions({ sector, agents }: { sector: SectorSummary; agents: AgentSummary[] }) {
   const [period, setPeriod] = useState<ExecutionPeriod>('30d')
-  const [summary, setSummary] = useState<SectorExecutionSummary | null>(null)
   const [rows, setRows] = useState<SectorExecutionRow[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
   const [status, setStatus] = useState('')
@@ -41,11 +34,7 @@ export function SectorExecutions({ sector, agents }: { sector: SectorSummary; ag
     setLoading(true)
     setFailed(false)
     try {
-      const [s, list] = await Promise.all([
-        getSectorSummary(sector._id, period),
-        listSectorExecutions(sector._id, { period, status: status || undefined, agentId: agentFilter || undefined }),
-      ])
-      setSummary(s)
+      const list = await listSectorExecutions(sector._id, { period, status: status || undefined, agentId: agentFilter || undefined })
       setRows(list.items)
       setCursor(list.nextCursor)
     } catch {
@@ -68,116 +57,26 @@ export function SectorExecutions({ sector, agents }: { sector: SectorSummary; ag
 
   return (
     <div style={{ display: 'grid', gap: 24 }} data-testid="sector-executions">
-      {/* --- Desempenho ----------------------------------------------------- */}
-      <section style={{ display: 'grid', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <h3 style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Desempenho</h3>
-          <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 'var(--radius-control)', background: 'var(--surface-sunken)' }}>
-            {PERIODS.map((p) => (
-              <button
-                key={p}
-                onClick={() => setPeriod(p)}
-                data-testid={`period-${p}`}
-                style={{
-                  height: 28,
-                  padding: '0 12px',
-                  borderRadius: 'var(--radius-xs)',
-                  border: 0,
-                  background: p === period ? 'var(--surface-card)' : 'transparent',
-                  boxShadow: p === period ? 'var(--shadow-flat)' : 'none',
-                  color: p === period ? 'var(--text-heading)' : 'var(--text-muted)',
-                  fontSize: 12.5,
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                }}
-              >
-                {PERIOD_LABEL[p]}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {failed ? (
-          <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)' }}>
-            Não foi possível carregar.{' '}
-            <button type="button" onClick={() => void load()} style={LINK} data-testid="executions-retry">
-              Tentar de novo
-            </button>
-          </p>
-        ) : (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 14 }} data-testid="sector-metrics">
-              <Card padding="16px" title="Fluxos completos do setor no período — cada execução conta uma vez">
-                <MetricStat icon="activity" label="Execuções" value={num(summary?.executions)} />
-              </Card>
-              <Card padding="16px" title="Execuções bem-sucedidas / execuções encerradas">
-                <MetricStat icon="check-circle" label="Sucesso" value={percent(summary?.successRate)} />
-              </Card>
-              <Card padding="16px" title="Duração ponta a ponta média do fluxo">
-                <MetricStat icon="gauge" label="Duração média" value={duration(summary?.avgDurationMs)} />
-              </Card>
-              <Card padding="16px" title="Soma do tempo dos agentes; com paralelismo pode superar a duração do fluxo">
-                <MetricStat icon="timer" label="Tempo ativo somado" value={duration(summary?.activeTimeMs)} />
-              </Card>
-              <Card padding="16px" title="Tokens de entrada + saída dos agentes participantes">
-                <MetricStat icon="coins" label="Tokens" value={fmtTokens(summary?.totalTokens)} />
-              </Card>
-              <Card padding="16px" title="Tokens médios por execução do setor">
-                <MetricStat icon="calculator" label="Tokens médios" value={fmtTokens(summary?.avgTokensPerExecution)} />
-              </Card>
-              <Card padding="16px" title="Quantos agentes/etapas o fluxo percorre em média">
-                <MetricStat icon="users-round" label="Agentes por execução" value={num(summary?.avgParticipants)} />
-              </Card>
-              <Card padding="16px" title="Execuções ainda em andamento agora">
-                <MetricStat icon="loader" label="Em andamento" value={num(summary?.running)} />
-              </Card>
-            </div>
-
-            <p style={{ margin: 0, fontSize: 12, color: 'var(--text-faint)' }} data-testid="telemetry-since">
-              {summary?.telemetrySince
-                ? `Telemetria disponível desde ${new Date(summary.telemetrySince).toLocaleDateString('pt-BR')}.`
-                : 'Ainda não há telemetria deste setor.'}
-            </p>
-
-            {/* --- por agente/etapa ------------------------------------------ */}
-            {summary && summary.byParticipant.length > 0 ? (
-              <div style={{ overflowX: 'auto' }} data-testid="by-participant">
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead>
-                    <tr style={{ textAlign: 'left', color: 'var(--text-muted)' }}>
-                      <th style={TH}>Agente</th>
-                      <th style={TH}>Papel / etapa</th>
-                      <th style={TH}>Participações</th>
-                      <th style={TH}>Sucesso</th>
-                      <th style={TH}>Tokens</th>
-                      <th style={TH}>Tempo ativo</th>
-                      <th style={TH}>Duração média</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summary.byParticipant.map((p) => (
-                      <tr key={`${p.agentId}:${p.stageId ?? ''}`} style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                        <td style={TD}>{nameOf(p.agentId)}</td>
-                        <td style={TD}>{p.stageName ?? (p.role ? ROLE_LABEL[p.role] : '—')}</td>
-                        <td style={TD}>{p.participations}</td>
-                        <td style={TD}>{p.participations ? `${Math.round((p.succeeded / p.participations) * 100)}%` : '—'}</td>
-                        <td style={TD}>{fmtTokens(p.tokens)}</td>
-                        <td style={TD}>{duration(p.activeTimeMs)}</td>
-                        <td style={TD}>{duration(p.avgDurationMs)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : null}
-          </>
-        )}
-      </section>
-
       {/* --- Histórico ------------------------------------------------------- */}
       <section style={{ display: 'grid', gap: 12 }}>
         <h3 style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Histórico</h3>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {/* O período era do bloco de Desempenho, que subiu para a Visão geral. O
+              histórico passa a ter o seu, em vez de ficar preso ao último filtro
+              usado em outra tela. */}
+          <select
+            value={period}
+            onChange={(e) => setPeriod(e.target.value as ExecutionPeriod)}
+            aria-label="Filtrar por período"
+            data-testid="filter-period"
+            style={SELECT}
+          >
+            {(['7d', '30d', 'all'] as ExecutionPeriod[]).map((p) => (
+              <option key={p} value={p}>
+                {PERIOD_LABEL[p]}
+              </option>
+            ))}
+          </select>
           <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Filtrar por status" data-testid="filter-status" style={SELECT}>
             <option value="">Todos os status</option>
             <option value="succeeded">Concluídas</option>
@@ -195,7 +94,14 @@ export function SectorExecutions({ sector, agents }: { sector: SectorSummary; ag
           </select>
         </div>
 
-        {loading && rows.length === 0 ? (
+        {failed ? (
+          <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)' }}>
+            Não foi possível carregar.{' '}
+            <button type="button" onClick={() => void load()} style={LINK} data-testid="executions-retry">
+              Tentar de novo
+            </button>
+          </p>
+        ) : loading && rows.length === 0 ? (
           <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)' }}>Carregando…</p>
         ) : rows.length === 0 ? (
           <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)' }} data-testid="history-empty">
@@ -220,7 +126,7 @@ export function SectorExecutions({ sector, agents }: { sector: SectorSummary; ag
       <section style={{ display: 'grid', gap: 8 }}>
         <h3 style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>Testar setor</h3>
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="playground-note">
-          Isto é um teste: a execução é registrada como teste e fica fora das métricas acima.
+          Isto é um teste: a execução é registrada como teste e fica fora do Desempenho e do histórico.
         </p>
         <SectorPlayground key={sector._id} sector={sector} />
       </section>
@@ -228,8 +134,6 @@ export function SectorExecutions({ sector, agents }: { sector: SectorSummary; ag
   )
 }
 
-const TH: React.CSSProperties = { padding: '6px 10px', fontWeight: 700, whiteSpace: 'nowrap' }
-const TD: React.CSSProperties = { padding: '6px 10px', color: 'var(--text-body)' }
 const SELECT: React.CSSProperties = {
   height: 34,
   padding: '0 10px',
