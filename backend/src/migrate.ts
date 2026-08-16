@@ -9,6 +9,7 @@ import { ensureInstallationIndexes } from './apps/installations.js'
 import { ensureNavigationIndexes } from './apps/navigation.js'
 import { ensureAgentLiveStateIndexes } from './agentLiveState.js'
 import { ensureSectorExecutionIndexes } from './sectorExecutions.js'
+import { backfillFloorCommunication } from './floorCommunication.js'
 import { ensureAppActionIndexes } from './apps/grants.js'
 import { migrateAppsAndInstallations } from './apps/migration.js'
 
@@ -68,6 +69,17 @@ export async function runMigrations(): Promise<void> {
   await ensureNavigationIndexes()
   await ensureAgentLiveStateIndexes()
   await ensureSectorExecutionIndexes()
+
+  // Existing sectors keep their CURRENT behaviour: open. Closing a core is a decision
+  // the owner takes explicitly — guessing which pipelines "should" be closed would
+  // silently break calls that work today. The recommendation to review shows up in
+  // the UI, not here.
+  await db
+    .collection('sectors')
+    .updateMany({ entryPolicy: { $exists: false } }, { $set: { entryPolicy: 'open_members', exposedAgentIds: [] } })
+
+  // Existing buildings keep collaborating exactly as they do today.
+  await backfillFloorCommunication()
   await ensureAppActionIndexes()
 
   // Apps: connections learn their appKey, Google gains an installation, and every

@@ -148,6 +148,16 @@ export interface SectorLite {
 // Injected IO. Production wiring in ./delegationWiring.ts binds these to the real
 // agent store, tool resolver, task runtime, provider keys and delegation log.
 export interface DelegationDeps {
+  // May a call cross from the caller's floor to the target's? A building-level
+  // decision, asked BEFORE the two sides' permissions. Optional so this module stays
+  // testable with no database.
+  canCrossFloors?: (ownerId: string, fromFloorId: string | null, toFloorId: string | null) => Promise<{ ok: boolean; code?: string; reason?: string }>
+  // A direct call to an agent must be refused when that agent is protected by a
+  // sector's entry policy. Optional so this module stays testable with no database.
+  sectorEntryFor?: (
+    ownerId: string,
+    targetAgentId: string,
+  ) => Promise<{ blocked: true; sectorId: string; sectorName: string; reason: string } | { blocked: false }>
   // Sector execution root: ONE identity for the whole sector run, so the sector's
   // numbers are not the sum of its members'. Optional — this module stays testable
   // with no database attached.
@@ -483,6 +493,33 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
   const check = checkDelegation(caller, target, targetBuildingId ?? '', ctx)
   if (!check.ok) return { ok: false, result: j({ status: 'denied', code: check.code, reason: check.reason }) }
 
+  // Crossing floors is decided by the BUILDING, before either side's permissions:
+  // no delegationPolicy — not even 'all' — crosses an isolated building or a link
+  // that does not exist in this direction.
+  const crossing = await deps.canCrossFloors?.(
+    ctx.ownerId,
+    caller.officeId ? caller.officeId.toString() : null,
+    target.officeId ? target.officeId.toString() : null,
+  )
+  if (crossing && !crossing.ok) {
+    return { ok: false, result: j({ status: 'denied', code: crossing.code ?? 'cross_floor_blocked', reason: crossing.reason ?? 'chamada entre andares bloqueada' }) }
+  }
+
+  // A closed core is refused BEFORE any inference: the answer names the sector that
+  // must be called instead, so the model corrects itself instead of guessing. An
+  // internal call made by that sector's own run carries the grant and is exempt —
+  // being on the member list alone never counts as internal.
+  const internalCall = ctx.sectorGrant?.memberIds.includes(targetId) ?? false
+  if (!internalCall) {
+    const entry = await deps.sectorEntryFor?.(ctx.ownerId, targetId)
+    if (entry?.blocked) {
+      return {
+        ok: false,
+        result: j({ status: 'denied', code: 'sector_entry_required', sectorId: entry.sectorId, sector: entry.sectorName, reason: entry.reason }),
+      }
+    }
+  }
+
   const recId = await deps.startDelegation({
     ownerId: ctx.ownerId,
     correlationId: ctx.correlationId,
@@ -633,6 +670,17 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
     !(caller.officeId && sector.officeId && caller.officeId.toString() === sector.officeId.toString())
   ) {
     return { ok: false, result: j({ status: 'denied', code: 'unauthorized', reason: 'este agente só pode chamar setores do próprio andar' }) }
+  }
+  const sectorCrossing = await deps.canCrossFloors?.(
+    ctx.ownerId,
+    caller.officeId ? caller.officeId.toString() : null,
+    sector.officeId ? sector.officeId.toString() : null,
+  )
+  if (sectorCrossing && !sectorCrossing.ok) {
+    return {
+      ok: false,
+      result: j({ status: 'denied', code: sectorCrossing.code ?? 'cross_floor_blocked', reason: sectorCrossing.reason ?? 'chamada entre andares bloqueada' }),
+    }
   }
   const sectorBuildingId = await deps.buildingIdForFloor(ctx.ownerId, sector.officeId)
   if (sectorBuildingId !== ctx.buildingId) return { ok: false, result: j({ status: 'denied', code: 'forbidden', reason: 'setor de outro prédio' }) }

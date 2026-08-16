@@ -61,6 +61,7 @@ import {
   setStructuredOutputData,
 } from './conversationMemory.js'
 import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, normalizeSectorMode, sectorIsExecutable, sectorReadiness, SECTOR_MODES, updateSector } from './sectors.js'
+import { accessConfigOf, validateAccessConfig } from './sectorAccess.js'
 import type { SectorStage, SectorTeamFields } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
 import { assignAgentToSector } from './sectorMembership.js'
@@ -847,6 +848,10 @@ function serializeSector(sector: WithId<Sector>) {
     instruction: sector.instruction ?? '',
     inputContract: sector.inputContract ?? '',
     outputContract: sector.outputContract ?? '',
+    // Who may call INTO this sector's people. Absent on old documents = open, which
+    // is exactly how they behaved.
+    ...accessConfigOf(sector),
+    exposedAgentIds: accessConfigOf(sector).exposedAgentIds.map((id) => id.toString()),
     stages: (sector.stages ?? []).map((s) => ({
       id: s.id,
       name: s.name,
@@ -1082,6 +1087,8 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     inputContract?: string
     outputContract?: string
     stages?: SectorStage[]
+    entryPolicy?: string
+    exposedAgentIds?: ObjectId[]
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof color === 'string' && color.trim()) updates.color = color.trim()
@@ -1107,6 +1114,20 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     return
   }
   Object.assign(updates, team)
+  // Who may call INTO this sector's people. Validated against the sector AS IT WILL
+  // BE (mode and membership included), atomically with the rest of the patch.
+  const body = (req.body ?? {}) as { entryPolicy?: unknown; exposedAgentIds?: unknown }
+  if (body.entryPolicy !== undefined || body.exposedAgentIds !== undefined) {
+    try {
+      const next = { ...existing, ...updates, coordinatorAgentId: updates.coordinatorAgentId ?? existing.coordinatorAgentId ?? undefined }
+      const resolved = validateAccessConfig(next, body, accessConfigOf(existing))
+      updates.entryPolicy = resolved.entryPolicy
+      updates.exposedAgentIds = resolved.exposedAgentIds
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message })
+      return
+    }
+  }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
     return

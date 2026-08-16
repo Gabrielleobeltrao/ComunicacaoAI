@@ -3,7 +3,8 @@ import { ObjectId } from 'mongodb'
 import { getSectorById } from '../sectors.js'
 import { listSectorExecutions, sectorExecutionSummary, sectorExecutionTimeline } from '../sectorExecutions.js'
 import type { ExecutionPeriod, SectorExecutionFilters, SectorExecutionSource, SectorExecutionStatus } from '../sectorExecutions.js'
-import { notFound, oid } from './http.js'
+import { accessConfigOf, accessImpact, validateAccessConfig } from '../sectorAccess.js'
+import { fail, notFound, oid } from './http.js'
 
 // Read-only operational view of a sector. Mounted at /api/sectors/:sectorId behind
 // requireAuth. Every route resolves the sector in the OWNER's scope first, so an id
@@ -61,4 +62,29 @@ sectorExecutionRouter.get('/executions/:executionId', async (req, res) => {
   // An execution of ANOTHER sector is as absent as one of another account.
   if (!timeline || timeline.execution.sectorId !== sectorId.toString()) return notFound(res)
   res.json(timeline)
+})
+
+// What closing (or opening) the core would really change, computed BEFORE saving.
+// Read-only: it decides nothing and stores nothing.
+sectorExecutionRouter.get('/access-impact', async (req, res, next) => {
+  const params = req.params as Record<string, string>
+  const id = oid(String(params.sectorId))
+  if (!id) return notFound(res)
+  const sector = await getSectorById(res.locals.userId, id)
+  if (!sector) return notFound(res)
+  try {
+    const q = req.query as Record<string, string | undefined>
+    // The caller may ask "what if I chose THIS policy?" before committing to it.
+    const candidate =
+      q.entryPolicy || q.exposedAgentIds
+        ? validateAccessConfig(
+            sector,
+            { entryPolicy: q.entryPolicy, exposedAgentIds: q.exposedAgentIds ? q.exposedAgentIds.split(',').filter(Boolean) : undefined },
+            accessConfigOf(sector),
+          )
+        : undefined
+    res.json(await accessImpact(res.locals.userId, sector, candidate))
+  } catch (error) {
+    fail(res, error, next)
+  }
 })

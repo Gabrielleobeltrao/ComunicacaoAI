@@ -101,6 +101,8 @@ const RULES: Rule[] = [
   // Restoring is its own verb: it used to fall through to "created a floor".
   R('POST', 'api/floors/:/restore', { entityType: 'floor', action: 'restore' }, { idAt: 2 }),
   R('PATCH', 'api/building', { entityType: 'building', action: 'update' }),
+  // Who may talk to whom across floors is a security decision of the building.
+  R('PATCH', 'api/building/floor-communication', { entityType: 'building', action: 'update' }),
 
   // --- tools ---------------------------------------------------------------------------
   R('POST', 'api/tools', { entityType: 'tool', action: 'create' }),

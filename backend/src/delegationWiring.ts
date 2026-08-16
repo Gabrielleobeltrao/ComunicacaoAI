@@ -9,6 +9,9 @@ import { resolveAgentTools } from './builtinTools.js'
 import { executeAgentTask } from './agentRuntime.js'
 import { reportAgentState } from './agentLiveState.js'
 import { finishSectorExecution, startSectorExecution } from './sectorExecutions.js'
+import { sectorEntryDecisionFor } from './sectorAccess.js'
+import { canCommunicate, getFloorCommunication } from './floorCommunication.js'
+import { ensureDefaultBuilding } from './building.js'
 import type { AgentBubbleState } from './agentLiveState.js'
 import { getProviderApiKey } from './userSettings.js'
 import type { Provider } from './llm.js'
@@ -37,6 +40,22 @@ export async function resolveToolsWithDelegation(agent: Agent, ownerId: string, 
 
 export function productionDelegationDeps(): DelegationDeps {
   const deps: DelegationDeps = {
+    // Crossing floors: the building's own decision, resolved once per call.
+    canCrossFloors: async (ownerId, fromFloorId, toFloorId) => {
+      if (!fromFloorId || !toFloorId || fromFloorId === toFloorId) return { ok: true }
+      const building = await ensureDefaultBuilding(ownerId)
+      const config = await getFloorCommunication(ownerId, building._id)
+      if (canCommunicate(config, fromFloorId, toFloorId)) return { ok: true }
+      return config.mode === 'isolated'
+        ? { ok: false, code: 'cross_floor_blocked', reason: 'os andares deste prédio estão isolados' }
+        : { ok: false, code: 'floor_link_required', reason: 'não existe conexão deste andar para o andar do alvo' }
+    },
+    // Which protected sector (if any) refuses a direct call to this agent. One query,
+    // owner-scoped: a sector from another account cannot protect anything here.
+    sectorEntryFor: async (ownerId, targetAgentId) => {
+      const decision = await sectorEntryDecisionFor(ownerId, targetAgentId)
+      return decision
+    },
     // The sector execution root: created before the first agent, closed on every
     // exit. Awaited, because the participations must be able to point at it.
     startSectorExecution: (input) => startSectorExecution(input),

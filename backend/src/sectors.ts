@@ -82,6 +82,11 @@ export interface Sector {
   outputContract?: string // what the team must produce
   // Pipeline mode: the ordered execution stages (replaces advanceWhen/transitions).
   stages?: SectorStage[]
+  // Who may call INTO this sector's people from outside (see sectorAccess.ts).
+  // Absent on documents written before this model = 'open_members', which is exactly
+  // how they behaved.
+  entryPolicy?: string
+  exposedAgentIds?: ObjectId[]
   createdAt: Date
   // Set on new writes/edits. Additive — old documents may lack it until edited.
   updatedAt?: Date
@@ -181,6 +186,8 @@ export interface SectorTeamFields {
   inputContract?: string
   outputContract?: string
   stages?: SectorStage[]
+  entryPolicy?: string
+  exposedAgentIds?: ObjectId[]
 }
 
 export async function createSector(
@@ -205,6 +212,11 @@ export async function createSector(
     ...(extra.inputContract !== undefined ? { inputContract: extra.inputContract } : {}),
     ...(extra.outputContract !== undefined ? { outputContract: extra.outputContract } : {}),
     ...(extra.stages ? { stages: normalizeStages(extra.stages) } : {}),
+    // A NEW executable sector is closed by default; a new group is open. An existing
+    // sector is never changed by this — see the migration. (The rule is inlined
+    // instead of imported from sectorAccess.ts, which imports this module.)
+    entryPolicy: extra.entryPolicy ?? (normalizeSectorMode(mode) === 'organization' ? 'open_members' : 'sector_only'),
+    exposedAgentIds: extra.exposedAgentIds ?? [],
     createdAt: now,
     updatedAt: now,
   }
@@ -246,6 +258,8 @@ export function updateSector(
     inputContract?: string
     outputContract?: string
     stages?: SectorStage[]
+    entryPolicy?: string
+    exposedAgentIds?: ObjectId[]
   },
 ) {
   const base: Record<string, unknown> = { ...updates }
