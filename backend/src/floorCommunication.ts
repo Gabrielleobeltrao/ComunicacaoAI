@@ -70,12 +70,13 @@ export async function getFloorCommunication(ownerId: string, buildingId: ObjectI
 
 // Validated against THIS owner's floors, in THIS building: an id from anywhere else
 // simply does not resolve, so a crafted body cannot open a path.
-export async function setFloorCommunication(
+// The SAME validation the save uses, without writing anything — so a preview can
+// never describe a configuration the save would then reject or store differently.
+export async function normalizeCommunication(
   ownerId: string,
-  buildingId: ObjectId,
+  current: FloorCommunicationConfig,
   patch: { mode?: unknown; links?: unknown },
 ): Promise<FloorCommunicationConfig> {
-  const current = await getFloorCommunication(ownerId, buildingId)
   const mode = patch.mode === undefined ? current.mode : (patch.mode as FloorCommunicationMode)
   if (!FLOOR_COMMUNICATION_MODES.includes(mode)) throw new ValidationError('modo de comunicação inválido')
 
@@ -105,7 +106,16 @@ export async function setFloorCommunication(
     }
   }
 
-  const config: FloorCommunicationConfig = { mode, links }
+  return { mode, links }
+}
+
+export async function setFloorCommunication(
+  ownerId: string,
+  buildingId: ObjectId,
+  patch: { mode?: unknown; links?: unknown },
+): Promise<FloorCommunicationConfig> {
+  const current = await getFloorCommunication(ownerId, buildingId)
+  const config = await normalizeCommunication(ownerId, current, patch)
   await buildings.updateOne({ _id: buildingId, ownerId }, { $set: { floorCommunication: config, updatedAt: new Date() } })
   return config
 }

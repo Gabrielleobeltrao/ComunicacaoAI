@@ -2,7 +2,7 @@ import { Router } from 'express'
 import type { Building } from '../building.js'
 import { ensureDefaultBuilding, updateBuilding } from '../building.js'
 import { buildingOverview } from '../automations/metrics.js'
-import { communicationImpact, FLOOR_COMMUNICATION_MODES, getFloorCommunication, setFloorCommunication } from '../floorCommunication.js'
+import { communicationImpact, normalizeCommunication, getFloorCommunication, setFloorCommunication } from '../floorCommunication.js'
 import { fail } from './http.js'
 
 // Mounted at /api/building behind requireAuth (res.locals.userId is the owner).
@@ -58,13 +58,19 @@ buildingRouter.patch('/floor-communication', async (req, res, next) => {
 })
 
 // What a configuration would block, computed BEFORE saving it.
-buildingRouter.get('/floor-communication/impact', async (req, res, next) => {
+//
+// The candidate is the WHOLE draft — mode and links together — because "isolated"
+// and "selected with these three links" block different things, and answering about
+// the mode while silently using the SAVED links describes a configuration nobody
+// asked about. Nothing here writes.
+buildingRouter.post('/floor-communication/impact', async (req, res, next) => {
   try {
     const building = await ensureDefaultBuilding(res.locals.userId)
     const current = await getFloorCommunication(res.locals.userId, building._id)
-    const q = req.query as Record<string, string | undefined>
-    const mode = FLOOR_COMMUNICATION_MODES.includes(q.mode as never) ? (q.mode as typeof current.mode) : current.mode
-    res.json(await communicationImpact(res.locals.userId, { mode, links: current.links }))
+    // Validated by the SAME function the save uses, then thrown away instead of
+    // stored: a link the save would refuse is refused here too.
+    const candidate = await normalizeCommunication(res.locals.userId, current, (req.body ?? {}) as Record<string, unknown>)
+    res.json(await communicationImpact(res.locals.userId, candidate))
   } catch (error) {
     fail(res, error, next)
   }

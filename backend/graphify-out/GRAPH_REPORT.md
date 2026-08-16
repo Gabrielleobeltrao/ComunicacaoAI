@@ -1,7 +1,7 @@
 # Graph Report - backend  (2026-08-16)
 
 ## Corpus Check
-- 186 files · ~191,042 words
+- 186 files · ~191,079 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `38018017`
+- Built from commit: `d63caec1`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -529,7 +529,7 @@ Cohesion: 0.60
 Nodes (4): addWidget(), messages(), say(), widgets()
 
 ## Knowledge Gaps
-- **482 isolated node(s):** `PrivateAppDoc`, `privateApps`, `RESERVED`, `DEFAULT_DELEGATION_TOKEN_BUDGET`, `DelegationBudget` (+477 more)
+- **482 isolated node(s):** `PrivateAppDoc`, `privateApps`, `RESERVED`, `Rule`, `RULES` (+477 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **12 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -537,11 +537,11 @@ Nodes (4): addWidget(), messages(), say(), widgets()
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `attemptChargeKey()` connect `tokenUsage.ts` to `runProcessor.ts`, `hardening.integration.test.mjs`?**
-  _High betweenness centrality (0.183) - this node is a cross-community bridge._
+  _High betweenness centrality (0.191) - this node is a cross-community bridge._
 - **Why does `execDeps()` connect `hardening.integration.test.mjs` to `tokenUsage.ts`?**
-  _High betweenness centrality (0.183) - this node is a cross-community bridge._
+  _High betweenness centrality (0.190) - this node is a cross-community bridge._
 - **Why does `startMongo()` connect `mongoServer.mjs` to `channelOverview.integration.test.mjs`, `executionCenter.integration.test.mjs`, `logRoutes.integration.test.mjs`, `eventTrigger.integration.test.mjs`, `floorWork.integration.test.mjs`, `schedulerPublish.integration.test.mjs`, `agentHistory.integration.test.mjs`, `routineDelivery.integration.test.mjs`, `gateWiring.integration.test.mjs`, `appRoutes.integration.test.mjs`, `appMigration.integration.test.mjs`, `hardening.integration.test.mjs`, `migrationFixture.integration.test.mjs`, `agentLiveState.integration.test.mjs`, `toolsSecurity.test.mjs`, `sectorExecutions.integration.test.mjs`, `executionRoots.integration.test.mjs`, `sectorAccess.integration.test.mjs`, `channelApps.integration.test.mjs`?**
-  _High betweenness centrality (0.064) - this node is a cross-community bridge._
+  _High betweenness centrality (0.067) - this node is a cross-community bridge._
 - **Are the 8 inferred relationships involving `buildDeps()` (e.g. with `finalizeAgentEvent()` and `runEventKey()`) actually correct?**
   _`buildDeps()` has 8 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `PrivateAppDoc`, `privateApps`, `RESERVED` to the rest of the system?**

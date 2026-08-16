@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { useBuildingContext } from '../contexts/BuildingContext'
 import { COLLAPSE_FADE } from '../lib/sidebarStyles'
 import { Icon } from '../ui'
@@ -13,9 +13,19 @@ import { BuildingSettingsDialog } from './BuildingSettingsDialog'
 export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
   const { building, floors, activeFloor, selectFloor } = useBuildingContext()
   const [open, setOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
+  // The dialog lives in the URL, so it survives a reload, closes with Back, and can
+  // be linked to. `?buildingSettings=1`.
+  const [params, setParams] = useSearchParams()
+  const settingsOpen = params.get('buildingSettings') === '1'
+  const setSettingsOpen = (next: boolean) => {
+    const q = new URLSearchParams(params)
+    if (next) q.set('buildingSettings', '1')
+    else q.delete('buildingSettings')
+    // Opening pushes (so Back closes it); closing replaces, so Back does not reopen.
+    setParams(q, { replace: !next })
+  }
 
   const name = building?.name?.trim() || 'Meu prédio'
   const active = floors.filter((f) => f.status === 'active')
@@ -45,27 +55,37 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      {/* Rail-aware: collapsed to just the avatar in the slim rail, expanding to
-          the full switcher on hover (same COLLAPSE_FADE mechanism as nav items). */}
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label="Prédio e andares"
-        className={`flex w-full items-center gap-2 ${expanded ? 'justify-start' : 'justify-center gap-0 group-hover:justify-start group-hover:gap-2'}`}
-        style={headerBtn}
-      >
-        <span style={avatar}>{name.charAt(0).toUpperCase()}</span>
-        <span className={`flex min-w-0 flex-1 flex-col text-left ${fade}`}>
-          <strong style={truncate}>{name}</strong>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {activeFloor ? activeFloor.name : 'Nenhum andar'} · {active.length} andar(es)
+      {/* Selector + gear, side by side and identical on desktop and mobile. The gear
+          is its own button: the building's settings are a destination, not an item
+          buried at the bottom of the floor list. */}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
+        <button
+          onClick={() => setOpen((o) => !o)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label="Prédio e andares"
+          className={`flex min-w-0 flex-1 items-center gap-2 ${expanded ? 'justify-start' : 'justify-center gap-0 group-hover:justify-start group-hover:gap-2'}`}
+          style={headerBtn}
+          data-testid="building-switcher"
+        >
+          <span className={`flex min-w-0 flex-1 flex-col text-left ${fade}`}>
+            <strong style={truncate}>{name}</strong>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {activeFloor ? activeFloor.name : 'Nenhum andar'} · {active.length} andar(es)
+            </span>
           </span>
-        </span>
-        <span className={fade}>
           <Icon name="chevrons-up-down" size={14} />
-        </span>
-      </button>
+        </button>
+        <button
+          onClick={() => setSettingsOpen(true)}
+          aria-label="Configurações do prédio"
+          title="Configurações do prédio"
+          style={gearBtn}
+          data-testid="open-building-settings"
+        >
+          <Icon name="settings" size={15} />
+        </button>
+      </div>
 
       {open && (
         <div role="menu" style={popover}>
@@ -92,7 +112,7 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
           <button role="menuitem" style={menuItem} onClick={go(() => navigate('/dashboard'))}>
             + Criar andar
           </button>
-          <button role="menuitem" style={menuItem} onClick={go(() => setSettingsOpen(true))} data-testid="open-building-settings">
+          <button role="menuitem" style={menuItem} onClick={go(() => setSettingsOpen(true))} data-testid="open-building-settings-menu">
             Configurações do prédio
           </button>
         </div>
@@ -124,17 +144,20 @@ const headerBtn: React.CSSProperties = {
   cursor: 'pointer',
   font: 'inherit',
 }
-const avatar: React.CSSProperties = {
-  width: 26,
-  height: 26,
-  borderRadius: 8,
-  background: 'var(--intent-brand, #2e5bff)',
-  color: '#fff',
+// Its own control, sized for a finger: `--hit-min` is the shared touch minimum, so
+// desktop and mobile get the same target.
+const gearBtn: React.CSSProperties = {
+  minWidth: 'var(--hit-min, 44px)',
+  minHeight: 'var(--hit-min, 44px)',
   display: 'grid',
   placeItems: 'center',
-  fontSize: 13,
-  fontWeight: 700,
+  borderRadius: 10,
+  border: '1px solid var(--border-subtle)',
+  background: 'var(--surface-sunken)',
+  color: 'var(--text-muted)',
+  cursor: 'pointer',
   flexShrink: 0,
+  padding: 0,
 }
 const popover: React.CSSProperties = {
   position: 'absolute',
