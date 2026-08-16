@@ -12,6 +12,9 @@ import { buildRetrievalQuery, formatContextWithSources } from './retrievalQuery.
 import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
 import type { Agent } from './agents.js'
 import type { ResolvedTool } from './agentTools.js'
+import { checkCollaboration } from './collaborationGate.js'
+import type { GateContext, GateTarget } from './collaborationGate.js'
+import type { FloorCommunicationConfig } from './floorCommunication.js'
 import type { AgentExecutionRequest, AgentExecutionResult, AgentOutputFormat } from './agentRuntime.js'
 import { presetSpec, suggestPresetForCapability } from './agentPresets.js'
 
@@ -66,25 +69,63 @@ function policyAllows(policy: Agent['delegationPolicy'], list: string[], id: str
 // whose policy doesn't authorize the pairing all fail here before anything runs.
 // Cross-FLOOR delegation within the SAME building is allowed; another building or
 // owner is refused.
-export function checkDelegation(caller: Agent, target: Agent, targetBuildingId: string, ctx: DelegationContext): DelegationCheck {
-  const tid = target._id.toString()
-  if (target.ownerId !== caller.ownerId) return { ok: false, code: 'forbidden', reason: 'agente de outro proprietário' }
-  if (targetBuildingId !== ctx.buildingId) return { ok: false, code: 'forbidden', reason: 'agente de outro prédio' }
-  if (ctx.depth + 1 > DELEGATION_MAX_DEPTH) return { ok: false, code: 'depth_exceeded', reason: `profundidade máxima (${DELEGATION_MAX_DEPTH}) atingida` }
-  if (tid === ctx.callerAgentId || ctx.ancestry.includes(tid)) return { ok: false, code: 'cycle', reason: 'ciclo de delegação detectado' }
-  // Being teammates in the sector being executed IS the authorisation — configuring
-  // the sector must not require configuring the same relation on both agents.
-  const grantedBySector = ctx.sectorGrant?.memberIds.includes(tid) ?? false
-  // Same floor is a fact about the two agents, not a permission by itself: it only
-  // decides whether a 'floor' policy is satisfied.
-  const sameFloor = Boolean(caller.officeId && target.officeId && caller.officeId.toString() === target.officeId.toString())
-  if (!grantedBySector) {
-    const callerAllows = policyAllows(caller.delegationPolicy, caller.callableAgentIds, tid, sameFloor)
-    const targetAllows = policyAllows(target.callerPolicy, target.allowedCallerAgentIds, caller._id.toString(), sameFloor)
-    if (!callerAllows || !targetAllows) return { ok: false, code: 'unauthorized', reason: 'delegação não autorizada entre estes agentes' }
+// The facts the pure gate needs about a target, gathered by whoever has the database.
+// Kept here so every caller builds them the same way.
+export function gateTargetForAgent(target: Agent, targetBuildingId: string, protectedBy?: { sectorId: string; sectorName: string } | null): GateTarget {
+  return {
+    kind: 'agent',
+    id: target._id.toString(),
+    ownerId: target.ownerId,
+    buildingId: targetBuildingId,
+    floorId: target.officeId ? target.officeId.toString() : null,
+    callerPolicy: target.callerPolicy,
+    allowedCallerAgentIds: target.allowedCallerAgentIds ?? [],
+    protectedBy: protectedBy ?? null,
   }
-  if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) return { ok: false, code: 'budget_exceeded', reason: 'orçamento de tokens da cadeia esgotado' }
-  return { ok: true }
+}
+
+export const gateContext = (ctx: DelegationContext, canceled = false): GateContext => ({
+  buildingId: ctx.buildingId,
+  callerAgentId: ctx.callerAgentId,
+  ancestry: ctx.ancestry,
+  depth: ctx.depth,
+  maxDepth: DELEGATION_MAX_DEPTH,
+  budget: ctx.budget,
+  canceled,
+  sectorGrant: ctx.sectorGrant ?? null,
+})
+
+// Everything talks to floors unless the building says otherwise. Callers that know
+// the real configuration pass it in; the ones that cannot (pure unit tests) keep the
+// previous behaviour, where crossing floors inside one building was always allowed.
+const OPEN_COMMUNICATION: FloorCommunicationConfig = { mode: 'all', links: [] }
+
+// DEPRECATED shape, kept so existing callers and tests keep working: it is now a thin
+// wrapper over the SINGLE gate. Two implementations of "who may call whom" is exactly
+// how discovery starts offering targets the runtime then refuses.
+export function checkDelegation(
+  caller: Agent,
+  target: Agent,
+  targetBuildingId: string,
+  ctx: DelegationContext,
+  extra: { communication?: FloorCommunicationConfig; protectedBy?: { sectorId: string; sectorName: string } | null } = {},
+): DelegationCheck {
+  const decision = checkCollaboration(
+    caller,
+    gateTargetForAgent(target, targetBuildingId, extra.protectedBy),
+    extra.communication ?? OPEN_COMMUNICATION,
+    gateContext(ctx),
+  )
+  if (decision.ok) return { ok: true }
+  // The gate has two codes the older contract did not: they map onto `forbidden`
+  // and `unauthorized`, which is what the callers already understand.
+  const code: DelegationDenyCode =
+    decision.code === 'cross_floor_blocked' || decision.code === 'floor_link_required'
+      ? 'forbidden'
+      : decision.code === 'sector_entry_required'
+        ? 'unauthorized'
+        : decision.code
+  return { ok: false, code, reason: decision.reason }
 }
 
 // The context the target runs under: it becomes the new caller, inherits the chain
@@ -148,10 +189,10 @@ export interface SectorLite {
 // Injected IO. Production wiring in ./delegationWiring.ts binds these to the real
 // agent store, tool resolver, task runtime, provider keys and delegation log.
 export interface DelegationDeps {
-  // May a call cross from the caller's floor to the target's? A building-level
-  // decision, asked BEFORE the two sides' permissions. Optional so this module stays
-  // testable with no database.
-  canCrossFloors?: (ownerId: string, fromFloorId: string | null, toFloorId: string | null) => Promise<{ ok: boolean; code?: string; reason?: string }>
+  // The building's floor-communication configuration, owner-scoped. Optional so this
+  // module stays testable with no database — absent means the previous behaviour,
+  // where crossing floors inside one building was always allowed.
+  loadCommunication?: (ownerId: string) => Promise<FloorCommunicationConfig>
   // A direct call to an agent must be refused when that agent is protected by a
   // sector's entry policy. Optional so this module stays testable with no database.
   sectorEntryFor?: (
@@ -489,34 +530,31 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
   if (!caller) return { ok: false, result: j({ status: 'error', reason: 'agente chamador não encontrado' }) }
   if (!target) return { ok: false, result: j({ status: 'error', reason: 'agente alvo não encontrado' }) }
 
+  // ONE decision. The facts are resolved here — building, floor communication and the
+  // sector that may protect the target — and the pure gate decides. Discovery asks the
+  // same gate with the same facts, so it can never offer a target this refuses.
   const targetBuildingId = await deps.buildingIdForFloor(ctx.ownerId, target.officeId)
-  const check = checkDelegation(caller, target, targetBuildingId ?? '', ctx)
-  if (!check.ok) return { ok: false, result: j({ status: 'denied', code: check.code, reason: check.reason }) }
-
-  // Crossing floors is decided by the BUILDING, before either side's permissions:
-  // no delegationPolicy — not even 'all' — crosses an isolated building or a link
-  // that does not exist in this direction.
-  const crossing = await deps.canCrossFloors?.(
-    ctx.ownerId,
-    caller.officeId ? caller.officeId.toString() : null,
-    target.officeId ? target.officeId.toString() : null,
+  const [communication, entry] = await Promise.all([
+    deps.loadCommunication?.(ctx.ownerId) ?? Promise.resolve(undefined),
+    // An internal call made by that sector's own run carries the grant and is exempt —
+    // being on the member list alone never counts as internal.
+    (ctx.sectorGrant?.memberIds.includes(targetId) ?? false) ? Promise.resolve(undefined) : deps.sectorEntryFor?.(ctx.ownerId, targetId),
+  ])
+  const decision = checkCollaboration(
+    caller,
+    gateTargetForAgent(target, targetBuildingId ?? '', entry?.blocked ? { sectorId: entry.sectorId, sectorName: entry.sectorName } : null),
+    communication ?? OPEN_COMMUNICATION,
+    gateContext(ctx),
   )
-  if (crossing && !crossing.ok) {
-    return { ok: false, result: j({ status: 'denied', code: crossing.code ?? 'cross_floor_blocked', reason: crossing.reason ?? 'chamada entre andares bloqueada' }) }
-  }
-
-  // A closed core is refused BEFORE any inference: the answer names the sector that
-  // must be called instead, so the model corrects itself instead of guessing. An
-  // internal call made by that sector's own run carries the grant and is exempt —
-  // being on the member list alone never counts as internal.
-  const internalCall = ctx.sectorGrant?.memberIds.includes(targetId) ?? false
-  if (!internalCall) {
-    const entry = await deps.sectorEntryFor?.(ctx.ownerId, targetId)
-    if (entry?.blocked) {
-      return {
-        ok: false,
-        result: j({ status: 'denied', code: 'sector_entry_required', sectorId: entry.sectorId, sector: entry.sectorName, reason: entry.reason }),
-      }
+  if (!decision.ok) {
+    return {
+      ok: false,
+      result: j({
+        status: 'denied',
+        code: decision.code,
+        reason: decision.reason,
+        ...(decision.sectorId ? { sectorId: decision.sectorId, sector: decision.sectorName } : {}),
+      }),
     }
   }
 
@@ -647,13 +685,8 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
 
   const caller = await deps.loadAgent(ctx.ownerId, new ObjectId(ctx.callerAgentId))
   if (!caller) return { ok: false, result: j({ status: 'error', reason: 'agente chamador não encontrado' }) }
-  // For 'floor', whether the sector is on the caller's floor can only be known after
-  // loading it — so the policy is re-checked below, once the sector is in hand.
-  const callerCanCall =
-    caller.delegationPolicy === 'floor' ? true : policyAllows(caller.delegationPolicy, caller.callableSectorIds, sectorId)
-  if (!callerCanCall) return { ok: false, result: j({ status: 'denied', code: 'unauthorized', reason: 'setor não autorizado para este agente' }) }
-  if (ctx.depth + 1 > DELEGATION_MAX_DEPTH) return { ok: false, result: j({ status: 'denied', code: 'depth_exceeded', reason: 'profundidade máxima atingida' }) }
-  if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) return { ok: false, result: j({ status: 'denied', code: 'budget_exceeded', reason: 'orçamento esgotado' }) }
+  // Policy, depth and budget are the gate's job now — checked once, below, with the
+  // sector in hand (a 'floor' policy cannot be decided before knowing its floor).
 
   const sector = await deps.loadSector(ctx.ownerId, new ObjectId(sectorId))
   if (!sector) return { ok: false, result: j({ status: 'error', reason: 'setor não encontrado' }) }
@@ -665,26 +698,31 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
     state: 'delegating_sector',
     detail: { targetType: 'sector' },
   })
-  if (
-    caller.delegationPolicy === 'floor' &&
-    !(caller.officeId && sector.officeId && caller.officeId.toString() === sector.officeId.toString())
-  ) {
-    return { ok: false, result: j({ status: 'denied', code: 'unauthorized', reason: 'este agente só pode chamar setores do próprio andar' }) }
-  }
-  const sectorCrossing = await deps.canCrossFloors?.(
-    ctx.ownerId,
-    caller.officeId ? caller.officeId.toString() : null,
-    sector.officeId ? sector.officeId.toString() : null,
-  )
-  if (sectorCrossing && !sectorCrossing.ok) {
-    return {
-      ok: false,
-      result: j({ status: 'denied', code: sectorCrossing.code ?? 'cross_floor_blocked', reason: sectorCrossing.reason ?? 'chamada entre andares bloqueada' }),
-    }
-  }
+  // Same gate as an agent call, with the sector as the target: floors, the caller's
+  // policy, depth, cycles and budget are decided in ONE place and in one order.
   const sectorBuildingId = await deps.buildingIdForFloor(ctx.ownerId, sector.officeId)
-  if (sectorBuildingId !== ctx.buildingId) return { ok: false, result: j({ status: 'denied', code: 'forbidden', reason: 'setor de outro prédio' }) }
-  if (sector.mode === 'organization') return { ok: false, result: j({ status: 'not_executable', reason: 'este setor apenas agrupa agentes; escolha um agente ou um setor orquestrado/pipeline' }) }
+  const communication = (await deps.loadCommunication?.(ctx.ownerId)) ?? OPEN_COMMUNICATION
+  const sectorDecision = checkCollaboration(
+    caller,
+    {
+      kind: 'sector',
+      id: sector._id.toString(),
+      ownerId: ctx.ownerId,
+      buildingId: sectorBuildingId ?? '',
+      floorId: sector.officeId ? sector.officeId.toString() : null,
+      executable: sector.mode !== 'organization',
+    },
+    communication,
+    gateContext(ctx),
+  )
+  if (!sectorDecision.ok) {
+    // A group that does not execute keeps its own, more useful answer: it is not a
+    // permission problem, it is the wrong kind of target.
+    if (sector.mode === 'organization') {
+      return { ok: false, result: j({ status: 'not_executable', reason: 'este setor apenas agrupa agentes; escolha um agente ou um setor orquestrado/pipeline' }) }
+    }
+    return { ok: false, result: j({ status: 'denied', code: sectorDecision.code, reason: sectorDecision.reason }) }
+  }
 
   const inChain = (id: ObjectId) => id.toString() === ctx.callerAgentId || ctx.ancestry.includes(id.toString())
   const format = asOutputFormat(args.format)
@@ -822,7 +860,23 @@ async function listAvailable(deps: DelegationDeps, ctx: DelegationContext, args:
   const need = typeof args.capability === 'string' ? args.capability.toLowerCase() : ''
   // Candidates already share the caller's building (listAgentsInBuilding), so the
   // building check is satisfied by construction — pass ctx.buildingId as the target's.
-  const available = all.filter((t) => t._id.toString() !== caller._id.toString() && checkDelegation(caller, t, ctx.buildingId, ctx).ok)
+  // Discovery HIDES what the runtime would refuse — same gate, same facts, so the two
+  // cannot disagree. Resolving the sector protection per candidate is one query each;
+  // the alternative is offering a target that fails after an inference is spent.
+  const communication = (await deps.loadCommunication?.(ctx.ownerId)) ?? OPEN_COMMUNICATION
+  const candidates = all.filter((t) => t._id.toString() !== caller._id.toString())
+  const protections = await Promise.all(
+    candidates.map((t) => (deps.sectorEntryFor ? deps.sectorEntryFor(ctx.ownerId, t._id.toString()) : Promise.resolve({ blocked: false as const }))),
+  )
+  const available = candidates.filter((t, i) => {
+    const entry = protections[i]
+    return checkCollaboration(
+      caller,
+      gateTargetForAgent(t, ctx.buildingId, entry.blocked ? { sectorId: entry.sectorId, sectorName: entry.sectorName } : null),
+      communication,
+      gateContext(ctx),
+    ).ok
+  })
   const filtered = need ? available.filter((t) => (t.capabilities ?? []).some((c) => c.toLowerCase().includes(need)) || t.name.toLowerCase().includes(need)) : available
   return { ok: true, result: j({ status: 'ok', agents: filtered.map(agentCard) }) }
 }
@@ -833,7 +887,16 @@ async function getCapabilities(deps: DelegationDeps, ctx: DelegationContext, arg
   const [caller, target] = await Promise.all([deps.loadAgent(ctx.ownerId, new ObjectId(ctx.callerAgentId)), deps.loadAgent(ctx.ownerId, new ObjectId(id))])
   if (!caller || !target) return { ok: false, result: j({ status: 'error', reason: 'agente não encontrado' }) }
   const targetBuildingId = await deps.buildingIdForFloor(ctx.ownerId, target.officeId)
-  const check = checkDelegation(caller, target, targetBuildingId ?? '', ctx)
+  const [communication, entry] = await Promise.all([
+    deps.loadCommunication?.(ctx.ownerId) ?? Promise.resolve(undefined),
+    deps.sectorEntryFor?.(ctx.ownerId, id) ?? Promise.resolve(undefined),
+  ])
+  const check = checkCollaboration(
+    caller,
+    gateTargetForAgent(target, targetBuildingId ?? '', entry?.blocked ? { sectorId: entry.sectorId, sectorName: entry.sectorName } : null),
+    communication ?? OPEN_COMMUNICATION,
+    gateContext(ctx),
+  )
   if (!check.ok) return { ok: false, result: j({ status: 'denied', code: check.code, reason: check.reason }) }
   return {
     ok: true,

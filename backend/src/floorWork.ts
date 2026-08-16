@@ -10,6 +10,13 @@ import type { Agent } from './agents.js'
 import { withAgentDefaults } from './agents.js'
 import type { Floor } from './floors.js'
 import { normalizeSectorMode } from './sectors.js'
+import { checkCollaboration } from './collaborationGate.js'
+import type { GateContext } from './collaborationGate.js'
+import { DELEGATION_MAX_DEPTH } from './delegation.js'
+import { getFloorCommunication } from './floorCommunication.js'
+import type { FloorCommunicationConfig } from './floorCommunication.js'
+import { ensureDefaultBuilding } from './building.js'
+import { sectorEntryDecisionFor } from './sectorAccess.js'
 
 export interface FloorTarget {
   id: string
@@ -55,59 +62,99 @@ const competencyOf = (a: Agent): string => (a.capabilities?.length ? a.capabilit
 
 // Which targets a policy really opens. `all` still means the building, and it is
 // never turned on implicitly by the floor's configuration.
+// The SAME gate the runtime uses, asked with the same facts. Preview and execution
+// therefore agree by construction — a coordinator is never shown a target that would
+// be refused the moment it tried.
+//
+// A refused target is still LISTED, with the reason: hiding it from the owner
+// configuring the floor would leave them guessing why someone is missing. Discovery
+// offered to the MODEL is the one that hides them (see delegation.ts).
 export function effectiveTargets(
   coordinator: Agent,
   floorAgents: Agent[],
   floorSectors: { _id: ObjectId; name: string; mode?: string; objective?: string; officeId: ObjectId }[],
   buildingAgents: Agent[],
+  opts: { buildingId?: string; communication?: FloorCommunicationConfig; protectedBy?: Map<string, { sectorId: string; sectorName: string }> } = {},
 ): FloorTarget[] {
-  const policy = coordinator.delegationPolicy
   const selfId = coordinator._id.toString()
+  const buildingId = opts.buildingId ?? 'building'
+  const communication = opts.communication ?? { mode: 'all', links: [] }
+  const ctx: GateContext = {
+    buildingId,
+    callerAgentId: selfId,
+    ancestry: [],
+    depth: 0,
+    maxDepth: DELEGATION_MAX_DEPTH,
+    budget: { tokensSpent: 0, tokenLimit: Number.MAX_SAFE_INTEGER },
+    sectorGrant: null,
+  }
 
-  const agentPool =
-    policy === 'all'
-      ? buildingAgents
-      : policy === 'floor'
-        ? floorAgents
-        : policy === 'selected'
-          ? buildingAgents.filter((a) => (coordinator.callableAgentIds ?? []).includes(a._id.toString()))
-          : []
+  const reasonFor = (decision: Exclude<ReturnType<typeof checkCollaboration>, { ok: true }>): string => {
+    if (decision.code === 'sector_entry_required') return `este agente participa do setor "${decision.sectorName}", que só recebe chamadas pelo próprio setor`
+    if (decision.code === 'cross_floor_blocked') return 'os andares deste prédio estão isolados'
+    if (decision.code === 'floor_link_required') return 'não existe conexão deste andar para o andar do alvo'
+    return decision.reason
+  }
 
-  const agentTargets: FloorTarget[] = agentPool
+  // Candidates are everything on the floor plus, for a building-wide policy, the rest
+  // of the building. The gate decides which of them are reachable.
+  const agentCandidates = coordinator.delegationPolicy === 'all' || coordinator.delegationPolicy === 'selected' ? buildingAgents : floorAgents
+  const agentTargets: FloorTarget[] = agentCandidates
     .filter((a) => a._id.toString() !== selfId)
     .map((a) => {
-      // The target's own incoming policy still applies: being reachable is a decision
-      // on BOTH sides.
-      const accepts = a.callerPolicy === 'all' || (a.callerPolicy === 'selected' && (a.allowedCallerAgentIds ?? []).includes(selfId)) || (a.callerPolicy === 'floor' && a.officeId?.toString() === coordinator.officeId?.toString())
+      const decision = checkCollaboration(
+        coordinator,
+        {
+          kind: 'agent',
+          id: a._id.toString(),
+          ownerId: a.ownerId,
+          buildingId,
+          floorId: a.officeId ? a.officeId.toString() : null,
+          callerPolicy: a.callerPolicy,
+          allowedCallerAgentIds: a.allowedCallerAgentIds ?? [],
+          protectedBy: opts.protectedBy?.get(a._id.toString()) ?? null,
+        },
+        communication,
+        ctx,
+      )
       return {
         id: a._id.toString(),
         kind: 'agent' as const,
         name: a.name,
         competency: competencyOf(a),
-        ready: accepts,
-        ...(accepts ? {} : { blockedReason: 'este agente não aceita chamadas deste coordenador' }),
+        ready: decision.ok,
+        ...(decision.ok ? {} : { blockedReason: reasonFor(decision) }),
       }
     })
+    // A target the caller's own policy never allowed is not "blocked", it is simply
+    // not part of this arrangement — listing the whole building would be noise.
+    .filter((t) => t.ready || coordinator.delegationPolicy !== 'selected')
 
-  const sectorPool =
-    policy === 'all' || policy === 'floor'
-      ? floorSectors
-      : policy === 'selected'
-        ? floorSectors.filter((s) => (coordinator.callableSectorIds ?? []).includes(s._id.toString()))
-        : []
-
-  const sectorTargets: FloorTarget[] = sectorPool.map((s) => {
+  const sectorTargets: FloorTarget[] = floorSectors.map((s) => {
     const mode = normalizeSectorMode(s.mode)
-    // An organisational group does not execute, so it is never offered as a tool.
-    const executable = mode !== 'organization'
+    const decision = checkCollaboration(
+      coordinator,
+      {
+        kind: 'sector',
+        id: s._id.toString(),
+        ownerId: coordinator.ownerId,
+        buildingId,
+        floorId: s.officeId ? s.officeId.toString() : null,
+        executable: mode !== 'organization',
+      },
+      communication,
+      ctx,
+    )
     return {
       id: s._id.toString(),
       kind: 'sector' as const,
       name: s.name,
       competency: s.objective ?? '',
       mode,
-      ready: executable,
-      ...(executable ? {} : { blockedReason: 'este setor apenas agrupa agentes e não executa como unidade' }),
+      ready: decision.ok,
+      ...(decision.ok
+        ? {}
+        : { blockedReason: mode === 'organization' ? 'este setor apenas agrupa agentes e não executa como unidade' : reasonFor(decision) }),
     }
   })
 
@@ -152,11 +199,25 @@ export async function floorWorkOverview(ownerId: string, floor: Floor): Promise<
       agents.find({ ownerId }).toArray(),
       sectors.find({ ownerId, officeId: floor._id }).toArray(),
     ])
+    // The same facts the runtime resolves, so the preview cannot be more optimistic
+    // than the execution.
+    const building = await ensureDefaultBuilding(ownerId)
+    const communication = await getFloorCommunication(ownerId, building._id)
+    const candidates = (coordinator.delegationPolicy === 'all' || coordinator.delegationPolicy === 'selected' ? buildingAgentDocs : floorAgentDocs).filter(
+      (a) => a._id.toString() !== coordinator._id.toString(),
+    )
+    const protections = new Map<string, { sectorId: string; sectorName: string }>()
+    for (const candidate of candidates) {
+      const entry = await sectorEntryDecisionFor(ownerId, candidate._id.toString())
+      if (entry.blocked) protections.set(candidate._id.toString(), { sectorId: entry.sectorId, sectorName: entry.sectorName })
+    }
+
     targets = effectiveTargets(
       coordinator,
       floorAgentDocs.map(withAgentDefaults),
       floorSectorDocs.map((s) => ({ _id: s._id, name: s.name, mode: s.mode, objective: s.objective, officeId: s.officeId })),
       buildingAgentDocs.map(withAgentDefaults),
+      { buildingId: building._id.toString(), communication, protectedBy: protections },
     )
 
     if (coordinator.delegationPolicy === 'none') {
