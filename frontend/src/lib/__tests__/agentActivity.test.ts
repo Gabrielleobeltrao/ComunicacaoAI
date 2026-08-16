@@ -131,9 +131,7 @@ describe('balões vizinhos não caem na mesma altura', () => {
   })
 
   it('a faixa levantada sobe o suficiente para o balão de baixo aparecer INTEIRO', () => {
-    const low = bubblePlacement(2)
-    const high = bubblePlacement(3)
-    const step = Math.abs(high.marginBottom - low.marginBottom)
+    const step = Math.abs(bubblePlacement(3, '100%').marginBottom - bubblePlacement(2, '100%').marginBottom)
     // Não basta passar da cápsula: a cauda da que sobe desce em direção ao personagem
     // dela e cruzaria a cápsula de baixo. O degrau cobre os dois.
     expect(step).toBeGreaterThanOrEqual(BUBBLE_CAPSULE_HEIGHT + BUBBLE_TAIL_HEIGHT)
@@ -141,12 +139,12 @@ describe('balões vizinhos não caem na mesma altura', () => {
   })
 
   it('a que sobe desenha por cima, para a cauda dela não ser cortada', () => {
-    expect(bubblePlacement(3).zIndex).toBeGreaterThan(bubblePlacement(2).zIndex)
+    expect(bubblePlacement(3, '100%').zIndex).toBeGreaterThan(bubblePlacement(2, '100%').zIndex)
   })
 
   it('o nome no hover limpa o balão, inclusive o levantado', () => {
     for (const x of [2, 3]) {
-      const p = bubblePlacement(x)
+      const p = bubblePlacement(x, '100%')
       expect(p.nameMarginBottom).toBeGreaterThan(p.marginBottom)
     }
   })
@@ -236,5 +234,25 @@ describe('a projeção do mapa não pisca', () => {
   it('execuções concorrentes chegam com a contagem, sem alternar', () => {
     const next = reconcile({}, [row({ state: 'delivering', concurrent: 3 })], {}, {}, 1000)
     expect(next.a1.concurrent).toBe(3)
+  })
+})
+
+describe('cada afastamento na unidade do que ele precisa limpar', () => {
+  it('limpar a cabeça é proporcional ao personagem, não px fixo', () => {
+    // Porcentagem: encolhe junto com a caixa do agente. Com px fixo, o recorte do
+    // setor (palco reduzido por transform) punha o balão DENTRO da cabeça.
+    expect(bubblePlacement(2, '100%').bottom).toMatch(/%\)$/)
+    expect(bubblePlacement(2, '100%').bottom).toContain('100%')
+  })
+
+  it('a âncora do sentado é respeitada, não substituída', () => {
+    // Um agente sentado tem a cabeça mais baixa no quadro; o afastamento soma à
+    // âncora dele, em vez de assumir que todo mundo está de pé.
+    expect(bubblePlacement(2, '78.6%').bottom).toContain('78.6%')
+  })
+
+  it('limpar o vizinho continua em px, que acompanha o balão dentro de cada mapa', () => {
+    expect(typeof bubblePlacement(3, '100%').marginBottom).toBe('number')
+    expect(bubblePlacement(3, '100%').marginBottom - bubblePlacement(2, '100%').marginBottom).toBe(BUBBLE_LANE_OFFSET)
   })
 })

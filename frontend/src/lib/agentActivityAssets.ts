@@ -139,15 +139,39 @@ export const BUBBLE_LANE_OFFSET = BUBBLE_CAPSULE_HEIGHT + BUBBLE_TAIL_HEIGHT
 
 export const bubbleLane = (x: number): 0 | 1 => (Math.round(x) % 2 === 0 ? 0 : 1)
 
-/** Where the bubble sits above the head, and how it stacks against a neighbour's. */
-export function bubblePlacement(x: number): { marginBottom: number; zIndex: number; nameMarginBottom: number } {
+/**
+ * Distância entre o topo do personagem e a base do balão, como PORCENTAGEM da caixa
+ * do agente.
+ *
+ * Porcentagem porque a caixa do agente é dimensionada em tiles e o personagem
+ * preenche ela: assim o afastamento encolhe exatamente junto com a cabeça, em
+ * qualquer mapa. Era 8px fixo — e no recorte do setor, onde o palco inteiro é
+ * reduzido por `transform`, esses 8px viravam 5, e o balão de um agente SENTADO
+ * (âncora mais baixa, 78,6%) acabava cinco pixels DENTRO da cabeça.
+ */
+const HEAD_CLEARANCE_PCT = 15
+
+/**
+ * Onde o balão fica acima da cabeça, e como ele se empilha com o do vizinho.
+ *
+ * As duas distâncias têm donos diferentes, e por isso unidades diferentes:
+ *
+ * - limpar a CABEÇA é proporcional ao personagem → porcentagem da caixa dele;
+ * - limpar o balão do VIZINHO é proporcional ao balão → pixel, que dentro de cada
+ *   mapa já acompanha o balão.
+ *
+ * Misturar as duas foi o que quebrou: primeiro um px tentando limpar algo que
+ * encolhe, depois um tile tentando limpar algo que não encolhe.
+ */
+export function bubblePlacement(x: number, headTop: string): { bottom: string; marginBottom: number; zIndex: number; nameMarginBottom: number } {
   const lane = bubbleLane(x)
   return {
-    marginBottom: 8 + lane * BUBBLE_LANE_OFFSET,
+    bottom: `calc(${headTop} + ${HEAD_CLEARANCE_PCT}%)`,
+    marginBottom: lane * BUBBLE_LANE_OFFSET,
     // The raised one draws over its neighbour, so its tail is never cut by the
     // capsule below it.
     zIndex: 6 + lane,
     // On hover the name still has to clear the bubble — including a raised one.
-    nameMarginBottom: 40 + lane * BUBBLE_LANE_OFFSET,
+    nameMarginBottom: 32 + lane * BUBBLE_LANE_OFFSET,
   }
 }

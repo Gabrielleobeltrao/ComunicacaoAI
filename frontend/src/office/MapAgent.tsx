@@ -55,7 +55,6 @@ export function MapAgent({
   style,
 }: MapAgentProps) {
   const [hovered, setHovered] = useState(false)
-  const placement = bubblePlacement(x)
   const view = facing === 'costas' ? 'costas' : 'frente'
   const variant = `${view}${seated ? '-sentado' : ''}${pose === 'ligacao' ? '-ligacao' : ''}` as CharacterView
   const src = art || (agent ? characterSrc(agent, variant) : undefined)
@@ -65,6 +64,7 @@ export function MapAgent({
   const dx = (w - 1) / 2
   const dy = h - 1.5
   const headTop = seated ? '78.6%' : '100%'
+  const placement = bubblePlacement(x, headTop)
   return (
     <button
       onClick={onOpen}
@@ -101,13 +101,13 @@ export function MapAgent({
           name={name}
           status={status}
           // The name rises above the bubble when both are on screen.
-          style={{ position: 'absolute', bottom: headTop, marginBottom: opState ? placement.nameMarginBottom : 4, zIndex: 20, whiteSpace: 'nowrap', pointerEvents: 'none' }}
+          style={{ position: 'absolute', bottom: opState ? placement.bottom : headTop, marginBottom: opState ? placement.nameMarginBottom : 4, zIndex: 20, whiteSpace: 'nowrap', pointerEvents: 'none' }}
         />
       ) : null}
       {/* Lane by column parity, so a neighbour's bubble never sits at the same
           height and hides this one. */}
       {opState ? (
-        <span style={{ position: 'absolute', bottom: headTop, marginBottom: placement.marginBottom, zIndex: placement.zIndex, pointerEvents: 'none' }}>
+        <span style={{ position: 'absolute', bottom: placement.bottom, marginBottom: placement.marginBottom, zIndex: placement.zIndex, pointerEvents: 'none' }}>
           <AgentActivityBubble state={opState} agentName={name ?? ''} safeDetail={opDetail} size="sm" />
         </span>
       ) : null}

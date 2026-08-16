@@ -38,9 +38,9 @@ export function SimAgent({ agentId, name, character, status, view, initialX, ini
   const [hover, setHover] = useState(false)
   // Which of the two bubble lanes this agent uses — from its own column, so two
   // characters side by side never draw at the same height.
-  const placement = bubblePlacement(initialX)
   const seated = view.motion === 'seated'
   const headTop = seated ? '78.6%' : '100%'
+  const placement = bubblePlacement(initialX, headTop)
   return (
     <button
       ref={(el) => register(agentId, el)}
@@ -79,7 +79,7 @@ export function SimAgent({ agentId, name, character, status, view, initialX, ini
         <NamePill
           name={name}
           status={status}
-          style={{ position: 'absolute', bottom: headTop, marginBottom: opState ? placement.nameMarginBottom : 4, zIndex: 20, whiteSpace: 'nowrap', pointerEvents: 'none' }}
+          style={{ position: 'absolute', bottom: opState ? placement.bottom : headTop, marginBottom: opState ? placement.nameMarginBottom : 4, zIndex: 20, whiteSpace: 'nowrap', pointerEvents: 'none' }}
         />
       ) : null}
       {/* Anchored to the real top of the sprite, so it follows the lower head of a
@@ -87,7 +87,7 @@ export function SimAgent({ agentId, name, character, status, view, initialX, ini
           the whole wrapper is positioned by the sim. The lane keeps it off a
           neighbour's bubble. */}
       {opState ? (
-        <span style={{ position: 'absolute', bottom: headTop, marginBottom: placement.marginBottom, zIndex: placement.zIndex, pointerEvents: 'none' }}>
+        <span style={{ position: 'absolute', bottom: placement.bottom, marginBottom: placement.marginBottom, zIndex: placement.zIndex, pointerEvents: 'none' }}>
           <AgentActivityBubble state={opState} agentName={name} safeDetail={opDetail} size="sm" />
         </span>
       ) : null}

@@ -430,3 +430,39 @@ test('vários mapas do mesmo andar dividem UMA sondagem', async ({ page }) => {
   // Uma sondagem a cada ~2s: dois ciclos são ~2 pedidos, não 2 por mapa na tela.
   expect(emDoisCiclos).toBeLessThanOrEqual(4)
 })
+
+test('no recorte do setor o balão não entra na cabeça, e as faixas ficam separadas', async ({ page }) => {
+  const ids = [A1, A2, '000000000000000000000a33', '000000000000000000000a44']
+  const roster = ids.map((id, i) => ({ ...AGENTS[0], _id: id, name: `Ag ${i}` }))
+  await stub(page, { agents: roster, states: ids.map((id) => liveState({ agentId: id, state: 'thinking' })) })
+  await page.route('**/api/sectors/*/overview', (r) =>
+    r.fulfill({
+      json: {
+        sector: { _id: 'c11', floorId: FLOOR_ID, name: 'Cozinha', color: '#88a', mode: 'organization', members: ids.map((id) => ({ agentId: id, transitions: [] })), stages: [] },
+        agents: roster, readiness: { ready: true, issues: [] }, knowledgeCount: 0, memberIssues: [], analytics: null, linkedWidgets: [],
+      },
+    }),
+  )
+  await page.route('**/api/sectors/*/executions/summary**', (r) => r.fulfill({ json: { byParticipant: [] } }))
+  await page.route('**/api/sectors/*/documents**', (r) => r.fulfill({ json: [] }))
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/c11`)
+  await expect(page.getByTestId('sector-hero')).toBeVisible()
+  await expect(page.getByTestId('sector-hero').getByTestId('agent-activity-bubble').first()).toBeVisible()
+
+  const medidas = await page.evaluate(() => {
+    const out: { faixa: number; alturaBalao: number; base: number }[] = []
+    for (const b of document.querySelectorAll('[data-testid="sector-hero"] [data-testid="agent-activity-bubble"]')) {
+      const r = b.getBoundingClientRect()
+      out.push({ faixa: Number(getComputedStyle(b.parentElement as Element).zIndex), alturaBalao: Math.round(r.height), base: Math.round(r.bottom) })
+    }
+    return out
+  })
+  expect(medidas.length).toBeGreaterThan(1)
+
+  // O recorte reduz o palco inteiro por `transform`. A separação entre as faixas tem
+  // que continuar proporcional ao BALÃO, senão duas cápsulas vizinhas se cobrem.
+  const baixa = medidas.find((m) => m.faixa === 6)!
+  const alta = medidas.find((m) => m.faixa === 7)!
+  expect(baixa.base - alta.base).toBeGreaterThan(baixa.alturaBalao)
+})
