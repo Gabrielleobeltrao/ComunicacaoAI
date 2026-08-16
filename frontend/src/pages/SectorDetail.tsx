@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { AgentBadges } from '../components/AgentBadges'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
+import { SectorAccessSection } from '../components/SectorAccessSection'
 import { SectorForm } from '../components/SectorForm'
 import { SectorExecutions } from '../components/SectorExecutions'
 import { SectorKnowledge } from '../components/SectorKnowledge'
@@ -400,6 +401,9 @@ export function SectorDetail() {
               )}
               {active === 'avancado' && (
                 <>
+                  {/* The boundary that keeps outsiders from walking into the middle
+                      of a flow. Removing ways in, never granting one. */}
+                  <SectorAccessSection sector={sector} agents={agents} onSaved={load} />
                   <div className="flex flex-col gap-2 rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p className="font-medium text-(--text-heading)">Mover de andar</p>

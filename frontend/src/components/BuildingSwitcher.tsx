@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router'
 import { useBuildingContext } from '../contexts/BuildingContext'
 import { COLLAPSE_FADE } from '../lib/sidebarStyles'
 import { Icon } from '../ui'
+import { BuildingSettingsDialog } from './BuildingSettingsDialog'
 
 // Building header + floor popover (UX reorg §6.2/§6.3). Represents the workspace
 // (not the logged-in account, which lives in the footer). Accessible: keyboard,
@@ -12,6 +13,7 @@ import { Icon } from '../ui'
 export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
   const { building, floors, activeFloor, selectFloor } = useBuildingContext()
   const [open, setOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
 
@@ -90,11 +92,20 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
           <button role="menuitem" style={menuItem} onClick={go(() => navigate('/dashboard'))}>
             + Criar andar
           </button>
-          <button role="menuitem" style={menuItem} onClick={go(() => navigate('/settings'))}>
+          <button role="menuitem" style={menuItem} onClick={go(() => setSettingsOpen(true))} data-testid="open-building-settings">
             Configurações do prédio
           </button>
         </div>
       )}
+
+      {/* The building's own settings are a pop-up from here, not a page: they belong
+          to the selector that represents the workspace. */}
+      <BuildingSettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        buildingName={name}
+        floors={floors}
+      />
     </div>
   )
 }
