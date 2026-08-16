@@ -10,6 +10,18 @@ import type { BuildingLanguage } from './building.js'
 // read here for any document that predates the backfill.
 export type FloorStatus = 'active' | 'archived'
 
+// How a floor works. A floor is an ORGANISATIONAL area — it never reasons and never
+// executes; an agent always does. So there are exactly two modes and nothing else:
+//   organization — free: agents and sectors keep working through their own channels,
+//                  routines, triggers and calls.
+//   coordinated  — one existing agent is the way in and decides which authorised
+//                  agents or sectors to consult.
+// No tool, App, trigger or permission list is copied onto the floor document:
+// `coordinatorAgentId` only POINTS at an agent, and that agent's own delegation
+// policy stays the source of truth for what it may call.
+export type FloorWorkMode = 'organization' | 'coordinated'
+export const FLOOR_WORK_MODES: FloorWorkMode[] = ['organization', 'coordinated']
+
 export interface Floor {
   _id: ObjectId
   ownerId: string
@@ -23,6 +35,9 @@ export interface Floor {
   icon: string | null
   order: number
   status: FloorStatus
+  workMode: FloorWorkMode
+  coordinatorAgentId: ObjectId | null
+  instruction: string
   createdAt: Date
   updatedAt: Date
 }
@@ -42,6 +57,9 @@ interface FloorDoc {
   icon?: string | null
   order?: number
   status?: FloorStatus
+  workMode?: FloorWorkMode
+  coordinatorAgentId?: ObjectId | null
+  instruction?: string
   updatedAt?: Date
 }
 
@@ -66,6 +84,10 @@ function toFloor(doc: FloorDoc, buildingId: ObjectId): Floor {
     icon: doc.icon ?? null,
     order: doc.order ?? 0,
     status: doc.status ?? 'active',
+    // A floor written before this model is FREE, which is exactly how it behaved.
+    workMode: FLOOR_WORK_MODES.includes(doc.workMode as FloorWorkMode) ? (doc.workMode as FloorWorkMode) : 'organization',
+    coordinatorAgentId: doc.coordinatorAgentId ?? null,
+    instruction: doc.instruction ?? '',
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt ?? doc.createdAt,
   }
@@ -124,6 +146,9 @@ export async function createFloor(ownerId: string, input: FloorInput): Promise<F
     icon: input.icon ?? null,
     order: (last?.order ?? -1) + 1,
     status: 'active',
+    workMode: 'organization',
+    coordinatorAgentId: null,
+    instruction: '',
     createdAt: now,
     updatedAt: now,
   }
@@ -140,6 +165,41 @@ export interface FloorPatch {
   color?: string | null
   icon?: string | null
   order?: number
+  workMode?: FloorWorkMode
+  coordinatorAgentId?: string | null
+  instruction?: string
+}
+
+// The floor's own configuration is validated ATOMICALLY: a coordinated floor without
+// a coordinator would be a mode that cannot work, so it is refused rather than saved
+// and then patched. The coordinator must be an agent of THIS floor, in this account.
+export async function validateWorkConfig(
+  ownerId: string,
+  floorId: ObjectId,
+  patch: Pick<FloorPatch, 'workMode' | 'coordinatorAgentId'>,
+  current: Floor,
+): Promise<{ workMode: FloorWorkMode; coordinatorAgentId: ObjectId | null }> {
+  const workMode = patch.workMode ?? current.workMode
+  if (!FLOOR_WORK_MODES.includes(workMode)) throw new ValidationError('modo de trabalho inválido')
+
+  let coordinatorAgentId: ObjectId | null =
+    patch.coordinatorAgentId === undefined ? current.coordinatorAgentId : patch.coordinatorAgentId === null ? null : null
+
+  if (patch.coordinatorAgentId) {
+    if (!ObjectId.isValid(patch.coordinatorAgentId)) throw new ValidationError('agente coordenador inválido')
+    const candidate = new ObjectId(patch.coordinatorAgentId)
+    // Owner AND floor are in the query: an agent from another account or another
+    // floor simply is not found.
+    const agent = await db.collection('agents').findOne({ _id: candidate, ownerId, officeId: floorId }, { projection: { _id: 1 } })
+    if (!agent) throw new ValidationError('o coordenador precisa ser um agente deste andar')
+    coordinatorAgentId = candidate
+  }
+
+  if (workMode === 'coordinated' && !coordinatorAgentId) {
+    throw new ValidationError('escolha o agente que coordena este andar')
+  }
+  // Leaving coordinated mode does not delete the choice — it just stops being used.
+  return { workMode, coordinatorAgentId }
 }
 
 export async function updateFloor(ownerId: string, floorId: ObjectId, patch: FloorPatch): Promise<Floor | null> {
@@ -160,6 +220,14 @@ export async function updateFloor(ownerId: string, floorId: ObjectId, patch: Flo
   if (patch.order !== undefined) {
     if (!Number.isFinite(patch.order)) throw new ValidationError('invalid order')
     set.order = Math.trunc(patch.order)
+  }
+  if (patch.instruction !== undefined) set.instruction = String(patch.instruction).slice(0, 4000)
+  if (patch.workMode !== undefined || patch.coordinatorAgentId !== undefined) {
+    const current = await getFloor(ownerId, floorId)
+    if (!current) return null
+    const resolved = await validateWorkConfig(ownerId, floorId, patch, current)
+    set.workMode = resolved.workMode
+    set.coordinatorAgentId = resolved.coordinatorAgentId
   }
   const result = await collection.updateOne({ _id: floorId, ownerId }, { $set: set })
   if (result.matchedCount === 0) return null

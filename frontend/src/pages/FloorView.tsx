@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { FloorSettingsDialog } from '../components/FloorSettingsDialog'
+import { FloorWorkSection } from '../components/FloorWorkSection'
 import { getFloor, getFloorActivity, getFloorMetrics } from '../lib/floors'
 import type { Floor, FloorMetrics } from '../lib/floors'
 import { featureFlags } from '../featureFlags'
@@ -62,6 +63,8 @@ export function FloorView() {
           <FloorSummary activity={activity} metrics={metrics} />
           {/* The visual office map is the centre of the floor view (scoped). */}
           <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
+          {/* How the floor works: free, or coordinated by one of its agents. */}
+          <FloorWorkSection floor={floor} agents={agents} onSaved={() => void load()} />
         </div>
       )}
 

@@ -51,9 +51,12 @@ export type DelegationCheck = { ok: true } | { ok: false; code: DelegationDenyCo
 
 // True when `policy`/`list` authorize acting on `id`. none → never; all → always;
 // selected → only when the id is in the explicit list.
-function policyAllows(policy: Agent['delegationPolicy'], list: string[], id: string): boolean {
+// `sameFloor` is only meaningful for the 'floor' policy; the caller resolves it,
+// so this stays pure and synchronous.
+function policyAllows(policy: Agent['delegationPolicy'], list: string[], id: string, sameFloor = false): boolean {
   if (policy === 'all') return true
   if (policy === 'selected') return (list ?? []).includes(id)
+  if (policy === 'floor') return sameFloor
   return false // 'none'
 }
 
@@ -72,9 +75,12 @@ export function checkDelegation(caller: Agent, target: Agent, targetBuildingId: 
   // Being teammates in the sector being executed IS the authorisation — configuring
   // the sector must not require configuring the same relation on both agents.
   const grantedBySector = ctx.sectorGrant?.memberIds.includes(tid) ?? false
+  // Same floor is a fact about the two agents, not a permission by itself: it only
+  // decides whether a 'floor' policy is satisfied.
+  const sameFloor = Boolean(caller.officeId && target.officeId && caller.officeId.toString() === target.officeId.toString())
   if (!grantedBySector) {
-    const callerAllows = policyAllows(caller.delegationPolicy, caller.callableAgentIds, tid)
-    const targetAllows = policyAllows(target.callerPolicy, target.allowedCallerAgentIds, caller._id.toString())
+    const callerAllows = policyAllows(caller.delegationPolicy, caller.callableAgentIds, tid, sameFloor)
+    const targetAllows = policyAllows(target.callerPolicy, target.allowedCallerAgentIds, caller._id.toString(), sameFloor)
     if (!callerAllows || !targetAllows) return { ok: false, code: 'unauthorized', reason: 'delegação não autorizada entre estes agentes' }
   }
   if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) return { ok: false, code: 'budget_exceeded', reason: 'orçamento de tokens da cadeia esgotado' }
@@ -604,7 +610,10 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
 
   const caller = await deps.loadAgent(ctx.ownerId, new ObjectId(ctx.callerAgentId))
   if (!caller) return { ok: false, result: j({ status: 'error', reason: 'agente chamador não encontrado' }) }
-  const callerCanCall = policyAllows(caller.delegationPolicy, caller.callableSectorIds, sectorId)
+  // For 'floor', whether the sector is on the caller's floor can only be known after
+  // loading it — so the policy is re-checked below, once the sector is in hand.
+  const callerCanCall =
+    caller.delegationPolicy === 'floor' ? true : policyAllows(caller.delegationPolicy, caller.callableSectorIds, sectorId)
   if (!callerCanCall) return { ok: false, result: j({ status: 'denied', code: 'unauthorized', reason: 'setor não autorizado para este agente' }) }
   if (ctx.depth + 1 > DELEGATION_MAX_DEPTH) return { ok: false, result: j({ status: 'denied', code: 'depth_exceeded', reason: 'profundidade máxima atingida' }) }
   if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) return { ok: false, result: j({ status: 'denied', code: 'budget_exceeded', reason: 'orçamento esgotado' }) }
@@ -619,6 +628,12 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
     state: 'delegating_sector',
     detail: { targetType: 'sector' },
   })
+  if (
+    caller.delegationPolicy === 'floor' &&
+    !(caller.officeId && sector.officeId && caller.officeId.toString() === sector.officeId.toString())
+  ) {
+    return { ok: false, result: j({ status: 'denied', code: 'unauthorized', reason: 'este agente só pode chamar setores do próprio andar' }) }
+  }
   const sectorBuildingId = await deps.buildingIdForFloor(ctx.ownerId, sector.officeId)
   if (sectorBuildingId !== ctx.buildingId) return { ok: false, result: j({ status: 'denied', code: 'forbidden', reason: 'setor de outro prédio' }) }
   if (sector.mode === 'organization') return { ok: false, result: j({ status: 'not_executable', reason: 'este setor apenas agrupa agentes; escolha um agente ou um setor orquestrado/pipeline' }) }

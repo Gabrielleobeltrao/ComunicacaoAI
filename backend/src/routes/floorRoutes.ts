@@ -3,6 +3,7 @@ import type { Floor } from '../floors.js'
 import { createFloor, deleteFloor, getFloor, getFloorActivity, listFloors, setFloorStatus, updateFloor } from '../floors.js'
 import { agentStatesForFloor, floorMetrics } from '../automations/metrics.js'
 import { agentLiveStatesForFloor, legacyWorkingMap, liveStatesEtag } from '../agentLiveState.js'
+import { floorWorkOverview } from '../floorWork.js'
 import { fail, notFound, oid } from './http.js'
 import { auditEntity } from './auditMiddleware.js'
 
@@ -23,6 +24,11 @@ const toPublic = (f: Floor) => ({
   icon: f.icon,
   order: f.order,
   status: f.status,
+  // How this floor works. `coordinatorAgentId` only points at an agent — no tool,
+  // App or permission list is stored on the floor.
+  workMode: f.workMode,
+  coordinatorAgentId: f.coordinatorAgentId ? f.coordinatorAgentId.toString() : null,
+  instruction: f.instruction,
   createdAt: f.createdAt,
   updatedAt: f.updatedAt,
 })
@@ -61,6 +67,16 @@ floorRouter.patch('/:floorId', async (req, res, next) => {
   } catch (error) {
     fail(res, error, next)
   }
+})
+
+// Who coordinates this floor, what they can effectively reach, and whether the
+// arrangement is ready. Read-only: it discovers, it never grants.
+floorRouter.get('/:floorId/work-overview', async (req, res) => {
+  const id = oid(req.params.floorId)
+  if (!id) return notFound(res)
+  const floor = await getFloor(res.locals.userId, id)
+  if (!floor) return notFound(res)
+  res.json(await floorWorkOverview(res.locals.userId, floor))
 })
 
 floorRouter.delete('/:floorId', async (req, res) => {

@@ -28,8 +28,34 @@ export interface Floor {
   icon: string | null
   order: number
   status: FloorStatus
+  // How this floor works. The floor is an organisational area — `coordinatorAgentId`
+  // only points at an existing agent, and that agent's own policy stays the source of
+  // truth for what it may call.
+  workMode: 'organization' | 'coordinated'
+  coordinatorAgentId: string | null
+  instruction: string
   createdAt: string
   updatedAt: string
+}
+
+export interface FloorTarget {
+  id: string
+  kind: 'agent' | 'sector'
+  name: string
+  competency: string
+  mode?: string
+  ready: boolean
+  blockedReason?: string
+}
+
+export interface FloorWorkOverview {
+  workMode: 'organization' | 'coordinated'
+  instruction: string
+  coordinator: { id: string; name: string; objective: string; delegationPolicy: string } | null
+  targets: FloorTarget[]
+  ready: boolean
+  issues: { code: string; message: string; severity: 'blocking' | 'warning' }[]
+  preview: { from: string; to: string[] } | null
 }
 
 async function json<T>(res: Response): Promise<T> {
@@ -52,8 +78,16 @@ export const listFloors = (includeArchived = false) =>
 export const getFloor = (floorId: string) => fetch(`${API_URL}/api/floors/${floorId}`, opts('GET')).then(json<Floor>)
 export const createFloor = (input: { name: string; mission?: string; description?: string; timezone?: string }) =>
   fetch(`${API_URL}/api/floors`, opts('POST', input)).then(json<Floor>)
-export const patchFloor = (floorId: string, patch: Partial<Floor>) =>
-  fetch(`${API_URL}/api/floors/${floorId}`, opts('PATCH', patch)).then(json<Floor>)
+// A refused save carries the SERVER's explanation ("escolha o agente que coordena
+// este andar"), not just a status code — the person has to know what to fix.
+export const patchFloor = async (floorId: string, patch: Partial<Floor>): Promise<Floor> => {
+  const res = await fetch(`${API_URL}/api/floors/${floorId}`, opts('PATCH', patch))
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { message?: string; error?: string } | null
+    throw new Error(body?.message ?? body?.error ?? 'Não foi possível salvar.')
+  }
+  return (await res.json()) as Floor
+}
 export const archiveFloor = (floorId: string) => fetch(`${API_URL}/api/floors/${floorId}/archive`, opts('POST')).then(json<Floor>)
 export const restoreFloor = (floorId: string) => fetch(`${API_URL}/api/floors/${floorId}/restore`, opts('POST')).then(json<Floor>)
 
@@ -141,3 +175,7 @@ export function resolveActiveFloor(floors: Floor[], savedId: string | null): str
   if (savedId && active.some((f) => f.id === savedId)) return savedId
   return active[0]?.id ?? null
 }
+
+// Who coordinates this floor and what they can effectively reach. Read-only.
+export const getFloorWorkOverview = (floorId: string) =>
+  fetch(`${API_URL}/api/floors/${floorId}/work-overview`, opts('GET')).then(json<FloorWorkOverview>)

@@ -50,8 +50,11 @@ export const LEGACY_ACTIVATION_MODES: ActivationMode[] = ['agent_only']
 //   incoming (callerPolicy): who may call this agent.
 // 'none' = nobody; 'all' = any agent in the SAME BUILDING; 'selected' = only the
 // matching id list (callableAgentIds / allowedCallerAgentIds).
-export type DelegationPolicy = 'none' | 'all' | 'selected'
-export const DELEGATION_POLICIES: DelegationPolicy[] = ['none', 'all', 'selected']
+// 'floor' = only agents and executable sectors of the SAME floor. It sits between
+// 'selected' (explicit ids) and 'all' (the whole building) and is what a floor
+// coordinator normally wants: reach my area, not the building.
+export type DelegationPolicy = 'none' | 'all' | 'selected' | 'floor'
+export const DELEGATION_POLICIES: DelegationPolicy[] = ['none', 'all', 'selected', 'floor']
 
 // The card KPI an agent shows in position 3. A concrete key is a MANUAL choice and
 // is never overwritten by a preset change; 'auto' derives the key from the preset at
