@@ -214,3 +214,72 @@ test('o breakdown por andar separa onde o trabalho aconteceu', async () => {
   assert.equal(rows.length, 2)
   assert.deepEqual(rows.map((r) => r.executions), [1, 1])
 })
+
+// --- originado x participado ---------------------------------------------------------
+
+test('o andar separa o que ORIGINOU do que apenas participou', async () => {
+  // Uma tarefa nasce no andar A e envolve um agente do andar B.
+  const rootId = await startRoot({ originFloorId: FLOOR_A })
+  await participation(rootId, { agentId: A1, floorId: FLOOR_A, inputTokens: 100, outputTokens: 50 })
+  await participation(rootId, { agentId: A2, floorId: FLOOR_B, inputTokens: 300, outputTokens: 100 })
+  await finishExecutionRoot('run:1', { status: 'succeeded' })
+
+  const a = await executionAnalytics({ ownerId: OWNER, scope: 'floor', period: 'all', floorId: FLOOR_A })
+  const b = await executionAnalytics({ ownerId: OWNER, scope: 'floor', period: 'all', floorId: FLOOR_B })
+
+  // O andar A originou uma; o andar B não originou nenhuma...
+  assert.equal(a.executions, 1)
+  assert.equal(b.executions, 0)
+  // ...mas participou de uma, e isso é dito com outro nome.
+  assert.equal(b.participatedExecutions, 1)
+  assert.equal(b.participations, 1)
+})
+
+test('tokens de participação não são divididos por raízes originadas', async () => {
+  const rootId = await startRoot({ originFloorId: FLOOR_A })
+  await participation(rootId, { agentId: A2, floorId: FLOOR_B, inputTokens: 300, outputTokens: 100 })
+  await finishExecutionRoot('run:1', { status: 'succeeded' })
+
+  const b = await executionAnalytics({ ownerId: OWNER, scope: 'floor', period: 'all', floorId: FLOOR_B })
+  // 400 tokens gastos em 1 execução participada. Dividir por 0 originadas seria um
+  // KPI sem sentido — e era exatamente o que acontecia.
+  assert.equal(b.totalTokens, 400)
+  assert.equal(b.avgTokensPerExecution, 400)
+})
+
+test('o prédio continua contando a mesma tarefa uma vez só', async () => {
+  const rootId = await startRoot({ originFloorId: FLOOR_A })
+  await participation(rootId, { agentId: A1, floorId: FLOOR_A })
+  await participation(rootId, { agentId: A2, floorId: FLOOR_B })
+  await participation(rootId, { agentId: A3, floorId: FLOOR_B })
+  await finishExecutionRoot('run:1', { status: 'succeeded' })
+
+  const building = await executionAnalytics({ ownerId: OWNER, scope: 'building', period: 'all' })
+  const a = await executionAnalytics({ ownerId: OWNER, scope: 'floor', period: 'all', floorId: FLOOR_A })
+  const b = await executionAnalytics({ ownerId: OWNER, scope: 'floor', period: 'all', floorId: FLOOR_B })
+  assert.equal(building.executions, 1)
+  // Somar os andares dá o mesmo total, porque só quem originou conta.
+  assert.equal(a.executions + b.executions, building.executions)
+})
+
+test('uma execução de teste tem raiz e continua fora da produção', async () => {
+  const rootId = await startRoot({ executionKey: 'manual:1', source: 'manual', environment: 'test' })
+  await participation(rootId, { agentId: A1 })
+  await finishExecutionRoot('manual:1', { status: 'succeeded' })
+
+  assert.equal((await executionAnalytics({ ownerId: OWNER, scope: 'building', period: 'all' })).executions, 0)
+  const withTest = await executionAnalytics({ ownerId: OWNER, scope: 'building', period: 'all', includeTest: true })
+  assert.equal(withTest.executions, 1)
+  // E a raiz existe de verdade: a execução é correlacionada, não invisível.
+  assert.equal(withTest.participations, 1)
+})
+
+test('canal e manual entram nas métricas como qualquer outra origem', async () => {
+  for (const [key, source] of [['channel:w:c:1', 'channel'], ['run:2', 'schedule']]) {
+    const id = await startRoot({ executionKey: key, source })
+    await participation(id, { agentId: A1, eventKey: `ev-${key}` })
+    await finishExecutionRoot(key, { status: 'succeeded' })
+  }
+  const building = await executionAnalytics({ ownerId: OWNER, scope: 'building', period: 'all' })
+  assert.equal(building.executions, 2)
+})

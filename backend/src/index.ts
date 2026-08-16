@@ -126,6 +126,7 @@ import {
 } from './userSettings.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
+import { channelExecutionKey, finishExecutionRoot, manualExecutionKey, openRunningRoot } from './executionRoots.js'
 import { agentReadiness, callerPolicyFromLegacy, sanitizeCollaborationRefs, triggerStates } from './agentReadiness.js'
 import { collaboratorContext, collaboratorCountFor } from './collaboration.js'
 import type { CollaboratorContext } from './collaboration.js'
@@ -2463,13 +2464,29 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   const manualStartedAt = new Date()
   // Telemetry helper for this manual test: one event per test, whatever the outcome.
   const manualEventKey = `manual:${new ObjectId().toString()}`
-  const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0) =>
+  // A manual test is a real execution too — it just is not PRODUCTION. It gets a
+  // root marked `test`, so it is correlated and auditable while staying out of the
+  // metrics by default.
+  const manualRootKey = manualExecutionKey(manualEventKey)
+  const manualRootId = await openRunningRoot({
+    executionKey: manualRootKey,
+    ownerId: res.locals.userId,
+    buildingId: playgroundFloor?.buildingId ?? null,
+    originFloorId: agent.officeId,
+    source: 'manual',
+    sourceRefId: agent._id,
+    environment: 'test',
+    createdAt: manualStartedAt,
+  }).catch(() => null)
+
+  const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0) => {
     recordAgentEventSafe({
       eventKey: manualEventKey,
       ownerId: res.locals.userId,
       agentId: agent._id,
       buildingId: playgroundFloor?.buildingId ?? null,
       floorId: agent.officeId,
+      rootExecutionId: manualRootId,
       source: 'manual',
       preset: agent.preset,
       status,
@@ -2479,6 +2496,11 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       outputTokens: u?.outputTokens ?? 0,
       toolCalls: okToolCalls,
     })
+    void finishExecutionRoot(manualRootKey, {
+      status: status === 'succeeded' ? 'succeeded' : 'failed',
+      errorKind: status === 'succeeded' ? null : status,
+    }).catch(() => undefined)
+  }
 
   let generated: string
   let usage: { inputTokens: number; outputTokens: number }
@@ -2507,7 +2529,9 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     await resolveToolsWithDelegation(
       agent,
       res.locals.userId,
-      rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent }),
+      // The manual test's own root, so its delegations are correlated to it and stay
+      // marked as `test` rather than leaking into production numbers.
+      rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent, rootExecutionId: manualRootId }),
       productionDelegationDeps(),
     ),
     )
@@ -3631,12 +3655,28 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     preset: agent.preset,
     startedAt: channelStartedAt,
   }
+  // A channel turn is a real execution: it gets a root like any other, so the
+  // building's and the floor's numbers stop ignoring everything that arrives through
+  // a channel. The key is derived from the message, so a redelivered webhook reuses
+  // the same root instead of counting twice.
+  const channelFloor = await getFloor(ownerId, agent.officeId).catch(() => null)
+  const channelRootKey = channelExecutionKey(widget._id.toString(), conversationId, channelStartedAt.getTime().toString())
+  const channelRootId = await openRunningRoot({
+    executionKey: channelRootKey,
+    ownerId,
+    buildingId: channelFloor?.buildingId ?? null,
+    originFloorId: agent.officeId,
+    source: 'channel',
+    sourceRefId: widget._id,
+    createdAt: channelStartedAt,
+  }).catch(() => null)
+
   const recordChannel = async (eventKey: string, status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0, extra: Record<string, string | number | boolean> = {}) => {
-    const floor = await getFloor(ownerId, agent.officeId).catch(() => null)
     recordAgentEventSafe({
       ...channelEventBase,
       eventKey,
-      buildingId: floor?.buildingId ?? null,
+      buildingId: channelFloor?.buildingId ?? null,
+      rootExecutionId: channelRootId,
       status,
       finishedAt: new Date(),
       inputTokens: u?.inputTokens ?? 0,
@@ -3644,6 +3684,11 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       toolCalls: okToolCalls,
       metadata: { channel: widget.channel ?? 'web', ...(widget.sectorId ? { sectorId: widget.sectorId.toString(), consulted: replyAgentName ?? '' } : {}), ...extra },
     })
+    // The turn ended, one way or another.
+    await finishExecutionRoot(channelRootKey, {
+      status: status === 'succeeded' ? 'succeeded' : 'failed',
+      errorKind: status === 'succeeded' ? null : status,
+    }).catch(() => undefined)
   }
 
   let generatedReply: string

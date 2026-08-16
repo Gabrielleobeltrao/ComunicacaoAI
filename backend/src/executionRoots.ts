@@ -40,6 +40,19 @@ export async function ensureExecutionRootIndexes(): Promise<void> {
 }
 
 export const runExecutionKey = (runId: string): string => `run:${runId}`
+// A channel turn is one request: the same conversation message must not open two
+// roots if the webhook is redelivered.
+export const channelExecutionKey = (widgetId: string, conversationId: string, messageId: string): string =>
+  `channel:${widgetId}:${conversationId}:${messageId}`
+export const manualExecutionKey = (eventKey: string): string => `manual:${eventKey}`
+
+// Open a root and hand back its id in one step, for the paths that have no separate
+// "queued" moment — a channel turn and a manual test start running immediately.
+export async function openRunningRoot(input: StartRootInput): Promise<ObjectId> {
+  const id = await startExecutionRoot(input)
+  await markRootRunning(input.executionKey, input.createdAt)
+  return id
+}
 
 export interface StartRootInput {
   executionKey: string
@@ -120,6 +133,10 @@ export interface AnalyticsResult {
   totalTokens: number
   avgTokensPerExecution: number | null
   participations: number
+  // Distinct requests this scope TOOK PART IN. For a floor this is a different
+  // question from `executions` (requests that STARTED here), and the two must never
+  // share a denominator: a floor can participate in work another floor originated.
+  participatedExecutions: number
   // Records with no root: reported, never estimated into the numbers above.
   partialTelemetry: number
 }
@@ -229,6 +246,11 @@ function summarize(query: AnalyticsQuery, rootDocs: ExecutionRoot[], leaves: Lea
     return sum
   }, 0)
   const totalTokens = leaves.reduce((sum, l) => sum + (l.inputTokens ?? 0) + (l.outputTokens ?? 0), 0)
+  // Distinct requests behind those participations — not the count of participations,
+  // and not the count of roots that started here.
+  const participatedExecutions = new Set(
+    leaves.map((l) => l.rootExecutionId?.toString() ?? l.sectorExecutionId?.toString()).filter(Boolean) as string[],
+  ).size
 
   return {
     scope: query.scope,
@@ -245,8 +267,15 @@ function summarize(query: AnalyticsQuery, rootDocs: ExecutionRoot[], leaves: Lea
     avgQueueMs: queues.length ? Math.round(queues.reduce((a, b) => a + b, 0) / queues.length) : null,
     activeTimeMs,
     totalTokens,
-    avgTokensPerExecution: rootDocs.length ? Math.round(totalTokens / rootDocs.length) : null,
+    // The denominator has to match the numerator. For a floor, the tokens counted are
+    // the ones ITS agents spent — participations — so dividing them by the requests
+    // that merely STARTED on this floor would mix two different populations.
+    avgTokensPerExecution: (() => {
+      const denominator = query.scope === 'floor' ? participatedExecutions : rootDocs.length
+      return denominator ? Math.round(totalTokens / denominator) : null
+    })(),
     participations: leaves.length,
+    participatedExecutions,
     partialTelemetry: partial,
   }
 }

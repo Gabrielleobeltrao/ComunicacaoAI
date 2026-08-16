@@ -41,6 +41,10 @@ export interface DelegationContext {
   // so a chain is never summed twice.
   currentEventKey?: string | null
   rootEventKey?: string | null
+  // The REQUEST this whole chain belongs to (executionRoots.ts). Every participation
+  // it produces points at the same one, so the building counts the request once
+  // however many agents and sectors it crossed.
+  rootExecutionId?: ObjectId | null
   // SECTOR CONTEXT GRANT. While a coordinator runs a sector, it may call THAT
   // sector's members without the user having to repeat the relationship on each
   // agent's policies. It is deliberately narrow: one sector, one explicit member
@@ -150,6 +154,8 @@ export function rootContext(opts: {
   agent: Agent
   tokenLimit?: number
   isCanceled?: () => boolean | Promise<boolean>
+  // The request this chain belongs to. Every participation it produces points at it.
+  rootExecutionId?: ObjectId | null
 }): DelegationContext {
   return {
     ownerId: opts.ownerId,
@@ -161,6 +167,7 @@ export function rootContext(opts: {
     depth: 0,
     budget: { tokenLimit: opts.tokenLimit ?? DEFAULT_DELEGATION_TOKEN_BUDGET, tokensSpent: 0 },
     isCanceled: opts.isCanceled,
+    rootExecutionId: opts.rootExecutionId ?? null,
   }
 }
 
@@ -257,6 +264,7 @@ export interface DelegationDeps {
     ownerId: string
     agentId: ObjectId
     sectorExecutionId?: ObjectId
+    rootExecutionId?: ObjectId
     buildingId: string
     floorId: ObjectId
     source: 'delegation' | 'sector'
@@ -325,6 +333,7 @@ async function emitAgentEvent(
   pending.push(deps.recordEvent?.({
     eventKey,
     ...(sectorExecutionId ? { sectorExecutionId } : {}),
+    ...(ctx.rootExecutionId ? { rootExecutionId: ctx.rootExecutionId } : {}),
     ownerId: ctx.ownerId,
     agentId: target._id,
     buildingId: ctx.buildingId,

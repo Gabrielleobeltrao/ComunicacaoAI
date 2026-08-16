@@ -74,7 +74,7 @@ async function stub(page: Page, opts: { states?: unknown[]; agents?: unknown[] }
   )
   await page.route('**/api/floors/*/executions/analytics**', (r) =>
     r.fulfill({
-      json: { scope: 'floor', period: '30d', telemetrySince: null, executions: 0, succeeded: 0, failed: 0, canceled: 0, running: 0, successRate: null, avgDurationMs: null, p95DurationMs: null, avgQueueMs: null, activeTimeMs: 0, totalTokens: 0, avgTokensPerExecution: null, participations: 0, partialTelemetry: 0 },
+      json: { scope: 'floor', period: '30d', telemetrySince: null, executions: 0, succeeded: 0, failed: 0, canceled: 0, running: 0, successRate: null, avgDurationMs: null, p95DurationMs: null, avgQueueMs: null, activeTimeMs: 0, totalTokens: 0, avgTokensPerExecution: null, participations: 0, participatedExecutions: 0, partialTelemetry: 0 },
     }),
   )
   await page.route('**/api/executions/breakdown**', (r) => r.fulfill({ json: [] }))

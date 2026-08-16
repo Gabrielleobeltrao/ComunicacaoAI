@@ -29,6 +29,7 @@ interface Analytics {
   totalTokens: number
   avgTokensPerExecution: number | null
   participations: number
+  participatedExecutions: number
   partialTelemetry: number
 }
 
@@ -142,8 +143,15 @@ export function ExecutionAnalytics({
       ) : (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 14 }} data-testid="analytics-metrics">
-            <Card padding="16px" title="Pedidos completos no período — cada um conta uma vez, mesmo cruzando andares e agentes">
-              <MetricStat icon="activity" label="Execuções" value={num(analytics?.executions)} />
+            <Card
+              padding="16px"
+              title={
+                floorId
+                  ? 'Pedidos que COMEÇARAM neste andar. Somar os andares dá o total do prédio — participações são contadas à parte.'
+                  : 'Pedidos completos no período — cada um conta uma vez, mesmo cruzando andares e agentes'
+              }
+            >
+              <MetricStat icon="activity" label={floorId ? 'Originadas aqui' : 'Execuções'} value={num(analytics?.executions)} />
             </Card>
             <Card padding="16px" title="Execuções bem-sucedidas / execuções encerradas">
               <MetricStat icon="check-circle" label="Sucesso" value={percent(analytics?.successRate)} />
@@ -166,6 +174,14 @@ export function ExecutionAnalytics({
             <Card padding="16px" title="Execuções ainda em andamento">
               <MetricStat icon="loader" label="Em andamento" value={num(analytics?.running)} />
             </Card>
+            {floorId ? (
+              // For a floor these are two different questions, and mixing them is how
+              // a dashboard starts lying: a floor can take part in work that started
+              // somewhere else.
+              <Card padding="16px" title="Pedidos que este andar atendeu, mas que começaram em outro lugar">
+                <MetricStat icon="users-round" label="Participou de" value={num(analytics?.participatedExecutions)} />
+              </Card>
+            ) : null}
           </div>
 
           <p style={{ margin: 0, fontSize: 12, color: 'var(--text-faint)' }} data-testid="analytics-telemetry">

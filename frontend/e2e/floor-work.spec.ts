@@ -90,6 +90,7 @@ async function stub(page: Page, opts: { floor?: Record<string, unknown>; overvie
         totalTokens: 0,
         avgTokensPerExecution: null,
         participations: 0,
+        participatedExecutions: 0,
         partialTelemetry: 0,
       },
     }),
@@ -195,4 +196,23 @@ test('o andar mostra a MESMA análise do prédio, escopada nele', async ({ page 
   // Sem telemetria, a página diz isso em vez de mostrar zeros.
   await expect(page.getByTestId('analytics-telemetry')).toContainText('Ainda não há telemetria correlacionada')
   await expect(page.getByTestId('breakdown-empty')).toBeVisible()
+})
+
+test('o andar separa o que originou do que apenas participou', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/floors/*/executions/analytics**', (r) =>
+    r.fulfill({
+      json: {
+        scope: 'floor', period: '30d', telemetrySince: '2026-01-01T00:00:00.000Z',
+        executions: 2, succeeded: 2, failed: 0, canceled: 0, running: 0, successRate: 1,
+        avgDurationMs: 5000, p95DurationMs: 9000, avgQueueMs: 500, activeTimeMs: 12000,
+        totalTokens: 900, avgTokensPerExecution: 300, participations: 4, participatedExecutions: 3, partialTelemetry: 0,
+      },
+    }),
+  )
+  await open(page)
+  const metrics = page.getByTestId('analytics-metrics')
+  await expect(metrics).toContainText('Originadas aqui')
+  await expect(metrics).toContainText('Participou de')
+  await expect(metrics).toContainText('3')
 })

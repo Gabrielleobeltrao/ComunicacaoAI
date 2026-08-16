@@ -60,11 +60,13 @@ function buildDeps(run: AutomationRun): RunnerDeps {
           loadAgent: getAgentById,
           resolveOwnedSectorId,
           retrieveContext,
-          resolveTools: (agent, ownerId) =>
+          resolveTools: async (agent, ownerId) =>
             resolveToolsWithDelegation(
               agent,
               ownerId,
-              rootContext({ ownerId, buildingId: run.buildingId.toString(), correlationId: run._id.toString(), agent, isCanceled }),
+              // The step's own root: a delegation made from here is a participation in
+              // the SAME request, never a second execution.
+              rootContext({ ownerId, buildingId: run.buildingId.toString(), correlationId: run._id.toString(), agent, isCanceled, rootExecutionId: await rootIdFor() }),
               deps,
             ),
           apiKeyFor: (ownerId, provider) => getProviderApiKey(ownerId, provider as Provider),

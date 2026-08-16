@@ -116,6 +116,7 @@ async function stub(page: Page, opts: { items?: Record<string, unknown[]>; fail?
         totalTokens: 2400,
         avgTokensPerExecution: 800,
         participations: 7,
+        participatedExecutions: 3,
         partialTelemetry: 2,
       },
     }),
