@@ -233,20 +233,43 @@ test('entrar no agente não rouba o foco nem abre a página rolada', async ({ pa
   expect(['BODY', 'HTML', '']).toContain(focada)
 })
 
-test('o resumo do agente não deixa um vão vazio antes do workspace', async ({ page }) => {
+// A regressão real: com 5 colegas a coluna da esquerda ia a 957px contra 402 das
+// métricas, e a diferença virava um retângulo vazio. A primeira tentativa de correção
+// mediu SEM colegas — onde o problema nem aparece — e por isso passou verde estando
+// errada. Este teste sempre semeia colegas.
+for (const [rotulo, colegas] of [
+  ['sem colegas', 0],
+  ['com 5 colegas', 5],
+] as const) {
+  test(`o resumo do agente não deixa um vão vazio antes do painel (${rotulo})`, async ({ page }) => {
+    await stub(page)
+    const roster = [
+      AGENT,
+      ...Array.from({ length: colegas }, (_, i) => ({ ...AGENT, _id: `00000000000000000000ab0${i + 1}`, name: `Colega ${i + 1}` })),
+    ]
+    await page.route('**/api/agents?**', (r) => r.fulfill({ json: roster }))
+    await page.route('**/api/agents', (r) => r.fulfill({ json: roster }))
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}`)
+    await expect(page.getByTestId('agent-workspace')).toBeVisible()
+
+    const [esquerda, direita] = await page.evaluate(() => {
+      const ws = document.querySelector('[data-testid="agent-workspace"]') as HTMLElement
+      const topo = (ws.parentElement as HTMLElement).children[0] as HTMLElement
+      return [...topo.children].map((c) => Math.round(c.getBoundingClientRect().height))
+    })
+    // As duas colunas do topo têm que fechar juntas, com ou sem colegas.
+    expect(Math.abs(esquerda - direita)).toBeLessThan(120)
+  })
+}
+
+test('colegas, setor e onde é usado ficam depois do painel', async ({ page }) => {
   await stub(page)
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}`)
-  await expect(page.getByTestId('agent-workspace')).toBeVisible()
-
-  // As duas colunas do resumo. A da direita parava na metade da altura da esquerda,
-  // e a diferença aparecia como um retângulo vazio antes do workspace.
-  const [esquerda, direita] = await page.evaluate(() => {
-    const ws = document.querySelector('[data-testid="agent-workspace"]') as HTMLElement
-    const grid = ws.previousElementSibling as HTMLElement
-    return [...grid.children].map((c) => Math.round(c.getBoundingClientRect().height))
-  })
-  const menor = Math.min(esquerda, direita)
-  const maior = Math.max(esquerda, direita)
-  expect(menor / maior).toBeGreaterThan(0.7)
+  const [painel, contexto] = await Promise.all([
+    page.getByTestId('agent-workspace').boundingBox(),
+    page.getByTestId('agent-context').boundingBox(),
+  ])
+  expect(contexto!.y).toBeGreaterThan(painel!.y)
 })

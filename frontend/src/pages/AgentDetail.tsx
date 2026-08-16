@@ -399,13 +399,6 @@ export function AgentDetail() {
       current="/agents"
       title={agent?.name ?? 'Agente'}
       subtitle={agent ? roleLabelOf(agent) : undefined}
-      actions={
-        agent ? (
-          <Button variant="secondary" icon="message-circle" onClick={() => navigate('/chats')}>
-            Conversar
-          </Button>
-        ) : undefined
-      }
     >
       {loading ? (
         <p className="text-sm text-(--text-muted)">Carregando agente...</p>
@@ -417,11 +410,12 @@ export function AgentDetail() {
         // column, which squeezed forms, flows and long values into ~60% of the page.
         <div className="grid grid-cols-1 gap-5" style={{ minWidth: 0 }}>
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] lg:items-start">
+          {/* Só o card do agente aqui. Os outros três desceram para depois do painel:
+              a altura desta coluna dependia de quantos colegas a conta tem, passava
+              dos 950px contra ~400 das métricas, e a diferença virava um retângulo
+              vazio que nenhum rearranjo entre as colunas fechava. */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {/* Coluna da IDENTIDADE: quem é, com quem trabalha, onde fica. */}
             <ProfileCard agent={agent} stats={stats} accent={accent} portrait={chars.portrait(agent._id)} />
-            <ColleaguesCard agents={agents} currentId={agent._id} chars={chars} />
-            <AgentSectorAssignment agentId={agent._id} floorId={agentFloorId} floorName={agentFloorName} onChanged={load} />
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -466,12 +460,6 @@ export function AgentDetail() {
             <Card padding="16px" title={`KPI do agente (${PERIOD_LABEL[period]})`}>
               <MetricStat icon="target" label={op?.specific.label ?? METRIC_KEY_LABEL[overview.resolvedMetric]} value={formatCount(op?.specific.value)} />
             </Card>
-
-            {/* "Onde é usado" desceu para cá. A coluna da esquerda passava de 800px
-                enquanto esta parava em 400, e a diferença virava um vão vazio antes
-                do workspace. Além de fechar o buraco, o bloco lê melhor aqui: onde o
-                agente é usado é operação, igual às métricas ao lado. */}
-            <UsageCard overview={overview} />
 
             {/* Channel/attendance only when the agent actually answers a channel. */}
             {(chan?.linked ?? overview.channelLinked) ? (
@@ -598,6 +586,16 @@ export function AgentDetail() {
                 )}
               </div>
             </Card>
+        </div>
+
+        {/* Com quem trabalha, onde fica e onde é usado. Desceram para cá: numa faixa
+            de largura total os três dividem a linha em vez de empilhar numa coluna
+            estreita, e nenhum deles empurra a altura de uma coluna que a outra tem
+            que acompanhar. */}
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3" data-testid="agent-context">
+          <ColleaguesCard agents={agents} currentId={agent._id} chars={chars} />
+          <AgentSectorAssignment agentId={agent._id} floorId={agentFloorId} floorName={agentFloorName} onChanged={load} />
+          <UsageCard overview={overview} />
         </div>
         </div>
       )}
