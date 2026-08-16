@@ -10,8 +10,8 @@ import { SectorForm } from '../components/SectorForm'
 import { SectorExecutions } from '../components/SectorExecutions'
 import { SectorKnowledge } from '../components/SectorKnowledge'
 import { API_URL } from '../lib/api'
-import { SectorApiError, getSectorOverview, sectorModeLabel } from '../lib/sectors'
-import { SectorHero } from '../components/SectorHero'
+import { SectorApiError, getSectorOverview, sectorModeLabel, sectorReadiness } from '../lib/sectors'
+import { SectorHero, ReadinessBadge } from '../components/SectorHero'
 import { SectorFlow } from '../components/SectorFlow'
 import { SectorAgentsDialog } from '../components/SectorAgentsDialog'
 import { MoveSectorWizard } from '../components/MoveSectorWizard'
@@ -135,7 +135,10 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
           "quem é essa etapa?". */}
       <section>
         <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Como o trabalho anda</h3>
-        <div className="space-y-3">
+        {/* Lado a lado: o desenho do fluxo à esquerda, quem faz cada parte à direita.
+            Empilhados, responder "quem é essa etapa?" exigia rolar de um para o
+            outro. */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start" data-testid="sector-work">
           <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
             <SectorFlow sector={sector} agents={agents} />
           </div>
@@ -162,10 +165,6 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
         </div>
       </section>
 
-      {/* Os KPIs reais de execução, no lugar onde a pergunta é feita. O bloco de
-          orquestração que ficava aqui media outra coisa (turnos, desvios) e
-          competia com este pelo mesmo nome. */}
-      <SectorPerformance sector={sector} agents={agents} />
     </div>
   )
 }
@@ -249,11 +248,28 @@ export function SectorDetail() {
     <>
       <Badge>{sectorModeLabel(sector.mode)}</Badge>
       <Badge>{`${sector.members.length} ${sector.members.length === 1 ? 'agente' : 'agentes'}`}</Badge>
+      {/* Prontidão na mesma linha do nome: é a primeira coisa que se quer saber, e
+          antes ficava escondida embaixo do mapa. */}
+      <ReadinessBadge
+        readiness={sectorReadiness({ mode: sector.mode, members: sector.members, coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages })}
+      />
     </>
   ) : undefined
 
   return (
-    <AppLayout current="/setores" title={sector?.name ?? 'Setor'} titleExtra={titleExtra}>
+    <AppLayout
+      current="/setores"
+      title={sector?.name ?? 'Setor'}
+      titleExtra={titleExtra}
+      // A ação principal do setor fica na mesma linha do nome dele.
+      actions={
+        sector ? (
+          <Button icon="users-round" onClick={() => setManageOpen(true)}>
+            Gerenciar agentes
+          </Button>
+        ) : undefined
+      }
+    >
       {loading ? (
         <p className="text-sm text-(--text-muted)">Carregando setor...</p>
       ) : error ? (
@@ -267,16 +283,14 @@ export function SectorDetail() {
         <p className="text-sm text-(--text-muted)">Setor não encontrado.</p>
       ) : (
         <div className="space-y-4">
-          <SectorHero
-            sector={sector}
-            agents={agents}
-            floorName={floorName}
-            actions={
-              <Button icon="users-round" onClick={() => setManageOpen(true)}>
-                Gerenciar agentes
-              </Button>
-            }
-          />
+          {/* Quem é o setor à esquerda, como ele está indo à direita. O Desempenho
+              subiu para cá: vale para todas as abas, não só para a Visão geral. */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
+            <SectorHero sector={sector} agents={agents} floorName={floorName} />
+            {/* Sem moldura própria: os cards de métrica lá dentro já têm a deles,
+                e uma caixa em volta viraria cartão dentro de cartão. */}
+            <SectorPerformance sector={sector} agents={agents} />
+          </div>
 
           <SectorAgentsDialog open={manageOpen} onClose={() => setManageOpen(false)} sector={sector} floorAgents={agents} onChanged={load} />
 
@@ -292,8 +306,11 @@ export function SectorDetail() {
             }}
           />
 
+          {/* Abas e conteúdo num cartão só, como na página do agente: o conteúdo
+              deixa de flutuar direto sobre o fundo da página. */}
+          <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card)" data-testid="sector-workspace">
           {/* Visible in-page navigation (canonical, URL-active, scrolls on mobile). */}
-          <nav aria-label="Seções do setor" style={{ display: 'flex', gap: 4, overflowX: 'auto', borderBottom: '1px solid var(--border-subtle)' }}>
+          <nav aria-label="Seções do setor" style={{ display: 'flex', gap: 4, overflowX: 'auto', borderBottom: '1px solid var(--border-subtle)', padding: '0 16px' }}>
             {SECTOR_SECTIONS.map((s) => {
               const on = active === s.key
               return (
@@ -310,14 +327,16 @@ export function SectorDetail() {
           </nav>
 
           {active === '' ? (
-            <div className="space-y-4">
+            <div className="space-y-4 p-6">
               <ReadinessPanel overview={overview} onFix={() => navigate(tabHref('equipe'))} />
               <OverviewSection overview={overview} agents={agents} />
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-4 p-6">
               {active !== 'avancado' && (
-                <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
+                // Sem cartão dentro de cartão: quem desenha a moldura agora é o
+                // bloco de abas.
+                <div>
                   {active === 'equipe' ? (
                     // Inline editing: the team and its flow are changed right here,
                     // no separate "edit sector" screen.
@@ -363,6 +382,7 @@ export function SectorDetail() {
               )}
             </div>
           )}
+          </div>
         </div>
       )}
     </AppLayout>

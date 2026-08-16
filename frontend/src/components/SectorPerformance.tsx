@@ -76,7 +76,7 @@ export function SectorPerformance({ sector, agents }: { sector: SectorSummary; a
       {failed ? (
         <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)' }}>
           Não foi possível carregar.{' '}
-          <button type="button" onClick={() => void load()} style={LINK} data-testid="executions-retry">
+          <button type="button" onClick={() => void load()} style={LINK} data-testid="performance-retry">
             Tentar de novo
           </button>
         </p>
@@ -116,7 +116,10 @@ export function SectorPerformance({ sector, agents }: { sector: SectorSummary; a
           </p>
 
           {/* --- por agente/etapa ------------------------------------------ */}
-          {summary && summary.byParticipant.length > 0 ? (
+          {/* `?.` de propósito: este bloco agora aparece em TODAS as abas do setor, e
+              uma resposta sem `byParticipant` derrubava a página inteira em vez de
+              apenas não desenhar a tabela. */}
+          {summary?.byParticipant?.length ? (
             <div style={{ overflowX: 'auto' }} data-testid="by-participant">
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
@@ -131,7 +134,7 @@ export function SectorPerformance({ sector, agents }: { sector: SectorSummary; a
                   </tr>
                 </thead>
                 <tbody>
-                  {summary.byParticipant.map((p) => (
+                  {(summary?.byParticipant ?? []).map((p) => (
                     <tr key={`${p.agentId}:${p.stageId ?? ''}`} style={{ borderTop: '1px solid var(--border-subtle)' }}>
                       <td style={TD}>{nameOf(p.agentId)}</td>
                       <td style={TD}>{p.stageName ?? (p.role ? ROLE_LABEL[p.role] : '—')}</td>

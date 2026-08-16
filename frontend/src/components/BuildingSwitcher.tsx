@@ -62,10 +62,9 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      {/* Selector + gear, side by side and identical on desktop and mobile. The gear
-          is its own button: the building's settings are a destination, not an item
-          buried at the bottom of the floor list. */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
+      {/* Um controle só. A engrenagem solta ao lado duplicava o item "Configurações
+          do prédio" que já existe dentro do próprio seletor. */}
+      <div style={{ display: 'flex' }}>
         <button
           onClick={() => setOpen((o) => !o)}
           aria-haspopup="menu"
@@ -82,15 +81,6 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
             </span>
           </span>
           <Icon name="chevrons-up-down" size={14} />
-        </button>
-        <button
-          onClick={() => setSettingsOpen(true)}
-          aria-label="Configurações do prédio"
-          title="Configurações do prédio"
-          style={gearBtn}
-          data-testid="open-building-settings"
-        >
-          <Icon name="settings" size={15} />
         </button>
       </div>
 
@@ -119,7 +109,7 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
           <button role="menuitem" style={menuItem} onClick={go(() => navigate('/dashboard'))}>
             + Criar andar
           </button>
-          <button role="menuitem" style={menuItem} onClick={go(() => setSettingsOpen(true))} data-testid="open-building-settings-menu">
+          <button role="menuitem" style={menuItem} onClick={go(() => setSettingsOpen(true))} data-testid="open-building-settings">
             Configurações do prédio
           </button>
         </div>
@@ -150,21 +140,6 @@ const headerBtn: React.CSSProperties = {
   color: 'inherit',
   cursor: 'pointer',
   font: 'inherit',
-}
-// Its own control, sized for a finger: `--hit-min` is the shared touch minimum, so
-// desktop and mobile get the same target.
-const gearBtn: React.CSSProperties = {
-  minWidth: 'var(--hit-min, 44px)',
-  minHeight: 'var(--hit-min, 44px)',
-  display: 'grid',
-  placeItems: 'center',
-  borderRadius: 10,
-  border: '1px solid var(--border-subtle)',
-  background: 'var(--surface-sunken)',
-  color: 'var(--text-muted)',
-  cursor: 'pointer',
-  flexShrink: 0,
-  padding: 0,
 }
 const popover: React.CSSProperties = {
   position: 'absolute',

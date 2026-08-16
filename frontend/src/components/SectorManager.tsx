@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { Link } from 'react-router'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import type { AgentSummary, SectorSummary } from '../lib/types'
@@ -6,22 +6,28 @@ import { useActiveFloorId } from '../contexts/BuildingContext'
 import { floorSector } from '../lib/floorRoutes'
 import { SECTOR_MODE_LABEL, normalizeSectorMode, sectorReadiness } from '../lib/sectors'
 import { SectorMapCrop } from '../office/SectorMapCrop'
-import { Button, Card, Dialog } from '../ui'
+import { Card, Dialog } from '../ui'
 import { SectorForm } from './SectorForm'
 
 interface SectorManagerProps {
   sectors: SectorSummary[]
   loading: boolean
   agents: AgentSummary[]
-  agentsLoading: boolean
+  // Só o cabeçalho usa isto, para desabilitar "Nova equipe" enquanto carrega.
+  agentsLoading?: boolean
   floorId?: string
   onChange: () => void | Promise<void>
   // Reload the agent roster after a contextual hire from inside the sector form.
   onAgentsChanged?: () => void | Promise<void>
+  // O botão "Nova equipe" vive no cabeçalho da página, junto do título. O diálogo
+  // continua aqui, então quem abre é de fora e o estado é do dono da página.
+  creating: boolean
+  onCreatingChange: (open: boolean) => void
 }
 
-export function SectorManager({ sectors, loading, agents, agentsLoading, floorId, onChange, onAgentsChanged }: SectorManagerProps) {
-  const [isCreating, setIsCreating] = useState(false)
+export function SectorManager({ sectors, loading, agents, floorId, onChange, onAgentsChanged, creating, onCreatingChange }: SectorManagerProps) {
+  const isCreating = creating
+  const setIsCreating = onCreatingChange
   const fid = useActiveFloorId()
   const agentNameById = useMemo(() => new Map(agents.map((a) => [a._id, a.name])), [agents])
   // Character faces for the crop sprites (same resolver as the map).
@@ -29,10 +35,6 @@ export function SectorManager({ sectors, loading, agents, agentsLoading, floorId
 
   return (
     <div className="space-y-4">
-      <Button icon="plus" disabled={agentsLoading} onClick={() => setIsCreating(true)}>
-        Nova equipe
-      </Button>
-
       {loading ? (
         <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>Carregando setores...</p>
       ) : sectors.length === 0 ? (

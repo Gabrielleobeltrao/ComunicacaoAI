@@ -1,58 +1,50 @@
 import { useMemo } from 'react'
-import type { ReactNode } from 'react'
 import { buildCharacterResolver } from '../lib/agentAvatar'
-import { sectorModeLabel, sectorReadiness } from '../lib/sectors'
 import { SectorMapCrop } from '../office/SectorMapCrop'
 import type { AgentSummary, SectorSummary } from '../lib/types'
 
-// The sector page's hero (plan §6): the SAME live crop the card shows, plus the
-// sector's identity (name, floor, mode) and operational readiness. Two columns on
-// desktop, stacked on mobile. The crop is decorative — an adjacent sentence carries
-// the same information for screen readers (§6.4).
-export function SectorHero({ sector, agents, floorName, actions }: { sector: SectorSummary; agents: AgentSummary[]; floorName: string; actions?: ReactNode }) {
+// The sector page's hero (plan §6): the SAME live crop the card shows. The crop is
+// decorative — the aria-label carries the same information for screen readers (§6.4).
+export function SectorHero({ sector, agents, floorName }: { sector: SectorSummary; agents: AgentSummary[]; floorName: string }) {
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
-  const readiness = sectorReadiness({ mode: sector.mode, members: sector.members, coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages })
-  const modeLabel = sectorModeLabel(sector.mode)
   const count = sector.members.length
   const description = `Sala do setor ${sector.name} com ${count} ${count === 1 ? 'agente' : 'agentes'} no andar ${floorName}.`
 
   return (
-    <div style={{ border: '1px solid var(--border-subtle)', borderTop: `3px solid ${sector.color}`, borderRadius: 14, overflow: 'hidden', background: 'var(--surface-card)' }}>
-      <div className="flex flex-col sm:flex-row">
-        <div
-          className="sm:w-1/2"
-          role="img"
-          aria-label={description}
-          style={{ height: 'clamp(180px, 42vw, 260px)', background: 'var(--map-floor, #f3ecdc)', borderBottom: '1px solid var(--border-subtle)' }}
-        >
-          <SectorMapCrop sector={sector} agents={agents} chars={chars} />
-        </div>
-        <div className="flex flex-1 flex-col gap-3 p-4">
-          <p className="sr-only">{description}</p>
-          <div className="flex flex-col gap-1.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span style={{ width: 12, height: 12, borderRadius: 4, background: sector.color, flexShrink: 0 }} />
-              <h2 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, color: 'var(--text-heading)' }}>{sector.name}</h2>
-            </div>
-            <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)' }}>
-              {floorName} · {modeLabel} · {count} {count === 1 ? 'agente' : 'agentes'}
-            </p>
-            <ReadinessBadge readiness={readiness} />
-          </div>
-          {actions ? <div className="mt-auto flex flex-wrap gap-2">{actions}</div> : null}
-        </div>
+    <div
+      data-testid="sector-hero"
+      style={{
+        border: '1px solid var(--border-subtle)',
+        borderTop: `3px solid ${sector.color}`,
+        borderRadius: 14,
+        overflow: 'hidden',
+        background: 'var(--map-floor, #f3ecdc)',
+        // Acompanha a altura da coluna ao lado: uma sala com um retângulo bege
+        // sobrando embaixo não é mapa, é espaço vazio.
+        height: '100%',
+        minHeight: 'clamp(180px, 42vw, 260px)',
+        display: 'flex',
+      }}
+      role="img"
+      aria-label={description}
+    >
+      {/* Só a sala. Nome, andar, modo, número de agentes e prontidão vivem no
+          cabeçalho da página — repetir aqui era ler a mesma frase duas vezes. */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <SectorMapCrop sector={sector} agents={agents} chars={chars} />
       </div>
     </div>
   )
 }
 
-function ReadinessBadge({ readiness }: { readiness: { ready: boolean; issues: { message: string }[] } }) {
+export function ReadinessBadge({ readiness }: { readiness: { ready: boolean; issues: { message: string }[] } }) {
   const ready = readiness.ready
   // The first blocking issue IS the label — "Configuração incompleta" alone never
   // told the user WHAT to do.
   const label = ready ? 'Pronto' : (readiness.issues[0]?.message ?? 'Configuração incompleta')
   return (
     <span
+      data-testid="sector-readiness"
       style={{
         alignSelf: 'flex-start',
         display: 'inline-flex',

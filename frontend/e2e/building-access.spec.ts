@@ -115,10 +115,11 @@ async function stub(page: Page, opts: { communication?: unknown; impact?: unknow
 const openBuildingSettings = async (page: Page) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/apps')
-  // A engrenagem é um botão próprio, ao lado do seletor — não um item escondido
-  // no fim da lista de andares.
+  // Um controle só: as configurações do prédio vivem DENTRO do seletor, sem
+  // engrenagem solta ao lado duplicando o mesmo destino.
   const switcher = page.getByRole('button', { name: 'Prédio e andares' }).first()
   await switcher.hover()
+  await switcher.click()
   await page.getByTestId('open-building-settings').first().click()
   await expect(page.getByTestId('building-settings')).toBeVisible()
 }
@@ -294,4 +295,15 @@ test('as configurações da conta continuam alcançáveis pelo cartão do usuár
   await card.hover()
   await card.click()
   await expect(page).toHaveURL(/\/settings$/)
+})
+
+test('o seletor não tem engrenagem solta ao lado', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps')
+  const switcher = page.getByTestId('building-switcher').first()
+  await switcher.hover()
+  // Fechado, o destino não existe em lugar nenhum da barra: ele mora no seletor.
+  await expect(page.getByTestId('open-building-settings')).toHaveCount(0)
+  await switcher.click()
+  await expect(page.getByTestId('open-building-settings').first()).toBeVisible()
 })
