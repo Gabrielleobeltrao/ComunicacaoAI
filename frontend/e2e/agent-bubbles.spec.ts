@@ -62,7 +62,10 @@ const liveState = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-async function stub(page: Page, opts: { states?: unknown[]; agents?: unknown[] } = {}) {
+let stateRequests: { ifNoneMatch: string | null; url: string }[] = []
+
+async function stub(page: Page, opts: { states?: unknown[]; agents?: unknown[]; etag?: string } = {}) {
+  stateRequests = []
   const roster = opts.agents ?? AGENTS
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   await page.route('**/api/floors**', (r) => r.fulfill({ json: [FLOOR] }))
@@ -80,9 +83,17 @@ async function stub(page: Page, opts: { states?: unknown[]; agents?: unknown[] }
   await page.route('**/api/executions/breakdown**', (r) => r.fulfill({ json: [] }))
   // The versioned live-state DTO. `legacy=1` is what the old map asked for; the
   // bubble layer reads this one.
-  await page.route('**/api/floors/*/agent-states**', (r) =>
-    r.fulfill({ json: { version: 1, generatedAt: new Date().toISOString(), states: opts.states ?? [] } }),
-  )
+  await page.route('**/api/floors/*/agent-states**', (r) => {
+    stateRequests.push({ ifNoneMatch: r.request().headers()['if-none-match'] ?? null, url: r.request().url() })
+    // Polled every two seconds: the second tick onwards must be able to answer 304.
+    if (opts.etag && r.request().headers()['if-none-match'] === opts.etag) {
+      return r.fulfill({ status: 304, headers: { ETag: opts.etag } })
+    }
+    return r.fulfill({
+      json: { version: 1, generatedAt: new Date().toISOString(), states: opts.states ?? [] },
+      headers: opts.etag ? { ETag: opts.etag } : {},
+    })
+  })
   await page.route('**/api/agents?**', (r) => r.fulfill({ json: roster }))
   await page.route('**/api/agents', (r) => r.fulfill({ json: roster }))
   await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
@@ -96,6 +107,64 @@ async function stub(page: Page, opts: { states?: unknown[]; agents?: unknown[] }
 }
 
 const bubbles = (page: Page) => page.getByTestId('agent-activity-bubble')
+
+// --- polling ------------------------------------------------------------------------
+
+test('o segundo poll manda If-None-Match, e um 304 mantém o balão na tela', async ({ page }) => {
+  await stub(page, { states: [liveState({ state: 'thinking' })], etag: 'W/"abc"' })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(bubbles(page)).toHaveCount(1)
+
+  // Espera o segundo tick (o poll é de 2s).
+  // O primeiro poll não tem nada para validar; do segundo em diante, valida.
+  expect(stateRequests[0].ifNoneMatch).toBeNull()
+  await expect.poll(() => stateRequests.filter((r) => r.ifNoneMatch === 'W/"abc"').length, { timeout: 10000 }).toBeGreaterThan(0)
+  // Respondido 304, sem corpo: o balão continua exatamente onde estava.
+  await expect(bubbles(page)).toHaveCount(1)
+})
+
+test('sair do andar cancela o polling em vez de continuar pedindo', async ({ page }) => {
+  await stub(page, { states: [liveState({ state: 'thinking' })] })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(bubbles(page)).toHaveCount(1)
+  await page.goto('/apps')
+  const afterLeaving = stateRequests.length
+  await page.waitForTimeout(4500)
+  // Nenhum poll novo depois de sair: no máximo o que já estava no ar.
+  expect(stateRequests.length).toBeLessThanOrEqual(afterLeaving + 1)
+})
+
+// --- a simulação física é outra coisa -----------------------------------------------
+
+test('pausar a simulação não apaga o que os agentes estão fazendo', async ({ page }) => {
+  await stub(page, { states: [liveState({ state: 'using_tool' })] })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(bubbles(page)).toHaveCount(1)
+
+  await page.getByRole('button', { name: /Pausar a simulação/i }).click()
+  // Pausa congela o movimento; a telemetria não é movimento.
+  await expect(bubbles(page)).toHaveCount(1)
+  await expect(bubbles(page).first()).toHaveAttribute('aria-label', /ferramenta|Usando/i)
+
+  await page.getByRole('button', { name: /Retomar a simulação/i }).click()
+  await expect(bubbles(page)).toHaveCount(1)
+})
+
+test('a pose do personagem e o balão são independentes', async ({ page }) => {
+  // Sem execução nenhuma: a pose vem do status decorativo, não do balão.
+  await stub(page, { states: [] })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(page.getByTestId('floor-work-section')).toBeVisible()
+  await expect(bubbles(page)).toHaveCount(0)
+  const posesSemBalao = await page.locator('img[src*="-ligacao"], img[src*="parado"]').count()
+
+  await stub(page, { states: [liveState({ state: 'thinking' })] })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(bubbles(page)).toHaveCount(1)
+  // O balão apareceu e o conjunto de poses desenhadas continua o mesmo: uma coisa
+  // não manda na outra.
+  expect(await page.locator('img[src*="-ligacao"], img[src*="parado"]').count()).toBe(posesSemBalao)
+})
 
 test('sem execução, nenhum balão — nem para agenda ou gatilho armado', async ({ page }) => {
   await stub(page, { states: [] })

@@ -230,7 +230,16 @@ app.use(
     // cookies (no requireAuth), so credentials stay off for that reflection.
     const isPublicWidgetRoute = req.path.startsWith('/api/public/')
     // Private routes: exact allowlist match (config.clientOrigins) with cookies.
-    callback(null, isPublicWidgetRoute ? { origin: true, credentials: false } : { origin: config.clientOrigins, credentials: true })
+    // `ETag` is NOT a CORS-safelisted response header: without exposing it, a
+    // cross-origin frontend reads `null` and can never send `If-None-Match` — the
+    // 304 path would exist on the server and never be used by the browser.
+    const exposedHeaders = ['ETag']
+    callback(
+      null,
+      isPublicWidgetRoute
+        ? { origin: true, credentials: false, exposedHeaders }
+        : { origin: config.clientOrigins, credentials: true, exposedHeaders },
+    )
   }),
 )
 

@@ -14,6 +14,7 @@ import {
   MIN_VISIBLE_MS,
   TRANSIENT_MS,
 } from '../agentActivityAssets'
+import type { AgentBubbleState } from '../agentActivityAssets'
 import { reconcile } from '../useAgentStates'
 
 // The bubble layer has two jobs it can fail at silently: showing a state that does
@@ -178,8 +179,8 @@ describe('a projeção do mapa não pisca', () => {
 
   it('uma troca rápida demais não repinta: o estado antigo permanece', () => {
     const shownAt = { a1: 1000 }
-    const pending: Record<string, { state: string; since: number }> = {}
-    const current = { a1: { state: 'thinking', concurrent: 1 } }
+    const pending: Record<string, { state: AgentBubbleState; since: number }> = {}
+    const current = { a1: { state: 'thinking' as AgentBubbleState, concurrent: 1 } }
     // Proposta chega...
     let next = reconcile(current, [row({ state: 'using_tool' })], shownAt, pending, 1100)
     expect(next.a1.state).toBe('thinking')
@@ -191,8 +192,8 @@ describe('a projeção do mapa não pisca', () => {
 
   it('uma troca estável repinta depois do debounce e da permanência mínima', () => {
     const shownAt = { a1: 0 }
-    const pending: Record<string, { state: string; since: number }> = {}
-    const current = { a1: { state: 'thinking', concurrent: 1 } }
+    const pending: Record<string, { state: AgentBubbleState; since: number }> = {}
+    const current = { a1: { state: 'thinking' as AgentBubbleState, concurrent: 1 } }
     const t0 = MIN_VISIBLE_MS + 1000
     let next = reconcile(current, [row({ state: 'using_tool' })], shownAt, pending, t0)
     expect(next.a1.state).toBe('thinking')
@@ -202,8 +203,8 @@ describe('a projeção do mapa não pisca', () => {
 
   it('um estado ainda não lido não é substituído, mesmo com proposta estável', () => {
     const shownAt = { a1: 1000 }
-    const pending = { a1: { state: 'delivering', since: 1000 } }
-    const current = { a1: { state: 'thinking', concurrent: 1 } }
+    const pending = { a1: { state: 'delivering' as AgentBubbleState, since: 1000 } }
+    const current = { a1: { state: 'thinking' as AgentBubbleState, concurrent: 1 } }
     // Debounce cumprido, permanência mínima NÃO.
     const next = reconcile(current, [row({ state: 'delivering' })], shownAt, pending, 1000 + DEBOUNCE_MS + 1)
     expect(next.a1.state).toBe('thinking')
@@ -211,7 +212,7 @@ describe('a projeção do mapa não pisca', () => {
 
   it('o desfecho aparece e sai sozinho depois da janela', () => {
     const shownAt: Record<string, number> = {}
-    const pending: Record<string, { state: string; since: number }> = {}
+    const pending: Record<string, { state: AgentBubbleState; since: number }> = {}
     let next = reconcile({}, [row({ state: 'completed' })], shownAt, pending, 5000)
     expect(next.a1.state).toBe('completed')
     next = reconcile(next, [row({ state: 'completed' })], shownAt, pending, 5000 + TRANSIENT_MS + 1)
@@ -220,8 +221,8 @@ describe('a projeção do mapa não pisca', () => {
 
   it('some do servidor = some do mapa, sem sobra', () => {
     const shownAt = { a1: 1000 }
-    const pending = { a1: { state: 'x', since: 1 } }
-    const next = reconcile({ a1: { state: 'thinking', concurrent: 1 } }, [], shownAt, pending, 2000)
+    const pending = { a1: { state: 'thinking' as AgentBubbleState, since: 1 } }
+    const next = reconcile({ a1: { state: 'thinking' as AgentBubbleState, concurrent: 1 } }, [], shownAt, pending, 2000)
     expect(next).toEqual({})
     expect(shownAt.a1).toBeUndefined()
     expect(pending.a1).toBeUndefined()

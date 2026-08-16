@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { getAgentLiveStates, listFloors } from './floors'
 import type { AgentLiveVisualState } from './floors'
-import { DEBOUNCE_MS, MIN_VISIBLE_MS, TRANSIENT_MS, bubbleAssetFor } from './agentActivityAssets'
+import { DEBOUNCE_MS, MIN_VISIBLE_MS, TRANSIENT_MS, bubbleAssetFor, isBubbleState } from './agentActivityAssets'
+import type { AgentBubbleState } from './agentActivityAssets'
 
 // Live-map overlay data source. The BACKEND is the source of truth: this only
 // reflects what the runtime reported, and an agent with no execution simply has no
@@ -13,7 +14,9 @@ import { DEBOUNCE_MS, MIN_VISIBLE_MS, TRANSIENT_MS, bubbleAssetFor } from './age
 // and a minimum dwell, and a terminal outcome is dropped after its display window.
 
 export interface AgentOpState {
-  state: string
+  // The runtime enum, not a free string: an unknown state is a bug, and the
+  // compiler is the cheapest place to catch it.
+  state: AgentBubbleState
   safeDetail?: { appKey?: string; actionLabel?: string; targetType?: string }
   concurrent: number
 }
@@ -22,7 +25,7 @@ const POLL_MS = 2000
 const ERROR_POLL_MS = 5000
 
 interface Pending {
-  state: string
+  state: AgentBubbleState
   since: number
 }
 
@@ -41,6 +44,14 @@ export function useAgentStates(enabled: boolean, explicitFloorId?: string | null
     let alive = true
     let timer: ReturnType<typeof setTimeout> | undefined
     let floorId: string | null = explicitFloorId ?? null
+    // The floor's own polling state. Declared HERE, inside the effect, so changing
+    // floor starts from scratch instead of validating the new floor against the old
+    // floor's ETag.
+    let etag: string | null = null
+    let rows: AgentLiveVisualState[] = []
+    // In-flight request, so leaving the floor or unmounting cancels it instead of
+    // paying for a payload nobody will read.
+    const controller = new AbortController()
 
     async function tick() {
       let delay = POLL_MS
@@ -50,10 +61,16 @@ export function useAgentStates(enabled: boolean, explicitFloorId?: string | null
           floorId = floors.find((f) => f.status === 'active')?.id ?? null
         }
         if (floorId && alive) {
-          const body = await getAgentLiveStates(floorId)
-          // A response without `states` is treated as "nothing running", not as an
-          // error: the map degrades to no bubbles instead of throwing every tick.
-          const rows = Array.isArray(body?.states) ? body.states : []
+          const body = await getAgentLiveStates(floorId, { etag, signal: controller.signal })
+          // `null` is a 304: nothing changed, so the previous rows are still the
+          // truth. They are re-reconciled anyway, because a bubble can expire or
+          // finish its minimum dwell without the server saying anything new.
+          if (body) {
+            // A response without `states` is treated as "nothing running", not as an
+            // error: the map degrades to no bubbles instead of throwing every tick.
+            rows = Array.isArray(body.states) ? body.states : []
+            etag = body.etag
+          }
           if (alive) {
             setStates((current) => {
               const next = reconcile(current, rows, shownAt.current, pending.current)
@@ -65,7 +82,9 @@ export function useAgentStates(enabled: boolean, explicitFloorId?: string | null
           }
         }
       } catch {
-        // Transient: retry more slowly; polling reconciles whatever was missed.
+        // Aborted on unmount is not a failure — and nothing below runs anyway.
+        // Anything else is transient: retry more slowly; polling reconciles whatever
+        // was missed.
         delay = ERROR_POLL_MS
       }
       if (alive) timer = setTimeout(tick, delay)
@@ -74,6 +93,7 @@ export function useAgentStates(enabled: boolean, explicitFloorId?: string | null
     return () => {
       alive = false
       if (timer) clearTimeout(timer)
+      controller.abort()
     }
   }, [enabled, explicitFloorId])
 
@@ -111,24 +131,26 @@ export function reconcile(
 
   for (const row of incoming) {
     seen.add(row.agentId)
-    const asset = bubbleAssetFor(row.state)
     // An unknown state draws nothing rather than a fallback that would claim work is
-    // happening.
+    // happening — and it is narrowed here, so nothing downstream handles a string.
+    if (!isBubbleState(row.state)) continue
+    const state = row.state
+    const asset = bubbleAssetFor(state)
     if (!asset) continue
 
     const shown = current[row.agentId]
-    const entry: AgentOpState = { state: row.state, safeDetail: row.safeDetail, concurrent: row.concurrent }
+    const entry: AgentOpState = { state, safeDetail: row.safeDetail, concurrent: row.concurrent }
 
     // A terminal outcome is shown for its window and then removed — it is an outcome,
     // not a state, so it must never stay on the map.
     if (asset.tier === 'transient') {
-      const started = shown?.state === row.state ? (shownAt[row.agentId] ?? now) : now
+      const started = shown?.state === state ? (shownAt[row.agentId] ?? now) : now
       if (now - started >= TRANSIENT_MS) {
         delete shownAt[row.agentId]
         delete pending[row.agentId]
         continue
       }
-      if (shown?.state !== row.state) shownAt[row.agentId] = now
+      if (shown?.state !== state) shownAt[row.agentId] = now
       next[row.agentId] = entry
       continue
     }
@@ -140,7 +162,7 @@ export function reconcile(
       continue
     }
 
-    if (shown.state === row.state) {
+    if (shown.state === state) {
       delete pending[row.agentId]
       next[row.agentId] = entry
       continue
@@ -149,8 +171,8 @@ export function reconcile(
     // The state changed. Two guards before repainting: the new one must have been
     // stable for the debounce, and the old one must have been visible long enough.
     const proposal = pending[row.agentId]
-    if (!proposal || proposal.state !== row.state) {
-      pending[row.agentId] = { state: row.state, since: now }
+    if (!proposal || proposal.state !== state) {
+      pending[row.agentId] = { state, since: now }
       next[row.agentId] = shown
       continue
     }

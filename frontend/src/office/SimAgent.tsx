@@ -6,6 +6,7 @@ import { bubblePlacement } from '../lib/agentActivityAssets'
 import { NamePill } from './NamePill'
 import type { SimView } from './useOfficeSimulation'
 import type { AgentStatus } from '../ui'
+import type { AgentBubbleState } from '../lib/agentActivityAssets'
 
 const W = 1.25
 const H = 1.875
@@ -24,7 +25,7 @@ interface SimAgentProps {
   // Live-map overlay: the operational state the RUNTIME reported. When set, the
   // activity bubble is drawn above the head. It never drives position or
   // pathfinding, and pausing the simulation does not pause or fake it.
-  opState?: string
+  opState?: AgentBubbleState
   // Allowlisted caption detail from the backend (public App action name, target
   // kind). Never an objective, a URL, an argument or a result.
   opDetail?: { appKey?: string; actionLabel?: string; targetType?: string }

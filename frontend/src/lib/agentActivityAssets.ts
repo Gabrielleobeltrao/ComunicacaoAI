@@ -98,6 +98,11 @@ export const DEBOUNCE_MS = 300
 export const bubbleAssetFor = (state: string): BubbleAsset | null =>
   (AGENT_ACTIVITY_ASSETS as Record<string, BubbleAsset>)[state] ?? null
 
+// The wire carries a string, and a state this build does not know about must not be
+// drawn. This is the ONE place that turns one into the other, so an unknown value
+// stops here instead of travelling as a type lie.
+export const isBubbleState = (state: string): state is AgentBubbleState => state in AGENT_ACTIVITY_ASSETS
+
 /**
  * The tooltip/aria text. It names the agent and the KIND of work — never the
  * objective, the query, a URL, a phone number or a result.

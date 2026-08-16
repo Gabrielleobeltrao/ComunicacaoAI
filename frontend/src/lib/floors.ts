@@ -144,11 +144,32 @@ export interface AgentLiveVisualState {
   concurrent: number
 }
 
-export const getAgentLiveStates = (floorId: string, updatedSince?: string) =>
-  fetch(
-    `${API_URL}/api/floors/${floorId}/agent-states${updatedSince ? `?updatedSince=${encodeURIComponent(updatedSince)}` : ''}`,
-    opts('GET'),
-  ).then(json<{ version: number; generatedAt: string; states: AgentLiveVisualState[] }>)
+export interface AgentLiveStatesResponse {
+  version: number
+  generatedAt: string
+  states: AgentLiveVisualState[]
+  etag: string | null
+}
+
+// Polled every couple of seconds, so the common answer — nothing changed — has to
+// cost nothing. `If-None-Match` turns that into a 304 with no body, and `signal`
+// lets the caller drop a request that is no longer wanted (floor changed, unmounted)
+// instead of paying for a payload it will throw away.
+export const getAgentLiveStates = async (
+  floorId: string,
+  { etag, signal }: { etag?: string | null; signal?: AbortSignal } = {},
+): Promise<AgentLiveStatesResponse | null> => {
+  const res = await fetch(`${API_URL}/api/floors/${floorId}/agent-states`, {
+    ...opts('GET'),
+    signal,
+    headers: etag ? { 'If-None-Match': etag } : undefined,
+  })
+  // 304: what is on screen is already current.
+  if (res.status === 304) return null
+  if (!res.ok) throw new Error('falhou')
+  const body = (await res.json()) as Omit<AgentLiveStatesResponse, 'etag'>
+  return { ...body, etag: res.headers.get('ETag') }
+}
 
 // Aggregated dashboard overview (one call — KPIs + per-floor cards).
 export interface FloorOverview {

@@ -7,6 +7,7 @@ import { NamePill } from './NamePill'
 import { characterSrc } from '../lib/officeAssets'
 import type { CharacterView } from '../lib/officeAssets'
 import type { AgentStatus } from '../ui'
+import type { AgentBubbleState } from '../lib/agentActivityAssets'
 
 interface MapAgentProps {
   x: number
@@ -23,7 +24,7 @@ interface MapAgentProps {
   speaking?: boolean
   // The operational state the RUNTIME reported, for the static fallback map. Same
   // rule as the animated one: no execution, no bubble.
-  opState?: string
+  opState?: AgentBubbleState
   opDetail?: { appKey?: string; actionLabel?: string; targetType?: string }
   showName?: 'hover' | 'always' | 'never'
   hoverLift?: boolean

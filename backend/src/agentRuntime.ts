@@ -34,7 +34,10 @@ export interface AgentExecutionRequest {
   // Operational transitions, for the live map. A plain callback: this module stays
   // pure and testable, and the caller — which knows the owner, the agent and the
   // execution — decides where the transition is recorded.
-  progress?: (state: 'thinking' | 'validating_output' | 'retrying' | 'generating_output', detail?: unknown) => void
+  // Only what the runtime can actually observe. `generating_output` used to be
+  // listed here and was never emitted by anything — a state in a type is a promise,
+  // and this one was empty.
+  progress?: (state: 'thinking' | 'validating_output' | 'retrying', detail?: unknown) => void
   // External source material is untrusted by default; pass false only when the
   // context is authored by the owner (plan §17.4).
   contextIsUntrusted?: boolean
