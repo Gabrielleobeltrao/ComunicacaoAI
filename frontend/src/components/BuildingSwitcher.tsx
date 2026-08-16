@@ -70,17 +70,31 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label="Prédio e andares"
-          className={`flex min-w-0 flex-1 items-center gap-2 ${expanded ? 'justify-start' : 'justify-center gap-0 group-hover:justify-start group-hover:gap-2'}`}
+          // Encolhido, o rail é uma fileira de ícones de 40px de altura. Este botão
+          // tinha um rótulo de DUAS linhas dentro: mesmo com a largura zerada, a
+          // altura continuava, e ele virava uma caixa alta e vazia no meio da
+          // fileira. Agora a altura também colapsa e só volta no hover.
+          className={`flex min-w-0 flex-1 items-center overflow-hidden ${
+            expanded ? 'h-auto justify-start gap-2.5' : 'h-10 justify-center gap-0 group-hover:h-auto group-hover:justify-start group-hover:gap-2.5'
+          }`}
           style={headerBtn}
           data-testid="building-switcher"
         >
+          {/* O ícone que sobra quando tudo o mais colapsa. `layers` são os andares
+              empilhados — é isto que o seletor troca. Nenhum item do menu usa. */}
+          <Icon name="layers" size={18} style={{ flexShrink: 0 }} />
           <span className={`flex min-w-0 flex-1 flex-col text-left ${fade}`}>
             <strong style={truncate}>{name}</strong>
+            {/* Só a contagem. O andar atual já é lido logo abaixo, no menu, sob
+                "ANDAR ATUAL" — repetir aqui era a mesma informação duas vezes na
+                mesma coluna. */}
             <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {activeFloor ? activeFloor.name : 'Nenhum andar'} · {active.length} andar(es)
+              {active.length} {active.length === 1 ? 'andar' : 'andares'}
             </span>
           </span>
-          <Icon name="chevrons-up-down" size={14} />
+          <span className={fade}>
+            <Icon name="chevrons-up-down" size={14} />
+          </span>
         </button>
       </div>
 
@@ -106,8 +120,11 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
               </button>
             ))}
           <div style={{ borderTop: '1px solid var(--border-subtle)', margin: '6px 0' }} />
-          <button role="menuitem" style={menuItem} onClick={go(() => navigate('/dashboard'))}>
-            + Criar andar
+          {/* Ação de criar, na mesma cor de "Nova equipe" e "Contratar agente": é
+              a mesma coisa em toda a interface. */}
+          <button role="menuitem" style={{ ...menuItem, color: 'var(--intent-brand)', fontWeight: 700 }} onClick={go(() => navigate('/dashboard'))}>
+            <Icon name="plus" size={14} style={{ marginRight: 6 }} />
+            Criar andar
           </button>
           <button role="menuitem" style={menuItem} onClick={go(() => setSettingsOpen(true))} data-testid="open-building-settings">
             Configurações do prédio
@@ -132,11 +149,13 @@ function Dot({ color }: { color: string | null }) {
 }
 
 const truncate: React.CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }
+// Mesma geometria dos itens de navegação: mesmo padding lateral, mesmo raio. O
+// bloco bege com borda destoava da fileira inteira.
 const headerBtn: React.CSSProperties = {
-  padding: 6,
-  borderRadius: 10,
-  border: '1px solid var(--border-subtle)',
-  background: 'var(--surface-sunken)',
+  padding: '6px 12px',
+  borderRadius: 'var(--radius-control)',
+  border: 0,
+  background: 'transparent',
   color: 'inherit',
   cursor: 'pointer',
   font: 'inherit',

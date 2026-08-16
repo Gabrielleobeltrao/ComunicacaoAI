@@ -232,7 +232,9 @@ test('o seletor mostra prédio e andar, sem círculo de inicial', async ({ page 
   const switcher = page.getByTestId('building-switcher').first()
   await switcher.hover()
   await expect(switcher).toContainText('Prédio QA')
-  await expect(switcher).toContainText('Térreo')
+  // O andar atual NÃO fica aqui: ele é lido logo abaixo, no menu, sob "ANDAR ATUAL".
+  await expect(switcher).not.toContainText('Térreo')
+  await expect(switcher).toContainText(/\d+ andar/)
   // O avatar com a inicial saiu: o que resta é nome, andar e chevron. Se ele
   // voltasse, haveria um elemento com o texto "P" e nada mais.
   expect(await switcher.locator('span', { hasText: /^P$/ }).count()).toBe(0)
@@ -306,4 +308,43 @@ test('o seletor não tem engrenagem solta ao lado', async ({ page }) => {
   await expect(page.getByTestId('open-building-settings')).toHaveCount(0)
   await switcher.click()
   await expect(page.getByTestId('open-building-settings').first()).toBeVisible()
+})
+
+test('encolhido, o seletor é um ícone na fileira — não uma caixa alta e vazia', async ({ page }) => {
+  await stub(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/apps')
+  const seletor = page.getByTestId('building-switcher')
+  await expect(seletor).toBeVisible()
+
+  // Sem hover o rail está encolhido. O seletor tinha um rótulo de duas linhas
+  // dentro: mesmo com largura zero, a altura ficava, e ele destoava da fileira.
+  const [caixa, itens] = await page.evaluate(() => {
+    const sw = document.querySelector('[data-testid="building-switcher"]')!.getBoundingClientRect()
+    const alturas = [...document.querySelectorAll('aside nav a')].slice(0, 3).map((a) => Math.round(a.getBoundingClientRect().height))
+    return [Math.round(sw.height), alturas] as const
+  })
+  expect(itens.length).toBeGreaterThan(0)
+  for (const altura of itens) expect(Math.abs(caixa - altura)).toBeLessThanOrEqual(2)
+
+  // E tem um ícone próprio: encolhido, era só o chevron.
+  const icone = seletor.locator('[data-icon="layers"]')
+  await expect(icone).toBeVisible()
+  expect((await icone.boundingBox())!.width).toBeGreaterThan(10)
+})
+
+test('criar andar é uma ação, e se veste como as outras ações de criar', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps')
+  const switcher = page.getByTestId('building-switcher').first()
+  await switcher.hover()
+  await switcher.click()
+  const criar = page.getByRole('menuitem', { name: /Criar andar/ })
+  await expect(criar).toBeVisible()
+  // Mesma cor de marca de "Nova equipe" e "Contratar agente" — não texto comum.
+  const cor = await criar.evaluate((el) => getComputedStyle(el).color)
+  const marca = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--intent-brand').trim())
+  expect(marca.length).toBeGreaterThan(0)
+  expect(cor).not.toBe('rgb(0, 0, 0)')
+  await expect(criar.locator('[data-icon="plus"]')).toBeVisible()
 })
