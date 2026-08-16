@@ -232,7 +232,13 @@ export function buildOfficeLayout(input: LayoutInput): BuiltOfficeLayout {
   const memberSet = new Map<string, string[]>()
   const rooms: Room[] = sectors.map((s) => {
     const ids = new Set(agents.map((a) => a._id))
-    const members = s.members.map((m) => m.agentId).filter((id) => ids.has(id))
+    // UM assento por agente, sempre. Um agente pode acabar listado em dois setores
+    // (dado antigo, antes de a regra de pertencer a um só existir) ou duas vezes no
+    // mesmo. Sem esta dedução, o mapa desenhava a mesma pessoa duas vezes: dois
+    // balões sobre a mesma cabeça, e duas simulações registradas com o mesmo id
+    // disputando o mesmo registro de movimento — o personagem travava.
+    // O primeiro setor da lista fica com o agente; os seguintes não o recebem.
+    const members = [...new Set(s.members.map((m) => m.agentId))].filter((id) => ids.has(id) && !used.has(id))
     members.forEach((id) => used.add(id))
     memberSet.set(s._id, members)
     return { key: s._id, name: s.name, color: s.color, memberIds: members }
