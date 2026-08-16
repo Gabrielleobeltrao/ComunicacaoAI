@@ -139,6 +139,37 @@ export const BUBBLE_LANE_OFFSET = BUBBLE_CAPSULE_HEIGHT + BUBBLE_TAIL_HEIGHT
 
 export const bubbleLane = (x: number): 0 | 1 => (Math.round(x) % 2 === 0 ? 0 : 1)
 
+/** Quão perto dois personagens precisam estar, em tiles, para os balões se cobrirem. */
+export const BUBBLE_NEIGHBOUR_X = 1.6
+export const BUBBLE_NEIGHBOUR_Y = 1.0
+
+/**
+ * Quem precisa subir de faixa, olhando quem está de fato ao lado.
+ *
+ * A faixa vinha da paridade da coluna: metade dos agentes era levantada SEMPRE,
+ * inclusive quem estava sozinho num canto do mapa. O balão ficava pairando uma
+ * altura de personagem acima da cabeça, sem vizinho nenhum para justificar.
+ *
+ * Aqui só sobe quem tem vizinho perto o bastante para colidir — e sobe um só do par,
+ * porque levantar os dois recria a colisão numa altura mais alta.
+ */
+export function assignBubbleLanes(points: { id: string; x: number; y: number }[]): Record<string, 0 | 1> {
+  const lanes: Record<string, 0 | 1> = {}
+  // Ordem estável por posição: dois renders do mesmo mapa dão o mesmo resultado.
+  const ordered = [...points].sort((a, b) => a.x - b.x || a.y - b.y || a.id.localeCompare(b.id))
+  for (const p of ordered) {
+    const colide = ordered.some(
+      (o) =>
+        o.id !== p.id &&
+        lanes[o.id] === 0 &&
+        Math.abs(o.x - p.x) < BUBBLE_NEIGHBOUR_X &&
+        Math.abs(o.y - p.y) < BUBBLE_NEIGHBOUR_Y,
+    )
+    lanes[p.id] = colide ? 1 : 0
+  }
+  return lanes
+}
+
 /**
  * Distância entre o topo do personagem e a base do balão, como PORCENTAGEM da caixa
  * do agente.
@@ -163,8 +194,13 @@ const HEAD_CLEARANCE_PCT = 15
  * Misturar as duas foi o que quebrou: primeiro um px tentando limpar algo que
  * encolhe, depois um tile tentando limpar algo que não encolhe.
  */
-export function bubblePlacement(x: number, headTop: string): { bottom: string; marginBottom: number; zIndex: number; nameMarginBottom: number } {
-  const lane = bubbleLane(x)
+export function bubblePlacement(
+  x: number,
+  headTop: string,
+  // A faixa vem do mapa, que sabe quem está ao lado de quem. Sem ela, cai na
+  // paridade da coluna — o palpite antigo, mantido só como último recurso.
+  lane: 0 | 1 = bubbleLane(x),
+): { bottom: string; marginBottom: number; zIndex: number; nameMarginBottom: number } {
   return {
     bottom: `calc(${headTop} + ${HEAD_CLEARANCE_PCT}%)`,
     marginBottom: lane * BUBBLE_LANE_OFFSET,

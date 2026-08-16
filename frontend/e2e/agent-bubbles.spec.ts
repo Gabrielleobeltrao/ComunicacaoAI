@@ -64,7 +64,7 @@ const liveState = (over: Record<string, unknown> = {}) => ({
 
 let stateRequests: { ifNoneMatch: string | null; url: string }[] = []
 
-async function stub(page: Page, opts: { states?: unknown[]; agents?: unknown[]; etag?: string } = {}) {
+async function stub(page: Page, opts: { states?: unknown[]; agents?: unknown[]; etag?: string; sectors?: unknown[] } = {}) {
   stateRequests = []
   const roster = opts.agents ?? AGENTS
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
@@ -96,7 +96,7 @@ async function stub(page: Page, opts: { states?: unknown[]; agents?: unknown[]; 
   })
   await page.route('**/api/agents?**', (r) => r.fulfill({ json: roster }))
   await page.route('**/api/agents', (r) => r.fulfill({ json: roster }))
-  await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
+  await page.route('**/api/sectors**', (r) => r.fulfill({ json: opts.sectors ?? [] }))
   await page.route('**/api/widgets', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/building', (r) => r.fulfill({ json: BUILDING }))
   await page.route('**/api/apps**', (r) => r.fulfill({ json: [] }))
@@ -376,9 +376,12 @@ test('a cápsula tem a altura que o cálculo das faixas assume', async ({ page }
   expect(tail).toBe(14)
 })
 
-test('as duas faixas ficam separadas por mais que a altura de um balão', async ({ page }) => {
+test('quem tem vizinho ao lado sobe; quem está sozinho, não', async ({ page }) => {
+  // Todos no MESMO setor: sentados lado a lado é onde os balões de fato colidem.
+  const juntos = CROWD.slice(0, 4)
   await stub(page, {
     agents: CROWD,
+    sectors: [{ _id: 'c11', floorId: FLOOR_ID, name: 'Cozinha', color: '#88a', mode: 'organization', members: juntos.map((a) => ({ agentId: a._id, transitions: [] })), stages: [] }],
     states: CROWD.map((a, i) => liveState({ agentId: a._id, state: 'thinking', rootExecutionId: `run-${i}` })),
   })
   await page.setViewportSize({ width: 1440, height: 900 })
@@ -389,8 +392,28 @@ test('as duas faixas ficam separadas por mais que a altura de um balão', async 
   const offsets = await bubbles(page).evaluateAll((els) =>
     [...new Set(els.map((el) => Number.parseInt(getComputedStyle(el.parentElement as HTMLElement).marginBottom, 10)))].sort((a, b) => a - b),
   )
-  expect(offsets.length, 'as duas faixas precisam estar em uso no mapa').toBe(2)
+  expect(offsets.length, 'com gente lado a lado, as duas faixas entram em uso').toBe(2)
+  // A que sobe tem que limpar a cápsula E a cauda da de baixo.
   expect(offsets[1] - offsets[0]).toBeGreaterThanOrEqual(22 + 14)
+  // E a faixa baixa é rente à cabeça: zero de margem extra.
+  expect(offsets[0]).toBe(0)
+})
+
+test('agentes espalhados não têm balão levantado à toa', async ({ page }) => {
+  // Sem setor: o mapa espalha os seis pelo andar, longe uns dos outros. Antes a
+  // faixa vinha da paridade da coluna e metade deles subia sem vizinho nenhum —
+  // o balão pairava uma altura de personagem acima da cabeça.
+  await stub(page, {
+    agents: CROWD,
+    states: CROWD.map((a, i) => liveState({ agentId: a._id, state: 'thinking', rootExecutionId: `run-${i}` })),
+  })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(bubbles(page).first()).toBeVisible()
+  const offsets = await bubbles(page).evaluateAll((els) =>
+    [...new Set(els.map((el) => Number.parseInt(getComputedStyle(el.parentElement as HTMLElement).marginBottom, 10)))],
+  )
+  expect(offsets).toEqual([0])
 })
 
 // --- os mesmos balões nos mapas de setor ---------------------------------------------

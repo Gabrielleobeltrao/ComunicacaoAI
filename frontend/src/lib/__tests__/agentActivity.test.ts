@@ -13,6 +13,7 @@ import {
   DEBOUNCE_MS,
   MIN_VISIBLE_MS,
   TRANSIENT_MS,
+  assignBubbleLanes,
 } from '../agentActivityAssets'
 import type { AgentBubbleState } from '../agentActivityAssets'
 import { reconcile } from '../useAgentStates'
@@ -254,5 +255,53 @@ describe('cada afastamento na unidade do que ele precisa limpar', () => {
   it('limpar o vizinho continua em px, que acompanha o balão dentro de cada mapa', () => {
     expect(typeof bubblePlacement(3, '100%').marginBottom).toBe('number')
     expect(bubblePlacement(3, '100%').marginBottom - bubblePlacement(2, '100%').marginBottom).toBe(BUBBLE_LANE_OFFSET)
+  })
+})
+
+describe('quem sobe de faixa é quem tem vizinho', () => {
+  it('agente sozinho fica na faixa baixa — o balão não paira longe da cabeça', () => {
+    const lanes = assignBubbleLanes([{ id: 'sozinho', x: 9.4, y: 3 }])
+    expect(lanes.sozinho).toBe(0)
+  })
+
+  it('dois lado a lado: um sobe, o outro não', () => {
+    const lanes = assignBubbleLanes([
+      { id: 'a', x: 3.0, y: 5 },
+      { id: 'b', x: 4.0, y: 5 },
+    ])
+    expect(new Set(Object.values(lanes))).toEqual(new Set([0, 1]))
+  })
+
+  it('longe um do outro, os dois ficam embaixo', () => {
+    const lanes = assignBubbleLanes([
+      { id: 'a', x: 3, y: 5 },
+      { id: 'b', x: 9, y: 5 },
+    ])
+    expect(lanes).toEqual({ a: 0, b: 0 })
+  })
+
+  it('mesma coluna, linhas distantes: não é vizinhança', () => {
+    const lanes = assignBubbleLanes([
+      { id: 'a', x: 3, y: 2 },
+      { id: 'b', x: 3, y: 8 },
+    ])
+    expect(lanes).toEqual({ a: 0, b: 0 })
+  })
+
+  it('numa fileira colada, dois vizinhos nunca ficam na mesma faixa', () => {
+    const fila = [0, 1, 2, 3, 4].map((i) => ({ id: `a${i}`, x: 2 + i * 1.14, y: 5 }))
+    const lanes = assignBubbleLanes(fila)
+    for (let i = 1; i < fila.length; i++) {
+      expect(lanes[fila[i].id], `${fila[i - 1].id} e ${fila[i].id} colidiriam`).not.toBe(lanes[fila[i - 1].id])
+    }
+  })
+
+  it('a atribuição é estável: mesma entrada em outra ordem, mesmo resultado', () => {
+    const pts = [
+      { id: 'b', x: 4.0, y: 5 },
+      { id: 'a', x: 3.0, y: 5 },
+      { id: 'c', x: 9.0, y: 5 },
+    ]
+    expect(assignBubbleLanes(pts)).toEqual(assignBubbleLanes([...pts].reverse()))
   })
 })

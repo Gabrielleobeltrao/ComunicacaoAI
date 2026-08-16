@@ -26,6 +26,8 @@ interface SimAgentProps {
   // activity bubble is drawn above the head. It never drives position or
   // pathfinding, and pausing the simulation does not pause or fake it.
   opState?: AgentBubbleState
+  // Faixa do balão, decidida pelo mapa a partir de quem está ao lado.
+  lane?: 0 | 1
   // Allowlisted caption detail from the backend (public App action name, target
   // kind). Never an objective, a URL, an argument or a result.
   opDetail?: { appKey?: string; actionLabel?: string; targetType?: string }
@@ -34,13 +36,13 @@ interface SimAgentProps {
 // A simulated agent: a clickable wrapper whose position is driven by the sim via
 // the --ax/--ay CSS vars (so it scales with zoom/pan for free), containing the
 // animated AgentSprite, a contact shadow and a hover name pill.
-export function SimAgent({ agentId, name, character, status, view, initialX, initialY, register, setHovered, onOpen, opState, opDetail }: SimAgentProps) {
+export function SimAgent({ agentId, name, character, status, view, initialX, initialY, register, setHovered, onOpen, opState, opDetail, lane }: SimAgentProps) {
   const [hover, setHover] = useState(false)
-  // Which of the two bubble lanes this agent uses — from its own column, so two
-  // characters side by side never draw at the same height.
+  // A faixa vem do mapa, que sabe quem está ao lado de quem. Antes vinha da
+  // paridade da coluna, e quem estava sozinho era levantado à toa.
   const seated = view.motion === 'seated'
   const headTop = seated ? '78.6%' : '100%'
-  const placement = bubblePlacement(initialX, headTop)
+  const placement = bubblePlacement(initialX, headTop, lane)
   return (
     <button
       ref={(el) => register(agentId, el)}

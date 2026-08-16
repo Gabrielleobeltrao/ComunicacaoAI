@@ -15,6 +15,7 @@ import { SimAgent } from './SimAgent'
 import { useOfficeSimulation } from './useOfficeSimulation'
 import { roundedPath, traceOutline } from './roomShape'
 import { useAgentStates } from '../lib/useAgentStates'
+import { assignBubbleLanes } from '../lib/agentActivityAssets'
 import { featureFlags } from '../featureFlags'
 
 type Chars = ReturnType<typeof buildCharacterResolver>
@@ -115,6 +116,8 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
   const desks = layout.desks.filter((d) => d.roomKey === sector._id)
   const sectorDecor = layout.decor.filter((dc) => dc.roomKey === sector._id)
   const seats = layout.seats.filter((s) => s.sectorId === sector._id)
+  // Mesma regra do mapa grande: só levanta o balão de quem tem vizinho ao lado.
+  const lanes = assignBubbleLanes(seats.map((s) => ({ id: s.agentId, x: s.seatedPoint.x, y: s.seatedPoint.y })))
   const farSeats = seats.filter((s) => !s.chair.near)
   const nearSeats = seats.filter((s) => s.chair.near)
   const emptySeats = layout.emptySeats.filter((e) => e.sectorId === sector._id)
@@ -138,6 +141,7 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
       style={{ zIndex }}
       opState={opStates[s.agentId]?.state}
       opDetail={opStates[s.agentId]?.safeDetail}
+      lane={lanes[s.agentId]}
     />
   )
 
@@ -224,6 +228,7 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
                   onOpen={() => {}}
                   opState={opStates[s.agentId]?.state}
                   opDetail={opStates[s.agentId]?.safeDetail}
+                  lane={lanes[s.agentId]}
                 />
               ))}
             </div>
