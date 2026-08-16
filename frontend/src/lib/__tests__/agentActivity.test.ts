@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync, existsSync } from 'node:fs'
-import { AGENT_ACTIVITY_ASSETS, AGENT_BUBBLE_STATES, bubbleAssetFor, bubbleLabel, DEBOUNCE_MS, MIN_VISIBLE_MS, TRANSIENT_MS } from '../agentActivityAssets'
+import {
+  AGENT_ACTIVITY_ASSETS,
+  AGENT_BUBBLE_STATES,
+  bubbleAssetFor,
+  bubbleLabel,
+  bubbleLane,
+  bubblePlacement,
+  BUBBLE_CAPSULE_HEIGHT,
+  BUBBLE_LANE_OFFSET,
+  BUBBLE_TAIL_HEIGHT,
+  DEBOUNCE_MS,
+  MIN_VISIBLE_MS,
+  TRANSIENT_MS,
+} from '../agentActivityAssets'
 import { reconcile } from '../useAgentStates'
 
 // The bubble layer has two jobs it can fail at silently: showing a state that does
@@ -101,6 +114,44 @@ describe('o rótulo diz o TIPO de trabalho, nunca o conteúdo', () => {
     const label = bubbleLabel('Nina', 'delegating_sector', { targetType: 'sector' })
     expect(label).toBe('Nina: chamando setor')
     expect(label).not.toMatch(/objetivo|http|@/)
+  })
+})
+
+// --- posicionamento ----------------------------------------------------------------
+
+describe('balões vizinhos não caem na mesma altura', () => {
+  it('colunas adjacentes usam faixas diferentes', () => {
+    // O passo entre assentos lado a lado é ~1.14 tile: a paridade alterna.
+    const seats = [1.729, 2.871, 4.013, 5.155]
+    const lanes = seats.map(bubbleLane)
+    for (let i = 1; i < lanes.length; i++) {
+      expect(lanes[i], `assentos ${seats[i - 1]} e ${seats[i]} colidiriam`).not.toBe(lanes[i - 1])
+    }
+  })
+
+  it('a faixa levantada sobe o suficiente para o balão de baixo aparecer INTEIRO', () => {
+    const low = bubblePlacement(2)
+    const high = bubblePlacement(3)
+    const step = Math.abs(high.marginBottom - low.marginBottom)
+    // Não basta passar da cápsula: a cauda da que sobe desce em direção ao personagem
+    // dela e cruzaria a cápsula de baixo. O degrau cobre os dois.
+    expect(step).toBeGreaterThanOrEqual(BUBBLE_CAPSULE_HEIGHT + BUBBLE_TAIL_HEIGHT)
+    expect(step).toBe(BUBBLE_LANE_OFFSET)
+  })
+
+  it('a que sobe desenha por cima, para a cauda dela não ser cortada', () => {
+    expect(bubblePlacement(3).zIndex).toBeGreaterThan(bubblePlacement(2).zIndex)
+  })
+
+  it('o nome no hover limpa o balão, inclusive o levantado', () => {
+    for (const x of [2, 3]) {
+      const p = bubblePlacement(x)
+      expect(p.nameMarginBottom).toBeGreaterThan(p.marginBottom)
+    }
+  })
+
+  it('a faixa é estável para o mesmo agente', () => {
+    expect(bubbleLane(2.871)).toBe(bubbleLane(2.871))
   })
 })
 

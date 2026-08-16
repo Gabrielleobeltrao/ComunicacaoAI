@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Illustration } from './Illustration'
 import { AgentActivityBubble } from '../components/AgentActivityBubble'
+import { bubblePlacement } from '../lib/agentActivityAssets'
 import { NamePill } from './NamePill'
 import { characterSrc } from '../lib/officeAssets'
 import type { CharacterView } from '../lib/officeAssets'
@@ -53,6 +54,7 @@ export function MapAgent({
   style,
 }: MapAgentProps) {
   const [hovered, setHovered] = useState(false)
+  const placement = bubblePlacement(x)
   const view = facing === 'costas' ? 'costas' : 'frente'
   const variant = `${view}${seated ? '-sentado' : ''}${pose === 'ligacao' ? '-ligacao' : ''}` as CharacterView
   const src = art || (agent ? characterSrc(agent, variant) : undefined)
@@ -98,11 +100,13 @@ export function MapAgent({
           name={name}
           status={status}
           // The name rises above the bubble when both are on screen.
-          style={{ position: 'absolute', bottom: headTop, marginBottom: opState ? 40 : 4, zIndex: 7, whiteSpace: 'nowrap', pointerEvents: 'none' }}
+          style={{ position: 'absolute', bottom: headTop, marginBottom: opState ? placement.nameMarginBottom : 4, zIndex: 20, whiteSpace: 'nowrap', pointerEvents: 'none' }}
         />
       ) : null}
+      {/* Lane by column parity, so a neighbour's bubble never sits at the same
+          height and hides this one. */}
       {opState ? (
-        <span style={{ position: 'absolute', bottom: headTop, marginBottom: 8, zIndex: 6, pointerEvents: 'none' }}>
+        <span style={{ position: 'absolute', bottom: headTop, marginBottom: placement.marginBottom, zIndex: placement.zIndex, pointerEvents: 'none' }}>
           <AgentActivityBubble state={opState} agentName={name ?? ''} safeDetail={opDetail} size="sm" />
         </span>
       ) : null}

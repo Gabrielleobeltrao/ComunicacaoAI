@@ -89,8 +89,11 @@ export function AgentActivityBubble({
   // the figure's actual side, which callers get wrong far more often than it helps.
   const tail =
     asset.kind === 'thought' ? (
-      <span style={{ position: 'absolute', top: 'calc(100% - 2px)', left: '50%', width: 0, height: 20, pointerEvents: 'none' }}>
-        {([[5, 0], [3.5, 1], [2.5, 2]] as [number, number][]).map(([d, i]) => (
+      // DIVERGENCE FROM THE DESIGN, on purpose: the specimen draws three dots, and
+      // the third (smallest, lowest) lands on the character's head with this app's
+      // sprite geometry. Two dots still read as a thought bubble and clear the head.
+      <span style={{ position: 'absolute', top: 'calc(100% - 2px)', left: '50%', width: 0, height: 14, pointerEvents: 'none' }}>
+        {([[5, 0], [3.5, 1]] as [number, number][]).map(([d, i]) => (
           <span
             key={i}
             style={{

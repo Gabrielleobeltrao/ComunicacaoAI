@@ -36,6 +36,20 @@ const AGENTS = [
   { _id: A2, name: 'Caio', objective: '', preset: 'operator', floorId: FLOOR_ID, tools: [], builtinTools: [], capabilities: [], activationModes: ['manual'] },
 ]
 
+// A full floor: enough characters that the layout necessarily seats some of them
+// side by side, which is where bubbles used to cover each other.
+const CROWD = Array.from({ length: 6 }, (_, i) => ({
+  _id: `000000000000000000000a${(i + 1).toString().padStart(2, '0')}`,
+  name: ['Nina', 'Caio', 'Íris', 'Théo', 'Duda', 'Léo'][i],
+  objective: '',
+  preset: 'operator',
+  floorId: FLOOR_ID,
+  tools: [],
+  builtinTools: [],
+  capabilities: [],
+  activationModes: ['manual'],
+}))
+
 const liveState = (over: Record<string, unknown> = {}) => ({
   agentId: A1,
   floorId: FLOOR_ID,
@@ -48,7 +62,8 @@ const liveState = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-async function stub(page: Page, opts: { states?: unknown[] } = {}) {
+async function stub(page: Page, opts: { states?: unknown[]; agents?: unknown[] } = {}) {
+  const roster = opts.agents ?? AGENTS
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   await page.route('**/api/floors**', (r) => r.fulfill({ json: [FLOOR] }))
   await page.route(`**/api/floors/${FLOOR_ID}`, (r) => r.fulfill({ json: FLOOR }))
@@ -68,8 +83,8 @@ async function stub(page: Page, opts: { states?: unknown[] } = {}) {
   await page.route('**/api/floors/*/agent-states**', (r) =>
     r.fulfill({ json: { version: 1, generatedAt: new Date().toISOString(), states: opts.states ?? [] } }),
   )
-  await page.route('**/api/agents?**', (r) => r.fulfill({ json: AGENTS }))
-  await page.route('**/api/agents', (r) => r.fulfill({ json: AGENTS }))
+  await page.route('**/api/agents?**', (r) => r.fulfill({ json: roster }))
+  await page.route('**/api/agents', (r) => r.fulfill({ json: roster }))
   await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/widgets', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/building', (r) => r.fulfill({ json: BUILDING }))
@@ -202,4 +217,91 @@ test('o asset do balão é servido pelo próprio build, nunca por CDN', async ({
   const status = await page.evaluate(async () => (await fetch('/illustrations/agent-activity/send.svg')).status)
   expect(status).toBe(200)
   expect(remoteGlyph).toEqual([])
+})
+
+// --- geometria ---------------------------------------------------------------------
+
+test('o rastro do balão de pensamento não encosta na cabeça', async ({ page }) => {
+  await stub(page, { states: [liveState({ state: 'thinking' })] })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  const bubble = bubbles(page).first()
+  await expect(bubble).toBeVisible()
+  // Dois pontinhos, não três: o terceiro caía sobre o personagem.
+  const trail = await bubble.evaluate((el) => {
+    const tail = [...el.children].find((c) => (c as HTMLElement).style.height === '14px')
+    return tail ? tail.childElementCount : -1
+  })
+  expect(trail).toBe(2)
+})
+
+// Guarda de regressão ampla. Com o layout de hoje os seis agentes caem em linhas
+// diferentes, então ela sozinha NÃO exercita o pior caso — quem sustenta a correção é
+// o teste das faixas, logo abaixo, que falha se o degrau for removido.
+test('balões de personagens lado a lado não se cobrem', async ({ page }) => {
+  await stub(page, {
+    agents: CROWD,
+    states: CROWD.map((a, i) =>
+      liveState({ agentId: a._id, state: ['thinking', 'using_tool', 'researching', 'delivering', 'responding', 'validating_output'][i], rootExecutionId: `run-${i}` }),
+    ),
+  })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(bubbles(page).first()).toBeVisible()
+
+  const boxes = await bubbles(page).evaluateAll((els) =>
+    els.map((el) => {
+      const r = el.getBoundingClientRect()
+      return { top: r.top, left: r.left, right: r.right, bottom: r.bottom }
+    }),
+  )
+  expect(boxes.length).toBeGreaterThan(1)
+
+  // Nenhum par pode se sobrepor: se dois se cruzam na horizontal, têm de estar em
+  // faixas verticais diferentes.
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i]
+      const b = boxes[j]
+      const overlaps = a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+      expect(overlaps, `balões ${i} e ${j} se cobrem`).toBe(false)
+    }
+  }
+})
+
+test('a cápsula tem a altura que o cálculo das faixas assume', async ({ page }) => {
+  await stub(page, { states: [liveState({ state: 'thinking' })] })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  const bubble = bubbles(page).first()
+  await expect(bubble).toBeVisible()
+
+  // BUBBLE_CAPSULE_HEIGHT / BUBBLE_TAIL_HEIGHT são medidas, não chutes. O que não pode
+  // acontecer é a constante SUBESTIMAR a cápsula: aí o degrau entre faixas deixa de
+  // bastar e os balões voltam a se cobrir. (A altura real é fracionária, ~21,5px, então
+  // comparar inteiro exato seria frágil.)
+  const box = (await bubble.boundingBox())!
+  expect(box.height).toBeLessThanOrEqual(22)
+  expect(box.height).toBeGreaterThan(22 - 4)
+
+  const tail = await bubble.evaluate((el) => {
+    const t = [...el.children].find((c) => (c as HTMLElement).style.height === '14px') as HTMLElement | undefined
+    return t ? Number.parseInt(t.style.height, 10) : -1
+  })
+  expect(tail).toBe(14)
+})
+
+test('as duas faixas ficam separadas por mais que a altura de um balão', async ({ page }) => {
+  await stub(page, {
+    agents: CROWD,
+    states: CROWD.map((a, i) => liveState({ agentId: a._id, state: 'thinking', rootExecutionId: `run-${i}` })),
+  })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(bubbles(page).first()).toBeVisible()
+
+  // Cada balão é posicionado pelo wrapper: o marginBottom revela a faixa.
+  const offsets = await bubbles(page).evaluateAll((els) =>
+    [...new Set(els.map((el) => Number.parseInt(getComputedStyle(el.parentElement as HTMLElement).marginBottom, 10)))].sort((a, b) => a - b),
+  )
+  expect(offsets.length, 'as duas faixas precisam estar em uso no mapa').toBe(2)
+  expect(offsets[1] - offsets[0]).toBeGreaterThanOrEqual(22 + 14)
 })

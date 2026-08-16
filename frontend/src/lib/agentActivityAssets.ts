@@ -110,3 +110,39 @@ export function bubbleLabel(agentName: string, state: string, safeDetail?: { act
   const detail = asset.tier === 'ongoing' && safeDetail?.actionLabel ? `: ${safeDetail.actionLabel}` : ''
   return `${agentName}: ${asset.label.toLowerCase()}${detail}`
 }
+
+// --- placement ------------------------------------------------------------------
+// Two characters seated side by side are about one tile apart, and a bubble is wider
+// than that gap — so drawn at the same height they cover each other and the one
+// behind is unreadable. Bubbles are therefore staggered into two lanes by column
+// parity: neighbours always land at different heights, and both stay legible.
+//
+// Parity is derived from the agent's own grid position, so it is stable per agent and
+// needs no knowledge of who is next door.
+// ponytail: parity heuristic, not a label-collision solver — if the map ever gets
+// free-form placement, this becomes a real de-overlap pass.
+// Measured, not guessed (see the e2e that asserts it against the rendered box):
+// the small capsule is 22px tall and a thought tail hangs 14px below it.
+export const BUBBLE_CAPSULE_HEIGHT = 22
+export const BUBBLE_TAIL_HEIGHT = 14
+
+// The raised lane has to clear the lower capsule COMPLETELY — including its own tail,
+// which hangs down towards its character and would otherwise cross the neighbour's
+// bubble. Anything smaller leaves the lower one partly hidden, which is the bug this
+// exists to fix.
+export const BUBBLE_LANE_OFFSET = BUBBLE_CAPSULE_HEIGHT + BUBBLE_TAIL_HEIGHT
+
+export const bubbleLane = (x: number): 0 | 1 => (Math.round(x) % 2 === 0 ? 0 : 1)
+
+/** Where the bubble sits above the head, and how it stacks against a neighbour's. */
+export function bubblePlacement(x: number): { marginBottom: number; zIndex: number; nameMarginBottom: number } {
+  const lane = bubbleLane(x)
+  return {
+    marginBottom: 8 + lane * BUBBLE_LANE_OFFSET,
+    // The raised one draws over its neighbour, so its tail is never cut by the
+    // capsule below it.
+    zIndex: 6 + lane,
+    // On hover the name still has to clear the bubble — including a raised one.
+    nameMarginBottom: 40 + lane * BUBBLE_LANE_OFFSET,
+  }
+}

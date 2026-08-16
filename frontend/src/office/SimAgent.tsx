@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import { AgentSprite } from './AgentSprite'
 import { AgentActivityBubble } from '../components/AgentActivityBubble'
+import { bubblePlacement } from '../lib/agentActivityAssets'
 import { NamePill } from './NamePill'
 import type { SimView } from './useOfficeSimulation'
 import type { AgentStatus } from '../ui'
@@ -34,6 +35,9 @@ interface SimAgentProps {
 // animated AgentSprite, a contact shadow and a hover name pill.
 export function SimAgent({ agentId, name, character, status, view, initialX, initialY, register, setHovered, onOpen, opState, opDetail }: SimAgentProps) {
   const [hover, setHover] = useState(false)
+  // Which of the two bubble lanes this agent uses — from its own column, so two
+  // characters side by side never draw at the same height.
+  const placement = bubblePlacement(initialX)
   const seated = view.motion === 'seated'
   const headTop = seated ? '78.6%' : '100%'
   return (
@@ -74,14 +78,15 @@ export function SimAgent({ agentId, name, character, status, view, initialX, ini
         <NamePill
           name={name}
           status={status}
-          style={{ position: 'absolute', bottom: headTop, marginBottom: opState ? 40 : 4, zIndex: 7, whiteSpace: 'nowrap', pointerEvents: 'none' }}
+          style={{ position: 'absolute', bottom: headTop, marginBottom: opState ? placement.nameMarginBottom : 4, zIndex: 20, whiteSpace: 'nowrap', pointerEvents: 'none' }}
         />
       ) : null}
       {/* Anchored to the real top of the sprite, so it follows the lower head of a
           seated crop with nothing to adjust — and it rides zoom/pan for free because
-          the whole wrapper is positioned by the sim. */}
+          the whole wrapper is positioned by the sim. The lane keeps it off a
+          neighbour's bubble. */}
       {opState ? (
-        <span style={{ position: 'absolute', bottom: headTop, marginBottom: 8, zIndex: 6, pointerEvents: 'none' }}>
+        <span style={{ position: 'absolute', bottom: headTop, marginBottom: placement.marginBottom, zIndex: placement.zIndex, pointerEvents: 'none' }}>
           <AgentActivityBubble state={opState} agentName={name} safeDetail={opDetail} size="sm" />
         </span>
       ) : null}
