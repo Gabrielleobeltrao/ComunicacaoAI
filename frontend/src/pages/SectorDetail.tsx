@@ -5,7 +5,7 @@ import { AgentBadges } from '../components/AgentBadges'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { SectorForm } from '../components/SectorForm'
-import { SectorPlayground } from '../components/SectorPlayground'
+import { SectorExecutions } from '../components/SectorExecutions'
 import { SectorKnowledge } from '../components/SectorKnowledge'
 import { API_URL } from '../lib/api'
 import { SectorApiError, getSectorOverview, sectorModeLabel } from '../lib/sectors'
@@ -392,7 +392,9 @@ export function SectorDetail() {
                   ) : active === 'conhecimento' ? (
                     <SectorKnowledge key={sector._id} sectorId={sector._id} />
                   ) : active === 'execucoes' ? (
-                    <SectorPlayground key={sector._id} sector={sector} />
+                    // Desempenho, Histórico and — last, labelled as a test — the
+                    // playground. It used to be the playground alone.
+                    <SectorExecutions sector={sector} agents={agents} />
                   ) : null}
                 </div>
               )}
