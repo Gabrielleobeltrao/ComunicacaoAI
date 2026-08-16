@@ -81,6 +81,40 @@ environment. They are entered per channel in the app and stored **encrypted in
 MongoDB** (using `ENCRYPTION_KEY`). There is therefore no `TWILIO_*` / `META_*`
 env var to configure at the platform level — do not invent one.
 
+The same is true of every **App** an owner connects (Slack, Mercado Pago, RD
+Station, HubSpot, Stripe, Nuvemshop, a private App…). Their credentials are typed
+in the product, encrypted with `ENCRYPTION_KEY` and stored on the installation —
+never in the environment, never in the agent document, and never returned by the
+API. Adding an App therefore adds **no** environment variable.
+
+Google is the exception in shape only: the OAuth **client** is a platform
+credential (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`), while the owner's own
+tokens stay encrypted in the database.
+
+## Collections the boot migration creates or evolves
+
+`runMigrations()` runs on every boot, is idempotent and additive — it never
+deletes and never changes behaviour an owner already had. It creates the indexes
+for, and backfills:
+
+| Collection | What it holds | Backfill |
+| --- | --- | --- |
+| `connections` | App installations (evolved from provider connections) | `appKey`/`appVersion`/`grantedScopes` filled from `provider` |
+| `app_definitions` | Private App manifests | — |
+| `user_navigation_preferences` | Pinned Apps, per user | — |
+| `agent_live_states` | Ephemeral operational state (TTL index) | — |
+| `sector_executions` | One root per sector run | — |
+| `execution_roots` | One root per request | — |
+| `app_action_events` | Safe App action telemetry | — |
+| `agents` | — | credentials moved out of `builtinTools` into installations; `appGrants` written |
+| `sectors` | — | `entryPolicy: 'open_members'` (current behaviour, unchanged) |
+| `buildings` | — | `floorCommunication`: `all` for a multi-floor building, `isolated` for a single-floor one |
+| `offices` (floors) | — | read as `workMode: 'organization'` (current behaviour) |
+
+Rolling back the application code is safe: the added fields are ignored by the
+previous version, the legacy `builtinTools` entries are still present (stamped
+`migratedAt`), and no collection was dropped or renamed.
+
 ## `BETTER_AUTH_SECRET` vs `ENCRYPTION_KEY`
 
 They are **different secrets with different blast radii** and must not be reused:
