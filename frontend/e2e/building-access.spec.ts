@@ -339,12 +339,23 @@ test('criar andar é uma ação, e se veste como as outras ações de criar', as
   const switcher = page.getByTestId('building-switcher').first()
   await switcher.hover()
   await switcher.click()
-  const criar = page.getByRole('menuitem', { name: /Criar andar/ })
+  const criar = page.getByTestId('create-floor')
   await expect(criar).toBeVisible()
-  // Mesma cor de marca de "Nova equipe" e "Contratar agente" — não texto comum.
-  const cor = await criar.evaluate((el) => getComputedStyle(el).color)
-  const marca = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--intent-brand').trim())
-  expect(marca.length).toBeGreaterThan(0)
-  expect(cor).not.toBe('rgb(0, 0, 0)')
   await expect(criar.locator('[data-icon="plus"]')).toBeVisible()
+
+  // O MESMO botão cheio de "Nova equipe": fundo da marca, texto branco. Antes era
+  // texto azul solto no meio da lista, indistinguível de um item de menu.
+  const [fundo, texto, marca] = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="create-floor"]') as HTMLElement
+    const cs = getComputedStyle(el)
+    return [cs.backgroundColor, cs.color, getComputedStyle(document.documentElement).getPropertyValue('--intent-brand').trim()]
+  })
+  expect(marca.length).toBeGreaterThan(0)
+  // Preenchido, não transparente.
+  expect(fundo).not.toBe('rgba(0, 0, 0, 0)')
+  expect(fundo).not.toBe('transparent')
+  // Texto claro sobre o fundo da marca.
+  const claro = /rgba?\((\d+), (\d+), (\d+)/.exec(texto)
+  expect(claro).not.toBeNull()
+  expect(Number(claro![1]) + Number(claro![2]) + Number(claro![3])).toBeGreaterThan(600)
 })

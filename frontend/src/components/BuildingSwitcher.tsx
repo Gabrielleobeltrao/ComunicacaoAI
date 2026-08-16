@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 import { useBuildingContext } from '../contexts/BuildingContext'
 import { COLLAPSE_FADE } from '../lib/sidebarStyles'
-import { Icon } from '../ui'
+import { Button, Icon } from '../ui'
 import { BuildingSettingsDialog } from './BuildingSettingsDialog'
 
 // Building header + floor popover (UX reorg §6.2/§6.3). Represents the workspace
@@ -120,12 +120,14 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
               </button>
             ))}
           <div style={{ borderTop: '1px solid var(--border-subtle)', margin: '6px 0' }} />
-          {/* Ação de criar, na mesma cor de "Nova equipe" e "Contratar agente": é
-              a mesma coisa em toda a interface. */}
-          <button role="menuitem" style={{ ...menuItem, color: 'var(--intent-brand)', fontWeight: 700 }} onClick={go(() => navigate('/dashboard'))}>
-            <Icon name="plus" size={14} style={{ marginRight: 6 }} />
-            Criar andar
-          </button>
+          {/* O MESMO botão de "Nova equipe" e "Contratar agente": fundo da marca,
+              texto branco. Criar é a mesma coisa em toda a interface, então usa o
+              mesmo componente, não uma imitação em texto. */}
+          <div style={{ padding: '4px 8px 6px' }}>
+            <Button size="sm" icon="plus" style={{ width: '100%' }} onClick={go(() => navigate('/dashboard'))} data-testid="create-floor">
+              Criar andar
+            </Button>
+          </div>
           <button role="menuitem" style={menuItem} onClick={go(() => setSettingsOpen(true))} data-testid="open-building-settings">
             Configurações do prédio
           </button>
