@@ -136,6 +136,20 @@ async function stub(
     pinnedSent = (r.request().postDataJSON() as { pinnedApps: string[] }).pinnedApps
     return r.fulfill({ json: { pinnedApps: pinnedSent.map((appKey, order) => ({ appKey, order })), maxPinnedApps: 6 } })
   })
+  await page.route('**/api/apps/*/overview', (r) =>
+    r.fulfill({
+      json: {
+        appKey: 'web_chat',
+        channels: [{ id: 'w1', name: 'Site', agentId: null, sectorId: null, ready: true }],
+        conversations: 12,
+        conversations7d: 4,
+        messages7d: 33,
+        handoffs: 1,
+        avgResponseMs: 42_000,
+        lastMessageAt: '2026-01-02T10:00:00.000Z',
+      },
+    }),
+  )
   await page.route('**/api/tools', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
@@ -376,4 +390,91 @@ test('falha de rede no guard não abre a página por engano', async ({ page }) =
   await page.route('**/api/apps/*/surfaces/*/access', (r) => r.abort())
   await page.goto('/apps/whatsapp/channels')
   await expect(page.getByTestId('surface-needs-reauth')).toBeVisible()
+})
+
+// --- visão geral dos canais ---------------------------------------------------------
+
+test('a Visão geral do canal mostra números medidos e atalhos', async ({ page }) => {
+  await stub(page, { access: { ok: true } })
+  await page.goto('/apps/web-chat/overview')
+  const metrics = page.getByTestId('overview-metrics')
+  await expect(metrics).toContainText('Conversas')
+  await expect(metrics).toContainText('12')
+  await expect(metrics).toContainText('Resposta média')
+  await expect(metrics).toContainText('42.0s')
+  await expect(page.getByTestId('overview-channels')).toContainText('Site')
+  await expect(page.getByTestId('overview-manage')).toBeVisible()
+})
+
+test('a Visão geral também passa pelo guard', async ({ page }) => {
+  await stub(page, { access: { ok: false, reason: 'inactive', appName: 'WhatsApp' } })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WHATSAPP] }))
+  await page.goto('/apps/whatsapp/overview')
+  await expect(page).toHaveURL(/\/apps\?inactive=whatsapp/)
+})
+
+// --- pin --------------------------------------------------------------------------
+
+test('erro ao fixar aparece na tela, em vez de sumir', async ({ page }) => {
+  await stub(page, { installations: [WEB_CHAT_INSTALLATION] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  await page.route('**/api/me/navigation-preferences/pinned-apps', (r) =>
+    r.fulfill({ status: 400, json: { message: 'Chat Web precisa estar conectado para ser fixado' } }),
+  )
+  await page.goto('/apps?tab=connected')
+  await page.getByTestId('pin-web_chat').click()
+  await expect(page.getByTestId('connected-list')).toContainText('precisa estar conectado para ser fixado')
+})
+
+test('conexão quebrada não oferece fixar', async ({ page }) => {
+  await stub(page, { installations: [{ ...WEB_CHAT_INSTALLATION, status: 'needs_reauth' }] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  await page.goto('/apps?tab=connected')
+  await expect(page.getByTestId('connected-list')).toBeVisible()
+  await expect(page.getByTestId('pin-web_chat')).toHaveCount(0)
+})
+
+test('o modal oferece fixar depois de ativado', async ({ page }) => {
+  await stub(page, { installations: [WEB_CHAT_INSTALLATION] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  await page.goto('/apps')
+  await page.getByTestId('app-open').click()
+  await expect(page.getByTestId('pin-from-detail')).toBeVisible()
+  await page.getByTestId('pin-from-detail').click()
+  await expect.poll(() => pinnedSent).toEqual(['web_chat'])
+})
+
+// --- drawer mobile ------------------------------------------------------------------
+
+test('no mobile, o App fixado é UM item-pai expansível — não uma lista achatada', async ({ page }) => {
+  await stub(page, { installations: [WEB_CHAT_INSTALLATION], navigation: [NAV_WEB_CHAT] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/apps')
+
+  await page.getByRole('button', { name: /menu/i }).first().click()
+  const group = page.getByTestId('mobile-pinned-apps')
+  await expect(group).toBeVisible()
+
+  // Um item-pai, não uma entrada por página.
+  await expect(page.getByTestId('mobile-app-web_chat')).toHaveCount(1)
+  await expect(group).toContainText('Chat Web')
+  // As subpáginas começam recolhidas.
+  await expect(page.getByTestId('mobile-surface-web_chat-conversations')).toHaveCount(0)
+
+  await page.getByTestId('mobile-toggle-web_chat').click()
+  await expect(page.getByTestId('mobile-surface-web_chat-conversations')).toBeVisible()
+  await expect(page.getByTestId('mobile-surface-web_chat-widgets')).toBeVisible()
+})
+
+test('o chevron do App tem alvo de toque adequado', async ({ page }) => {
+  await stub(page, { installations: [WEB_CHAT_INSTALLATION], navigation: [NAV_WEB_CHAT] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/apps')
+  await page.getByRole('button', { name: /menu/i }).first().click()
+
+  const box = (await page.getByTestId('mobile-toggle-web_chat').boundingBox())!
+  expect(box.width).toBeGreaterThanOrEqual(40)
+  expect(box.height).toBeGreaterThanOrEqual(40)
 })

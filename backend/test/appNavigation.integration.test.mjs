@@ -49,9 +49,9 @@ test('ativar o Chat Web libera as páginas do manifesto', async () => {
   assert.equal(apps[0].pinned, false)
   assert.deepEqual(
     apps[0].surfaces.map((s) => s.path),
-    ['/apps/web-chat/widgets', '/apps/web-chat/conversations'],
+    ['/apps/web-chat/overview', '/apps/web-chat/widgets', '/apps/web-chat/conversations'],
   )
-  assert.equal(apps[0].defaultSurfaceKey, 'widgets')
+  assert.equal(apps[0].defaultSurfaceKey, 'overview')
 })
 
 test('o DTO de navegação não carrega componente, import nem caminho de módulo', async () => {
@@ -131,7 +131,7 @@ test('conexão que precisa reconectar mantém a entrada com CTA, não some', asy
   await connections().updateOne({ _id: new ObjectId(installation._id) }, { $set: { status: 'needs_reauth' } })
   const { apps } = await buildNavigation(OWNER, USER)
   assert.equal(apps[0].status, 'needs_reauth')
-  assert.equal(apps[0].surfaces.length, 2)
+  assert.equal(apps[0].surfaces.length, 3)
   assert.equal((await resolveSurface(OWNER, 'whatsapp', 'channels')).reason, 'needs_reauth')
 })
 

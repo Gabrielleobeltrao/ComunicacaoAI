@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { createInstallation, RISK_LABEL } from '../lib/apps'
+import { useAppNavigation } from '../lib/appNavigation'
 import type { AppCatalogEntry, AppInstallation } from '../lib/apps'
 import { API_URL } from '../lib/api'
 import { Button, Dialog, Field, Input, Tag } from '../ui'
@@ -37,7 +38,10 @@ export function AppDetailDialog({
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [pinning, setPinning] = useState(false)
+  const [pinError, setPinError] = useState('')
   const navigate = useNavigate()
+  const { pinned, togglePin } = useAppNavigation()
 
   useEffect(() => {
     setConfig({})
@@ -46,6 +50,19 @@ export function AppDetailDialog({
   }, [app?.key])
 
   if (!app) return null
+
+  const isPinned = pinned.some((p) => p.appKey === app.key)
+  const pin = async () => {
+    setPinning(true)
+    setPinError('')
+    try {
+      await togglePin(app.key)
+    } catch (e) {
+      setPinError((e as Error).message)
+    } finally {
+      setPinning(false)
+    }
+  }
 
   const active = installations.filter((i) => i.status !== 'revoked')
   const isOauth = app.activation === 'oauth'
@@ -152,6 +169,29 @@ export function AppDetailDialog({
             {app.source === 'system' ? 'App do sistema' : app.source === 'private' ? 'App privado' : 'App da comunidade'} · versão {app.version}
           </P>
         </Block>
+
+        {/* Pinning is offered right where the App was just activated — that is when
+            someone decides they want it in the menu. It is navigation only: it never
+            connects, grants or activates anything. */}
+        {app.pinnable && active.some((i) => i.status === 'connected') ? (
+          <Block title="Atalho no menu">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={pinning}
+                onClick={() => void pin()}
+                data-testid="pin-from-detail"
+              >
+                {isPinned ? 'Desafixar do menu' : 'Fixar App no sidebar'}
+              </Button>
+              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                Ao fixar, todas as páginas deste App ficam no submenu. Fixar é só atalho — não muda permissão de agente.
+              </span>
+            </div>
+            {pinError ? <P>{pinError}</P> : null}
+          </Block>
+        ) : null}
 
         {active.length > 0 ? (
           <Block title="Conexões desta conta">

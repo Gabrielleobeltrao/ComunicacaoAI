@@ -374,13 +374,12 @@ const webChat: AppDefinition = {
   allowedDomains: [],
   supportsMultipleConnections: false,
   actions: [],
-  // Only pages that really exist are declared. A "Visão geral" page is planned but
-  // not built, and declaring it would put a dead link in the sidebar.
   surfaces: [
+    { key: 'overview', label: 'Visão geral', description: 'Estado dos widgets, conversas e volume.', kind: 'native', scope: 'account', routeSegment: 'overview' },
     { key: 'widgets', label: 'Widgets', description: 'Criar, personalizar e instalar o widget no seu site.', kind: 'native', scope: 'account', routeSegment: 'widgets' },
     { key: 'conversations', label: 'Conversas Web', description: 'Conversas recebidas pelo chat do site.', kind: 'native', scope: 'account', routeSegment: 'conversations' },
   ],
-  sidebar: { pinnable: true, defaultSurfaceKey: 'widgets' },
+  sidebar: { pinnable: true, defaultSurfaceKey: 'overview' },
   status: 'published',
   dataAccess: ['Mensagens trocadas no chat do seu site'],
   storageNote: 'As conversas e mensagens ficam nesta conta, associadas ao widget que as recebeu.',
@@ -407,10 +406,11 @@ const whatsapp: AppDefinition = {
   supportsMultipleConnections: true,
   actions: [],
   surfaces: [
+    { key: 'overview', label: 'Visão geral', description: 'Status por número, conversas abertas e volume.', kind: 'native', scope: 'account', routeSegment: 'overview' },
     { key: 'channels', label: 'Números', description: 'Conectar provedor, escolher agente ou setor e testar.', kind: 'native', scope: 'account', routeSegment: 'channels' },
     { key: 'conversations', label: 'Conversas WhatsApp', description: 'Conversas recebidas pelos números conectados.', kind: 'native', scope: 'account', routeSegment: 'conversations' },
   ],
-  sidebar: { pinnable: true, defaultSurfaceKey: 'channels' },
+  sidebar: { pinnable: true, defaultSurfaceKey: 'overview' },
   status: 'published',
   dataAccess: ['Mensagens trocadas nos números que você conectar'],
   storageNote: 'As credenciais do provedor ficam criptografadas; conversas e mensagens ficam nesta conta.',

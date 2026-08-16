@@ -228,6 +228,21 @@ function ConnectedList({
   // touches nothing about the connection itself.
   const { pinned, togglePin } = useAppNavigation()
   const pinnedKeys = pinned.map((p) => p.appKey)
+  const [pinning, setPinning] = useState<string | null>(null)
+
+  // A refused pin has a reason — the backend refuses one that points at a broken or
+  // inactive App. Swallowing it left the button doing nothing, silently.
+  const pin = async (appKey: string) => {
+    setPinning(appKey)
+    setMessage(null)
+    try {
+      await togglePin(appKey)
+    } catch (e) {
+      setMessage({ id: appKey, text: (e as Error).message, ok: false })
+    } finally {
+      setPinning(null)
+    }
+  }
   const [renaming, setRenaming] = useState<AppInstallation | null>(null)
   const [confirming, setConfirming] = useState<AppInstallation | null>(null)
 
@@ -280,7 +295,7 @@ function ConnectedList({
               <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="installation-usage">
                 {i.agentCount ? `${i.agentCount} ${i.agentCount === 1 ? 'agente usa' : 'agentes usam'}` : 'Nenhum agente usa ainda'}
               </p>
-              {message?.id === i.id ? (
+              {message?.id === i.appKey || message?.id === i.id ? (
                 <p style={{ margin: 0, fontSize: 12.5, color: message.ok ? 'var(--intent-brand)' : 'var(--coral-600, #d92d20)' }}>{message.text}</p>
               ) : null}
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 4 }}>
@@ -293,11 +308,12 @@ function ConnectedList({
                 <Button size="sm" variant="ghost" onClick={() => void reconnect(i)}>
                   Reconectar
                 </Button>
-                {app?.pinnable && i.status !== 'revoked' ? (
+                {app?.pinnable && i.status === 'connected' ? (
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => void togglePin(i.appKey).catch(() => undefined)}
+                    disabled={pinning === i.appKey}
+                    onClick={() => void pin(i.appKey)}
                     data-testid={`pin-${i.appKey}`}
                   >
                     {pinnedKeys.includes(i.appKey) ? 'Desafixar do menu' : 'Fixar no menu'}

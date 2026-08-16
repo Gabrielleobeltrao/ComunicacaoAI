@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import { AppSurfaceGuard } from './AppSurfaceGuard'
+import { ChannelOverview } from '../pages/ChannelOverview'
 import { Chats } from '../pages/Chats'
 import { Widgets } from '../pages/Widgets'
 
@@ -27,6 +28,18 @@ const guarded = (appKey: string, surfaceKey: string, title: string, page: ReactE
 )
 
 export const APP_SURFACE_ROUTES: SurfaceRoute[] = [
+  {
+    appKey: 'web_chat',
+    surfaceKey: 'overview',
+    path: '/apps/web-chat/overview',
+    element: () => guarded('web_chat', 'overview', 'Chat Web · Visão geral', <ChannelOverview appKey="web_chat" />),
+  },
+  {
+    appKey: 'whatsapp',
+    surfaceKey: 'overview',
+    path: '/apps/whatsapp/overview',
+    element: () => guarded('whatsapp', 'overview', 'WhatsApp · Visão geral', <ChannelOverview appKey="whatsapp" />),
+  },
   {
     appKey: 'web_chat',
     surfaceKey: 'widgets',

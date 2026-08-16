@@ -1,11 +1,13 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 import { signOut, useSession } from '../lib/auth-client'
 import { Brand, Icon } from '../ui'
 import { NAV } from './navItems'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { isNavActive, navGroupsFor } from './navConfig'
-import { useAppNavigation } from '../lib/appNavigation'
+import { defaultPathFor, useAppNavigation } from '../lib/appNavigation'
+import type { NavigationApp } from '../lib/appNavigation'
 
 // Touch navigation for phones and small tablets (< lg): a single slide-in drawer
 // (opened from the topbar hamburger) with the account, every destination with
@@ -141,24 +143,12 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
                   <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-muted)', padding: '8px 8px 2px' }}>
                     APPS FIXADOS
                   </span>
-                  {pinned.flatMap((app) =>
-                    app.surfaces.map((surface) => {
-                      const active = pathname === surface.path
-                      return (
-                        <Link
-                          key={surface.path}
-                          to={surface.path}
-                          onClick={close}
-                          aria-current={active ? 'page' : undefined}
-                          className="flex items-center gap-3 rounded-md px-3"
-                          style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-body)', background: active ? 'var(--intent-brand-soft)' : 'transparent', fontWeight: active ? 700 : 500, textDecoration: 'none' }}
-                        >
-                          <Icon name={app.icon ?? 'blocks'} size={18} />
-                          <span>{app.surfaces.length > 1 ? `${app.name} · ${surface.label}` : app.name}</span>
-                        </Link>
-                      )
-                    }),
-                  )}
+                  {/* One expandable PARENT per App — the same structure as the desktop
+                      rail. Flattening every page into its own top-level link buried the
+                      essential destinations under a wall of App sub-pages. */}
+                  {pinned.map((app) => (
+                    <MobilePinnedApp key={app.appKey} app={app} pathname={pathname} onNavigate={close} />
+                  ))}
                 </div>
               )}
             </nav>
@@ -186,5 +176,84 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
         </div>
       )}
     </>
+  )
+}
+
+// A pinned App in the drawer: the name opens its default page, the chevron reveals
+// the rest. It opens by itself when one of its pages is the current route.
+function MobilePinnedApp({
+  app,
+  pathname,
+  onNavigate,
+}: {
+  app: NavigationApp
+  pathname: string
+  onNavigate: () => void
+}) {
+  const containsActive = app.surfaces.some((s) => pathname === s.path)
+  const [open, setOpen] = useState(containsActive)
+  const expanded = open || containsActive
+  const single = app.surfaces.length === 1
+
+  const row = (active: boolean): CSSProperties => ({
+    minHeight: 'var(--hit-min)',
+    color: active ? 'var(--intent-brand)' : 'var(--text-body)',
+    background: active ? 'var(--intent-brand-soft)' : 'transparent',
+    fontWeight: active ? 700 : 500,
+    textDecoration: 'none',
+  })
+
+  return (
+    <div className="flex flex-col gap-0.5" data-testid={`mobile-app-${app.appKey}`}>
+      <div className="flex items-center gap-1">
+        <Link
+          to={defaultPathFor(app)}
+          onClick={onNavigate}
+          aria-current={containsActive ? 'page' : undefined}
+          className="flex flex-1 items-center gap-3 rounded-md px-3"
+          style={row(containsActive)}
+        >
+          <Icon name={app.icon ?? 'blocks'} size={18} />
+          <span>{app.name}</span>
+          {app.status === 'needs_reauth' ? (
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--intent-warning, #b54708)' }}>reconectar</span>
+          ) : null}
+        </Link>
+        {single ? null : (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={expanded}
+            aria-label={`${expanded ? 'Recolher' : 'Expandir'} páginas de ${app.name}`}
+            data-testid={`mobile-toggle-${app.appKey}`}
+            // A real touch target, not a 14px chevron.
+            style={{ minWidth: 'var(--hit-min)', minHeight: 'var(--hit-min)', display: 'grid', placeItems: 'center', background: 'none', border: 0, color: 'var(--text-muted)' }}
+          >
+            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={18} />
+          </button>
+        )}
+      </div>
+
+      {expanded && !single ? (
+        <div className="flex flex-col gap-0.5" style={{ paddingLeft: 22 }}>
+          {app.surfaces.map((surface) => {
+            const active = pathname === surface.path
+            return (
+              <Link
+                key={surface.path}
+                to={surface.path}
+                onClick={onNavigate}
+                aria-current={active ? 'page' : undefined}
+                className="flex items-center gap-3 rounded-md px-3"
+                style={{ ...row(active), fontSize: 13.5 }}
+                data-testid={`mobile-surface-${app.appKey}-${surface.key}`}
+              >
+                <span>{surface.label}</span>
+              </Link>
+            )
+          })}
+        </div>
+      ) : null}
+    </div>
   )
 }

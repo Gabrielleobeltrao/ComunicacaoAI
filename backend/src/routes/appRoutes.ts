@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { appCatalogPublic, getApp, SYSTEM_APPS } from '../apps/registry.js'
 import { installationPublic, listInstallations } from '../apps/installations.js'
 import { buildNavigation, getNavigationPreferences, MAX_PINNED_APPS, resolveSurface, setPinnedApps } from '../apps/navigation.js'
+import { channelOverview } from '../apps/channelOverview.js'
 import { fail, notFound } from './http.js'
 
 // Read-only: what the owner may connect, and what is already connected. Everything
@@ -60,6 +61,16 @@ appCatalogRouter.get('/:appKey/surfaces/:surfaceKey/access', async (req, res) =>
     appName: getApp(String(req.params.appKey))?.name ?? null,
     activationRoute: getApp(String(req.params.appKey))?.activationRoute ?? null,
   })
+})
+
+// The channel App's overview. Guarded by the same surface decision, so it cannot
+// serve an inactive App's numbers.
+appCatalogRouter.get('/:appKey/overview', async (req, res) => {
+  const appKey = String(req.params.appKey)
+  if (appKey !== 'web_chat' && appKey !== 'whatsapp') return notFound(res)
+  const decision = await resolveSurface(res.locals.userId, appKey, 'overview')
+  if (!decision.ok) return res.status(403).json({ ok: false, reason: decision.reason })
+  res.json(await channelOverview(res.locals.userId, appKey))
 })
 
 appCatalogRouter.get('/navigation', async (_req, res) => {
