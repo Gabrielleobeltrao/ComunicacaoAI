@@ -4,6 +4,7 @@ import { createFloor, deleteFloor, getFloor, getFloorActivity, listFloors, setFl
 import { agentStatesForFloor, floorMetrics } from '../automations/metrics.js'
 import { agentLiveStatesForFloor, legacyWorkingMap, liveStatesEtag } from '../agentLiveState.js'
 import { floorWorkOverview } from '../floorWork.js'
+import { executionAnalytics } from '../executionRoots.js'
 import { fail, notFound, oid } from './http.js'
 import { auditEntity } from './auditMiddleware.js'
 
@@ -77,6 +78,17 @@ floorRouter.get('/:floorId/work-overview', async (req, res) => {
   const floor = await getFloor(res.locals.userId, id)
   if (!floor) return notFound(res)
   res.json(await floorWorkOverview(res.locals.userId, floor))
+})
+
+// The same analytics service, scoped to this floor — never a second formula.
+floorRouter.get('/:floorId/executions/analytics', async (req, res) => {
+  const id = oid(req.params.floorId)
+  if (!id) return notFound(res)
+  const floor = await getFloor(res.locals.userId, id)
+  if (!floor) return notFound(res)
+  const raw = req.query.period
+  const period = raw === '7d' || raw === 'all' ? raw : '30d'
+  res.json(await executionAnalytics({ ownerId: res.locals.userId, scope: 'floor', period, floorId: id }))
 })
 
 floorRouter.delete('/:floorId', async (req, res) => {

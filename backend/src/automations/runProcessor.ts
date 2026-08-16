@@ -20,6 +20,7 @@ import { attemptChargeKey, recordReplyUsageOnce } from '../tokenUsage.js'
 import { finalizeAgentEvent, runEventKey } from '../agentEvents.js'
 import { executeRoutineStep } from './routineExecution.js'
 import { createLiveTracker } from '../agentLiveTracker.js'
+import { findRootByKey, finishExecutionRoot, markRootRunning, runExecutionKey } from '../executionRoots.js'
 import type { Provider } from '../llm.js'
 import { retrieveContext } from '../knowledge.js'
 import { decryptConfig, getConnection } from '../connections/service.js'
@@ -35,6 +36,13 @@ import type { Delivery, EmailConfig, TelegramConfig } from '../connections/types
 // Adapters wiring the runner's injected IO to the real subsystems, scoped to the
 // run's owner (never trust ids across owners).
 function buildDeps(run: AutomationRun): RunnerDeps {
+  // Resolved once per run and reused: every participation points at the SAME root.
+  // Awaited where it is needed, so a step never records a null root by racing.
+  let rootPromise: Promise<ObjectId | null> | null = null
+  const rootIdFor = () => {
+    rootPromise ??= findRootByKey(run.ownerId, runExecutionKey(run._id.toString())).then((root) => root?._id ?? null)
+    return rootPromise
+  }
   return {
     fetchUrl: async (url, opts) => {
       const res = await safeFetch(url, { contentTypeAllowlist: opts?.contentTypeAllowlist })
@@ -47,7 +55,7 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       const isCanceled = async () => (await findRunUnscoped(run._id))?.status === 'cancel_requested'
       const step = await executeRoutineStep(
         call,
-        { ownerId: run.ownerId, runId: run._id.toString(), buildingId: run.buildingId, floorId: run.floorId },
+        { ownerId: run.ownerId, runId: run._id.toString(), buildingId: run.buildingId, floorId: run.floorId, rootExecutionId: await rootIdFor() },
         {
           loadAgent: getAgentById,
           resolveOwnedSectorId,
@@ -147,10 +155,12 @@ export async function processRun(runId: string): Promise<void> {
   if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'canceled') return
   if (run.status === 'cancel_requested') {
     await Promise.all(trackersFor(run).map((tracker) => tracker.finish('canceled')))
+    await finishExecutionRoot(runExecutionKey(run._id.toString()), { status: 'canceled' })
     await updateRun(run._id, { status: 'canceled', finishedAt: new Date() })
     return
   }
 
+  await markRootRunning(runExecutionKey(run._id.toString()))
   await updateRun(run._id, { status: 'running', startedAt: new Date() })
   const outcome = await runDefinition(run.definitionSnapshot, buildDeps(run), run.triggerPayload)
 
@@ -197,6 +207,12 @@ export async function processRun(runId: string): Promise<void> {
   // instrumentation managed to report before.
   const terminal = outcome.status === 'succeeded' ? 'completed' : outcome.status === 'canceled' ? 'canceled' : 'failed'
   await Promise.all(trackersFor(run).map((tracker) => tracker.finish(terminal)))
+  // The request as a whole ended: the root closes with a CATEGORY, never a message.
+  await finishExecutionRoot(runExecutionKey(run._id.toString()), {
+    status: outcome.status === 'succeeded' ? 'succeeded' : outcome.status === 'canceled' ? 'canceled' : 'failed',
+    errorKind: failed?.errorKind ?? null,
+    finishedAt: now,
+  })
   await updateRun(run._id, {
     status: outcome.status as RunStatus,
     finishedAt: now,

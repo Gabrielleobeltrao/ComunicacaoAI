@@ -9,6 +9,7 @@ import { ensureInstallationIndexes } from './apps/installations.js'
 import { ensureNavigationIndexes } from './apps/navigation.js'
 import { ensureAgentLiveStateIndexes } from './agentLiveState.js'
 import { ensureSectorExecutionIndexes } from './sectorExecutions.js'
+import { ensureExecutionRootIndexes } from './executionRoots.js'
 import { backfillFloorCommunication } from './floorCommunication.js'
 import { ensureAppActionIndexes } from './apps/grants.js'
 import { migrateAppsAndInstallations } from './apps/migration.js'
@@ -69,6 +70,7 @@ export async function runMigrations(): Promise<void> {
   await ensureNavigationIndexes()
   await ensureAgentLiveStateIndexes()
   await ensureSectorExecutionIndexes()
+  await ensureExecutionRootIndexes()
 
   // Existing sectors keep their CURRENT behaviour: open. Closing a core is a decision
   // the owner takes explicitly — guessing which pipelines "should" be closed would

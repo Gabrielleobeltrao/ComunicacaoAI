@@ -6,6 +6,7 @@ import { findVersion } from './repository.js'
 import { computeDefinitionHash } from './validate.js'
 import { insertRunIdempotent } from './runRepository.js'
 import { createLiveTracker } from '../agentLiveTracker.js'
+import { runExecutionKey, startExecutionRoot } from '../executionRoots.js'
 import type { AutomationRun } from './runTypes.js'
 import type { TriggerType } from './types.js'
 
@@ -68,6 +69,18 @@ export async function createRun(
   // is no second system that could disagree with the database, and no enqueue that
   // could fail after the row was already written.
   const result = await insertRunIdempotent(run)
+  // One identity for the whole request. Idempotent: a retry finds the same root.
+  if (result.created) {
+    await startExecutionRoot({
+      executionKey: runExecutionKey(result.run._id.toString()),
+      ownerId,
+      buildingId: automation.buildingId,
+      originFloorId: automation.floorId,
+      source: run.triggerType === 'schedule' ? 'schedule' : run.triggerType === 'webhook' ? 'webhook' : 'manual',
+      sourceRefId: result.run._id,
+      createdAt: run.queuedAt,
+    })
+  }
   // A real execution now exists and is waiting for a worker. Only on CREATION: an
   // idempotent retry that found the existing run must not restart the clock.
   if (result.created) {

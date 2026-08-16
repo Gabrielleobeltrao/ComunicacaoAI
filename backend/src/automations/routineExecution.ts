@@ -60,6 +60,9 @@ export interface RoutineRunContext {
   runId: string
   buildingId: ObjectId
   floorId: ObjectId
+  // The request this step participates in. Absent on paths not yet correlated —
+  // those stay honestly marked as partial telemetry instead of being guessed.
+  rootExecutionId?: ObjectId | null
 }
 
 export interface RoutineExecutionDeps {
@@ -170,6 +173,9 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
     // not inflate the accumulators; a real retry does.
     attemptCount: call.attempt,
     // Safe scalars only: counts and statuses, never a prompt, a passage or an output.
+    // The request this participation belongs to, so the building's number is not the
+    // sum of its agents'.
+    rootExecutionId: ctx.rootExecutionId ?? null,
     metadata: {
       runId: ctx.runId,
       stepId: call.stepId,
