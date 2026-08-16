@@ -6,7 +6,8 @@ import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
-import { BuildingToDashboard, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
+import { DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
+import { Building } from './pages/Building'
 import { FloorView } from './pages/FloorView'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
@@ -77,7 +78,11 @@ function App() {
           <Route path="/floors/:floorId/runs" element={<P><FloorModuleRedirect to="agents" /></P>} />
 
           {/* Legacy → canonical redirects (bookmarks keep working) */}
-          <Route path="/building" element={<BuildingToDashboard />} />
+          {/* A página do prédio: lista os andares e é o ÚNICO lugar que cria um.
+              Ela redirecionava para o dashboard, e com isso "Criar andar" virava um
+              beco sem saída — uma conta nova, que não tem andar nenhum, não
+              conseguia criar o primeiro pela interface. */}
+          <Route path="/building" element={<P><Building /></P>} />
           <Route path="/automations" element={<P><LegacyModuleRedirect module="agents" /></P>} />
           <Route path="/automations/:id" element={<P><LegacyModuleRedirect module="agents" /></P>} />
           <Route path="/runs" element={<P><LegacyModuleRedirect module="agents" /></P>} />

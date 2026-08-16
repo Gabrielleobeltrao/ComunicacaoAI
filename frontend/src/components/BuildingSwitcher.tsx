@@ -124,7 +124,7 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
               texto branco. Criar é a mesma coisa em toda a interface, então usa o
               mesmo componente, não uma imitação em texto. */}
           <div style={{ padding: '4px 8px 6px' }}>
-            <Button size="sm" icon="plus" style={{ width: '100%' }} onClick={go(() => navigate('/dashboard'))} data-testid="create-floor">
+            <Button size="sm" icon="plus" style={{ width: '100%' }} onClick={go(() => navigate('/building'))} data-testid="create-floor">
               Criar andar
             </Button>
           </div>
