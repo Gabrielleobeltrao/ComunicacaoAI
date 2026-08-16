@@ -1,4 +1,4 @@
-import { Navigate, useParams } from 'react-router'
+import { Navigate, useParams, useSearchParams } from 'react-router'
 import { useBuildingContext } from '../contexts/BuildingContext'
 import { Dashboard } from './Dashboard'
 
@@ -35,4 +35,17 @@ export function LegacyModuleRedirect({ module }: { module: string }) {
 export function FloorModuleRedirect({ to }: { to: string }) {
   const { floorId } = useParams<{ floorId: string }>()
   return <Navigate to={floorId ? `/floors/${floorId}/${to}` : '/dashboard'} replace />
+}
+
+// /widgets and /chats predate the App pages. They keep working and land on the
+// canonical App route, preserving the query string — a bookmarked filter must not be
+// lost by a redirect. `?channel=whatsapp` lands on the WhatsApp page.
+export function LegacyChannelRedirect({ to, whatsappTo }: { to: string; whatsappTo: string }) {
+  const [params] = useSearchParams()
+  const channel = params.get('channel')
+  const target = channel === 'whatsapp' ? whatsappTo : to
+  const rest = new URLSearchParams(params)
+  rest.delete('channel')
+  const query = rest.toString()
+  return <Navigate to={query ? `${target}?${query}` : target} replace />
 }

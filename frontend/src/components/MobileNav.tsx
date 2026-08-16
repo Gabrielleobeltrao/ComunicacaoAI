@@ -5,6 +5,7 @@ import { Brand, Icon } from '../ui'
 import { NAV } from './navItems'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { isNavActive, navGroupsFor } from './navConfig'
+import { useAppNavigation } from '../lib/appNavigation'
 
 // Touch navigation for phones and small tablets (< lg): a single slide-in drawer
 // (opened from the topbar hamburger) with the account, every destination with
@@ -46,6 +47,7 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
   const bctx = useOptionalBuildingContext()
   const { pathname } = useLocation()
   const floorId = bctx?.activeFloorId ?? null
+  const { pinned } = useAppNavigation()
 
   return (
     <>
@@ -132,6 +134,33 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
                       </Link>
                     )
                   })}
+              {/* The same pins as the desktop rail. They are appended, so they can
+                  never push an essential destination out of the drawer. */}
+              {pinned.length > 0 && (
+                <div className="flex flex-col gap-1" data-testid="mobile-pinned-apps">
+                  <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-muted)', padding: '8px 8px 2px' }}>
+                    APPS FIXADOS
+                  </span>
+                  {pinned.flatMap((app) =>
+                    app.surfaces.map((surface) => {
+                      const active = pathname === surface.path
+                      return (
+                        <Link
+                          key={surface.path}
+                          to={surface.path}
+                          onClick={close}
+                          aria-current={active ? 'page' : undefined}
+                          className="flex items-center gap-3 rounded-md px-3"
+                          style={{ minHeight: 'var(--hit-min)', color: active ? 'var(--intent-brand)' : 'var(--text-body)', background: active ? 'var(--intent-brand-soft)' : 'transparent', fontWeight: active ? 700 : 500, textDecoration: 'none' }}
+                        >
+                          <Icon name={app.icon ?? 'blocks'} size={18} />
+                          <span>{app.surfaces.length > 1 ? `${app.name} · ${surface.label}` : app.name}</span>
+                        </Link>
+                      )
+                    }),
+                  )}
+                </div>
+              )}
             </nav>
 
             <div className="mt-auto flex flex-col gap-1 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>

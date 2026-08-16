@@ -229,6 +229,53 @@ test('entrada legada sem credencial preenchida não vira instalação vazia', as
   assert.equal((await readAgent(agentId)).builtinTools[0].migratedAt, undefined)
 })
 
+// --- canais que viram Apps -------------------------------------------------------
+
+test('quem já usa widget web encontra o Chat Web ativo, sem tocar no widget', async () => {
+  const widgetId = new ObjectId()
+  await db.collection('widgets').insertOne({ _id: widgetId, ownerId: OWNER, name: 'Site', publicKey: 'pk-1', createdAt: new Date() })
+
+  const report = await migrateAppsAndInstallations()
+  assert.equal(report.webChatInstallations, 1)
+
+  const [installation] = await listInstallations(OWNER, 'web_chat')
+  assert.equal(installation.status, 'connected')
+  // O widget não foi tocado: id, chave pública e roteamento continuam iguais.
+  const widget = await db.collection('widgets').findOne({ _id: widgetId })
+  assert.equal(widget.publicKey, 'pk-1')
+
+  // Rodar de novo não cria uma segunda instalação.
+  assert.equal((await migrateAppsAndInstallations()).webChatInstallations, 0)
+  assert.equal((await listInstallations(OWNER, 'web_chat')).length, 1)
+  await db.collection('widgets').deleteMany({})
+})
+
+test('cada número de WhatsApp vira uma conexão, sem copiar credencial nem histórico', async () => {
+  const channelId = new ObjectId()
+  await db.collection('widgets').insertOne({
+    _id: channelId,
+    ownerId: OWNER,
+    name: '+55 11 99999-8888',
+    publicKey: 'pk-wa',
+    channel: 'whatsapp',
+    whatsapp: { provider: 'meta', encryptedConfig: 'CIFRADO-DO-PROVEDOR' },
+    createdAt: new Date(),
+  })
+
+  const report = await migrateAppsAndInstallations()
+  assert.equal(report.whatsappInstallations, 1)
+
+  const [installation] = await listInstallations(OWNER, 'whatsapp')
+  assert.equal(installation.publicMetadata.channelId, channelId.toString())
+  // A config do provedor continua no canal, não foi duplicada na instalação.
+  assert.deepEqual(decryptInstallationConfig(installation), {})
+  const channel = await db.collection('widgets').findOne({ _id: channelId })
+  assert.equal(channel.whatsapp.encryptedConfig, 'CIFRADO-DO-PROVEDOR')
+
+  assert.equal((await migrateAppsAndInstallations()).whatsappInstallations, 0)
+  await db.collection('widgets').deleteMany({})
+})
+
 // --- o que a API devolve durante a transição ------------------------------------
 
 test('a API nunca devolve o valor de uma credencial legada', () => {

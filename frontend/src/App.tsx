@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react'
 import { Apps } from './pages/Apps'
+import { APP_SURFACE_ROUTES } from './components/appSurfaceRegistry'
+import { LegacyChannelRedirect } from './pages/redirects'
 import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
@@ -8,7 +10,6 @@ import { BuildingToDashboard, DashboardHome, FloorModuleRedirect, LegacyModuleRe
 import { FloorView } from './pages/FloorView'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
-import { Chats } from './pages/Chats'
 import { Dashboard } from './pages/Dashboard'
 import { Executions } from './pages/Executions'
 import { Logs } from './pages/Logs'
@@ -19,7 +20,6 @@ import { Settings } from './pages/Settings'
 import { SectorDetail } from './pages/SectorDetail'
 import { Setores } from './pages/Setores'
 import { Widget } from './pages/Widget'
-import { Widgets } from './pages/Widgets'
 
 // Navigation V2 is gated by aiBuilding: when ON, floor-scoped canonical routes +
 // legacy redirects replace the flat routes; when OFF, the original app is byte-
@@ -28,6 +28,12 @@ const P = ({ children }: { children: ReactNode }) => <ProtectedRoute>{children}<
 
 function App() {
   const v2 = featureFlags.aiBuilding
+
+  // App pages come from the compiled registry, so a route only exists when a real
+  // component backs it. The page itself still checks the installation.
+  const appSurfaceRoutes = APP_SURFACE_ROUTES.map((route) => (
+    <Route key={route.path} path={route.path} element={<P>{route.element()}</P>} />
+  ))
 
   const routes = (
     <Routes>
@@ -49,6 +55,7 @@ function App() {
               and lands on the Personalizados tab, favourites intact. */}
           <Route path="/apps" element={<P><Apps /></P>} />
           <Route path="/tools" element={<Navigate to="/apps?tab=custom" replace />} />
+          {appSurfaceRoutes}
           {/* The Central de execuções covers the WHOLE building (it filters by
               floor, it is not scoped to one), so it lives at the top level. */}
           <Route path="/executions" element={<P><Executions /></P>} />
@@ -93,6 +100,7 @@ function App() {
           <Route path="/agents/:agentId/:section" element={<P><AgentDetail /></P>} />
           <Route path="/apps" element={<P><Apps /></P>} />
           <Route path="/tools" element={<Navigate to="/apps?tab=custom" replace />} />
+          {appSurfaceRoutes}
           {/* Same canonical addresses with the pivot flag off, so no link dies. */}
           <Route path="/executions" element={<P><Executions /></P>} />
           <Route path="/settings/logs" element={<P><Logs /></P>} />
@@ -102,9 +110,10 @@ function App() {
         </>
       )}
 
-      {/* Global areas (both modes) */}
-      <Route path="/widgets" element={<P><Widgets /></P>} />
-      <Route path="/chats" element={<P><Chats /></P>} />
+      {/* Global areas (both modes). /widgets and /chats predate the App pages and
+          keep working: they land on the canonical App route with the query intact. */}
+      <Route path="/widgets" element={<P><LegacyChannelRedirect to="/apps/web-chat/widgets" whatsappTo="/apps/whatsapp/channels" /></P>} />
+      <Route path="/chats" element={<P><LegacyChannelRedirect to="/apps/web-chat/conversations" whatsappTo="/apps/whatsapp/conversations" /></P>} />
       <Route path="/settings" element={<P><Settings /></P>} />
       <Route path="/whatsapp" element={<Navigate to="/widgets" replace />} />
       <Route path="/teams" element={<Navigate to="/setores" replace />} />

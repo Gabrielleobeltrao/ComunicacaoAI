@@ -15,6 +15,7 @@ import {
 } from '../lib/apps'
 import type { AppCatalogEntry, AppInstallation } from '../lib/apps'
 import { API_URL } from '../lib/api'
+import { useAppNavigation } from '../lib/appNavigation'
 import { Button, Card, Dialog, EmptyState, Field, Input, Tabs, Tag } from '../ui'
 
 // The Apps page: what the account can connect (Catálogo), what it already connected
@@ -207,6 +208,10 @@ function ConnectedList({
 }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<{ id: string; text: string; ok: boolean } | null>(null)
+  // Pinning is navigation, not permission: it goes to the preference endpoint and
+  // touches nothing about the connection itself.
+  const { pinned, togglePin } = useAppNavigation()
+  const pinnedKeys = pinned.map((p) => p.appKey)
   const [renaming, setRenaming] = useState<AppInstallation | null>(null)
   const [confirming, setConfirming] = useState<AppInstallation | null>(null)
 
@@ -272,6 +277,16 @@ function ConnectedList({
                 <Button size="sm" variant="ghost" onClick={() => void reconnect(i)}>
                   Reconectar
                 </Button>
+                {app?.pinnable && i.status !== 'revoked' ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void togglePin(i.appKey).catch(() => undefined)}
+                    data-testid={`pin-${i.appKey}`}
+                  >
+                    {pinnedKeys.includes(i.appKey) ? 'Desafixar do menu' : 'Fixar no menu'}
+                  </Button>
+                ) : null}
                 {i.status !== 'revoked' ? (
                   <Button size="sm" variant="ghost" onClick={() => setConfirming(i)} data-testid="disconnect">
                     Desconectar

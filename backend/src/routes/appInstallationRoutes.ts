@@ -13,6 +13,7 @@ import {
   patchInstallation,
   revokeInstallation,
 } from '../apps/installations.js'
+import { dropPinsForApp } from '../apps/navigation.js'
 import { getGoogleStatus, googleConfigured } from '../googleCalendar.js'
 import { auditEntity } from './auditMiddleware.js'
 import { fail, notFound, oid } from './http.js'
@@ -27,6 +28,14 @@ export const appInstallationRouter = Router()
 
 // How many agents depend on an installation — what the owner must be warned about
 // before disconnecting (plan §7.1).
+// A pin pointing at an App with no usable connection left is dead weight. Dropping
+// it is idempotent and touches nothing operational.
+async function cleanUpPins(ownerId: string, appKey: string): Promise<void> {
+  const remaining = await listInstallations(ownerId, appKey)
+  if (remaining.some((i) => i.status !== 'revoked')) return
+  await dropPinsForApp(ownerId, appKey)
+}
+
 async function countAgentsUsing(ownerId: string, installationId: string): Promise<number> {
   return db.collection('agents').countDocuments({ ownerId, 'appGrants.installationId': installationId })
 }
@@ -153,8 +162,10 @@ appInstallationRouter.delete('/:id', async (req, res) => {
     // An explicit, separate action: remove the row entirely.
     const removed = await deleteInstallation(res.locals.userId, id)
     if (!removed) return notFound(res)
+    await cleanUpPins(res.locals.userId, installation.appKey)
     return res.json({ deleted: true })
   }
   await revokeInstallation(res.locals.userId, id)
+  await cleanUpPins(res.locals.userId, installation.appKey)
   res.json({ revoked: true })
 })

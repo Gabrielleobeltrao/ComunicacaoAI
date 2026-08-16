@@ -6,6 +6,8 @@ import { NAV } from './navItems'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { isNavActive, navGroupsFor } from './navConfig'
 import { BuildingSwitcher } from './BuildingSwitcher'
+import { PinnedAppsNav } from './PinnedAppsNav'
+import { useAppNavigation } from '../lib/appNavigation'
 
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
@@ -13,6 +15,7 @@ export function Sidebar({ current }: { current: string }) {
   // Nav V2 (grouped, floor-aware) when the building context is present.
   const bctx = useOptionalBuildingContext()
   const { pathname } = useLocation()
+  const { pinned } = useAppNavigation()
 
   const user = session?.user
   const displayName = user?.name?.trim() || user?.email?.split('@')[0] || 'Você'
@@ -67,6 +70,9 @@ export function Sidebar({ current }: { current: string }) {
                 })}
               </div>
             ))}
+            {/* Apps the user pinned. Built from active installations + manifest
+                pages + this user's preference — never from static config. */}
+            <PinnedAppsNav apps={pinned} />
           </nav>
         ) : (
           <nav className="flex flex-col gap-1">

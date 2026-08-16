@@ -27,6 +27,8 @@ export interface AppMigrationReport {
   installationsCreated: number
   agentsMigrated: number
   grantsCreated: number
+  webChatInstallations: number
+  whatsappInstallations: number
 }
 
 const installations = db.collection<AppInstallation>('connections')
@@ -235,15 +237,75 @@ async function ensureInstallation(
   return _id
 }
 
+// 4. The channels that already exist BECOME Apps.
+//
+// A widget or a connected number is exactly what an installation describes, so an
+// owner who already uses them must find the App active — not be asked to activate
+// something they have been using for months. Nothing is copied: no conversation, no
+// message, no widget id, no provider config. Only a row saying "this account uses
+// this App", pointing at what is already there.
+async function registerChannelApps(): Promise<{ webChat: number; whatsapp: number }> {
+  const widgets = db.collection<{ _id: ObjectId; ownerId: string; channel?: string; name?: string; createdAt?: Date }>('widgets')
+  let webChat = 0
+  let whatsapp = 0
+
+  const webOwners = (await widgets.distinct('ownerId', { channel: { $ne: 'whatsapp' } })) as string[]
+  for (const ownerId of webOwners) {
+    if (await ensureChannelInstallation(ownerId, 'web_chat')) webChat++
+  }
+
+  // One installation per connected NUMBER: the credentials stay in the channel
+  // document, which is what the webhook and the adapters already read.
+  const numbers = await widgets.find({ channel: 'whatsapp' }).toArray()
+  for (const number of numbers) {
+    if (await ensureChannelInstallation(number.ownerId, 'whatsapp', number)) whatsapp++
+  }
+  return { webChat, whatsapp }
+}
+
+async function ensureChannelInstallation(
+  ownerId: string,
+  appKey: 'web_chat' | 'whatsapp',
+  channel?: { _id: ObjectId; name?: string; createdAt?: Date },
+): Promise<boolean> {
+  const app = getApp(appKey)
+  if (!app) return false
+  // The channel id is the idempotency key: a second run finds the same row.
+  const filter = channel ? { ownerId, appKey, 'publicMetadata.channelId': channel._id.toString() } : { ownerId, appKey }
+  if (await installations.findOne(filter)) return false
+
+  const now = new Date()
+  await installations.insertOne({
+    _id: new ObjectId(),
+    ownerId,
+    buildingId: null,
+    appKey,
+    appVersion: app.version,
+    name: channel?.name ? `WhatsApp · ${channel.name}` : app.name,
+    status: 'connected',
+    // No credential is moved: the channel keeps its own encrypted provider config.
+    encryptedConfig: encrypt('{}'),
+    publicMetadata: channel ? { channelId: channel._id.toString(), configStore: 'widgets' } : { configStore: 'widgets' },
+    grantedScopes: [],
+    createdAt: channel?.createdAt ?? now,
+    updatedAt: now,
+    lastTestedAt: null,
+  })
+  return true
+}
+
 export async function migrateAppsAndInstallations(): Promise<AppMigrationReport> {
   const connectionsBackfilled = await backfillConnectionAppKeys()
   const googleInstallations = await ensureGoogleInstallations()
   const agentsResult = await migrateAgentBuiltinTools()
+  const channels = await registerChannelApps()
   return {
     connectionsBackfilled,
     googleInstallations,
     installationsCreated: agentsResult.installationsCreated,
     agentsMigrated: agentsResult.agentsMigrated,
     grantsCreated: agentsResult.grantsCreated,
+    webChatInstallations: channels.webChat,
+    whatsappInstallations: channels.whatsapp,
   }
 }

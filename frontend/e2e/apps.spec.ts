@@ -71,10 +71,12 @@ const INSTALLATION = {
 
 let created: Record<string, unknown> | null = null
 let disconnected: { method: string; url: string } | null = null
+let pinnedSent: string[] | null = null
 
-async function stub(page: Page, opts: { installations?: unknown[] } = {}) {
+async function stub(page: Page, opts: { installations?: unknown[]; navigation?: unknown[] } = {}) {
   created = null
   disconnected = null
+  pinnedSent = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   const installations = opts.installations ?? []
 
@@ -96,6 +98,11 @@ async function stub(page: Page, opts: { installations?: unknown[] } = {}) {
     return r.fulfill({ json: INSTALLATION })
   })
   await page.route('**/api/app-installations/*/test', (r) => r.fulfill({ json: { ok: true, message: 'Configuração lida com sucesso.' } }))
+  await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: opts.navigation ?? [], pinned: [] } }))
+  await page.route('**/api/me/navigation-preferences/pinned-apps', (r) => {
+    pinnedSent = (r.request().postDataJSON() as { pinnedApps: string[] }).pinnedApps
+    return r.fulfill({ json: { pinnedApps: pinnedSent.map((appKey, order) => ({ appKey, order })), maxPinnedApps: 6 } })
+  })
   await page.route('**/api/tools', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
@@ -193,4 +200,77 @@ test('/tools continua funcionando e cai na aba Personalizados', async ({ page })
   await page.goto('/tools')
   await expect(page).toHaveURL(/\/apps\?tab=custom/)
   await expect(page.getByTestId('new-tool')).toBeVisible()
+})
+
+// --- fixar no menu ---------------------------------------------------------------
+
+const WEB_CHAT_INSTALLATION = { ...INSTALLATION, id: 'inst-web', appKey: 'web_chat', name: 'Chat Web', agentCount: 0 }
+const WEB_CHAT_APP = {
+  ...SLACK,
+  key: 'web_chat',
+  name: 'Chat Web',
+  description: 'Atendimento no seu site.',
+  auth: { kind: 'none', fields: [], scopes: [], documentationUrl: null },
+  allowedDomains: [],
+  actions: [],
+  surfaces: [
+    { key: 'widgets', label: 'Widgets', description: 'Instalar o widget.', icon: null, scope: 'account', routeSegment: 'widgets' },
+    { key: 'conversations', label: 'Conversas Web', description: 'Conversas do site.', icon: null, scope: 'account', routeSegment: 'conversations' },
+  ],
+  pinnable: true,
+  defaultSurfaceKey: 'widgets',
+  requiresAuth: false,
+  connected: true,
+}
+
+const NAV_WEB_CHAT = {
+  appKey: 'web_chat',
+  name: 'Chat Web',
+  icon: 'message-circle',
+  pinned: true,
+  order: 0,
+  status: 'ready',
+  defaultSurfaceKey: 'widgets',
+  surfaces: [
+    { key: 'widgets', label: 'Widgets', description: 'Instalar o widget.', icon: null, path: '/apps/web-chat/widgets' },
+    { key: 'conversations', label: 'Conversas Web', description: 'Conversas do site.', icon: null, path: '/apps/web-chat/conversations' },
+  ],
+}
+
+test('fixar um App é atalho: manda só a preferência de navegação', async ({ page }) => {
+  await stub(page, { installations: [WEB_CHAT_INSTALLATION] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  await page.goto('/apps?tab=connected')
+  await page.getByTestId('pin-web_chat').click()
+  await expect.poll(() => pinnedSent).toEqual(['web_chat'])
+  // Nada de conexão foi tocado.
+  expect(created).toBeNull()
+})
+
+test('o App fixado vira grupo no menu com as suas páginas', async ({ page }) => {
+  await stub(page, { installations: [WEB_CHAT_INSTALLATION], navigation: [NAV_WEB_CHAT] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/apps')
+  const rail = page.getByTestId('pinned-apps')
+  await expect(rail).toBeVisible()
+  const parent = page.getByTestId('pinned-app-web_chat')
+  await expect(parent).toBeVisible()
+  // O rail é só de ícones até o hover; o chevron abre as subpáginas do App.
+  await parent.hover()
+  await page.getByTestId('toggle-web_chat').click()
+  await page.getByTestId('surface-web_chat-conversations').click()
+  await expect(page).toHaveURL(/\/apps\/web-chat\/conversations/)
+})
+
+test('/widgets e /chats continuam funcionando e preservam o filtro', async ({ page }) => {
+  await stub(page)
+  await page.goto('/widgets')
+  await expect(page).toHaveURL(/\/apps\/web-chat\/widgets/)
+
+  await page.goto('/chats?search=pedido')
+  await expect(page).toHaveURL(/\/apps\/web-chat\/conversations\?search=pedido/)
+
+  await page.goto('/widgets?channel=whatsapp')
+  await expect(page).toHaveURL(/\/apps\/whatsapp\/channels/)
 })

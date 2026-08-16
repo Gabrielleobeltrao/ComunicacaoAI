@@ -33,8 +33,23 @@ describe('the CONTROLE group', () => {
 
   it('is its own group, after the existing ones', () => {
     const groups = navGroupsFor('floor-1', 'Térreo')
-    expect(groups.map((g) => g.group)).toEqual(['operation', 'communication', 'control'])
+    // Canais and Conversas became pages of the Chat Web / WhatsApp Apps, so the
+    // static communication group is gone: those entries are built at runtime from
+    // the account's active Apps and the user's pins.
+    expect(groups.map((g) => g.group)).toEqual(['operation', 'control'])
     expect(groups.find((g) => g.group === 'control')?.label).toBe('CONTROLE')
+  })
+
+  it('carries Apps, the account-wide catalogue', () => {
+    const apps = navItemsFor(null).find((i) => i.key === 'apps')
+    expect(apps?.path(null)).toBe('/apps')
+    expect(apps?.scope).not.toBe('floor')
+  })
+
+  it('no longer hard-codes the channel surfaces', () => {
+    const keys = navItemsFor('floor-1').map((i) => i.key)
+    expect(keys).not.toContain('channels')
+    expect(keys).not.toContain('conversations')
   })
 
   it('is not floor-scoped, so it never renders disabled without a floor', () => {

@@ -352,7 +352,78 @@ const telegram: AppDefinition = {
   disconnectNote: 'Rotinas que entregam por este bot param de enviar. O histórico de entregas é preservado.',
 }
 
-export const SYSTEM_APPS: AppDefinition[] = [google, slack, mercadopago, rdstation, hubspot, stripe, nuvemshop, email, telegram]
+// --- canais de atendimento como Apps nativos ------------------------------------
+// Chat Web and WhatsApp were never "integrations" in the catalog, yet they are
+// exactly that: something the owner activates, that unlocks pages and that agents
+// answer through. They become Apps WITHOUT recreating anything — the surfaces below
+// resolve to the widget/conversation pages that already exist, and activating one
+// stores an installation, never a second chat system.
+
+const webChat: AppDefinition = {
+  key: 'web_chat',
+  version: '1.0.0',
+  source: 'system',
+  name: 'Chat Web',
+  description: 'Atendimento no seu site: widget incorporável, roteamento para agente ou setor e histórico das conversas.',
+  icon: 'message-circle',
+  categories: ['atendimento'],
+  // Nothing to connect: activating is idempotent and asks for no secret.
+  auth: { kind: 'none', fields: [] },
+  allowedDomains: [],
+  supportsMultipleConnections: false,
+  actions: [],
+  // Only pages that really exist are declared. A "Visão geral" page is planned but
+  // not built, and declaring it would put a dead link in the sidebar.
+  surfaces: [
+    { key: 'widgets', label: 'Widgets', description: 'Criar, personalizar e instalar o widget no seu site.', kind: 'native', scope: 'account', routeSegment: 'widgets' },
+    { key: 'conversations', label: 'Conversas Web', description: 'Conversas recebidas pelo chat do site.', kind: 'native', scope: 'account', routeSegment: 'conversations' },
+  ],
+  sidebar: { pinnable: true, defaultSurfaceKey: 'widgets' },
+  status: 'published',
+  dataAccess: ['Mensagens trocadas no chat do seu site'],
+  storageNote: 'As conversas e mensagens ficam nesta conta, associadas ao widget que as recebeu.',
+  disconnectNote: 'Desativar interrompe novas conversas. Widgets, conversas e mensagens são preservados.',
+}
+
+const whatsapp: AppDefinition = {
+  key: 'whatsapp',
+  version: '1.0.0',
+  source: 'system',
+  name: 'WhatsApp',
+  description: 'Atendimento no WhatsApp pelo seu provedor: números conectados, roteamento e histórico das conversas.',
+  icon: 'whatsapp',
+  categories: ['atendimento'],
+  // The provider credential is validated by the WhatsApp channel flow, which keeps
+  // its own encrypted config and webhook validation.
+  auth: { kind: 'api_key', fields: [], documentationUrl: 'https://developers.facebook.com/docs/whatsapp' },
+  allowedDomains: [],
+  supportsMultipleConnections: true,
+  actions: [],
+  surfaces: [
+    { key: 'channels', label: 'Números', description: 'Conectar provedor, escolher agente ou setor e testar.', kind: 'native', scope: 'account', routeSegment: 'channels' },
+    { key: 'conversations', label: 'Conversas WhatsApp', description: 'Conversas recebidas pelos números conectados.', kind: 'native', scope: 'account', routeSegment: 'conversations' },
+  ],
+  sidebar: { pinnable: true, defaultSurfaceKey: 'channels' },
+  status: 'published',
+  dataAccess: ['Mensagens trocadas nos números que você conectar'],
+  storageNote: 'As credenciais do provedor ficam criptografadas; conversas e mensagens ficam nesta conta.',
+  disconnectNote: 'Desconectar um número interrompe novas mensagens. Conversas e histórico são preservados.',
+  providerCostNote: 'As tarifas de mensagem são cobradas pelo seu provedor de WhatsApp, não por esta plataforma.',
+}
+
+export const SYSTEM_APPS: AppDefinition[] = [
+  google,
+  slack,
+  mercadopago,
+  rdstation,
+  hubspot,
+  stripe,
+  nuvemshop,
+  email,
+  telegram,
+  webChat,
+  whatsapp,
+]
 
 // The legacy catalog keys an agent document may still carry. They resolve to the
 // same App, so an agent configured before this change keeps working.
