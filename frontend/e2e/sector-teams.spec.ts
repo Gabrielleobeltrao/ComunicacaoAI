@@ -221,6 +221,57 @@ test('the flow diagram shows entrada, the stages in order, and saída', async ({
   await expect(flow).toContainText('Saída')
 })
 
+// The flow reads TOP DOWN. Growing sideways meant a scrollbar inside the card for
+// anything longer than three steps — and, on a phone, the whole page moving.
+test('o fluxo do pipeline cresce de cima para baixo, sem rolagem horizontal', async ({ page }) => {
+  await stubApi(page, { sectors: [PIPELINE_SECTOR], overview: overviewFor(PIPELINE_SECTOR) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  const flow = page.getByTestId('sector-flow')
+
+  // Cada bloco começa abaixo do anterior.
+  const tops = await flow.locator('a, div[style]').evaluateAll((els) =>
+    els.filter((el) => el.textContent?.trim()).map((el) => el.getBoundingClientRect().top),
+  )
+  const ordered = [...tops].sort((a, b) => a - b)
+  expect(tops).toEqual(ordered)
+
+  // As setas apontam para baixo e não são anunciadas por leitor de tela.
+  const arrow = flow.getByTestId('flow-arrow').first()
+  await expect(arrow).toHaveText('↓')
+  await expect(arrow).toHaveAttribute('aria-hidden', 'true')
+
+  // O fluxo não tem rolagem estrutural própria.
+  const scrolls = await flow.evaluate((el) => el.scrollWidth - el.clientWidth)
+  expect(scrolls).toBeLessThanOrEqual(1)
+})
+
+test('no orquestrado, os especialistas são um grupo — não uma sequência obrigatória', async ({ page }) => {
+  const orchestrated = { ...LEGACY_SECTOR, mode: 'orchestrated', coordinatorAgentId: A1 }
+  await stubApi(page, { sectors: [orchestrated], overview: overviewFor(orchestrated) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  const flow = page.getByTestId('sector-flow')
+  await expect(flow).toContainText('coordena')
+  await expect(flow.getByTestId('specialists-note')).toContainText('conforme a necessidade')
+  // Entrada ↓ coordenador ↓ grupo ↓ Saída: três setas, não uma por especialista.
+  await expect(flow.getByTestId('flow-arrow')).toHaveCount(3)
+})
+
+test('o grupo organizacional continua sem entrada, saída ou setas', async ({ page }) => {
+  const group = { ...LEGACY_SECTOR, mode: 'organization' }
+  await stubApi(page, { sectors: [group], overview: overviewFor(group) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  const flow = page.getByTestId('sector-flow')
+  await expect(flow.getByTestId('flow-arrow')).toHaveCount(0)
+  await expect(flow).not.toContainText('Saída')
+})
+
+test('cada bloco do fluxo continua abrindo o agente', async ({ page }) => {
+  await stubApi(page, { sectors: [PIPELINE_SECTOR], overview: overviewFor(PIPELINE_SECTOR) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  await page.getByTestId('sector-flow').getByRole('link').first().click()
+  await expect(page).toHaveURL(new RegExp(`/floors/${FLOOR_ID}/agents/`))
+})
+
 test('readiness on the page says what is missing and links to the fix', async ({ page }) => {
   const broken = { ...PIPELINE_SECTOR, stages: [] }
   await stubApi(page, {
