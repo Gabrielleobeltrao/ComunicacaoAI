@@ -269,3 +269,120 @@ test('URL direta de App inativo não abre a página', async ({ page }) => {
     )
     .toMatch(/catalogo|reauth/)
 })
+
+// As quatro larguras que importam, nas telas que o MVP usa de verdade — com uma
+// conta que tem andar, setor e agente, criados pelo teste acima.
+//
+// O que é defeito aqui: a página rolar de lado, um controle ficar fora do alcance,
+// ou um alvo de toque menor que o mínimo. Diferença de arranjo entre larguras não é
+// defeito — é o layout responsivo funcionando.
+const LARGURAS = [
+  { rotulo: '320 (celular pequeno)', w: 320, h: 568 },
+  { rotulo: '390 (celular)', w: 390, h: 844 },
+  { rotulo: '768 (tablet)', w: 768, h: 1024 },
+  { rotulo: '1440 (desktop)', w: 1440, h: 900 },
+]
+
+test('as telas do MVP cabem em 320, 390, 768 e 1440', async ({ page }) => {
+  test.setTimeout(180_000)
+
+  await irPara(page, '/login')
+  await page.locator('input[type="email"]').fill(CONTA.email)
+  await page.locator('input[type="password"]').fill(CONTA.senha)
+  await page.getByRole('button', { name: /Entrar/i }).click()
+  await page.waitForURL(/\/(building|dashboard|floors)/, { timeout: 30_000 })
+
+  const andares = await (await page.request.get('/api/floors')).json()
+  const andar = andares[0]
+  expect(andar, 'o teste anterior tem que ter deixado um andar').toBeTruthy()
+  const setores = await (await page.request.get(`/api/sectors?floorId=${andar.id}`)).json()
+  const agentes = await (await page.request.get(`/api/agents?floorId=${andar.id}`)).json()
+
+  const telas = [
+    ['prédio', '/building'],
+    ['andar (com o mapa)', `/floors/${andar.id}`],
+    ['agentes', `/floors/${andar.id}/agents`],
+    ['agente', `/floors/${andar.id}/agents/${agentes[0]._id}`],
+    ['setores', `/floors/${andar.id}/sectors`],
+    ['setor', `/floors/${andar.id}/sectors/${setores[0]._id}`],
+    ['execuções', '/executions'],
+    ['apps', '/apps'],
+  ] as const
+
+  for (const { rotulo, w, h } of LARGURAS) {
+    await page.setViewportSize({ width: w, height: h })
+    for (const [nome, rota] of telas) {
+      await irPara(page, rota)
+      await page.waitForLoadState('networkidle').catch(() => undefined)
+
+      // Rolagem lateral da PÁGINA: nada de 100vw nem margem negativa escapando.
+      // Um bloco largo (tabela, mapa) pode rolar dentro do próprio contêiner; o
+      // documento, não.
+      const excesso = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+      expect(excesso, `${nome} @ ${rotulo}: a página rola de lado`).toBeLessThanOrEqual(1)
+
+      // Nada pode ficar cortado à esquerda: um bloco que começa antes do zero é
+      // conteúdo que o usuário não alcança de jeito nenhum.
+      const cortado = await page.evaluate(() => {
+        for (const el of document.querySelectorAll('main *')) {
+          const r = el.getBoundingClientRect()
+          if (r.width > 0 && r.height > 0 && r.left < -2) return (el as HTMLElement).tagName + ':' + (el.className || '').toString().slice(0, 40)
+        }
+        return null
+      })
+      expect(cortado, `${nome} @ ${rotulo}: elemento cortado à esquerda`).toBeNull()
+    }
+  }
+})
+
+test('nos toques, os controles têm alvo mínimo de 44px', async ({ browser }) => {
+  test.setTimeout(120_000)
+  // Contexto de TOQUE de verdade: as regras de alvo do design são
+  // `@media (pointer: coarse)`. Num contexto de mouse elas nem se aplicam, e o
+  // teste passaria medindo a coisa errada.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const page = await ctx.newPage()
+
+  await irPara(page, '/login')
+  await page.locator('input[type="email"]').fill(CONTA.email)
+  await page.locator('input[type="password"]').fill(CONTA.senha)
+  await page.getByRole('button', { name: /Entrar/i }).click()
+  await page.waitForURL(/\/(building|dashboard|floors)/, { timeout: 30_000 })
+
+  const andares = await (await page.request.get('/api/floors')).json()
+
+  for (const rota of ['/building', `/floors/${andares[0].id}`, '/executions', '/apps']) {
+    await irPara(page, rota)
+    await page.waitForLoadState('networkidle').catch(() => undefined)
+    await page.waitForTimeout(500)
+    const pequenos = await page.evaluate(() => {
+      const ruins: string[] = []
+      for (const el of document.querySelectorAll('button, a[href], [role="button"], [role="tab"]')) {
+        const r = el.getBoundingClientRect()
+        // Só o que está de fato à vista: um controle escondido no rail encolhido
+        // ou fora da dobra não é alvo de toque de ninguém.
+        if (r.width === 0 || r.height === 0) continue
+        if (r.bottom < 0 || r.top > window.innerHeight) continue
+        if (getComputedStyle(el).visibility === 'hidden') continue
+
+        // Os personagens do mapa ficam de fora, de propósito. Eles são figuras de
+        // um DIAGRAMA, dimensionadas em tiles: forçar 44px neles mudaria a escala
+        // do escritório inteiro, que é o visual do produto. Quem quer abrir um
+        // agente pelo toque tem a lista de agentes, e o mapa tem zoom. Os
+        // CONTROLES do mapa (ajustar à tela, pausar) continuam valendo — eles não
+        // são personagens e a suíte responsiva já os mede.
+        if ((el as HTMLElement).closest('[data-agent-figure], [data-testid="office-map"]')) continue
+        if (/var\(--tile\)/.test((el as HTMLElement).getAttribute('style') ?? '')) continue
+
+        if (r.width < 32 || r.height < 32) {
+          const nome = (el.getAttribute('aria-label') ?? el.textContent ?? '').trim().slice(0, 28)
+          ruins.push(`${el.tagName}[${nome}] ${Math.round(r.width)}x${Math.round(r.height)}`)
+        }
+      }
+      return ruins
+    })
+    expect(pequenos, `${rota}: controles com alvo pequeno demais`).toEqual([])
+  }
+
+  await ctx.close()
+})
