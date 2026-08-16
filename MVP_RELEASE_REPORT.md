@@ -24,7 +24,7 @@ números são os obtidos.
 | `npx tsc -b --noEmit` (frontend) | limpo |
 | `npm run build` | 0 erros; bundle 953 kB (270 kB gzip) |
 | `npx oxlint` (frontend) | 0 erros, 18 avisos, saída 0 |
-| `npm test -w backend` | **802 testes, 802 passaram** |
+| `npm test -w backend` | **802 testes, 802 passaram** (416 sem banco + 386 com mongod) |
 | `npm test -w frontend` | **183 testes, 21 arquivos, todos passaram** |
 | `npx playwright test --workers=1` | **258 passaram, 17 pulados** |
 | `npm run smoke` | **4 testes, todos passaram** |
@@ -99,6 +99,52 @@ ali (o bundler declara `engines.node ^20.19.0 || >=22.12.0`).
 
 Não houve limitação técnica: o job roda o smoke completo, não uma versão
 reduzida.
+
+#### Correção de uma afirmação anterior
+
+A primeira versão deste relatório dizia que o CI estava verde. **Não estava, e eu
+não tinha olhado a execução** — reportei o resultado local como se fosse o do
+runner. O job `verify` vinha falhando em "Backend tests" enquanto o `smoke`
+passava.
+
+O que os dados mostram, lidos da API do GitHub:
+
+| commit | conteúdo | resultado |
+|---|---|---|
+| `d5c26c40` | só frontend (balões) | verde |
+| `d8b2540c` | só frontend (balões) | vermelho |
+| `41a0d300` | só frontend (balões) | vermelho |
+| `b1ec7e92` | só frontend (balões) | verde |
+| `233eaf4d` | **só documentação** | vermelho |
+
+Um commit que só mexeu num arquivo `.md` derrubando os testes de backend, e o
+mesmo tipo de mudança alternando entre verde e vermelho, não é regressão: é
+intermitência. Localmente a suíte passa até com concorrência forçada em 24,
+porque a máquina tem 8 núcleos, 9 GB e o binário do mongod em cache.
+
+**A causa:** 29 dos 70 arquivos sobem um `mongod` real (replica set de um nó). O
+`node --test` roda os arquivos em paralelo, um processo por arquivo, com
+concorrência igual ao número de CPUs. No runner, menor e com cache frio, isso
+significa 29 processos disputando o mesmo download de 76 MB e o mesmo lock, e
+depois vários mongod simultâneos na memória disponível.
+
+**A correção** está em `backend/scripts/run-tests.mjs`, e não é repetir o teste
+que falhou nem esconder a falha:
+
+1. o binário do mongod é baixado **uma vez**, antes de qualquer processo de teste
+   existir;
+2. os arquivos que sobem mongod rodam com concorrência limitada (2 no CI, até 4
+   fora dele, ajustável por `MONGO_TEST_CONCURRENCY`);
+3. os que não sobem continuam em paralelo total, porque não custam nada;
+4. quem entra em cada grupo é decidido **lendo o arquivo**, não pelo nome — um
+   teste que passe a usar mongod entra no grupo certo sozinho.
+
+O CI também passou a guardar o binário entre execuções (`actions/cache`).
+
+Nenhum teste foi pulado, nenhuma asserção mudou e a contagem final é a mesma:
+416 sem banco + 386 com mongod = **802**. Medições locais: 40s no modo normal,
+50s no modo do CI, 59s com o cache do binário apagado — este último reproduzindo
+o estado de um runner novo.
 
 ---
 
@@ -292,7 +338,9 @@ VITE_AI_OFFICE_LIVE_STATUS_ENABLED
 
 Antes:
 
-- [ ] CI verde nos dois jobs (`verify` e `smoke`).
+- [ ] CI verde nos dois jobs (`verify` e `smoke`) — **conferir a execução no
+      GitHub, não o resultado local**. Foi exatamente essa confusão que produziu
+      a afirmação errada corrigida na seção 1.
 - [ ] Os containers subidos e verificados numa máquina com Docker (pendência 1).
 - [ ] As três `VITE_*` de flags definidas como variáveis de **build** no Coolify,
       as três em `true`.

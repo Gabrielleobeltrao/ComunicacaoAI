@@ -56,6 +56,18 @@ jobs:
       - name: Build
         run: npm run build
 
+      # O binário do mongod entre execuções. Sem isto, cada run baixa 76 MB de
+      # novo — e era num cache frio que 29 processos disputavam o mesmo download.
+      - name: Cache mongod binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongod-${{ runner.os }}
+
+      # `npm test` particiona a suíte: os arquivos que sobem um mongod de verdade
+      # rodam com concorrência limitada, o resto em paralelo total. Ver
+      # backend/scripts/run-tests.mjs — o runner do GitHub é menor que a máquina
+      # de quem desenvolve, e a suíte inteira em paralelo pedia mais do que ele tem.
       - name: Backend tests
         run: npm test -w backend
 
