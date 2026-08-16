@@ -134,6 +134,7 @@ import { liveWebhookCountByAgent } from './automations/webhookTriggers.js'
 import { listActivePublished } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
+import { sectorExecutionRouter } from './routes/sectorExecutionRoutes.js'
 import type { KnowledgeOwner } from './knowledge.js'
 import { availableMetricKeys, composeAgentStats, getAgentEventMetricsBatch, periodSince, PERIODS, resolveMetricKey } from './agentMetrics.js'
 import type { Period } from './agentMetrics.js'
@@ -343,6 +344,7 @@ app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
 // Shared sector knowledge (same store as agent knowledge). Non-matching sub-paths
 // fall through to the inline /api/sectors/:sectorId routes below.
 app.use('/api/sectors/:sectorId', requireAuth, sectorKnowledgeRouter)
+app.use('/api/sectors/:sectorId', requireAuth, sectorExecutionRouter)
 app.use('/api/connections', requireAuth, connectionRouter)
 // Apps: the catalog, the owner's installations and each agent's grants.
 app.use('/api/apps', requireAuth, appCatalogRouter)

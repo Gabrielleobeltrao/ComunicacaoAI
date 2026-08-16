@@ -8,6 +8,7 @@ import { getSectorById, normalizeSectorMode } from './sectors.js'
 import { resolveAgentTools } from './builtinTools.js'
 import { executeAgentTask } from './agentRuntime.js'
 import { reportAgentState } from './agentLiveState.js'
+import { finishSectorExecution, startSectorExecution } from './sectorExecutions.js'
 import type { AgentBubbleState } from './agentLiveState.js'
 import { getProviderApiKey } from './userSettings.js'
 import type { Provider } from './llm.js'
@@ -36,6 +37,10 @@ export async function resolveToolsWithDelegation(agent: Agent, ownerId: string, 
 
 export function productionDelegationDeps(): DelegationDeps {
   const deps: DelegationDeps = {
+    // The sector execution root: created before the first agent, closed on every
+    // exit. Awaited, because the participations must be able to point at it.
+    startSectorExecution: (input) => startSectorExecution(input),
+    finishSectorExecution: (executionKey, outcome) => finishSectorExecution(executionKey, outcome),
     // Fire-and-forget: telemetry never delays or breaks a delegation.
     reportState: (input) => {
       void reportAgentState({

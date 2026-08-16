@@ -47,6 +47,10 @@ export interface AgentExecutionEvent {
   // chain is never summed twice.
   parentEventKey: string | null
   rootEventKey: string | null
+  // The sector run this participation belongs to. Present only when the execution
+  // really was part of one — it is the link that lets a sector count a three-stage
+  // flow as ONE execution while still reading each agent's numbers.
+  sectorExecutionId?: ObjectId | null
   metadata: Record<string, string | number | boolean> // safe scalars only
 }
 
@@ -83,6 +87,7 @@ export interface RecordAgentEventInput {
   attemptCount?: number
   parentEventKey?: string | null
   rootEventKey?: string | null
+  sectorExecutionId?: ObjectId | null
   metadata?: Record<string, string | number | boolean>
 }
 
@@ -109,6 +114,7 @@ export async function recordAgentEvent(input: RecordAgentEventInput): Promise<bo
     attemptCount: input.attemptCount ?? 1,
     parentEventKey: input.parentEventKey ?? null,
     rootEventKey: input.rootEventKey ?? input.eventKey,
+    ...(input.sectorExecutionId ? { sectorExecutionId: input.sectorExecutionId } : {}),
     metadata: input.metadata ?? {},
   }
   try {

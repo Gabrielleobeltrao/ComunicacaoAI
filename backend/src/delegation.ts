@@ -142,6 +142,21 @@ export interface SectorLite {
 // Injected IO. Production wiring in ./delegationWiring.ts binds these to the real
 // agent store, tool resolver, task runtime, provider keys and delegation log.
 export interface DelegationDeps {
+  // Sector execution root: ONE identity for the whole sector run, so the sector's
+  // numbers are not the sum of its members'. Optional — this module stays testable
+  // with no database attached.
+  startSectorExecution?: (input: {
+    executionKey: string
+    ownerId: string
+    sectorId: ObjectId
+    sectorName: string
+    sectorMode: string
+    floorId: ObjectId | null
+    source: 'delegation'
+    correlationId: string | null
+    callerAgentId: ObjectId | null
+  }) => Promise<ObjectId>
+  finishSectorExecution?: (executionKey: string, outcome: { status: 'succeeded' | 'failed' | 'canceled'; errorKind?: string | null }) => Promise<void>
   // Live map: a delegation leaving is a real transition of the CALLER. Optional so
   // this module stays testable with no database attached.
   reportState?: (input: { ownerId: string; agentId: ObjectId; floorId: ObjectId | null; rootExecutionId: string; state: string; detail?: unknown }) => void
@@ -184,6 +199,7 @@ export interface DelegationDeps {
     eventKey: string
     ownerId: string
     agentId: ObjectId
+    sectorExecutionId?: ObjectId
     buildingId: string
     floorId: ObjectId
     source: 'delegation' | 'sector'
@@ -244,10 +260,14 @@ async function emitAgentEvent(
     telemetry?: Record<string, string | number | boolean>
   },
   status: 'succeeded' | 'failed' | 'timeout' | 'canceled',
+  // Present when this run is a participation in a sector execution: the link that
+  // lets the sector count the flow once and still read its members' numbers.
+  sectorExecutionId?: ObjectId,
 ): Promise<void> {
   const pending: (Promise<void> | void)[] = []
   pending.push(deps.recordEvent?.({
     eventKey,
+    ...(sectorExecutionId ? { sectorExecutionId } : {}),
     ownerId: ctx.ownerId,
     agentId: target._id,
     buildingId: ctx.buildingId,
@@ -273,6 +293,23 @@ async function emitAgentEvent(
   if (run.usage.inputTokens || run.usage.outputTokens) pending.push(deps.chargeUsage?.(ctx.ownerId, run.usage, `event:${eventKey}`))
   const settled = await Promise.allSettled(pending.map(async (p) => p))
   for (const r of settled) if (r.status === 'rejected') console.error('delegation persistence failed (work kept, not re-run):', String(r.reason))
+}
+
+// Identifies the CALL, not the attempt.
+const sectorExecutionKeyFor = (ctx: DelegationContext, sectorId: string): string =>
+  `sector:${ctx.correlationId ?? 'none'}:${sectorId}:${ctx.callerAgentId}:${ctx.depth}`
+
+// Safe scalars only — a stage name is the owner's own label, never model output.
+function participationTelemetry(
+  p?: { role: string; stageId?: string; stageName?: string; stageOrder?: number },
+): Record<string, string | number> {
+  if (!p) return {}
+  return {
+    role: p.role,
+    ...(p.stageId ? { stageId: p.stageId } : {}),
+    ...(p.stageName ? { stageName: p.stageName.slice(0, 60) } : {}),
+    ...(typeof p.stageOrder === 'number' ? { stageOrder: p.stageOrder } : {}),
+  }
 }
 
 const TASK_TIMEOUT_MS = 120_000
@@ -506,7 +543,16 @@ async function runWithRetry(deps: DelegationDeps, ctx: DelegationContext, target
 // Record a child delegation (caller = the agent that invoked the sector) so each
 // stage/coordinator run shows in both histories, one level below the sector record,
 // AND a per-agent 'sector' telemetry event.
-async function recordChildRun(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, parentId: ObjectId, run: (eventKey: string) => Promise<TaskRun>): Promise<string> {
+async function recordChildRun(
+  deps: DelegationDeps,
+  ctx: DelegationContext,
+  target: Agent,
+  objective: string,
+  parentId: ObjectId,
+  run: (eventKey: string) => Promise<TaskRun>,
+  // Which sector run this participation belongs to, and what part the agent played.
+  participation?: { sectorExecutionId: ObjectId; role: 'coordinator' | 'specialist' | 'pipeline_stage'; stageId?: string; stageName?: string; stageOrder?: number },
+): Promise<string> {
   const recId = await deps.startDelegation({
     ownerId: ctx.ownerId,
     correlationId: ctx.correlationId,
@@ -522,13 +568,22 @@ async function recordChildRun(deps: DelegationDeps, ctx: DelegationContext, targ
   try {
     const r = await run(eventKey)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: r.output.slice(0, 500), usage: r.usage })
-    await emitAgentEvent(deps, ctx, target, 'sector', eventKey, r, 'succeeded')
+    await emitAgentEvent(deps, ctx, target, 'sector', eventKey, { ...r, telemetry: { ...(r.telemetry ?? {}), ...participationTelemetry(participation) } }, 'succeeded', participation?.sectorExecutionId)
     return r.output
   } catch (error) {
     const message = error instanceof Error ? error.message : 'falha'
     const outcome = /cancel/i.test(message) ? 'canceled' : /timeout|exceeded/i.test(message) ? 'timeout' : 'failed'
     await deps.finishDelegation(recId, { status: outcome === 'timeout' ? 'failed' : outcome, error: message })
-    await emitAgentEvent(deps, ctx, target, 'sector', eventKey, { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date() }, outcome)
+    await emitAgentEvent(
+      deps,
+      ctx,
+      target,
+      'sector',
+      eventKey,
+      { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date(), telemetry: { errorKind: outcome, ...participationTelemetry(participation) } },
+      outcome,
+      participation?.sectorExecutionId,
+    )
     throw error
   }
 }
@@ -580,6 +635,26 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
     targetSectorId: sector._id,
     objective,
   })
+
+  // ONE root for the whole flow, opened before the first agent. The key is
+  // deterministic, so a retry of the same call reuses it instead of counting twice.
+  const executionKey = sectorExecutionKeyFor(ctx, sector._id.toString())
+  const sectorExecutionId = await deps.startSectorExecution?.({
+    executionKey,
+    ownerId: ctx.ownerId,
+    sectorId: sector._id,
+    sectorName: sector.name,
+    sectorMode: sector.mode,
+    floorId: sector.officeId ?? null,
+    source: 'delegation',
+    correlationId: ctx.correlationId ?? null,
+    callerAgentId: caller._id,
+  })
+  const participationOf = (
+    role: 'coordinator' | 'specialist' | 'pipeline_stage',
+    stage?: { id: string; name: string; order: number },
+  ) => (sectorExecutionId ? { sectorExecutionId, role, stageId: stage?.id, stageName: stage?.name, stageOrder: stage?.order } : undefined)
+
   try {
     let output = ''
     if (sector.mode === 'pipeline') {
@@ -603,7 +678,15 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
         // What this stage owes the next one is part of its instruction, not folklore.
         const instruction = stageInstruction(stage.instruction || objective, stage.expectedOutput)
         try {
-          const out = await recordChildRun(deps, ctx, agent, instruction, recId, (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id))
+          const out = await recordChildRun(
+            deps,
+            ctx,
+            agent,
+            instruction,
+            recId,
+            (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id),
+            participationOf('pipeline_stage', { id: stage.id, name: stage.name, order: stages.indexOf(stage) + 1 }),
+          )
           // Checked BEFORE the next stage consumes it. Structural when the stage
           // produces JSON; otherwise only that something came out (see
           // checkStageOutput). Retries already happened inside runWithRetry, so
@@ -622,6 +705,7 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
         }
       }
       await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
+      await deps.finishSectorExecution?.(executionKey, { status: 'succeeded' })
       return { ok: true, result: j({ status: 'ok', sector: sector.name, output, ...(failures.length ? { warnings: failures } : {}) }) }
     }
 
@@ -638,13 +722,25 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
       sectorId: sector._id.toString(),
       memberIds: sector.members.map((m) => m.agentId.toString()).filter((id) => id !== coordinator._id.toString()),
     }
-    output = await recordChildRun(deps, ctx, coordinator, instruction, recId, (k) => runAgentTask(deps, ctx, coordinator, instruction, args.input, format, k, sector._id, grant))
+    output = await recordChildRun(
+      deps,
+      ctx,
+      coordinator,
+      instruction,
+      recId,
+      (k) => runAgentTask(deps, ctx, coordinator, instruction, args.input, format, k, sector._id, grant),
+      participationOf('coordinator'),
+    )
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
+    await deps.finishSectorExecution?.(executionKey, { status: 'succeeded' })
     return { ok: true, result: j({ status: 'ok', sector: sector.name, output }) }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'falha na delegação de setor'
     const canceled = /cancel/i.test(message)
     await deps.finishDelegation(recId, { status: canceled ? 'canceled' : 'failed', error: message })
+    // A failure BEFORE the first agent is still an execution of this sector: the root
+    // closes with a CATEGORY, never with the message.
+    await deps.finishSectorExecution?.(executionKey, { status: canceled ? 'canceled' : 'failed', errorKind: canceled ? 'canceled' : 'stage_failed' })
     return { ok: false, result: j({ status: canceled ? 'canceled' : 'error', reason: message }) }
   }
 }
