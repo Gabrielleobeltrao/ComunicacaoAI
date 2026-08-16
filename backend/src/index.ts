@@ -3893,10 +3893,21 @@ async function refreshMemoryAndIdentity(params: {
           data: updated,
           updatedAt: new Date().toISOString(),
         }).catch((error) => {
-          console.error('Structured output webhook delivery failed:', error)
+          // `error.message` from fetch embeds the URL; the host is the diagnosis.
+          console.error(`Structured output webhook delivery failed (${safeHost(agent.structuredOutputWebhookUrl ?? '')})`)
+          void error
         })
       }
     }
+  }
+}
+
+// Host only. A private URL in a log is a credential in a log.
+const safeHost = (url: string): string => {
+  try {
+    return new URL(url).host
+  } catch {
+    return 'destino inválido'
   }
 }
 
@@ -3907,7 +3918,9 @@ async function sendStructuredOutputWebhook(url: string, payload: unknown) {
     body: JSON.stringify(payload),
   })
   if (!response.ok) {
-    console.error(`Structured output webhook returned ${response.status} for ${url}`)
+    // The owner's webhook URL frequently carries a token in the path or query, so
+    // the log gets the host and the status — enough to diagnose, nothing to leak.
+    console.error(`Structured output webhook returned ${response.status} (${safeHost(url)})`)
   }
 }
 

@@ -28,3 +28,6 @@ backend/graphify-out/*
 # Ponteiro na raiz: é onde o hook procura qual diretório escanear. Só caminhos
 # absolutos desta máquina, nada versionável.
 graphify-out/
+
+# Artefatos do Playwright quando a suíte roda a partir da raiz.
+test-results/

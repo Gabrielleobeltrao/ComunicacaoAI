@@ -116,7 +116,9 @@ export async function getGoogleAccessToken(ownerId: string): Promise<string | nu
     }),
   })
   if (!res.ok) {
-    console.error('Google token refresh failed:', await res.text())
+    // The status, never the body: a token endpoint's error body is a raw provider
+    // response and has no business in an application log.
+    console.error(`Google token refresh failed with status ${res.status}`)
     return null
   }
   const data = (await res.json()) as TokenResponse
