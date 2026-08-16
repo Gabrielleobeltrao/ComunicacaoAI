@@ -151,19 +151,37 @@ test('pausar a simulação não apaga o que os agentes estão fazendo', async ({
 })
 
 test('a pose do personagem e o balão são independentes', async ({ page }) => {
-  // Sem execução nenhuma: a pose vem do status decorativo, não do balão.
+  // Com a simulação parada (reduced motion) o sprite não troca de quadro, então a
+  // POSE é estável e dá para compará-la. Com a caminhada ligada, contar sprites mede
+  // o instante do quadro, não a pose — a primeira versão deste teste fazia isso e
+  // passava ou falhava conforme a carga da máquina.
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+
+  const poses = async () => {
+    const srcs = await page
+      .locator('img[src*="/illustrations/characters/"]')
+      .evaluateAll((els) => els.map((el) => (el as HTMLImageElement).getAttribute('src') ?? ''))
+    // Telefone ou não, sentado ou não. O número do quadro da animação é ruído.
+    return srcs.map((src) => `${src.includes('-ligacao')}|${src.includes('sentado')}`).sort()
+  }
+
   await stub(page, { states: [] })
   await page.goto(`/floors/${FLOOR_ID}`)
   await expect(page.getByTestId('floor-work-section')).toBeVisible()
   await expect(bubbles(page)).toHaveCount(0)
-  const posesSemBalao = await page.locator('img[src*="-ligacao"], img[src*="parado"]').count()
+  const semBalao = await poses()
+  expect(semBalao.length).toBeGreaterThan(0)
+  // O teste só vale se alguém estiver FORA da pose de telefone no ponto de partida:
+  // é justamente esse personagem que mudaria de pose se `modeFor` passasse a ler o
+  // opState. Sem isso a comparação abaixo seria verdadeira por vacuidade.
+  expect(semBalao.some((pose) => pose.startsWith('false'))).toBe(true)
 
   await stub(page, { states: [liveState({ state: 'thinking' })] })
   await page.goto(`/floors/${FLOOR_ID}`)
   await expect(bubbles(page)).toHaveCount(1)
-  // O balão apareceu e o conjunto de poses desenhadas continua o mesmo: uma coisa
-  // não manda na outra.
-  expect(await page.locator('img[src*="-ligacao"], img[src*="parado"]').count()).toBe(posesSemBalao)
+  // O balão apareceu e as poses desenhadas são exatamente as mesmas: a telemetria
+  // não manda no personagem.
+  expect(await poses()).toEqual(semBalao)
 })
 
 test('sem execução, nenhum balão — nem para agenda ou gatilho armado', async ({ page }) => {
