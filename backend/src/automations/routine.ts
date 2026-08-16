@@ -7,10 +7,27 @@ import { ObjectId } from 'mongodb'
 import { getAgentById, ensureActivationMode } from '../agents.js'
 import { recurrenceToCron, isValidRecurrence, describeRecurrence } from './schedule.js'
 import type { Recurrence } from './schedule.js'
+import { INITIAL_WINDOWS, isInitialWindow } from './sourceChange.js'
+import type { InitialWindow } from './sourceChange.js'
 import { createAutomation, getAutomation, publishAutomation, setStatus, updateDraft } from './service.js'
 import { listAutomations as repoListAutomations } from './repository.js'
 import { DEFAULT_LIMITS } from './types.js'
 import type { Automation, AutomationDefinition, OutputFormat } from './types.js'
+
+/**
+ * De onde vem o que o agente processa.
+ *
+ * `fixed` é o que sempre existiu: um texto que o usuário escreve e que vai igual em
+ * toda execução. As outras duas transformam a rotina num MONITORAMENTO — ela passa a
+ * consultar uma URL de tempos em tempos e só aciona o agente quando algo mudou.
+ *
+ * Ausente = `fixed`. É isso que faz toda rotina criada antes disto continuar
+ * compilando exatamente como compilava.
+ */
+export type RoutineSource =
+  | { kind: 'fixed' }
+  | { kind: 'rss'; url: string; initialWindow: InitialWindow; focus?: string }
+  | { kind: 'http'; url: string; focus?: string }
 
 export interface RoutineSpec {
   name: string
@@ -28,22 +45,75 @@ export interface RoutineSpec {
   // owner-scoped by the service before the definition is stored/published, and
   // re-checked defensively by the worker.
   sectorId?: string | null
+  // Fonte de entrada. Ausente ou `fixed` = comportamento de sempre.
+  source?: RoutineSource
 }
 
 const STEP_AGENT = 'run'
 const STEP_DELIVERY = 'deliver'
+export const STEP_SOURCE = 'source'
+
+// A fonte declarada na spec, normalizada. Uma URL vazia derruba a fonte para
+// `fixed` em vez de gravar um monitoramento que nunca vai funcionar.
+export function normalizeSource(source: RoutineSource | undefined): RoutineSource {
+  if (!source || source.kind === 'fixed') return { kind: 'fixed' }
+  const url = String(source.url ?? '').trim()
+  if (!url) return { kind: 'fixed' }
+  const focus = typeof source.focus === 'string' && source.focus.trim() ? source.focus.trim() : undefined
+  if (source.kind === 'rss') {
+    const initialWindow = isInitialWindow(source.initialWindow) ? source.initialWindow : '24h'
+    return { kind: 'rss', url, initialWindow, ...(focus ? { focus } : {}) }
+  }
+  return { kind: 'http', url, ...(focus ? { focus } : {}) }
+}
 
 // Pure: routine spec + owning agent → a valid AutomationDefinition.
 export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): AutomationDefinition {
   const format = spec.outputFormat ?? 'markdown'
-  const instruction = spec.input ? `${spec.objective}\n\nEntrada: ${spec.input}` : spec.objective
-  const steps: AutomationDefinition['steps'] = [
+  const source = normalizeSource(spec.source)
+  const monitorando = source.kind !== 'fixed'
+
+  // Numa rotina de monitoramento, o que o agente recebe é o CONTEÚDO NOVO (vindo da
+  // etapa anterior), não um texto fixo. O "foco" entra como orientação sobre o que
+  // olhar nesse conteúdo.
+  const instruction = monitorando
+    ? [spec.objective, source.focus ? `Foco: ${source.focus}` : ''].filter(Boolean).join('\n\n')
+    : spec.input
+      ? `${spec.objective}\n\nEntrada: ${spec.input}`
+      : spec.objective
+
+  const steps: AutomationDefinition['steps'] = []
+
+  if (monitorando) {
+    steps.push({
+      id: STEP_SOURCE,
+      name: source.kind === 'rss' ? 'Verificar feed' : 'Verificar página',
+      type: source.kind === 'rss' ? 'source.rss' : 'source.http',
+      enabled: true,
+      dependsOn: [],
+      inputMapping: {},
+      config: {
+        url: source.url,
+        ...(source.kind === 'rss' ? { windowMs: INITIAL_WINDOWS[source.initialWindow], initialWindow: source.initialWindow } : {}),
+        ...(source.focus ? { focus: source.focus } : {}),
+      },
+      timeoutMs: 30_000,
+      // Buscar é a única parte que vale repetir: uma falha de rede é transitória.
+      // "Nada mudou" não passa por aqui — não é erro, e o runner nem chega a tentar
+      // de novo.
+      retryPolicy: { maxAttempts: 2, backoffMs: 2000 },
+      continueOnError: false,
+    })
+  }
+
+  steps.push(
     {
       id: STEP_AGENT,
       name: 'Executar agente',
       type: 'agent.execute',
       enabled: true,
-      dependsOn: [],
+      // Monitorando, o agente depende da fonte: é dela que vem a entrada.
+      dependsOn: monitorando ? [STEP_SOURCE] : [],
       inputMapping: {},
       config: {
         agentId: agentId.toString(),
@@ -59,7 +129,7 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
       retryPolicy: { maxAttempts: Math.max(1, Math.min(spec.retryMaxAttempts ?? 1, 5)), backoffMs: 2000 },
       continueOnError: false,
     },
-  ]
+  )
   const deliveries: AutomationDefinition['deliveries'] = []
   if (spec.delivery) {
     steps.push({
@@ -84,6 +154,27 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
     deliveries,
     limits: { ...DEFAULT_LIMITS, maxOutputChars: spec.maxOutputChars ?? DEFAULT_LIMITS.maxOutputChars },
   }
+}
+
+/**
+ * A fonte de volta, lida da definição compilada.
+ *
+ * A interface precisa reabrir a rotina com os campos que o usuário preencheu, e a
+ * definição é a única fonte de verdade — não há cópia da spec guardada em lugar
+ * nenhum. Definição sem etapa de fonte devolve `fixed`, que é o que toda rotina
+ * antiga é.
+ */
+export function readSourceFromDefinition(def: AutomationDefinition | null | undefined): RoutineSource {
+  const passo = (def?.steps ?? []).find((s) => s.id === STEP_SOURCE)
+  if (!passo) return { kind: 'fixed' }
+  const cfg = passo.config ?? {}
+  const url = String(cfg.url ?? '')
+  const focus = typeof cfg.focus === 'string' ? cfg.focus : undefined
+  if (passo.type === 'source.rss') {
+    const initialWindow = isInitialWindow(cfg.initialWindow) ? cfg.initialWindow : '24h'
+    return { kind: 'rss', url, initialWindow, ...(focus ? { focus } : {}) }
+  }
+  return { kind: 'http', url, ...(focus ? { focus } : {}) }
 }
 
 export class RoutineError extends Error {}
@@ -125,7 +216,11 @@ export async function updateRoutine(ownerId: string, agentId: ObjectId, routineI
       : current
         ? { provider: current.provider, connectionId: current.connectionId.toString() }
         : null
-  const definition = buildRoutineDefinition({ ...spec, delivery }, agentId)
+  // Uma fonte omitida no update MANTÉM a atual, pela mesma razão da entrega: um
+  // formulário salvo antes de a fonte carregar não pode apagar o monitoramento.
+  // Só um `{ kind: 'fixed' }` explícito o desliga.
+  const source = spec.source !== undefined ? spec.source : readSourceFromDefinition(existing.draftDefinition)
+  const definition = buildRoutineDefinition({ ...spec, delivery, source }, agentId)
   await updateDraft(ownerId, routineId, { name: spec.name || describeRecurrence(spec.recurrence), description: spec.objective.slice(0, 2000), definition })
   await publishAutomation(ownerId, routineId, ownerId)
   return getAutomation(ownerId, routineId)

@@ -2,8 +2,21 @@ import { Router } from 'express'
 import { ObjectId } from 'mongodb'
 import { config } from '../config.js'
 import { getAgentById } from '../agents.js'
-import { createRoutine, getRoutineForAgent, listAgentAutomations, listRoutines, RoutineError, updateRoutine } from '../automations/routine.js'
-import type { RoutineSpec } from '../automations/routine.js'
+import {
+  createRoutine,
+  getRoutineForAgent,
+  listAgentAutomations,
+  listRoutines,
+  readSourceFromDefinition,
+  RoutineError,
+  STEP_SOURCE,
+  updateRoutine,
+} from '../automations/routine.js'
+import type { RoutineSource, RoutineSpec } from '../automations/routine.js'
+import { isInitialWindow } from '../automations/sourceChange.js'
+import { previewSource } from '../automations/sourcePreview.js'
+import { getCheckpoint } from '../automations/sourceCheckpoint.js'
+import { createRun } from '../automations/runService.js'
 import {
   createEventTrigger,
   EventTriggerError,
@@ -43,8 +56,12 @@ function serializeRoutine(a: Automation) {
   // composed instruction; recover it so the editor never loses what the user typed.
   const legacyInput = typeof config.instruction === 'string' ? config.instruction.split('\n\nEntrada: ')[1] : undefined
   const delivery = (definition?.deliveries ?? [])[0]
+  // A fonte de entrada. Rotina antiga não tem etapa de fonte e volta como `fixed`,
+  // que é exatamente o que ela sempre foi.
+  const source = readSourceFromDefinition(definition)
   return {
     id: a._id.toString(),
+    source,
     name: a.name,
     objective: a.description,
     status: a.status,
@@ -88,8 +105,46 @@ function parseRoutineSpec(body: Record<string, unknown>): { spec?: RoutineSpec; 
       outputFormat: fmt === 'text' || fmt === 'markdown' || fmt === 'json' ? fmt : undefined,
       delivery,
       retryMaxAttempts: typeof body.retryMaxAttempts === 'number' ? body.retryMaxAttempts : undefined,
+      // Ausente = mantém a fonte atual (mesma regra da entrega: um formulário salvo
+      // antes de carregar não pode apagar o monitoramento).
+      ...('source' in body ? { source: parseSource(body.source) } : {}),
     },
   }
+}
+
+// A fonte vinda do corpo da requisição. Uma URL que não seja http/https é recusada
+// aqui, antes de virar definição — e o safeFetch recusa de novo na hora de buscar.
+// As duas checagens existem de propósito: esta dá erro de formulário, aquela impede
+// a requisição.
+function parseSource(raw: unknown): RoutineSource {
+  const s = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const kind = s.kind
+  if (kind !== 'rss' && kind !== 'http') return { kind: 'fixed' }
+  const url = typeof s.url === 'string' ? s.url.trim() : ''
+  const focus = typeof s.focus === 'string' ? s.focus : undefined
+  if (kind === 'rss') {
+    return { kind: 'rss', url, initialWindow: isInitialWindow(s.initialWindow) ? s.initialWindow : '24h', ...(focus ? { focus } : {}) }
+  }
+  return { kind: 'http', url, ...(focus ? { focus } : {}) }
+}
+
+// http(s) e nada mais. `file:`, `gopher:` e afins nem chegam ao safeFetch.
+function urlAceitavel(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+// Mensagem de formulário para uma fonte mal preenchida, ou null se estiver ok.
+function fonteComUrlInvalida(spec: RoutineSpec): string | null {
+  const fonte = spec.source
+  if (!fonte || fonte.kind === 'fixed') return null
+  if (!fonte.url) return 'a URL da fonte é obrigatória'
+  if (!urlAceitavel(fonte.url)) return 'a URL precisa começar com http:// ou https://'
+  return null
 }
 
 async function requireAgent(ownerId: string, raw: string): Promise<ObjectId | null> {
@@ -106,7 +161,35 @@ agentRoutineRouter.get('/routines', async (req, res) => {
     return
   }
   const routines = await listRoutines(res.locals.userId, agentId)
-  res.json(routines.map(serializeRoutine))
+
+  // O estado do monitoramento vem do checkpoint e do último run, e só para as
+  // rotinas que de fato monitoram algo. Uma rotina de entrada fixa não paga essa
+  // consulta e não ganha campos que não fazem sentido para ela.
+  const enriquecidas = await Promise.all(
+    routines.map(async (r) => {
+      const base = serializeRoutine(r)
+      if (base.source.kind === 'fixed') return base
+
+      const [checkpoint, ultimos] = await Promise.all([
+        getCheckpoint(res.locals.userId, r._id, STEP_SOURCE),
+        listRuns(res.locals.userId, { automationIds: [r._id], limit: 1, skip: 0 }),
+      ])
+      const ultimo = ultimos.items[0]
+      return {
+        ...base,
+        monitoring: {
+          lastCheckedAt: checkpoint?.lastCheckedAt ?? null,
+          lastChangedAt: checkpoint?.lastChangedAt ?? null,
+          // O desfecho da última verificação, em três estados que o usuário
+          // entende: encontrou algo, verificou e não havia nada, ou falhou.
+          lastResult: !ultimo ? null : ultimo.status === 'failed' ? 'failed' : ultimo.noChange ? 'no_change' : 'changed',
+          lastRunAt: ultimo?.finishedAt ?? ultimo?.startedAt ?? null,
+          lastError: publicError(ultimo?.error ?? null),
+        },
+      }
+    }),
+  )
+  res.json(enriquecidas)
 })
 
 agentRoutineRouter.post('/routines', async (req, res) => {
@@ -118,6 +201,11 @@ agentRoutineRouter.post('/routines', async (req, res) => {
   const { spec, error } = parseRoutineSpec(req.body ?? {})
   if (error) {
     res.status(400).json({ error })
+    return
+  }
+  const urlInvalida = fonteComUrlInvalida(spec!)
+  if (urlInvalida) {
+    res.status(400).json({ error: urlInvalida })
     return
   }
   try {
@@ -141,6 +229,11 @@ agentRoutineRouter.patch('/routines/:routineId', async (req, res) => {
     res.status(400).json({ error })
     return
   }
+  const urlInvalida = fonteComUrlInvalida(spec!)
+  if (urlInvalida) {
+    res.status(400).json({ error: urlInvalida })
+    return
+  }
   try {
     const routine = await updateRoutine(res.locals.userId, agentId, routineId, spec!)
     if (!routine) {
@@ -153,7 +246,60 @@ agentRoutineRouter.patch('/routines/:routineId', async (req, res) => {
   }
 })
 
+// Testar a fonte: consulta a URL e mostra o que ela devolve. NENHUMA LLM é
+// chamada, nenhum token é gasto e nenhum checkpoint é tocado — o usuário está
+// conferindo se o endereço funciona, não pedindo uma execução.
+agentRoutineRouter.post('/routines/test-source', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  if (!agentId) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>
+  const kind = body.kind === 'rss' || body.kind === 'http' ? body.kind : null
+  const url = typeof body.url === 'string' ? body.url.trim() : ''
+  if (!kind) {
+    res.status(400).json({ error: 'informe se a fonte é rss ou http' })
+    return
+  }
+  if (!url || !urlAceitavel(url)) {
+    res.status(400).json({ ok: false, kind, message: 'A URL precisa começar com http:// ou https://.' })
+    return
+  }
+  const preview = await previewSource(kind, url, {
+    initialWindow: isInitialWindow(body.initialWindow) ? body.initialWindow : undefined,
+  })
+  res.json(preview)
+})
+
+// "Verificar agora": enfileira uma execução da rotina fora do horário dela. É a
+// MESMA execução que o agendador dispararia — inclusive o checkpoint —, então se
+// não houver novidade ela termina como sucesso sem alteração. É diferente de
+// "testar fonte", que não executa nada.
+agentRoutineRouter.post('/routines/:routineId/check-now', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  const routineId = oid(String((req.params as Record<string, string>).routineId))
+  if (!agentId || !routineId) {
+    res.status(404).json({ error: 'not found' })
+    return
+  }
+  const owned = await getRoutineForAgent(res.locals.userId, agentId, routineId)
+  if (!owned) {
+    res.status(404).json({ error: 'routine not found' })
+    return
+  }
+  const { run, created } = await createRun(res.locals.userId, routineId, {
+    triggerType: 'manual',
+    requestId: typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined,
+  })
+  auditEntity(res, { id: owned._id.toString(), label: owned.name, floorId: owned.floorId.toString() })
+  res.status(created ? 201 : 200).json({ runId: run._id.toString(), status: run.status })
+})
+
 // Activate / pause / archive a routine. archive is also the "delete" (soft).
+//
+// Fica DEPOIS de `test-source` e `check-now` de propósito: `:action` é um pega-tudo
+// e engoliria os dois, entregando "check-now" como se fosse um verbo de status.
 agentRoutineRouter.post('/routines/:routineId/:action', async (req, res) => {
   const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
   const routineId = oid(String((req.params as Record<string, string>).routineId))

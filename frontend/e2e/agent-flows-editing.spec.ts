@@ -121,6 +121,9 @@ const ROUTINE = {
   delivery: { provider: 'email', connectionId: 'conn-1' },
   lastPublishedVersion: 2,
   nextRunAt: null,
+  // Rotina ANTIGA: sem fonte. É a maioria das que existem, e a interface tem que
+  // abri-la exatamente como abria antes do monitoramento existir.
+  source: { kind: 'fixed' },
   createdAt: NOW,
   updatedAt: NOW,
 }

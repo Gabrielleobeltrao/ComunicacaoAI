@@ -50,5 +50,11 @@ test('cronToRecurrence inverts recurrenceToCron for the friendly patterns', () =
     const back = cronToRecurrence(recurrenceToCron(r))
     assert.deepEqual(back, r)
   }
-  assert.equal(cronToRecurrence('*/5 * * * *'), null) // richer cron → null (fallback to raw)
+  // `*/5` passou a ser representável: é a frequência de monitoramento "a cada 5
+  // minutos". Antes caía no fallback porque a recorrência não tinha esse conceito.
+  assert.deepEqual(cronToRecurrence('*/5 * * * *'), { kind: 'minutes', every: 5 })
+  // O fallback continua existindo para o que o vocabulário amigável não cobre: um
+  // intervalo que a interface não oferece, e um cron com faixa.
+  assert.equal(cronToRecurrence('*/7 * * * *'), null)
+  assert.equal(cronToRecurrence('0 9 * * 1-5'), null)
 })

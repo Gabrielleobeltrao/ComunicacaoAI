@@ -38,8 +38,12 @@ export type AuditAction =
   | 'rotate'
   | 'publish'
   | 'test'
+  // Pediu para a rotina rodar AGORA, fora do horário dela. É diferente de
+  // 'activate' (que muda o estado) e de 'test' (que não executa nada).
+  | 'run'
   | 'disconnect'
 export const AUDIT_ACTIONS: AuditAction[] = [
+  'run',
   'create',
   'update',
   'delete',

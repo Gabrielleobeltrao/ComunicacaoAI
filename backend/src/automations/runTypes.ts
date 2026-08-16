@@ -34,6 +34,17 @@ export interface AutomationRun {
   finishedAt: Date | null
   cancelRequestedAt: Date | null
   usage: { inputTokens: number; outputTokens: number }
+  /**
+   * Sucesso SEM alteração: a fonte foi consultada e não havia nada novo. Presente
+   * só em rotina de monitoramento.
+   *
+   * Fica ao lado de `status` e não dentro dele de propósito. Para o motor, para as
+   * métricas e para o histórico isto é um SUCESSO — a rotina fez exatamente o que
+   * devia. O que muda é o que a interface conta ao dono: "verificado, sem novidade"
+   * em vez de "concluído" (que sugeriria que algo foi processado) ou "falhou" (que
+   * é mentira e ainda dispararia alerta).
+   */
+  noChange?: boolean
   finalOutput: string
   error: SafeRunError | null
   // --- queue bookkeeping (the runs collection IS the queue) --------------------

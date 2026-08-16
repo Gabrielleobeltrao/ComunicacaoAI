@@ -4,6 +4,7 @@ import { ensureBuildingIndexes, ensureDefaultBuilding } from './building.js'
 import { ensureFloorIndexes } from './floors.js'
 import { ensureAutomationIndexes } from './automations/repository.js'
 import { ensureRunIndexes } from './automations/runRepository.js'
+import { ensureSourceCheckpointIndexes } from './automations/sourceCheckpoint.js'
 import { ensureConnectionIndexes } from './connections/repository.js'
 import { ensureInstallationIndexes } from './apps/installations.js'
 import { ensureNavigationIndexes } from './apps/navigation.js'
@@ -67,6 +68,8 @@ export async function runMigrations(): Promise<void> {
   await backfillBuildingsAndFloors()
   await ensureAutomationIndexes()
   await ensureRunIndexes()
+  // O que cada rotina de monitoramento já viu.
+  await ensureSourceCheckpointIndexes()
   await ensureConnectionIndexes()
   await ensureInstallationIndexes()
   await ensureNavigationIndexes()

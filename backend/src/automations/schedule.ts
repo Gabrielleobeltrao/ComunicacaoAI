@@ -2,7 +2,16 @@
 // Pure and unit-tested; the reconciler feeds the cron + IANA timezone to BullMQ,
 // which handles DST. (plan §10.3/§11.2)
 
+// Os intervalos curtos existem para MONITORAMENTO: verificar um feed ou uma
+// página de tempos em tempos. Eles não têm hora do dia — "a cada 15 minutos" não
+// tem um "às 08:00" — e por isso são um tipo à parte em vez de um campo opcional
+// no meio dos outros.
+export const EVERY_MINUTES = [5, 15, 30] as const
+export type EveryMinutes = (typeof EVERY_MINUTES)[number]
+
 export type Recurrence =
+  | { kind: 'minutes'; every: EveryMinutes }
+  | { kind: 'hourly' }
   | { kind: 'daily'; time: string }
   | { kind: 'weekly'; time: string; weekdays: number[] } // 0=Sun … 6=Sat
   | { kind: 'monthly'; time: string; day: number } // 1..31
@@ -26,6 +35,14 @@ export function isValidRecurrence(r: unknown): r is Recurrence {
 }
 
 export function recurrenceToCron(r: Recurrence): string {
+  // Estes dois não têm hora do dia, então são resolvidos antes de `parseTime` —
+  // que exigiria um campo que eles não possuem.
+  if (r.kind === 'minutes') {
+    if (!EVERY_MINUTES.includes(r.every)) throw new Error(`intervalo inválido: ${r.every}`)
+    return `*/${r.every} * * * *`
+  }
+  if (r.kind === 'hourly') return '0 * * * *'
+
   const { minute, hour } = parseTime(r.time)
   switch (r.kind) {
     case 'daily':
@@ -47,6 +64,8 @@ export function recurrenceToCron(r: Recurrence): string {
 
 // Human summary for the UI ("Todo dia às 08:00"), timezone shown separately.
 export function describeRecurrence(r: Recurrence): string {
+  if (r.kind === 'minutes') return `A cada ${r.every} minutos`
+  if (r.kind === 'hourly') return 'A cada hora'
   const t = String(r.time)
   if (r.kind === 'daily') return `Todo dia às ${t}`
   if (r.kind === 'monthly') return `Todo dia ${r.day} às ${t}`
@@ -61,6 +80,15 @@ export function cronToRecurrence(cron: string): Recurrence | null {
   const parts = String(cron).trim().split(/\s+/)
   if (parts.length !== 5) return null
   const [min, hr, dom, mon, dow] = parts
+
+  // `*/N * * * *` e `0 * * * *` são os que os intervalos curtos geram.
+  const cadaN = /^\*\/(\d+)$/.exec(min)
+  if (cadaN && hr === '*' && dom === '*' && mon === '*' && dow === '*') {
+    const every = Number(cadaN[1])
+    return (EVERY_MINUTES as readonly number[]).includes(every) ? { kind: 'minutes', every: every as EveryMinutes } : null
+  }
+  if (min === '0' && hr === '*' && dom === '*' && mon === '*' && dow === '*') return { kind: 'hourly' }
+
   const m = Number(min)
   const h = Number(hr)
   if (!Number.isInteger(m) || !Number.isInteger(h) || m < 0 || m > 59 || h < 0 || h > 23) return null

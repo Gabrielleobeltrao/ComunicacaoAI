@@ -69,6 +69,13 @@ const RULES: Rule[] = [
   R('POST', 'api/agents/:/routines/:/activate', { entityType: 'routine', action: 'activate' }, { idAt: 4 }),
   R('POST', 'api/agents/:/routines/:/pause', { entityType: 'routine', action: 'pause' }, { idAt: 4 }),
   R('POST', 'api/agents/:/routines/:/archive', { entityType: 'routine', action: 'archive' }, { idAt: 4 }),
+  // Testar a fonte não muda nada: consulta uma URL e mostra o resultado. Não gasta
+  // token, não toca no checkpoint e não cria execução — não há o que registrar no
+  // histórico da conta.
+  R('POST', 'api/agents/:/routines/test-source', null, { why: 'consulta de teste, não altera nada' }),
+  // "Verificar agora" CRIA uma execução fora do horário — isso é uma ação do dono
+  // sobre a rotina, e o histórico precisa dizer quem pediu.
+  R('POST', 'api/agents/:/routines/:/check-now', { entityType: 'routine', action: 'run' }, { idAt: 4 }),
   R('POST', 'api/agents/:/event-triggers', { entityType: 'event_trigger', action: 'create' }),
   R('PATCH', 'api/agents/:/event-triggers/:', { entityType: 'event_trigger', action: 'update' }, { idAt: 4 }),
   R('POST', 'api/agents/:/event-triggers/:/rotate', { entityType: 'event_trigger', action: 'rotate' }, { idAt: 4 }),

@@ -6,6 +6,7 @@ import {
   updateRun,
 } from './runRepository.js'
 import { runDefinition } from './runner.js'
+import { advanceCheckpoint, getCheckpoint, markChecked } from './sourceCheckpoint.js'
 import type { RunnerDeps } from './runner.js'
 import { preview } from './runTypes.js'
 import type { AutomationRun, RunStatus, StepRun } from './runTypes.js'
@@ -43,11 +44,30 @@ function buildDeps(run: AutomationRun): RunnerDeps {
     rootPromise ??= findRootByKey(run.ownerId, runExecutionKey(run._id.toString())).then((root) => root?._id ?? null)
     return rootPromise
   }
+  // Só rotinas de monitoramento têm etapa de fonte. Para as demais isto fica
+  // ausente, e o runner segue o caminho de sempre.
+  const temFonte = (run.definitionSnapshot.steps ?? []).some((p) => p.type === 'source.rss' || p.type === 'source.http')
+
   return {
     fetchUrl: async (url, opts) => {
+      // safeFetch é obrigatório: é ele que recusa localhost, IP privado, link-local
+      // e redirect para dentro da rede. Uma URL de monitoramento vem do usuário e
+      // vai ser buscada pelo SERVIDOR — é a definição de SSRF.
       const res = await safeFetch(url, { contentTypeAllowlist: opts?.contentTypeAllowlist })
       return { body: res.body, contentType: res.contentType }
     },
+    ...(temFonte && run.automationId
+      ? {
+          sourceState: {
+            read: async (stepId: string) => {
+              const cp = await getCheckpoint(run.ownerId, run.automationId!, stepId)
+              return { seenKeys: cp?.seenKeys ?? [], contentHash: cp?.contentHash ?? null }
+            },
+            checked: async (stepId: string) => markChecked(run.ownerId, run.automationId!, stepId, new Date()),
+            advance: async (stepId: string, avanco) => advanceCheckpoint(run.ownerId, run.automationId!, stepId, avanco, new Date()),
+          },
+        }
+      : {}),
     runAgent: async (call) => {
       // The whole rule lives in executeRoutineStep (authorise sector → ground → run →
       // await charge + telemetry). The worker only wires the real adapters.
@@ -218,6 +238,9 @@ export async function processRun(runId: string): Promise<void> {
   await updateRun(run._id, {
     status: outcome.status as RunStatus,
     finishedAt: now,
+    // Verificou e não havia nada novo. Guardado no run para a lista de rotinas
+    // conseguir dizer isso sem reprocessar as etapas.
+    ...(outcome.noChange ? { noChange: true } : {}),
     finalOutput: outcome.finalOutput,
     // Real consumption of the whole run (summed across steps and their attempts).
     usage: outcome.usage,

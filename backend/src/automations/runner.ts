@@ -1,5 +1,6 @@
 import { renderTemplate } from './transform.js'
 import { dedupeItems, filterByWindow, parseRssItems } from './sources.js'
+import { detectHttpChange, detectRssChange } from './sourceChange.js'
 import type { AutomationDefinition, StepDefinition, StepType } from './types.js'
 
 // Transport-agnostic linear runner for an automation definition. It contains NO
@@ -37,8 +38,40 @@ export interface StepUsage {
   outputTokens: number
 }
 
+/**
+ * O que a fonte já viu, e como registrar o que ela viu agora.
+ *
+ * Opcional de propósito: uma rotina sem fonte — que é a esmagadora maioria das que
+ * existem hoje — não passa nada disto, e o runner se comporta exatamente como
+ * antes. Quando está presente, o passo de fonte deixa de ser "buscar" e passa a ser
+ * "buscar o que mudou".
+ *
+ * `advance` NÃO é chamado aqui dentro do passo. O runner guarda o avanço e só o
+ * aplica se a execução inteira terminar bem — se a LLM falhar ou a entrega falhar,
+ * o próximo ciclo reprocessa o mesmo conteúdo. Entregar duas vezes é recuperável;
+ * perder uma notícia, não.
+ */
+export interface SourceState {
+  read: (stepId: string) => Promise<{ seenKeys: string[]; contentHash: string | null }>
+  checked: (stepId: string) => Promise<void>
+  advance: (stepId: string, avanco: { novasChaves?: string[]; contentHash?: string | null }) => Promise<void>
+}
+
+/**
+ * "Consultei a fonte e não havia nada novo."
+ *
+ * Não é erro e não é falha: é o resultado esperado da maioria das verificações de
+ * um monitoramento. O runner reconhece este valor, pula o resto das etapas — nenhuma
+ * LLM, nenhuma entrega — e encerra a execução como sucesso sem alteração.
+ */
+export class NoChange {
+  constructor(public readonly reason: string) {}
+}
+
 export interface RunnerDeps {
   fetchUrl: (url: string, opts?: { contentTypeAllowlist?: string[] }) => Promise<FetchResult>
+  // Presente só em rotinas de monitoramento.
+  sourceState?: SourceState
   // Returns the model usage so it reaches the step record and the run total, plus an
   // optional `settle`: the accounting/telemetry that is still finishing. The runner
   // awaits it OUTSIDE the step timeout, so a slow database can never be mistaken for
@@ -63,6 +96,10 @@ export interface StepRecord {
 }
 export interface RunOutcome {
   status: 'succeeded' | 'failed' | 'canceled'
+  // Sucesso SEM alteração: a fonte foi consultada e não havia nada novo. Fica
+  // separado de `status` porque não é um desfecho diferente — é um sucesso com
+  // zero token, e a interface precisa saber distinguir para não parecer parada.
+  noChange?: boolean
   steps: StepRecord[]
   finalOutput: string
   context: Record<string, unknown>
@@ -126,6 +163,9 @@ async function executeStep(
   attempt = 1,
   usageSink?: StepUsage,
   settleSink?: Promise<unknown>[],
+  // Avanços de checkpoint acumulados; aplicados pelo runner só no fim, e só se a
+  // execução inteira der certo.
+  pendingAdvance?: { stepId: string; avanco: { novasChaves?: string[]; contentHash?: string | null } }[],
 ): Promise<unknown> {
   const cfg = step.config
   switch (step.type as StepType) {
@@ -134,13 +174,30 @@ async function executeStep(
         throw new StepError('fetch', (e as Error).message, true)
       })
       const windowMs = Number(cfg.windowMs ?? 24 * 3600 * 1000)
-      return filterByWindow(dedupeItems(parseRssItems(body)), windowMs, deps.now())
+
+      // Sem estado de fonte: comportamento antigo, intacto. É por aqui que passam as
+      // definições que já existiam antes do monitoramento existir.
+      if (!deps.sourceState) return filterByWindow(dedupeItems(parseRssItems(body)), windowMs, deps.now())
+
+      await deps.sourceState.checked(step.id)
+      const { seenKeys } = await deps.sourceState.read(step.id)
+      const mudanca = detectRssChange(body, seenKeys, windowMs, deps.now())
+      if (!mudanca.changed) return new NoChange('nenhum item novo no feed')
+      pendingAdvance?.push({ stepId: step.id, avanco: { novasChaves: mudanca.novasChaves } })
+      return mudanca.novos
     }
     case 'source.http': {
       const { body, contentType } = await deps.fetchUrl(String(cfg.url)).catch((e) => {
         throw new StepError('fetch', (e as Error).message, true)
       })
-      return contentType.includes('html') ? strip(body) : body
+      if (!deps.sourceState) return contentType.includes('html') ? strip(body) : body
+
+      await deps.sourceState.checked(step.id)
+      const { contentHash } = await deps.sourceState.read(step.id)
+      const mudanca = detectHttpChange(body, contentType, contentHash)
+      if (!mudanca.changed) return new NoChange('o conteúdo não mudou desde a última verificação')
+      pendingAdvance?.push({ stepId: step.id, avanco: { contentHash: mudanca.contentHash } })
+      return mudanca.conteudo
     }
     case 'agent.execute': {
       const context = (step.dependsOn ?? []).map((id) => `Etapa ${id}:\n${JSON.stringify(ctx[id])}`)
@@ -202,7 +259,10 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
   const steps: StepRecord[] = []
   let finalOutput = ''
   let canceled = false
+  let noChange = false
   const runUsage: StepUsage = { inputTokens: 0, outputTokens: 0 }
+  // Avanços de checkpoint pendentes: aplicados no fim, e SÓ se tudo deu certo.
+  const pendingAdvance: { stepId: string; avanco: { novasChaves?: string[]; contentHash?: string | null } }[] = []
 
   for (const step of def.steps) {
     if (!step.enabled) {
@@ -229,10 +289,26 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
       try {
         // The timeout guards the EXTERNAL work only (the model call / fetch /
         // delivery). Every other step type keeps its timeout unchanged.
-        const output = await withTimeout(executeStep(step, ctx, deps, attempt, stepUsage, settlePending), step.timeoutMs ?? 0)
+        const output = await withTimeout(executeStep(step, ctx, deps, attempt, stepUsage, settlePending, pendingAdvance), step.timeoutMs ?? 0)
         // The inference succeeded: from here on nothing may cause another one, so the
         // accounting finishes without any timeout over it.
         if (settlePending.length) await Promise.allSettled(settlePending.splice(0))
+        // A fonte disse que não há nada novo. Daqui para baixo não roda mais nada:
+        // nenhuma inferência, nenhuma entrega, zero token. E não é retry — não há o
+        // que tentar de novo, a resposta está correta.
+        if (output instanceof NoChange) {
+          steps.push({
+            stepId: step.id,
+            stepType: step.type,
+            status: 'succeeded',
+            attempts: attempt,
+            output: { noChange: true, reason: output.reason },
+            usage: { ...stepUsage },
+          })
+          noChange = true
+          done = true
+          break
+        }
         ctx[step.id] = output
         if (typeof output === 'string') finalOutput = output
         steps.push({ stepId: step.id, stepType: step.type, status: 'succeeded', attempts: attempt, output, usage: { ...stepUsage } })
@@ -263,11 +339,37 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
     runUsage.inputTokens += stepUsage.inputTokens
     runUsage.outputTokens += stepUsage.outputTokens
     if (!done && !step.continueOnError) {
+      // Falhou: o checkpoint NÃO avança. O próximo ciclo reprocessa o mesmo
+      // conteúdo, que é o comportamento seguro.
       return { status: 'failed', steps, finalOutput, context: ctx, usage: runUsage }
+    }
+    // Sem novidade na fonte: o resto da rotina não tem o que fazer.
+    if (noChange) break
+  }
+
+  // As etapas que nem chegaram a ser tentadas por falta de novidade ficam
+  // registradas como puladas, para o histórico não parecer truncado.
+  if (noChange) {
+    const executadas = new Set(steps.map((s) => s.stepId))
+    for (const step of def.steps) {
+      if (!executadas.has(step.id)) steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
     }
   }
 
   if (canceled) return { status: 'canceled', steps, finalOutput, context: ctx, usage: runUsage }
+
+  // Chegou aqui: nada falhou. Só AGORA o checkpoint avança — depois da inferência e
+  // da entrega, não antes.
+  //
+  // E não avança em `noChange`: se uma definição tiver duas fontes e a segunda não
+  // tiver novidade, o que a primeira trouxe não chegou a ser processado. Avançar ali
+  // perderia esse conteúdo para sempre. Uma rotina montada pela interface só tem uma
+  // fonte, então na prática esta lista já vem vazia — a guarda é para o runner, que
+  // é genérico.
+  if (deps.sourceState && !noChange) {
+    for (const { stepId, avanco } of pendingAdvance) await deps.sourceState.advance(stepId, avanco)
+  }
+  if (noChange) return { status: 'succeeded', noChange: true, steps, finalOutput, context: ctx, usage: runUsage }
   const anyFailed = steps.some((s) => s.status === 'failed')
   return { status: anyFailed ? 'failed' : 'succeeded', steps, finalOutput, context: ctx, usage: runUsage }
 }

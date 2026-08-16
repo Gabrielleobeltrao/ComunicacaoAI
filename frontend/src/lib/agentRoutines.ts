@@ -4,13 +4,44 @@ import { API_URL } from './api'
 // agent's Histórico (routine runs + delegations). Backend enforces ownership.
 export type RoutineStatus = 'draft' | 'active' | 'paused' | 'archived'
 
+// Os intervalos curtos existem para MONITORAMENTO — verificar um feed ou uma
+// página de tempos em tempos. Não têm hora do dia, e por isso são um tipo à parte.
 export type Recurrence =
+  | { kind: 'minutes'; every: 5 | 15 | 30 }
+  | { kind: 'hourly' }
   | { kind: 'daily'; time: string }
   | { kind: 'weekly'; time: string; weekdays: number[] }
   | { kind: 'monthly'; time: string; day: number }
 
+export type InitialWindow = '24h' | '3d' | '7d'
+
+/**
+ * De onde vem o que o agente processa.
+ *
+ * `fixed` é o que sempre existiu: um texto igual em toda execução. As outras duas
+ * transformam a rotina num monitoramento — ela consulta a URL e só aciona o agente
+ * quando há conteúdo novo ou alteração real.
+ */
+export type RoutineSource =
+  | { kind: 'fixed' }
+  | { kind: 'rss'; url: string; initialWindow: InitialWindow; focus?: string }
+  | { kind: 'http'; url: string; focus?: string }
+
+// O estado do monitoramento, para a lista. Só existe em rotina com fonte.
+export interface RoutineMonitoring {
+  lastCheckedAt: string | null
+  lastChangedAt: string | null
+  // 'changed' = encontrou e processou; 'no_change' = verificou e não havia nada
+  // (sucesso, zero token); 'failed' = a verificação em si falhou.
+  lastResult: 'changed' | 'no_change' | 'failed' | null
+  lastRunAt: string | null
+  lastError: PublicError | null
+}
+
 export interface Routine {
   id: string
+  source: RoutineSource
+  monitoring?: RoutineMonitoring
   name: string
   objective: string
   status: RoutineStatus
@@ -30,6 +61,9 @@ export interface Routine {
 
 export interface RoutineInput {
   name?: string
+  // Ausente = mantém a fonte atual. Só um `{ kind: 'fixed' }` explícito desliga o
+  // monitoramento — a mesma regra do destino de entrega.
+  source?: RoutineSource
   objective: string
   recurrence: Recurrence
   timezone?: string
@@ -94,6 +128,26 @@ const base = (agentId: string) => `${API_URL}/api/agents/${agentId}`
 
 export const listRoutines = (agentId: string) => fetch(`${base(agentId)}/routines`, req('GET')).then(json<Routine[]>)
 export const createRoutine = (agentId: string, input: RoutineInput) => fetch(`${base(agentId)}/routines`, req('POST', input)).then(json<Routine>)
+
+// O que a fonte devolve HOJE, sem executar nada: nenhuma LLM, nenhum token,
+// nenhum checkpoint tocado.
+export interface SourcePreview {
+  ok: boolean
+  kind: 'rss' | 'http'
+  message: string
+  itemCount?: number
+  items?: { title: string; url: string; publishedAt: string | null }[]
+  excerpt?: string
+}
+
+export const testSource = (agentId: string, body: { kind: 'rss' | 'http'; url: string; initialWindow?: InitialWindow }) =>
+  fetch(`${base(agentId)}/routines/test-source`, req('POST', body)).then(json<SourcePreview>)
+
+// Enfileira a MESMA execução que o agendador dispararia, fora do horário. Se não
+// houver novidade, ela termina como sucesso sem alteração — diferente de
+// `testSource`, que não executa nada.
+export const checkRoutineNow = (agentId: string, routineId: string) =>
+  fetch(`${base(agentId)}/routines/${routineId}/check-now`, req('POST', {})).then(json<{ runId: string; status: string }>)
 export const updateRoutine = (agentId: string, routineId: string, input: RoutineInput) =>
   fetch(`${base(agentId)}/routines/${routineId}`, req('PATCH', input)).then(json<Routine>)
 export const routineAction = (agentId: string, routineId: string, action: 'activate' | 'pause' | 'archive') =>

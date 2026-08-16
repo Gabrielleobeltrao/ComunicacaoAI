@@ -5,6 +5,7 @@ import {
   getAgentHistory,
   listDeliveryConnections,
   listRoutines,
+  checkRoutineNow,
   routineAction,
   updateRoutine,
   type AgentHistory,
@@ -12,6 +13,10 @@ import {
   type Recurrence,
   type Routine,
   type RoutineStatus,
+  type InitialWindow,
+  type RoutineSource,
+  type SourcePreview,
+  testSource,
 } from '../lib/agentRoutines'
 import { createSectorDocument } from '../lib/sectorKnowledge'
 import { Button, Card, EmptyState, Field, Input, Select, StatusPill, Tag, Textarea } from '../ui'
@@ -53,7 +58,20 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
   const [objective, setObjective] = useState(routine?.objective ?? '')
   const [name, setName] = useState(routine?.name ?? '')
   const [kind, setKind] = useState<Recurrence['kind']>(routine?.recurrence?.kind ?? 'daily')
-  const [time, setTime] = useState(routine?.recurrence?.time ?? '07:00')
+  // `time` só existe nas recorrências com hora do dia. "A cada 15 minutos" não tem
+  // horário, e ler `.time` de lá seria ler um campo que não existe.
+  const comHorario = routine?.recurrence && 'time' in routine.recurrence ? routine.recurrence.time : undefined
+  const [time, setTime] = useState(comHorario ?? '07:00')
+  const [every, setEvery] = useState<5 | 15 | 30>(routine?.recurrence?.kind === 'minutes' ? routine.recurrence.every : 15)
+
+  // --- fonte de entrada ---------------------------------------------------------
+  const fonteAtual = routine?.source ?? { kind: 'fixed' as const }
+  const [sourceKind, setSourceKind] = useState<'fixed' | 'rss' | 'http'>(fonteAtual.kind)
+  const [sourceUrl, setSourceUrl] = useState(fonteAtual.kind === 'fixed' ? '' : fonteAtual.url)
+  const [initialWindow, setInitialWindow] = useState<InitialWindow>(fonteAtual.kind === 'rss' ? fonteAtual.initialWindow : '24h')
+  const [focus, setFocus] = useState(fonteAtual.kind === 'fixed' ? '' : (fonteAtual.focus ?? ''))
+  const [preview, setPreview] = useState<SourcePreview | null>(null)
+  const [testando, setTestando] = useState(false)
   const [weekdays, setWeekdays] = useState<number[]>(routine?.recurrence?.kind === 'weekly' ? routine.recurrence.weekdays : [1])
   const [day, setDay] = useState(routine?.recurrence?.kind === 'monthly' ? routine.recurrence.day : 1)
   const [timezone, setTimezone] = useState(routine?.timezone || 'America/Sao_Paulo')
@@ -93,8 +111,38 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
     }
   }, [])
 
-  const buildRecurrence = (): Recurrence =>
-    kind === 'daily' ? { kind, time } : kind === 'weekly' ? { kind, time, weekdays: [...weekdays].sort((a, b) => a - b) } : { kind, time, day }
+  const buildRecurrence = (): Recurrence => {
+    if (kind === 'minutes') return { kind, every }
+    if (kind === 'hourly') return { kind }
+    if (kind === 'weekly') return { kind, time, weekdays: [...weekdays].sort((a, b) => a - b) }
+    if (kind === 'monthly') return { kind, time, day }
+    return { kind: 'daily', time }
+  }
+
+  const monitorando = sourceKind !== 'fixed'
+
+  const buildSource = (): RoutineSource => {
+    if (sourceKind === 'fixed') return { kind: 'fixed' }
+    const url = sourceUrl.trim()
+    const f = focus.trim()
+    if (sourceKind === 'rss') return { kind: 'rss', url, initialWindow, ...(f ? { focus: f } : {}) }
+    return { kind: 'http', url, ...(f ? { focus: f } : {}) }
+  }
+
+  // Consulta a fonte e mostra o que ela devolve. Não executa a rotina, não chama a
+  // LLM e não gasta token — é uma conferência antes de salvar.
+  const testarFonte = async () => {
+    if (sourceKind === 'fixed') return
+    setTestando(true)
+    setPreview(null)
+    try {
+      setPreview(await testSource(agentId, { kind: sourceKind, url: sourceUrl.trim(), initialWindow }))
+    } catch {
+      setPreview({ ok: false, kind: sourceKind, message: 'Não foi possível consultar a fonte agora.' })
+    } finally {
+      setTestando(false)
+    }
+  }
 
   const submit = async () => {
     if (!objective.trim()) {
@@ -103,6 +151,14 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
     }
     if (kind === 'weekly' && weekdays.length === 0) {
       setError('Escolha ao menos um dia da semana.')
+      return
+    }
+    if (monitorando && !sourceUrl.trim()) {
+      setError('Informe o endereço da fonte a monitorar.')
+      return
+    }
+    if (monitorando && !/^https?:\/\//i.test(sourceUrl.trim())) {
+      setError('O endereço precisa começar com http:// ou https://.')
       return
     }
     setSaving(true)
@@ -118,6 +174,7 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
       timezone,
       input: input.trim() || undefined,
       outputFormat,
+      source: buildSource(),
       ...(keepDestination ? {} : { delivery: chosen ? { provider: chosen.provider, connectionId: chosen.id } : null }),
     }
     try {
@@ -139,13 +196,151 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
       <Field label="Nome (opcional)">
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Relatório diário de notícias" data-testid="routine-name" />
       </Field>
+      {/* --- fonte de entrada --------------------------------------------------
+          Entrada fixa é o que sempre existiu. As outras duas transformam a rotina
+          num monitoramento: ela passa a consultar um endereço e só aciona o agente
+          quando encontra algo novo. */}
+      <Field label="Fonte de entrada" hint="De onde vem o que o agente processa a cada execução.">
+        <Select
+          value={sourceKind}
+          onChange={(e) => {
+            setSourceKind(e.target.value as 'fixed' | 'rss' | 'http')
+            setPreview(null)
+          }}
+          data-testid="routine-source-kind"
+          aria-label="Fonte de entrada"
+          options={[
+            { value: 'fixed', label: 'Entrada fixa (texto que você escreve)' },
+            { value: 'rss', label: 'Feed RSS/Atom — só quando houver item novo' },
+            { value: 'http', label: 'Página ou API — só quando o conteúdo mudar' },
+          ]}
+        />
+      </Field>
+
+      {monitorando ? (
+        <div style={{ display: 'grid', gap: 12 }} data-testid="routine-source-config">
+          <Field label="Endereço" hint="Precisa ser público e começar com http:// ou https://.">
+            <Input
+              value={sourceUrl}
+              onChange={(e) => {
+                setSourceUrl(e.target.value)
+                setPreview(null)
+              }}
+              placeholder={sourceKind === 'rss' ? 'https://exemplo.com/feed.xml' : 'https://exemplo.com/pagina'}
+              data-testid="routine-source-url"
+              aria-label="Endereço da fonte"
+            />
+          </Field>
+
+          {sourceKind === 'rss' ? (
+            <Field label="Janela inicial" hint="Na primeira verificação, o que é recente o bastante para valer a pena. Depois disso, só o que for novo.">
+              <Select
+                value={initialWindow}
+                onChange={(e) => setInitialWindow(e.target.value as InitialWindow)}
+                data-testid="routine-initial-window"
+                aria-label="Janela inicial"
+                options={[
+                  { value: '24h', label: 'Últimas 24 horas' },
+                  { value: '3d', label: 'Últimos 3 dias' },
+                  { value: '7d', label: 'Últimos 7 dias' },
+                ]}
+              />
+            </Field>
+          ) : null}
+
+          <Field label="Foco (opcional)" hint="O que olhar no que chegar.">
+            <Input value={focus} onChange={(e) => setFocus(e.target.value)} placeholder="Ex.: só mudanças de preço" data-testid="routine-source-focus" />
+          </Field>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Button variant="secondary" size="sm" icon="search" onClick={() => void testarFonte()} disabled={testando || !sourceUrl.trim()} data-testid="test-source">
+              {testando ? 'Consultando…' : 'Testar fonte'}
+            </Button>
+            {/* O ponto que evita a pergunta mais comum sobre custo. */}
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="source-cost-note">
+              A verificação não usa tokens. Eles só são consumidos quando o agente processa uma mudança.
+            </span>
+          </div>
+
+          {preview ? (
+            <div
+              data-testid="source-preview"
+              style={{
+                padding: 12,
+                borderRadius: 10,
+                border: `1px solid ${preview.ok ? 'var(--border-subtle)' : 'var(--status-blocked)'}`,
+                background: 'var(--surface-sunken)',
+                display: 'grid',
+                gap: 8,
+              }}
+            >
+              <p style={{ margin: 0, fontSize: 13, color: preview.ok ? 'var(--text-body)' : 'var(--status-blocked)' }}>{preview.message}</p>
+              {preview.items?.length ? (
+                <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4 }} data-testid="source-preview-items">
+                  {preview.items.map((item, i) => (
+                    <li key={`${item.url}:${i}`} style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                      {item.title || item.url}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {preview.excerpt ? (
+                <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)', overflowWrap: 'anywhere' }} data-testid="source-preview-excerpt">
+                  {preview.excerpt.slice(0, 240)}
+                  {preview.excerpt.length > 240 ? '…' : ''}
+                </p>
+              ) : null}
+              {preview.ok && preview.itemCount === 0 ? (
+                <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="source-preview-empty">
+                  O feed respondeu, mas nada dentro da janela escolhida. Uma janela maior traria mais.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Field label="Frequência">
-          <Select value={kind} onChange={(e) => setKind(e.target.value as Recurrence['kind'])} options={[{ value: 'daily', label: 'Todo dia' }, { value: 'weekly', label: 'Toda semana' }, { value: 'monthly', label: 'Todo mês' }]} />
+        <Field label={monitorando ? 'Verificar a cada' : 'Frequência'}>
+          <Select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as Recurrence['kind'])}
+            data-testid="routine-frequency"
+            aria-label="Frequência"
+            options={[
+              { value: 'minutes', label: 'Minutos' },
+              { value: 'hourly', label: '1 hora' },
+              { value: 'daily', label: 'Todo dia' },
+              { value: 'weekly', label: 'Toda semana' },
+              { value: 'monthly', label: 'Todo mês' },
+            ]}
+          />
         </Field>
-        <Field label="Horário">
-          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} data-testid="routine-time" />
-        </Field>
+        {kind === 'minutes' ? (
+          <Field label="Intervalo">
+            <Select
+              value={String(every)}
+              onChange={(e) => setEvery(Number(e.target.value) as 5 | 15 | 30)}
+              data-testid="routine-every-minutes"
+              aria-label="Intervalo em minutos"
+              options={[
+                { value: '5', label: 'A cada 5 minutos' },
+                { value: '15', label: 'A cada 15 minutos' },
+                { value: '30', label: 'A cada 30 minutos' },
+              ]}
+            />
+          </Field>
+        ) : kind === 'hourly' ? (
+          // "A cada hora" não tem horário para escolher; dizer isso é melhor que
+          // deixar um campo desabilitado sem explicação.
+          <Field label="Horário">
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>No começo de cada hora.</p>
+          </Field>
+        ) : (
+          <Field label="Horário">
+            <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} data-testid="routine-time" />
+          </Field>
+        )}
       </div>
       {kind === 'weekly' ? (
         <Field label="Dias da semana">
@@ -179,9 +374,13 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
           <Select value={outputFormat} onChange={(e) => setOutputFormat(e.target.value as 'text' | 'markdown' | 'json')} options={[{ value: 'markdown', label: 'Markdown' }, { value: 'text', label: 'Texto' }, { value: 'json', label: 'JSON' }]} />
         </Field>
       </div>
-      <Field label="Entrada fixa (opcional)" hint="Texto entregue ao agente em toda execução.">
-        <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ex.: foco em política nacional" data-testid="routine-input" />
-      </Field>
+      {/* Com uma fonte configurada, a entrada do agente é o conteúdo novo — um
+          texto fixo aqui não seria usado, e mostrá-lo prometeria o que não acontece. */}
+      {monitorando ? null : (
+        <Field label="Entrada fixa (opcional)" hint="Texto entregue ao agente em toda execução.">
+          <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ex.: foco em política nacional" data-testid="routine-input" />
+        </Field>
+      )}
       <Field
         label="Destino do resultado (opcional)"
         hint={
@@ -220,10 +419,50 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
   )
 }
 
+// Quanto tempo faz, em palavras. "há 3 min" responde melhor que um timestamp à
+// pergunta que o usuário está fazendo: isto ainda está funcionando?
+function haQuantoTempo(iso: string | null): string | null {
+  if (!iso) return null
+  const ms = Date.now() - Date.parse(iso)
+  if (!Number.isFinite(ms) || ms < 0) return null
+  const min = Math.floor(ms / 60_000)
+  if (min < 1) return 'agora'
+  if (min < 60) return `há ${min} min`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `há ${h} h`
+  const d = Math.floor(h / 24)
+  return `há ${d} dia${d === 1 ? '' : 's'}`
+}
+
+const RESULTADO_LABEL: Record<string, string> = {
+  changed: 'encontrou novidade',
+  no_change: 'sem novidade',
+  failed: 'falhou ao verificar',
+}
+
 function RoutineRow({ agentId, routine, onChanged }: { agentId: string; routine: Routine; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [verificando, setVerificando] = useState(false)
+  const [verificado, setVerificado] = useState(false)
+
+  // Enfileira a MESMA execução do agendador, fora do horário. Se não houver
+  // novidade, ela termina como sucesso sem alteração — não é o "testar fonte",
+  // que não executa nada.
+  const verificarAgora = async () => {
+    setVerificando(true)
+    setFailed(false)
+    try {
+      await checkRoutineNow(agentId, routine.id)
+      setVerificado(true)
+      onChanged()
+    } catch {
+      setFailed(true)
+    } finally {
+      setVerificando(false)
+    }
+  }
   const [pill, pillLabel] = ROUTINE_PILL[routine.status]
   const act = async (action: 'activate' | 'pause' | 'archive') => {
     setBusy(true)
@@ -261,11 +500,53 @@ function RoutineRow({ agentId, routine, onChanged }: { agentId: string; routine:
             <StatusPill status={pill} label={pillLabel} pulse={false} />
           </div>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>
+            {/* Que tipo de fonte esta rotina vigia — ou nenhuma. */}
+            {routine.source.kind !== 'fixed' ? (
+              <Tag data-testid="routine-source-tag">{routine.source.kind === 'rss' ? 'Feed RSS' : 'Página/API'}</Tag>
+            ) : null}{' '}
             {routine.scheduleLabel} · {routine.timezone}
           </p>
+
+          {/* O estado do monitoramento. Sem isto, uma rotina que verifica de 15 em
+              15 minutos e nunca encontra nada parece parada — e o usuário não tem
+              como distinguir "está tudo calmo" de "quebrou". */}
+          {routine.monitoring ? (
+            <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="routine-monitoring">
+              {(() => {
+                const m = routine.monitoring
+                const partes: string[] = []
+                const verificou = haQuantoTempo(m.lastCheckedAt)
+                partes.push(verificou ? `Verificado ${verificou}` : 'Ainda não verificado')
+                if (m.lastResult) partes.push(RESULTADO_LABEL[m.lastResult] ?? m.lastResult)
+                const mudou = haQuantoTempo(m.lastChangedAt)
+                partes.push(mudou ? `última novidade ${mudou}` : 'nenhuma novidade ainda')
+                if (routine.nextRunAt) partes.push(`próxima ${new Date(routine.nextRunAt).toLocaleString('pt-BR')}`)
+                return partes.join(' · ')
+              })()}
+            </p>
+          ) : null}
+          {/* A confirmação fica FORA do rótulo do botão: o botão continua dizendo o
+              que ele faz, e o aviso some junto com a próxima atualização da lista. */}
+          {verificado ? (
+            <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--intent-brand)' }} data-testid="check-now-queued">
+              Verificação enfileirada. O resultado aparece aqui quando terminar.
+            </p>
+          ) : null}
+          {routine.monitoring?.lastError ? (
+            <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--status-blocked)' }} data-testid="routine-monitoring-error">
+              {routine.monitoring.lastError.message}
+            </p>
+          ) : null}
           <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-subtle)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }}>{routine.objective}</p>
         </div>
         <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
+          {/* "Verificar agora" executa; "Testar fonte", no formulário, não. São
+              coisas diferentes e ficam em lugares diferentes de propósito. */}
+          {routine.source.kind !== 'fixed' ? (
+            <Button variant="secondary" size="sm" icon="refresh-cw" onClick={() => void verificarAgora()} disabled={busy || verificando} data-testid="check-now">
+              {verificando ? 'Verificando…' : 'Verificar agora'}
+            </Button>
+          ) : null}
           <Button variant="secondary" size="sm" icon="pencil" onClick={() => setEditing(true)} disabled={busy} data-testid="edit-routine">
             Editar
           </Button>
@@ -327,7 +608,10 @@ export function AgentRoutines({ agent }: { agent: AgentSummary }) {
           onCancel={() => setCreating(false)}
         />
       ) : null}
-      {loading ? (
+      {/* "Carregando…" só na primeira vez. Numa reatualização depois de uma ação a
+          lista continua na tela: trocá-la por um texto desmonta as linhas, apaga o
+          que elas estavam mostrando e faz a página piscar a cada clique. */}
+      {loading && visible.length === 0 ? (
         <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Carregando…</p>
       ) : visible.length === 0 ? (
         <EmptyState icon="clock" title="Nenhuma rotina" body="Crie uma rotina para o agente trabalhar em horários definidos." />
