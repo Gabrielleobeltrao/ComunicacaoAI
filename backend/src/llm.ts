@@ -1,6 +1,7 @@
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 import * as anthropicProvider from './claude.js'
 import * as openaiProvider from './openai.js'
+import * as fakeProvider from './llmFake.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
 
 export type { ChatTurn }
@@ -24,7 +25,19 @@ export const PROVIDER_INFO: { id: Provider; label: string }[] = [
 
 export const PROVIDER_IDS = PROVIDER_INFO.map((p) => p.id)
 
+// O portão do adaptador falso, resolvido UMA vez no carregamento do módulo.
+//
+// Duas condições, e as duas verificadas aqui e não no ponto de uso: o processo
+// precisa ter subido como `test` E alguém precisa ter pedido explicitamente. Um
+// processo de produção sobe com NODE_ENV=production, então nenhuma variável lida
+// depois do boot, nenhuma rota e nenhuma configuração de usuário conseguem ligar
+// isto — não existe caminho, não é uma checagem que dê para esquecer de fazer.
+//
+// `llmFakeGate.test.mjs` afirma as duas metades.
+export const FAKE_LLM_ENABLED = process.env.NODE_ENV === 'test' && process.env.LLM_FAKE === '1'
+
 function providerFor(provider: string | null | undefined) {
+  if (FAKE_LLM_ENABLED) return fakeProvider
   return provider === 'openai' ? openaiProvider : anthropicProvider
 }
 
