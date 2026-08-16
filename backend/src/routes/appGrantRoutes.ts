@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb'
 import { ValidationError } from '../building.js'
 import { getAgentById, updateAgent } from '../agents.js'
 import { getApp } from '../apps/registry.js'
+import { resolveAppForOwner } from '../apps/privateApps.js'
 import { getInstallation } from '../apps/installations.js'
 import type { AgentAppGrant } from '../apps/types.js'
 import { auditEntity } from './auditMiddleware.js'
@@ -69,7 +70,9 @@ async function validateGrant(ownerId: string, input: unknown): Promise<AgentAppG
   // Resolved with the owner in the query: an id from another account is simply absent.
   const installation = await getInstallation(ownerId, new ObjectId(installationId))
   if (!installation) throw new ValidationError('conexão não encontrada')
-  const app = getApp(installation.appKey)
+  // Owner-scoped: a private App's actions are grantable, and another account's App
+  // simply does not resolve here.
+  const app = await resolveAppForOwner(ownerId, installation.appKey)
   if (!app) throw new ValidationError('App desconhecido')
 
   const known = new Set(app.actions.map((a) => a.key))

@@ -159,3 +159,40 @@ export const acceptsGenericConnect = (app: Pick<AppCatalogEntry, 'activation'>):
 // Only a CONNECTED installation is usable — `error`, `needs_reauth` and `revoked`
 // are not. The backend enforces the same rule.
 export const connectedCount = (installations: AppInstallation[]): number => installations.filter(isUsable).length
+
+// --- Apps privados ------------------------------------------------------------------
+// A private App is a MANIFEST: declarative HTTP actions the owner wrote. It is edited
+// as JSON because that is literally what it is — there is no code to compile and no
+// page to render, which is also why exporting one and handing it over is safe: a
+// manifest never held a credential.
+
+export interface PrivateAppImpact {
+  installations: number
+  connectedInstallations: number
+  agents: number
+  archived: boolean
+}
+
+const priv = (key: string, suffix = '') => `/api/apps/private/${encodeURIComponent(key)}${suffix}`
+
+export const listPrivateApps = () => request<AppCatalogEntry[]>('/api/apps/private')
+
+export const createPrivateApp = (manifest: unknown) =>
+  request<AppCatalogEntry>('/api/apps/private', { method: 'POST', body: JSON.stringify(manifest) })
+
+// Importing creates a DRAFT in this account and grants nothing: the importer still
+// has to connect their own credential and authorise an agent.
+export const importPrivateApp = (manifest: unknown) =>
+  request<AppCatalogEntry>('/api/apps/private/import', { method: 'POST', body: JSON.stringify({ manifest }) })
+
+export const updatePrivateApp = (key: string, manifest: unknown) =>
+  request<AppCatalogEntry>(priv(key), { method: 'PATCH', body: JSON.stringify(manifest) })
+
+export const exportPrivateApp = (key: string) => request<Record<string, unknown>>(priv(key, '/export'))
+
+export const privateAppImpact = (key: string) => request<PrivateAppImpact>(priv(key, '/impact'))
+
+export const archivePrivateApp = (key: string, archived: boolean) =>
+  request<AppCatalogEntry>(priv(key, '/archive'), { method: 'POST', body: JSON.stringify({ archived }) })
+
+export const deletePrivateApp = (key: string) => request<{ deleted: boolean }>(priv(key), { method: 'DELETE' })

@@ -1,6 +1,15 @@
 import { Router } from 'express'
 import { appCatalogPublic } from '../apps/registry.js'
-import { createPrivateApp, deletePrivateApp, exportPrivateApp, getPrivateApp, listPrivateApps, updatePrivateApp } from '../apps/privateApps.js'
+import {
+  archivePrivateApp,
+  createPrivateApp,
+  deletePrivateApp,
+  exportPrivateApp,
+  getPrivateApp,
+  listPrivateApps,
+  privateAppImpact,
+  updatePrivateApp,
+} from '../apps/privateApps.js'
 import { auditEntity } from './auditMiddleware.js'
 import { fail, notFound } from './http.js'
 
@@ -51,13 +60,37 @@ privateAppRouter.patch('/:appKey', async (req, res, next) => {
   }
 })
 
-privateAppRouter.delete('/:appKey', async (req, res) => {
-  const key = String(req.params.appKey)
-  const existing = await getPrivateApp(res.locals.userId, key)
-  if (!existing) return notFound(res)
-  auditEntity(res, { id: key, label: existing.name })
-  await deletePrivateApp(res.locals.userId, key)
-  res.json({ deleted: true })
+// What would break. Asked BEFORE the delete button does anything, so the owner sees
+// the consequence as a sentence instead of as a failed request.
+privateAppRouter.get('/:appKey/impact', async (req, res) => {
+  const impact = await privateAppImpact(res.locals.userId, String(req.params.appKey))
+  if (!impact) return notFound(res)
+  res.json(impact)
+})
+
+// Archiving is the reversible route out: connections and grants stay, the App just
+// stops being offered.
+privateAppRouter.post('/:appKey/archive', async (req, res) => {
+  const archived = (req.body as { archived?: unknown })?.archived !== false
+  const updated = await archivePrivateApp(res.locals.userId, String(req.params.appKey), archived)
+  if (!updated) return notFound(res)
+  auditEntity(res, { id: updated.key, label: updated.name })
+  res.json(appCatalogPublic(updated))
+})
+
+privateAppRouter.delete('/:appKey', async (req, res, next) => {
+  try {
+    const key = String(req.params.appKey)
+    const existing = await getPrivateApp(res.locals.userId, key)
+    if (!existing) return notFound(res)
+    auditEntity(res, { id: key, label: existing.name })
+    // Refuses while a connection or a grant still points here — the owner revokes
+    // first, or archives instead.
+    await deletePrivateApp(res.locals.userId, key)
+    res.json({ deleted: true })
+  } catch (error) {
+    fail(res, error, next)
+  }
 })
 
 // Importing NEVER grants anything: it creates a draft App in this account, and the

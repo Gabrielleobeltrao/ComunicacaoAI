@@ -128,6 +128,9 @@ const RULES: Rule[] = [
   R('POST', 'api/private-apps/import', { entityType: 'tool', action: 'create' }),
   R('PATCH', 'api/private-apps/:', { entityType: 'tool', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/private-apps/:', { entityType: 'tool', action: 'delete' }, { idAt: 2 }),
+  // Arquivar tira o App do catálogo sem apagar nada — é uma mudança de estado, e
+  // precisa constar no histórico como qualquer outra.
+  R('POST', 'api/private-apps/:/archive', { entityType: 'tool', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/app-installations', { entityType: 'connection', action: 'create' }),
   R('PATCH', 'api/app-installations/:', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/app-installations/:/test', { entityType: 'connection', action: 'test' }, { idAt: 2 }),

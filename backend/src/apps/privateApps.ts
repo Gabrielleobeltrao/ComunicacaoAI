@@ -49,7 +49,17 @@ function normalize(input: unknown, ownerId: string): AppDefinition {
 
 export async function listPrivateApps(ownerId: string): Promise<AppDefinition[]> {
   const docs = await privateApps.find({ ownerId }).sort({ createdAt: -1 }).toArray()
-  return docs.map((d) => d.manifest)
+  // Re-validated on the way out too. A document edited straight in the database, or
+  // written by an older and laxer version, is not allowed to become a live App just
+  // because it is already stored.
+  return docs.map((d) => d.manifest).filter(isUsableManifest)
+}
+
+// THE resolver. System Apps plus the owner's own, in that order — so catalog,
+// installation, grant validation and runtime can never disagree about which App a
+// key means, and one account's App is invisible to another.
+export async function listAppsForOwner(ownerId: string): Promise<AppDefinition[]> {
+  return [...SYSTEM_APPS, ...(await listPrivateApps(ownerId))]
 }
 
 export async function getPrivateApp(ownerId: string, key: string): Promise<AppDefinition | null> {
@@ -85,7 +95,53 @@ export async function updatePrivateApp(ownerId: string, key: string, input: unkn
   return manifest
 }
 
+// What breaks if this App goes away. Asked before deleting, and shown to the owner
+// as a sentence rather than as a failed request.
+export interface PrivateAppImpact {
+  installations: number
+  connectedInstallations: number
+  agents: number
+  archived: boolean
+}
+
+export async function privateAppImpact(ownerId: string, key: string): Promise<PrivateAppImpact | null> {
+  const doc = await privateApps.findOne({ ownerId, key })
+  if (!doc) return null
+  const installed = await db.collection('connections').find({ ownerId, appKey: key, status: { $ne: 'revoked' } }).toArray()
+  const ids = installed.map((i) => (i._id as ObjectId).toString())
+  const agents = ids.length
+    ? await db.collection('agents').countDocuments({ ownerId, 'appGrants.installationId': { $in: ids.map((id) => new ObjectId(id)) } })
+    : 0
+  return {
+    installations: installed.length,
+    connectedInstallations: installed.filter((i) => i.status === 'connected').length,
+    agents,
+    archived: doc.manifest.status === 'suspended',
+  }
+}
+
+// Archiving is the reversible half: the App stops being offered and stops resolving
+// for the runtime, but the connections and grants stay exactly where they are, so
+// nothing is silently destroyed and the owner can undo it.
+export async function archivePrivateApp(ownerId: string, key: string, archived: boolean): Promise<AppDefinition | null> {
+  const doc = await privateApps.findOne({ ownerId, key })
+  if (!doc) return null
+  const manifest = { ...doc.manifest, status: archived ? ('suspended' as const) : ('published' as const) }
+  await privateApps.updateOne({ _id: doc._id }, { $set: { manifest, updatedAt: new Date() } })
+  return manifest
+}
+
+// Deleting is the irreversible half, and it refuses while anything still depends on
+// it. The caller gets the impact back, not a bare error, so the UI can say what to
+// revoke first instead of just failing.
 export async function deletePrivateApp(ownerId: string, key: string): Promise<boolean> {
+  const impact = await privateAppImpact(ownerId, key)
+  if (!impact) return false
+  if (impact.installations > 0 || impact.agents > 0) {
+    throw new ValidationError(
+      `este App ainda tem ${impact.installations} conexão(ões) e ${impact.agents} agente(s) usando. Desconecte e revogue antes de excluir, ou arquive o App.`,
+    )
+  }
   const r = await privateApps.deleteOne({ ownerId, key })
   return r.deletedCount === 1
 }
@@ -100,7 +156,13 @@ export async function exportPrivateApp(ownerId: string, key: string): Promise<Om
 // System first, then the owner's own. One lookup, so the runtime and the API can
 // never disagree about which App a grant points at.
 export async function resolveAppForOwner(ownerId: string, key: string): Promise<AppDefinition | null> {
-  return getSystemApp(key) ?? (await getPrivateApp(ownerId, key))
+  const system = getSystemApp(key)
+  if (system) return system
+  const own = await getPrivateApp(ownerId, key)
+  // An archived App still resolves for what is already connected — pulling the tool
+  // out from under a running agent is worse than letting it finish — but it is
+  // filtered out of the catalog, so nothing NEW can be connected to it.
+  return own && isUsableManifest(own) ? own : null
 }
 
 // Re-validated on read as well as on write: a document edited outside the API (or

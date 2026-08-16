@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { CustomToolsPanel } from './Tools'
+import { PrivateAppsPanel } from '../components/PrivateAppsPanel'
 import { AppDetailDialog } from '../components/AppDetailDialog'
 import {
   disconnectInstallation,
@@ -24,17 +25,18 @@ import { Button, Card, Dialog, EmptyState, Field, Input, Tabs, Tag } from '../ui
 // Nothing on this page ever displays a stored credential — the API does not return
 // one. A secret field left blank on save means "keep the current one".
 
-type TabKey = 'catalog' | 'connected' | 'custom'
+type TabKey = 'catalog' | 'connected' | 'mine' | 'custom'
 const TABS: { value: TabKey; label: string }[] = [
   { value: 'catalog', label: 'Catálogo' },
   { value: 'connected', label: 'Conectados' },
-  { value: 'custom', label: 'Personalizados' },
+  { value: 'mine', label: 'Meus Apps' },
+  { value: 'custom', label: 'Ferramentas' },
 ]
 
 export function Apps() {
   const [params, setParams] = useSearchParams()
   const raw = params.get('tab')
-  const tab: TabKey = raw === 'connected' || raw === 'custom' ? raw : 'catalog'
+  const tab: TabKey = raw === 'connected' || raw === 'custom' || raw === 'mine' ? raw : 'catalog'
 
   const [catalog, setCatalog] = useState<AppCatalogEntry[]>([])
   const [installations, setInstallations] = useState<AppInstallation[]>([])
@@ -102,6 +104,10 @@ export function Apps() {
 
         {tab === 'custom' ? (
           <CustomToolsPanel />
+        ) : tab === 'mine' ? (
+          // Creating an App changes what the catalog offers, so a change here
+          // refreshes the catalog too.
+          <PrivateAppsPanel onChanged={() => void load(true)} />
         ) : loading ? (
           <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>Carregando…</p>
         ) : failed ? (

@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import { ValidationError } from '../building.js'
 import { db } from '../db.js'
-import { acceptsGenericConnect, getApp } from '../apps/registry.js'
+import { acceptsGenericConnect } from '../apps/registry.js'
+import { resolveAppForOwner } from '../apps/privateApps.js'
 import { isManagedChannelApp, syncManagedChannelInstallations, testManagedChannel } from '../apps/channelApps.js'
 import {
   createInstallation,
@@ -53,7 +54,7 @@ appInstallationRouter.get('/', async (req, res) => {
 appInstallationRouter.post('/', async (req, res, next) => {
   try {
     const body = (req.body ?? {}) as { appKey?: string; name?: string; config?: unknown; publicMetadata?: Record<string, string> }
-    const app = getApp(String(body.appKey ?? ''))
+    const app = await resolveAppForOwner(res.locals.userId, String(body.appKey ?? ''))
     if (!app) throw new ValidationError('App desconhecido')
     if (app.auth.kind === 'oauth2') throw new ValidationError('Este App é conectado pelo login do provedor, não por credencial.')
     // A managed channel cannot be created by this form: it would produce a row that
@@ -90,7 +91,7 @@ appInstallationRouter.patch('/:id', async (req, res, next) => {
   try {
     const existing = await getInstallation(res.locals.userId, id)
     if (!existing) return notFound(res)
-    const app = getApp(existing.appKey)
+    const app = await resolveAppForOwner(res.locals.userId, existing.appKey)
     if (!app) throw new ValidationError('App desconhecido')
     const body = (req.body ?? {}) as { name?: string; config?: unknown; publicMetadata?: Record<string, string> }
     // `status` is deliberately NOT patchable: reconnecting and disconnecting are
@@ -115,7 +116,7 @@ appInstallationRouter.post('/:id/test', async (req, res) => {
   if (!id) return notFound(res)
   const installation = await getInstallation(res.locals.userId, id)
   if (!installation) return notFound(res)
-  const app = getApp(installation.appKey)
+  const app = await resolveAppForOwner(res.locals.userId, installation.appKey)
   if (!app) return notFound(res)
 
   auditEntity(res, { id: installation._id.toString(), label: installation.name })
@@ -155,7 +156,7 @@ appInstallationRouter.post('/:id/reconnect', async (req, res) => {
   if (!id) return notFound(res)
   const installation = await getInstallation(res.locals.userId, id)
   if (!installation) return notFound(res)
-  const app = getApp(installation.appKey)
+  const app = await resolveAppForOwner(res.locals.userId, installation.appKey)
   if (!app) return notFound(res)
   auditEntity(res, { id: installation._id.toString(), label: installation.name })
   if (app.auth.kind === 'oauth2') {

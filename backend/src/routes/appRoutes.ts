@@ -1,5 +1,6 @@
 import { Router } from 'express'
-import { appCatalogPublic, getApp, SYSTEM_APPS } from '../apps/registry.js'
+import { appCatalogPublic, getApp } from '../apps/registry.js'
+import { listAppsForOwner, resolveAppForOwner } from '../apps/privateApps.js'
 import { installationPublic, listInstallations } from '../apps/installations.js'
 import { buildNavigation, getNavigationPreferences, MAX_PINNED_APPS, resolveSurface, setPinnedApps } from '../apps/navigation.js'
 import { channelOverview } from '../apps/channelOverview.js'
@@ -21,9 +22,13 @@ appCatalogRouter.get('/catalog', async (_req, res) => {
     if (i.status === 'revoked') continue
     byApp.set(i.appKey, (byApp.get(i.appKey) ?? 0) + 1)
   }
+  // System Apps plus this owner's own — resolved in one place, so the catalog cannot
+  // show an App the installation route would then call unknown.
+  const catalog = await listAppsForOwner(ownerId)
   res.json(
-    SYSTEM_APPS.filter((app) => app.status === 'published').map((app) => ({
+    catalog.filter((app) => app.status === 'published').map((app) => ({
       ...appCatalogPublic(app),
+      private: app.source !== 'system',
       installationCount: byApp.get(app.key) ?? 0,
       connected: (byApp.get(app.key) ?? 0) > 0,
     })),
@@ -31,11 +36,12 @@ appCatalogRouter.get('/catalog', async (_req, res) => {
 })
 
 appCatalogRouter.get('/catalog/:appKey', async (req, res) => {
-  const app = getApp(req.params.appKey)
+  const app = await resolveAppForOwner(res.locals.userId, String(req.params.appKey))
   if (!app) return notFound(res)
   const installations = await listInstallations(res.locals.userId, app.key)
   res.json({
     ...appCatalogPublic(app),
+    private: app.source !== 'system',
     installations: installations.map(installationPublic),
     connected: installations.some((i) => i.status === 'connected'),
   })

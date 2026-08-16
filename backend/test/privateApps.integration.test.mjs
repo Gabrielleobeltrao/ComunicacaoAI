@@ -12,8 +12,18 @@ process.env.MONGODB_URI = await startMongo()
 process.env.ENCRYPTION_KEY = 'test-encryption-key'
 
 const { mongoClient, db } = await import('../dist/db.js')
-const { createPrivateApp, updatePrivateApp, deletePrivateApp, listPrivateApps, exportPrivateApp, resolveAppForOwner, ensurePrivateAppIndexes } =
-  await import('../dist/apps/privateApps.js')
+const {
+  createPrivateApp,
+  updatePrivateApp,
+  deletePrivateApp,
+  listPrivateApps,
+  listAppsForOwner,
+  exportPrivateApp,
+  resolveAppForOwner,
+  privateAppImpact,
+  archivePrivateApp,
+  ensurePrivateAppIndexes,
+} = await import('../dist/apps/privateApps.js')
 const { resolveGrant } = await import('../dist/apps/grants.js')
 const { createInstallation } = await import('../dist/apps/installations.js')
 
@@ -29,7 +39,11 @@ after(async () => {
   await stopMongo()
 })
 beforeEach(async () => {
-  await Promise.all([db.collection('app_definitions').deleteMany({}), db.collection('connections').deleteMany({})])
+  await Promise.all([
+    db.collection('app_definitions').deleteMany({}),
+    db.collection('connections').deleteMany({}),
+    db.collection('agents').deleteMany({}),
+  ])
 })
 
 const manifest = (over = {}) => ({
@@ -176,4 +190,93 @@ test('um manifesto adulterado no banco deixa de resolver', async () => {
     autonomousWriteActionKeys: [],
   })
   assert.deepEqual(tools, [])
+})
+
+// --- o resolvedor único -------------------------------------------------------------
+
+test('o catálogo do dono é sistema + os dele, e nada do vizinho', async () => {
+  await createPrivateApp(OWNER, manifest({ key: 'meu_app' }))
+  await createPrivateApp(OTHER, manifest({ key: 'app_do_vizinho' }))
+
+  const mine = await listAppsForOwner(OWNER)
+  const keys = mine.map((a) => a.key)
+  assert.ok(keys.includes('web_chat'), 'os Apps do sistema continuam no catálogo')
+  assert.ok(keys.includes('meu_app'))
+  assert.ok(!keys.includes('app_do_vizinho'), 'o App privado de outra conta não aparece')
+})
+
+test('o App do sistema vence a resolução, e o privado não consegue disputar a chave', async () => {
+  await assert.rejects(() => createPrivateApp(OWNER, manifest({ key: 'whatsapp' })), /App do sistema/)
+  assert.equal((await resolveAppForOwner(OWNER, 'whatsapp')).source, 'system')
+})
+
+// --- exclusão não destrutiva --------------------------------------------------------
+
+const connectPrivate = async (owner = OWNER, key = 'loja_exemplo') => {
+  const app = await resolveAppForOwner(owner, key)
+  return createInstallation(owner, app, { name: 'Minha loja', config: { apiKey: 'segredo' } })
+}
+
+test('não dá para excluir um App privado que ainda tem conexão', async () => {
+  await createPrivateApp(OWNER, manifest())
+  await connectPrivate()
+
+  await assert.rejects(() => deletePrivateApp(OWNER, 'loja_exemplo'), /Desconecte e revogue/)
+  // E continua lá: a recusa não é um meio-caminho.
+  assert.ok(await resolveAppForOwner(OWNER, 'loja_exemplo'))
+})
+
+test('não dá para excluir enquanto um agente ainda tem permissão', async () => {
+  await createPrivateApp(OWNER, manifest())
+  const installation = await connectPrivate()
+  await db.collection('agents').insertOne({
+    ownerId: OWNER,
+    name: 'Atendente',
+    appGrants: [{ appKey: 'loja_exemplo', installationId: installation._id, actionKeys: ['buscar_pedido'], resourceConfig: {}, autonomousWriteActionKeys: [] }],
+  })
+
+  const impact = await privateAppImpact(OWNER, 'loja_exemplo')
+  assert.equal(impact.installations, 1)
+  assert.equal(impact.agents, 1)
+  await assert.rejects(() => deletePrivateApp(OWNER, 'loja_exemplo'), /agente/)
+})
+
+test('sem conexão nem permissão, a exclusão passa', async () => {
+  await createPrivateApp(OWNER, manifest())
+  assert.equal((await privateAppImpact(OWNER, 'loja_exemplo')).installations, 0)
+  assert.equal(await deletePrivateApp(OWNER, 'loja_exemplo'), true)
+  assert.equal(await resolveAppForOwner(OWNER, 'loja_exemplo'), null)
+})
+
+test('arquivar tira do catálogo sem derrubar o que já está conectado', async () => {
+  await createPrivateApp(OWNER, manifest())
+  await connectPrivate()
+  await archivePrivateApp(OWNER, 'loja_exemplo', true)
+
+  // Fora do catálogo — nada novo se conecta a ele.
+  const offered = (await listAppsForOwner(OWNER)).filter((a) => a.status === 'published').map((a) => a.key)
+  assert.ok(!offered.includes('loja_exemplo'))
+  // Mas o que já rodava continua resolvendo: arquivar não é revogar.
+  assert.ok(await resolveAppForOwner(OWNER, 'loja_exemplo'))
+  assert.equal((await privateAppImpact(OWNER, 'loja_exemplo')).archived, true)
+
+  await archivePrivateApp(OWNER, 'loja_exemplo', false)
+  assert.equal((await privateAppImpact(OWNER, 'loja_exemplo')).archived, false)
+})
+
+test('o impacto de outra conta não é legível', async () => {
+  await createPrivateApp(OWNER, manifest())
+  assert.equal(await privateAppImpact(OTHER, 'loja_exemplo'), null)
+  assert.equal(await archivePrivateApp(OTHER, 'loja_exemplo', true), null)
+  assert.equal(await deletePrivateApp(OTHER, 'loja_exemplo'), false)
+})
+
+test('manifesto adulterado no banco some da listagem, não vira App', async () => {
+  await createPrivateApp(OWNER, manifest())
+  await db.collection('app_definitions').updateOne(
+    { ownerId: OWNER, key: 'loja_exemplo' },
+    { $set: { 'manifest.actions.0.execution': { kind: 'native', adapter: 'google' } } },
+  )
+  assert.equal((await listPrivateApps(OWNER)).length, 0)
+  assert.equal((await listAppsForOwner(OWNER)).find((a) => a.key === 'loja_exemplo'), undefined)
 })
