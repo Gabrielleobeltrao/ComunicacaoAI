@@ -167,7 +167,7 @@ test('a pose do personagem e o balão são independentes', async ({ page }) => {
 
   await stub(page, { states: [] })
   await page.goto(`/floors/${FLOOR_ID}`)
-  await expect(page.getByTestId('floor-work-section')).toBeVisible()
+  await expect(page.getByTestId('execution-analytics')).toBeVisible()
   await expect(bubbles(page)).toHaveCount(0)
   const semBalao = await poses()
   expect(semBalao.length).toBeGreaterThan(0)
@@ -187,7 +187,7 @@ test('a pose do personagem e o balão são independentes', async ({ page }) => {
 test('sem execução, nenhum balão — nem para agenda ou gatilho armado', async ({ page }) => {
   await stub(page, { states: [] })
   await page.goto(`/floors/${FLOOR_ID}`)
-  await expect(page.getByTestId('floor-work-section')).toBeVisible()
+  await expect(page.getByTestId('execution-analytics')).toBeVisible()
   await expect(bubbles(page)).toHaveCount(0)
 })
 
@@ -276,7 +276,7 @@ test('reduced motion tira o movimento sem esconder o significado', async ({ page
 test('um estado desconhecido não desenha balão nenhum', async ({ page }) => {
   await stub(page, { states: [liveState({ state: 'monitorando' })] })
   await page.goto(`/floors/${FLOOR_ID}`)
-  await expect(page.getByTestId('floor-work-section')).toBeVisible()
+  await expect(page.getByTestId('execution-analytics')).toBeVisible()
   await expect(bubbles(page)).toHaveCount(0)
 })
 

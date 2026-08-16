@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { floorAgent, floorSector } from '../lib/floorRoutes'
-import { getFloorWorkOverview, patchFloor } from '../lib/floors'
+import { getFloorWorkOverview } from '../lib/floors'
 import type { Floor, FloorWorkOverview } from '../lib/floors'
 import type { AgentSummary } from '../lib/types'
-import { Button, Card } from '../ui'
 
-// "Como este andar trabalha".
+// "Como este andar trabalha", dentro das configurações do andar.
 //
 // Two modes and nothing else, because a floor is an ORGANISATIONAL area: it never
 // reasons and never executes. Coordinating only points at an agent that already
 // exists — the tools, connections, triggers and permissions stay on that agent, and
 // its own delegation policy decides what it reaches. Choosing here never grants
 // anything.
+//
+// CONTROLLED: the settings dialog owns the values and has one Save. This block used
+// to carry a second "Salvar" of its own, which inside a dialog that already has one
+// would leave the owner guessing which button saves what.
 
 const MODES = [
   {
@@ -27,13 +30,25 @@ const MODES = [
   },
 ]
 
-export function FloorWorkSection({ floor, agents, onSaved }: { floor: Floor; agents: AgentSummary[]; onSaved?: () => void }) {
-  const [mode, setMode] = useState(floor.workMode)
-  const [coordinatorId, setCoordinatorId] = useState(floor.coordinatorAgentId ?? '')
-  const [instruction, setInstruction] = useState(floor.instruction)
+export interface FloorWorkValue {
+  mode: Floor['workMode']
+  coordinatorId: string
+  instruction: string
+}
+
+export function FloorWorkSection({
+  floor,
+  agents,
+  value,
+  onChange,
+}: {
+  floor: Floor
+  agents: AgentSummary[]
+  value: FloorWorkValue
+  onChange: (next: FloorWorkValue) => void
+}) {
+  const { mode, coordinatorId, instruction } = value
   const [overview, setOverview] = useState<FloorWorkOverview | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
 
   const floorAgents = agents.filter((a) => a.floorId === floor.id)
 
@@ -49,30 +64,8 @@ export function FloorWorkSection({ floor, agents, onSaved }: { floor: Floor; age
     void load()
   }, [load])
 
-  useEffect(() => {
-    setMode(floor.workMode)
-    setCoordinatorId(floor.coordinatorAgentId ?? '')
-    setInstruction(floor.instruction)
-  }, [floor.workMode, floor.coordinatorAgentId, floor.instruction])
-
-  const dirty = mode !== floor.workMode || coordinatorId !== (floor.coordinatorAgentId ?? '') || instruction !== floor.instruction
-
-  const save = async () => {
-    setSaving(true)
-    setError('')
-    try {
-      await patchFloor(floor.id, { workMode: mode, coordinatorAgentId: coordinatorId || null, instruction })
-      await load()
-      onSaved?.()
-    } catch (e) {
-      setError((e as Error).message || 'Não foi possível salvar.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
   return (
-    <Card padding="18px" style={{ display: 'grid', gap: 14 }} data-testid="floor-work-section">
+    <section style={{ display: 'grid', gap: 14 }} data-testid="floor-work-section">
       <div>
         <h3 style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>
           Como este andar trabalha
@@ -97,7 +90,7 @@ export function FloorWorkSection({ floor, agents, onSaved }: { floor: Floor; age
               background: mode === m.key ? 'var(--surface-sunken)' : 'transparent',
             }}
           >
-            <input type="radio" name="floor-work-mode" checked={mode === m.key} onChange={() => setMode(m.key)} style={{ marginTop: 3 }} />
+            <input type="radio" name="floor-work-mode" checked={mode === m.key} onChange={() => onChange({ ...value, mode: m.key })} style={{ marginTop: 3 }} />
             <span style={{ minWidth: 0 }}>
               <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: 'var(--text-heading)' }}>{m.title}</span>
               <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)' }}>{m.body}</span>
@@ -112,7 +105,7 @@ export function FloorWorkSection({ floor, agents, onSaved }: { floor: Floor; age
             <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Agente que coordena</span>
             <select
               value={coordinatorId}
-              onChange={(e) => setCoordinatorId(e.target.value)}
+              onChange={(e) => onChange({ ...value, coordinatorId: e.target.value })}
               data-testid="coordinator-select"
               style={{ height: 38, padding: '0 10px', borderRadius: 'var(--radius-control)', border: '1px solid var(--border-strong)', background: 'var(--surface-card)', fontSize: 13.5 }}
             >
@@ -132,7 +125,7 @@ export function FloorWorkSection({ floor, agents, onSaved }: { floor: Floor; age
             <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Instrução do andar (opcional)</span>
             <textarea
               value={instruction}
-              onChange={(e) => setInstruction(e.target.value)}
+              onChange={(e) => onChange({ ...value, instruction: e.target.value })}
               rows={3}
               data-testid="floor-instruction"
               placeholder="Ex.: priorize pedidos atrasados antes de qualquer outra coisa."
@@ -141,14 +134,6 @@ export function FloorWorkSection({ floor, agents, onSaved }: { floor: Floor; age
           </label>
         </div>
       ) : null}
-
-      {error ? <p style={{ margin: 0, fontSize: 13, color: 'var(--coral-600, #d92d20)' }} data-testid="work-error">{error}</p> : null}
-
-      <div>
-        <Button size="sm" disabled={!dirty || saving} onClick={() => void save()} data-testid="save-work-mode">
-          {saving ? 'Salvando…' : 'Salvar'}
-        </Button>
-      </div>
 
       {/* --- what this actually produces ------------------------------------- */}
       {overview && overview.workMode === 'coordinated' ? (
@@ -209,7 +194,7 @@ export function FloorWorkSection({ floor, agents, onSaved }: { floor: Floor; age
           ) : null}
         </div>
       ) : null}
-    </Card>
+    </section>
   )
 }
 

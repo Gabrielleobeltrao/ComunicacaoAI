@@ -418,10 +418,10 @@ export function AgentDetail() {
         <div className="grid grid-cols-1 gap-5" style={{ minWidth: 0 }}>
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] lg:items-start">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {/* Coluna da IDENTIDADE: quem é, com quem trabalha, onde fica. */}
             <ProfileCard agent={agent} stats={stats} accent={accent} portrait={chars.portrait(agent._id)} />
             <ColleaguesCard agents={agents} currentId={agent._id} chars={chars} />
             <AgentSectorAssignment agentId={agent._id} floorId={agentFloorId} floorName={agentFloorName} onChanged={load} />
-            <UsageCard overview={overview} />
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -466,6 +466,12 @@ export function AgentDetail() {
             <Card padding="16px" title={`KPI do agente (${PERIOD_LABEL[period]})`}>
               <MetricStat icon="target" label={op?.specific.label ?? METRIC_KEY_LABEL[overview.resolvedMetric]} value={formatCount(op?.specific.value)} />
             </Card>
+
+            {/* "Onde é usado" desceu para cá. A coluna da esquerda passava de 800px
+                enquanto esta parava em 400, e a diferença virava um vão vazio antes
+                do workspace. Além de fechar o buraco, o bloco lê melhor aqui: onde o
+                agente é usado é operação, igual às métricas ao lado. */}
+            <UsageCard overview={overview} />
 
             {/* Channel/attendance only when the agent actually answers a channel. */}
             {(chan?.linked ?? overview.channelLinked) ? (

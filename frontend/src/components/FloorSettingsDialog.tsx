@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { archiveFloor, deleteFloor, FloorApiError, patchFloor, restoreFloor } from '../lib/floors'
 import type { Floor, Language } from '../lib/floors'
+import { FloorWorkSection } from './FloorWorkSection'
+import type { FloorWorkValue } from './FloorWorkSection'
 import { SECTOR_COLORS } from '../lib/sectorColors'
+import type { AgentSummary } from '../lib/types'
 import { Button, Dialog, Field, Input, Select, Textarea } from '../ui'
 
 // Everything about a floor in one place (name, mission, description, timezone,
@@ -19,12 +22,14 @@ export function FloorSettingsDialog({
   open,
   onClose,
   floor,
+  agents,
   onSaved,
   onDeleted,
 }: {
   open: boolean
   onClose: () => void
   floor: Floor
+  agents: AgentSummary[]
   onSaved: (floor: Floor) => void
   onDeleted: () => void
 }) {
@@ -34,6 +39,12 @@ export function FloorSettingsDialog({
   const [timezone, setTimezone] = useState(floor.timezone)
   const [language, setLanguage] = useState<Language>(floor.defaultLanguage)
   const [color, setColor] = useState<string | null>(floor.color)
+  // Como o andar trabalha mora aqui agora, no mesmo estado e no mesmo Salvar.
+  const [work, setWork] = useState<FloorWorkValue>({
+    mode: floor.workMode,
+    coordinatorId: floor.coordinatorAgentId ?? '',
+    instruction: floor.instruction,
+  })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [busyLifecycle, setBusyLifecycle] = useState(false)
@@ -47,6 +58,7 @@ export function FloorSettingsDialog({
       setTimezone(floor.timezone)
       setLanguage(floor.defaultLanguage)
       setColor(floor.color)
+      setWork({ mode: floor.workMode, coordinatorId: floor.coordinatorAgentId ?? '', instruction: floor.instruction })
       setError('')
     }
   }, [open, floor])
@@ -61,7 +73,17 @@ export function FloorSettingsDialog({
     setSaving(true)
     setError('')
     try {
-      const updated = await patchFloor(floor.id, { name: name.trim(), mission, description, timezone, defaultLanguage: language, color })
+      const updated = await patchFloor(floor.id, {
+        name: name.trim(),
+        mission,
+        description,
+        timezone,
+        defaultLanguage: language,
+        color,
+        workMode: work.mode,
+        coordinatorAgentId: work.coordinatorId || null,
+        instruction: work.instruction,
+      })
       onSaved(updated)
       onClose()
     } catch {
@@ -154,6 +176,10 @@ export function FloorSettingsDialog({
             </button>
           </div>
         </Field>
+
+        <div style={{ marginTop: 4, paddingTop: 14, borderTop: '1px solid var(--border-subtle)' }}>
+          <FloorWorkSection floor={floor} agents={agents} value={work} onChange={setWork} />
+        </div>
 
         <section style={{ marginTop: 4, paddingTop: 14, borderTop: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--text-faint)' }}>Zona de perigo</span>

@@ -296,6 +296,26 @@ test('fixar um App é atalho: manda só a preferência de navegação', async ({
   expect(created).toBeNull()
 })
 
+test('o App fixado aparece no menu na hora, sem recarregar a página', async ({ page }) => {
+  await stub(page, { installations: [WEB_CHAT_INSTALLATION] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  // Antes de fixar, o menu não tem nada; depois de salvar, o servidor passa a
+  // devolvê-lo. A questão é se o sidebar percebe.
+  let navApps: unknown[] = []
+  await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: navApps, pinned: [] } }))
+  await page.route('**/api/me/navigation-preferences/pinned-apps', (r) => {
+    pinnedSent = (r.request().postDataJSON() as { pinnedApps: string[] }).pinnedApps
+    navApps = pinnedSent.includes('web_chat') ? [NAV_WEB_CHAT] : []
+    return r.fulfill({ json: { pinnedApps: pinnedSent.map((appKey, order) => ({ appKey, order })), maxPinnedApps: 6 } })
+  })
+
+  await page.goto('/apps?tab=connected')
+  await expect(page.getByTestId('pinned-app-web_chat')).toHaveCount(0)
+  await page.getByTestId('pin-web_chat').click()
+  // O sidebar e a página de Apps liam cada um o seu estado; só o F5 reconciliava.
+  await expect(page.getByTestId('pinned-app-web_chat')).toBeVisible()
+})
+
 test('o App fixado vira grupo no menu com as suas páginas', async ({ page }) => {
   await stub(page, { installations: [WEB_CHAT_INSTALLATION], navigation: [NAV_WEB_CHAT] })
   await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))

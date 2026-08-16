@@ -40,11 +40,18 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false)
     }
+    // O rail do desktop encolhe sozinho quando o mouse sai (CSS `group-hover`).
+    // Sem isto, o popover continuava aberto pendurado num rail de 64px, cobrindo o
+    // conteúdo e sem alinhamento com nada.
+    const rail = ref.current?.closest('[data-rail]')
+    const onLeave = () => setOpen(false)
     document.addEventListener('mousedown', onDoc)
     document.addEventListener('keydown', onKey)
+    rail?.addEventListener('mouseleave', onLeave)
     return () => {
       document.removeEventListener('mousedown', onDoc)
       document.removeEventListener('keydown', onKey)
+      rail?.removeEventListener('mouseleave', onLeave)
     }
   }, [open])
 

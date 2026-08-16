@@ -113,12 +113,23 @@ async function stub(page: Page, opts: { floor?: Record<string, unknown>; overvie
 
 const open = async (page: Page) => {
   await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(page.getByTestId('execution-analytics')).toBeVisible()
+}
+
+// "Como este andar trabalha" mora nas configurações do andar: é configuração, não
+// leitura, e por isso saiu do corpo da página.
+const openSettings = async (page: Page) => {
+  await open(page)
+  await page.getByRole('button', { name: 'Configurações do andar' }).click()
   await expect(page.getByTestId('floor-work-section')).toBeVisible()
 }
 
+// O Salvar é o do diálogo: um só, para tudo que o andar configura.
+const saveSettings = (page: Page) => page.getByRole('button', { name: /^Salvar/ }).click()
+
 test('o andar oferece exatamente dois modos, e livre é o padrão', async ({ page }) => {
   await stub(page)
-  await open(page)
+  await openSettings(page)
   await expect(page.getByTestId('work-mode-organization')).toBeVisible()
   await expect(page.getByTestId('work-mode-coordinated')).toBeVisible()
   await expect(page.getByTestId('floor-work-section').getByRole('radio')).toHaveCount(2)
@@ -127,7 +138,7 @@ test('o andar oferece exatamente dois modos, e livre é o padrão', async ({ pag
 
 test('coordenar só oferece agentes deste andar', async ({ page }) => {
   await stub(page)
-  await open(page)
+  await openSettings(page)
   await page.getByTestId('work-mode-coordinated').click()
   const select = page.getByTestId('coordinator-select')
   await expect(select.locator('option')).toHaveCount(2) // placeholder + Gerente Ana
@@ -137,11 +148,11 @@ test('coordenar só oferece agentes deste andar', async ({ page }) => {
 
 test('salvar manda apontar o agente e a instrução, e nada além disso', async ({ page }) => {
   await stub(page)
-  await open(page)
+  await openSettings(page)
   await page.getByTestId('work-mode-coordinated').click()
   await page.getByTestId('coordinator-select').selectOption(A1)
   await page.getByTestId('floor-instruction').fill('Priorize atrasos')
-  await page.getByTestId('save-work-mode').click()
+  await saveSettings(page)
 
   await expect.poll(() => savedPatch?.workMode).toBe('coordinated')
   expect(savedPatch?.coordinatorAgentId).toBe(A1)
@@ -154,15 +165,16 @@ test('salvar manda apontar o agente e a instrução, e nada além disso', async 
 
 test('coordenar sem escolher agente é recusado pelo servidor e explicado', async ({ page }) => {
   await stub(page, { patchStatus: 400 })
-  await open(page)
+  await openSettings(page)
   await page.getByTestId('work-mode-coordinated').click()
-  await page.getByTestId('save-work-mode').click()
-  await expect(page.getByTestId('work-error')).toContainText('coordena')
+  await saveSettings(page)
+  // A recusa é do diálogo agora, porque o Salvar é dele.
+  await expect(page.getByRole('alert')).toContainText('Não foi possível salvar')
 })
 
 test('o preview mostra quem recebe e quem é alcançado, de cima para baixo', async ({ page }) => {
   await stub(page, { floor: floorDoc({ workMode: 'coordinated', coordinatorAgentId: A1, instruction: 'Priorize atrasos' }), overview: READY_OVERVIEW })
-  await open(page)
+  await openSettings(page)
   await expect(page.getByTestId('coordinator-block')).toContainText('Gerente Ana')
   const targets = page.getByTestId('work-targets')
   await expect(targets).toContainText('Atendente')
@@ -183,7 +195,7 @@ test('coordenador removido deixa o andar não pronto, sem substituto automático
       issues: [{ code: 'no_coordinator', message: 'O andar está coordenado, mas o agente coordenador não existe mais.', severity: 'blocking' }],
     },
   })
-  await open(page)
+  await openSettings(page)
   await expect(page.getByTestId('work-issues')).toContainText('não existe mais')
   await expect(page.getByTestId('coordinator-block')).toHaveCount(0)
 })
@@ -215,4 +227,12 @@ test('o andar separa o que originou do que apenas participou', async ({ page }) 
   await expect(metrics).toContainText('Originadas aqui')
   await expect(metrics).toContainText('Participou de')
   await expect(metrics).toContainText('3')
+})
+
+test('configurar como o andar trabalha saiu do corpo da página', async ({ page }) => {
+  await stub(page)
+  await open(page)
+  // É configuração, não leitura: mora no diálogo de configurações do andar.
+  await expect(page.getByTestId('floor-work-section')).toHaveCount(0)
+  await expect(page.getByTestId('execution-analytics')).toBeVisible()
 })

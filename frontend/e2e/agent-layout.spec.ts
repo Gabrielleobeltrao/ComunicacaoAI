@@ -219,3 +219,34 @@ test('se a API falhar, o usuário fica na página e lê o erro', async ({ page }
   await expect(page.getByTestId('danger-error')).toContainText('Não foi possível excluir o agente.')
   await expect(page).toHaveURL(/avancado/)
 })
+
+test('entrar no agente não rouba o foco nem abre a página rolada', async ({ page }) => {
+  await stub(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}`)
+  await expect(page.getByTestId('agent-workspace')).toBeVisible()
+
+  // O autoFocus no campo de nome — que fica no meio da página — fazia o navegador
+  // rolar até ele. Abrir tem que abrir no topo.
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(20)
+  const focada = await page.evaluate(() => document.activeElement?.tagName ?? '')
+  expect(['BODY', 'HTML', '']).toContain(focada)
+})
+
+test('o resumo do agente não deixa um vão vazio antes do workspace', async ({ page }) => {
+  await stub(page)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}`)
+  await expect(page.getByTestId('agent-workspace')).toBeVisible()
+
+  // As duas colunas do resumo. A da direita parava na metade da altura da esquerda,
+  // e a diferença aparecia como um retângulo vazio antes do workspace.
+  const [esquerda, direita] = await page.evaluate(() => {
+    const ws = document.querySelector('[data-testid="agent-workspace"]') as HTMLElement
+    const grid = ws.previousElementSibling as HTMLElement
+    return [...grid.children].map((c) => Math.round(c.getBoundingClientRect().height))
+  })
+  const menor = Math.min(esquerda, direita)
+  const maior = Math.max(esquerda, direita)
+  expect(menor / maior).toBeGreaterThan(0.7)
+})

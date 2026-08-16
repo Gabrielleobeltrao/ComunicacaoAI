@@ -272,3 +272,26 @@ test('selecionar agentes expostos manda a lista junto', async ({ page }) => {
   await expect.poll(() => savedSector?.entryPolicy).toBe('selected_members')
   expect((savedSector?.exposedAgentIds as string[]).length).toBe(1)
 })
+
+test('tirar o mouse do rail fecha o seletor em vez de deixá-lo pendurado', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps')
+  const switcher = page.getByTestId('building-switcher').first()
+  await switcher.hover()
+  await switcher.click()
+  await expect(page.getByRole('menu')).toBeVisible()
+
+  // O rail encolhe sozinho quando o mouse sai. O popover tem que sair junto — senão
+  // fica aberto, largo, pendurado num rail de 64px.
+  await page.mouse.move(900, 400)
+  await expect(page.getByRole('menu')).toHaveCount(0)
+})
+
+test('as configurações da conta continuam alcançáveis pelo cartão do usuário', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps')
+  const card = page.getByTitle('Configurações da conta')
+  await card.hover()
+  await card.click()
+  await expect(page).toHaveURL(/\/settings$/)
+})

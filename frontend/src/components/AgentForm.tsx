@@ -723,7 +723,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
                   required
-                  autoFocus
+                  // Sem autoFocus: este formulário edita um agente que já existe e
+                  // vive no MEIO da página. Focar o campo fazia o navegador rolar
+                  // até ele, então a página abria pela metade.
                   className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                 />
               )}
