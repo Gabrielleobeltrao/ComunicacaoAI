@@ -284,9 +284,10 @@ export function SectorDetail() {
     void loadAgents()
   }, [loadAgents])
 
+  // Confirmed by the dialog in DangerZone, which requires the sector's name to be
+  // typed. This only performs what was already confirmed.
   async function handleDelete() {
     if (!overview || deleting) return
-    if (!window.confirm(`Excluir o setor "${overview.sector.name}"? Essa ação não pode ser desfeita.`)) return
     setDeleteError(null)
     setDeleting(true)
     try {
@@ -408,8 +409,14 @@ export function SectorDetail() {
                   </div>
                   <DangerZone
                     title="Excluir este setor"
-                    description="Não pode ser desfeito."
+                    description={`Remove "${overview.sector.name}". Não pode ser desfeito.`}
                     buttonLabel="Excluir setor"
+                    confirmName={overview.sector.name}
+                    consequences={[
+                      'O setor deixa de existir como unidade executável.',
+                      'Os agentes que participavam dele continuam existindo.',
+                      'O histórico de execuções já registrado é preservado.',
+                    ]}
                     onDelete={handleDelete}
                     deleting={deleting}
                     deleteError={deleteError}

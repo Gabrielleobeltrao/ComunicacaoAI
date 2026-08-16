@@ -356,15 +356,11 @@ export function AgentDetail() {
     }
   }, [period, agentId])
 
+  // The confirmation is the dialog in DangerZone: it names the agent and requires
+  // that name to be typed. This function only performs what was already confirmed,
+  // and a double click cannot start a second request.
   async function handleDelete() {
     if (!overview || deleting) return
-    if (
-      !window.confirm(
-        `Excluir o agente "${overview.agent.name}"? Essa ação não pode ser desfeita e remove também a base de conhecimento dele.`,
-      )
-    ) {
-      return
-    }
     setDeleteError(null)
     setDeleting(true)
     try {
@@ -416,6 +412,10 @@ export function AgentDetail() {
       ) : notFound || !overview || !agent || !stats ? (
         <p className="text-sm text-(--text-muted)">Agente não encontrado.</p>
       ) : (
+        // Summary on top (profile + metrics, side by side on desktop), workspace
+        // below at the FULL content width. The tabs card used to live in the right
+        // column, which squeezed forms, flows and long values into ~60% of the page.
+        <div className="grid grid-cols-1 gap-5" style={{ minWidth: 0 }}>
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] lg:items-start">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <ProfileCard agent={agent} stats={stats} accent={accent} portrait={chars.portrait(agent._id)} />
@@ -480,7 +480,16 @@ export function AgentDetail() {
               </Card>
             ) : null}
 
-            <Card padding="0" style={{ overflow: 'hidden' }}>
+          </div>
+        </div>
+
+        {/* The workspace: same width for every tab, so switching never shifts the
+            layout. No 100vw and no negative margins — that would scroll the page
+            sideways outside AppLayout. */}
+        <div style={{ width: '100%', minWidth: 0 }} data-testid="agent-workspace">
+            <Card padding="0" style={{ minWidth: 0 }}>
+              {/* Only the tab STRIP scrolls sideways on a phone; the tab content must
+                  never be clipped by the card. */}
               <div style={{ display: 'flex', padding: '14px 18px', borderBottom: '1px solid var(--border-subtle)', overflowX: 'auto' }}>
                 <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 'var(--radius-control)', background: 'var(--surface-sunken)' }}>
                   {TABS.map((t) => {
@@ -511,7 +520,7 @@ export function AgentDetail() {
                   })}
                 </div>
               </div>
-              <div style={{ padding: 18 }}>
+              <div style={{ padding: 18, minWidth: 0, overflowWrap: 'anywhere' }}>
                 {active === 'atividade' ? (
                   // What it did: metrics live above; here go history and the test bench.
                   <div style={{ display: 'grid', gap: 20 }}>
@@ -558,12 +567,21 @@ export function AgentDetail() {
                         <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
                       </div>
                     ) : null}
-                    {active === 'visao-geral' ? (
-                      <div style={{ marginTop: 20 }}>
+                    {/* Deleting lives in Avançado, after every setting, and is
+                        mounted ONLY there — it used to sit under Visão geral, the
+                        first thing anyone opens. */}
+                    {active === 'avancado' ? (
+                      <div style={{ marginTop: 24 }}>
                         <DangerZone
                           title="Excluir este agente"
-                          description="Remove o agente e sua base de conhecimento. Não pode ser desfeito."
+                          description={`Remove "${agent.name}" e a base de conhecimento dele. Não pode ser desfeito.`}
                           buttonLabel="Excluir agente"
+                          confirmName={agent.name}
+                          consequences={[
+                            'As rotinas e gatilhos deste agente param de existir.',
+                            'A base de conhecimento dele é removida.',
+                            'O histórico de execuções já registrado é preservado.',
+                          ]}
                           onDelete={handleDelete}
                           deleting={deleting}
                           deleteError={deleteError}
@@ -574,7 +592,7 @@ export function AgentDetail() {
                 )}
               </div>
             </Card>
-          </div>
+        </div>
         </div>
       )}
     </AppLayout>
