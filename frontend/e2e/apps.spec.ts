@@ -218,6 +218,10 @@ test('a aba Conectados diz quantos agentes dependem da conexão', async ({ page 
 test('desconectar avisa quem perde acesso e não apaga histórico', async ({ page }) => {
   await stub(page, { installations: [INSTALLATION] })
   await page.goto('/apps?tab=connected')
+  // Desconectar não é a ação do dia a dia: mora atrás da engrenagem, com o resto do
+  // que se faz raramente com uma conexão.
+  await page.getByTestId('settings-slack').click()
+  await expect(page.getByTestId('connection-settings')).toBeVisible()
   await page.getByTestId('disconnect').click()
   await expect(page.getByText('2 agentes perdem acesso a estas ações imediatamente.')).toBeVisible()
   await expect(page.getByText('As mensagens já enviadas permanecem no Slack.')).toBeVisible()
@@ -525,4 +529,43 @@ test('App sem marca própria cai no glifo do manifesto, nunca num vazio', async 
   // Sem quadrado de marca, mas com um símbolo desenhado.
   await expect(page.locator('[data-app-logo="app_sem_marca"]')).toHaveCount(0)
   await expect(page.getByTestId('app-card').locator('[data-icon="blocks"]')).toBeVisible()
+})
+
+test('o cartão da conexão tem uma ação em cada ponta, e o resto na engrenagem', async ({ page }) => {
+  await stub(page, { installations: [WEB_CHAT_INSTALLATION] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  await page.goto('/apps?tab=connected')
+  const card = page.getByTestId('installation-card').first()
+
+  // Testar à esquerda, fixar à direita, na MESMA linha.
+  const [testar, fixar] = await Promise.all([
+    card.getByRole('button', { name: /Testar conexão/ }).boundingBox(),
+    card.getByTestId('pin-web_chat').boundingBox(),
+  ])
+  expect(Math.abs(testar!.y - fixar!.y)).toBeLessThan(4)
+  expect(fixar!.x).toBeGreaterThan(testar!.x)
+
+  // Renomear, reconectar e desconectar saíram da fileira — eram cinco botões de
+  // mesmo peso numa linha que quebrava.
+  await expect(card.getByRole('button', { name: 'Renomear' })).toHaveCount(0)
+  await expect(card.getByRole('button', { name: 'Reconectar' })).toHaveCount(0)
+
+  await page.getByTestId('settings-web_chat').click()
+  const popup = page.getByTestId('connection-settings')
+  await expect(popup).toBeVisible()
+  for (const acao of ['action-rename', 'action-reconnect', 'disconnect']) {
+    await expect(popup.getByTestId(acao)).toBeVisible()
+  }
+  // Cada ação diz o que faz, em vez de ser só um rótulo.
+  await expect(popup.getByTestId('action-reconnect')).toContainText(/permissões dos agentes/i)
+})
+
+test('renomear abre a partir da engrenagem', async ({ page }) => {
+  await stub(page, { installations: [INSTALLATION] })
+  await page.goto('/apps?tab=connected')
+  await page.getByTestId('settings-slack').click()
+  await page.getByTestId('action-rename').click()
+  // O popup de configurações fecha e o de renomear assume: nunca os dois abertos.
+  await expect(page.getByTestId('connection-settings')).toHaveCount(0)
+  await expect(page.getByRole('textbox').first()).toBeVisible()
 })

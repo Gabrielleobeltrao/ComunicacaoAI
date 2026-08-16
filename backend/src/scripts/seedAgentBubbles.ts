@@ -9,6 +9,7 @@
 // being produced by a real execution, so nothing here proves the runtime works. The
 // integration tests do that.
 //
+//   npm run seed:bubbles -- --all
 //   npm run seed:bubbles -- --floor "Bastidores"
 //   npm run seed:bubbles -- --floor "Bastidores" --minutes 30
 //   npm run seed:bubbles -- --clear
@@ -54,20 +55,12 @@ async function main(): Promise<void> {
     return
   }
 
+  const all = process.argv.includes('--all')
   const floors = await db.collection<{ _id: ObjectId; name: string; ownerId: string }>('offices').find({}).toArray()
-  const floor = floorName ? floors.find((f) => f.name.toLowerCase() === floorName.toLowerCase()) : floors[0]
-  if (!floor) {
+  // `--all` pinta a conta inteira; sem ele, um andar só.
+  const chosen = all ? floors : [floorName ? floors.find((f) => f.name.toLowerCase() === floorName.toLowerCase()) : floors[0]].filter(Boolean)
+  if (chosen.length === 0) {
     console.error(`andar não encontrado. Disponíveis: ${floors.map((f) => f.name).join(', ')}`)
-    process.exitCode = 1
-    return
-  }
-
-  const agents = await db
-    .collection<{ _id: ObjectId; name: string; ownerId: string }>('agents')
-    .find({ officeId: floor._id })
-    .toArray()
-  if (agents.length === 0) {
-    console.error(`o andar "${floor.name}" não tem agentes.`)
     process.exitCode = 1
     return
   }
@@ -75,25 +68,44 @@ async function main(): Promise<void> {
   // A long window on purpose: the real TTL for an active state is two minutes, which
   // is right for a live map and too short to sit and look at.
   const expiresAt = new Date(Date.now() + minutes * 60_000)
-  for (const [i, agent] of agents.entries()) {
-    const pick = SHOWCASE[i % SHOWCASE.length]
-    await reportAgentState({
-      ownerId: agent.ownerId,
-      agentId: agent._id,
-      floorId: floor._id,
-      // A demo root, so these rows never collide with a real execution's.
-      rootExecutionId: `demo:${floor._id.toString()}:${agent._id.toString()}`,
-      state: pick.state,
-      detail: pick.detail,
-    })
-    await db
-      .collection('agent_live_states')
-      .updateOne({ ownerId: agent.ownerId, agentId: agent._id, rootExecutionId: `demo:${floor._id.toString()}:${agent._id.toString()}` }, { $set: { expiresAt } })
-    console.log(`  ${agent.name.padEnd(18)} → ${pick.state}`)
+  let total = 0
+  // O deslocamento anda entre os andares, para dois andares não abrirem com a mesma
+  // sequência de balões.
+  let offset = 0
+
+  for (const floor of chosen as { _id: ObjectId; name: string; ownerId: string }[]) {
+    const agents = await db
+      .collection<{ _id: ObjectId; name: string; ownerId: string }>('agents')
+      .find({ officeId: floor._id })
+      .toArray()
+    if (agents.length === 0) {
+      console.log(`  (o andar "${floor.name}" não tem agentes)`)
+      continue
+    }
+    console.log(`\n${floor.name}`)
+    for (const [i, agent] of agents.entries()) {
+      const pick = SHOWCASE[(i + offset) % SHOWCASE.length]
+      const rootExecutionId = `demo:${floor._id.toString()}:${agent._id.toString()}`
+      await reportAgentState({
+        ownerId: agent.ownerId,
+        agentId: agent._id,
+        floorId: floor._id,
+        // A demo root, so these rows never collide with a real execution's.
+        rootExecutionId,
+        state: pick.state,
+        detail: pick.detail,
+      })
+      await db
+        .collection('agent_live_states')
+        .updateOne({ ownerId: agent.ownerId, agentId: agent._id, rootExecutionId }, { $set: { expiresAt } })
+      console.log(`  ${agent.name.padEnd(18)} → ${pick.state}`)
+      total++
+    }
+    offset += agents.length + 1
   }
 
-  console.log(`\n${agents.length} balão(ões) no andar "${floor.name}", por ${minutes} min.`)
-  console.log(`Abra /floors/${floor._id.toString()} com VITE_AI_OFFICE_LIVE_STATUS_ENABLED=true.`)
+  console.log(`\n${total} balão(ões) em ${chosen.length} andar(es), por ${minutes} min.`)
+  for (const floor of chosen as { _id: ObjectId }[]) console.log(`  /floors/${floor._id.toString()}`)
   console.log('Para apagar antes da hora: npm run seed:bubbles -- --clear')
 }
 

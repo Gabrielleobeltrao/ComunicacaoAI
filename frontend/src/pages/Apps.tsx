@@ -18,7 +18,7 @@ import {
 import type { AppCatalogEntry, AppInstallation } from '../lib/apps'
 import { API_URL } from '../lib/api'
 import { useAppNavigation } from '../lib/appNavigation'
-import { Button, Card, Dialog, EmptyState, Field, Input, Tabs, Tag } from '../ui'
+import { Button, Card, Dialog, EmptyState, Field, Icon, IconButton, Input, Tabs, Tag } from '../ui'
 
 // The Apps page: what the account can connect (Catálogo), what it already connected
 // (Conectados) and the HTTP actions the owner wrote themselves (Personalizados).
@@ -255,6 +255,7 @@ function ConnectedList({
   }
   const [renaming, setRenaming] = useState<AppInstallation | null>(null)
   const [confirming, setConfirming] = useState<AppInstallation | null>(null)
+  const [settingsFor, setSettingsFor] = useState<AppInstallation | null>(null)
 
   const appFor = (key: string) => catalog.find((a) => a.key === key)
 
@@ -288,50 +289,59 @@ function ConnectedList({
         {installations.map((i) => {
           const app = appFor(i.appKey)
           return (
-            <Card key={i.id} padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="installation-card">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{i.name}</span>
-                <Tag>{STATUS_LABEL[i.status]}</Tag>
+            <Card key={i.id} padding="16px" style={{ display: 'grid', gap: 12 }} data-testid="installation-card">
+              {/* Cabeçalho: logo, nome, estado — e a engrenagem, que guarda tudo o
+                  que não é a ação do dia a dia. Antes eram CINCO botões soltos numa
+                  linha que quebrava, todos com o mesmo peso visual. */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <AppLogo appKey={i.appKey} icon={app?.icon} size={38} title={app?.name ?? i.appKey} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: 'var(--font-display)', fontSize: 15.5, fontWeight: 800, color: 'var(--text-heading)' }}>{i.name}</span>
+                    <Tag>{STATUS_LABEL[i.status]}</Tag>
+                  </div>
+                  <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>{app?.name ?? i.appKey}</p>
+                </div>
+                <IconButton
+                  icon="settings"
+                  label="Configurações da conexão"
+                  size="sm"
+                  onClick={() => setSettingsFor(i)}
+                  data-testid={`settings-${i.appKey}`}
+                />
               </div>
-              <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>{app?.name ?? i.appKey}</p>
-              {i.publicMetadata.account ? (
-                <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>Conta: {i.publicMetadata.account}</p>
-              ) : null}
-              {i.grantedScopes.length > 0 ? (
-                <p style={{ margin: 0, fontSize: 12, color: 'var(--text-faint)', wordBreak: 'break-word' }}>
-                  Permissões: {i.grantedScopes.length}
-                </p>
-              ) : null}
-              <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="installation-usage">
-                {i.agentCount ? `${i.agentCount} ${i.agentCount === 1 ? 'agente usa' : 'agentes usam'}` : 'Nenhum agente usa ainda'}
-              </p>
+
+              {/* Os fatos da conexão, um por linha e sempre na mesma ordem. */}
+              <dl style={{ margin: 0, display: 'grid', gap: 4 }}>
+                {i.publicMetadata.account ? <Fact icon="user" text={`Conta: ${i.publicMetadata.account}`} /> : null}
+                {i.grantedScopes.length > 0 ? <Fact icon="key-round" text={`${i.grantedScopes.length} permissão(ões) concedida(s)`} /> : null}
+                <Fact
+                  icon="users-round"
+                  text={i.agentCount ? `${i.agentCount} ${i.agentCount === 1 ? 'agente usa' : 'agentes usam'}` : 'Nenhum agente usa ainda'}
+                  testid="installation-usage"
+                />
+              </dl>
+
               {message?.id === i.appKey || message?.id === i.id ? (
                 <p style={{ margin: 0, fontSize: 12.5, color: message.ok ? 'var(--intent-brand)' : 'var(--coral-600, #d92d20)' }}>{message.text}</p>
               ) : null}
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 4 }}>
-                <Button size="sm" variant="secondary" disabled={busy === i.id} onClick={() => void runTest(i)}>
-                  Testar
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setRenaming(i)}>
-                  Renomear
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => void reconnect(i)}>
-                  Reconectar
+
+              {/* As duas ações do dia a dia, uma em cada ponta. O resto — renomear,
+                  reconectar, desconectar — mora na engrenagem. */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Button size="sm" variant="secondary" icon="plug-zap" disabled={busy === i.id} onClick={() => void runTest(i)}>
+                  {busy === i.id ? 'Testando…' : 'Testar conexão'}
                 </Button>
                 {app?.pinnable && i.status === 'connected' ? (
                   <Button
                     size="sm"
                     variant="ghost"
+                    icon={pinnedKeys.includes(i.appKey) ? 'pin-off' : 'pin'}
                     disabled={pinning === i.appKey}
                     onClick={() => void pin(i.appKey)}
                     data-testid={`pin-${i.appKey}`}
                   >
-                    {pinnedKeys.includes(i.appKey) ? 'Desafixar do menu' : 'Fixar no menu'}
-                  </Button>
-                ) : null}
-                {i.status !== 'revoked' ? (
-                  <Button size="sm" variant="ghost" onClick={() => setConfirming(i)} data-testid="disconnect">
-                    Desconectar
+                    {pinnedKeys.includes(i.appKey) ? 'Desafixar' : 'Fixar no menu'}
                   </Button>
                 ) : null}
               </div>
@@ -339,6 +349,58 @@ function ConnectedList({
           )
         })}
       </div>
+
+      {/* Tudo o que não é "testar" mora aqui: cada ação com o seu ícone, o seu nome
+          e uma linha dizendo o que ela faz. Numa fileira de botões-fantasma, nenhum
+          deles dizia isso. */}
+      <Dialog
+        open={settingsFor !== null}
+        onClose={() => setSettingsFor(null)}
+        title="Configurações da conexão"
+        subtitle={settingsFor?.name}
+        width={520}
+      >
+        {settingsFor ? (
+          <div style={{ display: 'grid', gap: 8 }} data-testid="connection-settings">
+            <SettingsAction
+              icon="pencil"
+              title="Renomear"
+              body="O nome que aparece nesta lista e na hora de conceder a um agente."
+              testid="action-rename"
+              onClick={() => {
+                const target = settingsFor
+                setSettingsFor(null)
+                setRenaming(target)
+              }}
+            />
+            <SettingsAction
+              icon="refresh-cw"
+              title="Reconectar"
+              body="Troca a credencial ou refaz o login do provedor. As permissões dos agentes ficam como estão."
+              testid="action-reconnect"
+              onClick={() => {
+                const target = settingsFor
+                setSettingsFor(null)
+                void reconnect(target)
+              }}
+            />
+            {settingsFor.status !== 'revoked' ? (
+              <SettingsAction
+                icon="power-off"
+                title="Desconectar"
+                body="Os agentes perdem acesso na hora. O histórico é preservado."
+                testid="disconnect"
+                danger
+                onClick={() => {
+                  const target = settingsFor
+                  setSettingsFor(null)
+                  setConfirming(target)
+                }}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </Dialog>
 
       <RenameDialog installation={renaming} app={renaming ? appFor(renaming.appKey) : undefined} onClose={() => setRenaming(null)} onSaved={onChanged} />
 
@@ -373,6 +435,65 @@ function ConnectedList({
         ) : null}
       </Dialog>
     </>
+  )
+}
+
+// Uma linha de fato da conexão: ícone + frase. Sempre na mesma ordem, para dois
+// cartões lado a lado serem comparáveis de relance.
+function Fact({ icon, text, testid }: { icon: string; text: string; testid?: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid={testid}>
+      <Icon name={icon} size={13} color="var(--text-faint)" />
+      <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{text}</span>
+    </div>
+  )
+}
+
+function SettingsAction({
+  icon,
+  title,
+  body,
+  onClick,
+  testid,
+  danger,
+  disabled,
+}: {
+  icon: string
+  title: string
+  body: string
+  onClick: () => void
+  testid?: string
+  danger?: boolean
+  disabled?: boolean
+}) {
+  const tone = danger ? 'var(--intent-danger, #d92d20)' : 'var(--text-heading)'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      data-testid={testid}
+      style={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 10,
+        width: '100%',
+        padding: 12,
+        borderRadius: 10,
+        border: '1px solid var(--border-subtle)',
+        background: 'var(--surface-card)',
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.6 : 1,
+        textAlign: 'left',
+        font: 'inherit',
+      }}
+    >
+      <Icon name={icon} size={16} color={tone} style={{ marginTop: 2 }} />
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: tone }}>{title}</span>
+        <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-muted)' }}>{body}</span>
+      </span>
+    </button>
   )
 }
 
