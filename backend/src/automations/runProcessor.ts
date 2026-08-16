@@ -19,6 +19,7 @@ import { getProviderApiKey } from '../userSettings.js'
 import { attemptChargeKey, recordReplyUsageOnce } from '../tokenUsage.js'
 import { finalizeAgentEvent, runEventKey } from '../agentEvents.js'
 import { executeRoutineStep } from './routineExecution.js'
+import { createLiveTracker } from '../agentLiveTracker.js'
 import type { Provider } from '../llm.js'
 import { retrieveContext } from '../knowledge.js'
 import { decryptConfig, getConnection } from '../connections/service.js'
@@ -65,6 +66,10 @@ function buildDeps(run: AutomationRun): RunnerDeps {
           finalizeEvent: finalizeAgentEvent,
           eventKeyFor: runEventKey,
           isCanceled,
+          // The live map: one projection row per (agent, run), removed by TTL if
+          // this worker dies mid-step.
+          trackerFor: (agentId) =>
+            createLiveTracker({ ownerId: run.ownerId, agentId, floorId: run.floorId, rootExecutionId: run._id.toString() }),
         },
       )
       return {
@@ -98,6 +103,8 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       }
       const { delivery, created } = await insertDeliveryIdempotent(record)
       if (!created && delivery.status === 'sent') return { providerMessageId: delivery.providerMessageId }
+      // The result is leaving the building: the agents behind this run show it.
+      for (const tracker of trackersFor(run)) tracker.report('delivering', { targetType: 'channel' })
       try {
         const config = decryptConfig(conn)
         const result =
@@ -120,6 +127,18 @@ function buildDeps(run: AutomationRun): RunnerDeps {
   }
 }
 
+// Which agents this run actually drives. Read from the SNAPSHOT, so a routine edited
+// mid-flight cannot retarget a running execution.
+function agentIdsOf(run: AutomationRun): string[] {
+  const steps = (run.definitionSnapshot as { steps?: Array<{ type?: string; config?: { agentId?: unknown } }> } | undefined)?.steps ?? []
+  return [...new Set(steps.filter((s) => s.type === 'agent.execute' && typeof s.config?.agentId === 'string').map((s) => String(s.config?.agentId)))]
+}
+
+const trackersFor = (run: AutomationRun) =>
+  agentIdsOf(run).map((agentId) =>
+    createLiveTracker({ ownerId: run.ownerId, agentId, floorId: run.floorId, rootExecutionId: run._id.toString() }),
+  )
+
 export async function processRun(runId: string): Promise<void> {
   const run = await findRunUnscoped(new ObjectId(runId))
   if (!run) return
@@ -127,6 +146,7 @@ export async function processRun(runId: string): Promise<void> {
   // into a second execution (which would deliver twice and charge twice).
   if (run.status === 'succeeded' || run.status === 'failed' || run.status === 'canceled') return
   if (run.status === 'cancel_requested') {
+    await Promise.all(trackersFor(run).map((tracker) => tracker.finish('canceled')))
     await updateRun(run._id, { status: 'canceled', finishedAt: new Date() })
     return
   }
@@ -173,6 +193,10 @@ export async function processRun(runId: string): Promise<void> {
   }
 
   const failed = outcome.steps.find((s) => s.status === 'failed')
+  // The run ended: every agent it drove lands on a terminal state, whatever the step
+  // instrumentation managed to report before.
+  const terminal = outcome.status === 'succeeded' ? 'completed' : outcome.status === 'canceled' ? 'canceled' : 'failed'
+  await Promise.all(trackersFor(run).map((tracker) => tracker.finish(terminal)))
   await updateRun(run._id, {
     status: outcome.status as RunStatus,
     finishedAt: now,

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import type { Floor } from '../floors.js'
 import { createFloor, deleteFloor, getFloor, getFloorActivity, listFloors, setFloorStatus, updateFloor } from '../floors.js'
 import { agentStatesForFloor, floorMetrics } from '../automations/metrics.js'
+import { agentLiveStatesForFloor, legacyWorkingMap, liveStatesEtag } from '../agentLiveState.js'
 import { fail, notFound, oid } from './http.js'
 import { auditEntity } from './auditMiddleware.js'
 
@@ -113,10 +114,38 @@ floorRouter.get('/:floorId/metrics', async (req, res) => {
 })
 
 // Per-agent operational state for the live-map overlay (read-only reflection).
+//
+// Read-only, authenticated, owner AND floor scoped. It returns the versioned DTO —
+// enum, timestamps and an allowlisted `safeDetail`, never a prompt, an input, an
+// output or a raw error. `legacy=1` keeps the old `Record<agentId,'working'>` shape
+// for the current map until the bubble layer ships.
 floorRouter.get('/:floorId/agent-states', async (req, res) => {
   const id = oid(req.params.floorId)
   if (!id) return notFound(res)
   const floor = await getFloor(res.locals.userId, id)
   if (!floor) return notFound(res)
-  res.json(await agentStatesForFloor(res.locals.userId, id))
+
+  const live = await agentLiveStatesForFloor(res.locals.userId, id)
+
+  // Nothing new since the client's copy: answer 304 instead of a payload. Polling
+  // every couple of seconds has to be cheap.
+  const etag = liveStatesEtag(live)
+  res.setHeader('ETag', etag)
+  res.setHeader('Cache-Control', 'no-cache')
+  if (req.headers['if-none-match'] === etag) return res.status(304).end()
+
+  const since = typeof req.query.updatedSince === 'string' ? new Date(req.query.updatedSince) : null
+  const filtered =
+    since && !Number.isNaN(since.getTime())
+      ? { ...live, states: live.states.filter((s) => new Date(s.updatedAt) > since) }
+      : live
+
+  if (req.query.legacy === '1') {
+    // The old contract, derived from the same projection — plus what the previous
+    // implementation covered: an agent in a run that has not reported a transition
+    // yet still counts as working.
+    const legacy = { ...legacyWorkingMap(live), ...(await agentStatesForFloor(res.locals.userId, id)) }
+    return res.json(legacy)
+  }
+  res.json(filtered)
 })

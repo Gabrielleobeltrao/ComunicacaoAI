@@ -7,6 +7,7 @@ import { ensureRunIndexes } from './automations/runRepository.js'
 import { ensureConnectionIndexes } from './connections/repository.js'
 import { ensureInstallationIndexes } from './apps/installations.js'
 import { ensureNavigationIndexes } from './apps/navigation.js'
+import { ensureAgentLiveStateIndexes } from './agentLiveState.js'
 import { ensureAppActionIndexes } from './apps/grants.js'
 import { migrateAppsAndInstallations } from './apps/migration.js'
 
@@ -64,6 +65,7 @@ export async function runMigrations(): Promise<void> {
   await ensureConnectionIndexes()
   await ensureInstallationIndexes()
   await ensureNavigationIndexes()
+  await ensureAgentLiveStateIndexes()
   await ensureAppActionIndexes()
 
   // Apps: connections learn their appKey, Google gains an installation, and every

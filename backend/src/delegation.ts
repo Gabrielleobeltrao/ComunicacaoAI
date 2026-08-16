@@ -142,6 +142,9 @@ export interface SectorLite {
 // Injected IO. Production wiring in ./delegationWiring.ts binds these to the real
 // agent store, tool resolver, task runtime, provider keys and delegation log.
 export interface DelegationDeps {
+  // Live map: a delegation leaving is a real transition of the CALLER. Optional so
+  // this module stays testable with no database attached.
+  reportState?: (input: { ownerId: string; agentId: ObjectId; floorId: ObjectId | null; rootExecutionId: string; state: string; detail?: unknown }) => void
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
@@ -446,6 +449,16 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
     targetAgentId: target._id,
     objective,
   })
+  // The caller is waiting on another agent — that is what the map shows, without
+  // ever naming the objective.
+  deps.reportState?.({
+    ownerId: ctx.ownerId,
+    agentId: caller._id,
+    floorId: caller.officeId ?? null,
+    rootExecutionId: ctx.correlationId,
+    state: 'delegating_agent',
+    detail: { targetType: 'agent' },
+  })
   const startedAt = new Date()
   try {
     const run = await runAgentTask(deps, ctx, target, objective, input, asOutputFormat(args.format), `deleg:${recId.toString()}`)
@@ -543,6 +556,14 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
 
   const sector = await deps.loadSector(ctx.ownerId, new ObjectId(sectorId))
   if (!sector) return { ok: false, result: j({ status: 'error', reason: 'setor não encontrado' }) }
+  deps.reportState?.({
+    ownerId: ctx.ownerId,
+    agentId: caller._id,
+    floorId: caller.officeId ?? null,
+    rootExecutionId: ctx.correlationId,
+    state: 'delegating_sector',
+    detail: { targetType: 'sector' },
+  })
   const sectorBuildingId = await deps.buildingIdForFloor(ctx.ownerId, sector.officeId)
   if (sectorBuildingId !== ctx.buildingId) return { ok: false, result: j({ status: 'denied', code: 'forbidden', reason: 'setor de outro prédio' }) }
   if (sector.mode === 'organization') return { ok: false, result: j({ status: 'not_executable', reason: 'este setor apenas agrupa agentes; escolha um agente ou um setor orquestrado/pipeline' }) }

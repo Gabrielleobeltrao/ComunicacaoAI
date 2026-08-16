@@ -31,6 +31,10 @@ export interface AgentExecutionRequest {
   contracts?: { input?: string | null; output?: string | null }
   limits?: { maxOutputChars?: number; timeoutMs?: number }
   enableCaching?: boolean
+  // Operational transitions, for the live map. A plain callback: this module stays
+  // pure and testable, and the caller — which knows the owner, the agent and the
+  // execution — decides where the transition is recorded.
+  progress?: (state: 'thinking' | 'validating_output' | 'retrying' | 'generating_output', detail?: unknown) => void
   // External source material is untrusted by default; pass false only when the
   // context is authored by the owner (plan §17.4).
   contextIsUntrusted?: boolean
@@ -182,6 +186,10 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
   const objective = buildTaskObjective(req)
   const history = buildHistory(req)
 
+  // The model is about to be called: that is what "thinking" means here, and it is
+  // reported before the call rather than inferred afterwards.
+  req.progress?.('thinking')
+
   const call = reply(
     objective,
     req.context ?? [],
@@ -219,6 +227,8 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
   // correction round-trip — the model is told exactly what was wrong — and its tokens
   // are counted like any other. A second failure ends the task as `validation`: an
   // answer that does not honour the contract is never delivered as if it did.
+  // A JSON contract is checked before anything is returned.
+  req.progress?.('validating_output')
   const first = checkJson(clip(result.text), req.output?.jsonSchema)
   if (first.ok) {
     return { output: first.output, json: first.json, usage, toolCalls: result.toolCalls, format: { requested, valid: true, repaired: false } }
@@ -232,6 +242,9 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
       content: `A resposta anterior não é um JSON válido para o contrato pedido: ${first.problem}. Responda de novo com APENAS o objeto JSON corrigido, sem texto fora dele.`,
     },
   ]
+  // The contract failed once: the correction round-trip IS a retry, and it is
+  // reported as one instead of looking like normal thinking.
+  req.progress?.('retrying')
   let repairResult: AgentReplyResult
   try {
     // NO TOOLS. This second call exists only to reformat the answer the model has

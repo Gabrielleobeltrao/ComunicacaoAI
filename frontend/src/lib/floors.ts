@@ -90,8 +90,31 @@ export interface FloorMetrics {
 export const getFloorMetrics = (floorId: string) =>
   fetch(`${API_URL}/api/floors/${floorId}/metrics`, opts('GET')).then(json<FloorMetrics>)
 
+// The map still consumes the legacy `Record<agentId, 'working'>` shape. The backend
+// now projects rich operational states; `legacy=1` asks it for the old contract, so
+// the current map is untouched until the bubble layer ships.
 export const getAgentStates = (floorId: string) =>
-  fetch(`${API_URL}/api/floors/${floorId}/agent-states`, opts('GET')).then(json<Record<string, string>>)
+  fetch(`${API_URL}/api/floors/${floorId}/agent-states?legacy=1`, opts('GET')).then(json<Record<string, string>>)
+
+// The versioned DTO the bubble layer will read: enum, timestamps and an allowlisted
+// detail. Nothing here can carry a prompt, an input, an output or a raw error.
+export interface AgentLiveVisualState {
+  agentId: string
+  floorId: string | null
+  rootExecutionId: string
+  state: string
+  safeDetail?: { appKey?: string; actionLabel?: string; targetType?: 'agent' | 'sector' | 'channel' }
+  startedAt: string
+  updatedAt: string
+  expiresAt: string
+  concurrent: number
+}
+
+export const getAgentLiveStates = (floorId: string, updatedSince?: string) =>
+  fetch(
+    `${API_URL}/api/floors/${floorId}/agent-states${updatedSince ? `?updatedSince=${encodeURIComponent(updatedSince)}` : ''}`,
+    opts('GET'),
+  ).then(json<{ version: number; generatedAt: string; states: AgentLiveVisualState[] }>)
 
 // Aggregated dashboard overview (one call — KPIs + per-floor cards).
 export interface FloorOverview {

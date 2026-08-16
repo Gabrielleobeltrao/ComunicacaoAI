@@ -7,6 +7,8 @@ import { getFloor, listFloors } from './floors.js'
 import { getSectorById, normalizeSectorMode } from './sectors.js'
 import { resolveAgentTools } from './builtinTools.js'
 import { executeAgentTask } from './agentRuntime.js'
+import { reportAgentState } from './agentLiveState.js'
+import type { AgentBubbleState } from './agentLiveState.js'
 import { getProviderApiKey } from './userSettings.js'
 import type { Provider } from './llm.js'
 import type { ResolvedTool } from './agentTools.js'
@@ -34,6 +36,17 @@ export async function resolveToolsWithDelegation(agent: Agent, ownerId: string, 
 
 export function productionDelegationDeps(): DelegationDeps {
   const deps: DelegationDeps = {
+    // Fire-and-forget: telemetry never delays or breaks a delegation.
+    reportState: (input) => {
+      void reportAgentState({
+        ownerId: input.ownerId,
+        agentId: input.agentId,
+        floorId: input.floorId,
+        rootExecutionId: input.rootExecutionId,
+        state: input.state as AgentBubbleState,
+        detail: input.detail,
+      }).catch(() => undefined)
+    },
     loadAgent: (ownerId, id) => getAgentById(ownerId, id),
     loadSector: async (ownerId, id) => {
       const s = await getSectorById(ownerId, id)
