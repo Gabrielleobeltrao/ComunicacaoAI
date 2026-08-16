@@ -35,6 +35,8 @@ export interface AppSurfaceSummary {
   routeSegment: string
 }
 
+export type AppActivation = 'instant' | 'credentials' | 'oauth' | 'managed_channel'
+
 export interface AppCatalogEntry {
   key: string
   version: string
@@ -57,6 +59,10 @@ export interface AppCatalogEntry {
   disconnectNote: string | null
   providerCostNote: string | null
   requiresAuth: boolean
+  // HOW this App becomes active. `managed_channel` cannot be created by the generic
+  // form: its CTA sends the owner to the real flow.
+  activation: AppActivation
+  activationRoute: string | null
   installationCount?: number
   connected?: boolean
 }
@@ -145,3 +151,11 @@ export const STATUS_LABEL: Record<InstallationStatus, string> = {
 // A connection is only usable while it is connected. Used by the UI to decide what
 // to offer — the backend enforces the same rule regardless.
 export const isUsable = (i: AppInstallation): boolean => i.status === 'connected'
+
+// Can the generic "type these fields" form create this App's connection?
+export const acceptsGenericConnect = (app: Pick<AppCatalogEntry, 'activation'>): boolean =>
+  app.activation === 'instant' || app.activation === 'credentials'
+
+// Only a CONNECTED installation is usable — `error`, `needs_reauth` and `revoked`
+// are not. The backend enforces the same rule.
+export const connectedCount = (installations: AppInstallation[]): number => installations.filter(isUsable).length

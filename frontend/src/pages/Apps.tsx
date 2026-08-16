@@ -184,13 +184,16 @@ function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) 
       </div>
       <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)', lineHeight: 1.45 }}>{app.description}</p>
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
-        {app.actions.length === 0
-          ? 'Usado nas entregas das rotinas'
-          : `${app.actions.length} ${app.actions.length === 1 ? 'ação' : 'ações'}${writes > 0 ? ` · ${writes} altera${writes === 1 ? '' : 'm'} dados` : ''}`}
+        {app.actions.length > 0
+          ? `${app.actions.length} ${app.actions.length === 1 ? 'ação' : 'ações'}${writes > 0 ? ` · ${writes} altera${writes === 1 ? '' : 'm'} dados` : ''}`
+          : app.surfaces.length > 0
+            ? // A channel App has no model actions: what it unlocks are its pages.
+              `Canal de atendimento · ${app.surfaces.length} página(s)`
+            : 'Usado nas entregas das rotinas'}
       </p>
       <div style={{ paddingTop: 4 }}>
         <Button size="sm" variant={app.connected ? 'secondary' : 'primary'} onClick={onOpen} data-testid="app-open">
-          {app.connected ? 'Ver conexão' : app.requiresAuth ? 'Conectar' : 'Ativar'}
+          {app.connected ? 'Ver conexão' : app.activation === 'managed_channel' ? 'Conectar número' : app.requiresAuth ? 'Conectar' : 'Ativar'}
         </Button>
       </div>
     </Card>

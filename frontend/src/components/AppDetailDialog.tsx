@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router'
 import { createInstallation, RISK_LABEL } from '../lib/apps'
 import type { AppCatalogEntry, AppInstallation } from '../lib/apps'
 import { API_URL } from '../lib/api'
@@ -36,6 +37,7 @@ export function AppDetailDialog({
   const [name, setName] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const navigate = useNavigate()
 
   useEffect(() => {
     setConfig({})
@@ -46,7 +48,8 @@ export function AppDetailDialog({
   if (!app) return null
 
   const active = installations.filter((i) => i.status !== 'revoked')
-  const isOauth = app.auth.kind === 'oauth2'
+  const isOauth = app.activation === 'oauth'
+  const managed = app.activation === 'managed_channel'
   const canAddAnother = app.supportsMultipleConnections || active.length === 0
 
   const connect = async () => {
@@ -82,7 +85,11 @@ export function AppDetailDialog({
           </Block>
         ) : (
           <Block title="Ações">
-            <P>Este App não oferece ações para o agente: ele é usado nas entregas das rotinas.</P>
+            <P>
+              {managed || app.activation === 'instant'
+                ? 'Este App não oferece ações para o agente: ele é um canal de atendimento. Os agentes respondem por ele; as páginas abaixo é que ficam disponíveis.'
+                : 'Este App não oferece ações para o agente: ele é usado nas entregas das rotinas.'}
+            </P>
           </Block>
         )}
 
@@ -179,6 +186,30 @@ export function AppDetailDialog({
             >
               {active.length > 0 ? 'Reconectar conta' : 'Conectar conta'}
             </Button>
+          </div>
+        ) : managed ? (
+          // A managed channel cannot be created by a form: the CTA opens the real
+          // flow, where the number and the provider are configured.
+          <div style={{ display: 'grid', gap: 10 }}>
+            <P>
+              Este App fica ativo quando houver ao menos um número conectado. Conecte o número e o provedor na página de Números — a credencial
+              fica lá, criptografada.
+            </P>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Button variant="ghost" onClick={onClose}>
+                Fechar
+              </Button>
+              <Button
+                variant="primary"
+                data-testid="connect-managed-channel"
+                onClick={() => {
+                  onClose()
+                  navigate(app.activationRoute ?? '/apps')
+                }}
+              >
+                Conectar número
+              </Button>
+            </div>
           </div>
         ) : canAddAnother ? (
           <div style={{ display: 'grid', gap: 12 }}>

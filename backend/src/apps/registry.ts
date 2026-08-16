@@ -9,7 +9,7 @@
 //
 // Action keys are the tool names the model already knows. Renaming them would break
 // every prompt, routine and test written against them, so they stay.
-import type { AppDefinition, AppActionDefinition } from './types.js'
+import type { AppActivation, AppDefinition, AppActionDefinition } from './types.js'
 
 const str = (description: string) => ({ type: 'string', description })
 const num = (description: string) => ({ type: 'number', description })
@@ -369,6 +369,8 @@ const webChat: AppDefinition = {
   categories: ['atendimento'],
   // Nothing to connect: activating is idempotent and asks for no secret.
   auth: { kind: 'none', fields: [] },
+  // Nothing to connect: activating is the whole flow, and it is idempotent.
+  activation: 'instant',
   allowedDomains: [],
   supportsMultipleConnections: false,
   actions: [],
@@ -396,6 +398,11 @@ const whatsapp: AppDefinition = {
   // The provider credential is validated by the WhatsApp channel flow, which keeps
   // its own encrypted config and webhook validation.
   auth: { kind: 'api_key', fields: [], documentationUrl: 'https://developers.facebook.com/docs/whatsapp' },
+  // The number and the provider credential live on the CHANNEL, in its own encrypted
+  // config. A generic form with no declared fields would happily create a "connected"
+  // installation with neither — so it is not allowed to.
+  activation: 'managed_channel',
+  activationRoute: '/apps/whatsapp/channels',
   allowedDomains: [],
   supportsMultipleConnections: true,
   actions: [],
@@ -536,5 +543,21 @@ export function appCatalogPublic(app: AppDefinition) {
     // owner authorises that action explicitly.
     supportsAutonomous: app.actions.some((a) => a.risk === 'read'),
     requiresAuth: app.auth.kind !== 'none',
+    // How the App becomes active, and where its real flow lives when the generic
+    // form cannot produce a valid connection.
+    activation: activationOf(app),
+    activationRoute: app.activationRoute ?? null,
   }
 }
+
+// The activation strategy, with a compatible default for a manifest written before
+// the field existed.
+export function activationOf(app: AppDefinition): AppActivation {
+  if (app.activation) return app.activation
+  if (app.auth.kind === 'oauth2') return 'oauth'
+  return (app.auth.fields ?? []).length === 0 ? 'instant' : 'credentials'
+}
+
+// Can the generic "connect with these fields" form create this App's installation?
+export const acceptsGenericConnect = (app: AppDefinition): boolean =>
+  activationOf(app) === 'instant' || activationOf(app) === 'credentials'

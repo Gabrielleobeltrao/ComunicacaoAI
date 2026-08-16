@@ -38,7 +38,31 @@ const SLACK = {
   disconnectNote: 'Desconectar interrompe os avisos. As mensagens já enviadas permanecem no Slack.',
   providerCostNote: null,
   requiresAuth: true,
+  activation: 'credentials',
+  activationRoute: null,
   installationCount: 0,
+  connected: false,
+}
+
+const WHATSAPP = {
+  ...SLACK,
+  key: 'whatsapp',
+  name: 'WhatsApp',
+  description: 'Atendimento no WhatsApp pelo seu provedor.',
+  categories: ['atendimento'],
+  auth: { kind: 'api_key', fields: [], scopes: [], documentationUrl: null },
+  allowedDomains: [],
+  actions: [],
+  surfaces: [
+    { key: 'channels', label: 'Números', description: 'Conectar provedor e número.', icon: null, scope: 'account', routeSegment: 'channels' },
+    { key: 'conversations', label: 'Conversas WhatsApp', description: 'Conversas recebidas.', icon: null, scope: 'account', routeSegment: 'conversations' },
+  ],
+  pinnable: true,
+  defaultSurfaceKey: 'channels',
+  // Cannot be created by the generic form: it needs a real number and provider.
+  activation: 'managed_channel',
+  activationRoute: '/apps/whatsapp/channels',
+  requiresAuth: true,
   connected: false,
 }
 
@@ -49,6 +73,7 @@ const GOOGLE = {
   description: 'Agenda e planilhas da sua conta Google.',
   categories: ['produtividade'],
   auth: { kind: 'oauth2', fields: [], scopes: ['https://www.googleapis.com/auth/calendar'], documentationUrl: null },
+  activation: 'oauth',
   allowedDomains: ['googleapis.com'],
   actions: [{ key: 'google_agenda_listar_eventos', name: 'Listar eventos', description: 'Lista os eventos da agenda.', risk: 'read', inputSchema: {}, resourceFields: [] }],
   dataAccess: ['Eventos das agendas que você autorizar'],
@@ -219,6 +244,8 @@ const WEB_CHAT_APP = {
   ],
   pinnable: true,
   defaultSurfaceKey: 'widgets',
+  activation: 'instant',
+  activationRoute: null,
   requiresAuth: false,
   connected: true,
 }
@@ -273,4 +300,34 @@ test('/widgets e /chats continuam funcionando e preservam o filtro', async ({ pa
 
   await page.goto('/widgets?channel=whatsapp')
   await expect(page).toHaveURL(/\/apps\/whatsapp\/channels/)
+})
+
+// --- ativação por canal real ------------------------------------------------------
+
+test('WhatsApp não oferece formulário: o CTA leva ao fluxo do número', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WHATSAPP] }))
+  await page.goto('/apps')
+
+  // O card já diz o que vai acontecer.
+  await expect(page.getByTestId('app-card')).toContainText('Conectar número')
+  await page.getByTestId('app-open').click()
+
+  const detail = page.getByTestId('app-detail')
+  // Nenhum campo de credencial: criar por aqui produziria uma conexão vazia.
+  await expect(detail.getByTestId('connect-app')).toHaveCount(0)
+  await expect(detail).toContainText('ativo quando houver ao menos um número conectado')
+
+  await page.getByTestId('connect-managed-channel').click()
+  await expect(page).toHaveURL(/\/apps\/whatsapp\/channels/)
+  // E nada foi criado no caminho.
+  expect(created).toBeNull()
+})
+
+test('um canal não é descrito como entrega de rotina', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WHATSAPP] }))
+  await page.goto('/apps')
+  await expect(page.getByTestId('app-card')).toContainText('Canal de atendimento')
+  await expect(page.getByTestId('app-card')).not.toContainText('entregas das rotinas')
 })

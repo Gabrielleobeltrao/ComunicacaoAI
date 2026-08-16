@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import { ValidationError } from '../building.js'
 import { db } from '../db.js'
-import { getApp } from '../apps/registry.js'
+import { acceptsGenericConnect, getApp } from '../apps/registry.js'
+import { isManagedChannelApp, syncManagedChannelInstallations, testManagedChannel } from '../apps/channelApps.js'
 import {
   createInstallation,
   decryptInstallationConfig,
@@ -55,6 +56,11 @@ appInstallationRouter.post('/', async (req, res, next) => {
     const app = getApp(String(body.appKey ?? ''))
     if (!app) throw new ValidationError('App desconhecido')
     if (app.auth.kind === 'oauth2') throw new ValidationError('Este App é conectado pelo login do provedor, não por credencial.')
+    // A managed channel cannot be created by this form: it would produce a row that
+    // says "connected" with no number and no provider behind it.
+    if (!acceptsGenericConnect(app)) {
+      throw new ValidationError(`${app.name} é ativado conectando um canal real. Abra ${app.activationRoute ?? 'a página do App'} para conectar.`)
+    }
     const created = await createInstallation(res.locals.userId, app, {
       name: body.name,
       config: body.config,
@@ -123,6 +129,16 @@ appInstallationRouter.post('/:id/test', async (req, res) => {
     return res.json({ ok: status.connected, message: status.connected ? 'Conta conectada.' : 'Conta não está conectada.' })
   }
 
+  // A managed channel is tested against the CHANNEL, never against the manifest: an
+  // App with no declared field would otherwise always report success.
+  if (isManagedChannelApp(app)) {
+    const result = await testManagedChannel(res.locals.userId, installation)
+    await markInstallationTested(res.locals.userId, id, result.ok)
+    // Keep the installation's status honest about what the test just found.
+    await syncManagedChannelInstallations(res.locals.userId, app.key)
+    return res.status(result.ok ? 200 : 400).json(result)
+  }
+
   const config = decryptInstallationConfig(installation)
   const missing = (app.auth.fields ?? []).filter((f) => f.required && !String(config[f.key] ?? '').trim())
   const ok = missing.length === 0
@@ -146,6 +162,10 @@ appInstallationRouter.post('/:id/reconnect', async (req, res) => {
     if (!googleConfigured()) return res.status(400).json({ error: 'Integração com o Google não está configurada no servidor.' })
     // The consent flow itself keeps its signed, single-use state cookie.
     return res.json({ kind: 'oauth', connectPath: '/api/integrations/google/connect' })
+  }
+  // The owner reconnects a managed channel where the channel lives, not here.
+  if (isManagedChannelApp(app)) {
+    return res.json({ kind: 'managed_channel', route: app.activationRoute ?? '/apps' })
   }
   res.json({ kind: 'credential', fields: (app.auth.fields ?? []).map((f) => ({ key: f.key, label: f.label, required: f.required, secret: f.secret })) })
 })

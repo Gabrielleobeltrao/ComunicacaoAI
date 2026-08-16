@@ -54,9 +54,11 @@ export async function setPinnedApps(ownerId: string, userId: string, appKeys: un
   // Only an App with a usable installation may be pinned: pinning must never be a
   // way to reach a page the account has not activated.
   const installations = await listInstallations(ownerId)
-  const usable = new Set(installations.filter((i) => i.status !== 'revoked').map((i) => i.appKey))
+  // Pinning is navigation, and it only points at something that WORKS: a broken or
+  // expired connection is not pinnable.
+  const usable = new Set(installations.filter((i) => i.status === 'connected').map((i) => i.appKey))
   for (const key of keys) {
-    if (!usable.has(key)) throw new ValidationError(`${getApp(key)?.name ?? key} precisa estar ativo para ser fixado`)
+    if (!usable.has(key)) throw new ValidationError(`${getApp(key)?.name ?? key} precisa estar conectado para ser fixado`)
   }
 
   const pinnedApps = keys.map((appKey, order) => ({ appKey, order }))
@@ -112,6 +114,10 @@ export async function buildNavigation(ownerId: string, userId: string): Promise<
     const active = byApp.get(app.key) ?? []
     // An App the account never activated has no pages to offer.
     if (active.length === 0) continue
+    // Only a CONNECTED installation makes an App usable. `error`, `needs_reauth` and
+    // `revoked` are not ready — the entry stays visible with a CTA, but it is never
+    // treated as working.
+    const usable = active.filter((i) => i.status === 'connected')
     apps.push({
       appKey: app.key,
       name: app.name,
@@ -120,7 +126,7 @@ export async function buildNavigation(ownerId: string, userId: string): Promise<
       order: pinnedOrder.get(app.key) ?? Number.MAX_SAFE_INTEGER,
       // Every connection needing attention keeps the entry visible with a CTA
       // instead of making the pages vanish.
-      status: active.every((i) => i.status === 'needs_reauth') ? 'needs_reauth' : 'ready',
+      status: usable.length > 0 ? 'ready' : 'needs_reauth',
       defaultSurfaceKey: app.sidebar?.defaultSurfaceKey ?? surfaces[0]?.key ?? null,
       surfaces: surfaces.map((s) => ({
         key: s.key,
@@ -149,6 +155,8 @@ export async function resolveSurface(
   if (!app || !surface) return { ok: false, reason: 'unknown' }
   const installations = (await listInstallations(ownerId, app.key)).filter((i) => i.status !== 'revoked')
   if (installations.length === 0) return { ok: false, reason: 'inactive' }
-  if (installations.every((i) => i.status === 'needs_reauth')) return { ok: false, reason: 'needs_reauth' }
-  return { ok: true, app, installations }
+  // At least one installation must be usable. A page backed only by broken or expired
+  // connections opens the reconnect screen, never the operational one.
+  if (!installations.some((i) => i.status === 'connected')) return { ok: false, reason: 'needs_reauth' }
+  return { ok: true, app, installations: installations.filter((i) => i.status === 'connected') }
 }

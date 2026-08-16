@@ -21,6 +21,19 @@ export const APP_AUTH_KINDS: AppAuthKind[] = ['none', 'oauth2', 'api_key', 'bear
 export type ActionRisk = 'read' | 'write' | 'high_risk'
 export const ACTION_RISKS: ActionRisk[] = ['read', 'write', 'high_risk']
 
+// HOW an App becomes active. This is not the same question as `auth.kind`: an App can
+// need no credential and still not be activatable by a generic form.
+//
+//   instant         · no credential, idempotent. Activating is the whole flow.
+//   credentials     · the owner types the declared fields into the generic form.
+//   oauth           · the provider's consent flow owns it.
+//   managed_channel · the App is active only while a real channel of its own exists.
+//                     The generic form CANNOT create it — WhatsApp needs a number and
+//                     a provider, and a row saying "connected" with neither is a lie
+//                     the map, the metrics and the agents would all repeat.
+export type AppActivation = 'instant' | 'credentials' | 'oauth' | 'managed_channel'
+export const APP_ACTIVATIONS: AppActivation[] = ['instant', 'credentials', 'oauth', 'managed_channel']
+
 export type AppStatus = 'draft' | 'review' | 'published' | 'suspended'
 export const APP_STATUSES: AppStatus[] = ['draft', 'review', 'published', 'suspended']
 
@@ -114,6 +127,12 @@ export interface AppDefinition {
   // shown to the owner BEFORE connecting.
   allowedDomains: string[]
   supportsMultipleConnections: boolean
+  // Absent = derived from `auth.kind` (oauth2 → oauth, no field → instant, else
+  // credentials), so a manifest written before this existed keeps behaving the same.
+  activation?: AppActivation
+  // `managed_channel` only: where the real flow lives, so the CTA can send the owner
+  // to it instead of opening a form that cannot produce a valid connection.
+  activationRoute?: string
   actions: AppActionDefinition[]
   surfaces?: AppSurfaceDefinition[]
   sidebar?: {

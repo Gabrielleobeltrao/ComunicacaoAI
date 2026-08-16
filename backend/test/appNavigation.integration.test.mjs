@@ -64,7 +64,7 @@ test('o DTO de navegação não carrega componente, import nem caminho de módul
 
 test('fixar é atalho: não instala, não concede e não abre nada novo', async () => {
   // Sem instalação, fixar é recusado — o pin não pode virar porta de entrada.
-  await assert.rejects(() => setPinnedApps(OWNER, USER, ['web_chat']), /ativo/)
+  await assert.rejects(() => setPinnedApps(OWNER, USER, ['web_chat']), /conectado/)
   assert.equal((await listInstallations(OWNER, 'web_chat')).length, 0)
 
   await activate('web_chat')
@@ -139,4 +139,35 @@ test('as preferências são por usuário, não da conta inteira', async () => {
   await activate('web_chat')
   await setPinnedApps(OWNER, 'usuario-a', ['web_chat'])
   assert.deepEqual((await getNavigationPreferences(OWNER, 'usuario-b')).pinnedApps, [])
+})
+
+// --- só o que funciona é fixável e navegável ------------------------------------
+
+test('conexão quebrada ou expirada não é fixável', async () => {
+  const installation = await activate('web_chat')
+  for (const status of ['needs_reauth', 'error']) {
+    await connections().updateOne({ _id: new ObjectId(installation._id) }, { $set: { status } })
+    await assert.rejects(() => setPinnedApps(OWNER, USER, ['web_chat']), /conectado/, `status ${status} não deveria ser fixável`)
+  }
+})
+
+test('App só com conexão quebrada abre a tela de reconectar, não a página', async () => {
+  const installation = await activate('whatsapp')
+  await connections().updateOne({ _id: new ObjectId(installation._id) }, { $set: { status: 'error' } })
+  const decision = await resolveSurface(OWNER, 'whatsapp', 'channels')
+  assert.equal(decision.ok, false)
+  assert.equal(decision.reason, 'needs_reauth')
+
+  const { apps } = await buildNavigation(OWNER, USER)
+  // A entrada continua visível com CTA — some seria pior que avisar.
+  assert.equal(apps[0].status, 'needs_reauth')
+})
+
+test('o guard só devolve as instalações realmente utilizáveis', async () => {
+  const broken = await activate('whatsapp')
+  await connections().updateOne({ _id: new ObjectId(broken._id) }, { $set: { status: 'needs_reauth' } })
+  const ok = await createInstallation(OWNER, getApp('whatsapp'), { name: 'Segundo número' })
+  const decision = await resolveSurface(OWNER, 'whatsapp', 'channels')
+  assert.equal(decision.ok, true)
+  assert.deepEqual(decision.installations.map((i) => i._id.toString()), [ok._id.toString()])
 })

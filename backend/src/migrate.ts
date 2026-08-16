@@ -12,6 +12,7 @@ import { ensureAgentLiveStateIndexes } from './agentLiveState.js'
 import { ensureSectorExecutionIndexes } from './sectorExecutions.js'
 import { ensureExecutionRootIndexes } from './executionRoots.js'
 import { backfillFloorCommunication } from './floorCommunication.js'
+import { backfillManagedChannelInstallations } from './apps/channelApps.js'
 import { ensureAppActionIndexes } from './apps/grants.js'
 import { migrateAppsAndInstallations } from './apps/migration.js'
 
@@ -81,6 +82,12 @@ export async function runMigrations(): Promise<void> {
   await db
     .collection('sectors')
     .updateMany({ entryPolicy: { $exists: false } }, { $set: { entryPolicy: 'open_members', exposedAgentIds: [] } })
+
+  // Installations of a managed-channel App that point at no real channel — including
+  // the empty ones the generic form used to create — stop claiming to be connected.
+  // Status only: no conversation, message, number or provider config is touched.
+  const channelSync = await backfillManagedChannelInstallations()
+  if (channelSync.revoked || channelSync.reconnected) console.log('[migrate] canais', JSON.stringify(channelSync))
 
   // Existing buildings keep collaborating exactly as they do today.
   await backfillFloorCommunication()
