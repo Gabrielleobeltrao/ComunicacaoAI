@@ -4,6 +4,7 @@ import { ACTIVE, COLLAPSE_FADE, INACTIVE, ITEM_BASE, LABEL } from '../lib/sideba
 import { Icon } from '../ui'
 import { defaultPathFor } from '../lib/appNavigation'
 import type { NavigationApp } from '../lib/appNavigation'
+import { AppLogo } from './AppLogo'
 
 // The "Apps fixados" group. One entry per pinned App; clicking the name opens its
 // default page, the chevron expands every page the App offers. There is no pinning
@@ -44,7 +45,10 @@ function PinnedApp({ app, pathname }: { app: NavigationApp; pathname: string }) 
           className={`${ITEM_BASE} ${containsActive ? ACTIVE : INACTIVE} flex-1`}
           data-testid={`pinned-app-${app.appKey}`}
         >
-          <Icon name={app.icon ?? 'blocks'} size={18} />
+          {/* O MESMO símbolo do catálogo. Antes ia `app.icon` direto para o Icon,
+              que carrega glifos do Lucide — e o Lucide não tem logo de marca, então
+              WhatsApp, Slack e companhia apareciam em branco aqui. */}
+          <AppLogo appKey={app.appKey} icon={app.icon} size={18} plain />
           <span className={LABEL}>{app.name}</span>
           {app.status === 'needs_reauth' ? (
             <span className={COLLAPSE_FADE} style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--intent-warning, #b54708)' }}>

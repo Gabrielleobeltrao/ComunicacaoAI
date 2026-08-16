@@ -8,6 +8,7 @@ import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { isNavActive, navGroupsFor } from './navConfig'
 import { defaultPathFor, useAppNavigation } from '../lib/appNavigation'
 import type { NavigationApp } from '../lib/appNavigation'
+import { AppLogo } from './AppLogo'
 
 // Touch navigation for phones and small tablets (< lg): a single slide-in drawer
 // (opened from the topbar hamburger) with the account, every destination with
@@ -213,7 +214,10 @@ function MobilePinnedApp({
           className="flex flex-1 items-center gap-3 rounded-md px-3"
           style={row(containsActive)}
         >
-          <Icon name={app.icon ?? 'blocks'} size={18} />
+          {/* O MESMO símbolo do catálogo. Antes ia `app.icon` direto para o Icon,
+              que carrega glifos do Lucide — e o Lucide não tem logo de marca, então
+              WhatsApp, Slack e companhia apareciam em branco aqui. */}
+          <AppLogo appKey={app.appKey} icon={app.icon} size={18} plain />
           <span>{app.name}</span>
           {app.status === 'needs_reauth' ? (
             <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--intent-warning, #b54708)' }}>reconectar</span>

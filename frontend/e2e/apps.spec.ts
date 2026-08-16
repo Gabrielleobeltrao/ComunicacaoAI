@@ -498,3 +498,31 @@ test('o chevron do App tem alvo de toque adequado', async ({ page }) => {
   expect(box.width).toBeGreaterThanOrEqual(40)
   expect(box.height).toBeGreaterThanOrEqual(40)
 })
+
+test('cada App tem um logo, e o mesmo símbolo aparece no menu', async ({ page }) => {
+  await stub(page, { installations: [WEB_CHAT_INSTALLATION], navigation: [NAV_WEB_CHAT] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WEB_CHAT_APP] }))
+  await page.goto('/apps')
+
+  // No catálogo: um símbolo próprio do App, não um quadrado vazio.
+  const logo = page.locator('[data-app-logo="web_chat"]').first()
+  await expect(logo).toBeVisible()
+  await expect(logo.locator('svg')).toHaveCount(1)
+
+  // No menu lateral: o mesmo App, desenhado pelo mesmo componente. Antes o menu
+  // mandava o nome da marca para um conjunto de ícones que só tem glifos de traço,
+  // e o resultado era um espaço em branco.
+  const noMenu = page.getByTestId('pinned-app-web_chat').locator('svg, [data-icon]').first()
+  await expect(noMenu).toBeVisible()
+})
+
+test('App sem marca própria cai no glifo do manifesto, nunca num vazio', async ({ page }) => {
+  const semMarca = { ...WEB_CHAT_APP, key: 'app_sem_marca', name: 'App Sem Marca', icon: 'blocks' }
+  await stub(page)
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [semMarca] }))
+  await page.goto('/apps')
+  await expect(page.getByTestId('app-card')).toContainText('App Sem Marca')
+  // Sem quadrado de marca, mas com um símbolo desenhado.
+  await expect(page.locator('[data-app-logo="app_sem_marca"]')).toHaveCount(0)
+  await expect(page.getByTestId('app-card').locator('[data-icon="blocks"]')).toBeVisible()
+})

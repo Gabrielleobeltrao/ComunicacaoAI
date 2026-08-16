@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { CustomToolsPanel } from './Tools'
 import { PrivateAppsPanel } from '../components/PrivateAppsPanel'
+import { AppLogo } from '../components/AppLogo'
 import { AppDetailDialog } from '../components/AppDetailDialog'
 import {
   disconnectInstallation,
@@ -196,10 +197,13 @@ function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) 
   const writes = app.actions.filter((a) => a.risk !== 'read').length
   return (
     <Card padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="app-card">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{app.name}</span>
-        <Tag>{SOURCE_LABEL[app.source] ?? app.source}</Tag>
-        {app.connected ? <Tag>Conectado</Tag> : null}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <AppLogo appKey={app.key} icon={app.icon} size={40} title={app.name} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{app.name}</span>
+          <Tag>{SOURCE_LABEL[app.source] ?? app.source}</Tag>
+          {app.connected ? <Tag>Conectado</Tag> : null}
+        </div>
       </div>
       <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)', lineHeight: 1.45 }}>{app.description}</p>
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
