@@ -1,0 +1,278 @@
+#!/usr/bin/env node
+// O smoke de MVP: a pilha inteira, de verdade, sem nada de fora.
+//
+//   npm run smoke
+//
+// Sobe um mongod próprio (binário real, réplica de um nó, como o Atlas), o backend
+// compilado apontado para ele, e o frontend compilado servido estático. Depois roda
+// o Playwright contra isso e derruba tudo.
+//
+// O que ele NÃO usa, de propósito: conta real, banco real, chave de provedor,
+// arquivo `.env` do desenvolvedor e qualquer chamada de rede para fora. O LLM é o
+// adaptador falso, que só existe com NODE_ENV=test (ver `llmFakeGate.test.mjs`).
+// Se este script passar numa máquina limpa e sem segredo nenhum, ele passa em
+// qualquer lugar — é esse o ponto.
+import { spawn } from 'node:child_process'
+import { createServer } from 'node:http'
+import { existsSync, readFileSync } from 'node:fs'
+import { extname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const raiz = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
+const backend = join(raiz, 'backend')
+const frontend = join(raiz, 'frontend')
+
+const PORTA_API = Number(process.env.SMOKE_API_PORT ?? 4399)
+const PORTA_WEB = Number(process.env.SMOKE_WEB_PORT ?? 4398)
+
+const encerrar = []
+let saida = 0
+
+const log = (msg) => console.log(`[smoke] ${msg}`)
+
+async function esperar(descricao, verificar, { timeoutMs = 90_000, intervaloMs = 500 } = {}) {
+  const limite = Date.now() + timeoutMs
+  let ultimoErro
+  while (Date.now() < limite) {
+    try {
+      if (await verificar()) return
+    } catch (e) {
+      ultimoErro = e
+    }
+    await new Promise((r) => setTimeout(r, intervaloMs))
+  }
+  throw new Error(`tempo esgotado esperando ${descricao}${ultimoErro ? ` — ${ultimoErro.message}` : ''}`)
+}
+
+// --- mongod isolado ------------------------------------------------------------------
+
+async function subirMongo() {
+  // Resolvido a partir do backend, que é quem declara a dependência — o npm
+  // workspaces iça para a raiz, então o caminho fixo não serve.
+  const { createRequire } = await import('node:module')
+  const exigir = createRequire(join(backend, 'package.json'))
+  const { MongoMemoryReplSet } = await import(exigir.resolve('mongodb-memory-server'))
+  log('subindo mongod isolado…')
+  const servidor = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
+  encerrar.push(async () => servidor.stop())
+  const uri = servidor.getUri()
+  log(`mongod pronto`)
+  return uri
+}
+
+// --- backend -------------------------------------------------------------------------
+
+async function subirBackend(mongoUri) {
+  if (!existsSync(join(backend, 'dist/index.js'))) throw new Error('backend não compilado — rode `npm run build` antes')
+  log(`subindo a API na porta ${PORTA_API}…`)
+  const proc = spawn(process.execPath, ['dist/index.js'], {
+    cwd: backend,
+    env: {
+      ...process.env,
+      // Nada de `.env` do desenvolvedor: o smoke tem que valer numa máquina limpa.
+      DOTENV_CONFIG_PATH: join(raiz, 'scripts/.smoke-no-env'),
+      NODE_ENV: 'test',
+      // O único lugar que liga o adaptador falso de LLM. Em produção não existe
+      // caminho: o portão lê NODE_ENV no carregamento do módulo.
+      LLM_FAKE: '1',
+      PORT: String(PORTA_API),
+      MONGODB_URI: mongoUri,
+      // Chaves de TESTE, geradas aqui e jogadas fora no fim. Nenhuma é secreta e
+      // nenhuma sai deste processo.
+      BETTER_AUTH_SECRET: 'smoke-'.padEnd(40, 'x'),
+      ENCRYPTION_KEY: 'smoke-'.padEnd(40, 'y'),
+      CLIENT_URL: `http://localhost:${PORTA_WEB}`,
+      PUBLIC_URL: `http://localhost:${PORTA_API}`,
+      BETTER_AUTH_URL: `http://localhost:${PORTA_API}`,
+      // Motor rápido, para uma rotina agendada disparar dentro do teste em vez de
+      // dentro de quinze segundos.
+      RUN_POLL_MS: '400',
+      SCHEDULER_POLL_MS: '800',
+      // Sem chave de provedor nenhuma: se alguma coisa tentar chamar para fora, o
+      // teste falha em vez de gastar dinheiro de alguém.
+      ANTHROPIC_API_KEY: '',
+      OPENAI_API_KEY: '',
+      VOYAGE_API_KEY: '',
+      GOOGLE_CLIENT_ID: '',
+      GOOGLE_CLIENT_SECRET: '',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  const linhas = []
+  const capturar = (buf) => {
+    const texto = buf.toString()
+    linhas.push(texto)
+    if (process.env.SMOKE_VERBOSE) process.stdout.write(`[api] ${texto}`)
+  }
+  proc.stdout.on('data', capturar)
+  proc.stderr.on('data', capturar)
+  encerrar.push(
+    async () =>
+      new Promise((r) => {
+        if (proc.exitCode !== null) return r()
+        proc.once('exit', r)
+        // SIGTERM de verdade: é assim que o orquestrador encerra em produção, e o
+        // motor precisa drenar o que está em andamento.
+        proc.kill('SIGTERM')
+        setTimeout(() => {
+          proc.kill('SIGKILL')
+          r()
+        }, 20_000)
+      }),
+  )
+
+  await esperar('a API responder /api/ready', async () => {
+    const res = await fetch(`http://localhost:${PORTA_API}/api/ready`).catch(() => null)
+    if (!res) return false
+    if (res.status === 200) return true
+    // 503 é resposta legítima enquanto banco/migração/motor não terminam de subir.
+    return false
+  })
+  log('API pronta (/api/ready 200)')
+  return { proc, linhas }
+}
+
+// --- frontend estático ---------------------------------------------------------------
+
+const TIPOS = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.json': 'application/json; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.ico': 'image/x-icon',
+}
+
+// O bundle é construído AQUI, com as flags de produção explícitas, em vez de
+// reaproveitar o `dist` que estiver na máquina. O `.env` do desenvolvedor pode ter
+// qualquer combinação — e uma flag desligada esconderia metade das telas que o
+// smoke precisa visitar, transformando um bug de produto num "seletor não
+// encontrado".
+async function compilarFrontend() {
+  log('compilando o frontend com as flags de produção…')
+  const codigo = await new Promise((r) => {
+    const p = spawn('npx', ['vite', 'build', '--mode', 'production'], {
+      cwd: frontend,
+      env: {
+        ...process.env,
+        // Mesma origem: o servidor estático abaixo faz o proxy de /api.
+        VITE_API_URL: '',
+        VITE_AI_BUILDING_ENABLED: 'true',
+        VITE_AI_AUTOMATIONS_ENABLED: 'true',
+        VITE_AI_OFFICE_LIVE_STATUS_ENABLED: 'true',
+      },
+      stdio: process.env.SMOKE_VERBOSE ? 'inherit' : 'ignore',
+    })
+    p.on('exit', (c) => r(c ?? 1))
+  })
+  if (codigo !== 0) throw new Error('o build do frontend falhou')
+}
+
+async function subirFrontend() {
+  const dist = join(frontend, 'dist')
+  if (!existsSync(join(dist, 'index.html'))) throw new Error('frontend não compilado')
+  log(`servindo o frontend compilado na porta ${PORTA_WEB}…`)
+
+  const servidor = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', `http://localhost:${PORTA_WEB}`)
+
+    // Proxy da API na MESMA origem, como o nginx de produção faz — assim o cookie
+    // de sessão e o CORS se comportam como lá, em vez de como um atalho de teste.
+    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io')) {
+      try {
+        const alvo = `http://localhost:${PORTA_API}${url.pathname}${url.search}`
+        const corpo = ['GET', 'HEAD'].includes(req.method ?? 'GET') ? undefined : await lerCorpo(req)
+        const upstream = await fetch(alvo, {
+          method: req.method,
+          headers: { ...req.headers, host: `localhost:${PORTA_API}` },
+          body: corpo,
+          redirect: 'manual',
+        })
+        res.writeHead(upstream.status, Object.fromEntries(upstream.headers))
+        res.end(Buffer.from(await upstream.arrayBuffer()))
+      } catch (e) {
+        res.writeHead(502).end(String(e))
+      }
+      return
+    }
+
+    const caminho = join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1))
+    // SPA fallback: rota do react-router que não é arquivo volta o index — o mesmo
+    // que o nginx faz com `try_files`.
+    const arquivo = existsSync(caminho) && extname(caminho) ? caminho : join(dist, 'index.html')
+    res.writeHead(200, { 'Content-Type': TIPOS[extname(arquivo)] ?? 'application/octet-stream' })
+    res.end(readFileSync(arquivo))
+  })
+
+  await new Promise((r) => servidor.listen(PORTA_WEB, r))
+  encerrar.push(async () => new Promise((r) => servidor.close(r)))
+  log('frontend pronto')
+}
+
+const lerCorpo = (req) =>
+  new Promise((resolver) => {
+    const partes = []
+    req.on('data', (c) => partes.push(c))
+    req.on('end', () => resolver(partes.length ? Buffer.concat(partes) : undefined))
+  })
+
+// --- playwright ----------------------------------------------------------------------
+
+async function rodarSmoke() {
+  log('rodando o smoke…')
+  const args = ['playwright', 'test', 'e2e/mvp-smoke.spec.ts', '--workers=1', '--reporter=list']
+  if (process.env.SMOKE_GREP) args.push('-g', process.env.SMOKE_GREP)
+  const codigo = await new Promise((r) => {
+    const p = spawn('npx', args, {
+      cwd: frontend,
+      env: {
+        ...process.env,
+        SMOKE: '1',
+        // A base é o servidor estático, que faz proxy da API na mesma origem.
+        E2E_BASE_URL: `http://localhost:${PORTA_WEB}`,
+        PLAYWRIGHT_SKIP_WEBSERVER: '1',
+      },
+      stdio: 'inherit',
+    })
+    p.on('exit', (c) => r(c ?? 1))
+  })
+  return codigo
+}
+
+// --- orquestração --------------------------------------------------------------------
+
+try {
+  await compilarFrontend()
+  const uri = await subirMongo()
+  const { linhas } = await subirBackend(uri)
+  await subirFrontend()
+  saida = await rodarSmoke()
+
+  // O que o log do backend NÃO pode ter. O smoke exercita registro, execução e
+  // webhook — se algo desses vazasse credencial ou conteúdo, vazaria aqui.
+  const log_ = linhas.join('\n')
+  const proibido = [
+    [/BETTER_AUTH_SECRET|ENCRYPTION_KEY/, 'nome de variável secreta'],
+    [/smoke-x{10,}|smoke-y{10,}/, 'valor de chave'],
+    [/\[fake\] /, 'resposta do modelo'],
+  ]
+  for (const [padrao, oque] of proibido) {
+    if (padrao.test(log_)) {
+      console.error(`[smoke] FALHA: ${oque} apareceu no log do backend`)
+      saida = 1
+    }
+  }
+  if (saida === 0) log('log do backend limpo: sem credencial e sem conteúdo de execução')
+} catch (erro) {
+  console.error(`[smoke] ${erro.message}`)
+  saida = 1
+} finally {
+  log('encerrando…')
+  for (const fn of encerrar.reverse()) await fn().catch(() => undefined)
+}
+
+process.exit(saida)

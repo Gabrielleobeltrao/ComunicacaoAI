@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "concurrently -n frontend,backend,worker -c blue,green,magenta \"npm run dev -w frontend\" \"npm run dev:api -w backend\" \"npm run dev:worker -w backend\"",
     "build": "npm run build -w frontend && npm run build -w backend",
-    "dev:api": "concurrently -n frontend,backend -c blue,green \"npm run dev -w frontend\" \"npm run dev:api -w backend\""
+    "dev:api": "concurrently -n frontend,backend -c blue,green \"npm run dev -w frontend\" \"npm run dev:api -w backend\"",
+    "smoke": "npm run build && node scripts/mvp-smoke.mjs"
   },
   "devDependencies": {
     "concurrently": "^10.0.3"
