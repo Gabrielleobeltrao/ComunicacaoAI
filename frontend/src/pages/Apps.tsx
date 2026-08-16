@@ -175,6 +175,10 @@ function CategoryChip({ label, active, onClick }: { label: string; active: boole
       type="button"
       onClick={onClick}
       aria-pressed={active}
+      // `ds-hit` só vale sob ponteiro grosso: no desktop o chip continua com 30px
+      // de altura, no celular ele cresce até o mínimo tocável. O visual do mouse
+      // não muda; o que muda é o dedo acertar.
+      className="ds-hit"
       style={{
         height: 30,
         padding: '0 12px',

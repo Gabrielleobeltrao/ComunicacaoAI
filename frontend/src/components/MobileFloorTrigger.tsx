@@ -20,7 +20,11 @@ export function MobileFloorTrigger({ onOpen }: { onOpen: () => void }) {
         display: 'inline-flex',
         alignItems: 'center',
         gap: 6,
-        minHeight: 28,
+        // Alvo de toque: este controle é EXCLUSIVO do celular, onde o dedo é o
+        // único ponteiro. Tinha 28px de altura — abaixo do mínimo, e num botão que
+        // o usuário aperta o tempo todo para trocar de andar. O visual não muda: o
+        // rótulo continua compacto, é a área tocável que cresce.
+        minHeight: 'var(--hit-min, 44px)',
         maxWidth: '100%',
         padding: '2px 8px 2px 4px',
         marginLeft: -4,
