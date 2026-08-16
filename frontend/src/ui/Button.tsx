@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { ButtonHTMLAttributes, CSSProperties } from 'react'
+import type { ButtonHTMLAttributes, CSSProperties, Ref } from 'react'
 import { Icon } from './Icon'
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'soft' | 'danger'
@@ -26,6 +26,9 @@ interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'sty
   iconRight?: string
   block?: boolean
   style?: CSSProperties
+  // React 19 passes `ref` as a normal prop; declared here so a caller can focus the
+  // button (a confirmation dialog needs focus on the SAFE option).
+  ref?: Ref<HTMLButtonElement>
 }
 
 export function Button({

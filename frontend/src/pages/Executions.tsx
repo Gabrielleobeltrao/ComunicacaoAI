@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
+import { ExecutionAnalytics } from '../components/ExecutionAnalytics'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { API_URL } from '../lib/api'
 import { routineAction } from '../lib/agentRoutines'
@@ -410,6 +411,8 @@ function FilterSheet({
 export function Executions() {
   const building = useOptionalBuildingContext()
   const [tab, setTab] = useState<ExecutionTab>('scheduled')
+  // The analysis view sits beside the four lists; it reads the analytics service.
+  const [showAnalysis, setShowAnalysis] = useState(false)
   const [filters, setFilters] = useState<ExecutionFilters>({})
   const [page, setPage] = useState(0)
   const [items, setItems] = useState<(ScheduledItem | TriggerItem | RunItem)[]>([])
@@ -466,6 +469,7 @@ export function Executions() {
   }, [building?.floors])
 
   const changeTab = (next: ExecutionTab) => {
+    setShowAnalysis(false)
     setTab(next)
     setPage(0)
     // A run status means nothing on the schedules tab, and vice versa.
@@ -529,6 +533,29 @@ export function Executions() {
         {/* Tabs — horizontally scrollable on a phone instead of wrapping. */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 'var(--radius-control)', background: 'var(--surface-sunken)', overflowX: 'auto', maxWidth: '100%' }} role="tablist" data-testid="execution-tabs">
+            {/* "Análise" is a VIEW over the same executions, not a fifth list. */}
+            <button
+              role="tab"
+              aria-selected={showAnalysis}
+              onClick={() => setShowAnalysis(true)}
+              data-testid="tab-analysis"
+              style={{
+                minHeight: 36,
+                padding: '0 14px',
+                borderRadius: 'var(--radius-xs)',
+                border: 0,
+                whiteSpace: 'nowrap',
+                background: showAnalysis ? 'var(--surface-card)' : 'transparent',
+                boxShadow: showAnalysis ? 'var(--shadow-flat)' : 'none',
+                color: showAnalysis ? 'var(--text-heading)' : 'var(--text-muted)',
+                fontFamily: 'var(--font-ui)',
+                fontSize: 13.5,
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              Análise
+            </button>
             {EXECUTION_TABS.map((key) => (
               <button
                 key={key}
@@ -560,6 +587,10 @@ export function Executions() {
           </Button>
         </div>
 
+        {showAnalysis ? (
+          <ExecutionAnalytics floors={options.floors} agents={options.agents} />
+        ) : (
+        <>
         {/* Desktop: filters always visible. Mobile: inside the sheet below. */}
         <div className="hidden lg:block">
           <Filters tab={tab} filters={filters} options={options} onChange={changeFilters} />
@@ -608,6 +639,8 @@ export function Executions() {
             </Button>
           </div>
         ) : null}
+        </>
+        )}
       </div>
     </AppLayout>
   )

@@ -17,20 +17,17 @@ COPY . .
 ARG VITE_API_URL=https://api.comunicacaoai.oneplataforma.com
 ENV VITE_API_URL=${VITE_API_URL}
 # Public AI feature flags (build-time — Vite inlines VITE_* into the bundle, so a
-# runtime env in Coolify does NOT change an already-built bundle). Defaults match
-# the validated app UX (nav V2 on); set these as BUILD variables in Coolify. None
-# is a secret. See frontend/.env.production.example.
+# runtime env in Coolify does NOT change an already-built bundle). São TRÊS, e o
+# padrão é o da produção validada (nav V2 ligada). Nenhuma é segredo. Passe como
+# BUILD variables no Coolify. Ver frontend/.env.production.example.
+#
+# VITE_AI_FLOORS_ENABLED, VITE_AI_SCHEDULER_ENABLED e VITE_AI_DELIVERIES_ENABLED
+# saíram: nenhuma linha do código as lia.
 ARG VITE_AI_BUILDING_ENABLED=true
-ARG VITE_AI_FLOORS_ENABLED=false
 ARG VITE_AI_AUTOMATIONS_ENABLED=true
-ARG VITE_AI_SCHEDULER_ENABLED=true
-ARG VITE_AI_DELIVERIES_ENABLED=true
 ARG VITE_AI_OFFICE_LIVE_STATUS_ENABLED=true
 ENV VITE_AI_BUILDING_ENABLED=${VITE_AI_BUILDING_ENABLED} \
-    VITE_AI_FLOORS_ENABLED=${VITE_AI_FLOORS_ENABLED} \
     VITE_AI_AUTOMATIONS_ENABLED=${VITE_AI_AUTOMATIONS_ENABLED} \
-    VITE_AI_SCHEDULER_ENABLED=${VITE_AI_SCHEDULER_ENABLED} \
-    VITE_AI_DELIVERIES_ENABLED=${VITE_AI_DELIVERIES_ENABLED} \
     VITE_AI_OFFICE_LIVE_STATUS_ENABLED=${VITE_AI_OFFICE_LIVE_STATUS_ENABLED}
 RUN npm run build
 

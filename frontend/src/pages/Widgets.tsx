@@ -13,17 +13,23 @@ const TABS: { key: Channel; label: string }[] = [
 
 // The "Canais" page: the surfaces where an agent or sector acts. Each tab is a
 // channel — the embeddable web widget and connected WhatsApp numbers.
-export function Widgets() {
-  const [tab, setTab] = useState<Channel>('web')
+//
+// It is also the page behind two App surfaces (`/apps/web-chat/widgets` and
+// `/apps/whatsapp/channels`). When one of them opens it, the page is that channel and
+// the tab strip is not offered: the App already answered "which channel".
+export function Widgets({ channel, current = '/widgets', title = 'Canais' }: { channel?: Channel; current?: string; title?: string } = {}) {
+  const [tab, setTab] = useState<Channel>(channel ?? 'web')
   const { widgets, widgetsLoading, loadWidgets, agents, agentsLoading, sectors } = useAgentsAndWidgets()
+  const active = channel ?? tab
 
   return (
-    <AppLayout current="/widgets" title="Canais">
+    <AppLayout current={current} title={title}>
       <div className="space-y-6">
         <p className="max-w-2xl text-sm text-(--text-muted)">
           Onde seus agentes e setores atendem — no site (widget de chat) e no WhatsApp.
         </p>
 
+        {channel ? null : (
         <div className="flex gap-1 border-b border-(--border-subtle)">
           {TABS.map((t) => (
             <button
@@ -40,8 +46,9 @@ export function Widgets() {
             </button>
           ))}
         </div>
+        )}
 
-        {tab === 'web' ? (
+        {active === 'web' ? (
           <section className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
             <h2 className="mb-2 font-medium">Widget de chat</h2>
             <p className="mb-4 text-sm text-(--text-muted)">

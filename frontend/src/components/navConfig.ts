@@ -37,10 +37,13 @@ export const NAV_V2: NavItemDef[] = [
   { key: 'floor', label: 'Visão do andar', shortLabel: 'Andar', icon: 'building-2', scope: 'floor', group: 'operation', path: (f) => floorPath(f, '', '/dashboard'), activePrefixes: (f) => (f ? [`/floors/${f}`] : ['/dashboard']), exact: true, mobilePrimary: true },
   { key: 'sectors', label: 'Setores', icon: 'network', scope: 'floor', group: 'operation', path: (f) => floorPath(f, '/sectors', '/setores'), activePrefixes: (f) => [floorPath(f, '/sectors', '/setores')] },
   { key: 'agents', label: 'Agentes', icon: 'users-round', scope: 'floor', group: 'operation', path: (f) => floorPath(f, '/agents', '/agents'), activePrefixes: (f) => [floorPath(f, '/agents', '/agents')], mobilePrimary: true },
-  { key: 'channels', label: 'Canais', icon: 'share-2', scope: 'communication', group: 'communication', path: () => '/widgets', activePrefixes: () => ['/widgets'] },
-  { key: 'conversations', label: 'Conversas', icon: 'message-circle', scope: 'communication', group: 'communication', path: () => '/chats', activePrefixes: () => ['/chats'] },
+  // Canais and Conversas are no longer static entries: they are pages of the Chat Web
+  // and WhatsApp Apps, and appear under "Apps fixados" when the user pins them
+  // (see PinnedAppsNav). They stay reachable from /apps whether pinned or not.
   // Building-wide observability over the agents' automatic work. It is a control
   // surface, not an editor: every row links back to the agent that owns the work.
+  // What the account can reach: connected once here, granted per agent.
+  { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'control', path: () => '/apps', activePrefixes: () => ['/apps'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
 ]
 

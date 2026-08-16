@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { FloorSettingsDialog } from '../components/FloorSettingsDialog'
+import { ExecutionAnalytics } from '../components/ExecutionAnalytics'
 import { getFloor, getFloorActivity, getFloorMetrics } from '../lib/floors'
 import type { Floor, FloorMetrics } from '../lib/floors'
 import { featureFlags } from '../featureFlags'
@@ -62,6 +63,13 @@ export function FloorView() {
           <FloorSummary activity={activity} metrics={metrics} />
           {/* The visual office map is the centre of the floor view (scoped). */}
           <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
+          {/* The SAME analytics service the building view reads, scoped to this
+              floor — never a second formula. */}
+          <ExecutionAnalytics
+            floorId={floor.id}
+            floors={[{ id: floor.id, name: floor.name }]}
+            agents={agents.map((a) => ({ _id: a._id, name: a.name }))}
+          />
         </div>
       )}
 
@@ -70,6 +78,7 @@ export function FloorView() {
           open={settingsOpen}
           onClose={() => setSettingsOpen(false)}
           floor={floor}
+          agents={agents}
           onSaved={(updated) => {
             setFloor(updated)
             void building?.reloadFloors()

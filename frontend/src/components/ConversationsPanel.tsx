@@ -36,7 +36,9 @@ interface OrchestrationDecision {
   createdAt: string
 }
 
-export function ConversationsPanel() {
+// `channel` scopes the panel to one channel. It is sent to the server, which applies
+// it against the owner's own widgets — the filter narrows, it can never widen.
+export function ConversationsPanel({ channel }: { channel?: 'web' | 'whatsapp' } = {}) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<ConversationSummary | null>(null)
@@ -61,13 +63,16 @@ export function ConversationsPanel() {
   // (see the backend). Stable identity so the socket effect registers it once.
   const load = useCallback(async () => {
     const term = searchRef.current.trim()
-    const qs = term ? `?search=${encodeURIComponent(term)}` : ''
+    const params = new URLSearchParams()
+    if (term) params.set('search', term)
+    if (channel) params.set('channel', channel)
+    const qs = params.toString() ? `?${params}` : ''
     const res = await fetch(`${API_URL}/api/conversations${qs}`, { credentials: 'include' })
     if (res.ok) {
       setConversations(await res.json())
     }
     setLoading(false)
-  }, [])
+  }, [channel])
 
   useEffect(() => {
     const interval = setInterval(load, 20000)

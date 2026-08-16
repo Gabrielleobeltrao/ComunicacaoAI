@@ -7,6 +7,12 @@ import { getFloor, listFloors } from './floors.js'
 import { getSectorById, normalizeSectorMode } from './sectors.js'
 import { resolveAgentTools } from './builtinTools.js'
 import { executeAgentTask } from './agentRuntime.js'
+import { reportAgentState } from './agentLiveState.js'
+import { finishSectorExecution, startSectorExecution } from './sectorExecutions.js'
+import { sectorEntryDecisionFor } from './sectorAccess.js'
+import { getFloorCommunication } from './floorCommunication.js'
+import { ensureDefaultBuilding } from './building.js'
+import type { AgentBubbleState } from './agentLiveState.js'
 import { getProviderApiKey } from './userSettings.js'
 import type { Provider } from './llm.js'
 import type { ResolvedTool } from './agentTools.js'
@@ -34,6 +40,33 @@ export async function resolveToolsWithDelegation(agent: Agent, ownerId: string, 
 
 export function productionDelegationDeps(): DelegationDeps {
   const deps: DelegationDeps = {
+    // The building's floor-communication configuration. The gate decides what it
+    // means; this only fetches it, owner-scoped.
+    loadCommunication: async (ownerId) => {
+      const building = await ensureDefaultBuilding(ownerId)
+      return getFloorCommunication(ownerId, building._id)
+    },
+    // Which protected sector (if any) refuses a direct call to this agent. One query,
+    // owner-scoped: a sector from another account cannot protect anything here.
+    sectorEntryFor: async (ownerId, targetAgentId) => {
+      const decision = await sectorEntryDecisionFor(ownerId, targetAgentId)
+      return decision
+    },
+    // The sector execution root: created before the first agent, closed on every
+    // exit. Awaited, because the participations must be able to point at it.
+    startSectorExecution: (input) => startSectorExecution(input),
+    finishSectorExecution: (executionKey, outcome) => finishSectorExecution(executionKey, outcome),
+    // Fire-and-forget: telemetry never delays or breaks a delegation.
+    reportState: (input) => {
+      void reportAgentState({
+        ownerId: input.ownerId,
+        agentId: input.agentId,
+        floorId: input.floorId,
+        rootExecutionId: input.rootExecutionId,
+        state: input.state as AgentBubbleState,
+        detail: input.detail,
+      }).catch(() => undefined)
+    },
     loadAgent: (ownerId, id) => getAgentById(ownerId, id),
     loadSector: async (ownerId, id) => {
       const s = await getSectorById(ownerId, id)

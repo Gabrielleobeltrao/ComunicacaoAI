@@ -47,6 +47,14 @@ export interface AgentExecutionEvent {
   // chain is never summed twice.
   parentEventKey: string | null
   rootEventKey: string | null
+  // The sector run this participation belongs to. Present only when the execution
+  // really was part of one — it is the link that lets a sector count a three-stage
+  // flow as ONE execution while still reading each agent's numbers.
+  sectorExecutionId?: ObjectId | null
+  // The complete REQUEST this participation belongs to (see executionRoots.ts).
+  // Absent on records written before correlation existed — those are reported as
+  // partial telemetry rather than guessed into a root.
+  rootExecutionId?: ObjectId | null
   metadata: Record<string, string | number | boolean> // safe scalars only
 }
 
@@ -83,6 +91,8 @@ export interface RecordAgentEventInput {
   attemptCount?: number
   parentEventKey?: string | null
   rootEventKey?: string | null
+  sectorExecutionId?: ObjectId | null
+  rootExecutionId?: ObjectId | null
   metadata?: Record<string, string | number | boolean>
 }
 
@@ -109,6 +119,8 @@ export async function recordAgentEvent(input: RecordAgentEventInput): Promise<bo
     attemptCount: input.attemptCount ?? 1,
     parentEventKey: input.parentEventKey ?? null,
     rootEventKey: input.rootEventKey ?? input.eventKey,
+    ...(input.sectorExecutionId ? { sectorExecutionId: input.sectorExecutionId } : {}),
+    ...(input.rootExecutionId ? { rootExecutionId: input.rootExecutionId } : {}),
     metadata: input.metadata ?? {},
   }
   try {
@@ -147,6 +159,10 @@ export async function finalizeAgentEvent(input: RecordAgentEventInput): Promise<
           startedAt: input.startedAt,
           parentEventKey: input.parentEventKey ?? null,
           rootEventKey: input.rootEventKey ?? input.eventKey,
+          // Correlation is set once, with the row: a later attempt of the same
+          // execution belongs to the same request.
+          ...(input.sectorExecutionId ? { sectorExecutionId: input.sectorExecutionId } : {}),
+          ...(input.rootExecutionId ? { rootExecutionId: input.rootExecutionId } : {}),
         },
         $addToSet: { seenAttempts: attempt },
         $inc: {

@@ -12,6 +12,9 @@ import { buildRetrievalQuery, formatContextWithSources } from './retrievalQuery.
 import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
 import type { Agent } from './agents.js'
 import type { ResolvedTool } from './agentTools.js'
+import { checkCollaboration } from './collaborationGate.js'
+import type { GateContext, GateTarget } from './collaborationGate.js'
+import type { FloorCommunicationConfig } from './floorCommunication.js'
 import type { AgentExecutionRequest, AgentExecutionResult, AgentOutputFormat } from './agentRuntime.js'
 import { presetSpec, suggestPresetForCapability } from './agentPresets.js'
 
@@ -38,6 +41,10 @@ export interface DelegationContext {
   // so a chain is never summed twice.
   currentEventKey?: string | null
   rootEventKey?: string | null
+  // The REQUEST this whole chain belongs to (executionRoots.ts). Every participation
+  // it produces points at the same one, so the building counts the request once
+  // however many agents and sectors it crossed.
+  rootExecutionId?: ObjectId | null
   // SECTOR CONTEXT GRANT. While a coordinator runs a sector, it may call THAT
   // sector's members without the user having to repeat the relationship on each
   // agent's policies. It is deliberately narrow: one sector, one explicit member
@@ -51,9 +58,12 @@ export type DelegationCheck = { ok: true } | { ok: false; code: DelegationDenyCo
 
 // True when `policy`/`list` authorize acting on `id`. none → never; all → always;
 // selected → only when the id is in the explicit list.
-function policyAllows(policy: Agent['delegationPolicy'], list: string[], id: string): boolean {
+// `sameFloor` is only meaningful for the 'floor' policy; the caller resolves it,
+// so this stays pure and synchronous.
+function policyAllows(policy: Agent['delegationPolicy'], list: string[], id: string, sameFloor = false): boolean {
   if (policy === 'all') return true
   if (policy === 'selected') return (list ?? []).includes(id)
+  if (policy === 'floor') return sameFloor
   return false // 'none'
 }
 
@@ -63,22 +73,63 @@ function policyAllows(policy: Agent['delegationPolicy'], list: string[], id: str
 // whose policy doesn't authorize the pairing all fail here before anything runs.
 // Cross-FLOOR delegation within the SAME building is allowed; another building or
 // owner is refused.
-export function checkDelegation(caller: Agent, target: Agent, targetBuildingId: string, ctx: DelegationContext): DelegationCheck {
-  const tid = target._id.toString()
-  if (target.ownerId !== caller.ownerId) return { ok: false, code: 'forbidden', reason: 'agente de outro proprietário' }
-  if (targetBuildingId !== ctx.buildingId) return { ok: false, code: 'forbidden', reason: 'agente de outro prédio' }
-  if (ctx.depth + 1 > DELEGATION_MAX_DEPTH) return { ok: false, code: 'depth_exceeded', reason: `profundidade máxima (${DELEGATION_MAX_DEPTH}) atingida` }
-  if (tid === ctx.callerAgentId || ctx.ancestry.includes(tid)) return { ok: false, code: 'cycle', reason: 'ciclo de delegação detectado' }
-  // Being teammates in the sector being executed IS the authorisation — configuring
-  // the sector must not require configuring the same relation on both agents.
-  const grantedBySector = ctx.sectorGrant?.memberIds.includes(tid) ?? false
-  if (!grantedBySector) {
-    const callerAllows = policyAllows(caller.delegationPolicy, caller.callableAgentIds, tid)
-    const targetAllows = policyAllows(target.callerPolicy, target.allowedCallerAgentIds, caller._id.toString())
-    if (!callerAllows || !targetAllows) return { ok: false, code: 'unauthorized', reason: 'delegação não autorizada entre estes agentes' }
+// The facts the pure gate needs about a target, gathered by whoever has the database.
+// Kept here so every caller builds them the same way.
+export function gateTargetForAgent(target: Agent, targetBuildingId: string, protectedBy?: { sectorId: string; sectorName: string } | null): GateTarget {
+  return {
+    kind: 'agent',
+    id: target._id.toString(),
+    ownerId: target.ownerId,
+    buildingId: targetBuildingId,
+    floorId: target.officeId ? target.officeId.toString() : null,
+    callerPolicy: target.callerPolicy,
+    allowedCallerAgentIds: target.allowedCallerAgentIds ?? [],
+    protectedBy: protectedBy ?? null,
   }
-  if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) return { ok: false, code: 'budget_exceeded', reason: 'orçamento de tokens da cadeia esgotado' }
-  return { ok: true }
+}
+
+export const gateContext = (ctx: DelegationContext, canceled = false): GateContext => ({
+  buildingId: ctx.buildingId,
+  callerAgentId: ctx.callerAgentId,
+  ancestry: ctx.ancestry,
+  depth: ctx.depth,
+  maxDepth: DELEGATION_MAX_DEPTH,
+  budget: ctx.budget,
+  canceled,
+  sectorGrant: ctx.sectorGrant ?? null,
+})
+
+// Everything talks to floors unless the building says otherwise. Callers that know
+// the real configuration pass it in; the ones that cannot (pure unit tests) keep the
+// previous behaviour, where crossing floors inside one building was always allowed.
+const OPEN_COMMUNICATION: FloorCommunicationConfig = { mode: 'all', links: [] }
+
+// DEPRECATED shape, kept so existing callers and tests keep working: it is now a thin
+// wrapper over the SINGLE gate. Two implementations of "who may call whom" is exactly
+// how discovery starts offering targets the runtime then refuses.
+export function checkDelegation(
+  caller: Agent,
+  target: Agent,
+  targetBuildingId: string,
+  ctx: DelegationContext,
+  extra: { communication?: FloorCommunicationConfig; protectedBy?: { sectorId: string; sectorName: string } | null } = {},
+): DelegationCheck {
+  const decision = checkCollaboration(
+    caller,
+    gateTargetForAgent(target, targetBuildingId, extra.protectedBy),
+    extra.communication ?? OPEN_COMMUNICATION,
+    gateContext(ctx),
+  )
+  if (decision.ok) return { ok: true }
+  // The gate has two codes the older contract did not: they map onto `forbidden`
+  // and `unauthorized`, which is what the callers already understand.
+  const code: DelegationDenyCode =
+    decision.code === 'cross_floor_blocked' || decision.code === 'floor_link_required'
+      ? 'forbidden'
+      : decision.code === 'sector_entry_required'
+        ? 'unauthorized'
+        : decision.code
+  return { ok: false, code, reason: decision.reason }
 }
 
 // The context the target runs under: it becomes the new caller, inherits the chain
@@ -103,6 +154,8 @@ export function rootContext(opts: {
   agent: Agent
   tokenLimit?: number
   isCanceled?: () => boolean | Promise<boolean>
+  // The request this chain belongs to. Every participation it produces points at it.
+  rootExecutionId?: ObjectId | null
 }): DelegationContext {
   return {
     ownerId: opts.ownerId,
@@ -114,6 +167,7 @@ export function rootContext(opts: {
     depth: 0,
     budget: { tokenLimit: opts.tokenLimit ?? DEFAULT_DELEGATION_TOKEN_BUDGET, tokensSpent: 0 },
     isCanceled: opts.isCanceled,
+    rootExecutionId: opts.rootExecutionId ?? null,
   }
 }
 
@@ -142,6 +196,34 @@ export interface SectorLite {
 // Injected IO. Production wiring in ./delegationWiring.ts binds these to the real
 // agent store, tool resolver, task runtime, provider keys and delegation log.
 export interface DelegationDeps {
+  // The building's floor-communication configuration, owner-scoped. Optional so this
+  // module stays testable with no database — absent means the previous behaviour,
+  // where crossing floors inside one building was always allowed.
+  loadCommunication?: (ownerId: string) => Promise<FloorCommunicationConfig>
+  // A direct call to an agent must be refused when that agent is protected by a
+  // sector's entry policy. Optional so this module stays testable with no database.
+  sectorEntryFor?: (
+    ownerId: string,
+    targetAgentId: string,
+  ) => Promise<{ blocked: true; sectorId: string; sectorName: string; reason: string } | { blocked: false }>
+  // Sector execution root: ONE identity for the whole sector run, so the sector's
+  // numbers are not the sum of its members'. Optional — this module stays testable
+  // with no database attached.
+  startSectorExecution?: (input: {
+    executionKey: string
+    ownerId: string
+    sectorId: ObjectId
+    sectorName: string
+    sectorMode: string
+    floorId: ObjectId | null
+    source: 'delegation'
+    correlationId: string | null
+    callerAgentId: ObjectId | null
+  }) => Promise<ObjectId>
+  finishSectorExecution?: (executionKey: string, outcome: { status: 'succeeded' | 'failed' | 'canceled'; errorKind?: string | null }) => Promise<void>
+  // Live map: a delegation leaving is a real transition of the CALLER. Optional so
+  // this module stays testable with no database attached.
+  reportState?: (input: { ownerId: string; agentId: ObjectId; floorId: ObjectId | null; rootExecutionId: string; state: string; detail?: unknown }) => void
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
@@ -181,6 +263,8 @@ export interface DelegationDeps {
     eventKey: string
     ownerId: string
     agentId: ObjectId
+    sectorExecutionId?: ObjectId
+    rootExecutionId?: ObjectId
     buildingId: string
     floorId: ObjectId
     source: 'delegation' | 'sector'
@@ -241,10 +325,15 @@ async function emitAgentEvent(
     telemetry?: Record<string, string | number | boolean>
   },
   status: 'succeeded' | 'failed' | 'timeout' | 'canceled',
+  // Present when this run is a participation in a sector execution: the link that
+  // lets the sector count the flow once and still read its members' numbers.
+  sectorExecutionId?: ObjectId,
 ): Promise<void> {
   const pending: (Promise<void> | void)[] = []
   pending.push(deps.recordEvent?.({
     eventKey,
+    ...(sectorExecutionId ? { sectorExecutionId } : {}),
+    ...(ctx.rootExecutionId ? { rootExecutionId: ctx.rootExecutionId } : {}),
     ownerId: ctx.ownerId,
     agentId: target._id,
     buildingId: ctx.buildingId,
@@ -270,6 +359,23 @@ async function emitAgentEvent(
   if (run.usage.inputTokens || run.usage.outputTokens) pending.push(deps.chargeUsage?.(ctx.ownerId, run.usage, `event:${eventKey}`))
   const settled = await Promise.allSettled(pending.map(async (p) => p))
   for (const r of settled) if (r.status === 'rejected') console.error('delegation persistence failed (work kept, not re-run):', String(r.reason))
+}
+
+// Identifies the CALL, not the attempt.
+const sectorExecutionKeyFor = (ctx: DelegationContext, sectorId: string): string =>
+  `sector:${ctx.correlationId ?? 'none'}:${sectorId}:${ctx.callerAgentId}:${ctx.depth}`
+
+// Safe scalars only — a stage name is the owner's own label, never model output.
+function participationTelemetry(
+  p?: { role: string; stageId?: string; stageName?: string; stageOrder?: number },
+): Record<string, string | number> {
+  if (!p) return {}
+  return {
+    role: p.role,
+    ...(p.stageId ? { stageId: p.stageId } : {}),
+    ...(p.stageName ? { stageName: p.stageName.slice(0, 60) } : {}),
+    ...(typeof p.stageOrder === 'number' ? { stageOrder: p.stageOrder } : {}),
+  }
 }
 
 const TASK_TIMEOUT_MS = 120_000
@@ -433,9 +539,33 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
   if (!caller) return { ok: false, result: j({ status: 'error', reason: 'agente chamador não encontrado' }) }
   if (!target) return { ok: false, result: j({ status: 'error', reason: 'agente alvo não encontrado' }) }
 
+  // ONE decision. The facts are resolved here — building, floor communication and the
+  // sector that may protect the target — and the pure gate decides. Discovery asks the
+  // same gate with the same facts, so it can never offer a target this refuses.
   const targetBuildingId = await deps.buildingIdForFloor(ctx.ownerId, target.officeId)
-  const check = checkDelegation(caller, target, targetBuildingId ?? '', ctx)
-  if (!check.ok) return { ok: false, result: j({ status: 'denied', code: check.code, reason: check.reason }) }
+  const [communication, entry] = await Promise.all([
+    deps.loadCommunication?.(ctx.ownerId) ?? Promise.resolve(undefined),
+    // An internal call made by that sector's own run carries the grant and is exempt —
+    // being on the member list alone never counts as internal.
+    (ctx.sectorGrant?.memberIds.includes(targetId) ?? false) ? Promise.resolve(undefined) : deps.sectorEntryFor?.(ctx.ownerId, targetId),
+  ])
+  const decision = checkCollaboration(
+    caller,
+    gateTargetForAgent(target, targetBuildingId ?? '', entry?.blocked ? { sectorId: entry.sectorId, sectorName: entry.sectorName } : null),
+    communication ?? OPEN_COMMUNICATION,
+    gateContext(ctx),
+  )
+  if (!decision.ok) {
+    return {
+      ok: false,
+      result: j({
+        status: 'denied',
+        code: decision.code,
+        reason: decision.reason,
+        ...(decision.sectorId ? { sectorId: decision.sectorId, sector: decision.sectorName } : {}),
+      }),
+    }
+  }
 
   const recId = await deps.startDelegation({
     ownerId: ctx.ownerId,
@@ -445,6 +575,16 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
     targetType: 'agent',
     targetAgentId: target._id,
     objective,
+  })
+  // The caller is waiting on another agent — that is what the map shows, without
+  // ever naming the objective.
+  deps.reportState?.({
+    ownerId: ctx.ownerId,
+    agentId: caller._id,
+    floorId: caller.officeId ?? null,
+    rootExecutionId: ctx.correlationId,
+    state: 'delegating_agent',
+    detail: { targetType: 'agent' },
   })
   const startedAt = new Date()
   try {
@@ -493,7 +633,16 @@ async function runWithRetry(deps: DelegationDeps, ctx: DelegationContext, target
 // Record a child delegation (caller = the agent that invoked the sector) so each
 // stage/coordinator run shows in both histories, one level below the sector record,
 // AND a per-agent 'sector' telemetry event.
-async function recordChildRun(deps: DelegationDeps, ctx: DelegationContext, target: Agent, objective: string, parentId: ObjectId, run: (eventKey: string) => Promise<TaskRun>): Promise<string> {
+async function recordChildRun(
+  deps: DelegationDeps,
+  ctx: DelegationContext,
+  target: Agent,
+  objective: string,
+  parentId: ObjectId,
+  run: (eventKey: string) => Promise<TaskRun>,
+  // Which sector run this participation belongs to, and what part the agent played.
+  participation?: { sectorExecutionId: ObjectId; role: 'coordinator' | 'specialist' | 'pipeline_stage'; stageId?: string; stageName?: string; stageOrder?: number },
+): Promise<string> {
   const recId = await deps.startDelegation({
     ownerId: ctx.ownerId,
     correlationId: ctx.correlationId,
@@ -509,13 +658,22 @@ async function recordChildRun(deps: DelegationDeps, ctx: DelegationContext, targ
   try {
     const r = await run(eventKey)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: r.output.slice(0, 500), usage: r.usage })
-    await emitAgentEvent(deps, ctx, target, 'sector', eventKey, r, 'succeeded')
+    await emitAgentEvent(deps, ctx, target, 'sector', eventKey, { ...r, telemetry: { ...(r.telemetry ?? {}), ...participationTelemetry(participation) } }, 'succeeded', participation?.sectorExecutionId)
     return r.output
   } catch (error) {
     const message = error instanceof Error ? error.message : 'falha'
     const outcome = /cancel/i.test(message) ? 'canceled' : /timeout|exceeded/i.test(message) ? 'timeout' : 'failed'
     await deps.finishDelegation(recId, { status: outcome === 'timeout' ? 'failed' : outcome, error: message })
-    await emitAgentEvent(deps, ctx, target, 'sector', eventKey, { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date() }, outcome)
+    await emitAgentEvent(
+      deps,
+      ctx,
+      target,
+      'sector',
+      eventKey,
+      { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date(), telemetry: { errorKind: outcome, ...participationTelemetry(participation) } },
+      outcome,
+      participation?.sectorExecutionId,
+    )
     throw error
   }
 }
@@ -536,16 +694,44 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
 
   const caller = await deps.loadAgent(ctx.ownerId, new ObjectId(ctx.callerAgentId))
   if (!caller) return { ok: false, result: j({ status: 'error', reason: 'agente chamador não encontrado' }) }
-  const callerCanCall = policyAllows(caller.delegationPolicy, caller.callableSectorIds, sectorId)
-  if (!callerCanCall) return { ok: false, result: j({ status: 'denied', code: 'unauthorized', reason: 'setor não autorizado para este agente' }) }
-  if (ctx.depth + 1 > DELEGATION_MAX_DEPTH) return { ok: false, result: j({ status: 'denied', code: 'depth_exceeded', reason: 'profundidade máxima atingida' }) }
-  if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) return { ok: false, result: j({ status: 'denied', code: 'budget_exceeded', reason: 'orçamento esgotado' }) }
+  // Policy, depth and budget are the gate's job now — checked once, below, with the
+  // sector in hand (a 'floor' policy cannot be decided before knowing its floor).
 
   const sector = await deps.loadSector(ctx.ownerId, new ObjectId(sectorId))
   if (!sector) return { ok: false, result: j({ status: 'error', reason: 'setor não encontrado' }) }
+  deps.reportState?.({
+    ownerId: ctx.ownerId,
+    agentId: caller._id,
+    floorId: caller.officeId ?? null,
+    rootExecutionId: ctx.correlationId,
+    state: 'delegating_sector',
+    detail: { targetType: 'sector' },
+  })
+  // Same gate as an agent call, with the sector as the target: floors, the caller's
+  // policy, depth, cycles and budget are decided in ONE place and in one order.
   const sectorBuildingId = await deps.buildingIdForFloor(ctx.ownerId, sector.officeId)
-  if (sectorBuildingId !== ctx.buildingId) return { ok: false, result: j({ status: 'denied', code: 'forbidden', reason: 'setor de outro prédio' }) }
-  if (sector.mode === 'organization') return { ok: false, result: j({ status: 'not_executable', reason: 'este setor apenas agrupa agentes; escolha um agente ou um setor orquestrado/pipeline' }) }
+  const communication = (await deps.loadCommunication?.(ctx.ownerId)) ?? OPEN_COMMUNICATION
+  const sectorDecision = checkCollaboration(
+    caller,
+    {
+      kind: 'sector',
+      id: sector._id.toString(),
+      ownerId: ctx.ownerId,
+      buildingId: sectorBuildingId ?? '',
+      floorId: sector.officeId ? sector.officeId.toString() : null,
+      executable: sector.mode !== 'organization',
+    },
+    communication,
+    gateContext(ctx),
+  )
+  if (!sectorDecision.ok) {
+    // A group that does not execute keeps its own, more useful answer: it is not a
+    // permission problem, it is the wrong kind of target.
+    if (sector.mode === 'organization') {
+      return { ok: false, result: j({ status: 'not_executable', reason: 'este setor apenas agrupa agentes; escolha um agente ou um setor orquestrado/pipeline' }) }
+    }
+    return { ok: false, result: j({ status: 'denied', code: sectorDecision.code, reason: sectorDecision.reason }) }
+  }
 
   const inChain = (id: ObjectId) => id.toString() === ctx.callerAgentId || ctx.ancestry.includes(id.toString())
   const format = asOutputFormat(args.format)
@@ -559,6 +745,26 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
     targetSectorId: sector._id,
     objective,
   })
+
+  // ONE root for the whole flow, opened before the first agent. The key is
+  // deterministic, so a retry of the same call reuses it instead of counting twice.
+  const executionKey = sectorExecutionKeyFor(ctx, sector._id.toString())
+  const sectorExecutionId = await deps.startSectorExecution?.({
+    executionKey,
+    ownerId: ctx.ownerId,
+    sectorId: sector._id,
+    sectorName: sector.name,
+    sectorMode: sector.mode,
+    floorId: sector.officeId ?? null,
+    source: 'delegation',
+    correlationId: ctx.correlationId ?? null,
+    callerAgentId: caller._id,
+  })
+  const participationOf = (
+    role: 'coordinator' | 'specialist' | 'pipeline_stage',
+    stage?: { id: string; name: string; order: number },
+  ) => (sectorExecutionId ? { sectorExecutionId, role, stageId: stage?.id, stageName: stage?.name, stageOrder: stage?.order } : undefined)
+
   try {
     let output = ''
     if (sector.mode === 'pipeline') {
@@ -582,7 +788,15 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
         // What this stage owes the next one is part of its instruction, not folklore.
         const instruction = stageInstruction(stage.instruction || objective, stage.expectedOutput)
         try {
-          const out = await recordChildRun(deps, ctx, agent, instruction, recId, (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id))
+          const out = await recordChildRun(
+            deps,
+            ctx,
+            agent,
+            instruction,
+            recId,
+            (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id),
+            participationOf('pipeline_stage', { id: stage.id, name: stage.name, order: stages.indexOf(stage) + 1 }),
+          )
           // Checked BEFORE the next stage consumes it. Structural when the stage
           // produces JSON; otherwise only that something came out (see
           // checkStageOutput). Retries already happened inside runWithRetry, so
@@ -601,6 +815,7 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
         }
       }
       await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
+      await deps.finishSectorExecution?.(executionKey, { status: 'succeeded' })
       return { ok: true, result: j({ status: 'ok', sector: sector.name, output, ...(failures.length ? { warnings: failures } : {}) }) }
     }
 
@@ -617,13 +832,25 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
       sectorId: sector._id.toString(),
       memberIds: sector.members.map((m) => m.agentId.toString()).filter((id) => id !== coordinator._id.toString()),
     }
-    output = await recordChildRun(deps, ctx, coordinator, instruction, recId, (k) => runAgentTask(deps, ctx, coordinator, instruction, args.input, format, k, sector._id, grant))
+    output = await recordChildRun(
+      deps,
+      ctx,
+      coordinator,
+      instruction,
+      recId,
+      (k) => runAgentTask(deps, ctx, coordinator, instruction, args.input, format, k, sector._id, grant),
+      participationOf('coordinator'),
+    )
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
+    await deps.finishSectorExecution?.(executionKey, { status: 'succeeded' })
     return { ok: true, result: j({ status: 'ok', sector: sector.name, output }) }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'falha na delegação de setor'
     const canceled = /cancel/i.test(message)
     await deps.finishDelegation(recId, { status: canceled ? 'canceled' : 'failed', error: message })
+    // A failure BEFORE the first agent is still an execution of this sector: the root
+    // closes with a CATEGORY, never with the message.
+    await deps.finishSectorExecution?.(executionKey, { status: canceled ? 'canceled' : 'failed', errorKind: canceled ? 'canceled' : 'stage_failed' })
     return { ok: false, result: j({ status: canceled ? 'canceled' : 'error', reason: message }) }
   }
 }
@@ -642,7 +869,23 @@ async function listAvailable(deps: DelegationDeps, ctx: DelegationContext, args:
   const need = typeof args.capability === 'string' ? args.capability.toLowerCase() : ''
   // Candidates already share the caller's building (listAgentsInBuilding), so the
   // building check is satisfied by construction — pass ctx.buildingId as the target's.
-  const available = all.filter((t) => t._id.toString() !== caller._id.toString() && checkDelegation(caller, t, ctx.buildingId, ctx).ok)
+  // Discovery HIDES what the runtime would refuse — same gate, same facts, so the two
+  // cannot disagree. Resolving the sector protection per candidate is one query each;
+  // the alternative is offering a target that fails after an inference is spent.
+  const communication = (await deps.loadCommunication?.(ctx.ownerId)) ?? OPEN_COMMUNICATION
+  const candidates = all.filter((t) => t._id.toString() !== caller._id.toString())
+  const protections = await Promise.all(
+    candidates.map((t) => (deps.sectorEntryFor ? deps.sectorEntryFor(ctx.ownerId, t._id.toString()) : Promise.resolve({ blocked: false as const }))),
+  )
+  const available = candidates.filter((t, i) => {
+    const entry = protections[i]
+    return checkCollaboration(
+      caller,
+      gateTargetForAgent(t, ctx.buildingId, entry.blocked ? { sectorId: entry.sectorId, sectorName: entry.sectorName } : null),
+      communication,
+      gateContext(ctx),
+    ).ok
+  })
   const filtered = need ? available.filter((t) => (t.capabilities ?? []).some((c) => c.toLowerCase().includes(need)) || t.name.toLowerCase().includes(need)) : available
   return { ok: true, result: j({ status: 'ok', agents: filtered.map(agentCard) }) }
 }
@@ -653,7 +896,16 @@ async function getCapabilities(deps: DelegationDeps, ctx: DelegationContext, arg
   const [caller, target] = await Promise.all([deps.loadAgent(ctx.ownerId, new ObjectId(ctx.callerAgentId)), deps.loadAgent(ctx.ownerId, new ObjectId(id))])
   if (!caller || !target) return { ok: false, result: j({ status: 'error', reason: 'agente não encontrado' }) }
   const targetBuildingId = await deps.buildingIdForFloor(ctx.ownerId, target.officeId)
-  const check = checkDelegation(caller, target, targetBuildingId ?? '', ctx)
+  const [communication, entry] = await Promise.all([
+    deps.loadCommunication?.(ctx.ownerId) ?? Promise.resolve(undefined),
+    deps.sectorEntryFor?.(ctx.ownerId, id) ?? Promise.resolve(undefined),
+  ])
+  const check = checkCollaboration(
+    caller,
+    gateTargetForAgent(target, targetBuildingId ?? '', entry?.blocked ? { sectorId: entry.sectorId, sectorName: entry.sectorName } : null),
+    communication ?? OPEN_COMMUNICATION,
+    gateContext(ctx),
+  )
   if (!check.ok) return { ok: false, result: j({ status: 'denied', code: check.code, reason: check.reason }) }
   return {
     ok: true,

@@ -114,6 +114,9 @@ const ROUTER_PREFIX = {
   'routes/automationRoutes.ts': '/api/automations',
   'routes/agentRoutineRoutes.ts': '/api/agents/:agentId',
   'routes/connectionRoutes.ts': '/api/connections',
+  'routes/appInstallationRoutes.ts': '/api/app-installations',
+  'routes/privateAppRoutes.ts': '/api/private-apps',
+  'routes/appGrantRoutes.ts': '/api/agents/:agentId',
   'routes/floorRoutes.ts': '/api/floors',
   'routes/runRoutes.ts': '/api/runs',
   'routes/buildingRoutes.ts': '/api/building',
@@ -197,7 +200,8 @@ test('every route file is covered by the scan', () => {
   const files = readdirSync(new URL('routes/', SOURCE_DIR)).filter((f) => f.endsWith('Routes.ts'))
   const scanned = new Set(Object.keys(ROUTER_PREFIX).map((f) => f.replace('routes/', '')))
   // webhookRoutes is the public receiver (skipped by prefix); logRoutes is read-only.
-  const exempt = new Set(['webhookRoutes.ts', 'logRoutes.ts', 'executionRoutes.ts'])
+  // appRoutes is the read-only App catalog.
+  const exempt = new Set(['webhookRoutes.ts', 'logRoutes.ts', 'executionRoutes.ts', 'appRoutes.ts', 'sectorExecutionRoutes.ts'])
   for (const file of files) {
     assert.ok(scanned.has(file) || exempt.has(file), `${file} is neither scanned nor exempt`)
   }

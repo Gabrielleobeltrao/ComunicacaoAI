@@ -2,6 +2,8 @@ import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 import { isValidToolSchema } from './jsonSchema.js'
 import type { Provider } from './llm.js'
+import type { AgentAppGrant } from './apps/types.js'
+import { isSecretLegacyConfigKey } from './apps/registry.js'
 // Type-only cycle back to agents.ts, so there is no runtime import loop.
 import { sanitizeActivationWrite } from './agentReadiness.js'
 
@@ -48,8 +50,11 @@ export const LEGACY_ACTIVATION_MODES: ActivationMode[] = ['agent_only']
 //   incoming (callerPolicy): who may call this agent.
 // 'none' = nobody; 'all' = any agent in the SAME BUILDING; 'selected' = only the
 // matching id list (callableAgentIds / allowedCallerAgentIds).
-export type DelegationPolicy = 'none' | 'all' | 'selected'
-export const DELEGATION_POLICIES: DelegationPolicy[] = ['none', 'all', 'selected']
+// 'floor' = only agents and executable sectors of the SAME floor. It sits between
+// 'selected' (explicit ids) and 'all' (the whole building) and is what a floor
+// coordinator normally wants: reach my area, not the building.
+export type DelegationPolicy = 'none' | 'all' | 'selected' | 'floor'
+export const DELEGATION_POLICIES: DelegationPolicy[] = ['none', 'all', 'selected', 'floor']
 
 // The card KPI an agent shows in position 3. A concrete key is a MANUAL choice and
 // is never overwritten by a preset change; 'auto' derives the key from the preset at
@@ -103,9 +108,17 @@ export interface AgentTool {
 
 // A built-in integration ("app") enabled on the agent, with its per-agent config
 // (e.g. which spreadsheet). See builtinTools.ts for the catalog.
+//
+// DEPRECATED — this is where a credential used to live in the clear, inside the
+// agent document. It is read-only during the transition: the migration moves the
+// credential into an encrypted installation and leaves only non-secret selection
+// here. New configuration goes through `appGrants`.
 export interface AgentBuiltinTool {
   key: string
   config: Record<string, string>
+  // Stamped by the migration. Present = the credential already lives in an
+  // installation and must not be read from here again.
+  migratedAt?: Date
 }
 
 export interface Agent {
@@ -141,6 +154,10 @@ export interface Agent {
   promptCaching: boolean
   tools: AgentTool[]
   builtinTools: AgentBuiltinTool[]
+  // What this agent may do with the owner's connected Apps: which installation,
+  // which actions, and which of those may run without being asked. Not listed
+  // means not reachable — assignment IS the permission.
+  appGrants: AgentAppGrant[]
   // --- Agent-as-the-primary-unit model (additive; legacy agents get safe defaults
   // via withAgentDefaults on read, so no destructive migration is needed) ---
   preset: AgentPreset
@@ -191,10 +208,23 @@ function deriveCallerPolicy(a: Agent): DelegationPolicy {
 // means "keep the stored one" (see parseTools).
 export const MASKED_HEADER_VALUE = '***'
 
-export function toPublicAgent<T extends { tools?: AgentTool[] }>(agent: T): T {
-  if (!agent.tools?.length) return agent
+export function toPublicAgent<T extends { tools?: AgentTool[]; builtinTools?: AgentBuiltinTool[] }>(agent: T): T {
+  // Legacy built-in config could hold a token in the clear. Until the migration has
+  // moved every one of them into an installation, nothing from it leaves the API
+  // with a readable value.
+  const builtinTools = agent.builtinTools?.length
+    ? agent.builtinTools.map((entry) => ({
+        ...entry,
+        config: Object.fromEntries(
+          Object.entries(entry.config ?? {}).map(([key, value]) => [key, isSecretLegacyConfigKey(entry.key, key) && value ? MASKED_HEADER_VALUE : value]),
+        ),
+      }))
+    : agent.builtinTools
+
+  if (!agent.tools?.length) return builtinTools === agent.builtinTools ? agent : { ...agent, builtinTools }
   return {
     ...agent,
+    builtinTools,
     tools: agent.tools.map((tool) => ({
       ...tool,
       headers: (tool.headers ?? []).map((header) => ({ key: header.key, value: header.value ? MASKED_HEADER_VALUE : '' })),
@@ -215,6 +245,7 @@ export function withAgentDefaults(a: Agent): Agent {
     callableAgentIds: a.callableAgentIds ?? [],
     callableSectorIds: a.callableSectorIds ?? [],
     toolIds: a.toolIds ?? [],
+    appGrants: a.appGrants ?? [],
     allowedCallerAgentIds: a.allowedCallerAgentIds ?? [],
     delegationPolicy: deriveDelegationPolicy(a),
     callerPolicy: deriveCallerPolicy(a),
@@ -337,6 +368,7 @@ export async function createAgent(
     promptCaching?: boolean
     tools?: AgentTool[]
     builtinTools?: AgentBuiltinTool[]
+    appGrants?: AgentAppGrant[]
     preset?: AgentPreset
     capabilities?: string[]
     activationModes?: ActivationMode[]
@@ -381,6 +413,7 @@ export async function createAgent(
     promptCaching: options.promptCaching ?? true,
     tools: options.tools ?? [],
     builtinTools: options.builtinTools ?? [],
+    appGrants: options.appGrants ?? [],
     preset: options.preset ?? 'custom',
     capabilities: options.capabilities ?? [],
     // agent_only is never stored, whatever the caller passed.
@@ -446,6 +479,7 @@ export async function updateAgent(
     promptCaching?: boolean
     tools?: AgentTool[]
     builtinTools?: AgentBuiltinTool[]
+    appGrants?: AgentAppGrant[]
     preset?: AgentPreset
     capabilities?: string[]
     activationModes?: ActivationMode[]

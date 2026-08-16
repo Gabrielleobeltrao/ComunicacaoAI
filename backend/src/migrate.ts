@@ -5,6 +5,16 @@ import { ensureFloorIndexes } from './floors.js'
 import { ensureAutomationIndexes } from './automations/repository.js'
 import { ensureRunIndexes } from './automations/runRepository.js'
 import { ensureConnectionIndexes } from './connections/repository.js'
+import { ensureInstallationIndexes } from './apps/installations.js'
+import { ensureNavigationIndexes } from './apps/navigation.js'
+import { ensurePrivateAppIndexes } from './apps/privateApps.js'
+import { ensureAgentLiveStateIndexes } from './agentLiveState.js'
+import { ensureSectorExecutionIndexes } from './sectorExecutions.js'
+import { ensureExecutionRootIndexes } from './executionRoots.js'
+import { backfillFloorCommunication } from './floorCommunication.js'
+import { backfillManagedChannelInstallations } from './apps/channelApps.js'
+import { ensureAppActionIndexes } from './apps/grants.js'
+import { migrateAppsAndInstallations } from './apps/migration.js'
 
 async function renameCollectionIfNeeded(from: string, to: string): Promise<void> {
   const source = await db.listCollections({ name: from }).toArray()
@@ -58,6 +68,38 @@ export async function runMigrations(): Promise<void> {
   await ensureAutomationIndexes()
   await ensureRunIndexes()
   await ensureConnectionIndexes()
+  await ensureInstallationIndexes()
+  await ensureNavigationIndexes()
+  await ensurePrivateAppIndexes()
+  await ensureAgentLiveStateIndexes()
+  await ensureSectorExecutionIndexes()
+  await ensureExecutionRootIndexes()
+
+  // Existing sectors keep their CURRENT behaviour: open. Closing a core is a decision
+  // the owner takes explicitly — guessing which pipelines "should" be closed would
+  // silently break calls that work today. The recommendation to review shows up in
+  // the UI, not here.
+  await db
+    .collection('sectors')
+    .updateMany({ entryPolicy: { $exists: false } }, { $set: { entryPolicy: 'open_members', exposedAgentIds: [] } })
+
+  // Installations of a managed-channel App that point at no real channel — including
+  // the empty ones the generic form used to create — stop claiming to be connected.
+  // Status only: no conversation, message, number or provider config is touched.
+  const channelSync = await backfillManagedChannelInstallations()
+  if (channelSync.revoked || channelSync.reconnected) console.log('[migrate] canais', JSON.stringify(channelSync))
+
+  // Existing buildings keep collaborating exactly as they do today.
+  await backfillFloorCommunication()
+  await ensureAppActionIndexes()
+
+  // Apps: connections learn their appKey, Google gains an installation, and every
+  // credential still sitting in an agent document moves into an encrypted one.
+  const apps = await migrateAppsAndInstallations()
+  if (apps.installationsCreated || apps.agentsMigrated || apps.googleInstallations || apps.connectionsBackfilled) {
+    // Counts only — never a value.
+    console.log('[migrate] apps', JSON.stringify(apps))
+  }
 }
 
 // AI-building pivot backfill (idempotent, additive). Ensures a Building per owner

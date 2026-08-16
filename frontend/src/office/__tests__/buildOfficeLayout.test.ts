@@ -71,3 +71,44 @@ describe('buildOfficeLayout', () => {
     expect(l.obstacles.filter((o) => o.kind === 'object').length).toBeGreaterThan(0)
   })
 })
+
+// A regressão real: "Marcos" estava listado em dois setores da conta. Cada setor
+// ganhava um assento para ele, então o mapa desenhava a MESMA pessoa duas vezes —
+// dois balões sobre uma cabeça só, e duas simulações registradas com o mesmo id
+// brigando pelo mesmo registro de movimento. O personagem travava.
+describe('um agente ocupa um assento só', () => {
+  const doisSetores = (): LayoutInput => ({
+    agents: [{ _id: 'a1' }, { _id: 'a2' }],
+    sectors: [
+      { _id: 's1', name: 'Atendimento', color: '#2E5BFF', members: [{ agentId: 'a1' }, { agentId: 'a2' }] },
+      // a1 aparece de novo aqui: dado antigo, de antes da regra de pertencer a um só.
+      { _id: 's2', name: 'Equipe do Salão', color: '#17B98A', members: [{ agentId: 'a1' }] },
+    ],
+    aspect: 2,
+    amenities: [],
+    amenityTint: {},
+    decorArts: [],
+  })
+
+  it('o agente listado em dois setores é assentado uma vez', () => {
+    const l = buildOfficeLayout(doisSetores())
+    const doA1 = l.seats.filter((s) => s.agentId === 'a1')
+    expect(doA1).toHaveLength(1)
+    // E é o primeiro setor da lista que fica com ele.
+    const sala1 = l.rooms.find((r) => r.key === 's1')
+    expect(l.seats.find((s) => s.agentId === 'a1')?.sectorId).toBe(sala1?.key)
+  })
+
+  it('membro repetido dentro do MESMO setor também vira um assento só', () => {
+    const input = doisSetores()
+    input.sectors = [{ _id: 's1', name: 'Atendimento', color: '#2E5BFF', members: [{ agentId: 'a1' }, { agentId: 'a1' }, { agentId: 'a2' }] }]
+    const l = buildOfficeLayout(input)
+    expect(l.seats.filter((s) => s.agentId === 'a1')).toHaveLength(1)
+  })
+
+  it('ninguém é desenhado duas vezes: assentos e soltos são conjuntos disjuntos', () => {
+    const l = buildOfficeLayout(doisSetores())
+    const ids = [...l.seats.map((s) => s.agentId), ...l.loose.map((o) => o.agentId)]
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+})

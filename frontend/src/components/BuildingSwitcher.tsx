@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { useBuildingContext } from '../contexts/BuildingContext'
 import { COLLAPSE_FADE } from '../lib/sidebarStyles'
-import { Icon } from '../ui'
+import { Button, Icon } from '../ui'
+import { BuildingSettingsDialog } from './BuildingSettingsDialog'
 
 // Building header + floor popover (UX reorg §6.2/§6.3). Represents the workspace
 // (not the logged-in account, which lives in the footer). Accessible: keyboard,
@@ -14,6 +15,17 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
+  // The dialog lives in the URL, so it survives a reload, closes with Back, and can
+  // be linked to. `?buildingSettings=1`.
+  const [params, setParams] = useSearchParams()
+  const settingsOpen = params.get('buildingSettings') === '1'
+  const setSettingsOpen = (next: boolean) => {
+    const q = new URLSearchParams(params)
+    if (next) q.set('buildingSettings', '1')
+    else q.delete('buildingSettings')
+    // Opening pushes (so Back closes it); closing replaces, so Back does not reopen.
+    setParams(q, { replace: !next })
+  }
 
   const name = building?.name?.trim() || 'Meu prédio'
   const active = floors.filter((f) => f.status === 'active')
@@ -28,11 +40,18 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false)
     }
+    // O rail do desktop encolhe sozinho quando o mouse sai (CSS `group-hover`).
+    // Sem isto, o popover continuava aberto pendurado num rail de 64px, cobrindo o
+    // conteúdo e sem alinhamento com nada.
+    const rail = ref.current?.closest('[data-rail]')
+    const onLeave = () => setOpen(false)
     document.addEventListener('mousedown', onDoc)
     document.addEventListener('keydown', onKey)
+    rail?.addEventListener('mouseleave', onLeave)
     return () => {
       document.removeEventListener('mousedown', onDoc)
       document.removeEventListener('keydown', onKey)
+      rail?.removeEventListener('mouseleave', onLeave)
     }
   }, [open])
 
@@ -43,27 +62,41 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      {/* Rail-aware: collapsed to just the avatar in the slim rail, expanding to
-          the full switcher on hover (same COLLAPSE_FADE mechanism as nav items). */}
-      <button
-        onClick={() => setOpen((o) => !o)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label="Prédio e andares"
-        className={`flex w-full items-center gap-2 ${expanded ? 'justify-start' : 'justify-center gap-0 group-hover:justify-start group-hover:gap-2'}`}
-        style={headerBtn}
-      >
-        <span style={avatar}>{name.charAt(0).toUpperCase()}</span>
-        <span className={`flex min-w-0 flex-1 flex-col text-left ${fade}`}>
-          <strong style={truncate}>{name}</strong>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {activeFloor ? activeFloor.name : 'Nenhum andar'} · {active.length} andar(es)
+      {/* Um controle só. A engrenagem solta ao lado duplicava o item "Configurações
+          do prédio" que já existe dentro do próprio seletor. */}
+      <div style={{ display: 'flex' }}>
+        <button
+          onClick={() => setOpen((o) => !o)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label="Prédio e andares"
+          // Encolhido, o rail é uma fileira de ícones de 40px de altura. Este botão
+          // tinha um rótulo de DUAS linhas dentro: mesmo com a largura zerada, a
+          // altura continuava, e ele virava uma caixa alta e vazia no meio da
+          // fileira. Agora a altura também colapsa e só volta no hover.
+          className={`flex min-w-0 flex-1 items-center overflow-hidden ${
+            expanded ? 'h-auto justify-start gap-2.5' : 'h-10 justify-center gap-0 group-hover:h-auto group-hover:justify-start group-hover:gap-2.5'
+          }`}
+          style={headerBtn}
+          data-testid="building-switcher"
+        >
+          {/* O ícone que sobra quando tudo o mais colapsa. `layers` são os andares
+              empilhados — é isto que o seletor troca. Nenhum item do menu usa. */}
+          <Icon name="layers" size={18} style={{ flexShrink: 0 }} />
+          <span className={`flex min-w-0 flex-1 flex-col text-left ${fade}`}>
+            <strong style={truncate}>{name}</strong>
+            {/* Só a contagem. O andar atual já é lido logo abaixo, no menu, sob
+                "ANDAR ATUAL" — repetir aqui era a mesma informação duas vezes na
+                mesma coluna. */}
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {active.length} {active.length === 1 ? 'andar' : 'andares'}
+            </span>
           </span>
-        </span>
-        <span className={fade}>
-          <Icon name="chevrons-up-down" size={14} />
-        </span>
-      </button>
+          <span className={fade}>
+            <Icon name="chevrons-up-down" size={14} />
+          </span>
+        </button>
+      </div>
 
       {open && (
         <div role="menu" style={popover}>
@@ -87,14 +120,28 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
               </button>
             ))}
           <div style={{ borderTop: '1px solid var(--border-subtle)', margin: '6px 0' }} />
-          <button role="menuitem" style={menuItem} onClick={go(() => navigate('/dashboard'))}>
-            + Criar andar
-          </button>
-          <button role="menuitem" style={menuItem} onClick={go(() => navigate('/settings'))}>
+          {/* O MESMO botão de "Nova equipe" e "Contratar agente": fundo da marca,
+              texto branco. Criar é a mesma coisa em toda a interface, então usa o
+              mesmo componente, não uma imitação em texto. */}
+          <div style={{ padding: '4px 8px 6px' }}>
+            <Button size="sm" icon="plus" style={{ width: '100%' }} onClick={go(() => navigate('/building'))} data-testid="create-floor">
+              Criar andar
+            </Button>
+          </div>
+          <button role="menuitem" style={menuItem} onClick={go(() => setSettingsOpen(true))} data-testid="open-building-settings">
             Configurações do prédio
           </button>
         </div>
       )}
+
+      {/* The building's own settings are a pop-up from here, not a page: they belong
+          to the selector that represents the workspace. */}
+      <BuildingSettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        buildingName={name}
+        floors={floors}
+      />
     </div>
   )
 }
@@ -104,26 +151,16 @@ function Dot({ color }: { color: string | null }) {
 }
 
 const truncate: React.CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }
+// Mesma geometria dos itens de navegação: mesmo padding lateral, mesmo raio. O
+// bloco bege com borda destoava da fileira inteira.
 const headerBtn: React.CSSProperties = {
-  padding: 6,
-  borderRadius: 10,
-  border: '1px solid var(--border-subtle)',
-  background: 'var(--surface-sunken)',
+  padding: '6px 12px',
+  borderRadius: 'var(--radius-control)',
+  border: 0,
+  background: 'transparent',
   color: 'inherit',
   cursor: 'pointer',
   font: 'inherit',
-}
-const avatar: React.CSSProperties = {
-  width: 26,
-  height: 26,
-  borderRadius: 8,
-  background: 'var(--intent-brand, #2e5bff)',
-  color: '#fff',
-  display: 'grid',
-  placeItems: 'center',
-  fontSize: 13,
-  fontWeight: 700,
-  flexShrink: 0,
 }
 const popover: React.CSSProperties = {
   position: 'absolute',

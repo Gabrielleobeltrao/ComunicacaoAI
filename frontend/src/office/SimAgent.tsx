@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import { AgentSprite } from './AgentSprite'
+import { AgentActivityBubble } from '../components/AgentActivityBubble'
+import { bubblePlacement } from '../lib/agentActivityAssets'
 import { NamePill } from './NamePill'
 import type { SimView } from './useOfficeSimulation'
 import type { AgentStatus } from '../ui'
+import type { AgentBubbleState } from '../lib/agentActivityAssets'
 
 const W = 1.25
 const H = 1.875
@@ -19,18 +22,23 @@ interface SimAgentProps {
   register: (id: string, el: HTMLElement | null) => void
   setHovered: (id: string | null) => void
   onOpen: () => void
-  // Live-map overlay: operational state from the backend (e.g. 'working'). When
-  // set, a discreet badge is shown. Never drives position/pathfinding.
-  opState?: string
+  // Live-map overlay: the operational state the RUNTIME reported. When set, the
+  // activity bubble is drawn above the head. It never drives position or
+  // pathfinding, and pausing the simulation does not pause or fake it.
+  opState?: AgentBubbleState
+  // Allowlisted caption detail from the backend (public App action name, target
+  // kind). Never an objective, a URL, an argument or a result.
+  opDetail?: { appKey?: string; actionLabel?: string; targetType?: string }
 }
 
 // A simulated agent: a clickable wrapper whose position is driven by the sim via
 // the --ax/--ay CSS vars (so it scales with zoom/pan for free), containing the
 // animated AgentSprite, a contact shadow and a hover name pill.
-export function SimAgent({ agentId, name, character, status, view, initialX, initialY, register, setHovered, onOpen, opState }: SimAgentProps) {
+export function SimAgent({ agentId, name, character, status, view, initialX, initialY, register, setHovered, onOpen, opState, opDetail }: SimAgentProps) {
   const [hover, setHover] = useState(false)
   const seated = view.motion === 'seated'
   const headTop = seated ? '78.6%' : '100%'
+  const placement = bubblePlacement(initialX, headTop)
   return (
     <button
       ref={(el) => register(agentId, el)}
@@ -64,13 +72,21 @@ export function SimAgent({ agentId, name, character, status, view, initialX, ini
         } as CSSProperties
       }
     >
-      {hover ? <NamePill name={name} status={status} style={{ position: 'absolute', bottom: headTop, marginBottom: 4, zIndex: 5, whiteSpace: 'nowrap', pointerEvents: 'none' }} /> : null}
+      {/* On hover the NAME rises above the bubble, so the two never overlap. */}
+      {hover ? (
+        <NamePill
+          name={name}
+          status={status}
+          style={{ position: 'absolute', bottom: opState ? placement.bottom : headTop, marginBottom: opState ? placement.nameMarginBottom : 4, zIndex: 20, whiteSpace: 'nowrap', pointerEvents: 'none' }}
+        />
+      ) : null}
+      {/* Anchored to the real top of the sprite, so it follows the lower head of a
+          seated crop with nothing to adjust — and it rides zoom/pan for free because
+          the whole wrapper is positioned by the sim. The lane keeps it off a
+          neighbour's bubble. */}
       {opState ? (
-        <span
-          title={opState}
-          style={{ position: 'absolute', bottom: headTop, marginBottom: 22, fontSize: 9, fontWeight: 700, lineHeight: 1, padding: '2px 5px', borderRadius: 999, background: 'var(--intent-brand, #2e5bff)', color: '#fff', zIndex: 6, pointerEvents: 'none', whiteSpace: 'nowrap' }}
-        >
-          ⚙
+        <span style={{ position: 'absolute', bottom: placement.bottom, marginBottom: placement.marginBottom, zIndex: placement.zIndex, pointerEvents: 'none' }}>
+          <AgentActivityBubble state={opState} agentName={name} safeDetail={opDetail} size="sm" />
         </span>
       ) : null}
       <span style={{ position: 'absolute', bottom: 4, width: '58%', height: 8, borderRadius: '50%', background: 'var(--map-shadow)', filter: 'blur(2px)' }} />

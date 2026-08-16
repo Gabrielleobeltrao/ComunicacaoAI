@@ -221,6 +221,57 @@ test('the flow diagram shows entrada, the stages in order, and saída', async ({
   await expect(flow).toContainText('Saída')
 })
 
+// The flow reads TOP DOWN. Growing sideways meant a scrollbar inside the card for
+// anything longer than three steps — and, on a phone, the whole page moving.
+test('o fluxo do pipeline cresce de cima para baixo, sem rolagem horizontal', async ({ page }) => {
+  await stubApi(page, { sectors: [PIPELINE_SECTOR], overview: overviewFor(PIPELINE_SECTOR) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  const flow = page.getByTestId('sector-flow')
+
+  // Cada bloco começa abaixo do anterior.
+  const tops = await flow.locator('a, div[style]').evaluateAll((els) =>
+    els.filter((el) => el.textContent?.trim()).map((el) => el.getBoundingClientRect().top),
+  )
+  const ordered = [...tops].sort((a, b) => a - b)
+  expect(tops).toEqual(ordered)
+
+  // As setas apontam para baixo e não são anunciadas por leitor de tela.
+  const arrow = flow.getByTestId('flow-arrow').first()
+  await expect(arrow).toHaveText('↓')
+  await expect(arrow).toHaveAttribute('aria-hidden', 'true')
+
+  // O fluxo não tem rolagem estrutural própria.
+  const scrolls = await flow.evaluate((el) => el.scrollWidth - el.clientWidth)
+  expect(scrolls).toBeLessThanOrEqual(1)
+})
+
+test('no orquestrado, os especialistas são um grupo — não uma sequência obrigatória', async ({ page }) => {
+  const orchestrated = { ...LEGACY_SECTOR, mode: 'orchestrated', coordinatorAgentId: A1 }
+  await stubApi(page, { sectors: [orchestrated], overview: overviewFor(orchestrated) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  const flow = page.getByTestId('sector-flow')
+  await expect(flow).toContainText('coordena')
+  await expect(flow.getByTestId('specialists-note')).toContainText('conforme a necessidade')
+  // Entrada ↓ coordenador ↓ grupo ↓ Saída: três setas, não uma por especialista.
+  await expect(flow.getByTestId('flow-arrow')).toHaveCount(3)
+})
+
+test('o grupo organizacional continua sem entrada, saída ou setas', async ({ page }) => {
+  const group = { ...LEGACY_SECTOR, mode: 'organization' }
+  await stubApi(page, { sectors: [group], overview: overviewFor(group) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  const flow = page.getByTestId('sector-flow')
+  await expect(flow.getByTestId('flow-arrow')).toHaveCount(0)
+  await expect(flow).not.toContainText('Saída')
+})
+
+test('cada bloco do fluxo continua abrindo o agente', async ({ page }) => {
+  await stubApi(page, { sectors: [PIPELINE_SECTOR], overview: overviewFor(PIPELINE_SECTOR) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  await page.getByTestId('sector-flow').getByRole('link').first().click()
+  await expect(page).toHaveURL(new RegExp(`/floors/${FLOOR_ID}/agents/`))
+})
+
 test('readiness on the page says what is missing and links to the fix', async ({ page }) => {
   const broken = { ...PIPELINE_SECTOR, stages: [] }
   await stubApi(page, {
@@ -276,4 +327,93 @@ test('the sector page works on a phone', async ({ page }) => {
   // Nothing may push the page sideways.
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
+})
+
+test('o topo do setor não repete o que o cabeçalho já diz', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  await expect(page.getByTestId('sector-workspace')).toBeVisible()
+
+  // Nome e "andar · modo · N agentes" ficam no cabeçalho da página. O bloco do mapa
+  // não os repete — a mesma frase duas vezes na mesma tela é ruído.
+  const heroi = page.getByTestId('sector-hero')
+  await expect(heroi.getByRole('heading')).toHaveCount(0)
+  // A ação principal vive na linha do nome, não dentro do mapa.
+  await expect(heroi.getByRole('button', { name: 'Gerenciar agentes' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Gerenciar agentes' })).toBeVisible()
+})
+
+test('o Desempenho fica ao lado do mapa, fora do bloco de abas', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  await expect(page.getByTestId('sector-workspace')).toBeVisible()
+  const [desempenho, abas] = await Promise.all([
+    page.getByTestId('sector-performance').boundingBox(),
+    page.getByTestId('sector-workspace').boundingBox(),
+  ])
+  // Acima do bloco de abas, não dentro dele.
+  expect(desempenho!.y).toBeLessThan(abas!.y)
+})
+
+test('o mapa acompanha a altura do Desempenho, sem bege sobrando', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  await expect(page.getByTestId('sector-workspace')).toBeVisible()
+  const [mapa, desempenho] = await Promise.all([
+    page.getByTestId('sector-hero').boundingBox(),
+    page.getByTestId('sector-performance').boundingBox(),
+  ])
+  expect(Math.abs(mapa!.height - desempenho!.height)).toBeLessThan(4)
+})
+
+test('a prontidão do setor é lida no cabeçalho, não embaixo do mapa', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  await expect(page.getByTestId('sector-workspace')).toBeVisible()
+  // O selo saiu de dentro do mapa e subiu para a linha do nome.
+  await expect(page.getByTestId('sector-hero').getByTestId('sector-readiness')).toHaveCount(0)
+  const [prontidao, mapa] = await Promise.all([
+    // O cabeçalho renderiza os mesmos selos no desktop e no mobile; o primeiro é o
+    // que está visível na largura deste teste.
+    page.getByTestId('sector-readiness').first().boundingBox(),
+    page.getByTestId('sector-hero').boundingBox(),
+  ])
+  expect(prontidao!.y).toBeLessThan(mapa!.y)
+})
+
+test('o Desempenho acompanha o setor em qualquer aba', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  for (const aba of ['', 'equipe', 'avancado']) {
+    await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}/${aba}`)
+    await expect(page.getByTestId('sector-performance')).toBeVisible()
+  }
+})
+
+test('o fluxo fica à esquerda e os agentes à direita, lado a lado', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  const trabalho = page.getByTestId('sector-work')
+  await expect(trabalho).toBeVisible()
+
+  const [fluxo, agentes] = await trabalho.evaluate((el) =>
+    [...el.children].map((c) => {
+      const r = c.getBoundingClientRect()
+      return { x: Math.round(r.x), y: Math.round(r.y) }
+    }),
+  )
+  // Mesma linha, e o fluxo antes dos agentes.
+  expect(Math.abs(fluxo.y - agentes.y)).toBeLessThan(4)
+  expect(fluxo.x).toBeLessThan(agentes.x)
+})
+
+test('no celular as duas colunas viram uma pilha', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  const trabalho = page.getByTestId('sector-work')
+  await expect(trabalho).toBeVisible()
+  const [fluxo, agentes] = await trabalho.evaluate((el) => [...el.children].map((c) => Math.round(c.getBoundingClientRect().y)))
+  expect(agentes).toBeGreaterThan(fluxo)
 })

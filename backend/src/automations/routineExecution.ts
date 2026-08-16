@@ -16,6 +16,8 @@ import type { ResolvedTool } from '../agentTools.js'
 import type { AgentEventStatus, RecordAgentEventInput } from '../agentEvents.js'
 import type { StepUsage } from './runner.js'
 import { buildRetrievalQuery, formatContextWithSources } from '../retrievalQuery.js'
+import { instrumentTools, NOOP_TRACKER } from '../agentLiveTracker.js'
+import type { LiveTracker } from '../agentLiveTracker.js'
 
 // The knowledge the step requires could not be consulted (the embedding or the
 // vector search failed), and this agent is configured to refuse rather than answer
@@ -58,6 +60,9 @@ export interface RoutineRunContext {
   runId: string
   buildingId: ObjectId
   floorId: ObjectId
+  // The request this step participates in. Absent on paths not yet correlated —
+  // those stay honestly marked as partial telemetry instead of being guessed.
+  rootExecutionId?: ObjectId | null
 }
 
 export interface RoutineExecutionDeps {
@@ -79,6 +84,9 @@ export interface RoutineExecutionDeps {
   finalizeEvent: (input: RecordAgentEventInput) => Promise<void>
   eventKeyFor: (runId: string, stepId: string, agentId: string) => string
   isCanceled?: () => Promise<boolean>
+  // Live map projection. Injected because this module must stay testable without a
+  // database — absent means no instrumentation at all, never a fake state.
+  trackerFor?: (agentId: string) => LiveTracker
   // Injected so tests don't wait real seconds.
   sleep?: (ms: number) => Promise<void>
 }
@@ -117,6 +125,7 @@ export interface RoutineStepResult {
 
 export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunContext, deps: RoutineExecutionDeps): Promise<RoutineStepResult> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)))
+  const tracker = deps.trackerFor?.(call.agentId) ?? NOOP_TRACKER
 
   const agent = await deps.loadAgent(ctx.ownerId, new ObjectId(call.agentId))
   if (!agent) throw new Error(`agente não encontrado: ${call.agentId}`)
@@ -132,16 +141,21 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
   // (2) Grounding + model. The question includes the objective, the instructions AND
   // the input — serialized when it is an object, which used to retrieve nothing.
   const knowledgeQuery = buildRetrievalQuery({ objective: agent.objective ?? call.objective, instructions: call.instructions, input: call.input })
+  if (knowledgeQuery) tracker.report('reading_knowledge')
   const retrieved = knowledgeQuery ? await deps.retrieveContext(agent._id, knowledgeQuery, { verifiedSectorId }) : { context: [], failed: false, status: 'no_base' }
   const grounding = (retrieved.status as string | undefined) ?? (retrieved.failed ? 'unavailable' : retrieved.context.length ? 'ok' : 'empty')
   // An agent told to answer only from curated knowledge does NOT answer when the base
   // could not be consulted. Nothing is invented, and nothing is spent.
   if (agent.requireGrounding && grounding !== 'ok') {
+    // Stopped by a rule, not by an error: the map says blocked BEFORE the throw, so
+    // the state cannot lose a race with the error path.
+    await tracker.reportNow('blocked')
     throw new KnowledgeUnavailableError(
       grounding === 'unavailable' ? 'a base de conhecimento não pôde ser consultada' : 'nenhum trecho relevante foi encontrado na base',
     )
   }
-  const tools = await deps.resolveTools(agent, ctx.ownerId)
+  // Each tool reports when it starts and when it hands control back.
+  const tools = instrumentTools(await deps.resolveTools(agent, ctx.ownerId), tracker)
   const apiKey = await deps.apiKeyFor(ctx.ownerId, agent.provider)
 
   const startedAt = new Date()
@@ -159,6 +173,9 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
     // not inflate the accumulators; a real retry does.
     attemptCount: call.attempt,
     // Safe scalars only: counts and statuses, never a prompt, a passage or an output.
+    // The request this participation belongs to, so the building's number is not the
+    // sum of its agents'.
+    rootExecutionId: ctx.rootExecutionId ?? null,
     metadata: {
       runId: ctx.runId,
       stepId: call.stepId,
@@ -194,11 +211,14 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       // The step's own format wins; the agent's default is the fallback for a step
       // that never expressed one. The schema only applies to JSON.
       output: { format: outputFormat, jsonSchema: outputFormat === 'json' ? (agent.outputJsonSchema ?? null) : null },
+      progress: (state, detail) => tracker.report(state, detail),
     })
   } catch (error) {
     const kind = (error as { kind?: string }).kind
     const canceled = deps.isCanceled ? await deps.isCanceled().catch(() => false) : false
     const status: AgentEventStatus = canceled ? 'canceled' : kind === 'timeout' ? 'timeout' : 'failed'
+    // Every ending is terminal on the map — timeout and cancellation included.
+    await tracker.finish(canceled ? 'canceled' : 'failed')
     // Awaited too: a failed attempt must be visible before the runner moves on.
     await persistWithRetry('finalizeAgentEvent', () => deps.finalizeEvent({ ...baseEvent, status, finishedAt: new Date() }), sleep)
     throw error
@@ -239,5 +259,6 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
     return charged && recorded
   })()
 
+  await tracker.finish('completed')
   return { output: result.output, usage: result.usage, settle }
 }

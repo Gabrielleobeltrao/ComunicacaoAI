@@ -61,6 +61,7 @@ import {
   setStructuredOutputData,
 } from './conversationMemory.js'
 import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, normalizeSectorMode, sectorIsExecutable, sectorReadiness, SECTOR_MODES, updateSector } from './sectors.js'
+import { accessConfigOf, validateAccessConfig } from './sectorAccess.js'
 import type { SectorStage, SectorTeamFields } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
 import { assignAgentToSector } from './sectorMembership.js'
@@ -125,6 +126,7 @@ import {
 } from './userSettings.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
+import { channelExecutionKey, finishExecutionRoot, manualExecutionKey, openRunningRoot } from './executionRoots.js'
 import { agentReadiness, callerPolicyFromLegacy, sanitizeCollaborationRefs, triggerStates } from './agentReadiness.js'
 import { collaboratorContext, collaboratorCountFor } from './collaboration.js'
 import type { CollaboratorContext } from './collaboration.js'
@@ -134,6 +136,7 @@ import { liveWebhookCountByAgent } from './automations/webhookTriggers.js'
 import { listActivePublished } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
+import { sectorExecutionRouter } from './routes/sectorExecutionRoutes.js'
 import type { KnowledgeOwner } from './knowledge.js'
 import { availableMetricKeys, composeAgentStats, getAgentEventMetricsBatch, periodSince, PERIODS, resolveMetricKey } from './agentMetrics.js'
 import type { Period } from './agentMetrics.js'
@@ -200,6 +203,11 @@ import { auditEntity, auditRequests } from './routes/auditMiddleware.js'
 import { ensureAuditIndexes } from './audit.js'
 import { agentRoutineRouter } from './routes/agentRoutineRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
+import { appCatalogRouter, navigationPreferencesRouter } from './routes/appRoutes.js'
+import { privateAppRouter } from './routes/privateAppRoutes.js'
+import { appInstallationRouter } from './routes/appInstallationRoutes.js'
+import { appGrantRouter } from './routes/appGrantRoutes.js'
+import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
 
 const app = express()
@@ -222,7 +230,16 @@ app.use(
     // cookies (no requireAuth), so credentials stay off for that reflection.
     const isPublicWidgetRoute = req.path.startsWith('/api/public/')
     // Private routes: exact allowlist match (config.clientOrigins) with cookies.
-    callback(null, isPublicWidgetRoute ? { origin: true, credentials: false } : { origin: config.clientOrigins, credentials: true })
+    // `ETag` is NOT a CORS-safelisted response header: without exposing it, a
+    // cross-origin frontend reads `null` and can never send `If-None-Match` — the
+    // 304 path would exist on the server and never be used by the browser.
+    const exposedHeaders = ['ETag']
+    callback(
+      null,
+      isPublicWidgetRoute
+        ? { origin: true, credentials: false, exposedHeaders }
+        : { origin: config.clientOrigins, credentials: true, exposedHeaders },
+    )
   }),
 )
 
@@ -339,7 +356,14 @@ app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
 // Shared sector knowledge (same store as agent knowledge). Non-matching sub-paths
 // fall through to the inline /api/sectors/:sectorId routes below.
 app.use('/api/sectors/:sectorId', requireAuth, sectorKnowledgeRouter)
+app.use('/api/sectors/:sectorId', requireAuth, sectorExecutionRouter)
 app.use('/api/connections', requireAuth, connectionRouter)
+// Apps: the catalog, the owner's installations and each agent's grants.
+app.use('/api/apps', requireAuth, appCatalogRouter)
+app.use('/api/me', requireAuth, navigationPreferencesRouter)
+app.use('/api/private-apps', requireAuth, privateAppRouter)
+app.use('/api/app-installations', requireAuth, appInstallationRouter)
+app.use('/api/agents/:agentId', requireAuth, appGrantRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
 app.use('/api/hooks', webhookRouter)
 
@@ -498,7 +522,12 @@ function parseTools(raw: unknown, existing: AgentTool[] = []): { tools?: AgentTo
 }
 
 // Validate the built-in integrations enabled on an agent against the catalog.
-function parseBuiltinTools(raw: unknown): { builtinTools?: AgentBuiltinTool[]; error?: string } {
+//
+// DEPRECATED shape (see AgentBuiltinTool). Two things must survive a save here: a
+// masked secret must not overwrite the stored one, and `migratedAt` must not be
+// dropped — losing it would send the runtime back to reading a credential that has
+// already moved into an encrypted installation.
+function parseBuiltinTools(raw: unknown, existing: AgentBuiltinTool[] = []): { builtinTools?: AgentBuiltinTool[]; error?: string } {
   if (raw === undefined) return { builtinTools: undefined }
   if (!Array.isArray(raw)) return { error: 'builtinTools must be a list' }
 
@@ -512,14 +541,18 @@ function parseBuiltinTools(raw: unknown): { builtinTools?: AgentBuiltinTool[]; e
     if (seen.has(key)) return { error: `Integração "${key}" duplicada` }
     seen.add(key)
 
+    const stored = existing.find((e) => e.key === key)
     const rawConfig = (typeof o.config === 'object' && o.config !== null ? o.config : {}) as Record<string, unknown>
     const config: Record<string, string> = {}
     for (const field of app.configFields) {
-      const value = typeof rawConfig[field.key] === 'string' ? (rawConfig[field.key] as string) : ''
-      if (field.required && !value.trim()) return { error: `${app.label}: "${field.label}" é obrigatório.` }
+      const incoming = typeof rawConfig[field.key] === 'string' ? (rawConfig[field.key] as string) : ''
+      // The API masks secrets on the way out; the same mask coming back means
+      // "keep what is stored", exactly like a legacy tool header.
+      const value = incoming === MASKED_HEADER_VALUE ? (stored?.config?.[field.key] ?? '') : incoming
+      if (field.required && !value.trim() && !stored?.migratedAt) return { error: `${app.label}: "${field.label}" é obrigatório.` }
       config[field.key] = value
     }
-    result.push({ key, config })
+    result.push({ key, config, ...(stored?.migratedAt ? { migratedAt: stored.migratedAt } : {}) })
   }
   return { builtinTools: result }
 }
@@ -608,6 +641,9 @@ app.get('/api/integrations/google/callback', requireAuth, async (req, res) => {
   }
   try {
     await connectGoogle(res.locals.userId, code)
+    // Mirror the connected account as an installation so Apps can show, grant and
+    // revoke it. The tokens themselves stay in the integration store.
+    await ensureGoogleInstallation(res.locals.userId)
     res.redirect(`${clientUrl}/dashboard?integration=google_connected`)
   } catch (error) {
     console.error('Google connect failed:', error)
@@ -617,6 +653,9 @@ app.get('/api/integrations/google/callback', requireAuth, async (req, res) => {
 
 app.delete('/api/integrations/google', requireAuth, async (_req, res) => {
   await deleteIntegration(res.locals.userId, 'google')
+  // Every grant pointing at Google stops working immediately; the installation stays
+  // as history, revoked.
+  await revokeGoogleInstallation(res.locals.userId)
   res.status(204).end()
 })
 
@@ -821,6 +860,10 @@ function serializeSector(sector: WithId<Sector>) {
     instruction: sector.instruction ?? '',
     inputContract: sector.inputContract ?? '',
     outputContract: sector.outputContract ?? '',
+    // Who may call INTO this sector's people. Absent on old documents = open, which
+    // is exactly how they behaved.
+    ...accessConfigOf(sector),
+    exposedAgentIds: accessConfigOf(sector).exposedAgentIds.map((id) => id.toString()),
     stages: (sector.stages ?? []).map((s) => ({
       id: s.id,
       name: s.name,
@@ -1056,6 +1099,8 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     inputContract?: string
     outputContract?: string
     stages?: SectorStage[]
+    entryPolicy?: string
+    exposedAgentIds?: ObjectId[]
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof color === 'string' && color.trim()) updates.color = color.trim()
@@ -1081,6 +1126,20 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     return
   }
   Object.assign(updates, team)
+  // Who may call INTO this sector's people. Validated against the sector AS IT WILL
+  // BE (mode and membership included), atomically with the rest of the patch.
+  const body = (req.body ?? {}) as { entryPolicy?: unknown; exposedAgentIds?: unknown }
+  if (body.entryPolicy !== undefined || body.exposedAgentIds !== undefined) {
+    try {
+      const next = { ...existing, ...updates, coordinatorAgentId: updates.coordinatorAgentId ?? existing.coordinatorAgentId ?? undefined }
+      const resolved = validateAccessConfig(next, body, accessConfigOf(existing))
+      updates.entryPolicy = resolved.entryPolicy
+      updates.exposedAgentIds = resolved.exposedAgentIds
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message })
+      return
+    }
+  }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
     return
@@ -2096,7 +2155,8 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     updates.tools = parsedTools
   }
   if (builtinTools !== undefined) {
-    const { builtinTools: parsedBuiltins, error } = parseBuiltinTools(builtinTools)
+    const current = await getAgentById(res.locals.userId, new ObjectId(agentId))
+    const { builtinTools: parsedBuiltins, error } = parseBuiltinTools(builtinTools, current?.builtinTools ?? [])
     if (error) {
       res.status(400).json({ error })
       return
@@ -2413,13 +2473,29 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   const manualStartedAt = new Date()
   // Telemetry helper for this manual test: one event per test, whatever the outcome.
   const manualEventKey = `manual:${new ObjectId().toString()}`
-  const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0) =>
+  // A manual test is a real execution too — it just is not PRODUCTION. It gets a
+  // root marked `test`, so it is correlated and auditable while staying out of the
+  // metrics by default.
+  const manualRootKey = manualExecutionKey(manualEventKey)
+  const manualRootId = await openRunningRoot({
+    executionKey: manualRootKey,
+    ownerId: res.locals.userId,
+    buildingId: playgroundFloor?.buildingId ?? null,
+    originFloorId: agent.officeId,
+    source: 'manual',
+    sourceRefId: agent._id,
+    environment: 'test',
+    createdAt: manualStartedAt,
+  }).catch(() => null)
+
+  const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0) => {
     recordAgentEventSafe({
       eventKey: manualEventKey,
       ownerId: res.locals.userId,
       agentId: agent._id,
       buildingId: playgroundFloor?.buildingId ?? null,
       floorId: agent.officeId,
+      rootExecutionId: manualRootId,
       source: 'manual',
       preset: agent.preset,
       status,
@@ -2429,6 +2505,11 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       outputTokens: u?.outputTokens ?? 0,
       toolCalls: okToolCalls,
     })
+    void finishExecutionRoot(manualRootKey, {
+      status: status === 'succeeded' ? 'succeeded' : 'failed',
+      errorKind: status === 'succeeded' ? null : status,
+    }).catch(() => undefined)
+  }
 
   let generated: string
   let usage: { inputTokens: number; outputTokens: number }
@@ -2457,7 +2538,9 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     await resolveToolsWithDelegation(
       agent,
       res.locals.userId,
-      rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent }),
+      // The manual test's own root, so its delegations are correlated to it and stay
+      // marked as `test` rather than leaking into production numbers.
+      rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent, rootExecutionId: manualRootId }),
       productionDelegationDeps(),
     ),
     )
@@ -2639,7 +2722,10 @@ app.delete('/api/agents/:agentId/documents/:documentId', requireAuth, async (req
 
 app.get('/api/conversations', requireAuth, async (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search : undefined
-  const conversations = await listConversationsForOwner(res.locals.userId, search)
+  const channelParam = req.query.channel
+  const channel = channelParam === 'web' || channelParam === 'whatsapp' ? channelParam : undefined
+  const widgetId = typeof req.query.widgetId === 'string' && ObjectId.isValid(req.query.widgetId) ? new ObjectId(req.query.widgetId) : undefined
+  const conversations = await listConversationsForOwner(res.locals.userId, { search, channel, widgetId })
   res.json(conversations)
 })
 
@@ -3578,12 +3664,28 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     preset: agent.preset,
     startedAt: channelStartedAt,
   }
+  // A channel turn is a real execution: it gets a root like any other, so the
+  // building's and the floor's numbers stop ignoring everything that arrives through
+  // a channel. The key is derived from the message, so a redelivered webhook reuses
+  // the same root instead of counting twice.
+  const channelFloor = await getFloor(ownerId, agent.officeId).catch(() => null)
+  const channelRootKey = channelExecutionKey(widget._id.toString(), conversationId, channelStartedAt.getTime().toString())
+  const channelRootId = await openRunningRoot({
+    executionKey: channelRootKey,
+    ownerId,
+    buildingId: channelFloor?.buildingId ?? null,
+    originFloorId: agent.officeId,
+    source: 'channel',
+    sourceRefId: widget._id,
+    createdAt: channelStartedAt,
+  }).catch(() => null)
+
   const recordChannel = async (eventKey: string, status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0, extra: Record<string, string | number | boolean> = {}) => {
-    const floor = await getFloor(ownerId, agent.officeId).catch(() => null)
     recordAgentEventSafe({
       ...channelEventBase,
       eventKey,
-      buildingId: floor?.buildingId ?? null,
+      buildingId: channelFloor?.buildingId ?? null,
+      rootExecutionId: channelRootId,
       status,
       finishedAt: new Date(),
       inputTokens: u?.inputTokens ?? 0,
@@ -3591,6 +3693,11 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       toolCalls: okToolCalls,
       metadata: { channel: widget.channel ?? 'web', ...(widget.sectorId ? { sectorId: widget.sectorId.toString(), consulted: replyAgentName ?? '' } : {}), ...extra },
     })
+    // The turn ended, one way or another.
+    await finishExecutionRoot(channelRootKey, {
+      status: status === 'succeeded' ? 'succeeded' : 'failed',
+      errorKind: status === 'succeeded' ? null : status,
+    }).catch(() => undefined)
   }
 
   let generatedReply: string
@@ -3786,10 +3893,21 @@ async function refreshMemoryAndIdentity(params: {
           data: updated,
           updatedAt: new Date().toISOString(),
         }).catch((error) => {
-          console.error('Structured output webhook delivery failed:', error)
+          // `error.message` from fetch embeds the URL; the host is the diagnosis.
+          console.error(`Structured output webhook delivery failed (${safeHost(agent.structuredOutputWebhookUrl ?? '')})`)
+          void error
         })
       }
     }
+  }
+}
+
+// Host only. A private URL in a log is a credential in a log.
+const safeHost = (url: string): string => {
+  try {
+    return new URL(url).host
+  } catch {
+    return 'destino inválido'
   }
 }
 
@@ -3800,7 +3918,9 @@ async function sendStructuredOutputWebhook(url: string, payload: unknown) {
     body: JSON.stringify(payload),
   })
   if (!response.ok) {
-    console.error(`Structured output webhook returned ${response.status} for ${url}`)
+    // The owner's webhook URL frequently carries a token in the path or query, so
+    // the log gets the host and the status — enough to diagnose, nothing to leak.
+    console.error(`Structured output webhook returned ${response.status} (${safeHost(url)})`)
   }
 }
 

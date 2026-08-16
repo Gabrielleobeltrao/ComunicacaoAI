@@ -101,6 +101,9 @@ const RULES: Rule[] = [
   // Restoring is its own verb: it used to fall through to "created a floor".
   R('POST', 'api/floors/:/restore', { entityType: 'floor', action: 'restore' }, { idAt: 2 }),
   R('PATCH', 'api/building', { entityType: 'building', action: 'update' }),
+  // Who may talk to whom across floors is a security decision of the building.
+  R('PATCH', 'api/building/floor-communication', { entityType: 'building', action: 'update' }),
+  R('POST', 'api/building/floor-communication/impact', null, { why: 'simulação do rascunho, não persiste nada' }),
 
   // --- tools ---------------------------------------------------------------------------
   R('POST', 'api/tools', { entityType: 'tool', action: 'create' }),
@@ -118,6 +121,24 @@ const RULES: Rule[] = [
   R('POST', 'api/whatsapp/channels', { entityType: 'channel', action: 'create' }),
   R('PATCH', 'api/whatsapp/channels/:', { entityType: 'channel', action: 'update' }, { idAt: 3 }),
   R('DELETE', 'api/whatsapp/channels/:', { entityType: 'channel', action: 'delete' }, { idAt: 3 }),
+  // Apps: connecting, renaming, testing, reconnecting and disconnecting an
+  // installation are all changes to what this account can reach.
+  // A private App is a capability the account gains: creating, changing and deleting
+  // one are changes to what agents can be authorised to do.
+  R('POST', 'api/private-apps', { entityType: 'tool', action: 'create' }),
+  R('POST', 'api/private-apps/import', { entityType: 'tool', action: 'create' }),
+  R('PATCH', 'api/private-apps/:', { entityType: 'tool', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/private-apps/:', { entityType: 'tool', action: 'delete' }, { idAt: 2 }),
+  // Arquivar tira o App do catálogo sem apagar nada — é uma mudança de estado, e
+  // precisa constar no histórico como qualquer outra.
+  R('POST', 'api/private-apps/:/archive', { entityType: 'tool', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/app-installations', { entityType: 'connection', action: 'create' }),
+  R('PATCH', 'api/app-installations/:', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/app-installations/:/test', { entityType: 'connection', action: 'test' }, { idAt: 2 }),
+  R('POST', 'api/app-installations/:/reconnect', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/app-installations/:', { entityType: 'connection', action: 'disconnect' }, { idAt: 2 }),
+  // Granting or revoking an App on an agent changes what that agent may do.
+  R('PATCH', 'api/agents/:/app-grants', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/connections', { entityType: 'connection', action: 'create' }),
   R('PATCH', 'api/connections/:', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/connections/:', { entityType: 'connection', action: 'delete' }, { idAt: 2 }),

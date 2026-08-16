@@ -55,7 +55,8 @@ const BRAND: Record<string, { color: string; path: string }> = {
   },
 }
 
-function AppIcon({ appKey }: { appKey: string }) {
+// Shared with the grant editor: the same tile identifies the same App everywhere.
+export function AppIcon({ appKey }: { appKey: string }) {
   const brand = BRAND[appKey]
   if (!brand) {
     return (
@@ -73,8 +74,10 @@ function AppIcon({ appKey }: { appKey: string }) {
   )
 }
 
-// Gallery of built-in integrations ("apps") the owner connects to the agent.
-// Clicking Conectar/Configurar opens a popup with the app's per-agent config.
+// DEPRECATED gallery of built-in integrations. Superseded by AgentAppGrantsEditor:
+// a credential now lives on the account's connection, and the agent only carries a
+// grant. Kept because an agent whose entries were not migrated (e.g. Google never
+// connected) still reads them here.
 export function AgentAppsEditor({
   value,
   onChange,

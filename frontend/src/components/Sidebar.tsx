@@ -6,6 +6,8 @@ import { NAV } from './navItems'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { isNavActive, navGroupsFor } from './navConfig'
 import { BuildingSwitcher } from './BuildingSwitcher'
+import { PinnedAppsNav } from './PinnedAppsNav'
+import { useAppNavigation } from '../lib/appNavigation'
 
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
@@ -13,6 +15,7 @@ export function Sidebar({ current }: { current: string }) {
   // Nav V2 (grouped, floor-aware) when the building context is present.
   const bctx = useOptionalBuildingContext()
   const { pathname } = useLocation()
+  const { pinned } = useAppNavigation()
 
   const user = session?.user
   const displayName = user?.name?.trim() || user?.email?.split('@')[0] || 'Você'
@@ -29,7 +32,13 @@ export function Sidebar({ current }: { current: string }) {
     // outer wrapper keeps reserving the collapsed width so the page never
     // reflows; the <aside> overlays the content when expanded. Desktop only —
     // touch devices get MobileNav (bottom bar + drawer) instead of this hover rail.
-    <div className="group relative hidden shrink-0 lg:block" style={{ width: 'var(--rail-width-collapsed)' }}>
+    <div
+      className="group relative hidden shrink-0 lg:block"
+      style={{ width: 'var(--rail-width-collapsed)' }}
+      // Marcado para o seletor de prédio saber quando o mouse saiu do rail: o rail
+      // encolhe por CSS, e um popover aberto ficaria pendurado num rail estreito.
+      data-rail
+    >
       <aside
         className="absolute inset-y-0 left-0 z-30 flex w-(--rail-width-collapsed) flex-col gap-4 overflow-hidden border-r px-3 py-4 transition-[width,box-shadow] duration-200 ease-out group-hover:w-(--rail-width) group-hover:overflow-y-auto group-hover:shadow-[0_16px_40px_rgba(22,24,31,.16)]"
         style={{ background: 'var(--surface-rail)', borderColor: 'var(--border-subtle)' }}
@@ -67,6 +76,9 @@ export function Sidebar({ current }: { current: string }) {
                 })}
               </div>
             ))}
+            {/* Apps the user pinned. Built from active installations + manifest
+                pages + this user's preference — never from static config. */}
+            <PinnedAppsNav apps={pinned} />
           </nav>
         ) : (
           <nav className="flex flex-col gap-1">
@@ -81,9 +93,14 @@ export function Sidebar({ current }: { current: string }) {
 
         {/* User card — mirrors the design's Rail footer. Collapsed to the avatar
             until the rail expands. */}
-        <div
+        {/* Cartão do usuário — é ele que leva às configurações DA CONTA. A
+            engrenagem solta ao lado lia como duplicata da engrenagem do prédio, que
+            fica no seletor e configura outra coisa. */}
+        <Link
+          to="/settings"
           className="mt-auto flex items-center justify-center gap-0 overflow-hidden rounded-md p-1.5 group-hover:justify-start group-hover:gap-2.5"
-          style={{ background: 'var(--surface-sunken)' }}
+          style={{ background: 'var(--surface-sunken)', textDecoration: 'none', color: 'inherit' }}
+          title="Configurações da conta"
         >
           <span
             className="grid shrink-0 place-items-center rounded-full"
@@ -108,10 +125,19 @@ export function Sidebar({ current }: { current: string }) {
             </span>
           </div>
           <div className={`flex items-center gap-0.5 ${COLLAPSE_FADE}`}>
-            <IconButton icon="settings" label="Configurações" size="sm" onClick={() => navigate('/settings')} />
-            <IconButton icon="log-out" label="Sair" size="sm" onClick={handleSignOut} />
+            <IconButton
+              icon="log-out"
+              label="Sair"
+              size="sm"
+              onClick={(e) => {
+                // Dentro de um link: sair não pode virar navegação para /settings.
+                e.preventDefault()
+                e.stopPropagation()
+                void handleSignOut()
+              }}
+            />
           </div>
-        </div>
+        </Link>
       </aside>
     </div>
   )

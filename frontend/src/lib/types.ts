@@ -60,6 +60,10 @@ export interface SectorSummary {
   outputContract?: string
   stages?: SectorStageSummary[]
   members: SectorMemberSummary[]
+  // Who may call INTO this sector's people. Absent on old documents = open, which is
+  // exactly how they behaved.
+  entryPolicy?: 'sector_only' | 'selected_members' | 'open_members'
+  exposedAgentIds?: string[]
 }
 
 export type ToolMethod = 'GET' | 'POST'

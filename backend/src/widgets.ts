@@ -373,11 +373,28 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+// The channel filter is applied HERE, on the server, against widgets this owner
+// actually has. Editing the query string can therefore narrow the result, never widen
+// it: an id that is not the owner's simply is not in the set.
+export interface ConversationFilters {
+  search?: string
+  channel?: 'web' | 'whatsapp'
+  widgetId?: ObjectId
+}
+
 export async function listConversationsForOwner(
   ownerId: string,
-  search?: string,
+  searchOrFilters?: string | ConversationFilters,
 ): Promise<ConversationSummary[]> {
-  const ownerWidgets = await widgets.find({ ownerId }).toArray()
+  const filters: ConversationFilters = typeof searchOrFilters === 'string' ? { search: searchOrFilters } : (searchOrFilters ?? {})
+  const search = filters.search
+  const scope: Record<string, unknown> = { ownerId }
+  // Legacy documents have no `channel` field and are web by definition.
+  if (filters.channel === 'web') scope.channel = { $ne: 'whatsapp' }
+  else if (filters.channel === 'whatsapp') scope.channel = 'whatsapp'
+  if (filters.widgetId) scope._id = filters.widgetId
+
+  const ownerWidgets = await widgets.find(scope).toArray()
   if (ownerWidgets.length === 0) return []
 
   const widgetIds = ownerWidgets.map((w) => w._id)

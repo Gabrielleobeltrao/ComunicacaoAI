@@ -1,3 +1,4 @@
+import { ObjectId } from 'mongodb'
 import { Router } from 'express'
 import { config } from '../config.js'
 import {
@@ -8,7 +9,13 @@ import {
   listTriggers,
 } from '../automations/executionCenter.js'
 import type { ExecutionFilters, ExecutionTab } from '../automations/executionCenter.js'
+import { executionAnalytics, executionBreakdown } from '../executionRoots.js'
+import type { AnalyticsPeriod } from '../executionRoots.js'
 import { oid } from './http.js'
+
+const ANALYTICS_PERIODS: AnalyticsPeriod[] = ['7d', '30d', 'all']
+const readAnalyticsPeriod = (raw: unknown): AnalyticsPeriod =>
+  ANALYTICS_PERIODS.includes(raw as AnalyticsPeriod) ? (raw as AnalyticsPeriod) : '30d'
 
 // Mounted at /api/executions behind requireAuth. Read-only observability over the
 // work the agents already do: it starts no run, publishes nothing, and every query
@@ -50,4 +57,18 @@ executionRouter.get('/', async (req, res) => {
     return
   }
   res.json({ tab, ...(await listRunsForCenter(ownerId, tab === 'active' ? 'active' : 'history', filters, page)) })
+})
+
+// Hierarchical analytics. ONE service answers building, floor, sector and agent, so
+// the four pages cannot implement different formulas and disagree.
+executionRouter.get('/analytics', async (req, res) => {
+  const period = readAnalyticsPeriod(req.query.period)
+  res.json(await executionAnalytics({ ownerId: res.locals.userId, scope: 'building', period }))
+})
+
+executionRouter.get('/breakdown', async (req, res) => {
+  const q = req.query as Record<string, string | undefined>
+  const groupBy = q.groupBy === 'sector' || q.groupBy === 'agent' ? q.groupBy : 'floor'
+  const floorId = q.floorId && ObjectId.isValid(q.floorId) ? new ObjectId(q.floorId) : undefined
+  res.json(await executionBreakdown(res.locals.userId, groupBy, { period: readAnalyticsPeriod(q.period), floorId }))
 })

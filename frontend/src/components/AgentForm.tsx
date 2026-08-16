@@ -19,7 +19,7 @@ import type {
   ResponseDetail,
   ResponseTone,
 } from '../lib/types'
-import { AgentAppsEditor } from './AgentAppsEditor'
+import { AgentAppGrantsEditor } from './AgentAppGrantsEditor'
 import { AgentToolsEditor } from './AgentToolsEditor'
 
 interface AgentFormProps {
@@ -723,7 +723,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
                   required
-                  autoFocus
+                  // Sem autoFocus: este formulário edita um agente que já existe e
+                  // vive no MEIO da página. Focar o campo fazia o navegador rolar
+                  // até ele, então a página abria pela metade.
                   className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                 />
               )}
@@ -1307,8 +1309,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           <CollapsibleBlock title="Ferramentas" showHeader={stacked}>
             <div className="space-y-5">
               <div>
-                <p className="mb-2 text-sm font-medium">Integrações (apps)</p>
-                <AgentAppsEditor value={editBuiltinTools} onChange={setEditBuiltinTools} />
+                <p className="mb-2 text-sm font-medium">Apps</p>
+                <p className="mb-2 text-xs text-(--text-faint)">
+                  O que este agente pode fazer com as contas conectadas na conta. A credencial fica na conexão.
+                </p>
+                <AgentAppGrantsEditor agentId={agent?._id ?? null} />
               </div>
               <div className="border-t border-(--border-subtle) pt-4">
                 <p className="mb-2 text-sm font-medium">Ferramentas personalizadas (HTTP)</p>

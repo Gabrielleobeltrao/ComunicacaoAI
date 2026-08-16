@@ -2,6 +2,9 @@ import { Router } from 'express'
 import type { Floor } from '../floors.js'
 import { createFloor, deleteFloor, getFloor, getFloorActivity, listFloors, setFloorStatus, updateFloor } from '../floors.js'
 import { agentStatesForFloor, floorMetrics } from '../automations/metrics.js'
+import { agentLiveStatesForFloor, legacyWorkingMap, liveStatesEtag } from '../agentLiveState.js'
+import { floorWorkOverview } from '../floorWork.js'
+import { executionAnalytics } from '../executionRoots.js'
 import { fail, notFound, oid } from './http.js'
 import { auditEntity } from './auditMiddleware.js'
 
@@ -22,6 +25,11 @@ const toPublic = (f: Floor) => ({
   icon: f.icon,
   order: f.order,
   status: f.status,
+  // How this floor works. `coordinatorAgentId` only points at an agent — no tool,
+  // App or permission list is stored on the floor.
+  workMode: f.workMode,
+  coordinatorAgentId: f.coordinatorAgentId ? f.coordinatorAgentId.toString() : null,
+  instruction: f.instruction,
   createdAt: f.createdAt,
   updatedAt: f.updatedAt,
 })
@@ -60,6 +68,27 @@ floorRouter.patch('/:floorId', async (req, res, next) => {
   } catch (error) {
     fail(res, error, next)
   }
+})
+
+// Who coordinates this floor, what they can effectively reach, and whether the
+// arrangement is ready. Read-only: it discovers, it never grants.
+floorRouter.get('/:floorId/work-overview', async (req, res) => {
+  const id = oid(req.params.floorId)
+  if (!id) return notFound(res)
+  const floor = await getFloor(res.locals.userId, id)
+  if (!floor) return notFound(res)
+  res.json(await floorWorkOverview(res.locals.userId, floor))
+})
+
+// The same analytics service, scoped to this floor — never a second formula.
+floorRouter.get('/:floorId/executions/analytics', async (req, res) => {
+  const id = oid(req.params.floorId)
+  if (!id) return notFound(res)
+  const floor = await getFloor(res.locals.userId, id)
+  if (!floor) return notFound(res)
+  const raw = req.query.period
+  const period = raw === '7d' || raw === 'all' ? raw : '30d'
+  res.json(await executionAnalytics({ ownerId: res.locals.userId, scope: 'floor', period, floorId: id }))
 })
 
 floorRouter.delete('/:floorId', async (req, res) => {
@@ -113,10 +142,38 @@ floorRouter.get('/:floorId/metrics', async (req, res) => {
 })
 
 // Per-agent operational state for the live-map overlay (read-only reflection).
+//
+// Read-only, authenticated, owner AND floor scoped. It returns the versioned DTO —
+// enum, timestamps and an allowlisted `safeDetail`, never a prompt, an input, an
+// output or a raw error. `legacy=1` keeps the old `Record<agentId,'working'>` shape
+// for the current map until the bubble layer ships.
 floorRouter.get('/:floorId/agent-states', async (req, res) => {
   const id = oid(req.params.floorId)
   if (!id) return notFound(res)
   const floor = await getFloor(res.locals.userId, id)
   if (!floor) return notFound(res)
-  res.json(await agentStatesForFloor(res.locals.userId, id))
+
+  const live = await agentLiveStatesForFloor(res.locals.userId, id)
+
+  // Nothing new since the client's copy: answer 304 instead of a payload. Polling
+  // every couple of seconds has to be cheap.
+  const etag = liveStatesEtag(live)
+  res.setHeader('ETag', etag)
+  res.setHeader('Cache-Control', 'no-cache')
+  if (req.headers['if-none-match'] === etag) return res.status(304).end()
+
+  const since = typeof req.query.updatedSince === 'string' ? new Date(req.query.updatedSince) : null
+  const filtered =
+    since && !Number.isNaN(since.getTime())
+      ? { ...live, states: live.states.filter((s) => new Date(s.updatedAt) > since) }
+      : live
+
+  if (req.query.legacy === '1') {
+    // The old contract, derived from the same projection — plus what the previous
+    // implementation covered: an agent in a run that has not reported a transition
+    // yet still counts as working.
+    const legacy = { ...legacyWorkingMap(live), ...(await agentStatesForFloor(res.locals.userId, id)) }
+    return res.json(legacy)
+  }
+  res.json(filtered)
 })

@@ -2,14 +2,16 @@ import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AgentBadges } from '../components/AgentBadges'
+import { SectorPerformance } from '../components/SectorPerformance'
 import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
+import { SectorAccessSection } from '../components/SectorAccessSection'
 import { SectorForm } from '../components/SectorForm'
-import { SectorPlayground } from '../components/SectorPlayground'
+import { SectorExecutions } from '../components/SectorExecutions'
 import { SectorKnowledge } from '../components/SectorKnowledge'
 import { API_URL } from '../lib/api'
-import { SectorApiError, getSectorOverview, sectorModeLabel } from '../lib/sectors'
-import { SectorHero } from '../components/SectorHero'
+import { SectorApiError, getSectorOverview, sectorModeLabel, sectorReadiness } from '../lib/sectors'
+import { SectorHero, ReadinessBadge } from '../components/SectorHero'
 import { SectorFlow } from '../components/SectorFlow'
 import { SectorAgentsDialog } from '../components/SectorAgentsDialog'
 import { MoveSectorWizard } from '../components/MoveSectorWizard'
@@ -18,19 +20,6 @@ import { floorAgent, floorSector, floorSectors } from '../lib/floorRoutes'
 import { Button } from '../ui'
 import { LEGACY_SECTOR_SECTION, SECTOR_SECTIONS } from '../lib/sectorSections'
 import type { AgentSummary, SectorOverview } from '../lib/types'
-
-function Metric({ label, value, suffix, hint }: { label: string; value: number; suffix?: string; hint?: string }) {
-  return (
-    <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
-      <p className="text-2xl font-semibold">
-        {value.toLocaleString('pt-BR')}
-        {suffix}
-      </p>
-      <p className="mt-1 text-sm text-(--text-muted)">{label}</p>
-      {hint && <p className="mt-0.5 text-xs text-(--text-faint)">{hint}</p>}
-    </div>
-  )
-}
 
 function Badge({ children }: { children: ReactNode }) {
   return (
@@ -58,7 +47,7 @@ function ReadinessPanel({ overview, onFix }: { overview: SectorOverview; onFix: 
 }
 
 function OverviewSection({ overview, agents }: { overview: SectorOverview; agents: AgentSummary[] }) {
-  const { sector, analytics, linkedWidgets } = overview
+  const { sector } = overview
   const fid = useActiveFloorId()
   const nameById = new Map(agents.map((a) => [a._id, a.name]))
   const agentById = new Map(agents.map((a) => [a._id, a]))
@@ -66,7 +55,6 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
   // Agents that are wired in but still need their OWN setup — the backend reports
   // them by name, so the card can say so instead of failing silently at run time.
   const pendingNames = new Set((overview.readiness?.issues ?? []).filter((i) => i.code === 'agent_pending').map((i) => i.message.split(' ainda precisa')[0]))
-  const maxCount = Math.max(1, ...(analytics?.specialists.map((s) => s.count) ?? []))
 
   const renderMember = (m: (typeof sector.members)[number], index: number) => {
     const full = agentById.get(m.agentId)
@@ -96,9 +84,11 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
             <span className="text-(--text-faint)">Avança quando:</span> {m.advanceWhen}
           </p>
         )}
-        {isPipeline && m.transitions.length > 0 && (
+        {/* `transitions` chegou depois: um membro gravado antes dela não tem o
+            campo, e ler `.length` dele derrubava a página inteira do setor. */}
+        {isPipeline && (m.transitions?.length ?? 0) > 0 && (
           <ul className="mt-1.5 space-y-0.5">
-            {m.transitions.map((t, ti) => (
+            {(m.transitions ?? []).map((t, ti) => (
               <li key={ti} className="text-xs text-(--text-faint)">
                 <span className="text-(--text-faint)">Se</span> {t.condition || '…'}{' '}
                 <span className="text-(--text-muted)">→ {nameById.get(t.targetAgentId) ?? 'etapa'}</span>
@@ -140,99 +130,41 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
 
   return (
     <div className="space-y-6">
+      {/* O desenho do fluxo e quem faz cada parte são a MESMA pergunta. Separá-los
+          em duas seções obrigava a olhar para cima e para baixo para responder
+          "quem é essa etapa?". */}
       <section>
         <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Como o trabalho anda</h3>
-        <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
-          <SectorFlow sector={sector} agents={agents} />
-        </div>
-      </section>
-
-      <section>
-        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">
-          {isPipeline ? 'Etapas do fluxo' : 'Agentes do setor'}
-        </h3>
-        {isPipeline || !showSectorHeadings ? (
-          <ul className="space-y-2">
-            {sector.members.map((m, index) => renderMember(m, index))}
-          </ul>
-        ) : (
-          <div className="space-y-4">
-            {sectorGroups.map(([area, members]) => (
-              <div key={area || '_none'}>
-                <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-(--text-faint)">
-                  {area || 'Sem área'}
-                </p>
-                <ul className="space-y-2">
-                  {members.map((m) => renderMember(m, sector.members.indexOf(m)))}
-                </ul>
-              </div>
-            ))}
+        {/* Lado a lado: o desenho do fluxo à esquerda, quem faz cada parte à direita.
+            Empilhados, responder "quem é essa etapa?" exigia rolar de um para o
+            outro. */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start" data-testid="sector-work">
+          <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
+            <SectorFlow sector={sector} agents={agents} />
           </div>
-        )}
-      </section>
-
-      <section>
-        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Desempenho</h3>
-        {analytics ? (
-          <div className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <Metric label="Turnos orquestrados" value={analytics.decisions} />
-              {isPipeline ? (
-                <Metric label="Avanços/desvios" value={analytics.moves} />
-              ) : (
-                <Metric
-                  label="Pediu esclarecimento"
-                  value={Math.round(analytics.clarifyRate * 100)}
-                  suffix="%"
-                />
-              )}
-            </div>
-            <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-(--text-faint)">
-                {isPipeline ? 'Atividade por etapa' : 'Mais consultados'}
-              </p>
-              <ul className="space-y-1.5">
-                {analytics.specialists.map((s) => (
-                  <li key={s.name}>
-                    <div className="mb-0.5 flex items-center justify-between text-xs">
-                      <span className="text-(--text-body)">{s.name}</span>
-                      <span className="text-(--text-faint)">{s.count}</span>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-(--surface-sunken)">
-                      <div
-                        className="h-1.5 rounded-full bg-(--intent-brand)"
-                        style={{ width: `${(s.count / maxCount) * 100}%` }}
-                      />
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        ) : (
-          <p className="text-sm text-(--text-faint)">
-            Sem dados de orquestração ainda. Eles aparecem conforme o setor responde conversas.
-          </p>
-        )}
-      </section>
-
-      <section>
-        <h3 className="mb-3 text-sm font-medium text-(--text-muted)">Onde é usado</h3>
-        <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-(--text-faint)">Widgets</p>
-          {linkedWidgets.length === 0 ? (
-            <p className="text-sm text-(--text-faint)">Nenhum widget usa este setor.</p>
-          ) : (
-            <ul className="flex flex-wrap gap-1.5">
-              {linkedWidgets.map((w) => (
-                <li key={w._id}>
-                  <Badge>{w.name}</Badge>
-                </li>
-              ))}
+          {isPipeline || !showSectorHeadings ? (
+            <ul className="space-y-2">
+              {sector.members.map((m, index) => renderMember(m, index))}
             </ul>
+          ) : (
+            <div className="space-y-4">
+              {sectorGroups.map(([area, members]) => (
+                <div key={area || '_none'}>
+                  {/* A área continua rotulada: num setor adaptativo ela é o que
+                      explica por que um agente está no grupo. */}
+                  <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-(--text-faint)">
+                    {area || 'Sem área'}
+                  </p>
+                  <ul className="space-y-2">
+                    {members.map((m) => renderMember(m, sector.members.indexOf(m)))}
+                  </ul>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </section>
+
     </div>
   )
 }
@@ -284,9 +216,10 @@ export function SectorDetail() {
     void loadAgents()
   }, [loadAgents])
 
+  // Confirmed by the dialog in DangerZone, which requires the sector's name to be
+  // typed. This only performs what was already confirmed.
   async function handleDelete() {
     if (!overview || deleting) return
-    if (!window.confirm(`Excluir o setor "${overview.sector.name}"? Essa ação não pode ser desfeita.`)) return
     setDeleteError(null)
     setDeleting(true)
     try {
@@ -315,11 +248,28 @@ export function SectorDetail() {
     <>
       <Badge>{sectorModeLabel(sector.mode)}</Badge>
       <Badge>{`${sector.members.length} ${sector.members.length === 1 ? 'agente' : 'agentes'}`}</Badge>
+      {/* Prontidão na mesma linha do nome: é a primeira coisa que se quer saber, e
+          antes ficava escondida embaixo do mapa. */}
+      <ReadinessBadge
+        readiness={sectorReadiness({ mode: sector.mode, members: sector.members, coordinatorAgentId: sector.coordinatorAgentId, stages: sector.stages })}
+      />
     </>
   ) : undefined
 
   return (
-    <AppLayout current="/setores" title={sector?.name ?? 'Setor'} titleExtra={titleExtra}>
+    <AppLayout
+      current="/setores"
+      title={sector?.name ?? 'Setor'}
+      titleExtra={titleExtra}
+      // A ação principal do setor fica na mesma linha do nome dele.
+      actions={
+        sector ? (
+          <Button icon="users-round" onClick={() => setManageOpen(true)}>
+            Gerenciar agentes
+          </Button>
+        ) : undefined
+      }
+    >
       {loading ? (
         <p className="text-sm text-(--text-muted)">Carregando setor...</p>
       ) : error ? (
@@ -333,16 +283,14 @@ export function SectorDetail() {
         <p className="text-sm text-(--text-muted)">Setor não encontrado.</p>
       ) : (
         <div className="space-y-4">
-          <SectorHero
-            sector={sector}
-            agents={agents}
-            floorName={floorName}
-            actions={
-              <Button icon="users-round" onClick={() => setManageOpen(true)}>
-                Gerenciar agentes
-              </Button>
-            }
-          />
+          {/* Quem é o setor à esquerda, como ele está indo à direita. O Desempenho
+              subiu para cá: vale para todas as abas, não só para a Visão geral. */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
+            <SectorHero sector={sector} agents={agents} floorName={floorName} />
+            {/* Sem moldura própria: os cards de métrica lá dentro já têm a deles,
+                e uma caixa em volta viraria cartão dentro de cartão. */}
+            <SectorPerformance sector={sector} agents={agents} />
+          </div>
 
           <SectorAgentsDialog open={manageOpen} onClose={() => setManageOpen(false)} sector={sector} floorAgents={agents} onChanged={load} />
 
@@ -358,8 +306,11 @@ export function SectorDetail() {
             }}
           />
 
+          {/* Abas e conteúdo num cartão só, como na página do agente: o conteúdo
+              deixa de flutuar direto sobre o fundo da página. */}
+          <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card)" data-testid="sector-workspace">
           {/* Visible in-page navigation (canonical, URL-active, scrolls on mobile). */}
-          <nav aria-label="Seções do setor" style={{ display: 'flex', gap: 4, overflowX: 'auto', borderBottom: '1px solid var(--border-subtle)' }}>
+          <nav aria-label="Seções do setor" style={{ display: 'flex', gap: 4, overflowX: 'auto', borderBottom: '1px solid var(--border-subtle)', padding: '0 16px' }}>
             {SECTOR_SECTIONS.map((s) => {
               const on = active === s.key
               return (
@@ -376,14 +327,16 @@ export function SectorDetail() {
           </nav>
 
           {active === '' ? (
-            <div className="space-y-4">
+            <div className="space-y-4 p-6">
               <ReadinessPanel overview={overview} onFix={() => navigate(tabHref('equipe'))} />
               <OverviewSection overview={overview} agents={agents} />
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-4 p-6">
               {active !== 'avancado' && (
-                <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-6">
+                // Sem cartão dentro de cartão: quem desenha a moldura agora é o
+                // bloco de abas.
+                <div>
                   {active === 'equipe' ? (
                     // Inline editing: the team and its flow are changed right here,
                     // no separate "edit sector" screen.
@@ -391,12 +344,17 @@ export function SectorDetail() {
                   ) : active === 'conhecimento' ? (
                     <SectorKnowledge key={sector._id} sectorId={sector._id} />
                   ) : active === 'execucoes' ? (
-                    <SectorPlayground key={sector._id} sector={sector} />
+                    // Desempenho, Histórico and — last, labelled as a test — the
+                    // playground. It used to be the playground alone.
+                    <SectorExecutions sector={sector} agents={agents} />
                   ) : null}
                 </div>
               )}
               {active === 'avancado' && (
                 <>
+                  {/* The boundary that keeps outsiders from walking into the middle
+                      of a flow. Removing ways in, never granting one. */}
+                  <SectorAccessSection sector={sector} agents={agents} onSaved={load} />
                   <div className="flex flex-col gap-2 rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p className="font-medium text-(--text-heading)">Mover de andar</p>
@@ -408,8 +366,14 @@ export function SectorDetail() {
                   </div>
                   <DangerZone
                     title="Excluir este setor"
-                    description="Não pode ser desfeito."
+                    description={`Remove "${overview.sector.name}". Não pode ser desfeito.`}
                     buttonLabel="Excluir setor"
+                    confirmName={overview.sector.name}
+                    consequences={[
+                      'O setor deixa de existir como unidade executável.',
+                      'Os agentes que participavam dele continuam existindo.',
+                      'O histórico de execuções já registrado é preservado.',
+                    ]}
                     onDelete={handleDelete}
                     deleting={deleting}
                     deleteError={deleteError}
@@ -418,6 +382,7 @@ export function SectorDetail() {
               )}
             </div>
           )}
+          </div>
         </div>
       )}
     </AppLayout>

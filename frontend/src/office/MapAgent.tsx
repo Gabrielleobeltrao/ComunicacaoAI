@@ -1,10 +1,13 @@
 import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Illustration } from './Illustration'
+import { AgentActivityBubble } from '../components/AgentActivityBubble'
+import { bubblePlacement } from '../lib/agentActivityAssets'
 import { NamePill } from './NamePill'
 import { characterSrc } from '../lib/officeAssets'
 import type { CharacterView } from '../lib/officeAssets'
 import type { AgentStatus } from '../ui'
+import type { AgentBubbleState } from '../lib/agentActivityAssets'
 
 interface MapAgentProps {
   x: number
@@ -19,6 +22,10 @@ interface MapAgentProps {
   scale?: number
   department?: string
   speaking?: boolean
+  // The operational state the RUNTIME reported, for the static fallback map. Same
+  // rule as the animated one: no execution, no bubble.
+  opState?: AgentBubbleState
+  opDetail?: { appKey?: string; actionLabel?: string; targetType?: string }
   showName?: 'hover' | 'always' | 'never'
   hoverLift?: boolean
   onOpen?: () => void
@@ -40,6 +47,8 @@ export function MapAgent({
   scale = 1.25,
   department = 'var(--dept-dev)',
   speaking,
+  opState,
+  opDetail,
   showName = 'hover',
   hoverLift = true,
   onOpen,
@@ -55,6 +64,7 @@ export function MapAgent({
   const dx = (w - 1) / 2
   const dy = h - 1.5
   const headTop = seated ? '78.6%' : '100%'
+  const placement = bubblePlacement(x, headTop)
   return (
     <button
       onClick={onOpen}
@@ -90,8 +100,16 @@ export function MapAgent({
         <NamePill
           name={name}
           status={status}
-          style={{ position: 'absolute', bottom: headTop, marginBottom: 4, zIndex: 5, whiteSpace: 'nowrap', pointerEvents: 'none' }}
+          // The name rises above the bubble when both are on screen.
+          style={{ position: 'absolute', bottom: opState ? placement.bottom : headTop, marginBottom: opState ? placement.nameMarginBottom : 4, zIndex: 20, whiteSpace: 'nowrap', pointerEvents: 'none' }}
         />
+      ) : null}
+      {/* Lane by column parity, so a neighbour's bubble never sits at the same
+          height and hides this one. */}
+      {opState ? (
+        <span style={{ position: 'absolute', bottom: placement.bottom, marginBottom: placement.marginBottom, zIndex: placement.zIndex, pointerEvents: 'none' }}>
+          <AgentActivityBubble state={opState} agentName={name ?? ''} safeDetail={opDetail} size="sm" />
+        </span>
       ) : null}
       {speaking ? (
         <span

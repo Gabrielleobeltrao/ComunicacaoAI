@@ -97,6 +97,38 @@ async function stub(page: Page, opts: { items?: Record<string, unknown[]>; fail?
     lastAction = r.request().url().split('/').pop() ?? null
     return r.fulfill({ json: { id: 'sch-1', name: 'Resumo diário', status: 'paused' } })
   })
+  await page.route('**/api/executions/analytics**', (r) =>
+    r.fulfill({
+      json: {
+        scope: 'building',
+        period: '30d',
+        telemetrySince: '2026-01-01T00:00:00.000Z',
+        executions: 3,
+        succeeded: 2,
+        failed: 1,
+        canceled: 0,
+        running: 0,
+        successRate: 0.6667,
+        avgDurationMs: 6000,
+        p95DurationMs: 9000,
+        avgQueueMs: 1200,
+        activeTimeMs: 15000,
+        totalTokens: 2400,
+        avgTokensPerExecution: 800,
+        participations: 7,
+        participatedExecutions: 3,
+        partialTelemetry: 2,
+      },
+    }),
+  )
+  await page.route('**/api/executions/breakdown**', (r) =>
+    r.fulfill({
+      json: [
+        { id: FLOOR_ID, label: FLOOR_ID, executions: 3, successRate: 0.5, totalTokens: 1800, participations: 5 },
+        { id: 'sem-andar', label: 'sem-andar', executions: 1, successRate: 1, totalTokens: 600, participations: 2 },
+      ],
+    }),
+  )
   await page.route('**/api/agents?**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents', (r) => r.fulfill({ json: [{ _id: AGENT_ID, name: 'Ana', floorId: FLOOR_ID }] }))
   await page.route('**/api/sectors**', (r) =>
@@ -321,4 +353,48 @@ test('the Central links to the full log', async ({ page }) => {
   await page.goto('/executions')
   await page.getByTestId('open-logs').click()
   await expect(page).toHaveURL(/\/settings\/logs$/)
+})
+
+// --- análise ------------------------------------------------------------------------
+
+test('a aba Análise conta cada pedido uma vez e separa tempo ativo de duração', async ({ page }) => {
+  await stub(page)
+  await page.goto('/executions')
+  await page.getByTestId('tab-analysis').click()
+
+  const metrics = page.getByTestId('analytics-metrics')
+  await expect(metrics).toContainText('Execuções')
+  await expect(metrics).toContainText('3')
+  await expect(metrics).toContainText('Duração média')
+  await expect(metrics).toContainText('6.0s')
+  // Tempo somado dos agentes é outra métrica, com rótulo próprio.
+  await expect(metrics).toContainText('Tempo ativo somado')
+  await expect(metrics).toContainText('15.0s')
+  await expect(metrics).toContainText('P95')
+})
+
+test('a análise declara telemetria parcial em vez de fingir histórico', async ({ page }) => {
+  await stub(page)
+  await page.goto('/executions')
+  await page.getByTestId('tab-analysis').click()
+  await expect(page.getByTestId('analytics-telemetry')).toContainText('Telemetria disponível desde')
+  await expect(page.getByTestId('analytics-telemetry')).toContainText('2 registro(s) antigo(s) sem correlação')
+})
+
+test('o detalhamento separa execuções de participações e diz que somar não vale', async ({ page }) => {
+  await stub(page)
+  await page.goto('/executions')
+  await page.getByTestId('tab-analysis').click()
+  const table = page.getByTestId('analytics-breakdown')
+  await expect(table).toContainText('Térreo')
+  await expect(table).toContainText('Participações')
+  await expect(table).toContainText('Somar participações não dá o total de execuções')
+})
+
+test('a análise aponta onde o trabalho aperta', async ({ page }) => {
+  await stub(page)
+  await page.goto('/executions')
+  await page.getByTestId('tab-analysis').click()
+  await expect(page.getByTestId('analytics-bottlenecks')).toContainText('concentra')
+  await expect(page.getByTestId('analytics-bottlenecks')).toContainText('menor taxa de sucesso')
 })

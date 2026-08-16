@@ -14,3 +14,20 @@ compose.production-test.env
 
 # Local Redis dump (dev only)
 dump.rdb
+
+# Grafo de conhecimento (graphify). Só o relatório legível é versionado:
+# graph.json + graph.html somam ~2,3 MB de artefato DERIVADO, regenerável em
+# segundos e sem token nenhum (a extração é AST), e ficariam desatualizados a cada
+# commit de código. Os dotfiles guardam caminhos absolutos da máquina que gerou, e
+# cache/ é índice de mtime local.
+# O grafo vive em backend/graphify-out/ porque o graphify sempre escreve a saída
+# dentro do diretório que escaneia — e o hook de post-commit depende disso para
+# reconstruir o grafo certo.
+backend/graphify-out/*
+!backend/graphify-out/GRAPH_REPORT.md
+# Ponteiro na raiz: é onde o hook procura qual diretório escanear. Só caminhos
+# absolutos desta máquina, nada versionável.
+graphify-out/
+
+# Artefatos do Playwright quando a suíte roda a partir da raiz.
+test-results/

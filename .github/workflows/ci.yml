@@ -1,11 +1,12 @@
 # Every push and pull request on main/development gets the same checks a developer
-# runs locally: a clean install, typecheck, build and both test suites.
+# runs locally: a clean install, typecheck, build, both test suites — e o smoke de
+# MVP, que sobe a pilha inteira e a exercita como um usuário.
 #
 # Deliberately hermetic: no secrets, no deploy, no seed, no call to any external
 # service, and no broker — the automation queue and scheduler live in MongoDB, and
-# the integration tests start their own mongod through mongodb-memory-server. The
-# E2E suite is not run here (it needs browsers and a live backend; it stays a
-# local gate).
+# both the integration tests and the smoke start their own mongod through
+# mongodb-memory-server. O LLM do smoke é um adaptador falso que só existe com
+# NODE_ENV=test (backend/test/llmFakeGate.test.mjs prova que produção não alcança).
 name: CI
 
 on:
@@ -30,9 +31,9 @@ jobs:
       MONGODB_URI: mongodb://127.0.0.1:27017/comunicacaoai_ci
       CI: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # Pinned to 20.19+: rolldown (vite's bundler) declares
           # engines.node "^20.19.0 || >=22.12.0", and on an older 20.x npm silently
@@ -55,8 +56,49 @@ jobs:
       - name: Build
         run: npm run build
 
+      # O binário do mongod entre execuções. Sem isto, cada run baixa 76 MB de
+      # novo — e era num cache frio que 29 processos disputavam o mesmo download.
+      - name: Cache mongod binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongod-${{ runner.os }}
+
+      # `npm test` particiona a suíte: os arquivos que sobem um mongod de verdade
+      # rodam com concorrência limitada, o resto em paralelo total. Ver
+      # backend/scripts/run-tests.mjs — o runner do GitHub é menor que a máquina
+      # de quem desenvolve, e a suíte inteira em paralelo pedia mais do que ele tem.
       - name: Backend tests
         run: npm test -w backend
 
       - name: Frontend unit tests
         run: npm test -w frontend
+
+  # O smoke roda a pilha de verdade num navegador. Fica num job próprio porque
+  # precisa do Chromium e leva mais tempo que o gate — e porque, quando ele quebra,
+  # o que quebrou é o produto, não uma unidade.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20.19'
+          cache: npm
+
+      - name: Clean install
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      # `npm run smoke` compila os dois workspaces, sobe mongod + API + frontend
+      # estático e roda o Playwright contra a pilha. Nenhum segredo, nenhuma conta
+      # e nenhuma chave de provedor — se precisasse de alguma, não rodaria aqui.
+      - name: MVP smoke (Chromium)
+        run: npm run smoke
