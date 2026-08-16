@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { appCatalogPublic, getApp, SYSTEM_APPS } from '../apps/registry.js'
 import { installationPublic, listInstallations } from '../apps/installations.js'
-import { buildNavigation, getNavigationPreferences, MAX_PINNED_APPS, setPinnedApps } from '../apps/navigation.js'
+import { buildNavigation, getNavigationPreferences, MAX_PINNED_APPS, resolveSurface, setPinnedApps } from '../apps/navigation.js'
 import { fail, notFound } from './http.js'
 
 // Read-only: what the owner may connect, and what is already connected. Everything
@@ -43,6 +43,24 @@ appCatalogRouter.get('/catalog/:appKey', async (req, res) => {
 // --- navegação ------------------------------------------------------------------
 // Read-only for the catalog side; the pin preference is the only thing writable, and
 // it is a shortcut, never an authorisation.
+
+// Can this user open this App page, right now? The SAME decision the sidebar uses,
+// asked by the route guard before it renders anything — so a direct URL cannot reach
+// a page whose App is inactive or broken.
+appCatalogRouter.get('/:appKey/surfaces/:surfaceKey/access', async (req, res) => {
+  const decision = await resolveSurface(res.locals.userId, String(req.params.appKey), String(req.params.surfaceKey))
+  if (decision.ok) {
+    return res.json({ ok: true, appKey: decision.app.key, appName: decision.app.name, installations: decision.installations.length })
+  }
+  // Never a 404 that looks like a bug: the reason is what the UI needs to show the
+  // right screen (reconnect vs activate).
+  res.status(403).json({
+    ok: false,
+    reason: decision.reason,
+    appName: getApp(String(req.params.appKey))?.name ?? null,
+    activationRoute: getApp(String(req.params.appKey))?.activationRoute ?? null,
+  })
+})
 
 appCatalogRouter.get('/navigation', async (_req, res) => {
   res.json(await buildNavigation(res.locals.userId, res.locals.userId))

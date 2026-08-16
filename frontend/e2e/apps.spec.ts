@@ -98,7 +98,10 @@ let created: Record<string, unknown> | null = null
 let disconnected: { method: string; url: string } | null = null
 let pinnedSent: string[] | null = null
 
-async function stub(page: Page, opts: { installations?: unknown[]; navigation?: unknown[] } = {}) {
+async function stub(
+  page: Page,
+  opts: { installations?: unknown[]; navigation?: unknown[]; access?: { ok: boolean; reason?: string; appName?: string; activationRoute?: string } } = {},
+) {
   created = null
   disconnected = null
   pinnedSent = null
@@ -124,6 +127,11 @@ async function stub(page: Page, opts: { installations?: unknown[]; navigation?: 
   })
   await page.route('**/api/app-installations/*/test', (r) => r.fulfill({ json: { ok: true, message: 'Configuração lida com sucesso.' } }))
   await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: opts.navigation ?? [], pinned: [] } }))
+  // The surface guard asks this before rendering any App page.
+  await page.route('**/api/apps/*/surfaces/*/access', (r) => {
+    const access = opts.access ?? { ok: true }
+    return access.ok ? r.fulfill({ json: access }) : r.fulfill({ status: 403, json: access })
+  })
   await page.route('**/api/me/navigation-preferences/pinned-apps', (r) => {
     pinnedSent = (r.request().postDataJSON() as { pinnedApps: string[] }).pinnedApps
     return r.fulfill({ json: { pinnedApps: pinnedSent.map((appKey, order) => ({ appKey, order })), maxPinnedApps: 6 } })
@@ -330,4 +338,42 @@ test('um canal não é descrito como entrega de rotina', async ({ page }) => {
   await page.goto('/apps')
   await expect(page.getByTestId('app-card')).toContainText('Canal de atendimento')
   await expect(page.getByTestId('app-card')).not.toContainText('entregas das rotinas')
+})
+
+// --- guard das superfícies ---------------------------------------------------------
+
+test('URL direta não abre página de App inativo: leva a /apps e explica', async ({ page }) => {
+  await stub(page, { access: { ok: false, reason: 'inactive', appName: 'WhatsApp' } })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [WHATSAPP] }))
+  await page.goto('/apps/whatsapp/channels')
+  await expect(page).toHaveURL(/\/apps\?inactive=whatsapp/)
+  await expect(page.getByTestId('inactive-notice')).toContainText('ainda não está ativo')
+})
+
+test('conexão quebrada abre tela segura de reconexão, não a página operacional', async ({ page }) => {
+  await stub(page, { access: { ok: false, reason: 'needs_reauth', appName: 'WhatsApp', activationRoute: '/apps/whatsapp/channels' } })
+  await page.goto('/apps/whatsapp/conversations')
+  await expect(page.getByTestId('surface-needs-reauth')).toContainText('precisa ser reconectado')
+  // A página operacional não aparece.
+  await expect(page.getByTestId('conversations-panel')).toHaveCount(0)
+  await expect(page.getByTestId('surface-reconnect')).toBeVisible()
+})
+
+test('App desconhecido simplesmente não é uma página', async ({ page }) => {
+  await stub(page, { access: { ok: false, reason: 'unknown' } })
+  await page.goto('/apps/web-chat/widgets')
+  await expect(page).toHaveURL(/\/apps$/)
+})
+
+test('com App ativo, a página abre normalmente', async ({ page }) => {
+  await stub(page, { access: { ok: true } })
+  await page.goto('/apps/web-chat/widgets')
+  await expect(page.getByRole('heading', { name: 'Chat Web · Widgets' })).toBeVisible()
+})
+
+test('falha de rede no guard não abre a página por engano', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/apps/*/surfaces/*/access', (r) => r.abort())
+  await page.goto('/apps/whatsapp/channels')
+  await expect(page.getByTestId('surface-needs-reauth')).toBeVisible()
 })

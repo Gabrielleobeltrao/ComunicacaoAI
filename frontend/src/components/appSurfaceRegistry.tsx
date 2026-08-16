@@ -1,4 +1,5 @@
 import type { ReactElement } from 'react'
+import { AppSurfaceGuard } from './AppSurfaceGuard'
 import { Chats } from '../pages/Chats'
 import { Widgets } from '../pages/Widgets'
 
@@ -17,30 +18,38 @@ export interface SurfaceRoute {
   element: () => ReactElement
 }
 
+// Every route below is wrapped by the guard: an inactive, broken or unknown App never
+// renders its operational page, however the URL was reached.
+const guarded = (appKey: string, surfaceKey: string, title: string, page: ReactElement): ReactElement => (
+  <AppSurfaceGuard appKey={appKey} surfaceKey={surfaceKey} title={title}>
+    {page}
+  </AppSurfaceGuard>
+)
+
 export const APP_SURFACE_ROUTES: SurfaceRoute[] = [
   {
     appKey: 'web_chat',
     surfaceKey: 'widgets',
     path: '/apps/web-chat/widgets',
-    element: () => <Widgets channel="web" current="/apps/web-chat/widgets" title="Chat Web · Widgets" />,
+    element: () => guarded('web_chat', 'widgets', 'Chat Web · Widgets', <Widgets channel="web" current="/apps/web-chat/widgets" title="Chat Web · Widgets" />),
   },
   {
     appKey: 'web_chat',
     surfaceKey: 'conversations',
     path: '/apps/web-chat/conversations',
-    element: () => <Chats channel="web" current="/apps/web-chat/conversations" title="Conversas Web" />,
+    element: () => guarded('web_chat', 'conversations', 'Conversas Web', <Chats channel="web" current="/apps/web-chat/conversations" title="Conversas Web" />),
   },
   {
     appKey: 'whatsapp',
     surfaceKey: 'channels',
     path: '/apps/whatsapp/channels',
-    element: () => <Widgets channel="whatsapp" current="/apps/whatsapp/channels" title="WhatsApp · Números" />,
+    element: () => guarded('whatsapp', 'channels', 'WhatsApp · Números', <Widgets channel="whatsapp" current="/apps/whatsapp/channels" title="WhatsApp · Números" />),
   },
   {
     appKey: 'whatsapp',
     surfaceKey: 'conversations',
     path: '/apps/whatsapp/conversations',
-    element: () => <Chats channel="whatsapp" current="/apps/whatsapp/conversations" title="Conversas WhatsApp" />,
+    element: () => guarded('whatsapp', 'conversations', 'Conversas WhatsApp', <Chats channel="whatsapp" current="/apps/whatsapp/conversations" title="Conversas WhatsApp" />),
   },
 ]
 

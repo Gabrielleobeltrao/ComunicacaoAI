@@ -82,9 +82,22 @@ export function Apps() {
     setParams(next, { replace: true })
   }
 
+  // The surface guard sends the owner here when a page belongs to an App this account
+  // has not activated. Saying so beats a silent redirect.
+  const inactiveApp = params.get('inactive')
+  const inactiveName = inactiveApp ? (catalog.find((a) => a.key === inactiveApp)?.name ?? inactiveApp) : null
+
   return (
     <AppLayout current="/apps" title="Apps" subtitle="O que os seus agentes podem usar, conectado uma vez na conta.">
       <div style={{ display: 'grid', gap: 16 }}>
+        {inactiveName ? (
+          <p
+            data-testid="inactive-notice"
+            style={{ margin: 0, padding: '10px 12px', borderRadius: 10, background: 'var(--surface-sunken)', fontSize: 13.5, color: 'var(--text-body)' }}
+          >
+            Aquela página pertence ao App <strong>{inactiveName}</strong>, que ainda não está ativo nesta conta. Ative-o aqui para abri-la.
+          </p>
+        ) : null}
         <Tabs tabs={TABS} value={tab} onChange={setTab} style={{ alignSelf: 'start' }} />
 
         {tab === 'custom' ? (
