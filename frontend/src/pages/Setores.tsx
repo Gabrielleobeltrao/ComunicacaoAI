@@ -23,11 +23,6 @@ export function Setores() {
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <p style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 680 }}>
-          Um setor é uma equipe de agentes. Ele pode <strong>só organizar</strong> quem fica junto no mapa,
-          ter <strong>um gerente que coordena</strong> o time, ou <strong>executar em etapas</strong>, uma
-          depois da outra. Para atender no site, vincule o setor a um canal na página “Canais”.
-        </p>
         <SectorManager
           sectors={sectors}
           loading={sectorsLoading}
