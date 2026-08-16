@@ -14,6 +14,8 @@ import { MapObject } from './MapObject'
 import { SimAgent } from './SimAgent'
 import { useOfficeSimulation } from './useOfficeSimulation'
 import { roundedPath, traceOutline } from './roomShape'
+import { useAgentStates } from '../lib/useAgentStates'
+import { featureFlags } from '../featureFlags'
 
 type Chars = ReturnType<typeof buildCharacterResolver>
 const TILE = 44 // base tile px inside the crop; the whole thing is scaled to fit
@@ -85,6 +87,10 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
   const reduced = useReducedMotion()
   const simOn = onScreen && OFFICE_FEATURES.simulation && (!reduced || IGNORE_REDUCED_MOTION)
   const sim = useOfficeSimulation(layout, grid, { modeFor, enabled: simOn, warmStart: OFFICE_FEATURES.warmStart, envelope })
+  // Os MESMOS balões do mapa do andar. A sondagem é uma só por andar, compartilhada
+  // com o mapa grande e com os outros cartões desta lista — não uma por cartão.
+  // Fora da tela ninguém assina: o cartão que não está à vista não pede nada.
+  const opStates = useAgentStates(featureFlags.aiOfficeLiveStatus && onScreen, sector.floorId)
 
   const room = layout.rooms.find((r) => r.kind === 'sector')
   useLayoutEffect(() => {
@@ -130,6 +136,8 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
       hoverLift={false}
       showName="never"
       style={{ zIndex }}
+      opState={opStates[s.agentId]?.state}
+      opDetail={opStates[s.agentId]?.safeDetail}
     />
   )
 
@@ -214,6 +222,8 @@ export function SectorMapCrop({ sector, agents, chars }: { sector: SectorSummary
                   register={sim.register}
                   setHovered={sim.setHovered}
                   onOpen={() => {}}
+                  opState={opStates[s.agentId]?.state}
+                  opDetail={opStates[s.agentId]?.safeDetail}
                 />
               ))}
             </div>

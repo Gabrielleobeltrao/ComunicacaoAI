@@ -392,3 +392,41 @@ test('as duas faixas ficam separadas por mais que a altura de um balão', async 
   expect(offsets.length, 'as duas faixas precisam estar em uso no mapa').toBe(2)
   expect(offsets[1] - offsets[0]).toBeGreaterThanOrEqual(22 + 14)
 })
+
+// --- os mesmos balões nos mapas de setor ---------------------------------------------
+
+test('o mapa dentro do setor mostra os mesmos balões', async ({ page }) => {
+  await stub(page, { states: [liveState({ state: 'using_tool', safeDetail: { appKey: 'google', actionLabel: 'Criar evento' } })] })
+  await page.route('**/api/sectors/*/overview', (r) =>
+    r.fulfill({
+      json: {
+        sector: { _id: 'c11', floorId: FLOOR_ID, name: 'Cozinha', color: '#88a', mode: 'organization', members: [{ agentId: A1, transitions: [] }], stages: [] },
+        agents: AGENTS,
+        readiness: { ready: true, issues: [] },
+        knowledgeCount: 0,
+        memberIssues: [],
+        analytics: null,
+        linkedWidgets: [],
+      },
+    }),
+  )
+  await page.route('**/api/sectors/*/executions/summary**', (r) => r.fulfill({ json: { byParticipant: [] } }))
+  await page.route('**/api/sectors/*/documents**', (r) => r.fulfill({ json: [] }))
+  await page.goto(`/floors/${FLOOR_ID}/sectors/c11`)
+  await expect(page.getByTestId('sector-hero')).toBeVisible()
+  const bubble = page.getByTestId('sector-hero').getByTestId('agent-activity-bubble').first()
+  await expect(bubble).toHaveAttribute('data-agent-bubble', 'using_tool')
+  // O rótulo continua público: o tipo de trabalho, nunca o conteúdo.
+  await expect(bubble).toHaveAttribute('aria-label', /usando ferramenta/)
+})
+
+test('vários mapas do mesmo andar dividem UMA sondagem', async ({ page }) => {
+  await stub(page, { states: [liveState({ state: 'thinking' })] })
+  await page.goto(`/floors/${FLOOR_ID}`)
+  await expect(bubbles(page).first()).toBeVisible()
+  // O mapa do andar já está pedindo. Deixa dois ciclos passarem.
+  await expect.poll(() => stateRequests.length, { timeout: 8000 }).toBeGreaterThan(1)
+  const emDoisCiclos = stateRequests.length
+  // Uma sondagem a cada ~2s: dois ciclos são ~2 pedidos, não 2 por mapa na tela.
+  expect(emDoisCiclos).toBeLessThanOrEqual(4)
+})

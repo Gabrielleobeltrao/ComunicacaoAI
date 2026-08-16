@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getAgentLiveStates, listFloors } from './floors'
 import type { AgentLiveVisualState } from './floors'
 import { DEBOUNCE_MS, MIN_VISIBLE_MS, TRANSIENT_MS, bubbleAssetFor, isBubbleState } from './agentActivityAssets'
@@ -29,75 +29,112 @@ interface Pending {
   since: number
 }
 
-export function useAgentStates(enabled: boolean, explicitFloorId?: string | null): Record<string, AgentOpState> {
-  const [states, setStates] = useState<Record<string, AgentOpState>>({})
-  // Per agent: when the currently SHOWN state was painted, and what the server is
-  // proposing that has not been accepted yet.
-  const shownAt = useRef<Record<string, number>>({})
-  const pending = useRef<Record<string, Pending>>({})
+// UMA sondagem por andar, compartilhada por quem estiver olhando.
+//
+// O mapa do andar, os cartões da lista de setores e o mapa dentro do setor pedem os
+// mesmos dados. Com estado por componente, dez cartões abriam dez sondagens do mesmo
+// andar a cada dois segundos. Aqui existe uma por andar, e todos leem o mesmo
+// instantâneo — inclusive a suavização (debounce, permanência mínima, janela do
+// desfecho), que precisa ser única para dois mapas não piscarem em tempos diferentes.
+interface FloorFeed {
+  snapshot: Record<string, AgentOpState>
+  listeners: Set<() => void>
+  shownAt: Record<string, number>
+  pending: Record<string, Pending>
+  stop?: () => void
+}
 
+const feeds = new Map<string, FloorFeed>()
+const EMPTY: Record<string, AgentOpState> = {}
+
+function feedFor(floorId: string): FloorFeed {
+  let feed = feeds.get(floorId)
+  if (feed) return feed
+  feed = { snapshot: EMPTY, listeners: new Set(), shownAt: {}, pending: {} }
+  feeds.set(floorId, feed)
+  return feed
+}
+
+function startPolling(floorId: string, feed: FloorFeed): void {
+  let alive = true
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let etag: string | null = null
+  let rows: AgentLiveVisualState[] = []
+  const controller = new AbortController()
+
+  const publish = (next: Record<string, AgentOpState>) => {
+    if (sameStates(feed.snapshot, next)) return
+    feed.snapshot = next
+    for (const l of feed.listeners) l()
+  }
+
+  async function tick() {
+    let delay = POLL_MS
+    try {
+      const body = await getAgentLiveStates(floorId, { etag, signal: controller.signal })
+      // `null` é um 304: nada mudou, então as linhas anteriores continuam valendo.
+      // Ainda assim são reconciliadas, porque um balão pode expirar ou completar a
+      // permanência mínima sem o servidor dizer nada novo.
+      if (body) {
+        rows = Array.isArray(body.states) ? body.states : []
+        etag = body.etag
+      }
+      if (alive) publish(reconcile(feed.snapshot, rows, feed.shownAt, feed.pending))
+    } catch {
+      // Cancelado no desmonte não é falha. Qualquer outra coisa é transitória:
+      // tenta de novo mais devagar, e a sondagem reconcilia o que passou.
+      delay = ERROR_POLL_MS
+    }
+    if (alive) timer = setTimeout(tick, delay)
+  }
+
+  void tick()
+  feed.stop = () => {
+    alive = false
+    if (timer) clearTimeout(timer)
+    controller.abort()
+  }
+}
+
+export function useAgentStates(enabled: boolean, explicitFloorId?: string | null): Record<string, AgentOpState> {
+  // Sem andar explícito, resolve o primeiro ativo — é o que o mapa do andar fazia.
+  const [resolvedFloorId, setResolvedFloorId] = useState<string | null>(explicitFloorId ?? null)
   useEffect(() => {
-    if (!enabled) {
-      setStates({})
+    if (explicitFloorId) {
+      setResolvedFloorId(explicitFloorId)
       return
     }
     let alive = true
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let floorId: string | null = explicitFloorId ?? null
-    // The floor's own polling state. Declared HERE, inside the effect, so changing
-    // floor starts from scratch instead of validating the new floor against the old
-    // floor's ETag.
-    let etag: string | null = null
-    let rows: AgentLiveVisualState[] = []
-    // In-flight request, so leaving the floor or unmounting cancels it instead of
-    // paying for a payload nobody will read.
-    const controller = new AbortController()
-
-    async function tick() {
-      let delay = POLL_MS
-      try {
-        if (!floorId) {
-          const floors = await listFloors()
-          floorId = floors.find((f) => f.status === 'active')?.id ?? null
-        }
-        if (floorId && alive) {
-          const body = await getAgentLiveStates(floorId, { etag, signal: controller.signal })
-          // `null` is a 304: nothing changed, so the previous rows are still the
-          // truth. They are re-reconciled anyway, because a bubble can expire or
-          // finish its minimum dwell without the server saying anything new.
-          if (body) {
-            // A response without `states` is treated as "nothing running", not as an
-            // error: the map degrades to no bubbles instead of throwing every tick.
-            rows = Array.isArray(body.states) ? body.states : []
-            etag = body.etag
-          }
-          if (alive) {
-            setStates((current) => {
-              const next = reconcile(current, rows, shownAt.current, pending.current)
-              // The office polls every couple of seconds. Re-rendering the whole map
-              // when nothing changed would restart hover, focus and any in-flight
-              // interaction — so an unchanged tick keeps the SAME object.
-              return sameStates(current, next) ? current : next
-            })
-          }
-        }
-      } catch {
-        // Aborted on unmount is not a failure — and nothing below runs anyway.
-        // Anything else is transient: retry more slowly; polling reconciles whatever
-        // was missed.
-        delay = ERROR_POLL_MS
-      }
-      if (alive) timer = setTimeout(tick, delay)
-    }
-    void tick()
+    void listFloors()
+      .then((floors) => {
+        if (alive) setResolvedFloorId(floors.find((f) => f.status === 'active')?.id ?? null)
+      })
+      .catch(() => undefined)
     return () => {
       alive = false
-      if (timer) clearTimeout(timer)
-      controller.abort()
     }
-  }, [enabled, explicitFloorId])
+  }, [explicitFloorId])
 
-  return states
+  const floorId = enabled ? resolvedFloorId : null
+  const [, force] = useState(0)
+
+  useEffect(() => {
+    if (!floorId) return
+    const feed = feedFor(floorId)
+    const listener = () => force((n) => n + 1)
+    feed.listeners.add(listener)
+    // O primeiro assinante liga a sondagem; o último a desliga.
+    if (feed.listeners.size === 1) startPolling(floorId, feed)
+    return () => {
+      feed.listeners.delete(listener)
+      if (feed.listeners.size === 0) {
+        feed.stop?.()
+        feeds.delete(floorId)
+      }
+    }
+  }, [floorId])
+
+  return floorId ? (feeds.get(floorId)?.snapshot ?? EMPTY) : EMPTY
 }
 
 // Cheap structural comparison: this runs once per poll, over a handful of agents.
