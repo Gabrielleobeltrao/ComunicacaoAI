@@ -7,6 +7,7 @@ import {
   getRoutineForAgent,
   listAgentAutomations,
   listRoutines,
+  readRoutineExecution,
   readSourceFromDefinition,
   RoutineError,
   STEP_SOURCE,
@@ -16,8 +17,8 @@ import type { RoutineSource, RoutineSpec } from '../automations/routine.js'
 import { isInitialWindow } from '../automations/sourceChange.js'
 import { isExecutionMode } from '../automations/types.js'
 import type { ExecutionMode } from '../automations/types.js'
-import { aiStepPlanned, normalizeMemoryPlan } from '../automations/executionPlan.js'
-import type { MemoryPlan } from '../automations/executionPlan.js'
+import { aiStepPlanned, normalizeAppActionPlan, normalizeMemoryPlan } from '../automations/executionPlan.js'
+import type { AppActionPlan, MemoryPlan } from '../automations/executionPlan.js'
 import type { StepCondition } from '../automations/conditions.js'
 import { previewSource } from '../automations/sourcePreview.js'
 import { getCheckpoint } from '../automations/sourceCheckpoint.js'
@@ -66,9 +67,15 @@ function serializeRoutine(a: Automation) {
   // A fonte de entrada. Rotina antiga não tem etapa de fonte e volta como `fixed`,
   // que é exatamente o que ela sempre foi.
   const source = readSourceFromDefinition(definition)
+  // Modo, destino de memória e condição, também lidos da definição.
+  const execucao = readRoutineExecution(definition)
   return {
     id: a._id.toString(),
     source,
+    executionMode: execucao.executionMode,
+    memory: execucao.memory,
+    aiCondition: execucao.aiCondition,
+    action: execucao.action,
     name: a.name,
     objective: a.description,
     status: a.status,
@@ -115,6 +122,9 @@ function parseRoutineSpec(body: Record<string, unknown>): { spec?: RoutineSpec; 
       // Ausente = mantém a fonte atual (mesma regra da entrega: um formulário salvo
       // antes de carregar não pode apagar o monitoramento).
       ...('source' in body ? { source: parseSource(body.source) } : {}),
+      // Modo, memória e condição seguem a MESMA regra: ausentes, o update preserva o
+      // que a rotina já tinha (resolvido em `updateRoutine`).
+      ...parseTriggerExtras(body),
     },
   }
 }
@@ -146,11 +156,13 @@ function parseTriggerExtras(body: Record<string, unknown>): {
   executionMode?: ExecutionMode
   memory?: MemoryPlan
   aiCondition?: StepCondition | null
+  action?: AppActionPlan
 } {
   return {
     ...(isExecutionMode(body.executionMode) ? { executionMode: body.executionMode } : {}),
     ...('memory' in body ? { memory: normalizeMemoryPlan(body.memory) } : {}),
     ...('aiCondition' in body ? { aiCondition: normalizeCondition(body.aiCondition) } : {}),
+    ...('action' in body ? { action: normalizeAppActionPlan(body.action) } : {}),
   }
 }
 
@@ -374,6 +386,7 @@ function serializeTrigger(a: Automation) {
     executionMode: cfg.executionMode,
     memory: cfg.memory,
     aiCondition: cfg.aiCondition,
+    action: cfg.action,
     id: a._id.toString(),
     name: a.name,
     objective: a.description,

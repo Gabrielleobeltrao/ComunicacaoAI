@@ -10,7 +10,7 @@ import {
   type RoutineStatus,
 } from '../lib/agentRoutines'
 import type { AgentSummary } from '../lib/types'
-import { emptyMemoryPlan, ExecutionModeFields, type ExecutionModeValue } from './ExecutionModeFields'
+import { emptyAppActionPlan, emptyMemoryPlan, ExecutionModeFields, type ExecutionModeValue } from './ExecutionModeFields'
 import { Button, Card, EmptyState, Field, Input, StatusPill, Tag, Textarea } from '../ui'
 import type { AgentStatus } from '../ui'
 
@@ -87,11 +87,15 @@ function SecretOnce({ secret, onDismiss }: { secret: string; onDismiss: () => vo
 const temIA = (v: ExecutionModeValue): boolean =>
   v.executionMode === 'ai' || ((v.executionMode === 'hybrid' || v.executionMode === 'automatic') && !!v.aiCondition)
 
+// Sem IA, sem memória e sem ação o gatilho responderia 200 e encerraria. O servidor
+// recusa; dizer aqui evita a ida e volta.
+const semTrabalho = (v: ExecutionModeValue): boolean => !temIA(v) && !v.memory.enabled && !v.action?.enabled
+
 function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (secret: string) => void }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [objective, setObjective] = useState('')
-  const [modo, setModo] = useState<ExecutionModeValue>({ executionMode: 'ai', memory: emptyMemoryPlan(), aiCondition: null })
+  const [modo, setModo] = useState<ExecutionModeValue>({ executionMode: 'ai', memory: emptyMemoryPlan(), aiCondition: null, action: emptyAppActionPlan() })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -104,6 +108,10 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
       setError('Escolha onde a informação será guardada.')
       return
     }
+    if (semTrabalho(modo)) {
+      setError('Sem IA no fluxo, escolha guardar a informação, executar uma ação, ou use o modo com IA.')
+      return
+    }
     setSaving(true)
     setError(null)
     try {
@@ -113,10 +121,11 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
         executionMode: modo.executionMode,
         memory: modo.memory,
         aiCondition: modo.aiCondition,
+        action: modo.action,
       })
       setName('')
       setObjective('')
-      setModo({ executionMode: 'ai', memory: emptyMemoryPlan(), aiCondition: null })
+      setModo({ executionMode: 'ai', memory: emptyMemoryPlan(), aiCondition: null, action: emptyAppActionPlan() })
       setOpen(false)
       onCreated(created.secret)
     } catch {
@@ -145,7 +154,7 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
       <Field label="Nome (opcional)">
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Novo pedido no site" data-testid="trigger-name" />
       </Field>
-      <ExecutionModeFields value={modo} onChange={setModo} />
+      <ExecutionModeFields value={modo} onChange={setModo} agentId={agentId} />
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
         A assinatura HMAC vem ativada: quem chamar o endereço precisa assiná-lo com a credencial. A credencial aparece uma única vez, logo depois de criar.
       </p>
@@ -174,6 +183,7 @@ function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: stri
     executionMode: trigger.executionMode ?? 'ai',
     memory: trigger.memory ?? emptyMemoryPlan(),
     aiCondition: trigger.aiCondition ?? null,
+    action: trigger.action ?? emptyAppActionPlan(),
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -187,6 +197,10 @@ function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: stri
       setError('Escolha onde a informação será guardada.')
       return
     }
+    if (semTrabalho(modo)) {
+      setError('Sem IA no fluxo, escolha guardar a informação, executar uma ação, ou use o modo com IA.')
+      return
+    }
     setSaving(true)
     setError(null)
     try {
@@ -196,6 +210,7 @@ function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: stri
         executionMode: modo.executionMode,
         memory: modo.memory,
         aiCondition: modo.aiCondition,
+        action: modo.action,
       })
       onDone()
     } catch {
@@ -215,7 +230,7 @@ function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: stri
       <Field label="Nome">
         <Input value={name} onChange={(e) => setName(e.target.value)} data-testid="edit-trigger-name" />
       </Field>
-      <ExecutionModeFields value={modo} onChange={setModo} idPrefix="edit-" />
+      <ExecutionModeFields value={modo} onChange={setModo} idPrefix="edit-" agentId={agentId} />
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
         O endereço, a credencial, a assinatura e o estado (ativo/pausado) não mudam ao salvar.
       </p>

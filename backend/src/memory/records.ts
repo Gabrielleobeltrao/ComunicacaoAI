@@ -11,29 +11,31 @@
 // limite, e não deixar uma conta ver a informação de outra.
 import { ObjectId } from 'mongodb'
 import { db } from '../db.js'
+import {
+  MAX_KEY_LENGTH,
+  MAX_METADATA_BYTES,
+  MAX_PAGE_SIZE,
+  MAX_PAYLOAD_BYTES,
+  MAX_SEARCH_TEXT,
+  MemoryError,
+} from './model.js'
+import type { MemoryScope, MemoryStrategy } from './model.js'
 
-export type MemoryScope = 'agent' | 'sector' | 'floor' | 'building'
-export const MEMORY_SCOPES: readonly MemoryScope[] = ['agent', 'sector', 'floor', 'building']
-export const isMemoryScope = (v: unknown): v is MemoryScope => typeof v === 'string' && (MEMORY_SCOPES as readonly string[]).includes(v)
-
-/**
- * Como gravar quando já existe algo com a mesma chave.
- *
- * `append` guarda histórico: cada evento vira um registro. É o certo para "os
- * pedidos que chegaram" — apagar o anterior perderia o pedido de ontem.
- *
- * `upsert` mantém UM registro por chave e MISTURA os campos novos nos antigos. É o
- * certo para um cadastro que chega em pedaços: o evento que traz só o telefone não
- * pode apagar o e-mail que veio antes.
- *
- * `replace` mantém um registro por chave e TROCA o conteúdo inteiro. É o certo para
- * um estado atual — o preço de hoje, o status do pedido — onde o valor antigo não é
- * parte do novo.
- */
-export type MemoryStrategy = 'append' | 'upsert' | 'replace'
-export const MEMORY_STRATEGIES: readonly MemoryStrategy[] = ['append', 'upsert', 'replace']
-export const isMemoryStrategy = (v: unknown): v is MemoryStrategy =>
-  typeof v === 'string' && (MEMORY_STRATEGIES as readonly string[]).includes(v)
+// O vocabulário vive em `model.ts`, que não conhece banco — quem valida uma definição
+// precisa dele e roda sem Mongo. Reexportado aqui por conveniência de quem já importa
+// deste módulo.
+export {
+  isMemoryScope,
+  isMemoryStrategy,
+  MAX_KEY_LENGTH,
+  MAX_METADATA_BYTES,
+  MAX_PAGE_SIZE,
+  MAX_PAYLOAD_BYTES,
+  MEMORY_SCOPES,
+  MEMORY_STRATEGIES,
+  MemoryError,
+} from './model.js'
+export type { MemoryScope, MemoryStrategy } from './model.js'
 
 export interface MemoryTarget {
   scope: MemoryScope
@@ -79,6 +81,16 @@ export interface MemoryRecord {
    * barata e indexável.
    */
   searchText: string
+  /**
+   * Este registro é o ÚNICO da sua chave.
+   *
+   * Verdadeiro em `upsert` e `replace`, ausente em `append` — que existe justamente
+   * para ter vários registros com a mesma chave. O campo existe para o índice único
+   * parcial: sem ele, "um registro por chave" seria uma esperança, e dois eventos
+   * simultâneos criariam dois registros porque o upsert do Mongo só é atômico contra
+   * duplicata quando há índice único sobre o filtro.
+   */
+  singleton?: boolean
   createdAt: Date
   updatedAt: Date
   // Quando este registro deixa de valer. Nulo = para sempre.
@@ -87,20 +99,6 @@ export interface MemoryRecord {
 
 const memories = db.collection<MemoryRecord>('memories')
 
-// --- limites -----------------------------------------------------------------------------
-//
-// Um webhook público recebe o que mandarem. Sem teto, um remetente distraído — ou
-// mal-intencionado — enche a coleção com um payload de dezenas de megabytes por
-// evento. Os números são folgados para uso real e apertados para abuso.
-export const MAX_KEY_LENGTH = 200
-export const MAX_PAYLOAD_BYTES = 64 * 1024
-export const MAX_METADATA_BYTES = 4 * 1024
-export const MAX_PAGE_SIZE = 100
-// O texto de busca é um espelho do conteúdo, não uma cópia dele: o registro inteiro
-// continua no `payload`. Cortar aqui evita duplicar 64 KB por registro no índice.
-export const MAX_SEARCH_TEXT = 8 * 1024
-
-export class MemoryError extends Error {}
 
 export const scopeKeyOf = (target: MemoryTarget): string => {
   const id =
@@ -184,6 +182,14 @@ export async function ensureMemoryIndexes(): Promise<void> {
     { tenantId: 1, scopeKey: 1, dedupeKey: 1 },
     { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } },
   )
+  // A trava que torna `upsert`/`replace` de fato atômicos: com ela, dois eventos
+  // simultâneos na mesma chave não viram dois registros — o segundo recebe erro de
+  // chave duplicada e cai no caminho de atualização. Parcial porque `append` PRECISA
+  // de vários registros na mesma chave.
+  await memories.createIndex(
+    { tenantId: 1, scopeKey: 1, key: 1, singleton: 1 },
+    { unique: true, partialFilterExpression: { singleton: true } },
+  )
   // Faxina automática do que tem prazo. `expireAfterSeconds: 0` diz ao Mongo para
   // apagar quando `expiresAt` chegar.
   await memories.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
@@ -198,7 +204,26 @@ export interface WriteMemoryInput {
   sourceType?: string
   sourceId?: string | null
   metadata?: Record<string, unknown>
+  /**
+   * O que torna este EVENTO único, na visão de quem configurou.
+   *
+   * Guardado com a origem na frente (`webhook:p-1`): o pedido `p-1` que veio de um
+   * webhook e o item `p-1` que veio de um feed são coisas diferentes, e sem o prefixo
+   * o segundo seria recusado como repetição do primeiro.
+   */
   dedupeKey?: string | null
+  /**
+   * A identidade da TENTATIVA, para o retry de uma mesma execução não duplicar.
+   *
+   * Coisa diferente do `dedupeKey`: aquele fala do evento e vale entre execuções;
+   * este fala de uma execução específica e existe porque a etapa tem
+   * `maxAttempts: 3`. Sem ele, uma falha de rede depois do INSERT — o registro
+   * entrou, a confirmação não voltou — viraria dois registros na segunda tentativa.
+   *
+   * Só vale para `append`: em `upsert`/`replace` a chave já é a identidade, e a
+   * segunda tentativa naturalmente atualiza o mesmo registro.
+   */
+  attemptKey?: string | null
   ttlSeconds?: number | null
 }
 
@@ -230,7 +255,14 @@ export async function writeMemory(input: WriteMemoryInput): Promise<WriteMemoryR
   const scopeKey = scopeKeyOf(input.target)
   const agora = new Date()
   const expiresAt = input.ttlSeconds && input.ttlSeconds > 0 ? new Date(agora.getTime() + input.ttlSeconds * 1000) : null
-  const dedupeKey = input.dedupeKey?.trim() || null
+  const sourceType = input.sourceType ?? 'manual'
+
+  // A marca do evento, com a origem na frente. Sem prefixo, um `p-1` de webhook e um
+  // `p-1` de feed colidiriam.
+  const doEvento = input.dedupeKey?.trim() ? `${sourceType}:${input.dedupeKey.trim()}` : null
+  // Em `append`, sem marca de evento, entra a marca da TENTATIVA: é ela que faz o
+  // retry da mesma execução não virar um segundo registro.
+  const dedupeKey = doEvento ?? (strategy === 'append' ? (input.attemptKey?.trim() || null) : null)
 
   const alvo = {
     tenantId: input.tenantId,
@@ -242,21 +274,23 @@ export async function writeMemory(input: WriteMemoryInput): Promise<WriteMemoryR
     scopeKey,
   }
 
+  const novoDoc = (): MemoryRecord => ({
+    _id: new ObjectId(),
+    ...alvo,
+    key,
+    payload,
+    sourceType,
+    sourceId: input.sourceId ?? null,
+    metadata,
+    dedupeKey,
+    searchText: searchTextOf(key, payload),
+    createdAt: agora,
+    updatedAt: agora,
+    expiresAt,
+  })
+
   if (strategy === 'append') {
-    const doc: MemoryRecord = {
-      _id: new ObjectId(),
-      ...alvo,
-      key,
-      payload,
-      sourceType: input.sourceType ?? 'manual',
-      sourceId: input.sourceId ?? null,
-      metadata,
-      dedupeKey,
-      searchText: searchTextOf(key, payload),
-      createdAt: agora,
-      updatedAt: agora,
-      expiresAt,
-    }
+    const doc = novoDoc()
     try {
       await memories.insertOne(doc)
       return { outcome: 'created', recordId: doc._id.toString(), scopeKey }
@@ -267,62 +301,74 @@ export async function writeMemory(input: WriteMemoryInput): Promise<WriteMemoryR
     }
   }
 
-  // `upsert` e `replace` trabalham sobre UM registro por chave. A marca de
-  // deduplicação, quando existe, é mais específica que a chave e manda nela.
-  const filtro = dedupeKey ? { tenantId: input.tenantId, scopeKey, dedupeKey } : { tenantId: input.tenantId, scopeKey, key }
-  const atual = await memories.findOne(filtro)
+  /**
+   * `upsert` e `replace` numa operação só.
+   *
+   * Ler e depois escrever perderia atualização sob concorrência: dois eventos do
+   * mesmo cliente chegando juntos leriam o mesmo registro, cada um mesclaria em cima
+   * do que leu, e o último gravaria por cima — o campo que o outro trouxe some.
+   *
+   * `replace` troca o payload inteiro. `upsert` mistura via caminhos pontuados
+   * (`payload.telefone`), que é o que o Mongo sabe fazer atomicamente: cada campo é
+   * escrito no seu lugar sem tocar nos demais. As chaves já passaram pela
+   * sanitização, então nenhuma delas carrega ponto ou `$`.
+   */
+  const filtro = doEvento ? { tenantId: input.tenantId, scopeKey, dedupeKey: doEvento } : { tenantId: input.tenantId, scopeKey, key }
 
-  if (!atual) {
-    const doc: MemoryRecord = {
-      _id: new ObjectId(),
-      ...alvo,
-      key,
-      payload,
-      sourceType: input.sourceType ?? 'manual',
-      sourceId: input.sourceId ?? null,
-      metadata,
-      dedupeKey,
-      searchText: searchTextOf(key, payload),
-      createdAt: agora,
-      updatedAt: agora,
-      expiresAt,
-    }
-    try {
-      await memories.insertOne(doc)
-      return { outcome: 'created', recordId: doc._id.toString(), scopeKey }
-    } catch (erro) {
-      if (!ehChaveDuplicada(erro)) throw erro
-      // Outra tentativa do mesmo evento chegou primeiro; cai no caminho de update.
-      const criado = await memories.findOne(filtro)
-      if (!criado) throw erro
-      return { outcome: 'duplicate', recordId: criado._id.toString(), scopeKey }
-    }
+  const misturavel =
+    strategy === 'upsert' && payload !== null && typeof payload === 'object' && !Array.isArray(payload) && !(payload instanceof Date)
+
+  const set: Record<string, unknown> = {
+    key,
+    metadata: strategy === 'upsert' ? undefined : metadata,
+    sourceType,
+    sourceId: input.sourceId ?? null,
+    updatedAt: agora,
+    expiresAt,
+  }
+  if (set.metadata === undefined) delete set.metadata
+  if (misturavel) {
+    for (const [k, v] of Object.entries(payload as Record<string, unknown>)) set[`payload.${k}`] = v
+    for (const [k, v] of Object.entries(metadata)) set[`metadata.${k}`] = v
+  } else {
+    set.payload = payload
   }
 
-  // `upsert` mistura: o evento que traz só o telefone não pode apagar o e-mail que
-  // veio antes. `replace` troca: um estado atual não é a soma dos estados passados.
-  const novoPayload =
-    strategy === 'upsert' && atual.payload && typeof atual.payload === 'object' && !Array.isArray(atual.payload) && payload && typeof payload === 'object' && !Array.isArray(payload)
-      ? { ...(atual.payload as Record<string, unknown>), ...(payload as Record<string, unknown>) }
-      : payload
+  const aoInserir: Record<string, unknown> = {
+    ...alvo,
+    dedupeKey: doEvento,
+    // Entra no índice único: é isto que impede dois registros na mesma chave.
+    singleton: true,
+    createdAt: agora,
+    ...(misturavel ? { metadata: {} } : {}),
+  }
+  // Campos que aparecem em `$set` não podem aparecer em `$setOnInsert`.
+  for (const campo of Object.keys(set)) delete aoInserir[campo]
+  if (misturavel) delete aoInserir.metadata
 
-  assertWithinLimits(key, novoPayload, metadata)
-  await memories.updateOne(
-    { _id: atual._id },
-    {
-      $set: {
-        key,
-        payload: novoPayload,
-        searchText: searchTextOf(key, novoPayload),
-        metadata: strategy === 'upsert' ? { ...atual.metadata, ...metadata } : metadata,
-        sourceType: input.sourceType ?? atual.sourceType,
-        sourceId: input.sourceId ?? atual.sourceId,
-        updatedAt: agora,
-        expiresAt,
-      },
-    },
-  )
-  return { outcome: 'updated', recordId: atual._id.toString(), scopeKey }
+  let doc: MemoryRecord | null = null
+  let criou = false
+  try {
+    const antes = await memories.findOneAndUpdate(filtro, { $set: set, $setOnInsert: aoInserir }, { upsert: true, returnDocument: 'before' })
+    criou = !antes
+    doc = await memories.findOne(filtro)
+  } catch (erro) {
+    if (!ehChaveDuplicada(erro)) throw erro
+    // A outra escrita simultânea criou o registro primeiro. Agora ele existe, e a
+    // mistura desta acontece por cima — sem perder o que a primeira trouxe, porque os
+    // campos são escritos um a um.
+    await memories.updateOne(filtro, { $set: set })
+    doc = await memories.findOne(filtro)
+  }
+
+  if (!doc) throw new MemoryError('não foi possível gravar a memória')
+
+  // O texto de busca espelha o conteúdo, e só dá para calculá-lo depois de saber o
+  // resultado da mistura. Fica um instante desatualizado entre as duas escritas —
+  // aceitável, porque ele é índice de busca, não a verdade do registro.
+  await memories.updateOne({ _id: doc._id }, { $set: { searchText: searchTextOf(doc.key, doc.payload) } })
+
+  return { outcome: criou ? 'created' : 'updated', recordId: doc._id.toString(), scopeKey }
 }
 
 export interface SearchMemoryInput {

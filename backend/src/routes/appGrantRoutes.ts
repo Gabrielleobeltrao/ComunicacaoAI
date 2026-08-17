@@ -33,6 +33,59 @@ appGrantRouter.get('/app-grants', async (req, res) => {
   res.json((agent.appGrants ?? []).map(grantPublic))
 })
 
+/**
+ * As ações que este agente pode de fato executar, com nome e risco.
+ *
+ * Existe para o formulário de Rotinas/Gatilhos poder oferecer SOMENTE App conectado e
+ * ação concedida. Oferecer o catálogo inteiro ali levaria o dono a montar um fluxo que
+ * falha na primeira execução — e a mensagem de recusa chegaria horas depois, no
+ * histórico.
+ *
+ * Instalação ausente ou inutilizável derruba o App da lista: sem conexão não há o que
+ * executar, e mostrar a ação seria prometer o que não acontece.
+ */
+appGrantRouter.get('/app-actions', async (req, res) => {
+  const agentId = oid(String((req.params as Record<string, string>).agentId))
+  if (!agentId) return notFound(res)
+  const agent = await getAgentById(res.locals.userId, agentId)
+  if (!agent) return notFound(res)
+
+  const saida: {
+    appKey: string
+    appName: string
+    actionKey: string
+    actionName: string
+    risk: string
+    autonomous: boolean
+  }[] = []
+
+  for (const grant of agent.appGrants ?? []) {
+    const app = await resolveAppForOwner(res.locals.userId, grant.appKey)
+    if (!app) continue
+    const id = ObjectId.isValid(grant.installationId) ? new ObjectId(grant.installationId) : null
+    const installation = id ? await getInstallation(res.locals.userId, id) : null
+    // App que exige conexão e não tem uma utilizável não entra na lista.
+    if (app.auth?.kind !== 'none' && !installation) continue
+
+    const autonomas = new Set(grant.autonomousWriteActionKeys ?? [])
+    for (const action of app.actions) {
+      if (!(grant.actionKeys ?? []).includes(action.key)) continue
+      saida.push({
+        appKey: app.key,
+        appName: app.name,
+        actionKey: action.key,
+        actionName: action.name,
+        risk: action.risk,
+        // Ação de escrita sem autorização autônoma seria recusada em execução
+        // automática; a interface precisa poder avisar antes.
+        autonomous: action.risk === 'read' || autonomas.has(action.key),
+      })
+    }
+  }
+
+  res.json(saida)
+})
+
 // The whole permission set is replaced atomically: a partial write is what turns an
 // "I removed that action" into an agent that still has it.
 appGrantRouter.patch('/app-grants', async (req, res, next) => {

@@ -22,6 +22,7 @@ const { createEventTrigger, updateEventTrigger, buildEventTriggerDefinition, rea
 const { createRun } = await import('../dist/automations/runService.js')
 const { processRun } = await import('../dist/automations/runProcessor.js')
 const { ensureMemoryIndexes, searchMemory, scopeKeyOf } = await import('../dist/memory/records.js')
+const { getApp } = await import('../dist/apps/registry.js')
 
 const OWNER = 'modos-owner'
 const FLOOR = new ObjectId()
@@ -53,6 +54,7 @@ beforeEach(async () => {
     db.collection('automation_runs').deleteMany({}),
     db.collection('step_runs').deleteMany({}),
     db.collection('memories').deleteMany({}),
+    db.collection('connections').deleteMany({}),
     db.collection('agents').deleteMany({}),
     db.collection('sectors').deleteMany({}),
     db.collection('offices').deleteMany({}),
@@ -131,12 +133,26 @@ test('deterministic também não chama modelo', async () => {
   assert.equal((await memoriasDe(CHAVE_AGENTE)).total, 1)
 })
 
-test('sem destino de memória, um modo sem IA simplesmente não faz nada — e não falha', async () => {
-  // Recebeu, validou, não havia o que guardar. Chamar isso de erro encheria a tela
-  // de alarme falso.
-  const { run } = await rodar({ executionMode: 'collect_only' })
-  assert.equal(run.status, 'succeeded')
-  assert.equal(run.usedAI, false)
+test('modo sem IA e sem nada para fazer é recusado, com o motivo e a saída', async () => {
+  // "Somente coletar" sem destino de memória e sem ação responderia 200 e encerraria:
+  // nenhuma etapa, nenhum efeito. Aceitar salvaria uma configuração que parece pronta
+  // e não é, e o dono só descobriria quando o relatório viesse vazio.
+  await assert.rejects(
+    () => rodar({ executionMode: 'collect_only' }),
+    (erro) => {
+      assert.match(erro.message, /guardar a informação|executar uma ação|monitorar uma fonte/)
+      return true
+    },
+  )
+})
+
+test('híbrido sem condição e sem memória é recusado dizendo qual das saídas tomar', async () => {
+  await assert.rejects(() => rodar({ executionMode: 'hybrid' }), /condição|guardar|modo com IA/)
+})
+
+test('a recusa não vale para o modo com IA: ele sempre tem o que fazer', async () => {
+  const { run } = await rodar({ executionMode: 'ai' })
+  assert.ok(run)
 })
 
 // --- o modo de sempre ------------------------------------------------------------------
@@ -364,4 +380,139 @@ test('um modo sem IA não exige objetivo — não há a quem instruir', async ()
 
 test('mas o modo com IA continua exigindo', async () => {
   await assert.rejects(() => createEventTrigger(OWNER, AGENT, { name: 'x', objective: '   ' }), /objective/)
+})
+
+// --- executar um App sem passar por modelo --------------------------------------------------
+//
+// O fluxo que motiva tudo: dados chegam → o App analisa → a condição olha o resultado →
+// a memória guarda o SINAL (não os quinhentos candles) → o agente só entra se houver o
+// que dizer.
+
+const CANDLES = Array.from({ length: 30 }, (_, i) => ({
+  timestamp: 1_700_000_000_000 + i * 60_000,
+  open: 100,
+  high: 100,
+  low: 100,
+  close: 100,
+  volume: 1000,
+  closed: true,
+})).concat([
+  // Martelo na ponta, com volume acima da média: é o que o analisador reconhece.
+  { timestamp: 1_700_000_000_000 + 30 * 60_000, open: 100, high: 101.2, low: 96, close: 101, volume: 9000, closed: true },
+])
+
+const comCandleAnalyzer = async () => {
+  const app = getApp('candle_analyzer')
+  const instalacao = new ObjectId()
+  // A instalação de um App vive na coleção `connections` — é o mesmo documento que já
+  // guardava as conexões, reaproveitado quando os Apps unificaram as integrações.
+  await db.collection('connections').insertOne({
+    _id: instalacao,
+    ownerId: OWNER,
+    appKey: app.key,
+    appVersion: app.version,
+    name: 'Análise de candles',
+    status: 'connected',
+    encryptedConfig: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
+  await db.collection('agents').updateOne(
+    { _id: AGENT },
+    {
+      $set: {
+        appGrants: [
+          {
+            installationId: instalacao.toString(),
+            appKey: app.key,
+            actionKeys: ['candles_find_opportunities'],
+            resourceConfig: {},
+            autonomousWriteActionKeys: [],
+          },
+        ],
+      },
+    },
+  )
+}
+
+const acaoDeCandles = {
+  enabled: true,
+  appKey: 'candle_analyzer',
+  actionKey: 'candles_find_opportunities',
+  args: { symbol: 'PETR4', timeframe: '5m', candles: '{{candles}}', minimumScore: 1 },
+}
+
+test('um App roda direto, sem modelo, e o resultado fica utilizável', async () => {
+  await comCandleAnalyzer()
+  const { run } = await rodar(
+    { executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente({ key: 'sinal', dedupeKey: null }) },
+    { candles: CANDLES },
+  )
+
+  assert.equal(run.status, 'succeeded')
+  assert.equal(run.usedAI, false, 'nenhum modelo no caminho')
+  assert.equal(run.usage.inputTokens + run.usage.outputTokens, 0)
+
+  const { items, total } = await memoriasDe(CHAVE_AGENTE)
+  assert.equal(total, 1)
+  // O que ficou guardado é o SINAL, não a série: guardar quinhentos candles por
+  // execução encheria a memória com dado que já está na origem.
+  assert.equal(items[0].payload.symbol, 'PETR4')
+  assert.equal(typeof items[0].payload.score, 'number')
+  assert.equal(items[0].payload.candles, undefined, 'os candles não vão para a memória')
+})
+
+test('a condição lê o resultado do App, e a IA só roda se ela bater', async () => {
+  await comCandleAnalyzer()
+  const { run } = await rodar(
+    {
+      executionMode: 'hybrid',
+      action: acaoDeCandles,
+      memory: memoriaNoAgente({ key: 'sinal', dedupeKey: null }),
+      // Nenhuma oportunidade tem direção "impossivel": a condição é falsa de propósito.
+      aiCondition: { source: 'acao', path: 'direction', operator: 'equals', value: 'impossivel' },
+    },
+    { candles: CANDLES },
+  )
+
+  assert.equal(run.status, 'succeeded')
+  assert.equal(run.usedAI, false, 'condição falsa: nenhum token')
+  assert.equal((await memoriasDe(CHAVE_AGENTE)).total, 1, 'mas a parte determinística aconteceu')
+})
+
+test('a etapa de App aparece na definição, e a de IA não, num modo sem IA', async () => {
+  await comCandleAnalyzer()
+  const def = buildEventTriggerDefinition(
+    { name: 'x', objective: '', executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() },
+    AGENT,
+  )
+  assert.ok(def.steps.some((s) => s.type === 'app.execute'))
+  assert.equal(def.steps.some((s) => s.type === 'agent.execute'), false)
+})
+
+test('App sem permissão do agente falha a execução, em vez de seguir como se tivesse rodado', async () => {
+  // O agente não tem grant nenhum. Deixar passar faria o fluxo gravar e entregar algo
+  // que nunca aconteceu.
+  const { run } = await rodar({ executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() }, { candles: CANDLES })
+  assert.equal(run.status, 'failed')
+  assert.match(run.error?.message ?? '', /permissão|concedida/)
+  assert.equal((await memoriasDe(CHAVE_AGENTE)).total, 0, 'nada foi guardado')
+})
+
+test('ação revogada depois de configurada também falha', async () => {
+  await comCandleAnalyzer()
+  // O dono tira a ação do agente. A rotina continua salva apontando para ela.
+  await db.collection('agents').updateOne({ _id: AGENT }, { $set: { 'appGrants.0.actionKeys': [] } })
+  const { run } = await rodar({ executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() }, { candles: CANDLES })
+  assert.equal(run.status, 'failed')
+})
+
+test('entrada inválida para o App falha a etapa com o motivo', async () => {
+  await comCandleAnalyzer()
+  const { run } = await rodar(
+    { executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() },
+    { candles: [{ timestamp: 1, open: 100, high: 98, low: 99, close: 100 }] },
+  )
+  assert.equal(run.status, 'failed')
+  assert.match(run.error?.message ?? '', /high|candle/i)
 })

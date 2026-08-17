@@ -19,6 +19,8 @@ export type StepType =
   | 'memory.write'
   | 'memory.search'
   | 'memory.delete'
+  // Executar uma ação de App diretamente, pelo MESMO caminho que o modelo usaria.
+  | 'app.execute'
 
 export const STEP_TYPES: readonly StepType[] = [
   'source.rss',
@@ -29,6 +31,7 @@ export const STEP_TYPES: readonly StepType[] = [
   'memory.write',
   'memory.search',
   'memory.delete',
+  'app.execute',
 ]
 
 /**

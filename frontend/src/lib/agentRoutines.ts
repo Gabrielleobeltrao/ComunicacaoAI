@@ -43,6 +43,10 @@ export interface RoutineMonitoring {
 export interface Routine {
   id: string
   source: RoutineSource
+  executionMode: ExecutionMode
+  memory: MemoryPlan
+  aiCondition: StepCondition | null
+  action: AppActionPlan
   monitoring?: RoutineMonitoring
   name: string
   objective: string
@@ -66,6 +70,11 @@ export interface RoutineInput {
   // Ausente = mantém a fonte atual. Só um `{ kind: 'fixed' }` explícito desliga o
   // monitoramento — a mesma regra do destino de entrega.
   source?: RoutineSource
+  // Ausentes = mantém o que a rotina já tinha. Mesma regra.
+  executionMode?: ExecutionMode
+  memory?: MemoryPlan
+  aiCondition?: StepCondition | null
+  action?: AppActionPlan
   objective: string
   recurrence: Recurrence
   timezone?: string
@@ -171,6 +180,27 @@ export type ExecutionMode = 'collect_only' | 'deterministic' | 'ai' | 'hybrid' |
 export type MemoryScope = 'agent' | 'sector' | 'floor' | 'building'
 export type MemoryStrategy = 'append' | 'upsert' | 'replace'
 
+// Uma ação de App executada direto, sem modelo no caminho.
+export interface AppActionPlan {
+  enabled: boolean
+  appKey: string
+  actionKey: string
+  args?: Record<string, unknown>
+}
+
+// O que este agente pode de fato executar: App conectado e ação concedida. Vem do
+// servidor pronto — oferecer o catálogo inteiro levaria o dono a montar um fluxo que
+// falha na primeira execução.
+export interface AgentAppAction {
+  appKey: string
+  appName: string
+  actionKey: string
+  actionName: string
+  risk: string
+  autonomous: boolean
+}
+
+
 export interface MemoryPlan {
   enabled: boolean
   scope: MemoryScope
@@ -197,6 +227,7 @@ export interface StepCondition {
 export interface EventTrigger {
   id: string
   executionMode: ExecutionMode
+  action: AppActionPlan
   memory: MemoryPlan
   aiCondition: StepCondition | null
   name: string
@@ -216,7 +247,11 @@ export interface EventTriggerInput {
   executionMode?: ExecutionMode
   memory?: MemoryPlan
   aiCondition?: StepCondition | null
+  action?: AppActionPlan
 }
+
+export const listAgentAppActions = (agentId: string) =>
+  fetch(`${base(agentId)}/app-actions`, req('GET')).then(json<AgentAppAction[]>)
 
 export const listEventTriggers = (agentId: string) => fetch(`${base(agentId)}/event-triggers`, req('GET')).then(json<EventTrigger[]>)
 export const createEventTrigger = (agentId: string, input: EventTriggerInput) =>

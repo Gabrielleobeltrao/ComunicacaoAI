@@ -144,6 +144,92 @@ A busca é textual e determinística. O modelo pode pedir um escopo, mas só con
 **estreitar** o que já lhe é permitido. Busca semântica não existe nesta fase; se um
 dia existir, será opcional e com o custo dito na tela.
 
+## Executar um App sem LLM
+
+A etapa `app.execute` chama uma ação de App direto. **Não existe executor paralelo**:
+ela resolve o grant do agente pelo mesmo `resolveGrant` que monta as ferramentas do
+modelo, e chama o mesmo `run`. Com isso vêm, sem cópia, a instalação resolvida por
+`{ownerId, _id}`, a credencial descriptografada fora do alcance de qualquer argumento,
+a autorização de escrita, a validação de schema, os limites, o SSRF e a telemetria.
+
+Um segundo executor "só para automações" seria a forma mais rápida de perder uma
+dessas garantias sem ninguém notar.
+
+- A permissão é do **agente**, sempre: um gatilho não ganha acesso a um App por estar
+  na mesma conta.
+- Uma **recusa** (conexão revogada, ação não concedida, escrita não autorizada) FALHA a
+  etapa. Deixar passar faria o fluxo gravar e entregar algo que nunca aconteceu.
+- `args` aceita `{{campo}}`. Quando o valor é exatamente um template, o valor original
+  é passado adiante — é o que permite entregar 500 candles sem transformá-los em texto.
+- A interface oferece **somente** App conectado e ação concedida
+  (`GET /api/agents/:id/app-actions`), com "0 tokens de LLM" no rótulo. Oferecer o
+  catálogo inteiro levaria o dono a montar um fluxo que falha na primeira execução.
+
+Ordem no fluxo: `origem → ação → memória → IA (se a condição bater) → entrega`. A ação
+vem antes de guardar porque é o resultado dela que costuma valer a pena guardar, não o
+evento cru.
+
+## Apps oficiais são módulos
+
+`backend/src/apps/official/<app>/` com `manifest.ts`, `adapter.ts` (quando há ação
+nativa) e `index.ts`. `official/index.ts` agrega; `registry.ts` continua a fachada,
+porque metade do sistema importa dela.
+
+O que a divisão fechou: antes havia o manifesto num arquivo e um mapa
+`NATIVE_FACTORIES` escrito à mão em outro — duas listas para a mesma verdade. Dava para
+adicionar um App e esquecer o adapter, e o sintoma aparecia como "configuração
+incompleta" quando alguém tentava usar a ação. Agora cada módulo exporta o que tem, e
+`assertOfficialAppsConsistent` **para o processo no arranque** se um manifesto declarar
+ação nativa sem adapter, se dois módulos disputarem a mesma key, ou se algo que não é
+`source: 'system'` estiver ali.
+
+Nada mudou de nome: keys, versões e action keys são as mesmas, porque todo grant,
+instalação e migração já gravados apontam para elas. Há teste travando isso.
+
+Internamente continua `source: 'system'`; a interface mostra **"Oficial"** — o dono
+decide se confia pela procedência, não pela implementação. O catálogo separa Oficiais,
+Comunidade e Meus Apps, porque a procedência muda o que o App pode fazer: só um oficial
+roda código compilado, os outros são DATA-only/HTTP declarado no manifesto.
+
+## App oficial: Análise de candles
+
+`candle_analyzer`, `auth: none`, `allowedDomains: []`, ativação instantânea. Três ações
+de leitura: `candles_calculate_indicators`, `candles_detect_patterns`,
+`candles_find_opportunities`.
+
+Não busca cotação e não conhece corretora — e é por isso que serve para qualquer origem
+de dados. Quem traz os candles é outra peça do fluxo.
+
+**O que ele nunca faz:** rede, modelo, ordem de compra ou venda. Ele descreve o que a
+série mostra e dá uma nota. Há teste garantindo que a saída não contém BUY/SELL nem
+"comprar"/"vender": decidir operar é de gente, ou de um App de risco que ainda não
+existe, e essa separação é o que impede um bug de padrão de virar uma ordem enviada.
+
+Entrada validada, não saneada: número não finito, OHLC incoerente (`high` menor que
+`low`), timestamp repetido e série curta são **recusados** com o motivo. Calcular sobre
+dado corrompido não dá erro — dá um número plausível e errado, e a diferença entre
+"erro" e "número errado" é que o segundo alguém usa. Limite de 500 velas; vela em
+formação é ignorada por padrão, com aviso, porque ela muda até fechar.
+
+Indicadores pela convenção de Wilder (RSI, ATR) — a mesma das plataformas de gráfico,
+senão o dono compararia com o gráfico dele e acharia o nosso errado. Funções puras: a
+mesma série dá exatamente a mesma saída, sempre. Um agente que decide com base num
+número que varia entre execuções é impossível de depurar.
+
+Padrões só na **ponta** da série: um martelo de trinta velas atrás não é oportunidade
+agora, e devolver o histórico daria ao agente uma lista para escolher — a decisão que
+este App existe para não delegar. Padrões opostos na mesma vela se cancelam.
+
+Saída: `schemaVersion`, `symbol`, `timeframe`, `candleCount`, `lastClosedAt`,
+`opportunityFound`, `direction`, `score` (0..100), `patterns`, `indicators`, `reasons`,
+`warnings`. Os pesos do escore estão escritos e nomeados no código, e cada fator que
+entra deixa uma frase em `reasons` — um número sem razões é impossível de contestar.
+
+Fluxo pretendido: **App de dados/HTTP → Candle Analyzer → condição
+`opportunityFound = true` → memória → agente (opcional) → futuro App de risco**. Na
+memória vai o SINAL, não os candles: guardar 500 velas por execução encheria o banco
+com dado que já está na origem.
+
 ## Contrato da API
 
 ### Gatilho por evento — `POST` / `PATCH /api/agents/:id/event-triggers`
@@ -178,6 +264,25 @@ pulada por condição não usou IA.
 
 Etapas puladas ficam no histórico como `skipped`, não ausentes: quem for conferir
 precisa ver que elas existiam e não rodaram.
+
+## Configuração que não faz nada é recusada
+
+"Somente coletar" sem fonte, sem destino de memória e sem ação responderia 200 e
+encerraria: nenhuma etapa, nenhum efeito. Aceitar salvaria uma configuração que parece
+pronta e não é, e o dono só descobriria quando o relatório viesse vazio. A recusa diz
+qual das saídas tomar.
+
+E a entrega nunca aponta para uma etapa inexistente: sem IA e sem fonte, a origem da
+entrega é a gravação; se nem ela existe, a entrega não é gerada. Apontar para o vazio
+produziria uma definição inválida na publicação, com um erro que não diz nada ao dono.
+
+## Validação na publicação
+
+`validateDefinition` confere `executionMode`, `runIf` e as configurações de
+`memory.*` e `app.execute`. Uma condição malformada é avaliada como falsa em execução
+— seguro, mas silencioso: o dono configuraria "chamar a IA quando o valor passar de
+1000", nunca seria chamado, e não teria como saber por quê. Recusar na publicação diz
+o problema na hora.
 
 ## Migração
 

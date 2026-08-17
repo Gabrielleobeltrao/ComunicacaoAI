@@ -210,3 +210,12 @@ export interface AgentAppGrant {
 // collide and a name stays stable across versions.
 export const actionToolName = (appKey: string, actionKey: string): string =>
   `${appKey}__${actionKey}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
+
+/**
+ * Um adapter compilado: a função que transforma credencial + seleção em ferramentas.
+ *
+ * O tipo mora aqui, e não em `grants.ts`, porque cada módulo de App oficial exporta o
+ * seu — e um módulo de App não deve precisar importar o resolvedor de grants para
+ * declarar o que ele oferece.
+ */
+export type NativeFactory = (ownerId: string, config: Record<string, string>) => import('../agentTools.js').ResolvedTool[]

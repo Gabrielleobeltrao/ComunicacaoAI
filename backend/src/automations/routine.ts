@@ -13,8 +13,20 @@ import { createAutomation, getAutomation, publishAutomation, setStatus, updateDr
 import { listAutomations as repoListAutomations } from './repository.js'
 import { DEFAULT_LIMITS, isExecutionMode } from './types.js'
 import type { Automation, AutomationDefinition, ExecutionMode, OutputFormat, StepDefinition } from './types.js'
-import { aiStepPlanned, describeFlow, emptyMemoryPlan, memoryStep, normalizeMemoryPlan, STEP_MEMORY } from './executionPlan.js'
-import type { MemoryPlan } from './executionPlan.js'
+import {
+  aiStepPlanned,
+  appStep,
+  describeFlow,
+  emptyMemoryPlan,
+  memoryStep,
+  normalizeAppActionPlan,
+  normalizeMemoryPlan,
+  readAppActionFromSteps,
+  semTrabalho,
+  STEP_APP,
+  STEP_MEMORY,
+} from './executionPlan.js'
+import type { AppActionPlan, MemoryPlan } from './executionPlan.js'
 import type { StepCondition } from './conditions.js'
 
 /**
@@ -76,6 +88,8 @@ export interface RoutineSpec {
   memory?: MemoryPlan
   // Quando chamar a IA nos modos híbrido e automático.
   aiCondition?: StepCondition | null
+  // Uma ação de App executada direto, sem modelo. Desligada por padrão.
+  action?: AppActionPlan
 }
 
 const STEP_AGENT = 'run'
@@ -114,6 +128,7 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
   const executionMode: ExecutionMode = isExecutionMode(spec.executionMode) ? spec.executionMode : 'ai'
   const memoria = normalizeMemoryPlan(spec.memory)
   const condicao = spec.aiCondition ?? null
+  const acao = normalizeAppActionPlan(spec.action)
   const comIA = aiStepPlanned(executionMode, condicao)
 
   const steps: StepDefinition[] = []
@@ -141,9 +156,13 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
     })
   }
 
+  // A ação vem antes de guardar: é o resultado dela que costuma valer a pena guardar,
+  // não o conteúdo cru da fonte.
+  if (acao.enabled) steps.push(appStep(acao, monitorando ? [STEP_SOURCE] : [], agentId))
+
   // Guardar vem antes do que é caro: se a IA falhar depois, o que a fonte trouxe já
   // está salvo.
-  if (memoria.enabled) steps.push(memoryStep(memoria, monitorando ? [STEP_SOURCE] : [], agentId))
+  if (memoria.enabled) steps.push(memoryStep(memoria, acao.enabled ? [STEP_APP] : monitorando ? [STEP_SOURCE] : [], agentId))
 
   // A etapa que gasta token só existe quando o modo pede.
   if (comIA) {
@@ -153,9 +172,9 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
       type: 'agent.execute',
       enabled: true,
       // Monitorando, o agente depende da fonte: é dela que vem a entrada.
-      // Sempre a fonte: gravar é efeito colateral, não elo da corrente. Depender da
-      // memória entregaria ao agente o recibo da gravação em vez do conteúdo.
-      dependsOn: monitorando ? [STEP_SOURCE] : [],
+      // O que a ação produziu, quando existe; senão a fonte. Gravar é efeito
+      // colateral, não elo da corrente.
+      dependsOn: acao.enabled ? [STEP_APP] : monitorando ? [STEP_SOURCE] : [],
       inputMapping: {},
       config: {
         agentId: agentId.toString(),
@@ -172,11 +191,12 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
   }
 
   const deliveries: AutomationDefinition['deliveries'] = []
-  // Sem etapa de IA, o que se entrega é o que a etapa anterior produziu — o registro
-  // gravado, ou o que a fonte trouxe. Apontar para uma etapa que não existe deixaria
-  // a entrega muda.
-  const origemDaEntrega = comIA ? STEP_AGENT : memoria.enabled ? STEP_MEMORY : monitorando ? STEP_SOURCE : STEP_AGENT
-  if (spec.delivery) {
+  // Sem etapa de IA, o que se entrega é o que a etapa anterior produziu — o que a
+  // fonte trouxe, ou o recibo da gravação. Se nenhuma delas existe, a entrega NÃO é
+  // gerada: apontar para uma etapa inexistente produziria uma definição inválida na
+  // publicação, com um erro que não diz nada ao dono.
+  const origemDaEntrega = comIA ? STEP_AGENT : acao.enabled ? STEP_APP : monitorando ? STEP_SOURCE : memoria.enabled ? STEP_MEMORY : null
+  if (spec.delivery && origemDaEntrega) {
     steps.push({
       id: STEP_DELIVERY,
       name: 'Entregar resultado',
@@ -210,6 +230,25 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
  * nenhum. Definição sem etapa de fonte devolve `fixed`, que é o que toda rotina
  * antiga é.
  */
+/**
+ * Modo, destino de memória e condição de uma rotina salva.
+ *
+ * Lido da definição, que é a única fonte de verdade — é isto que faz a interface
+ * reabrir a rotina preenchida do jeito que ela foi salva.
+ */
+export function readRoutineExecution(def: AutomationDefinition | null | undefined): {
+  executionMode: ExecutionMode
+  memory: MemoryPlan
+  aiCondition: StepCondition | null
+  action: AppActionPlan
+} {
+  const mode: ExecutionMode = isExecutionMode(def?.executionMode) ? def.executionMode : 'ai'
+  const passoMemoria = (def?.steps ?? []).find((s) => s.id === STEP_MEMORY)
+  const memory: MemoryPlan = passoMemoria ? normalizeMemoryPlan({ ...(passoMemoria.config ?? {}), enabled: true }) : emptyMemoryPlan()
+  const passoAgente = (def?.steps ?? []).find((s) => s.type === 'agent.execute')
+  return { executionMode: mode, memory, aiCondition: passoAgente?.runIf ?? null, action: readAppActionFromSteps(def?.steps) }
+}
+
 // A geração gravada na definição, ou null nas rotinas anteriores ao campo.
 export function readSourceInstanceId(def: AutomationDefinition | null | undefined): string | null {
   const passo = (def?.steps ?? []).find((s) => s.id === STEP_SOURCE)
@@ -273,6 +312,14 @@ export async function createRoutine(ownerId: string, agentId: ObjectId, spec: Ro
   if (!isValidRecurrence(spec.recurrence)) throw new RoutineError('invalid recurrence')
   const incompativel = recorrenciaIncompativelComFonte(spec)
   if (incompativel) throw new RoutineError(incompativel)
+  const vazia = semTrabalho({
+    mode: isExecutionMode(spec.executionMode) ? spec.executionMode : 'ai',
+    memory: normalizeMemoryPlan(spec.memory),
+    condition: spec.aiCondition ?? null,
+    temFonte: normalizeSource(spec.source).kind !== 'fixed',
+    temAcao: normalizeAppActionPlan(spec.action).enabled,
+  })
+  if (vazia) throw new RoutineError(vazia)
   // Rotina nova que monitora começa a primeira geração.
   const sourceInstanceId = normalizeSource(spec.source).kind === 'fixed' ? undefined : novaGeracaoDeFonte()
   const definition = buildRoutineDefinition({ ...spec, sourceInstanceId }, agentId)
@@ -311,14 +358,32 @@ export async function updateRoutine(ownerId: string, agentId: ObjectId, routineI
   const anterior = readSourceFromDefinition(existing.draftDefinition)
   const source = spec.source !== undefined ? spec.source : anterior
 
+  // Modo, memória e condição seguem a regra da fonte e da entrega: ausentes, o update
+  // PRESERVA o que a rotina já tinha. Sem isto, um PATCH que só muda o objetivo
+  // transformaria uma rotina "somente coletar" numa rotina com IA — e o dono
+  // descobriria pela conta.
+  const salvo = readRoutineExecution(existing.draftDefinition)
+  const executionMode = spec.executionMode !== undefined ? spec.executionMode : salvo.executionMode
+  const memory = spec.memory !== undefined ? spec.memory : salvo.memory
+  const aiCondition = spec.aiCondition !== undefined ? spec.aiCondition : salvo.aiCondition
+  const action = spec.action !== undefined ? spec.action : salvo.action
+
   // A frequência é julgada contra a fonte EFETIVA, não contra o que veio no corpo:
   // um monitor existente que verifica de 15 em 15 minutos não pode ser recusado
   // como "rotina fixa" só porque o cliente omitiu `source`.
   const incompativel = recorrenciaIncompativelComFonte({ ...spec, source })
   if (incompativel) throw new RoutineError(incompativel)
+  const vazia = semTrabalho({
+    mode: executionMode,
+    memory: normalizeMemoryPlan(memory),
+    condition: aiCondition,
+    temFonte: normalizeSource(source).kind !== 'fixed',
+    temAcao: normalizeAppActionPlan(action).enabled,
+  })
+  if (vazia) throw new RoutineError(vazia)
 
   const sourceInstanceId = resolverGeracao(anterior, normalizeSource(source), readSourceInstanceId(existing.draftDefinition))
-  const definition = buildRoutineDefinition({ ...spec, delivery, source, sourceInstanceId }, agentId)
+  const definition = buildRoutineDefinition({ ...spec, delivery, source, sourceInstanceId, executionMode, memory, aiCondition, action }, agentId)
   await updateDraft(ownerId, routineId, { name: spec.name || describeRecurrence(spec.recurrence), description: spec.objective.slice(0, 2000), definition })
   await publishAutomation(ownerId, routineId, ownerId)
   return getAutomation(ownerId, routineId)

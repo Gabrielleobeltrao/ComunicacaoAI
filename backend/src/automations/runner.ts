@@ -102,7 +102,7 @@ export class SourceHalt {
  * e destino é a camada de fora.
  */
 export interface MemoryOps {
-  write: (cfg: Record<string, unknown>, valor: unknown) => Promise<{ outcome: string; recordId: string; scopeKey: string }>
+  write: (cfg: Record<string, unknown>, valor: unknown, stepId: string) => Promise<{ outcome: string; recordId: string; scopeKey: string }>
   search: (cfg: Record<string, unknown>, valor: unknown) => Promise<{ items: unknown[]; total: number }>
   remove: (cfg: Record<string, unknown>, valor: unknown) => Promise<{ deleted: number }>
 }
@@ -113,6 +113,13 @@ export interface RunnerDeps {
   sourceState?: SourceState
   // Presente quando a definição tem alguma etapa de memória.
   memory?: MemoryOps
+  /**
+   * Executa uma ação de App. Presente quando a definição tem `app.execute`.
+   *
+   * Injetado como todo o resto do IO — e, do lado de fora, é o MESMO executor que
+   * monta as ferramentas do modelo. Não há caminho alternativo.
+   */
+  runApp?: (cfg: Record<string, unknown>, valor: unknown) => Promise<unknown>
   // Returns the model usage so it reaches the step record and the run total, plus an
   // optional `settle`: the accounting/telemetry that is still finishing. The runner
   // awaits it OUTSIDE the step timeout, so a slow database can never be mistaken for
@@ -320,11 +327,21 @@ async function executeStep(
       pendingAdvance?.push({ stepId: step.id, fingerprint, avanco: { contentHash: mudanca.contentHash } })
       return mudanca.conteudo
     }
+    case 'app.execute': {
+      if (!deps.runApp) throw new StepError('validation', 'execução de App não disponível nesta execução', false)
+      const valor = (step.dependsOn ?? []).length ? ctx[(step.dependsOn ?? [])[0]] : ctx.input
+      // Uma recusa da camada de Apps (conexão revogada, ação não concedida) vem como
+      // exceção e falha a etapa — deixar passar faria o fluxo seguir como se a ação
+      // tivesse acontecido. Não é transitória: reconectar é coisa de gente.
+      return deps.runApp(cfg, valor).catch((e) => {
+        throw new StepError('app', (e as Error).message, false)
+      })
+    }
     // As três etapas de memória. Determinísticas: banco, e nada além disso.
     case 'memory.write': {
       if (!deps.memory) throw new StepError('validation', 'memória não disponível nesta execução', false)
       const valor = (step.dependsOn ?? []).length ? ctx[(step.dependsOn ?? [])[0]] : ctx.input
-      return deps.memory.write(cfg, valor)
+      return deps.memory.write(cfg, valor, step.id)
     }
     case 'memory.search': {
       if (!deps.memory) throw new StepError('validation', 'memória não disponível nesta execução', false)

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ExecutionMode, MemoryPlan, MemoryScope, MemoryStrategy, StepCondition } from '../lib/agentRoutines'
+import type { AgentAppAction, AppActionPlan, ExecutionMode, MemoryPlan, MemoryScope, MemoryStrategy, StepCondition } from '../lib/agentRoutines'
+import { listAgentAppActions } from '../lib/agentRoutines'
 import { listMemoryScopes, type MemoryScopeSummary } from '../lib/memories'
 import { Field, Input, Select } from '../ui'
 
@@ -47,11 +48,20 @@ const TTL_OPTIONS: { value: string; label: string }[] = [
 ]
 
 export const emptyMemoryPlan = (): MemoryPlan => ({ enabled: false, scope: 'agent', strategy: 'append', key: 'evento' })
+export const emptyAppActionPlan = (): AppActionPlan => ({ enabled: false, appKey: '', actionKey: '' })
 
 // A frase de conferência. A mesma lógica existe no servidor (`describeFlow`); esta
 // é a versão que aparece ANTES de salvar, que é quando ela ainda evita o erro.
-export function describeFlow(mode: ExecutionMode, memory: MemoryPlan, condition: StepCondition | null, destino?: string | null): string {
+export function describeFlow(
+  mode: ExecutionMode,
+  memory: MemoryPlan,
+  condition: StepCondition | null,
+  destino?: string | null,
+  action?: AppActionPlan | null,
+  actionLabel?: string | null,
+): string {
   const partes = ['Webhook', 'validar']
+  if (action?.enabled) partes.push(actionLabel ?? `executar ${action.actionKey}`)
   if (memory.enabled) {
     const onde = destino ?? { agent: 'do agente', sector: 'do setor', floor: 'do andar', building: 'do prédio' }[memory.scope]
     partes.push(`salvar na memória ${onde}`)
@@ -67,18 +77,24 @@ export interface ExecutionModeValue {
   executionMode: ExecutionMode
   memory: MemoryPlan
   aiCondition: StepCondition | null
+  action?: AppActionPlan
 }
 
 export function ExecutionModeFields({
   value,
   onChange,
   idPrefix = '',
+  agentId,
 }: {
   value: ExecutionModeValue
   onChange: (v: ExecutionModeValue) => void
   idPrefix?: string
+  // Sem o agente não há como saber quais Apps ele pode usar — e a seção de ação não
+  // aparece, em vez de oferecer o catálogo inteiro.
+  agentId?: string
 }) {
   const [scopes, setScopes] = useState<MemoryScopeSummary[]>([])
+  const [acoes, setAcoes] = useState<AgentAppAction[]>([])
   const [avancado, setAvancado] = useState(false)
   const t = (id: string) => `${idPrefix}${id}`
 
@@ -90,7 +106,19 @@ export function ExecutionModeFields({
       .catch(() => setScopes([]))
   }, [])
 
+  useEffect(() => {
+    if (!agentId) return
+    // Só App conectado e ação concedida. Oferecer o catálogo inteiro levaria o dono a
+    // montar um fluxo que falha na primeira execução — e a recusa chegaria horas depois,
+    // no histórico.
+    listAgentAppActions(agentId)
+      .then(setAcoes)
+      .catch(() => setAcoes([]))
+  }, [agentId])
+
   const { executionMode, memory, aiCondition } = value
+  const action = value.action ?? emptyAppActionPlan()
+  const acaoAtual = acoes.find((a) => a.appKey === action.appKey && a.actionKey === action.actionKey)
   const set = (patch: Partial<ExecutionModeValue>) => onChange({ ...value, ...patch })
   const setMemory = (patch: Partial<MemoryPlan>) => set({ memory: { ...memory, ...patch } })
 
@@ -128,6 +156,37 @@ export function ExecutionModeFields({
           options={MODE_OPTIONS.map((m) => ({ value: m.value, label: m.label }))}
         />
       </Field>
+
+      {/* --- executar uma ação de App ------------------------------------------- */}
+      {agentId && acoes.length > 0 ? (
+        <Field
+          label="Executar uma ação?"
+          hint="Roda a ação direto, pelo mesmo caminho que o agente usaria — sem passar por modelo. 0 tokens de LLM."
+        >
+          <Select
+            value={action.enabled ? `${action.appKey}:${action.actionKey}` : ''}
+            onChange={(e) => {
+              const escolha = e.target.value
+              if (!escolha) return set({ action: emptyAppActionPlan() })
+              const [appKey, actionKey] = escolha.split(':')
+              set({ action: { enabled: true, appKey, actionKey, args: action.args } })
+            }}
+            data-testid={t('app-action')}
+            aria-label="Executar uma ação"
+            options={[
+              { value: '', label: 'Não executar ação' },
+              ...acoes.map((a) => ({ value: `${a.appKey}:${a.actionKey}`, label: `${a.appName} · ${a.actionName} — 0 tokens de LLM` })),
+            ]}
+          />
+        </Field>
+      ) : null}
+
+      {action.enabled && acaoAtual && !acaoAtual.autonomous ? (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-blocked)' }} data-testid={t('app-action-warning')}>
+          Esta ação altera dados e ainda não está autorizada para uso autônomo. Autorize nas permissões do agente, senão ela será recusada em
+          cada execução.
+        </p>
+      ) : null}
 
       {/* --- salvar informação ------------------------------------------------- */}
       <Field label="Salvar informação?" hint="Guardar o que chegou, sem passar por modelo nenhum.">
@@ -306,7 +365,9 @@ export function ExecutionModeFields({
         data-testid={t('flow-summary')}
       >
         <p style={{ margin: '0 0 2px', fontSize: 12, fontWeight: 700, color: 'var(--text-muted)' }}>O que vai acontecer</p>
-        <p style={{ margin: 0, fontSize: 13 }}>{describeFlow(executionMode, memory, aiCondition, destinoAtual)}</p>
+        <p style={{ margin: 0, fontSize: 13 }}>
+          {describeFlow(executionMode, memory, aiCondition, destinoAtual, action, acaoAtual ? `executar ${acaoAtual.actionName}` : null)}
+        </p>
       </div>
     </div>
   )

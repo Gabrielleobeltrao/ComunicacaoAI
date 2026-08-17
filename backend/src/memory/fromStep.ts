@@ -50,6 +50,8 @@ export function applyFieldMap(valor: unknown, fieldMap: Record<string, string> |
 export interface MemoryStepContext {
   ownerId: string
   sourceType: string
+  // O id da execução. Vira parte da marca de tentativa, e é o que faz um retry desta
+  // execução não duplicar sem duplicar entre execuções diferentes.
   sourceId: string | null
 }
 
@@ -86,6 +88,7 @@ export async function writeFromStep(
   cfg: Record<string, unknown>,
   valor: unknown,
   ctx: MemoryStepContext,
+  stepId?: string,
 ): Promise<{ outcome: string; recordId: string; scopeKey: string }> {
   const alvo = await alvoDaEtapa(cfg, ctx)
   const strategy: MemoryStrategy = isMemoryStrategy(cfg.strategy) ? cfg.strategy : 'append'
@@ -106,6 +109,10 @@ export async function writeFromStep(
     // string vazia travaria TODOS os eventos daquele destino como duplicados um do
     // outro.
     dedupeKey: dedupeBruto || null,
+    // A marca da tentativa, quando o dono não declarou marca de evento nenhuma. A
+    // etapa de memória tem `maxAttempts: 3`: sem isto, uma falha de rede DEPOIS do
+    // INSERT — o registro entrou, a confirmação não voltou — viraria dois registros.
+    ...(ctx.sourceId && stepId ? { attemptKey: `run:${ctx.sourceId}:${stepId}` } : {}),
     ttlSeconds,
   })
 }

@@ -267,3 +267,90 @@ test('escopo sem o id correspondente é erro de programação, e falha alto', as
   assert.throws(() => scopeKeyOf({ scope: 'sector' }), MemoryError)
   assert.equal(scopeKeyOf({ scope: 'floor', floorId: ANDAR }), `floor:${ANDAR.toString()}`)
 })
+
+// --- idempotência de verdade -------------------------------------------------------------
+
+test('retry da MESMA execução não duplica, mesmo sem marca de evento', async () => {
+  // A etapa de memória tem maxAttempts 3. O caso perigoso não é a falha antes do
+  // INSERT — é a falha DEPOIS dele: o registro entrou, a confirmação não voltou, e a
+  // segunda tentativa gravaria de novo.
+  const tentativa = { attemptKey: 'run:abc:memoria' }
+  const um = await gravar(tentativa)
+  const dois = await gravar(tentativa)
+  assert.equal(um.outcome, 'created')
+  assert.equal(dois.outcome, 'duplicate')
+  assert.equal((await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE] })).total, 1)
+})
+
+test('execuções DIFERENTES continuam gravando cada uma a sua', async () => {
+  // A marca é da tentativa, não do conteúdo: dois eventos iguais em execuções
+  // diferentes são dois fatos.
+  await gravar({ attemptKey: 'run:um:memoria' })
+  await gravar({ attemptKey: 'run:dois:memoria' })
+  assert.equal((await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE] })).total, 2)
+})
+
+test('a marca de evento manda mais que a da tentativa', async () => {
+  // Quem declarou o que torna o evento único quis dedupe ENTRE execuções.
+  await gravar({ dedupeKey: 'p-1', attemptKey: 'run:um:memoria' })
+  const outro = await gravar({ dedupeKey: 'p-1', attemptKey: 'run:dois:memoria' })
+  assert.equal(outro.outcome, 'duplicate')
+  assert.equal((await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE] })).total, 1)
+})
+
+test('a marca de evento é namespaceada pela origem', async () => {
+  // O pedido `p-1` de um webhook e o item `p-1` de um feed são coisas diferentes.
+  // Sem prefixo, o segundo seria recusado como repetição do primeiro.
+  await gravar({ dedupeKey: 'p-1', sourceType: 'webhook' })
+  const doFeed = await gravar({ dedupeKey: 'p-1', sourceType: 'rss' })
+  assert.equal(doFeed.outcome, 'created')
+  assert.equal((await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE] })).total, 2)
+})
+
+// --- concorrência em upsert e replace ------------------------------------------------------
+
+test('dois upserts simultâneos não perdem o campo um do outro', async () => {
+  // Ler-e-depois-escrever perderia atualização: os dois leem o mesmo registro, cada
+  // um mescla em cima do que leu, e o último grava por cima.
+  await Promise.all([
+    gravar({ strategy: 'upsert', key: 'cliente', payload: { email: 'a@b.c' } }),
+    gravar({ strategy: 'upsert', key: 'cliente', payload: { telefone: '9999' } }),
+  ])
+  const { items, total } = await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE], key: 'cliente' })
+  assert.equal(total, 1, 'um registro por chave')
+  assert.equal(items[0].payload.email, 'a@b.c')
+  assert.equal(items[0].payload.telefone, '9999')
+})
+
+test('dez upserts concorrentes preservam os dez campos', async () => {
+  await Promise.all(
+    Array.from({ length: 10 }, (_, i) => gravar({ strategy: 'upsert', key: 'acumulado', payload: { [`campo${i}`]: i } })),
+  )
+  const { items, total } = await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE], key: 'acumulado' })
+  assert.equal(total, 1)
+  assert.equal(Object.keys(items[0].payload).length, 10)
+})
+
+test('replace concorrente termina com UM registro, não vários', async () => {
+  await Promise.all(
+    Array.from({ length: 5 }, (_, i) => gravar({ strategy: 'replace', key: 'estado', payload: { v: i } })),
+  )
+  assert.equal((await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE], key: 'estado' })).total, 1)
+})
+
+test('o texto de busca acompanha a mistura', async () => {
+  await gravar({ strategy: 'upsert', key: 'cliente', payload: { nome: 'Fulano' } })
+  await gravar({ strategy: 'upsert', key: 'cliente', payload: { cidade: 'Recife' } })
+  // Os dois campos precisam ser encontráveis, e não só o do último evento.
+  assert.equal((await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE], query: 'Fulano' })).total, 1)
+  assert.equal((await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE], query: 'Recife' })).total, 1)
+})
+
+test('upsert de conteúdo que não é objeto substitui, em vez de tentar misturar', async () => {
+  // Misturar um número com outro número não quer dizer nada.
+  await gravar({ strategy: 'upsert', key: 'contador', payload: 1 })
+  await gravar({ strategy: 'upsert', key: 'contador', payload: 2 })
+  const { items, total } = await searchMemory({ tenantId: TENANT, scopeKeys: [CHAVE_AGENTE], key: 'contador' })
+  assert.equal(total, 1)
+  assert.equal(items[0].payload, 2)
+})

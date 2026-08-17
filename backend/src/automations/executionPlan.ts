@@ -12,11 +12,12 @@
 import { ObjectId } from 'mongodb'
 import { describeCondition } from './conditions.js'
 import type { StepCondition } from './conditions.js'
-import { isMemoryScope, isMemoryStrategy } from '../memory/records.js'
-import type { MemoryScope, MemoryStrategy } from '../memory/records.js'
+import { isMemoryScope, isMemoryStrategy } from '../memory/model.js'
+import type { MemoryScope, MemoryStrategy } from '../memory/model.js'
 import type { ExecutionMode, StepDefinition } from './types.js'
 
 export const STEP_MEMORY = 'memoria'
+export const STEP_APP = 'acao'
 
 /**
  * O que gravar, e onde.
@@ -79,6 +80,67 @@ export function normalizeMemoryPlan(raw: unknown): MemoryPlan {
 }
 
 /**
+ * Uma ação de App executada direto, sem modelo no caminho.
+ *
+ * `args` aceita `{{campo}}` apontando para o que a etapa anterior produziu. Quando o
+ * valor é exatamente um template, o valor ORIGINAL é passado adiante — é o que
+ * permite entregar uma lista de quinhentos candles sem transformá-la em texto.
+ */
+export interface AppActionPlan {
+  enabled: boolean
+  appKey: string
+  actionKey: string
+  args?: Record<string, unknown>
+}
+
+export const emptyAppActionPlan = (): AppActionPlan => ({ enabled: false, appKey: '', actionKey: '' })
+
+export function normalizeAppActionPlan(raw: unknown): AppActionPlan {
+  const p = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  if (p.enabled !== true) return emptyAppActionPlan()
+  const appKey = typeof p.appKey === 'string' ? p.appKey.trim() : ''
+  const actionKey = typeof p.actionKey === 'string' ? p.actionKey.trim() : ''
+  // Sem App ou sem ação não há o que executar: desligado é mais honesto que uma etapa
+  // que falharia na primeira execução.
+  if (!appKey || !actionKey) return emptyAppActionPlan()
+  return {
+    enabled: true,
+    appKey,
+    actionKey,
+    ...(typeof p.args === 'object' && p.args !== null ? { args: p.args as Record<string, unknown> } : {}),
+  }
+}
+
+export const appStep = (plan: AppActionPlan, dependsOn: string[], ownerAgentId: ObjectId): StepDefinition => ({
+  id: STEP_APP,
+  name: 'Executar ação',
+  type: 'app.execute',
+  enabled: true,
+  dependsOn,
+  inputMapping: {},
+  config: {
+    // Sob a permissão deste agente. Um App só é alcançável por grant, e o grant é do
+    // agente — não da conta.
+    ownerAgentId: ownerAgentId.toString(),
+    appKey: plan.appKey,
+    actionKey: plan.actionKey,
+    ...(plan.args ? { args: plan.args } : {}),
+  },
+  timeoutMs: 60_000,
+  // Vale repetir uma falha de rede; uma recusa de permissão não é retentável e o
+  // runner já a classifica como definitiva.
+  retryPolicy: { maxAttempts: 2, backoffMs: 1000 },
+  continueOnError: false,
+})
+
+// A ação lida de volta da definição, para a interface reabrir preenchida.
+export function readAppActionFromSteps(steps: { id: string; type: string; config?: Record<string, unknown> }[] | undefined): AppActionPlan {
+  const passo = (steps ?? []).find((s) => s.id === STEP_APP && s.type === 'app.execute')
+  if (!passo) return emptyAppActionPlan()
+  return normalizeAppActionPlan({ ...(passo.config ?? {}), enabled: true })
+}
+
+/**
  * A etapa de gravação.
  *
  * `ownerAgentId` fica na configuração de propósito: é sob a permissão DESTE agente
@@ -126,6 +188,25 @@ export function aiStepPlanned(mode: ExecutionMode, condition: StepCondition | nu
 }
 
 /**
+ * Esta configuração faz alguma coisa?
+ *
+ * O caso concreto: modo "somente coletar", sem fonte, sem destino de memória e sem
+ * ação de App. O gatilho responderia 200 e encerraria — nenhuma etapa, nenhum efeito.
+ * Aceitar isso salva uma configuração que parece pronta e não é, e o dono só descobre
+ * quando o relatório vem vazio.
+ *
+ * Devolve a mensagem do problema, ou `null` quando há trabalho.
+ */
+export function semTrabalho(opts: { mode: ExecutionMode; memory: MemoryPlan; condition?: StepCondition | null; temFonte?: boolean; temAcao?: boolean }): string | null {
+  if (aiStepPlanned(opts.mode, opts.condition)) return null
+  if (opts.memory.enabled || opts.temAcao || opts.temFonte) return null
+  if (opts.mode === 'hybrid' || opts.mode === 'automatic') {
+    return 'Neste modo, a IA só roda com uma condição preenchida. Preencha a condição, ou escolha guardar a informação, ou use o modo com IA.'
+  }
+  return 'Sem IA no fluxo, é preciso ter o que fazer: escolha guardar a informação na memória, executar uma ação de App, ou monitorar uma fonte.'
+}
+
+/**
  * A frase que a interface mostra antes de salvar.
  *
  * Existe porque a combinação de modo, destino e condição é fácil de configurar
@@ -140,8 +221,12 @@ export function describeFlow(opts: {
   condition?: StepCondition | null
   hasDelivery?: boolean
   destinoLabel?: string | null
+  action?: AppActionPlan | null
+  actionLabel?: string | null
 }): string {
   const partes: string[] = [opts.origem, 'validar']
+
+  if (opts.action?.enabled) partes.push(opts.actionLabel ?? `executar ${opts.action.actionKey}`)
 
   if (opts.memory.enabled) {
     const onde =
