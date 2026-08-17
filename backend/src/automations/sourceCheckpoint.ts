@@ -79,29 +79,21 @@ export async function advanceCheckpoint(
   avanco: { novasChaves?: string[]; contentHash?: string | null },
   quando: Date,
 ): Promise<void> {
-  const atual = await getCheckpoint(ownerId, automationId, stepId)
-  const chaves = [...(atual?.seenKeys ?? []), ...(avanco.novasChaves ?? [])]
-  const cortadas = chaves.length > MAX_SEEN_KEYS ? chaves.slice(chaves.length - MAX_SEEN_KEYS) : chaves
-
   await checkpoints.updateOne(
     { ownerId, automationId, stepId },
     {
       $set: {
-        seenKeys: cortadas,
         ...(avanco.contentHash !== undefined ? { contentHash: avanco.contentHash } : {}),
         lastChangedAt: quando,
         lastCheckedAt: quando,
         updatedAt: quando,
       },
-      $setOnInsert: { ownerId, automationId, stepId },
+      // Uma operação só, sem ler antes de escrever: se uma verificação agendada e um
+      // "verificar agora" caírem juntos, nenhuma das duas perde as chaves da outra.
+      // `$each: []` cobre a fonte HTTP, que não empurra chave nenhuma mas ainda
+      // precisa nascer com o campo.
+      $push: { seenKeys: { $each: avanco.novasChaves ?? [], $slice: -MAX_SEEN_KEYS } },
     },
     { upsert: true },
   )
-}
-
-// Apagar a automação apaga o que ela viu. Sem isto, recriar uma rotina com o mesmo
-// id (o que não acontece hoje, mas o banco não promete) herdaria um histórico
-// alheio.
-export async function deleteCheckpoints(ownerId: string, automationId: ObjectId): Promise<void> {
-  await checkpoints.deleteMany({ ownerId, automationId })
 }

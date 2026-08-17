@@ -90,7 +90,8 @@ Coleção `source_checkpoints`, única por `{ownerId, automationId, stepId}`.
 - **O checkpoint só avança depois que tudo deu certo.** Falha na entrega, na LLM ou
   na rede deixa o checkpoint onde estava, e a próxima volta reprocessa. Perder um
   item é pior que repetir um.
-- Apagar a rotina apaga o que ela viu.
+- O avanço é uma única operação atômica no Mongo: uma verificação agendada e um
+  "verificar agora" simultâneos não sobrescrevem as chaves um do outro.
 
 ## Segurança
 

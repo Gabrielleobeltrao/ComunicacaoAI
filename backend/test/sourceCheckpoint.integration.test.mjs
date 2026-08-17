@@ -12,7 +12,7 @@ process.env.MONGODB_URI = await startMongo()
 process.env.ENCRYPTION_KEY = 'test-encryption-key'
 
 const { mongoClient, db } = await import('../dist/db.js')
-const { advanceCheckpoint, deleteCheckpoints, ensureSourceCheckpointIndexes, getCheckpoint, markChecked, MAX_SEEN_KEYS } = await import(
+const { advanceCheckpoint, ensureSourceCheckpointIndexes, getCheckpoint, markChecked, MAX_SEEN_KEYS } = await import(
   '../dist/automations/sourceCheckpoint.js'
 )
 const { detectRssChange, INITIAL_WINDOWS } = await import('../dist/automations/sourceChange.js')
@@ -109,15 +109,22 @@ test('duas etapas da mesma automação têm checkpoints separados', async () => 
   assert.deepEqual((await getCheckpoint(OWNER, AUTOMACAO, 'fonte-b')).seenKeys, ['y'])
 })
 
-test('apagar a automação apaga o que ela viu', async () => {
-  await advanceCheckpoint(OWNER, AUTOMACAO, ETAPA, { novasChaves: ['a'] }, new Date(agora))
-  await deleteCheckpoints(OWNER, AUTOMACAO)
-  assert.equal(await getCheckpoint(OWNER, AUTOMACAO, ETAPA), null)
-})
-
 test('duas voltas seguidas acumulam, não substituem', async () => {
   await advanceCheckpoint(OWNER, AUTOMACAO, ETAPA, { novasChaves: ['a'] }, new Date(agora))
   await advanceCheckpoint(OWNER, AUTOMACAO, ETAPA, { novasChaves: ['b'] }, new Date(agora + 1000))
   const cp = await getCheckpoint(OWNER, AUTOMACAO, ETAPA)
   assert.deepEqual(cp.seenKeys, ['a', 'b'])
+})
+
+test('duas verificações simultâneas não perdem as chaves uma da outra', async () => {
+  // O caso real: uma verificação agendada roda enquanto o dono clica em "Verificar
+  // agora". Se o avanço lesse o checkpoint para depois gravá-lo, a segunda escrita
+  // apagaria o que a primeira acabou de registrar — e esses itens voltariam como
+  // novos no ciclo seguinte.
+  await Promise.all([
+    advanceCheckpoint(OWNER, AUTOMACAO, ETAPA, { novasChaves: ['a', 'b'] }, new Date(agora)),
+    advanceCheckpoint(OWNER, AUTOMACAO, ETAPA, { novasChaves: ['c', 'd'] }, new Date(agora)),
+  ])
+  const cp = await getCheckpoint(OWNER, AUTOMACAO, ETAPA)
+  assert.deepEqual([...cp.seenKeys].sort(), ['a', 'b', 'c', 'd'])
 })
