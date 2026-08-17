@@ -186,6 +186,8 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       // How many DISTINCT documents backed the answer — a count, never a title.
       ragSources: new Set((retrieved.sources ?? []).map((s) => s.documentId).filter(Boolean)).size,
       toolsAvailable: 0,
+      // Os parâmetros que este modelo não aceitou. Preenchido abaixo, quando houver.
+      runConfigDropped: '',
     },
   }
 
@@ -195,6 +197,15 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
   // execução.
   const execucao = resolveAgentRun(agent, { context: 'automation', toolRisks: tools.map((t) => t.risk ?? 'write') })
   baseEvent.metadata.toolsAvailable = tools.length
+  /**
+   * Os parâmetros que o modelo não aceitou, para o dono entender por que a escolha dele
+   * não teve efeito.
+   *
+   * Só o par campo/motivo, os dois gerados por este código — nunca prompt, contexto,
+   * resposta, chave ou credencial. Um diagnóstico que carrega conteúdo vira um vazamento
+   * com outro nome.
+   */
+  baseEvent.metadata.runConfigDropped = execucao.runConfig.dropped.map((d) => `${d.field}: ${d.reason}`).join('; ')
 
   let result: AgentExecutionResult
   try {

@@ -7,7 +7,7 @@ import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
 import { reachableCollaboratorCount } from '../lib/agentReadiness'
 import { useBuildingPeers } from '../lib/useBuildingPeers'
 import { assignAgentToSector } from '../lib/sectors'
-import type { AgentPreset, AgentSummary, SectorSummary } from '../lib/types'
+import type { AgentPreset, AgentSummary, SectorSummary, ProviderInfo} from '../lib/types'
 import { Button, Card, Field, Input, Select, Textarea } from '../ui'
 
 // Hiring in three steps: Função → Trabalho → Revisar e contratar.
@@ -165,6 +165,12 @@ export function HireWizard({
   const [definicao, setDefinicao] = useState<AgentDefinitionValue>({ role: '', instructions: '', constraints: '' })
   const [runConfig, setRunConfig] = useState<RunConfig>({})
   const [avancadoAberto, setAvancadoAberto] = useState(false)
+  // O catálogo real de provedores/modelos, o MESMO da edição. Fixar `anthropic`/`null`
+  // aqui obrigava a contratar e depois editar para escolher o modelo — e a escolha do
+  // modelo é justamente o que muda custo e qualidade desde a primeira execução.
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [provider, setProvider] = useState<'anthropic' | 'openai'>('anthropic')
+  const [model, setModel] = useState('')
 
   const [language, setLanguage] = useState('pt')
   const [name, setName] = useState(() => randomAgentName('pt').name)
@@ -179,6 +185,13 @@ export function HireWizard({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hired, setHired] = useState<{ _id: string; name: string } | null>(null)
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/providers`, { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((lista: ProviderInfo[]) => setProviders(Array.isArray(lista) ? lista : []))
+      .catch(() => setProviders([]))
+  }, [])
 
   useEffect(() => {
     listAgentPresets()
@@ -273,7 +286,9 @@ export function HireWizard({
         body: JSON.stringify({
           name: name.trim(),
           objective: objective.trim(),
-          provider: 'anthropic',
+          provider,
+          // Vazio = padrão do sistema, que é o comportamento de sempre.
+          model: model || null,
           language,
           floorId,
           preset,
@@ -486,7 +501,49 @@ export function HireWizard({
         {avancadoAberto ? (
           <div className="mt-3 grid gap-5" data-testid="hire-advanced">
             <AgentDefinitionFields value={definicao} onChange={setDefinicao} presetLabel={spec?.label ?? null} />
-            <AgentRunConfigFields value={runConfig} onChange={setRunConfig} provider="anthropic" model={null} />
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-sm text-(--text-muted)">Provedor</label>
+                <select
+                  value={provider}
+                  onChange={(e) => {
+                    setProvider(e.target.value as 'anthropic' | 'openai')
+                    // Modelo é específico do provedor: manter o anterior apontaria para
+                    // um nome que o novo não conhece.
+                    setModel('')
+                  }}
+                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                  data-testid="hire-provider"
+                >
+                  {providers.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm text-(--text-muted)">Modelo</label>
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                  data-testid="hire-model"
+                >
+                  <option value="">Padrão do sistema</option>
+                  {(providers.find((p) => p.id === provider)?.models ?? []).map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* A matriz decide o que aparece aqui, e ela depende do modelo escolhido
+                acima — por isso os dois selects vêm antes. */}
+            <AgentRunConfigFields value={runConfig} onChange={setRunConfig} provider={provider} model={model || null} />
           </div>
         ) : null}
       </div>

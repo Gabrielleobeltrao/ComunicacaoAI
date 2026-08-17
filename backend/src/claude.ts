@@ -101,7 +101,7 @@ export async function generateAgentReply(
   responseStyleInstruction = '',
   enableCaching = true,
   tools: ResolvedTool[] = [],
-  opts: { runConfig?: EffectiveRunConfig } = {},
+  opts: { runConfig?: EffectiveRunConfig; signal?: AbortSignal; onToolStart?: (risk: 'read' | 'write' | 'high_risk') => void } = {},
 ): Promise<AgentReplyResult> {
   const { cacheablePrefix, dynamicSuffix } = buildSystemPromptParts(
     objective,
@@ -167,14 +167,19 @@ export async function generateAgentReply(
   // the iteration cap (on the last pass tools are withheld so it must reply).
   for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
     const allowTools = toolDefs.length > 0 && !proibirFerramentas && iteration < MAX_TOOL_ITERATIONS
-    const response = await client.messages.create({
-      model: model || DEFAULT_MODEL,
-      ...tuning,
-      system,
-      messages,
-      ...(allowTools ? { tools: toolDefs } : {}),
-      ...(allowTools && escolha ? { tool_choice: escolha } : {}),
-    })
+    // O sinal também vai para o SDK: ele aborta a requisição em curso em vez de
+    // deixá-la terminar sozinha e produzir um resultado que ninguém vai usar.
+    const response = await client.messages.create(
+      {
+        model: model || DEFAULT_MODEL,
+        ...tuning,
+        system,
+        messages,
+        ...(allowTools ? { tools: toolDefs } : {}),
+        ...(allowTools && escolha ? { tool_choice: escolha } : {}),
+      },
+      opts.signal ? { signal: opts.signal } : undefined,
+    )
     const turnUsage = anthropicUsage(response.usage)
     usage.inputTokens += turnUsage.inputTokens
     usage.outputTokens += turnUsage.outputTokens
@@ -197,8 +202,15 @@ export async function generateAgentReply(
       const soLeitura = pedidos.every((p) => tools.find((t) => t.name === p.name)?.risk === 'read')
       const emParalelo = opts.runConfig?.parallelTools === true && soLeitura && pedidos.length > 1
 
-      const executar = (bloco: Anthropic.ToolUseBlock) =>
-        runResolvedTool(tools, bloco.name, (bloco.input ?? {}) as Record<string, unknown>)
+      const executar = (bloco: Anthropic.ToolUseBlock) => {
+        // A porteira: uma tentativa cancelada não INICIA mais nada. Sem esta linha o
+        // laço continuaria chamando ferramentas depois do timeout, e a escrita que o
+        // dono já desistiu de esperar aconteceria assim mesmo.
+        if (opts.signal?.aborted) throw new Error('execução cancelada por tempo esgotado')
+        const ferramenta = tools.find((t) => t.name === bloco.name)
+        opts.onToolStart?.(ferramenta?.risk ?? 'write')
+        return runResolvedTool(tools, bloco.name, (bloco.input ?? {}) as Record<string, unknown>)
+      }
 
       // `map` preserva a ordem em qualquer um dos caminhos: cada resultado volta no
       // índice do pedido, e o `tool_use_id` que os pareia vem do mesmo bloco.

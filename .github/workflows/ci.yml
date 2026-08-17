@@ -77,6 +77,35 @@ jobs:
       - name: Frontend unit tests
         run: npm test -w frontend
 
+      # As imagens são construídas no CI porque um Dockerfile que só é exercitado na
+      # hora do deploy é um Dockerfile que falha na hora do deploy. Aqui o custo de
+      # descobrir é um job vermelho; lá, é um rollback.
+      - name: Build backend image
+        run: docker build -t comunicacaoai-backend:ci backend
+
+      - name: Build frontend image
+        run: docker build -t comunicacaoai-frontend:ci --build-arg VITE_API_URL=https://api.comunicacaoai.onplataform.com frontend
+
+      # Sobe a pilha com `NODE_ENV=production` e as origens públicas reais: a validação
+      # de produção roda por inteiro, sem flag de escape. O que se confere é o que dá
+      # para conferir de dentro — prontidão, saúde do frontend e encerramento limpo.
+      - name: Docker smoke (production config)
+        run: |
+          cp compose.production-test.env.example compose.production-test.env
+          docker compose -f compose.production-test.yml --env-file compose.production-test.env up -d --build
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:4000/api/ready > /dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:4000/api/ready | tee /dev/stderr | grep -q '"ready"'
+          curl -fsS http://localhost:8080/healthz > /dev/null
+          docker compose -f compose.production-test.yml --env-file compose.production-test.env logs backend | tail -40
+          docker compose -f compose.production-test.yml --env-file compose.production-test.env down -v
+
+      - name: Docker smoke logs on failure
+        if: failure()
+        run: docker compose -f compose.production-test.yml --env-file compose.production-test.env logs || true
+
   # O smoke roda a pilha de verdade num navegador. Fica num job próprio porque
   # precisa do Chromium e leva mais tempo que o gate — e porque, quando ele quebra,
   # o que quebrou é o produto, não uma unidade.

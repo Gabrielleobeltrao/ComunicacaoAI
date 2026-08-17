@@ -100,9 +100,10 @@ export type ReplyFn = (
   responseStyleInstruction?: string,
   enableCaching?: boolean,
   tools?: ResolvedTool[],
-  // A configuração já resolvida. Opcional: um dublê de teste que não se importe com ela
+  // A configuração já resolvida, o sinal de cancelamento da tentativa e o aviso de que
+  // uma ferramenta vai começar. Opcionais: um dublê de teste que não se importe com eles
   // continua encaixando na assinatura.
-  opts?: { runConfig?: EffectiveRunConfig },
+  opts?: { runConfig?: EffectiveRunConfig; signal?: AbortSignal; onToolStart?: (risk: 'read' | 'write' | 'high_risk') => void },
 ) => Promise<AgentReplyResult>
 
 const DEFAULT_MAX_OUTPUT = 200_000
@@ -220,9 +221,22 @@ export function parseJsonOutput(raw: string): unknown {
   }
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+/**
+ * Espera com prazo — e CANCELA quem passou dele.
+ *
+ * A versão anterior só rejeitava a promessa. A chamada continuava viva: o modelo
+ * respondia depois, o laço de ferramentas seguia rodando, e uma ESCRITA acontecia
+ * quando ninguém mais esperava por ela. Se o runtime já tivesse tentado de novo, a
+ * mesma escrita saía duas vezes — o segundo e-mail, a segunda cobrança.
+ *
+ * Rejeitar sem abortar é prometer um prazo e não cumprir nada além do relógio.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, controller?: AbortController): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new AgentRunError('timeout', `agent task exceeded ${ms}ms`)), ms)
+    const timer = setTimeout(() => {
+      controller?.abort()
+      reject(new AgentRunError('timeout', `agent task exceeded ${ms}ms`))
+    }, ms)
     if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref()
     p.then(
       (v) => {
@@ -246,7 +260,8 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
   // reported before the call rather than inferred afterwards.
   req.progress?.('thinking')
 
-  const call = reply(
+  const primeiraChamada = (opcoes: { runConfig?: EffectiveRunConfig; signal?: AbortSignal; onToolStart?: (risk: 'read' | 'write' | 'high_risk') => void }) =>
+    reply(
     objective,
     req.context ?? [],
     '', // no conversation memory in the generic path
@@ -259,7 +274,7 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
     '', // response style — attendance only
     req.enableCaching ?? true,
     req.tools ?? [],
-    { runConfig: req.runConfig },
+    opcoes,
   )
 
   // O tempo máximo: a escolha do dono ganha do limite da etapa, e a ausência dos dois
@@ -276,12 +291,29 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
   const tentativas = Math.max(0, req.runConfig?.retries ?? 0)
   let result: AgentReplyResult | null = null
   let ultimoErro: unknown = null
+  /**
+   * Alguma ferramenta que ALTERA algo chegou a começar nesta execução?
+   *
+   * Depois disso, nem o cancelamento garante que ela não chegou ao outro lado: o pedido
+   * pode ter sido aceito e a resposta perdida. Repetir seria a segunda cobrança. Uma
+   * leitura não tem esse problema — repetir uma consulta não muda nada.
+   */
+  let escritaIniciada = false
 
   for (let tentativa = 0; tentativa <= tentativas; tentativa++) {
+    // Um controlador POR TENTATIVA: abortar a primeira não pode cancelar a segunda.
+    const controller = new AbortController()
+    const opcoes = {
+      runConfig: req.runConfig,
+      signal: controller.signal,
+      onToolStart: (risk: 'read' | 'write' | 'high_risk') => {
+        if (risk !== 'read') escritaIniciada = true
+      },
+    }
     try {
       const chamada =
         tentativa === 0
-          ? call
+          ? primeiraChamada(opcoes)
           : reply(
               objective,
               req.context ?? [],
@@ -295,15 +327,21 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
               '',
               req.enableCaching ?? true,
               req.tools ?? [],
-              { runConfig: req.runConfig },
+              opcoes,
             )
-      result = timeoutMs && timeoutMs > 0 ? await withTimeout(chamada, timeoutMs) : await chamada
+      result = timeoutMs && timeoutMs > 0 ? await withTimeout(chamada, timeoutMs, controller) : await chamada
       break
     } catch (error) {
+      // A tentativa acabou: o que ela ainda estivesse fazendo para de valer aqui.
+      controller.abort()
       ultimoErro = error
-      // O erro do SDK é CLASSIFICADO antes de decidir: um 401 e um 503 chegam pelo mesmo
-      // caminho, e repetir o 401 só demora três vezes mais para dizer a mesma coisa.
       const kind = error instanceof AgentRunError ? error.kind : classifyProviderError(error)
+
+      // A regra que evita a ação duplicada: depois que uma escrita começou, não se
+      // tenta de novo — nem em timeout, que é justamente quando não se sabe se ela
+      // completou.
+      if (escritaIniciada) break
+
       // `hasValidAnswer` é falso aqui por construção: se houvesse resposta, não
       // estaríamos no catch. Repetir depois dela é o que a função proíbe.
       if (tentativa >= tentativas || !shouldRetryInference(kind, { hasValidAnswer: false })) break
@@ -354,11 +392,17 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
     // delegation or any other side effect while "fixing" the JSON.
     // A correção usa a MESMA configuração: mudar a temperatura ou o teto de saída só na
     // segunda tentativa produziria uma resposta com outras características.
-    const repairCall = reply(objective, req.context ?? [], '', repairHistory, req.provider ?? null, req.model ?? null, req.apiKey ?? null, '', '', '', req.enableCaching ?? true, [], { runConfig: req.runConfig })
+    // Sem ferramentas (a lista vai vazia) e sob o mesmo prazo, agora com cancelamento:
+    // um reparo que estoure o tempo não pode continuar rodando em segundo plano.
+    const repairController = new AbortController()
+    const repairCall = reply(objective, req.context ?? [], '', repairHistory, req.provider ?? null, req.model ?? null, req.apiKey ?? null, '', '', '', req.enableCaching ?? true, [], {
+      runConfig: req.runConfig,
+      signal: repairController.signal,
+    })
     // O mesmo tempo máximo da chamada principal: um reparo com prazo diferente seria
     // uma segunda regra sobre quanto o dono está disposto a esperar.
     const ms = req.runConfig?.timeoutMs ?? req.limits?.timeoutMs
-    repairResult = ms && ms > 0 ? await withTimeout(repairCall, ms) : await repairCall
+    repairResult = ms && ms > 0 ? await withTimeout(repairCall, ms, repairController) : await repairCall
   } catch (error) {
     if (error instanceof AgentRunError) throw error
     throw new AgentRunError('provider', error instanceof Error ? error.message : 'provider error')

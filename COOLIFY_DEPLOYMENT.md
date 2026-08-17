@@ -29,13 +29,13 @@ Nenhum segredo real aparece aqui. Tudo abaixo é espaço reservado.
 | Build context | `frontend/` |
 | Dockerfile | `frontend/Dockerfile` |
 | Porta interna | `8080` |
-| Domínio | `https://comunicacaoai.oneplataforma.com` |
+| Domínio | `https://comunicacaoai.onplataform.com` |
 | Healthcheck | `GET /healthz` |
 
 Variável de **build** (entra no bundle do navegador, não é segredo):
 
 ```
-VITE_API_URL=https://api.comunicacaoai.oneplataforma.com
+VITE_API_URL=https://api.comunicacaoai.onplataform.com
 ```
 
 ## 2. backend
@@ -46,7 +46,7 @@ VITE_API_URL=https://api.comunicacaoai.oneplataforma.com
 | Dockerfile | `backend/Dockerfile` |
 | Start command | (padrão da imagem — não precisa mexer) |
 | Porta interna | `4000` |
-| Domínio | `https://api.comunicacaoai.oneplataforma.com` |
+| Domínio | `https://api.comunicacaoai.onplataform.com` |
 | Healthcheck | `GET /api/ready` (200 só quando o MongoDB responde **e** o motor de automações está de pé) |
 
 Variáveis obrigatórias:
@@ -57,9 +57,9 @@ PORT=4000
 MONGODB_URI=<string de conexão do Atlas>
 BETTER_AUTH_SECRET=<openssl rand -hex 32>
 ENCRYPTION_KEY=<openssl rand -hex 32>
-CLIENT_URL=https://comunicacaoai.oneplataforma.com
-BETTER_AUTH_URL=https://api.comunicacaoai.oneplataforma.com
-PUBLIC_URL=https://api.comunicacaoai.oneplataforma.com
+CLIENT_URL=https://comunicacaoai.onplataform.com
+BETTER_AUTH_URL=https://api.comunicacaoai.onplataform.com
+PUBLIC_URL=https://api.comunicacaoai.onplataform.com
 ```
 
 Opcionais (chaves de provedor; o app sobe sem elas):
@@ -112,7 +112,7 @@ atômica no Mongo e cada disparo agendado carrega uma chave de idempotência ún
 ## Checklist de corte
 
 - [ ] Os dois recursos verdes.
-- [ ] `GET https://api.comunicacaoai.oneplataforma.com/api/ready` → 200.
+- [ ] `GET https://api.comunicacaoai.onplataform.com/api/ready` → 200.
 - [ ] Log do backend mostrando `Automation engine up`.
 - [ ] Nenhum Redis e nenhum recurso de worker (se você criou antes, pode apagar).
 

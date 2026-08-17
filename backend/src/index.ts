@@ -11,7 +11,7 @@ import type { NextFunction, Request, Response } from 'express'
 import multer from 'multer'
 import { ObjectId } from 'mongodb'
 import { normalizeRunConfig } from './runConfig.js'
-import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
+import { composeAgentPrompt, enforceOutputContract, resolveAgentRun } from './agentDefinition.js'
 import type { WithId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import { Server } from 'socket.io'
@@ -1617,7 +1617,7 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     toolRisks: playgroundTools.map((t) => t.risk ?? 'write'),
   })
 
-  const { text, usage, toolCalls } = await generateAgentReply(
+  const bruto = await generateAgentReply(
     composeAgentPrompt({
       definition: execucaoPlayground.definition,
       taskInstruction: replyObjective === configAgent.objective ? '' : replyObjective,
@@ -1644,6 +1644,36 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     playgroundTools,
     { runConfig: execucaoPlayground.runConfig },
   )
+
+  /**
+   * O contrato de saída do agente vale AQUI também.
+   *
+   * O reparo vai sem ferramentas de propósito: o problema é a forma do texto, não falta
+   * de informação — e dar ferramentas ao reparo faria repetir ações já executadas.
+   */
+  const conferidoPlayground = await enforceOutputContract(bruto.text, execucaoPlayground.definition.output, (instrucao) =>
+    generateAgentReply(
+      instrucao,
+      [],
+      '',
+      [
+        ...history,
+        { role: 'assistant', content: bruto.text },
+        { role: 'user', content: instrucao },
+      ],
+      configAgent.provider,
+      configAgent.model,
+      apiKey,
+      '',
+      '',
+      '',
+      execucaoPlayground.enableCaching,
+      [],
+      { runConfig: execucaoPlayground.runConfig },
+    ).then((r) => r.text),
+  )
+  const { usage, toolCalls } = bruto
+  const text = conferidoPlayground.text
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
   )
@@ -2610,7 +2640,11 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     chatTools,
     { runConfig: execucaoChat.runConfig },
     )
-    generated = result.text
+    // O contrato de saída do agente vale também nesta porta. Reparo sem ferramentas.
+    const conferido = await enforceOutputContract(result.text, execucaoChat.definition.output, (instrucao) =>
+      generateAgentReply(instrucao, [], '', [...history, { role: 'assistant', content: result.text }, { role: 'user', content: instrucao }], agent.provider, agent.model, apiKey, '', '', '', execucaoChat.enableCaching, [], { runConfig: execucaoChat.runConfig }).then((r) => r.text),
+    )
+    generated = conferido.text
     usage = result.usage
     toolCalls = result.toolCalls
   } catch (error) {
@@ -3792,7 +3826,10 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     canalTools,
     { runConfig: execucaoCanal.runConfig },
     )
-    generatedReply = channelResult.text
+    const conferidoCanal = await enforceOutputContract(channelResult.text, execucaoCanal.definition.output, (instrucao) =>
+      generateAgentReply(instrucao, [], '', [...history, { role: 'assistant', content: channelResult.text }, { role: 'user', content: instrucao }], agent.provider, agent.model, apiKey, '', '', '', execucaoCanal.enableCaching, [], { runConfig: execucaoCanal.runConfig }).then((r) => r.text),
+    )
+    generatedReply = conferidoCanal.text
     usage = channelResult.usage
     toolCalls = channelResult.toolCalls
   } catch (error) {

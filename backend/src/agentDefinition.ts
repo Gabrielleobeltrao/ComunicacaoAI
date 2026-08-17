@@ -207,3 +207,51 @@ export function outputDirective(output: { format: string; jsonSchema?: Record<st
   if (output.format === 'markdown') return 'Responda em Markdown bem formatado.'
   return ''
 }
+
+/**
+ * A resposta de um caminho de CONVERSA, conferida contra o contrato do agente.
+ *
+ * O Playground, o widget e os canais chamam `generateAgentReply` direto — eles não
+ * passam pelo runtime, que é quem valida JSON. O resultado: um agente configurado para
+ * produzir JSON recebia a instrução no prompt e entregava o que viesse, sem ninguém
+ * conferir. Por uma porta o contrato valia; pela outra, era decoração.
+ *
+ * Um reparo, no máximo, e SEM ferramentas: o texto está errado, não faltou informação.
+ * Dar ferramentas ao reparo o faria repetir ações que já aconteceram.
+ */
+export interface OutputCheck {
+  text: string
+  valid: boolean
+  repaired: boolean
+  problem?: string
+}
+
+export async function enforceOutputContract(
+  texto: string,
+  output: { format: string; jsonSchema?: Record<string, unknown> | null } | undefined,
+  repair: (instrucao: string) => Promise<string>,
+): Promise<OutputCheck> {
+  if (!output || output.format !== 'json') return { text: texto, valid: true, repaired: false }
+
+  const { checkJsonText } = await import('./jsonOutput.js')
+  const primeira = checkJsonText(texto, output.jsonSchema ?? null)
+  if (primeira.ok) return { text: primeira.text, valid: true, repaired: false }
+
+  let bruto: string
+  try {
+    bruto = await repair(
+      `Sua resposta anterior não era um JSON válido segundo o contrato (${primeira.problem}). ` +
+        'Reescreva APENAS o JSON correto, sem texto fora dele e sem cercas de código.',
+    )
+  } catch {
+    // O reparo falhou (prazo, rede). O texto original volta marcado como inválido: quem
+    // consome precisa saber que o contrato não foi cumprido, em vez de receber algo que
+    // parece bom.
+    return { text: texto, valid: false, repaired: false, problem: primeira.problem }
+  }
+
+  const segunda = checkJsonText(bruto, output.jsonSchema ?? null)
+  return segunda.ok
+    ? { text: segunda.text, valid: true, repaired: true }
+    : { text: bruto, valid: false, repaired: true, problem: segunda.problem }
+}

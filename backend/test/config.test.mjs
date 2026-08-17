@@ -44,9 +44,9 @@ function run(caseVars, { validate = true } = {}) {
 // The definitive production origins (ASCII, no trailing slash).
 const PROD_URLS = {
   NODE_ENV: 'production',
-  CLIENT_URL: 'https://comunicacaoai.oneplataforma.com',
-  BETTER_AUTH_URL: 'https://api.comunicacaoai.oneplataforma.com',
-  PUBLIC_URL: 'https://api.comunicacaoai.oneplataforma.com',
+  CLIENT_URL: 'https://comunicacaoai.onplataform.com',
+  BETTER_AUTH_URL: 'https://api.comunicacaoai.onplataform.com',
+  PUBLIC_URL: 'https://api.comunicacaoai.onplataform.com',
 }
 // The non-URL variables a production deploy must carry. There is no REDIS_URL any
 // more: the automation queue and scheduler live in MongoDB, so a deploy needs one
@@ -73,7 +73,7 @@ test('production: a required URL var missing fails fast at import', () => {
 })
 
 test('production: non-https URL is rejected', () => {
-  const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS, BETTER_AUTH_URL: 'http://api.comunicacaoai.oneplataforma.com' })
+  const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS, BETTER_AUTH_URL: 'http://api.comunicacaoai.onplataform.com' })
   assert.equal(ok, false)
   assert.match(out, /https/i)
 })
@@ -83,12 +83,12 @@ test('production: valid config passes, strips trailing slash, splits CSV origins
     ...PROD_URLS,
     ...PROD_SECRETS,
     // prod origin + local dev origin, both with a stray trailing slash to strip.
-    CLIENT_URL: 'https://comunicacaoai.oneplataforma.com/, http://localhost:5173/',
+    CLIENT_URL: 'https://comunicacaoai.onplataform.com/, http://localhost:5173/',
   })
   assert.equal(ok, true, out)
   const parsed = JSON.parse(out)
-  assert.deepEqual(parsed.origins, ['https://comunicacaoai.oneplataforma.com', 'http://localhost:5173'])
-  assert.equal(parsed.publicUrl, 'https://api.comunicacaoai.oneplataforma.com')
+  assert.deepEqual(parsed.origins, ['https://comunicacaoai.onplataform.com', 'http://localhost:5173'])
+  assert.equal(parsed.publicUrl, 'https://api.comunicacaoai.onplataform.com')
 })
 
 test('development: no env needed, falls back to localhost defaults', () => {
@@ -105,4 +105,51 @@ test('production needs NO broker: a complete config without REDIS_URL is accepte
   const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS })
   assert.equal(ok, true, out)
   assert.ok(!out.includes('REDIS_URL'), 'REDIS_URL must not be demanded any more')
+})
+
+// --- o compose de teste sobe de verdade? ------------------------------------------------
+//
+// O `compose.production-test.yml` declarava `NODE_ENV=production` com URLs
+// `http://localhost`, e `validateConfig` exige https em produção. O teste documentado
+// nunca chegava a subir — e ninguém percebia, porque conferir isso exigia rodar Docker.
+//
+// Aqui os valores do próprio arquivo de exemplo são lidos e passados pela validação
+// real. Se alguém voltar a colocar http lá, este teste quebra sem precisar de Docker.
+
+test('os valores do compose de produção passam pela validação de produção', async () => {
+  const { readFileSync } = await import('node:fs')
+  const texto = readFileSync(new URL('../../compose.production-test.env.example', import.meta.url), 'utf8')
+
+  const doArquivo = {}
+  for (const linha of texto.split('\n')) {
+    const m = /^([A-Z0-9_]+)=(.*)$/.exec(linha.trim())
+    if (m) doArquivo[m[1]] = m[2]
+  }
+
+  for (const chave of ['CLIENT_URL', 'BETTER_AUTH_URL', 'PUBLIC_URL']) {
+    assert.ok(doArquivo[chave], `${chave} não está no arquivo de exemplo`)
+  }
+
+  const { ok, out } = run({
+    NODE_ENV: 'production',
+    ...PROD_SECRETS,
+    CLIENT_URL: doArquivo.CLIENT_URL,
+    BETTER_AUTH_URL: doArquivo.BETTER_AUTH_URL,
+    PUBLIC_URL: doArquivo.PUBLIC_URL,
+  })
+  assert.equal(ok, true, `a pilha não subiria: ${out}`)
+})
+
+test('e a exigência de https continua valendo — não há flag de escape', () => {
+  // A alternativa fácil seria uma variável que desligasse a checagem. Ela existiria
+  // também em produção, e um dia alguém a usaria lá.
+  const comHttp = run({
+    NODE_ENV: 'production',
+    ...PROD_SECRETS,
+    CLIENT_URL: 'http://localhost:8080',
+    BETTER_AUTH_URL: 'https://a.b.com',
+    PUBLIC_URL: 'https://a.b.com',
+  })
+  assert.equal(comHttp.ok, false)
+  assert.match(comHttp.out, /https/i)
 })

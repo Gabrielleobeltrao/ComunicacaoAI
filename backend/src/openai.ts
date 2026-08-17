@@ -109,7 +109,7 @@ export async function generateAgentReply(
   // keep the provider signatures identical.
   enableCaching = true,
   tools: ResolvedTool[] = [],
-  opts: { runConfig?: EffectiveRunConfig } = {},
+  opts: { runConfig?: EffectiveRunConfig; signal?: AbortSignal; onToolStart?: (risk: 'read' | 'write' | 'high_risk') => void } = {},
 ): Promise<AgentReplyResult> {
   void enableCaching
   const client = buildClient(apiKey)
@@ -160,14 +160,17 @@ export async function generateAgentReply(
   // the cap (tools are withheld on the last pass so it must reply).
   for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
     const allowTools = toolDefs.length > 0 && !proibirFerramentas && iteration < MAX_TOOL_ITERATIONS
-    const response = await client.chat.completions.create({
-      model: model || DEFAULT_MODEL,
-      ...tuning,
-      messages,
-      ...(allowTools ? { tools: toolDefs } : {}),
-      ...(allowTools && cfg.toolChoice === 'required' ? { tool_choice: 'required' as const } : {}),
-      ...(allowTools && cfg.parallelTools === false ? { parallel_tool_calls: false } : {}),
-    })
+    const response = await client.chat.completions.create(
+      {
+        model: model || DEFAULT_MODEL,
+        ...tuning,
+        messages,
+        ...(allowTools ? { tools: toolDefs } : {}),
+        ...(allowTools && cfg.toolChoice === 'required' ? { tool_choice: 'required' as const } : {}),
+        ...(allowTools && cfg.parallelTools === false ? { parallel_tool_calls: false } : {}),
+      },
+      opts.signal ? { signal: opts.signal } : undefined,
+    )
     usage.inputTokens += response.usage?.prompt_tokens ?? 0
     usage.outputTokens += response.usage?.completion_tokens ?? 0
 
@@ -189,6 +192,9 @@ export async function generateAgentReply(
       const emParalelo = cfg.parallelTools === true && soLeitura && pedidos.length > 1
 
       const executar = (call: (typeof pedidos)[number]) => {
+        // Uma tentativa cancelada não inicia mais ferramenta nenhuma.
+        if (opts.signal?.aborted) throw new Error('execução cancelada por tempo esgotado')
+        opts.onToolStart?.(tools.find((t) => t.name === call.function.name)?.risk ?? 'write')
         let args: Record<string, unknown> = {}
         try {
           args = JSON.parse(call.function.arguments || '{}')

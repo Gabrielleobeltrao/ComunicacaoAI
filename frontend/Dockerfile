@@ -1,5 +1,5 @@
 # Frontend production image — multi-stage. Build context is THIS folder only:
-#   docker build -t comunicacaoai-frontend:test --build-arg VITE_API_URL=https://api.comunicacaoai.oneplataforma.com frontend
+#   docker build -t comunicacaoai-frontend:test --build-arg VITE_API_URL=https://api.comunicacaoai.onplataform.com frontend
 #
 # VITE_API_URL is a BUILD arg: Vite inlines it into the browser bundle, so it is
 # public by definition — never pass a secret here.
@@ -14,7 +14,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --include=dev
 COPY . .
 # Default points at the production backend origin; override per environment.
-ARG VITE_API_URL=https://api.comunicacaoai.oneplataforma.com
+ARG VITE_API_URL=https://api.comunicacaoai.onplataform.com
 ENV VITE_API_URL=${VITE_API_URL}
 # Public AI feature flags (build-time — Vite inlines VITE_* into the bundle, so a
 # runtime env in Coolify does NOT change an already-built bundle). São TRÊS, e o

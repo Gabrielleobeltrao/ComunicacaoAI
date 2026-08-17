@@ -13,8 +13,8 @@ scheduled routine silently unexecuted.
 
 **Definitive production origins (ASCII, no trailing slash):**
 
-- Frontend: `https://comunicacaoai.oneplataforma.com`
-- Backend: `https://api.comunicacaoai.oneplataforma.com`
+- Frontend: `https://comunicacaoai.onplataform.com`
+- Backend: `https://api.comunicacaoai.onplataform.com`
 
 Secrets are never real in this repo. URLs are public and are the real values above.
 
@@ -31,7 +31,7 @@ Secrets are never real in this repo. URLs are public and are the real values abo
 
 | Variable | Service | Required | Phase | Sensitivity | Example | Source of value | Rotate when | If missing |
 |---|---|---|---|---|---|---|---|---|
-| `VITE_API_URL` | frontend | Required | **Build-time** | **Public** (inlined in bundle) | `https://api.comunicacaoai.oneplataforma.com` | Backend public origin | Backend domain changes | API calls have no base URL → app cannot reach the backend |
+| `VITE_API_URL` | frontend | Required | **Build-time** | **Public** (inlined in bundle) | `https://api.comunicacaoai.onplataform.com` | Backend public origin | Backend domain changes | API calls have no base URL → app cannot reach the backend |
 
 > `VITE_API_URL` is passed as a Docker `--build-arg`. Because Vite inlines it into
 > the bundle, it is public by definition — **never** put a secret in a `VITE_*` var.
@@ -42,9 +42,9 @@ Secrets are never real in this repo. URLs are public and are the real values abo
 |---|---|---|---|---|---|---|---|---|
 | `NODE_ENV` | backend | Required (prod) | Runtime | Public | `production` | Deploy config | n/a | No fail-fast validation; cookies not marked Secure/SameSite=None |
 | `PORT` | backend | Optional (default `4000`) | Runtime | Public | `4000` | Deploy config | n/a | Defaults to `4000` |
-| `CLIENT_URL` | backend | Required (prod) | Runtime | Public | `https://comunicacaoai.oneplataforma.com` | Frontend public origin(s), comma-separated | Frontend domain changes | Startup fails in prod; CORS + Socket.IO + cookies reject the frontend |
-| `BETTER_AUTH_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.oneplataforma.com` | Backend public origin | Backend domain changes | Startup fails; auth base + Google callback wrong |
-| `PUBLIC_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.oneplataforma.com` | Backend public origin | Backend domain changes | Startup fails; WhatsApp webhook URLs are wrong |
+| `CLIENT_URL` | backend | Required (prod) | Runtime | Public | `https://comunicacaoai.onplataform.com` | Frontend public origin(s), comma-separated | Frontend domain changes | Startup fails in prod; CORS + Socket.IO + cookies reject the frontend |
+| `BETTER_AUTH_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.onplataform.com` | Backend public origin | Backend domain changes | Startup fails; auth base + Google callback wrong |
+| `PUBLIC_URL` | backend | Required (prod) | Runtime | Public | `https://api.comunicacaoai.onplataform.com` | Backend public origin | Backend domain changes | Startup fails; WhatsApp webhook URLs are wrong |
 | `MONGODB_URI` | backend API + worker | **Required** | Runtime | **Secret** | `mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/comunicacaoai` | MongoDB Atlas | DB credential suspected leaked / policy rotation | Startup fails; no persistence |
 | `EMBEDDED_WORKER` | backend | Optional (default `true`) | Runtime | Public | `true` | Deploy config | Splitting the worker out at scale | The automation engine runs inside the API. `false` disables it, and a separate `npm run start:worker` process must then exist |
 | `WORKER_CONCURRENCY` | backend | Optional (default `4`) | Runtime | Public | `4` | Deploy config | Tuning throughput | Defaults to 4 concurrent runs |
@@ -62,7 +62,7 @@ Secrets are never real in this repo. URLs are public and are the real values abo
 | `VOYAGE_MODEL` | backend | Optional | Runtime | Public | `voyage-4` | Fixed config | Model change | Uses built-in default |
 | `GOOGLE_CLIENT_ID` | backend | Optional | Runtime | Secret-ish | *(blank)* | Google Cloud OAuth client | Provider policy | Google Calendar integration hidden |
 | `GOOGLE_CLIENT_SECRET` | backend | Optional | Runtime | **Secret** | *(blank)* | Google Cloud OAuth client | Provider policy / on suspicion | Google OAuth callback fails |
-| `GOOGLE_REDIRECT_URI` | backend | Optional | Runtime | Public | `https://api.comunicacaoai.oneplataforma.com/api/integrations/google/callback` | Derived from `BETTER_AUTH_URL` if unset | Backend domain changes | Defaults to `BETTER_AUTH_URL` + `/api/integrations/google/callback` |
+| `GOOGLE_REDIRECT_URI` | backend | Optional | Runtime | Public | `https://api.comunicacaoai.onplataform.com/api/integrations/google/callback` | Derived from `BETTER_AUTH_URL` if unset | Backend domain changes | Defaults to `BETTER_AUTH_URL` + `/api/integrations/google/callback` |
 
 ## `CLIENT_URL` vs `CLIENT_URLS`
 
@@ -71,7 +71,7 @@ comma-separated list. A separate `CLIENT_URLS` variable is **not implemented** �
 do not set it. Production uses exactly:
 
 ```
-CLIENT_URL=https://comunicacaoai.oneplataforma.com
+CLIENT_URL=https://comunicacaoai.onplataform.com
 ```
 
 ## Credentials that are **not** environment variables
@@ -129,19 +129,19 @@ They are **different secrets with different blast radii** and must not be reused
 
 ```
 # Contract (documentation names)
-FRONTEND_PUBLIC_URL=https://comunicacaoai.oneplataforma.com
-BACKEND_PUBLIC_URL=https://api.comunicacaoai.oneplataforma.com
+FRONTEND_PUBLIC_URL=https://comunicacaoai.onplataform.com
+BACKEND_PUBLIC_URL=https://api.comunicacaoai.onplataform.com
 
 # Frontend (build-time)
-VITE_API_URL=https://api.comunicacaoai.oneplataforma.com
+VITE_API_URL=https://api.comunicacaoai.onplataform.com
 
 # Backend (runtime)
-CLIENT_URL=https://comunicacaoai.oneplataforma.com
-BETTER_AUTH_URL=https://api.comunicacaoai.oneplataforma.com
-PUBLIC_URL=https://api.comunicacaoai.oneplataforma.com
-GOOGLE_REDIRECT_URI=https://api.comunicacaoai.oneplataforma.com/api/integrations/google/callback
+CLIENT_URL=https://comunicacaoai.onplataform.com
+BETTER_AUTH_URL=https://api.comunicacaoai.onplataform.com
+PUBLIC_URL=https://api.comunicacaoai.onplataform.com
+GOOGLE_REDIRECT_URI=https://api.comunicacaoai.onplataform.com/api/integrations/google/callback
 ```
 
-`comunicacaoai.oneplataforma.com` and `api.comunicacaoai.oneplataforma.com` share the
-registrable domain `oneplataforma.com`, so they are **same-site** — see the cookie
+`comunicacaoai.onplataform.com` and `api.comunicacaoai.onplataform.com` share the
+registrable domain `onplataform.com`, so they are **same-site** — see the cookie
 note in `DEPLOYMENT_READINESS_REPORT.md`.

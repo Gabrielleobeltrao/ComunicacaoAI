@@ -60,6 +60,26 @@ export function auxiliaryModel(provider: string | null | undefined): string {
  */
 export interface ReplyOptions {
   runConfig?: EffectiveRunConfig
+  /**
+   * O sinal de cancelamento DESTA tentativa.
+   *
+   * Sem ele, um timeout apenas rejeita a promessa: a chamada continua viva, o modelo
+   * responde depois, e o laço de ferramentas executa uma ESCRITA que já ninguém está
+   * esperando. Se o runtime tiver tentado de novo enquanto isso, a mesma escrita
+   * acontece duas vezes.
+   *
+   * O sinal é conferido antes de cada ferramenta e vai para o SDK, que aborta a
+   * requisição em curso.
+   */
+  signal?: AbortSignal
+  /**
+   * Avisa que uma ferramenta VAI começar, com o risco dela.
+   *
+   * É o que permite ao runtime decidir se ainda pode tentar de novo: depois que uma
+   * escrita começou, nem o cancelamento garante que ela não chegou ao outro lado — e
+   * repetir seria a segunda cobrança, o segundo e-mail, o segundo pedido.
+   */
+  onToolStart?: (risk: 'read' | 'write' | 'high_risk') => void
 }
 
 export function generateAgentReply(

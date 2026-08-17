@@ -136,8 +136,8 @@ Criar no relatório uma tabela com:
 **Atualizado:** as URLs definitivas de produção foram fornecidas (ASCII, sem
 Punycode, sem barra final):
 
-- `FRONTEND_PUBLIC_URL=https://comunicacaoai.oneplataforma.com`
-- `BACKEND_PUBLIC_URL=https://api.comunicacaoai.oneplataforma.com`
+- `FRONTEND_PUBLIC_URL=https://comunicacaoai.onplataform.com`
+- `BACKEND_PUBLIC_URL=https://api.comunicacaoai.onplataform.com`
 
 > Histórico: durante a preparação os exemplos usavam o TLD reservado `.invalid`.
 > Agora substituídos pelos domínios reais acima. Não usar Punycode — o DNS é
