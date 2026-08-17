@@ -8,6 +8,8 @@ import {
 import { runDefinition } from './runner.js'
 import { acquireSourceLease, advanceCheckpoint, beginCheck, releaseSourceLease } from './sourceCheckpoint.js'
 import { publishedSourceFingerprint } from './routine.js'
+import { deleteFromStep, searchFromStep, writeFromStep } from '../memory/fromStep.js'
+import { executeAppStep } from '../apps/fromStep.js'
 import { findAutomation, findVersion } from './repository.js'
 import type { RunnerDeps } from './runner.js'
 import { preview } from './runTypes.js'
@@ -49,6 +51,15 @@ function buildDeps(run: AutomationRun): RunnerDeps {
   // Só rotinas de monitoramento têm etapa de fonte. Para as demais isto fica
   // ausente, e o runner segue o caminho de sempre.
   const temFonte = (run.definitionSnapshot.steps ?? []).some((p) => p.type === 'source.rss' || p.type === 'source.http')
+  const temMemoria = (run.definitionSnapshot.steps ?? []).some((p) => p.type.startsWith('memory.'))
+  const temApp = (run.definitionSnapshot.steps ?? []).some((p) => p.type === 'app.execute')
+
+  // O agente dono da automação é quem responde pela gravação: a permissão é conferida
+  // contra ELE, não contra o dono da conta. Sem isso, um gatilho gravaria em qualquer
+  // canto do prédio só por estar na mesma conta.
+  // Quem responde pela gravação vem da própria etapa (`ownerAgentId`), não daqui: a
+  // definição carrega essa informação para os modos sem IA também.
+  const memoryCtx = { ownerId: run.ownerId, sourceType: run.triggerType, sourceId: run._id.toString() }
 
   return {
     fetchUrl: async (url, opts) => {
@@ -58,6 +69,16 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       const res = await safeFetch(url, { contentTypeAllowlist: opts?.contentTypeAllowlist, requireOk: opts?.requireOk })
       return { body: res.body, contentType: res.contentType }
     },
+    ...(temApp ? { runApp: (cfg, valor) => executeAppStep(cfg, valor, { ownerId: run.ownerId }) } : {}),
+    ...(temMemoria
+      ? {
+          memory: {
+            write: (cfg, valor, stepId) => writeFromStep(cfg, valor, memoryCtx, stepId),
+            search: (cfg, valor) => searchFromStep(cfg, valor, memoryCtx),
+            remove: (cfg, valor) => deleteFromStep(cfg, valor, memoryCtx),
+          },
+        }
+      : {}),
     ...(temFonte && run.automationId
       ? {
           sourceState: {
@@ -274,6 +295,10 @@ export async function processRun(runId: string): Promise<void> {
     // Como a fonte encerrou, quando ela encerrou. Guardado no run para a lista de
     // rotinas conseguir dizer isso sem reprocessar as etapas.
     ...(outcome.sourceOutcome ? { sourceOutcome: outcome.sourceOutcome } : {}),
+    // O que sustenta a promessa de custo zero: `usedAI: false` com `usage` zerado,
+    // gravado no run, é a prova auditável de que o modo sem IA cumpriu o combinado.
+    executionMode: outcome.executionMode,
+    usedAI: outcome.usedAI,
     finalOutput: outcome.finalOutput,
     // Real consumption of the whole run (summed across steps and their attempts).
     usage: outcome.usage,

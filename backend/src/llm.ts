@@ -3,6 +3,7 @@ import * as anthropicProvider from './claude.js'
 import * as openaiProvider from './openai.js'
 import * as fakeProvider from './llmFake.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
+import type { EffectiveRunConfig } from './runConfig.js'
 
 export type { ChatTurn }
 export type Provider = 'anthropic' | 'openai'
@@ -47,6 +48,40 @@ export function auxiliaryModel(provider: string | null | undefined): string {
   return providerFor(provider).AUXILIARY_MODEL
 }
 
+/**
+ * A configuração de execução que chega ao adapter.
+ *
+ * Vem como objeto no fim, e não como mais quatro parâmetros posicionais: esta assinatura
+ * já tem doze, e o próximo argumento solto seria o erro de chamada esperando para
+ * acontecer.
+ *
+ * Já passou por `effectiveRunConfig`: o que está aqui é o que aquele modelo aceita, e o
+ * adapter só precisa traduzir os nomes.
+ */
+export interface ReplyOptions {
+  runConfig?: EffectiveRunConfig
+  /**
+   * O sinal de cancelamento DESTA tentativa.
+   *
+   * Sem ele, um timeout apenas rejeita a promessa: a chamada continua viva, o modelo
+   * responde depois, e o laço de ferramentas executa uma ESCRITA que já ninguém está
+   * esperando. Se o runtime tiver tentado de novo enquanto isso, a mesma escrita
+   * acontece duas vezes.
+   *
+   * O sinal é conferido antes de cada ferramenta e vai para o SDK, que aborta a
+   * requisição em curso.
+   */
+  signal?: AbortSignal
+  /**
+   * Avisa que uma ferramenta VAI começar, com o risco dela.
+   *
+   * É o que permite ao runtime decidir se ainda pode tentar de novo: depois que uma
+   * escrita começou, nem o cancelamento garante que ela não chegou ao outro lado — e
+   * repetir seria a segunda cobrança, o segundo e-mail, o segundo pedido.
+   */
+  onToolStart?: (risk: 'read' | 'write' | 'high_risk') => void
+}
+
 export function generateAgentReply(
   objective: string,
   knowledge: string[],
@@ -60,6 +95,7 @@ export function generateAgentReply(
   responseStyleInstruction = '',
   enableCaching = true,
   tools: ResolvedTool[] = [],
+  opts: ReplyOptions = {},
 ): Promise<AgentReplyResult> {
   return providerFor(provider).generateAgentReply(
     objective,
@@ -73,6 +109,7 @@ export function generateAgentReply(
     responseStyleInstruction,
     enableCaching,
     tools,
+    opts,
   )
 }
 

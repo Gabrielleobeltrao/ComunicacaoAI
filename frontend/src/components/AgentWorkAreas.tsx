@@ -19,6 +19,7 @@ import {
   testSource,
 } from '../lib/agentRoutines'
 import { createSectorDocument } from '../lib/sectorKnowledge'
+import { emptyAppActionPlan, emptyMemoryPlan, ExecutionModeFields, type ExecutionModeValue } from './ExecutionModeFields'
 import { Button, Card, EmptyState, Field, Input, Select, StatusPill, Tag, Textarea } from '../ui'
 import type { AgentStatus } from '../ui'
 
@@ -72,6 +73,15 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
   const [focus, setFocus] = useState(fonteAtual.kind === 'fixed' ? '' : (fonteAtual.focus ?? ''))
   const [preview, setPreview] = useState<SourcePreview | null>(null)
   const [testando, setTestando] = useState(false)
+  // Como a rotina processa o que a fonte trouxer, e onde guardar. Reabre exatamente
+  // como foi salvo; uma rotina anterior a isto não tem os campos e cai no padrão.
+  const [modo, setModo] = useState<ExecutionModeValue>({
+    executionMode: routine?.executionMode ?? 'ai',
+    memory: routine?.memory ?? emptyMemoryPlan(),
+    aiCondition: routine?.aiCondition ?? null,
+    action: routine?.action ?? emptyAppActionPlan(),
+  })
+  const comIA = modo.executionMode === 'ai' || ((modo.executionMode === 'hybrid' || modo.executionMode === 'automatic') && !!modo.aiCondition)
   const [weekdays, setWeekdays] = useState<number[]>(routine?.recurrence?.kind === 'weekly' ? routine.recurrence.weekdays : [1])
   const [day, setDay] = useState(routine?.recurrence?.kind === 'monthly' ? routine.recurrence.day : 1)
   const [timezone, setTimezone] = useState(routine?.timezone || 'America/Sao_Paulo')
@@ -145,7 +155,7 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
   }
 
   const submit = async () => {
-    if (!objective.trim()) {
+    if (comIA && !objective.trim()) {
       setError('Descreva o objetivo da rotina.')
       return
     }
@@ -159,6 +169,16 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
     }
     if (monitorando && !/^https?:\/\//i.test(sourceUrl.trim())) {
       setError('O endereço precisa começar com http:// ou https://.')
+      return
+    }
+    if (modo.memory.enabled && modo.memory.scope !== 'agent' && !modo.memory.sectorId && !modo.memory.floorId && !modo.memory.buildingId) {
+      setError('Escolha onde a informação será guardada.')
+      return
+    }
+    // Sem IA, sem memória e sem fonte a rotina não faria nada. O servidor recusa; dizer
+    // aqui evita a ida e volta.
+    if (!comIA && !modo.memory.enabled && !monitorando && !modo.action?.enabled) {
+      setError('Sem IA no fluxo, escolha guardar a informação, executar uma ação, ou monitorar uma fonte.')
       return
     }
     setSaving(true)
@@ -175,6 +195,10 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
       input: input.trim() || undefined,
       outputFormat,
       source: buildSource(),
+      executionMode: modo.executionMode,
+      memory: modo.memory,
+      aiCondition: modo.aiCondition,
+      action: modo.action,
       ...(keepDestination ? {} : { delivery: chosen ? { provider: chosen.provider, connectionId: chosen.id } : null }),
     }
     try {
@@ -190,9 +214,12 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
 
   return (
     <Card padding="16px" style={{ display: 'grid', gap: 12 }} data-testid="routine-form">
-      <Field label="Objetivo" hint="O que o agente deve fazer a cada execução.">
-        <Textarea rows={2} value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Ex.: consolidar as notícias políticas de ontem em um relatório." data-testid="routine-objective" />
-      </Field>
+      {/* Sem IA no fluxo não há a quem instruir. */}
+      {comIA ? (
+        <Field label="Objetivo" hint="O que o agente deve fazer a cada execução.">
+          <Textarea rows={2} value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Ex.: consolidar as notícias políticas de ontem em um relatório." data-testid="routine-objective" />
+        </Field>
+      ) : null}
       <Field label="Nome (opcional)">
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Relatório diário de notícias" data-testid="routine-name" />
       </Field>
@@ -305,6 +332,8 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
           ) : null}
         </div>
       ) : null}
+
+      <ExecutionModeFields value={modo} onChange={setModo} idPrefix="routine-" agentId={agentId} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <Field label={monitorando ? 'Verificar a cada' : 'Frequência'}>

@@ -37,9 +37,15 @@ export interface AppSurfaceSummary {
 
 export type AppActivation = 'instant' | 'credentials' | 'oauth' | 'managed_channel'
 
+// O App já pode ser usado? Coisa diferente do ciclo de publicação: um App pode estar
+// no catálogo, com nome e descrição, e ainda não estar pronto para ligar em nada.
+// Ausente = disponível.
+export type AppAvailability = 'available' | 'coming_soon'
+
 export interface AppCatalogEntry {
   key: string
   version: string
+  availability?: AppAvailability
   source: AppSource
   name: string
   description: string

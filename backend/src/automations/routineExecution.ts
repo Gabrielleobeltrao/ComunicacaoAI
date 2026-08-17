@@ -15,6 +15,7 @@ import type { AgentExecutionRequest, AgentExecutionResult } from '../agentRuntim
 import type { ResolvedTool } from '../agentTools.js'
 import type { AgentEventStatus, RecordAgentEventInput } from '../agentEvents.js'
 import type { StepUsage } from './runner.js'
+import { resolveAgentRun } from '../agentDefinition.js'
 import { buildRetrievalQuery, formatContextWithSources } from '../retrievalQuery.js'
 import { instrumentTools, NOOP_TRACKER } from '../agentLiveTracker.js'
 import type { LiveTracker } from '../agentLiveTracker.js'
@@ -185,18 +186,31 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       // How many DISTINCT documents backed the answer — a count, never a title.
       ragSources: new Set((retrieved.sources ?? []).map((s) => s.documentId).filter(Boolean)).size,
       toolsAvailable: 0,
+      // Os parâmetros que este modelo não aceitou. Preenchido abaixo, quando houver.
+      runConfigDropped: '',
     },
   }
 
   // The routine's own choice, then the agent's default, then text.
   const outputFormat = call.format ?? agent.defaultOutputFormat ?? 'text'
+  // Automação: nunca stream, e o paralelismo depende do risco das ferramentas desta
+  // execução.
+  const execucao = resolveAgentRun(agent, { context: 'automation', toolRisks: tools.map((t) => t.risk ?? 'write') })
   baseEvent.metadata.toolsAvailable = tools.length
+  /**
+   * Os parâmetros que o modelo não aceitou, para o dono entender por que a escolha dele
+   * não teve efeito.
+   *
+   * Só o par campo/motivo, os dois gerados por este código — nunca prompt, contexto,
+   * resposta, chave ou credencial. Um diagnóstico que carrega conteúdo vira um vazamento
+   * com outro nome.
+   */
+  baseEvent.metadata.runConfigDropped = execucao.runConfig.dropped.map((d) => `${d.field}: ${d.reason}`).join('; ')
 
   let result: AgentExecutionResult
   try {
     result = await deps.runTask({
       objective: String(agent.objective ?? call.objective ?? ''),
-      instructions: call.instructions,
       input: call.input,
       // Step outputs + curated passages, both handled as untrusted data. The curated
       // ones carry a numbered reference (title + document id) so the answer can cite
@@ -208,6 +222,18 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       tools,
       // What the agent promised to receive and produce reaches the model now.
       contracts: { input: agent.inputContract, output: agent.outputContract },
+      // Função e limites, em blocos próprios: a ordem no prompt do sistema é o que
+      // impede um objetivo mal redigido de enfraquecer as regras que vêm antes dele.
+      definition: { role: agent.role ?? null, constraints: agent.constraints ?? null },
+      // Instruções operacionais do agente entram ANTES das da etapa: elas valem para
+      // todo trabalho dele, e a etapa é o pedido específico.
+      instructions: [agent.instructions?.trim(), call.instructions?.trim()].filter(Boolean).join('\n\n'),
+      // A MESMA configuração que o Playground e o canal resolvem — a partir do mesmo
+      // resolvedor, com o risco das ferramentas já conhecidas.
+      runConfig: execucao.runConfig,
+      // Sem isto o runtime caía no padrão `true` e perdia o `promptCaching: false` de
+      // quem desligou o cache de propósito.
+      enableCaching: execucao.enableCaching,
       // The step's own format wins; the agent's default is the fallback for a step
       // that never expressed one. The schema only applies to JSON.
       output: { format: outputFormat, jsonSchema: outputFormat === 'json' ? (agent.outputJsonSchema ?? null) : null },

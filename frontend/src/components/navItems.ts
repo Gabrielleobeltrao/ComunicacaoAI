@@ -21,4 +21,7 @@ export const NAV: NavLink[] = [
   { to: '/chats', label: 'Conversas', icon: 'message-circle' },
   // Not a builder: one place to SEE the automatic work the agents already do.
   { to: '/executions', label: 'Execuções', icon: 'activity' },
+  // Memória invisível é memória em que ninguém confia: o dono precisa poder ver o
+  // que os gatilhos guardaram, procurar e apagar.
+  { to: '/memories', label: 'Memória', icon: 'database' },
 ]

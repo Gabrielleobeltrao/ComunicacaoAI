@@ -93,6 +93,10 @@ const RULES: Rule[] = [
   R('POST', 'api/sectors', { entityType: 'sector', action: 'create' }),
   R('PATCH', 'api/sectors/:', { entityType: 'sector', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/sectors/:', { entityType: 'sector', action: 'delete' }, { idAt: 2 }),
+  // Apagar memória é irreversível e não tem lixeira: quem apagou, e o quê, precisa
+  // ficar registrado.
+  R('DELETE', 'api/memories/:', { entityType: 'memory', action: 'delete' }, { idAt: 2 }),
+  R('POST', 'api/memories/clear', { entityType: 'memory', action: 'delete' }),
   R('PUT', 'api/sectors/:/members', { entityType: 'sector', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/sectors/:/move', { entityType: 'sector', action: 'move' }, { idAt: 2 }),
   R('POST', 'api/sectors/:/documents/:/reindex', { entityType: 'knowledge', action: 'update' }, { idAt: 4 }),

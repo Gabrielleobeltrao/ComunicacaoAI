@@ -15,25 +15,26 @@ import type { ResolvedTool } from '../agentTools.js'
 import { missingCapability } from '../agentTools.js'
 import { executeToolCall } from '../toolExecution.js'
 import type { ExecutableTool } from '../toolExecution.js'
-import { googleCalendarTools, googleSheetsTools } from '../googleTools.js'
-import { hubspotTools, mercadoPagoTools, nuvemshopTools, rdStationTools, slackTools, stripeTools } from '../providerApps.js'
 import { getApp } from './registry.js'
+import { OFFICIAL_ADAPTERS } from './official/index.js'
 import { isUsableManifest, resolveAppForOwner } from './privateApps.js'
-import type { AppDefinition, AppActionDefinition, AppInstallation, AgentAppGrant } from './types.js'
+import { isUsableApp } from './types.js'
+import type { AppDefinition, AppActionDefinition, AppInstallation, AgentAppGrant, NativeFactory } from './types.js'
 import { decryptInstallationConfig, getInstallation, isInstallationUsable } from './installations.js'
 
-// The compiled adapters a SYSTEM App may point at. A manifest cannot add an entry
-// here: this map is the allow list, and `execution.adapter` only selects from it.
-type NativeFactory = (ownerId: string, config: Record<string, string>) => ResolvedTool[]
-const NATIVE_FACTORIES: Record<string, NativeFactory[]> = {
-  google: [googleCalendarTools, googleSheetsTools],
-  slack: [slackTools],
-  mercadopago: [mercadoPagoTools],
-  rdstation: [rdStationTools],
-  hubspot: [hubspotTools],
-  stripe: [stripeTools],
-  nuvemshop: [nuvemshopTools],
-}
+/**
+ * Os adapters que uma ação nativa pode apontar.
+ *
+ * Antes era um mapa escrito à mão aqui. O problema não era o mapa, era ele ser uma
+ * SEGUNDA lista da mesma verdade, em outro arquivo: dava para adicionar um App e
+ * esquecer o adapter, e o sintoma aparecia como "configuração incompleta" quando
+ * alguém tentava usar a ação. Agora cada módulo de App exporta o que tem, e a
+ * incoerência é detectada no arranque — ver apps/official/index.ts.
+ *
+ * Continua sendo uma lista de permissão: um manifesto não pode acrescentar entrada
+ * nenhuma, `execution.adapter` só escolhe entre o que já está compilado.
+ */
+const NATIVE_FACTORIES: Record<string, NativeFactory[]> = OFFICIAL_ADAPTERS
 
 // Safe telemetry (plan §13): what ran, whether it worked and how long it took.
 // Never an argument, never a response body, never a credential.
@@ -139,6 +140,14 @@ export async function resolveGrant(
   const app = await resolveAppForOwner(ownerId, grant.appKey)
   if (!app || !isUsableManifest(app)) return []
 
+  // App marcado como "em breve" não executa, nem por um grant que já existia. A recusa
+  // é estruturada de propósito: o modelo precisa saber que a ação NÃO aconteceu, em vez
+  // de receber uma ferramenta ausente e concluir o que quiser.
+  if (!isUsableApp(app)) {
+    const granted = app.actions.filter((a) => (grant.actionKeys ?? []).includes(a.key))
+    return granted.map((a) => refusalTool(a, 'app_em_breve', `${app.name} ainda não está disponível. Ele aparece no catálogo como "Em breve".`))
+  }
+
   const granted = app.actions.filter((a) => (grant.actionKeys ?? []).includes(a.key))
   if (granted.length === 0) return []
 
@@ -168,7 +177,11 @@ export async function resolveGrant(
     const allowedToAct = action.risk === 'read' || autonomous.has(action.key)
     const built = buildAction(app, action, ownerId, auth, resource, allowedToAct)
     if (!built) continue
-    tools.push(instrument(built, { ownerId, agentId: options.agentId ?? null, appKey: app.key, actionKey: action.key, installationId: installation._id }))
+    // O risco declarado no manifesto viaja com a ferramenta. Ele não amplia nada — o
+    // grant continua sendo a permissão — mas é o que permite decidir paralelismo.
+    tools.push(
+      instrument({ ...built, risk: action.risk }, { ownerId, agentId: options.agentId ?? null, appKey: app.key, actionKey: action.key, installationId: installation._id }),
+    )
   }
   return tools
 }

@@ -140,10 +140,26 @@ export function Apps() {
             {visible.length === 0 ? (
               <EmptyState icon="search" title="Nenhum App encontrado" body="Tente outro termo ou limpe o filtro." />
             ) : (
-              <div style={GRID} data-testid="app-catalog">
-                {visible.map((app) => (
-                  <AppCard key={app.key} app={app} onOpen={() => setDetail(app)} />
-                ))}
+              <div style={{ display: 'grid', gap: 20 }} data-testid="app-catalog">
+                {GROUPS.map(({ source, title, note }) => {
+                  const doGrupo = visible.filter((a) => a.source === source)
+                  // Grupo sem App não vira um cabeçalho vazio: uma conta que nunca criou
+                  // App não precisa ver "Meus Apps" com nada embaixo.
+                  if (doGrupo.length === 0) return null
+                  return (
+                    <div key={source} style={{ display: 'grid', gap: 10 }} data-testid={`app-group-${source}`}>
+                      <div>
+                        <h2 style={{ margin: 0, fontSize: 15 }}>{title}</h2>
+                        <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>{note}</p>
+                      </div>
+                      <div style={GRID}>
+                        {doGrupo.map((app) => (
+                          <AppCard key={app.key} app={app} onOpen={() => setDetail(app)} />
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             )}
           </>
@@ -195,7 +211,29 @@ function CategoryChip({ label, active, onClick }: { label: string; active: boole
   )
 }
 
-const SOURCE_LABEL: Record<string, string> = { system: 'Sistema', private: 'Privado', community: 'Comunidade' }
+// "Sistema" descrevia a implementação; "Oficial" descreve a procedência, que é o que
+// o dono precisa saber para decidir se confia. O valor guardado continua `system` —
+// mudar a chave quebraria todo grant e instalação já gravados.
+const SOURCE_LABEL: Record<string, string> = { system: 'Oficial', private: 'Meu App', community: 'Comunidade' }
+
+/**
+ * Os três grupos do catálogo.
+ *
+ * A separação existe porque a procedência muda o que o App pode fazer: um oficial roda
+ * código compilado neste repositório; um da comunidade e um privado são DATA-only, só
+ * HTTP declarado no manifesto. Misturá-los numa lista só faria parecer que todos têm o
+ * mesmo alcance.
+ */
+const GROUPS: { source: string; title: string; note: string }[] = [
+  { source: 'system', title: 'Oficiais', note: 'Mantidos por nós, com integração nativa.' },
+  { source: 'community', title: 'Comunidade', note: 'Publicados por terceiros. Só requisições HTTP declaradas no manifesto.' },
+  { source: 'private', title: 'Meus Apps', note: 'Criados por você nesta conta. Só requisições HTTP declaradas no manifesto.' },
+]
+
+// "Em breve" é anúncio: o App aparece com nome e descrição para o dono saber o que
+// está vindo, e as ações ficam fora do alcance. Esconder seria a alternativa fácil, e
+// desperdiçaria a única coisa que um "em breve" tem de útil.
+const emBreve = (app: AppCatalogEntry): boolean => app.availability === 'coming_soon'
 
 function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) {
   const writes = app.actions.filter((a) => a.risk !== 'read').length
@@ -206,6 +244,7 @@ function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
           <span style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{app.name}</span>
           <Tag>{SOURCE_LABEL[app.source] ?? app.source}</Tag>
+          {emBreve(app) ? <Tag data-testid="app-coming-soon">Em breve</Tag> : null}
           {app.connected ? <Tag>Conectado</Tag> : null}
         </div>
       </div>
@@ -219,8 +258,24 @@ function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) 
             : 'Usado nas entregas das rotinas'}
       </p>
       <div style={{ paddingTop: 4 }}>
-        <Button size="sm" variant={app.connected ? 'secondary' : 'primary'} onClick={onOpen} data-testid="app-open">
-          {app.connected ? 'Ver conexão' : app.activation === 'managed_channel' ? 'Conectar número' : app.requiresAuth ? 'Conectar' : 'Ativar'}
+        {/* Em breve: o botão fica desabilitado e diz o que é. O backend recusa de
+            qualquer forma — isto evita a ida e volta. */}
+        <Button
+          size="sm"
+          variant={app.connected ? 'secondary' : 'primary'}
+          onClick={emBreve(app) ? undefined : onOpen}
+          disabled={emBreve(app)}
+          data-testid="app-open"
+        >
+          {emBreve(app)
+            ? 'Em breve'
+            : app.connected
+              ? 'Ver conexão'
+              : app.activation === 'managed_channel'
+                ? 'Conectar número'
+                : app.requiresAuth
+                  ? 'Conectar'
+                  : 'Ativar'}
         </Button>
       </div>
     </Card>

@@ -4,6 +4,9 @@ import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
 import { METRIC_KEY_LABEL } from '../lib/agentStats'
 import { Icon } from '../ui'
+import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue } from './AgentDefinitionFields'
+import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
+import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import type {
   AgentBuiltinTool,
   AgentSummary,
@@ -49,7 +52,10 @@ interface AgentFormProps {
 const SECTION_BLOCKS: Record<string, string[]> = {
   'visao-geral': ['identidade'],
   'como-trabalha': ['ferramentas', 'conhecimento'],
-  avancado: ['metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
+  // "Definição" abre a lista de propósito: é o bloco que o dono revisa, e o que mais
+  // muda o comportamento do agente. "Modelo e execução" vem logo depois, e quase ninguém
+  // precisa tocar — todo campo dele começa em "Padrão do sistema".
+  avancado: ['definicao', 'execucao', 'metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
   // legacy aliases
   essencial: ['identidade'],
   ferramentas: ['ferramentas'],
@@ -155,10 +161,36 @@ function OptionSwitch<T extends string>({
 }
 
 export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId, availableMetrics }: AgentFormProps) {
+  // A definição em blocos e a configuração de execução. Começam vazias: é o vazio que
+  // reproduz o comportamento de um agente criado antes desta tela.
+  const [editDefinicao, setEditDefinicao] = useState<AgentDefinitionValue>({
+    role: agent?.role ?? '',
+    instructions: agent?.instructions ?? '',
+    constraints: agent?.constraints ?? '',
+  })
+  const [editRunConfig, setEditRunConfig] = useState<RunConfig>(agent?.runConfig ?? {})
+  // O catálogo de modelos-base, para o seletor da definição. Só é buscado quando há um
+  // agente para trocar: na criação, quem escolhe o molde é o assistente de contratação.
+  const [presets, setPresets] = useState<AgentPresetSpec[]>([])
+  const [presetSalvo, setPresetSalvo] = useState(agent?.preset ?? 'custom')
+  const [definitionEditedAt, setDefinitionEditedAt] = useState<string | null>(agent?.definitionEditedAt ?? null)
   const isCreating = agent === null
   const flat = layout === 'flat'
 
   const [providers, setProviders] = useState<ProviderInfo[]>([])
+
+  useEffect(() => {
+    if (!agent) return
+    let vivo = true
+    listAgentPresets()
+      .then((lista) => vivo && setPresets(lista))
+      // Sem catálogo, o seletor simplesmente não aparece: é melhor do que uma lista
+      // vazia que promete uma troca impossível.
+      .catch(() => undefined)
+    return () => {
+      vivo = false
+    }
+  }, [agent?._id])
 
   const [editName, setEditName] = useState('')
   const [editObjective, setEditObjective] = useState('')
@@ -184,6 +216,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   const [editLanguage, setEditLanguage] = useState<Language>('pt')
   const [editDailyMessageLimit, setEditDailyMessageLimit] = useState(0)
   const [editCheapAuxModel, setEditCheapAuxModel] = useState(true)
+  /**
+   * O valor legado de cache, mantido apenas para não ser APAGADO ao salvar.
+   *
+   * O controle saiu da tela: agora existe um só, tri-estado, em "Modelo e execução"
+   * (`runConfig.cache`). Este campo continua sendo lido do documento e devolvido intacto,
+   * porque ele é o fallback de quem nunca abriu a tela nova — zerá-lo aqui religaria o
+   * cache de quem desligou antes.
+   */
   const [editPromptCaching, setEditPromptCaching] = useState(true)
   const [editMetricProfile, setEditMetricProfile] = useState<MetricProfile>('auto')
   const [editTools, setEditTools] = useState<AgentTool[]>([])
@@ -254,6 +294,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     if (agent) {
       setEditName(agent.name)
       setEditObjective(agent.objective)
+      setEditDefinicao({
+        role: agent.role ?? '',
+        instructions: agent.instructions ?? '',
+        constraints: agent.constraints ?? '',
+      })
+      setEditRunConfig(agent.runConfig ?? {})
       setEditProvider(agent.provider ?? 'anthropic')
       setEditModel(agent.model ?? '')
       setEditMemoryType(agent.memoryType ?? 'none')
@@ -390,10 +436,55 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     setDocumentsLoading(false)
   }
 
+  /**
+   * Troca o modelo-base — e só depois de o dono confirmar, na tela, o que vai acontecer.
+   *
+   * Quem decide o que preencher é o SERVIDOR: mandamos `preset` e `applyPresetSuggestions`
+   * e adotamos o que ele devolver. A regra de "só campo vazio, e nada quando a definição
+   * foi escrita à mão" vive num lugar só, e a tela não tem como divergir dela.
+   */
+  async function trocarPreset(novo: AgentSummary['preset'], aplicarSugestoes: boolean) {
+    if (!agent) return
+    setAutoSaveState('saving')
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${agent._id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset: novo, applyPresetSuggestions: aplicarSugestoes }),
+      })
+      if (!res.ok) {
+        setAutoSaveState('error')
+        return
+      }
+      const atualizado: AgentSummary = await res.json()
+      setPresetSalvo(atualizado.preset)
+      setDefinitionEditedAt(atualizado.definitionEditedAt ?? null)
+      setEditObjective(atualizado.objective ?? '')
+      setEditDefinicao({
+        role: atualizado.role ?? '',
+        instructions: atualizado.instructions ?? '',
+        constraints: atualizado.constraints ?? '',
+      })
+      setAutoSaveState('saved')
+      onSaved(atualizado)
+    } catch {
+      setAutoSaveState('error')
+    }
+  }
+
   function buildPayload() {
     return {
       name: editName,
       objective: editObjective,
+      // Blocos da definição. Enviados sempre que o formulário está aberto; o servidor
+      // só grava o que vem, e marca a edição para o preset não sobrescrever depois.
+      role: editDefinicao.role,
+      instructions: editDefinicao.instructions,
+      constraints: editDefinicao.constraints,
+      // Vazio = padrão do sistema. Limpar o campo é uma escolha, e ela chega como
+      // ausência.
+      runConfig: cleanRunConfig(editRunConfig),
       provider: editProvider,
       model: editModel || null,
       memoryType: editMemoryType,
@@ -767,6 +858,27 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
             !flat && advancedOpen ? 'mt-3 rounded-xl border border-(--border-subtle) bg-(--surface-card)/40 px-4 py-1' : ''
           }
         >
+          {showBlock('definicao') && (
+            <CollapsibleBlock title="Definição do agente" showHeader={stacked}>
+              <AgentDefinitionFields
+                value={editDefinicao}
+                onChange={setEditDefinicao}
+                presetLabel={agent?.preset ?? null}
+                preset={presetSalvo}
+                presets={agent ? presets : []}
+                objective={editObjective}
+                definitionEditedAt={definitionEditedAt}
+                onApplyPreset={trocarPreset}
+              />
+            </CollapsibleBlock>
+          )}
+
+          {showBlock('execucao') && (
+            <CollapsibleBlock title="Modelo e execução" showHeader={stacked}>
+              <AgentRunConfigFields value={editRunConfig} onChange={setEditRunConfig} provider={editProvider} model={editModel || null} />
+            </CollapsibleBlock>
+          )}
+
           {showBlock('metrica') && (
           <CollapsibleBlock title="Métrica do card" showHeader={stacked}>
             <div>
@@ -836,21 +948,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                     type="checkbox"
                     checked={editCheapAuxModel}
                     onChange={(e) => setEditCheapAuxModel(e.target.checked)}
-                    className="peer sr-only"
-                  />
-                  <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
-                </label>
-              </div>
-              <div className="flex items-center justify-between gap-3 border-t border-(--border-subtle) pt-2">
-                <p className="text-sm text-(--text-muted)">
-                  Cache de prompt — reaproveita o contexto fixo (objetivo + instruções) entre as
-                  mensagens de uma conversa, reduzindo o custo de entrada.
-                </p>
-                <label className="relative inline-flex shrink-0 cursor-pointer items-center">
-                  <input
-                    type="checkbox"
-                    checked={editPromptCaching}
-                    onChange={(e) => setEditPromptCaching(e.target.checked)}
                     className="peer sr-only"
                   />
                   <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />

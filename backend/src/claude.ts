@@ -22,6 +22,7 @@ import {
   SECTOR_PLANNER_SYSTEM_PROMPT,
 } from './systemPrompt.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
+import type { EffectiveRunConfig } from './runConfig.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
 import { MAX_TOOL_ITERATIONS, runResolvedTool } from './agentTools.js'
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
@@ -100,6 +101,7 @@ export async function generateAgentReply(
   responseStyleInstruction = '',
   enableCaching = true,
   tools: ResolvedTool[] = [],
+  opts: { runConfig?: EffectiveRunConfig; signal?: AbortSignal; onToolStart?: (risk: 'read' | 'write' | 'high_risk') => void } = {},
 ): Promise<AgentReplyResult> {
   const { cacheablePrefix, dynamicSuffix } = buildSystemPromptParts(
     objective,
@@ -131,38 +133,111 @@ export async function generateAgentReply(
   const toolCalls: ToolCallRecord[] = []
   let text = ''
 
+  /**
+   * A configuração do dono, traduzida para os nomes da Anthropic.
+   *
+   * Os padrões que já existiam continuam quando o campo está ausente — `max_tokens:
+   * 1024` e esforço baixo eram o comportamento de todo agente, e mudá-los aqui mexeria
+   * em todos de uma vez.
+   *
+   * O que era hardcode e passa a ser escolha: `max_tokens` e o esforço. `thinking` só é
+   * desligado quando o esforço não foi pedido — pedir esforço alto e desligar o
+   * raciocínio na linha seguinte seria anular a escolha.
+   */
+  const cfg: Partial<EffectiveRunConfig> = opts.runConfig ?? {}
+  const esforco = cfg.reasoningEffort
+  const tuning = {
+    max_tokens: cfg.maxOutputTokens ?? 1024,
+    ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+    ...(esforco ? { output_config: { effort: esforco } } : { thinking: { type: 'disabled' as const }, output_config: { effort: 'low' as const } }),
+  }
+
+  // `none` não é uma opção de `tool_choice` aqui: a forma de proibir ferramenta é não
+  // mandar ferramenta nenhuma. Mandar a lista e pedir para não usar gasta tokens
+  // descrevendo o que não pode ser chamado.
+  const proibirFerramentas = cfg.toolChoice === 'none'
+  const escolha: Anthropic.MessageCreateParams['tool_choice'] | undefined =
+    cfg.toolChoice === 'required'
+      ? { type: 'any', ...(cfg.parallelTools === false ? { disable_parallel_tool_use: true } : {}) }
+      : cfg.parallelTools === false
+        ? { type: 'auto', disable_parallel_tool_use: true }
+        : undefined
+
   // Agentic loop: keep letting the model call tools until it answers, or we hit
   // the iteration cap (on the last pass tools are withheld so it must reply).
   for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
-    const allowTools = toolDefs.length > 0 && iteration < MAX_TOOL_ITERATIONS
-    const response = await client.messages.create({
-      model: model || DEFAULT_MODEL,
-      max_tokens: 1024,
-      system,
-      thinking: { type: 'disabled' },
-      output_config: { effort: 'low' },
-      messages,
-      ...(allowTools ? { tools: toolDefs } : {}),
-    })
+    const allowTools = toolDefs.length > 0 && !proibirFerramentas && iteration < MAX_TOOL_ITERATIONS
+    // O sinal também vai para o SDK: ele aborta a requisição em curso em vez de
+    // deixá-la terminar sozinha e produzir um resultado que ninguém vai usar.
+    const response = await client.messages.create(
+      {
+        model: model || DEFAULT_MODEL,
+        ...tuning,
+        system,
+        messages,
+        ...(allowTools ? { tools: toolDefs } : {}),
+        ...(allowTools && escolha ? { tool_choice: escolha } : {}),
+      },
+      opts.signal ? { signal: opts.signal } : undefined,
+    )
     const turnUsage = anthropicUsage(response.usage)
     usage.inputTokens += turnUsage.inputTokens
     usage.outputTokens += turnUsage.outputTokens
 
     if (allowTools && response.stop_reason === 'tool_use') {
       messages.push({ role: 'assistant', content: response.content })
-      const results: Anthropic.ToolResultBlockParam[] = []
-      for (const block of response.content) {
-        if (block.type === 'tool_use') {
-          const record = await runResolvedTool(tools, block.name, (block.input ?? {}) as Record<string, unknown>)
-          toolCalls.push(record)
-          results.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: record.result,
-            is_error: !record.ok,
-          })
-        }
+      const pedidos = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+
+      /**
+       * Em paralelo só quando TODAS as chamadas deste lote são de leitura.
+       *
+       * A decisão é sobre as ferramentas CHAMADAS, não sobre as disponíveis: o modelo
+       * pode ter dez à mão e pedir duas leituras — esse lote é seguro. E basta uma
+       * escrita para tudo voltar a ser sequencial, porque a ordem em que duas escritas
+       * chegam ao outro lado é o que o dono configurou.
+       *
+       * Risco ausente conta como escrita. Uma ferramenta que não declarou o que faz não
+       * ganha paralelismo por omissão.
+       */
+      const soLeitura = pedidos.every((p) => tools.find((t) => t.name === p.name)?.risk === 'read')
+      const emParalelo = opts.runConfig?.parallelTools === true && soLeitura && pedidos.length > 1
+
+      const executar = (bloco: Anthropic.ToolUseBlock) => {
+        // A porteira: uma tentativa cancelada não INICIA mais nada. Sem esta linha o
+        // laço continuaria chamando ferramentas depois do timeout, e a escrita que o
+        // dono já desistiu de esperar aconteceria assim mesmo.
+        if (opts.signal?.aborted) throw new Error('execução cancelada por tempo esgotado')
+        const ferramenta = tools.find((t) => t.name === bloco.name)
+        opts.onToolStart?.(ferramenta?.risk ?? 'write')
+        return runResolvedTool(tools, bloco.name, (bloco.input ?? {}) as Record<string, unknown>)
       }
+
+      // `map` preserva a ordem em qualquer um dos caminhos: cada resultado volta no
+      // índice do pedido, e o `tool_use_id` que os pareia vem do mesmo bloco.
+      /**
+       * O laço sequencial é um `for...of` de propósito.
+       *
+       * Um `reduce` com `async (acc, x) => [...(await acc), await executar(x)]` PARECE
+       * sequencial e não é: o `reduce` chama o callback para todos os elementos de uma
+       * vez, então `executar(x)` dispara em todos antes de qualquer `await` — e o
+       * encadeamento só ordena a COLETA dos resultados, não a execução. Duas escritas
+       * sairiam juntas mesmo com o paralelismo desligado.
+       */
+      let registros: ToolCallRecord[]
+      if (emParalelo) {
+        registros = await Promise.all(pedidos.map(executar))
+      } else {
+        registros = []
+        for (const bloco of pedidos) registros.push(await executar(bloco))
+      }
+
+      const results: Anthropic.ToolResultBlockParam[] = pedidos.map((bloco, i) => ({
+        type: 'tool_result',
+        tool_use_id: bloco.id,
+        content: registros[i].result,
+        is_error: !registros[i].ok,
+      }))
+      toolCalls.push(...registros)
       messages.push({ role: 'user', content: results })
       continue
     }

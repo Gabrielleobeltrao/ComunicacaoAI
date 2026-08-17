@@ -5,6 +5,7 @@ import { ensureFloorIndexes } from './floors.js'
 import { ensureAutomationIndexes } from './automations/repository.js'
 import { ensureRunIndexes } from './automations/runRepository.js'
 import { backfillSourceFingerprints, ensureSourceCheckpointIndexes } from './automations/sourceCheckpoint.js'
+import { ensureMemoryIndexes } from './memory/records.js'
 import { ensureConnectionIndexes } from './connections/repository.js'
 import { ensureInstallationIndexes } from './apps/installations.js'
 import { ensureNavigationIndexes } from './apps/navigation.js'
@@ -71,6 +72,10 @@ export async function runMigrations(): Promise<void> {
   // O que cada rotina de monitoramento já viu.
   await ensureSourceCheckpointIndexes()
   await backfillCheckpointFingerprints()
+  // A memória determinística: índices de consulta, a trava contra duplicata e o TTL.
+  // Não há backfill — quem não tem registro não tem o que migrar, e definições sem
+  // `executionMode` já são lidas como 'ai'.
+  await ensureMemoryIndexes()
   await ensureConnectionIndexes()
   await ensureInstallationIndexes()
   await ensureNavigationIndexes()

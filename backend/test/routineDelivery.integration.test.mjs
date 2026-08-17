@@ -14,7 +14,7 @@ process.env.MONGODB_URI = await startMongo()
 process.env.ENCRYPTION_KEY = 'test-encryption-key'
 
 const { mongoClient, db } = await import('../dist/db.js')
-const { createRoutine, updateRoutine, readSourceFromDefinition, readSourceInstanceId, publishedSourceFingerprint } = await import(
+const { createRoutine, updateRoutine, readSourceFromDefinition, readSourceInstanceId, publishedSourceFingerprint, readRoutineExecution } = await import(
   '../dist/automations/routine.js'
 )
 
@@ -184,4 +184,180 @@ test('trocar a URL também começa uma vez nova', async () => {
   const antes = publishedSourceFingerprint(criada.draftDefinition)
   const outra = await updateRoutine(OWNER, AGENT, criada._id, monitor({ source: { ...RSS, url: 'https://exemplo.test/outro.xml' } }))
   assert.notEqual(publishedSourceFingerprint(outra.draftDefinition), antes)
+})
+
+// --- modo de execução e memória nas ROTINAS ----------------------------------------------
+//
+// O mesmo contrato dos gatilhos, e as mesmas duas regras: ausente preserva, e uma
+// configuração sem trabalho é recusada em vez de salva.
+
+const memoriaNoAgente = { enabled: true, scope: 'agent', strategy: 'append', key: 'item' }
+
+test('uma rotina nasce no modo de sempre quando ninguém escolhe', async () => {
+  const criada = await createRoutine(OWNER, AGENT, spec())
+  const cfg = readRoutineExecution(criada.draftDefinition)
+  assert.equal(cfg.executionMode, 'ai')
+  assert.equal(cfg.memory.enabled, false)
+  assert.ok(criada.draftDefinition.steps.some((s) => s.type === 'agent.execute'))
+})
+
+test('rotina que monitora e só coleta não gera etapa de IA', async () => {
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({
+      recurrence: { kind: 'minutes', every: 15 },
+      source: { kind: 'rss', url: 'https://exemplo.test/f.xml', initialWindow: '24h' },
+      executionMode: 'collect_only',
+      memory: memoriaNoAgente,
+      delivery: null,
+    }),
+  )
+  const passos = criada.draftDefinition.steps
+  assert.equal(passos.some((s) => s.type === 'agent.execute'), false)
+  assert.ok(passos.some((s) => s.type === 'source.rss'))
+  assert.ok(passos.some((s) => s.type === 'memory.write'))
+  assert.equal(readRoutineExecution(criada.draftDefinition).memory.enabled, true)
+})
+
+test('a rotina reabre preenchida com o modo e o destino que ela tem', async () => {
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({ executionMode: 'collect_only', memory: { ...memoriaNoAgente, strategy: 'upsert', key: 'cliente' }, delivery: null }),
+  )
+  const cfg = readRoutineExecution(criada.draftDefinition)
+  assert.equal(cfg.executionMode, 'collect_only')
+  assert.equal(cfg.memory.strategy, 'upsert')
+  assert.equal(cfg.memory.key, 'cliente')
+})
+
+test('um PATCH que só muda o objetivo NÃO transforma uma rotina de coleta em rotina com IA', async () => {
+  // Mesma classe de bug do destino de entrega e da fonte: o campo ausente preserva.
+  // Sem isto, o dono descobriria a mudança pela conta no fim do mês.
+  const criada = await createRoutine(OWNER, AGENT, spec({ executionMode: 'collect_only', memory: memoriaNoAgente, delivery: null }))
+  const { executionMode, memory, aiCondition, ...semModo } = spec({ objective: 'Outro objetivo', delivery: null })
+  const atualizada = await updateRoutine(OWNER, AGENT, criada._id, semModo)
+
+  const cfg = readRoutineExecution(atualizada.draftDefinition)
+  assert.equal(cfg.executionMode, 'collect_only', 'o modo sobreviveu')
+  assert.equal(cfg.memory.enabled, true, 'e o destino também')
+  assert.equal(atualizada.draftDefinition.steps.some((s) => s.type === 'agent.execute'), false)
+})
+
+test('desligar o modo sem IA por um PATCH explícito continua funcionando', async () => {
+  const criada = await createRoutine(OWNER, AGENT, spec({ executionMode: 'collect_only', memory: memoriaNoAgente, delivery: null }))
+  const voltou = await updateRoutine(OWNER, AGENT, criada._id, spec({ executionMode: 'ai', delivery: null }))
+  assert.equal(readRoutineExecution(voltou.draftDefinition).executionMode, 'ai')
+  assert.ok(voltou.draftDefinition.steps.some((s) => s.type === 'agent.execute'))
+})
+
+test('rotina sem IA, sem memória e sem fonte é recusada com o motivo', async () => {
+  await assert.rejects(
+    () => createRoutine(OWNER, AGENT, spec({ executionMode: 'collect_only', delivery: null })),
+    /guardar a informação|executar uma ação|monitorar uma fonte/,
+  )
+})
+
+test('sem etapa que produza algo, a entrega não é gerada apontando para o vazio', async () => {
+  // O destino de entrega aponta para uma etapa. Sem IA e sem fonte, a única etapa é a
+  // gravação — e é dela que a entrega sai. Apontar para a etapa de agente, que não
+  // existe, produziria uma definição inválida na publicação.
+  const criada = await createRoutine(OWNER, AGENT, spec({ executionMode: 'collect_only', memory: memoriaNoAgente }))
+  const entrega = criada.draftDefinition.steps.find((s) => s.type === 'delivery.send')
+  const ids = new Set(criada.draftDefinition.steps.map((s) => s.id))
+  assert.ok(entrega, 'a entrega existe')
+  assert.ok(ids.has(entrega.config.fromStepId), 'e aponta para uma etapa que existe')
+  assert.equal(entrega.config.fromStepId, 'memoria')
+})
+
+test('a condição da rotina é preservada e vale como guarda da IA', async () => {
+  const condicao = { source: 'input', path: 'urgente', operator: 'equals', value: 'sim' }
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({
+      recurrence: { kind: 'minutes', every: 15 },
+      source: { kind: 'rss', url: 'https://exemplo.test/f.xml', initialWindow: '24h' },
+      executionMode: 'hybrid',
+      aiCondition: condicao,
+      delivery: null,
+    }),
+  )
+  const agente = criada.draftDefinition.steps.find((s) => s.type === 'agent.execute')
+  assert.ok(agente, 'com condição, a etapa de IA existe')
+  // O campo e o operador são os que o dono escreveu; a ORIGEM é derivada da etapa que
+  // de fato tem o conteúdo — numa rotina que monitora, a fonte.
+  assert.equal(agente.runIf.path, condicao.path)
+  assert.equal(agente.runIf.operator, condicao.operator)
+  assert.equal(agente.runIf.source, 'source')
+  assert.equal(readRoutineExecution(criada.draftDefinition).aiCondition.path, condicao.path)
+})
+
+// --- a entrada configurada chega à memória --------------------------------------------------
+
+test('rotina agendada de entrada fixa sem IA grava a entrada, não nulo', async () => {
+  // O defeito: o texto que o dono escreve vivia SÓ dentro da instrução do agente. Isso
+  // funcionava enquanto toda rotina tinha um agente; sem IA, a etapa de memória lia
+  // `ctx.input` — e uma rotina agendada não recebe corpo, então gravava nulo.
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({ executionMode: 'collect_only', memory: memoriaNoAgente, input: 'foco em política nacional', delivery: null }),
+  )
+  assert.equal(criada.draftDefinition.defaultInput, 'foco em política nacional')
+})
+
+test('rotina que monitora não declara entrada padrão: o conteúdo vem da fonte', async () => {
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({
+      recurrence: { kind: 'minutes', every: 15 },
+      source: { kind: 'rss', url: 'https://exemplo.test/f.xml', initialWindow: '24h' },
+      executionMode: 'collect_only',
+      memory: memoriaNoAgente,
+      input: 'ignorado quando há fonte',
+      delivery: null,
+    }),
+  )
+  assert.equal(criada.draftDefinition.defaultInput, undefined)
+})
+
+test('rotina sem entrada fixa não ganha campo nenhum: definição antiga fica igual', async () => {
+  const criada = await createRoutine(OWNER, AGENT, spec({ delivery: null }))
+  assert.equal(criada.draftDefinition.defaultInput, undefined)
+})
+
+test('a condição de uma rotina que monitora aponta para a FONTE, não para o corpo vazio', async () => {
+  // Numa rotina agendada não há corpo. Apontar a condição para `input` — como a
+  // interface fazia — deixava a IA nunca sendo chamada, sem nada explicando por quê.
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({
+      recurrence: { kind: 'minutes', every: 15 },
+      source: { kind: 'rss', url: 'https://exemplo.test/f.xml', initialWindow: '24h' },
+      executionMode: 'hybrid',
+      aiCondition: { source: 'input', path: 'titulo', operator: 'contains', value: 'urgente' },
+      delivery: null,
+    }),
+  )
+  const agente = criada.draftDefinition.steps.find((s) => s.type === 'agent.execute')
+  assert.equal(agente.runIf.source, 'source', 'a origem é derivada da etapa de fonte')
+  assert.equal(agente.runIf.path, 'titulo', 'e o que o dono escreveu é preservado')
+})
+
+test('sem fonte e sem ação, a condição continua lendo a entrada', async () => {
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({
+      executionMode: 'hybrid',
+      input: 'algum texto',
+      aiCondition: { source: 'input', path: '', operator: 'exists' },
+      delivery: null,
+    }),
+  )
+  assert.equal(criada.draftDefinition.steps.find((s) => s.type === 'agent.execute').runIf.source, 'input')
 })

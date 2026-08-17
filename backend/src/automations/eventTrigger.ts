@@ -9,8 +9,26 @@ import { ObjectId } from 'mongodb'
 import { getAgentById, ensureActivationMode } from '../agents.js'
 import { createAutomation, getAutomation, publishAutomation, rotateWebhookSecret, setStatus, updateDraft } from './service.js'
 import { listAutomations as repoListAutomations } from './repository.js'
-import { DEFAULT_LIMITS } from './types.js'
-import type { Automation, AutomationDefinition, OutputFormat } from './types.js'
+import { DEFAULT_LIMITS, isExecutionMode } from './types.js'
+import type { Automation, AutomationDefinition, ExecutionMode, OutputFormat, StepDefinition } from './types.js'
+import {
+  aiStepPlanned,
+  appStep,
+  describeFlow,
+  emptyAppActionPlan,
+  emptyMemoryPlan,
+  memoryStep,
+  normalizeAppActionPlan,
+  normalizeMemoryPlan,
+  readAppActionFromSteps,
+  resolveConditionSource,
+  semTrabalho,
+  STEP_APP,
+  STEP_MEMORY,
+} from './executionPlan.js'
+import type { AppActionPlan, MemoryPlan } from './executionPlan.js'
+import { isConditionOperator } from './conditions.js'
+import type { StepCondition } from './conditions.js'
 
 export interface EventTriggerSpec {
   name: string
@@ -20,6 +38,45 @@ export interface EventTriggerSpec {
   // Optional EXPLICIT sector context for knowledge grounding (authorised by the
   // service before the definition is stored).
   sectorId?: string | null
+  // Ausente = 'ai', que é o comportamento de todo gatilho criado antes disto.
+  executionMode?: ExecutionMode
+  // Onde guardar o que chegou. Desligado por padrão.
+  memory?: MemoryPlan
+  // Quando chamar a IA nos modos híbrido e automático.
+  aiCondition?: StepCondition | null
+  // Uma ação de App executada direto, sem modelo. Desligada por padrão.
+  action?: AppActionPlan
+}
+
+// A condição vinda da API, saneada. Operador desconhecido some — e sem condição, os
+// modos híbrido e automático não geram etapa de IA nenhuma.
+export function normalizeCondition(raw: unknown): StepCondition | null {
+  const c = (typeof raw === 'object' && raw !== null ? raw : null) as Record<string, unknown> | null
+  if (!c || !isConditionOperator(c.operator)) return null
+  return {
+    source: typeof c.source === 'string' && c.source.trim() ? c.source.trim() : 'input',
+    path: typeof c.path === 'string' ? c.path.trim() : '',
+    operator: c.operator,
+    ...(c.value !== undefined ? { value: c.value } : {}),
+  }
+}
+
+// A fonte de verdade sobre o que um gatilho salvo faz: lida da definição publicada,
+// porque não existe cópia da spec em lugar nenhum.
+export function readEventTriggerConfig(def: AutomationDefinition | null | undefined): {
+  executionMode: ExecutionMode
+  memory: MemoryPlan
+  aiCondition: StepCondition | null
+  action: AppActionPlan
+} {
+  const mode: ExecutionMode = isExecutionMode(def?.executionMode) ? def.executionMode : 'ai'
+  const passoMemoria = (def?.steps ?? []).find((s) => s.id === STEP_MEMORY)
+  const cfg = (passoMemoria?.config ?? {}) as Record<string, unknown>
+  const memory: MemoryPlan = passoMemoria
+    ? normalizeMemoryPlan({ ...cfg, enabled: true })
+    : emptyMemoryPlan()
+  const passoAgente = (def?.steps ?? []).find((s) => s.type === 'agent.execute')
+  return { executionMode: mode, memory, aiCondition: passoAgente?.runIf ?? null, action: readAppActionFromSteps(def?.steps) }
 }
 
 const STEP_EVENT = 'evento'
@@ -32,48 +89,93 @@ export class EventTriggerError extends Error {}
 // callable by anyone who merely guesses the URL.
 export function buildEventTriggerDefinition(spec: EventTriggerSpec, agentId: ObjectId): AutomationDefinition {
   const format = spec.outputFormat ?? 'markdown'
+  const executionMode: ExecutionMode = isExecutionMode(spec.executionMode) ? spec.executionMode : 'ai'
+  const memory = normalizeMemoryPlan(spec.memory)
+  const condition = spec.aiCondition ?? null
+  const action = normalizeAppActionPlan(spec.action)
+  // Sem ação, o conteúdo do evento está em `input`. Com ação, no resultado dela.
+  const conditionResolved = resolveConditionSource(condition, action.enabled ? STEP_APP : 'input')
+
+  const steps: StepDefinition[] = [
+    {
+      // Carries the event body into the next step: the runner hands a step its
+      // first dependency's output as `input`.
+      id: STEP_EVENT,
+      name: 'Evento recebido',
+      type: 'transform.template',
+      enabled: true,
+      dependsOn: [],
+      inputMapping: {},
+      config: { template: '{{input}}' },
+      timeoutMs: 5_000,
+      retryPolicy: { maxAttempts: 1, backoffMs: 0 },
+      continueOnError: false,
+    },
+  ]
+
+  // Guardar vem antes de qualquer coisa cara. Se a IA falhar depois, o evento já
+  // está salvo — perder o dado que chegou é o pior desfecho possível para um
+  // recebedor de eventos.
+  //
+  // A ação vem ANTES de guardar: é o resultado dela que costuma valer a pena guardar,
+  // não o evento cru. Ela lê o evento estruturado direto de `input`.
+  if (action.enabled) steps.push(appStep(action, [], agentId))
+
+  // Sem dependência quando não há ação: a memória quer o evento ESTRUTURADO, e a etapa
+  // de template serializa para texto (é o que a IA precisa receber). Ler dali faria o
+  // mapeamento de campos e o `{{pedido.id}}` da chave procurarem caminho dentro de uma
+  // string.
+  if (memory.enabled) steps.push(memoryStep(memory, action.enabled ? [STEP_APP] : [], agentId))
+
+  // A etapa que gasta token só existe quando o modo pede. Num modo sem IA ela não
+  // é gerada — não há flag para inverter nem passo para pular.
+  if (aiStepPlanned(executionMode, condition)) {
+    steps.push({
+      id: STEP_AGENT,
+      name: 'Executar agente',
+      type: 'agent.execute',
+      enabled: true,
+      // O que a ação produziu, quando existe; senão o evento. Gravar é efeito
+      // colateral, não elo — depender da memória entregaria ao agente o recibo da
+      // gravação em vez do conteúdo.
+      dependsOn: [action.enabled ? STEP_APP : STEP_EVENT],
+      inputMapping: {},
+      config: {
+        agentId: agentId.toString(),
+        objective: spec.objective,
+        instruction: spec.objective,
+        format,
+        ...(spec.sectorId ? { sectorId: spec.sectorId } : {}),
+      },
+      timeoutMs: 120_000,
+      retryPolicy: { maxAttempts: 1, backoffMs: 2_000 },
+      continueOnError: false,
+      // Nos modos híbrido e automático a IA só roda se isto for verdade.
+      ...(conditionResolved && executionMode !== 'ai' ? { runIf: conditionResolved } : {}),
+    })
+  }
+
   return {
     trigger: { type: 'webhook', requireSignature: true },
+    executionMode,
     inputs: [],
-    steps: [
-      {
-        // Carries the event body into the agent step: the runner hands a step its
-        // first dependency's output as `input`.
-        id: STEP_EVENT,
-        name: 'Evento recebido',
-        type: 'transform.template',
-        enabled: true,
-        dependsOn: [],
-        inputMapping: {},
-        config: { template: '{{input}}' },
-        timeoutMs: 5_000,
-        retryPolicy: { maxAttempts: 1, backoffMs: 0 },
-        continueOnError: false,
-      },
-      {
-        id: STEP_AGENT,
-        name: 'Executar agente',
-        type: 'agent.execute',
-        enabled: true,
-        dependsOn: [STEP_EVENT],
-        inputMapping: {},
-        config: {
-          agentId: agentId.toString(),
-          objective: spec.objective,
-          instruction: spec.objective,
-          format,
-          ...(spec.sectorId ? { sectorId: spec.sectorId } : {}),
-        },
-        timeoutMs: 120_000,
-        retryPolicy: { maxAttempts: 1, backoffMs: 2_000 },
-        continueOnError: false,
-      },
-    ],
+    steps,
     resultFormat: format,
     deliveries: [],
     limits: { ...DEFAULT_LIMITS },
   }
 }
+
+// A frase de conferência mostrada antes de salvar.
+export const describeEventTriggerFlow = (spec: EventTriggerSpec, destinoLabel?: string | null): string =>
+  describeFlow({
+    mode: isExecutionMode(spec.executionMode) ? spec.executionMode : 'ai',
+    origem: 'Webhook',
+    memory: normalizeMemoryPlan(spec.memory),
+    condition: spec.aiCondition ?? null,
+    action: normalizeAppActionPlan(spec.action),
+    destinoLabel,
+  })
 
 // Create the trigger and arm it. The signing secret is returned HERE and never
 // again — only its encrypted form is stored.
@@ -85,12 +187,23 @@ export async function createEventTrigger(
   const agent = await getAgentById(ownerId, agentId)
   if (!agent) throw new EventTriggerError('agent not found')
   const objective = spec.objective.trim()
-  if (!objective) throw new EventTriggerError('objective is required')
+  // Sem etapa de IA não há a quem dar instrução: exigir objetivo aqui obrigaria a
+  // escrever um texto que ninguém vai ler.
+  const modo = isExecutionMode(spec.executionMode) ? spec.executionMode : 'ai'
+  const precisaObjetivo = aiStepPlanned(modo, spec.aiCondition ?? null)
+  if (precisaObjetivo && !objective) throw new EventTriggerError('objective is required')
+  const vazio = semTrabalho({
+    mode: modo,
+    memory: normalizeMemoryPlan(spec.memory),
+    condition: spec.aiCondition ?? null,
+    temAcao: normalizeAppActionPlan(spec.action).enabled,
+  })
+  if (vazio) throw new EventTriggerError(vazio)
 
   const created = await createAutomation(ownerId, {
     floorId: agent.officeId.toString(),
     name: spec.name.trim() || 'Gatilho por evento',
-    description: objective.slice(0, 2000),
+    description: (objective || 'Recebe e guarda o evento').slice(0, 2000),
     definition: buildEventTriggerDefinition({ ...spec, objective }, agentId),
     agentId,
   })
@@ -112,7 +225,16 @@ export async function updateEventTrigger(ownerId: string, agentId: ObjectId, tri
   const existing = await getEventTriggerForAgent(ownerId, agentId, triggerId)
   if (!existing) return null
   const objective = spec.objective.trim()
-  if (!objective) throw new EventTriggerError('objective is required')
+  const modo = isExecutionMode(spec.executionMode) ? spec.executionMode : 'ai'
+  const precisaObjetivo = aiStepPlanned(modo, spec.aiCondition ?? null)
+  if (precisaObjetivo && !objective) throw new EventTriggerError('objective is required')
+  const vazio = semTrabalho({
+    mode: modo,
+    memory: normalizeMemoryPlan(spec.memory),
+    condition: spec.aiCondition ?? null,
+    temAcao: normalizeAppActionPlan(spec.action).enabled,
+  })
+  if (vazio) throw new EventTriggerError(vazio)
   await updateDraft(ownerId, triggerId, {
     name: spec.name.trim() || existing.name,
     description: objective.slice(0, 2000),

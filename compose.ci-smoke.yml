@@ -1,0 +1,61 @@
+# Override EXCLUSIVO do CI: sobe um Mongo efêmero ao lado da pilha.
+#
+# O smoke anterior copiava `compose.production-test.env.example`, cujo `MONGODB_URI` é um
+# placeholder de Atlas (`mongodb+srv://<user>:<password>@<cluster>...`). Não havia banco
+# no compose e não havia credencial — nem podia haver, porque credencial real não entra
+# em repositório. O job falhava sempre, e falhava por falta de infraestrutura, não por
+# defeito do produto.
+#
+# Este arquivo resolve isso sem tocar no compose de produção: `docker compose -f
+# compose.production-test.yml -f compose.ci-smoke.yml` acrescenta o banco e aponta a
+# aplicação para ele. O de produção continua descrevendo produção — sem banco embutido,
+# como deve ser.
+#
+# O banco é EFÊMERO de propósito: sem volume nomeado, `down -v` leva tudo, e duas
+# execuções do CI nunca compartilham estado.
+
+services:
+  mongo:
+    image: mongo:8
+    # Replica set de um nó: o driver exige um para transações e change streams, e o
+    # motor de automações usa os dois. Um mongod avulso subiria e falharia depois, no
+    # meio do smoke, com um erro que não diz isso.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--quiet"]
+    healthcheck:
+      # O VEREDITO É O CÓDIGO DE SAÍDA, não o que aparece no stdout.
+      #
+      # A versão anterior fazia `mongosh --eval "try { ... } catch { ... }" | grep -q 1` e
+      # nunca ficava verde: `try/catch` é um STATEMENT, e o `--eval` do mongosh só imprime
+      # o valor de uma EXPRESSÃO final. Não saía nada, o grep nunca casava, e o healthcheck
+      # esgotava as 20 tentativas — apesar de o `rs.initiate` ter funcionado na primeira.
+      # O backend, preso em `depends_on: service_healthy`, nem chegava a iniciar.
+      #
+      # Aqui a inicialização é idempotente (só acontece quando `rs.status()` lança) e o
+      # `quit()` responde a única pergunta que importa: já existe um PRIMÁRIO para escrever?
+      # Dizer "saudável" logo após o `initiate`, antes da eleição, entregaria ao backend um
+      # replica set sem primário — e a falha apareceria depois, longe daqui.
+      test:
+        - "CMD"
+        - "mongosh"
+        - "--quiet"
+        - "--eval"
+        - >-
+          try { rs.status() } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]}) }
+          quit(db.hello().isWritablePrimary ? 0 : 1)
+      interval: 2s
+      timeout: 10s
+      retries: 30
+      start_period: 5s
+    networks: [appnet]
+    # Sem `ports`: o banco só é alcançável de dentro da rede do compose. O smoke fala com
+    # a aplicação, não com o banco.
+
+  backend:
+    environment:
+      # Banco isolado, sem credencial: o mongod do CI sobe sem autenticação e não é
+      # exposto para fora da rede. Uma senha aqui seria teatro — e um dia alguém copiaria
+      # o arquivo para um ambiente onde ela importa.
+      MONGODB_URI: mongodb://mongo:27017/comunicacaoai_ci_smoke?replicaSet=rs0
+    depends_on:
+      mongo:
+        condition: service_healthy

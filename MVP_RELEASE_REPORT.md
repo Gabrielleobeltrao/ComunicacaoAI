@@ -349,9 +349,9 @@ Antes:
 
 Depois:
 
-- [ ] `GET https://api.comunicacaoai.oneplataforma.com/api/ready` → 200.
+- [ ] `GET https://api.comunicacaoai.onplataform.com/api/ready` → 200.
 - [ ] Log do backend com `Automation engine up`.
-- [ ] `GET https://comunicacaoai.oneplataforma.com/healthz` → 200.
+- [ ] `GET https://comunicacaoai.onplataform.com/healthz` → 200.
 - [ ] Uma rota profunda do SPA carregando (não 404).
 - [ ] Nenhum recurso de Redis e nenhum worker separado.
 - [ ] Criar uma rotina para dali a poucos minutos e ver a execução aparecer em

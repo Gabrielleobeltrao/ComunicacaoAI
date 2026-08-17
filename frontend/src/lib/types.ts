@@ -1,3 +1,4 @@
+import type { RunConfig } from './runConfig'
 export type WidgetPosition = 'right' | 'left'
 
 export interface WidgetSummary {
@@ -174,6 +175,16 @@ export interface AgentSummary {
   // Agent-as-the-primary-unit model (additive; legacy agents get safe defaults from
   // the backend). Drive the hiring wizard, Acionamentos and delegation.
   preset: AgentPreset
+  // Blocos NOVOS da definição. Ausentes num agente criado antes disto — e é a ausência
+  // que faz o prompt dele continuar exatamente o mesmo.
+  role?: string
+  instructions?: string
+  constraints?: string
+  // Quando uma PESSOA escreveu algum bloco da definição. É a marca que impede uma troca
+  // de modelo-base de sugerir por cima do trabalho de alguém — a tela avisa antes.
+  definitionEditedAt?: string | null
+  // Como o modelo é chamado. Tudo opcional; ausente = padrão do sistema.
+  runConfig?: RunConfig
   capabilities: string[]
   activationModes: ActivationMode[]
   inputContract: string

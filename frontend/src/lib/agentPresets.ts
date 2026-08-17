@@ -12,6 +12,11 @@ export interface AgentPresetSpec {
   activationModes: ActivationMode[]
   inputContract: string
   outputContract: string
+  // Sugestões da definição, por bloco. Preenchem campo vazio e nunca passam por cima de
+  // texto humano — ver `applyPreset` no assistente.
+  role?: string
+  instructions?: string
+  constraints?: string
   // Safe per-role defaults applied at hiring; editable later under "Avançado".
   delegationPolicy: DelegationPolicy
   callerPolicy: DelegationPolicy

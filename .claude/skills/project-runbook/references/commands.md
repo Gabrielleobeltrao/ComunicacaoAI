@@ -47,6 +47,7 @@ E2E specs live in `frontend/e2e/` and self-skip unless their env guard is set (e
 |---|---|
 | Dev stack | `docker compose -f compose.dev.yml up` |
 | Production-like validation | `docker compose -f compose.production-test.yml up` |
+| Idem, com Mongo efêmero | `docker compose -f compose.production-test.yml -f compose.ci-smoke.yml up` (limpe com `down -v`) |
 
 The worker (BullMQ) is a **separate process** from the API — automations/rotinas only execute when a
 worker is running.

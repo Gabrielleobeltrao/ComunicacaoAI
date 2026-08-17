@@ -167,9 +167,16 @@ test('o catálogo mostra origem, ações e o que cada uma faz com os dados', asy
   await page.goto('/apps')
   const catalog = page.getByTestId('app-catalog')
   await expect(catalog).toContainText('Slack')
-  await expect(catalog).toContainText('Sistema')
+  // "Oficial", não "Sistema": o dono decide se confia pela procedência, não pela
+  // implementação. O valor guardado continua sendo `system`.
+  await expect(catalog).toContainText('Oficial')
   await expect(catalog).toContainText('1 ação')
   await expect(catalog).toContainText('altera dados')
+
+  // E os grupos existem: a procedência muda o que o App pode fazer, então oficiais,
+  // comunidade e privados não podem aparecer numa lista só.
+  await expect(page.getByTestId('app-group-system')).toBeVisible()
+  await expect(page.getByTestId('app-group-system')).toContainText('integração nativa')
 })
 
 test('antes de conectar, o dono lê domínios, dados e o impacto de desconectar', async ({ page }) => {

@@ -22,6 +22,7 @@ import {
   SECTOR_PLANNER_SYSTEM_PROMPT,
 } from './systemPrompt.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
+import type { EffectiveRunConfig } from './runConfig.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
 import { MAX_TOOL_ITERATIONS, runResolvedTool } from './agentTools.js'
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
@@ -108,6 +109,7 @@ export async function generateAgentReply(
   // keep the provider signatures identical.
   enableCaching = true,
   tools: ResolvedTool[] = [],
+  opts: { runConfig?: EffectiveRunConfig; signal?: AbortSignal; onToolStart?: (risk: 'read' | 'write' | 'high_risk') => void } = {},
 ): Promise<AgentReplyResult> {
   void enableCaching
   const client = buildClient(apiKey)
@@ -136,16 +138,39 @@ export async function generateAgentReply(
   const toolCalls: ToolCallRecord[] = []
   let text = ''
 
+  /**
+   * A configuração do dono, traduzida para os nomes da OpenAI.
+   *
+   * `max_completion_tokens: 1024` era hardcode e continua sendo o padrão quando o campo
+   * está ausente: mudá-lo aqui alteraria o comportamento de todos os agentes existentes.
+   *
+   * `parallel_tool_calls` só é enviado quando o dono escolheu `false`. Mandar `true`
+   * explicitamente seria dizer ao provedor algo que já é o padrão dele — e um campo a
+   * mais na requisição é uma chance a mais de incompatibilidade num modelo futuro.
+   */
+  const cfg: Partial<EffectiveRunConfig> = opts.runConfig ?? {}
+  const proibirFerramentas = cfg.toolChoice === 'none'
+  const tuning = {
+    max_completion_tokens: cfg.maxOutputTokens ?? 1024,
+    ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+    ...(cfg.reasoningEffort ? { reasoning_effort: cfg.reasoningEffort } : {}),
+  }
+
   // Agentic loop: keep letting the model call tools until it answers, or we hit
   // the cap (tools are withheld on the last pass so it must reply).
   for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
-    const allowTools = toolDefs.length > 0 && iteration < MAX_TOOL_ITERATIONS
-    const response = await client.chat.completions.create({
-      model: model || DEFAULT_MODEL,
-      max_completion_tokens: 1024,
-      messages,
-      ...(allowTools ? { tools: toolDefs } : {}),
-    })
+    const allowTools = toolDefs.length > 0 && !proibirFerramentas && iteration < MAX_TOOL_ITERATIONS
+    const response = await client.chat.completions.create(
+      {
+        model: model || DEFAULT_MODEL,
+        ...tuning,
+        messages,
+        ...(allowTools ? { tools: toolDefs } : {}),
+        ...(allowTools && cfg.toolChoice === 'required' ? { tool_choice: 'required' as const } : {}),
+        ...(allowTools && cfg.parallelTools === false ? { parallel_tool_calls: false } : {}),
+      },
+      opts.signal ? { signal: opts.signal } : undefined,
+    )
     usage.inputTokens += response.usage?.prompt_tokens ?? 0
     usage.outputTokens += response.usage?.completion_tokens ?? 0
 
@@ -153,18 +178,55 @@ export async function generateAgentReply(
     const calls = message?.tool_calls ?? []
     if (allowTools && message && calls.length > 0) {
       messages.push(message)
-      for (const call of calls) {
-        if (call.type !== 'function') continue
+      const pedidos = calls.filter((c) => c.type === 'function')
+
+      /**
+       * Em paralelo só quando TODAS as chamadas deste lote são de leitura.
+       *
+       * Sobre as ferramentas CHAMADAS, não as disponíveis: o modelo pode ter dez à mão e
+       * pedir duas leituras — esse lote é seguro. Uma escrita no meio devolve tudo para
+       * sequencial, porque a ordem em que duas escritas chegam ao outro lado é o que o
+       * dono configurou. Risco ausente conta como escrita.
+       */
+      const soLeitura = pedidos.every((c) => tools.find((t) => t.name === c.function.name)?.risk === 'read')
+      const emParalelo = cfg.parallelTools === true && soLeitura && pedidos.length > 1
+
+      const executar = (call: (typeof pedidos)[number]) => {
+        // Uma tentativa cancelada não inicia mais ferramenta nenhuma.
+        if (opts.signal?.aborted) throw new Error('execução cancelada por tempo esgotado')
+        opts.onToolStart?.(tools.find((t) => t.name === call.function.name)?.risk ?? 'write')
         let args: Record<string, unknown> = {}
         try {
           args = JSON.parse(call.function.arguments || '{}')
         } catch {
           /* leave args empty on malformed JSON */
         }
-        const record = await runResolvedTool(tools, call.function.name, args)
-        toolCalls.push(record)
-        messages.push({ role: 'tool', tool_call_id: call.id, content: record.result })
+        return runResolvedTool(tools, call.function.name, args)
       }
+
+      // A ordem das mensagens de resultado é preservada nos dois caminhos: `map` devolve
+      // no índice do pedido, e o `tool_call_id` que as pareia vem do mesmo objeto.
+      /**
+       * O laço sequencial é um `for...of` de propósito.
+       *
+       * Um `reduce` com `async (acc, x) => [...(await acc), await executar(x)]` PARECE
+       * sequencial e não é: o `reduce` chama o callback para todos os elementos de uma
+       * vez, então `executar(x)` dispara em todos antes de qualquer `await` — e o
+       * encadeamento só ordena a COLETA dos resultados, não a execução. Duas escritas
+       * sairiam juntas mesmo com o paralelismo desligado.
+       */
+      let registros: ToolCallRecord[]
+      if (emParalelo) {
+        registros = await Promise.all(pedidos.map(executar))
+      } else {
+        registros = []
+        for (const call of pedidos) registros.push(await executar(call))
+      }
+
+      pedidos.forEach((call, i) => {
+        toolCalls.push(registros[i])
+        messages.push({ role: 'tool', tool_call_id: call.id, content: registros[i].result })
+      })
       continue
     }
 

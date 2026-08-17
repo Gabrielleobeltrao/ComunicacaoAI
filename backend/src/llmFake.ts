@@ -33,6 +33,10 @@ export async function generateAgentReply(
   _responseStyleInstruction = '',
   _enableCaching = true,
   _tools: ResolvedTool[] = [],
+
+  // Assinatura idêntica à dos provedores reais: o dublê existe para trocar de lugar
+  // com eles, e um parâmetro a menos aqui esconderia um erro de chamada.
+  opts: { runConfig?: unknown } = {},
 ): Promise<{ text: string; usage: { inputTokens: number; outputTokens: number }; toolCalls: ToolCallRecord[] }> {
   const last = history[history.length - 1]?.content ?? objective
   const text = reply(last)

@@ -19,8 +19,8 @@ const PORTA = 4487
 
 // Os domínios do COOLIFY_DEPLOYMENT.md. Nenhum é chamado — são a configuração
 // contra a qual o servidor decide quem entra.
-const SITE = 'https://comunicacaoai.oneplataforma.com'
-const API = 'https://api.comunicacaoai.oneplataforma.com'
+const SITE = 'https://comunicacaoai.onplataform.com'
+const API = 'https://api.comunicacaoai.onplataform.com'
 const INTRUSO = 'https://nao-e-nosso.example'
 
 let proc

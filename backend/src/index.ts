@@ -10,6 +10,11 @@ import express from 'express'
 import type { NextFunction, Request, Response } from 'express'
 import multer from 'multer'
 import { ObjectId } from 'mongodb'
+import { normalizeRunConfig } from './runConfig.js'
+import { presetFillableFields } from './agentPresets.js'
+import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
+import { describeDropped, runInteractive } from './interactiveRun.js'
+import { AgentRunError } from './agentRuntime.js'
 import type { WithId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import { Server } from 'socket.io'
@@ -202,6 +207,7 @@ import { logRouter } from './routes/logRoutes.js'
 import { auditEntity, auditRequests } from './routes/auditMiddleware.js'
 import { ensureAuditIndexes } from './audit.js'
 import { agentRoutineRouter } from './routes/agentRoutineRoutes.js'
+import { memoryRouter } from './routes/memoryRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
 import { appCatalogRouter, navigationPreferencesRouter } from './routes/appRoutes.js'
 import { privateAppRouter } from './routes/privateAppRoutes.js'
@@ -350,6 +356,7 @@ app.use('/api/executions', requireAuth, executionRouter)
 // Logs e auditoria: read-only timelines (executions + changes). No write route
 // exists here on purpose — an audit trail that can be edited is not one.
 app.use('/api/logs', requireAuth, logRouter)
+app.use('/api/memories', requireAuth, memoryRouter)
 // Agent routines + history (agent-owned scheduled automations). Sub-paths that this
 // router doesn't handle fall through to the inline /api/agents/:agentId routes below.
 app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
@@ -1603,28 +1610,62 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     .filter(Boolean)
     .join('\n\n')
 
-  const { text, usage, toolCalls } = await generateAgentReply(
-    replyObjective,
-    knowledge,
-    '',
-    history,
-    configAgent.provider,
-    configAgent.model,
-    apiKey,
-    '',
-    behaviorInstruction,
-    [
-      buildLanguageInstruction(configAgent.language ?? 'pt'),
-      buildResponseStyleInstruction(
-        configAgent.responseTone ?? 'neutral',
-        configAgent.responseDetail ?? 'balanced',
-        configAgent.responseEmojis ?? false,
-        configAgent.responseFormatting ?? false,
+  // As ferramentas primeiro: o risco delas é o que decide se dá para paralelizar, e
+  // resolver a configuração antes produziria algo que o adapter teria de corrigir.
+  const playgroundTools = await resolveAgentTools(configAgent, res.locals.userId)
+  // O MESMO resolvedor que a rotina e a delegação usam. Antes, cada caminho montava o
+  // seu — e o agente respondia diferente conforme a porta por onde o pedido entrou.
+  const execucaoPlayground = resolveAgentRun(configAgent, {
+    context: 'chat',
+    toolRisks: playgroundTools.map((t) => t.risk ?? 'write'),
+  })
+
+  // O MESMO caminho do chat e dos canais: prazo, tentativas, cancelamento e contrato de
+  // saída aplicados uma vez, por uma função só.
+  const interativo = await runInteractive({
+    reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
+      generateAgentReply(
+        objective,
+        k,
+        m,
+        h,
+        configAgent.provider,
+        configAgent.model,
+        apiKey,
+        '',
+        behaviorInstruction,
+        [
+          buildLanguageInstruction(configAgent.language ?? 'pt'),
+          buildResponseStyleInstruction(
+            configAgent.responseTone ?? 'neutral',
+            configAgent.responseDetail ?? 'balanced',
+            configAgent.responseEmojis ?? false,
+            configAgent.responseFormatting ?? false,
+          ),
+        ].join('\n\n'),
+        execucaoPlayground.enableCaching,
+        tools,
+        { runConfig: execucaoPlayground.runConfig, signal, onToolStart },
       ),
-    ].join('\n\n'),
-    configAgent.promptCaching ?? true,
-    await resolveAgentTools(configAgent, res.locals.userId),
-  )
+    objective: composeAgentPrompt({
+      definition: execucaoPlayground.definition,
+      taskInstruction: replyObjective === configAgent.objective ? '' : replyObjective,
+      hasUntrustedContext: knowledge.length > 0,
+    }),
+    knowledge,
+    history,
+    tools: playgroundTools,
+    runConfig: execucaoPlayground.runConfig,
+    output: execucaoPlayground.definition.output,
+  })
+
+  // Os parâmetros que este modelo não aceitou. Só campo e motivo, os dois gerados por
+  // este código — nunca prompt, contexto, resposta ou credencial.
+  const descartados = describeDropped(execucaoPlayground.runConfig)
+  if (descartados) console.info(`[runConfig] playground: ${descartados}`)
+
+  const { usage, toolCalls } = interativo
+  const text = interativo.text
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
   )
@@ -1643,6 +1684,20 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     advanced: pipelineAdvanced,
     fromStage: pipelineFromStage,
     toolCalls,
+    // O Playground é onde se TESTA o agente: aqui a resposta que não cumpriu o contrato
+    // aparece, com o motivo, em vez de virar erro — é exatamente o que o dono precisa ver
+    // para corrigir o schema ou as instruções. No chat e nos canais é o oposto: lá ela não
+    // é enviada, porque do outro lado tem um cliente.
+    //
+    // O diagnóstico carrega só o que este código gerou — validade, se houve reparo, o
+    // motivo da recusa e o par campo/motivo dos parâmetros descartados. Nunca prompt,
+    // contexto, chave ou credencial.
+    diagnostics: {
+      outputValid: interativo.outputValid,
+      outputRepaired: interativo.outputRepaired,
+      ...(interativo.outputProblem ? { outputProblem: interativo.outputProblem } : {}),
+      ...(descartados ? { runConfigDropped: descartados } : {}),
+    },
   })
 })
 
@@ -1861,8 +1916,17 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     )
   }
 
+  // Os blocos da definição e a configuração de execução, saneados aqui como no PATCH: a
+  // tela é uma das formas de chegar nesta rota, não a única.
+  const corpoCriacao = req.body as Record<string, unknown>
+  const textoOpcional = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.slice(0, 8000) : undefined)
+
   const agent = await createAgent(res.locals.userId, officeId, name, {
     objective: typeof objective === 'string' ? objective : undefined,
+    role: textoOpcional(corpoCriacao.role),
+    instructions: textoOpcional(corpoCriacao.instructions),
+    constraints: textoOpcional(corpoCriacao.constraints),
+    ...('runConfig' in corpoCriacao ? { runConfig: normalizeRunConfig(corpoCriacao.runConfig) } : {}),
     provider,
     model: typeof model === 'string' || model === null ? model || null : undefined,
     memoryType,
@@ -2044,6 +2108,69 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
+
+  /**
+   * Os blocos da definição: função, instruções e limites.
+   *
+   * Cada um só é tocado quando VEM no corpo — a mesma regra da fonte de uma rotina e do
+   * destino de uma entrega. Um formulário que salva antes de carregar não pode apagar o
+   * que o dono escreveu.
+   *
+   * Editar qualquer um deles marca `definitionEditedAt`. É essa marca que impede uma
+   * troca de preset de sobrescrever texto humano depois.
+   */
+  const corpo = req.body as Record<string, unknown>
+  // O agente gravado, para comparar. A marca de edição precisa significar "uma pessoa
+  // escreveu isto", e não "o formulário salvou": a tela manda os quatro campos em todo
+  // autosave, então marcar pela presença marcava tudo no primeiro salvamento — e a
+  // sugestão de preset nascia morta, sem nunca ter o que preencher.
+  const gravado = await getAgentById(res.locals.userId, new ObjectId(agentId))
+  if (!gravado) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  let editouDefinicao = false
+  const mudou = (campo: 'role' | 'instructions' | 'constraints' | 'objective', valor: string): boolean =>
+    valor !== ((gravado as unknown as Record<string, unknown>)[campo] as string | undefined ?? '')
+  for (const campo of ['role', 'instructions', 'constraints'] as const) {
+    if (typeof corpo[campo] !== 'string') continue
+    const valor = (corpo[campo] as string).slice(0, 8000)
+    ;(updates as Record<string, unknown>)[campo] = valor
+    if (mudou(campo, valor)) editouDefinicao = true
+  }
+  if (typeof objective === 'string' && mudou('objective', objective)) editouDefinicao = true
+  if (editouDefinicao) (updates as Record<string, unknown>).definitionEditedAt = new Date()
+
+  /**
+   * Trocar de preset preenche o que está vazio, e nada além disso.
+   *
+   * A regra vive no servidor porque a interface é uma das formas de chegar aqui, não a
+   * única — e porque é aqui que se sabe o que já está gravado. `presetFillableFields`
+   * usa `definitionEditedAt` para distinguir "veio de um molde" de "uma pessoa escreveu
+   * isto": no segundo caso, nada é preenchido.
+   */
+  // O `preset` em si é gravado adiante, por `parseAgentModelFields`, que também o valida.
+  // Aqui só se decide o que ele PREENCHE.
+  if (typeof corpo.preset === 'string' && corpo.applyPresetSuggestions === true) {
+    const spec = AGENT_PRESET_SPECS.find((p) => p.preset === corpo.preset)
+    if (spec) {
+      const preencher = presetFillableFields(gravado, spec)
+      for (const [campo, valor] of Object.entries(preencher)) {
+        // O corpo da requisição continua ganhando: se o cliente mandou o campo com texto,
+        // é uma edição explícita e vale mais que a sugestão. Campo vindo VAZIO não conta
+        // como texto — o autosave manda os quatro sempre, e tratá-los como escolha
+        // deliberada anularia a sugestão que o dono acabou de confirmar.
+        const jaVeio = (updates as Record<string, unknown>)[campo]
+        if (typeof jaVeio !== 'string' || !jaVeio.trim()) (updates as Record<string, unknown>)[campo] = valor
+      }
+    }
+  }
+
+  // Como o modelo é chamado. Saneado e limitado no servidor: a tela é uma das formas de
+  // chegar aqui, não a única.
+  if ('runConfig' in corpo) {
+    ;(updates as Record<string, unknown>).runConfig = normalizeRunConfig(corpo.runConfig)
+  }
   if (provider !== undefined) {
     if (!isProvider(provider)) {
       res.status(400).json({ error: 'Unknown provider' })
@@ -2488,7 +2615,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     createdAt: manualStartedAt,
   }).catch(() => null)
 
-  const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0) => {
+  const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0, errorKind?: string) => {
     recordAgentEventSafe({
       eventKey: manualEventKey,
       ownerId: res.locals.userId,
@@ -2504,58 +2631,118 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       inputTokens: u?.inputTokens ?? 0,
       outputTokens: u?.outputTokens ?? 0,
       toolCalls: okToolCalls,
+      // `descartadosChat` é resolvido logo abaixo; este fecho só roda depois da chamada ao
+      // modelo. Só campo e motivo — nunca prompt, resposta ou credencial.
+      metadata: {
+        ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
+        ...(errorKind ? { errorKind } : {}),
+      },
     })
     void finishExecutionRoot(manualRootKey, {
       status: status === 'succeeded' ? 'succeeded' : 'failed',
-      errorKind: status === 'succeeded' ? null : status,
+      errorKind: status === 'succeeded' ? null : (errorKind ?? status),
     }).catch(() => undefined)
   }
 
+  // As ferramentas ANTES do resolvedor. Resolvê-las depois, como estava, entregava uma
+  // lista de riscos vazia — e com ela `toolChoice: 'required'` era descartado ("não há
+  // ferramenta para tornar obrigatória") e o paralelismo nunca era oferecido, mesmo com
+  // todas as ferramentas sendo de leitura. A lista resolvida aqui é a MESMA usada na
+  // chamada abaixo: duas resoluções poderiam divergir.
+  const chatTools = await resolveToolsWithDelegation(
+    agent,
+    res.locals.userId,
+    // The manual test's own root, so its delegations are correlated to it and stay
+    // marked as `test` rather than leaking into production numbers.
+    rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent, rootExecutionId: manualRootId }),
+    productionDelegationDeps(),
+  )
+  const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: chatTools.map((t) => t.risk ?? 'write') })
+  const descartadosChat = describeDropped(execucaoChat.runConfig)
+  if (descartadosChat) console.info(`[runConfig] chat: ${descartadosChat}`)
+
   let generated: string
-  let usage: { inputTokens: number; outputTokens: number }
-  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
-  try {
-    const result = await generateAgentReply(
-    agent.objective,
-    knowledge,
-    '',
-    history,
-    agent.provider,
-    agent.model,
-    apiKey,
-    identityFields.length > 0 ? buildIdentityCaptureInstruction(identityFields) : '',
-    behaviorInstruction,
-    [
-      buildLanguageInstruction(agent.language ?? 'pt'),
-      buildResponseStyleInstruction(
-        agent.responseTone ?? 'neutral',
-        agent.responseDetail ?? 'balanced',
-        agent.responseEmojis ?? false,
-        agent.responseFormatting ?? false,
-      ),
-    ].join('\n\n'),
-    agent.promptCaching ?? true,
-    await resolveToolsWithDelegation(
-      agent,
-      res.locals.userId,
-      // The manual test's own root, so its delegations are correlated to it and stay
-      // marked as `test` rather than leaking into production numbers.
-      rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent, rootExecutionId: manualRootId }),
-      productionDelegationDeps(),
-    ),
+  // Zerados e MUTÁVEIS de propósito: o que o provedor cobrou precisa sobreviver ao caminho
+  // de falha. A versão anterior lançava antes de copiar o uso, e uma resposta que custou a
+  // chamada original mais o reparo era registrada como zero token.
+  let usage = { inputTokens: 0, outputTokens: 0 }
+  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls'] = []
+  let problemaContrato: string | null = null
+
+  // A cobrança acontece UMA vez, dê certo ou não. A trava existe porque agora há dois
+  // caminhos até aqui — o de sucesso e o de falha — e cobrar nos dois seria cobrar duas.
+  let cobrado = false
+  const cobrar = () => {
+    if (cobrado || (usage.inputTokens === 0 && usage.outputTokens === 0)) return
+    cobrado = true
+    recordReplyUsage(res.locals.userId, usage).catch((error) =>
+      console.error('Failed to record token usage:', error),
     )
-    generated = result.text
-    usage = result.usage
-    toolCalls = result.toolCalls
+  }
+
+  try {
+    const interativoChat = await runInteractive({
+      reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
+        generateAgentReply(
+          objective,
+          k,
+          m,
+          h,
+          agent.provider,
+          agent.model,
+          apiKey,
+          identityFields.length > 0 ? buildIdentityCaptureInstruction(identityFields) : '',
+          behaviorInstruction,
+          [
+            buildLanguageInstruction(agent.language ?? 'pt'),
+            buildResponseStyleInstruction(
+              agent.responseTone ?? 'neutral',
+              agent.responseDetail ?? 'balanced',
+              agent.responseEmojis ?? false,
+              agent.responseFormatting ?? false,
+            ),
+          ].join('\n\n'),
+          execucaoChat.enableCaching,
+          tools,
+          { runConfig: execucaoChat.runConfig, signal, onToolStart },
+        ),
+      objective: composeAgentPrompt({ definition: execucaoChat.definition, hasUntrustedContext: knowledge.length > 0 }),
+      knowledge,
+      history,
+      tools: chatTools,
+      runConfig: execucaoChat.runConfig,
+      output: execucaoChat.definition.output,
+    })
+    // O uso PRIMEIRO, o julgamento depois: os tokens da resposta e do reparo já foram
+    // gastos, e o provedor vai faturá-los independentemente de o JSON servir.
+    usage = interativoChat.usage
+    toolCalls = interativoChat.toolCalls
+    // Contrato não cumprido: NÃO se entrega ao cliente um texto que o próprio sistema
+    // sabe estar errado. O erro controlado deixa o caminho de falha decidir.
+    if (!interativoChat.outputValid) {
+      problemaContrato = interativoChat.outputProblem ?? 'JSON inválido'
+      throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${problemaContrato}`)
+    }
+    generated = interativoChat.text
   } catch (error) {
-    // The functional response is unchanged (the error still propagates); only the
-    // telemetry is added.
-    recordManual(/timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed')
+    const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
+      ? 'output_invalid'
+      : /timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed'
+    // Cobrança, métrica e auditoria também na falha — senão o contrato quebrado sairia de
+    // graça nos números e a fatura do provedor não bateria com nada.
+    cobrar()
+    recordManual(kind === 'timeout' ? 'timeout' : 'failed', usage, toolCalls.filter((c) => c.ok).length, kind)
+    if (kind === 'output_invalid') {
+      // Erro controlado, e não um 500 genérico: 502 é a mesma resposta que este arquivo já
+      // dá quando um serviço de fora devolve algo inutilizável. Quem chama aqui é o dono
+      // testando o próprio agente, então o motivo da recusa de schema ajuda — mas o texto
+      // do modelo e o prompt não saem daqui.
+      res.status(502).json({ error: 'A resposta do modelo não cumpriu o formato JSON configurado e não foi entregue.', code: 'output_invalid', problem: problemaContrato })
+      return
+    }
     throw error
   }
-  recordReplyUsage(res.locals.userId, usage).catch((error) =>
-    console.error('Failed to record token usage:', error),
-  )
+  cobrar()
   // Only tool calls that actually COMPLETED count as tool actions.
   recordManual('succeeded', usage, toolCalls.filter((c) => c.ok).length)
   let reply = generated
@@ -3691,43 +3878,97 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       inputTokens: u?.inputTokens ?? 0,
       outputTokens: u?.outputTokens ?? 0,
       toolCalls: okToolCalls,
-      metadata: { channel: widget.channel ?? 'web', ...(widget.sectorId ? { sectorId: widget.sectorId.toString(), consulted: replyAgentName ?? '' } : {}), ...extra },
+      // `descartadosCanal` é resolvido logo abaixo; este fecho só roda depois da chamada
+      // ao modelo. Só campo e motivo — nunca prompt, resposta ou credencial.
+      metadata: { channel: widget.channel ?? 'web', ...(widget.sectorId ? { sectorId: widget.sectorId.toString(), consulted: replyAgentName ?? '' } : {}), ...(descartadosCanal ? { runConfigDropped: descartadosCanal } : {}), ...extra },
     })
     // The turn ended, one way or another.
     await finishExecutionRoot(channelRootKey, {
       status: status === 'succeeded' ? 'succeeded' : 'failed',
-      errorKind: status === 'succeeded' ? null : status,
+      errorKind: status === 'succeeded' ? null : (typeof extra.errorKind === 'string' ? extra.errorKind : status),
     }).catch(() => undefined)
   }
 
+  const canalTools = await resolveAgentTools(agent, ownerId)
+  const execucaoCanal = resolveAgentRun(agent, { context: 'chat', toolRisks: canalTools.map((t) => t.risk ?? 'write') })
+  const descartadosCanal = describeDropped(execucaoCanal.runConfig)
+  if (descartadosCanal) console.info(`[runConfig] canal: ${descartadosCanal}`)
+
   let generatedReply: string
-  let usage: { inputTokens: number; outputTokens: number }
-  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
+  // Zerados e mutáveis: o que foi cobrado precisa sobreviver ao caminho de falha. Lançar
+  // antes de copiar o uso, como estava, registrava zero token numa chamada que custou a
+  // resposta original mais o reparo.
+  let usage = { inputTokens: 0, outputTokens: 0 }
+  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls'] = []
+
+  let cobrado = false
+  const cobrarCanal = () => {
+    if (cobrado || (usage.inputTokens === 0 && usage.outputTokens === 0)) return
+    cobrado = true
+    recordReplyUsage(ownerId, usage).catch((error) => console.error('Failed to record token usage:', error))
+  }
+
   try {
-    const channelResult = await generateAgentReply(
-    replyObjective,
-    knowledge,
-    memoryText,
-    history,
-    agent.provider,
-    agent.model,
-    apiKey,
-    identityInstruction,
-    behaviorInstruction,
-    responseStyleInstruction,
-    agent.promptCaching ?? true,
-    await resolveAgentTools(agent, ownerId),
-    )
-    generatedReply = channelResult.text
-    usage = channelResult.usage
-    toolCalls = channelResult.toolCalls
+    const interativoCanal = await runInteractive({
+      reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
+        generateAgentReply(
+          objective,
+          k,
+          m,
+          h,
+          agent.provider,
+          agent.model,
+          apiKey,
+          identityInstruction,
+          behaviorInstruction,
+          responseStyleInstruction,
+          execucaoCanal.enableCaching,
+          tools,
+          { runConfig: execucaoCanal.runConfig, signal, onToolStart },
+        ),
+      objective: composeAgentPrompt({
+        definition: execucaoCanal.definition,
+        taskInstruction: replyObjective === agent.objective ? '' : replyObjective,
+        hasUntrustedContext: knowledge.length > 0,
+      }),
+      knowledge,
+      memory: memoryText,
+      history,
+      tools: canalTools,
+      runConfig: execucaoCanal.runConfig,
+      output: execucaoCanal.definition.output,
+    })
+    // O uso PRIMEIRO, o julgamento depois: esses tokens já saíram, e o provedor vai
+    // faturá-los tenha o JSON servido ou não.
+    usage = interativoCanal.usage
+    toolCalls = interativoCanal.toolCalls
+    if (!interativoCanal.outputValid) {
+      throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${interativoCanal.outputProblem ?? 'JSON inválido'}`)
+    }
+    generatedReply = interativoCanal.text
   } catch (error) {
-    // Functional behaviour unchanged (the caller still sees the failure); the
-    // outcome is simply no longer invisible in the agent's history.
-    void recordChannel(`msg-fail:${widgetId.toString()}:${conversationId}:${channelStartedAt.getTime()}`, /timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed')
+    const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
+      ? 'output_invalid'
+      : /timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed'
+    // Cobrança, métrica e auditoria acontecem também aqui. As ferramentas que rodaram
+    // rodaram de verdade — ficar de fora do registro por causa de um JSON malformado
+    // esconderia ação real do dono da conversa.
+    cobrarCanal()
+    logToolCalls(widgetId, conversationId, toolCalls).catch((erro) => console.error('Failed to log tool calls:', erro))
+    // A chave do evento é derivada da mensagem: um webhook reentregue reaproveita a mesma
+    // em vez de contar duas vezes.
+    void recordChannel(
+      `msg-fail:${widgetId.toString()}:${conversationId}:${channelStartedAt.getTime()}`,
+      kind === 'timeout' ? 'timeout' : 'failed',
+      usage,
+      toolCalls.filter((c) => c.ok).length,
+      { errorKind: kind },
+    )
+    // Nada é enviado ao visitante: a resposta que não cumpre o contrato não vira mensagem,
+    // não é transmitida pelo socket e não entra no histórico da conversa.
     throw error
   }
-  recordReplyUsage(ownerId, usage).catch((error) => console.error('Failed to record token usage:', error))
+  cobrarCanal()
   logToolCalls(widgetId, conversationId, toolCalls).catch((error) =>
     console.error('Failed to log tool calls:', error),
   )

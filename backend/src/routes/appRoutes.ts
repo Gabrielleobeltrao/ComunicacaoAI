@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { appCatalogPublic, getApp } from '../apps/registry.js'
 import { listAppsForOwner, resolveAppForOwner } from '../apps/privateApps.js'
 import { installationPublic, listInstallations } from '../apps/installations.js'
+import { availabilityOf } from '../apps/types.js'
 import { buildNavigation, getNavigationPreferences, MAX_PINNED_APPS, resolveSurface, setPinnedApps } from '../apps/navigation.js'
 import { channelOverview } from '../apps/channelOverview.js'
 import { fail, notFound } from './http.js'
@@ -27,6 +28,9 @@ appCatalogRouter.get('/catalog', async (_req, res) => {
   const catalog = await listAppsForOwner(ownerId)
   res.json(
     catalog.filter((app) => app.status === 'published').map((app) => ({
+      // Visível de propósito, mesmo quando não é ligável: é o "em breve" que diz ao
+      // dono o que está vindo. A tela mostra o selo e desabilita as ações.
+      availability: availabilityOf(app),
       ...appCatalogPublic(app),
       private: app.source !== 'system',
       installationCount: byApp.get(app.key) ?? 0,
