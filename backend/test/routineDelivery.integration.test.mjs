@@ -14,7 +14,9 @@ process.env.MONGODB_URI = await startMongo()
 process.env.ENCRYPTION_KEY = 'test-encryption-key'
 
 const { mongoClient, db } = await import('../dist/db.js')
-const { createRoutine, updateRoutine } = await import('../dist/automations/routine.js')
+const { createRoutine, updateRoutine, readSourceFromDefinition, readSourceInstanceId, publishedSourceFingerprint } = await import(
+  '../dist/automations/routine.js'
+)
 
 const OWNER = 'routine-owner'
 const OTHER = 'other-owner'
@@ -113,4 +115,73 @@ test('an edit never crosses to another owner or another agent', async () => {
   // And the routine is untouched by either attempt.
   const stored = await db.collection('automations').findOne({ _id: created._id })
   assert.equal(stored.draftDefinition.deliveries.length, 1)
+})
+
+// --- a fonte segue a mesma regra do destino ---------------------------------------------
+//
+// Mesmo bug, outro campo: um formulário salvo antes de a fonte carregar não pode
+// desligar o monitoramento — e, pior, não pode ser RECUSADO por causa disso.
+
+const RSS = { kind: 'rss', url: 'https://exemplo.test/feed.xml', initialWindow: '24h' }
+const monitor = (over = {}) => spec({ recurrence: { kind: 'minutes', every: 15 }, source: RSS, ...over })
+
+test('um PATCH sem `source` preserva o monitoramento E a frequência curta', async () => {
+  // O caso concreto: rotina que verifica de 15 em 15 minutos, o cliente manda um
+  // PATCH só com o objetivo. Julgar a frequência pelo corpo da requisição leria
+  // "fonte ausente = rotina fixa" e devolveria 400 numa rotina perfeitamente válida.
+  const criada = await createRoutine(OWNER, AGENT, monitor())
+  assert.equal(readSourceFromDefinition(criada.draftDefinition).kind, 'rss')
+
+  const { source, ...semFonte } = monitor({ objective: 'Outro objetivo' })
+  assert.equal(source.kind, 'rss')
+  const atualizada = await updateRoutine(OWNER, AGENT, criada._id, semFonte)
+
+  assert.equal(atualizada.description, 'Outro objetivo', 'a edição foi aplicada')
+  assert.deepEqual(readSourceFromDefinition(atualizada.draftDefinition), RSS, 'o monitoramento sobreviveu')
+})
+
+test('rotina de entrada fixa continua recusando frequência curta', async () => {
+  await assert.rejects(
+    () => createRoutine(OWNER, AGENT, spec({ recurrence: { kind: 'minutes', every: 5 } })),
+    /monitoram uma fonte/,
+  )
+})
+
+test('desligar o monitoramento por um PATCH explícito continua funcionando', async () => {
+  const criada = await createRoutine(OWNER, AGENT, monitor())
+  const desligada = await updateRoutine(OWNER, AGENT, criada._id, spec({ source: { kind: 'fixed' } }))
+  assert.equal(readSourceFromDefinition(desligada.draftDefinition).kind, 'fixed')
+  assert.equal(readSourceInstanceId(desligada.draftDefinition), null)
+})
+
+test('mudar só o foco preserva a vez do monitoramento — nada recomeça', async () => {
+  const criada = await createRoutine(OWNER, AGENT, monitor())
+  const geracao = readSourceInstanceId(criada.draftDefinition)
+  assert.ok(geracao, 'uma rotina nova que monitora começa a primeira vez')
+
+  const comFoco = await updateRoutine(OWNER, AGENT, criada._id, monitor({ source: { ...RSS, focus: 'só preços' } }))
+  assert.equal(readSourceInstanceId(comFoco.draftDefinition), geracao)
+  // E a identidade do checkpoint não muda, que é o que de fato importa.
+  assert.equal(publishedSourceFingerprint(comFoco.draftDefinition), publishedSourceFingerprint(criada.draftDefinition))
+})
+
+test('desligar e religar na MESMA URL começa uma vez nova', async () => {
+  // No meio do desligamento o feed andou. Quem religa quer saber o que há AGORA —
+  // nem receber de uma vez tudo que passou, nem ficar em silêncio porque aquilo
+  // "já foi visto" numa vez anterior.
+  const criada = await createRoutine(OWNER, AGENT, monitor())
+  const antes = publishedSourceFingerprint(criada.draftDefinition)
+
+  await updateRoutine(OWNER, AGENT, criada._id, spec({ source: { kind: 'fixed' } }))
+  const religada = await updateRoutine(OWNER, AGENT, criada._id, monitor())
+
+  assert.deepEqual(readSourceFromDefinition(religada.draftDefinition), RSS, 'mesma URL, mesmo tipo')
+  assert.notEqual(publishedSourceFingerprint(religada.draftDefinition), antes, 'e mesmo assim, outro checkpoint')
+})
+
+test('trocar a URL também começa uma vez nova', async () => {
+  const criada = await createRoutine(OWNER, AGENT, monitor())
+  const antes = publishedSourceFingerprint(criada.draftDefinition)
+  const outra = await updateRoutine(OWNER, AGENT, criada._id, monitor({ source: { ...RSS, url: 'https://exemplo.test/outro.xml' } }))
+  assert.notEqual(publishedSourceFingerprint(outra.draftDefinition), antes)
 })

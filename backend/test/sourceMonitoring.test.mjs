@@ -195,9 +195,11 @@ const definicao = (passos) => ({
 })
 
 function estado(inicial = { seenKeys: [], contentHash: null, initialized: true }, opts = {}) {
-  const registro = { avancos: [], verificacoes: 0, atual: inicial, leasesTomados: 0, leasesLiberados: 0, fingerprints: [] }
+  const registro = { avancos: [], verificacoes: 0, atual: inicial, leasesTomados: 0, leasesLiberados: 0, fingerprints: [], buscas: 0 }
   return {
     api: {
+      // `fonteTrocada` simula a rotina já publicando outra fonte.
+      isCurrent: async () => !opts.fonteTrocada,
       begin: async (_stepId, fingerprint) => {
         registro.verificacoes++
         registro.fingerprints.push(fingerprint)
@@ -628,4 +630,139 @@ test('não se toma lease quando não há o que processar', async () => {
   // Verificar é barato e acontece o tempo todo; segurar a fonte para não fazer nada
   // só atrapalharia quem tem o que fazer.
   assert.equal(registro.leasesTomados, 0)
+})
+
+// --- execução que envelheceu na fila ---------------------------------------------------
+
+test('execução da fonte anterior não busca, não processa e não toca no checkpoint', async () => {
+  // A corrida real: enfileirada às 10h00 com a URL antiga, o dono troca a URL às
+  // 10h01, o worker só pega às 10h02. Buscar o endereço velho já seria errado; pior
+  // seria o `begin` dela redefinir para a fonte antiga o checkpoint que a fonte nova
+  // acabou de criar.
+  const { api, registro } = estado({ seenKeys: [], contentHash: null, initialized: true }, { fonteTrocada: true })
+  let buscou = 0
+  let chamouLLM = 0
+  let entregou = 0
+  const out = await runDefinition(definicao([passoFonte('source.rss'), passoAgente]), {
+    fetchUrl: async () => {
+      buscou++
+      return { body: feed([{ title: 'Novo', guid: 'n' }]), contentType: 'application/xml' }
+    },
+    runAgent: async () => {
+      chamouLLM++
+      return { output: 'resumo' }
+    },
+    deliver: async () => {
+      entregou++
+      return { providerMessageId: null }
+    },
+    now: () => agora,
+    sourceState: api,
+  })
+
+  assert.equal(out.status, 'succeeded', 'descartar uma execução obsoleta não é falha')
+  assert.equal(out.sourceOutcome, 'skipped_stale')
+  assert.equal(buscou, 0, 'nem chega a consultar o endereço antigo')
+  assert.equal(chamouLLM, 0)
+  assert.equal(entregou, 0)
+  assert.equal(registro.verificacoes, 0, 'o checkpoint da fonte nova não pode ser aberto por ela')
+  assert.equal(registro.avancos.length, 0)
+  assert.equal(registro.leasesTomados, 0)
+})
+
+test('o mesmo vale para fonte HTTP', async () => {
+  const { api, registro } = estado({ seenKeys: [], contentHash: null, initialized: true }, { fonteTrocada: true })
+  let buscou = 0
+  const out = await runDefinition(definicao([passoFonte('source.http'), passoAgente]), {
+    fetchUrl: async () => {
+      buscou++
+      return { body: '<p>x</p>', contentType: 'text/html' }
+    },
+    runAgent: async () => ({ output: 'nunca' }),
+    deliver: async () => ({ providerMessageId: null }),
+    now: () => agora,
+    sourceState: api,
+  })
+  assert.equal(out.sourceOutcome, 'skipped_stale')
+  assert.equal(buscou, 0)
+  assert.equal(registro.verificacoes, 0)
+})
+
+test('rotina SEM monitoramento não pergunta nada: ela roda o snapshot dela', async () => {
+  // Reprodutibilidade: uma execução que não monitora tem que rodar exatamente a
+  // definição que foi capturada, sem consultar o estado atual da rotina.
+  let buscou = 0
+  const out = await runDefinition(definicao([passoFonte('source.rss'), passoAgente]), {
+    fetchUrl: async () => {
+      buscou++
+      return { body: feed([{ title: 'Item', guid: 'i', date: 'Tue, 10 Mar 2026 11:00:00 GMT' }]), contentType: 'application/xml' }
+    },
+    runAgent: async () => ({ output: 'ok' }),
+    deliver: async () => ({ providerMessageId: null }),
+    now: () => agora,
+  })
+  assert.equal(out.status, 'succeeded')
+  assert.equal(out.sourceOutcome, undefined)
+  assert.equal(buscou, 1)
+})
+
+// --- HTTP que chega vazio ----------------------------------------------------------------
+
+test('página que só monta no navegador é falha dita, não silêncio', async () => {
+  // 2xx, mas sem nada depois de tirar a marcação. As duas alternativas são piores:
+  // comparar vazio com vazio diria "não mudou" para sempre, e mandar vazio para a
+  // LLM gastaria tokens com nada.
+  const { api, registro } = estado({ seenKeys: [], contentHash: null, initialized: true })
+  let chamouLLM = 0
+  const out = await runDefinition(definicao([passoFonte('source.http'), passoAgente]), {
+    fetchUrl: async () => ({ body: '<html><head><script>montaTudo()</script></head><body></body></html>', contentType: 'text/html' }),
+    runAgent: async () => {
+      chamouLLM++
+      return { output: 'nunca' }
+    },
+    deliver: async () => ({ providerMessageId: null }),
+    now: () => agora,
+    sourceState: api,
+  })
+
+  assert.equal(out.status, 'failed')
+  assert.equal(out.sourceOutcome, undefined, 'vazio não é "sem novidade"')
+  assert.equal(chamouLLM, 0)
+  assert.equal(registro.avancos.length, 0)
+  // A mensagem precisa dizer o que fazer com isso.
+  assert.match(out.steps[0].errorMessage, /JavaScript/i)
+})
+
+test('resposta 204, sem corpo nenhum, cai na mesma regra', async () => {
+  const { api } = estado({ seenKeys: [], contentHash: null, initialized: true })
+  let chamouLLM = 0
+  const out = await runDefinition(definicao([passoFonte('source.http'), passoAgente]), {
+    fetchUrl: async () => ({ body: '', contentType: '' }),
+    runAgent: async () => {
+      chamouLLM++
+      return { output: 'nunca' }
+    },
+    deliver: async () => ({ providerMessageId: null }),
+    now: () => agora,
+    sourceState: api,
+  })
+  assert.equal(out.status, 'failed')
+  assert.equal(chamouLLM, 0)
+})
+
+test('conteúdo vazio não vira retry: a página não vai encher sozinha', async () => {
+  const { api } = estado({ seenKeys: [], contentHash: null, initialized: true })
+  let buscas = 0
+  await runDefinition(definicao([passoFonte('source.http'), passoAgente]), {
+    fetchUrl: async () => {
+      buscas++
+      return { body: '<html><body>   </body></html>', contentType: 'text/html' }
+    },
+    runAgent: async () => ({ output: 'nunca' }),
+    deliver: async () => ({ providerMessageId: null }),
+    now: () => agora,
+    sourceState: api,
+  })
+  // A etapa tem maxAttempts 2, mas isto não é falha transitória.
+  assert.equal(buscas, 1)
 })

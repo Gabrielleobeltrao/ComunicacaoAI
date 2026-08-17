@@ -46,8 +46,12 @@ export interface AutomationRun {
    *
    * `skipped_concurrent`: havia o que fazer, mas outra execução já estava fazendo.
    * Desistir é o certo — e também não é erro.
+   *
+   * `skipped_stale`: a execução carregava uma fonte que não é mais a publicada — o
+   * dono trocou a URL depois de ela ser enfileirada. Ela não busca, não processa e
+   * não encosta no checkpoint da fonte nova.
    */
-  sourceOutcome?: 'no_change' | 'skipped_concurrent'
+  sourceOutcome?: 'no_change' | 'skipped_concurrent' | 'skipped_stale'
   // Campo anterior, mantido só para os runs já gravados continuarem sendo lidos
   // corretamente. Nada novo é escrito aqui.
   noChange?: boolean

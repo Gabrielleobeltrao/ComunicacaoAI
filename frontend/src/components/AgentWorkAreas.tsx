@@ -448,6 +448,9 @@ const RESULTADO_LABEL: Record<string, string> = {
   // Outra execução já estava verificando esta fonte. Não é erro, e dizer isso é
   // melhor que mostrar "sem novidade", que seria mentira.
   skipped_concurrent: 'já estava sendo verificada',
+  // A execução carregava a fonte anterior. Some sozinho na próxima verificação, e
+  // dizer isso evita a leitura de que a troca quebrou alguma coisa.
+  skipped_stale: 'era da fonte anterior, descartada',
   failed: 'falhou ao verificar',
 }
 

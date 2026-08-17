@@ -1,6 +1,6 @@
 import { renderTemplate } from './transform.js'
 import { dedupeItems, filterByWindow, parseRssItems } from './sources.js'
-import { detectHttpChange, detectRssChange, pareceFeed, sourceFingerprint } from './sourceChange.js'
+import { detectHttpChange, detectRssChange, normalizeHttpContent, pareceFeed, sourceFingerprint } from './sourceChange.js'
 import type { AutomationDefinition, StepDefinition, StepType } from './types.js'
 
 // Transport-agnostic linear runner for an automation definition. It contains NO
@@ -56,6 +56,15 @@ export interface StepUsage {
  * isso o feed inteiro seria relido como novo na volta seguinte.
  */
 export interface SourceState {
+  /**
+   * Esta fonte ainda é a que a rotina publica?
+   *
+   * Perguntado ANTES de qualquer coisa: antes de buscar, antes de tocar no
+   * checkpoint. Uma execução enfileirada há uma hora carrega a fonte de uma hora
+   * atrás; se o dono trocou a URL no meio, ela não pode nem consultar o endereço
+   * antigo — e muito menos redefinir o checkpoint da fonte nova para ele.
+   */
+  isCurrent: (fingerprint: string) => Promise<boolean>
   // Registra a consulta e devolve o estado da fonte, recomeçando se ela mudou.
   begin: (stepId: string, fingerprint: string) => Promise<{ seenKeys: string[]; contentHash: string | null; initialized: boolean }>
   acquire: (stepId: string, fingerprint: string) => Promise<boolean>
@@ -78,7 +87,7 @@ export interface SourceState {
  */
 export class SourceHalt {
   constructor(
-    public readonly outcome: 'no_change' | 'skipped_concurrent',
+    public readonly outcome: 'no_change' | 'skipped_concurrent' | 'skipped_stale',
     public readonly reason: string,
   ) {}
 }
@@ -118,7 +127,7 @@ export interface RunOutcome {
    * sucessos com zero token. A interface precisa distinguir para não fazer uma
    * rotina saudável parecer parada nem um desvio de concorrência parecer defeito.
    */
-  sourceOutcome?: 'no_change' | 'skipped_concurrent'
+  sourceOutcome?: 'no_change' | 'skipped_concurrent' | 'skipped_stale'
   steps: StepRecord[]
   finalOutput: string
   context: Record<string, unknown>
@@ -193,16 +202,29 @@ async function executeStep(
   switch (step.type as StepType) {
     case 'source.rss': {
       const url = String(cfg.url)
-      const { body } = await deps
-        .fetchUrl(url, { contentTypeAllowlist: ['xml', 'rss', 'atom', 'text'], requireOk: !!deps.sourceState })
-        .catch((e) => {
-          throw new StepError('fetch', (e as Error).message, true)
-        })
       const windowMs = Number(cfg.windowMs ?? 24 * 3600 * 1000)
 
       // Sem estado de fonte: comportamento antigo, intacto. É por aqui que passam as
-      // definições que já existiam antes do monitoramento existir.
-      if (!deps.sourceState) return filterByWindow(dedupeItems(parseRssItems(body)), windowMs, deps.now())
+      // definições que já existiam antes do monitoramento existir — e é o que
+      // preserva a reprodutibilidade de uma execução que não monitora nada: ela roda
+      // o snapshot dela, ponto.
+      if (!deps.sourceState) {
+        const { body } = await deps.fetchUrl(url, { contentTypeAllowlist: ['xml', 'rss', 'atom', 'text'] }).catch((e) => {
+          throw new StepError('fetch', (e as Error).message, true)
+        })
+        return filterByWindow(dedupeItems(parseRssItems(body)), windowMs, deps.now())
+      }
+
+      const fingerprint = sourceFingerprint('rss', url, typeof cfg.instanceId === 'string' ? cfg.instanceId : null)
+      if (!(await deps.sourceState.isCurrent(fingerprint))) {
+        return new SourceHalt('skipped_stale', 'a fonte desta rotina mudou depois que esta execução foi enfileirada')
+      }
+
+      const { body } = await deps
+        .fetchUrl(url, { contentTypeAllowlist: ['xml', 'rss', 'atom', 'text'], requireOk: true })
+        .catch((e) => {
+          throw new StepError('fetch', (e as Error).message, true)
+        })
 
       // Uma página de login, um erro em HTML ou um "em manutenção" respondem 200 com
       // zero item. Tratar isso como "feed vazio, nada novo" faria a rotina ficar
@@ -212,7 +234,6 @@ async function executeStep(
         throw new StepError('source', 'A resposta não é um feed RSS ou Atom.', true)
       }
 
-      const fingerprint = sourceFingerprint('rss', url)
       const { seenKeys, initialized } = await deps.sourceState.begin(step.id, fingerprint)
       const mudanca = detectRssChange(body, seenKeys, windowMs, deps.now(), initialized)
 
@@ -236,12 +257,35 @@ async function executeStep(
     }
     case 'source.http': {
       const url = String(cfg.url)
-      const { body, contentType } = await deps.fetchUrl(url, { requireOk: !!deps.sourceState }).catch((e) => {
+      if (!deps.sourceState) {
+        const { body, contentType } = await deps.fetchUrl(url).catch((e) => {
+          throw new StepError('fetch', (e as Error).message, true)
+        })
+        return contentType.includes('html') ? strip(body) : body
+      }
+
+      const fingerprint = sourceFingerprint('http', url, typeof cfg.instanceId === 'string' ? cfg.instanceId : null)
+      if (!(await deps.sourceState.isCurrent(fingerprint))) {
+        return new SourceHalt('skipped_stale', 'a fonte desta rotina mudou depois que esta execução foi enfileirada')
+      }
+
+      const { body, contentType } = await deps.fetchUrl(url, { requireOk: true }).catch((e) => {
         throw new StepError('fetch', (e as Error).message, true)
       })
-      if (!deps.sourceState) return contentType.includes('html') ? strip(body) : body
 
-      const fingerprint = sourceFingerprint('http', url)
+      // 2xx com corpo que não sobra nada depois de tirar a marcação: quase sempre
+      // uma página que só monta no navegador, que aqui não roda. Comparar hash de
+      // vazio com hash de vazio diria "não mudou" para sempre; mandar vazio para a
+      // LLM gastaria tokens com nada. As duas saídas são piores que dizer o que
+      // aconteceu.
+      if (!normalizeHttpContent(body, contentType)) {
+        throw new StepError(
+          'source',
+          'A resposta chegou vazia depois de remover a marcação. Esta página pode depender de JavaScript, que não é executado aqui.',
+          false,
+        )
+      }
+
       const { contentHash, initialized } = await deps.sourceState.begin(step.id, fingerprint)
       const mudanca = detectHttpChange(body, contentType, contentHash, initialized)
       if (!mudanca.changed) return new SourceHalt('no_change', 'o conteúdo não mudou desde a última verificação')

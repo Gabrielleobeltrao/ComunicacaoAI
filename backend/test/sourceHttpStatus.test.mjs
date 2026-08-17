@@ -36,6 +36,16 @@ before(async () => {
       res.writeHead(200, { 'content-type': 'text/html' })
       return res.end('<html><body><p>Preço: R$ 10</p></body></html>')
     }
+    if (rota === '/so-script') {
+      // 200, com corpo — e nada de conteúdo depois de tirar a marcação. É a página
+      // que só monta no navegador, que aqui não roda.
+      res.writeHead(200, { 'content-type': 'text/html' })
+      return res.end('<html><head><script>montaTudo()</script></head><body><div id="app"></div></body></html>')
+    }
+    if (rota === '/vazio') {
+      res.writeHead(204).end()
+      return
+    }
     // /status/404, /status/429, /status/500 — com corpo, que é o caso perigoso: a
     // resposta tem conteúdo, e sem a porteira ele seria lido como conteúdo da fonte.
     const m = /^\/status\/(\d+)$/.exec(rota)
@@ -115,4 +125,22 @@ test('HTML no endereço de um feed é recusado com um motivo acionável', async 
   const r = await previewSource('rss', `${base}/pagina`)
   assert.equal(r.ok, false)
   assert.match(r.message, /feed/i)
+})
+
+// --- 2xx que não traz conteúdo -----------------------------------------------------------
+
+test('página que só monta no navegador é recusada com o motivo real', async () => {
+  // Não é erro de rede nem status ruim: o servidor respondeu 200. Dizer "não foi
+  // possível consultar" mandaria o dono conferir a URL, que está certa. O que ele
+  // precisa saber é que a página depende de JavaScript.
+  const r = await previewSource('http', `${base}/so-script`)
+  assert.equal(r.ok, false)
+  assert.match(r.message, /JavaScript/i)
+  assert.equal(r.excerpt, undefined)
+})
+
+test('204 sem corpo nenhum cai na mesma regra', async () => {
+  const r = await previewSource('http', `${base}/vazio`)
+  assert.equal(r.ok, false)
+  assert.equal(r.excerpt, undefined)
 })

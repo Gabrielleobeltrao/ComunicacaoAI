@@ -8,7 +8,6 @@ import {
   listAgentAutomations,
   listRoutines,
   readSourceFromDefinition,
-  recorrenciaIncompativelComFonte,
   RoutineError,
   STEP_SOURCE,
   updateRoutine,
@@ -139,11 +138,6 @@ function urlAceitavel(url: string): boolean {
   }
 }
 
-// Tudo que impede a rotina de ser salva, em uma mensagem de formulário.
-function specInvalida(spec: RoutineSpec): string | null {
-  return fonteComUrlInvalida(spec) ?? recorrenciaIncompativelComFonte(spec)
-}
-
 // Mensagem de formulário para uma fonte mal preenchida, ou null se estiver ok.
 function fonteComUrlInvalida(spec: RoutineSpec): string | null {
   const fonte = spec.source
@@ -215,9 +209,12 @@ agentRoutineRouter.post('/routines', async (req, res) => {
     res.status(400).json({ error })
     return
   }
-  const invalida = specInvalida(spec!)
-  if (invalida) {
-    res.status(400).json({ error: invalida })
+  // Só o que dá para julgar pelo corpo da requisição. A regra de frequência depende
+  // da fonte EFETIVA — que num PATCH pode vir da rotina salva — e por isso mora em
+  // `createRoutine`/`updateRoutine`, que a resolvem antes de decidir.
+  const urlInvalida = fonteComUrlInvalida(spec!)
+  if (urlInvalida) {
+    res.status(400).json({ error: urlInvalida })
     return
   }
   try {
@@ -241,9 +238,12 @@ agentRoutineRouter.patch('/routines/:routineId', async (req, res) => {
     res.status(400).json({ error })
     return
   }
-  const invalida = specInvalida(spec!)
-  if (invalida) {
-    res.status(400).json({ error: invalida })
+  // Só o que dá para julgar pelo corpo da requisição. A regra de frequência depende
+  // da fonte EFETIVA — que num PATCH pode vir da rotina salva — e por isso mora em
+  // `createRoutine`/`updateRoutine`, que a resolvem antes de decidir.
+  const urlInvalida = fonteComUrlInvalida(spec!)
+  if (urlInvalida) {
+    res.status(400).json({ error: urlInvalida })
     return
   }
   try {

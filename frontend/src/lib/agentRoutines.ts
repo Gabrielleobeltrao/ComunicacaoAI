@@ -33,8 +33,9 @@ export interface RoutineMonitoring {
   lastChangedAt: string | null
   // 'changed' = encontrou e processou; 'no_change' = verificou e não havia nada
   // (sucesso, zero token); 'skipped_concurrent' = outra execução já estava
-  // verificando; 'failed' = a verificação em si falhou.
-  lastResult: 'changed' | 'no_change' | 'skipped_concurrent' | 'failed' | null
+  // verificando; 'skipped_stale' = a execução era de uma fonte que já foi trocada;
+  // 'failed' = a verificação em si falhou.
+  lastResult: 'changed' | 'no_change' | 'skipped_concurrent' | 'skipped_stale' | 'failed' | null
   lastRunAt: string | null
   lastError: PublicError | null
 }

@@ -7,6 +7,8 @@ import {
 } from './runRepository.js'
 import { runDefinition } from './runner.js'
 import { acquireSourceLease, advanceCheckpoint, beginCheck, releaseSourceLease } from './sourceCheckpoint.js'
+import { publishedSourceFingerprint } from './routine.js'
+import { findAutomation, findVersion } from './repository.js'
 import type { RunnerDeps } from './runner.js'
 import { preview } from './runTypes.js'
 import type { AutomationRun, RunStatus, StepRun } from './runTypes.js'
@@ -59,6 +61,27 @@ function buildDeps(run: AutomationRun): RunnerDeps {
     ...(temFonte && run.automationId
       ? {
           sourceState: {
+            /**
+             * A fonte deste snapshot ainda é a publicada?
+             *
+             * A corrida real: a execução foi enfileirada às 10h00 com a URL antiga, o
+             * dono trocou a URL às 10h01, e o worker só pegou a execução às 10h02. Sem
+             * esta pergunta ela consultaria o endereço velho e — pior — o `beginCheck`
+             * dela redefiniria o checkpoint da fonte NOVA para a antiga, apagando a
+             * linha de base recém-criada. O filtro do avanço não pega isso, porque o
+             * estrago acontece na abertura, não na gravação.
+             *
+             * Lê a definição PUBLICADA, que é a única fonte de verdade. Na dúvida
+             * (rotina sumiu, nada publicado) a execução segue: barrar por falta de
+             * informação calaria uma rotina saudável.
+             */
+            isCurrent: async (fingerprint: string) => {
+              const automation = await findAutomation(run.ownerId, run.automationId!)
+              if (!automation || automation.lastPublishedVersion == null) return true
+              const publicada = await findVersion(run.ownerId, run.automationId!, automation.lastPublishedVersion)
+              const atual = publishedSourceFingerprint(publicada?.definition)
+              return atual === null || atual === fingerprint
+            },
             begin: async (stepId: string, fingerprint: string) => beginCheck(run.ownerId, run.automationId!, stepId, fingerprint, new Date()),
             // O dono do lease é a EXECUÇÃO. Assim uma execução nunca libera o lease
             // de outra, e um lease abandonado por um processo morto expira sozinho.

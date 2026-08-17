@@ -41,7 +41,7 @@ Cada rotina passa a devolver `source`. As que monitoram vêm também com:
 monitoring: {
   lastCheckedAt: string | null   // última vez que a fonte foi consultada
   lastChangedAt: string | null   // última vez que havia algo novo
-  lastResult: 'changed' | 'no_change' | 'skipped_concurrent' | 'failed' | null
+  lastResult: 'changed' | 'no_change' | 'skipped_concurrent' | 'skipped_stale' | 'failed' | null
   lastRunAt: string | null
   lastError: { kind: string; message: string } | null
 }
@@ -50,14 +50,21 @@ monitoring: {
 `lastCheckedAt` e `lastChangedAt` são campos separados de propósito: é a diferença
 entre "está funcionando e não há novidade" e "parou de verificar".
 
-`skipped_concurrent` é o desfecho de quem chegou e encontrou a fonte já sendo
-verificada por outra execução. É sucesso, não erro — ver **Lease**.
+Dois desfechos são sucessos que não processaram nada, e nenhum dos dois é erro:
+`skipped_concurrent` (a fonte já estava sendo verificada por outra execução, ver
+**Lease**) e `skipped_stale` (a execução carregava uma fonte que não é mais a
+publicada, ver **Execução que envelheceu**).
 
 ### `POST /routines` · `PATCH /routines/:id`
 
 Aceitam `source` no corpo. **Omitir `source` num PATCH preserva a fonte atual** —
 não a apaga. Rotina sem `source` compila exatamente como antes: um único passo
 `agent.execute`, sem passo de fonte e sem checkpoint.
+
+A validação de frequência usa a fonte **efetiva**, resolvida depois de carregar a
+rotina — não o que veio no corpo. Um monitor que verifica de 15 em 15 minutos não
+pode ser recusado como "rotina fixa" só porque o cliente omitiu `source`. Por isso a
+regra mora em `createRoutine`/`updateRoutine`, e não na rota.
 
 **Frequência curta é privilégio de quem monitora.** `minutes` e `hourly` só valem
 com fonte RSS/HTTP; numa rotina de entrada fixa são recusadas com 400. Uma rotina
@@ -137,6 +144,40 @@ O fingerprint também vai no **filtro** do avanço. Uma execução que começou 
 antiga e terminou depois da troca não casa o filtro, não grava nada, e o conteúdo de
 uma fonte não contamina o checkpoint da outra.
 
+### A "vez" do monitoramento
+
+`instanceId` na configuração da etapa de fonte, e dentro do fingerprint quando
+existe. Ele responde ao que a URL sozinha não distingue: **desligar o monitoramento
+e religar na mesma URL**. No meio do desligamento o feed andou; quem religa quer
+saber o que há agora — nem receber de uma vez tudo que passou, nem ficar em silêncio
+porque aquilo "já foi visto".
+
+| Mudança | Vez |
+|---------|-----|
+| foco, horário, formato, destino, janela inicial | a mesma |
+| URL ou tipo | outra |
+| `fixed` → RSS/HTTP (religar) | outra |
+
+Rotinas anteriores ao campo não têm `instanceId`, e aí o fingerprint é exatamente o
+de antes — é assim que o checkpoint delas continua valendo **sem migração de dados**.
+
+## Execução que envelheceu
+
+Uma execução é enfileirada às 10h00 com a URL de então; o dono troca a URL às 10h01;
+o worker só pega a execução às 10h02. Ela carrega uma fonte que já não existe.
+
+O filtro do avanço não resolve isso, porque o estrago acontece antes: o `beginCheck`
+dela veria "fingerprint diferente" e **redefiniria para a fonte antiga** o checkpoint
+que a fonte nova acabou de criar.
+
+Então, antes de qualquer coisa — antes de buscar, antes de tocar no checkpoint — a
+etapa de fonte pergunta se o seu fingerprint é o da definição **publicada**. Se não
+for: `skipped_stale`, sem busca, sem LLM, sem entrega, sem checkpoint.
+
+Na dúvida (rotina sumiu, nada publicado) a execução segue: barrar por falta de
+informação calaria uma rotina saudável. E uma execução **sem** monitoramento não
+pergunta nada — ela roda o snapshot dela, que é o que preserva a reprodutibilidade.
+
 ## Lease
 
 O `$push` atômico protege a escrita, não o processamento: o agendador dispara às
@@ -172,6 +213,12 @@ parte que não pode falhar.
   servidor seria lida como "o site mudou". A ferramenta HTTP genérica do agente
   continua vendo o 404 e o 500: são a resposta que ela foi buscar. A diferença é a
   opção `requireOk`, pedida só pela camada de fontes.
+- **2xx sem conteúdo é falha, não `no_change`.** Uma página que só monta no
+  navegador chega vazia depois de tirar a marcação. Comparar vazio com vazio diria
+  "não mudou" para sempre; mandar vazio para a LLM gastaria tokens com nada. A
+  mensagem diz o motivo real — a URL está certa, o que falta é JavaScript, que não
+  roda aqui. Vale igual no preview e na execução, e não é retry: a página não vai
+  encher sozinha.
 - **Feed que não é feed é falha, não `no_change`.** Uma página de login ou de
   manutenção responde 200 com zero item; chamar isso de "sem novidade" faria a
   rotina jurar para sempre que está tudo bem. Um feed legítimo e realmente vazio tem

@@ -144,7 +144,14 @@ export function normalizeSourceUrl(bruta: string): string {
   }
 }
 
-export const sourceFingerprint = (kind: 'rss' | 'http', url: string): string => contentHashOf(`${kind}|${normalizeSourceUrl(url)}`)
+/**
+ * A geração entra na identidade quando existe.
+ *
+ * Sem ela — rotinas criadas antes do campo — a identidade é exatamente a de antes,
+ * e é assim que o checkpoint delas continua valendo sem migração de dados.
+ */
+export const sourceFingerprint = (kind: 'rss' | 'http', url: string, instanceId?: string | null): string =>
+  contentHashOf(instanceId ? `${kind}|${normalizeSourceUrl(url)}|${instanceId}` : `${kind}|${normalizeSourceUrl(url)}`)
 
 // A janela inicial oferecida na interface, em milissegundos.
 export const INITIAL_WINDOWS = { '24h': 86_400_000, '3d': 259_200_000, '7d': 604_800_000 } as const
