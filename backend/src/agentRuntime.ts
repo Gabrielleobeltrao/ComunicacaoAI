@@ -74,7 +74,21 @@ export interface AgentExecutionResult {
   format?: { requested: AgentOutputFormat; valid: boolean; repaired: boolean }
 }
 
-export type AgentRunErrorKind = 'provider' | 'tool' | 'timeout' | 'validation' | 'limit'
+export type AgentRunErrorKind =
+  | 'provider'
+  | 'tool'
+  | 'timeout'
+  | 'validation'
+  | 'limit'
+  /**
+   * A resposta não cumpriu o contrato de saída, nem depois do único reparo.
+   *
+   * Separado de `validation` de propósito: aquele é sobre a ENTRADA ou a configuração
+   * estarem erradas; este é sobre o modelo ter respondido fora do formato combinado. Um
+   * canal não pode enviar esse texto ao cliente, e quem lê o histórico precisa saber
+   * qual das duas coisas aconteceu.
+   */
+  | 'output_invalid'
 
 export class AgentRunError extends Error {
   constructor(

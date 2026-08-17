@@ -1,0 +1,48 @@
+# Override EXCLUSIVO do CI: sobe um Mongo efêmero ao lado da pilha.
+#
+# O smoke anterior copiava `compose.production-test.env.example`, cujo `MONGODB_URI` é um
+# placeholder de Atlas (`mongodb+srv://<user>:<password>@<cluster>...`). Não havia banco
+# no compose e não havia credencial — nem podia haver, porque credencial real não entra
+# em repositório. O job falhava sempre, e falhava por falta de infraestrutura, não por
+# defeito do produto.
+#
+# Este arquivo resolve isso sem tocar no compose de produção: `docker compose -f
+# compose.production-test.yml -f compose.ci-smoke.yml` acrescenta o banco e aponta a
+# aplicação para ele. O de produção continua descrevendo produção — sem banco embutido,
+# como deve ser.
+#
+# O banco é EFÊMERO de propósito: sem volume nomeado, `down -v` leva tudo, e duas
+# execuções do CI nunca compartilham estado.
+
+services:
+  mongo:
+    image: mongo:8
+    # Replica set de um nó: o driver exige um para transações e change streams, e o
+    # motor de automações usa os dois. Um mongod avulso subiria e falharia depois, no
+    # meio do smoke, com um erro que não diz isso.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--quiet"]
+    healthcheck:
+      # A inicialização do replica set é idempotente: `rs.initiate` falha se já existir,
+      # e o `||` transforma isso no caso normal em vez de erro.
+      test:
+        - "CMD-SHELL"
+        - >-
+          mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }"
+          | grep -q 1
+      interval: 3s
+      timeout: 10s
+      retries: 20
+      start_period: 5s
+    networks: [appnet]
+    # Sem `ports`: o banco só é alcançável de dentro da rede do compose. O smoke fala com
+    # a aplicação, não com o banco.
+
+  backend:
+    environment:
+      # Banco isolado, sem credencial: o mongod do CI sobe sem autenticação e não é
+      # exposto para fora da rede. Uma senha aqui seria teatro — e um dia alguém copiaria
+      # o arquivo para um ambiente onde ela importa.
+      MONGODB_URI: mongodb://mongo:27017/comunicacaoai_ci_smoke?replicaSet=rs0
+    depends_on:
+      mongo:
+        condition: service_healthy

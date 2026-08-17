@@ -536,6 +536,8 @@ async function runAgentTask(
     ragChunks: passages.length,
     ragSources: new Set(sources.map((source) => source.documentId).filter(Boolean)).size,
     outputFormat: effectiveFormat,
+    // Campo e motivo apenas — o mesmo diagnóstico da rotina, pelo mesmo formato.
+    runConfigDropped: (execucao.runConfig.dropped ?? []).map((d) => `${d.field}: ${d.reason}`).join('; '),
     outputValid: res.format?.valid !== false,
     outputRepaired: res.format?.repaired === true,
     toolsAvailable: tools.length,

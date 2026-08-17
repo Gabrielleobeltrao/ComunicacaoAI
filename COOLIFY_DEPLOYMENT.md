@@ -123,3 +123,15 @@ cp compose.production-test.env.example compose.production-test.env
 # preencha com valores de TESTE — nunca segredos de produção
 docker compose -f compose.production-test.yml --env-file compose.production-test.env up --build
 ```
+
+Com um Mongo apontado por você (Atlas de teste, ou um local), é só isso. Sem banco à mão,
+some o override do CI e um mongod efêmero sobe junto — mesmo caminho que o CI exercita:
+
+```
+docker compose -f compose.production-test.yml -f compose.ci-smoke.yml \
+  --env-file compose.production-test.env up --build
+docker compose -f compose.production-test.yml -f compose.ci-smoke.yml down -v
+```
+
+O banco do override não tem volume nem porta publicada: `down -v` leva tudo, e nenhuma
+credencial entra no repositório.

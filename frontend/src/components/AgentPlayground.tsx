@@ -9,7 +9,13 @@ import { ToolCalls } from './ToolCalls'
 // memory is not used. Reused by the Agents list modal and the agent page.
 export function AgentPlayground({ agent }: { agent: AgentSummary }) {
   const [messages, setMessages] = useState<
-    { role: 'user' | 'assistant'; content: string; handoff?: boolean; toolCalls?: ToolCall[] }[]
+    {
+      role: 'user' | 'assistant'
+      content: string
+      handoff?: boolean
+      toolCalls?: ToolCall[]
+      diagnostics?: { outputValid?: boolean; outputRepaired?: boolean; outputProblem?: string; runConfigDropped?: string }
+    }[]
   >([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -34,7 +40,13 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
         const body = await res.json()
         setMessages((prev) => [
           ...prev,
-          { role: 'assistant', content: body.reply, handoff: body.handoff, toolCalls: body.toolCalls },
+          {
+            role: 'assistant',
+            content: body.reply,
+            handoff: body.handoff,
+            toolCalls: body.toolCalls,
+            diagnostics: body.diagnostics,
+          },
         ])
       } else {
         setMessages((prev) => [
@@ -76,6 +88,25 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
                 <div className="max-w-[85%]">
                   <ToolCalls calls={message.toolCalls} />
                 </div>
+              )}
+              {/* O Playground é onde se testa: uma resposta fora do contrato aparece aqui,
+                  com o motivo, em vez de sumir. Numa conversa real ela não seria enviada. */}
+              {message.diagnostics?.outputValid === false && (
+                <p className="mt-1 text-xs font-medium text-amber-400">
+                  ⚠ A resposta não cumpriu o formato JSON configurado
+                  {message.diagnostics.outputProblem ? ` (${message.diagnostics.outputProblem})` : ''} — num
+                  canal real ela não seria enviada.
+                </p>
+              )}
+              {message.diagnostics?.outputRepaired && message.diagnostics.outputValid !== false && (
+                <p className="mt-1 text-xs text-(--text-faint)">
+                  A resposta precisou de uma correção de formato — custou uma chamada extra ao modelo.
+                </p>
+              )}
+              {message.diagnostics?.runConfigDropped && (
+                <p className="mt-1 text-xs text-(--text-faint)">
+                  Parâmetros ignorados por este modelo — {message.diagnostics.runConfigDropped}.
+                </p>
               )}
               {message.handoff && (
                 <p className="mt-1 text-xs font-medium text-amber-400">

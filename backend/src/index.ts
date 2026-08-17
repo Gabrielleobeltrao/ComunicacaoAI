@@ -11,7 +11,10 @@ import type { NextFunction, Request, Response } from 'express'
 import multer from 'multer'
 import { ObjectId } from 'mongodb'
 import { normalizeRunConfig } from './runConfig.js'
-import { composeAgentPrompt, enforceOutputContract, resolveAgentRun } from './agentDefinition.js'
+import { presetFillableFields } from './agentPresets.js'
+import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
+import { describeDropped, runInteractive } from './interactiveRun.js'
+import { AgentRunError } from './agentRuntime.js'
 import type { WithId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import { Server } from 'socket.io'
@@ -1617,63 +1620,52 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     toolRisks: playgroundTools.map((t) => t.risk ?? 'write'),
   })
 
-  const bruto = await generateAgentReply(
-    composeAgentPrompt({
+  // O MESMO caminho do chat e dos canais: prazo, tentativas, cancelamento e contrato de
+  // saída aplicados uma vez, por uma função só.
+  const interativo = await runInteractive({
+    reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
+      generateAgentReply(
+        objective,
+        k,
+        m,
+        h,
+        configAgent.provider,
+        configAgent.model,
+        apiKey,
+        '',
+        behaviorInstruction,
+        [
+          buildLanguageInstruction(configAgent.language ?? 'pt'),
+          buildResponseStyleInstruction(
+            configAgent.responseTone ?? 'neutral',
+            configAgent.responseDetail ?? 'balanced',
+            configAgent.responseEmojis ?? false,
+            configAgent.responseFormatting ?? false,
+          ),
+        ].join('\n\n'),
+        execucaoPlayground.enableCaching,
+        tools,
+        { runConfig: execucaoPlayground.runConfig, signal, onToolStart },
+      ),
+    objective: composeAgentPrompt({
       definition: execucaoPlayground.definition,
       taskInstruction: replyObjective === configAgent.objective ? '' : replyObjective,
       hasUntrustedContext: knowledge.length > 0,
     }),
     knowledge,
-    '',
     history,
-    configAgent.provider,
-    configAgent.model,
-    apiKey,
-    '',
-    behaviorInstruction,
-    [
-      buildLanguageInstruction(configAgent.language ?? 'pt'),
-      buildResponseStyleInstruction(
-        configAgent.responseTone ?? 'neutral',
-        configAgent.responseDetail ?? 'balanced',
-        configAgent.responseEmojis ?? false,
-        configAgent.responseFormatting ?? false,
-      ),
-    ].join('\n\n'),
-    execucaoPlayground.enableCaching,
-    playgroundTools,
-    { runConfig: execucaoPlayground.runConfig },
-  )
+    tools: playgroundTools,
+    runConfig: execucaoPlayground.runConfig,
+    output: execucaoPlayground.definition.output,
+  })
 
-  /**
-   * O contrato de saída do agente vale AQUI também.
-   *
-   * O reparo vai sem ferramentas de propósito: o problema é a forma do texto, não falta
-   * de informação — e dar ferramentas ao reparo faria repetir ações já executadas.
-   */
-  const conferidoPlayground = await enforceOutputContract(bruto.text, execucaoPlayground.definition.output, (instrucao) =>
-    generateAgentReply(
-      instrucao,
-      [],
-      '',
-      [
-        ...history,
-        { role: 'assistant', content: bruto.text },
-        { role: 'user', content: instrucao },
-      ],
-      configAgent.provider,
-      configAgent.model,
-      apiKey,
-      '',
-      '',
-      '',
-      execucaoPlayground.enableCaching,
-      [],
-      { runConfig: execucaoPlayground.runConfig },
-    ).then((r) => r.text),
-  )
-  const { usage, toolCalls } = bruto
-  const text = conferidoPlayground.text
+  // Os parâmetros que este modelo não aceitou. Só campo e motivo, os dois gerados por
+  // este código — nunca prompt, contexto, resposta ou credencial.
+  const descartados = describeDropped(execucaoPlayground.runConfig)
+  if (descartados) console.info(`[runConfig] playground: ${descartados}`)
+
+  const { usage, toolCalls } = interativo
+  const text = interativo.text
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
   )
@@ -1692,6 +1684,20 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     advanced: pipelineAdvanced,
     fromStage: pipelineFromStage,
     toolCalls,
+    // O Playground é onde se TESTA o agente: aqui a resposta que não cumpriu o contrato
+    // aparece, com o motivo, em vez de virar erro — é exatamente o que o dono precisa ver
+    // para corrigir o schema ou as instruções. No chat e nos canais é o oposto: lá ela não
+    // é enviada, porque do outro lado tem um cliente.
+    //
+    // O diagnóstico carrega só o que este código gerou — validade, se houve reparo, o
+    // motivo da recusa e o par campo/motivo dos parâmetros descartados. Nunca prompt,
+    // contexto, chave ou credencial.
+    diagnostics: {
+      outputValid: interativo.outputValid,
+      outputRepaired: interativo.outputRepaired,
+      ...(interativo.outputProblem ? { outputProblem: interativo.outputProblem } : {}),
+      ...(descartados ? { runConfigDropped: descartados } : {}),
+    },
   })
 })
 
@@ -2122,6 +2128,27 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
   }
   if (typeof objective === 'string') editouDefinicao = true
   if (editouDefinicao) (updates as Record<string, unknown>).definitionEditedAt = new Date()
+
+  /**
+   * Trocar de preset preenche o que está vazio, e nada além disso.
+   *
+   * A regra vive no servidor porque a interface é uma das formas de chegar aqui, não a
+   * única — e porque é aqui que se sabe o que já está gravado. `presetFillableFields`
+   * usa `definitionEditedAt` para distinguir "veio de um molde" de "uma pessoa escreveu
+   * isto": no segundo caso, nada é preenchido.
+   */
+  if (typeof corpo.preset === 'string' && corpo.applyPresetSuggestions === true) {
+    const spec = AGENT_PRESET_SPECS.find((p) => p.preset === corpo.preset)
+    const atual = await getAgentById(res.locals.userId, new ObjectId(agentId))
+    if (spec && atual) {
+      const preencher = presetFillableFields(atual, spec)
+      for (const [campo, valor] of Object.entries(preencher)) {
+        // O corpo da requisição continua ganhando: se o cliente mandou o campo, é uma
+        // edição explícita e vale mais que a sugestão.
+        if ((updates as Record<string, unknown>)[campo] === undefined) (updates as Record<string, unknown>)[campo] = valor
+      }
+    }
+  }
 
   // Como o modelo é chamado. Saneado e limitado no servidor: a tela é uma das formas de
   // chegar aqui, não a única.
@@ -2588,6 +2615,9 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       inputTokens: u?.inputTokens ?? 0,
       outputTokens: u?.outputTokens ?? 0,
       toolCalls: okToolCalls,
+      // `descartadosChat` é resolvido logo abaixo; este fecho só roda depois da chamada ao
+      // modelo. Só campo e motivo — nunca prompt, resposta ou credencial.
+      ...(descartadosChat ? { metadata: { runConfigDropped: descartadosChat } } : {}),
     })
     void finishExecutionRoot(manualRootKey, {
       status: status === 'succeeded' ? 'succeeded' : 'failed',
@@ -2609,44 +2639,53 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     productionDelegationDeps(),
   )
   const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: chatTools.map((t) => t.risk ?? 'write') })
+  const descartadosChat = describeDropped(execucaoChat.runConfig)
+  if (descartadosChat) console.info(`[runConfig] chat: ${descartadosChat}`)
 
   let generated: string
   let usage: { inputTokens: number; outputTokens: number }
   let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
   try {
-    const result = await generateAgentReply(
-    composeAgentPrompt({
-      definition: execucaoChat.definition,
-      hasUntrustedContext: knowledge.length > 0,
-    }),
-    knowledge,
-    '',
-    history,
-    agent.provider,
-    agent.model,
-    apiKey,
-    identityFields.length > 0 ? buildIdentityCaptureInstruction(identityFields) : '',
-    behaviorInstruction,
-    [
-      buildLanguageInstruction(agent.language ?? 'pt'),
-      buildResponseStyleInstruction(
-        agent.responseTone ?? 'neutral',
-        agent.responseDetail ?? 'balanced',
-        agent.responseEmojis ?? false,
-        agent.responseFormatting ?? false,
-      ),
-    ].join('\n\n'),
-    execucaoChat.enableCaching,
-    chatTools,
-    { runConfig: execucaoChat.runConfig },
-    )
-    // O contrato de saída do agente vale também nesta porta. Reparo sem ferramentas.
-    const conferido = await enforceOutputContract(result.text, execucaoChat.definition.output, (instrucao) =>
-      generateAgentReply(instrucao, [], '', [...history, { role: 'assistant', content: result.text }, { role: 'user', content: instrucao }], agent.provider, agent.model, apiKey, '', '', '', execucaoChat.enableCaching, [], { runConfig: execucaoChat.runConfig }).then((r) => r.text),
-    )
-    generated = conferido.text
-    usage = result.usage
-    toolCalls = result.toolCalls
+    const interativoChat = await runInteractive({
+      reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
+        generateAgentReply(
+          objective,
+          k,
+          m,
+          h,
+          agent.provider,
+          agent.model,
+          apiKey,
+          identityFields.length > 0 ? buildIdentityCaptureInstruction(identityFields) : '',
+          behaviorInstruction,
+          [
+            buildLanguageInstruction(agent.language ?? 'pt'),
+            buildResponseStyleInstruction(
+              agent.responseTone ?? 'neutral',
+              agent.responseDetail ?? 'balanced',
+              agent.responseEmojis ?? false,
+              agent.responseFormatting ?? false,
+            ),
+          ].join('\n\n'),
+          execucaoChat.enableCaching,
+          tools,
+          { runConfig: execucaoChat.runConfig, signal, onToolStart },
+        ),
+      objective: composeAgentPrompt({ definition: execucaoChat.definition, hasUntrustedContext: knowledge.length > 0 }),
+      knowledge,
+      history,
+      tools: chatTools,
+      runConfig: execucaoChat.runConfig,
+      output: execucaoChat.definition.output,
+    })
+    // Contrato não cumprido: NÃO se entrega ao cliente um texto que o próprio sistema
+    // sabe estar errado. O erro controlado deixa o caminho de falha decidir.
+    if (!interativoChat.outputValid) {
+      throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${interativoChat.outputProblem ?? 'JSON inválido'}`)
+    }
+    generated = interativoChat.text
+    usage = interativoChat.usage
+    toolCalls = interativoChat.toolCalls
   } catch (error) {
     // The functional response is unchanged (the error still propagates); only the
     // telemetry is added.
@@ -3791,7 +3830,9 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       inputTokens: u?.inputTokens ?? 0,
       outputTokens: u?.outputTokens ?? 0,
       toolCalls: okToolCalls,
-      metadata: { channel: widget.channel ?? 'web', ...(widget.sectorId ? { sectorId: widget.sectorId.toString(), consulted: replyAgentName ?? '' } : {}), ...extra },
+      // `descartadosCanal` é resolvido logo abaixo; este fecho só roda depois da chamada
+      // ao modelo. Só campo e motivo — nunca prompt, resposta ou credencial.
+      metadata: { channel: widget.channel ?? 'web', ...(widget.sectorId ? { sectorId: widget.sectorId.toString(), consulted: replyAgentName ?? '' } : {}), ...(descartadosCanal ? { runConfigDropped: descartadosCanal } : {}), ...extra },
     })
     // The turn ended, one way or another.
     await finishExecutionRoot(channelRootKey, {
@@ -3802,36 +3843,48 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
 
   const canalTools = await resolveAgentTools(agent, ownerId)
   const execucaoCanal = resolveAgentRun(agent, { context: 'chat', toolRisks: canalTools.map((t) => t.risk ?? 'write') })
+  const descartadosCanal = describeDropped(execucaoCanal.runConfig)
+  if (descartadosCanal) console.info(`[runConfig] canal: ${descartadosCanal}`)
 
   let generatedReply: string
   let usage: { inputTokens: number; outputTokens: number }
   let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
   try {
-    const channelResult = await generateAgentReply(
-    composeAgentPrompt({
-      definition: execucaoCanal.definition,
-      taskInstruction: replyObjective === agent.objective ? '' : replyObjective,
-      hasUntrustedContext: knowledge.length > 0,
-    }),
-    knowledge,
-    memoryText,
-    history,
-    agent.provider,
-    agent.model,
-    apiKey,
-    identityInstruction,
-    behaviorInstruction,
-    responseStyleInstruction,
-    execucaoCanal.enableCaching,
-    canalTools,
-    { runConfig: execucaoCanal.runConfig },
-    )
-    const conferidoCanal = await enforceOutputContract(channelResult.text, execucaoCanal.definition.output, (instrucao) =>
-      generateAgentReply(instrucao, [], '', [...history, { role: 'assistant', content: channelResult.text }, { role: 'user', content: instrucao }], agent.provider, agent.model, apiKey, '', '', '', execucaoCanal.enableCaching, [], { runConfig: execucaoCanal.runConfig }).then((r) => r.text),
-    )
-    generatedReply = conferidoCanal.text
-    usage = channelResult.usage
-    toolCalls = channelResult.toolCalls
+    const interativoCanal = await runInteractive({
+      reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
+        generateAgentReply(
+          objective,
+          k,
+          m,
+          h,
+          agent.provider,
+          agent.model,
+          apiKey,
+          identityInstruction,
+          behaviorInstruction,
+          responseStyleInstruction,
+          execucaoCanal.enableCaching,
+          tools,
+          { runConfig: execucaoCanal.runConfig, signal, onToolStart },
+        ),
+      objective: composeAgentPrompt({
+        definition: execucaoCanal.definition,
+        taskInstruction: replyObjective === agent.objective ? '' : replyObjective,
+        hasUntrustedContext: knowledge.length > 0,
+      }),
+      knowledge,
+      memory: memoryText,
+      history,
+      tools: canalTools,
+      runConfig: execucaoCanal.runConfig,
+      output: execucaoCanal.definition.output,
+    })
+    if (!interativoCanal.outputValid) {
+      throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${interativoCanal.outputProblem ?? 'JSON inválido'}`)
+    }
+    generatedReply = interativoCanal.text
+    usage = interativoCanal.usage
+    toolCalls = interativoCanal.toolCalls
   } catch (error) {
     // Functional behaviour unchanged (the caller still sees the failure); the
     // outcome is simply no longer invisible in the agent's history.

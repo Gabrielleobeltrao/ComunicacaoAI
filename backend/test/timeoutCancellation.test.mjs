@@ -87,13 +87,13 @@ const rodar = (over = {}) =>
 // --- a garantia central ----------------------------------------------------------------
 
 test('escrita que tentaria rodar DEPOIS do timeout executa no máximo uma vez', async () => {
-  // O provedor demora mais que o prazo e, quando responder, pede uma escrita. Com retry
-  // ligado, a versão anterior deixava a chamada abandonada terminar e disparar a
-  // ferramenta — enquanto a nova tentativa fazia o mesmo.
+  // O provedor demora MAIS que o prazo — 300 ms contra 100 ms — e, quando responder,
+  // pede uma escrita. Com o prazo em 5 s, como estava antes, o timeout nunca disparava e
+  // o teste passava sem exercitar nada: media a ausência do problema, não a correção.
   const { tool, estado } = contadora('cobrar', 'write')
   comportamento = { atrasoMs: 300, pedeFerramenta: 'cobrar', respostas: 0 }
 
-  await rodar({ tools: [tool], runConfig: { timeoutMs: 5_000, retries: 2 } }).catch(() => undefined)
+  await rodar({ tools: [tool], runConfig: { timeoutMs: 100, retries: 2 } }).catch(() => undefined)
   // Espaço para uma chamada abandonada terminar e tentar executar.
   await espera(500)
 
