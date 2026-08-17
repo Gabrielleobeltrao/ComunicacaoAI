@@ -177,6 +177,23 @@ export function readSourceFromDefinition(def: AutomationDefinition | null | unde
   return { kind: 'http', url, ...(focus ? { focus } : {}) }
 }
 
+/**
+ * Recorrência de minutos e de hora em hora existem para MONITORAMENTO.
+ *
+ * Uma rotina de entrada fixa rodando de 5 em 5 minutos chama a LLM 288 vezes por
+ * dia com exatamente a mesma entrada — é conta alta em troca de nada. O
+ * monitoramento pode: ele verifica de graça e só paga quando encontra algo.
+ *
+ * A interface já não oferece a combinação; isto aqui é a porteira, porque a API é
+ * pública e a interface não é a única forma de chegar nela.
+ */
+export function recorrenciaIncompativelComFonte(spec: RoutineSpec): string | null {
+  const curta = spec.recurrence?.kind === 'minutes' || spec.recurrence?.kind === 'hourly'
+  if (!curta) return null
+  if (normalizeSource(spec.source).kind !== 'fixed') return null
+  return 'Frequências de minutos ou de hora em hora só valem para rotinas que monitoram uma fonte. Escolha diária, semanal ou mensal.'
+}
+
 export class RoutineError extends Error {}
 
 // Create a routine on an agent: build the definition, create the (agent-owned)

@@ -32,8 +32,9 @@ export interface RoutineMonitoring {
   lastCheckedAt: string | null
   lastChangedAt: string | null
   // 'changed' = encontrou e processou; 'no_change' = verificou e não havia nada
-  // (sucesso, zero token); 'failed' = a verificação em si falhou.
-  lastResult: 'changed' | 'no_change' | 'failed' | null
+  // (sucesso, zero token); 'skipped_concurrent' = outra execução já estava
+  // verificando; 'failed' = a verificação em si falhou.
+  lastResult: 'changed' | 'no_change' | 'skipped_concurrent' | 'failed' | null
   lastRunAt: string | null
   lastError: PublicError | null
 }

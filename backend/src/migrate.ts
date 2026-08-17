@@ -4,7 +4,7 @@ import { ensureBuildingIndexes, ensureDefaultBuilding } from './building.js'
 import { ensureFloorIndexes } from './floors.js'
 import { ensureAutomationIndexes } from './automations/repository.js'
 import { ensureRunIndexes } from './automations/runRepository.js'
-import { ensureSourceCheckpointIndexes } from './automations/sourceCheckpoint.js'
+import { backfillSourceFingerprints, ensureSourceCheckpointIndexes } from './automations/sourceCheckpoint.js'
 import { ensureConnectionIndexes } from './connections/repository.js'
 import { ensureInstallationIndexes } from './apps/installations.js'
 import { ensureNavigationIndexes } from './apps/navigation.js'
@@ -70,6 +70,7 @@ export async function runMigrations(): Promise<void> {
   await ensureRunIndexes()
   // O que cada rotina de monitoramento já viu.
   await ensureSourceCheckpointIndexes()
+  await backfillCheckpointFingerprints()
   await ensureConnectionIndexes()
   await ensureInstallationIndexes()
   await ensureNavigationIndexes()
@@ -143,4 +144,20 @@ async function backfillBuildingsAndFloors(): Promise<void> {
     // Any remaining docs without updatedAt inherit createdAt.
     await officesCol.updateMany({ ownerId, updatedAt: { $exists: false } }, [{ $set: { updatedAt: '$createdAt' } }])
   }
+}
+
+// Carimba a identidade da fonte nos checkpoints anteriores ao `sourceFingerprint`.
+// A URL vem da própria definição publicada da automação — ela é a fonte de verdade,
+// não há cópia em lugar nenhum.
+async function backfillCheckpointFingerprints(): Promise<void> {
+  const { findAutomation } = await import('./automations/repository.js')
+  const { sourceFingerprint } = await import('./automations/sourceChange.js')
+  const carimbados = await backfillSourceFingerprints(async (ownerId, automationId, stepId) => {
+    const automation = await findAutomation(ownerId, automationId)
+    const passo = automation?.draftDefinition?.steps?.find((s) => s.id === stepId)
+    if (!passo || (passo.type !== 'source.rss' && passo.type !== 'source.http')) return null
+    const url = typeof passo.config?.url === 'string' ? passo.config.url : ''
+    return url ? sourceFingerprint(passo.type === 'source.rss' ? 'rss' : 'http', url) : null
+  })
+  if (carimbados) console.log(`[migrate] ${carimbados} checkpoint(s) de fonte receberam identidade`)
 }

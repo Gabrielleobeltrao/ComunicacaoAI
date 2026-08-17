@@ -6,7 +6,7 @@ import {
   updateRun,
 } from './runRepository.js'
 import { runDefinition } from './runner.js'
-import { advanceCheckpoint, getCheckpoint, markChecked } from './sourceCheckpoint.js'
+import { acquireSourceLease, advanceCheckpoint, beginCheck, releaseSourceLease } from './sourceCheckpoint.js'
 import type { RunnerDeps } from './runner.js'
 import { preview } from './runTypes.js'
 import type { AutomationRun, RunStatus, StepRun } from './runTypes.js'
@@ -53,18 +53,21 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       // safeFetch é obrigatório: é ele que recusa localhost, IP privado, link-local
       // e redirect para dentro da rede. Uma URL de monitoramento vem do usuário e
       // vai ser buscada pelo SERVIDOR — é a definição de SSRF.
-      const res = await safeFetch(url, { contentTypeAllowlist: opts?.contentTypeAllowlist })
+      const res = await safeFetch(url, { contentTypeAllowlist: opts?.contentTypeAllowlist, requireOk: opts?.requireOk })
       return { body: res.body, contentType: res.contentType }
     },
     ...(temFonte && run.automationId
       ? {
           sourceState: {
-            read: async (stepId: string) => {
-              const cp = await getCheckpoint(run.ownerId, run.automationId!, stepId)
-              return { seenKeys: cp?.seenKeys ?? [], contentHash: cp?.contentHash ?? null }
-            },
-            checked: async (stepId: string) => markChecked(run.ownerId, run.automationId!, stepId, new Date()),
-            advance: async (stepId: string, avanco) => advanceCheckpoint(run.ownerId, run.automationId!, stepId, avanco, new Date()),
+            begin: async (stepId: string, fingerprint: string) => beginCheck(run.ownerId, run.automationId!, stepId, fingerprint, new Date()),
+            // O dono do lease é a EXECUÇÃO. Assim uma execução nunca libera o lease
+            // de outra, e um lease abandonado por um processo morto expira sozinho.
+            acquire: async (stepId: string, fingerprint: string) =>
+              acquireSourceLease(run.ownerId, run.automationId!, stepId, fingerprint, run._id.toString(), new Date()),
+            release: async (stepId: string, fingerprint: string) =>
+              releaseSourceLease(run.ownerId, run.automationId!, stepId, fingerprint, run._id.toString()),
+            advance: async (stepId: string, fingerprint: string, avanco: { novasChaves?: string[]; contentHash?: string | null; baseline?: boolean }) =>
+              advanceCheckpoint(run.ownerId, run.automationId!, stepId, fingerprint, avanco, new Date()),
           },
         }
       : {}),
@@ -238,9 +241,9 @@ export async function processRun(runId: string): Promise<void> {
   await updateRun(run._id, {
     status: outcome.status as RunStatus,
     finishedAt: now,
-    // Verificou e não havia nada novo. Guardado no run para a lista de rotinas
-    // conseguir dizer isso sem reprocessar as etapas.
-    ...(outcome.noChange ? { noChange: true } : {}),
+    // Como a fonte encerrou, quando ela encerrou. Guardado no run para a lista de
+    // rotinas conseguir dizer isso sem reprocessar as etapas.
+    ...(outcome.sourceOutcome ? { sourceOutcome: outcome.sourceOutcome } : {}),
     finalOutput: outcome.finalOutput,
     // Real consumption of the whole run (summed across steps and their attempts).
     usage: outcome.usage,

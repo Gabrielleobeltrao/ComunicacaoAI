@@ -8,6 +8,7 @@ import {
   listAgentAutomations,
   listRoutines,
   readSourceFromDefinition,
+  recorrenciaIncompativelComFonte,
   RoutineError,
   STEP_SOURCE,
   updateRoutine,
@@ -138,6 +139,11 @@ function urlAceitavel(url: string): boolean {
   }
 }
 
+// Tudo que impede a rotina de ser salva, em uma mensagem de formulário.
+function specInvalida(spec: RoutineSpec): string | null {
+  return fonteComUrlInvalida(spec) ?? recorrenciaIncompativelComFonte(spec)
+}
+
 // Mensagem de formulário para uma fonte mal preenchida, ou null se estiver ok.
 function fonteComUrlInvalida(spec: RoutineSpec): string | null {
   const fonte = spec.source
@@ -182,7 +188,13 @@ agentRoutineRouter.get('/routines', async (req, res) => {
           lastChangedAt: checkpoint?.lastChangedAt ?? null,
           // O desfecho da última verificação, em três estados que o usuário
           // entende: encontrou algo, verificou e não havia nada, ou falhou.
-          lastResult: !ultimo ? null : ultimo.status === 'failed' ? 'failed' : ultimo.noChange ? 'no_change' : 'changed',
+          // `noChange` é o campo anterior; ler os dois mantém os runs já gravados
+          // aparecendo certo na lista.
+          lastResult: !ultimo
+            ? null
+            : ultimo.status === 'failed'
+              ? 'failed'
+              : (ultimo.sourceOutcome ?? (ultimo.noChange ? 'no_change' : 'changed')),
           lastRunAt: ultimo?.finishedAt ?? ultimo?.startedAt ?? null,
           lastError: publicError(ultimo?.error ?? null),
         },
@@ -203,9 +215,9 @@ agentRoutineRouter.post('/routines', async (req, res) => {
     res.status(400).json({ error })
     return
   }
-  const urlInvalida = fonteComUrlInvalida(spec!)
-  if (urlInvalida) {
-    res.status(400).json({ error: urlInvalida })
+  const invalida = specInvalida(spec!)
+  if (invalida) {
+    res.status(400).json({ error: invalida })
     return
   }
   try {
@@ -229,9 +241,9 @@ agentRoutineRouter.patch('/routines/:routineId', async (req, res) => {
     res.status(400).json({ error })
     return
   }
-  const urlInvalida = fonteComUrlInvalida(spec!)
-  if (urlInvalida) {
-    res.status(400).json({ error: urlInvalida })
+  const invalida = specInvalida(spec!)
+  if (invalida) {
+    res.status(400).json({ error: invalida })
     return
   }
   try {

@@ -215,6 +215,9 @@ test('o custo é dito onde a dúvida aparece', async ({ page }) => {
 test('as frequências curtas existem, e "a cada 15 minutos" não pede horário', async ({ page }) => {
   await stub(page)
   await abrirFormulario(page)
+  // Elas só existem para quem monitora — numa rotina de entrada fixa seriam 288
+  // chamadas por dia com a mesma entrada.
+  await page.getByTestId('routine-source-kind').selectOption('rss')
   await page.getByTestId('routine-frequency').selectOption('minutes')
   await expect(page.getByTestId('routine-every-minutes')).toBeVisible()
   // "A cada 15 minutos" não tem hora do dia: o campo de horário sai de cena.
@@ -377,4 +380,71 @@ test('a lista de monitoramento cabe em 320px', async ({ page }) => {
   await expect(page.getByTestId('routine-monitoring')).toBeVisible()
   const excesso = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(excesso).toBeLessThanOrEqual(1)
+})
+
+// --- proteção de custo -----------------------------------------------------------------
+
+test('entrada fixa não oferece verificar de 5 em 5 minutos', async ({ page }) => {
+  // 288 execuções por dia com exatamente a mesma entrada é conta alta em troca de
+  // nada. Quem monitora pode: a consulta é de graça, e a LLM só roda se mudar.
+  await stub(page)
+  await abrirFormulario(page)
+  const frequencia = page.getByTestId('routine-frequency')
+  await expect(frequencia.locator('option[value="minutes"]')).toHaveCount(0)
+  await expect(frequencia.locator('option[value="hourly"]')).toHaveCount(0)
+  await expect(frequencia.locator('option[value="daily"]')).toHaveCount(1)
+})
+
+test('escolher uma fonte libera os intervalos curtos', async ({ page }) => {
+  await stub(page)
+  await abrirFormulario(page)
+  await page.getByTestId('routine-source-kind').selectOption('rss')
+  const frequencia = page.getByTestId('routine-frequency')
+  await expect(frequencia.locator('option[value="minutes"]')).toHaveCount(1)
+  await expect(frequencia.locator('option[value="hourly"]')).toHaveCount(1)
+
+  await frequencia.selectOption('minutes')
+  await expect(page.getByTestId('routine-every-minutes')).toBeVisible()
+})
+
+test('voltar para entrada fixa com intervalo curto cai para diária, sem beco sem saída', async ({ page }) => {
+  // O beco: a frequência some da lista mas continua selecionada, o formulário fica
+  // com um valor inválido e o dono só descobre no erro de salvamento.
+  await stub(page)
+  await abrirFormulario(page)
+  await page.getByTestId('routine-source-kind').selectOption('rss')
+  await page.getByTestId('routine-frequency').selectOption('minutes')
+
+  await page.getByTestId('routine-source-kind').selectOption('fixed')
+  await expect(page.getByTestId('routine-frequency')).toHaveValue('daily')
+  await expect(page.getByTestId('routine-every-minutes')).toHaveCount(0)
+  await expect(page.getByTestId('routine-time')).toBeVisible()
+})
+
+test('a rotina salva com a frequência que ficou na tela', async ({ page }) => {
+  await stub(page)
+  await abrirFormulario(page)
+  await page.getByTestId('routine-source-kind').selectOption('rss')
+  await page.getByTestId('routine-source-url').fill('https://exemplo.test/feed.xml')
+  await page.getByTestId('routine-objective').fill('Vigiar lançamentos')
+  await page.getByTestId('routine-frequency').selectOption('minutes')
+  await page.getByTestId('routine-every-minutes').selectOption('5')
+  await page.getByTestId('save-routine').click()
+
+  await expect.poll(() => enviado).not.toBeNull()
+  expect(enviado?.recurrence).toEqual({ kind: 'minutes', every: 5 })
+  expect(enviado?.source).toMatchObject({ kind: 'rss', url: 'https://exemplo.test/feed.xml' })
+})
+
+// --- concorrência na lista -------------------------------------------------------------
+
+test('"já estava sendo verificada" é dito como tal, não como erro nem como calmaria', async ({ page }) => {
+  await stub(page, {
+    rotinas: [{ ...ROTINA_RSS, monitoring: { ...ROTINA_RSS.monitoring, lastResult: 'skipped_concurrent', lastError: null } }],
+  })
+  await abrirFluxos(page)
+  const linha = page.getByTestId('routine-monitoring')
+  await expect(linha).toContainText('já estava sendo verificada')
+  // Não é falha: nada de mensagem de erro na linha.
+  await expect(page.getByTestId('routine-monitoring-error')).toHaveCount(0)
 })

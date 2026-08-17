@@ -63,6 +63,16 @@ export interface SafeFetchOptions {
   maxBytes?: number
   maxRedirects?: number
   contentTypeAllowlist?: string[] // substring match against Content-Type
+  /**
+   * Recusa qualquer resposta que não seja 2xx.
+   *
+   * Desligado por padrão porque a ferramenta HTTP genérica do agente PRECISA ver o
+   * 404 e o 500 — eles são a resposta que ela foi buscar. Para uma FONTE de
+   * monitoramento é o contrário: uma página de erro tem conteúdo próprio, que muda
+   * sozinho, e sem esta porteira ela seria lida como "o site mudou" a cada
+   * instabilidade do servidor.
+   */
+  requireOk?: boolean
 }
 
 export interface SafeFetchResult {
@@ -108,6 +118,10 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
       if (opts.body !== undefined) throw new Error(`Redirecionamento não seguido para requisição com corpo (${res.status})`)
       current = new URL(location, url).toString()
       continue // re-assert the next hop
+    }
+
+    if (opts.requireOk && (res.status < 200 || res.status > 299)) {
+      throw new Error(`A fonte respondeu ${res.status}`)
     }
 
     const contentType = res.headers.get('content-type') ?? ''

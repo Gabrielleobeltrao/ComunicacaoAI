@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { ObjectId } from 'mongodb'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
-const { buildRoutineDefinition } = await import('../dist/automations/routine.js')
+const { buildRoutineDefinition, recorrenciaIncompativelComFonte, readSourceFromDefinition } = await import('../dist/automations/routine.js')
 const { validateDefinition } = await import('../dist/automations/validate.js')
 const { recurrenceToCron, cronToRecurrence } = await import('../dist/automations/schedule.js')
 
@@ -57,4 +57,51 @@ test('cronToRecurrence inverts recurrenceToCron for the friendly patterns', () =
   // intervalo que a interface não oferece, e um cron com faixa.
   assert.equal(cronToRecurrence('*/7 * * * *'), null)
   assert.equal(cronToRecurrence('0 9 * * 1-5'), null)
+})
+
+// --- proteção de custo: frequência curta é privilégio de quem monitora ----------------
+
+test('rotina de entrada fixa não pode rodar de 5 em 5 minutos', () => {
+  // 288 execuções por dia com exatamente a mesma entrada é conta alta em troca de
+  // nada. Quem monitora pode: a verificação é de graça, e a LLM só roda se mudar.
+  const fixa = { name: 'x', objective: 'y', recurrence: { kind: 'minutes', every: 5 } }
+  assert.match(recorrenciaIncompativelComFonte(fixa) ?? '', /monitoram uma fonte/)
+  assert.match(recorrenciaIncompativelComFonte({ ...fixa, recurrence: { kind: 'hourly' } }) ?? '', /monitoram uma fonte/)
+  // Fonte declarada como fixa, ou com URL vazia, é entrada fixa do mesmo jeito.
+  assert.notEqual(recorrenciaIncompativelComFonte({ ...fixa, source: { kind: 'fixed' } }), null)
+  assert.notEqual(recorrenciaIncompativelComFonte({ ...fixa, source: { kind: 'rss', url: '  ', initialWindow: '24h' } }), null)
+})
+
+test('quem monitora pode usar as frequências curtas', () => {
+  const source = { kind: 'rss', url: 'https://exemplo.test/f.xml', initialWindow: '24h' }
+  assert.equal(recorrenciaIncompativelComFonte({ name: 'x', objective: 'y', recurrence: { kind: 'minutes', every: 5 }, source }), null)
+  assert.equal(recorrenciaIncompativelComFonte({ name: 'x', objective: 'y', recurrence: { kind: 'hourly' }, source }), null)
+})
+
+test('as frequências longas continuam valendo para as duas', () => {
+  const diaria = { kind: 'daily', time: '08:00' }
+  assert.equal(recorrenciaIncompativelComFonte({ name: 'x', objective: 'y', recurrence: diaria }), null)
+  assert.equal(
+    recorrenciaIncompativelComFonte({ name: 'x', objective: 'y', recurrence: diaria, source: { kind: 'http', url: 'https://e.test/p' } }),
+    null,
+  )
+})
+
+// --- troca de fonte, lida de volta da definição ---------------------------------------
+
+test('a fonte volta da definição do jeito que entrou', () => {
+  const agentId = new ObjectId()
+  const spec = { name: 'r', objective: 'vigiar', recurrence: { kind: 'minutes', every: 15 } }
+  const rss = buildRoutineDefinition({ ...spec, source: { kind: 'rss', url: 'https://e.test/f.xml', initialWindow: '3d', focus: 'preços' } }, agentId)
+  assert.deepEqual(readSourceFromDefinition(rss), { kind: 'rss', url: 'https://e.test/f.xml', initialWindow: '3d', focus: 'preços' })
+
+  // RSS → HTTP, e de volta: cada uma compila a sua etapa, sem sobra da outra.
+  const http = buildRoutineDefinition({ ...spec, source: { kind: 'http', url: 'https://e.test/p' } }, agentId)
+  assert.deepEqual(readSourceFromDefinition(http), { kind: 'http', url: 'https://e.test/p' })
+  assert.equal(http.steps.filter((s) => s.type.startsWith('source.')).length, 1)
+
+  // E de volta para fixa: a etapa de fonte simplesmente não existe.
+  const fixa = buildRoutineDefinition({ ...spec, recurrence: { kind: 'daily', time: '08:00' }, source: { kind: 'fixed' } }, agentId)
+  assert.deepEqual(readSourceFromDefinition(fixa), { kind: 'fixed' })
+  assert.equal(fixa.steps.some((s) => s.type.startsWith('source.')), false)
 })
