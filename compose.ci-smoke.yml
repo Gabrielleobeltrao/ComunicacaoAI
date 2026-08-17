@@ -22,16 +22,29 @@ services:
     # meio do smoke, com um erro que não diz isso.
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--quiet"]
     healthcheck:
-      # A inicialização do replica set é idempotente: `rs.initiate` falha se já existir,
-      # e o `||` transforma isso no caso normal em vez de erro.
+      # O VEREDITO É O CÓDIGO DE SAÍDA, não o que aparece no stdout.
+      #
+      # A versão anterior fazia `mongosh --eval "try { ... } catch { ... }" | grep -q 1` e
+      # nunca ficava verde: `try/catch` é um STATEMENT, e o `--eval` do mongosh só imprime
+      # o valor de uma EXPRESSÃO final. Não saía nada, o grep nunca casava, e o healthcheck
+      # esgotava as 20 tentativas — apesar de o `rs.initiate` ter funcionado na primeira.
+      # O backend, preso em `depends_on: service_healthy`, nem chegava a iniciar.
+      #
+      # Aqui a inicialização é idempotente (só acontece quando `rs.status()` lança) e o
+      # `quit()` responde a única pergunta que importa: já existe um PRIMÁRIO para escrever?
+      # Dizer "saudável" logo após o `initiate`, antes da eleição, entregaria ao backend um
+      # replica set sem primário — e a falha apareceria depois, longe daqui.
       test:
-        - "CMD-SHELL"
+        - "CMD"
+        - "mongosh"
+        - "--quiet"
+        - "--eval"
         - >-
-          mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }"
-          | grep -q 1
-      interval: 3s
+          try { rs.status() } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]}) }
+          quit(db.hello().isWritablePrimary ? 0 : 1)
+      interval: 2s
       timeout: 10s
-      retries: 20
+      retries: 30
       start_period: 5s
     networks: [appnet]
     # Sem `ports`: o banco só é alcançável de dentro da rede do compose. O smoke fala com

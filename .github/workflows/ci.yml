@@ -30,6 +30,10 @@ jobs:
       # in-process mongod.
       MONGODB_URI: mongodb://127.0.0.1:27017/comunicacaoai_ci
       CI: true
+      # Um só lugar define a pilha do smoke, e os quatro passos abaixo usam o mesmo — inclusive
+      # o da limpeza, que precisa apontar para exatamente os mesmos arquivos para derrubar o
+      # que subiu.
+      COMPOSE_ARGS: -f compose.production-test.yml -f compose.ci-smoke.yml --env-file compose.production-test.env
     steps:
       - uses: actions/checkout@v5
 
@@ -90,38 +94,40 @@ jobs:
       # de produção roda por inteiro, sem flag de escape. O banco vem do override do CI
       # (`compose.ci-smoke.yml`) — efêmero, sem credencial, sem porta exposta.
       #
-      # O `trap` garante o `down -v` mesmo quando um passo falha: um Mongo órfão segurando
-      # volume é o tipo de sujeira que só aparece três execuções depois, como um erro que
-      # não tem nada a ver.
-      - name: Docker smoke (production config)
+      # Em ETAPAS NOMEADAS de propósito: quando o smoke quebra, o nome do passo já diz onde
+      # — banco, aplicação ou probe. Num passo único, "Docker smoke falhou" obriga a abrir o
+      # log, e o log de um repositório de outra pessoa nem sempre está ao alcance.
+      #
+      # A limpeza é um passo `if: always()`: roda mesmo com falha, timeout ou cancelamento,
+      # que é mais do que um `trap` cobre — um job morto não executa trap nenhum, e um Mongo
+      # órfão segurando volume é a sujeira que só aparece três execuções depois.
+      - name: "Smoke: banco efêmero de pé"
         run: |
           set -euo pipefail
-          COMPOSE="docker compose -f compose.production-test.yml -f compose.ci-smoke.yml --env-file compose.production-test.env"
           cp compose.production-test.env.example compose.production-test.env
+          # Saudável aqui significa "existe um primário para escrever" — o healthcheck do
+          # override responde isso pelo código de saída.
+          docker compose $COMPOSE_ARGS up -d --wait --wait-timeout 150 mongo
 
-          limpar() {
-            echo "--- logs backend ---"; $COMPOSE logs --no-color --tail=80 backend || true
-            echo "--- logs mongo ---";   $COMPOSE logs --no-color --tail=20 mongo   || true
-            $COMPOSE down -v --remove-orphans || true
-          }
-          trap limpar EXIT
+      - name: "Smoke: pilha de pé (backend + frontend)"
+        run: docker compose $COMPOSE_ARGS up -d --build --wait --wait-timeout 240
 
-          # `--wait` porque o frontend só sobe depois de o backend ficar saudável: sem um
-          # prazo, um backend que nunca fica pronto deixa o `up` pendurado até o job ser
-          # morto — e um job morto não roda o trap, então nem os logs sobrariam.
-          $COMPOSE up -d --build --wait --wait-timeout 240
-
-          # `/api/ready` só responde 200 depois de o banco estar acessível e as migrações
-          # terem rodado: é o sinal honesto de "a pilha subiu", e não "o processo existe".
-          pronto=0
-          for _ in $(seq 1 60); do
-            if curl -fsS http://localhost:4000/api/ready | grep -q '"ready"'; then pronto=1; break; fi
-            sleep 2
-          done
-          [ "$pronto" = 1 ] || { echo "backend não ficou pronto"; exit 1; }
-
+      - name: "Smoke: /api/ready e /healthz respondem"
+        run: |
+          set -euo pipefail
+          # `/api/ready` só devolve 200 com o banco acessível E o motor de automações no ar:
+          # é o sinal honesto de "a pilha subiu", não "o processo existe".
+          curl -fsS http://localhost:4000/api/ready | grep -q '"ready"'
           curl -fsS http://localhost:8080/healthz > /dev/null
           echo "smoke ok: /api/ready e /healthz responderam"
+
+      - name: "Smoke: logs e limpeza"
+        if: always()
+        run: |
+          docker compose $COMPOSE_ARGS ps || true
+          echo "--- logs backend ---"; docker compose $COMPOSE_ARGS logs --no-color --tail=120 backend || true
+          echo "--- logs mongo ---";   docker compose $COMPOSE_ARGS logs --no-color --tail=40 mongo || true
+          docker compose $COMPOSE_ARGS down -v --remove-orphans || true
 
 
 
