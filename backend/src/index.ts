@@ -2149,16 +2149,11 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
    * usa `definitionEditedAt` para distinguir "veio de um molde" de "uma pessoa escreveu
    * isto": no segundo caso, nada é preenchido.
    */
-  if (typeof corpo.preset === 'string') {
+  // O `preset` em si é gravado adiante, por `parseAgentModelFields`, que também o valida.
+  // Aqui só se decide o que ele PREENCHE.
+  if (typeof corpo.preset === 'string' && corpo.applyPresetSuggestions === true) {
     const spec = AGENT_PRESET_SPECS.find((p) => p.preset === corpo.preset)
-    if (!spec) {
-      res.status(400).json({ error: 'Unknown preset' })
-      return
-    }
-    // O molde escolhido passa a ser gravado. Antes ele só era lido para decidir a
-    // sugestão, então a tela podia oferecer a troca e nada mudava de verdade.
-    ;(updates as Record<string, unknown>).preset = spec.preset
-    if (corpo.applyPresetSuggestions === true) {
+    if (spec) {
       const preencher = presetFillableFields(gravado, spec)
       for (const [campo, valor] of Object.entries(preencher)) {
         // O corpo da requisição continua ganhando: se o cliente mandou o campo com texto,
