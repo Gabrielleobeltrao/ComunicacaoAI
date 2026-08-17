@@ -71,16 +71,23 @@ function buildDeps(run: AutomationRun): RunnerDeps {
              * linha de base recém-criada. O filtro do avanço não pega isso, porque o
              * estrago acontece na abertura, não na gravação.
              *
-             * Lê a definição PUBLICADA, que é a única fonte de verdade. Na dúvida
-             * (rotina sumiu, nada publicado) a execução segue: barrar por falta de
-             * informação calaria uma rotina saudável.
+             * Fecha na dúvida, e de propósito. Rotina apagada, versão publicada que
+             * sumiu, monitoramento desligado para `fixed`: em todos, a fonte que esta
+             * execução carrega não é mais a que a rotina publica, e continuar seria
+             * buscar um endereço que ninguém mais pediu para vigiar. Descartar UMA
+             * execução obsoleta não cala a rotina — a definição atual continua
+             * disparando no horário dela.
+             *
+             * Só é chamado por uma etapa de fonte, então rotina que nunca monitorou
+             * nada não passa por aqui.
              */
             isCurrent: async (fingerprint: string) => {
               const automation = await findAutomation(run.ownerId, run.automationId!)
-              if (!automation || automation.lastPublishedVersion == null) return true
+              if (!automation || automation.lastPublishedVersion == null) return false
               const publicada = await findVersion(run.ownerId, run.automationId!, automation.lastPublishedVersion)
-              const atual = publishedSourceFingerprint(publicada?.definition)
-              return atual === null || atual === fingerprint
+              // `publishedSourceFingerprint` devolve null quando a rotina virou fixa ou
+              // perdeu a fonte — e null nunca é igual a um fingerprint.
+              return publishedSourceFingerprint(publicada?.definition) === fingerprint
             },
             begin: async (stepId: string, fingerprint: string) => beginCheck(run.ownerId, run.automationId!, stepId, fingerprint, new Date()),
             // O dono do lease é a EXECUÇÃO. Assim uma execução nunca libera o lease

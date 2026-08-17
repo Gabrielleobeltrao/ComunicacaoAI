@@ -170,13 +170,19 @@ O filtro do avanço não resolve isso, porque o estrago acontece antes: o `begin
 dela veria "fingerprint diferente" e **redefiniria para a fonte antiga** o checkpoint
 que a fonte nova acabou de criar.
 
-Então, antes de qualquer coisa — antes de buscar, antes de tocar no checkpoint — a
-etapa de fonte pergunta se o seu fingerprint é o da definição **publicada**. Se não
-for: `skipped_stale`, sem busca, sem LLM, sem entrega, sem checkpoint.
+Então, antes de qualquer coisa — antes de buscar, antes de tocar no checkpoint,
+antes de tomar lease — a etapa de fonte pergunta se o seu fingerprint é **igual** ao
+da definição publicada. Se não for: `skipped_stale`, sem busca, sem LLM, sem
+entrega, sem checkpoint.
 
-Na dúvida (rotina sumiu, nada publicado) a execução segue: barrar por falta de
-informação calaria uma rotina saudável. E uma execução **sem** monitoramento não
-pergunta nada — ela roda o snapshot dela, que é o que preserva a reprodutibilidade.
+**Fecha na dúvida.** Só segue quem bate exatamente. Rotina apagada, versão publicada
+que sumiu, ponteiro de publicação vazio, monitoramento desligado para `fixed`: em
+todos, a fonte que a execução carrega não é mais a que a rotina publica, e continuar
+seria buscar um endereço que ninguém mais pediu para vigiar. Descartar uma execução
+obsoleta não cala a rotina — a definição atual continua disparando no horário dela.
+
+Uma execução **sem** monitoramento não pergunta nada: ela roda o snapshot dela, que
+é o que preserva a reprodutibilidade.
 
 ## Lease
 
