@@ -58,7 +58,10 @@ function rodar(lista, concorrencia, rotulo) {
   if (lista.length === 0) return Promise.resolve(0)
   console.log(`# ${rotulo}: ${lista.length} arquivo(s), concorrência ${concorrencia}`)
   return new Promise((resolver) => {
-    const p = spawn(process.execPath, ['--test', `--test-concurrency=${concorrencia}`, ...lista], {
+    // `--experimental-test-module-mocks` habilita `mock.module`, que é o único jeito de
+    // substituir um SDK importado por ESM. É o que permite conferir o CORPO que sai para
+    // o provedor — sem isso, os testes de payload chamariam a API de verdade.
+    const p = spawn(process.execPath, ['--test', '--experimental-test-module-mocks', `--test-concurrency=${concorrencia}`, ...lista], {
       cwd: raiz,
       stdio: 'inherit',
       env: process.env,

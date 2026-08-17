@@ -45,13 +45,18 @@ const TUDO: ModelCapabilities = {
   toolChoice: true,
   parallelTools: true,
   cache: true,
-  stream: true,
+  // Desligado em toda a matriz: o transporte de streaming não existe (nem servidor
+  // emitindo pedaços, nem tela desenhando). Oferecer prometeria o que não acontece; e
+  // "simular" com efeito de digitação seria enganar sobre onde está a espera.
+  stream: false,
 }
 
 // Espelho de backend/src/runConfig.ts. Conservadora: um recurso só é declarado quando o
 // código sabe enviá-lo corretamente.
 const MATRIX: { provider: string; match: RegExp; caps: Partial<ModelCapabilities> }[] = [
-  { provider: 'openai', match: /^(o[1-9]|gpt-5)/i, caps: { temperature: false, reasoningEffort: true } },
+  { provider: 'openai', match: /^(o[1-9]|gpt-5)/i, caps: { temperature: false, reasoningEffort: true, cache: false } },
+  // O cache da OpenAI é automático e sem opt-out: um controle aqui não faria nada.
+  { provider: 'openai', match: /.*/, caps: { cache: false } },
   { provider: 'anthropic', match: /^claude-(opus-[5-9]|sonnet-[5-9]|fable)/i, caps: { reasoningEffort: true } },
 ]
 
@@ -62,8 +67,15 @@ export function capabilitiesFor(provider: string | null | undefined, model: stri
   return { ...TUDO, ...(linha?.caps ?? {}) }
 }
 
-// Remove o que ficou vazio antes de enviar: um campo `undefined` no corpo é a forma de
-// dizer "padrão do sistema", e mandar `null` seria dizer outra coisa.
+/**
+ * Remove o que ficou vazio antes de enviar.
+ *
+ * `undefined` é a forma de dizer "padrão do sistema"; mandar `null` diria outra coisa.
+ *
+ * `false` e `0` SOBREVIVEM, e é o ponto todo desta função existir: "desligado" e
+ * "temperatura zero" são escolhas fortes, e um filtro por valor-verdade as trataria como
+ * ausência — religando o cache de quem desligou de propósito.
+ */
 export const cleanRunConfig = (c: RunConfig): RunConfig => {
   const out: RunConfig = {}
   for (const [k, v] of Object.entries(c)) {

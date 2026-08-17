@@ -28,6 +28,7 @@ const HELP = {
 const campo =
   'w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)'
 const rotulo = 'mb-1 block text-sm text-(--text-muted)'
+const rotulo2 = rotulo
 const ajuda = 'mt-1 text-xs text-(--text-faint)'
 
 export function AgentDefinitionFields({
@@ -81,6 +82,48 @@ export function AgentDefinitionFields({
         />
         <p className={ajuda}>{HELP.constraints}</p>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Um booleano de TRÊS estados: padrão, ligado, desligado.
+ *
+ * Uma caixa de seleção só tem dois, e o terceiro é justamente o que importa aqui.
+ * "Desmarcada" teria de significar ao mesmo tempo "não escolhi" e "escolhi que não" — e
+ * a diferença é real: quem desligou o cache de propósito não pode vê-lo religado por uma
+ * mudança de padrão do sistema.
+ *
+ * Por isso `false` vira a string `'nao'` e volta como `false`, nunca como ausência.
+ */
+function TriEstado({
+  rotulo,
+  ajudaTexto,
+  valor,
+  onChange,
+  testId,
+}: {
+  rotulo: string
+  ajudaTexto: string
+  valor: boolean | undefined
+  onChange: (v: boolean | undefined) => void
+  testId: string
+}) {
+  return (
+    <div>
+      <label className={rotulo2}>{rotulo}</label>
+      <select
+        value={valor === undefined ? '' : valor ? 'sim' : 'nao'}
+        onChange={(e) => onChange(e.target.value === '' ? undefined : e.target.value === 'sim')}
+        className={campo}
+        data-testid={testId}
+        aria-label={rotulo}
+      >
+        <option value="">Padrão do sistema</option>
+        <option value="sim">Ativado</option>
+        <option value="nao">Desativado</option>
+      </select>
+      <p className={ajuda}>{ajudaTexto}</p>
     </div>
   )
 }
@@ -231,50 +274,33 @@ export function AgentRunConfigFields({
       </div>
 
       {caps.parallelTools ? (
-        <label className="flex items-start gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={value.parallelTools === true}
-            onChange={(e) => set({ parallelTools: e.target.checked || undefined })}
-            data-testid="run-parallel-tools"
-          />
-          <span>
-            Chamar ferramentas em paralelo
-            <span className={`block ${ajuda}`}>
-              Vale só quando todas as ferramentas disponíveis são de leitura. Se houver uma que altera dados, a ordem é mantida.
-            </span>
-          </span>
-        </label>
+        <TriEstado
+          rotulo="Chamar ferramentas em paralelo"
+          ajudaTexto="Vale só quando todas as ferramentas disponíveis são de leitura. Se houver uma que altera dados, a ordem é mantida."
+          valor={value.parallelTools}
+          onChange={(v) => set({ parallelTools: v })}
+          testId="run-parallel-tools"
+        />
       ) : null}
 
       {caps.cache ? (
-        <label className="flex items-start gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={value.cache === true}
-            onChange={(e) => set({ cache: e.target.checked || undefined })}
-            data-testid="run-cache"
-          />
-          <span>
-            Reaproveitar prompt em cache
-            <span className={`block ${ajuda}`}>Reduz custo quando o começo do prompt repete entre execuções.</span>
-          </span>
-        </label>
+        <TriEstado
+          rotulo="Reaproveitar prompt em cache"
+          ajudaTexto="Reduz custo quando o começo do prompt repete entre execuções."
+          valor={value.cache}
+          onChange={(v) => set({ cache: v })}
+          testId="run-cache"
+        />
       ) : null}
 
       {caps.stream ? (
-        <label className="flex items-start gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={value.stream === true}
-            onChange={(e) => set({ stream: e.target.checked || undefined })}
-            data-testid="run-stream"
-          />
-          <span>
-            Mostrar a resposta sendo escrita
-            <span className={`block ${ajuda}`}>Só em conversa. Automação grava o resultado, então lá isto não se aplica.</span>
-          </span>
-        </label>
+        <TriEstado
+          rotulo="Mostrar a resposta sendo escrita"
+          ajudaTexto="Só em conversa. Automação grava o resultado, então lá isto não se aplica."
+          valor={value.stream}
+          onChange={(v) => set({ stream: v })}
+          testId="run-stream"
+        />
       ) : null}
     </div>
   )

@@ -22,6 +22,7 @@ import {
   SECTOR_PLANNER_SYSTEM_PROMPT,
 } from './systemPrompt.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
+import type { EffectiveRunConfig } from './runConfig.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
 import { MAX_TOOL_ITERATIONS, runResolvedTool } from './agentTools.js'
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
@@ -100,6 +101,7 @@ export async function generateAgentReply(
   responseStyleInstruction = '',
   enableCaching = true,
   tools: ResolvedTool[] = [],
+  opts: { runConfig?: EffectiveRunConfig } = {},
 ): Promise<AgentReplyResult> {
   const { cacheablePrefix, dynamicSuffix } = buildSystemPromptParts(
     objective,
@@ -131,18 +133,47 @@ export async function generateAgentReply(
   const toolCalls: ToolCallRecord[] = []
   let text = ''
 
+  /**
+   * A configuração do dono, traduzida para os nomes da Anthropic.
+   *
+   * Os padrões que já existiam continuam quando o campo está ausente — `max_tokens:
+   * 1024` e esforço baixo eram o comportamento de todo agente, e mudá-los aqui mexeria
+   * em todos de uma vez.
+   *
+   * O que era hardcode e passa a ser escolha: `max_tokens` e o esforço. `thinking` só é
+   * desligado quando o esforço não foi pedido — pedir esforço alto e desligar o
+   * raciocínio na linha seguinte seria anular a escolha.
+   */
+  const cfg: Partial<EffectiveRunConfig> = opts.runConfig ?? {}
+  const esforco = cfg.reasoningEffort
+  const tuning = {
+    max_tokens: cfg.maxOutputTokens ?? 1024,
+    ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+    ...(esforco ? { output_config: { effort: esforco } } : { thinking: { type: 'disabled' as const }, output_config: { effort: 'low' as const } }),
+  }
+
+  // `none` não é uma opção de `tool_choice` aqui: a forma de proibir ferramenta é não
+  // mandar ferramenta nenhuma. Mandar a lista e pedir para não usar gasta tokens
+  // descrevendo o que não pode ser chamado.
+  const proibirFerramentas = cfg.toolChoice === 'none'
+  const escolha: Anthropic.MessageCreateParams['tool_choice'] | undefined =
+    cfg.toolChoice === 'required'
+      ? { type: 'any', ...(cfg.parallelTools === false ? { disable_parallel_tool_use: true } : {}) }
+      : cfg.parallelTools === false
+        ? { type: 'auto', disable_parallel_tool_use: true }
+        : undefined
+
   // Agentic loop: keep letting the model call tools until it answers, or we hit
   // the iteration cap (on the last pass tools are withheld so it must reply).
   for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
-    const allowTools = toolDefs.length > 0 && iteration < MAX_TOOL_ITERATIONS
+    const allowTools = toolDefs.length > 0 && !proibirFerramentas && iteration < MAX_TOOL_ITERATIONS
     const response = await client.messages.create({
       model: model || DEFAULT_MODEL,
-      max_tokens: 1024,
+      ...tuning,
       system,
-      thinking: { type: 'disabled' },
-      output_config: { effort: 'low' },
       messages,
       ...(allowTools ? { tools: toolDefs } : {}),
+      ...(allowTools && escolha ? { tool_choice: escolha } : {}),
     })
     const turnUsage = anthropicUsage(response.usage)
     usage.inputTokens += turnUsage.inputTokens

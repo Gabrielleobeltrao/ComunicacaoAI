@@ -3,6 +3,7 @@ import * as anthropicProvider from './claude.js'
 import * as openaiProvider from './openai.js'
 import * as fakeProvider from './llmFake.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
+import type { EffectiveRunConfig } from './runConfig.js'
 
 export type { ChatTurn }
 export type Provider = 'anthropic' | 'openai'
@@ -47,6 +48,20 @@ export function auxiliaryModel(provider: string | null | undefined): string {
   return providerFor(provider).AUXILIARY_MODEL
 }
 
+/**
+ * A configuração de execução que chega ao adapter.
+ *
+ * Vem como objeto no fim, e não como mais quatro parâmetros posicionais: esta assinatura
+ * já tem doze, e o próximo argumento solto seria o erro de chamada esperando para
+ * acontecer.
+ *
+ * Já passou por `effectiveRunConfig`: o que está aqui é o que aquele modelo aceita, e o
+ * adapter só precisa traduzir os nomes.
+ */
+export interface ReplyOptions {
+  runConfig?: EffectiveRunConfig
+}
+
 export function generateAgentReply(
   objective: string,
   knowledge: string[],
@@ -60,6 +75,7 @@ export function generateAgentReply(
   responseStyleInstruction = '',
   enableCaching = true,
   tools: ResolvedTool[] = [],
+  opts: ReplyOptions = {},
 ): Promise<AgentReplyResult> {
   return providerFor(provider).generateAgentReply(
     objective,
@@ -73,6 +89,7 @@ export function generateAgentReply(
     responseStyleInstruction,
     enableCaching,
     tools,
+    opts,
   )
 }
 

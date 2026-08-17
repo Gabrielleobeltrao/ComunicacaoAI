@@ -56,7 +56,17 @@ const TUDO: ModelCapabilities = {
   toolChoice: true,
   parallelTools: true,
   cache: true,
-  stream: true,
+  /**
+   * Streaming está DESLIGADO em toda a matriz, e é uma decisão, não um esquecimento.
+   *
+   * O transporte não existe: nem o servidor emite pedaços, nem a tela os desenha.
+   * Oferecer a opção agora seria prometer uma experiência que não acontece — e a
+   * alternativa pior seria "simular", entregando a resposta inteira de uma vez com um
+   * efeito de digitação, que é enganar o usuário sobre onde está o tempo de espera.
+   *
+   * Quando o transporte existir, esta linha vira `true` e a opção aparece sozinha.
+   */
+  stream: false,
 }
 
 /**
@@ -71,7 +81,10 @@ const TUDO: ModelCapabilities = {
  */
 const MATRIX: { provider: string; match: RegExp; caps: Partial<ModelCapabilities> }[] = [
   // OpenAI, família de raciocínio: sem temperature, com esforço.
-  { provider: 'openai', match: /^(o[1-9]|gpt-5)/i, caps: { temperature: false, reasoningEffort: true } },
+  { provider: 'openai', match: /^(o[1-9]|gpt-5)/i, caps: { temperature: false, reasoningEffort: true, cache: false } },
+  // OpenAI em geral: o cache de prefixo é automático e não tem opt-out, então oferecer um
+  // controle seria oferecer um botão que não faz nada.
+  { provider: 'openai', match: /.*/, caps: { cache: false } },
   // Anthropic com esforço de raciocínio.
   { provider: 'anthropic', match: /^claude-(opus-[5-9]|sonnet-[5-9]|fable)/i, caps: { reasoningEffort: true } },
 ]

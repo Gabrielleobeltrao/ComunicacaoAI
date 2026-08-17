@@ -15,6 +15,7 @@ import type { AgentExecutionRequest, AgentExecutionResult } from '../agentRuntim
 import type { ResolvedTool } from '../agentTools.js'
 import type { AgentEventStatus, RecordAgentEventInput } from '../agentEvents.js'
 import type { StepUsage } from './runner.js'
+import { resolveAgentRun } from '../agentDefinition.js'
 import { buildRetrievalQuery, formatContextWithSources } from '../retrievalQuery.js'
 import { instrumentTools, NOOP_TRACKER } from '../agentLiveTracker.js'
 import type { LiveTracker } from '../agentLiveTracker.js'
@@ -190,6 +191,9 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
 
   // The routine's own choice, then the agent's default, then text.
   const outputFormat = call.format ?? agent.defaultOutputFormat ?? 'text'
+  // Automação: nunca stream, e o paralelismo depende do risco das ferramentas desta
+  // execução.
+  const execucao = resolveAgentRun(agent, { context: 'automation', toolRisks: tools.map((t) => t.risk ?? 'write') })
   baseEvent.metadata.toolsAvailable = tools.length
 
   let result: AgentExecutionResult
@@ -213,6 +217,9 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       // Instruções operacionais do agente entram ANTES das da etapa: elas valem para
       // todo trabalho dele, e a etapa é o pedido específico.
       instructions: [agent.instructions?.trim(), call.instructions?.trim()].filter(Boolean).join('\n\n'),
+      // A MESMA configuração que o Playground e o canal resolvem — a partir do mesmo
+      // resolvedor, com o risco das ferramentas já conhecidas.
+      runConfig: execucao.runConfig,
       // The step's own format wins; the agent's default is the fallback for a step
       // that never expressed one. The schema only applies to JSON.
       output: { format: outputFormat, jsonSchema: outputFormat === 'json' ? (agent.outputJsonSchema ?? null) : null },

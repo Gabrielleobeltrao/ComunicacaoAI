@@ -22,6 +22,7 @@ import {
   SECTOR_PLANNER_SYSTEM_PROMPT,
 } from './systemPrompt.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
+import type { EffectiveRunConfig } from './runConfig.js'
 import type { AgentReplyResult, TokenUsage } from './llm.js'
 import { MAX_TOOL_ITERATIONS, runResolvedTool } from './agentTools.js'
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
@@ -108,6 +109,7 @@ export async function generateAgentReply(
   // keep the provider signatures identical.
   enableCaching = true,
   tools: ResolvedTool[] = [],
+  opts: { runConfig?: EffectiveRunConfig } = {},
 ): Promise<AgentReplyResult> {
   void enableCaching
   const client = buildClient(apiKey)
@@ -136,15 +138,35 @@ export async function generateAgentReply(
   const toolCalls: ToolCallRecord[] = []
   let text = ''
 
+  /**
+   * A configuração do dono, traduzida para os nomes da OpenAI.
+   *
+   * `max_completion_tokens: 1024` era hardcode e continua sendo o padrão quando o campo
+   * está ausente: mudá-lo aqui alteraria o comportamento de todos os agentes existentes.
+   *
+   * `parallel_tool_calls` só é enviado quando o dono escolheu `false`. Mandar `true`
+   * explicitamente seria dizer ao provedor algo que já é o padrão dele — e um campo a
+   * mais na requisição é uma chance a mais de incompatibilidade num modelo futuro.
+   */
+  const cfg: Partial<EffectiveRunConfig> = opts.runConfig ?? {}
+  const proibirFerramentas = cfg.toolChoice === 'none'
+  const tuning = {
+    max_completion_tokens: cfg.maxOutputTokens ?? 1024,
+    ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+    ...(cfg.reasoningEffort ? { reasoning_effort: cfg.reasoningEffort } : {}),
+  }
+
   // Agentic loop: keep letting the model call tools until it answers, or we hit
   // the cap (tools are withheld on the last pass so it must reply).
   for (let iteration = 0; iteration <= MAX_TOOL_ITERATIONS; iteration++) {
-    const allowTools = toolDefs.length > 0 && iteration < MAX_TOOL_ITERATIONS
+    const allowTools = toolDefs.length > 0 && !proibirFerramentas && iteration < MAX_TOOL_ITERATIONS
     const response = await client.chat.completions.create({
       model: model || DEFAULT_MODEL,
-      max_completion_tokens: 1024,
+      ...tuning,
       messages,
       ...(allowTools ? { tools: toolDefs } : {}),
+      ...(allowTools && cfg.toolChoice === 'required' ? { tool_choice: 'required' as const } : {}),
+      ...(allowTools && cfg.parallelTools === false ? { parallel_tool_calls: false } : {}),
     })
     usage.inputTokens += response.usage?.prompt_tokens ?? 0
     usage.outputTokens += response.usage?.completion_tokens ?? 0

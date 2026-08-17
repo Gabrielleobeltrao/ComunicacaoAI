@@ -11,6 +11,7 @@ import type { NextFunction, Request, Response } from 'express'
 import multer from 'multer'
 import { ObjectId } from 'mongodb'
 import { normalizeRunConfig } from './runConfig.js'
+import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
 import type { WithId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import { Server } from 'socket.io'
@@ -1606,8 +1607,22 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     .filter(Boolean)
     .join('\n\n')
 
+  // As ferramentas primeiro: o risco delas é o que decide se dá para paralelizar, e
+  // resolver a configuração antes produziria algo que o adapter teria de corrigir.
+  const playgroundTools = await resolveAgentTools(configAgent, res.locals.userId)
+  // O MESMO resolvedor que a rotina e a delegação usam. Antes, cada caminho montava o
+  // seu — e o agente respondia diferente conforme a porta por onde o pedido entrou.
+  const execucaoPlayground = resolveAgentRun(configAgent, {
+    context: 'chat',
+    toolRisks: playgroundTools.map((t) => t.risk ?? 'write'),
+  })
+
   const { text, usage, toolCalls } = await generateAgentReply(
-    replyObjective,
+    composeAgentPrompt({
+      definition: execucaoPlayground.definition,
+      taskInstruction: replyObjective === configAgent.objective ? '' : replyObjective,
+      hasUntrustedContext: knowledge.length > 0,
+    }),
     knowledge,
     '',
     history,
@@ -1625,8 +1640,9 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
         configAgent.responseFormatting ?? false,
       ),
     ].join('\n\n'),
-    configAgent.promptCaching ?? true,
-    await resolveAgentTools(configAgent, res.locals.userId),
+    execucaoPlayground.enableCaching,
+    playgroundTools,
+    { runConfig: execucaoPlayground.runConfig },
   )
   recordReplyUsage(res.locals.userId, usage).catch((error) =>
     console.error('Failed to record token usage:', error),
@@ -2540,12 +2556,21 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     }).catch(() => undefined)
   }
 
+  // Mesmo resolvedor do Playground e das automações: quem o agente é não muda com a
+  // porta de entrada. As ferramentas deste caminho incluem delegação e são resolvidas
+  // logo abaixo, na própria chamada — por isso o risco vai vazio aqui: sem lista, o
+  // paralelismo simplesmente não é oferecido, que é o lado seguro.
+  const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: [] })
+
   let generated: string
   let usage: { inputTokens: number; outputTokens: number }
   let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
   try {
     const result = await generateAgentReply(
-    agent.objective,
+    composeAgentPrompt({
+      definition: execucaoChat.definition,
+      hasUntrustedContext: knowledge.length > 0,
+    }),
     knowledge,
     '',
     history,
@@ -2563,7 +2588,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
         agent.responseFormatting ?? false,
       ),
     ].join('\n\n'),
-    agent.promptCaching ?? true,
+    execucaoChat.enableCaching,
     await resolveToolsWithDelegation(
       agent,
       res.locals.userId,
@@ -2572,6 +2597,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent, rootExecutionId: manualRootId }),
       productionDelegationDeps(),
     ),
+    { runConfig: execucaoChat.runConfig },
     )
     generated = result.text
     usage = result.usage
@@ -3729,12 +3755,19 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     }).catch(() => undefined)
   }
 
+  const canalTools = await resolveAgentTools(agent, ownerId)
+  const execucaoCanal = resolveAgentRun(agent, { context: 'chat', toolRisks: canalTools.map((t) => t.risk ?? 'write') })
+
   let generatedReply: string
   let usage: { inputTokens: number; outputTokens: number }
   let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
   try {
     const channelResult = await generateAgentReply(
-    replyObjective,
+    composeAgentPrompt({
+      definition: execucaoCanal.definition,
+      taskInstruction: replyObjective === agent.objective ? '' : replyObjective,
+      hasUntrustedContext: knowledge.length > 0,
+    }),
     knowledge,
     memoryText,
     history,
@@ -3744,8 +3777,9 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     identityInstruction,
     behaviorInstruction,
     responseStyleInstruction,
-    agent.promptCaching ?? true,
-    await resolveAgentTools(agent, ownerId),
+    execucaoCanal.enableCaching,
+    canalTools,
+    { runConfig: execucaoCanal.runConfig },
     )
     generatedReply = channelResult.text
     usage = channelResult.usage

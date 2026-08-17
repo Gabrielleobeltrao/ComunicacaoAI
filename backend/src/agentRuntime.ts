@@ -12,6 +12,8 @@
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 import type { AgentReplyResult, ChatTurn } from './llm.js'
 import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
+import { shouldRetryInference } from './runConfig.js'
+import type { EffectiveRunConfig } from './runConfig.js'
 
 export type AgentOutputFormat = 'text' | 'markdown' | 'json'
 
@@ -38,6 +40,15 @@ export interface AgentExecutionRequest {
    * ele decide pelo que aparece primeiro.
    */
   definition?: { role?: string | null; constraints?: string | null }
+  /**
+   * Como chamar o modelo. Já resolvida e filtrada pelas capacidades do modelo.
+   *
+   * O runtime não decide nada sobre ela: quem resolveu foi `resolveAgentRun`, que sabe
+   * o agente, as ferramentas e o contexto. Aqui ela só é repassada — e é isso que faz
+   * rotina, delegação, Playground e canal chegarem ao provedor com a MESMA
+   * configuração.
+   */
+  runConfig?: EffectiveRunConfig
   limits?: { maxOutputChars?: number; timeoutMs?: number }
   enableCaching?: boolean
   // Operational transitions, for the live map. A plain callback: this module stays
@@ -88,6 +99,9 @@ export type ReplyFn = (
   responseStyleInstruction?: string,
   enableCaching?: boolean,
   tools?: ResolvedTool[],
+  // A configuração já resolvida. Opcional: um dublê de teste que não se importe com ela
+  // continua encaixando na assinatura.
+  opts?: { runConfig?: EffectiveRunConfig },
 ) => Promise<AgentReplyResult>
 
 const DEFAULT_MAX_OUTPUT = 200_000
@@ -248,15 +262,59 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
     '', // response style — attendance only
     req.enableCaching ?? true,
     req.tools ?? [],
+    { runConfig: req.runConfig },
   )
 
-  let result: AgentReplyResult
-  try {
-    const ms = req.limits?.timeoutMs
-    result = ms && ms > 0 ? await withTimeout(call, ms) : await call
-  } catch (error) {
-    if (error instanceof AgentRunError) throw error
-    throw new AgentRunError('provider', error instanceof Error ? error.message : 'provider error')
+  // O tempo máximo: a escolha do dono ganha do limite da etapa, e a ausência dos dois
+  // mantém o comportamento de antes (sem timeout próprio).
+  const timeoutMs = req.runConfig?.timeoutMs ?? req.limits?.timeoutMs
+
+  /**
+   * As tentativas de INFERÊNCIA.
+   *
+   * Só falha transitória, e só antes de haver resposta. Zero por padrão — que é o
+   * comportamento que todo agente sempre teve; ligar retry por conta própria dobraria a
+   * conta de quem não pediu.
+   */
+  const tentativas = Math.max(0, req.runConfig?.retries ?? 0)
+  let result: AgentReplyResult | null = null
+  let ultimoErro: unknown = null
+
+  for (let tentativa = 0; tentativa <= tentativas; tentativa++) {
+    try {
+      const chamada =
+        tentativa === 0
+          ? call
+          : reply(
+              objective,
+              req.context ?? [],
+              '',
+              history,
+              req.provider ?? null,
+              req.model ?? null,
+              req.apiKey ?? null,
+              '',
+              '',
+              '',
+              req.enableCaching ?? true,
+              req.tools ?? [],
+              { runConfig: req.runConfig },
+            )
+      result = timeoutMs && timeoutMs > 0 ? await withTimeout(chamada, timeoutMs) : await chamada
+      break
+    } catch (error) {
+      ultimoErro = error
+      const kind = error instanceof AgentRunError ? error.kind : 'provider'
+      // `hasValidAnswer` é falso aqui por construção: se houvesse resposta, não
+      // estaríamos no catch. Repetir depois dela é o que a função proíbe.
+      if (tentativa >= tentativas || !shouldRetryInference(kind, { hasValidAnswer: false })) break
+      req.progress?.('retrying', { tentativa: tentativa + 1 })
+    }
+  }
+
+  if (!result) {
+    if (ultimoErro instanceof AgentRunError) throw ultimoErro
+    throw new AgentRunError('provider', ultimoErro instanceof Error ? ultimoErro.message : 'provider error')
   }
 
   const max = req.limits?.maxOutputChars ?? DEFAULT_MAX_OUTPUT
@@ -295,7 +353,9 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
     // NO TOOLS. This second call exists only to reformat the answer the model has
     // already produced; giving it the tool list again would let it repeat a POST, a
     // delegation or any other side effect while "fixing" the JSON.
-    const repairCall = reply(objective, req.context ?? [], '', repairHistory, req.provider ?? null, req.model ?? null, req.apiKey ?? null, '', '', '', req.enableCaching ?? true, [])
+    // A correção usa a MESMA configuração: mudar a temperatura ou o teto de saída só na
+    // segunda tentativa produziria uma resposta com outras características.
+    const repairCall = reply(objective, req.context ?? [], '', repairHistory, req.provider ?? null, req.model ?? null, req.apiKey ?? null, '', '', '', req.enableCaching ?? true, [], { runConfig: req.runConfig })
     const ms = req.limits?.timeoutMs
     repairResult = ms && ms > 0 ? await withTimeout(repairCall, ms) : await repairCall
   } catch (error) {

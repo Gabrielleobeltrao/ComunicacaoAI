@@ -28,6 +28,8 @@ const LIMITE_MAXIMO = 25
 export function memorySearchTool(ownerId: string, agentId: ObjectId): ResolvedTool {
   return {
     name: MEMORY_TOOL_NAME,
+    // Consultar memória não altera nada: pode ir em paralelo com outras leituras.
+    risk: 'read',
     description:
       'Busca informações guardadas na memória (do próprio agente, dos setores em que ele trabalha, do andar e do prédio). ' +
       'Use para lembrar de algo específico — um pedido, um cliente, uma decisão anterior. ' +

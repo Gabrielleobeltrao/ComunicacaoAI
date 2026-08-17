@@ -177,7 +177,11 @@ export async function resolveGrant(
     const allowedToAct = action.risk === 'read' || autonomous.has(action.key)
     const built = buildAction(app, action, ownerId, auth, resource, allowedToAct)
     if (!built) continue
-    tools.push(instrument(built, { ownerId, agentId: options.agentId ?? null, appKey: app.key, actionKey: action.key, installationId: installation._id }))
+    // O risco declarado no manifesto viaja com a ferramenta. Ele não amplia nada — o
+    // grant continua sendo a permissão — mas é o que permite decidir paralelismo.
+    tools.push(
+      instrument({ ...built, risk: action.risk }, { ownerId, agentId: options.agentId ?? null, appKey: app.key, actionKey: action.key, installationId: installation._id }),
+    )
   }
   return tools
 }

@@ -47,3 +47,41 @@ describe('limpeza antes de enviar', () => {
     expect(cleanRunConfig({})).toEqual({})
   })
 })
+
+describe('tri-estado dos booleanos', () => {
+  it('"desligado" sobrevive ao envio', () => {
+    // O erro clássico do booleano opcional: um filtro por valor-verdade transformaria
+    // "escolhi que não" em "não escolhi", e o servidor religaria o cache de quem
+    // desligou de propósito.
+    expect(cleanRunConfig({ cache: false, parallelTools: false })).toEqual({ cache: false, parallelTools: false })
+  })
+
+  it('"não escolhido" some, que é o que significa padrão do sistema', () => {
+    expect(cleanRunConfig({ cache: undefined })).toEqual({})
+  })
+
+  it('os três estados são distinguíveis na ida e na volta', () => {
+    expect(cleanRunConfig({ cache: true }).cache).toBe(true)
+    expect(cleanRunConfig({ cache: false }).cache).toBe(false)
+    expect('cache' in cleanRunConfig({ cache: undefined })).toBe(false)
+  })
+})
+
+describe('streaming não é oferecido', () => {
+  it('a capacidade está desligada em toda a matriz', () => {
+    // Decisão declarada: sem transporte, a opção não aparece. Quando ele existir, este
+    // teste é o que lembra de reativar.
+    expect(capabilitiesFor('openai', 'gpt-4o').stream).toBe(false)
+    expect(capabilitiesFor('anthropic', 'claude-sonnet-5').stream).toBe(false)
+  })
+})
+
+describe('cache por provedor', () => {
+  it('a OpenAI não oferece controle: lá o cache é automático', () => {
+    expect(capabilitiesFor('openai', 'gpt-4o').cache).toBe(false)
+  })
+
+  it('a Anthropic oferece', () => {
+    expect(capabilitiesFor('anthropic', 'claude-sonnet-5').cache).toBe(true)
+  })
+})

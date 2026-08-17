@@ -23,6 +23,17 @@ export interface ResolvedTool {
   name: string
   description: string
   inputSchema: Record<string, unknown>
+  /**
+   * O que esta ferramenta faz do outro lado.
+   *
+   * Informação, NÃO permissão: quem decide se o agente pode chamar continua sendo o
+   * grant. Isto existe para o paralelismo — duas leituras podem ir juntas, duas
+   * escritas não, porque a ordem em que elas chegam é o que o dono configurou.
+   *
+   * Ausente = tratado como escrita. Falhar para o lado conservador: uma ferramenta que
+   * não declarou risco não deve ganhar paralelismo por omissão.
+   */
+  risk?: 'read' | 'write' | 'high_risk'
   run: (args: Record<string, unknown>) => Promise<{ ok: boolean; result: string }>
 }
 

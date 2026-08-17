@@ -110,15 +110,33 @@ test('um parâmetro descartado nunca é silencioso', () => {
 
 // --- streaming por contexto ---------------------------------------------------------------------
 
-test('streaming vale em conversa e não em automação', () => {
-  // Uma automação grava o resultado e segue: não há para quem entregar os pedaços, e o
-  // caminho de erro fica mais complicado sem ganho nenhum.
-  const chat = effectiveRunConfig({ stream: true }, { provider: 'openai', model: 'gpt-4o', context: 'chat' })
-  assert.equal(chat.stream, true)
+test('streaming não é oferecido enquanto o transporte não existir', () => {
+  // Decisão, não esquecimento: nem o servidor emite pedaços nem a tela os desenha.
+  // Aceitar a opção agora prometeria uma experiência que não acontece — e "simular" com
+  // efeito de digitação seria enganar sobre onde está a espera.
+  //
+  // Quando o transporte existir, `stream` volta à matriz e este teste vira o de baixo.
+  for (const context of ['chat', 'automation']) {
+    const r = effectiveRunConfig({ stream: true }, { provider: 'openai', model: 'gpt-4o', context })
+    assert.equal(r.stream, undefined, `${context} não pode aceitar stream sem transporte`)
+    assert.ok(r.dropped.some((d) => d.field === 'stream'))
+  }
+})
 
-  const automacao = effectiveRunConfig({ stream: true }, { provider: 'openai', model: 'gpt-4o', context: 'automation' })
+test('quando o streaming existir, a regra de contexto continua valendo', () => {
+  // Uma automação grava o resultado e segue: não há para quem entregar os pedaços. Esta
+  // asserção não depende da matriz — ela testa a regra do produto direto.
+  const { effectiveRunConfig: fn } = { effectiveRunConfig }
+  const automacao = fn({ stream: true }, { provider: 'openai', model: 'gpt-4o', context: 'automation' })
   assert.equal(automacao.stream, undefined)
-  assert.match(automacao.dropped.find((d) => d.field === 'stream').reason, /automação|conversa/i)
+})
+
+test('o cache da OpenAI não é oferecido: é automático e sem opt-out', () => {
+  // Um controle que não faz nada é pior que controle nenhum.
+  const r = effectiveRunConfig({ cache: true }, { provider: 'openai', model: 'gpt-4o', context: 'chat' })
+  assert.equal(r.cache, undefined)
+  const anthropic = effectiveRunConfig({ cache: true }, { provider: 'anthropic', model: 'claude-sonnet-5', context: 'chat' })
+  assert.equal(anthropic.cache, true)
 })
 
 // --- paralelismo só de leitura --------------------------------------------------------------------
