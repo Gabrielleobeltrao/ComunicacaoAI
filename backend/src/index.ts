@@ -2599,7 +2599,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     createdAt: manualStartedAt,
   }).catch(() => null)
 
-  const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0) => {
+  const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0, errorKind?: string) => {
     recordAgentEventSafe({
       eventKey: manualEventKey,
       ownerId: res.locals.userId,
@@ -2617,11 +2617,14 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       toolCalls: okToolCalls,
       // `descartadosChat` é resolvido logo abaixo; este fecho só roda depois da chamada ao
       // modelo. Só campo e motivo — nunca prompt, resposta ou credencial.
-      ...(descartadosChat ? { metadata: { runConfigDropped: descartadosChat } } : {}),
+      metadata: {
+        ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
+        ...(errorKind ? { errorKind } : {}),
+      },
     })
     void finishExecutionRoot(manualRootKey, {
       status: status === 'succeeded' ? 'succeeded' : 'failed',
-      errorKind: status === 'succeeded' ? null : status,
+      errorKind: status === 'succeeded' ? null : (errorKind ?? status),
     }).catch(() => undefined)
   }
 
@@ -2643,8 +2646,24 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   if (descartadosChat) console.info(`[runConfig] chat: ${descartadosChat}`)
 
   let generated: string
-  let usage: { inputTokens: number; outputTokens: number }
-  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
+  // Zerados e MUTÁVEIS de propósito: o que o provedor cobrou precisa sobreviver ao caminho
+  // de falha. A versão anterior lançava antes de copiar o uso, e uma resposta que custou a
+  // chamada original mais o reparo era registrada como zero token.
+  let usage = { inputTokens: 0, outputTokens: 0 }
+  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls'] = []
+  let problemaContrato: string | null = null
+
+  // A cobrança acontece UMA vez, dê certo ou não. A trava existe porque agora há dois
+  // caminhos até aqui — o de sucesso e o de falha — e cobrar nos dois seria cobrar duas.
+  let cobrado = false
+  const cobrar = () => {
+    if (cobrado || (usage.inputTokens === 0 && usage.outputTokens === 0)) return
+    cobrado = true
+    recordReplyUsage(res.locals.userId, usage).catch((error) =>
+      console.error('Failed to record token usage:', error),
+    )
+  }
+
   try {
     const interativoChat = await runInteractive({
       reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
@@ -2678,23 +2697,36 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       runConfig: execucaoChat.runConfig,
       output: execucaoChat.definition.output,
     })
+    // O uso PRIMEIRO, o julgamento depois: os tokens da resposta e do reparo já foram
+    // gastos, e o provedor vai faturá-los independentemente de o JSON servir.
+    usage = interativoChat.usage
+    toolCalls = interativoChat.toolCalls
     // Contrato não cumprido: NÃO se entrega ao cliente um texto que o próprio sistema
     // sabe estar errado. O erro controlado deixa o caminho de falha decidir.
     if (!interativoChat.outputValid) {
-      throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${interativoChat.outputProblem ?? 'JSON inválido'}`)
+      problemaContrato = interativoChat.outputProblem ?? 'JSON inválido'
+      throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${problemaContrato}`)
     }
     generated = interativoChat.text
-    usage = interativoChat.usage
-    toolCalls = interativoChat.toolCalls
   } catch (error) {
-    // The functional response is unchanged (the error still propagates); only the
-    // telemetry is added.
-    recordManual(/timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed')
+    const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
+      ? 'output_invalid'
+      : /timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed'
+    // Cobrança, métrica e auditoria também na falha — senão o contrato quebrado sairia de
+    // graça nos números e a fatura do provedor não bateria com nada.
+    cobrar()
+    recordManual(kind === 'timeout' ? 'timeout' : 'failed', usage, toolCalls.filter((c) => c.ok).length, kind)
+    if (kind === 'output_invalid') {
+      // Erro controlado, e não um 500 genérico: 502 é a mesma resposta que este arquivo já
+      // dá quando um serviço de fora devolve algo inutilizável. Quem chama aqui é o dono
+      // testando o próprio agente, então o motivo da recusa de schema ajuda — mas o texto
+      // do modelo e o prompt não saem daqui.
+      res.status(502).json({ error: 'A resposta do modelo não cumpriu o formato JSON configurado e não foi entregue.', code: 'output_invalid', problem: problemaContrato })
+      return
+    }
     throw error
   }
-  recordReplyUsage(res.locals.userId, usage).catch((error) =>
-    console.error('Failed to record token usage:', error),
-  )
+  cobrar()
   // Only tool calls that actually COMPLETED count as tool actions.
   recordManual('succeeded', usage, toolCalls.filter((c) => c.ok).length)
   let reply = generated
@@ -3837,7 +3869,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     // The turn ended, one way or another.
     await finishExecutionRoot(channelRootKey, {
       status: status === 'succeeded' ? 'succeeded' : 'failed',
-      errorKind: status === 'succeeded' ? null : status,
+      errorKind: status === 'succeeded' ? null : (typeof extra.errorKind === 'string' ? extra.errorKind : status),
     }).catch(() => undefined)
   }
 
@@ -3847,8 +3879,19 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   if (descartadosCanal) console.info(`[runConfig] canal: ${descartadosCanal}`)
 
   let generatedReply: string
-  let usage: { inputTokens: number; outputTokens: number }
-  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls']
+  // Zerados e mutáveis: o que foi cobrado precisa sobreviver ao caminho de falha. Lançar
+  // antes de copiar o uso, como estava, registrava zero token numa chamada que custou a
+  // resposta original mais o reparo.
+  let usage = { inputTokens: 0, outputTokens: 0 }
+  let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls'] = []
+
+  let cobrado = false
+  const cobrarCanal = () => {
+    if (cobrado || (usage.inputTokens === 0 && usage.outputTokens === 0)) return
+    cobrado = true
+    recordReplyUsage(ownerId, usage).catch((error) => console.error('Failed to record token usage:', error))
+  }
+
   try {
     const interativoCanal = await runInteractive({
       reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
@@ -3879,19 +3922,37 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       runConfig: execucaoCanal.runConfig,
       output: execucaoCanal.definition.output,
     })
+    // O uso PRIMEIRO, o julgamento depois: esses tokens já saíram, e o provedor vai
+    // faturá-los tenha o JSON servido ou não.
+    usage = interativoCanal.usage
+    toolCalls = interativoCanal.toolCalls
     if (!interativoCanal.outputValid) {
       throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${interativoCanal.outputProblem ?? 'JSON inválido'}`)
     }
     generatedReply = interativoCanal.text
-    usage = interativoCanal.usage
-    toolCalls = interativoCanal.toolCalls
   } catch (error) {
-    // Functional behaviour unchanged (the caller still sees the failure); the
-    // outcome is simply no longer invisible in the agent's history.
-    void recordChannel(`msg-fail:${widgetId.toString()}:${conversationId}:${channelStartedAt.getTime()}`, /timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed')
+    const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
+      ? 'output_invalid'
+      : /timeout|timed out|exceeded/i.test((error as Error).message ?? '') ? 'timeout' : 'failed'
+    // Cobrança, métrica e auditoria acontecem também aqui. As ferramentas que rodaram
+    // rodaram de verdade — ficar de fora do registro por causa de um JSON malformado
+    // esconderia ação real do dono da conversa.
+    cobrarCanal()
+    logToolCalls(widgetId, conversationId, toolCalls).catch((erro) => console.error('Failed to log tool calls:', erro))
+    // A chave do evento é derivada da mensagem: um webhook reentregue reaproveita a mesma
+    // em vez de contar duas vezes.
+    void recordChannel(
+      `msg-fail:${widgetId.toString()}:${conversationId}:${channelStartedAt.getTime()}`,
+      kind === 'timeout' ? 'timeout' : 'failed',
+      usage,
+      toolCalls.filter((c) => c.ok).length,
+      { errorKind: kind },
+    )
+    // Nada é enviado ao visitante: a resposta que não cumpre o contrato não vira mensagem,
+    // não é transmitida pelo socket e não entra no histórico da conversa.
     throw error
   }
-  recordReplyUsage(ownerId, usage).catch((error) => console.error('Failed to record token usage:', error))
+  cobrarCanal()
   logToolCalls(widgetId, conversationId, toolCalls).catch((error) =>
     console.error('Failed to log tool calls:', error),
   )

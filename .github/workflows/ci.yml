@@ -109,8 +109,11 @@ jobs:
           # override responde isso pelo código de saída.
           docker compose $COMPOSE_ARGS up -d --wait --wait-timeout 150 mongo
 
-      - name: "Smoke: pilha de pé (backend + frontend)"
-        run: docker compose $COMPOSE_ARGS up -d --build --wait --wait-timeout 240
+      - name: "Smoke: backend de pé"
+        run: docker compose $COMPOSE_ARGS up -d --build --wait --wait-timeout 240 backend
+
+      - name: "Smoke: frontend de pé"
+        run: docker compose $COMPOSE_ARGS up -d --build --wait --wait-timeout 180 frontend
 
       - name: "Smoke: /api/ready e /healthz respondem"
         run: |
@@ -121,11 +124,26 @@ jobs:
           curl -fsS http://localhost:8080/healthz > /dev/null
           echo "smoke ok: /api/ready e /healthz responderam"
 
+      # O diagnóstico vira ANOTAÇÃO do run, e não só linha de log: quem abre o resumo do CI
+      # lê o estado dos contêineres e o fim do log do backend sem precisar caçar dentro do
+      # passo que falhou. Roda antes da limpeza, senão o `down -v` já teria levado os logs.
+      - name: "Smoke: diagnóstico da falha"
+        if: failure()
+        run: |
+          anotar() {
+            printf '::error title=%s::%s\n' "$1" "$(printf '%s' "$2" | tail -c 2500 | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')"
+          }
+          anotar "smoke: estado dos contêineres" "$(docker compose $COMPOSE_ARGS ps -a 2>&1 || true)"
+          anotar "smoke: fim do log do backend"  "$(docker compose $COMPOSE_ARGS logs --no-color --tail=25 backend 2>&1 || true)"
+          anotar "smoke: fim do log do frontend" "$(docker compose $COMPOSE_ARGS logs --no-color --tail=15 frontend 2>&1 || true)"
+          anotar "smoke: fim do log do mongo"    "$(docker compose $COMPOSE_ARGS logs --no-color --tail=15 mongo 2>&1 || true)"
+
       - name: "Smoke: logs e limpeza"
         if: always()
         run: |
-          docker compose $COMPOSE_ARGS ps || true
+          docker compose $COMPOSE_ARGS ps -a || true
           echo "--- logs backend ---"; docker compose $COMPOSE_ARGS logs --no-color --tail=120 backend || true
+          echo "--- logs frontend ---"; docker compose $COMPOSE_ARGS logs --no-color --tail=40 frontend || true
           echo "--- logs mongo ---";   docker compose $COMPOSE_ARGS logs --no-color --tail=40 mongo || true
           docker compose $COMPOSE_ARGS down -v --remove-orphans || true
 
