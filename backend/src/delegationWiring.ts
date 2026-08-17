@@ -23,6 +23,7 @@ import { recordReplyUsageOnce } from './tokenUsage.js'
 import { retrieveContext } from './knowledge.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
 import type { DelegationContext, DelegationDeps } from './delegation.js'
+import { TEAM_TOOL_NAMES } from './delegation.js'
 
 // The tool list an agent runs with in a delegation-aware context: its own tools,
 // the capability_missing escape hatch (every task agent), plus the delegation tools
@@ -36,6 +37,30 @@ export async function resolveToolsWithDelegation(agent: Agent, ownerId: string, 
   const coordinatingNow = Boolean(childCtx.sectorGrant?.memberIds.length)
   const canDelegate = agentCanDelegate(agent) || coordinatingNow
   return [...base, capabilityMissingTool(), ...(canDelegate ? buildDelegationTools(childCtx, deps) : [])]
+}
+
+/**
+ * As mesmas dependências de produção, com as ferramentas que ESCREVEM removidas.
+ *
+ * O Playground roda o fluxo de verdade — coordenador, especialistas, base, memória —
+ * e é justamente por isso que ele não pode mandar e-mail, criar cobrança ou chamar a
+ * API de ninguém: quem está testando não espera que o teste aconteça de verdade.
+ *
+ * O filtro vive no `resolveTools`, que é por onde TODO agente da cadeia passa: o
+ * coordenador e cada membro que ele acionar. Passam leitura, `buscar_memoria` (que é
+ * leitura) e as ferramentas de time — sem elas não haveria time para testar. Risco
+ * ausente conta como escrita, como em todo lugar.
+ */
+export function playgroundDelegationDeps(): DelegationDeps {
+  const deps = productionDelegationDeps()
+  const permitidas = new Set<string>(TEAM_TOOL_NAMES)
+  return {
+    ...deps,
+    resolveTools: async (agent, ownerId, childCtx) => {
+      const todas = await resolveToolsWithDelegation(agent, ownerId, childCtx, deps)
+      return todas.filter((t) => (t.risk ?? 'write') === 'read' || permitidas.has(t.name))
+    },
+  }
 }
 
 export function productionDelegationDeps(): DelegationDeps {

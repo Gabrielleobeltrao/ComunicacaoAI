@@ -1,30 +1,54 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
-import type { SectorMode, SectorSummary, ToolCall } from '../lib/types'
+import type { SectorMode, SectorSummary } from '../lib/types'
 import { MessageContent } from './MessageContent'
-import { ToolCalls } from './ToolCalls'
+
+/** Quem executou, e com o que na mão. Vem do servidor; nada aqui é inferido. */
+export interface SectorParticipant {
+  name: string
+  role: 'coordinator' | 'specialist' | 'pipeline_stage'
+  grounding?: string | null
+  toolCalls?: number
+  stage?: string
+  order?: number
+}
+
+export interface SectorSource {
+  documentId: string | null
+  title: string | null
+}
 
 interface PlayMessage {
   role: 'user' | 'assistant'
   content: string
-  specialists?: string[]
-  clarify?: boolean
-  stage?: string | null
-  advanced?: boolean
-  fromStage?: string | null
+  participants?: SectorParticipant[]
+  grounding?: string
+  sources?: SectorSource[]
+  warnings?: string[]
   mode?: SectorMode
-  toolCalls?: ToolCall[]
 }
 
-// Stateless sector test chat — nothing is persisted. Each reply shows which
-// specialists were consulted (adaptive) or the active stage (pipeline). Reused
-// by the Setores list modal and the sector page.
+/**
+ * O que a busca de conhecimento respondeu, em uma linha.
+ *
+ * `unavailable` é o caso que mais importa: significa "não consegui procurar", e não
+ * "não existe". Confundir os dois é o que faz um agente afirmar que não há dado sobre
+ * uma base que tem o dado.
+ */
+const GROUNDING_LABEL: Record<string, string> = {
+  ok: 'usou a base',
+  empty: 'a base não tinha nada sobre isso',
+  no_base: 'sem base para consultar',
+  unavailable: 'a busca na base falhou — não é o mesmo que "não existe"',
+}
+
+// Conversa de teste de um setor — nada é salvo. A resposta mostra quem REALMENTE
+// executou, na ordem, com o que cada um encontrou.
 export function SectorPlayground({ sector }: { sector: SectorSummary }) {
   const [messages, setMessages] = useState<PlayMessage[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-  const [stageIndex, setStageIndex] = useState(0)
 
   async function handleSend(event: FormEvent) {
     event.preventDefault()
@@ -38,23 +62,20 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })), stageIndex }),
+        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })) }),
       })
-      if (res.ok) {
-        const body = await res.json()
-        if (typeof body.stageIndex === 'number') setStageIndex(body.stageIndex)
+      const body = await res.json().catch(() => null)
+      if (res.ok && body) {
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
             content: body.reply,
-            specialists: body.specialists,
-            clarify: body.clarify,
-            stage: body.stage,
-            advanced: body.advanced,
-            fromStage: body.fromStage,
+            participants: body.participants,
+            grounding: body.grounding,
+            sources: body.sources,
+            warnings: body.warnings,
             mode: body.mode,
-            toolCalls: body.toolCalls,
           },
         ])
       } else {
@@ -62,7 +83,9 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
           ...prev,
           {
             role: 'assistant',
-            content: 'Não foi possível gerar a resposta — verifique a chave de API em Configurações.',
+            // O motivo vem do servidor como categoria; sem ele, a mensagem genérica.
+            content:
+              body?.problem || body?.error || 'Não foi possível gerar a resposta — verifique a chave de API em Configurações.',
           },
         ])
       }
@@ -74,9 +97,8 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
   return (
     <div>
       <p className="mb-3 text-xs text-(--text-faint)">
-        {sector.mode === 'pipeline'
-          ? 'Conversa de teste — nada é salvo. Cada resposta mostra em qual etapa do fluxo o atendimento está.'
-          : 'Conversa de teste — nada é salvo. Cada resposta mostra quais especialistas o orquestrador consultou.'}
+        Conversa de teste — nada é salvo e as ferramentas que escrevem ficam bloqueadas. O time executa de verdade:
+        abaixo de cada resposta está quem trabalhou e o que consultou.
       </p>
       <div className="flex h-96 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50">
         <div className="flex-1 space-y-2 overflow-y-auto p-3">
@@ -94,27 +116,45 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
               >
                 <MessageContent content={message.content} />
               </div>
-              {message.role === 'assistant' && (
-                <span className="mt-0.5 text-[10px] text-(--text-faint)">
-                  {message.mode === 'pipeline'
-                    ? message.advanced && message.fromStage
-                      ? `↳ ${message.fromStage} → ${message.stage ?? '—'}`
-                      : `↳ etapa: ${message.stage ?? '—'}`
-                    : message.clarify
-                      ? '↳ pediu esclarecimento'
-                      : message.specialists && message.specialists.length > 0
-                        ? `↳ consultou: ${message.specialists.join(', ')}`
-                        : ''}
+
+              {message.role === 'assistant' && message.participants && message.participants.length > 0 && (
+                <div className="mt-1 max-w-[85%] text-[10px] text-(--text-faint)" data-testid="sector-run-trace">
+                  <span>
+                    ↳ executaram:{' '}
+                    {message.participants
+                      .map((p) =>
+                        p.stage
+                          ? `${p.order}. ${p.stage} (${p.name})`
+                          : p.role === 'coordinator'
+                            ? `${p.name} (coordenador)`
+                            : p.name,
+                      )
+                      .join(' · ')}
+                  </span>
+                </div>
+              )}
+
+              {message.role === 'assistant' && message.grounding && (
+                <span
+                  className={`mt-0.5 text-[10px] ${message.grounding === 'unavailable' ? 'text-amber-400' : 'text-(--text-faint)'}`}
+                  data-testid="sector-run-grounding"
+                >
+                  ↳ conhecimento: {GROUNDING_LABEL[message.grounding] ?? message.grounding}
                 </span>
               )}
-              {message.toolCalls && message.toolCalls.length > 0 && (
-                <div className="max-w-[85%]">
-                  <ToolCalls calls={message.toolCalls} />
-                </div>
+
+              {message.role === 'assistant' && message.sources && message.sources.length > 0 && (
+                <span className="mt-0.5 text-[10px] text-(--text-faint)" data-testid="sector-run-sources">
+                  ↳ fontes: {message.sources.map((f) => f.title || f.documentId || 'documento').join(', ')}
+                </span>
+              )}
+
+              {message.role === 'assistant' && message.warnings && message.warnings.length > 0 && (
+                <span className="mt-0.5 text-[10px] text-amber-400">↳ {message.warnings.join(' · ')}</span>
               )}
             </div>
           ))}
-          {sending && <p className="text-sm text-(--text-faint)">Orquestrando...</p>}
+          {sending && <p className="text-sm text-(--text-faint)">O time está trabalhando...</p>}
         </div>
         <form onSubmit={handleSend} className="flex gap-2 border-t border-(--border-subtle) p-3">
           <input
