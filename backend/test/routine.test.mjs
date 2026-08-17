@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { ObjectId } from 'mongodb'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
-const { buildRoutineDefinition } = await import('../dist/automations/routine.js')
+const { buildRoutineDefinition, recorrenciaIncompativelComFonte, readSourceFromDefinition, readSourceInstanceId, resolverGeracao, publishedSourceFingerprint } = await import('../dist/automations/routine.js')
 const { validateDefinition } = await import('../dist/automations/validate.js')
 const { recurrenceToCron, cronToRecurrence } = await import('../dist/automations/schedule.js')
 
@@ -57,4 +57,120 @@ test('cronToRecurrence inverts recurrenceToCron for the friendly patterns', () =
   // intervalo que a interface não oferece, e um cron com faixa.
   assert.equal(cronToRecurrence('*/7 * * * *'), null)
   assert.equal(cronToRecurrence('0 9 * * 1-5'), null)
+})
+
+// --- proteção de custo: frequência curta é privilégio de quem monitora ----------------
+
+test('rotina de entrada fixa não pode rodar de 5 em 5 minutos', () => {
+  // 288 execuções por dia com exatamente a mesma entrada é conta alta em troca de
+  // nada. Quem monitora pode: a verificação é de graça, e a LLM só roda se mudar.
+  const fixa = { name: 'x', objective: 'y', recurrence: { kind: 'minutes', every: 5 } }
+  assert.match(recorrenciaIncompativelComFonte(fixa) ?? '', /monitoram uma fonte/)
+  assert.match(recorrenciaIncompativelComFonte({ ...fixa, recurrence: { kind: 'hourly' } }) ?? '', /monitoram uma fonte/)
+  // Fonte declarada como fixa, ou com URL vazia, é entrada fixa do mesmo jeito.
+  assert.notEqual(recorrenciaIncompativelComFonte({ ...fixa, source: { kind: 'fixed' } }), null)
+  assert.notEqual(recorrenciaIncompativelComFonte({ ...fixa, source: { kind: 'rss', url: '  ', initialWindow: '24h' } }), null)
+})
+
+test('quem monitora pode usar as frequências curtas', () => {
+  const source = { kind: 'rss', url: 'https://exemplo.test/f.xml', initialWindow: '24h' }
+  assert.equal(recorrenciaIncompativelComFonte({ name: 'x', objective: 'y', recurrence: { kind: 'minutes', every: 5 }, source }), null)
+  assert.equal(recorrenciaIncompativelComFonte({ name: 'x', objective: 'y', recurrence: { kind: 'hourly' }, source }), null)
+})
+
+test('as frequências longas continuam valendo para as duas', () => {
+  const diaria = { kind: 'daily', time: '08:00' }
+  assert.equal(recorrenciaIncompativelComFonte({ name: 'x', objective: 'y', recurrence: diaria }), null)
+  assert.equal(
+    recorrenciaIncompativelComFonte({ name: 'x', objective: 'y', recurrence: diaria, source: { kind: 'http', url: 'https://e.test/p' } }),
+    null,
+  )
+})
+
+// --- troca de fonte, lida de volta da definição ---------------------------------------
+
+test('a fonte volta da definição do jeito que entrou', () => {
+  const agentId = new ObjectId()
+  const spec = { name: 'r', objective: 'vigiar', recurrence: { kind: 'minutes', every: 15 } }
+  const rss = buildRoutineDefinition({ ...spec, source: { kind: 'rss', url: 'https://e.test/f.xml', initialWindow: '3d', focus: 'preços' } }, agentId)
+  assert.deepEqual(readSourceFromDefinition(rss), { kind: 'rss', url: 'https://e.test/f.xml', initialWindow: '3d', focus: 'preços' })
+
+  // RSS → HTTP, e de volta: cada uma compila a sua etapa, sem sobra da outra.
+  const http = buildRoutineDefinition({ ...spec, source: { kind: 'http', url: 'https://e.test/p' } }, agentId)
+  assert.deepEqual(readSourceFromDefinition(http), { kind: 'http', url: 'https://e.test/p' })
+  assert.equal(http.steps.filter((s) => s.type.startsWith('source.')).length, 1)
+
+  // E de volta para fixa: a etapa de fonte simplesmente não existe.
+  const fixa = buildRoutineDefinition({ ...spec, recurrence: { kind: 'daily', time: '08:00' }, source: { kind: 'fixed' } }, agentId)
+  assert.deepEqual(readSourceFromDefinition(fixa), { kind: 'fixed' })
+  assert.equal(fixa.steps.some((s) => s.type.startsWith('source.')), false)
+})
+
+// --- a "vez" do monitoramento -----------------------------------------------------------
+
+const RSS = { kind: 'rss', url: 'https://exemplo.test/feed.xml', initialWindow: '24h' }
+
+test('mudar só o foco continua a mesma vez do monitoramento', () => {
+  // Nada recomeça: o dono está ajustando o que o agente olha, não trocando o que a
+  // rotina vigia.
+  const geracao = 'g1'
+  assert.equal(resolverGeracao(RSS, { ...RSS, focus: 'preços' }, geracao), geracao)
+  assert.equal(resolverGeracao({ ...RSS, focus: 'a' }, { ...RSS, focus: 'b' }, geracao), geracao)
+  // Janela inicial também não: ela só vale na estreia, e a estreia já passou.
+  assert.equal(resolverGeracao(RSS, { ...RSS, initialWindow: '7d' }, geracao), geracao)
+})
+
+test('trocar a URL ou o tipo começa outra vez', () => {
+  assert.notEqual(resolverGeracao(RSS, { ...RSS, url: 'https://exemplo.test/outro.xml' }, 'g1'), 'g1')
+  assert.notEqual(resolverGeracao(RSS, { kind: 'http', url: RSS.url }, 'g1'), 'g1')
+})
+
+test('desligar e religar na MESMA URL começa outra vez', () => {
+  // Este é o caso que a URL sozinha não distingue. No meio do desligamento o feed
+  // andou: quem religa quer ser avisado do que há agora — nem receber de uma vez
+  // tudo que passou, nem ficar em silêncio porque aquilo "já foi visto".
+  const desligou = resolverGeracao(RSS, { kind: 'fixed' }, 'g1')
+  assert.equal(desligou, undefined, 'rotina fixa não tem geração de fonte')
+
+  const religou = resolverGeracao({ kind: 'fixed' }, RSS, null)
+  assert.ok(religou, 'religar gera uma vez nova')
+  assert.notEqual(religou, 'g1')
+})
+
+test('rotina anterior ao campo continua valendo sem geração', () => {
+  // Sem geração gravada e sem troca de fonte, continua sem geração — e a identidade
+  // do checkpoint dela é a mesma de antes. É isso que dispensa migrar dados.
+  assert.equal(resolverGeracao(RSS, { ...RSS, focus: 'novo foco' }, null), undefined)
+})
+
+test('a geração vai para a definição e volta de lá', () => {
+  const agentId = new ObjectId()
+  const spec = { name: 'r', objective: 'vigiar', recurrence: { kind: 'minutes', every: 15 } }
+  const comGeracao = buildRoutineDefinition({ ...spec, source: RSS, sourceInstanceId: 'g-123' }, agentId)
+  assert.equal(readSourceInstanceId(comGeracao), 'g-123')
+  // E a fonte lida de volta não inventa a geração como se fosse campo do usuário.
+  assert.deepEqual(readSourceFromDefinition(comGeracao), RSS)
+
+  const semGeracao = buildRoutineDefinition({ ...spec, source: RSS }, agentId)
+  assert.equal(readSourceInstanceId(semGeracao), null)
+})
+
+test('a mesma URL com gerações diferentes é outra identidade', () => {
+  const agentId = new ObjectId()
+  const spec = { name: 'r', objective: 'vigiar', recurrence: { kind: 'minutes', every: 15 }, source: RSS }
+  const primeira = publishedSourceFingerprint(buildRoutineDefinition({ ...spec, sourceInstanceId: 'g1' }, agentId))
+  const segunda = publishedSourceFingerprint(buildRoutineDefinition({ ...spec, sourceInstanceId: 'g2' }, agentId))
+  assert.notEqual(primeira, segunda, 'religar não herda o checkpoint da vez anterior')
+
+  // Sem geração, a identidade é a de sempre — o checkpoint antigo continua servindo.
+  const antiga = publishedSourceFingerprint(buildRoutineDefinition(spec, agentId))
+  assert.ok(antiga)
+  assert.notEqual(antiga, primeira)
+})
+
+test('rotina sem fonte não tem identidade de fonte', () => {
+  const agentId = new ObjectId()
+  const fixa = buildRoutineDefinition({ name: 'r', objective: 'x', recurrence: { kind: 'daily', time: '08:00' } }, agentId)
+  assert.equal(publishedSourceFingerprint(fixa), null)
+  assert.equal(publishedSourceFingerprint(null), null)
 })

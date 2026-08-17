@@ -182,7 +182,13 @@ agentRoutineRouter.get('/routines', async (req, res) => {
           lastChangedAt: checkpoint?.lastChangedAt ?? null,
           // O desfecho da última verificação, em três estados que o usuário
           // entende: encontrou algo, verificou e não havia nada, ou falhou.
-          lastResult: !ultimo ? null : ultimo.status === 'failed' ? 'failed' : ultimo.noChange ? 'no_change' : 'changed',
+          // `noChange` é o campo anterior; ler os dois mantém os runs já gravados
+          // aparecendo certo na lista.
+          lastResult: !ultimo
+            ? null
+            : ultimo.status === 'failed'
+              ? 'failed'
+              : (ultimo.sourceOutcome ?? (ultimo.noChange ? 'no_change' : 'changed')),
           lastRunAt: ultimo?.finishedAt ?? ultimo?.startedAt ?? null,
           lastError: publicError(ultimo?.error ?? null),
         },
@@ -203,6 +209,9 @@ agentRoutineRouter.post('/routines', async (req, res) => {
     res.status(400).json({ error })
     return
   }
+  // Só o que dá para julgar pelo corpo da requisição. A regra de frequência depende
+  // da fonte EFETIVA — que num PATCH pode vir da rotina salva — e por isso mora em
+  // `createRoutine`/`updateRoutine`, que a resolvem antes de decidir.
   const urlInvalida = fonteComUrlInvalida(spec!)
   if (urlInvalida) {
     res.status(400).json({ error: urlInvalida })
@@ -229,6 +238,9 @@ agentRoutineRouter.patch('/routines/:routineId', async (req, res) => {
     res.status(400).json({ error })
     return
   }
+  // Só o que dá para julgar pelo corpo da requisição. A regra de frequência depende
+  // da fonte EFETIVA — que num PATCH pode vir da rotina salva — e por isso mora em
+  // `createRoutine`/`updateRoutine`, que a resolvem antes de decidir.
   const urlInvalida = fonteComUrlInvalida(spec!)
   if (urlInvalida) {
     res.status(400).json({ error: urlInvalida })

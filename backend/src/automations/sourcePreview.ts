@@ -5,7 +5,7 @@
 // chamada, nenhum token é consumido e nenhum checkpoint é tocado — testar não pode
 // fazer a rotina "pular" um item de verdade depois.
 import { safeFetch } from '../net/safeHttp.js'
-import { detectHttpChange } from './sourceChange.js'
+import { detectHttpChange, pareceFeed } from './sourceChange.js'
 import { dedupeItems, filterByWindow, parseRssItems } from './sources.js'
 import { INITIAL_WINDOWS } from './sourceChange.js'
 import type { InitialWindow } from './sourceChange.js'
@@ -38,12 +38,18 @@ export async function previewSource(
     // não testar.
     const res = await safeFetch(url, {
       contentTypeAllowlist: kind === 'rss' ? ['xml', 'rss', 'atom', 'text'] : undefined,
+      // Mesma porteira da execução: um 404 ou um 500 não é uma fonte que funciona,
+      // e mostrar a página de erro como se fosse conteúdo enganaria o dono.
+      requireOk: true,
     })
 
     if (kind === 'rss') {
+      if (!pareceFeed(res.body)) {
+        return { ok: false, kind, message: 'A resposta chegou, mas não é um feed RSS ou Atom. Confira se o endereço é o do feed, e não o da página.' }
+      }
       const todos = dedupeItems(parseRssItems(res.body))
       if (todos.length === 0) {
-        return { ok: false, kind, message: 'A resposta chegou, mas não parece um feed RSS ou Atom — nenhum item foi encontrado.' }
+        return { ok: true, kind, message: 'O feed está vazio no momento. A rotina avisa quando o primeiro item aparecer.', itemCount: 0, items: [] }
       }
       const janela = INITIAL_WINDOWS[opts.initialWindow ?? '24h']
       const naJanela = filterByWindow(todos, janela, agora)
@@ -58,7 +64,7 @@ export async function previewSource(
 
     // HTTP: o que interessa é o conteúdo NORMALIZADO — é ele que será comparado a
     // cada verificação, então é ele que o usuário precisa ver.
-    const { conteudo } = detectHttpChange(res.body, res.contentType, null)
+    const { conteudo } = detectHttpChange(res.body, res.contentType, null, false)
     if (!conteudo) {
       return { ok: false, kind, message: 'A resposta chegou vazia depois de remover a marcação. Esta página pode depender de JavaScript, que não é executado aqui.' }
     }

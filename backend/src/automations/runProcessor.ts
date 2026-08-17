@@ -6,7 +6,9 @@ import {
   updateRun,
 } from './runRepository.js'
 import { runDefinition } from './runner.js'
-import { advanceCheckpoint, getCheckpoint, markChecked } from './sourceCheckpoint.js'
+import { acquireSourceLease, advanceCheckpoint, beginCheck, releaseSourceLease } from './sourceCheckpoint.js'
+import { publishedSourceFingerprint } from './routine.js'
+import { findAutomation, findVersion } from './repository.js'
 import type { RunnerDeps } from './runner.js'
 import { preview } from './runTypes.js'
 import type { AutomationRun, RunStatus, StepRun } from './runTypes.js'
@@ -53,18 +55,49 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       // safeFetch é obrigatório: é ele que recusa localhost, IP privado, link-local
       // e redirect para dentro da rede. Uma URL de monitoramento vem do usuário e
       // vai ser buscada pelo SERVIDOR — é a definição de SSRF.
-      const res = await safeFetch(url, { contentTypeAllowlist: opts?.contentTypeAllowlist })
+      const res = await safeFetch(url, { contentTypeAllowlist: opts?.contentTypeAllowlist, requireOk: opts?.requireOk })
       return { body: res.body, contentType: res.contentType }
     },
     ...(temFonte && run.automationId
       ? {
           sourceState: {
-            read: async (stepId: string) => {
-              const cp = await getCheckpoint(run.ownerId, run.automationId!, stepId)
-              return { seenKeys: cp?.seenKeys ?? [], contentHash: cp?.contentHash ?? null }
+            /**
+             * A fonte deste snapshot ainda é a publicada?
+             *
+             * A corrida real: a execução foi enfileirada às 10h00 com a URL antiga, o
+             * dono trocou a URL às 10h01, e o worker só pegou a execução às 10h02. Sem
+             * esta pergunta ela consultaria o endereço velho e — pior — o `beginCheck`
+             * dela redefiniria o checkpoint da fonte NOVA para a antiga, apagando a
+             * linha de base recém-criada. O filtro do avanço não pega isso, porque o
+             * estrago acontece na abertura, não na gravação.
+             *
+             * Fecha na dúvida, e de propósito. Rotina apagada, versão publicada que
+             * sumiu, monitoramento desligado para `fixed`: em todos, a fonte que esta
+             * execução carrega não é mais a que a rotina publica, e continuar seria
+             * buscar um endereço que ninguém mais pediu para vigiar. Descartar UMA
+             * execução obsoleta não cala a rotina — a definição atual continua
+             * disparando no horário dela.
+             *
+             * Só é chamado por uma etapa de fonte, então rotina que nunca monitorou
+             * nada não passa por aqui.
+             */
+            isCurrent: async (fingerprint: string) => {
+              const automation = await findAutomation(run.ownerId, run.automationId!)
+              if (!automation || automation.lastPublishedVersion == null) return false
+              const publicada = await findVersion(run.ownerId, run.automationId!, automation.lastPublishedVersion)
+              // `publishedSourceFingerprint` devolve null quando a rotina virou fixa ou
+              // perdeu a fonte — e null nunca é igual a um fingerprint.
+              return publishedSourceFingerprint(publicada?.definition) === fingerprint
             },
-            checked: async (stepId: string) => markChecked(run.ownerId, run.automationId!, stepId, new Date()),
-            advance: async (stepId: string, avanco) => advanceCheckpoint(run.ownerId, run.automationId!, stepId, avanco, new Date()),
+            begin: async (stepId: string, fingerprint: string) => beginCheck(run.ownerId, run.automationId!, stepId, fingerprint, new Date()),
+            // O dono do lease é a EXECUÇÃO. Assim uma execução nunca libera o lease
+            // de outra, e um lease abandonado por um processo morto expira sozinho.
+            acquire: async (stepId: string, fingerprint: string) =>
+              acquireSourceLease(run.ownerId, run.automationId!, stepId, fingerprint, run._id.toString(), new Date()),
+            release: async (stepId: string, fingerprint: string) =>
+              releaseSourceLease(run.ownerId, run.automationId!, stepId, fingerprint, run._id.toString()),
+            advance: async (stepId: string, fingerprint: string, avanco: { novasChaves?: string[]; contentHash?: string | null; baseline?: boolean }) =>
+              advanceCheckpoint(run.ownerId, run.automationId!, stepId, fingerprint, avanco, new Date()),
           },
         }
       : {}),
@@ -238,9 +271,9 @@ export async function processRun(runId: string): Promise<void> {
   await updateRun(run._id, {
     status: outcome.status as RunStatus,
     finishedAt: now,
-    // Verificou e não havia nada novo. Guardado no run para a lista de rotinas
-    // conseguir dizer isso sem reprocessar as etapas.
-    ...(outcome.noChange ? { noChange: true } : {}),
+    // Como a fonte encerrou, quando ela encerrou. Guardado no run para a lista de
+    // rotinas conseguir dizer isso sem reprocessar as etapas.
+    ...(outcome.sourceOutcome ? { sourceOutcome: outcome.sourceOutcome } : {}),
     finalOutput: outcome.finalOutput,
     // Real consumption of the whole run (summed across steps and their attempts).
     usage: outcome.usage,

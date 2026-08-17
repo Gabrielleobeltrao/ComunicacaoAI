@@ -1,6 +1,6 @@
 import { renderTemplate } from './transform.js'
 import { dedupeItems, filterByWindow, parseRssItems } from './sources.js'
-import { detectHttpChange, detectRssChange } from './sourceChange.js'
+import { detectHttpChange, detectRssChange, normalizeHttpContent, pareceFeed, sourceFingerprint } from './sourceChange.js'
 import type { AutomationDefinition, StepDefinition, StepType } from './types.js'
 
 // Transport-agnostic linear runner for an automation definition. It contains NO
@@ -39,37 +39,61 @@ export interface StepUsage {
 }
 
 /**
- * O que a fonte já viu, e como registrar o que ela viu agora.
+ * O que a fonte já viu, quem está olhando para ela agora, e como registrar.
  *
  * Opcional de propósito: uma rotina sem fonte — que é a esmagadora maioria das que
  * existem hoje — não passa nada disto, e o runner se comporta exatamente como
  * antes. Quando está presente, o passo de fonte deixa de ser "buscar" e passa a ser
- * "buscar o que mudou".
+ * "buscar o que mudou, se ninguém já estiver buscando".
  *
- * `advance` NÃO é chamado aqui dentro do passo. O runner guarda o avanço e só o
- * aplica se a execução inteira terminar bem — se a LLM falhar ou a entrega falhar,
- * o próximo ciclo reprocessa o mesmo conteúdo. Entregar duas vezes é recuperável;
- * perder uma notícia, não.
+ * `advance` NÃO é chamado dentro do passo quando há o que entregar. O runner guarda
+ * o avanço e só o aplica se a execução inteira terminar bem — se a LLM falhar ou a
+ * entrega falhar, o próximo ciclo reprocessa o mesmo conteúdo. Entregar duas vezes
+ * é recuperável; perder uma notícia, não.
+ *
+ * A exceção é a linha de base: quando a fonte é nova e NÃO há o que entregar, o
+ * avanço acontece na hora. Não há nada a perder — nenhuma etapa vai rodar — e sem
+ * isso o feed inteiro seria relido como novo na volta seguinte.
  */
 export interface SourceState {
-  read: (stepId: string) => Promise<{ seenKeys: string[]; contentHash: string | null }>
-  checked: (stepId: string) => Promise<void>
-  advance: (stepId: string, avanco: { novasChaves?: string[]; contentHash?: string | null }) => Promise<void>
+  /**
+   * Esta fonte ainda é a que a rotina publica?
+   *
+   * Perguntado ANTES de qualquer coisa: antes de buscar, antes de tocar no
+   * checkpoint. Uma execução enfileirada há uma hora carrega a fonte de uma hora
+   * atrás; se o dono trocou a URL no meio, ela não pode nem consultar o endereço
+   * antigo — e muito menos redefinir o checkpoint da fonte nova para ele.
+   */
+  isCurrent: (fingerprint: string) => Promise<boolean>
+  // Registra a consulta e devolve o estado da fonte, recomeçando se ela mudou.
+  begin: (stepId: string, fingerprint: string) => Promise<{ seenKeys: string[]; contentHash: string | null; initialized: boolean }>
+  acquire: (stepId: string, fingerprint: string) => Promise<boolean>
+  release: (stepId: string, fingerprint: string) => Promise<void>
+  advance: (
+    stepId: string,
+    fingerprint: string,
+    // `baseline`: registra o que existia na estreia, sem nada ter sido entregue.
+    avanco: { novasChaves?: string[]; contentHash?: string | null; baseline?: boolean },
+  ) => Promise<void>
 }
 
 /**
- * "Consultei a fonte e não havia nada novo."
+ * A verificação terminou sem nada para processar. Não é erro e não é falha.
  *
- * Não é erro e não é falha: é o resultado esperado da maioria das verificações de
- * um monitoramento. O runner reconhece este valor, pula o resto das etapas — nenhuma
- * LLM, nenhuma entrega — e encerra a execução como sucesso sem alteração.
+ * `no_change` é o resultado esperado da maioria das verificações de um
+ * monitoramento. `skipped_concurrent` é outra coisa: havia o que fazer, mas outra
+ * execução já estava fazendo — desistir é o certo, e chamar isso de erro encheria
+ * a tela de alarme falso.
  */
-export class NoChange {
-  constructor(public readonly reason: string) {}
+export class SourceHalt {
+  constructor(
+    public readonly outcome: 'no_change' | 'skipped_concurrent' | 'skipped_stale',
+    public readonly reason: string,
+  ) {}
 }
 
 export interface RunnerDeps {
-  fetchUrl: (url: string, opts?: { contentTypeAllowlist?: string[] }) => Promise<FetchResult>
+  fetchUrl: (url: string, opts?: { contentTypeAllowlist?: string[]; requireOk?: boolean }) => Promise<FetchResult>
   // Presente só em rotinas de monitoramento.
   sourceState?: SourceState
   // Returns the model usage so it reaches the step record and the run total, plus an
@@ -96,10 +120,14 @@ export interface StepRecord {
 }
 export interface RunOutcome {
   status: 'succeeded' | 'failed' | 'canceled'
-  // Sucesso SEM alteração: a fonte foi consultada e não havia nada novo. Fica
-  // separado de `status` porque não é um desfecho diferente — é um sucesso com
-  // zero token, e a interface precisa saber distinguir para não parecer parada.
-  noChange?: boolean
+  /**
+   * Como a fonte encerrou a execução, quando ela encerrou.
+   *
+   * Fica separado de `status` porque nenhum dos dois é um desfecho diferente: são
+   * sucessos com zero token. A interface precisa distinguir para não fazer uma
+   * rotina saudável parecer parada nem um desvio de concorrência parecer defeito.
+   */
+  sourceOutcome?: 'no_change' | 'skipped_concurrent' | 'skipped_stale'
   steps: StepRecord[]
   finalOutput: string
   context: Record<string, unknown>
@@ -165,38 +193,109 @@ async function executeStep(
   settleSink?: Promise<unknown>[],
   // Avanços de checkpoint acumulados; aplicados pelo runner só no fim, e só se a
   // execução inteira der certo.
-  pendingAdvance?: { stepId: string; avanco: { novasChaves?: string[]; contentHash?: string | null } }[],
+  pendingAdvance?: { stepId: string; fingerprint: string; avanco: { novasChaves?: string[]; contentHash?: string | null; baseline?: boolean } }[],
+  // Leases tomados nesta execução, para o runner devolver todos no fim — dê certo
+  // ou não.
+  leaseSink?: { stepId: string; fingerprint: string }[],
 ): Promise<unknown> {
   const cfg = step.config
   switch (step.type as StepType) {
     case 'source.rss': {
-      const { body } = await deps.fetchUrl(String(cfg.url), { contentTypeAllowlist: ['xml', 'rss', 'atom', 'text'] }).catch((e) => {
-        throw new StepError('fetch', (e as Error).message, true)
-      })
+      const url = String(cfg.url)
       const windowMs = Number(cfg.windowMs ?? 24 * 3600 * 1000)
 
       // Sem estado de fonte: comportamento antigo, intacto. É por aqui que passam as
-      // definições que já existiam antes do monitoramento existir.
-      if (!deps.sourceState) return filterByWindow(dedupeItems(parseRssItems(body)), windowMs, deps.now())
+      // definições que já existiam antes do monitoramento existir — e é o que
+      // preserva a reprodutibilidade de uma execução que não monitora nada: ela roda
+      // o snapshot dela, ponto.
+      if (!deps.sourceState) {
+        const { body } = await deps.fetchUrl(url, { contentTypeAllowlist: ['xml', 'rss', 'atom', 'text'] }).catch((e) => {
+          throw new StepError('fetch', (e as Error).message, true)
+        })
+        return filterByWindow(dedupeItems(parseRssItems(body)), windowMs, deps.now())
+      }
 
-      await deps.sourceState.checked(step.id)
-      const { seenKeys } = await deps.sourceState.read(step.id)
-      const mudanca = detectRssChange(body, seenKeys, windowMs, deps.now())
-      if (!mudanca.changed) return new NoChange('nenhum item novo no feed')
-      pendingAdvance?.push({ stepId: step.id, avanco: { novasChaves: mudanca.novasChaves } })
+      const fingerprint = sourceFingerprint('rss', url, typeof cfg.instanceId === 'string' ? cfg.instanceId : null)
+      if (!(await deps.sourceState.isCurrent(fingerprint))) {
+        return new SourceHalt('skipped_stale', 'a fonte desta rotina mudou depois que esta execução foi enfileirada')
+      }
+
+      const { body } = await deps
+        .fetchUrl(url, { contentTypeAllowlist: ['xml', 'rss', 'atom', 'text'], requireOk: true })
+        .catch((e) => {
+          throw new StepError('fetch', (e as Error).message, true)
+        })
+
+      // Uma página de login, um erro em HTML ou um "em manutenção" respondem 200 com
+      // zero item. Tratar isso como "feed vazio, nada novo" faria a rotina ficar
+      // calada para sempre jurando que está tudo bem. Um feed legítimo e realmente
+      // vazio tem raiz de feed e passa aqui.
+      if (!pareceFeed(body)) {
+        throw new StepError('source', 'A resposta não é um feed RSS ou Atom.', true)
+      }
+
+      const { seenKeys, initialized } = await deps.sourceState.begin(step.id, fingerprint)
+      const mudanca = detectRssChange(body, seenKeys, windowMs, deps.now(), initialized)
+
+      if (!mudanca.changed) {
+        // Nada a entregar. Se a fonte é nova, a linha de base é gravada AGORA: não
+        // há etapa nenhuma para falhar depois, e sem isso o feed inteiro voltaria
+        // como novo — com a janela já não valendo mais.
+        if (mudanca.novasChaves.length || !initialized) {
+          await deps.sourceState.advance(step.id, fingerprint, { novasChaves: mudanca.novasChaves, baseline: true })
+        }
+        return new SourceHalt('no_change', 'nenhum item novo no feed')
+      }
+
+      if (!(await deps.sourceState.acquire(step.id, fingerprint))) {
+        return new SourceHalt('skipped_concurrent', 'outra verificação desta fonte já está em andamento')
+      }
+      leaseSink?.push({ stepId: step.id, fingerprint })
+
+      pendingAdvance?.push({ stepId: step.id, fingerprint, avanco: { novasChaves: mudanca.novasChaves } })
       return mudanca.novos
     }
     case 'source.http': {
-      const { body, contentType } = await deps.fetchUrl(String(cfg.url)).catch((e) => {
+      const url = String(cfg.url)
+      if (!deps.sourceState) {
+        const { body, contentType } = await deps.fetchUrl(url).catch((e) => {
+          throw new StepError('fetch', (e as Error).message, true)
+        })
+        return contentType.includes('html') ? strip(body) : body
+      }
+
+      const fingerprint = sourceFingerprint('http', url, typeof cfg.instanceId === 'string' ? cfg.instanceId : null)
+      if (!(await deps.sourceState.isCurrent(fingerprint))) {
+        return new SourceHalt('skipped_stale', 'a fonte desta rotina mudou depois que esta execução foi enfileirada')
+      }
+
+      const { body, contentType } = await deps.fetchUrl(url, { requireOk: true }).catch((e) => {
         throw new StepError('fetch', (e as Error).message, true)
       })
-      if (!deps.sourceState) return contentType.includes('html') ? strip(body) : body
 
-      await deps.sourceState.checked(step.id)
-      const { contentHash } = await deps.sourceState.read(step.id)
-      const mudanca = detectHttpChange(body, contentType, contentHash)
-      if (!mudanca.changed) return new NoChange('o conteúdo não mudou desde a última verificação')
-      pendingAdvance?.push({ stepId: step.id, avanco: { contentHash: mudanca.contentHash } })
+      // 2xx com corpo que não sobra nada depois de tirar a marcação: quase sempre
+      // uma página que só monta no navegador, que aqui não roda. Comparar hash de
+      // vazio com hash de vazio diria "não mudou" para sempre; mandar vazio para a
+      // LLM gastaria tokens com nada. As duas saídas são piores que dizer o que
+      // aconteceu.
+      if (!normalizeHttpContent(body, contentType)) {
+        throw new StepError(
+          'source',
+          'A resposta chegou vazia depois de remover a marcação. Esta página pode depender de JavaScript, que não é executado aqui.',
+          false,
+        )
+      }
+
+      const { contentHash, initialized } = await deps.sourceState.begin(step.id, fingerprint)
+      const mudanca = detectHttpChange(body, contentType, contentHash, initialized)
+      if (!mudanca.changed) return new SourceHalt('no_change', 'o conteúdo não mudou desde a última verificação')
+
+      if (!(await deps.sourceState.acquire(step.id, fingerprint))) {
+        return new SourceHalt('skipped_concurrent', 'outra verificação desta fonte já está em andamento')
+      }
+      leaseSink?.push({ stepId: step.id, fingerprint })
+
+      pendingAdvance?.push({ stepId: step.id, fingerprint, avanco: { contentHash: mudanca.contentHash } })
       return mudanca.conteudo
     }
     case 'agent.execute': {
@@ -259,117 +358,131 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
   const steps: StepRecord[] = []
   let finalOutput = ''
   let canceled = false
-  let noChange = false
+  let halt: SourceHalt | null = null
   const runUsage: StepUsage = { inputTokens: 0, outputTokens: 0 }
   // Avanços de checkpoint pendentes: aplicados no fim, e SÓ se tudo deu certo.
-  const pendingAdvance: { stepId: string; avanco: { novasChaves?: string[]; contentHash?: string | null } }[] = []
+  const pendingAdvance: { stepId: string; fingerprint: string; avanco: { novasChaves?: string[]; contentHash?: string | null; baseline?: boolean } }[] = []
+  // Fontes tomadas por esta execução. Devolvidas no `finally`, aconteça o que
+  // acontecer: se ficassem só no caminho feliz, uma falha travaria a rotina até o
+  // lease expirar.
+  const leases: { stepId: string; fingerprint: string }[] = []
 
-  for (const step of def.steps) {
-    if (!step.enabled) {
-      steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
-      continue
-    }
-    if (await deps.isCanceled?.()) {
-      steps.push({ stepId: step.id, stepType: step.type, status: 'canceled', attempts: 0 })
-      canceled = true
-      continue
-    }
+  try {
+    for (const step of def.steps) {
+      if (!step.enabled) {
+        steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
+        continue
+      }
+      if (await deps.isCanceled?.()) {
+        steps.push({ stepId: step.id, stepType: step.type, status: 'canceled', attempts: 0 })
+        canceled = true
+        continue
+      }
 
-    const maxAttempts = Math.max(1, step.retryPolicy?.maxAttempts ?? 1)
-    const backoff = step.retryPolicy?.backoffMs ?? 0
-    let attempt = 0
-    let done = false
-    // Usage accumulates across this step's attempts — a retry really did consume
-    // tokens, so the run total reflects it.
-    const stepUsage: StepUsage = { inputTokens: 0, outputTokens: 0 }
-    // Accounting handed back by agent.execute; awaited OUTSIDE the timeout below.
-    const settlePending: Promise<unknown>[] = []
-    for (;;) {
-      attempt++
-      try {
-        // The timeout guards the EXTERNAL work only (the model call / fetch /
-        // delivery). Every other step type keeps its timeout unchanged.
-        const output = await withTimeout(executeStep(step, ctx, deps, attempt, stepUsage, settlePending, pendingAdvance), step.timeoutMs ?? 0)
-        // The inference succeeded: from here on nothing may cause another one, so the
-        // accounting finishes without any timeout over it.
-        if (settlePending.length) await Promise.allSettled(settlePending.splice(0))
-        // A fonte disse que não há nada novo. Daqui para baixo não roda mais nada:
-        // nenhuma inferência, nenhuma entrega, zero token. E não é retry — não há o
-        // que tentar de novo, a resposta está correta.
-        if (output instanceof NoChange) {
+      const maxAttempts = Math.max(1, step.retryPolicy?.maxAttempts ?? 1)
+      const backoff = step.retryPolicy?.backoffMs ?? 0
+      let attempt = 0
+      let done = false
+      // Usage accumulates across this step's attempts — a retry really did consume
+      // tokens, so the run total reflects it.
+      const stepUsage: StepUsage = { inputTokens: 0, outputTokens: 0 }
+      // Accounting handed back by agent.execute; awaited OUTSIDE the timeout below.
+      const settlePending: Promise<unknown>[] = []
+      for (;;) {
+        attempt++
+        try {
+          // The timeout guards the EXTERNAL work only (the model call / fetch /
+          // delivery). Every other step type keeps its timeout unchanged.
+          const output = await withTimeout(
+            executeStep(step, ctx, deps, attempt, stepUsage, settlePending, pendingAdvance, leases),
+            step.timeoutMs ?? 0,
+          )
+          // The inference succeeded: from here on nothing may cause another one, so the
+          // accounting finishes without any timeout over it.
+          if (settlePending.length) await Promise.allSettled(settlePending.splice(0))
+          // A fonte encerrou a execução: ou não havia nada novo, ou outra execução já
+          // estava cuidando disto. Daqui para baixo não roda nada — nenhuma
+          // inferência, nenhuma entrega, zero token. E não é retry: a resposta está
+          // correta, não há o que tentar de novo.
+          if (output instanceof SourceHalt) {
+            steps.push({
+              stepId: step.id,
+              stepType: step.type,
+              status: 'succeeded',
+              attempts: attempt,
+              output: { outcome: output.outcome, reason: output.reason },
+              usage: { ...stepUsage },
+            })
+            halt = output
+            done = true
+            break
+          }
+          ctx[step.id] = output
+          if (typeof output === 'string') finalOutput = output
+          steps.push({ stepId: step.id, stepType: step.type, status: 'succeeded', attempts: attempt, output, usage: { ...stepUsage } })
+          done = true
+          break
+        } catch (error) {
+          const retryable = error instanceof StepError ? error.retryable : true
+          const kind = error instanceof StepError ? error.kind : 'unknown'
+          if (attempt < maxAttempts && retryable) {
+            await delay(backoff)
+            continue
+          }
+          // A step that failed may still have a settle in flight (a retried attempt
+          // that succeeded earlier); let it finish before moving on.
+          if (settlePending.length) await Promise.allSettled(settlePending.splice(0))
           steps.push({
             stepId: step.id,
             stepType: step.type,
-            status: 'succeeded',
+            status: 'failed',
             attempts: attempt,
-            output: { noChange: true, reason: output.reason },
+            errorKind: kind,
+            errorMessage: (error as Error).message,
             usage: { ...stepUsage },
           })
-          noChange = true
-          done = true
           break
         }
-        ctx[step.id] = output
-        if (typeof output === 'string') finalOutput = output
-        steps.push({ stepId: step.id, stepType: step.type, status: 'succeeded', attempts: attempt, output, usage: { ...stepUsage } })
-        done = true
-        break
-      } catch (error) {
-        const retryable = error instanceof StepError ? error.retryable : true
-        const kind = error instanceof StepError ? error.kind : 'unknown'
-        if (attempt < maxAttempts && retryable) {
-          await delay(backoff)
-          continue
-        }
-        // A step that failed may still have a settle in flight (a retried attempt
-        // that succeeded earlier); let it finish before moving on.
-        if (settlePending.length) await Promise.allSettled(settlePending.splice(0))
-        steps.push({
-          stepId: step.id,
-          stepType: step.type,
-          status: 'failed',
-          attempts: attempt,
-          errorKind: kind,
-          errorMessage: (error as Error).message,
-          usage: { ...stepUsage },
-        })
-        break
+      }
+      runUsage.inputTokens += stepUsage.inputTokens
+      runUsage.outputTokens += stepUsage.outputTokens
+      if (!done && !step.continueOnError) {
+        // Falhou: o checkpoint NÃO avança. O próximo ciclo reprocessa o mesmo
+        // conteúdo, que é o comportamento seguro.
+        return { status: 'failed', steps, finalOutput, context: ctx, usage: runUsage }
+      }
+      // A fonte encerrou: o resto da rotina não tem o que fazer.
+      if (halt) break
+    }
+
+    // As etapas que nem chegaram a ser tentadas ficam registradas como puladas, para
+    // o histórico não parecer truncado.
+    if (halt) {
+      const executadas = new Set(steps.map((s) => s.stepId))
+      for (const step of def.steps) {
+        if (!executadas.has(step.id)) steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
       }
     }
-    runUsage.inputTokens += stepUsage.inputTokens
-    runUsage.outputTokens += stepUsage.outputTokens
-    if (!done && !step.continueOnError) {
-      // Falhou: o checkpoint NÃO avança. O próximo ciclo reprocessa o mesmo
-      // conteúdo, que é o comportamento seguro.
-      return { status: 'failed', steps, finalOutput, context: ctx, usage: runUsage }
+
+    if (canceled) return { status: 'canceled', steps, finalOutput, context: ctx, usage: runUsage }
+
+    // Chegou aqui: nada falhou. Só AGORA o checkpoint avança — depois da inferência e
+    // da entrega, não antes.
+    //
+    // E não avança quando a fonte encerrou: se uma definição tiver duas fontes e a
+    // segunda não tiver novidade, o que a primeira trouxe não chegou a ser
+    // processado. Avançar ali perderia esse conteúdo. Uma rotina montada pela
+    // interface só tem uma fonte, então na prática esta lista já vem vazia — a
+    // guarda é para o runner, que é genérico.
+    if (deps.sourceState && !halt) {
+      for (const { stepId, fingerprint, avanco } of pendingAdvance) await deps.sourceState.advance(stepId, fingerprint, avanco)
     }
-    // Sem novidade na fonte: o resto da rotina não tem o que fazer.
-    if (noChange) break
-  }
-
-  // As etapas que nem chegaram a ser tentadas por falta de novidade ficam
-  // registradas como puladas, para o histórico não parecer truncado.
-  if (noChange) {
-    const executadas = new Set(steps.map((s) => s.stepId))
-    for (const step of def.steps) {
-      if (!executadas.has(step.id)) steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
+    if (halt) return { status: 'succeeded', sourceOutcome: halt.outcome, steps, finalOutput, context: ctx, usage: runUsage }
+    const anyFailed = steps.some((s) => s.status === 'failed')
+    return { status: anyFailed ? 'failed' : 'succeeded', steps, finalOutput, context: ctx, usage: runUsage }
+  } finally {
+    for (const { stepId, fingerprint } of leases) {
+      await deps.sourceState?.release(stepId, fingerprint).catch(() => undefined)
     }
   }
-
-  if (canceled) return { status: 'canceled', steps, finalOutput, context: ctx, usage: runUsage }
-
-  // Chegou aqui: nada falhou. Só AGORA o checkpoint avança — depois da inferência e
-  // da entrega, não antes.
-  //
-  // E não avança em `noChange`: se uma definição tiver duas fontes e a segunda não
-  // tiver novidade, o que a primeira trouxe não chegou a ser processado. Avançar ali
-  // perderia esse conteúdo para sempre. Uma rotina montada pela interface só tem uma
-  // fonte, então na prática esta lista já vem vazia — a guarda é para o runner, que
-  // é genérico.
-  if (deps.sourceState && !noChange) {
-    for (const { stepId, avanco } of pendingAdvance) await deps.sourceState.advance(stepId, avanco)
-  }
-  if (noChange) return { status: 'succeeded', noChange: true, steps, finalOutput, context: ctx, usage: runUsage }
-  const anyFailed = steps.some((s) => s.status === 'failed')
-  return { status: anyFailed ? 'failed' : 'succeeded', steps, finalOutput, context: ctx, usage: runUsage }
 }

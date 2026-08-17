@@ -204,8 +204,14 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
         <Select
           value={sourceKind}
           onChange={(e) => {
-            setSourceKind(e.target.value as 'fixed' | 'rss' | 'http')
+            const escolhida = e.target.value as 'fixed' | 'rss' | 'http'
+            setSourceKind(escolhida)
             setPreview(null)
+            // Minutos e "a cada hora" existem para monitorar. Voltando para entrada
+            // fixa, uma frequência dessas passaria a chamar a LLM 288 vezes por dia
+            // com a mesma entrada — então a rotina cai para diária em vez de
+            // esperar o dono descobrir isso no erro de salvamento.
+            if (escolhida === 'fixed' && (kind === 'minutes' || kind === 'hourly')) setKind('daily')
           }}
           data-testid="routine-source-kind"
           aria-label="Fonte de entrada"
@@ -308,8 +314,10 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
             data-testid="routine-frequency"
             aria-label="Frequência"
             options={[
-              { value: 'minutes', label: 'Minutos' },
-              { value: 'hourly', label: '1 hora' },
+              // Só quem monitora pode verificar de minuto em minuto: a consulta é
+              // de graça e a LLM só roda quando há mudança. Numa rotina de entrada
+              // fixa a mesma frequência seria conta alta em troca de nada.
+              ...(monitorando ? [{ value: 'minutes', label: 'Minutos' }, { value: 'hourly', label: '1 hora' }] : []),
               { value: 'daily', label: 'Todo dia' },
               { value: 'weekly', label: 'Toda semana' },
               { value: 'monthly', label: 'Todo mês' },
@@ -437,6 +445,12 @@ function haQuantoTempo(iso: string | null): string | null {
 const RESULTADO_LABEL: Record<string, string> = {
   changed: 'encontrou novidade',
   no_change: 'sem novidade',
+  // Outra execução já estava verificando esta fonte. Não é erro, e dizer isso é
+  // melhor que mostrar "sem novidade", que seria mentira.
+  skipped_concurrent: 'já estava sendo verificada',
+  // A execução carregava a fonte anterior. Some sozinho na próxima verificação, e
+  // dizer isso evita a leitura de que a troca quebrou alguma coisa.
+  skipped_stale: 'era da fonte anterior, descartada',
   failed: 'falhou ao verificar',
 }
 

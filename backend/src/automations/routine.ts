@@ -7,7 +7,7 @@ import { ObjectId } from 'mongodb'
 import { getAgentById, ensureActivationMode } from '../agents.js'
 import { recurrenceToCron, isValidRecurrence, describeRecurrence } from './schedule.js'
 import type { Recurrence } from './schedule.js'
-import { INITIAL_WINDOWS, isInitialWindow } from './sourceChange.js'
+import { INITIAL_WINDOWS, isInitialWindow, sourceFingerprint } from './sourceChange.js'
 import type { InitialWindow } from './sourceChange.js'
 import { createAutomation, getAutomation, publishAutomation, setStatus, updateDraft } from './service.js'
 import { listAutomations as repoListAutomations } from './repository.js'
@@ -29,6 +29,23 @@ export type RoutineSource =
   | { kind: 'rss'; url: string; initialWindow: InitialWindow; focus?: string }
   | { kind: 'http'; url: string; focus?: string }
 
+/**
+ * Qual "vez" deste monitoramento.
+ *
+ * Desligar o monitoramento e religar na mesma URL é começar de novo, não continuar
+ * de onde parou: no meio do desligamento o feed andou, e o dono que reativa espera
+ * ser avisado do que há agora — não receber de uma vez tudo que passou enquanto
+ * estava desligado, nem ficar em silêncio porque aquilo "já foi visto".
+ *
+ * A URL sozinha não sabe disso: ela é a mesma nas duas vezes. Daí a geração, que
+ * entra na identidade do checkpoint junto com tipo e URL.
+ *
+ * Ausente nas rotinas criadas antes deste campo, e é assim que elas continuam
+ * valendo: sem geração, a identidade é a de sempre e o checkpoint delas segue
+ * servindo.
+ */
+export const novaGeracaoDeFonte = (): string => new ObjectId().toHexString()
+
 export interface RoutineSpec {
   name: string
   objective: string // the instruction/objective for each run
@@ -47,6 +64,9 @@ export interface RoutineSpec {
   sectorId?: string | null
   // Fonte de entrada. Ausente ou `fixed` = comportamento de sempre.
   source?: RoutineSource
+  // A "vez" deste monitoramento. Quem monta a spec decide se continua a anterior
+  // ou começa outra; ver `resolverGeracao`.
+  sourceInstanceId?: string
 }
 
 const STEP_AGENT = 'run'
@@ -96,6 +116,7 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
         url: source.url,
         ...(source.kind === 'rss' ? { windowMs: INITIAL_WINDOWS[source.initialWindow], initialWindow: source.initialWindow } : {}),
         ...(source.focus ? { focus: source.focus } : {}),
+        ...(spec.sourceInstanceId ? { instanceId: spec.sourceInstanceId } : {}),
       },
       timeoutMs: 30_000,
       // Buscar é a única parte que vale repetir: uma falha de rede é transitória.
@@ -164,6 +185,28 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
  * nenhum. Definição sem etapa de fonte devolve `fixed`, que é o que toda rotina
  * antiga é.
  */
+// A geração gravada na definição, ou null nas rotinas anteriores ao campo.
+export function readSourceInstanceId(def: AutomationDefinition | null | undefined): string | null {
+  const passo = (def?.steps ?? []).find((s) => s.id === STEP_SOURCE)
+  return typeof passo?.config?.instanceId === 'string' ? passo.config.instanceId : null
+}
+
+/**
+ * Qual geração vale para a fonte que está sendo salva.
+ *
+ * Continua a mesma quando a fonte continua a mesma — mudar foco, horário, formato
+ * ou destino não recomeça nada. Começa outra quando o tipo ou a URL mudam, e
+ * também quando o monitoramento é religado depois de ter sido desligado, que é o
+ * caso que a URL sozinha não distingue.
+ */
+export function resolverGeracao(anterior: RoutineSource, nova: RoutineSource, geracaoAtual: string | null): string | undefined {
+  if (nova.kind === 'fixed') return undefined
+  // `anterior` fixa cai aqui como fonte diferente, que é exatamente o caso do
+  // religar: mesma URL, monitoramento novo.
+  const mesmaFonte = anterior.kind !== 'fixed' && anterior.kind === nova.kind && anterior.url === nova.url
+  return mesmaFonte ? (geracaoAtual ?? undefined) : novaGeracaoDeFonte()
+}
+
 export function readSourceFromDefinition(def: AutomationDefinition | null | undefined): RoutineSource {
   const passo = (def?.steps ?? []).find((s) => s.id === STEP_SOURCE)
   if (!passo) return { kind: 'fixed' }
@@ -177,6 +220,23 @@ export function readSourceFromDefinition(def: AutomationDefinition | null | unde
   return { kind: 'http', url, ...(focus ? { focus } : {}) }
 }
 
+/**
+ * Recorrência de minutos e de hora em hora existem para MONITORAMENTO.
+ *
+ * Uma rotina de entrada fixa rodando de 5 em 5 minutos chama a LLM 288 vezes por
+ * dia com exatamente a mesma entrada — é conta alta em troca de nada. O
+ * monitoramento pode: ele verifica de graça e só paga quando encontra algo.
+ *
+ * A interface já não oferece a combinação; isto aqui é a porteira, porque a API é
+ * pública e a interface não é a única forma de chegar nela.
+ */
+export function recorrenciaIncompativelComFonte(spec: RoutineSpec): string | null {
+  const curta = spec.recurrence?.kind === 'minutes' || spec.recurrence?.kind === 'hourly'
+  if (!curta) return null
+  if (normalizeSource(spec.source).kind !== 'fixed') return null
+  return 'Frequências de minutos ou de hora em hora só valem para rotinas que monitoram uma fonte. Escolha diária, semanal ou mensal.'
+}
+
 export class RoutineError extends Error {}
 
 // Create a routine on an agent: build the definition, create the (agent-owned)
@@ -186,7 +246,11 @@ export async function createRoutine(ownerId: string, agentId: ObjectId, spec: Ro
   const agent = await getAgentById(ownerId, agentId)
   if (!agent) throw new RoutineError('agent not found')
   if (!isValidRecurrence(spec.recurrence)) throw new RoutineError('invalid recurrence')
-  const definition = buildRoutineDefinition(spec, agentId)
+  const incompativel = recorrenciaIncompativelComFonte(spec)
+  if (incompativel) throw new RoutineError(incompativel)
+  // Rotina nova que monitora começa a primeira geração.
+  const sourceInstanceId = normalizeSource(spec.source).kind === 'fixed' ? undefined : novaGeracaoDeFonte()
+  const definition = buildRoutineDefinition({ ...spec, sourceInstanceId }, agentId)
   const created = await createAutomation(ownerId, {
     floorId: agent.officeId.toString(),
     name: spec.name || describeRecurrence(spec.recurrence),
@@ -219,8 +283,17 @@ export async function updateRoutine(ownerId: string, agentId: ObjectId, routineI
   // Uma fonte omitida no update MANTÉM a atual, pela mesma razão da entrega: um
   // formulário salvo antes de a fonte carregar não pode apagar o monitoramento.
   // Só um `{ kind: 'fixed' }` explícito o desliga.
-  const source = spec.source !== undefined ? spec.source : readSourceFromDefinition(existing.draftDefinition)
-  const definition = buildRoutineDefinition({ ...spec, delivery, source }, agentId)
+  const anterior = readSourceFromDefinition(existing.draftDefinition)
+  const source = spec.source !== undefined ? spec.source : anterior
+
+  // A frequência é julgada contra a fonte EFETIVA, não contra o que veio no corpo:
+  // um monitor existente que verifica de 15 em 15 minutos não pode ser recusado
+  // como "rotina fixa" só porque o cliente omitiu `source`.
+  const incompativel = recorrenciaIncompativelComFonte({ ...spec, source })
+  if (incompativel) throw new RoutineError(incompativel)
+
+  const sourceInstanceId = resolverGeracao(anterior, normalizeSource(source), readSourceInstanceId(existing.draftDefinition))
+  const definition = buildRoutineDefinition({ ...spec, delivery, source, sourceInstanceId }, agentId)
   await updateDraft(ownerId, routineId, { name: spec.name || describeRecurrence(spec.recurrence), description: spec.objective.slice(0, 2000), definition })
   await publishAutomation(ownerId, routineId, ownerId)
   return getAutomation(ownerId, routineId)
@@ -244,4 +317,20 @@ export async function listRoutines(ownerId: string, agentId: ObjectId): Promise<
 export async function getRoutineForAgent(ownerId: string, agentId: ObjectId, routineId: ObjectId): Promise<Automation | null> {
   const doc = await getAutomation(ownerId, routineId)
   return doc && doc.agentId?.toString() === agentId.toString() ? doc : null
+}
+
+/**
+ * A identidade da fonte que a rotina publica AGORA.
+ *
+ * `null` quando a rotina não monitora nada. Serve para uma execução perguntar se a
+ * fonte que ela carrega ainda é a que vale — a definição publicada é a única fonte
+ * de verdade, e o snapshot da execução pode ter envelhecido na fila.
+ */
+export function publishedSourceFingerprint(def: AutomationDefinition | null | undefined): string | null {
+  const passo = (def?.steps ?? []).find((s) => s.id === STEP_SOURCE)
+  if (!passo || (passo.type !== 'source.rss' && passo.type !== 'source.http')) return null
+  const url = typeof passo.config?.url === 'string' ? passo.config.url : ''
+  if (!url) return null
+  const instanceId = typeof passo.config?.instanceId === 'string' ? passo.config.instanceId : null
+  return sourceFingerprint(passo.type === 'source.rss' ? 'rss' : 'http', url, instanceId)
 }

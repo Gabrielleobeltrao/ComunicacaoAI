@@ -35,15 +35,25 @@ export interface AutomationRun {
   cancelRequestedAt: Date | null
   usage: { inputTokens: number; outputTokens: number }
   /**
-   * Sucesso SEM alteração: a fonte foi consultada e não havia nada novo. Presente
-   * só em rotina de monitoramento.
+   * Como a fonte encerrou a execução — presente só em rotina de monitoramento.
    *
    * Fica ao lado de `status` e não dentro dele de propósito. Para o motor, para as
-   * métricas e para o histórico isto é um SUCESSO — a rotina fez exatamente o que
-   * devia. O que muda é o que a interface conta ao dono: "verificado, sem novidade"
-   * em vez de "concluído" (que sugeriria que algo foi processado) ou "falhou" (que
-   * é mentira e ainda dispararia alerta).
+   * métricas e para o histórico os dois são SUCESSO: a rotina fez exatamente o que
+   * devia, com zero token. O que muda é o que a interface conta ao dono.
+   *
+   * `no_change`: verificou e não havia nada. Dizer "concluído" sugeriria que algo
+   * foi processado; dizer "falhou" é mentira e ainda dispararia alerta.
+   *
+   * `skipped_concurrent`: havia o que fazer, mas outra execução já estava fazendo.
+   * Desistir é o certo — e também não é erro.
+   *
+   * `skipped_stale`: a execução carregava uma fonte que não é mais a publicada — o
+   * dono trocou a URL depois de ela ser enfileirada. Ela não busca, não processa e
+   * não encosta no checkpoint da fonte nova.
    */
+  sourceOutcome?: 'no_change' | 'skipped_concurrent' | 'skipped_stale'
+  // Campo anterior, mantido só para os runs já gravados continuarem sendo lidos
+  // corretamente. Nada novo é escrito aqui.
   noChange?: boolean
   finalOutput: string
   error: SafeRunError | null
