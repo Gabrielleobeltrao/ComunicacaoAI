@@ -1,5 +1,8 @@
+import { useState } from 'react'
 import type { RunConfig, ToolChoice, ReasoningEffort } from '../lib/runConfig'
 import { capabilitiesFor, REASONING_EFFORTS, TOOL_CHOICES } from '../lib/runConfig'
+import type { AgentPresetSpec } from '../lib/agentPresets'
+import type { AgentPreset } from '../lib/types'
 
 // Dois blocos: quem o agente é, e como o modelo é chamado.
 //
@@ -31,18 +34,69 @@ const rotulo = 'mb-1 block text-sm text-(--text-muted)'
 const rotulo2 = rotulo
 const ajuda = 'mt-1 text-xs text-(--text-faint)'
 
+/**
+ * Que campos uma troca de modelo-base preencheria, dado o que já está escrito.
+ *
+ * A mesma regra do servidor (`presetFillableFields`), e por isso ela mora numa função
+ * pura: a tela precisa PROMETER exatamente o que vai acontecer antes de o dono
+ * confirmar. Campo com texto nunca entra na lista.
+ */
+export function camposQueSeriamPreenchidos(
+  atual: { objective: string; role: string; instructions: string; constraints: string },
+  spec: Pick<AgentPresetSpec, 'objective' | 'role' | 'instructions' | 'constraints'>,
+): { campo: 'objective' | 'role' | 'instructions' | 'constraints'; rotulo: string }[] {
+  const vazio = (v: string | undefined) => !(v ?? '').trim()
+  const pares = [
+    { campo: 'objective', rotulo: 'Objetivo', valor: atual.objective, sugestao: spec.objective },
+    { campo: 'role', rotulo: 'Função', valor: atual.role, sugestao: spec.role },
+    { campo: 'instructions', rotulo: 'Instruções', valor: atual.instructions, sugestao: spec.instructions },
+    { campo: 'constraints', rotulo: 'Limites', valor: atual.constraints, sugestao: spec.constraints },
+  ] as const
+  return pares.filter((p) => vazio(p.valor) && !vazio(p.sugestao)).map((p) => ({ campo: p.campo, rotulo: p.rotulo }))
+}
+
 export function AgentDefinitionFields({
   value,
   onChange,
   presetLabel,
+  preset,
+  presets,
+  objective,
+  definitionEditedAt,
+  onApplyPreset,
 }: {
   value: AgentDefinitionValue
   onChange: (v: AgentDefinitionValue) => void
   // O molde de onde o agente saiu. Mostrado como origem, não como estado atual: o
   // preset é escolhido uma vez, e a função muda com o uso.
   presetLabel?: string | null
+  preset?: AgentPreset
+  // O catálogo. Ausente (ainda carregando, ou criação) = sem seletor: uma lista vazia
+  // seria pior que nenhuma.
+  presets?: AgentPresetSpec[]
+  // O objetivo vive fora deste bloco, mas é um dos quatro campos que o molde preenche —
+  // precisa entrar na conta para a confirmação não prometer o que não vai fazer.
+  objective?: string
+  definitionEditedAt?: string | null
+  onApplyPreset?: (preset: AgentPreset, aplicarSugestoes: boolean) => void
 }) {
   const set = (patch: Partial<AgentDefinitionValue>) => onChange({ ...value, ...patch })
+  const [escolhido, setEscolhido] = useState<AgentPreset | null>(null)
+
+  const specEscolhido = presets?.find((p) => p.preset === escolhido) ?? null
+  const editadaAMao = Boolean(definitionEditedAt)
+  const aPreencher = specEscolhido
+    ? camposQueSeriamPreenchidos(
+        { objective: objective ?? '', role: value.role, instructions: value.instructions, constraints: value.constraints },
+        specEscolhido,
+      )
+    : []
+
+  const trocar = (aplicar: boolean) => {
+    if (!escolhido) return
+    onApplyPreset?.(escolhido, aplicar)
+    setEscolhido(null)
+  }
 
   return (
     <div className="grid gap-4" data-testid="agent-definition-fields">
@@ -51,6 +105,86 @@ export function AgentDefinitionFields({
           Criado a partir do modelo <strong>{presetLabel}</strong>. Trocar de modelo preenche apenas os campos vazios — o que você escreveu
           nunca é sobrescrito.
         </p>
+      ) : null}
+
+      {presets && presets.length > 0 && onApplyPreset ? (
+        <div>
+          <label className={rotulo} htmlFor="agent-preset-select">
+            Modelo-base
+          </label>
+          <select
+            id="agent-preset-select"
+            data-testid="agent-preset-select"
+            value={escolhido ?? preset ?? 'custom'}
+            onChange={(e) => setEscolhido(e.target.value as AgentPreset)}
+            className={campo}
+          >
+            {presets.map((p) => (
+              <option key={p.preset} value={p.preset}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+
+          {escolhido && escolhido !== preset ? (
+            <div
+              className="mt-2 rounded-lg border border-(--border-strong) bg-(--surface-sunken) p-3 text-sm"
+              data-testid="agent-preset-confirm"
+            >
+              {editadaAMao ? (
+                <p>
+                  Sua definição já foi escrita à mão, então <strong>nada será preenchido</strong> — só o modelo-base muda. Seus
+                  textos ficam como estão.
+                </p>
+              ) : aPreencher.length > 0 ? (
+                <>
+                  <p>
+                    Trocar para <strong>{specEscolhido?.label}</strong> vai preencher {aPreencher.length === 1 ? 'o campo vazio' : 'os campos vazios'}:
+                  </p>
+                  <ul className="mt-1 list-disc pl-5" data-testid="agent-preset-fields">
+                    {aPreencher.map((c) => (
+                      <li key={c.campo}>{c.rotulo}</li>
+                    ))}
+                  </ul>
+                  <p className={ajuda}>Nenhum texto seu é substituído.</p>
+                </>
+              ) : (
+                <p>
+                  Nenhum campo está vazio: trocar para <strong>{specEscolhido?.label}</strong> muda só o modelo-base.
+                </p>
+              )}
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                {!editadaAMao && aPreencher.length > 0 && (
+                  <button
+                    type="button"
+                    data-testid="agent-preset-apply"
+                    onClick={() => trocar(true)}
+                    className="rounded-lg bg-(--intent-brand) px-3 py-1.5 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover)"
+                  >
+                    Trocar e preencher
+                  </button>
+                )}
+                <button
+                  type="button"
+                  data-testid="agent-preset-only"
+                  onClick={() => trocar(false)}
+                  className="rounded-lg border border-(--border-strong) px-3 py-1.5 text-sm transition hover:border-(--border-focus)"
+                >
+                  Só trocar o modelo-base
+                </button>
+                <button
+                  type="button"
+                  data-testid="agent-preset-cancel"
+                  onClick={() => setEscolhido(null)}
+                  className="rounded-lg px-3 py-1.5 text-sm text-(--text-muted) transition hover:text-(--text-heading)"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       <div>

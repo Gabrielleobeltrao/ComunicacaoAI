@@ -208,15 +208,18 @@ export function suggestPresetForCapability(capability: string): AgentPreset {
  * alguém, sem avisar, é perder esse trabalho.
  */
 export function presetFillableFields(
-  atual: { role?: string | null; instructions?: string | null; constraints?: string | null; definitionEditedAt?: Date | null },
-  spec: Pick<AgentPresetSpec, 'role' | 'instructions' | 'constraints'>,
-): { role?: string; instructions?: string; constraints?: string } {
+  atual: { objective?: string | null; role?: string | null; instructions?: string | null; constraints?: string | null; definitionEditedAt?: Date | null },
+  spec: Pick<AgentPresetSpec, 'objective' | 'role' | 'instructions' | 'constraints'>,
+): { objective?: string; role?: string; instructions?: string; constraints?: string } {
   // Definição tocada por uma pessoa: o preset não mexe em nada. A interface pede
   // confirmação antes de aplicar.
   if (atual.definitionEditedAt) return {}
 
   const vazio = (v: string | null | undefined): boolean => !(typeof v === 'string' && v.trim())
   return {
+    // O objetivo entra junto: ele é um dos quatro blocos da definição e sua ausência
+    // deixaria o agente sem o que o molde tem de mais concreto a dizer.
+    ...(vazio(atual.objective) && spec.objective ? { objective: spec.objective } : {}),
     ...(vazio(atual.role) && spec.role ? { role: spec.role } : {}),
     ...(vazio(atual.instructions) && spec.instructions ? { instructions: spec.instructions } : {}),
     ...(vazio(atual.constraints) && spec.constraints ? { constraints: spec.constraints } : {}),

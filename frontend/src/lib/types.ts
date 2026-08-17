@@ -180,6 +180,9 @@ export interface AgentSummary {
   role?: string
   instructions?: string
   constraints?: string
+  // Quando uma PESSOA escreveu algum bloco da definição. É a marca que impede uma troca
+  // de modelo-base de sugerir por cima do trabalho de alguém — a tela avisa antes.
+  definitionEditedAt?: string | null
   // Como o modelo é chamado. Tudo opcional; ausente = padrão do sistema.
   runConfig?: RunConfig
   capabilities: string[]

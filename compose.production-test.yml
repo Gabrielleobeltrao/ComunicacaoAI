@@ -84,8 +84,15 @@ services:
       backend:
         condition: service_healthy
     # busybox wget ships in the nginx-unprivileged alpine image.
+    #
+    # 127.0.0.1, e NÃO `localhost`: a imagem roda sem privilégio, então o script
+    # `10-listen-on-ipv6-by-default.sh` do entrypoint não consegue reescrever o
+    # default.conf que copiamos ("can not modify ... read-only file system?") e o nginx
+    # sobe só em IPv4. `localhost` dentro do contêiner resolve ::1 primeiro, o wget bate
+    # numa porta que ninguém escuta, e o contêiner fica eternamente unhealthy — com o
+    # nginx servindo /healthz perfeitamente o tempo todo.
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -1,7 +1,7 @@
 # Graph Report - backend  (2026-08-17)
 
 ## Corpus Check
-- 264 files · ~262,989 words
+- 264 files · ~263,475 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `cc261cce`
+- Built from commit: `336e5178`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -162,11 +162,11 @@
   src/agentLiveState.ts → test/agentLiveState.test.mjs
 - `execDeps()` --indirect_call--> `attemptChargeKey()`  [INFERRED]
   test/hardening.integration.test.mjs → src/tokenUsage.ts
-- `buildDeps()` --indirect_call--> `executeAgentTask()`  [INFERRED]
-  src/automations/runProcessor.ts → src/agentRuntime.ts
 - `resolveOwnedAgentId()` --calls--> `getAgentById()`  [EXTRACTED]
   src/index.ts → src/agents.ts
 - `resolveSectorMembers()` --calls--> `getAgentById()`  [EXTRACTED]
+  src/index.ts → src/agents.ts
+- `resolveSectorTeamFields()` --calls--> `getAgentById()`  [EXTRACTED]
   src/index.ts → src/agents.ts
 
 ## Import Cycles
@@ -597,7 +597,7 @@ Cohesion: 0.40
 Nodes (4): AnthropicFalso, comportamento, contadora(), espera()
 
 ## Knowledge Gaps
-- **578 isolated node(s):** `AgentRunErrorKind`, `ReplyFn`, `DEFAULT_DELEGATION_TOKEN_BUDGET`, `DelegationBudget`, `DelegationDenyCode` (+573 more)
+- **578 isolated node(s):** `app`, `upload`, `uploadAvatar`, `AVATAR_MIME_TYPES`, `httpServer` (+573 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **24 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -612,7 +612,7 @@ _Questions this graph is uniquely positioned to answer:_
   _High betweenness centrality (0.059) - this node is a cross-community bridge._
 - **Are the 8 inferred relationships involving `buildDeps()` (e.g. with `finalizeAgentEvent()` and `runEventKey()`) actually correct?**
   _`buildDeps()` has 8 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `AgentRunErrorKind`, `ReplyFn`, `DEFAULT_DELEGATION_TOKEN_BUDGET` to the rest of the system?**
+- **What connects `app`, `upload`, `uploadAvatar` to the rest of the system?**
   _578 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `floorWork.ts` be split into smaller, more focused modules?**
   _Cohesion score 0.1341991341991342 - nodes in this community are weakly interconnected._

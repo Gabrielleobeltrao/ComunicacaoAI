@@ -2120,13 +2120,25 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
    * troca de preset de sobrescrever texto humano depois.
    */
   const corpo = req.body as Record<string, unknown>
+  // O agente gravado, para comparar. A marca de edição precisa significar "uma pessoa
+  // escreveu isto", e não "o formulário salvou": a tela manda os quatro campos em todo
+  // autosave, então marcar pela presença marcava tudo no primeiro salvamento — e a
+  // sugestão de preset nascia morta, sem nunca ter o que preencher.
+  const gravado = await getAgentById(res.locals.userId, new ObjectId(agentId))
+  if (!gravado) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
   let editouDefinicao = false
+  const mudou = (campo: 'role' | 'instructions' | 'constraints' | 'objective', valor: string): boolean =>
+    valor !== ((gravado as unknown as Record<string, unknown>)[campo] as string | undefined ?? '')
   for (const campo of ['role', 'instructions', 'constraints'] as const) {
     if (typeof corpo[campo] !== 'string') continue
-    ;(updates as Record<string, unknown>)[campo] = (corpo[campo] as string).slice(0, 8000)
-    editouDefinicao = true
+    const valor = (corpo[campo] as string).slice(0, 8000)
+    ;(updates as Record<string, unknown>)[campo] = valor
+    if (mudou(campo, valor)) editouDefinicao = true
   }
-  if (typeof objective === 'string') editouDefinicao = true
+  if (typeof objective === 'string' && mudou('objective', objective)) editouDefinicao = true
   if (editouDefinicao) (updates as Record<string, unknown>).definitionEditedAt = new Date()
 
   /**
@@ -2137,15 +2149,24 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
    * usa `definitionEditedAt` para distinguir "veio de um molde" de "uma pessoa escreveu
    * isto": no segundo caso, nada é preenchido.
    */
-  if (typeof corpo.preset === 'string' && corpo.applyPresetSuggestions === true) {
+  if (typeof corpo.preset === 'string') {
     const spec = AGENT_PRESET_SPECS.find((p) => p.preset === corpo.preset)
-    const atual = await getAgentById(res.locals.userId, new ObjectId(agentId))
-    if (spec && atual) {
-      const preencher = presetFillableFields(atual, spec)
+    if (!spec) {
+      res.status(400).json({ error: 'Unknown preset' })
+      return
+    }
+    // O molde escolhido passa a ser gravado. Antes ele só era lido para decidir a
+    // sugestão, então a tela podia oferecer a troca e nada mudava de verdade.
+    ;(updates as Record<string, unknown>).preset = spec.preset
+    if (corpo.applyPresetSuggestions === true) {
+      const preencher = presetFillableFields(gravado, spec)
       for (const [campo, valor] of Object.entries(preencher)) {
-        // O corpo da requisição continua ganhando: se o cliente mandou o campo, é uma
-        // edição explícita e vale mais que a sugestão.
-        if ((updates as Record<string, unknown>)[campo] === undefined) (updates as Record<string, unknown>)[campo] = valor
+        // O corpo da requisição continua ganhando: se o cliente mandou o campo com texto,
+        // é uma edição explícita e vale mais que a sugestão. Campo vindo VAZIO não conta
+        // como texto — o autosave manda os quatro sempre, e tratá-los como escolha
+        // deliberada anularia a sugestão que o dono acabou de confirmar.
+        const jaVeio = (updates as Record<string, unknown>)[campo]
+        if (typeof jaVeio !== 'string' || !jaVeio.trim()) (updates as Record<string, unknown>)[campo] = valor
       }
     }
   }
