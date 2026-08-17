@@ -1,7 +1,9 @@
 import { renderTemplate } from './transform.js'
 import { dedupeItems, filterByWindow, parseRssItems } from './sources.js'
 import { detectHttpChange, detectRssChange, normalizeHttpContent, pareceFeed, sourceFingerprint } from './sourceChange.js'
-import type { AutomationDefinition, StepDefinition, StepType } from './types.js'
+import { evaluateCondition } from './conditions.js'
+import { executionModeOf, modeNeverUsesAI, stepUsesAI } from './types.js'
+import type { AutomationDefinition, ExecutionMode, StepDefinition, StepType } from './types.js'
 
 // Transport-agnostic linear runner for an automation definition. It contains NO
 // Redis/Mongo/queue code: IO is injected (fetch/agent/deliver), so it is fully
@@ -92,10 +94,25 @@ export class SourceHalt {
   ) {}
 }
 
+/**
+ * As operações de memória, injetadas como todo o resto do IO deste runner.
+ *
+ * Nenhuma delas chama modelo. Estão aqui, e não dentro do runner, pela mesma razão
+ * de `fetchUrl`: o runner precisa ser testável sem banco, e quem resolve permissão
+ * e destino é a camada de fora.
+ */
+export interface MemoryOps {
+  write: (cfg: Record<string, unknown>, valor: unknown) => Promise<{ outcome: string; recordId: string; scopeKey: string }>
+  search: (cfg: Record<string, unknown>, valor: unknown) => Promise<{ items: unknown[]; total: number }>
+  remove: (cfg: Record<string, unknown>, valor: unknown) => Promise<{ deleted: number }>
+}
+
 export interface RunnerDeps {
   fetchUrl: (url: string, opts?: { contentTypeAllowlist?: string[]; requireOk?: boolean }) => Promise<FetchResult>
   // Presente só em rotinas de monitoramento.
   sourceState?: SourceState
+  // Presente quando a definição tem alguma etapa de memória.
+  memory?: MemoryOps
   // Returns the model usage so it reaches the step record and the run total, plus an
   // optional `settle`: the accounting/telemetry that is still finishing. The runner
   // awaits it OUTSIDE the step timeout, so a slow database can never be mistaken for
@@ -128,6 +145,11 @@ export interface RunOutcome {
    * rotina saudável parecer parada nem um desvio de concorrência parecer defeito.
    */
   sourceOutcome?: 'no_change' | 'skipped_concurrent' | 'skipped_stale'
+  // Como esta execução foi processada, e se ela chegou a falar com um modelo.
+  // `usedAI: false` com `usage` zerado é o que prova, no histórico, que o modo sem
+  // IA cumpriu o que promete.
+  executionMode: ExecutionMode
+  usedAI: boolean
   steps: StepRecord[]
   finalOutput: string
   context: Record<string, unknown>
@@ -298,6 +320,22 @@ async function executeStep(
       pendingAdvance?.push({ stepId: step.id, fingerprint, avanco: { contentHash: mudanca.contentHash } })
       return mudanca.conteudo
     }
+    // As três etapas de memória. Determinísticas: banco, e nada além disso.
+    case 'memory.write': {
+      if (!deps.memory) throw new StepError('validation', 'memória não disponível nesta execução', false)
+      const valor = (step.dependsOn ?? []).length ? ctx[(step.dependsOn ?? [])[0]] : ctx.input
+      return deps.memory.write(cfg, valor)
+    }
+    case 'memory.search': {
+      if (!deps.memory) throw new StepError('validation', 'memória não disponível nesta execução', false)
+      const valor = (step.dependsOn ?? []).length ? ctx[(step.dependsOn ?? [])[0]] : ctx.input
+      return deps.memory.search(cfg, valor)
+    }
+    case 'memory.delete': {
+      if (!deps.memory) throw new StepError('validation', 'memória não disponível nesta execução', false)
+      const valor = (step.dependsOn ?? []).length ? ctx[(step.dependsOn ?? [])[0]] : ctx.input
+      return deps.memory.remove(cfg, valor)
+    }
     case 'agent.execute': {
       const context = (step.dependsOn ?? []).map((id) => `Etapa ${id}:\n${JSON.stringify(ctx[id])}`)
       const res = await deps
@@ -359,6 +397,10 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
   let finalOutput = ''
   let canceled = false
   let halt: SourceHalt | null = null
+  const executionMode = executionModeOf(def)
+  // Vira `true` no instante em que uma etapa de IA de fato roda — não quando ela
+  // existe na definição. Uma etapa de agente pulada por condição não usou IA.
+  let usedAI = false
   const runUsage: StepUsage = { inputTokens: 0, outputTokens: 0 }
   // Avanços de checkpoint pendentes: aplicados no fim, e SÓ se tudo deu certo.
   const pendingAdvance: { stepId: string; fingerprint: string; avanco: { novasChaves?: string[]; contentHash?: string | null; baseline?: boolean } }[] = []
@@ -373,6 +415,28 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
         steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
         continue
       }
+      /**
+       * A porteira que não pode ser furada: num modo sem IA, uma etapa de agente
+       * nunca roda.
+       *
+       * O compilador já não gera essa etapa nesses modos. Isto aqui é a segunda
+       * tranca, para uma definição vinda de outro caminho — importada, editada à
+       * mão, criada por uma versão anterior — não gastar token de quem escolheu
+       * explicitamente não gastar.
+       */
+      if (stepUsesAI(step.type) && modeNeverUsesAI(executionMode)) {
+        steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
+        continue
+      }
+
+      // A condição do modo híbrido/automático. Falsa: a etapa não roda, e se ela era
+      // a da IA, nenhum token é gasto. A avaliação é pura — nada de perguntar a um
+      // modelo se vale a pena chamar o modelo.
+      if (step.runIf && !evaluateCondition(step.runIf, ctx)) {
+        steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
+        continue
+      }
+
       if (await deps.isCanceled?.()) {
         steps.push({ stepId: step.id, stepType: step.type, status: 'canceled', attempts: 0 })
         canceled = true
@@ -417,6 +481,7 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
             done = true
             break
           }
+          if (stepUsesAI(step.type)) usedAI = true
           ctx[step.id] = output
           if (typeof output === 'string') finalOutput = output
           steps.push({ stepId: step.id, stepType: step.type, status: 'succeeded', attempts: attempt, output, usage: { ...stepUsage } })
@@ -449,7 +514,7 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
       if (!done && !step.continueOnError) {
         // Falhou: o checkpoint NÃO avança. O próximo ciclo reprocessa o mesmo
         // conteúdo, que é o comportamento seguro.
-        return { status: 'failed', steps, finalOutput, context: ctx, usage: runUsage }
+        return { status: 'failed', executionMode, usedAI, steps, finalOutput, context: ctx, usage: runUsage }
       }
       // A fonte encerrou: o resto da rotina não tem o que fazer.
       if (halt) break
@@ -464,7 +529,7 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
       }
     }
 
-    if (canceled) return { status: 'canceled', steps, finalOutput, context: ctx, usage: runUsage }
+    if (canceled) return { status: 'canceled', executionMode, usedAI, steps, finalOutput, context: ctx, usage: runUsage }
 
     // Chegou aqui: nada falhou. Só AGORA o checkpoint avança — depois da inferência e
     // da entrega, não antes.
@@ -477,9 +542,9 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
     if (deps.sourceState && !halt) {
       for (const { stepId, fingerprint, avanco } of pendingAdvance) await deps.sourceState.advance(stepId, fingerprint, avanco)
     }
-    if (halt) return { status: 'succeeded', sourceOutcome: halt.outcome, steps, finalOutput, context: ctx, usage: runUsage }
+    if (halt) return { status: 'succeeded', sourceOutcome: halt.outcome, executionMode, usedAI, steps, finalOutput, context: ctx, usage: runUsage }
     const anyFailed = steps.some((s) => s.status === 'failed')
-    return { status: anyFailed ? 'failed' : 'succeeded', steps, finalOutput, context: ctx, usage: runUsage }
+    return { status: anyFailed ? 'failed' : 'succeeded', executionMode, usedAI, steps, finalOutput, context: ctx, usage: runUsage }
   } finally {
     for (const { stepId, fingerprint } of leases) {
       await deps.sourceState?.release(stepId, fingerprint).catch(() => undefined)

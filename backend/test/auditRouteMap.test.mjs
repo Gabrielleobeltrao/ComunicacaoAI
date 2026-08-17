@@ -121,6 +121,7 @@ const ROUTER_PREFIX = {
   'routes/runRoutes.ts': '/api/runs',
   'routes/buildingRoutes.ts': '/api/building',
   'routes/sectorKnowledgeRoutes.ts': '/api/sectors/:sectorId',
+  'routes/memoryRoutes.ts': '/api/memories',
 }
 
 function declaredRoutes() {

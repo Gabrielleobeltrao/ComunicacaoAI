@@ -14,6 +14,7 @@ import { Agents } from './pages/Agents'
 import { Dashboard } from './pages/Dashboard'
 import { Executions } from './pages/Executions'
 import { Logs } from './pages/Logs'
+import Memories from './pages/Memories'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
@@ -62,6 +63,8 @@ function App() {
           <Route path="/executions" element={<P><Executions /></P>} />
           {/* Logs e auditoria lives under Configurações: it is account-wide. */}
           <Route path="/settings/logs" element={<P><Logs /></P>} />
+          {/* A memória é do prédio inteiro, não de um andar: fica ao lado dos logs. */}
+          <Route path="/memories" element={<P><Memories /></P>} />
           {/* Canonical floor-scoped routes */}
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
           <Route path="/floors/:floorId/agents" element={<P><Agents /></P>} />
@@ -109,6 +112,7 @@ function App() {
           {/* Same canonical addresses with the pivot flag off, so no link dies. */}
           <Route path="/executions" element={<P><Executions /></P>} />
           <Route path="/settings/logs" element={<P><Logs /></P>} />
+          <Route path="/memories" element={<P><Memories /></P>} />
           <Route path="/setores" element={<P><Setores /></P>} />
           <Route path="/setores/:sectorId" element={<P><SectorDetail /></P>} />
           <Route path="/setores/:sectorId/:section" element={<P><SectorDetail /></P>} />

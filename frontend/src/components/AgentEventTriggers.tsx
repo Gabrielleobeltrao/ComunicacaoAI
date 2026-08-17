@@ -10,6 +10,7 @@ import {
   type RoutineStatus,
 } from '../lib/agentRoutines'
 import type { AgentSummary } from '../lib/types'
+import { emptyMemoryPlan, ExecutionModeFields, type ExecutionModeValue } from './ExecutionModeFields'
 import { Button, Card, EmptyState, Field, Input, StatusPill, Tag, Textarea } from '../ui'
 import type { AgentStatus } from '../ui'
 
@@ -81,24 +82,41 @@ function SecretOnce({ secret, onDismiss }: { secret: string; onDismiss: () => vo
   )
 }
 
+// A IA participa deste fluxo? É o que decide se o campo de objetivo faz sentido e se
+// o modo custa alguma coisa.
+const temIA = (v: ExecutionModeValue): boolean =>
+  v.executionMode === 'ai' || ((v.executionMode === 'hybrid' || v.executionMode === 'automatic') && !!v.aiCondition)
+
 function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (secret: string) => void }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [objective, setObjective] = useState('')
+  const [modo, setModo] = useState<ExecutionModeValue>({ executionMode: 'ai', memory: emptyMemoryPlan(), aiCondition: null })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const submit = async () => {
-    if (!objective.trim()) {
+    if (temIA(modo) && !objective.trim()) {
       setError('Descreva o que o agente deve fazer quando o evento chegar.')
+      return
+    }
+    if (modo.memory.enabled && modo.memory.scope !== 'agent' && !modo.memory.sectorId && !modo.memory.floorId && !modo.memory.buildingId) {
+      setError('Escolha onde a informação será guardada.')
       return
     }
     setSaving(true)
     setError(null)
     try {
-      const created = await createEventTrigger(agentId, { name: name.trim() || undefined, objective: objective.trim() })
+      const created = await createEventTrigger(agentId, {
+        name: name.trim() || undefined,
+        objective: objective.trim(),
+        executionMode: modo.executionMode,
+        memory: modo.memory,
+        aiCondition: modo.aiCondition,
+      })
       setName('')
       setObjective('')
+      setModo({ executionMode: 'ai', memory: emptyMemoryPlan(), aiCondition: null })
       setOpen(false)
       onCreated(created.secret)
     } catch {
@@ -117,12 +135,17 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
 
   return (
     <Card padding="16px" style={{ display: 'grid', gap: 12 }}>
-      <Field label="O que o agente faz com o evento" hint="Ex.: analisar o pedido recebido e responder com o resumo para o time.">
-        <Textarea rows={2} value={objective} onChange={(e) => setObjective(e.target.value)} data-testid="trigger-objective" />
-      </Field>
+      {/* Sem IA no fluxo não há a quem instruir: o campo sai de cena em vez de pedir
+          um texto que ninguém vai ler. */}
+      {temIA(modo) ? (
+        <Field label="O que o agente faz com o evento" hint="Ex.: analisar o pedido recebido e responder com o resumo para o time.">
+          <Textarea rows={2} value={objective} onChange={(e) => setObjective(e.target.value)} data-testid="trigger-objective" />
+        </Field>
+      ) : null}
       <Field label="Nome (opcional)">
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Novo pedido no site" data-testid="trigger-name" />
       </Field>
+      <ExecutionModeFields value={modo} onChange={setModo} />
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
         A assinatura HMAC vem ativada: quem chamar o endereço precisa assiná-lo com a credencial. A credencial aparece uma única vez, logo depois de criar.
       </p>
@@ -145,18 +168,35 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
 function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: string; trigger: EventTrigger; onDone: () => void; onCancel: () => void }) {
   const [name, setName] = useState(trigger.name)
   const [objective, setObjective] = useState(trigger.objective)
+  // Reabre exatamente como foi salvo. Um gatilho anterior a isto não tem os campos, e
+  // o padrão é o comportamento de sempre.
+  const [modo, setModo] = useState<ExecutionModeValue>({
+    executionMode: trigger.executionMode ?? 'ai',
+    memory: trigger.memory ?? emptyMemoryPlan(),
+    aiCondition: trigger.aiCondition ?? null,
+  })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const submit = async () => {
-    if (!objective.trim()) {
+    if (temIA(modo) && !objective.trim()) {
       setError('Descreva o que o agente deve fazer quando o evento chegar.')
+      return
+    }
+    if (modo.memory.enabled && modo.memory.scope !== 'agent' && !modo.memory.sectorId && !modo.memory.floorId && !modo.memory.buildingId) {
+      setError('Escolha onde a informação será guardada.')
       return
     }
     setSaving(true)
     setError(null)
     try {
-      await updateEventTrigger(agentId, trigger.id, { name: name.trim() || undefined, objective: objective.trim() })
+      await updateEventTrigger(agentId, trigger.id, {
+        name: name.trim() || undefined,
+        objective: objective.trim(),
+        executionMode: modo.executionMode,
+        memory: modo.memory,
+        aiCondition: modo.aiCondition,
+      })
       onDone()
     } catch {
       setError('Não foi possível salvar as alterações.')
@@ -167,12 +207,15 @@ function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: stri
 
   return (
     <Card padding="16px" style={{ display: 'grid', gap: 12 }} data-testid="edit-trigger-form">
-      <Field label="O que o agente faz com o evento">
-        <Textarea rows={2} value={objective} onChange={(e) => setObjective(e.target.value)} data-testid="edit-trigger-objective" />
-      </Field>
+      {temIA(modo) ? (
+        <Field label="O que o agente faz com o evento">
+          <Textarea rows={2} value={objective} onChange={(e) => setObjective(e.target.value)} data-testid="edit-trigger-objective" />
+        </Field>
+      ) : null}
       <Field label="Nome">
         <Input value={name} onChange={(e) => setName(e.target.value)} data-testid="edit-trigger-name" />
       </Field>
+      <ExecutionModeFields value={modo} onChange={setModo} idPrefix="edit-" />
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
         O endereço, a credencial, a assinatura e o estado (ativo/pausado) não mudam ao salvar.
       </p>

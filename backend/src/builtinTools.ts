@@ -1,4 +1,5 @@
 import type { Agent } from './agents.js'
+import { memorySearchTool } from './memory/tool.js'
 import { getToolsByIds } from './tools.js'
 import { executeToolCall } from './toolExecution.js'
 import type { ResolvedTool } from './agentTools.js'
@@ -231,6 +232,10 @@ export function builtinAppsCatalog() {
 // unified tool list the reply loop uses. Built-in apps whose account isn't
 // connected are skipped so the model isn't offered a tool that would fail.
 export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<ResolvedTool[]> {
+  // Lembrar é uma capacidade de todo agente, não um app que se conecta: a memória
+  // já existe no prédio dele. A ferramenta busca sob demanda em vez de despejar
+  // tudo no prompt — ver memory/tool.ts.
+  const memoria = memorySearchTool(ownerId, agent._id)
   // Legacy per-agent HTTP tools, kept working untouched.
   const http = (agent.tools ?? []).map(resolveHttpTool)
 
@@ -264,7 +269,7 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
   // already moved carries `migratedAt`: its credential is gone from this document
   // and resolving it here would silently produce a tool that cannot authenticate.
   const enabled = (agent.builtinTools ?? []).filter((entry) => !entry.migratedAt)
-  if (enabled.length === 0) return [...http, ...custom, ...fromGrants]
+  if (enabled.length === 0) return [memoria, ...http, ...custom, ...fromGrants]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')
   const googleConnected = needsGoogle ? (await getGoogleStatus(ownerId)).connected : false
@@ -276,5 +281,5 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
     if (app.connection === 'google' && !googleConnected) continue
     builtins.push(...app.resolve(ownerId, entry.config ?? {}))
   }
-  return [...http, ...custom, ...fromGrants, ...builtins]
+  return [memoria, ...http, ...custom, ...fromGrants, ...builtins]
 }

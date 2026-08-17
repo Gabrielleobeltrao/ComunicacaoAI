@@ -11,8 +11,11 @@ import { INITIAL_WINDOWS, isInitialWindow, sourceFingerprint } from './sourceCha
 import type { InitialWindow } from './sourceChange.js'
 import { createAutomation, getAutomation, publishAutomation, setStatus, updateDraft } from './service.js'
 import { listAutomations as repoListAutomations } from './repository.js'
-import { DEFAULT_LIMITS } from './types.js'
-import type { Automation, AutomationDefinition, OutputFormat } from './types.js'
+import { DEFAULT_LIMITS, isExecutionMode } from './types.js'
+import type { Automation, AutomationDefinition, ExecutionMode, OutputFormat, StepDefinition } from './types.js'
+import { aiStepPlanned, describeFlow, emptyMemoryPlan, memoryStep, normalizeMemoryPlan, STEP_MEMORY } from './executionPlan.js'
+import type { MemoryPlan } from './executionPlan.js'
+import type { StepCondition } from './conditions.js'
 
 /**
  * De onde vem o que o agente processa.
@@ -67,6 +70,12 @@ export interface RoutineSpec {
   // A "vez" deste monitoramento. Quem monta a spec decide se continua a anterior
   // ou começa outra; ver `resolverGeracao`.
   sourceInstanceId?: string
+  // Ausente = 'ai', que é o comportamento de toda rotina criada antes disto.
+  executionMode?: ExecutionMode
+  // Onde guardar o que a fonte trouxe. Desligado por padrão.
+  memory?: MemoryPlan
+  // Quando chamar a IA nos modos híbrido e automático.
+  aiCondition?: StepCondition | null
 }
 
 const STEP_AGENT = 'run'
@@ -102,7 +111,12 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
       ? `${spec.objective}\n\nEntrada: ${spec.input}`
       : spec.objective
 
-  const steps: AutomationDefinition['steps'] = []
+  const executionMode: ExecutionMode = isExecutionMode(spec.executionMode) ? spec.executionMode : 'ai'
+  const memoria = normalizeMemoryPlan(spec.memory)
+  const condicao = spec.aiCondition ?? null
+  const comIA = aiStepPlanned(executionMode, condicao)
+
+  const steps: StepDefinition[] = []
 
   if (monitorando) {
     steps.push({
@@ -127,13 +141,20 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
     })
   }
 
-  steps.push(
-    {
+  // Guardar vem antes do que é caro: se a IA falhar depois, o que a fonte trouxe já
+  // está salvo.
+  if (memoria.enabled) steps.push(memoryStep(memoria, monitorando ? [STEP_SOURCE] : [], agentId))
+
+  // A etapa que gasta token só existe quando o modo pede.
+  if (comIA) {
+    steps.push({
       id: STEP_AGENT,
       name: 'Executar agente',
       type: 'agent.execute',
       enabled: true,
       // Monitorando, o agente depende da fonte: é dela que vem a entrada.
+      // Sempre a fonte: gravar é efeito colateral, não elo da corrente. Depender da
+      // memória entregaria ao agente o recibo da gravação em vez do conteúdo.
       dependsOn: monitorando ? [STEP_SOURCE] : [],
       inputMapping: {},
       config: {
@@ -141,33 +162,37 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
         objective: spec.objective,
         instruction,
         format,
-        // Kept apart from the composed instruction so the editor can prefill the
-        // field the user actually typed, instead of re-parsing prose.
-        ...(spec.input ? { input: spec.input } : {}),
         ...(spec.sectorId ? { sectorId: spec.sectorId } : {}),
       },
       timeoutMs: 120_000,
       retryPolicy: { maxAttempts: Math.max(1, Math.min(spec.retryMaxAttempts ?? 1, 5)), backoffMs: 2000 },
       continueOnError: false,
-    },
-  )
+      ...(condicao && executionMode !== 'ai' ? { runIf: condicao } : {}),
+    })
+  }
+
   const deliveries: AutomationDefinition['deliveries'] = []
+  // Sem etapa de IA, o que se entrega é o que a etapa anterior produziu — o registro
+  // gravado, ou o que a fonte trouxe. Apontar para uma etapa que não existe deixaria
+  // a entrega muda.
+  const origemDaEntrega = comIA ? STEP_AGENT : memoria.enabled ? STEP_MEMORY : monitorando ? STEP_SOURCE : STEP_AGENT
   if (spec.delivery) {
     steps.push({
       id: STEP_DELIVERY,
       name: 'Entregar resultado',
       type: 'delivery.send',
       enabled: true,
-      dependsOn: [STEP_AGENT],
+      dependsOn: [origemDaEntrega],
       inputMapping: {},
-      config: { connectionId: spec.delivery.connectionId, fromStepId: STEP_AGENT },
+      config: { connectionId: spec.delivery.connectionId, fromStepId: origemDaEntrega },
       timeoutMs: 30_000,
       retryPolicy: { maxAttempts: 2, backoffMs: 2000 },
       continueOnError: false,
     })
-    deliveries.push({ provider: spec.delivery.provider, connectionId: spec.delivery.connectionId, fromStepId: STEP_AGENT, required: false })
+    deliveries.push({ provider: spec.delivery.provider, connectionId: spec.delivery.connectionId, fromStepId: origemDaEntrega, required: false })
   }
   return {
+    executionMode,
     trigger: { type: 'schedule', timezone: spec.timezone, cron: recurrenceToCron(spec.recurrence) },
     inputs: [],
     steps,

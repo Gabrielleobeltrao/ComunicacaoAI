@@ -1,5 +1,5 @@
 import type { ObjectId } from 'mongodb'
-import type { AutomationDefinition, TriggerType } from './types.js'
+import type { AutomationDefinition, ExecutionMode, TriggerType } from './types.js'
 
 // Execution records (plan §8.8–§8.10). MongoDB is the source of truth; BullMQ only
 // coordinates jobs. Snapshots make a run reproducible from the exact definition.
@@ -52,6 +52,10 @@ export interface AutomationRun {
    * não encosta no checkpoint da fonte nova.
    */
   sourceOutcome?: 'no_change' | 'skipped_concurrent' | 'skipped_stale'
+  // Como esta execução foi processada e se ela falou com um modelo. Ausentes nos
+  // runs gravados antes disto — que eram todos com IA, e é assim que são lidos.
+  executionMode?: ExecutionMode
+  usedAI?: boolean
   // Campo anterior, mantido só para os runs já gravados continuarem sendo lidos
   // corretamente. Nada novo é escrito aqui.
   noChange?: boolean

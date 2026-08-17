@@ -202,6 +202,7 @@ import { logRouter } from './routes/logRoutes.js'
 import { auditEntity, auditRequests } from './routes/auditMiddleware.js'
 import { ensureAuditIndexes } from './audit.js'
 import { agentRoutineRouter } from './routes/agentRoutineRoutes.js'
+import { memoryRouter } from './routes/memoryRoutes.js'
 import { connectionRouter } from './routes/connectionRoutes.js'
 import { appCatalogRouter, navigationPreferencesRouter } from './routes/appRoutes.js'
 import { privateAppRouter } from './routes/privateAppRoutes.js'
@@ -350,6 +351,7 @@ app.use('/api/executions', requireAuth, executionRouter)
 // Logs e auditoria: read-only timelines (executions + changes). No write route
 // exists here on purpose — an audit trail that can be edited is not one.
 app.use('/api/logs', requireAuth, logRouter)
+app.use('/api/memories', requireAuth, memoryRouter)
 // Agent routines + history (agent-owned scheduled automations). Sub-paths that this
 // router doesn't handle fall through to the inline /api/agents/:agentId routes below.
 app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)

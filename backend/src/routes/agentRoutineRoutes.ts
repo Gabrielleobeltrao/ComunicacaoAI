@@ -14,12 +14,19 @@ import {
 } from '../automations/routine.js'
 import type { RoutineSource, RoutineSpec } from '../automations/routine.js'
 import { isInitialWindow } from '../automations/sourceChange.js'
+import { isExecutionMode } from '../automations/types.js'
+import type { ExecutionMode } from '../automations/types.js'
+import { aiStepPlanned, normalizeMemoryPlan } from '../automations/executionPlan.js'
+import type { MemoryPlan } from '../automations/executionPlan.js'
+import type { StepCondition } from '../automations/conditions.js'
 import { previewSource } from '../automations/sourcePreview.js'
 import { getCheckpoint } from '../automations/sourceCheckpoint.js'
 import { createRun } from '../automations/runService.js'
 import {
   createEventTrigger,
   EventTriggerError,
+  normalizeCondition,
+  readEventTriggerConfig,
   getEventTriggerForAgent,
   listEventTriggers,
   updateEventTrigger,
@@ -126,6 +133,25 @@ function parseSource(raw: unknown): RoutineSource {
     return { kind: 'rss', url, initialWindow: isInitialWindow(s.initialWindow) ? s.initialWindow : '24h', ...(focus ? { focus } : {}) }
   }
   return { kind: 'http', url, ...(focus ? { focus } : {}) }
+}
+
+/**
+ * Modo, destino de memória e condição, vindos do corpo da requisição.
+ *
+ * Ausentes = o comportamento de sempre: modo `ai`, sem memória, sem condição. É isto
+ * que faz um cliente antigo — ou um `PATCH` que só muda o nome — continuar
+ * funcionando exatamente como antes.
+ */
+function parseTriggerExtras(body: Record<string, unknown>): {
+  executionMode?: ExecutionMode
+  memory?: MemoryPlan
+  aiCondition?: StepCondition | null
+} {
+  return {
+    ...(isExecutionMode(body.executionMode) ? { executionMode: body.executionMode } : {}),
+    ...('memory' in body ? { memory: normalizeMemoryPlan(body.memory) } : {}),
+    ...('aiCondition' in body ? { aiCondition: normalizeCondition(body.aiCondition) } : {}),
+  }
 }
 
 // http(s) e nada mais. `file:`, `gopher:` e afins nem chegam ao safeFetch.
@@ -340,7 +366,14 @@ agentRoutineRouter.post('/routines/:routineId/:action', async (req, res) => {
 // part of this shape — it is returned once, by create and by rotate, and nowhere else.
 function serializeTrigger(a: Automation) {
   const trigger = (a.publishedTrigger ?? a.trigger) as { type?: string; requireSignature?: boolean }
+  // Modo, destino da memória e condição vêm da definição — não há cópia da spec em
+  // lugar nenhum, e é por isso que a interface reabre o gatilho do jeito que ele foi
+  // salvo.
+  const cfg = readEventTriggerConfig(a.draftDefinition)
   return {
+    executionMode: cfg.executionMode,
+    memory: cfg.memory,
+    aiCondition: cfg.aiCondition,
     id: a._id.toString(),
     name: a.name,
     objective: a.description,
@@ -371,7 +404,10 @@ agentRoutineRouter.post('/event-triggers', async (req, res) => {
   }
   const body = (req.body ?? {}) as Record<string, unknown>
   const objective = typeof body.objective === 'string' ? body.objective.trim() : ''
-  if (!objective) {
+  const extras = parseTriggerExtras(body)
+  // Sem etapa de IA não há a quem instruir: exigir objetivo obrigaria a escrever um
+  // texto que ninguém vai ler.
+  if (!objective && aiStepPlanned(extras.executionMode ?? 'ai', extras.aiCondition ?? null)) {
     res.status(400).json({ error: 'objective is required' })
     return
   }
@@ -379,6 +415,7 @@ agentRoutineRouter.post('/event-triggers', async (req, res) => {
     const { trigger, secret } = await createEventTrigger(res.locals.userId, agentId, {
       name: typeof body.name === 'string' ? body.name : '',
       objective,
+      ...extras,
     })
     auditEntity(res, { id: trigger._id.toString(), label: trigger.name, floorId: trigger.floorId.toString() })
     // The ONLY moment the plaintext secret exists outside the database.
@@ -397,7 +434,8 @@ agentRoutineRouter.patch('/event-triggers/:triggerId', async (req, res) => {
   }
   const body = (req.body ?? {}) as Record<string, unknown>
   const objective = typeof body.objective === 'string' ? body.objective.trim() : ''
-  if (!objective) {
+  const extras = parseTriggerExtras(body)
+  if (!objective && aiStepPlanned(extras.executionMode ?? 'ai', extras.aiCondition ?? null)) {
     res.status(400).json({ error: 'objective is required' })
     return
   }
@@ -405,6 +443,7 @@ agentRoutineRouter.patch('/event-triggers/:triggerId', async (req, res) => {
     const updated = await updateEventTrigger(res.locals.userId, agentId, triggerId, {
       name: typeof body.name === 'string' ? body.name : '',
       objective,
+      ...extras,
     })
     if (!updated) {
       res.status(404).json({ error: 'trigger not found' })

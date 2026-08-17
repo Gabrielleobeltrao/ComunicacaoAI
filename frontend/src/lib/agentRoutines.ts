@@ -160,8 +160,45 @@ export const getAgentHistory = (agentId: string, limit = 25) => fetch(`${base(ag
 // Agent-native: the user creates "um gatilho por evento", never an automation. The
 // signing secret exists in this contract ONLY in the response of create and rotate —
 // it is never listed and never stored in the browser.
+/**
+ * Como o gatilho processa o que chega.
+ *
+ * `ai` é o de sempre, e é o padrão de quem não escolheu. Os outros existem porque a
+ * maior parte do que um webhook recebe não precisa de inteligência: guardar um
+ * pedido é um INSERT, e mandar para um modelo custa tokens a cada evento.
+ */
+export type ExecutionMode = 'collect_only' | 'deterministic' | 'ai' | 'hybrid' | 'automatic'
+export type MemoryScope = 'agent' | 'sector' | 'floor' | 'building'
+export type MemoryStrategy = 'append' | 'upsert' | 'replace'
+
+export interface MemoryPlan {
+  enabled: boolean
+  scope: MemoryScope
+  agentId?: string | null
+  sectorId?: string | null
+  floorId?: string | null
+  buildingId?: string | null
+  strategy: MemoryStrategy
+  key: string
+  dedupeKey?: string | null
+  fieldMap?: Record<string, string>
+  ttlSeconds?: number | null
+}
+
+export type ConditionOperator = 'exists' | 'absent' | 'equals' | 'not_equals' | 'contains' | 'gt' | 'lt' | 'matches'
+
+export interface StepCondition {
+  source: string
+  path: string
+  operator: ConditionOperator
+  value?: unknown
+}
+
 export interface EventTrigger {
   id: string
+  executionMode: ExecutionMode
+  memory: MemoryPlan
+  aiCondition: StepCondition | null
   name: string
   objective: string
   status: RoutineStatus
@@ -175,6 +212,10 @@ export interface EventTrigger {
 export interface EventTriggerInput {
   name?: string
   objective: string
+  // Ausentes = mantém o comportamento de sempre: modo `ai`, sem memória.
+  executionMode?: ExecutionMode
+  memory?: MemoryPlan
+  aiCondition?: StepCondition | null
 }
 
 export const listEventTriggers = (agentId: string) => fetch(`${base(agentId)}/event-triggers`, req('GET')).then(json<EventTrigger[]>)

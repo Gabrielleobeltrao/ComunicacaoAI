@@ -71,8 +71,11 @@ export type AuditEntityType =
   | 'event_trigger'
   | 'automation'
   | 'knowledge'
+  // Um registro guardado pela memória determinística.
+  | 'memory'
   | 'settings'
 export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
+  'memory',
   'agent',
   'sector',
   'floor',
