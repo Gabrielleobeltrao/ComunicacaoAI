@@ -17,6 +17,7 @@ import type { GateContext, GateTarget } from './collaborationGate.js'
 import type { FloorCommunicationConfig } from './floorCommunication.js'
 import type { AgentExecutionRequest, AgentExecutionResult, AgentOutputFormat } from './agentRuntime.js'
 import { presetSpec, suggestPresetForCapability } from './agentPresets.js'
+import { resolveAgentRun } from './agentDefinition.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -496,9 +497,24 @@ async function runAgentTask(
   // The TARGET decides how it answers: an agent configured to produce JSON is not
   // forced into Markdown because the caller did not think about it.
   const effectiveFormat: AgentOutputFormat = format ?? target.defaultOutputFormat ?? 'markdown'
+  /**
+   * O agente delegado é o MESMO agente, por outra porta.
+   *
+   * As ferramentas já foram resolvidas acima, e é o risco delas que decide o
+   * paralelismo — por isso o resolvedor vem depois. Delegação é automação: ninguém
+   * está olhando a tela, o resultado é consumido por quem pediu.
+   */
+  const execucao = resolveAgentRun(target, { context: 'automation', toolRisks: tools.map((t) => t.risk ?? 'write') })
+
   const res = await deps.runTask({
+    // O objetivo é o do ALVO; o pedido delegado é a instrução da tarefa. Trocar os dois
+    // faria o agente esquecer para que ele existe e virar executor do pedido da vez.
     objective: target.objective || objective,
-    instructions: objective,
+    // Instruções do agente primeiro, pedido depois: as dele valem para todo trabalho,
+    // o pedido é o do momento.
+    instructions: [target.instructions?.trim(), objective?.trim()].filter(Boolean).join('\n\n'),
+    // Função e limites, que antes não chegavam por este caminho.
+    definition: { role: target.role ?? null, constraints: target.constraints ?? null },
     // Passages are untrusted DATA (agentRuntime marks them as such), never system
     // instructions.
     context: context.length ? context : undefined,
@@ -510,6 +526,8 @@ async function runAgentTask(
     // What the target promised to receive and produce, in its own words.
     contracts: { input: target.inputContract, output: target.outputContract },
     output: { format: effectiveFormat, jsonSchema: effectiveFormat === 'json' ? (target.outputJsonSchema ?? null) : null },
+    runConfig: execucao.runConfig,
+    enableCaching: execucao.enableCaching,
     limits: { timeoutMs: TASK_TIMEOUT_MS, maxOutputChars: MAX_OUTPUT_CHARS },
   })
   ctx.budget.tokensSpent += res.usage.inputTokens + res.usage.outputTokens

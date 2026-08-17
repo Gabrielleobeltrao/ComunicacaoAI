@@ -220,6 +220,9 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       // A MESMA configuração que o Playground e o canal resolvem — a partir do mesmo
       // resolvedor, com o risco das ferramentas já conhecidas.
       runConfig: execucao.runConfig,
+      // Sem isto o runtime caía no padrão `true` e perdia o `promptCaching: false` de
+      // quem desligou o cache de propósito.
+      enableCaching: execucao.enableCaching,
       // The step's own format wins; the agent's default is the fallback for a step
       // that never expressed one. The schema only applies to JSON.
       output: { format: outputFormat, jsonSchema: outputFormat === 'json' ? (agent.outputJsonSchema ?? null) : null },

@@ -59,7 +59,10 @@ jobs:
       # O binário do mongod entre execuções. Sem isto, cada run baixa 76 MB de
       # novo — e era num cache frio que 29 processos disputavam o mesmo download.
       - name: Cache mongod binary
-        uses: actions/cache@v4
+        # v5: a v4 roda em Node 20, que o runner já avisa que vai sair. O aviso não
+        # quebra nada hoje e vira falha quando o Node 20 for removido — trocar agora é
+        # mais barato que descobrir no dia.
+        uses: actions/cache@v5
         with:
           path: ~/.cache/mongodb-binaries
           key: mongod-${{ runner.os }}

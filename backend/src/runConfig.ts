@@ -218,9 +218,49 @@ export function effectiveRunConfig(
  * falha de PERSISTÊNCIA ou de telemetria seria pagar a inferência duas vezes por um
  * problema que não é do modelo — o texto já existe, o que falhou foi guardá-lo.
  */
-export const RETRYABLE_KINDS: readonly string[] = ['provider', 'network', 'timeout', 'rate_limit']
+export const RETRYABLE_KINDS: readonly string[] = ['network', 'timeout', 'rate_limit', 'server']
 
 export function shouldRetryInference(kind: string, opts: { hasValidAnswer: boolean }): boolean {
   if (opts.hasValidAnswer) return false
   return RETRYABLE_KINDS.includes(kind)
+}
+
+/**
+ * O erro do SDK, classificado antes de qualquer decisão de repetir.
+ *
+ * "Erro do provedor" é grande demais para servir de critério: um 401 e um 503 chegam
+ * pelo mesmo caminho, e repetir o 401 três vezes só demora três vezes mais para dizer a
+ * mesma coisa — a credencial continua errada. Um 400 é pior: o pedido está malformado,
+ * e insistir gasta a inferência de novo pelo mesmo motivo.
+ *
+ * Só volta a valer a pena tentar quando a falha é de TRÂNSITO: rede caiu, o servidor
+ * está sobrecarregado (429), ou ele mesmo falhou (5xx).
+ */
+export function classifyProviderError(error: unknown): string {
+  const e = error as { status?: number; statusCode?: number; code?: string; name?: string; message?: string } | null
+  if (!e) return 'unknown'
+
+  const status = typeof e.status === 'number' ? e.status : typeof e.statusCode === 'number' ? e.statusCode : null
+  if (status !== null) {
+    if (status === 429) return 'rate_limit'
+    if (status >= 500) return 'server'
+    // 400, 401, 403, 404, 422: o pedido ou a credencial estão errados. Repetir não
+    // conserta nenhum dos dois.
+    if (status >= 400) return 'client'
+  }
+
+  const codigo = String(e.code ?? '').toUpperCase()
+  // `ETIMEDOUT` é timeout, não rede. Os dois são retentáveis, mas o rótulo vai para o
+  // diagnóstico do dono — e "a rede caiu" quando o servidor só demorou manda procurar o
+  // problema no lugar errado.
+  if (codigo === 'ETIMEDOUT' || e.name === 'AbortError' || codigo === 'ABORT_ERR') return 'timeout'
+  if (['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE'].includes(codigo)) return 'network'
+
+  const texto = String(e.message ?? '').toLowerCase()
+  if (texto.includes('timeout') || texto.includes('timed out')) return 'timeout'
+  if (texto.includes('econnreset') || texto.includes('socket hang up') || texto.includes('network')) return 'network'
+  if (texto.includes('rate limit') || texto.includes('too many requests')) return 'rate_limit'
+
+  // Desconhecido NÃO é retentável. Na dúvida sobre gastar de novo, não gaste.
+  return 'unknown'
 }

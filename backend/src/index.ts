@@ -1880,8 +1880,17 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     )
   }
 
+  // Os blocos da definição e a configuração de execução, saneados aqui como no PATCH: a
+  // tela é uma das formas de chegar nesta rota, não a única.
+  const corpoCriacao = req.body as Record<string, unknown>
+  const textoOpcional = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.slice(0, 8000) : undefined)
+
   const agent = await createAgent(res.locals.userId, officeId, name, {
     objective: typeof objective === 'string' ? objective : undefined,
+    role: textoOpcional(corpoCriacao.role),
+    instructions: textoOpcional(corpoCriacao.instructions),
+    constraints: textoOpcional(corpoCriacao.constraints),
+    ...('runConfig' in corpoCriacao ? { runConfig: normalizeRunConfig(corpoCriacao.runConfig) } : {}),
     provider,
     model: typeof model === 'string' || model === null ? model || null : undefined,
     memoryType,
@@ -2556,11 +2565,20 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     }).catch(() => undefined)
   }
 
-  // Mesmo resolvedor do Playground e das automações: quem o agente é não muda com a
-  // porta de entrada. As ferramentas deste caminho incluem delegação e são resolvidas
-  // logo abaixo, na própria chamada — por isso o risco vai vazio aqui: sem lista, o
-  // paralelismo simplesmente não é oferecido, que é o lado seguro.
-  const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: [] })
+  // As ferramentas ANTES do resolvedor. Resolvê-las depois, como estava, entregava uma
+  // lista de riscos vazia — e com ela `toolChoice: 'required'` era descartado ("não há
+  // ferramenta para tornar obrigatória") e o paralelismo nunca era oferecido, mesmo com
+  // todas as ferramentas sendo de leitura. A lista resolvida aqui é a MESMA usada na
+  // chamada abaixo: duas resoluções poderiam divergir.
+  const chatTools = await resolveToolsWithDelegation(
+    agent,
+    res.locals.userId,
+    // The manual test's own root, so its delegations are correlated to it and stay
+    // marked as `test` rather than leaking into production numbers.
+    rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent, rootExecutionId: manualRootId }),
+    productionDelegationDeps(),
+  )
+  const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: chatTools.map((t) => t.risk ?? 'write') })
 
   let generated: string
   let usage: { inputTokens: number; outputTokens: number }
@@ -2589,14 +2607,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       ),
     ].join('\n\n'),
     execucaoChat.enableCaching,
-    await resolveToolsWithDelegation(
-      agent,
-      res.locals.userId,
-      // The manual test's own root, so its delegations are correlated to it and stay
-      // marked as `test` rather than leaking into production numbers.
-      rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent, rootExecutionId: manualRootId }),
-      productionDelegationDeps(),
-    ),
+    chatTools,
     { runConfig: execucaoChat.runConfig },
     )
     generated = result.text

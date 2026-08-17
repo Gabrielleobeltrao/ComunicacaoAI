@@ -16,6 +16,7 @@ const {
   normalizeRunConfig,
   resolveRunConfig,
   shouldRetryInference,
+  classifyProviderError,
 } = await import('../dist/runConfig.js')
 
 // --- padrão do sistema ------------------------------------------------------------------
@@ -186,13 +187,49 @@ test('`none` sempre vale: recusar ferramenta é sempre possível', () => {
 
 // --- retry ---------------------------------------------------------------------------------------
 
-test('retry de inferência só em falha transitória', () => {
-  for (const kind of ['provider', 'network', 'timeout', 'rate_limit']) {
+test('retry de inferência só em falha de TRÂNSITO', () => {
+  // "provider" saiu da lista: era genérico demais. Um 401 e um 503 chegam pelo mesmo
+  // caminho, e repetir o 401 três vezes só demora três vezes mais para dizer que a
+  // credencial está errada.
+  for (const kind of ['network', 'timeout', 'rate_limit', 'server']) {
     assert.equal(shouldRetryInference(kind, { hasValidAnswer: false }), true, kind)
   }
-  for (const kind of ['validation', 'config', 'persistence', 'telemetry', 'unknown']) {
+  for (const kind of ['client', 'provider', 'validation', 'config', 'persistence', 'telemetry', 'unknown']) {
     assert.equal(shouldRetryInference(kind, { hasValidAnswer: false }), false, kind)
   }
+})
+
+test('o erro do SDK é classificado pelo status, não pelo tipo genérico', () => {
+  assert.equal(classifyProviderError({ status: 429 }), 'rate_limit')
+  assert.equal(classifyProviderError({ status: 503 }), 'server')
+  assert.equal(classifyProviderError({ status: 500 }), 'server')
+  // Estes NÃO se consertam repetindo: o pedido ou a credencial estão errados.
+  assert.equal(classifyProviderError({ status: 400 }), 'client')
+  assert.equal(classifyProviderError({ status: 401 }), 'client')
+  assert.equal(classifyProviderError({ status: 403 }), 'client')
+  assert.equal(classifyProviderError({ status: 422 }), 'client')
+})
+
+test('falha de rede e timeout são reconhecidos pelo código e pela mensagem', () => {
+  assert.equal(classifyProviderError({ code: 'ECONNRESET' }), 'network')
+  assert.equal(classifyProviderError({ code: 'ETIMEDOUT' }), 'timeout')
+  assert.equal(classifyProviderError({ name: 'AbortError' }), 'timeout')
+  assert.equal(classifyProviderError(new Error('Request timed out')), 'timeout')
+  assert.equal(classifyProviderError(new Error('socket hang up')), 'network')
+})
+
+test('erro desconhecido NÃO é retentável', () => {
+  // Na dúvida sobre gastar de novo, não gaste.
+  assert.equal(classifyProviderError(new Error('algo estranho')), 'unknown')
+  assert.equal(shouldRetryInference(classifyProviderError(new Error('algo estranho')), { hasValidAnswer: false }), false)
+})
+
+test('a classificação decide o retry ponta a ponta', () => {
+  const retenta = (erro) => shouldRetryInference(classifyProviderError(erro), { hasValidAnswer: false })
+  assert.equal(retenta({ status: 429 }), true)
+  assert.equal(retenta({ status: 503 }), true)
+  assert.equal(retenta({ status: 401 }), false)
+  assert.equal(retenta({ status: 400 }), false)
 })
 
 test('nunca repetir a inferência depois de haver resposta válida', () => {

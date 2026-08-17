@@ -164,10 +164,46 @@ export function composeAgentPrompt(opts: {
   if (entrada) partes.push(`O que você recebe: ${entrada}`)
   if (saida) partes.push(`O que você deve produzir: ${saida}`)
 
+  // O contrato de FORMA. Estava sendo recebido e não aplicado: `defaultOutputFormat`
+  // valia na automação e não valia no chat, então o mesmo agente respondia em Markdown
+  // por uma porta e em texto por outra.
+  const formato = outputDirective(opts.definition.output)
+  if (formato) partes.push(formato)
+
   for (const bloco of opts.channelBlocks ?? []) {
     const b = limpo(bloco)
     if (b) partes.push(b)
   }
 
   return partes.join('\n\n')
+}
+
+// Quanto de um schema vale a pena colar no prompt. Um schema gigante ocupa a janela sem
+// ajudar: o validador continua rodando sobre a resposta de qualquer forma.
+const MAX_SCHEMA_CHARS = 4000
+
+/**
+ * A instrução de formato, uma só para todos os caminhos.
+ *
+ * Ela é a última do prompt de propósito: é a palavra final sobre a FORMA da resposta, e
+ * vir depois do que o dono escreveu evita que uma instrução solta ("responda em tópicos")
+ * concorra com o contrato configurado.
+ */
+export function outputDirective(output: { format: string; jsonSchema?: Record<string, unknown> | null } | undefined): string {
+  if (!output) return ''
+  if (output.format === 'json') {
+    let schema = ''
+    try {
+      const texto = JSON.stringify(output.jsonSchema ?? null)
+      if (texto && texto !== 'null' && texto.length <= MAX_SCHEMA_CHARS) schema = texto
+    } catch {
+      schema = ''
+    }
+    return (
+      'Responda EXCLUSIVAMENTE com um único objeto JSON válido, sem texto fora do JSON e sem cercas de código.' +
+      (schema ? `\n\nO JSON deve obedecer a este JSON Schema:\n${schema}` : '')
+    )
+  }
+  if (output.format === 'markdown') return 'Responda em Markdown bem formatado.'
+  return ''
 }

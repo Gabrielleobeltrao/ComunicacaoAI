@@ -175,18 +175,52 @@ export async function generateAgentReply(
     const calls = message?.tool_calls ?? []
     if (allowTools && message && calls.length > 0) {
       messages.push(message)
-      for (const call of calls) {
-        if (call.type !== 'function') continue
+      const pedidos = calls.filter((c) => c.type === 'function')
+
+      /**
+       * Em paralelo só quando TODAS as chamadas deste lote são de leitura.
+       *
+       * Sobre as ferramentas CHAMADAS, não as disponíveis: o modelo pode ter dez à mão e
+       * pedir duas leituras — esse lote é seguro. Uma escrita no meio devolve tudo para
+       * sequencial, porque a ordem em que duas escritas chegam ao outro lado é o que o
+       * dono configurou. Risco ausente conta como escrita.
+       */
+      const soLeitura = pedidos.every((c) => tools.find((t) => t.name === c.function.name)?.risk === 'read')
+      const emParalelo = cfg.parallelTools === true && soLeitura && pedidos.length > 1
+
+      const executar = (call: (typeof pedidos)[number]) => {
         let args: Record<string, unknown> = {}
         try {
           args = JSON.parse(call.function.arguments || '{}')
         } catch {
           /* leave args empty on malformed JSON */
         }
-        const record = await runResolvedTool(tools, call.function.name, args)
-        toolCalls.push(record)
-        messages.push({ role: 'tool', tool_call_id: call.id, content: record.result })
+        return runResolvedTool(tools, call.function.name, args)
       }
+
+      // A ordem das mensagens de resultado é preservada nos dois caminhos: `map` devolve
+      // no índice do pedido, e o `tool_call_id` que as pareia vem do mesmo objeto.
+      /**
+       * O laço sequencial é um `for...of` de propósito.
+       *
+       * Um `reduce` com `async (acc, x) => [...(await acc), await executar(x)]` PARECE
+       * sequencial e não é: o `reduce` chama o callback para todos os elementos de uma
+       * vez, então `executar(x)` dispara em todos antes de qualquer `await` — e o
+       * encadeamento só ordena a COLETA dos resultados, não a execução. Duas escritas
+       * sairiam juntas mesmo com o paralelismo desligado.
+       */
+      let registros: ToolCallRecord[]
+      if (emParalelo) {
+        registros = await Promise.all(pedidos.map(executar))
+      } else {
+        registros = []
+        for (const call of pedidos) registros.push(await executar(call))
+      }
+
+      pedidos.forEach((call, i) => {
+        toolCalls.push(registros[i])
+        messages.push({ role: 'tool', tool_call_id: call.id, content: registros[i].result })
+      })
       continue
     }
 

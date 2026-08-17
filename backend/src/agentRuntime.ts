@@ -12,7 +12,8 @@
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 import type { AgentReplyResult, ChatTurn } from './llm.js'
 import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
-import { shouldRetryInference } from './runConfig.js'
+import { outputDirective } from './agentDefinition.js'
+import { classifyProviderError, shouldRetryInference } from './runConfig.js'
 import type { EffectiveRunConfig } from './runConfig.js'
 
 export type AgentOutputFormat = 'text' | 'markdown' | 'json'
@@ -191,14 +192,10 @@ export function buildTaskObjective(req: AgentExecutionRequest): string {
   if (inputContract) parts.push(`O que você recebe: ${inputContract}`)
   if (outputContract) parts.push(`O que você deve produzir: ${outputContract}`)
 
-  const format = req.output?.format ?? 'text'
-  if (format === 'json') {
-    parts.push('Responda EXCLUSIVAMENTE com um único objeto JSON válido, sem texto fora do JSON e sem cercas de código.')
-    const schema = boundedSchema(req.output?.jsonSchema)
-    if (schema) parts.push(`O JSON deve obedecer a este JSON Schema:\n${schema}`)
-  } else if (format === 'markdown') {
-    parts.push('Responda em Markdown bem formatado.')
-  }
+  // A MESMA função que o caminho de conversa usa: uma cópia aqui era exatamente como o
+  // formato acabou valendo em um caminho e não no outro.
+  const formato = outputDirective({ format: req.output?.format ?? 'text', jsonSchema: req.output?.jsonSchema })
+  if (formato) parts.push(formato)
 
   return parts.join('\n\n')
 }
@@ -304,7 +301,9 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
       break
     } catch (error) {
       ultimoErro = error
-      const kind = error instanceof AgentRunError ? error.kind : 'provider'
+      // O erro do SDK é CLASSIFICADO antes de decidir: um 401 e um 503 chegam pelo mesmo
+      // caminho, e repetir o 401 só demora três vezes mais para dizer a mesma coisa.
+      const kind = error instanceof AgentRunError ? error.kind : classifyProviderError(error)
       // `hasValidAnswer` é falso aqui por construção: se houvesse resposta, não
       // estaríamos no catch. Repetir depois dela é o que a função proíbe.
       if (tentativa >= tentativas || !shouldRetryInference(kind, { hasValidAnswer: false })) break
@@ -356,7 +355,9 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
     // A correção usa a MESMA configuração: mudar a temperatura ou o teto de saída só na
     // segunda tentativa produziria uma resposta com outras características.
     const repairCall = reply(objective, req.context ?? [], '', repairHistory, req.provider ?? null, req.model ?? null, req.apiKey ?? null, '', '', '', req.enableCaching ?? true, [], { runConfig: req.runConfig })
-    const ms = req.limits?.timeoutMs
+    // O mesmo tempo máximo da chamada principal: um reparo com prazo diferente seria
+    // uma segunda regra sobre quanto o dono está disposto a esperar.
+    const ms = req.runConfig?.timeoutMs ?? req.limits?.timeoutMs
     repairResult = ms && ms > 0 ? await withTimeout(repairCall, ms) : await repairCall
   } catch (error) {
     if (error instanceof AgentRunError) throw error

@@ -181,19 +181,51 @@ export async function generateAgentReply(
 
     if (allowTools && response.stop_reason === 'tool_use') {
       messages.push({ role: 'assistant', content: response.content })
-      const results: Anthropic.ToolResultBlockParam[] = []
-      for (const block of response.content) {
-        if (block.type === 'tool_use') {
-          const record = await runResolvedTool(tools, block.name, (block.input ?? {}) as Record<string, unknown>)
-          toolCalls.push(record)
-          results.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: record.result,
-            is_error: !record.ok,
-          })
-        }
+      const pedidos = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+
+      /**
+       * Em paralelo só quando TODAS as chamadas deste lote são de leitura.
+       *
+       * A decisão é sobre as ferramentas CHAMADAS, não sobre as disponíveis: o modelo
+       * pode ter dez à mão e pedir duas leituras — esse lote é seguro. E basta uma
+       * escrita para tudo voltar a ser sequencial, porque a ordem em que duas escritas
+       * chegam ao outro lado é o que o dono configurou.
+       *
+       * Risco ausente conta como escrita. Uma ferramenta que não declarou o que faz não
+       * ganha paralelismo por omissão.
+       */
+      const soLeitura = pedidos.every((p) => tools.find((t) => t.name === p.name)?.risk === 'read')
+      const emParalelo = opts.runConfig?.parallelTools === true && soLeitura && pedidos.length > 1
+
+      const executar = (bloco: Anthropic.ToolUseBlock) =>
+        runResolvedTool(tools, bloco.name, (bloco.input ?? {}) as Record<string, unknown>)
+
+      // `map` preserva a ordem em qualquer um dos caminhos: cada resultado volta no
+      // índice do pedido, e o `tool_use_id` que os pareia vem do mesmo bloco.
+      /**
+       * O laço sequencial é um `for...of` de propósito.
+       *
+       * Um `reduce` com `async (acc, x) => [...(await acc), await executar(x)]` PARECE
+       * sequencial e não é: o `reduce` chama o callback para todos os elementos de uma
+       * vez, então `executar(x)` dispara em todos antes de qualquer `await` — e o
+       * encadeamento só ordena a COLETA dos resultados, não a execução. Duas escritas
+       * sairiam juntas mesmo com o paralelismo desligado.
+       */
+      let registros: ToolCallRecord[]
+      if (emParalelo) {
+        registros = await Promise.all(pedidos.map(executar))
+      } else {
+        registros = []
+        for (const bloco of pedidos) registros.push(await executar(bloco))
       }
+
+      const results: Anthropic.ToolResultBlockParam[] = pedidos.map((bloco, i) => ({
+        type: 'tool_result',
+        tool_use_id: bloco.id,
+        content: registros[i].result,
+        is_error: !registros[i].ok,
+      }))
+      toolCalls.push(...registros)
       messages.push({ role: 'user', content: results })
       continue
     }

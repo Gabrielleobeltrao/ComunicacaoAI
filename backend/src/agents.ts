@@ -373,6 +373,13 @@ export async function createAgent(
   name: string,
   options: {
     objective?: string
+    // Os blocos da definição, na criação e não só no PATCH. Sem isto, contratar um
+    // agente já configurado exigia criar e depois editar — e o que fosse esquecido no
+    // segundo passo simplesmente não existia.
+    role?: string
+    instructions?: string
+    constraints?: string
+    runConfig?: RunConfig
     provider?: Provider
     model?: string | null
     memoryType?: MemoryType
@@ -418,6 +425,15 @@ export async function createAgent(
     officeId,
     name,
     objective: options.objective ?? '',
+    // Ausentes viram ausentes, não string vazia: é a ausência que faz o prompt não ganhar
+    // bloco nenhum — exatamente como um agente criado antes destes campos.
+    ...(options.role?.trim() ? { role: options.role.trim() } : {}),
+    ...(options.instructions?.trim() ? { instructions: options.instructions.trim() } : {}),
+    ...(options.constraints?.trim() ? { constraints: options.constraints.trim() } : {}),
+    ...(options.runConfig && Object.keys(options.runConfig).length ? { runConfig: options.runConfig } : {}),
+    // Quem já nasce com definição escrita nasce EDITADO: uma troca de preset depois não
+    // pode passar por cima do que foi dito na contratação.
+    ...(options.role?.trim() || options.instructions?.trim() || options.constraints?.trim() ? { definitionEditedAt: new Date() } : {}),
     provider: options.provider ?? 'anthropic',
     model: options.model ?? null,
     memoryType: options.memoryType ?? 'none',

@@ -26,11 +26,16 @@ const enviado = { anthropic: [], openai: [] }
 const respostaAnthropic = { content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 }, stop_reason: 'end_turn' }
 const respostaOpenAI = { choices: [{ message: { content: 'ok', tool_calls: [] } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }
 
+// O que o dublê responde. Variável de módulo, e não método de protótipo: a classe define
+// `messages` como CAMPO DE INSTÂNCIA, e campo de instância vence protótipo — sobrescrever
+// o protótipo depois não teria efeito nenhum, e o teste passaria medindo nada.
+let responderAnthropic = async () => respostaAnthropic
+
 class AnthropicFalso {
   messages = {
     create: async (body) => {
       enviado.anthropic.push(body)
-      return respostaAnthropic
+      return responderAnthropic(body)
     },
   }
   models = { list: async () => ({ data: [] }) }
@@ -219,4 +224,68 @@ test('nenhum campo do nosso vocabulário vaza para a requisição', async () => 
   for (const proibido of ['timeoutMs', 'retries', 'dropped', 'runConfig', 'reasoningEffort', 'maxOutputTokens', 'toolChoice', 'parallelTools']) {
     assert.equal(proibido in corpo, false, `"${proibido}" vazou para a requisição`)
   }
+})
+
+// --- paralelismo de verdade, medido -----------------------------------------------------
+//
+// O commit anterior mandava `parallel_tool_calls` ao provedor e executava o lote num
+// `for/await`. O campo dizia "pode ir junto" e o código ia um de cada vez: promessa
+// falsa. Aqui a prova é temporal — duas leituras que dormem 60 ms cada terminam em ~60 ms
+// se forem paralelas, e em ~120 ms se não forem.
+
+const lenta = (name, risk, ms = 60) => ({
+  name,
+  description: 'x',
+  inputSchema: { type: 'object', properties: {} },
+  risk,
+  run: async () => {
+    await new Promise((r) => setTimeout(r, ms))
+    return { ok: true, result: '{}' }
+  },
+})
+
+// Uma resposta que pede DUAS ferramentas e, na volta, responde.
+const pedindoDuas = (nomes) => ({
+  content: nomes.map((n, i) => ({ type: 'tool_use', id: `t${i}`, name: n, input: {} })),
+  usage: { input_tokens: 1, output_tokens: 1 },
+  stop_reason: 'tool_use',
+})
+
+async function medirAnthropic({ parallelTools, riscos }) {
+  const nomes = riscos.map((_, i) => `f${i}`)
+  const tools = riscos.map((r, i) => lenta(nomes[i], r))
+  let volta = 0
+  // Primeira resposta pede as ferramentas; a segunda encerra.
+  responderAnthropic = async () => {
+    volta += 1
+    return volta === 1 ? pedindoDuas(nomes) : respostaAnthropic
+  }
+  const inicio = Date.now()
+  await anthropic.generateAgentReply('o', [], '', [{ role: 'user', content: 'oi' }], 'claude-sonnet-5', 'k', '', '', '', true, tools, {
+    runConfig: { parallelTools },
+  })
+  const duracao = Date.now() - inicio
+  responderAnthropic = async () => respostaAnthropic
+  return duracao
+}
+
+test('duas LEITURAS com paralelismo ligado rodam juntas', async () => {
+  const ms = await medirAnthropic({ parallelTools: true, riscos: ['read', 'read'] })
+  assert.ok(ms < 110, `esperado ~60ms (paralelo), levou ${ms}ms`)
+})
+
+test('as mesmas duas leituras SEM paralelismo rodam em sequência', async () => {
+  const ms = await medirAnthropic({ parallelTools: undefined, riscos: ['read', 'read'] })
+  assert.ok(ms >= 110, `esperado ~120ms (sequencial), levou ${ms}ms`)
+})
+
+test('uma ESCRITA no lote força a sequência, mesmo com paralelismo pedido', async () => {
+  // A ordem em que duas escritas chegam ao outro lado é o que o dono configurou.
+  const ms = await medirAnthropic({ parallelTools: true, riscos: ['read', 'write'] })
+  assert.ok(ms >= 110, `esperado sequencial, levou ${ms}ms`)
+})
+
+test('risco AUSENTE conta como escrita e mantém a sequência', async () => {
+  const ms = await medirAnthropic({ parallelTools: true, riscos: ['read', undefined] })
+  assert.ok(ms >= 110, `ferramenta sem risco declarado não pode ganhar paralelismo, levou ${ms}ms`)
 })

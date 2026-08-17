@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
+import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue } from './AgentDefinitionFields'
+import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
 import { reachableCollaboratorCount } from '../lib/agentReadiness'
 import { useBuildingPeers } from '../lib/useBuildingPeers'
@@ -158,6 +160,11 @@ export function HireWizard({
   const [step, setStep] = useState(initialPreset ? 1 : 0)
   const [presets, setPresets] = useState<AgentPresetSpec[]>([])
   const [preset, setPreset] = useState<AgentPreset>(initialPreset ?? 'custom')
+  // A definição sugerida pelo modelo, editável. Fica em "Configuração avançada": o
+  // caminho simples continua sendo três perguntas.
+  const [definicao, setDefinicao] = useState<AgentDefinitionValue>({ role: '', instructions: '', constraints: '' })
+  const [runConfig, setRunConfig] = useState<RunConfig>({})
+  const [avancadoAberto, setAvancadoAberto] = useState(false)
 
   const [language, setLanguage] = useState('pt')
   const [name, setName] = useState(() => randomAgentName('pt').name)
@@ -179,7 +186,14 @@ export function HireWizard({
         setPresets(list)
         // Pre-picked role: adopt its default objective as if the user had clicked it.
         const picked = initialPreset ? list.find((p) => p.preset === initialPreset) : null
-        if (picked) setObjective((prev) => (prev.trim() ? prev : picked.objective))
+        if (picked) {
+          setObjective((prev) => (prev.trim() ? prev : picked.objective))
+          setDefinicao((atual) => ({
+            role: atual.role.trim() ? atual.role : (picked.role ?? ''),
+            instructions: atual.instructions.trim() ? atual.instructions : (picked.instructions ?? ''),
+            constraints: atual.constraints.trim() ? atual.constraints : (picked.constraints ?? ''),
+          }))
+        }
       })
       .catch(() => setPresets([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -193,11 +207,26 @@ export function HireWizard({
   const otherAgents = useMemo(() => (peers.agents.length > 0 ? peers.agents : agents).filter((a) => a.name), [peers.agents, agents])
   const callableSectors = useMemo(() => (peers.sectors.length > 0 ? peers.sectors : sectors.filter((s) => s.mode !== 'organization')), [peers.sectors, sectors])
 
+  /**
+   * Trocar de modelo preenche o que está VAZIO, e só isso.
+   *
+   * O objetivo continua sendo substituído porque no assistente ele é gerado a partir do
+   * modelo e das respostas — quem escreveu texto próprio já está em "Configuração
+   * avançada", e é lá que ele fica protegido.
+   *
+   * Os blocos da definição, esses, nunca são sobrescritos: passar por cima de uma
+   * instrução que a pessoa escreveu, sem avisar, é perder trabalho dela.
+   */
   const applyPreset = (s: AgentPresetSpec) => {
     setPreset(s.preset)
     setObjective(s.objective)
     setSubject('')
     setDeliverable('')
+    setDefinicao((atual) => ({
+      role: atual.role.trim() ? atual.role : (s.role ?? ''),
+      instructions: atual.instructions.trim() ? atual.instructions : (s.instructions ?? ''),
+      constraints: atual.constraints.trim() ? atual.constraints : (s.constraints ?? ''),
+    }))
   }
 
   // How many colleagues this agent could REALLY reach once hired — the same rule the
@@ -260,6 +289,13 @@ export function HireWizard({
           callableSectorIds: picked ? collaboratorSectors : [],
           // Reachable by other agents — the permission that replaced agent_only.
           callerPolicy: spec?.callerPolicy ?? 'all',
+          // A definição e a configuração vão na CRIAÇÃO. Antes elas só existiam no
+          // PATCH: contratar um agente pronto exigia criar e depois editar, e o que
+          // fosse esquecido no segundo passo simplesmente não existia.
+          role: definicao.role.trim(),
+          instructions: definicao.instructions.trim(),
+          constraints: definicao.constraints.trim(),
+          runConfig: cleanRunConfig(runConfig),
         }),
       })
       if (!res.ok) throw new Error(String(res.status))
@@ -429,6 +465,28 @@ export function HireWizard({
                 ))}
               </Card>
             ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      {/* Configuração avançada: recolhida, e fora do caminho das três perguntas. Quem
+          quer contratar rápido não vê nada disto; quem quer ajustar não precisa criar e
+          editar depois. */}
+      <div className="border-t border-(--border-subtle) pt-3">
+        <button
+          type="button"
+          onClick={() => setAvancadoAberto((v) => !v)}
+          className="flex w-full items-center gap-1.5 text-sm text-(--text-muted) transition hover:text-(--text-heading)"
+          data-testid="hire-advanced-toggle"
+        >
+          <span className={`transition-transform ${avancadoAberto ? 'rotate-90' : ''}`}>▸</span>
+          Configuração avançada
+          <span className="text-xs text-(--text-faint)">(opcional)</span>
+        </button>
+        {avancadoAberto ? (
+          <div className="mt-3 grid gap-5" data-testid="hire-advanced">
+            <AgentDefinitionFields value={definicao} onChange={setDefinicao} presetLabel={spec?.label ?? null} />
+            <AgentRunConfigFields value={runConfig} onChange={setRunConfig} provider="anthropic" model={null} />
           </div>
         ) : null}
       </div>

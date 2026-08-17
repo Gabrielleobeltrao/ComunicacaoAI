@@ -197,6 +197,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   const [editLanguage, setEditLanguage] = useState<Language>('pt')
   const [editDailyMessageLimit, setEditDailyMessageLimit] = useState(0)
   const [editCheapAuxModel, setEditCheapAuxModel] = useState(true)
+  /**
+   * O valor legado de cache, mantido apenas para não ser APAGADO ao salvar.
+   *
+   * O controle saiu da tela: agora existe um só, tri-estado, em "Modelo e execução"
+   * (`runConfig.cache`). Este campo continua sendo lido do documento e devolvido intacto,
+   * porque ele é o fallback de quem nunca abriu a tela nova — zerá-lo aqui religaria o
+   * cache de quem desligou antes.
+   */
   const [editPromptCaching, setEditPromptCaching] = useState(true)
   const [editMetricProfile, setEditMetricProfile] = useState<MetricProfile>('auto')
   const [editTools, setEditTools] = useState<AgentTool[]>([])
@@ -875,21 +883,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                     type="checkbox"
                     checked={editCheapAuxModel}
                     onChange={(e) => setEditCheapAuxModel(e.target.checked)}
-                    className="peer sr-only"
-                  />
-                  <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
-                </label>
-              </div>
-              <div className="flex items-center justify-between gap-3 border-t border-(--border-subtle) pt-2">
-                <p className="text-sm text-(--text-muted)">
-                  Cache de prompt — reaproveita o contexto fixo (objetivo + instruções) entre as
-                  mensagens de uma conversa, reduzindo o custo de entrada.
-                </p>
-                <label className="relative inline-flex shrink-0 cursor-pointer items-center">
-                  <input
-                    type="checkbox"
-                    checked={editPromptCaching}
-                    onChange={(e) => setEditPromptCaching(e.target.checked)}
                     className="peer sr-only"
                   />
                   <div className="peer h-6 w-11 rounded-full bg-(--paper-3) transition peer-checked:bg-(--intent-success) after:absolute after:left-0.5 after:top-0.5 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:after:translate-x-5 peer-checked:after:bg-white" />
