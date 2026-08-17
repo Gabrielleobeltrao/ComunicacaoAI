@@ -37,6 +37,28 @@ export const APP_ACTIVATIONS: AppActivation[] = ['instant', 'credentials', 'oaut
 export type AppStatus = 'draft' | 'review' | 'published' | 'suspended'
 export const APP_STATUSES: AppStatus[] = ['draft', 'review', 'published', 'suspended']
 
+/**
+ * O App já pode ser USADO?
+ *
+ * Coisa diferente de `status`, que é o ciclo de publicação (rascunho, revisão,
+ * publicado, suspenso). Um App pode estar publicado — aparecer no catálogo, com nome e
+ * descrição — e ainda não estar pronto para ligar em nada.
+ *
+ * É para isso que serve `coming_soon`: anunciar sem entregar. O App fica visível com
+ * selo "Em breve", e conectar, conceder e executar são todos recusados — no backend,
+ * não só na tela. Esconder o App seria a alternativa fácil, e ela desperdiça a única
+ * coisa que um "em breve" tem de útil: dizer ao dono o que está vindo.
+ *
+ * Ausente = `available`. É isso que faz todo manifesto escrito antes deste campo
+ * continuar exatamente como era.
+ */
+export type AppAvailability = 'available' | 'coming_soon'
+export const APP_AVAILABILITIES: AppAvailability[] = ['available', 'coming_soon']
+export const availabilityOf = (app: { availability?: AppAvailability } | null | undefined): AppAvailability =>
+  app?.availability === 'coming_soon' ? 'coming_soon' : 'available'
+export const isUsableApp = (app: { availability?: AppAvailability } | null | undefined): boolean =>
+  availabilityOf(app) === 'available'
+
 // A field the OWNER fills in once, on the account. Secret fields are encrypted at
 // rest and never returned by the API.
 export interface AppAuthField {
@@ -140,6 +162,8 @@ export interface AppDefinition {
     defaultSurfaceKey: string
   }
   status: AppStatus
+  // Ausente = 'available'. Ver `AppAvailability`.
+  availability?: AppAvailability
   // What the owner is told before connecting: what is read, what is stored, and
   // what happens on disconnect.
   dataAccess?: string[]

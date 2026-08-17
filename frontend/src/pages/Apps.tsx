@@ -230,6 +230,11 @@ const GROUPS: { source: string; title: string; note: string }[] = [
   { source: 'private', title: 'Meus Apps', note: 'Criados por você nesta conta. Só requisições HTTP declaradas no manifesto.' },
 ]
 
+// "Em breve" é anúncio: o App aparece com nome e descrição para o dono saber o que
+// está vindo, e as ações ficam fora do alcance. Esconder seria a alternativa fácil, e
+// desperdiçaria a única coisa que um "em breve" tem de útil.
+const emBreve = (app: AppCatalogEntry): boolean => app.availability === 'coming_soon'
+
 function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) {
   const writes = app.actions.filter((a) => a.risk !== 'read').length
   return (
@@ -239,6 +244,7 @@ function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
           <span style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{app.name}</span>
           <Tag>{SOURCE_LABEL[app.source] ?? app.source}</Tag>
+          {emBreve(app) ? <Tag data-testid="app-coming-soon">Em breve</Tag> : null}
           {app.connected ? <Tag>Conectado</Tag> : null}
         </div>
       </div>
@@ -252,8 +258,24 @@ function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) 
             : 'Usado nas entregas das rotinas'}
       </p>
       <div style={{ paddingTop: 4 }}>
-        <Button size="sm" variant={app.connected ? 'secondary' : 'primary'} onClick={onOpen} data-testid="app-open">
-          {app.connected ? 'Ver conexão' : app.activation === 'managed_channel' ? 'Conectar número' : app.requiresAuth ? 'Conectar' : 'Ativar'}
+        {/* Em breve: o botão fica desabilitado e diz o que é. O backend recusa de
+            qualquer forma — isto evita a ida e volta. */}
+        <Button
+          size="sm"
+          variant={app.connected ? 'secondary' : 'primary'}
+          onClick={emBreve(app) ? undefined : onOpen}
+          disabled={emBreve(app)}
+          data-testid="app-open"
+        >
+          {emBreve(app)
+            ? 'Em breve'
+            : app.connected
+              ? 'Ver conexão'
+              : app.activation === 'managed_channel'
+                ? 'Conectar número'
+                : app.requiresAuth
+                  ? 'Conectar'
+                  : 'Ativar'}
         </Button>
       </div>
     </Card>

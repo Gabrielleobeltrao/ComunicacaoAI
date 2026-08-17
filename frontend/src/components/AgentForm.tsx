@@ -4,6 +4,8 @@ import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
 import { METRIC_KEY_LABEL } from '../lib/agentStats'
 import { Icon } from '../ui'
+import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue } from './AgentDefinitionFields'
+import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import type {
   AgentBuiltinTool,
   AgentSummary,
@@ -49,7 +51,10 @@ interface AgentFormProps {
 const SECTION_BLOCKS: Record<string, string[]> = {
   'visao-geral': ['identidade'],
   'como-trabalha': ['ferramentas', 'conhecimento'],
-  avancado: ['metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
+  // "Definição" abre a lista de propósito: é o bloco que o dono revisa, e o que mais
+  // muda o comportamento do agente. "Modelo e execução" vem logo depois, e quase ninguém
+  // precisa tocar — todo campo dele começa em "Padrão do sistema".
+  avancado: ['definicao', 'execucao', 'metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
   // legacy aliases
   essencial: ['identidade'],
   ferramentas: ['ferramentas'],
@@ -155,6 +160,14 @@ function OptionSwitch<T extends string>({
 }
 
 export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId, availableMetrics }: AgentFormProps) {
+  // A definição em blocos e a configuração de execução. Começam vazias: é o vazio que
+  // reproduz o comportamento de um agente criado antes desta tela.
+  const [editDefinicao, setEditDefinicao] = useState<AgentDefinitionValue>({
+    role: agent?.role ?? '',
+    instructions: agent?.instructions ?? '',
+    constraints: agent?.constraints ?? '',
+  })
+  const [editRunConfig, setEditRunConfig] = useState<RunConfig>(agent?.runConfig ?? {})
   const isCreating = agent === null
   const flat = layout === 'flat'
 
@@ -254,6 +267,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     if (agent) {
       setEditName(agent.name)
       setEditObjective(agent.objective)
+      setEditDefinicao({
+        role: agent.role ?? '',
+        instructions: agent.instructions ?? '',
+        constraints: agent.constraints ?? '',
+      })
+      setEditRunConfig(agent.runConfig ?? {})
       setEditProvider(agent.provider ?? 'anthropic')
       setEditModel(agent.model ?? '')
       setEditMemoryType(agent.memoryType ?? 'none')
@@ -394,6 +413,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     return {
       name: editName,
       objective: editObjective,
+      // Blocos da definição. Enviados sempre que o formulário está aberto; o servidor
+      // só grava o que vem, e marca a edição para o preset não sobrescrever depois.
+      role: editDefinicao.role,
+      instructions: editDefinicao.instructions,
+      constraints: editDefinicao.constraints,
+      // Vazio = padrão do sistema. Limpar o campo é uma escolha, e ela chega como
+      // ausência.
+      runConfig: cleanRunConfig(editRunConfig),
       provider: editProvider,
       model: editModel || null,
       memoryType: editMemoryType,
@@ -767,6 +794,18 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
             !flat && advancedOpen ? 'mt-3 rounded-xl border border-(--border-subtle) bg-(--surface-card)/40 px-4 py-1' : ''
           }
         >
+          {showBlock('definicao') && (
+            <CollapsibleBlock title="Definição do agente" showHeader={stacked}>
+              <AgentDefinitionFields value={editDefinicao} onChange={setEditDefinicao} presetLabel={agent?.preset ?? null} />
+            </CollapsibleBlock>
+          )}
+
+          {showBlock('execucao') && (
+            <CollapsibleBlock title="Modelo e execução" showHeader={stacked}>
+              <AgentRunConfigFields value={editRunConfig} onChange={setEditRunConfig} provider={editProvider} model={editModel || null} />
+            </CollapsibleBlock>
+          )}
+
           {showBlock('metrica') && (
           <CollapsibleBlock title="Métrica do card" showHeader={stacked}>
             <div>

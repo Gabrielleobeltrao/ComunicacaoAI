@@ -18,6 +18,7 @@ import type { ExecutableTool } from '../toolExecution.js'
 import { getApp } from './registry.js'
 import { OFFICIAL_ADAPTERS } from './official/index.js'
 import { isUsableManifest, resolveAppForOwner } from './privateApps.js'
+import { isUsableApp } from './types.js'
 import type { AppDefinition, AppActionDefinition, AppInstallation, AgentAppGrant, NativeFactory } from './types.js'
 import { decryptInstallationConfig, getInstallation, isInstallationUsable } from './installations.js'
 
@@ -138,6 +139,14 @@ export async function resolveGrant(
   // validates resolves to nothing rather than to a weaker execution path.
   const app = await resolveAppForOwner(ownerId, grant.appKey)
   if (!app || !isUsableManifest(app)) return []
+
+  // App marcado como "em breve" não executa, nem por um grant que já existia. A recusa
+  // é estruturada de propósito: o modelo precisa saber que a ação NÃO aconteceu, em vez
+  // de receber uma ferramenta ausente e concluir o que quiser.
+  if (!isUsableApp(app)) {
+    const granted = app.actions.filter((a) => (grant.actionKeys ?? []).includes(a.key))
+    return granted.map((a) => refusalTool(a, 'app_em_breve', `${app.name} ainda não está disponível. Ele aparece no catálogo como "Em breve".`))
+  }
 
   const granted = app.actions.filter((a) => (grant.actionKeys ?? []).includes(a.key))
   if (granted.length === 0) return []

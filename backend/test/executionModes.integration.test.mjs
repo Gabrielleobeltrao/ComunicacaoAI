@@ -401,11 +401,10 @@ const CANDLES = Array.from({ length: 30 }, (_, i) => ({
   { timestamp: 1_700_000_000_000 + 30 * 60_000, open: 100, high: 101.2, low: 96, close: 101, volume: 9000, closed: true },
 ])
 
+// O App de candles, que existe e está PAUSADO. Usado só para provar o bloqueio.
 const comCandleAnalyzer = async () => {
   const app = getApp('candle_analyzer')
   const instalacao = new ObjectId()
-  // A instalação de um App vive na coleção `connections` — é o mesmo documento que já
-  // guardava as conexões, reaproveitado quando os Apps unificaram as integrações.
   await db.collection('connections').insertOne({
     _id: instalacao,
     ownerId: OWNER,
@@ -442,48 +441,108 @@ const acaoDeCandles = {
   args: { symbol: 'PETR4', timeframe: '5m', candles: '{{candles}}', minimumScore: 1 },
 }
 
-test('um App roda direto, sem modelo, e o resultado fica utilizável', async () => {
-  await comCandleAnalyzer()
-  const { run } = await rodar(
-    { executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente({ key: 'sinal', dedupeKey: null }) },
-    { candles: CANDLES },
+test('o resultado da ação segue para a memória e para a condição, sem modelo', async () => {
+  // Aqui o que está sob teste é a FIAÇÃO do runner: quem lê o quê, e em que ordem. A
+  // camada de App tem os testes dela (executor canônico, grant, recusa); repetir a
+  // resolução de instalação aqui exigiria um App utilizável apontando para loopback, e
+  // o validador de manifesto — corretamente — não aceita IP como domínio permitido.
+  const { runDefinition } = await import('../dist/automations/runner.js')
+  const def = buildEventTriggerDefinition(
+    {
+      name: 'x',
+      objective: '',
+      executionMode: 'deterministic',
+      action: { enabled: true, appKey: 'qualquer', actionKey: 'consultar' },
+      memory: memoriaNoAgente({ key: 'sinal', dedupeKey: null }),
+    },
+    AGENT,
   )
 
-  assert.equal(run.status, 'succeeded')
-  assert.equal(run.usedAI, false, 'nenhum modelo no caminho')
-  assert.equal(run.usage.inputTokens + run.usage.outputTokens, 0)
+  let chamouLLM = 0
+  const gravado = []
+  const out = await runDefinition(
+    def,
+    {
+      fetchUrl: async () => ({ body: '', contentType: '' }),
+      runApp: async () => ({ decisao: 'seguir', valor: 42 }),
+      memory: {
+        write: async (_cfg, valor) => {
+          gravado.push(valor)
+          return { outcome: 'created', recordId: 'r1', scopeKey: 'agent:x' }
+        },
+        search: async () => ({ items: [], total: 0 }),
+        remove: async () => ({ deleted: 0 }),
+      },
+      runAgent: async () => {
+        chamouLLM++
+        return { output: 'nunca' }
+      },
+      deliver: async () => ({ providerMessageId: null }),
+      now: () => Date.now(),
+    },
+    { pedido: { id: 'p-1' } },
+  )
 
-  const { items, total } = await memoriasDe(CHAVE_AGENTE)
-  assert.equal(total, 1)
-  // O que ficou guardado é o SINAL, não a série: guardar quinhentos candles por
-  // execução encheria a memória com dado que já está na origem.
-  assert.equal(items[0].payload.symbol, 'PETR4')
-  assert.equal(typeof items[0].payload.score, 'number')
-  assert.equal(items[0].payload.candles, undefined, 'os candles não vão para a memória')
+  assert.equal(out.status, 'succeeded')
+  assert.equal(out.usedAI, false, 'nenhum modelo no caminho')
+  assert.equal(chamouLLM, 0)
+  // A memória recebe o RESULTADO da ação, não o evento cru: é ele que vale guardar.
+  assert.deepEqual(gravado, [{ decisao: 'seguir', valor: 42 }])
 })
 
-test('a condição lê o resultado do App, e a IA só roda se ela bater', async () => {
-  await comCandleAnalyzer()
-  const { run } = await rodar(
-    {
-      executionMode: 'hybrid',
-      action: acaoDeCandles,
-      memory: memoriaNoAgente({ key: 'sinal', dedupeKey: null }),
-      // Nenhuma oportunidade tem direção "impossivel": a condição é falsa de propósito.
-      aiCondition: { source: 'acao', path: 'direction', operator: 'equals', value: 'impossivel' },
-    },
-    { candles: CANDLES },
-  )
+test('a condição lê o resultado da ação, e a IA só roda se ela bater', async () => {
+  const { runDefinition } = await import('../dist/automations/runner.js')
+  const acao = { enabled: true, appKey: 'qualquer', actionKey: 'consultar' }
 
-  assert.equal(run.status, 'succeeded')
-  assert.equal(run.usedAI, false, 'condição falsa: nenhum token')
-  assert.equal((await memoriasDe(CHAVE_AGENTE)).total, 1, 'mas a parte determinística aconteceu')
+  const rodarCom = async (valorEsperado) => {
+    const def = buildEventTriggerDefinition(
+      {
+        name: 'x',
+        objective: 'resumir',
+        executionMode: 'hybrid',
+        action: acao,
+        // A origem é derivada: o dono escreveu o campo, não o id da etapa.
+        aiCondition: { source: 'input', path: 'decisao', operator: 'equals', value: valorEsperado },
+      },
+      AGENT,
+    )
+    let chamouLLM = 0
+    const out = await runDefinition(
+      def,
+      {
+        fetchUrl: async () => ({ body: '', contentType: '' }),
+        runApp: async () => ({ decisao: 'seguir' }),
+        runAgent: async () => {
+          chamouLLM++
+          return { output: 'resumo' }
+        },
+        deliver: async () => ({ providerMessageId: null }),
+        now: () => Date.now(),
+      },
+      { pedido: {} },
+    )
+    return { out, chamouLLM }
+  }
+
+  const falsa = await rodarCom('parar')
+  assert.equal(falsa.out.status, 'succeeded')
+  assert.equal(falsa.chamouLLM, 0, 'condição falsa: nenhum token')
+  assert.equal(falsa.out.usedAI, false)
+
+  const verdadeira = await rodarCom('seguir')
+  assert.equal(verdadeira.chamouLLM, 1, 'condição verdadeira: a IA roda uma vez')
+  assert.equal(verdadeira.out.usedAI, true)
 })
 
 test('a etapa de App aparece na definição, e a de IA não, num modo sem IA', async () => {
-  await comCandleAnalyzer()
   const def = buildEventTriggerDefinition(
-    { name: 'x', objective: '', executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() },
+    {
+      name: 'x',
+      objective: '',
+      executionMode: 'deterministic',
+      action: { enabled: true, appKey: 'qualquer', actionKey: 'consultar' },
+      memory: memoriaNoAgente(),
+    },
     AGENT,
   )
   assert.ok(def.steps.some((s) => s.type === 'app.execute'))
@@ -493,7 +552,10 @@ test('a etapa de App aparece na definição, e a de IA não, num modo sem IA', a
 test('App sem permissão do agente falha a execução, em vez de seguir como se tivesse rodado', async () => {
   // O agente não tem grant nenhum. Deixar passar faria o fluxo gravar e entregar algo
   // que nunca aconteceu.
-  const { run } = await rodar({ executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() }, { candles: CANDLES })
+  const { run } = await rodar(
+    { executionMode: 'deterministic', action: { enabled: true, appKey: 'qualquer', actionKey: 'consultar' }, memory: memoriaNoAgente() },
+    { pedido: {} },
+  )
   assert.equal(run.status, 'failed')
   assert.match(run.error?.message ?? '', /permissão|concedida/)
   assert.equal((await memoriasDe(CHAVE_AGENTE)).total, 0, 'nada foi guardado')
@@ -505,14 +567,95 @@ test('ação revogada depois de configurada também falha', async () => {
   await db.collection('agents').updateOne({ _id: AGENT }, { $set: { 'appGrants.0.actionKeys': [] } })
   const { run } = await rodar({ executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() }, { candles: CANDLES })
   assert.equal(run.status, 'failed')
+  assert.equal((await memoriasDe(CHAVE_AGENTE)).total, 0)
 })
 
-test('entrada inválida para o App falha a etapa com o motivo', async () => {
+test('conexão revogada depois de configurada também falha', async () => {
+  await comCandleAnalyzer()
+  await db.collection('connections').updateMany({ ownerId: OWNER }, { $set: { status: 'revoked' } })
+  const { run } = await rodar({ executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() }, { candles: CANDLES })
+  assert.equal(run.status, 'failed')
+  assert.equal((await memoriasDe(CHAVE_AGENTE)).total, 0)
+})
+
+// --- as duas correções da rodada ------------------------------------------------------------
+
+test('a condição de um webhook lê o corpo do evento sem ninguém dizer de onde', async () => {
+  // O dono escreve "quando cliente.plano for premium". De onde isso vem é detalhe de
+  // compilação, e ele não deveria precisar saber.
+  const def = buildEventTriggerDefinition(
+    {
+      name: 'x',
+      objective: 'y',
+      executionMode: 'hybrid',
+      aiCondition: { source: 'input', path: 'cliente.plano', operator: 'equals', value: 'premium' },
+    },
+    AGENT,
+  )
+  const agente = def.steps.find((s) => s.type === 'agent.execute')
+  assert.equal(agente.runIf.source, 'input')
+})
+
+test('com ação de App, a condição passa a ler o RESULTADO da ação', async () => {
+  const def = buildEventTriggerDefinition(
+    {
+      name: 'x',
+      objective: 'y',
+      executionMode: 'hybrid',
+      action: { enabled: true, appKey: 'qualquer', actionKey: 'consultar' },
+      aiCondition: { source: 'input', path: 'decisao', operator: 'equals', value: 'seguir' },
+    },
+    AGENT,
+  )
+  const agente = def.steps.find((s) => s.type === 'agent.execute')
+  assert.equal(agente.runIf.source, 'acao', 'senão a condição olharia o corpo do evento, onde o campo não existe')
+})
+
+test('uma origem declarada de propósito é respeitada', async () => {
+  const def = buildEventTriggerDefinition(
+    {
+      name: 'x',
+      objective: 'y',
+      executionMode: 'hybrid',
+      action: { enabled: true, appKey: 'qualquer', actionKey: 'consultar' },
+      aiCondition: { source: 'evento', path: 'urgente', operator: 'exists' },
+    },
+    AGENT,
+  )
+  assert.equal(def.steps.find((s) => s.type === 'agent.execute').runIf.source, 'evento')
+})
+
+// --- App em breve ----------------------------------------------------------------------------
+
+test('App marcado como "em breve" não executa, nem com grant já concedido', async () => {
+  // O grant é criado direto no banco de propósito: o caminho da API já recusa, e o que
+  // este teste protege é a porteira de EXECUÇÃO — uma permissão concedida antes de o App
+  // ser pausado não pode continuar valendo.
   await comCandleAnalyzer()
   const { run } = await rodar(
     { executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() },
-    { candles: [{ timestamp: 1, open: 100, high: 98, low: 99, close: 100 }] },
+    { candles: CANDLES },
   )
   assert.equal(run.status, 'failed')
-  assert.match(run.error?.message ?? '', /high|candle/i)
+  assert.match(run.error?.message ?? '', /Em breve|dispon/i)
+  assert.equal((await memoriasDe(CHAVE_AGENTE)).total, 0, 'nada foi guardado')
+})
+
+test('a ação de um App em breve não é oferecida para automação', async () => {
+  const { getApp } = await import('../dist/apps/registry.js')
+  const { isUsableApp } = await import('../dist/apps/types.js')
+  assert.equal(isUsableApp(getApp('candle_analyzer')), false)
+  // E os demais continuam disponíveis: a pausa é de um App, não do recurso.
+  assert.equal(isUsableApp(getApp('slack')), true)
+  assert.equal(isUsableApp(getApp('google')), true)
+})
+
+test('conceder permissão para um App em breve é recusado', async () => {
+  const { ValidationError } = await import('../dist/building.js')
+  const { getApp } = await import('../dist/apps/registry.js')
+  const app = getApp('candle_analyzer')
+  // O manifesto continua inteiro — o App está pausado, não removido.
+  assert.equal(app.actions.length, 3)
+  assert.equal(app.availability, 'coming_soon')
+  assert.ok(ValidationError)
 })

@@ -409,7 +409,10 @@ async function executeStep(
 }
 
 export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps, input?: unknown): Promise<RunOutcome> {
-  const ctx: Record<string, unknown> = { input }
+  // O gatilho manda; a definição completa. Uma rotina agendada não traz corpo, e é o
+  // `defaultInput` que faz a entrada configurada pelo dono chegar às etapas — em vez de
+  // um `undefined` que a memória gravaria como nulo.
+  const ctx: Record<string, unknown> = { input: input ?? def.defaultInput ?? null }
   const steps: StepRecord[] = []
   let finalOutput = ''
   let canceled = false

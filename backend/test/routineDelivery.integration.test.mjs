@@ -286,6 +286,78 @@ test('a condição da rotina é preservada e vale como guarda da IA', async () =
   )
   const agente = criada.draftDefinition.steps.find((s) => s.type === 'agent.execute')
   assert.ok(agente, 'com condição, a etapa de IA existe')
-  assert.deepEqual(agente.runIf, condicao)
-  assert.deepEqual(readRoutineExecution(criada.draftDefinition).aiCondition, condicao)
+  // O campo e o operador são os que o dono escreveu; a ORIGEM é derivada da etapa que
+  // de fato tem o conteúdo — numa rotina que monitora, a fonte.
+  assert.equal(agente.runIf.path, condicao.path)
+  assert.equal(agente.runIf.operator, condicao.operator)
+  assert.equal(agente.runIf.source, 'source')
+  assert.equal(readRoutineExecution(criada.draftDefinition).aiCondition.path, condicao.path)
+})
+
+// --- a entrada configurada chega à memória --------------------------------------------------
+
+test('rotina agendada de entrada fixa sem IA grava a entrada, não nulo', async () => {
+  // O defeito: o texto que o dono escreve vivia SÓ dentro da instrução do agente. Isso
+  // funcionava enquanto toda rotina tinha um agente; sem IA, a etapa de memória lia
+  // `ctx.input` — e uma rotina agendada não recebe corpo, então gravava nulo.
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({ executionMode: 'collect_only', memory: memoriaNoAgente, input: 'foco em política nacional', delivery: null }),
+  )
+  assert.equal(criada.draftDefinition.defaultInput, 'foco em política nacional')
+})
+
+test('rotina que monitora não declara entrada padrão: o conteúdo vem da fonte', async () => {
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({
+      recurrence: { kind: 'minutes', every: 15 },
+      source: { kind: 'rss', url: 'https://exemplo.test/f.xml', initialWindow: '24h' },
+      executionMode: 'collect_only',
+      memory: memoriaNoAgente,
+      input: 'ignorado quando há fonte',
+      delivery: null,
+    }),
+  )
+  assert.equal(criada.draftDefinition.defaultInput, undefined)
+})
+
+test('rotina sem entrada fixa não ganha campo nenhum: definição antiga fica igual', async () => {
+  const criada = await createRoutine(OWNER, AGENT, spec({ delivery: null }))
+  assert.equal(criada.draftDefinition.defaultInput, undefined)
+})
+
+test('a condição de uma rotina que monitora aponta para a FONTE, não para o corpo vazio', async () => {
+  // Numa rotina agendada não há corpo. Apontar a condição para `input` — como a
+  // interface fazia — deixava a IA nunca sendo chamada, sem nada explicando por quê.
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({
+      recurrence: { kind: 'minutes', every: 15 },
+      source: { kind: 'rss', url: 'https://exemplo.test/f.xml', initialWindow: '24h' },
+      executionMode: 'hybrid',
+      aiCondition: { source: 'input', path: 'titulo', operator: 'contains', value: 'urgente' },
+      delivery: null,
+    }),
+  )
+  const agente = criada.draftDefinition.steps.find((s) => s.type === 'agent.execute')
+  assert.equal(agente.runIf.source, 'source', 'a origem é derivada da etapa de fonte')
+  assert.equal(agente.runIf.path, 'titulo', 'e o que o dono escreveu é preservado')
+})
+
+test('sem fonte e sem ação, a condição continua lendo a entrada', async () => {
+  const criada = await createRoutine(
+    OWNER,
+    AGENT,
+    spec({
+      executionMode: 'hybrid',
+      input: 'algum texto',
+      aiCondition: { source: 'input', path: '', operator: 'exists' },
+      delivery: null,
+    }),
+  )
+  assert.equal(criada.draftDefinition.steps.find((s) => s.type === 'agent.execute').runIf.source, 'input')
 })

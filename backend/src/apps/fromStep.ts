@@ -13,6 +13,8 @@ import { ObjectId } from 'mongodb'
 import { getAgentById } from '../agents.js'
 import { readPath } from '../automations/conditions.js'
 import { resolveGrant } from './grants.js'
+import { resolveAppForOwner } from './privateApps.js'
+import { isUsableApp } from './types.js'
 
 export class AppStepError extends Error {}
 
@@ -68,6 +70,11 @@ export async function executeAppStep(cfg: Record<string, unknown>, valor: unknow
   // na mesma conta: ele age com o que foi concedido ao agente dele.
   const agent = await getAgentById(ctx.ownerId, new ObjectId(donoBruto))
   if (!agent) throw new AppStepError('o agente responsável por esta etapa não existe mais')
+
+  // "Em breve" barra antes de qualquer resolução: a mensagem diz o motivo real, em vez
+  // de "ação não disponível nesta instalação", que mandaria o dono conferir a conexão.
+  const app = await resolveAppForOwner(ctx.ownerId, appKey)
+  if (app && !isUsableApp(app)) throw new AppStepError(`${app.name} ainda não está disponível ("Em breve")`)
 
   const grant = (agent.appGrants ?? []).find((g) => g.appKey === appKey)
   if (!grant) throw new AppStepError(`o agente não tem permissão para o App ${appKey}`)

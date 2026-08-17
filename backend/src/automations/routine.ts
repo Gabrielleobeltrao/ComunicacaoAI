@@ -22,6 +22,7 @@ import {
   normalizeAppActionPlan,
   normalizeMemoryPlan,
   readAppActionFromSteps,
+  resolveConditionSource,
   semTrabalho,
   STEP_APP,
   STEP_MEMORY,
@@ -130,6 +131,9 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
   const condicao = spec.aiCondition ?? null
   const acao = normalizeAppActionPlan(spec.action)
   const comIA = aiStepPlanned(executionMode, condicao)
+  // De onde a condição lê: o resultado da ação, senão o da fonte, senão o corpo.
+  const origemDoConteudo = acao.enabled ? STEP_APP : monitorando ? STEP_SOURCE : 'input'
+  const condicaoResolvida = resolveConditionSource(condicao, origemDoConteudo)
 
   const steps: StepDefinition[] = []
 
@@ -186,7 +190,7 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
       timeoutMs: 120_000,
       retryPolicy: { maxAttempts: Math.max(1, Math.min(spec.retryMaxAttempts ?? 1, 5)), backoffMs: 2000 },
       continueOnError: false,
-      ...(condicao && executionMode !== 'ai' ? { runIf: condicao } : {}),
+      ...(condicaoResolvida && executionMode !== 'ai' ? { runIf: condicaoResolvida } : {}),
     })
   }
 
@@ -213,6 +217,8 @@ export function buildRoutineDefinition(spec: RoutineSpec, agentId: ObjectId): Au
   }
   return {
     executionMode,
+    // A entrada fixa vira entrada da EXECUÇÃO, não só texto na instrução do agente.
+    ...(!monitorando && spec.input?.trim() ? { defaultInput: spec.input.trim() } : {}),
     trigger: { type: 'schedule', timezone: spec.timezone, cron: recurrenceToCron(spec.recurrence) },
     inputs: [],
     steps,

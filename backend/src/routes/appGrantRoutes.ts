@@ -5,6 +5,7 @@ import { getAgentById, updateAgent } from '../agents.js'
 import { getApp } from '../apps/registry.js'
 import { resolveAppForOwner } from '../apps/privateApps.js'
 import { getInstallation } from '../apps/installations.js'
+import { isUsableApp } from '../apps/types.js'
 import type { AgentAppGrant } from '../apps/types.js'
 import { auditEntity } from './auditMiddleware.js'
 import { fail, notFound, oid } from './http.js'
@@ -62,6 +63,9 @@ appGrantRouter.get('/app-actions', async (req, res) => {
   for (const grant of agent.appGrants ?? []) {
     const app = await resolveAppForOwner(res.locals.userId, grant.appKey)
     if (!app) continue
+    // App "em breve" não é oferecido para automação: montar o fluxo agora daria uma
+    // rotina que falha na primeira execução.
+    if (!isUsableApp(app)) continue
     const id = ObjectId.isValid(grant.installationId) ? new ObjectId(grant.installationId) : null
     const installation = id ? await getInstallation(res.locals.userId, id) : null
     // App que exige conexão e não tem uma utilizável não entra na lista.
@@ -127,6 +131,9 @@ async function validateGrant(ownerId: string, input: unknown): Promise<AgentAppG
   // simply does not resolve here.
   const app = await resolveAppForOwner(ownerId, installation.appKey)
   if (!app) throw new ValidationError('App desconhecido')
+  // Conceder permissão para um App "em breve" criaria uma configuração que falha na
+  // primeira execução — e a recusa chegaria horas depois, no histórico.
+  if (!isUsableApp(app)) throw new ValidationError(`${app.name} ainda não está disponível`)
 
   const known = new Set(app.actions.map((a) => a.key))
   const actionKeys = [...new Set((Array.isArray(o.actionKeys) ? o.actionKeys : []).map((k) => String(k)))]

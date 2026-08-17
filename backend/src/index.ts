@@ -10,6 +10,7 @@ import express from 'express'
 import type { NextFunction, Request, Response } from 'express'
 import multer from 'multer'
 import { ObjectId } from 'mongodb'
+import { normalizeRunConfig } from './runConfig.js'
 import type { WithId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import { Server } from 'socket.io'
@@ -2046,6 +2047,32 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
   } = {}
   if (typeof name === 'string' && name.trim()) updates.name = name
   if (typeof objective === 'string') updates.objective = objective
+
+  /**
+   * Os blocos da definição: função, instruções e limites.
+   *
+   * Cada um só é tocado quando VEM no corpo — a mesma regra da fonte de uma rotina e do
+   * destino de uma entrega. Um formulário que salva antes de carregar não pode apagar o
+   * que o dono escreveu.
+   *
+   * Editar qualquer um deles marca `definitionEditedAt`. É essa marca que impede uma
+   * troca de preset de sobrescrever texto humano depois.
+   */
+  const corpo = req.body as Record<string, unknown>
+  let editouDefinicao = false
+  for (const campo of ['role', 'instructions', 'constraints'] as const) {
+    if (typeof corpo[campo] !== 'string') continue
+    ;(updates as Record<string, unknown>)[campo] = (corpo[campo] as string).slice(0, 8000)
+    editouDefinicao = true
+  }
+  if (typeof objective === 'string') editouDefinicao = true
+  if (editouDefinicao) (updates as Record<string, unknown>).definitionEditedAt = new Date()
+
+  // Como o modelo é chamado. Saneado e limitado no servidor: a tela é uma das formas de
+  // chegar aqui, não a única.
+  if ('runConfig' in corpo) {
+    ;(updates as Record<string, unknown>).runConfig = normalizeRunConfig(corpo.runConfig)
+  }
   if (provider !== undefined) {
     if (!isProvider(provider)) {
       res.status(400).json({ error: 'Unknown provider' })

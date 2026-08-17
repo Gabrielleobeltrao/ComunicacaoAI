@@ -21,6 +21,7 @@ import {
   normalizeAppActionPlan,
   normalizeMemoryPlan,
   readAppActionFromSteps,
+  resolveConditionSource,
   semTrabalho,
   STEP_APP,
   STEP_MEMORY,
@@ -92,6 +93,8 @@ export function buildEventTriggerDefinition(spec: EventTriggerSpec, agentId: Obj
   const memory = normalizeMemoryPlan(spec.memory)
   const condition = spec.aiCondition ?? null
   const action = normalizeAppActionPlan(spec.action)
+  // Sem ação, o conteúdo do evento está em `input`. Com ação, no resultado dela.
+  const conditionResolved = resolveConditionSource(condition, action.enabled ? STEP_APP : 'input')
 
   const steps: StepDefinition[] = [
     {
@@ -148,7 +151,7 @@ export function buildEventTriggerDefinition(spec: EventTriggerSpec, agentId: Obj
       retryPolicy: { maxAttempts: 1, backoffMs: 2_000 },
       continueOnError: false,
       // Nos modos híbrido e automático a IA só roda se isto for verdade.
-      ...(condition && executionMode !== 'ai' ? { runIf: condition } : {}),
+      ...(conditionResolved && executionMode !== 'ai' ? { runIf: conditionResolved } : {}),
     })
   }
 

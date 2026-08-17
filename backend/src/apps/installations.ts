@@ -10,6 +10,7 @@ import { db } from '../db.js'
 import { decrypt, encrypt } from '../crypto.js'
 import { ValidationError } from '../building.js'
 import type { AppDefinition } from './types.js'
+import { isUsableApp } from './types.js'
 import type { AppInstallation, AppInstallationPublic, InstallationStatus } from './types.js'
 import { INSTALLATION_STATUSES } from './types.js'
 
@@ -124,6 +125,10 @@ export interface CreateInstallationInput {
 
 export async function createInstallation(ownerId: string, app: AppDefinition, input: CreateInstallationInput): Promise<AppInstallation> {
   if (app.status === 'suspended') throw new ValidationError('este App não aceita novas conexões')
+  // "Em breve" é anúncio, não oferta. Bloquear só na tela deixaria a porta aberta para
+  // quem chama a API direto — e uma conexão criada agora ficaria pendurada esperando um
+  // fluxo que ainda não existe.
+  if (!isUsableApp(app)) throw new ValidationError('este App ainda não está disponível para conectar')
   if (!app.supportsMultipleConnections) {
     const existing = await listInstallations(ownerId, app.key)
     if (existing.some((i) => i.status !== 'revoked')) throw new ValidationError('este App já está conectado nesta conta')

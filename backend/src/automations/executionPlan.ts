@@ -181,6 +181,28 @@ export const memoryStep = (plan: MemoryPlan, dependsOn: string[], ownerAgentId: 
  * sem ela, "automático" viraria "sempre", que é o modo `ai` com outro nome e uma
  * conta que o dono não escolheu.
  */
+/**
+ * A condição, apontada para a etapa que REALMENTE tem o conteúdo.
+ *
+ * O dono escreve "quando o campo X for Y" e não deveria precisar saber de onde X vem —
+ * ids de etapa são detalhe de compilação. Mas a diferença importa: num webhook o
+ * conteúdo está no corpo (`input`); numa rotina que monitora, está no resultado da
+ * fonte; e quando há ação de App, está no resultado dela.
+ *
+ * Apontar sempre para `input`, como a interface fazia, deixava a condição de uma rotina
+ * lendo um lugar vazio — e "campo ausente" avalia como falso, então a IA nunca era
+ * chamada e nada explicava por quê.
+ *
+ * Uma origem que o dono declarou explicitamente é respeitada: quem sabe o que está
+ * fazendo não é corrigido.
+ */
+export function resolveConditionSource(condition: StepCondition | null | undefined, origemDoConteudo: string): StepCondition | null {
+  if (!condition) return null
+  const declarada = condition.source?.trim()
+  const automatica = !declarada || declarada === 'input' || declarada === 'auto'
+  return automatica ? { ...condition, source: origemDoConteudo } : condition
+}
+
 export function aiStepPlanned(mode: ExecutionMode, condition: StepCondition | null | undefined): boolean {
   if (mode === 'collect_only' || mode === 'deterministic') return false
   if (mode === 'ai') return true

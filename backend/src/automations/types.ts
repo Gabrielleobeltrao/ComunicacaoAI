@@ -134,6 +134,18 @@ export interface AutomationDefinition {
   trigger: AutomationTrigger
   // Ausente = 'ai'. Ver `executionModeOf`.
   executionMode?: ExecutionMode
+  /**
+   * O que vale como entrada quando o gatilho não trouxe nada.
+   *
+   * Uma rotina agendada de entrada fixa não recebe corpo: o agendador dispara e o
+   * `triggerPayload` é nulo. O texto que o dono escreveu vivia apenas dentro da
+   * instrução do agente — o que funcionava enquanto TODA rotina tinha um agente. Sem
+   * IA, a etapa de memória lia `ctx.input` e gravava nulo.
+   *
+   * Declarar a entrada aqui conserta isso de uma vez para todas as etapas que leem
+   * `ctx.input`: memória, ação de App e condição. Ausente = comportamento de antes.
+   */
+  defaultInput?: unknown
   inputs: AutomationInput[]
   steps: StepDefinition[]
   resultFormat: OutputFormat

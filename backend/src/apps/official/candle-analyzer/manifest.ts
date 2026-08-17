@@ -108,6 +108,11 @@ export const manifest: AppDefinition = {
     },
   ],
   status: 'published',
+  // Visível no catálogo, e ainda não ligável. O analisador está pronto e testado, mas o
+  // fluxo em volta dele — de onde vêm os candles, o que se faz com o sinal — não está.
+  // Liberar a peça isolada convidaria a montar meio caminho e concluir que não
+  // funciona.
+  availability: 'coming_soon',
   dataAccess: ['Somente os candles que você enviar em cada chamada'],
   storageNote: 'Nada é guardado por este App: ele calcula e devolve. Guardar o resultado é escolha da rotina que o chamou.',
   disconnectNote: 'Desconectar apenas remove as ações dos agentes. Não há dado deste App para apagar.',

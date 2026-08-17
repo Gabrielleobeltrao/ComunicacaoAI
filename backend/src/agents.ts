@@ -3,6 +3,7 @@ import { db } from './db.js'
 import { isValidToolSchema } from './jsonSchema.js'
 import type { Provider } from './llm.js'
 import type { AgentAppGrant } from './apps/types.js'
+import type { RunConfig } from './runConfig.js'
 import { isSecretLegacyConfigKey } from './apps/registry.js'
 // Type-only cycle back to agents.ts, so there is no runtime import loop.
 import { sanitizeActivationWrite } from './agentReadiness.js'
@@ -161,6 +162,35 @@ export interface Agent {
   // --- Agent-as-the-primary-unit model (additive; legacy agents get safe defaults
   // via withAgentDefaults on read, so no destructive migration is needed) ---
   preset: AgentPreset
+  /**
+   * A DESCRIÇÃO da função, editável. Nova.
+   *
+   * `preset` diz de que molde o agente saiu; `role` diz o que ele é agora. Os dois
+   * existem porque o preset é escolhido uma vez, na contratação, e a função muda com o
+   * uso — e sobrescrever a segunda com o primeiro apagaria trabalho do dono.
+   *
+   * Ausente = o comportamento de antes: o prompt não ganha bloco de função nenhum.
+   */
+  role?: string
+  // Instruções operacionais: COMO fazer. Novo. Ausente = prompt igual ao de antes.
+  instructions?: string
+  // Limites: o que NÃO fazer. Novo. Texto livre ou lista por linha.
+  constraints?: string
+  /**
+   * Quando o dono editou a definição pela última vez.
+   *
+   * É o que impede o preset de sobrescrever em silêncio. Trocar de preset preenche
+   * sugestões em campo VAZIO; onde há texto escrito por gente, ele não passa. Sem esta
+   * marca, a única alternativa seria perguntar a cada troca — ou apagar sem avisar.
+   */
+  definitionEditedAt?: Date
+  /**
+   * Como o modelo é chamado. Tudo opcional; ausente = padrão do sistema.
+   *
+   * `provider` e `model` continuam canônicos nos campos próprios — duplicá-los aqui
+   * criaria duas verdades sobre qual modelo roda. Ver runConfig.ts.
+   */
+  runConfig?: RunConfig
   capabilities: string[] // free-form competency tags used for capability-based discovery/delegation
   activationModes: ActivationMode[] // how this agent may be triggered
   inputContract: string // what data the agent expects to receive (free text)

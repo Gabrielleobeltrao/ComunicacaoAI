@@ -196,7 +196,6 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
   try {
     result = await deps.runTask({
       objective: String(agent.objective ?? call.objective ?? ''),
-      instructions: call.instructions,
       input: call.input,
       // Step outputs + curated passages, both handled as untrusted data. The curated
       // ones carry a numbered reference (title + document id) so the answer can cite
@@ -208,6 +207,12 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       tools,
       // What the agent promised to receive and produce reaches the model now.
       contracts: { input: agent.inputContract, output: agent.outputContract },
+      // Função e limites, em blocos próprios: a ordem no prompt do sistema é o que
+      // impede um objetivo mal redigido de enfraquecer as regras que vêm antes dele.
+      definition: { role: agent.role ?? null, constraints: agent.constraints ?? null },
+      // Instruções operacionais do agente entram ANTES das da etapa: elas valem para
+      // todo trabalho dele, e a etapa é o pedido específico.
+      instructions: [agent.instructions?.trim(), call.instructions?.trim()].filter(Boolean).join('\n\n'),
       // The step's own format wins; the agent's default is the fallback for a step
       // that never expressed one. The schema only applies to JSON.
       output: { format: outputFormat, jsonSchema: outputFormat === 'json' ? (agent.outputJsonSchema ?? null) : null },
