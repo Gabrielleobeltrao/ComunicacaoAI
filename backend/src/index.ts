@@ -219,6 +219,7 @@ import { AUTO_MODEL, resolveAutoModel } from './autoModel.js'
 import { clarificationFrom, countClarifications } from './clarify.js'
 import { clarificationGuidance } from './clarifyBudget.js'
 import { recallClarifications, rememberClarification } from './clarifyMemory.js'
+import { formatOptions, resolveChoice } from './clarifyChoice.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -2644,8 +2645,15 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   // dela — e guardá-la é o que evita perguntar a mesma coisa amanhã. Determinístico: sem
   // modelo, sem token, e sem dar a agente nenhum o direito de escrever memória.
   const turnos = history as { role: string; content: string; clarification?: boolean }[]
-  const anterior = turnos[turnos.length - 2]
+  const anterior = turnos[turnos.length - 2] as
+    | { role: string; content: string; clarification?: boolean; clarificationOptions?: string[] }
+    | undefined
   if (anterior?.role === 'assistant' && anterior.clarification && lastUser.content.trim()) {
+    // "2" ou "b" viram a opção que elas representam, aqui, sem modelo. Mandar o número
+    // cru adiante gastaria uma inferência para adivinhar o que já está escrito — e erra
+    // justamente quando a conversa é longa e a lista ficou para trás.
+    const escolhida = resolveChoice(lastUser.content, anterior.clarificationOptions ?? [])
+    if (escolhida) lastUser.content = escolhida
     void rememberClarification({ ownerId: res.locals.userId, agentId: agent._id }, anterior.content, lastUser.content).catch(
       (erro) => console.error('não foi possível guardar o esclarecimento:', erro),
     )
@@ -2741,8 +2749,14 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     }
     generated = interativoChat.text
     // O agente perguntou em vez de responder: a marca acompanha o turno para a próxima
-    // rodada saber que já houve uma pergunta — e para a tela oferecer as opções.
+    // rodada saber que já houve uma pergunta.
     pedidoDeEsclarecimento = clarificationFrom(interativoChat.toolCalls)
+    // As alternativas entram no TEXTO da resposta, e não como botão: elas precisam
+    // aparecer igual no WhatsApp, no e-mail e em qualquer canal que só transporta texto.
+    // Escrevê-las aqui, e não pedir ao modelo, é o que garante que apareçam sempre.
+    if (pedidoDeEsclarecimento?.options?.length) {
+      generated = `${generated}${formatOptions(pedidoDeEsclarecimento.options)}`
+    }
   } catch (error) {
     const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
       ? 'output_invalid'

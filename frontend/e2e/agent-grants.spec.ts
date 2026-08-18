@@ -566,7 +566,8 @@ test('existe "Automático", e ele explica pelo que decide', async ({ page }) => 
 // redigir o recorte. Com as alternativas prontas, responder é um toque.
 
 const PERGUNTA_DO_AGENTE = {
-  reply: 'Você quer a proposta que enviamos ou a que recebemos?',
+  reply:
+    'Você quer a proposta que enviamos ou a que recebemos?\n\n1) A que enviamos\n2) A que recebemos\n\nResponda com o número da opção — ou escreva sua resposta, se nenhuma servir.',
   handoff: false,
   toolCalls: [],
   clarification: {
@@ -577,7 +578,8 @@ const PERGUNTA_DO_AGENTE = {
   diagnostics: { model: 'claude-sonnet-5', modelChoice: 'default', inputTokens: 10, outputTokens: 5, durationMs: 900 },
 }
 
-test('a pergunta do agente vem com alternativas clicáveis', async ({ page }) => {
+test('a pergunta chega com as alternativas ESCRITAS, para qualquer canal', async ({ page }) => {
+  // Botão não existe em WhatsApp, e-mail nem SMS — e é para lá que estas conversas vão.
   const enviados: Record<string, unknown>[] = []
   await stub(page)
   await page.route('**/api/agents/*/playground', (r) => {
@@ -589,20 +591,27 @@ test('a pergunta do agente vem com alternativas clicáveis', async ({ page }) =>
   await page.getByPlaceholder('Mensagem do visitante...').fill('me manda a proposta')
   await page.getByRole('button', { name: 'Enviar' }).click()
 
-  const opcoes = page.getByTestId('clarification-option')
-  await expect(opcoes).toHaveCount(2)
-  await expect(opcoes.first()).toHaveText('A que enviamos')
+  // As opções estão no TEXTO da resposta — nada de botão. (A numeração vira marcador de
+  // lista no renderizador de markdown do Playground; num canal de texto puro ela aparece
+  // literal, que é justamente o ponto.)
+  await expect(page.getByText('A que enviamos', { exact: true })).toBeVisible()
+  await expect(page.getByText('A que recebemos', { exact: true })).toBeVisible()
+  await expect(page.getByText(/número da opção/i)).toBeVisible()
+  await expect(page.getByTestId('clarification-option')).toHaveCount(0)
 
-  // Um toque responde — e a marca da pergunta volta no envio, que é o que limita o
-  // agente a não perguntar sem parar.
-  await opcoes.first().click()
+  // E o visitante responde digitando o número.
+  await page.getByPlaceholder('Mensagem do visitante...').fill('2')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+
   await expect.poll(() => enviados.length).toBe(2)
-  const segundo = enviados[1] as { messages: { role: string; content: string; clarification?: boolean }[] }
-  expect(segundo.messages.some((m) => m.role === 'assistant' && m.clarification === true)).toBe(true)
-  expect(segundo.messages.at(-1)).toMatchObject({ role: 'user', content: 'A que enviamos' })
+  const segundo = enviados[1] as { messages: { role: string; content: string; clarification?: boolean; clarificationOptions?: string[] }[] }
+  const pergunta = segundo.messages.find((m) => m.clarification)
+  // As alternativas voltam com o turno: é o que permite o servidor ler "2" como a segunda.
+  expect(pergunta?.clarificationOptions).toEqual(['A que enviamos', 'A que recebemos'])
+  expect(segundo.messages.at(-1)).toMatchObject({ role: 'user', content: '2' })
 })
 
-test('resposta comum não desenha alternativa nenhuma', async ({ page }) => {
+test('resposta comum não traz lista de alternativa nenhuma', async ({ page }) => {
   await stub(page)
   await page.route('**/api/agents/*/playground', (r) =>
     r.fulfill({ json: { reply: 'Aqui está.', handoff: false, toolCalls: [], diagnostics: { model: 'x' } } }),
@@ -612,5 +621,5 @@ test('resposta comum não desenha alternativa nenhuma', async ({ page }) => {
   await page.getByPlaceholder('Mensagem do visitante...').fill('oi')
   await page.getByRole('button', { name: 'Enviar' }).click()
 
-  await expect(page.getByTestId('clarification-options')).toHaveCount(0)
+  await expect(page.getByText(/número da opção/i)).toHaveCount(0)
 })

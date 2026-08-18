@@ -16,7 +16,7 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
       toolCalls?: ToolCall[]
       /** Este turno é uma PERGUNTA do agente — a marca volta no próximo envio. */
       clarification?: boolean
-      /** Recortes concretos que a respondem: escolher é mais rápido que redigir. */
+      /** As alternativas oferecidas — devolvidas no próximo envio para "2" virar a opção. */
       clarificationOptions?: string[]
       diagnostics?: {
         outputValid?: boolean
@@ -54,7 +54,13 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
         // quantas vezes já se perguntou nesta conversa, e é o que impede o agente de
         // perguntar sem parar.
         body: JSON.stringify({
-          messages: next.map(({ role, content, clarification }) => ({ role, content, ...(clarification ? { clarification } : {}) })),
+          messages: next.map(({ role, content, clarification, clarificationOptions }) => ({
+            role,
+            content,
+            ...(clarification ? { clarification } : {}),
+            // As alternativas voltam para o servidor poder ler "2" como a segunda delas.
+            ...(clarificationOptions?.length ? { clarificationOptions } : {}),
+          })),
         }),
       })
       if (res.ok) {
@@ -122,24 +128,10 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
               {/* O que rodou, e a que preço. Com "Automático" a escolha é uma regra —
                   e uma regra em que se confia sem conferir é um palpite com passos
                   extras. */}
-              {/* A pergunta veio com recortes prontos: um toque responde. Digitar o
-                  recorte à mão é onde a conversa costuma morrer. */}
-              {message.clarificationOptions && message.clarificationOptions.length > 0 && (
-                <div className="mt-1.5 flex max-w-[85%] flex-wrap gap-1.5" data-testid="clarification-options">
-                  {message.clarificationOptions.map((opcao) => (
-                    <button
-                      key={opcao}
-                      type="button"
-                      disabled={sending}
-                      onClick={() => void enviar(opcao)}
-                      className="rounded-full border border-(--border-strong) px-3 py-1 text-xs transition hover:border-(--border-focus) disabled:opacity-50"
-                      data-testid="clarification-option"
-                    >
-                      {opcao}
-                    </button>
-                  ))}
-                </div>
-              )}
+              {/* As alternativas NÃO viram botão: elas já estão escritas na resposta,
+                  numeradas, porque a mesma conversa vai para WhatsApp, e-mail e outros
+                  canais que só transportam texto. O visitante responde "2" e o servidor
+                  entende, sem gastar inferência para adivinhar. */}
 
               {message.diagnostics?.model && (
                 <span className="mt-1 text-[10px] text-(--text-faint)" data-testid="playground-run-info">
