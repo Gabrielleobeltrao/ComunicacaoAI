@@ -166,3 +166,53 @@ test('nenhum caminho do servidor manda `agent.model` cru ao provedor', async () 
     }
   }
 })
+
+// --- ferramenta que não escreve não pode promover o agente -------------------------------
+//
+// A regra sobe de classe quando há ferramenta de escrita, e risco AUSENTE conta como
+// escrita — regra conservadora e correta. O problema é que ferramentas puramente
+// informativas não declaravam risco: relatar uma lacuna e listar colaboradores contavam
+// como ação real e mandavam todo agente para o modelo caro.
+
+test('as ferramentas de descoberta e de lacuna são declaradas como leitura', async () => {
+  const { buildDelegationTools, capabilityMissingTool, rootContext } = await import('../dist/delegation.js')
+  const { ObjectId } = await import('mongodb')
+
+  assert.equal(capabilityMissingTool().risk, 'read', 'relatar uma lacuna não muda nada no mundo')
+
+  const agente = {
+    _id: new ObjectId(),
+    ownerId: 'o1',
+    officeId: new ObjectId(),
+    name: 'A',
+    objective: 'x',
+    provider: 'anthropic',
+    model: null,
+    preset: 'manager',
+    capabilities: [],
+    activationModes: [],
+    inputContract: '',
+    outputContract: '',
+    delegationPolicy: 'all',
+    callerPolicy: 'all',
+    callableAgentIds: [],
+    callableSectorIds: [],
+    allowedCallerAgentIds: [],
+  }
+  const ctx = rootContext({ ownerId: 'o1', buildingId: new ObjectId().toString(), correlationId: 'c', agent: agente })
+  const ferramentas = buildDelegationTools(ctx, { loadAgent: async () => null })
+  const risco = (nome) => ferramentas.find((t) => t.name === nome)?.risk
+
+  assert.equal(risco('list_available_agents'), 'read', 'consultar quem existe não aciona ninguém')
+  assert.equal(risco('get_agent_capabilities'), 'read')
+  // Delegar continua SEM risco declarado — ou seja, tratado como escrita: quem está do
+  // outro lado pode muito bem escrever.
+  assert.equal(risco('delegate_to_agent'), undefined)
+})
+
+test('um comunicador com só ferramentas informativas continua no modelo barato', () => {
+  // Era este o caso que o defeito estragava: `report_capability_missing` sem risco
+  // declarado promovia ao caro qualquer agente, inclusive quem só reescreve texto.
+  const escolha = chooseModelTier(agente({ preset: 'communicator' }), ['read', 'read', 'read'])
+  assert.equal(escolha.tier, 'aux')
+})

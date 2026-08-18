@@ -1652,6 +1652,7 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
       durationMs: p.durationMs ?? 0,
       provider: p.provider ?? null,
       model: p.model ?? null,
+      modelReason: p.modelReason ?? null,
       ...(p.stageName ? { stage: p.stageName, order: p.order } : {}),
     })),
     // O total da execução, para não obrigar a somar de cabeça.
@@ -2634,6 +2635,9 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     productionDelegationDeps(),
   )
   const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: chatTools.map((t) => t.risk ?? 'write') })
+  // Quando nada foi escolhido, `model` é null e quem responde é a constante do adapter —
+  // a tela precisa do nome dela para não dizer "—" no lugar do modelo que rodou.
+  const provedorPadrao = defaultModel(agent.provider)
   const descartadosChat = describeDropped(execucaoChat.runConfig)
   if (descartadosChat) console.info(`[runConfig] chat: ${descartadosChat}`)
 
@@ -2729,7 +2733,32 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     handoff = true
     reply = reply.trimStart().slice(HANDOFF_MARKER.length).trim()
   }
-  res.json({ reply, refusedByGuardrail: false, handoff, toolCalls })
+  res.json({
+    reply,
+    refusedByGuardrail: false,
+    handoff,
+    toolCalls,
+    /**
+     * O que ACONTECEU nesta execução — e não só o que saiu dela.
+     *
+     * O modelo entra aqui porque "Automático" escolhe por regra, e uma regra em que se
+     * confia sem conferir é um palpite com passos extras: quem testa precisa ver qual
+     * modelo rodou e por quê. Os tokens e o tempo pela mesma razão — o teste custa, e o
+     * custo estava invisível.
+     *
+     * Só números e categorias. Nunca prompt, nunca conteúdo de base, nunca credencial.
+     */
+    diagnostics: {
+      model: execucaoChat.model ?? provedorPadrao,
+      modelChoice: execucaoChat.modelReason ? 'auto' : agent.model ? 'manual' : 'default',
+      modelReason: execucaoChat.modelReason,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      durationMs: Math.max(0, Date.now() - manualStartedAt.getTime()),
+      outputValid: true,
+      ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
+    },
+  })
 })
 
 app.post('/api/agents/:agentId/documents', requireAuth, async (req, res) => {

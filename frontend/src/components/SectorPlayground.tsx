@@ -17,6 +17,8 @@ export interface SectorParticipant {
   durationMs?: number
   provider?: string | null
   model?: string | null
+  /** Por que este modelo, quando a escolha foi automática. */
+  modelReason?: string | null
 }
 
 export interface SectorSource {
@@ -162,7 +164,13 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
                             <td className="pr-2 py-0.5">{p.order ?? i + 1}</td>
                             <td className="pr-2 py-0.5 text-(--text-body)">{p.name}</td>
                             <td className="pr-2 py-0.5">{p.stage ?? (p.role === 'coordinator' ? 'coordenador' : 'especialista')}</td>
-                            <td className="pr-2 py-0.5">{p.model || p.provider || '—'}</td>
+                            {/* O motivo entra como título: com "Automático" o modelo
+                                muda de agente para agente, e o porquê é o que torna a
+                                escolha conferível em vez de mágica. */}
+                            <td className="pr-2 py-0.5" title={p.modelReason ?? undefined}>
+                              {p.model || p.provider || '—'}
+                              {p.modelReason ? ' *' : ''}
+                            </td>
                             <td className="pr-2 py-0.5">{(p.inputTokens ?? 0) + (p.outputTokens ?? 0)}</td>
                             <td className="pr-2 py-0.5">{duracao(p.durationMs)}</td>
                             <td className="pr-2 py-0.5">{p.toolCalls ?? 0}</td>

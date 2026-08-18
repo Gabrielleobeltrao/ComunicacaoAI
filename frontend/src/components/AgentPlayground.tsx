@@ -14,7 +14,19 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
       content: string
       handoff?: boolean
       toolCalls?: ToolCall[]
-      diagnostics?: { outputValid?: boolean; outputRepaired?: boolean; outputProblem?: string; runConfigDropped?: string }
+      diagnostics?: {
+        outputValid?: boolean
+        outputRepaired?: boolean
+        outputProblem?: string
+        runConfigDropped?: string
+        // O que rodou de fato, e a que preço.
+        model?: string | null
+        modelChoice?: 'auto' | 'manual' | 'default'
+        modelReason?: string | null
+        inputTokens?: number
+        outputTokens?: number
+        durationMs?: number
+      }
     }[]
   >([])
   const [input, setInput] = useState('')
@@ -91,6 +103,25 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
               )}
               {/* O Playground é onde se testa: uma resposta fora do contrato aparece aqui,
                   com o motivo, em vez de sumir. Numa conversa real ela não seria enviada. */}
+              {/* O que rodou, e a que preço. Com "Automático" a escolha é uma regra —
+                  e uma regra em que se confia sem conferir é um palpite com passos
+                  extras. */}
+              {message.diagnostics?.model && (
+                <span className="mt-1 text-[10px] text-(--text-faint)" data-testid="playground-run-info">
+                  ↳ {message.diagnostics.model}
+                  {message.diagnostics.modelChoice === 'auto'
+                    ? ` (automático${message.diagnostics.modelReason ? `: ${message.diagnostics.modelReason}` : ''})`
+                    : message.diagnostics.modelChoice === 'default'
+                      ? ' (padrão do sistema)'
+                      : ''}
+                  {' · '}
+                  {(message.diagnostics.inputTokens ?? 0) + (message.diagnostics.outputTokens ?? 0)} tokens
+                  {message.diagnostics.durationMs
+                    ? ` · ${message.diagnostics.durationMs < 1000 ? `${message.diagnostics.durationMs} ms` : `${(message.diagnostics.durationMs / 1000).toFixed(1)} s`}`
+                    : ''}
+                </span>
+              )}
+
               {message.diagnostics?.outputValid === false && (
                 <p className="mt-1 text-xs font-medium text-amber-400">
                   ⚠ A resposta não cumpriu o formato JSON configurado

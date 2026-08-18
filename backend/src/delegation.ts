@@ -313,6 +313,8 @@ interface TaskRun {
   telemetry?: Record<string, string | number | boolean>
   /** O modelo que rodou de fato — com "Automático", o resolvido, e não o marcador. */
   model?: string | null
+  /** Por que este modelo, quando a escolha foi automática. */
+  modelReason?: string | null
   // De onde saiu a resposta, para quem PEDIU poder conferir: o veredito da busca e os
   // documentos que entraram — id e título, nunca o texto deles.
   grounding?: string
@@ -565,7 +567,7 @@ async function runAgentTask(
     toolsExecuted: res.toolCalls.filter((c) => c.ok).length,
   }
   // "Ações com ferramenta" counts calls that actually COMPLETED, not attempts.
-  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources, model: execucao.model }
+  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources, model: execucao.model, modelReason: execucao.modelReason }
 }
 
 // ---- delegate_to_agent ------------------------------------------------------
@@ -794,6 +796,8 @@ export interface SectorParticipant {
   /** O provedor e o modelo com que ele rodou — a prova de que cada um usa o seu. */
   provider?: string
   model?: string | null
+  /** Por que este modelo, quando a escolha foi automática. */
+  modelReason?: string | null
   /** Deu certo? Uma etapa que falhou com `onError: continue` também aparece aqui. */
   status?: 'succeeded' | 'failed'
 }
@@ -909,6 +913,7 @@ export async function executeSectorTeam(
       provider: target.provider,
       // O que rodou, não o que está guardado: com "Automático" os dois diferem.
       model: saida.model ?? target.model ?? null,
+      modelReason: saida.modelReason ?? null,
       status: 'succeeded',
     })
     return saida.output
@@ -1218,12 +1223,15 @@ export function buildDelegationTools(ctx: DelegationContext, deps: DelegationDep
   return [
     {
       name: 'list_available_agents',
+      // Descoberta é leitura: consultar quem existe não aciona ninguém.
+      risk: 'read',
       description: 'Lista os agentes colaboradores que você pode acionar (mesmo prédio e autorizados), opcionalmente filtrando por competência. Use antes de delegar.',
       inputSchema: { type: 'object', properties: { capability: { type: 'string', description: 'competência desejada (opcional)' } }, additionalProperties: false },
       run: (args) => listAvailable(deps, ctx, args),
     },
     {
       name: 'get_agent_capabilities',
+      risk: 'read',
       description: 'Detalha as competências, objetivo e contratos de entrada/saída de um agente colaborador.',
       inputSchema: { type: 'object', properties: { agentId: { type: 'string', description: 'id do agente' } }, required: ['agentId'], additionalProperties: false },
       run: (args) => getCapabilities(deps, ctx, args),
@@ -1305,6 +1313,11 @@ export function capabilityMissingTool(): ResolvedTool {
     name: 'report_capability_missing',
     description:
       'Use quando NÃO existir agente colaborador nem ferramenta capaz de cumprir a tarefa. Não invente: relate a lacuna. Informe a tarefa, a competência que falta e, se aplicável, a ferramenta ausente.',
+    // Relatar uma lacuna não muda nada no mundo. Sem risco declarado ela contava como
+    // ESCRITA — e risco de escrita bloqueia paralelismo, impede nova tentativa depois de
+    // uma falha e, agora, promove o agente ao modelo caro. Três decisões erradas por um
+    // campo ausente.
+    risk: 'read',
     inputSchema: {
       type: 'object',
       properties: {
