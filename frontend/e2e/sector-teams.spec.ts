@@ -13,10 +13,12 @@ const NOW = new Date(0).toISOString()
 const BUILDING = { id: 'b1', name: 'Prédio QA', description: '', defaultTimezone: 'America/Sao_Paulo', defaultLanguage: 'pt', createdAt: NOW, updatedAt: NOW }
 const FLOOR = { id: FLOOR_ID, buildingId: 'b1', name: 'Térreo', mission: '', description: '', timezone: 'America/Sao_Paulo', defaultLanguage: 'pt', color: null, icon: null, order: 0, status: 'active', createdAt: NOW, updatedAt: NOW }
 
-const agent = (id: string, name: string, preset: string) => ({
+const agent = (id: string, name: string, preset: string, role?: string) => ({
   _id: id,
   name,
   objective: 'obj',
+  // O bloco "Função" da definição: é o que o desenho do fluxo mostra debaixo do nome.
+  ...(role ? { role } : {}),
   provider: 'anthropic',
   model: null,
   preset,
@@ -34,7 +36,10 @@ const agent = (id: string, name: string, preset: string) => ({
   metricProfile: 'auto',
   floorId: FLOOR_ID,
 })
-const AGENTS = [agent(A1, 'Gerente Ana', 'manager'), agent(A2, 'Executor Bruno', 'operator')]
+const AGENTS = [
+  agent(A1, 'Gerente Ana', 'manager', 'Coordena a mesa e distribui o trabalho'),
+  agent(A2, 'Executor Bruno', 'operator', 'Analista de pedidos do salão'),
+]
 
 const member = (agentId: string, over: Record<string, unknown> = {}) => ({ agentId, sector: '', routingDescription: '', advanceWhen: '', transitions: [], isDefault: false, ...over })
 
@@ -72,11 +77,15 @@ const overviewFor = (sector: Record<string, unknown>, readiness?: Record<string,
 
 let savedBody: Record<string, unknown> | null = null
 
-async function stubApi(page: Page, opts: { sectors?: Record<string, unknown>[]; overview?: Record<string, unknown> } = {}) {
+async function stubApi(
+  page: Page,
+  opts: { sectors?: Record<string, unknown>[]; overview?: Record<string, unknown>; agents?: Record<string, unknown>[] } = {},
+) {
   savedBody = null
   const sectors = opts.sectors ?? []
-  await page.route('**/api/agents?**', (r) => r.fulfill({ json: AGENTS }))
-  await page.route('**/api/agents', (r) => r.fulfill({ json: AGENTS }))
+  const agentes = opts.agents ?? AGENTS
+  await page.route('**/api/agents?**', (r) => r.fulfill({ json: agentes }))
+  await page.route('**/api/agents', (r) => r.fulfill({ json: agentes }))
   await page.route('**/api/agent-presets', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/sectors/*/overview', (r) => r.fulfill({ json: opts.overview ?? overviewFor(sectors[0] ?? LEGACY_SECTOR) }))
   await page.route('**/api/sectors/*', async (r) => {
@@ -516,4 +525,45 @@ test('busca indisponível não é dita como "não existe"', async ({ page }) => 
   await page.getByRole('button', { name: 'Enviar' }).click()
 
   await expect(page.getByTestId('sector-run-grounding')).toContainText('não é o mesmo que "não existe"')
+})
+
+// --- o fluxo diz o que cada agente É --------------------------------------------------
+//
+// O desenho mostrava só o nome, e um nome não diz se aquele quadrado é o analista ou o
+// redator. O cartão ao lado já dizia; o fluxo, não — e é nele que se olha para entender o
+// caminho do trabalho.
+
+test('no fluxo orquestrado, coordenador e especialistas mostram a função de cada um', async ({ page }) => {
+  const orquestrado = { ...LEGACY_SECTOR, mode: 'orchestrated', coordinatorAgentId: A1 }
+  await stubApi(page, { sectors: [orquestrado], overview: overviewFor(orquestrado) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+
+  const fluxo = page.getByTestId('sector-flow')
+  await expect(fluxo).toContainText('Coordena a mesa e distribui o trabalho')
+  await expect(fluxo).toContainText('Analista de pedidos do salão')
+  // E continua dizendo quem coordena.
+  await expect(fluxo).toContainText('coordena')
+})
+
+test('no fluxo em etapas, cada etapa mostra o agente E a função dele', async ({ page }) => {
+  await stubApi(page, { sectors: [PIPELINE_SECTOR], overview: overviewFor(PIPELINE_SECTOR) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+
+  const fluxo = page.getByTestId('sector-flow')
+  await expect(fluxo).toContainText('1. Anotar pedido')
+  await expect(fluxo).toContainText('Executor Bruno')
+  await expect(fluxo).toContainText('Analista de pedidos do salão')
+  await expect(fluxo).toContainText('Coordena a mesa e distribui o trabalho')
+})
+
+test('sem função escrita, o fluxo não inventa — mostra o objetivo', async ({ page }) => {
+  const semFuncao = [
+    { ...AGENTS[0], role: undefined, objective: 'Receber pedidos e distribuir' },
+    { ...AGENTS[1], role: undefined, objective: 'Preparar o prato' },
+  ]
+  const orquestrado = { ...LEGACY_SECTOR, mode: 'orchestrated', coordinatorAgentId: A1 }
+  await stubApi(page, { sectors: [orquestrado], overview: overviewFor(orquestrado), agents: semFuncao })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+
+  await expect(page.getByTestId('sector-flow')).toContainText('Receber pedidos e distribuir')
 })

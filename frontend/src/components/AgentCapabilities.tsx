@@ -86,10 +86,7 @@ export function AgentCapabilities({ agent, onSaved }: { agent: AgentSummary; onS
   return (
     <Card padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="agent-capabilities">
       <div>
-        <h3 style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>
-          Competências
-        </h3>
-        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
           É por aqui que <strong>outro agente encontra este</strong> quando precisa de ajuda. Um coordenador procura por
           competência antes de delegar — “jurídico”, “mercado financeiro”, “nota fiscal”. Quanto mais específico, menos ele
           escolhe o agente errado.

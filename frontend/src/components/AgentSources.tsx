@@ -137,10 +137,7 @@ export function AgentSources({ agentId }: { agentId: string }) {
   return (
     <Card padding="16px" style={{ display: 'grid', gap: 12 }} data-testid="agent-sources">
       <div>
-        <h3 style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>
-          Consultar um site
-        </h3>
-        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
           Endereços que o agente pode olhar <strong>quando for acionado</strong> — numa conversa, num canal ou dentro de um
           setor. Não tem horário: ele consulta quando a pergunta pedir. Buscar não gasta tokens; o que custa é ele ler e
           responder.

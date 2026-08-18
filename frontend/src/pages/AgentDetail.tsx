@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AgentCapabilities } from '../components/AgentCapabilities'
+import { CollapsibleBlock } from '../components/CollapsibleBlock'
 import { AgentSources } from '../components/AgentSources'
 import { AgentToolsPicker } from '../components/AgentToolsPicker'
 import { Link, useNavigate, useParams } from 'react-router'
@@ -555,19 +556,40 @@ export function AgentDetail() {
                         <AgentSummaryCard agent={agent} overview={overview} />
                       </div>
                     ) : null}
+                    {/* Competências abrem a aba: é por elas que outro agente encontra
+                        este, antes de ferramenta, conhecimento ou site. Aberto por padrão
+                        para a aba não abrir como uma lista de títulos vazia. */}
+                    {active === 'como-trabalha' ? (
+                      <CollapsibleBlock
+                        title="Competências"
+                        showHeader
+                        defaultOpen
+                        hint={(agent.capabilities ?? []).length ? `${(agent.capabilities ?? []).length}` : 'nenhuma'}
+                      >
+                        <AgentCapabilities key={`${agent._id}:caps`} agent={agent} onSaved={load} />
+                      </CollapsibleBlock>
+                    ) : null}
                     <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} availableMetrics={overview.availableMetrics} />
                     {/* Which reusable Custom Tools this agent may call. Assignment
                         IS the permission — the backend refuses anything not here. */}
                     {active === 'como-trabalha' ? (
-                      <div style={{ marginTop: 20, display: 'grid', gap: 20 }}>
-                        {/* As competências vêm primeiro: é por elas que outro agente
-                            encontra este, antes de qualquer ferramenta. */}
-                        <AgentCapabilities key={`${agent._id}:caps`} agent={agent} onSaved={load} />
-                        <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
+                      // Blocos que abrem e fecham, no mesmo padrão do resto do formulário:
+                      // a aba juntou competências, ferramentas, conhecimento e sites, e
+                      // tudo aberto de uma vez vira uma rolagem em que nada se acha.
+                      <div>
+                        <CollapsibleBlock
+                          title="Ferramentas reutilizáveis"
+                          showHeader
+                          hint={(agent.toolIds ?? []).length ? `${(agent.toolIds ?? []).length}` : 'nenhuma'}
+                        >
+                          <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
+                        </CollapsibleBlock>
                         {/* Olhar um site é capacidade do agente, e é aqui que se pergunta
                             o que ele consegue fazer. Antes isso existia só dentro de uma
                             rotina, atrás de um horário. */}
-                        <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+                        <CollapsibleBlock title="Consultar um site" showHeader>
+                          <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+                        </CollapsibleBlock>
                       </div>
                     ) : null}
                     {/* Deleting lives in Avançado, after every setting, and is
