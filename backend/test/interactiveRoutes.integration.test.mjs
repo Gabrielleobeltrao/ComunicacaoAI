@@ -340,3 +340,75 @@ test('a execução do chat grava QUAL modelo rodou, e não só quantos tokens', 
   assert.notEqual(evento.model, 'auto', 'o marcador não é nome de modelo')
   assert.ok(evento.inputTokens > 0)
 })
+
+// --- a conversa de teste que fica guardada -------------------------------------------------
+//
+// O Playground apagava tudo ao trocar de aba, e voltar ao ponto onde se estava exigia
+// repetir as mesmas perguntas — o que custa tokens de verdade. O que se guarda é a TELA:
+// a memória do agente continua fora do teste.
+
+const esperarTurnos = async (agenteId, quantos, limiteMs = 8000) => {
+  const fim = Date.now() + limiteMs
+  let corpo = { turns: [] }
+  while (Date.now() < fim) {
+    const res = await fetch(`${base}/api/agents/${agenteId}/playground`, { headers: comSessao() })
+    corpo = await res.json()
+    if ((corpo.turns ?? []).length >= quantos) break
+    await new Promise((r) => setTimeout(r, 150))
+  }
+  return corpo.turns ?? []
+}
+
+test('a conversa de teste é guardada, devolvida e só some quando se pede', async () => {
+  const agente = await criarAgente({ name: 'Agente que lembra da tela' })
+
+  const envio = await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'qual foi o último provento de BBSE3?' }] }),
+  })
+  assert.ok(envio.ok, `playground devolveu ${envio.status}`)
+  const resposta = await envio.json()
+
+  // A gravação é disparada sem `await`: quem pergunta não espera pelo histórico.
+  const turnos = await esperarTurnos(agente._id, 2)
+  assert.equal(turnos.length, 2, 'a pergunta e a resposta ficam guardadas')
+  assert.equal(turnos[0].role, 'user')
+  assert.equal(turnos[0].content, 'qual foi o último provento de BBSE3?')
+  assert.equal(turnos[1].role, 'assistant')
+  assert.equal(turnos[1].content, resposta.reply, 'o que foi guardado é o que a tela mostrou')
+  // O custo também: sem ele a conversa recarregada mentiria por omissão sobre o preço.
+  assert.equal(typeof turnos[1].diagnostics?.model, 'string')
+
+  // Segundo envio: acrescenta, não substitui.
+  const segundo = await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({
+      messages: [
+        { role: 'user', content: 'qual foi o último provento de BBSE3?' },
+        { role: 'assistant', content: resposta.reply },
+        { role: 'user', content: 'e o anterior?' },
+      ],
+    }),
+  })
+  assert.ok(segundo.ok)
+  const depois = await esperarTurnos(agente._id, 4)
+  assert.equal(depois.length, 4)
+  assert.equal(depois[2].content, 'e o anterior?')
+
+  // Limpar é explícito, e é a única forma de apagar.
+  const apagou = await fetch(`${base}/api/agents/${agente._id}/playground`, { method: 'DELETE', headers: comSessao() })
+  assert.equal(apagou.status, 204)
+  const vazio = await fetch(`${base}/api/agents/${agente._id}/playground`, { headers: comSessao() })
+  assert.deepEqual((await vazio.json()).turns, [])
+})
+
+test('a conversa de teste é do dono do agente, e de mais ninguém', async () => {
+  const agente = await criarAgente({ name: 'Agente de outra pessoa' })
+  // Sem sessão: nem ler nem apagar.
+  const semSessao = await fetch(`${base}/api/agents/${agente._id}/playground`)
+  assert.equal(semSessao.status, 401)
+  const apagar = await fetch(`${base}/api/agents/${agente._id}/playground`, { method: 'DELETE' })
+  assert.equal(apagar.status, 401)
+})

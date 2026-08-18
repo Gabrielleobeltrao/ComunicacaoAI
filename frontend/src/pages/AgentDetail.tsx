@@ -209,6 +209,8 @@ function AgentSummaryCard({ agent, overview }: { agent: AgentSummary; overview: 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 4 }}>
           <Tag>{w.toolCount} ferramenta(s)</Tag>
           <Tag>{w.knowledgeCount} documento(s)</Tag>
+          {/* O site cadastrado também é fonte, e some do resumo se não for contado. */}
+          {w.sourceCount > 0 ? <Tag>{w.sourceCount} fonte(s) na web</Tag> : null}
           <Tag>{w.routineCount} rotina(s)</Tag>
           <Tag>{w.channelCount} canal(is)</Tag>
         </div>
@@ -487,7 +489,7 @@ export function AgentDetail() {
             <Card padding="0" style={{ minWidth: 0 }}>
               {/* Only the tab STRIP scrolls sideways on a phone; the tab content must
                   never be clipped by the card. */}
-              <div style={{ display: 'flex', padding: '14px 18px', borderBottom: '1px solid var(--border-subtle)', overflowX: 'auto' }}>
+              <div style={{ display: 'flex', padding: '14px 18px', borderBottom: '1px solid var(--border-subtle)', overflowX: 'auto' }} data-testid="agent-tabs">
                 <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 'var(--radius-control)', background: 'var(--surface-sunken)' }}>
                   {TABS.map((t) => {
                     const on = t.key === active

@@ -11,6 +11,7 @@ import { ensureInstallationIndexes } from './apps/installations.js'
 import { ensureNavigationIndexes } from './apps/navigation.js'
 import { ensurePrivateAppIndexes } from './apps/privateApps.js'
 import { ensureAgentLiveStateIndexes } from './agentLiveState.js'
+import { ensurePlaygroundSessionIndexes } from './playgroundSession.js'
 import { ensureSectorExecutionIndexes } from './sectorExecutions.js'
 import { ensureExecutionRootIndexes } from './executionRoots.js'
 import { backfillFloorCommunication } from './floorCommunication.js'
@@ -81,6 +82,8 @@ export async function runMigrations(): Promise<void> {
   await ensureNavigationIndexes()
   await ensurePrivateAppIndexes()
   await ensureAgentLiveStateIndexes()
+  // A conversa de teste que sobrevive à troca de aba (e some sozinha em 30 dias).
+  await ensurePlaygroundSessionIndexes()
   await ensureSectorExecutionIndexes()
   await ensureExecutionRootIndexes()
 
