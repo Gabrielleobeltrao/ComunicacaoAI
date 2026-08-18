@@ -4,6 +4,7 @@ import { db } from './db.js'
 // the routine step needs it without pulling in the database.
 export { buildRetrievalQuery } from './retrievalQuery.js'
 import { embedText, embedTexts } from './voyage.js'
+import { extractTerms, extractWindow, scoreText, termsToPattern } from './lexicalRetrieval.js'
 
 // Curated knowledge base (RAG) shared by agents AND sectors. There is ONE store:
 // the same `knowledge_documents` / `knowledge_chunks` collections, the same Voyage
@@ -373,6 +374,54 @@ export async function searchKnowledgeForOwners(owners: KnowledgeOwner[], query: 
     .toArray()
 }
 
+/**
+ * A busca que funciona sem Atlas e sem Voyage.
+ *
+ * Procura nos DOCUMENTOS, não nos chunks, de propósito: quando a indexação falha — e ela
+ * falha inteira sem `VOYAGE_API_KEY` — nenhum chunk é gravado, mas o texto do documento
+ * está lá, completo. Era esse o buraco: uma base visível na tela, com o dado dentro, e
+ * uma busca que só sabia perguntar ao vetor que nunca existiu.
+ *
+ * O escopo é o MESMO da vetorial: os donos já resolvidos pelo chamador. Nenhum caminho
+ * aqui alcança documento de outra conta.
+ */
+export async function searchKnowledgeLexicallyForOwners(owners: KnowledgeOwner[], query: string, limit = 5): Promise<KnowledgeHit[]> {
+  if (owners.length === 0) return []
+  const termos = extractTerms(query)
+  if (termos.length === 0) return []
+
+  // Quando há identificadores, o filtro do banco usa SÓ eles: é mais barato e evita
+  // trazer todo documento que por acaso repete uma palavra comum da pergunta.
+  const especificos = termos.filter((t) => t.weight > 1)
+  const padrao = termsToPattern(especificos.length ? especificos : termos)
+  if (!padrao) return []
+
+  const ownerIds = owners.map((o) => o.ownerId)
+  const agentIds = owners.filter((o) => o.ownerType === 'agent').map((o) => o.ownerId)
+  const escopo = agentIds.length
+    ? { $or: [{ ownerId: { $in: ownerIds } }, { agentId: { $in: agentIds } }] }
+    : { ownerId: { $in: ownerIds } }
+
+  const encontrados = await documents
+    // `padrao` já vem escapado por `termsToPattern`: um termo com `.*` procura os
+    // caracteres `.*`, e não "qualquer coisa" — que devolveria a base inteira.
+    .find({ ...escopo, $and: [{ $or: [{ content: { $regex: padrao, $options: 'i' } }, { title: { $regex: padrao, $options: 'i' } }] }] })
+    // Um teto de leitura: o corte por nota acontece depois, em memória.
+    .limit(Math.max(limit * 4, 20))
+    .toArray()
+
+  return encontrados
+    .map((doc) => ({
+      content: extractWindow(doc.content ?? '', termos),
+      score: scoreText(`${doc.title ?? ''}\n${doc.content ?? ''}`, termos),
+      ownerType: (doc.ownerType ?? 'agent') as KnowledgeOwnerType,
+      ownerId: String(doc.ownerId ?? doc.agentId ?? ''),
+      documentId: String(doc._id),
+      title: doc.title ?? undefined,
+    }))
+    .filter((hit) => hit.score > 0 && hit.content)
+}
+
 export function searchKnowledge(agentId: ObjectId, query: string, limit = 5) {
   return searchKnowledgeForOwners([{ ownerType: 'agent', ownerId: agentId }], query, limit)
 }
@@ -453,24 +502,49 @@ export async function retrieveContext(
   // the agent's home sector.
   if (opts.verifiedSectorId) owners.push({ ownerType: 'sector', ownerId: opts.verifiedSectorId })
   if (owners.length === 0 || !query.trim()) return { context: [], sources: [], status: 'no_base', failed: false }
+
+  const emResultado = (selected: KnowledgeHit[], status: GroundingStatus, failed: boolean): RetrievalResult => ({
+    context: selected.map((hit) => hit.content),
+    sources: selected.map((hit) => ({
+      documentId: hit.documentId ?? null,
+      // Short by construction: a title is a label, not a document.
+      title: hit.title ? String(hit.title).slice(0, 120) : null,
+      ownerType: hit.ownerType,
+      ownerId: hit.ownerId,
+    })),
+    status,
+    failed,
+  })
+
+  const limite = Math.max(opts.topK ?? RETRIEVAL_TOP_K, 5) * owners.length
+
+  // --- metade 1: o vizinho semântico ------------------------------------------------------
+  let vetorialFalhou = false
+  let selecionados: KnowledgeHit[] = []
   try {
-    const hits = await searchKnowledgeForOwners(owners, query, Math.max(opts.topK ?? RETRIEVAL_TOP_K, 5) * owners.length)
-    const selected = selectKnowledgeHits(hits, opts)
-    return {
-      context: selected.map((hit) => hit.content),
-      sources: selected.map((hit) => ({
-        documentId: hit.documentId ?? null,
-        // Short by construction: a title is a label, not a document.
-        title: hit.title ? String(hit.title).slice(0, 120) : null,
-        ownerType: hit.ownerType,
-        ownerId: hit.ownerId,
-      })),
-      status: selected.length ? 'ok' : 'empty',
-      failed: false,
-    }
+    selecionados = selectKnowledgeHits(await searchKnowledgeForOwners(owners, query, limite), opts)
   } catch (error) {
-    // A failure NEVER becomes invented context, and never reads as "no knowledge".
-    console.error('knowledge retrieval failed:', (error as Error).message)
-    return { context: [], sources: [], status: 'unavailable', failed: true }
+    // Sem Atlas Search ou sem chave de embedding, ela falha SEMPRE. Isso não é "não há
+    // conhecimento" — é "não consegui olhar por semelhança". A busca exata ainda pode.
+    console.error('knowledge retrieval (vector) failed:', (error as Error).message)
+    vetorialFalhou = true
   }
+  if (selecionados.length > 0) return emResultado(selecionados, 'ok', false)
+
+  // --- metade 2: o termo exato ------------------------------------------------------------
+  //
+  // Roda quando a vetorial falhou OU não trouxe nada. Um ticker, uma data e um valor são
+  // exatamente o que a semelhança erra e a comparação de texto acerta — e é o caso em que
+  // dizer "não há dados" seria mentira sobre uma base que tem a resposta escrita.
+  try {
+    const lexicais = selectKnowledgeHits(await searchKnowledgeLexicallyForOwners(owners, query, limite), opts)
+    if (lexicais.length > 0) return emResultado(lexicais, 'ok', false)
+  } catch (error) {
+    console.error('knowledge retrieval (lexical) failed:', (error as Error).message)
+    return emResultado([], 'unavailable', true)
+  }
+
+  // Nenhuma das duas achou. Se a semântica sequer rodou, o honesto é 'unavailable': a
+  // busca exata não substitui a outra, e afirmar ausência aqui seria afirmar demais.
+  return emResultado([], vetorialFalhou ? 'unavailable' : 'empty', vetorialFalhou)
 }

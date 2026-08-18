@@ -333,7 +333,16 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
         </div>
       ) : null}
 
-      <ExecutionModeFields value={modo} onChange={setModo} idPrefix="routine-" agentId={agentId} />
+      {/* A origem entra na frase de conferência: numa rotina de feed ela dizia
+          "Webhook → validar → …", que é a única linha que explica o que vai
+          acontecer — e começava errada. */}
+      <ExecutionModeFields
+        value={modo}
+        onChange={setModo}
+        idPrefix="routine-"
+        agentId={agentId}
+        origem={sourceKind === 'rss' ? 'Verificar o feed' : sourceKind === 'http' ? 'Verificar a página' : 'No horário'}
+      />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <Field label={monitorando ? 'Verificar a cada' : 'Frequência'}>

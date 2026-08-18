@@ -18,7 +18,11 @@ export interface SourcePreview {
   message: string
   itemCount?: number
   // Amostra curta: título e link do que a rotina entregaria hoje.
-  items?: { title: string; url: string; publishedAt: string | null }[]
+  //
+  // `guid` vai junto porque é ele que IDENTIFICA o item para o checkpoint
+  // (`chaveDoItem`). Sem ele, quem compara com o que a rotina já viu recalcularia a
+  // chave pelo link e acharia novidade em item conhecido. A tela ignora o campo.
+  items?: { title: string; url: string; publishedAt: string | null; guid?: string }[]
   // HTTP: um pedaço do texto útil, para o usuário reconhecer a página.
   excerpt?: string
 }
@@ -29,7 +33,10 @@ const TRECHO = 400
 export async function previewSource(
   kind: 'rss' | 'http',
   url: string,
-  opts: { initialWindow?: InitialWindow; now?: number } = {},
+  // `amostra` existe porque a tela quer 5 itens e a ferramenta `verificar_fonte` precisa
+  // ver MAIS: ela conta quantos são novos desde o checkpoint, e contar dentro de uma
+  // amostra de 5 daria um número errado num feed movimentado.
+  opts: { initialWindow?: InitialWindow; now?: number; amostra?: number } = {},
 ): Promise<SourcePreview> {
   const agora = opts.now ?? Date.now()
   try {
@@ -58,7 +65,7 @@ export async function previewSource(
         kind,
         message: `Feed lido: ${todos.length} item(ns), ${naJanela.length} dentro da janela escolhida.`,
         itemCount: naJanela.length,
-        items: naJanela.slice(0, AMOSTRA).map((i) => ({ title: i.title, url: i.url, publishedAt: i.publishedAt })),
+        items: naJanela.slice(0, opts.amostra ?? AMOSTRA).map((i) => ({ title: i.title, url: i.url, publishedAt: i.publishedAt, guid: i.guid })),
       }
     }
 

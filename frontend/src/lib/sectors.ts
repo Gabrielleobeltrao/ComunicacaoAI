@@ -1,5 +1,5 @@
 import { API_URL } from './api'
-import type { SectorMemberSummary, SectorMode, SectorOverview, SectorSummary } from './types'
+import type { SectorMemberSummary, SectorMode, SectorOverview, SectorStageSummary, SectorSummary, SectorTransition } from './types'
 
 // Centralized sector API client (plan §11.1). Surfaces the backend's real error
 // message + structured code instead of collapsing failures into empty state.
@@ -80,6 +80,67 @@ export function sectorReadiness(input: SectorReadinessInput): { ready: boolean; 
 }
 
 // Plain-language mode copy — the user picks what the team DOES, not a jargon word.
+/**
+ * Quem está NESTE setor — venha de onde vier.
+ *
+ * Um setor guarda seus agentes em dois lugares diferentes conforme o modo: em
+ * `members` no orquestrado e no organizacional, e em `stages` no "executar em etapas".
+ * A página lia só `members`, então um pipeline — que salva etapas e deixa `members`
+ * vazio — mostrava "0 agentes" e uma coluna em branco ao lado do desenho do fluxo, com
+ * os agentes existindo o tempo todo dentro das etapas.
+ *
+ * Esta função é a resposta única para "quem trabalha aqui". Quem pergunta não precisa
+ * saber onde o dado ficou guardado.
+ */
+export interface SectorRosterEntry {
+  agentId: string
+  /** 1, 2, 3… — a ordem da etapa no pipeline; a posição na lista nos outros modos. */
+  order: number
+  /** O nome da ETAPA, quando há uma. É o que dá sentido ao agente estar ali. */
+  stageName?: string
+  /** O que a etapa espera receber de quem vem antes. */
+  dependsOnNames?: string[]
+  isDefault: boolean
+  isCoordinator: boolean
+  routingDescription?: string
+  advanceWhen?: string
+  transitions?: SectorTransition[]
+}
+
+export function sectorRoster(sector: {
+  mode: SectorMode
+  members?: SectorMemberSummary[]
+  stages?: SectorStageSummary[]
+  coordinatorAgentId?: string | null
+}): SectorRosterEntry[] {
+  const coordenador = sector.coordinatorAgentId ?? null
+  if (normalizeSectorMode(sector.mode) === 'pipeline') {
+    const etapas = sector.stages ?? []
+    const nomePorId = new Map(etapas.map((e) => [e.id, e.name]))
+    // Com etapas, elas mandam. Sem etapas, um pipeline antigo ainda pode ter membros —
+    // e mostrar esses membros é melhor que mostrar nada.
+    if (etapas.length > 0) {
+      return etapas.map((etapa, i) => ({
+        agentId: etapa.agentId,
+        order: i + 1,
+        stageName: etapa.name,
+        dependsOnNames: etapa.dependsOn.map((id: string) => nomePorId.get(id) ?? id).filter(Boolean),
+        isDefault: false,
+        isCoordinator: etapa.agentId === coordenador,
+      }))
+    }
+  }
+  return (sector.members ?? []).map((m, i) => ({
+    agentId: m.agentId,
+    order: i + 1,
+    isDefault: m.isDefault,
+    isCoordinator: m.agentId === coordenador,
+    routingDescription: m.routingDescription,
+    advanceWhen: m.advanceWhen,
+    transitions: m.transitions,
+  }))
+}
+
 export const SECTOR_MODE_LABEL: Record<SectorMode, { title: string; help: string }> = {
   organization: { title: 'Só organizar', help: 'Agrupa agentes no mapa. Não executa nada como equipe.' },
   orchestrated: { title: 'Um gerente coordena', help: 'Um coordenador recebe o pedido, aciona quem precisa e junta a resposta.' },

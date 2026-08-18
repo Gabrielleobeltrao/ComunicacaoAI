@@ -18,6 +18,9 @@ import type { FloorCommunicationConfig } from './floorCommunication.js'
 import type { AgentExecutionRequest, AgentExecutionResult, AgentOutputFormat } from './agentRuntime.js'
 import { presetSpec, suggestPresetForCapability } from './agentPresets.js'
 import { resolveAgentRun } from './agentDefinition.js'
+// O papel que um agente cumpre numa execução de setor. O tipo vive com a raiz da
+// execução, que é quem grava a participação.
+import type { ParticipationRole } from './sectorExecutions.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -288,8 +291,13 @@ export interface DelegationDeps {
   // call); a failure returns none so the run continues ungrounded.
   // The WHOLE result: turning a failure into [] hid the difference between "the
   // base said nothing" and "the base could not be consulted".
+  // Os sites do agente marcados como `always`/`on_change`. Injetado para este módulo
+  // seguir testável sem rede.
+  livePassages?: (ownerId: string, agent: Agent) => Promise<{ content: string; title: string }[]>
   retrieveContext?: (
-    agentId: ObjectId,
+    // Um agente, ou vários: o coordenador de um setor pode precisar olhar as bases do
+    // time inteiro quando a dele não responde (ver `executeSectorTeam`).
+    agentId: ObjectId | ObjectId[],
     query: string,
     opts: { sectorId?: ObjectId | null },
   ) => Promise<{ context: string[]; sources?: { documentId: string | null; title: string | null }[]; status?: string; failed?: boolean }>
@@ -303,6 +311,10 @@ interface TaskRun {
   finishedAt: Date
   // Safe scalars for the telemetry: statuses and counts, never content.
   telemetry?: Record<string, string | number | boolean>
+  // De onde saiu a resposta, para quem PEDIU poder conferir: o veredito da busca e os
+  // documentos que entraram — id e título, nunca o texto deles.
+  grounding?: string
+  sources?: { documentId: string | null; title: string | null }[]
 }
 
 // Emit a per-agent telemetry event for a delegation/sector run (fire-and-forget via
@@ -491,8 +503,14 @@ async function runAgentTask(
   if (target.requireGrounding && grounding !== 'ok') {
     throw new GroundingRequiredError(grounding)
   }
+  // Os endereços que o dono marcou para entrar sozinhos também valem aqui: delegação e
+  // etapa de setor são "o agente foi chamado" tanto quanto uma conversa.
+  const vivas = deps.livePassages ? await deps.livePassages(ctx.ownerId, target).catch(() => []) : []
   // Numbered references, so the answer can cite what it used. The owner is not named.
-  const context = formatContextWithSources(passages, sources)
+  const context = [
+    ...formatContextWithSources(passages, sources),
+    ...vivas.map((v) => `[${v.title}]\n${v.content}`),
+  ]
   const startedAt = new Date()
   // The TARGET decides how it answers: an agent configured to produce JSON is not
   // forced into Markdown because the caller did not think about it.
@@ -544,7 +562,7 @@ async function runAgentTask(
     toolsExecuted: res.toolCalls.filter((c) => c.ok).length,
   }
   // "Ações com ferramenta" counts calls that actually COMPLETED, not attempts.
-  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry }
+  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources }
 }
 
 // ---- delegate_to_agent ------------------------------------------------------
@@ -662,7 +680,9 @@ async function recordChildRun(
   run: (eventKey: string) => Promise<TaskRun>,
   // Which sector run this participation belongs to, and what part the agent played.
   participation?: { sectorExecutionId: ObjectId; role: 'coordinator' | 'specialist' | 'pipeline_stage'; stageId?: string; stageName?: string; stageOrder?: number },
-): Promise<string> {
+  // A execução inteira, e não só o texto: quem chama precisa da procedência para poder
+  // mostrar de onde veio a resposta.
+): Promise<TaskRun> {
   const recId = await deps.startDelegation({
     ownerId: ctx.ownerId,
     correlationId: ctx.correlationId,
@@ -679,7 +699,7 @@ async function recordChildRun(
     const r = await run(eventKey)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: r.output.slice(0, 500), usage: r.usage })
     await emitAgentEvent(deps, ctx, target, 'sector', eventKey, { ...r, telemetry: { ...(r.telemetry ?? {}), ...participationTelemetry(participation) } }, 'succeeded', participation?.sectorExecutionId)
-    return r.output
+    return r
   } catch (error) {
     const message = error instanceof Error ? error.message : 'falha'
     const outcome = /cancel/i.test(message) ? 'canceled' : /timeout|exceeded/i.test(message) ? 'timeout' : 'failed'
@@ -696,6 +716,302 @@ async function recordChildRun(
     )
     throw error
   }
+}
+
+// ---- o executor de setor, único ---------------------------------------------
+//
+// Havia DOIS comportamentos para "executar um setor". Este, que executa de verdade —
+// coordenador com acesso aos membros, ou etapas encadeadas, cada agente com o próprio
+// provedor, modelo, ferramentas, memória e base. E outro, no Playground e no canal, que
+// só ESCOLHIA NOMES: perguntava a um modelo auxiliar quais especialistas seriam bons,
+// buscava trechos e fazia uma única inferência com o membro marcado como padrão. O
+// pesquisador nunca rodava; o coordenador nunca era chamado; `coordinatorAgentId` e
+// `stages` sequer eram lidos. Um setor com dados de BBSE3 no pesquisador respondia "não
+// tenho esses dados" — e estava certo, porque quem respondia era outro agente.
+//
+// Agora existe só este. O Playground, o canal e `delegate_to_sector` chamam a mesma
+// função; o que muda entre eles é quem registra o quê, não o que acontece.
+
+/**
+ * As ferramentas que existem para um agente ALCANÇAR o time.
+ *
+ * Elas não declaram risco porque o risco é do que o outro lado faz — delegar não
+ * escreve nada por si. Ficam nomeadas aqui para o Playground poder liberá-las sem
+ * precisar repetir a lista e sem ela envelhecer em silêncio.
+ */
+export const TEAM_TOOL_NAMES = ['list_available_agents', 'get_agent_capabilities', 'delegate_to_agent', 'delegate_to_sector'] as const
+
+/**
+ * O contexto de uma execução de setor pedida por uma PESSOA.
+ *
+ * Sem agente chamador: quem pediu foi o dono, pela tela ou por um canal. O campo fica
+ * vazio de propósito — inventar um agente aqui produziria uma cadeia de delegação que
+ * nunca existiu. Ele só entra na `ancestry` dos filhos, onde uma string vazia não casa
+ * com id de agente nenhum e portanto não bloqueia nada.
+ */
+export function sectorRunContext(opts: {
+  ownerId: string
+  buildingId: string
+  correlationId: string
+  tokenLimit?: number
+  isCanceled?: () => boolean | Promise<boolean>
+  rootExecutionId?: ObjectId | null
+}): DelegationContext {
+  return {
+    ownerId: opts.ownerId,
+    buildingId: opts.buildingId,
+    correlationId: opts.correlationId,
+    callerAgentId: '',
+    callerAgentName: '',
+    ancestry: [],
+    depth: 0,
+    budget: { tokenLimit: opts.tokenLimit ?? DEFAULT_DELEGATION_TOKEN_BUDGET, tokensSpent: 0 },
+    isCanceled: opts.isCanceled,
+    rootExecutionId: opts.rootExecutionId ?? null,
+  }
+}
+
+export interface SectorParticipant {
+  agentId: string
+  name: string
+  role: ParticipationRole
+  stageId?: string
+  stageName?: string
+  order?: number
+  /** O veredito da busca de conhecimento DESTE agente: ok/empty/no_base/unavailable. */
+  grounding?: string
+  /** Quantas ferramentas ele completou. Um número, nunca argumentos ou resultado. */
+  toolCalls?: number
+  /** Os documentos que entraram na resposta: id e título, nunca o texto. */
+  sources?: { documentId: string | null; title: string | null }[]
+  /** O que ESTE agente custou. Quem paga a conta precisa ver a conta separada. */
+  usage?: { inputTokens: number; outputTokens: number }
+  /** Quanto ele demorou, em milissegundos. */
+  durationMs?: number
+  /** O provedor e o modelo com que ele rodou — a prova de que cada um usa o seu. */
+  provider?: string
+  model?: string | null
+  /** Deu certo? Uma etapa que falhou com `onError: continue` também aparece aqui. */
+  status?: 'succeeded' | 'failed'
+}
+
+export interface SectorTeamRun {
+  output: string
+  /** Quem REALMENTE executou, na ordem em que executou. */
+  participants: SectorParticipant[]
+  warnings: string[]
+}
+
+export interface SectorTeamOptions {
+  objective: string
+  input?: unknown
+  format?: AgentOutputFormat
+  /**
+   * O registro de delegação pai, quando a execução veio de um agente. Ausente numa
+   * execução iniciada por uma PESSOA (Playground, canal): ali não há delegação — há um
+   * pedido — e inventar um registro com um agente chamador falso sujaria a auditoria.
+   */
+  parentDelegationId?: ObjectId | null
+  sectorExecutionId?: ObjectId | null
+  /** Já está na cadeia? Numa execução iniciada por pessoa, não há cadeia. */
+  inChain?: (id: ObjectId) => boolean
+}
+
+/**
+ * Executa o setor como time.
+ *
+ * `orchestrated`: roda `coordinatorAgentId` e concede a ele, SÓ durante esta execução,
+ * o direito de chamar os membros do próprio setor. Quem escolhe o especialista é o
+ * coordenador, com as ferramentas de delegação na mão — e cada membro chamado executa
+ * com a própria configuração.
+ *
+ * `pipeline`: lê `sector.stages` — nunca `members` — e roda as etapas na ordem,
+ * passando a saída de uma como entrada das dependentes.
+ *
+ * `organization` não executa: é agrupamento visual, e quem chama trata isso antes.
+ */
+export async function executeSectorTeam(
+  deps: DelegationDeps,
+  ctx: DelegationContext,
+  sector: SectorLite,
+  opts: SectorTeamOptions,
+): Promise<SectorTeamRun> {
+  const inChain = opts.inChain ?? (() => false)
+  const format = opts.format
+  const participants: SectorParticipant[] = []
+  const warnings: string[] = []
+  const sectorExecutionId = opts.sectorExecutionId ?? null
+
+  const participationOf = (
+    role: ParticipationRole,
+    stage?: { id: string; name: string; order: number },
+  ) => (sectorExecutionId ? { sectorExecutionId, role, stageId: stage?.id, stageName: stage?.name, stageOrder: stage?.order } : undefined)
+
+  // Um agente do time roda igual pelos três caminhos. A diferença é só o registro: com
+  // um pai, vira delegação-filha; sem pai, o evento é emitido direto, e a participação
+  // no setor é gravada do mesmo jeito.
+  const rodarMembro = async (
+    target: Agent,
+    instruction: string,
+    input: unknown,
+    executar: (eventKey: string) => Promise<TaskRun>,
+    participation: ReturnType<typeof participationOf>,
+    papel: SectorParticipant,
+  ): Promise<string> => {
+    void input
+    let saida: TaskRun
+    if (opts.parentDelegationId) {
+      saida = await recordChildRun(deps, ctx, target, instruction, opts.parentDelegationId, executar, participation)
+    } else {
+      const eventKey = `setor:${sectorExecutionId?.toString() ?? ctx.correlationId}:${target._id.toString()}:${participants.length}`
+      const startedAt = new Date()
+      try {
+        const r = await executar(eventKey)
+        await emitAgentEvent(
+          deps,
+          ctx,
+          target,
+          'sector',
+          eventKey,
+          { ...r, telemetry: { ...(r.telemetry ?? {}), ...participationTelemetry(participation) } },
+          'succeeded',
+          participation?.sectorExecutionId,
+        )
+        saida = r
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'falha'
+        const outcome = /cancel/i.test(message) ? 'canceled' : /timeout|exceeded/i.test(message) ? 'timeout' : 'failed'
+        await emitAgentEvent(
+          deps,
+          ctx,
+          target,
+          'sector',
+          eventKey,
+          { usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: 0, startedAt, finishedAt: new Date(), telemetry: participationTelemetry(participation) },
+          outcome,
+          participation?.sectorExecutionId,
+        )
+        throw error
+      }
+    }
+    // A procedência acompanha quem produziu: quem lê a resposta vê de qual agente veio
+    // cada fonte, e não uma pilha anônima.
+    participants.push({
+      ...papel,
+      grounding: saida.grounding,
+      toolCalls: saida.toolCalls,
+      sources: (saida.sources ?? []).map((f) => ({ documentId: f.documentId, title: f.title })),
+      usage: saida.usage,
+      durationMs: Math.max(0, saida.finishedAt.getTime() - saida.startedAt.getTime()),
+      provider: target.provider,
+      model: target.model ?? null,
+      status: 'succeeded',
+    })
+    return saida.output
+  }
+
+  if (sector.mode === 'pipeline') {
+    const stages = sector.stages ?? []
+    if (stages.length === 0) throw new Error('pipeline sem etapas')
+    const outputs: Record<string, string> = {}
+    let output = ''
+    for (const stage of stages) {
+      if (await isCanceled(ctx)) throw new Error('cancelado')
+      if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) throw new Error('orçamento esgotado')
+      const agent = await deps.loadAgent(ctx.ownerId, stage.agentId)
+      const problem = !agent ? 'agente da etapa não encontrado' : inChain(stage.agentId) ? 'ciclo de delegação na etapa' : null
+      if (problem || !agent) {
+        if (stage.onError === 'continue') {
+          warnings.push(`${stage.name}: ${problem}`)
+          continue
+        }
+        throw new Error(`${stage.name}: ${problem}`)
+      }
+      // A entrada de uma etapa é a saída de quem ela depende — e só o pedido original
+      // quando ela não depende de ninguém.
+      const input = stage.dependsOn.length ? stage.dependsOn.map((id) => outputs[id] ?? '').join('\n\n') : opts.input
+      const instruction = stageInstruction(stage.instruction || opts.objective, stage.expectedOutput)
+      const order = stages.indexOf(stage) + 1
+      try {
+        const out = await rodarMembro(
+          agent,
+          instruction,
+          input,
+          (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id),
+          participationOf('pipeline_stage', { id: stage.id, name: stage.name, order }),
+          { agentId: agent._id.toString(), name: agent.name, role: 'pipeline_stage', stageId: stage.id, stageName: stage.name, order },
+        )
+        // Conferida ANTES de a próxima etapa consumir: estrutural quando a etapa produz
+        // JSON, e só "saiu alguma coisa" no resto.
+        const verdict = checkStageOutput(out, agent, format)
+        if (!verdict.ok) throw new Error(verdict.problem)
+        outputs[stage.id] = out
+        output = out
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'falha'
+        if (stage.onError === 'continue') {
+          warnings.push(`${stage.name}: ${message}`)
+          continue
+        }
+        throw new Error(`${stage.name}: ${message}`)
+      }
+    }
+    return { output, participants, warnings }
+  }
+
+  // orquestrado
+  const coordinatorId = sector.coordinatorAgentId ?? sector.members.find((m) => m.isDefault)?.agentId ?? sector.members[0]?.agentId
+  if (!coordinatorId) throw new Error('setor orquestrado sem coordenador nem membros')
+  if (inChain(coordinatorId)) throw new Error('ciclo de delegação: o coordenador já está na cadeia')
+  const coordinator = await deps.loadAgent(ctx.ownerId, coordinatorId)
+  if (!coordinator) throw new Error('coordenador não encontrado')
+  const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
+  // O time que o coordenador alcança durante ESTA execução: os membros do próprio
+  // setor, menos ele. Nada global é aberto, e o filho não herda o direito.
+  const grant = {
+    sectorId: sector._id.toString(),
+    memberIds: sector.members.map((m) => m.agentId.toString()).filter((id) => id !== coordinator._id.toString()),
+  }
+
+  /**
+   * A rede de segurança do conhecimento.
+   *
+   * O coordenador costuma não ter base própria — quem tem é o especialista. Se ele não
+   * delegar (e ele pode não delegar), a resposta sairia "não tenho esses dados" com o
+   * dado guardado ali do lado, na base de um colega do MESMO setor. Então: primeiro a
+   * base dele; se não vier nada, as bases do time.
+   *
+   * Continua dentro do escopo já autorizado — os membros deste setor, desta conta.
+   * Nada global é aberto, e a base do setor entra pelo mesmo `sectorId` de sempre.
+   */
+  // Os colegas que a busca ainda NÃO cobriu. Sem nenhum, não há segunda busca a fazer:
+  // repetir a mesma consulta nos mesmos donos custa e não descobre nada.
+  const colegas = sector.members.map((m) => m.agentId).filter((id) => id.toString() !== coordinator._id.toString())
+  const achou = (r: { context?: string[]; status?: string }): boolean =>
+    r.status === 'ok' || (r.status === undefined && (r.context?.length ?? 0) > 0)
+  const depsComTime: DelegationDeps = deps.retrieveContext && colegas.length > 0
+    ? {
+        ...deps,
+        retrieveContext: async (agentId, query, o) => {
+          const propria = await deps.retrieveContext!(agentId, query, o)
+          if (achou(propria)) return propria
+          const doTime = await deps.retrieveContext!([coordinator._id, ...colegas], query, o)
+          // Só substitui quando o time REALMENTE achou: um 'empty' do time não pode
+          // apagar um 'unavailable' da base própria, que significa outra coisa.
+          return achou(doTime) ? doTime : propria
+        },
+      }
+    : deps
+
+  const output = await rodarMembro(
+    coordinator,
+    instruction,
+    opts.input,
+    (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant),
+    participationOf('coordinator'),
+    { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
+  )
+  return { output, participants, warnings }
 }
 
 // ---- delegate_to_sector -----------------------------------------------------
@@ -786,84 +1102,30 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
   ) => (sectorExecutionId ? { sectorExecutionId, role, stageId: stage?.id, stageName: stage?.name, stageOrder: stage?.order } : undefined)
 
   try {
-    let output = ''
-    if (sector.mode === 'pipeline') {
-      const stages = sector.stages ?? []
-      if (stages.length === 0) throw new Error('pipeline sem etapas')
-      const outputs: Record<string, string> = {}
-      const failures: string[] = []
-      for (const stage of stages) {
-        if (await isCanceled(ctx)) throw new Error('cancelado')
-        if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) throw new Error('orçamento esgotado')
-        const agent = await deps.loadAgent(ctx.ownerId, stage.agentId)
-        const problem = !agent ? 'agente da etapa não encontrado' : inChain(stage.agentId) ? 'ciclo de delegação na etapa' : null
-        if (problem || !agent) {
-          if (stage.onError === 'continue') {
-            failures.push(`${stage.name}: ${problem}`)
-            continue
-          }
-          throw new Error(`${stage.name}: ${problem}`)
-        }
-        const input = stage.dependsOn.length ? stage.dependsOn.map((id) => outputs[id] ?? '').join('\n\n') : args.input
-        // What this stage owes the next one is part of its instruction, not folklore.
-        const instruction = stageInstruction(stage.instruction || objective, stage.expectedOutput)
-        try {
-          const out = await recordChildRun(
-            deps,
-            ctx,
-            agent,
-            instruction,
-            recId,
-            (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id),
-            participationOf('pipeline_stage', { id: stage.id, name: stage.name, order: stages.indexOf(stage) + 1 }),
-          )
-          // Checked BEFORE the next stage consumes it. Structural when the stage
-          // produces JSON; otherwise only that something came out (see
-          // checkStageOutput). Retries already happened inside runWithRetry, so
-          // nothing completed is called twice here.
-          const verdict = checkStageOutput(out, agent, format)
-          if (!verdict.ok) throw new Error(verdict.problem)
-          outputs[stage.id] = out
-          output = out
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'falha'
-          if (stage.onError === 'continue') {
-            failures.push(`${stage.name}: ${message}`)
-            continue
-          }
-          throw new Error(`${stage.name}: ${message}`)
-        }
-      }
-      await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
-      await deps.finishSectorExecution?.(executionKey, { status: 'succeeded' })
-      return { ok: true, result: j({ status: 'ok', sector: sector.name, output, ...(failures.length ? { warnings: failures } : {}) }) }
-    }
-
-    // orchestrated
-    const coordinatorId = sector.coordinatorAgentId ?? sector.members.find((m) => m.isDefault)?.agentId ?? sector.members[0]?.agentId
-    if (!coordinatorId) throw new Error('setor orquestrado sem coordenador nem membros')
-    if (inChain(coordinatorId)) throw new Error('ciclo de delegação: o coordenador já está na cadeia')
-    const coordinator = await deps.loadAgent(ctx.ownerId, coordinatorId)
-    if (!coordinator) throw new Error('coordenador não encontrado')
-    const instruction = sector.instruction ? `${sector.instruction}\n\n${objective}` : objective
-    // The team the coordinator may reach during THIS run: the sector's own members,
-    // minus itself. Nothing global is opened.
-    const grant = {
-      sectorId: sector._id.toString(),
-      memberIds: sector.members.map((m) => m.agentId.toString()).filter((id) => id !== coordinator._id.toString()),
-    }
-    output = await recordChildRun(
-      deps,
-      ctx,
-      coordinator,
-      instruction,
-      recId,
-      (k) => runAgentTask(deps, ctx, coordinator, instruction, args.input, format, k, sector._id, grant),
-      participationOf('coordinator'),
-    )
-    await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: output.slice(0, 500) })
+    // O MESMO executor do Playground e do canal. O que esta função acrescenta é o que
+    // só existe quando quem pede é um agente: o portão de colaboração, o registro de
+    // delegação pai e a resposta em JSON que a ferramenta devolve ao modelo.
+    const run = await executeSectorTeam(deps, ctx, sector, {
+      objective,
+      input: args.input,
+      format,
+      parentDelegationId: recId,
+      sectorExecutionId,
+      inChain,
+    })
+    await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: run.output.slice(0, 500) })
     await deps.finishSectorExecution?.(executionKey, { status: 'succeeded' })
-    return { ok: true, result: j({ status: 'ok', sector: sector.name, output }) }
+    return {
+      ok: true,
+      result: j({
+        status: 'ok',
+        sector: sector.name,
+        output: run.output,
+        // Quem realmente trabalhou, para o chamador não ter que adivinhar.
+        participants: run.participants.map((p) => p.name),
+        ...(run.warnings.length ? { warnings: run.warnings } : {}),
+      }),
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'falha na delegação de setor'
     const canceled = /cancel/i.test(message)

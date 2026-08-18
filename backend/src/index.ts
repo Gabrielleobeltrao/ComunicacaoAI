@@ -15,6 +15,11 @@ import { presetFillableFields } from './agentPresets.js'
 import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
 import { describeDropped, runInteractive } from './interactiveRun.js'
 import { AgentRunError } from './agentRuntime.js'
+import { executeSectorTeam, sectorRunContext } from './delegation.js'
+import type { DelegationDeps } from './delegation.js'
+import { playgroundDelegationDeps } from './delegationWiring.js'
+import { finishSectorExecution, startSectorExecution } from './sectorExecutions.js'
+import { livePassagesFor } from './automations/liveSources.js'
 import type { WithId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import { Server } from 'socket.io'
@@ -52,20 +57,18 @@ import type {
 } from './agents.js'
 import { auth } from './auth.js'
 import {
-  getActiveAgentId,
   getHumanHandoff,
   getLinkedVisitorProfileId,
   getConversationMemory,
   getStructuredMemory,
   getStructuredOutputData,
   linkVisitorProfile,
-  setActiveAgentId,
   setConversationMemory,
   setHumanHandoff,
   setStructuredMemory,
   setStructuredOutputData,
 } from './conversationMemory.js'
-import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, normalizeSectorMode, sectorIsExecutable, sectorReadiness, SECTOR_MODES, updateSector } from './sectors.js'
+import { createSector, deleteSector, enforceSingleMembership, stageConflicts, getSectorById, listSectors, normalizeSectorMode, sectorIsExecutable, sectorReadiness, SECTOR_MODES, updateSector } from './sectors.js'
 import { accessConfigOf, validateAccessConfig } from './sectorAccess.js'
 import type { SectorStage, SectorTeamFields } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
@@ -97,8 +100,6 @@ import {
   extractStructuredOutput,
   generateAgentReply,
   listModelsForProvider,
-  planStageTransition,
-  planSectorResponse,
   PROVIDER_IDS,
   PROVIDER_INFO,
   updateConversationMemory,
@@ -106,15 +107,13 @@ import {
 } from './llm.js'
 import type { ChatTurn, Provider } from './llm.js'
 import type { RouterOption, StageTransitionOption } from './systemPrompt.js'
-import { aggregateSectorDecisions, listSectorDecisionsForConversation, logSectorDecision } from './sectorDecisions.js'
+import { aggregateSectorDecisions, listSectorDecisionsForConversation } from './sectorDecisions.js'
 import {
   buildClarificationInstruction,
   buildIdentityCaptureInstruction,
   buildLanguageInstruction,
-  buildPipelineStageObjective,
   buildProactivityInstruction,
   buildResponseStyleInstruction,
-  buildSectorObjective,
   formatStructuredMemory,
   GUARDRAIL_REFUSAL_MESSAGE,
   GUARDRAIL_SCOPE_INSTRUCTION,
@@ -1047,6 +1046,31 @@ async function resolveSectorTeamFields(
   return { fields }
 }
 
+/**
+ * Um agente está num lugar só.
+ *
+ * Recusa antes de gravar quando alguém que entraria neste setor já é ETAPA de outro.
+ * Mover um MEMBRO é silencioso e continua sendo (`enforceSingleMembership`) — não há o
+ * que perder. Mover uma ETAPA não: ela é trabalho configurado, e apagá-la de outro
+ * fluxo para acomodar este seria destruir o que alguém montou sem perguntar.
+ */
+async function recusarSeJaEhEtapaDeOutro(
+  res: Response,
+  ownerId: string,
+  manter: ObjectId | null,
+  agentIds: ObjectId[],
+): Promise<boolean> {
+  const conflitos = await stageConflicts(ownerId, manter, agentIds)
+  if (conflitos.length === 0) return false
+  const c = conflitos[0]
+  res.status(409).json({
+    error: `Este agente já é a etapa "${c.stageName}" do setor "${c.sectorName}". Um agente trabalha em um setor só — remova-o de lá antes.`,
+    code: 'AGENT_ALREADY_IN_SECTOR',
+    conflicts: conflitos,
+  })
+  return true
+}
+
 app.post('/api/sectors', requireAuth, async (req, res) => {
   const { name, mode, members, color } = req.body ?? {}
   if (!name || typeof name !== 'string' || !name.trim()) {
@@ -1071,8 +1095,13 @@ app.post('/api/sectors', requireAuth, async (req, res) => {
     return
   }
   const sectorColor = typeof color === 'string' && color.trim() ? color.trim() : DEFAULT_SECTOR_COLOR
+  // Um agente que já é etapa de outro setor não entra aqui — nem como membro, nem como
+  // etapa. A recusa vem antes de qualquer gravação.
+  const entrandoNovo = [...(parsed ?? []).map((x) => x.agentId), ...(team?.stages ?? []).map((e) => e.agentId)]
+  if (await recusarSeJaEhEtapaDeOutro(res, res.locals.userId, null, entrandoNovo)) return
+
   const sector = await createSector(res.locals.userId, officeId, name, sectorColor, parsedMode, parsed ?? [], team)
-  await enforceSingleMembership(res.locals.userId, sector._id, (parsed ?? []).map((m) => m.agentId))
+  await enforceSingleMembership(res.locals.userId, sector._id, sector.members.map((m) => m.agentId))
   auditEntity(res, { id: sector._id.toString(), label: sector.name, floorId: sector.officeId?.toString() })
   res.status(201).json(serializeSector(sector as WithId<Sector>))
 })
@@ -1151,14 +1180,22 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Nothing to update' })
     return
   }
+  // Quem entraria neste setor — por membro ou por etapa — não pode ser etapa de outro.
+  const entrando = [
+    ...(updates.members ?? []).map((m) => m.agentId),
+    ...(updates.stages ?? []).map((e) => e.agentId),
+  ]
+  if (await recusarSeJaEhEtapaDeOutro(res, res.locals.userId, new ObjectId(sectorId), entrando)) return
+
   const sector = await updateSector(res.locals.userId, new ObjectId(sectorId), updates)
   if (!sector) {
     res.status(404).json({ error: 'Sector not found' })
     return
   }
-  if (updates.members) {
-    await enforceSingleMembership(res.locals.userId, sector._id, updates.members.map((m) => m.agentId))
-  }
+  // A lista GRAVADA, e não a que veio no corpo: num pipeline ela é derivada das etapas,
+  // e era por isso que um agente podia ser etapa de vários setores ao mesmo tempo — a
+  // exclusividade era checada contra um array vazio.
+  await enforceSingleMembership(res.locals.userId, sector._id, sector.members.map((m) => m.agentId))
   res.json(serializeSector(sector))
 })
 
@@ -1251,7 +1288,7 @@ app.put('/api/sectors/:sectorId/members', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Sector not found' })
     return
   }
-  await enforceSingleMembership(ownerId, sector._id, (parsed ?? []).map((m) => m.agentId))
+  await enforceSingleMembership(ownerId, sector._id, sector.members.map((m) => m.agentId))
   res.json(serializeSector(sector))
 })
 
@@ -1484,220 +1521,144 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     return
   }
 
-  const resolved = (
-    await Promise.all(
-      sector.members.map(async (m) => ({ member: m, agent: await getAgentById(res.locals.userId, m.agentId) })),
-    )
-  ).filter((x): x is { member: SectorMember; agent: WithId<Agent> } => x.agent !== null)
-  if (resolved.length === 0) {
-    res.status(400).json({ error: 'Sector has no valid agents' })
+  const mode: SectorMode = normalizeSectorMode(sector.mode)
+  if (mode === 'organization') {
+    // Continua não executável: é agrupamento no mapa, não equipe.
+    res.status(400).json({ error: 'Este setor apenas agrupa agentes e não executa. Use um setor orquestrado ou pipeline.' })
     return
   }
 
-  const defaultIndex = Math.max(
-    0,
-    resolved.findIndex((x) => x.member.isDefault),
-  )
-  const configAgent = resolved[defaultIndex].agent
-  const apiKey = await getProviderApiKey(res.locals.userId, configAgent.provider)
-  const sectorObjectiveFor = (chosen: { member: SectorMember; agent: WithId<Agent> }[]) =>
-    buildSectorObjective(
-      sector.name,
-      chosen.map((x) => ({ name: x.agent.name, objective: x.agent.objective })),
-    )
+  /**
+   * O time roda DE VERDADE — o mesmo executor da delegação e do canal.
+   *
+   * O que havia aqui antes era outra coisa com o mesmo nome: um modelo auxiliar
+   * escolhia nomes de especialistas, buscava trechos e uma única inferência era feita
+   * com o membro marcado como padrão. O coordenador não era chamado, `coordinatorAgentId`
+   * e `stages` não eram lidos, e nenhum especialista executava. Um setor cujo pesquisador
+   * tinha a série histórica respondia "não tenho esses dados" — e quem respondia era um
+   * agente que, de fato, não tinha.
+   *
+   * Aqui é produção com duas diferenças, as duas deliberadas: a execução é marcada como
+   * `test` (fica fora das métricas) e as ferramentas que ESCREVEM são removidas de toda
+   * a cadeia. Testar não pode mandar e-mail de verdade.
+   */
+  const deps = playgroundDelegationDeps()
+  const setorParaExecutar = await deps.loadSector(res.locals.userId, sector._id)
+  if (!setorParaExecutar) {
+    res.status(404).json({ error: 'Sector not found' })
+    return
+  }
+  if (mode === 'pipeline' ? (setorParaExecutar.stages ?? []).length === 0 : setorParaExecutar.members.length === 0 && !setorParaExecutar.coordinatorAgentId) {
+    res.status(400).json({ error: mode === 'pipeline' ? 'Este pipeline não tem etapas configuradas.' : 'Este setor não tem coordenador nem membros.' })
+    return
+  }
 
-  const mode: SectorMode = normalizeSectorMode(sector.mode)
-  let replyObjective: string
-  let knowledgeAgentIds: ObjectId[]
-  let specialistNames: string[]
-  let clarificationTopics: string[] | null = null
-  let clarify = false
-  // Pipeline-only response fields (the client tracks the stage between sends).
-  let pipelineStageName: string | null = null
-  let pipelineStageIndex: number | null = null
-  let pipelineAdvanced = false
-  let pipelineFromStage: string | null = null
+  const buildingIdSetor = (await deps.buildingIdForFloor(res.locals.userId, setorParaExecutar.officeId)) ?? ''
+  const correlationId = `playground:${sector._id.toString()}:${Date.now()}`
+  const chaveExecucao = correlationId
+  const execucaoSetorId = await startSectorExecution({
+    executionKey: chaveExecucao,
+    ownerId: res.locals.userId,
+    sectorId: sector._id,
+    sectorName: sector.name,
+    sectorMode: mode,
+    floorId: setorParaExecutar.officeId ?? null,
+    buildingId: buildingIdSetor ? new ObjectId(buildingIdSetor) : null,
+    source: 'manual',
+    correlationId,
+    // Trabalho real, fora dos números de produção.
+    environment: 'test',
+  })
 
-  if (mode === 'pipeline' && resolved.length > 1) {
-    // The client sends the stage the conversation is on; default to the first.
-    let stageIndex =
-      typeof rawStageIndex === 'number' && Number.isInteger(rawStageIndex)
-        ? Math.min(Math.max(rawStageIndex, 0), resolved.length - 1)
-        : 0
-    const options = buildStageTransitionOptions(resolved, stageIndex)
-    if (options.length > 0) {
-      try {
-        const target = await planStageTransition(
-          resolved[stageIndex].agent.name,
-          resolved[stageIndex].member.routingDescription,
-          options,
-          history.slice(0, -1),
-          lastUser.content,
-          configAgent.provider,
-          auxModelFor(configAgent),
-          apiKey,
-        )
-        if (target >= 0 && target !== stageIndex) {
-          pipelineFromStage = resolved[stageIndex].agent.name
-          pipelineAdvanced = true
-          stageIndex = target
-        }
-      } catch (error) {
-        console.error('Sector playground stage transition planning failed, staying on current stage:', error)
-      }
-    }
-    const stage = resolved[stageIndex]
-    replyObjective = buildPipelineStageObjective(sector.name, {
-      name: stage.agent.name,
-      objective: stage.agent.objective,
-      stageGoal: stage.member.routingDescription,
+  // A última pergunta é o pedido; o que veio antes é contexto. O executor trata as duas
+  // coisas de forma diferente — instrução e dado — e misturá-las apagaria a distinção.
+  const anteriores = history.slice(0, -1)
+  const contexto = anteriores.length
+    ? anteriores.map((m) => `${m.role === 'user' ? 'Visitante' : 'Agente'}: ${m.content}`).join('\n')
+    : undefined
+
+  const ctxSetor = sectorRunContext({
+    ownerId: res.locals.userId,
+    buildingId: buildingIdSetor,
+    correlationId,
+    rootExecutionId: execucaoSetorId,
+  })
+
+  let run: Awaited<ReturnType<typeof executeSectorTeam>>
+  try {
+    run = await executeSectorTeam(deps, ctxSetor, setorParaExecutar, {
+      objective: lastUser.content,
+      input: contexto,
+      sectorExecutionId: execucaoSetorId,
     })
-    knowledgeAgentIds = [stage.agent._id]
-    specialistNames = [stage.agent.name]
-    pipelineStageName = stage.agent.name
-    pipelineStageIndex = stageIndex
-  } else {
-    let plan = { specialists: [defaultIndex], clarify: false }
-    if (resolved.length > 1) {
-      const options: RouterOption[] = resolved.map((x, i) => ({
-        index: i,
-        name: x.agent.name,
-        description: memberRoutingLine(x.member, x.agent),
-      }))
-      try {
-        plan = await planSectorResponse(
-          options,
-          [],
-          defaultIndex,
-          history.slice(0, -1),
-          lastUser.content,
-          configAgent.provider,
-          auxModelFor(configAgent),
-          apiKey,
-        )
-      } catch (error) {
-        console.error('Sector playground planning failed, using default specialist:', error)
-      }
-    }
-    clarify = plan.clarify
-    if (plan.clarify) {
-      replyObjective = sectorObjectiveFor(resolved)
-      knowledgeAgentIds = []
-      specialistNames = []
-      clarificationTopics = resolved.map((x) => x.member.routingDescription.trim() || x.agent.name)
-    } else {
-      const chosen = plan.specialists.map((i) => resolved[i]).filter(Boolean)
-      if (chosen.length === 0) chosen.push(resolved[defaultIndex])
-      replyObjective = sectorObjectiveFor(chosen)
-      knowledgeAgentIds = chosen.map((x) => x.agent._id)
-      specialistNames = chosen.map((x) => x.agent.name)
-    }
+    await finishSectorExecution(chaveExecucao, { status: 'succeeded' })
+  } catch (error) {
+    const mensagem = error instanceof Error ? error.message : 'falha ao executar o setor'
+    await finishSectorExecution(chaveExecucao, { status: /cancel/i.test(mensagem) ? 'canceled' : 'failed', errorKind: 'stage_failed' })
+    // Erro controlado: a causa é uma categoria de configuração/execução, nunca prompt,
+    // conteúdo de base ou credencial.
+    res.status(502).json({ error: 'Não foi possível concluir a execução do setor.', code: 'sector_run_failed', problem: mensagem.slice(0, 300) })
+    return
   }
 
-  // Sector context: the consulted specialists' own bases PLUS the sector's shared
-  // base, merged by relevance, deduped and capped by top-K/character budget. A
-  // vector-search failure never breaks the turn — it just answers without grounding.
-  // Canonical retrieval: the consulted specialists' bases + THIS sector's shared
-  // base, merged/deduped/capped. Never throws — an outage just means no grounding.
-  const { context: knowledge } = await retrieveContext(knowledgeAgentIds, lastUser.content, { verifiedSectorId: sector._id })
+  // O que o dono precisa ver para acreditar (ou não) na resposta: quem executou, em que
+  // ordem, se havia base para consultar e quais documentos entraram. Sem conteúdo
+  // interno, sem prompt, sem segredo.
+  // A fundamentação do CONJUNTO. 'ok' se alguém achou; 'unavailable' se alguém não
+  // conseguiu procurar — porque isso não é o mesmo que "não existe"; só então 'empty'.
+  const status = run.participants.map((p) => p.grounding).filter(Boolean) as string[]
+  const grounding = status.includes('ok')
+    ? 'ok'
+    : status.includes('unavailable')
+      ? 'unavailable'
+      : status.includes('empty')
+        ? 'empty'
+        : 'no_base'
+  // Títulos e ids, sem repetição. Nunca o texto do documento.
+  const vistas = new Set<string>()
+  const sources = run.participants
+    .flatMap((p) => p.sources ?? [])
+    .filter((f) => {
+      const chave = `${f.documentId ?? ''}:${f.title ?? ''}`
+      if (vistas.has(chave)) return false
+      vistas.add(chave)
+      return true
+    })
 
-  const behaviorInstruction = [
-    configAgent.guardrailMode === 'prompt' ? GUARDRAIL_SCOPE_INSTRUCTION : '',
-    configAgent.handoffEnabled ? HANDOFF_INSTRUCTION : '',
-    configAgent.proactivityEnabled ? buildProactivityInstruction(configAgent.proactivityGuidance ?? '') : '',
-    clarificationTopics ? buildClarificationInstruction(clarificationTopics) : '',
-  ]
-    .filter(Boolean)
-    .join('\n\n')
-
-  // As ferramentas primeiro: o risco delas é o que decide se dá para paralelizar, e
-  // resolver a configuração antes produziria algo que o adapter teria de corrigir.
-  const playgroundTools = await resolveAgentTools(configAgent, res.locals.userId)
-  // O MESMO resolvedor que a rotina e a delegação usam. Antes, cada caminho montava o
-  // seu — e o agente respondia diferente conforme a porta por onde o pedido entrou.
-  const execucaoPlayground = resolveAgentRun(configAgent, {
-    context: 'chat',
-    toolRisks: playgroundTools.map((t) => t.risk ?? 'write'),
-  })
-
-  // O MESMO caminho do chat e dos canais: prazo, tentativas, cancelamento e contrato de
-  // saída aplicados uma vez, por uma função só.
-  const interativo = await runInteractive({
-    reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
-      generateAgentReply(
-        objective,
-        k,
-        m,
-        h,
-        configAgent.provider,
-        configAgent.model,
-        apiKey,
-        '',
-        behaviorInstruction,
-        [
-          buildLanguageInstruction(configAgent.language ?? 'pt'),
-          buildResponseStyleInstruction(
-            configAgent.responseTone ?? 'neutral',
-            configAgent.responseDetail ?? 'balanced',
-            configAgent.responseEmojis ?? false,
-            configAgent.responseFormatting ?? false,
-          ),
-        ].join('\n\n'),
-        execucaoPlayground.enableCaching,
-        tools,
-        { runConfig: execucaoPlayground.runConfig, signal, onToolStart },
-      ),
-    objective: composeAgentPrompt({
-      definition: execucaoPlayground.definition,
-      taskInstruction: replyObjective === configAgent.objective ? '' : replyObjective,
-      hasUntrustedContext: knowledge.length > 0,
-    }),
-    knowledge,
-    history,
-    tools: playgroundTools,
-    runConfig: execucaoPlayground.runConfig,
-    output: execucaoPlayground.definition.output,
-  })
-
-  // Os parâmetros que este modelo não aceitou. Só campo e motivo, os dois gerados por
-  // este código — nunca prompt, contexto, resposta ou credencial.
-  const descartados = describeDropped(execucaoPlayground.runConfig)
-  if (descartados) console.info(`[runConfig] playground: ${descartados}`)
-
-  const { usage, toolCalls } = interativo
-  const text = interativo.text
-  recordReplyUsage(res.locals.userId, usage).catch((error) =>
-    console.error('Failed to record token usage:', error),
-  )
-
-  let reply = text
-  if (configAgent.handoffEnabled && reply.trimStart().startsWith(HANDOFF_MARKER)) {
-    reply = reply.trimStart().slice(HANDOFF_MARKER.length).trim()
-  }
   res.json({
-    reply,
+    reply: run.output,
     mode,
-    specialists: specialistNames,
-    clarify,
-    stage: pipelineStageName,
-    stageIndex: pipelineStageIndex,
-    advanced: pipelineAdvanced,
-    fromStage: pipelineFromStage,
-    toolCalls,
-    // O Playground é onde se TESTA o agente: aqui a resposta que não cumpriu o contrato
-    // aparece, com o motivo, em vez de virar erro — é exatamente o que o dono precisa ver
-    // para corrigir o schema ou as instruções. No chat e nos canais é o oposto: lá ela não
-    // é enviada, porque do outro lado tem um cliente.
-    //
-    // O diagnóstico carrega só o que este código gerou — validade, se houve reparo, o
-    // motivo da recusa e o par campo/motivo dos parâmetros descartados. Nunca prompt,
-    // contexto, chave ou credencial.
-    diagnostics: {
-      outputValid: interativo.outputValid,
-      outputRepaired: interativo.outputRepaired,
-      ...(interativo.outputProblem ? { outputProblem: interativo.outputProblem } : {}),
-      ...(descartados ? { runConfigDropped: descartados } : {}),
-    },
+    // A identidade desta execução: dá para abrir o registro completo dela em Execuções.
+    executionId: execucaoSetorId.toString(),
+    participants: run.participants.map((p) => ({
+      name: p.name,
+      role: p.role,
+      grounding: p.grounding ?? null,
+      toolCalls: p.toolCalls ?? 0,
+      // O custo e o tempo de CADA agente. Sem isto, o teste mostrava um texto e nada
+      // sobre o que ele custou — e uma equipe de quatro agentes é quatro chamadas.
+      inputTokens: p.usage?.inputTokens ?? 0,
+      outputTokens: p.usage?.outputTokens ?? 0,
+      durationMs: p.durationMs ?? 0,
+      provider: p.provider ?? null,
+      model: p.model ?? null,
+      ...(p.stageName ? { stage: p.stageName, order: p.order } : {}),
+    })),
+    // O total da execução, para não obrigar a somar de cabeça.
+    usage: run.participants.reduce(
+      (soma, p) => ({
+        inputTokens: soma.inputTokens + (p.usage?.inputTokens ?? 0),
+        outputTokens: soma.outputTokens + (p.usage?.outputTokens ?? 0),
+      }),
+      { inputTokens: 0, outputTokens: 0 },
+    ),
+    durationMs: run.participants.reduce((soma, p) => soma + (p.durationMs ?? 0), 0),
+    // Compatibilidade: a tela lia `specialists` para dizer quem foi consultado. Agora
+    // são os que EXECUTARAM de verdade.
+    specialists: run.participants.map((p) => p.name),
+    grounding,
+    sources,
+    ...(run.warnings.length ? { warnings: run.warnings } : {}),
   })
 })
 
@@ -2582,6 +2543,11 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     knowledge = results.map((result) => result.content)
   } catch (error) {
     console.error('Playground knowledge search failed, replying without grounding:', error)
+  }
+  // Os endereços que o dono marcou para entrar sozinhos quando o agente é chamado.
+  // Nunca lançam: site fora do ar não derruba o atendimento.
+  for (const viva of await livePassagesFor(res.locals.userId, agent)) {
+    knowledge.push(`[${viva.title}]\n${viva.content}`)
   }
 
   const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
@@ -3481,230 +3447,19 @@ function auxModelFor(agent: WithId<Agent>): string | null {
   return agent.cheapAuxModel === false ? agent.model : auxiliaryModel(agent.provider)
 }
 
-// The line the adaptive planner reads for each specialist: its sector (if set)
-// plus its routing hint, so routing can lean on the department.
-function memberRoutingLine(member: SectorMember, agent: WithId<Agent>): string {
-  const base = member.routingDescription.trim() || agent.objective.trim() || agent.name
-  const sector = member.sector?.trim()
-  return sector ? `[Setor: ${sector}] ${base}` : base
-}
-
-// The moves available out of a pipeline stage: its explicit transitions
-// (skip/branch/back) plus the implicit linear advance to the next stage. Targets
-// are indices into `resolved`; self-targets, out-of-range, and duplicates drop.
-function buildStageTransitionOptions(
-  resolved: { member: SectorMember; agent: WithId<Agent> }[],
-  stageIndex: number,
-): StageTransitionOption[] {
-  const current = resolved[stageIndex]
-  const options: StageTransitionOption[] = []
-  const usedTargets = new Set<number>()
-  for (const transition of current.member.transitions ?? []) {
-    const target = resolved.findIndex((x) => x.agent._id.equals(transition.targetAgentId))
-    if (target < 0 || target === stageIndex || usedTargets.has(target)) continue
-    usedTargets.add(target)
-    options.push({ target, targetName: resolved[target].agent.name, condition: transition.condition })
-  }
-  const next = stageIndex + 1
-  if (next < resolved.length && current.member.advanceWhen.trim() && !usedTargets.has(next)) {
-    options.push({ target: next, targetName: resolved[next].agent.name, condition: current.member.advanceWhen })
-  }
-  return options
-}
-
-interface SectorTurn {
-  // The default member supplies the sector voice + memory/identity/guardrail config.
-  configAgent: WithId<Agent>
-  // A unified objective merging the consulted specialists' expertise.
-  replyObjective: string
-  // Whose knowledge bases to search (the consulted specialists). Empty on clarify.
-  knowledgeAgentIds: ObjectId[]
-  // Consulted specialist names, for owner-side attribution in Chats.
-  replyAgentName: string
-  // Non-null when the supervisor decided the message is too ambiguous to answer.
-  clarificationTopics: string[] | null
-}
-
-// Adaptive supervisor: on each turn a cheap planner decides which specialists
-// (one or several) have the info to answer — or that the message is ambiguous.
-// The visitor always gets ONE unified reply in a single voice; the specialists
-// are internal. Sticky: the planner is told the current specialists so it keeps
-// them while the topic holds.
-async function resolveSectorTurn(
-  widget: WithId<Widget>,
-  sectorId: ObjectId,
-  conversationId: string,
-  visitorContent: string,
-): Promise<SectorTurn | null> {
-  const ownerId = widget.ownerId
-  const widgetId = widget._id
-  const sector = await getSectorById(ownerId, sectorId)
-  if (!sector || sector.members.length === 0) return null
-
-  const resolved = (
-    await Promise.all(
-      sector.members.map(async (m) => ({ member: m, agent: await getAgentById(ownerId, m.agentId) })),
-    )
-  ).filter((x): x is { member: SectorMember; agent: WithId<Agent> } => x.agent !== null)
-  if (resolved.length === 0) return null
-
-  const defaultIndex = Math.max(
-    0,
-    resolved.findIndex((x) => x.member.isDefault),
-  )
-  const configAgent = resolved[defaultIndex].agent
-  const sectorObjectiveFor = (chosen: { member: SectorMember; agent: WithId<Agent> }[]) =>
-    buildSectorObjective(
-      sector.name,
-      chosen.map((x) => ({ name: x.agent.name, objective: x.agent.objective })),
-    )
-
-  // Single-member sector: no planning needed.
-  if (resolved.length === 1) {
-    await setActiveAgentId(widgetId, conversationId, resolved[0].agent._id)
-    await logSectorDecision({
-      ownerId,
-      sectorId,
-      widgetId,
-      conversationId,
-      specialists: [resolved[0].agent.name],
-      clarify: false,
-    })
-    return {
-      configAgent,
-      replyObjective: sectorObjectiveFor(resolved),
-      knowledgeAgentIds: [resolved[0].agent._id],
-      replyAgentName: resolved[0].agent.name,
-      clarificationTopics: null,
-    }
-  }
-
-  // Pipeline mode: ordered stages. The active stage answers; a planner may first
-  // move the flow to another stage — the next one (advance), a later one (skip),
-  // an alternative (branch), or an earlier one (back) — when a transition's
-  // condition is met. At most one move per turn, and the visitor never perceives
-  // the switch: each stage speaks as one continuous assistant.
-  if ((normalizeSectorMode(sector.mode)) === 'pipeline') {
-    const activeAgentId = await getActiveAgentId(widgetId, conversationId)
-    let stageIndex = activeAgentId ? resolved.findIndex((x) => x.agent._id.equals(activeAgentId)) : 0
-    if (stageIndex < 0) stageIndex = 0
-
-    const recent = await listMessages(widgetId, conversationId)
-    const advanceHistory: ChatTurn[] = recent.slice(-8).map((m) => ({
-      role: m.role === 'visitor' ? 'user' : 'assistant',
-      content: m.content,
-    }))
-    const apiKey = await getProviderApiKey(ownerId, configAgent.provider)
-
-    let fromStage: string | null = null
-    const options = buildStageTransitionOptions(resolved, stageIndex)
-    if (options.length > 0) {
-      let target = -1
-      try {
-        target = await planStageTransition(
-          resolved[stageIndex].agent.name,
-          resolved[stageIndex].member.routingDescription,
-          options,
-          advanceHistory,
-          visitorContent,
-          configAgent.provider,
-          auxModelFor(configAgent),
-          apiKey,
-        )
-      } catch (error) {
-        console.error('Stage transition planning failed, staying on current stage:', error)
-      }
-      if (target >= 0 && target !== stageIndex) {
-        fromStage = resolved[stageIndex].agent.name
-        stageIndex = target
-      }
-    }
-
-    const stage = resolved[stageIndex]
-    await setActiveAgentId(widgetId, conversationId, stage.agent._id)
-    await logSectorDecision({
-      ownerId,
-      sectorId,
-      widgetId,
-      conversationId,
-      specialists: [stage.agent.name],
-      clarify: false,
-      mode: 'pipeline',
-      advanced: fromStage !== null,
-      fromStage,
-    })
-    return {
-      configAgent,
-      replyObjective: buildPipelineStageObjective(sector.name, {
-        name: stage.agent.name,
-        objective: stage.agent.objective,
-        stageGoal: stage.member.routingDescription,
-      }),
-      knowledgeAgentIds: [stage.agent._id],
-      replyAgentName: stage.agent.name,
-      clarificationTopics: null,
-    }
-  }
-
-  const options: RouterOption[] = resolved.map((x, i) => ({
-    index: i,
-    name: x.agent.name,
-    description: memberRoutingLine(x.member, x.agent),
-  }))
-
-  const activeAgentId = await getActiveAgentId(widgetId, conversationId)
-  const currentIndices = activeAgentId
-    ? resolved.flatMap((x, i) => (x.agent._id.equals(activeAgentId) ? [i] : []))
-    : []
-
-  const recent = await listMessages(widgetId, conversationId)
-  const planHistory: ChatTurn[] = recent.slice(-6).map((m) => ({
-    role: m.role === 'visitor' ? 'user' : 'assistant',
-    content: m.content,
-  }))
-
-  const apiKey = await getProviderApiKey(ownerId, configAgent.provider)
-  let plan = { specialists: [defaultIndex], clarify: false }
-  try {
-    plan = await planSectorResponse(
-      options,
-      currentIndices,
-      defaultIndex,
-      planHistory,
-      visitorContent,
-      configAgent.provider,
-      auxModelFor(configAgent),
-      apiKey,
-    )
-  } catch (error) {
-    console.error('Sector planning failed, using default specialist:', error)
-  }
-
-  if (plan.clarify) {
-    await logSectorDecision({ ownerId, sectorId, widgetId, conversationId, specialists: [], clarify: true })
-    return {
-      configAgent,
-      replyObjective: sectorObjectiveFor(resolved),
-      knowledgeAgentIds: [],
-      replyAgentName: sector.name,
-      clarificationTopics: resolved.map((x) => x.member.routingDescription.trim() || x.agent.name),
-    }
-  }
-
-  const chosen = plan.specialists.map((i) => resolved[i]).filter(Boolean)
-  if (chosen.length === 0) chosen.push(resolved[defaultIndex])
-  const names = chosen.map((x) => x.agent.name)
-  await logSectorDecision({ ownerId, sectorId, widgetId, conversationId, specialists: names, clarify: false })
-  await setActiveAgentId(widgetId, conversationId, chosen[0].agent._id)
-
-  return {
-    configAgent,
-    replyObjective: sectorObjectiveFor(chosen),
-    knowledgeAgentIds: chosen.map((x) => x.agent._id),
-    replyAgentName: names.join(' + '),
-    clarificationTopics: null,
-  }
-}
+// O roteador conversacional saiu daqui.
+//
+// Ele escolhia NOMES de especialistas com um modelo auxiliar, guardava o "agente ativo"
+// da conversa e fazia uma inferência com o membro marcado como padrão — enquanto
+// `delegate_to_sector` executava o time de verdade, com coordenador, grant e etapas.
+// Dois comportamentos com o mesmo nome, e o do canal e do Playground era o que não
+// executava ninguém. Agora os três chamam `executeSectorTeam`.
+//
+// O que foi embora junto, porque só existia para ele: `memberRoutingLine`,
+// `buildStageTransitionOptions`, `resolveSectorTurn`, `SectorTurn`, o estado de agente
+// ativo por conversa e os planejadores `planSectorResponse`/`planStageTransition`. Quem
+// decide qual especialista responde agora é o coordenador do setor, com as ferramentas
+// de delegação — e a decisão dele fica registrada como execução, não como palpite.
 
 async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: string, visitorContent: string) {
   const widgetId = widget._id
@@ -3729,14 +3484,27 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   let knowledgeAgentIds: ObjectId[]
   let replyAgentName: string | null
   let clarificationTopics: string[] | null
+  // O setor rodado pelo executor único; ausente quando o canal aponta para um agente só.
+  let setorDoCanal: Awaited<ReturnType<DelegationDeps['loadSector']>> = null
+  const depsCanal = productionDelegationDeps()
   if (widget.sectorId) {
-    const turn = await resolveSectorTurn(widget, widget.sectorId, conversationId, visitorContent)
-    if (!turn) return
-    agent = turn.configAgent
-    replyObjective = turn.replyObjective
-    knowledgeAgentIds = turn.knowledgeAgentIds
-    replyAgentName = turn.replyAgentName
-    clarificationTopics = turn.clarificationTopics
+    // O MESMO executor da delegação e do Playground. O que havia aqui era uma segunda
+    // implementação — planner escolhendo nomes, membro padrão respondendo sozinho — que
+    // podia (e ia) divergir da execução real do time.
+    const setor = await depsCanal.loadSector(ownerId, widget.sectorId)
+    if (!setor || setor.mode === 'organization') return
+    const coordenadorId = setor.coordinatorAgentId ?? setor.members.find((m) => m.isDefault)?.agentId ?? setor.members[0]?.agentId
+    // Num pipeline o "agente de configuração" é o da primeira etapa: é dele o idioma, o
+    // estilo e o guardrail com que o canal fala com o visitante.
+    const configId = setor.mode === 'pipeline' ? setor.stages?.[0]?.agentId : coordenadorId
+    const config = configId ? await getAgentById(ownerId, configId) : null
+    if (!config) return
+    setorDoCanal = setor
+    agent = config
+    replyObjective = config.objective
+    knowledgeAgentIds = [config._id]
+    replyAgentName = null
+    clarificationTopics = null
   } else {
     const single = widget.agentId ? await getAgentById(ownerId, widget.agentId) : null
     if (!single) return
@@ -3789,7 +3557,12 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // every consulted specialist, for a sector. Skipped when only clarifying.
   // Only a SECTOR-answered channel reads the sector's shared base; a widget wired
   // straight to one agent stays on that agent's own knowledge.
-  const { context: knowledge } = await retrieveContext(knowledgeAgentIds, visitorContent, { verifiedSectorId: widget.sectorId ?? null })
+  const { context: knowledgeBase } = await retrieveContext(knowledgeAgentIds, visitorContent, { verifiedSectorId: widget.sectorId ?? null })
+  const knowledge = [
+    ...knowledgeBase,
+    // Idem no canal: quem escolheu "sempre" ou "quando mudar" espera o conteúdo aqui.
+    ...(await livePassagesFor(ownerId, agent)).map((viva) => `[${viva.title}]\n${viva.content}`),
+  ]
 
   // If a previous turn in this conversation already resolved who the
   // visitor is, their memory lives on the profile (shared across every
@@ -3909,6 +3682,41 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   }
 
   try {
+    if (setorDoCanal) {
+      // O time executa: coordenador com acesso aos membros, ou as etapas em ordem. A
+      // conversa entra como contexto; a última mensagem do visitante é o pedido.
+      const buildingIdCanal = (await depsCanal.buildingIdForFloor(ownerId, setorDoCanal.officeId)) ?? ''
+      const correlacao = `canal:${widgetId.toString()}:${conversationId}:${channelStartedAt.getTime()}`
+      const execucaoSetorId = await startSectorExecution({
+        executionKey: correlacao,
+        ownerId,
+        sectorId: setorDoCanal._id,
+        sectorName: setorDoCanal.name,
+        sectorMode: setorDoCanal.mode,
+        floorId: setorDoCanal.officeId ?? null,
+        buildingId: buildingIdCanal ? new ObjectId(buildingIdCanal) : null,
+        source: 'channel',
+        correlationId: correlacao,
+      })
+      const ctxCanal = sectorRunContext({ ownerId, buildingId: buildingIdCanal, correlationId: correlacao, rootExecutionId: execucaoSetorId })
+      const anterioresCanal = history.slice(0, -1)
+      try {
+        const runSetor = await executeSectorTeam(depsCanal, ctxCanal, setorDoCanal, {
+          objective: visitorContent,
+          input: anterioresCanal.length
+            ? anterioresCanal.map((m) => `${m.role === 'user' ? 'Visitante' : 'Agente'}: ${m.content}`).join('\n')
+            : memoryText || undefined,
+          sectorExecutionId: execucaoSetorId,
+        })
+        await finishSectorExecution(correlacao, { status: 'succeeded' })
+        generatedReply = runSetor.output
+        // Quem realmente falou, para o registro da conversa dizer a verdade.
+        replyAgentName = runSetor.participants.map((p) => p.name).join(' + ') || null
+      } catch (erro) {
+        await finishSectorExecution(correlacao, { status: 'failed', errorKind: 'stage_failed' })
+        throw erro
+      }
+    } else {
     const interativoCanal = await runInteractive({
       reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
         generateAgentReply(
@@ -3946,6 +3754,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${interativoCanal.outputProblem ?? 'JSON inválido'}`)
     }
     generatedReply = interativoCanal.text
+    }
   } catch (error) {
     const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
       ? 'output_invalid'

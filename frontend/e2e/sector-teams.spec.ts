@@ -417,3 +417,103 @@ test('no celular as duas colunas viram uma pilha', async ({ page }) => {
   const [fluxo, agentes] = await trabalho.evaluate((el) => [...el.children].map((c) => Math.round(c.getBoundingClientRect().y)))
   expect(agentes).toBeGreaterThan(fluxo)
 })
+
+// --- setor em etapas: os agentes precisam APARECER ---------------------------------------
+//
+// O sintoma relatado: um setor "executar em etapas" mostrava o fluxo desenhado à esquerda
+// e nada à direita, com "0 agentes" no cabeçalho. A causa: o editor grava `members: []` e
+// toda a tela lia `members` — os agentes existiam o tempo todo, dentro das etapas.
+
+test('um setor em etapas mostra os agentes de cada etapa, e não uma coluna vazia', async ({ page }) => {
+  await stubApi(page, { sectors: [PIPELINE_SECTOR], overview: overviewFor(PIPELINE_SECTOR) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+
+  const trabalho = page.getByTestId('sector-work')
+  await expect(trabalho).toContainText('Executor Bruno')
+  await expect(trabalho).toContainText('Gerente Ana')
+  // E o nome da etapa, que é o que explica por que cada um está ali.
+  await expect(trabalho).toContainText('Anotar pedido')
+  await expect(trabalho).toContainText('Preparar')
+})
+
+test('a contagem de agentes conta quem está nas etapas', async ({ page }) => {
+  await stubApi(page, { sectors: [PIPELINE_SECTOR], overview: overviewFor(PIPELINE_SECTOR) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  // Dizia "0 agentes" num setor com duas etapas configuradas. (O cabeçalho é
+  // responsivo e desenha o selo duas vezes; basta um estar lá.)
+  await expect(page.getByText('2 agentes').first()).toBeVisible()
+})
+
+test('a etapa diz de quem ela recebe, pelo nome da etapa anterior', async ({ page }) => {
+  await stubApi(page, { sectors: [PIPELINE_SECTOR], overview: overviewFor(PIPELINE_SECTOR) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  await expect(page.getByTestId('sector-work')).toContainText('Recebe de: Anotar pedido')
+})
+
+// --- o teste do setor precisa mostrar o que aconteceu ---------------------------------------
+//
+// Antes ele mostrava um texto de resposta e mais nada: nem quem executou, nem quanto
+// custou, nem quanto demorou. Numa equipe, uma pergunta são várias chamadas — e o dono
+// pagava por todas sem ver nenhuma.
+
+const RESPOSTA_DO_TIME = {
+  reply: 'Em 10/08/2026, BBSE3 fechou a R$ 36,42.',
+  mode: 'orchestrated',
+  executionId: 'exec-1',
+  participants: [
+    { name: 'Gerente Ana', role: 'coordinator', grounding: 'empty', toolCalls: 1, inputTokens: 120, outputTokens: 30, durationMs: 1400, provider: 'anthropic', model: 'claude-sonnet-5' },
+    { name: 'Executor Bruno', role: 'specialist', grounding: 'ok', toolCalls: 0, inputTokens: 400, outputTokens: 90, durationMs: 2600, provider: 'openai', model: 'gpt-5' },
+  ],
+  grounding: 'ok',
+  sources: [{ documentId: 'doc-1', title: 'Série histórica BBSE3' }],
+  usage: { inputTokens: 520, outputTokens: 120 },
+  durationMs: 4000,
+}
+
+test('o teste do setor mostra quem executou, com modelo, tokens e tempo', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  await page.route('**/api/sectors/*/playground', (r) => r.fulfill({ json: RESPOSTA_DO_TIME }))
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}/execucoes`)
+
+  await page.getByPlaceholder('Mensagem do visitante...').fill('quanto valia BBSE3?')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+
+  const registro = page.getByTestId('sector-run-trace')
+  await expect(registro).toBeVisible()
+  await expect(registro).toContainText('2 agentes executaram')
+  await expect(registro).toContainText('640 tokens')
+
+  // Cada agente, com o que ele custou — e com o modelo DELE.
+  const linhas = page.getByTestId('sector-run-rows')
+  await expect(linhas).toContainText('Gerente Ana')
+  await expect(linhas).toContainText('claude-sonnet-5')
+  await expect(linhas).toContainText('Executor Bruno')
+  await expect(linhas).toContainText('gpt-5')
+  await expect(linhas).toContainText('490')
+  await expect(linhas).toContainText('2.6 s')
+})
+
+test('o teste diz de qual documento a resposta veio, e como a busca terminou', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  await page.route('**/api/sectors/*/playground', (r) => r.fulfill({ json: RESPOSTA_DO_TIME }))
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}/execucoes`)
+
+  await page.getByPlaceholder('Mensagem do visitante...').fill('quanto valia BBSE3?')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+
+  await expect(page.getByTestId('sector-run-sources')).toContainText('Série histórica BBSE3')
+  await expect(page.getByTestId('sector-run-grounding')).toContainText('usou a base')
+})
+
+test('busca indisponível não é dita como "não existe"', async ({ page }) => {
+  await stubApi(page, { sectors: [LEGACY_SECTOR] })
+  await page.route('**/api/sectors/*/playground', (r) =>
+    r.fulfill({ json: { ...RESPOSTA_DO_TIME, grounding: 'unavailable', sources: [] } }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}/execucoes`)
+
+  await page.getByPlaceholder('Mensagem do visitante...').fill('quanto valia BBSE3?')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+
+  await expect(page.getByTestId('sector-run-grounding')).toContainText('não é o mesmo que "não existe"')
+})
