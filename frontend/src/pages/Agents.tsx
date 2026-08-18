@@ -13,6 +13,7 @@ import type { AgentOperationalStats, AgentSummary } from '../lib/types'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import { useNavigate, useParams } from 'react-router'
 import { Button, Dialog, EmptyState, Field, Input, Select } from '../ui'
+import { sectorRoster } from '../lib/sectors'
 
 const NO_SECTOR = '__none__'
 
@@ -72,7 +73,8 @@ export function Agents() {
   // card can show it (or "Sem setor" when orphan).
   const sectorByAgent = useMemo(() => {
     const map = new Map<string, string>()
-    for (const s of sectors) for (const m of s.members) map.set(m.agentId, s.name)
+    // A lista unificada: um agente que só existe como etapa de um pipeline também tem setor.
+  for (const s of sectors) for (const m of sectorRoster(s)) map.set(m.agentId, s.name)
     return map
   }, [sectors])
 

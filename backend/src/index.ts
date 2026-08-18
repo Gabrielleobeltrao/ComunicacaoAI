@@ -67,7 +67,7 @@ import {
   setStructuredMemory,
   setStructuredOutputData,
 } from './conversationMemory.js'
-import { createSector, deleteSector, enforceSingleMembership, getSectorById, listSectors, normalizeSectorMode, sectorIsExecutable, sectorReadiness, SECTOR_MODES, updateSector } from './sectors.js'
+import { createSector, deleteSector, enforceSingleMembership, stageConflicts, getSectorById, listSectors, normalizeSectorMode, sectorIsExecutable, sectorReadiness, SECTOR_MODES, updateSector } from './sectors.js'
 import { accessConfigOf, validateAccessConfig } from './sectorAccess.js'
 import type { SectorStage, SectorTeamFields } from './sectors.js'
 import type { Sector, SectorMember, SectorMode, SectorTransition } from './sectors.js'
@@ -1045,6 +1045,31 @@ async function resolveSectorTeamFields(
   return { fields }
 }
 
+/**
+ * Um agente está num lugar só.
+ *
+ * Recusa antes de gravar quando alguém que entraria neste setor já é ETAPA de outro.
+ * Mover um MEMBRO é silencioso e continua sendo (`enforceSingleMembership`) — não há o
+ * que perder. Mover uma ETAPA não: ela é trabalho configurado, e apagá-la de outro
+ * fluxo para acomodar este seria destruir o que alguém montou sem perguntar.
+ */
+async function recusarSeJaEhEtapaDeOutro(
+  res: Response,
+  ownerId: string,
+  manter: ObjectId | null,
+  agentIds: ObjectId[],
+): Promise<boolean> {
+  const conflitos = await stageConflicts(ownerId, manter, agentIds)
+  if (conflitos.length === 0) return false
+  const c = conflitos[0]
+  res.status(409).json({
+    error: `Este agente já é a etapa "${c.stageName}" do setor "${c.sectorName}". Um agente trabalha em um setor só — remova-o de lá antes.`,
+    code: 'AGENT_ALREADY_IN_SECTOR',
+    conflicts: conflitos,
+  })
+  return true
+}
+
 app.post('/api/sectors', requireAuth, async (req, res) => {
   const { name, mode, members, color } = req.body ?? {}
   if (!name || typeof name !== 'string' || !name.trim()) {
@@ -1069,8 +1094,13 @@ app.post('/api/sectors', requireAuth, async (req, res) => {
     return
   }
   const sectorColor = typeof color === 'string' && color.trim() ? color.trim() : DEFAULT_SECTOR_COLOR
+  // Um agente que já é etapa de outro setor não entra aqui — nem como membro, nem como
+  // etapa. A recusa vem antes de qualquer gravação.
+  const entrandoNovo = [...(parsed ?? []).map((x) => x.agentId), ...(team?.stages ?? []).map((e) => e.agentId)]
+  if (await recusarSeJaEhEtapaDeOutro(res, res.locals.userId, null, entrandoNovo)) return
+
   const sector = await createSector(res.locals.userId, officeId, name, sectorColor, parsedMode, parsed ?? [], team)
-  await enforceSingleMembership(res.locals.userId, sector._id, (parsed ?? []).map((m) => m.agentId))
+  await enforceSingleMembership(res.locals.userId, sector._id, sector.members.map((m) => m.agentId))
   auditEntity(res, { id: sector._id.toString(), label: sector.name, floorId: sector.officeId?.toString() })
   res.status(201).json(serializeSector(sector as WithId<Sector>))
 })
@@ -1149,14 +1179,22 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     res.status(400).json({ error: 'Nothing to update' })
     return
   }
+  // Quem entraria neste setor — por membro ou por etapa — não pode ser etapa de outro.
+  const entrando = [
+    ...(updates.members ?? []).map((m) => m.agentId),
+    ...(updates.stages ?? []).map((e) => e.agentId),
+  ]
+  if (await recusarSeJaEhEtapaDeOutro(res, res.locals.userId, new ObjectId(sectorId), entrando)) return
+
   const sector = await updateSector(res.locals.userId, new ObjectId(sectorId), updates)
   if (!sector) {
     res.status(404).json({ error: 'Sector not found' })
     return
   }
-  if (updates.members) {
-    await enforceSingleMembership(res.locals.userId, sector._id, updates.members.map((m) => m.agentId))
-  }
+  // A lista GRAVADA, e não a que veio no corpo: num pipeline ela é derivada das etapas,
+  // e era por isso que um agente podia ser etapa de vários setores ao mesmo tempo — a
+  // exclusividade era checada contra um array vazio.
+  await enforceSingleMembership(res.locals.userId, sector._id, sector.members.map((m) => m.agentId))
   res.json(serializeSector(sector))
 })
 
@@ -1249,7 +1287,7 @@ app.put('/api/sectors/:sectorId/members', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Sector not found' })
     return
   }
-  await enforceSingleMembership(ownerId, sector._id, (parsed ?? []).map((m) => m.agentId))
+  await enforceSingleMembership(ownerId, sector._id, sector.members.map((m) => m.agentId))
   res.json(serializeSector(sector))
 })
 
@@ -1589,13 +1627,31 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
   res.json({
     reply: run.output,
     mode,
+    // A identidade desta execução: dá para abrir o registro completo dela em Execuções.
+    executionId: execucaoSetorId.toString(),
     participants: run.participants.map((p) => ({
       name: p.name,
       role: p.role,
       grounding: p.grounding ?? null,
       toolCalls: p.toolCalls ?? 0,
+      // O custo e o tempo de CADA agente. Sem isto, o teste mostrava um texto e nada
+      // sobre o que ele custou — e uma equipe de quatro agentes é quatro chamadas.
+      inputTokens: p.usage?.inputTokens ?? 0,
+      outputTokens: p.usage?.outputTokens ?? 0,
+      durationMs: p.durationMs ?? 0,
+      provider: p.provider ?? null,
+      model: p.model ?? null,
       ...(p.stageName ? { stage: p.stageName, order: p.order } : {}),
     })),
+    // O total da execução, para não obrigar a somar de cabeça.
+    usage: run.participants.reduce(
+      (soma, p) => ({
+        inputTokens: soma.inputTokens + (p.usage?.inputTokens ?? 0),
+        outputTokens: soma.outputTokens + (p.usage?.outputTokens ?? 0),
+      }),
+      { inputTokens: 0, outputTokens: 0 },
+    ),
+    durationMs: run.participants.reduce((soma, p) => soma + (p.durationMs ?? 0), 0),
     // Compatibilidade: a tela lia `specialists` para dizer quem foi consultado. Agora
     // são os que EXECUTARAM de verdade.
     specialists: run.participants.map((p) => p.name),

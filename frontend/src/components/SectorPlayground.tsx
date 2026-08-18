@@ -12,6 +12,11 @@ export interface SectorParticipant {
   toolCalls?: number
   stage?: string
   order?: number
+  inputTokens?: number
+  outputTokens?: number
+  durationMs?: number
+  provider?: string | null
+  model?: string | null
 }
 
 export interface SectorSource {
@@ -27,6 +32,14 @@ interface PlayMessage {
   sources?: SectorSource[]
   warnings?: string[]
   mode?: SectorMode
+  usage?: { inputTokens: number; outputTokens: number }
+  durationMs?: number
+  executionId?: string
+}
+
+const duracao = (ms?: number): string => {
+  if (!ms || ms < 0) return '—'
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`
 }
 
 /**
@@ -76,6 +89,9 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
             sources: body.sources,
             warnings: body.warnings,
             mode: body.mode,
+            usage: body.usage,
+            durationMs: body.durationMs,
+            executionId: body.executionId,
           },
         ])
       } else {
@@ -118,20 +134,45 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
               </div>
 
               {message.role === 'assistant' && message.participants && message.participants.length > 0 && (
-                <div className="mt-1 max-w-[85%] text-[10px] text-(--text-faint)" data-testid="sector-run-trace">
-                  <span>
-                    ↳ executaram:{' '}
-                    {message.participants
-                      .map((p) =>
-                        p.stage
-                          ? `${p.order}. ${p.stage} (${p.name})`
-                          : p.role === 'coordinator'
-                            ? `${p.name} (coordenador)`
-                            : p.name,
-                      )
-                      .join(' · ')}
-                  </span>
-                </div>
+                <details className="mt-1 w-full max-w-[95%] rounded-lg border border-(--border-subtle) bg-(--surface-card)/60 px-2 py-1" data-testid="sector-run-trace">
+                  <summary className="cursor-pointer text-[11px] text-(--text-muted)">
+                    {message.participants.length === 1 ? '1 agente executou' : `${message.participants.length} agentes executaram`}
+                    {message.usage ? ` · ${message.usage.inputTokens + message.usage.outputTokens} tokens` : ''}
+                    {message.durationMs ? ` · ${duracao(message.durationMs)}` : ''}
+                  </summary>
+                  {/* O registro da execução, agente por agente. Números e status — nunca
+                      o prompt, o texto da base ou a resposta de cada um. */}
+                  <div className="mt-1 overflow-x-auto">
+                    <table className="w-full text-left text-[10px] text-(--text-faint)">
+                      <thead className="text-(--text-muted)">
+                        <tr>
+                          <th className="pr-2 font-medium">#</th>
+                          <th className="pr-2 font-medium">Agente</th>
+                          <th className="pr-2 font-medium">Papel</th>
+                          <th className="pr-2 font-medium">Modelo</th>
+                          <th className="pr-2 font-medium">Tokens</th>
+                          <th className="pr-2 font-medium">Tempo</th>
+                          <th className="pr-2 font-medium">Ferr.</th>
+                          <th className="font-medium">Base</th>
+                        </tr>
+                      </thead>
+                      <tbody data-testid="sector-run-rows">
+                        {message.participants.map((p, i) => (
+                          <tr key={`${p.name}-${i}`}>
+                            <td className="pr-2 py-0.5">{p.order ?? i + 1}</td>
+                            <td className="pr-2 py-0.5 text-(--text-body)">{p.name}</td>
+                            <td className="pr-2 py-0.5">{p.stage ?? (p.role === 'coordinator' ? 'coordenador' : 'especialista')}</td>
+                            <td className="pr-2 py-0.5">{p.model || p.provider || '—'}</td>
+                            <td className="pr-2 py-0.5">{(p.inputTokens ?? 0) + (p.outputTokens ?? 0)}</td>
+                            <td className="pr-2 py-0.5">{duracao(p.durationMs)}</td>
+                            <td className="pr-2 py-0.5">{p.toolCalls ?? 0}</td>
+                            <td className="py-0.5">{p.grounding ? (GROUNDING_LABEL[p.grounding] ?? p.grounding) : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
               )}
 
               {message.role === 'assistant' && message.grounding && (

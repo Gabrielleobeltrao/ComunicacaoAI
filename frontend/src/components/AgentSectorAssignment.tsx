@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { API_URL } from '../lib/api'
-import { SectorApiError, assignAgentToSector } from '../lib/sectors'
+import { SectorApiError, assignAgentToSector, sectorRoster } from '../lib/sectors'
 import { floorSector } from '../lib/floorRoutes'
 import type { SectorSummary } from '../lib/types'
 import { Card, Icon, Select } from '../ui'
@@ -36,7 +36,9 @@ export function AgentSectorAssignment({ agentId, floorId, floorName, onChanged }
     void load()
   }, [load])
 
-  const current = sectors.find((s) => s.members.some((m) => m.agentId === agentId)) ?? null
+  // Também as ETAPAS: um agente que é etapa de um pipeline está no setor, e dizer
+  // "Sem setor" para ele era a mesma confusão de ler só `members`.
+  const current = sectors.find((s) => sectorRoster(s).some((m) => m.agentId === agentId)) ?? null
   const needsConfig = current?.mode === 'pipeline'
 
   async function change(nextSectorId: string | null) {

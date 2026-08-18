@@ -172,6 +172,45 @@ export function normalizeStages(stages: SectorStage[]): SectorStage[] {
   }))
 }
 
+/**
+ * Quem está numa ETAPA é membro do setor.
+ *
+ * `members` e `stages` eram duas listas independentes, e o editor de pipeline gravava
+ * `members: []` de propósito ao salvar as etapas. Toda tela que pergunta "quem trabalha
+ * aqui" lê `members` — então um setor em etapas mostrava "0 agentes", sala vazia no mapa
+ * e "Sem setor" na página de cada agente, com os agentes existindo o tempo todo dentro
+ * das etapas. Pior: `enforceSingleMembership` também lê `members`, então um agente podia
+ * ser etapa de quantos pipelines quisesse, ao mesmo tempo, sem ninguém notar.
+ *
+ * A resposta para "quem está neste setor" passa a ser uma só, gravada. O que cada agente
+ * FAZ continua nas etapas; a lista de membros é a consequência, derivada aqui, e não algo
+ * que alguém precise manter em dia à mão.
+ *
+ * A configuração de membro que já existia é preservada (área, descrição), e o mesmo
+ * agente em duas etapas vira UM membro — dentro de um fluxo, repetir é legítimo.
+ */
+export function membersFromStages(stages: SectorStage[], anteriores: SectorMember[] = []): SectorMember[] {
+  const porAgente = new Map(anteriores.map((m) => [m.agentId.toString(), m]))
+  const vistos = new Set<string>()
+  const derivados: SectorMember[] = []
+  for (const etapa of stages) {
+    const chave = etapa.agentId.toString()
+    if (vistos.has(chave)) continue
+    vistos.add(chave)
+    const anterior = porAgente.get(chave)
+    derivados.push({
+      agentId: etapa.agentId,
+      sector: anterior?.sector ?? '',
+      // Sem descrição própria, o nome da etapa explica por que ele está no setor.
+      routingDescription: anterior?.routingDescription || etapa.name || '',
+      advanceWhen: anterior?.advanceWhen ?? '',
+      transitions: anterior?.transitions ?? [],
+      isDefault: false,
+    })
+  }
+  return normalizeMembers(derivados)
+}
+
 // Exactly one member must be the default. If none/many are flagged, pick the first.
 export function normalizeMembers(members: SectorMember[]): SectorMember[] {
   if (members.length === 0) return members
@@ -206,7 +245,11 @@ export async function createSector(
     name,
     color,
     mode,
-    members: normalizeMembers(members),
+    // Num pipeline, quem está nas etapas é quem está no setor.
+    members:
+      normalizeSectorMode(mode) === 'pipeline' && (extra.stages?.length ?? 0) > 0
+        ? membersFromStages(normalizeStages(extra.stages ?? []), members)
+        : normalizeMembers(members),
     ...(extra.coordinatorAgentId ? { coordinatorAgentId: extra.coordinatorAgentId } : {}),
     ...(extra.instruction !== undefined ? { instruction: extra.instruction } : {}),
     ...(extra.inputContract !== undefined ? { inputContract: extra.inputContract } : {}),
@@ -244,7 +287,7 @@ export async function resolveOwnedSectorId(ownerId: string, raw: unknown): Promi
   return sector ? sector._id : null
 }
 
-export function updateSector(
+export async function updateSector(
   ownerId: string,
   sectorId: ObjectId,
   updates: {
@@ -265,6 +308,20 @@ export function updateSector(
   const base: Record<string, unknown> = { ...updates }
   if (updates.members) base.members = normalizeMembers(updates.members)
   if (updates.stages) base.stages = normalizeStages(updates.stages)
+
+  // Pipeline: a lista de membros é DERIVADA das etapas, sempre.
+  //
+  // A gravação chega com `members: []` do editor (ele limpa de propósito) e `stages`
+  // preenchido. Aceitar isso literalmente é o que apagava os agentes de toda a
+  // interface e o que deixava um agente ser etapa de vários setores ao mesmo tempo.
+  // Aqui a atualização é lida junto com o que já está gravado, porque um PATCH pode
+  // mudar só o modo, só as etapas, ou os dois.
+  const atual = await sectors.findOne({ _id: sectorId, ownerId })
+  const modoFinal = normalizeSectorMode((updates.mode ?? atual?.mode) as SectorMode)
+  const etapasFinais = (base.stages as SectorStage[] | undefined) ?? atual?.stages ?? []
+  if (modoFinal === 'pipeline' && etapasFinais.length > 0) {
+    base.members = membersFromStages(etapasFinais, (base.members as SectorMember[] | undefined) ?? atual?.members ?? [])
+  }
   // A null coordinator means "clear it" — $unset rather than storing null.
   const unset = base.coordinatorAgentId === null ? { coordinatorAgentId: '' } : undefined
   if (unset) delete base.coordinatorAgentId
@@ -281,6 +338,38 @@ export function deleteSector(ownerId: string, sectorId: ObjectId) {
 // `keepTeamId`, remove them from every OTHER sector of the same owner, so moving
 // an agent into a sector transfers it out of its previous one. Affected sectors
 // are re-normalized (a pulled member could have been the default).
+/**
+ * Onde mais este agente já está — como ETAPA de outro setor.
+ *
+ * Membro é vínculo: mover um agente de um setor para outro é o modelo do produto, e
+ * `enforceSingleMembership` faz isso em silêncio porque não há nada a perder. Etapa é
+ * TRABALHO CONFIGURADO: apagar a etapa de outro fluxo para acomodar este destruiria o
+ * que alguém montou. Então aqui não se move — recusa-se, dizendo onde ele está.
+ */
+export async function stageConflicts(
+  ownerId: string,
+  keepTeamId: ObjectId | null,
+  agentIds: ObjectId[],
+): Promise<{ agentId: string; sectorId: string; sectorName: string; stageName: string }[]> {
+  if (agentIds.length === 0) return []
+  const filtro: Record<string, unknown> = { ownerId, 'stages.agentId': { $in: agentIds } }
+  if (keepTeamId) filtro._id = { $ne: keepTeamId }
+  const outros = await sectors.find(filtro).toArray()
+  const conflitos: { agentId: string; sectorId: string; sectorName: string; stageName: string }[] = []
+  for (const setor of outros) {
+    for (const etapa of setor.stages ?? []) {
+      if (!agentIds.some((id) => id.equals(etapa.agentId))) continue
+      conflitos.push({
+        agentId: etapa.agentId.toString(),
+        sectorId: setor._id.toString(),
+        sectorName: setor.name,
+        stageName: etapa.name,
+      })
+    }
+  }
+  return conflitos
+}
+
 export async function enforceSingleMembership(ownerId: string, keepTeamId: ObjectId, agentIds: ObjectId[]) {
   if (agentIds.length === 0) return
   const affected = await sectors

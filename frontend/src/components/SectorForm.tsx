@@ -214,8 +214,10 @@ export function SectorForm({ sector, agents, floorId, onSaved, onAgentsChanged, 
         expectedOutput: s.expectedOutput.trim(),
         onError: s.onError,
       }))
-      // Clearing a converted pipeline of legacy roster is intentional here.
-      body.members = []
+      // `members` NÃO é enviado: num pipeline quem está nas etapas é quem está no setor,
+      // e o servidor deriva a lista. Mandar `[]` daqui — que era o que acontecia — zerava
+      // os agentes de toda a interface (contagem, lista, mapa, página do agente) e ainda
+      // fazia a regra de "um agente, um setor" checar contra uma lista vazia.
     }
 
     setSaving(true)

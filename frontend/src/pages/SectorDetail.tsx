@@ -10,7 +10,7 @@ import { SectorForm } from '../components/SectorForm'
 import { SectorExecutions } from '../components/SectorExecutions'
 import { SectorKnowledge } from '../components/SectorKnowledge'
 import { API_URL } from '../lib/api'
-import { SectorApiError, getSectorOverview, sectorModeLabel, sectorReadiness } from '../lib/sectors'
+import { SectorApiError, getSectorOverview, sectorModeLabel, sectorReadiness, sectorRoster } from '../lib/sectors'
 import { SectorHero, ReadinessBadge } from '../components/SectorHero'
 import { SectorFlow } from '../components/SectorFlow'
 import { SectorAgentsDialog } from '../components/SectorAgentsDialog'
@@ -56,17 +56,24 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
   // them by name, so the card can say so instead of failing silently at run time.
   const pendingNames = new Set((overview.readiness?.issues ?? []).filter((i) => i.code === 'agent_pending').map((i) => i.message.split(' ainda precisa')[0]))
 
-  const renderMember = (m: (typeof sector.members)[number], index: number) => {
+  // Quem está no setor — de `members` ou das etapas, conforme o modo. A tela lia só
+  // `members`, e um setor em etapas (que grava `members` derivado das etapas) aparecia
+  // com a coluna vazia ao lado do fluxo desenhado.
+  const roster = sectorRoster(sector)
+
+  const renderMember = (m: (typeof roster)[number], index: number) => {
     const full = agentById.get(m.agentId)
     const inner = (
       <>
         <div className="flex items-center gap-2">
-          {isPipeline && <span className="text-sm text-(--text-faint)">{index + 1}.</span>}
+          {isPipeline && <span className="text-sm text-(--text-faint)">{m.order}.</span>}
           <span className={`font-medium ${full ? '' : 'text-(--text-faint)'}`}>
             {full ? full.name : 'Agente removido'}
           </span>
-          {m.isDefault && <Badge>Padrão</Badge>}
-          {sector.coordinatorAgentId === m.agentId && <Badge>Coordena</Badge>}
+          {/* O nome da ETAPA é o que explica por que este agente está aqui. */}
+          {m.stageName && <Badge>{m.stageName}</Badge>}
+          {m.isDefault && !isPipeline && <Badge>Padrão</Badge>}
+          {m.isCoordinator && <Badge>Coordena</Badge>}
           {full && pendingNames.has(full.name) && (
             <span className="rounded-full px-2 py-0.5 text-xs" style={{ background: 'var(--mango-100, #fef3e6)', color: 'var(--mango-700, #b54708)' }} data-testid="member-pending">
               Precisa de configuração
@@ -79,7 +86,12 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
           </div>
         )}
         {m.routingDescription && <p className="mt-2 text-sm text-(--text-muted)">{m.routingDescription}</p>}
-        {isPipeline && index < sector.members.length - 1 && m.advanceWhen && (
+        {isPipeline && (m.dependsOnNames?.length ?? 0) > 0 && (
+          <p className="mt-1 text-xs text-(--text-faint)">
+            <span className="text-(--text-faint)">Recebe de:</span> {m.dependsOnNames?.join(', ')}
+          </p>
+        )}
+        {isPipeline && index < roster.length - 1 && m.advanceWhen && (
           <p className="mt-1 text-xs text-(--text-faint)">
             <span className="text-(--text-faint)">Avança quando:</span> {m.advanceWhen}
           </p>
@@ -116,11 +128,11 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
 
   // Adaptive sectors group members by sector; pipelines stay in stage order. The
   // "no sector" group sorts last, and a single empty group means no headings.
-  const sectorGroups: [string, typeof sector.members][] = []
+  const sectorGroups: [string, typeof roster][] = []
   if (!isPipeline) {
-    const map = new Map<string, typeof sector.members>()
-    for (const m of sector.members) {
-      const key = (m.sector ?? '').trim()
+    const map = new Map<string, typeof roster>()
+    for (const m of roster) {
+      const key = (sector.members.find((x) => x.agentId === m.agentId)?.sector ?? '').trim()
       if (!map.has(key)) map.set(key, [])
       map.get(key)?.push(m)
     }
@@ -144,7 +156,7 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
           </div>
           {isPipeline || !showSectorHeadings ? (
             <ul className="space-y-2">
-              {sector.members.map((m, index) => renderMember(m, index))}
+              {roster.map((m, index) => renderMember(m, index))}
             </ul>
           ) : (
             <div className="space-y-4">
@@ -156,7 +168,7 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
                     {area || 'Sem área'}
                   </p>
                   <ul className="space-y-2">
-                    {members.map((m) => renderMember(m, sector.members.indexOf(m)))}
+                    {members.map((m) => renderMember(m, roster.indexOf(m)))}
                   </ul>
                 </div>
               ))}
@@ -247,7 +259,7 @@ export function SectorDetail() {
   const titleExtra = sector ? (
     <>
       <Badge>{sectorModeLabel(sector.mode)}</Badge>
-      <Badge>{`${sector.members.length} ${sector.members.length === 1 ? 'agente' : 'agentes'}`}</Badge>
+      <Badge>{(() => { const n = sectorRoster(sector).length; return `${n} ${n === 1 ? 'agente' : 'agentes'}` })()}</Badge>
       {/* Prontidão na mesma linha do nome: é a primeira coisa que se quer saber, e
           antes ficava escondida embaixo do mapa. */}
       <ReadinessBadge

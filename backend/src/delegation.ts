@@ -775,6 +775,15 @@ export interface SectorParticipant {
   toolCalls?: number
   /** Os documentos que entraram na resposta: id e título, nunca o texto. */
   sources?: { documentId: string | null; title: string | null }[]
+  /** O que ESTE agente custou. Quem paga a conta precisa ver a conta separada. */
+  usage?: { inputTokens: number; outputTokens: number }
+  /** Quanto ele demorou, em milissegundos. */
+  durationMs?: number
+  /** O provedor e o modelo com que ele rodou — a prova de que cada um usa o seu. */
+  provider?: string
+  model?: string | null
+  /** Deu certo? Uma etapa que falhou com `onError: continue` também aparece aqui. */
+  status?: 'succeeded' | 'failed'
 }
 
 export interface SectorTeamRun {
@@ -883,6 +892,11 @@ export async function executeSectorTeam(
       grounding: saida.grounding,
       toolCalls: saida.toolCalls,
       sources: (saida.sources ?? []).map((f) => ({ documentId: f.documentId, title: f.title })),
+      usage: saida.usage,
+      durationMs: Math.max(0, saida.finishedAt.getTime() - saida.startedAt.getTime()),
+      provider: target.provider,
+      model: target.model ?? null,
+      status: 'succeeded',
     })
     return saida.output
   }
