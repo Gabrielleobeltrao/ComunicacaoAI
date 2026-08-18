@@ -16,7 +16,7 @@ import { db } from '../db.js'
 import type { AutomationStatus, AutomationTrigger } from './types.js'
 import type { RunStatus } from './runTypes.js'
 import { cronToRecurrence, describeRecurrence } from './schedule.js'
-import { tokensByModelSince } from '../agentEvents.js'
+import { clarificationsSince, tokensByModelSince } from '../agentEvents.js'
 
 export type ExecutionTab = 'scheduled' | 'triggers' | 'active' | 'history'
 export const EXECUTION_TABS: ExecutionTab[] = ['scheduled', 'triggers', 'active', 'history']
@@ -606,6 +606,12 @@ export interface ExecutionSummary {
    * carregam o setor, e mostrar um total que ignora o filtro seria pior que não mostrar.
    */
   tokensByModel?: { model: string; inputTokens: number; outputTokens: number; runs: number }[]
+  /**
+   * Quantas execuções pediram esclarecimento em vez de responder.
+   *
+   * Cresce sem parar = virou questionário. Zero num assunto ambíguo = segue chutando.
+   */
+  clarificationsWindow?: number
 }
 
 // The counters answer the question the page is currently asking: the SAME filters
@@ -658,5 +664,6 @@ export async function executionSummary(ownerId: string, now = new Date(), f: Exe
     runsWindow: usage[0]?.count ?? 0,
     windowDays: USAGE_WINDOW_DAYS,
     ...(porModelo ? { tokensByModel: porModelo } : {}),
+    clarificationsWindow: await clarificationsSince(ownerId, since),
   }
 }

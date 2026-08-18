@@ -29,8 +29,15 @@ import { livePassagesFor } from './automations/liveSources.js'
 // The tool list an agent runs with in a delegation-aware context: its own tools,
 // the capability_missing escape hatch (every task agent), plus the delegation tools
 // bound to the child context when it may delegate.
-export async function resolveToolsWithDelegation(agent: Agent, ownerId: string, childCtx: DelegationContext, deps: DelegationDeps): Promise<ResolvedTool[]> {
-  const base = await resolveAgentTools(agent, ownerId)
+export async function resolveToolsWithDelegation(
+  agent: Agent,
+  ownerId: string,
+  childCtx: DelegationContext,
+  deps: DelegationDeps,
+  // Quantas vezes já se pediu esclarecimento nesta conversa — o teto vem daqui.
+  jaPerguntou = 0,
+): Promise<ResolvedTool[]> {
+  const base = await resolveAgentTools(agent, ownerId, jaPerguntou)
   // An agent coordinating a sector RIGHT NOW gets the delegation tools even when its
   // own policy is 'none': the sector grant is the authorisation, and without the
   // tools it could not reach the team it was put in charge of. The grant itself stays

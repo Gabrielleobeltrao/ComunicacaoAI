@@ -559,3 +559,58 @@ test('existe "Automático", e ele explica pelo que decide', async ({ page }) => 
   await expect(nota).toContainText('claude-haiku-4-5')
   await expect(nota).toContainText('ação real')
 })
+
+// --- perguntar em vez de chutar, e responder com um toque ---------------------------------
+//
+// Quando o agente pergunta, a conversa costuma morrer no momento em que a pessoa precisa
+// redigir o recorte. Com as alternativas prontas, responder é um toque.
+
+const PERGUNTA_DO_AGENTE = {
+  reply: 'Você quer a proposta que enviamos ou a que recebemos?',
+  handoff: false,
+  toolCalls: [],
+  clarification: {
+    question: 'Você quer a proposta que enviamos ou a que recebemos?',
+    reason: 'o termo tem dois sentidos nesta conta',
+    options: ['A que enviamos', 'A que recebemos'],
+  },
+  diagnostics: { model: 'claude-sonnet-5', modelChoice: 'default', inputTokens: 10, outputTokens: 5, durationMs: 900 },
+}
+
+test('a pergunta do agente vem com alternativas clicáveis', async ({ page }) => {
+  const enviados: Record<string, unknown>[] = []
+  await stub(page)
+  await page.route('**/api/agents/*/playground', (r) => {
+    enviados.push(JSON.parse(r.request().postData() ?? '{}'))
+    return r.fulfill({ json: PERGUNTA_DO_AGENTE })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/atividade`)
+
+  await page.getByPlaceholder('Mensagem do visitante...').fill('me manda a proposta')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+
+  const opcoes = page.getByTestId('clarification-option')
+  await expect(opcoes).toHaveCount(2)
+  await expect(opcoes.first()).toHaveText('A que enviamos')
+
+  // Um toque responde — e a marca da pergunta volta no envio, que é o que limita o
+  // agente a não perguntar sem parar.
+  await opcoes.first().click()
+  await expect.poll(() => enviados.length).toBe(2)
+  const segundo = enviados[1] as { messages: { role: string; content: string; clarification?: boolean }[] }
+  expect(segundo.messages.some((m) => m.role === 'assistant' && m.clarification === true)).toBe(true)
+  expect(segundo.messages.at(-1)).toMatchObject({ role: 'user', content: 'A que enviamos' })
+})
+
+test('resposta comum não desenha alternativa nenhuma', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/playground', (r) =>
+    r.fulfill({ json: { reply: 'Aqui está.', handoff: false, toolCalls: [], diagnostics: { model: 'x' } } }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/atividade`)
+
+  await page.getByPlaceholder('Mensagem do visitante...').fill('oi')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+
+  await expect(page.getByTestId('clarification-options')).toHaveCount(0)
+})

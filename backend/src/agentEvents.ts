@@ -274,6 +274,17 @@ export interface ModelUsageRow {
   runs: number
 }
 
+/**
+ * Quantas execuções PERGUNTARAM em vez de responder, na janela.
+ *
+ * É a medida que diz se o esclarecimento está ajudando ou incomodando. Um número que
+ * cresce sem parar é um agente que virou questionário; zero num assunto naturalmente
+ * ambíguo é um agente que segue chutando em silêncio.
+ */
+export async function clarificationsSince(ownerId: string, since: Date): Promise<number> {
+  return events.countDocuments({ ownerId, startedAt: { $gte: since }, 'metadata.clarificationRequested': true })
+}
+
 export async function tokensByModelSince(
   ownerId: string,
   since: Date,

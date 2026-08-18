@@ -234,7 +234,13 @@ export function builtinAppsCatalog() {
 // Combine an agent's custom HTTP tools with its enabled built-in apps into the
 // unified tool list the reply loop uses. Built-in apps whose account isn't
 // connected are skipped so the model isn't offered a tool that would fail.
-export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<ResolvedTool[]> {
+export async function resolveAgentTools(
+  agent: Agent,
+  ownerId: string,
+  // Quantas vezes já se pediu esclarecimento nesta conversa. Zero em automação: lá não há
+  // ninguém do outro lado para responder, e o teto é imediato (ver o Playground/canal).
+  jaPerguntou = 0,
+): Promise<ResolvedTool[]> {
   // Lembrar é uma capacidade de todo agente, não um app que se conecta: a memória
   // já existe no prédio dele. A ferramenta busca sob demanda em vez de despejar
   // tudo no prompt — ver memory/tool.ts.
@@ -246,7 +252,7 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
   const fonte = sourceCheckTool(ownerId, agent._id, sourceSettingsOf(agent))
   // Perguntar em vez de responder é capacidade de todo agente. Sem ela, diante de um
   // pedido amplo demais o modelo só sabe responder por cima — e cobrar por isso.
-  const esclarecer = clarifyTool()
+  const esclarecer = clarifyTool(jaPerguntou)
   // Legacy per-agent HTTP tools, kept working untouched.
   const http = (agent.tools ?? []).map(resolveHttpTool)
 

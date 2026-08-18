@@ -216,6 +216,9 @@ import { appGrantRouter } from './routes/appGrantRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
 import { AUTO_MODEL, resolveAutoModel } from './autoModel.js'
+import { clarificationFrom, countClarifications } from './clarify.js'
+import { clarificationGuidance } from './clarifyBudget.js'
+import { recallClarifications, rememberClarification } from './clarifyMemory.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -2617,6 +2620,9 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       metadata: {
         ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
         ...(errorKind ? { errorKind } : {}),
+        // Perguntou em vez de responder. Sem contar isto não dá para saber se o recurso
+        // está economizando ou irritando — que é a única pergunta que importa sobre ele.
+        ...(pedidoDeEsclarecimento ? { clarificationRequested: true } : {}),
       },
     })
     void finishExecutionRoot(manualRootKey, {
@@ -2630,6 +2636,21 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   // ferramenta para tornar obrigatória") e o paralelismo nunca era oferecido, mesmo com
   // todas as ferramentas sendo de leitura. A lista resolvida aqui é a MESMA usada na
   // chamada abaixo: duas resoluções poderiam divergir.
+  // Quantas vezes já se perguntou nesta conversa. O cliente devolve a marca que a
+  // resposta anterior trouxe; ela só orienta o modelo e limita a ferramenta, então um
+  // valor mentiroso aqui não abre nada — só faz o agente responder mais cedo.
+  const jaPerguntouChat = countClarifications(history as { role: string; clarification?: boolean }[])
+  // Se o turno ANTERIOR foi uma pergunta de esclarecimento, esta mensagem é a resposta
+  // dela — e guardá-la é o que evita perguntar a mesma coisa amanhã. Determinístico: sem
+  // modelo, sem token, e sem dar a agente nenhum o direito de escrever memória.
+  const turnos = history as { role: string; content: string; clarification?: boolean }[]
+  const anterior = turnos[turnos.length - 2]
+  if (anterior?.role === 'assistant' && anterior.clarification && lastUser.content.trim()) {
+    void rememberClarification({ ownerId: res.locals.userId, agentId: agent._id }, anterior.content, lastUser.content).catch(
+      (erro) => console.error('não foi possível guardar o esclarecimento:', erro),
+    )
+  }
+  const lembrados = await recallClarifications({ ownerId: res.locals.userId, agentId: agent._id }).catch(() => null)
   const chatTools = await resolveToolsWithDelegation(
     agent,
     res.locals.userId,
@@ -2637,6 +2658,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     // marked as `test` rather than leaking into production numbers.
     rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent, rootExecutionId: manualRootId }),
     productionDelegationDeps(),
+    jaPerguntouChat,
   )
   const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: chatTools.map((t) => t.risk ?? 'write') })
   // Quando nada foi escolhido, `model` é null e quem responde é a constante do adapter —
@@ -2654,6 +2676,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   let usage = { inputTokens: 0, outputTokens: 0 }
   let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls'] = []
   let problemaContrato: string | null = null
+  let pedidoDeEsclarecimento: ReturnType<typeof clarificationFrom> = null
 
   // A cobrança acontece UMA vez, dê certo ou não. A trava existe porque agora há dois
   // caminhos até aqui — o de sucesso e o de falha — e cobrar nos dois seria cobrar duas.
@@ -2693,7 +2716,13 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
           tools,
           { runConfig: execucaoChat.runConfig, signal, onToolStart },
         ),
-      objective: composeAgentPrompt({ definition: execucaoChat.definition, hasUntrustedContext: knowledge.length > 0 }),
+      objective: composeAgentPrompt({
+        definition: execucaoChat.definition,
+        hasUntrustedContext: knowledge.length > 0,
+        // Já perguntou antes? Então a orientação muda: da segunda vez em diante, decidir
+        // e declarar a suposição vale mais que perguntar de novo.
+        channelBlocks: [clarificationGuidance(jaPerguntouChat), lembrados].filter((b): b is string => Boolean(b)),
+      }),
       knowledge,
       history,
       tools: chatTools,
@@ -2711,6 +2740,9 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${problemaContrato}`)
     }
     generated = interativoChat.text
+    // O agente perguntou em vez de responder: a marca acompanha o turno para a próxima
+    // rodada saber que já houve uma pergunta — e para a tela oferecer as opções.
+    pedidoDeEsclarecimento = clarificationFrom(interativoChat.toolCalls)
   } catch (error) {
     const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
       ? 'output_invalid'

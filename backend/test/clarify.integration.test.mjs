@@ -172,3 +172,56 @@ test('sem pedido de recorte, a delegação segue devolvendo a resposta normalmen
   assert.equal(corpo.status, 'ok')
   assert.equal(corpo.output, 'a resposta')
 })
+
+// --- o teto: perguntar é bom, perguntar sempre não ------------------------------------------
+//
+// Dar a um agente o direito de perguntar cria um modo de falha novo: perguntar, receber, e
+// perguntar de novo. Do outro lado isso não parece cuidado — parece que ninguém está
+// trabalhando. E custa uma inferência por rodada.
+
+const { clarificationGuidance, clarifyBudgetSpent, CLARIFY_LIMIT } = await import('../dist/clarifyBudget.js')
+const { countClarifications } = await import('../dist/clarify.js')
+
+test('na primeira vez nada é dito — o modelo decide como decidiria', () => {
+  assert.equal(clarificationGuidance(0), null)
+})
+
+test('a partir da segunda, a orientação muda de tom sem proibir', () => {
+  const aviso = clarificationGuidance(1)
+  assert.match(aviso, /já pediu esclarecimento 1x/i)
+  assert.match(aviso, /Só pergunte de novo se a dúvida for OUTRA/i)
+})
+
+test('no teto, a saída passa a ser responder DECLARANDO a suposição', () => {
+  const aviso = clarificationGuidance(CLARIFY_LIMIT)
+  assert.match(aviso, /não deve pedir mais/i)
+  assert.match(aviso, /assumindo/i, 'a saída é declarar a premissa, não calar')
+})
+
+test('o teto é verificado na ferramenta, e não só no prompt', async () => {
+  // Uma orientação pode ser ignorada; uma recusa não.
+  const r = await clarifyTool(CLARIFY_LIMIT).run({ pergunta: 'De novo?', motivo: 'x' })
+  assert.equal(r.ok, false)
+  const corpo = JSON.parse(r.result)
+  assert.equal(corpo.status, 'clarification_budget_spent')
+  assert.match(corpo.instrucao, /DECLARANDO a suposição/i, 'a recusa diz o que fazer no lugar')
+})
+
+test('abaixo do teto a ferramenta continua aceitando', async () => {
+  const r = await clarifyTool(CLARIFY_LIMIT - 1).run({ pergunta: 'Qual período?', motivo: 'amplo' })
+  assert.equal(r.ok, true)
+  assert.equal(clarifyBudgetSpent(CLARIFY_LIMIT - 1), false)
+})
+
+test('a contagem vem da MARCA no histórico, não de adivinhar ponto de interrogação', () => {
+  // Uma resposta que termina com pergunta retórica não é um pedido de esclarecimento.
+  const historico = [
+    { role: 'user', content: 'oi' },
+    { role: 'assistant', content: 'Qual período?', clarification: true },
+    { role: 'user', content: '30 dias' },
+    { role: 'assistant', content: 'Interessante, não acha?' },
+  ]
+  assert.equal(countClarifications(historico), 1)
+  assert.equal(countClarifications([]), 0)
+  assert.equal(countClarifications(undefined), 0)
+})

@@ -14,6 +14,10 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
       content: string
       handoff?: boolean
       toolCalls?: ToolCall[]
+      /** Este turno é uma PERGUNTA do agente — a marca volta no próximo envio. */
+      clarification?: boolean
+      /** Recortes concretos que a respondem: escolher é mais rápido que redigir. */
+      clarificationOptions?: string[]
       diagnostics?: {
         outputValid?: boolean
         outputRepaired?: boolean
@@ -32,11 +36,11 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
 
-  async function handleSend(event: FormEvent) {
-    event.preventDefault()
-    if (!input.trim() || sending) return
+  async function enviar(texto: string) {
+    const limpo = texto.trim()
+    if (!limpo || sending) return
 
-    const next = [...messages, { role: 'user' as const, content: input.trim() }]
+    const next = [...messages, { role: 'user' as const, content: limpo }]
     setMessages(next)
     setInput('')
     setSending(true)
@@ -46,7 +50,12 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })) }),
+        // A marca de "isto foi uma pergunta" volta junto: é dela que o servidor conta
+        // quantas vezes já se perguntou nesta conversa, e é o que impede o agente de
+        // perguntar sem parar.
+        body: JSON.stringify({
+          messages: next.map(({ role, content, clarification }) => ({ role, content, ...(clarification ? { clarification } : {}) })),
+        }),
       })
       if (res.ok) {
         const body = await res.json()
@@ -58,6 +67,8 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
             handoff: body.handoff,
             toolCalls: body.toolCalls,
             diagnostics: body.diagnostics,
+            clarification: Boolean(body.clarification),
+            clarificationOptions: body.clarification?.options ?? [],
           },
         ])
       } else {
@@ -72,6 +83,11 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
     } finally {
       setSending(false)
     }
+  }
+
+  const handleSend = (event: FormEvent) => {
+    event.preventDefault()
+    void enviar(input)
   }
 
   return (
@@ -106,6 +122,25 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
               {/* O que rodou, e a que preço. Com "Automático" a escolha é uma regra —
                   e uma regra em que se confia sem conferir é um palpite com passos
                   extras. */}
+              {/* A pergunta veio com recortes prontos: um toque responde. Digitar o
+                  recorte à mão é onde a conversa costuma morrer. */}
+              {message.clarificationOptions && message.clarificationOptions.length > 0 && (
+                <div className="mt-1.5 flex max-w-[85%] flex-wrap gap-1.5" data-testid="clarification-options">
+                  {message.clarificationOptions.map((opcao) => (
+                    <button
+                      key={opcao}
+                      type="button"
+                      disabled={sending}
+                      onClick={() => void enviar(opcao)}
+                      className="rounded-full border border-(--border-strong) px-3 py-1 text-xs transition hover:border-(--border-focus) disabled:opacity-50"
+                      data-testid="clarification-option"
+                    >
+                      {opcao}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {message.diagnostics?.model && (
                 <span className="mt-1 text-[10px] text-(--text-faint)" data-testid="playground-run-info">
                   ↳ {message.diagnostics.model}

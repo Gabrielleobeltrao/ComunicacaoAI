@@ -490,6 +490,15 @@ export function Executions() {
       { key: 'triggers', label: 'Gatilhos ativos', value: summary ? String(summary.activeTriggers) : '—', icon: 'webhook' },
       { key: 'inflight', label: 'Em fila / execução', value: summary ? String(summary.inFlight) : '—', icon: 'loader' },
       {
+        key: 'clarifications',
+        // Perguntar em vez de chutar é bom; perguntar sempre é um questionário. O número
+        // existe para essa diferença ser percebida cedo.
+        label: 'Pediram esclarecimento',
+        value: summary ? String(summary.clarificationsWindow ?? 0) : '—',
+        icon: 'message-circle-question',
+        hint: summary ? `de ${summary.runsWindow} execução(ões)` : undefined,
+      },
+      {
         key: 'tokens',
         label: summary ? `Tokens em ${summary.windowDays} dias` : 'Tokens',
         value: summary ? tokensLabel(summary.tokensWindow) : '—',

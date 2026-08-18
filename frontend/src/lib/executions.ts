@@ -90,6 +90,8 @@ export interface ExecutionSummary {
    * muda um token, muda o preço de cada um. Ausente quando há filtro de setor.
    */
   tokensByModel?: { model: string; inputTokens: number; outputTokens: number; runs: number }[]
+  /** Quantas execuções pediram esclarecimento em vez de responder. */
+  clarificationsWindow?: number
 }
 
 export interface ExecutionFilters {

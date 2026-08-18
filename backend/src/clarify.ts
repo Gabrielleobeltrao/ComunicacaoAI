@@ -25,6 +25,7 @@
 // ferramenta, ele recebe `needs_clarification` com a pergunta pronta e decide: pergunta ao
 // visitante, ou responde sozinho se já souber o recorte.
 import type { ResolvedTool } from './agentTools.js'
+import { clarifyBudgetSpent } from './clarifyBudget.js'
 
 export const CLARIFY_TOOL_NAME = 'pedir_esclarecimento'
 
@@ -46,7 +47,7 @@ const j = (v: unknown): string => JSON.stringify(v)
  * no Playground, onde as ferramentas de escrita ficam bloqueadas — e perguntar é
  * justamente o que se quer poder testar.
  */
-export function clarifyTool(): ResolvedTool {
+export function clarifyTool(jaPerguntou = 0): ResolvedTool {
   return {
     name: CLARIFY_TOOL_NAME,
     description:
@@ -74,6 +75,19 @@ export function clarifyTool(): ResolvedTool {
       additionalProperties: false,
     },
     run: async (args: Record<string, unknown>) => {
+      // O teto é verificado AQUI, e não só no prompt: uma orientação pode ser ignorada,
+      // uma recusa não. E a recusa já diz o que fazer no lugar.
+      if (clarifyBudgetSpent(jaPerguntou)) {
+        return {
+          ok: false,
+          result: j({
+            status: 'clarification_budget_spent',
+            motivo: `já houve ${jaPerguntou} pedido(s) de esclarecimento nesta conversa`,
+            instrucao:
+              'Responda agora com o que você tem, DECLARANDO a suposição que escolheu (ex: "assumindo os últimos 30 dias: ..."). Não peça mais esclarecimento.',
+          }),
+        }
+      }
       const pergunta = typeof args.pergunta === 'string' ? args.pergunta.trim() : ''
       const motivo = typeof args.motivo === 'string' ? args.motivo.trim() : ''
       if (!pergunta) return { ok: false, result: j({ status: 'error', reason: 'pergunta é obrigatória' }) }
@@ -103,6 +117,17 @@ export function clarifyTool(): ResolvedTool {
  * modelo, no meio do próprio raciocínio, e a chamada é o registro disso. A ÚLTIMA vale —
  * se ele refinou a pergunta, é a refinada que interessa.
  */
+/**
+ * Quantas vezes o agente já perguntou nesta conversa.
+ *
+ * Lido do próprio histórico: um turno do assistente marcado como pergunta de
+ * esclarecimento. Sem uma marca explícita seria preciso adivinhar pelo ponto de
+ * interrogação — e uma resposta que termina com pergunta retórica viraria um pedido.
+ */
+export function countClarifications(history: { role: string; clarification?: boolean }[] | undefined): number {
+  return (history ?? []).filter((t) => t.role === 'assistant' && t.clarification === true).length
+}
+
 export function clarificationFrom(
   toolCalls: { name: string; arguments: Record<string, unknown>; ok: boolean }[] | undefined,
 ): ClarificationRequest | null {
