@@ -59,8 +59,12 @@ export function describeFlow(
   destino?: string | null,
   action?: AppActionPlan | null,
   actionLabel?: string | null,
+  // De onde vem o trabalho. Escrito para o gatilho por evento, esta frase dizia
+  // "Webhook" também numa ROTINA que verifica um feed — a única linha da tela que
+  // explica o que vai acontecer, e ela começava errado.
+  origem = 'Webhook',
 ): string {
-  const partes = ['Webhook', 'validar']
+  const partes = [origem, 'validar']
   if (action?.enabled) partes.push(actionLabel ?? `executar ${action.actionKey}`)
   if (memory.enabled) {
     const onde = destino ?? { agent: 'do agente', sector: 'do setor', floor: 'do andar', building: 'do prédio' }[memory.scope]
@@ -81,11 +85,14 @@ export interface ExecutionModeValue {
 }
 
 export function ExecutionModeFields({
+  origem,
   value,
   onChange,
   idPrefix = '',
   agentId,
 }: {
+  /** O que dispara este fluxo, para a frase de conferência não mentir. */
+  origem?: string
   value: ExecutionModeValue
   onChange: (v: ExecutionModeValue) => void
   idPrefix?: string
@@ -366,7 +373,7 @@ export function ExecutionModeFields({
       >
         <p style={{ margin: '0 0 2px', fontSize: 12, fontWeight: 700, color: 'var(--text-muted)' }}>O que vai acontecer</p>
         <p style={{ margin: 0, fontSize: 13 }}>
-          {describeFlow(executionMode, memory, aiCondition, destinoAtual, action, acaoAtual ? `executar ${acaoAtual.actionName}` : null)}
+          {describeFlow(executionMode, memory, aiCondition, destinoAtual, action, acaoAtual ? `executar ${acaoAtual.actionName}` : null, origem)}
         </p>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import type { Agent } from './agents.js'
 import { memorySearchTool } from './memory/tool.js'
+import { sourceCheckTool } from './automations/sourceTool.js'
 import { getToolsByIds } from './tools.js'
 import { executeToolCall } from './toolExecution.js'
 import type { ResolvedTool } from './agentTools.js'
@@ -236,6 +237,11 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
   // já existe no prédio dele. A ferramenta busca sob demanda em vez de despejar
   // tudo no prompt — ver memory/tool.ts.
   const memoria = memorySearchTool(ownerId, agent._id)
+  // Olhar uma fonte monitorada também é capacidade de todo agente — e é leitura: não
+  // envia nada, não escreve e não avança o checkpoint da rotina. Sem fonte configurada
+  // ela responde "sem_fonte", que é a verdade, em vez de não existir e o modelo ter que
+  // adivinhar que não pode consultar.
+  const fonte = sourceCheckTool(ownerId, agent._id)
   // Legacy per-agent HTTP tools, kept working untouched.
   const http = (agent.tools ?? []).map(resolveHttpTool)
 
@@ -269,7 +275,7 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
   // already moved carries `migratedAt`: its credential is gone from this document
   // and resolving it here would silently produce a tool that cannot authenticate.
   const enabled = (agent.builtinTools ?? []).filter((entry) => !entry.migratedAt)
-  if (enabled.length === 0) return [memoria, ...http, ...custom, ...fromGrants]
+  if (enabled.length === 0) return [memoria, fonte, ...http, ...custom, ...fromGrants]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')
   const googleConnected = needsGoogle ? (await getGoogleStatus(ownerId)).connected : false
@@ -281,5 +287,5 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
     if (app.connection === 'google' && !googleConnected) continue
     builtins.push(...app.resolve(ownerId, entry.config ?? {}))
   }
-  return [memoria, ...http, ...custom, ...fromGrants, ...builtins]
+  return [memoria, fonte, ...http, ...custom, ...fromGrants, ...builtins]
 }

@@ -73,6 +73,9 @@ const RULES: Rule[] = [
   // token, não toca no checkpoint e não cria execução — não há o que registrar no
   // histórico da conta.
   R('POST', 'api/agents/:/routines/test-source', null, { why: 'consulta de teste, não altera nada' }),
+  // Os sites que o agente consulta sob demanda são configuração DELE: mudá-los muda o
+  // que ele alcança, e isso é do mesmo tamanho de trocar uma ferramenta.
+  R('PUT', 'api/agents/:/sources', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
   // "Verificar agora" CRIA uma execução fora do horário — isso é uma ação do dono
   // sobre a rotina, e o histórico precisa dizer quem pediu.
   R('POST', 'api/agents/:/routines/:/check-now', { entityType: 'routine', action: 'run' }, { idAt: 4 }),

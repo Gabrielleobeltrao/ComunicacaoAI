@@ -283,3 +283,65 @@ test('só conexão conectada pode receber permissão', async ({ page }) => {
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
   await expect(page.getByTestId('no-installations')).toBeVisible()
 })
+
+// --- consultar um site quando o agente é chamado ------------------------------------------
+//
+// A rotina responde "verifique de hora em hora". Faltava o outro caso, que é o mais comum:
+// "quando alguém perguntar, olhe aqui". Sem horário, sem checkpoint e sem custo enquanto
+// ninguém pergunta.
+
+test('a aba Como trabalha deixa cadastrar um site para o agente consultar', async ({ page }) => {
+  let salvo: Record<string, unknown> | null = null
+  await stub(page)
+  await page.route('**/api/agents/*/sources', async (r) => {
+    if (r.request().method() === 'PUT') {
+      salvo = JSON.parse(r.request().postData() ?? '{}')
+      return r.fulfill({ json: [] })
+    }
+    return r.fulfill({ json: [] })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  const cartao = page.getByTestId('agent-sources')
+  await expect(cartao).toBeVisible()
+  await expect(cartao).toContainText('quando for acionado')
+  await expect(page.getByTestId('agent-sources-empty')).toBeVisible()
+
+  await page.getByTestId('agent-source-add').click()
+  await page.getByTestId('agent-source-name').fill('Blog da empresa')
+  await page.getByTestId('agent-source-url').fill('https://exemplo.test/blog')
+  await page.getByTestId('agent-sources-save').click()
+
+  await expect(page.getByTestId('agent-sources-saved')).toBeVisible()
+  expect(salvo).toEqual({ sources: [{ name: 'Blog da empresa', kind: 'http', url: 'https://exemplo.test/blog' }] })
+})
+
+test('um endereço inválido é recusado com o motivo na tela', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.request().method() === 'PUT'
+      ? r.fulfill({ status: 400, json: { error: 'O endereço precisa começar com http:// ou https://', code: 'INVALID_URL' } })
+      : r.fulfill({ json: [] }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  await page.getByTestId('agent-source-add').click()
+  await page.getByTestId('agent-source-url').fill('exemplo.test/blog')
+  await page.getByTestId('agent-sources-save').click()
+
+  await expect(page.getByTestId('agent-sources-error')).toContainText('http://')
+})
+
+test('as fontes que vêm de rotinas aparecem separadas, como leitura', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.fulfill({
+      json: [{ routineId: 'r1', origem: 'rotina', name: 'Notícias', kind: 'rss', host: 'exemplo.test' }],
+    }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  const doRotina = page.getByTestId('agent-sources-routines')
+  await expect(doRotina).toContainText('Notícias')
+  await expect(doRotina).toContainText('não consome o alerta da rotina')
+})

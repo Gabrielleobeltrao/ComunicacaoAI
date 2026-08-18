@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import { ObjectId } from 'mongodb'
 import { config } from '../config.js'
-import { getAgentById } from '../agents.js'
+import { getAgentById, updateAgent, MAX_WATCHED_SOURCES } from '../agents.js'
+import type { WatchedSource } from '../agents.js'
 import {
   createRoutine,
   getRoutineForAgent,
@@ -14,7 +15,8 @@ import {
   updateRoutine,
 } from '../automations/routine.js'
 import type { RoutineSource, RoutineSpec } from '../automations/routine.js'
-import { isInitialWindow } from '../automations/sourceChange.js'
+import { isInitialWindow, normalizeSourceUrl } from '../automations/sourceChange.js'
+import { fontesDoAgente } from '../automations/sourceTool.js'
 import { isExecutionMode } from '../automations/types.js'
 import type { ExecutionMode } from '../automations/types.js'
 import { aiStepPlanned, normalizeAppActionPlan, normalizeMemoryPlan } from '../automations/executionPlan.js'
@@ -191,6 +193,83 @@ async function requireAgent(ownerId: string, raw: string): Promise<ObjectId | nu
   const agent = await getAgentById(ownerId, id)
   return agent ? id : null
 }
+
+/**
+ * As fontes que este agente consulta — feeds e páginas monitoradas.
+ *
+ * Existe para a aba "Como trabalha" poder DIZER que o agente sabe olhar um site. A
+ * capacidade estava só na rotina, escondida atrás de um horário: quem abria o agente
+ * para entender o que ele consegue fazer não via nada sobre isso.
+ */
+agentRoutineRouter.get('/sources', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  if (!agentId) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const fontes = await fontesDoAgente(res.locals.userId, agentId)
+  res.json(
+    fontes.map((f) => ({
+      // Sem rotina quando o site é do próprio agente: ele não tem horário.
+      routineId: f.automationId ? f.automationId.toString() : null,
+      origem: f.origem,
+      name: f.nome,
+      kind: f.source.kind,
+      url: f.origem === 'agente' ? f.source.url : undefined,
+      // O host, e não a URL inteira: uma query string pode carregar token.
+      host: (() => {
+        try {
+          return new URL(f.source.url).host
+        } catch {
+          return null
+        }
+      })(),
+    })),
+  )
+})
+
+/**
+ * Grava os sites que este agente consulta sob demanda.
+ *
+ * Substitui a lista inteira: é o que a tela edita, e um PATCH parcial aqui obrigaria a
+ * inventar identidade para linhas que o dono acabou de digitar.
+ */
+agentRoutineRouter.put('/sources', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  if (!agentId) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const bruto = (req.body ?? {}).sources
+  if (!Array.isArray(bruto)) {
+    res.status(400).json({ error: 'sources must be a list' })
+    return
+  }
+  if (bruto.length > MAX_WATCHED_SOURCES) {
+    res.status(400).json({ error: `no máximo ${MAX_WATCHED_SOURCES} endereços`, code: 'SOURCE_LIMIT' })
+    return
+  }
+  const sources: WatchedSource[] = []
+  for (const item of bruto as Record<string, unknown>[]) {
+    const url = typeof item?.url === 'string' ? item.url.trim() : ''
+    const kind = item?.kind === 'rss' ? 'rss' : 'http'
+    // A mesma exigência da fonte de rotina: público e http(s). O bloqueio de endereço
+    // privado acontece de novo na hora de consultar (safeFetch) — aqui é para o erro
+    // aparecer enquanto o dono ainda está na tela.
+    if (!/^https?:\/\//i.test(url)) {
+      res.status(400).json({ error: 'O endereço precisa começar com http:// ou https://', code: 'INVALID_URL' })
+      return
+    }
+    const name = typeof item?.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 80) : new URL(url).host
+    sources.push({ id: typeof item?.id === 'string' && item.id ? item.id : new ObjectId().toHexString(), name, kind, url: normalizeSourceUrl(url) })
+  }
+  const atualizado = await updateAgent(res.locals.userId, agentId, { watchedSources: sources })
+  if (!atualizado) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  res.json(sources)
+})
 
 agentRoutineRouter.get('/routines', async (req, res) => {
   const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))

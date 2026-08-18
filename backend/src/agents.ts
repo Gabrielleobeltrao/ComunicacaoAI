@@ -122,6 +122,16 @@ export interface AgentBuiltinTool {
   migratedAt?: Date
 }
 
+/** Um endereço que o agente pode consultar sob demanda. */
+export interface WatchedSource {
+  id: string
+  name: string
+  kind: 'rss' | 'http'
+  url: string
+}
+
+export const MAX_WATCHED_SOURCES = 5
+
 export interface Agent {
   _id: ObjectId
   ownerId: string
@@ -213,6 +223,15 @@ export interface Agent {
   callableSectorIds: string[] // when delegationPolicy='selected': the sectors this one may call
   // Ids from the `tools` collection this agent may call.
   toolIds: string[]
+  /**
+   * Sites que este agente consulta QUANDO É CHAMADO — não por horário.
+   *
+   * A rotina responde "verifique de hora em hora"; isto responde "quando alguém
+   * perguntar, olhe aqui". Sem agendamento, sem checkpoint e sem custo enquanto
+   * ninguém pergunta: a consulta acontece pela ferramenta `verificar_fonte`, e só
+   * quando o próprio agente julgar que a pergunta pede.
+   */
+  watchedSources?: WatchedSource[]
   allowedCallerAgentIds: string[] // when callerPolicy='selected': the agents allowed to call this one
   metricProfile: MetricProfile // which KPI the card shows ('auto' = derive from preset)
   createdAt: Date
@@ -417,6 +436,7 @@ export async function createAgent(
     callableSectorIds?: string[]
     allowedCallerAgentIds?: string[]
     toolIds?: string[]
+    watchedSources?: WatchedSource[]
     metricProfile?: MetricProfile
   } = {},
 ) {
@@ -537,6 +557,8 @@ export async function updateAgent(
     callableSectorIds?: string[]
     allowedCallerAgentIds?: string[]
     toolIds?: string[]
+    // Sites consultados sob demanda — ver `WatchedSource`.
+    watchedSources?: WatchedSource[]
     metricProfile?: MetricProfile
   },
 ) {
