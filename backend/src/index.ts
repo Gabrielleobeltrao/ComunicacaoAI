@@ -221,6 +221,7 @@ import { clarificationGuidance } from './clarifyBudget.js'
 import { recallClarifications, rememberClarification } from './clarifyMemory.js'
 import { formatOptions, resolveChoice } from './clarifyChoice.js'
 import type { ClarificationRequest } from './clarify.js'
+import { checkScope } from './scopeGate.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -1572,6 +1573,45 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     return
   }
 
+  // O porteiro, ANTES de acordar o time.
+  //
+  // Aqui era o único caminho sem checagem de escopo — e o mais caro: uma pergunta sobre
+  // a previsão do tempo num setor de restaurante acordava o coordenador, que podia
+  // delegar, e quatro agentes trabalhavam para dizer "não sei disso". O chat e o canal
+  // já barravam isso; o time não. O escopo é o do agente de configuração (coordenador,
+  // ou o da primeira etapa num pipeline), o mesmo critério que o canal usa.
+  const configId =
+    mode === 'pipeline'
+      ? setorParaExecutar.stages?.[0]?.agentId
+      : (setorParaExecutar.coordinatorAgentId ??
+        setorParaExecutar.members.find((m) => m.isDefault)?.agentId ??
+        setorParaExecutar.members[0]?.agentId)
+  const agenteConfig = configId ? await getAgentById(res.locals.userId, configId) : null
+  if (agenteConfig && (agenteConfig.guardrailMode ?? 'none') === 'verification') {
+    const chaveEscopo = `sector:${sector._id.toString()}`
+    const veredito = await checkScope({
+      scopeId: chaveEscopo,
+      objective: agenteConfig.objective,
+      history: history.slice(0, -1),
+      message: lastUser.content,
+      verificar: async () =>
+        checkGuardrail(
+          agenteConfig.objective,
+          history.slice(0, -1),
+          lastUser.content,
+          agenteConfig.provider,
+          auxModelFor(agenteConfig),
+          await getProviderApiKey(res.locals.userId, agenteConfig.provider),
+        ),
+    })
+    if (!veredito.inScope) {
+      // Nenhuma execução é aberta: recusar não é trabalho do setor, e um registro vazio
+      // em Execuções só sujaria a tela.
+      res.json({ reply: GUARDRAIL_REFUSAL_MESSAGE, mode, refusedByGuardrail: true })
+      return
+    }
+  }
+
   const buildingIdSetor = (await deps.buildingIdForFloor(res.locals.userId, setorParaExecutar.officeId)) ?? ''
   const correlationId = `playground:${sector._id.toString()}:${Date.now()}`
   const chaveExecucao = correlationId
@@ -2547,20 +2587,17 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   const guardrailMode = agent.guardrailMode ?? 'none'
 
   if (guardrailMode === 'verification') {
-    let inScope = true
-    try {
-      inScope = await checkGuardrail(
-        agent.objective,
-        history.slice(0, -1),
-        lastUser.content,
-        agent.provider,
-        auxModelFor(agent),
-        apiKey,
-      )
-    } catch (error) {
-      console.error('Playground guardrail check failed, allowing the message through:', error)
-    }
-    if (!inScope) {
+    // O veredito fica lembrado: "e o tempo?" chega o dia inteiro e a resposta é sempre a
+    // mesma. Pagar a checagem de novo a cada repetição é gastar para reconfirmar.
+    const veredito = await checkScope({
+      scopeId: agent._id.toString(),
+      objective: agent.objective,
+      history: history.slice(0, -1),
+      message: lastUser.content,
+      verificar: () =>
+        checkGuardrail(agent.objective, history.slice(0, -1), lastUser.content, agent.provider, auxModelFor(agent), apiKey),
+    })
+    if (!veredito.inScope) {
       res.json({ reply: GUARDRAIL_REFUSAL_MESSAGE, refusedByGuardrail: true, handoff: false })
       return
     }
@@ -3667,22 +3704,18 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   const apiKey = await getProviderApiKey(ownerId, agent.provider)
 
   if (guardrailMode === 'verification') {
-    // A failed check fails open (treats the message as in-scope) rather than
-    // silently refusing every visitor if the classification call errors out.
-    let inScope = true
-    try {
-      inScope = await checkGuardrail(
-        replyObjective,
-        history,
-        visitorContent,
-        agent.provider,
-        auxModelFor(agent),
-        apiKey,
-      )
-    } catch (error) {
-      console.error('Guardrail check failed, allowing the message through:', error)
-    }
-    if (!inScope) {
+    // Falha da checagem deixa passar (trata como dentro do escopo) em vez de recusar
+    // todo mundo em silêncio quando a classificação der erro. E o veredito fica
+    // lembrado: num canal movimentado a mesma pergunta fora de assunto chega o dia
+    // inteiro, e repagar a checagem é gastar para reconfirmar.
+    const veredito = await checkScope({
+      scopeId: agent._id.toString(),
+      objective: replyObjective,
+      history,
+      message: visitorContent,
+      verificar: () => checkGuardrail(replyObjective, history, visitorContent, agent.provider, auxModelFor(agent), apiKey),
+    })
+    if (!veredito.inScope) {
       const refusal = await addMessage(widgetId, conversationId, 'agent', GUARDRAIL_REFUSAL_MESSAGE, replyAgentName)
       broadcastMessage(refusal, ownerId)
       return
