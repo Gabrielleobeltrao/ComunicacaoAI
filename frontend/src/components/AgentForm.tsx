@@ -1399,8 +1399,15 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
         <div className="order-2">
           {section == null && <div className="my-5 border-t border-(--border-subtle)" />}
 
+          {/* Recolhível como os outros blocos da aba: era o único que ficava sempre
+              aberto, e é justamente o mais alto — a lista de documentos empurrava todo o
+              resto para fora da tela. */}
+          <CollapsibleBlock
+            title="Base de conhecimento"
+            showHeader={stacked}
+            hint={documents.length ? `${documents.length}` : undefined}
+          >
           <div className="space-y-3">
-            <h4 className="font-medium">Base de conhecimento</h4>
             <p className="text-sm text-(--text-muted)">
               Textos que o agente usa para responder com precisão (cardápio, horários, políticas...).
               {isCreating && ' Eles serão enviados assim que o agente for criado.'}
@@ -1561,6 +1568,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               </button>
             </form>
           </div>
+          </CollapsibleBlock>
         </div>
       )}
 

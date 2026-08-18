@@ -482,3 +482,33 @@ test('uma etiqueta pode ser removida antes de salvar', async ({ page }) => {
 
   await expect(page.getByTestId('agent-capabilities-empty')).toBeVisible()
 })
+
+test('a Base de conhecimento também abre e fecha, como as outras seções', async ({ page }) => {
+  // Era a única seção da aba que ficava sempre aberta — e a mais alta: a lista de
+  // documentos empurrava tudo que vem depois para fora da tela.
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  const cabecalho = page.getByRole('button', { name: 'Base de conhecimento', exact: true })
+  await expect(cabecalho).toBeVisible()
+  await expect(cabecalho).toHaveAttribute('aria-expanded', 'false')
+
+  await cabecalho.click()
+  await expect(cabecalho).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByText('Textos que o agente usa para responder com precisão', { exact: false })).toBeVisible()
+
+  await cabecalho.click()
+  await expect(cabecalho).toHaveAttribute('aria-expanded', 'false')
+})
+
+test('as seções da aba nascem fechadas, menos as competências', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  // Aberta: é por ela que outro agente encontra este, e a aba não pode abrir como uma
+  // lista de títulos vazia.
+  await expect(page.getByRole('button', { name: 'Competências', exact: true })).toHaveAttribute('aria-expanded', 'true')
+  for (const titulo of ['Ferramentas', 'Base de conhecimento', 'Ferramentas reutilizáveis', 'Consultar um site']) {
+    await expect(page.getByRole('button', { name: titulo, exact: true })).toHaveAttribute('aria-expanded', 'false')
+  }
+})
