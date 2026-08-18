@@ -269,6 +269,8 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
           finishedAt: new Date(),
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
+          // Resolvido, e não `agent.model`: com "Automático" o campo guardado é um marcador.
+          model: execucao.model,
           toolCalls: result.toolCalls.filter((c) => c.ok).length, // completed tool calls only
           metadata: {
             ...baseEvent.metadata,

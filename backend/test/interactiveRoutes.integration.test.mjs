@@ -316,3 +316,27 @@ test('um perfil que planeja recebe o modelo principal, e o motivo diz isso', asy
   const { diagnostics } = await res.json()
   assert.match(diagnostics.modelReason, /coordena/)
 })
+
+test('a execução do chat grava QUAL modelo rodou, e não só quantos tokens', async () => {
+  // Sem isto, "economia" não é verificável: trocar de modelo não muda um token, muda o
+  // preço de cada um — e o contador de tokens mostra o mesmo número antes e depois.
+  const agente = await criarAgente({ name: 'Registro de modelo' })
+  await patch(agente._id, { model: 'auto', preset: 'communicator' })
+
+  await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'oi' }] }),
+  })
+
+  const fim = Date.now() + 8000
+  let evento
+  while (Date.now() < fim && !evento) {
+    const eventos = await cliente.db().collection('agent_execution_events').find({ source: 'manual' }).toArray()
+    evento = eventos.find((e) => e.model)
+    if (!evento) await new Promise((r) => setTimeout(r, 200))
+  }
+  assert.ok(evento, 'o evento precisa dizer em qual modelo a execução rodou')
+  assert.notEqual(evento.model, 'auto', 'o marcador não é nome de modelo')
+  assert.ok(evento.inputTokens > 0)
+})

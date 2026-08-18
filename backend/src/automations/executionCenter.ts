@@ -16,6 +16,7 @@ import { db } from '../db.js'
 import type { AutomationStatus, AutomationTrigger } from './types.js'
 import type { RunStatus } from './runTypes.js'
 import { cronToRecurrence, describeRecurrence } from './schedule.js'
+import { tokensByModelSince } from '../agentEvents.js'
 
 export type ExecutionTab = 'scheduled' | 'triggers' | 'active' | 'history'
 export const EXECUTION_TABS: ExecutionTab[] = ['scheduled', 'triggers', 'active', 'history']
@@ -597,6 +598,14 @@ export interface ExecutionSummary {
   tokensWindow: number
   runsWindow: number
   windowDays: number
+  /**
+   * Os tokens separados por MODELO — a única forma de ver economia acontecer.
+   *
+   * Trocar um agente do modelo caro para o barato não muda um token; muda o preço de
+   * cada um. Ausente quando um filtro de setor está ativo: os eventos por agente não
+   * carregam o setor, e mostrar um total que ignora o filtro seria pior que não mostrar.
+   */
+  tokensByModel?: { model: string; inputTokens: number; outputTokens: number; runs: number }[]
 }
 
 // The counters answer the question the page is currently asking: the SAME filters
@@ -612,7 +621,7 @@ export async function executionSummary(ownerId: string, now = new Date(), f: Exe
   const runScope = await runFilter(ownerId, { ...f, status: undefined })
   // A filter that can match nobody yields zeros, never the unfiltered totals.
   if (!scope || !triggerScope || !runScope) {
-    return { next24h: 0, activeTriggers: 0, inFlight: 0, tokensWindow: 0, runsWindow: 0, windowDays: USAGE_WINDOW_DAYS }
+    return { next24h: 0, activeTriggers: 0, inFlight: 0, tokensWindow: 0, runsWindow: 0, windowDays: USAGE_WINDOW_DAYS, tokensByModel: [] }
   }
 
   const [next24h, activeTriggers, inFlight, usage] = await Promise.all([
@@ -632,6 +641,15 @@ export async function executionSummary(ownerId: string, now = new Date(), f: Exe
       ])
       .toArray(),
   ])
+  // Por modelo, só quando dá para respeitar o filtro: o evento por agente conhece agente
+  // e andar, mas não setor.
+  const porModelo = f.sectorId
+    ? undefined
+    : await tokensByModelSince(ownerId, since, {
+        ...(f.agentId && ObjectId.isValid(f.agentId) ? { agentId: new ObjectId(f.agentId) } : {}),
+        ...(f.floorId && ObjectId.isValid(f.floorId) ? { floorId: new ObjectId(f.floorId) } : {}),
+      })
+
   return {
     next24h,
     activeTriggers,
@@ -639,5 +657,6 @@ export async function executionSummary(ownerId: string, now = new Date(), f: Exe
     tokensWindow: usage[0]?.tokens ?? 0,
     runsWindow: usage[0]?.count ?? 0,
     windowDays: USAGE_WINDOW_DAYS,
+    ...(porModelo ? { tokensByModel: porModelo } : {}),
   }
 }

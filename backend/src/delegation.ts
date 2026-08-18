@@ -278,6 +278,8 @@ export interface DelegationDeps {
     finishedAt: Date
     inputTokens: number
     outputTokens: number
+    /** O modelo que rodou — é o que permite somar o gasto POR MODELO. */
+    model?: string | null
     toolCalls: number
     parentEventKey: string | null
     rootEventKey: string
@@ -340,6 +342,8 @@ async function emitAgentEvent(
     finishedAt: Date
     // Safe operational facts, the same vocabulary the routine step records.
     telemetry?: Record<string, string | number | boolean>
+    /** O modelo que rodou, quando quem chama sabe. */
+    model?: string | null
   },
   status: 'succeeded' | 'failed' | 'timeout' | 'canceled',
   // Present when this run is a participation in a sector execution: the link that
@@ -362,6 +366,9 @@ async function emitAgentEvent(
     finishedAt: run.finishedAt,
     inputTokens: run.usage.inputTokens,
     outputTokens: run.usage.outputTokens,
+    // O modelo que rodou — com "Automático" ele muda de agente para agente, e sem isto
+    // registrado não há como somar o gasto por modelo.
+    model: run.model ?? target.model ?? null,
     toolCalls: run.toolCalls,
     parentEventKey: ctx.currentEventKey ?? null,
     rootEventKey: ctx.rootEventKey ?? eventKey,

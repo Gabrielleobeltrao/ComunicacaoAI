@@ -2593,6 +2593,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   }).catch(() => null)
 
   const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0, errorKind?: string) => {
+    // `modeloDoChat` é resolvido abaixo; este fecho só roda depois da chamada.
     recordAgentEventSafe({
       eventKey: manualEventKey,
       ownerId: res.locals.userId,
@@ -2607,6 +2608,9 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       finishedAt: new Date(),
       inputTokens: u?.inputTokens ?? 0,
       outputTokens: u?.outputTokens ?? 0,
+      // Sem o modelo no registro, "economia" não é verificável: trocar de modelo não muda
+      // um token, muda o preço de cada um.
+      model: modeloDoChat,
       toolCalls: okToolCalls,
       // `descartadosChat` é resolvido logo abaixo; este fecho só roda depois da chamada ao
       // modelo. Só campo e motivo — nunca prompt, resposta ou credencial.
@@ -2638,6 +2642,8 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   // Quando nada foi escolhido, `model` é null e quem responde é a constante do adapter —
   // a tela precisa do nome dela para não dizer "—" no lugar do modelo que rodou.
   const provedorPadrao = defaultModel(agent.provider)
+  // O modelo que vai rodar de fato, já resolvido — é ele que entra no registro.
+  const modeloDoChat = execucaoChat.model ?? provedorPadrao
   const descartadosChat = describeDropped(execucaoChat.runConfig)
   if (descartadosChat) console.info(`[runConfig] chat: ${descartadosChat}`)
 
@@ -3698,6 +3704,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       finishedAt: new Date(),
       inputTokens: u?.inputTokens ?? 0,
       outputTokens: u?.outputTokens ?? 0,
+      model: modeloDoCanal,
       toolCalls: okToolCalls,
       // `descartadosCanal` é resolvido logo abaixo; este fecho só roda depois da chamada
       // ao modelo. Só campo e motivo — nunca prompt, resposta ou credencial.
@@ -3712,6 +3719,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
 
   const canalTools = await resolveAgentTools(agent, ownerId)
   const execucaoCanal = resolveAgentRun(agent, { context: 'chat', toolRisks: canalTools.map((t) => t.risk ?? 'write') })
+  const modeloDoCanal = execucaoCanal.model ?? defaultModel(agent.provider)
   const descartadosCanal = describeDropped(execucaoCanal.runConfig)
   if (descartadosCanal) console.info(`[runConfig] canal: ${descartadosCanal}`)
 

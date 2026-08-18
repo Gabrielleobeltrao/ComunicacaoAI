@@ -32,6 +32,17 @@ export interface AgentExecutionEvent {
   durationMs: number
   inputTokens: number
   outputTokens: number
+  /**
+   * O modelo que REALMENTE rodou.
+   *
+   * Sem ele, "economia" não é verificável: trocar um agente do modelo caro para o barato
+   * não muda um único token — muda o PREÇO de cada token. O contador de tokens mostra o
+   * mesmo número antes e depois, e a diferença só aparece na fatura do provedor.
+   *
+   * Ausente nos eventos gravados antes deste campo. Quem soma trata como 'desconhecido',
+   * em vez de atribuir a um modelo que ninguém registrou.
+   */
+  model?: string | null
   toolCalls: number
   // How many attempts this logical execution took (a retried routine step stays ONE
   // event: the final status wins, usage/duration accumulate across attempts).
@@ -87,6 +98,8 @@ export interface RecordAgentEventInput {
   durationMs?: number
   inputTokens?: number
   outputTokens?: number
+  /** O modelo que rodou. Ver `AgentExecutionEvent.model`. */
+  model?: string | null
   toolCalls?: number
   attemptCount?: number
   parentEventKey?: string | null
@@ -114,6 +127,7 @@ export async function recordAgentEvent(input: RecordAgentEventInput): Promise<bo
     finishedAt: input.finishedAt,
     durationMs: input.durationMs ?? Math.max(0, input.finishedAt.getTime() - input.startedAt.getTime()),
     inputTokens: input.inputTokens ?? 0,
+    ...(input.model ? { model: input.model } : {}),
     outputTokens: input.outputTokens ?? 0,
     toolCalls: input.toolCalls ?? 0,
     attemptCount: input.attemptCount ?? 1,
@@ -163,6 +177,9 @@ export async function finalizeAgentEvent(input: RecordAgentEventInput): Promise<
           // execution belongs to the same request.
           ...(input.sectorExecutionId ? { sectorExecutionId: input.sectorExecutionId } : {}),
           ...(input.rootExecutionId ? { rootExecutionId: input.rootExecutionId } : {}),
+          // O modelo não é somável: ele descreve a execução, e uma nova tentativa da
+          // MESMA execução roda no mesmo modelo. Fica no `$set` junto do resto.
+          ...(input.model ? { model: input.model } : {}),
         },
         $addToSet: { seenAttempts: attempt },
         $inc: {
@@ -235,6 +252,60 @@ export function recordAgentEventSafe(input: RecordAgentEventInput): void {
 export async function telemetrySince(ownerId: string): Promise<Date | null> {
   const first = await events.find({ ownerId }).sort({ startedAt: 1 }).limit(1).next()
   return first?.startedAt ?? null
+}
+
+/**
+ * Quantos tokens em cada MODELO, na janela.
+ *
+ * É a resposta para "a economia é real?". O contador de tokens não responde: trocar um
+ * agente do modelo caro para o barato não muda um único token — muda o preço de cada um.
+ * A diferença só aparece quando os tokens são separados por modelo.
+ *
+ * Soma dos EVENTOS por agente, e não das execuções de rotina: assim entram também chat,
+ * canal, delegação e etapa de setor, que é onde a maior parte do gasto acontece.
+ *
+ * Execuções gravadas antes deste campo aparecem como `desconhecido` — atribuí-las a um
+ * modelo que ninguém registrou seria inventar o dado que a função existe para mostrar.
+ */
+export interface ModelUsageRow {
+  model: string
+  inputTokens: number
+  outputTokens: number
+  runs: number
+}
+
+export async function tokensByModelSince(
+  ownerId: string,
+  since: Date,
+  escopo: { agentId?: ObjectId; floorId?: ObjectId } = {},
+): Promise<ModelUsageRow[]> {
+  const filtro: Record<string, unknown> = { ownerId, startedAt: { $gte: since } }
+  if (escopo.agentId) filtro.agentId = escopo.agentId
+  if (escopo.floorId) filtro.floorId = escopo.floorId
+
+  const linhas = await events
+    .aggregate<{ _id: string | null; inputTokens: number; outputTokens: number; runs: number }>([
+      { $match: filtro },
+      {
+        $group: {
+          _id: { $ifNull: ['$model', null] },
+          inputTokens: { $sum: { $ifNull: ['$inputTokens', 0] } },
+          outputTokens: { $sum: { $ifNull: ['$outputTokens', 0] } },
+          runs: { $sum: 1 },
+        },
+      },
+    ])
+    .toArray()
+
+  return linhas
+    .map((l) => ({
+      model: l._id ?? 'desconhecido',
+      inputTokens: l.inputTokens,
+      outputTokens: l.outputTokens,
+      runs: l.runs,
+    }))
+    // Do maior gasto para o menor: é a ordem em que a pergunta é feita.
+    .sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens))
 }
 
 export { events as agentEventsCollection }

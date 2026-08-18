@@ -541,6 +541,52 @@ export function Executions() {
           ))}
         </Card>
 
+        {/*
+          Onde os tokens foram gastos, por MODELO.
+          Sem esta divisão, "economia" é adjetivo: o total de tokens não muda quando um
+          agente passa a rodar no modelo barato — muda o preço de cada token, e isso só
+          aparece separando um do outro.
+        */}
+        {summary?.tokensByModel && summary.tokensByModel.length > 0 && (
+          <Card padding="16px" style={{ display: 'grid', gap: 8 }} data-testid="tokens-by-model">
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 700 }}>Tokens por modelo</p>
+              <p style={{ ...faint, margin: 0 }}>últimos {summary.windowDays} dias · execuções de agente</p>
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {summary.tokensByModel.map((linha) => {
+                const total = linha.inputTokens + linha.outputTokens
+                const maior = Math.max(...(summary.tokensByModel ?? []).map((l) => l.inputTokens + l.outputTokens), 1)
+                return (
+                  <div key={linha.model} style={{ display: 'grid', gap: 3 }} data-testid="tokens-by-model-row">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12.5 }}>
+                      <span style={{ overflowWrap: 'anywhere' }}>{linha.model}</span>
+                      <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
+                        {tokensLabel(total)} · {linha.runs} exec.
+                      </span>
+                    </div>
+                    {/* A barra é comparação, não precisão: serve para ver de olho em qual
+                        modelo o gasto está concentrado. */}
+                    <div style={{ height: 4, borderRadius: 999, background: 'var(--surface-sunken)' }}>
+                      <div
+                        style={{
+                          height: 4,
+                          borderRadius: 999,
+                          width: `${Math.max(2, Math.round((total / maior) * 100))}%`,
+                          background: 'var(--intent-brand)',
+                        }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <p style={{ ...faint, margin: 0 }}>
+              O total de tokens não cai ao trocar de modelo — o preço por token cai. É aqui que a diferença aparece.
+            </p>
+          </Card>
+        )}
+
         {/* Tabs — horizontally scrollable on a phone instead of wrapping. */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 'var(--radius-control)', background: 'var(--surface-sunken)', overflowX: 'auto', maxWidth: '100%' }} role="tablist" data-testid="execution-tabs">

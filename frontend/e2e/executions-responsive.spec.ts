@@ -85,7 +85,20 @@ async function stub(page: Page) {
   // Depois da rota geral: a última registrada é a que vale, e `**/api/executions**`
   // também casa com `/api/executions/summary`.
   await page.route('**/api/executions/summary**', (r) =>
-    r.fulfill({ json: { next24h: 4, activeTriggers: 2, inFlight: 1, tokensWindow: 98765, runsWindow: 40, windowDays: 7 } }),
+    r.fulfill({
+      json: {
+        next24h: 4,
+        activeTriggers: 2,
+        inFlight: 1,
+        tokensWindow: 98765,
+        runsWindow: 40,
+        windowDays: 7,
+        tokensByModel: [
+          { model: 'claude-sonnet-5', inputTokens: 60000, outputTokens: 20000, runs: 12 },
+          { model: 'claude-haiku-4-5', inputTokens: 15000, outputTokens: 3765, runs: 28 },
+        ],
+      },
+    }),
   )
   await page.route('**/api/building', (r) => r.fulfill({ json: { id: 'b1', name: 'Prédio', description: '', defaultTimezone: 'America/Sao_Paulo', defaultLanguage: 'pt', createdAt: NOW, updatedAt: NOW } }))
   await page.route('**/api/floors**', (r) => r.fulfill({ json: [{ id: 'f1', buildingId: 'b1', name: 'Térreo', mission: '', description: '', timezone: 'America/Sao_Paulo', defaultLanguage: 'pt', color: null, icon: null, order: 0, status: 'active', createdAt: NOW, updatedAt: NOW }] }))
@@ -152,4 +165,41 @@ test('o subtítulo da página cabe inteiro, sem ser picado no meio da palavra', 
     .getByText('Tudo o que os agentes fazem sozinhos', { exact: false })
     .evaluate((el) => el.scrollHeight > el.clientHeight + 1)
   expect(cortado, 'a frase está cortada por falta de espaço').toBe(false)
+})
+
+// --- onde os tokens foram gastos, por modelo ------------------------------------------------
+//
+// O contador de tokens não mostra economia: trocar um agente do modelo caro para o barato
+// não muda um token, muda o preço de cada um. A divisão por modelo é o que torna a
+// diferença visível.
+
+test('a Central mostra os tokens separados por modelo', async ({ page }) => {
+  await stub(page)
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('/executions', { waitUntil: 'networkidle' })
+
+  const bloco = page.getByTestId('tokens-by-model')
+  await expect(bloco).toBeVisible()
+  await expect(bloco).toContainText('claude-sonnet-5')
+  await expect(bloco).toContainText('claude-haiku-4-5')
+  await expect(bloco).toContainText('28 exec.')
+  // A frase que evita a leitura errada do total.
+  await expect(bloco).toContainText('não cai ao trocar de modelo')
+  // Maior gasto primeiro, que é a ordem em que a pergunta é feita.
+  const linhas = await page.getByTestId('tokens-by-model-row').allTextContents()
+  expect(linhas[0]).toContain('claude-sonnet-5')
+})
+
+test('sem divisão por modelo, o bloco simplesmente não aparece', async ({ page }) => {
+  // É o caso do filtro de setor: o evento por agente não carrega o setor, e mostrar um
+  // total que ignora o filtro seria pior que não mostrar.
+  await stub(page)
+  await page.route('**/api/executions/summary**', (r) =>
+    r.fulfill({ json: { next24h: 0, activeTriggers: 0, inFlight: 0, tokensWindow: 0, runsWindow: 0, windowDays: 7 } }),
+  )
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('/executions', { waitUntil: 'networkidle' })
+
+  await expect(page.getByTestId('execution-counters')).toBeVisible()
+  await expect(page.getByTestId('tokens-by-model')).toHaveCount(0)
 })
