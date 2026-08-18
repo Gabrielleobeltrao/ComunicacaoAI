@@ -752,6 +752,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   // "Como trabalha" entra aqui junto de "Avançado": ela também empilha vários blocos, e
   // sem cabeçalho eles viram uma rolagem longa em que nada é encontrável.
   const stacked = (flat && (section === 'avancado' || section === 'como-trabalha')) || (!flat && advancedOpen)
+  // O provedor escolhido, com os modelos e os padrões que ele declara.
+  const provedorAtual = providers.find((p) => p.id === editProvider)
 
   return (
     <div className="flex flex-col">
@@ -900,14 +902,38 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                 value={editModel}
                 onChange={(e) => setEditModel(e.target.value)}
                 className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                data-testid="agent-model"
               >
-                <option value="">Padrão do sistema</option>
-                {(providers.find((p) => p.id === editProvider)?.models ?? []).map((model) => (
+                {/* O padrão vem NOMEADO. "Padrão do sistema", sozinho, não diz se vai
+                    rodar o modelo mais caro ou o mais barato — e quem paga a diferença é
+                    quem está lendo. */}
+                <option value="">
+                  {provedorAtual?.defaultModel ? `Padrão do sistema — ${provedorAtual.defaultModel}` : 'Padrão do sistema'}
+                </option>
+                {/* A escolha por PERFIL. Fica ao lado do padrão porque é a alternativa a
+                    ele: um manda sempre o mesmo modelo, o outro olha o que o agente faz. */}
+                <option value="auto">Automático (pelo perfil do agente)</option>
+                {(provedorAtual?.models ?? []).map((model) => (
                   <option key={model.id} value={model.id}>
                     {model.label}
                   </option>
                 ))}
               </select>
+              {/* O modelo de bastidor também é dinheiro: com o modo econômico ligado,
+                  memória, extração e guardrail rodam nele. */}
+              {editModel === 'auto' && (
+                <p className="mt-1 text-xs text-(--text-faint)" data-testid="agent-model-auto-note">
+                  Escolhe entre {provedorAtual?.defaultModel ?? 'o modelo principal'} e{' '}
+                  {provedorAtual?.auxiliaryModel ?? 'o econômico'} conforme o que este agente faz: quem planeja, decide ou
+                  executa ação real fica no principal; quem só transforma um texto que já existe usa o barato.
+                </p>
+              )}
+              {provedorAtual?.auxiliaryModel && (
+                <p className="mt-1 text-xs text-(--text-faint)" data-testid="agent-aux-model">
+                  Tarefas internas (memória, extração, guardrail) usam {provedorAtual.auxiliaryModel} enquanto o modo
+                  econômico estiver ligado.
+                </p>
+              )}
             </div>
             <div className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
               <p className="text-sm font-medium">Otimização de custo</p>

@@ -512,3 +512,50 @@ test('as seções da aba nascem fechadas, menos as competências', async ({ page
     await expect(page.getByRole('button', { name: titulo, exact: true })).toHaveAttribute('aria-expanded', 'false')
   }
 })
+
+// --- a escolha do modelo diz qual modelo é ------------------------------------------------
+//
+// "Padrão do sistema" é uma CONSTANTE por provedor — todo agente deixado nele roda o
+// mesmo modelo. A tela não dizia qual, e quem lia entendia "o sistema escolhe".
+
+const PROVEDORES = [
+  {
+    id: 'anthropic',
+    label: 'Anthropic (Claude)',
+    models: [{ id: 'claude-sonnet-5', label: 'Claude Sonnet 5' }],
+    defaultModel: 'claude-sonnet-5',
+    auxiliaryModel: 'claude-haiku-4-5',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI (GPT)',
+    models: [{ id: 'gpt-5.1', label: 'GPT-5.1' }],
+    defaultModel: 'gpt-5.1',
+    auxiliaryModel: 'gpt-5-mini',
+  },
+]
+
+test('o padrão do sistema aparece com o nome do modelo', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/providers**', (r) => r.fulfill({ json: PROVEDORES }))
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
+  await abrirBloco(page, 'Modelo e custo')
+
+  await expect(page.getByTestId('agent-model')).toContainText('Padrão do sistema — claude-sonnet-5')
+  // O modelo de bastidor também é dinheiro: com o modo econômico ligado, ele é quem roda
+  // memória, extração e guardrail.
+  await expect(page.getByTestId('agent-aux-model')).toContainText('claude-haiku-4-5')
+})
+
+test('existe "Automático", e ele explica pelo que decide', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/providers**', (r) => r.fulfill({ json: PROVEDORES }))
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
+  await abrirBloco(page, 'Modelo e custo')
+
+  await page.getByTestId('agent-model').selectOption('auto')
+  const nota = page.getByTestId('agent-model-auto-note')
+  await expect(nota).toContainText('claude-sonnet-5')
+  await expect(nota).toContainText('claude-haiku-4-5')
+  await expect(nota).toContainText('ação real')
+})

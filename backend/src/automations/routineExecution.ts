@@ -217,7 +217,8 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       // them; the owner is never named to the model.
       context: [...call.context, ...formatContextWithSources(retrieved.context, retrieved.sources ?? [])],
       provider: agent.provider,
-      model: agent.model,
+      // Resolvido: "Automático" guarda um marcador, não um id de modelo.
+      model: execucao.model,
       apiKey,
       tools,
       // What the agent promised to receive and produce reaches the model now.

@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getCachedModels, setCachedModels } from './modelCache.js'
+// Uma fonte só para os padrões, e sem banco atrás dela — ver `modelDefaults.ts`.
+import { ANTHROPIC_DEFAULT_MODEL, ANTHROPIC_AUX_MODEL } from './modelDefaults.js'
 import {
   buildGuardrailCheckPrompt,
   buildIdentityExtractionPrompt,
@@ -41,12 +43,12 @@ function anthropicUsage(usage: Anthropic.Usage): TokenUsage {
   }
 }
 
-const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5'
+export const DEFAULT_MODEL = ANTHROPIC_DEFAULT_MODEL
 
 // Background/utility calls (memory, extraction, guardrail check) are
 // classification-style tasks that don't need the flagship model — route them
 // to a small, cheap model to keep token spend down.
-export const AUXILIARY_MODEL = process.env.ANTHROPIC_AUX_MODEL ?? 'claude-haiku-4-5'
+export const AUXILIARY_MODEL = ANTHROPIC_AUX_MODEL
 const PLATFORM_API_KEY = process.env.ANTHROPIC_API_KEY
 
 // Used only if we can't reach Anthropic (no key configured yet, or the API call fails).

@@ -95,6 +95,7 @@ import {
 } from './knowledge.js'
 import {
   auxiliaryModel,
+  defaultModel,
   checkGuardrail,
   extractIdentity,
   extractStructuredOutput,
@@ -214,6 +215,7 @@ import { appInstallationRouter } from './routes/appInstallationRoutes.js'
 import { appGrantRouter } from './routes/appGrantRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
+import { AUTO_MODEL, resolveAutoModel } from './autoModel.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -378,7 +380,15 @@ app.get('/api/providers', requireAuth, async (_req, res) => {
     PROVIDER_INFO.map(async (provider) => {
       const apiKey = await getProviderApiKey(res.locals.userId, provider.id)
       const models = await listModelsForProvider(provider.id, apiKey)
-      return { id: provider.id, label: provider.label, models }
+      // Qual modelo roda quando ninguém escolhe, e qual roda nas tarefas de bastidor. A
+      // tela precisa DIZER isso: "Padrão do sistema" não informa nada a quem paga a conta.
+      return {
+        id: provider.id,
+        label: provider.label,
+        models,
+        defaultModel: defaultModel(provider.id),
+        auxiliaryModel: auxiliaryModel(provider.id),
+      }
     }),
   )
   res.json(results)
@@ -2655,7 +2665,8 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
           m,
           h,
           agent.provider,
-          agent.model,
+          // O modelo RESOLVIDO: com "Automático" o campo guardado é um marcador.
+          execucaoChat.model,
           apiKey,
           identityFields.length > 0 ? buildIdentityCaptureInstruction(identityFields) : '',
           behaviorInstruction,
@@ -3444,7 +3455,15 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
 // Which model to use for background/utility calls: the cheap one when the
 // agent's economy toggle is on (default), otherwise the agent's own model.
 function auxModelFor(agent: WithId<Agent>): string | null {
-  return agent.cheapAuxModel === false ? agent.model : auxiliaryModel(agent.provider)
+  // Com o modo econômico DESLIGADO as tarefas de bastidor usam o modelo do agente — e
+  // "Automático" precisa virar um id de verdade aqui também, senão o marcador seguiria
+  // para o provedor como se fosse nome de modelo.
+  if (agent.cheapAuxModel === false) {
+    return agent.model === AUTO_MODEL
+      ? resolveAutoModel(agent, { main: null, aux: auxiliaryModel(agent.provider) }).model
+      : agent.model
+  }
+  return auxiliaryModel(agent.provider)
 }
 
 // O roteador conversacional saiu daqui.
@@ -3725,7 +3744,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
           m,
           h,
           agent.provider,
-          agent.model,
+          execucaoCanal.model,
           apiKey,
           identityInstruction,
           behaviorInstruction,

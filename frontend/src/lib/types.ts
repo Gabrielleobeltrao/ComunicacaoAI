@@ -349,6 +349,10 @@ export interface ProviderInfo {
   id: 'anthropic' | 'openai'
   label: string
   models: { id: string; label: string }[]
+  /** O que roda quando o dono não escolhe modelo. A tela DIZ qual é. */
+  defaultModel?: string
+  /** O que roda nas tarefas de bastidor com o modo econômico ligado. */
+  auxiliaryModel?: string
 }
 
 export interface KnowledgeDocumentSummary {

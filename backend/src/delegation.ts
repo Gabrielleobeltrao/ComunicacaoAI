@@ -311,6 +311,8 @@ interface TaskRun {
   finishedAt: Date
   // Safe scalars for the telemetry: statuses and counts, never content.
   telemetry?: Record<string, string | number | boolean>
+  /** O modelo que rodou de fato — com "Automático", o resolvido, e não o marcador. */
+  model?: string | null
   // De onde saiu a resposta, para quem PEDIU poder conferir: o veredito da busca e os
   // documentos que entraram — id e título, nunca o texto deles.
   grounding?: string
@@ -538,7 +540,8 @@ async function runAgentTask(
     context: context.length ? context : undefined,
     input,
     provider: target.provider,
-    model: target.model,
+    // Resolvido: "Automático" guarda um marcador, não um id de modelo.
+    model: execucao.model,
     apiKey,
     tools,
     // What the target promised to receive and produce, in its own words.
@@ -562,7 +565,7 @@ async function runAgentTask(
     toolsExecuted: res.toolCalls.filter((c) => c.ok).length,
   }
   // "Ações com ferramenta" counts calls that actually COMPLETED, not attempts.
-  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources }
+  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources, model: execucao.model }
 }
 
 // ---- delegate_to_agent ------------------------------------------------------
@@ -904,7 +907,8 @@ export async function executeSectorTeam(
       usage: saida.usage,
       durationMs: Math.max(0, saida.finishedAt.getTime() - saida.startedAt.getTime()),
       provider: target.provider,
-      model: target.model ?? null,
+      // O que rodou, não o que está guardado: com "Automático" os dois diferem.
+      model: saida.model ?? target.model ?? null,
       status: 'succeeded',
     })
     return saida.output

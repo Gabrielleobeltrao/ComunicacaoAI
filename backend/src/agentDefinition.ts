@@ -12,6 +12,10 @@ import type { Agent } from './agents.js'
 import { effectiveRunConfig, resolveRunConfig } from './runConfig.js'
 import type { EffectiveRunConfig, RunConfig, RunContext } from './runConfig.js'
 import type { ActionRisk } from './apps/types.js'
+import { AUTO_MODEL, resolveAutoModel } from './autoModel.js'
+// De um módulo PURO: importar `llm.js` aqui arrastava o SDK do provedor, o executor
+// de ferramentas e o banco atrás dele — e quebrava todo teste que não sobe mongod.
+import { auxModelOf } from './modelDefaults.js'
 
 /** A definição em blocos, na ordem em que ela entra no prompt. */
 export interface AgentDefinition {
@@ -76,6 +80,16 @@ export interface ResolvedAgentRun {
   definition: AgentDefinition
   runConfig: EffectiveRunConfig
   enableCaching: boolean
+  /**
+   * O modelo que vai rodar DE FATO.
+   *
+   * Quem chama usa este, e não `agent.model`: com "Automático" o campo guardado é um
+   * marcador (`auto`), e mandá-lo ao provedor seria pedir um modelo que não existe. Aqui
+   * ele já virou um id de verdade — ou `null`, que é o padrão do adapter.
+   */
+  model: string | null
+  /** Por que este modelo, quando a escolha foi automática. Para a tela poder mostrar. */
+  modelReason: string | null
 }
 
 /**
@@ -88,15 +102,23 @@ export interface ResolvedAgentRun {
  */
 export function resolveAgentRun(agent: Agent, opts: ResolveRunOptions): ResolvedAgentRun {
   const config = resolveRunConfig(agent.runConfig, opts.overrides)
+  // O modelo PRIMEIRO: a matriz de capacidades pergunta "este modelo aceita temperatura?",
+  // e perguntar isso sobre o marcador `auto` não responderia nada.
+  const escolha =
+    agent.model === AUTO_MODEL
+      ? resolveAutoModel(agent, { main: null, aux: auxModelOf(agent.provider) }, opts.toolRisks ?? [])
+      : { model: agent.model, reason: null }
   const runConfig = effectiveRunConfig(config, {
     provider: agent.provider,
-    model: agent.model,
+    model: escolha.model,
     context: opts.context,
     toolRisks: opts.toolRisks,
   })
   return {
     definition: definitionOf(agent),
     runConfig,
+    model: escolha.model,
+    modelReason: escolha.reason,
     enableCaching: resolveCache(agent, config),
   }
 }
