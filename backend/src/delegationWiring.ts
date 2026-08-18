@@ -24,6 +24,7 @@ import { retrieveContext } from './knowledge.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
 import type { DelegationContext, DelegationDeps } from './delegation.js'
 import { TEAM_TOOL_NAMES } from './delegation.js'
+import { livePassagesFor } from './automations/liveSources.js'
 
 // The tool list an agent runs with in a delegation-aware context: its own tools,
 // the capability_missing escape hatch (every task agent), plus the delegation tools
@@ -142,6 +143,7 @@ export function productionDelegationDeps(): DelegationDeps {
     // provenance included — so a delegation can tell "found nothing" from "could not
     // look", and can cite what it used.
     retrieveContext: (agentId, query, opts) => retrieveContext(agentId, query, { verifiedSectorId: opts.sectorId ?? null }),
+    livePassages: (ownerId, agent) => livePassagesFor(ownerId, agent),
     chargeUsage: (ownerId, usage, chargeKey) => recordReplyUsageOnce(ownerId, usage, chargeKey).then(() => undefined),
   }
   return deps

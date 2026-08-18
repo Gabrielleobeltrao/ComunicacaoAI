@@ -291,6 +291,9 @@ export interface DelegationDeps {
   // call); a failure returns none so the run continues ungrounded.
   // The WHOLE result: turning a failure into [] hid the difference between "the
   // base said nothing" and "the base could not be consulted".
+  // Os sites do agente marcados como `always`/`on_change`. Injetado para este módulo
+  // seguir testável sem rede.
+  livePassages?: (ownerId: string, agent: Agent) => Promise<{ content: string; title: string }[]>
   retrieveContext?: (
     // Um agente, ou vários: o coordenador de um setor pode precisar olhar as bases do
     // time inteiro quando a dele não responde (ver `executeSectorTeam`).
@@ -500,8 +503,14 @@ async function runAgentTask(
   if (target.requireGrounding && grounding !== 'ok') {
     throw new GroundingRequiredError(grounding)
   }
+  // Os endereços que o dono marcou para entrar sozinhos também valem aqui: delegação e
+  // etapa de setor são "o agente foi chamado" tanto quanto uma conversa.
+  const vivas = deps.livePassages ? await deps.livePassages(ctx.ownerId, target).catch(() => []) : []
   // Numbered references, so the answer can cite what it used. The owner is not named.
-  const context = formatContextWithSources(passages, sources)
+  const context = [
+    ...formatContextWithSources(passages, sources),
+    ...vivas.map((v) => `[${v.title}]\n${v.content}`),
+  ]
   const startedAt = new Date()
   // The TARGET decides how it answers: an agent configured to produce JSON is not
   // forced into Markdown because the caller did not think about it.

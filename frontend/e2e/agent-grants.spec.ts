@@ -6,6 +6,7 @@ import type { Page } from '@playwright/test'
 // The bug this closes: it sent the whole list on every checkbox and every keystroke,
 // so a slow response could land after a newer one and silently restore permissions
 // the owner had just removed. Editing is now a draft with one explicit save.
+const SETTINGS = { maxItems: 8, charBudget: 2400, maxSources: 5, toolName: '', toolDescription: '' }
 const AGENT_ID = '000000000000000000000a11'
 const FLOOR_ID = '000000000000000000000f11'
 const INSTALLATION = 'inst-1'
@@ -296,9 +297,9 @@ test('a aba Como trabalha deixa cadastrar um site para o agente consultar', asyn
   await page.route('**/api/agents/*/sources', async (r) => {
     if (r.request().method() === 'PUT') {
       salvo = JSON.parse(r.request().postData() ?? '{}')
-      return r.fulfill({ json: [] })
+      return r.fulfill({ json: { sources: [], settings: SETTINGS } })
     }
-    return r.fulfill({ json: [] })
+    return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
 
@@ -313,7 +314,10 @@ test('a aba Como trabalha deixa cadastrar um site para o agente consultar', asyn
   await page.getByTestId('agent-sources-save').click()
 
   await expect(page.getByTestId('agent-sources-saved')).toBeVisible()
-  expect(salvo).toEqual({ sources: [{ name: 'Blog da empresa', kind: 'http', url: 'https://exemplo.test/blog' }] })
+  expect(salvo).toEqual({
+    sources: [{ name: 'Blog da empresa', kind: 'http', url: 'https://exemplo.test/blog', when: 'on_demand', initialWindow: '7d' }],
+    settings: SETTINGS,
+  })
 })
 
 test('um endereço inválido é recusado com o motivo na tela', async ({ page }) => {
@@ -321,7 +325,7 @@ test('um endereço inválido é recusado com o motivo na tela', async ({ page })
   await page.route('**/api/agents/*/sources', (r) =>
     r.request().method() === 'PUT'
       ? r.fulfill({ status: 400, json: { error: 'O endereço precisa começar com http:// ou https://', code: 'INVALID_URL' } })
-      : r.fulfill({ json: [] }),
+      : r.fulfill({ json: { sources: [], settings: SETTINGS } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
 
@@ -336,7 +340,7 @@ test('as fontes que vêm de rotinas aparecem separadas, como leitura', async ({ 
   await stub(page)
   await page.route('**/api/agents/*/sources', (r) =>
     r.fulfill({
-      json: [{ routineId: 'r1', origem: 'rotina', name: 'Notícias', kind: 'rss', host: 'exemplo.test' }],
+      json: { settings: SETTINGS, sources: [{ routineId: 'r1', origem: 'rotina', name: 'Notícias', kind: 'rss', host: 'exemplo.test' }] },
     }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
@@ -344,4 +348,61 @@ test('as fontes que vêm de rotinas aparecem separadas, como leitura', async ({ 
   const doRotina = page.getByTestId('agent-sources-routines')
   await expect(doRotina).toContainText('Notícias')
   await expect(doRotina).toContainText('não consome o alerta da rotina')
+})
+
+test('cada endereço escolhe QUANDO ser consultado, e a tela diz o custo de cada escolha', async ({ page }) => {
+  let salvo: Record<string, unknown> | null = null
+  await stub(page)
+  await page.route('**/api/agents/*/sources', async (r) => {
+    if (r.request().method() === 'PUT') {
+      salvo = JSON.parse(r.request().postData() ?? '{}')
+      return r.fulfill({ json: { sources: [], settings: SETTINGS } })
+    }
+    return r.fulfill({ json: { sources: [], settings: SETTINGS } })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  await page.getByTestId('agent-source-add').click()
+  await page.getByTestId('agent-source-url').fill('https://exemplo.test/feed.xml')
+  await page.getByTestId('agent-source-kind').selectOption('rss')
+
+  // O custo de cada modo está escrito ao lado do modo.
+  const quando = page.getByTestId('agent-source-when')
+  await expect(quando).toContainText('0 token se ninguém perguntar')
+  await expect(quando).toContainText('paga o texto em todo turno')
+  await quando.selectOption('on_change')
+
+  // Feed ganha a janela; página não teria.
+  await page.getByTestId('agent-source-window').selectOption('24h')
+  await page.getByTestId('agent-sources-save').click()
+
+  await expect(page.getByTestId('agent-sources-saved')).toBeVisible()
+  const enviados = (salvo as { sources: Record<string, unknown>[] }).sources
+  expect(enviados[0].when).toBe('on_change')
+  expect(enviados[0].initialWindow).toBe('24h')
+})
+
+test('os limites e o nome da ferramenta são editáveis, e vão junto no salvamento', async ({ page }) => {
+  let salvo: Record<string, unknown> | null = null
+  await stub(page)
+  await page.route('**/api/agents/*/sources', async (r) => {
+    if (r.request().method() === 'PUT') {
+      salvo = JSON.parse(r.request().postData() ?? '{}')
+      return r.fulfill({ json: { sources: [], settings: SETTINGS } })
+    }
+    return r.fulfill({ json: { sources: [], settings: SETTINGS } })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  await page.getByTestId('agent-sources-settings').click()
+  await page.getByTestId('agent-sources-max-items').fill('3')
+  await page.getByTestId('agent-sources-tool-name').fill('olhar_site')
+  await page.getByTestId('agent-sources-tool-description').fill('Use quando perguntarem de preço.')
+  await page.getByTestId('agent-sources-save').click()
+
+  await expect(page.getByTestId('agent-sources-saved')).toBeVisible()
+  const cfg = (salvo as { settings: Record<string, unknown> }).settings
+  expect(cfg.maxItems).toBe(3)
+  expect(cfg.toolName).toBe('olhar_site')
+  expect(cfg.toolDescription).toBe('Use quando perguntarem de preço.')
 })

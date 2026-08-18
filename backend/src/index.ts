@@ -19,6 +19,7 @@ import { executeSectorTeam, sectorRunContext } from './delegation.js'
 import type { DelegationDeps } from './delegation.js'
 import { playgroundDelegationDeps } from './delegationWiring.js'
 import { finishSectorExecution, startSectorExecution } from './sectorExecutions.js'
+import { livePassagesFor } from './automations/liveSources.js'
 import type { WithId } from 'mongodb'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import { Server } from 'socket.io'
@@ -2543,6 +2544,11 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('Playground knowledge search failed, replying without grounding:', error)
   }
+  // Os endereços que o dono marcou para entrar sozinhos quando o agente é chamado.
+  // Nunca lançam: site fora do ar não derruba o atendimento.
+  for (const viva of await livePassagesFor(res.locals.userId, agent)) {
+    knowledge.push(`[${viva.title}]\n${viva.content}`)
+  }
 
   const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
   const behaviorInstruction = [
@@ -3551,7 +3557,12 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // every consulted specialist, for a sector. Skipped when only clarifying.
   // Only a SECTOR-answered channel reads the sector's shared base; a widget wired
   // straight to one agent stays on that agent's own knowledge.
-  const { context: knowledge } = await retrieveContext(knowledgeAgentIds, visitorContent, { verifiedSectorId: widget.sectorId ?? null })
+  const { context: knowledgeBase } = await retrieveContext(knowledgeAgentIds, visitorContent, { verifiedSectorId: widget.sectorId ?? null })
+  const knowledge = [
+    ...knowledgeBase,
+    // Idem no canal: quem escolheu "sempre" ou "quando mudar" espera o conteúdo aqui.
+    ...(await livePassagesFor(ownerId, agent)).map((viva) => `[${viva.title}]\n${viva.content}`),
+  ]
 
   // If a previous turn in this conversation already resolved who the
   // visitor is, their memory lives on the profile (shared across every

@@ -122,15 +122,88 @@ export interface AgentBuiltinTool {
   migratedAt?: Date
 }
 
-/** Um endereço que o agente pode consultar sob demanda. */
+/**
+ * Quando um endereço é consultado.
+ *
+ *   on_demand — só quando o agente julgar que a pergunta pede. Custa zero enquanto
+ *               ninguém precisa; é o padrão.
+ *   always    — em toda chamada, e o conteúdo entra no contexto. Previsível e caro:
+ *               paga tokens mesmo quando a pergunta não tem nada a ver com o site.
+ *   on_change — consulta em toda chamada e só injeta quando MUDOU desde a última vez.
+ *               Zero na maioria dos turnos, com o conteúdo aparecendo quando importa.
+ */
+export type WatchedSourceWhen = 'on_demand' | 'always' | 'on_change'
+export const WATCHED_SOURCE_WHEN: readonly WatchedSourceWhen[] = ['on_demand', 'always', 'on_change']
+
+/** Um endereço que o agente pode consultar. */
 export interface WatchedSource {
   id: string
   name: string
   kind: 'rss' | 'http'
   url: string
+  when: WatchedSourceWhen
+  /** Só feed: quanto para trás olhar. Ignorado numa página. */
+  initialWindow: '24h' | '3d' | '7d'
 }
 
-export const MAX_WATCHED_SOURCES = 5
+/**
+ * O que o dono decide sobre o custo dessas consultas.
+ *
+ * Eram números que EU escolhi, escondidos no código: quantos itens voltam, quanto texto
+ * cabe, quantos endereços existem. Quem paga a conta é quem deve decidir — dentro de um
+ * teto de sistema, que existe para um engano de digitação não virar um prompt de cem mil
+ * caracteres.
+ */
+export interface AgentSourceSettings {
+  maxItems: number
+  charBudget: number
+  maxSources: number
+  /** O nome da ferramenta como o modelo a vê. Saneado: provedor só aceita [a-zA-Z0-9_-]. */
+  toolName?: string
+  /** Quando o agente deve consultar, nas palavras do dono. */
+  toolDescription?: string
+}
+
+// Tetos de SISTEMA. O dono escolhe abaixo deles; acima seria transformar um engano de
+// digitação numa conta inesperada.
+export const SOURCE_LIMITS = {
+  maxItems: { padrao: 8, min: 1, max: 30 },
+  charBudget: { padrao: 2400, min: 200, max: 20000 },
+  maxSources: { padrao: 5, min: 1, max: 20 },
+} as const
+
+export const MAX_WATCHED_SOURCES = SOURCE_LIMITS.maxSources.max
+
+export const sourceSettingsOf = (agent: { sourceSettings?: Partial<AgentSourceSettings> | null }): AgentSourceSettings => {
+  const s = agent.sourceSettings ?? {}
+  const clamp = (v: unknown, faixa: { padrao: number; min: number; max: number }): number =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(faixa.min, Math.min(Math.round(v), faixa.max)) : faixa.padrao
+  return {
+    maxItems: clamp(s.maxItems, SOURCE_LIMITS.maxItems),
+    charBudget: clamp(s.charBudget, SOURCE_LIMITS.charBudget),
+    maxSources: clamp(s.maxSources, SOURCE_LIMITS.maxSources),
+    ...(s.toolName ? { toolName: s.toolName } : {}),
+    ...(s.toolDescription ? { toolDescription: s.toolDescription } : {}),
+  }
+}
+
+/**
+ * O nome que o provedor aceita.
+ *
+ * A API de ferramentas só admite `[a-zA-Z0-9_-]{1,64}`. Um nome com espaço ou acento —
+ * que é exatamente o que uma pessoa digita — faria a chamada inteira ser recusada pelo
+ * provedor, e o erro apareceria como "falha do modelo". Então saneia-se aqui, e a tela
+ * mostra o resultado.
+ */
+export function sanitizeToolName(bruto: string, padrao: string): string {
+  const limpo = bruto
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64)
+  return limpo || padrao
+}
 
 export interface Agent {
   _id: ObjectId
@@ -232,6 +305,8 @@ export interface Agent {
    * quando o próprio agente julgar que a pergunta pede.
    */
   watchedSources?: WatchedSource[]
+  /** Limites e nomes que o dono escolheu para essas consultas. */
+  sourceSettings?: AgentSourceSettings
   allowedCallerAgentIds: string[] // when callerPolicy='selected': the agents allowed to call this one
   metricProfile: MetricProfile // which KPI the card shows ('auto' = derive from preset)
   createdAt: Date
@@ -559,6 +634,7 @@ export async function updateAgent(
     toolIds?: string[]
     // Sites consultados sob demanda — ver `WatchedSource`.
     watchedSources?: WatchedSource[]
+    sourceSettings?: AgentSourceSettings
     metricProfile?: MetricProfile
   },
 ) {

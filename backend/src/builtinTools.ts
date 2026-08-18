@@ -1,6 +1,7 @@
 import type { Agent } from './agents.js'
 import { memorySearchTool } from './memory/tool.js'
 import { sourceCheckTool } from './automations/sourceTool.js'
+import { sourceSettingsOf } from './agents.js'
 import { getToolsByIds } from './tools.js'
 import { executeToolCall } from './toolExecution.js'
 import type { ResolvedTool } from './agentTools.js'
@@ -241,7 +242,7 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
   // envia nada, não escreve e não avança o checkpoint da rotina. Sem fonte configurada
   // ela responde "sem_fonte", que é a verdade, em vez de não existir e o modelo ter que
   // adivinhar que não pode consultar.
-  const fonte = sourceCheckTool(ownerId, agent._id)
+  const fonte = sourceCheckTool(ownerId, agent._id, sourceSettingsOf(agent))
   // Legacy per-agent HTTP tools, kept working untouched.
   const http = (agent.tools ?? []).map(resolveHttpTool)
 

@@ -27,12 +27,10 @@ import type { RoutineSource } from './routine.js'
 
 export const SOURCE_TOOL_NAME = 'verificar_fonte'
 
-// Tetos: o que volta daqui entra no prompt, e o prompt é o que se paga.
-const MAX_ITENS = 8
 // Quantos itens são EXAMINADOS para contar as novidades — bem mais do que os exibidos.
+// Este não é escolha do dono: é o custo de contar, e contar não entra no prompt.
 const MAX_ANALISADOS = 50
 const MAX_TITULO = 160
-const ORCAMENTO_CHARS = 2400
 
 const j = (v: unknown): string => JSON.stringify(v)
 
@@ -68,7 +66,10 @@ export async function fontesDoAgente(ownerId: string, agentId: ObjectId): Promis
     saida.push({
       automationId: null,
       nome: site.name,
-      source: site.kind === 'rss' ? { kind: 'rss', url: site.url, initialWindow: '7d' } : { kind: 'http', url: site.url },
+      source:
+        site.kind === 'rss'
+          ? { kind: 'rss', url: site.url, initialWindow: site.initialWindow ?? '7d' }
+          : { kind: 'http', url: site.url },
       origem: 'agente',
     })
   }
@@ -83,10 +84,19 @@ export async function fontesDoAgente(ownerId: string, agentId: ObjectId): Promis
   return saida
 }
 
-export function sourceCheckTool(ownerId: string, agentId: ObjectId): ResolvedTool {
+export function sourceCheckTool(
+  ownerId: string,
+  agentId: ObjectId,
+  // O que o dono escolheu: quantos itens, quanto texto, e como a ferramenta se apresenta
+  // ao modelo. Ausente = os padrões, que é o comportamento de antes.
+  cfg: { maxItems?: number; charBudget?: number; toolName?: string; toolDescription?: string } = {},
+): ResolvedTool {
+  const maxItens = cfg.maxItems ?? 8
+  const orcamento = cfg.charBudget ?? 2400
   return {
-    name: SOURCE_TOOL_NAME,
+    name: cfg.toolName || SOURCE_TOOL_NAME,
     description:
+      cfg.toolDescription ||
       'Consulta AGORA uma fonte monitorada por este agente (feed RSS ou página) e devolve o que há de novo desde a última verificação da rotina. Não altera nada e não marca os itens como vistos. Sem o parâmetro `fonte`, lista as fontes disponíveis.',
     // Leitura: não escreve, não envia, não avança checkpoint. É o que permite usá-la
     // no Playground, onde as ferramentas de escrita são bloqueadas.
@@ -156,9 +166,9 @@ export function sourceCheckTool(ownerId: string, agentId: ObjectId): ResolvedToo
             )
           : itens
         let usados = 0
-        const recorte = novos.slice(0, MAX_ITENS).filter((i) => {
+        const recorte = novos.slice(0, maxItens).filter((i) => {
           const custo = Math.min(i.title.length, MAX_TITULO) + (i.url?.length ?? 0)
-          if (usados + custo > ORCAMENTO_CHARS) return false
+          if (usados + custo > orcamento) return false
           usados += custo
           return true
         })
@@ -181,7 +191,7 @@ export function sourceCheckTool(ownerId: string, agentId: ObjectId): ResolvedToo
         }
       }
 
-      const trecho = (preview.excerpt ?? '').slice(0, ORCAMENTO_CHARS)
+      const trecho = (preview.excerpt ?? '').slice(0, orcamento)
       const mudou = checkpoint?.contentHash ? contentHashOf(detectHttpChange(trecho, 'text/plain', null, false).conteudo) !== checkpoint.contentHash : null
       return {
         ok: true,
