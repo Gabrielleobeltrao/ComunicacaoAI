@@ -92,7 +92,8 @@ test('MVP: registro, prédio, setor, agente, permissões, execução e log', asy
   await irPara(page, `/floors/${andarId}/agents`)
   await page.getByRole('button', { name: 'Contratar agente' }).first().click()
   await expect(page.getByTestId('hire-wizard')).toBeVisible({ timeout: 20_000 })
-  await page.getByText('Analista', { exact: true }).click()
+  // A escolha é pelo que ele FAZ; o cartão carrega o verbo e o cargo.
+  await page.getByTestId('role-analyst').click()
   await page.getByRole('button', { name: 'Próximo' }).click()
   await expect(page.getByTestId('work-step')).toBeVisible()
   await page.getByRole('button', { name: 'Próximo' }).click()
