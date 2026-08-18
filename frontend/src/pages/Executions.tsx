@@ -519,9 +519,20 @@ export function Executions() {
         </div>
       }
     >
-      <div style={{ display: 'grid', gap: 16 }}>
+      {/*
+        `minmax(0, 1fr)` e não só `grid`: uma coluna `auto` se dimensiona pelo CONTEÚDO,
+        e o cartão de contadores pedia 497px dentro de uma tela de 390. O bloco ficava
+        cortado sem que `scrollWidth` acusasse nada — o corte acontecia acima, e a página
+        parecia certa em qualquer teste de transbordo.
+      */}
+      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0, 1fr)' }}>
         {/* Counters — measured, never estimated. */}
-        <Card padding="16px" style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 170px), 1fr))' }} data-testid="execution-counters">
+        {/*
+          140px, e não 170: com o respiro do cartão, 170 só cabia UM por linha num
+          telefone — quatro números empilhados tomavam a primeira tela inteira antes de
+          a lista aparecer. Com 140 cabem dois, e a lista sobe.
+        */}
+        <Card padding="16px" style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))' }} data-testid="execution-counters">
           {counters.map((c) => (
             <div key={c.key}>
               <MetricStat label={c.label} value={c.value} icon={c.icon} />

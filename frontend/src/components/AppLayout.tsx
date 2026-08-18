@@ -69,7 +69,10 @@ export function AppLayout({ current, title, titleExtra, subtitle, actions, child
         <main className="flex-1 overflow-y-auto">
           <div className="mx-auto max-w-5xl" style={{ padding: 'var(--gutter-screen)' }}>
             {/* Page header — the module title/subtitle live inside the content now. */}
-            <div className="mb-5 flex items-start justify-between gap-3">
+            {/* No telefone o cabeçalho empilha: com os botões na mesma linha do título
+                sobravam ~150px para o subtítulo, e ele saía cortado por falta de espaço,
+                não por ser comprido. A partir de `sm` volta a ser lado a lado. */}
+            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-x-2.5">
                   <h1
@@ -80,10 +83,18 @@ export function AppLayout({ current, title, titleExtra, subtitle, actions, child
                   </h1>
                   {titleExtra ? <div className="hidden shrink-0 items-center gap-x-2 sm:flex">{titleExtra}</div> : null}
                 </div>
-                {subtitle ? <p className="truncate" style={{ margin: '3px 0 0', fontSize: 13.5, color: 'var(--text-muted)' }}>{subtitle}</p> : null}
+                {/* Duas linhas, e não uma cortada: `truncate` picava a frase no meio da
+                    palavra em QUALQUER largura — "Tudo o que os agen…" — inclusive num
+                    tablet onde sobrava espaço. O teto de duas linhas continua impedindo
+                    que um subtítulo comprido empurre a tela. */}
+                {subtitle ? (
+                  <p className="line-clamp-2" style={{ margin: '3px 0 0', fontSize: 13.5, color: 'var(--text-muted)' }}>
+                    {subtitle}
+                  </p>
+                ) : null}
                 {titleExtra ? <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 sm:hidden">{titleExtra}</div> : null}
               </div>
-              {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+              {actions ? <div className="flex flex-wrap items-center gap-2 sm:shrink-0">{actions}</div> : null}
             </div>
             {children}
           </div>
