@@ -1,5 +1,7 @@
 import OpenAI from 'openai'
 import { getCachedModels, setCachedModels } from './modelCache.js'
+// Uma fonte só para os padrões, e sem banco atrás dela — ver `modelDefaults.ts`.
+import { OPENAI_DEFAULT_MODEL, OPENAI_AUX_MODEL } from './modelDefaults.js'
 import {
   buildGuardrailCheckPrompt,
   buildIdentityExtractionPrompt,
@@ -27,12 +29,12 @@ import type { AgentReplyResult, TokenUsage } from './llm.js'
 import { MAX_TOOL_ITERATIONS, runResolvedTool } from './agentTools.js'
 import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? 'gpt-5.1'
+export const DEFAULT_MODEL = OPENAI_DEFAULT_MODEL
 
 // Background/utility calls (memory, extraction, guardrail check) are
 // classification-style tasks that don't need the flagship model — route them
 // to a small, cheap model to keep token spend down.
-export const AUXILIARY_MODEL = process.env.OPENAI_AUX_MODEL ?? 'gpt-5-mini'
+export const AUXILIARY_MODEL = OPENAI_AUX_MODEL
 const PLATFORM_API_KEY = process.env.OPENAI_API_KEY
 
 // Used only if we can't reach OpenAI (no key configured yet, or the API call fails).

@@ -490,6 +490,15 @@ export function Executions() {
       { key: 'triggers', label: 'Gatilhos ativos', value: summary ? String(summary.activeTriggers) : '—', icon: 'webhook' },
       { key: 'inflight', label: 'Em fila / execução', value: summary ? String(summary.inFlight) : '—', icon: 'loader' },
       {
+        key: 'clarifications',
+        // Perguntar em vez de chutar é bom; perguntar sempre é um questionário. O número
+        // existe para essa diferença ser percebida cedo.
+        label: 'Pediram esclarecimento',
+        value: summary ? String(summary.clarificationsWindow ?? 0) : '—',
+        icon: 'message-circle-question',
+        hint: summary ? `de ${summary.runsWindow} execução(ões)` : undefined,
+      },
+      {
         key: 'tokens',
         label: summary ? `Tokens em ${summary.windowDays} dias` : 'Tokens',
         value: summary ? tokensLabel(summary.tokensWindow) : '—',
@@ -519,9 +528,20 @@ export function Executions() {
         </div>
       }
     >
-      <div style={{ display: 'grid', gap: 16 }}>
+      {/*
+        `minmax(0, 1fr)` e não só `grid`: uma coluna `auto` se dimensiona pelo CONTEÚDO,
+        e o cartão de contadores pedia 497px dentro de uma tela de 390. O bloco ficava
+        cortado sem que `scrollWidth` acusasse nada — o corte acontecia acima, e a página
+        parecia certa em qualquer teste de transbordo.
+      */}
+      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'minmax(0, 1fr)' }}>
         {/* Counters — measured, never estimated. */}
-        <Card padding="16px" style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 170px), 1fr))' }} data-testid="execution-counters">
+        {/*
+          140px, e não 170: com o respiro do cartão, 170 só cabia UM por linha num
+          telefone — quatro números empilhados tomavam a primeira tela inteira antes de
+          a lista aparecer. Com 140 cabem dois, e a lista sobe.
+        */}
+        <Card padding="16px" style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))' }} data-testid="execution-counters">
           {counters.map((c) => (
             <div key={c.key}>
               <MetricStat label={c.label} value={c.value} icon={c.icon} />
@@ -529,6 +549,52 @@ export function Executions() {
             </div>
           ))}
         </Card>
+
+        {/*
+          Onde os tokens foram gastos, por MODELO.
+          Sem esta divisão, "economia" é adjetivo: o total de tokens não muda quando um
+          agente passa a rodar no modelo barato — muda o preço de cada token, e isso só
+          aparece separando um do outro.
+        */}
+        {summary?.tokensByModel && summary.tokensByModel.length > 0 && (
+          <Card padding="16px" style={{ display: 'grid', gap: 8 }} data-testid="tokens-by-model">
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 700 }}>Tokens por modelo</p>
+              <p style={{ ...faint, margin: 0 }}>últimos {summary.windowDays} dias · execuções de agente</p>
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {summary.tokensByModel.map((linha) => {
+                const total = linha.inputTokens + linha.outputTokens
+                const maior = Math.max(...(summary.tokensByModel ?? []).map((l) => l.inputTokens + l.outputTokens), 1)
+                return (
+                  <div key={linha.model} style={{ display: 'grid', gap: 3 }} data-testid="tokens-by-model-row">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12.5 }}>
+                      <span style={{ overflowWrap: 'anywhere' }}>{linha.model}</span>
+                      <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
+                        {tokensLabel(total)} · {linha.runs} exec.
+                      </span>
+                    </div>
+                    {/* A barra é comparação, não precisão: serve para ver de olho em qual
+                        modelo o gasto está concentrado. */}
+                    <div style={{ height: 4, borderRadius: 999, background: 'var(--surface-sunken)' }}>
+                      <div
+                        style={{
+                          height: 4,
+                          borderRadius: 999,
+                          width: `${Math.max(2, Math.round((total / maior) * 100))}%`,
+                          background: 'var(--intent-brand)',
+                        }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <p style={{ ...faint, margin: 0 }}>
+              O total de tokens não cai ao trocar de modelo — o preço por token cai. É aqui que a diferença aparece.
+            </p>
+          </Card>
+        )}
 
         {/* Tabs — horizontally scrollable on a phone instead of wrapping. */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>

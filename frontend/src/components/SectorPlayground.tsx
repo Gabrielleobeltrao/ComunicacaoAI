@@ -17,6 +17,8 @@ export interface SectorParticipant {
   durationMs?: number
   provider?: string | null
   model?: string | null
+  /** Por que este modelo, quando a escolha foi automática. */
+  modelReason?: string | null
 }
 
 export interface SectorSource {
@@ -27,6 +29,9 @@ export interface SectorSource {
 interface PlayMessage {
   role: 'user' | 'assistant'
   content: string
+  /** Este turno é uma PERGUNTA do time — a marca volta no próximo envio, para o teto valer. */
+  clarification?: boolean
+  clarificationOptions?: string[]
   participants?: SectorParticipant[]
   grounding?: string
   sources?: SectorSource[]
@@ -75,7 +80,16 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })) }),
+        // A marca volta junto: é dela que sai a contagem de quantas vezes o time já
+        // perguntou nesta conversa, e é o que impede a pergunta de virar laço.
+        body: JSON.stringify({
+          messages: next.map(({ role, content, clarification, clarificationOptions }) => ({
+            role,
+            content,
+            ...(clarification ? { clarification } : {}),
+            ...(clarificationOptions?.length ? { clarificationOptions } : {}),
+          })),
+        }),
       })
       const body = await res.json().catch(() => null)
       if (res.ok && body) {
@@ -92,6 +106,8 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
             usage: body.usage,
             durationMs: body.durationMs,
             executionId: body.executionId,
+            clarification: Boolean(body.clarification),
+            clarificationOptions: body.clarification?.options ?? [],
           },
         ])
       } else {
@@ -162,7 +178,13 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
                             <td className="pr-2 py-0.5">{p.order ?? i + 1}</td>
                             <td className="pr-2 py-0.5 text-(--text-body)">{p.name}</td>
                             <td className="pr-2 py-0.5">{p.stage ?? (p.role === 'coordinator' ? 'coordenador' : 'especialista')}</td>
-                            <td className="pr-2 py-0.5">{p.model || p.provider || '—'}</td>
+                            {/* O motivo entra como título: com "Automático" o modelo
+                                muda de agente para agente, e o porquê é o que torna a
+                                escolha conferível em vez de mágica. */}
+                            <td className="pr-2 py-0.5" title={p.modelReason ?? undefined}>
+                              {p.model || p.provider || '—'}
+                              {p.modelReason ? ' *' : ''}
+                            </td>
                             <td className="pr-2 py-0.5">{(p.inputTokens ?? 0) + (p.outputTokens ?? 0)}</td>
                             <td className="pr-2 py-0.5">{duracao(p.durationMs)}</td>
                             <td className="pr-2 py-0.5">{p.toolCalls ?? 0}</td>

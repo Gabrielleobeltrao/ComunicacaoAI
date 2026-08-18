@@ -14,17 +14,33 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
       content: string
       handoff?: boolean
       toolCalls?: ToolCall[]
-      diagnostics?: { outputValid?: boolean; outputRepaired?: boolean; outputProblem?: string; runConfigDropped?: string }
+      /** Este turno é uma PERGUNTA do agente — a marca volta no próximo envio. */
+      clarification?: boolean
+      /** As alternativas oferecidas — devolvidas no próximo envio para "2" virar a opção. */
+      clarificationOptions?: string[]
+      diagnostics?: {
+        outputValid?: boolean
+        outputRepaired?: boolean
+        outputProblem?: string
+        runConfigDropped?: string
+        // O que rodou de fato, e a que preço.
+        model?: string | null
+        modelChoice?: 'auto' | 'manual' | 'default'
+        modelReason?: string | null
+        inputTokens?: number
+        outputTokens?: number
+        durationMs?: number
+      }
     }[]
   >([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
 
-  async function handleSend(event: FormEvent) {
-    event.preventDefault()
-    if (!input.trim() || sending) return
+  async function enviar(texto: string) {
+    const limpo = texto.trim()
+    if (!limpo || sending) return
 
-    const next = [...messages, { role: 'user' as const, content: input.trim() }]
+    const next = [...messages, { role: 'user' as const, content: limpo }]
     setMessages(next)
     setInput('')
     setSending(true)
@@ -34,7 +50,18 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })) }),
+        // A marca de "isto foi uma pergunta" volta junto: é dela que o servidor conta
+        // quantas vezes já se perguntou nesta conversa, e é o que impede o agente de
+        // perguntar sem parar.
+        body: JSON.stringify({
+          messages: next.map(({ role, content, clarification, clarificationOptions }) => ({
+            role,
+            content,
+            ...(clarification ? { clarification } : {}),
+            // As alternativas voltam para o servidor poder ler "2" como a segunda delas.
+            ...(clarificationOptions?.length ? { clarificationOptions } : {}),
+          })),
+        }),
       })
       if (res.ok) {
         const body = await res.json()
@@ -46,6 +73,8 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
             handoff: body.handoff,
             toolCalls: body.toolCalls,
             diagnostics: body.diagnostics,
+            clarification: Boolean(body.clarification),
+            clarificationOptions: body.clarification?.options ?? [],
           },
         ])
       } else {
@@ -60,6 +89,11 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
     } finally {
       setSending(false)
     }
+  }
+
+  const handleSend = (event: FormEvent) => {
+    event.preventDefault()
+    void enviar(input)
   }
 
   return (
@@ -91,6 +125,30 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
               )}
               {/* O Playground é onde se testa: uma resposta fora do contrato aparece aqui,
                   com o motivo, em vez de sumir. Numa conversa real ela não seria enviada. */}
+              {/* O que rodou, e a que preço. Com "Automático" a escolha é uma regra —
+                  e uma regra em que se confia sem conferir é um palpite com passos
+                  extras. */}
+              {/* As alternativas NÃO viram botão: elas já estão escritas na resposta,
+                  numeradas, porque a mesma conversa vai para WhatsApp, e-mail e outros
+                  canais que só transportam texto. O visitante responde "2" e o servidor
+                  entende, sem gastar inferência para adivinhar. */}
+
+              {message.diagnostics?.model && (
+                <span className="mt-1 text-[10px] text-(--text-faint)" data-testid="playground-run-info">
+                  ↳ {message.diagnostics.model}
+                  {message.diagnostics.modelChoice === 'auto'
+                    ? ` (automático${message.diagnostics.modelReason ? `: ${message.diagnostics.modelReason}` : ''})`
+                    : message.diagnostics.modelChoice === 'default'
+                      ? ' (padrão do sistema)'
+                      : ''}
+                  {' · '}
+                  {(message.diagnostics.inputTokens ?? 0) + (message.diagnostics.outputTokens ?? 0)} tokens
+                  {message.diagnostics.durationMs
+                    ? ` · ${message.diagnostics.durationMs < 1000 ? `${message.diagnostics.durationMs} ms` : `${(message.diagnostics.durationMs / 1000).toFixed(1)} s`}`
+                    : ''}
+                </span>
+              )}
+
               {message.diagnostics?.outputValid === false && (
                 <p className="mt-1 text-xs font-medium text-amber-400">
                   ⚠ A resposta não cumpriu o formato JSON configurado

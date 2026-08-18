@@ -482,3 +482,144 @@ test('uma etiqueta pode ser removida antes de salvar', async ({ page }) => {
 
   await expect(page.getByTestId('agent-capabilities-empty')).toBeVisible()
 })
+
+test('a Base de conhecimento também abre e fecha, como as outras seções', async ({ page }) => {
+  // Era a única seção da aba que ficava sempre aberta — e a mais alta: a lista de
+  // documentos empurrava tudo que vem depois para fora da tela.
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  const cabecalho = page.getByRole('button', { name: 'Base de conhecimento', exact: true })
+  await expect(cabecalho).toBeVisible()
+  await expect(cabecalho).toHaveAttribute('aria-expanded', 'false')
+
+  await cabecalho.click()
+  await expect(cabecalho).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByText('Textos que o agente usa para responder com precisão', { exact: false })).toBeVisible()
+
+  await cabecalho.click()
+  await expect(cabecalho).toHaveAttribute('aria-expanded', 'false')
+})
+
+test('as seções da aba nascem fechadas, menos as competências', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  // Aberta: é por ela que outro agente encontra este, e a aba não pode abrir como uma
+  // lista de títulos vazia.
+  await expect(page.getByRole('button', { name: 'Competências', exact: true })).toHaveAttribute('aria-expanded', 'true')
+  for (const titulo of ['Ferramentas', 'Base de conhecimento', 'Ferramentas reutilizáveis', 'Consultar um site']) {
+    await expect(page.getByRole('button', { name: titulo, exact: true })).toHaveAttribute('aria-expanded', 'false')
+  }
+})
+
+// --- a escolha do modelo diz qual modelo é ------------------------------------------------
+//
+// "Padrão do sistema" é uma CONSTANTE por provedor — todo agente deixado nele roda o
+// mesmo modelo. A tela não dizia qual, e quem lia entendia "o sistema escolhe".
+
+const PROVEDORES = [
+  {
+    id: 'anthropic',
+    label: 'Anthropic (Claude)',
+    models: [{ id: 'claude-sonnet-5', label: 'Claude Sonnet 5' }],
+    defaultModel: 'claude-sonnet-5',
+    auxiliaryModel: 'claude-haiku-4-5',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI (GPT)',
+    models: [{ id: 'gpt-5.1', label: 'GPT-5.1' }],
+    defaultModel: 'gpt-5.1',
+    auxiliaryModel: 'gpt-5-mini',
+  },
+]
+
+test('o padrão do sistema aparece com o nome do modelo', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/providers**', (r) => r.fulfill({ json: PROVEDORES }))
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
+  await abrirBloco(page, 'Modelo e custo')
+
+  await expect(page.getByTestId('agent-model')).toContainText('Padrão do sistema — claude-sonnet-5')
+  // O modelo de bastidor também é dinheiro: com o modo econômico ligado, ele é quem roda
+  // memória, extração e guardrail.
+  await expect(page.getByTestId('agent-aux-model')).toContainText('claude-haiku-4-5')
+})
+
+test('existe "Automático", e ele explica pelo que decide', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/providers**', (r) => r.fulfill({ json: PROVEDORES }))
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
+  await abrirBloco(page, 'Modelo e custo')
+
+  await page.getByTestId('agent-model').selectOption('auto')
+  const nota = page.getByTestId('agent-model-auto-note')
+  await expect(nota).toContainText('claude-sonnet-5')
+  await expect(nota).toContainText('claude-haiku-4-5')
+  await expect(nota).toContainText('ação real')
+})
+
+// --- perguntar em vez de chutar, e responder com um toque ---------------------------------
+//
+// Quando o agente pergunta, a conversa costuma morrer no momento em que a pessoa precisa
+// redigir o recorte. Com as alternativas prontas, responder é um toque.
+
+const PERGUNTA_DO_AGENTE = {
+  reply:
+    'Você quer a proposta que enviamos ou a que recebemos?\n\n1) A que enviamos\n2) A que recebemos\n\nResponda com o número da opção — ou escreva sua resposta, se nenhuma servir.',
+  handoff: false,
+  toolCalls: [],
+  clarification: {
+    question: 'Você quer a proposta que enviamos ou a que recebemos?',
+    reason: 'o termo tem dois sentidos nesta conta',
+    options: ['A que enviamos', 'A que recebemos'],
+  },
+  diagnostics: { model: 'claude-sonnet-5', modelChoice: 'default', inputTokens: 10, outputTokens: 5, durationMs: 900 },
+}
+
+test('a pergunta chega com as alternativas ESCRITAS, para qualquer canal', async ({ page }) => {
+  // Botão não existe em WhatsApp, e-mail nem SMS — e é para lá que estas conversas vão.
+  const enviados: Record<string, unknown>[] = []
+  await stub(page)
+  await page.route('**/api/agents/*/playground', (r) => {
+    enviados.push(JSON.parse(r.request().postData() ?? '{}'))
+    return r.fulfill({ json: PERGUNTA_DO_AGENTE })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/atividade`)
+
+  await page.getByPlaceholder('Mensagem do visitante...').fill('me manda a proposta')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+
+  // As opções estão no TEXTO da resposta — nada de botão. (A numeração vira marcador de
+  // lista no renderizador de markdown do Playground; num canal de texto puro ela aparece
+  // literal, que é justamente o ponto.)
+  await expect(page.getByText('A que enviamos', { exact: true })).toBeVisible()
+  await expect(page.getByText('A que recebemos', { exact: true })).toBeVisible()
+  await expect(page.getByText(/número da opção/i)).toBeVisible()
+  await expect(page.getByTestId('clarification-option')).toHaveCount(0)
+
+  // E o visitante responde digitando o número.
+  await page.getByPlaceholder('Mensagem do visitante...').fill('2')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+
+  await expect.poll(() => enviados.length).toBe(2)
+  const segundo = enviados[1] as { messages: { role: string; content: string; clarification?: boolean; clarificationOptions?: string[] }[] }
+  const pergunta = segundo.messages.find((m) => m.clarification)
+  // As alternativas voltam com o turno: é o que permite o servidor ler "2" como a segunda.
+  expect(pergunta?.clarificationOptions).toEqual(['A que enviamos', 'A que recebemos'])
+  expect(segundo.messages.at(-1)).toMatchObject({ role: 'user', content: '2' })
+})
+
+test('resposta comum não traz lista de alternativa nenhuma', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/playground', (r) =>
+    r.fulfill({ json: { reply: 'Aqui está.', handoff: false, toolCalls: [], diagnostics: { model: 'x' } } }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/atividade`)
+
+  await page.getByPlaceholder('Mensagem do visitante...').fill('oi')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+
+  await expect(page.getByText(/número da opção/i)).toHaveCount(0)
+})

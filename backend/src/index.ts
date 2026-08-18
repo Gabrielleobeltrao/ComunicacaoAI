@@ -95,6 +95,7 @@ import {
 } from './knowledge.js'
 import {
   auxiliaryModel,
+  defaultModel,
   checkGuardrail,
   extractIdentity,
   extractStructuredOutput,
@@ -214,6 +215,13 @@ import { appInstallationRouter } from './routes/appInstallationRoutes.js'
 import { appGrantRouter } from './routes/appGrantRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
+import { AUTO_MODEL, resolveAutoModel } from './autoModel.js'
+import { clarificationFrom, countClarifications } from './clarify.js'
+import { clarificationGuidance } from './clarifyBudget.js'
+import { recallClarifications, rememberClarification } from './clarifyMemory.js'
+import { formatOptions, resolveChoice } from './clarifyChoice.js'
+import type { ClarificationRequest } from './clarify.js'
+import { checkScope } from './scopeGate.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -378,7 +386,15 @@ app.get('/api/providers', requireAuth, async (_req, res) => {
     PROVIDER_INFO.map(async (provider) => {
       const apiKey = await getProviderApiKey(res.locals.userId, provider.id)
       const models = await listModelsForProvider(provider.id, apiKey)
-      return { id: provider.id, label: provider.label, models }
+      // Qual modelo roda quando ninguém escolhe, e qual roda nas tarefas de bastidor. A
+      // tela precisa DIZER isso: "Padrão do sistema" não informa nada a quem paga a conta.
+      return {
+        id: provider.id,
+        label: provider.label,
+        models,
+        defaultModel: defaultModel(provider.id),
+        auxiliaryModel: auxiliaryModel(provider.id),
+      }
     }),
   )
   res.json(results)
@@ -1542,7 +1558,11 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
    * `test` (fica fora das métricas) e as ferramentas que ESCREVEM são removidas de toda
    * a cadeia. Testar não pode mandar e-mail de verdade.
    */
-  const deps = playgroundDelegationDeps()
+  // O teste também tem teto: o cliente devolve a marca de cada pergunta, e a contagem
+  // sai daí. Sem isso o Playground seria o único lugar onde o agente pode perguntar sem
+  // parar — justamente onde o dono vai avaliar se ele sabe conversar.
+  const jaPerguntouSetor = countClarifications(history as { role: string; clarification?: boolean }[])
+  const deps = playgroundDelegationDeps(jaPerguntouSetor)
   const setorParaExecutar = await deps.loadSector(res.locals.userId, sector._id)
   if (!setorParaExecutar) {
     res.status(404).json({ error: 'Sector not found' })
@@ -1551,6 +1571,45 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
   if (mode === 'pipeline' ? (setorParaExecutar.stages ?? []).length === 0 : setorParaExecutar.members.length === 0 && !setorParaExecutar.coordinatorAgentId) {
     res.status(400).json({ error: mode === 'pipeline' ? 'Este pipeline não tem etapas configuradas.' : 'Este setor não tem coordenador nem membros.' })
     return
+  }
+
+  // O porteiro, ANTES de acordar o time.
+  //
+  // Aqui era o único caminho sem checagem de escopo — e o mais caro: uma pergunta sobre
+  // a previsão do tempo num setor de restaurante acordava o coordenador, que podia
+  // delegar, e quatro agentes trabalhavam para dizer "não sei disso". O chat e o canal
+  // já barravam isso; o time não. O escopo é o do agente de configuração (coordenador,
+  // ou o da primeira etapa num pipeline), o mesmo critério que o canal usa.
+  const configId =
+    mode === 'pipeline'
+      ? setorParaExecutar.stages?.[0]?.agentId
+      : (setorParaExecutar.coordinatorAgentId ??
+        setorParaExecutar.members.find((m) => m.isDefault)?.agentId ??
+        setorParaExecutar.members[0]?.agentId)
+  const agenteConfig = configId ? await getAgentById(res.locals.userId, configId) : null
+  if (agenteConfig && (agenteConfig.guardrailMode ?? 'none') === 'verification') {
+    const chaveEscopo = `sector:${sector._id.toString()}`
+    const veredito = await checkScope({
+      scopeId: chaveEscopo,
+      objective: agenteConfig.objective,
+      history: history.slice(0, -1),
+      message: lastUser.content,
+      verificar: async () =>
+        checkGuardrail(
+          agenteConfig.objective,
+          history.slice(0, -1),
+          lastUser.content,
+          agenteConfig.provider,
+          auxModelFor(agenteConfig),
+          await getProviderApiKey(res.locals.userId, agenteConfig.provider),
+        ),
+    })
+    if (!veredito.inScope) {
+      // Nenhuma execução é aberta: recusar não é trabalho do setor, e um registro vazio
+      // em Execuções só sujaria a tela.
+      res.json({ reply: GUARDRAIL_REFUSAL_MESSAGE, mode, refusedByGuardrail: true })
+      return
+    }
   }
 
   const buildingIdSetor = (await deps.buildingIdForFloor(res.locals.userId, setorParaExecutar.officeId)) ?? ''
@@ -1625,9 +1684,18 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
       return true
     })
 
+  // A pergunta do time, com as alternativas escritas no texto — o mesmo formato que vai
+  // para qualquer canal.
+  const respostaSetor = run.clarification?.options?.length
+    ? `${run.output}${formatOptions(run.clarification.options)}`
+    : run.output
+
   res.json({
-    reply: run.output,
+    reply: respostaSetor,
     mode,
+    ...(run.clarification
+      ? { clarification: { question: run.clarification.question, reason: run.clarification.reason, options: run.clarification.options ?? [] } }
+      : {}),
     // A identidade desta execução: dá para abrir o registro completo dela em Execuções.
     executionId: execucaoSetorId.toString(),
     participants: run.participants.map((p) => ({
@@ -1642,6 +1710,7 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
       durationMs: p.durationMs ?? 0,
       provider: p.provider ?? null,
       model: p.model ?? null,
+      modelReason: p.modelReason ?? null,
       ...(p.stageName ? { stage: p.stageName, order: p.order } : {}),
     })),
     // O total da execução, para não obrigar a somar de cabeça.
@@ -2518,20 +2587,17 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   const guardrailMode = agent.guardrailMode ?? 'none'
 
   if (guardrailMode === 'verification') {
-    let inScope = true
-    try {
-      inScope = await checkGuardrail(
-        agent.objective,
-        history.slice(0, -1),
-        lastUser.content,
-        agent.provider,
-        auxModelFor(agent),
-        apiKey,
-      )
-    } catch (error) {
-      console.error('Playground guardrail check failed, allowing the message through:', error)
-    }
-    if (!inScope) {
+    // O veredito fica lembrado: "e o tempo?" chega o dia inteiro e a resposta é sempre a
+    // mesma. Pagar a checagem de novo a cada repetição é gastar para reconfirmar.
+    const veredito = await checkScope({
+      scopeId: agent._id.toString(),
+      objective: agent.objective,
+      history: history.slice(0, -1),
+      message: lastUser.content,
+      verificar: () =>
+        checkGuardrail(agent.objective, history.slice(0, -1), lastUser.content, agent.provider, auxModelFor(agent), apiKey),
+    })
+    if (!veredito.inScope) {
       res.json({ reply: GUARDRAIL_REFUSAL_MESSAGE, refusedByGuardrail: true, handoff: false })
       return
     }
@@ -2582,6 +2648,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   }).catch(() => null)
 
   const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0, errorKind?: string) => {
+    // `modeloDoChat` é resolvido abaixo; este fecho só roda depois da chamada.
     recordAgentEventSafe({
       eventKey: manualEventKey,
       ownerId: res.locals.userId,
@@ -2596,12 +2663,18 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       finishedAt: new Date(),
       inputTokens: u?.inputTokens ?? 0,
       outputTokens: u?.outputTokens ?? 0,
+      // Sem o modelo no registro, "economia" não é verificável: trocar de modelo não muda
+      // um token, muda o preço de cada um.
+      model: modeloDoChat,
       toolCalls: okToolCalls,
       // `descartadosChat` é resolvido logo abaixo; este fecho só roda depois da chamada ao
       // modelo. Só campo e motivo — nunca prompt, resposta ou credencial.
       metadata: {
         ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
         ...(errorKind ? { errorKind } : {}),
+        // Perguntou em vez de responder. Sem contar isto não dá para saber se o recurso
+        // está economizando ou irritando — que é a única pergunta que importa sobre ele.
+        ...(pedidoDeEsclarecimento ? { clarificationRequested: true } : {}),
       },
     })
     void finishExecutionRoot(manualRootKey, {
@@ -2615,6 +2688,28 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   // ferramenta para tornar obrigatória") e o paralelismo nunca era oferecido, mesmo com
   // todas as ferramentas sendo de leitura. A lista resolvida aqui é a MESMA usada na
   // chamada abaixo: duas resoluções poderiam divergir.
+  // Quantas vezes já se perguntou nesta conversa. O cliente devolve a marca que a
+  // resposta anterior trouxe; ela só orienta o modelo e limita a ferramenta, então um
+  // valor mentiroso aqui não abre nada — só faz o agente responder mais cedo.
+  const jaPerguntouChat = countClarifications(history as { role: string; clarification?: boolean }[])
+  // Se o turno ANTERIOR foi uma pergunta de esclarecimento, esta mensagem é a resposta
+  // dela — e guardá-la é o que evita perguntar a mesma coisa amanhã. Determinístico: sem
+  // modelo, sem token, e sem dar a agente nenhum o direito de escrever memória.
+  const turnos = history as { role: string; content: string; clarification?: boolean }[]
+  const anterior = turnos[turnos.length - 2] as
+    | { role: string; content: string; clarification?: boolean; clarificationOptions?: string[] }
+    | undefined
+  if (anterior?.role === 'assistant' && anterior.clarification && lastUser.content.trim()) {
+    // "2" ou "b" viram a opção que elas representam, aqui, sem modelo. Mandar o número
+    // cru adiante gastaria uma inferência para adivinhar o que já está escrito — e erra
+    // justamente quando a conversa é longa e a lista ficou para trás.
+    const escolhida = resolveChoice(lastUser.content, anterior.clarificationOptions ?? [])
+    if (escolhida) lastUser.content = escolhida
+    void rememberClarification({ ownerId: res.locals.userId, agentId: agent._id }, anterior.content, lastUser.content).catch(
+      (erro) => console.error('não foi possível guardar o esclarecimento:', erro),
+    )
+  }
+  const lembrados = await recallClarifications({ ownerId: res.locals.userId, agentId: agent._id }).catch(() => null)
   const chatTools = await resolveToolsWithDelegation(
     agent,
     res.locals.userId,
@@ -2622,8 +2717,14 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     // marked as `test` rather than leaking into production numbers.
     rootContext({ ownerId: res.locals.userId, buildingId: playgroundBuildingId, correlationId: agent._id.toString(), agent, rootExecutionId: manualRootId }),
     productionDelegationDeps(),
+    jaPerguntouChat,
   )
   const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: chatTools.map((t) => t.risk ?? 'write') })
+  // Quando nada foi escolhido, `model` é null e quem responde é a constante do adapter —
+  // a tela precisa do nome dela para não dizer "—" no lugar do modelo que rodou.
+  const provedorPadrao = defaultModel(agent.provider)
+  // O modelo que vai rodar de fato, já resolvido — é ele que entra no registro.
+  const modeloDoChat = execucaoChat.model ?? provedorPadrao
   const descartadosChat = describeDropped(execucaoChat.runConfig)
   if (descartadosChat) console.info(`[runConfig] chat: ${descartadosChat}`)
 
@@ -2634,6 +2735,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   let usage = { inputTokens: 0, outputTokens: 0 }
   let toolCalls: Awaited<ReturnType<typeof generateAgentReply>>['toolCalls'] = []
   let problemaContrato: string | null = null
+  let pedidoDeEsclarecimento: ReturnType<typeof clarificationFrom> = null
 
   // A cobrança acontece UMA vez, dê certo ou não. A trava existe porque agora há dois
   // caminhos até aqui — o de sucesso e o de falha — e cobrar nos dois seria cobrar duas.
@@ -2655,7 +2757,8 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
           m,
           h,
           agent.provider,
-          agent.model,
+          // O modelo RESOLVIDO: com "Automático" o campo guardado é um marcador.
+          execucaoChat.model,
           apiKey,
           identityFields.length > 0 ? buildIdentityCaptureInstruction(identityFields) : '',
           behaviorInstruction,
@@ -2672,7 +2775,13 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
           tools,
           { runConfig: execucaoChat.runConfig, signal, onToolStart },
         ),
-      objective: composeAgentPrompt({ definition: execucaoChat.definition, hasUntrustedContext: knowledge.length > 0 }),
+      objective: composeAgentPrompt({
+        definition: execucaoChat.definition,
+        hasUntrustedContext: knowledge.length > 0,
+        // Já perguntou antes? Então a orientação muda: da segunda vez em diante, decidir
+        // e declarar a suposição vale mais que perguntar de novo.
+        channelBlocks: [clarificationGuidance(jaPerguntouChat), lembrados].filter((b): b is string => Boolean(b)),
+      }),
       knowledge,
       history,
       tools: chatTools,
@@ -2690,6 +2799,15 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${problemaContrato}`)
     }
     generated = interativoChat.text
+    // O agente perguntou em vez de responder: a marca acompanha o turno para a próxima
+    // rodada saber que já houve uma pergunta.
+    pedidoDeEsclarecimento = clarificationFrom(interativoChat.toolCalls)
+    // As alternativas entram no TEXTO da resposta, e não como botão: elas precisam
+    // aparecer igual no WhatsApp, no e-mail e em qualquer canal que só transporta texto.
+    // Escrevê-las aqui, e não pedir ao modelo, é o que garante que apareçam sempre.
+    if (pedidoDeEsclarecimento?.options?.length) {
+      generated = `${generated}${formatOptions(pedidoDeEsclarecimento.options)}`
+    }
   } catch (error) {
     const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
       ? 'output_invalid'
@@ -2718,7 +2836,32 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     handoff = true
     reply = reply.trimStart().slice(HANDOFF_MARKER.length).trim()
   }
-  res.json({ reply, refusedByGuardrail: false, handoff, toolCalls })
+  res.json({
+    reply,
+    refusedByGuardrail: false,
+    handoff,
+    toolCalls,
+    /**
+     * O que ACONTECEU nesta execução — e não só o que saiu dela.
+     *
+     * O modelo entra aqui porque "Automático" escolhe por regra, e uma regra em que se
+     * confia sem conferir é um palpite com passos extras: quem testa precisa ver qual
+     * modelo rodou e por quê. Os tokens e o tempo pela mesma razão — o teste custa, e o
+     * custo estava invisível.
+     *
+     * Só números e categorias. Nunca prompt, nunca conteúdo de base, nunca credencial.
+     */
+    diagnostics: {
+      model: execucaoChat.model ?? provedorPadrao,
+      modelChoice: execucaoChat.modelReason ? 'auto' : agent.model ? 'manual' : 'default',
+      modelReason: execucaoChat.modelReason,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      durationMs: Math.max(0, Date.now() - manualStartedAt.getTime()),
+      outputValid: true,
+      ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
+    },
+  })
 })
 
 app.post('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
@@ -3444,7 +3587,15 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
 // Which model to use for background/utility calls: the cheap one when the
 // agent's economy toggle is on (default), otherwise the agent's own model.
 function auxModelFor(agent: WithId<Agent>): string | null {
-  return agent.cheapAuxModel === false ? agent.model : auxiliaryModel(agent.provider)
+  // Com o modo econômico DESLIGADO as tarefas de bastidor usam o modelo do agente — e
+  // "Automático" precisa virar um id de verdade aqui também, senão o marcador seguiria
+  // para o provedor como se fosse nome de modelo.
+  if (agent.cheapAuxModel === false) {
+    return agent.model === AUTO_MODEL
+      ? resolveAutoModel(agent, { main: null, aux: auxiliaryModel(agent.provider) }).model
+      : agent.model
+  }
+  return auxiliaryModel(agent.provider)
 }
 
 // O roteador conversacional saiu daqui.
@@ -3522,6 +3673,28 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // Keep the raw window short — a compact per-conversation memory (below)
   // carries older context forward instead of resending the whole history.
   const recentMessages = await listMessages(widgetId, conversationId)
+
+  // Num canal não existe cliente para devolver a marca: ela sai do que está gravado.
+  // É isto que faz o teto e a leitura de "2" valerem no WhatsApp, e não só no Playground.
+  const jaPerguntouCanal = recentMessages.filter((m) => m.role === 'agent' && m.clarification).length
+  const ultimaDoAgente = [...recentMessages].reverse().find((m) => m.role === 'agent')
+  if (ultimaDoAgente?.clarification && recentMessages.at(-1)?.role === 'visitor') {
+    const escolhida = resolveChoice(visitorContent, ultimaDoAgente.clarificationOptions ?? [])
+    // "2" vira a opção aqui, sem modelo. E o par pergunta→resposta é guardado, para a
+    // mesma dúvida não voltar amanhã.
+    if (escolhida) visitorContent = escolhida
+    void rememberClarification(
+      { ownerId, agentId: agent._id, sectorId: widget.sectorId ?? null },
+      ultimaDoAgente.content,
+      visitorContent,
+    ).catch((erro) => console.error('não foi possível guardar o esclarecimento:', erro))
+  }
+  const lembradosCanal = await recallClarifications({
+    ownerId,
+    agentId: agent._id,
+    sectorId: widget.sectorId ?? null,
+  }).catch(() => null)
+
   const historyLimit = agent.historyLimit ?? DEFAULT_HISTORY_LIMIT
   const history: ChatTurn[] = recentMessages.slice(-historyLimit).map((message) => ({
     role: message.role === 'visitor' ? 'user' : 'assistant',
@@ -3531,22 +3704,18 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   const apiKey = await getProviderApiKey(ownerId, agent.provider)
 
   if (guardrailMode === 'verification') {
-    // A failed check fails open (treats the message as in-scope) rather than
-    // silently refusing every visitor if the classification call errors out.
-    let inScope = true
-    try {
-      inScope = await checkGuardrail(
-        replyObjective,
-        history,
-        visitorContent,
-        agent.provider,
-        auxModelFor(agent),
-        apiKey,
-      )
-    } catch (error) {
-      console.error('Guardrail check failed, allowing the message through:', error)
-    }
-    if (!inScope) {
+    // Falha da checagem deixa passar (trata como dentro do escopo) em vez de recusar
+    // todo mundo em silêncio quando a classificação der erro. E o veredito fica
+    // lembrado: num canal movimentado a mesma pergunta fora de assunto chega o dia
+    // inteiro, e repagar a checagem é gastar para reconfirmar.
+    const veredito = await checkScope({
+      scopeId: agent._id.toString(),
+      objective: replyObjective,
+      history,
+      message: visitorContent,
+      verificar: () => checkGuardrail(replyObjective, history, visitorContent, agent.provider, auxModelFor(agent), apiKey),
+    })
+    if (!veredito.inScope) {
       const refusal = await addMessage(widgetId, conversationId, 'agent', GUARDRAIL_REFUSAL_MESSAGE, replyAgentName)
       broadcastMessage(refusal, ownerId)
       return
@@ -3650,6 +3819,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       finishedAt: new Date(),
       inputTokens: u?.inputTokens ?? 0,
       outputTokens: u?.outputTokens ?? 0,
+      model: modeloDoCanal,
       toolCalls: okToolCalls,
       // `descartadosCanal` é resolvido logo abaixo; este fecho só roda depois da chamada
       // ao modelo. Só campo e motivo — nunca prompt, resposta ou credencial.
@@ -3662,12 +3832,14 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     }).catch(() => undefined)
   }
 
-  const canalTools = await resolveAgentTools(agent, ownerId)
+  const canalTools = await resolveAgentTools(agent, ownerId, jaPerguntouCanal)
   const execucaoCanal = resolveAgentRun(agent, { context: 'chat', toolRisks: canalTools.map((t) => t.risk ?? 'write') })
+  const modeloDoCanal = execucaoCanal.model ?? defaultModel(agent.provider)
   const descartadosCanal = describeDropped(execucaoCanal.runConfig)
   if (descartadosCanal) console.info(`[runConfig] canal: ${descartadosCanal}`)
 
   let generatedReply: string
+  let pedidoDoCanal: ClarificationRequest | null = null
   // Zerados e mutáveis: o que foi cobrado precisa sobreviver ao caminho de falha. Lançar
   // antes de copiar o uso, como estava, registrava zero token numa chamada que custou a
   // resposta original mais o reparo.
@@ -3710,6 +3882,14 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
         })
         await finishSectorExecution(correlacao, { status: 'succeeded' })
         generatedReply = runSetor.output
+        // O coordenador (ou a etapa final) pediu para restringir: a mesma marca e as
+        // mesmas alternativas do caminho de agente único. Sem isto, o esclarecimento
+        // funcionava entre agentes e sumia justamente quando quem perguntava era quem
+        // fala com o visitante.
+        pedidoDoCanal = runSetor.clarification ?? null
+        if (pedidoDoCanal?.options?.length) {
+          generatedReply = `${generatedReply}${formatOptions(pedidoDoCanal.options)}`
+        }
         // Quem realmente falou, para o registro da conversa dizer a verdade.
         replyAgentName = runSetor.participants.map((p) => p.name).join(' + ') || null
       } catch (erro) {
@@ -3725,7 +3905,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
           m,
           h,
           agent.provider,
-          agent.model,
+          execucaoCanal.model,
           apiKey,
           identityInstruction,
           behaviorInstruction,
@@ -3738,6 +3918,8 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
         definition: execucaoCanal.definition,
         taskInstruction: replyObjective === agent.objective ? '' : replyObjective,
         hasUntrustedContext: knowledge.length > 0,
+        // O mesmo teto do chat, e o que já foi esclarecido com esta pessoa.
+        channelBlocks: [clarificationGuidance(jaPerguntouCanal), lembradosCanal].filter((b): b is string => Boolean(b)),
       }),
       knowledge,
       memory: memoryText,
@@ -3754,6 +3936,11 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${interativoCanal.outputProblem ?? 'JSON inválido'}`)
     }
     generatedReply = interativoCanal.text
+    pedidoDoCanal = clarificationFrom(interativoCanal.toolCalls)
+    if (pedidoDoCanal?.options?.length) {
+      // Escritas no texto: num canal não há botão, e a lista precisa viajar na mensagem.
+      generatedReply = `${generatedReply}${formatOptions(pedidoDoCanal.options)}`
+    }
     }
   } catch (error) {
     const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
@@ -3792,7 +3979,17 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       'Vou chamar um atendente humano para continuar com você — só um momento!'
   }
 
-  const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText, replyAgentName)
+  const agentMessage = await addMessage(
+    widgetId,
+    conversationId,
+    'agent',
+    replyText,
+    replyAgentName,
+    null,
+    // A marca fica com a mensagem: é dela que a próxima volta lê "já perguntei" e "2
+    // significa a segunda opção".
+    pedidoDoCanal?.options?.length ? { options: pedidoDoCanal.options } : pedidoDoCanal ? { options: [] } : null,
+  )
   broadcastMessage(agentMessage, ownerId)
   // Channel telemetry: the REAL executor of this reply, keyed by the agent message
   // id so a re-broadcast never double-counts. Only completed tool calls count.

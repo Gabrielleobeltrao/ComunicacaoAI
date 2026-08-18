@@ -8,7 +8,7 @@
 // Pure + dependency-injected: no DB/provider imports here, so the safety logic is
 // unit-tested without IO. Production wiring lives in ./delegationWiring.ts.
 import { ObjectId } from 'mongodb'
-import { buildRetrievalQuery, formatContextWithSources } from './retrievalQuery.js'
+import { breadthNotice, buildRetrievalQuery, formatContextWithSources } from './retrievalQuery.js'
 import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
 import type { Agent } from './agents.js'
 import type { ResolvedTool } from './agentTools.js'
@@ -21,6 +21,8 @@ import { resolveAgentRun } from './agentDefinition.js'
 // O papel que um agente cumpre numa execução de setor. O tipo vive com a raiz da
 // execução, que é quem grava a participação.
 import type { ParticipationRole } from './sectorExecutions.js'
+import { clarificationFrom } from './clarify.js'
+import type { ClarificationRequest } from './clarify.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -278,6 +280,8 @@ export interface DelegationDeps {
     finishedAt: Date
     inputTokens: number
     outputTokens: number
+    /** O modelo que rodou — é o que permite somar o gasto POR MODELO. */
+    model?: string | null
     toolCalls: number
     parentEventKey: string | null
     rootEventKey: string
@@ -300,7 +304,14 @@ export interface DelegationDeps {
     agentId: ObjectId | ObjectId[],
     query: string,
     opts: { sectorId?: ObjectId | null },
-  ) => Promise<{ context: string[]; sources?: { documentId: string | null; title: string | null }[]; status?: string; failed?: boolean }>
+  ) => Promise<{
+    context: string[]
+    sources?: { documentId: string | null; title: string | null }[]
+    status?: string
+    failed?: boolean
+    /** Quantos trechos correspondiam, quando dá para saber — ver `knowledge.ts`. */
+    totalMatches?: number
+  }>
 }
 
 interface TaskRun {
@@ -311,6 +322,18 @@ interface TaskRun {
   finishedAt: Date
   // Safe scalars for the telemetry: statuses and counts, never content.
   telemetry?: Record<string, string | number | boolean>
+  /** O modelo que rodou de fato — com "Automático", o resolvido, e não o marcador. */
+  model?: string | null
+  /** Por que este modelo, quando a escolha foi automática. */
+  modelReason?: string | null
+  /**
+   * O especialista pediu para restringir, em vez de responder.
+   *
+   * É o que faltava para o coordenador saber a diferença entre "aqui está a resposta" e
+   * "isto é o começo de 2000 resultados". Sem isso ele recebia texto e tratava tudo como
+   * resposta pronta.
+   */
+  clarification?: ClarificationRequest | null
   // De onde saiu a resposta, para quem PEDIU poder conferir: o veredito da busca e os
   // documentos que entraram — id e título, nunca o texto deles.
   grounding?: string
@@ -336,6 +359,8 @@ async function emitAgentEvent(
     finishedAt: Date
     // Safe operational facts, the same vocabulary the routine step records.
     telemetry?: Record<string, string | number | boolean>
+    /** O modelo que rodou, quando quem chama sabe. */
+    model?: string | null
   },
   status: 'succeeded' | 'failed' | 'timeout' | 'canceled',
   // Present when this run is a participation in a sector execution: the link that
@@ -358,6 +383,9 @@ async function emitAgentEvent(
     finishedAt: run.finishedAt,
     inputTokens: run.usage.inputTokens,
     outputTokens: run.usage.outputTokens,
+    // O modelo que rodou — com "Automático" ele muda de agente para agente, e sem isto
+    // registrado não há como somar o gasto por modelo.
+    model: run.model ?? target.model ?? null,
     toolCalls: run.toolCalls,
     parentEventKey: ctx.currentEventKey ?? null,
     rootEventKey: ctx.rootEventKey ?? eventKey,
@@ -507,7 +535,14 @@ async function runAgentTask(
   // etapa de setor são "o agente foi chamado" tanto quanto uma conversa.
   const vivas = deps.livePassages ? await deps.livePassages(ctx.ownerId, target).catch(() => []) : []
   // Numbered references, so the answer can cite what it used. The owner is not named.
+  // O aviso de amplitude vem ANTES das passagens: é o que decide entre responder e
+  // perguntar, e depois delas já seria tarde.
+  const aviso = breadthNotice(
+    Array.isArray(retrieved) ? undefined : (retrieved as { totalMatches?: number }).totalMatches,
+    passages.length,
+  )
   const context = [
+    ...(aviso ? [aviso] : []),
     ...formatContextWithSources(passages, sources),
     ...vivas.map((v) => `[${v.title}]\n${v.content}`),
   ]
@@ -538,7 +573,8 @@ async function runAgentTask(
     context: context.length ? context : undefined,
     input,
     provider: target.provider,
-    model: target.model,
+    // Resolvido: "Automático" guarda um marcador, não um id de modelo.
+    model: execucao.model,
     apiKey,
     tools,
     // What the target promised to receive and produce, in its own words.
@@ -562,7 +598,7 @@ async function runAgentTask(
     toolsExecuted: res.toolCalls.filter((c) => c.ok).length,
   }
   // "Ações com ferramenta" counts calls that actually COMPLETED, not attempts.
-  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources }
+  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources, model: execucao.model, modelReason: execucao.modelReason, clarification: clarificationFrom(res.toolCalls) }
 }
 
 // ---- delegate_to_agent ------------------------------------------------------
@@ -629,6 +665,22 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
     const run = await runAgentTask(deps, ctx, target, objective, input, asOutputFormat(args.format), `deleg:${recId.toString()}`)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: run.output.slice(0, 500), usage: run.usage })
     await emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, run, 'succeeded')
+    // O especialista pediu para restringir. Devolver isso como se fosse resposta faria o
+    // coordenador consolidar uma pergunta como se fosse um resultado.
+    if (run.clarification) {
+      return {
+        ok: true,
+        result: j({
+          status: 'needs_clarification',
+          agent: target.name,
+          pergunta: run.clarification.question,
+          motivo: run.clarification.reason,
+          ...(run.clarification.options ? { opcoes: run.clarification.options } : {}),
+          instrucao:
+            'NÃO invente a resposta. Faça essa pergunta a quem pediu (adapte a redação se quiser), ou responda-a você mesmo se já souber o recorte e delegue de novo.',
+        }),
+      }
+    }
     return { ok: true, result: j({ status: 'ok', agent: target.name, output: run.output }) }
   } catch (error) {
     // The target requires curated knowledge and there was none: a distinct outcome,
@@ -791,6 +843,8 @@ export interface SectorParticipant {
   /** O provedor e o modelo com que ele rodou — a prova de que cada um usa o seu. */
   provider?: string
   model?: string | null
+  /** Por que este modelo, quando a escolha foi automática. */
+  modelReason?: string | null
   /** Deu certo? Uma etapa que falhou com `onError: continue` também aparece aqui. */
   status?: 'succeeded' | 'failed'
 }
@@ -800,6 +854,15 @@ export interface SectorTeamRun {
   /** Quem REALMENTE executou, na ordem em que executou. */
   participants: SectorParticipant[]
   warnings: string[]
+  /**
+   * O time pediu para restringir em vez de responder.
+   *
+   * Vem de quem falou por último — o coordenador, ou a etapa final do pipeline. É o que
+   * permite ao canal marcar o turno e escrever as alternativas: sem isto, o
+   * esclarecimento funcionava na delegação entre agentes e sumia quando quem perguntava
+   * era o próprio coordenador.
+   */
+  clarification?: ClarificationRequest | null
 }
 
 export interface SectorTeamOptions {
@@ -840,6 +903,8 @@ export async function executeSectorTeam(
   const format = opts.format
   const participants: SectorParticipant[] = []
   const warnings: string[] = []
+  // O pedido de quem falou por último: é ele que chega a quem pediu.
+  let clarification: ClarificationRequest | null = null
   const sectorExecutionId = opts.sectorExecutionId ?? null
 
   const participationOf = (
@@ -896,6 +961,7 @@ export async function executeSectorTeam(
     }
     // A procedência acompanha quem produziu: quem lê a resposta vê de qual agente veio
     // cada fonte, e não uma pilha anônima.
+    clarification = saida.clarification ?? null
     participants.push({
       ...papel,
       grounding: saida.grounding,
@@ -904,7 +970,9 @@ export async function executeSectorTeam(
       usage: saida.usage,
       durationMs: Math.max(0, saida.finishedAt.getTime() - saida.startedAt.getTime()),
       provider: target.provider,
-      model: target.model ?? null,
+      // O que rodou, não o que está guardado: com "Automático" os dois diferem.
+      model: saida.model ?? target.model ?? null,
+      modelReason: saida.modelReason ?? null,
       status: 'succeeded',
     })
     return saida.output
@@ -956,7 +1024,7 @@ export async function executeSectorTeam(
         throw new Error(`${stage.name}: ${message}`)
       }
     }
-    return { output, participants, warnings }
+    return { output, participants, warnings, clarification }
   }
 
   // orquestrado
@@ -1011,7 +1079,7 @@ export async function executeSectorTeam(
     participationOf('coordinator'),
     { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
   )
-  return { output, participants, warnings }
+  return { output, participants, warnings, clarification }
 }
 
 // ---- delegate_to_sector -----------------------------------------------------
@@ -1214,12 +1282,15 @@ export function buildDelegationTools(ctx: DelegationContext, deps: DelegationDep
   return [
     {
       name: 'list_available_agents',
+      // Descoberta é leitura: consultar quem existe não aciona ninguém.
+      risk: 'read',
       description: 'Lista os agentes colaboradores que você pode acionar (mesmo prédio e autorizados), opcionalmente filtrando por competência. Use antes de delegar.',
       inputSchema: { type: 'object', properties: { capability: { type: 'string', description: 'competência desejada (opcional)' } }, additionalProperties: false },
       run: (args) => listAvailable(deps, ctx, args),
     },
     {
       name: 'get_agent_capabilities',
+      risk: 'read',
       description: 'Detalha as competências, objetivo e contratos de entrada/saída de um agente colaborador.',
       inputSchema: { type: 'object', properties: { agentId: { type: 'string', description: 'id do agente' } }, required: ['agentId'], additionalProperties: false },
       run: (args) => getCapabilities(deps, ctx, args),
@@ -1301,6 +1372,11 @@ export function capabilityMissingTool(): ResolvedTool {
     name: 'report_capability_missing',
     description:
       'Use quando NÃO existir agente colaborador nem ferramenta capaz de cumprir a tarefa. Não invente: relate a lacuna. Informe a tarefa, a competência que falta e, se aplicável, a ferramenta ausente.',
+    // Relatar uma lacuna não muda nada no mundo. Sem risco declarado ela contava como
+    // ESCRITA — e risco de escrita bloqueia paralelismo, impede nova tentativa depois de
+    // uma falha e, agora, promove o agente ao modelo caro. Três decisões erradas por um
+    // campo ausente.
+    risk: 'read',
     inputSchema: {
       type: 'object',
       properties: {

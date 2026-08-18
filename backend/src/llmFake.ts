@@ -14,6 +14,8 @@ import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 import type { ChatTurn, RouterOption, StageTransitionOption, SectorPlan } from './systemPrompt.js'
 
 export const AUXILIARY_MODEL = 'fake-aux'
+// O dublê também precisa dizer qual é o padrão dele: quem pergunta é a mesma função.
+export const DEFAULT_MODEL = 'fake-model'
 
 // Contagem estável: o mesmo texto sempre "custa" o mesmo, então uma asserção de
 // métrica no smoke não fica dependendo de tokenizador de ninguém.

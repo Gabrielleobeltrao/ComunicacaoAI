@@ -391,3 +391,93 @@ test('não existe mais um segundo caminho de execução de setor no código', as
     assert.ok(!index.includes(morto), `${morto} voltou a existir — são dois comportamentos de novo`)
   }
 })
+
+// --- amplitude: saber que existe mais do que coube ------------------------------------------
+//
+// Sem isto o agente recebe seis trechos sem saber se são seis de seis ou seis de dois mil.
+// Nos dois casos ele responde com a mesma confiança — e no segundo a resposta é um recorte
+// arbitrário apresentado como conclusão.
+
+test('a busca informa quantos trechos correspondiam, e não só os que couberam', async () => {
+  const pesquisador = agente('Pesquisador')
+  // Vinte documentos que casam com o mesmo termo: a seleção corta bem antes disso.
+  for (let i = 0; i < 20; i++) {
+    await createDocumentFor(
+      { ownerType: 'agent', ownerId: pesquisador._id },
+      { title: `Ata ${i}`, content: `Reunião ${i} sobre BBSE3 e o mercado, com deliberações e anexos.` },
+    )
+  }
+
+  const r = await retrieveContext([pesquisador._id], 'BBSE3')
+  assert.equal(r.status, 'ok')
+  assert.ok(r.totalMatches >= 20, `esperava ao menos 20 correspondências, veio ${r.totalMatches}`)
+  assert.ok(r.context.length < r.totalMatches, 'o que coube é menos que o que existe')
+  assert.equal(r.truncated, true, 'e isso precisa vir dito, não deduzido')
+})
+
+test('quando tudo coube, não há aviso de amplitude', async () => {
+  const pesquisador = agente('Pesquisador')
+  await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'Única', content: BBSE3 })
+
+  const r = await retrieveContext([pesquisador._id], 'BBSE3 em 10/08/2026')
+  assert.equal(r.truncated, undefined, 'inventar amplitude onde não há é tão ruim quanto escondê-la')
+})
+
+// --- o time também pode perguntar em vez de chutar -----------------------------------------
+//
+// O esclarecimento funcionava entre agentes (o especialista devolve `needs_clarification`
+// ao coordenador) e sumia justamente quando quem perguntava era o coordenador — que é
+// quem fala com o visitante.
+
+test('quando o coordenador pede recorte, o pedido chega a quem falou com ele', async () => {
+  const { CLARIFY_TOOL_NAME } = await import('../dist/clarify.js')
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Time',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }],
+    stages: [],
+  }
+  const f = deps([coordenador], {
+    sector: setor,
+    runTask: async () => ({
+      output: 'De qual período você precisa?',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      toolCalls: [
+        {
+          name: CLARIFY_TOOL_NAME,
+          ok: true,
+          arguments: { pergunta: 'De qual período?', motivo: 'o pedido cobre 3 anos', opcoes: ['7 dias', '30 dias'] },
+          result: '{}',
+        },
+      ],
+    }),
+  })
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'me fale do mercado' })
+
+  assert.ok(run.clarification, 'sem isto o canal não tem como marcar o turno nem escrever as opções')
+  assert.equal(run.clarification.question, 'De qual período?')
+  assert.deepEqual(run.clarification.options, ['7 dias', '30 dias'])
+})
+
+test('uma execução comum do time não traz pedido nenhum', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Time',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }],
+    stages: [],
+  }
+  const f = deps([coordenador], { sector: setor })
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'oi' })
+  assert.equal(run.clarification, null)
+})

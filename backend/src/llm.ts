@@ -49,6 +49,17 @@ export function auxiliaryModel(provider: string | null | undefined): string {
 }
 
 /**
+ * O modelo que roda quando o dono não escolheu nenhum.
+ *
+ * Existe para a TELA poder dizer qual é. "Padrão do sistema" não informa nada: quem lê
+ * não tem como saber se vai rodar o modelo mais caro ou o mais barato, e é o dono quem
+ * paga a diferença.
+ */
+export function defaultModel(provider: string | null | undefined): string {
+  return providerFor(provider).DEFAULT_MODEL
+}
+
+/**
  * A configuração de execução que chega ao adapter.
  *
  * Vem como objeto no fim, e não como mais quatro parâmetros posicionais: esta assinatura

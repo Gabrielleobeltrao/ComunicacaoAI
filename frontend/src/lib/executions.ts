@@ -83,6 +83,15 @@ export interface ExecutionSummary {
   tokensWindow: number
   runsWindow: number
   windowDays: number
+  /**
+   * Os tokens separados por modelo.
+   *
+   * É o que torna a economia visível: trocar um agente do modelo caro para o barato não
+   * muda um token, muda o preço de cada um. Ausente quando há filtro de setor.
+   */
+  tokensByModel?: { model: string; inputTokens: number; outputTokens: number; runs: number }[]
+  /** Quantas execuções pediram esclarecimento em vez de responder. */
+  clarificationsWindow?: number
 }
 
 export interface ExecutionFilters {

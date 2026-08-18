@@ -260,3 +260,83 @@ test('salvar o formulário sem mudar nada não conta como escrever à mão', asy
   const atualizado = await res.json()
   assert.ok(atualizado.role.trim(), 'a sugestão continua disponível depois de um autosave')
 })
+
+// --- o teste diz qual modelo rodou ---------------------------------------------------------
+//
+// "Automático" escolhe por regra. Uma regra em que se confia sem conferir é um palpite com
+// passos extras: quem testa precisa ver qual modelo rodou, por quê, e a que preço.
+
+test('o Playground do agente informa o modelo, a origem da escolha e o custo', async () => {
+  const agente = await criarAgente({ name: 'Com diagnóstico' })
+
+  const res = await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'oi' }] }),
+  })
+  assert.equal(res.status, 200)
+  const { diagnostics } = await res.json()
+
+  assert.ok(diagnostics, 'a resposta precisa trazer o diagnóstico')
+  assert.ok(diagnostics.model, 'sem o nome do modelo não há o que conferir')
+  assert.equal(diagnostics.modelChoice, 'default', 'agente novo não escolheu modelo: é o padrão')
+  assert.equal(diagnostics.modelReason, null, 'padrão não tem motivo a explicar')
+  assert.ok(diagnostics.inputTokens > 0 && diagnostics.outputTokens > 0, 'o teste custou, e o custo aparece')
+  assert.ok(typeof diagnostics.durationMs === 'number')
+})
+
+test('com "Automático", o diagnóstico diz o modelo escolhido E o motivo', async () => {
+  const agente = await criarAgente({ name: 'Automático' })
+  // Comunicador: transforma um texto que já existe — a regra manda o modelo barato.
+  const r = await patch(agente._id, { model: 'auto', preset: 'communicator' })
+  assert.ok(r.ok, `patch devolveu ${r.status}`)
+
+  const res = await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'oi' }] }),
+  })
+  const { diagnostics } = await res.json()
+
+  assert.equal(diagnostics.modelChoice, 'auto')
+  assert.match(diagnostics.modelReason, /já existe/, 'o motivo é o que torna a regra conferível')
+  assert.ok(diagnostics.model, 'e o modelo escolhido vem nomeado')
+  assert.notEqual(diagnostics.model, 'auto', 'o marcador nunca é apresentado como modelo')
+})
+
+test('um perfil que planeja recebe o modelo principal, e o motivo diz isso', async () => {
+  const agente = await criarAgente({ name: 'Gerente' })
+  await patch(agente._id, { model: 'auto', preset: 'manager' })
+
+  const res = await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'oi' }] }),
+  })
+  const { diagnostics } = await res.json()
+  assert.match(diagnostics.modelReason, /coordena/)
+})
+
+test('a execução do chat grava QUAL modelo rodou, e não só quantos tokens', async () => {
+  // Sem isto, "economia" não é verificável: trocar de modelo não muda um token, muda o
+  // preço de cada um — e o contador de tokens mostra o mesmo número antes e depois.
+  const agente = await criarAgente({ name: 'Registro de modelo' })
+  await patch(agente._id, { model: 'auto', preset: 'communicator' })
+
+  await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'oi' }] }),
+  })
+
+  const fim = Date.now() + 8000
+  let evento
+  while (Date.now() < fim && !evento) {
+    const eventos = await cliente.db().collection('agent_execution_events').find({ source: 'manual' }).toArray()
+    evento = eventos.find((e) => e.model)
+    if (!evento) await new Promise((r) => setTimeout(r, 200))
+  }
+  assert.ok(evento, 'o evento precisa dizer em qual modelo a execução rodou')
+  assert.notEqual(evento.model, 'auto', 'o marcador não é nome de modelo')
+  assert.ok(evento.inputTokens > 0)
+})
