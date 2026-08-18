@@ -4,6 +4,7 @@ import { randomAgentName } from '../lib/agentNames'
 import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue } from './AgentDefinitionFields'
 import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
+import { PAPEIS_OUTROS, PAPEIS_PRINCIPAIS, ehPrincipal } from '../lib/agentRoles'
 import { reachableCollaboratorCount } from '../lib/agentReadiness'
 import { useBuildingPeers } from '../lib/useBuildingPeers'
 import { assignAgentToSector } from '../lib/sectors'
@@ -112,11 +113,12 @@ const LANGS = [
   { value: 'es', label: 'Espanhol' },
 ]
 
-function Choice({ on, label, hint, onClick }: { on: boolean; label: string; hint?: string; onClick: () => void }) {
+function Choice({ on, label, cargo, hint, onClick, testId }: { on: boolean; label: string; cargo?: string; hint?: string; onClick: () => void; testId?: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      data-testid={testId}
       style={{
         textAlign: 'left',
         padding: '10px 12px',
@@ -129,7 +131,11 @@ function Choice({ on, label, hint, onClick }: { on: boolean; label: string; hint
         minWidth: 0,
       }}
     >
-      <div style={{ fontSize: 13.5, fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 13.5, fontWeight: 700 }}>
+        {label}
+        {/* O cargo continua visível: quem já conhece o sistema procura por ele. */}
+        {cargo ? <span style={{ fontWeight: 500, color: on ? 'var(--accent-700)' : 'var(--text-faint)' }}> · {cargo}</span> : null}
+      </div>
       {hint ? <div style={{ fontSize: 12, color: on ? 'var(--accent-700)' : 'var(--text-muted)', marginTop: 2, lineHeight: 1.4 }}>{hint}</div> : null}
     </button>
   )
@@ -159,6 +165,11 @@ export function HireWizard({
 }) {
   const [step, setStep] = useState(initialPreset ? 1 : 0)
   const [presets, setPresets] = useState<AgentPresetSpec[]>([])
+  // Só nasce aberto quando ALGUÉM já escolheu um papel de lá — vindo de um checklist,
+  // por exemplo: fechar em cima do que está marcado esconderia justamente a resposta.
+  // Sem escolha nenhuma, o padrão interno é 'custom', e abrir por causa dele deixaria a
+  // seção sempre aberta, que é o contrário do ponto.
+  const [outrosAbertos, setOutrosAbertos] = useState(Boolean(initialPreset) && !ehPrincipal(initialPreset))
   const [preset, setPreset] = useState<AgentPreset>(initialPreset ?? 'custom')
   // A definição sugerida pelo modelo, editável. Fica em "Configuração avançada": o
   // caminho simples continua sendo três perguntas.
@@ -379,10 +390,54 @@ export function HireWizard({
       <div style={{ minHeight: 260 }}>
         {/* 1 — Função */}
         {step === 0 ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 10 }} data-testid="role-picker">
-            {presets.map((s) => (
-              <Choice key={s.preset} on={preset === s.preset} label={s.label} hint={ROLE_FORM[s.preset]?.hint ?? s.description} onClick={() => applyPreset(s)} />
-            ))}
+          <div style={{ display: 'grid', gap: 12 }} data-testid="role-picker">
+            {/* O verbo primeiro. Oito cargos lado a lado obrigam a ler os oito para
+                descobrir que a diferença entre dois deles é quem chama quem. */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 10 }}>
+              {PAPEIS_PRINCIPAIS.map((papel) => {
+                const s = presets.find((p) => p.preset === papel.preset)
+                return s ? (
+                  <Choice
+                    key={papel.preset}
+                    on={preset === papel.preset}
+                    label={papel.verbo}
+                    cargo={papel.cargo}
+                    hint={ROLE_FORM[papel.preset]?.hint ?? s.description}
+                    onClick={() => applyPreset(s)}
+                    testId={`role-${papel.preset}`}
+                  />
+                ) : null
+              })}
+            </div>
+            <div>
+              <button
+                type="button"
+                onClick={() => setOutrosAbertos((v) => !v)}
+                aria-expanded={outrosAbertos}
+                data-testid="role-picker-others-toggle"
+                style={{ border: 0, background: 'transparent', padding: 0, cursor: 'pointer', fontFamily: 'var(--font-ui)', fontSize: 12.5, color: 'var(--text-muted)' }}
+              >
+                {outrosAbertos ? '▾' : '▸'} Outros perfis (casos específicos)
+              </button>
+              {outrosAbertos ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: 10, marginTop: 10 }} data-testid="role-picker-others">
+                  {PAPEIS_OUTROS.map((papel) => {
+                    const s = presets.find((p) => p.preset === papel.preset)
+                    return s ? (
+                      <Choice
+                        key={papel.preset}
+                        on={preset === papel.preset}
+                        label={papel.verbo}
+                        cargo={papel.cargo}
+                        hint={ROLE_FORM[papel.preset]?.hint ?? s.description}
+                        onClick={() => applyPreset(s)}
+                        testId={`role-${papel.preset}`}
+                      />
+                    ) : null
+                  })}
+                </div>
+              ) : null}
+            </div>
           </div>
         ) : null}
 

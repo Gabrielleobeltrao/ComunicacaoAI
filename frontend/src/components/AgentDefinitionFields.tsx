@@ -3,6 +3,7 @@ import type { RunConfig, ToolChoice, ReasoningEffort } from '../lib/runConfig'
 import { capabilitiesFor, REASONING_EFFORTS, TOOL_CHOICES } from '../lib/runConfig'
 import type { AgentPresetSpec } from '../lib/agentPresets'
 import type { AgentPreset } from '../lib/types'
+import { PAPEIS_OUTROS, PAPEIS_PRINCIPAIS } from '../lib/agentRoles'
 
 // Dois blocos: quem o agente é, e como o modelo é chamado.
 //
@@ -119,11 +120,28 @@ export function AgentDefinitionFields({
             onChange={(e) => setEscolhido(e.target.value as AgentPreset)}
             className={campo}
           >
-            {presets.map((p) => (
-              <option key={p.preset} value={p.preset}>
-                {p.label}
-              </option>
-            ))}
+            {/* Os mesmos grupos da contratação: o verbo é o que a pessoa procura, e o
+                cargo fica junto para quem já conhece o sistema. */}
+            <optgroup label="Principais">
+              {PAPEIS_PRINCIPAIS.map((papel) => {
+                const p = presets.find((x) => x.preset === papel.preset)
+                return p ? (
+                  <option key={p.preset} value={p.preset}>
+                    {papel.verbo} · {p.label}
+                  </option>
+                ) : null
+              })}
+            </optgroup>
+            <optgroup label="Outros perfis">
+              {PAPEIS_OUTROS.map((papel) => {
+                const p = presets.find((x) => x.preset === papel.preset)
+                return p ? (
+                  <option key={p.preset} value={p.preset}>
+                    {papel.verbo} · {p.label}
+                  </option>
+                ) : null
+              })}
+            </optgroup>
           </select>
 
           {escolhido && escolhido !== preset ? (
