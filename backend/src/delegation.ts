@@ -1138,6 +1138,13 @@ async function delegateToSector(deps: DelegationDeps, ctx: DelegationContext, ar
 }
 
 // ---- discovery tools --------------------------------------------------------
+
+/** Minúsculas e sem acento — a forma em que duas grafias da mesma palavra se encontram. */
+const semAcento = (texto: string): string =>
+  texto
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
 function agentCard(a: Agent) {
   return { id: a._id.toString(), name: a.name, preset: a.preset, capabilities: a.capabilities ?? [], outputContract: a.outputContract || undefined }
 }
@@ -1168,7 +1175,12 @@ async function listAvailable(deps: DelegationDeps, ctx: DelegationContext, args:
       gateContext(ctx),
     ).ok
   })
-  const filtered = need ? available.filter((t) => (t.capabilities ?? []).some((c) => c.toLowerCase().includes(need)) || t.name.toLowerCase().includes(need)) : available
+  // Sem acento dos DOIS lados: quem etiquetou "jurídico" e quem procura por "juridico"
+  // estão falando da mesma competência, e a busca não pode discordar por causa de um til.
+  const alvo = semAcento(need)
+  const filtered = need
+    ? available.filter((t) => (t.capabilities ?? []).some((c) => semAcento(c).includes(alvo)) || semAcento(t.name).includes(alvo))
+    : available
   return { ok: true, result: j({ status: 'ok', agents: filtered.map(agentCard) }) }
 }
 

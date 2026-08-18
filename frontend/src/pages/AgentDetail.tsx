@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { AgentCapabilities } from '../components/AgentCapabilities'
 import { AgentSources } from '../components/AgentSources'
 import { AgentToolsPicker } from '../components/AgentToolsPicker'
 import { Link, useNavigate, useParams } from 'react-router'
@@ -559,6 +560,9 @@ export function AgentDetail() {
                         IS the permission — the backend refuses anything not here. */}
                     {active === 'como-trabalha' ? (
                       <div style={{ marginTop: 20, display: 'grid', gap: 20 }}>
+                        {/* As competências vêm primeiro: é por elas que outro agente
+                            encontra este, antes de qualquer ferramenta. */}
+                        <AgentCapabilities key={`${agent._id}:caps`} agent={agent} onSaved={load} />
                         <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
                         {/* Olhar um site é capacidade do agente, e é aqui que se pergunta
                             o que ele consegue fazer. Antes isso existia só dentro de uma

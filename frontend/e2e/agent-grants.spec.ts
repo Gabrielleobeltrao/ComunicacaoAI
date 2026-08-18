@@ -406,3 +406,55 @@ test('os limites e o nome da ferramenta são editáveis, e vão junto no salvame
   expect(cfg.toolName).toBe('olhar_site')
   expect(cfg.toolDescription).toBe('Use quando perguntarem de preço.')
 })
+
+// --- competências: como outro agente encontra este -------------------------------------
+//
+// O campo existia e nenhuma tela o editava — era gravado uma vez, na contratação, a
+// partir do catálogo do modelo-base. É por ele que `list_available_agents` procura.
+
+test('as competências são editáveis, e é o que o coordenador procura', async ({ page }) => {
+  let salvo: Record<string, unknown> | null = null
+  await stub(page)
+  // O PATCH do agente é outra rota que a do stub de permissões — registrada depois,
+  // porque no Playwright a última registrada é a que vale.
+  await page.route(`**/api/agents/${AGENT_ID}`, (r) => {
+    if (r.request().method() !== 'PATCH') return r.fallback()
+    salvo = JSON.parse(r.request().postData() ?? '{}')
+    return r.fulfill({ json: {} })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  const cartao = page.getByTestId('agent-capabilities')
+  await expect(cartao).toBeVisible()
+  await expect(cartao).toContainText('outro agente encontra este')
+
+  await page.getByTestId('agent-capability-input').fill('mercado financeiro')
+  await page.getByTestId('agent-capability-add').click()
+  await expect(page.getByTestId('agent-capability-tag')).toContainText('mercado financeiro')
+
+  await page.getByTestId('agent-capabilities-save').click()
+  await expect(page.getByTestId('agent-capabilities-result')).toContainText('Salvo')
+  expect((salvo as { capabilities: string[] }).capabilities).toEqual(['mercado financeiro'])
+})
+
+test('a mesma competência não entra duas vezes, nem escrita de outro jeito', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  for (const texto of ['jurídico', 'JURIDICO']) {
+    await page.getByTestId('agent-capability-input').fill(texto)
+    await page.getByTestId('agent-capability-add').click()
+  }
+  await expect(page.getByTestId('agent-capability-tag')).toHaveCount(1)
+})
+
+test('uma etiqueta pode ser removida antes de salvar', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  await page.getByTestId('agent-capability-input').fill('tributário')
+  await page.getByTestId('agent-capability-add').click()
+  await page.getByRole('button', { name: 'Remover tributário' }).click()
+
+  await expect(page.getByTestId('agent-capabilities-empty')).toBeVisible()
+})

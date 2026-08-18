@@ -515,3 +515,60 @@ test('a pipeline that produces real output runs every stage once', async () => {
   assert.equal(calls.length, 2, 'no completed stage is called twice')
   assert.equal(JSON.parse(out.result).output, 'saída 2')
 })
+
+// --- descoberta por competência -------------------------------------------------------
+//
+// É por estas etiquetas que um coordenador encontra quem sabe fazer a coisa. Elas eram
+// gravadas uma vez, na contratação, e nenhuma tela as editava — agora editam, e a busca
+// precisa achar o que foi escrito.
+
+const comCompetencias = (caps, over = {}) => mkAgent({ capabilities: caps, ...over })
+
+const buscar = async (agentes, capability) => {
+  const chamador = agentes[0]
+  const deps = {
+    loadAgent: async (_o, id) => agentes.find((a) => a._id.toString() === id.toString()) ?? null,
+    listAgentsInBuilding: async () => agentes,
+    buildingIdForFloor: async () => BUILDING.toString(),
+    resolveTools: async () => [],
+    apiKeyFor: async () => 'k',
+    runTask: async () => ({ output: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
+    startDelegation: async () => new ObjectId(),
+    finishDelegation: async () => undefined,
+  }
+  const ferramenta = buildDelegationTools(ctxFor(chamador), deps).find((t) => t.name === 'list_available_agents')
+  const r = await ferramenta.run(capability ? { capability } : {})
+  return JSON.parse(r.result).agents.map((a) => a.name)
+}
+
+test('a busca por competência acha quem tem a etiqueta', async () => {
+  const chamador = comCompetencias([], { name: 'Coordenador', delegationPolicy: 'all' })
+  const juridico = comCompetencias(['jurídico'], { name: 'Advogado' })
+  const financeiro = comCompetencias(['mercado financeiro'], { name: 'Analista' })
+
+  assert.deepEqual(await buscar([chamador, juridico, financeiro], 'jurídico'), ['Advogado'])
+  assert.deepEqual(await buscar([chamador, juridico, financeiro], 'financeiro'), ['Analista'])
+})
+
+test('acento não separa quem procura de quem foi etiquetado', async () => {
+  const chamador = comCompetencias([], { name: 'Coordenador', delegationPolicy: 'all' })
+  const alvo = comCompetencias(['jurídico'], { name: 'Advogado' })
+  // Quem digitou a etiqueta com til e quem procura sem ele falam da mesma competência.
+  assert.deepEqual(await buscar([chamador, alvo], 'juridico'), ['Advogado'])
+  // E o contrário também.
+  const semTil = comCompetencias(['juridico'], { name: 'Outro' })
+  assert.deepEqual(await buscar([chamador, semTil], 'JURÍDICO'), ['Outro'])
+})
+
+test('sem competência pedida, lista todos os alcançáveis', async () => {
+  const chamador = comCompetencias([], { name: 'Coordenador', delegationPolicy: 'all' })
+  const a = comCompetencias(['x'], { name: 'A' })
+  const b = comCompetencias(['y'], { name: 'B' })
+  assert.deepEqual((await buscar([chamador, a, b])).sort(), ['A', 'B'])
+})
+
+test('o nome também casa — procurar pelo que se lembra funciona', async () => {
+  const chamador = comCompetencias([], { name: 'Coordenador', delegationPolicy: 'all' })
+  const alvo = comCompetencias([], { name: 'Pesquisador de Mercado' })
+  assert.deepEqual(await buscar([chamador, alvo], 'mercado'), ['Pesquisador de Mercado'])
+})
