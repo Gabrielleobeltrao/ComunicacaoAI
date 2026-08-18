@@ -220,6 +220,9 @@ agentRoutineRouter.get('/sources', async (req, res) => {
       name: f.nome,
       kind: f.source.kind,
       url: f.origem === 'agente' ? f.source.url : undefined,
+      // Quando consultar e a janela do feed são escolha do dono, por endereço.
+      when: f.origem === 'agente' ? (porId.get(f.nome)?.when ?? 'on_demand') : undefined,
+      initialWindow: f.origem === 'agente' ? porId.get(f.nome)?.initialWindow : undefined,
       // O host, e não a URL inteira: uma query string pode carregar token.
       host: (() => {
         try {
@@ -229,7 +232,7 @@ agentRoutineRouter.get('/sources', async (req, res) => {
         }
       })(),
     })),
-  )
+  })
 })
 
 /**
