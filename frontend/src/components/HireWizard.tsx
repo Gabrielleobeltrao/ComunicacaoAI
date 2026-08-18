@@ -169,7 +169,7 @@ export function HireWizard({
   // por exemplo: fechar em cima do que está marcado esconderia justamente a resposta.
   // Sem escolha nenhuma, o padrão interno é 'custom', e abrir por causa dele deixaria a
   // seção sempre aberta, que é o contrário do ponto.
-  const [outrosAbertos, setOutrosAbertos] = useState(Boolean(initialPreset) && !ehPrincipal(initialPreset))
+  const [outrosAbertos, setOutrosAbertos] = useState(initialPreset ? !ehPrincipal(initialPreset) : false)
   const [preset, setPreset] = useState<AgentPreset>(initialPreset ?? 'custom')
   // A definição sugerida pelo modelo, editável. Fica em "Configuração avançada": o
   // caminho simples continua sendo três perguntas.
