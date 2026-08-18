@@ -489,6 +489,16 @@ export interface RetrievalResult {
   sources: KnowledgeSource[]
   status: GroundingStatus
   failed: boolean
+  /**
+   * Quantos trechos correspondiam, quando dá para saber — e não quantos couberam.
+   *
+   * Sem isto o modelo recebe seis passagens sem saber se são seis de seis ou seis de dois
+   * mil. Nos dois casos ele responde com a mesma confiança, e no segundo a resposta é um
+   * recorte arbitrário apresentado como conclusão.
+   */
+  totalMatches?: number
+  /** A seleção foi cortada: existe mais do que o que está aqui. */
+  truncated?: boolean
 }
 
 export async function retrieveContext(
@@ -503,7 +513,12 @@ export async function retrieveContext(
   if (opts.verifiedSectorId) owners.push({ ownerType: 'sector', ownerId: opts.verifiedSectorId })
   if (owners.length === 0 || !query.trim()) return { context: [], sources: [], status: 'no_base', failed: false }
 
-  const emResultado = (selected: KnowledgeHit[], status: GroundingStatus, failed: boolean): RetrievalResult => ({
+  const emResultado = (
+    selected: KnowledgeHit[],
+    status: GroundingStatus,
+    failed: boolean,
+    encontrados?: number,
+  ): RetrievalResult => ({
     context: selected.map((hit) => hit.content),
     sources: selected.map((hit) => ({
       documentId: hit.documentId ?? null,
@@ -514,6 +529,8 @@ export async function retrieveContext(
     })),
     status,
     failed,
+    ...(encontrados !== undefined ? { totalMatches: encontrados } : {}),
+    ...(encontrados !== undefined && encontrados > selected.length ? { truncated: true } : {}),
   })
 
   const limite = Math.max(opts.topK ?? RETRIEVAL_TOP_K, 5) * owners.length
@@ -521,15 +538,18 @@ export async function retrieveContext(
   // --- metade 1: o vizinho semântico ------------------------------------------------------
   let vetorialFalhou = false
   let selecionados: KnowledgeHit[] = []
+  let encontrados = 0
   try {
-    selecionados = selectKnowledgeHits(await searchKnowledgeForOwners(owners, query, limite), opts)
+    const brutos = await searchKnowledgeForOwners(owners, query, limite)
+    encontrados = brutos.length
+    selecionados = selectKnowledgeHits(brutos, opts)
   } catch (error) {
     // Sem Atlas Search ou sem chave de embedding, ela falha SEMPRE. Isso não é "não há
     // conhecimento" — é "não consegui olhar por semelhança". A busca exata ainda pode.
     console.error('knowledge retrieval (vector) failed:', (error as Error).message)
     vetorialFalhou = true
   }
-  if (selecionados.length > 0) return emResultado(selecionados, 'ok', false)
+  if (selecionados.length > 0) return emResultado(selecionados, 'ok', false, encontrados)
 
   // --- metade 2: o termo exato ------------------------------------------------------------
   //
@@ -537,8 +557,9 @@ export async function retrieveContext(
   // exatamente o que a semelhança erra e a comparação de texto acerta — e é o caso em que
   // dizer "não há dados" seria mentira sobre uma base que tem a resposta escrita.
   try {
-    const lexicais = selectKnowledgeHits(await searchKnowledgeLexicallyForOwners(owners, query, limite), opts)
-    if (lexicais.length > 0) return emResultado(lexicais, 'ok', false)
+    const brutosLexicais = await searchKnowledgeLexicallyForOwners(owners, query, limite)
+    const lexicais = selectKnowledgeHits(brutosLexicais, opts)
+    if (lexicais.length > 0) return emResultado(lexicais, 'ok', false, brutosLexicais.length)
   } catch (error) {
     console.error('knowledge retrieval (lexical) failed:', (error as Error).message)
     return emResultado([], 'unavailable', true)

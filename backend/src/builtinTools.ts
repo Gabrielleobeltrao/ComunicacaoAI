@@ -1,6 +1,7 @@
 import type { Agent } from './agents.js'
 import { memorySearchTool } from './memory/tool.js'
 import { sourceCheckTool } from './automations/sourceTool.js'
+import { clarifyTool } from './clarify.js'
 import { sourceSettingsOf } from './agents.js'
 import { getToolsByIds } from './tools.js'
 import { executeToolCall } from './toolExecution.js'
@@ -243,6 +244,9 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
   // ela responde "sem_fonte", que é a verdade, em vez de não existir e o modelo ter que
   // adivinhar que não pode consultar.
   const fonte = sourceCheckTool(ownerId, agent._id, sourceSettingsOf(agent))
+  // Perguntar em vez de responder é capacidade de todo agente. Sem ela, diante de um
+  // pedido amplo demais o modelo só sabe responder por cima — e cobrar por isso.
+  const esclarecer = clarifyTool()
   // Legacy per-agent HTTP tools, kept working untouched.
   const http = (agent.tools ?? []).map(resolveHttpTool)
 
@@ -276,7 +280,7 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
   // already moved carries `migratedAt`: its credential is gone from this document
   // and resolving it here would silently produce a tool that cannot authenticate.
   const enabled = (agent.builtinTools ?? []).filter((entry) => !entry.migratedAt)
-  if (enabled.length === 0) return [memoria, fonte, ...http, ...custom, ...fromGrants]
+  if (enabled.length === 0) return [memoria, fonte, esclarecer, ...http, ...custom, ...fromGrants]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')
   const googleConnected = needsGoogle ? (await getGoogleStatus(ownerId)).connected : false
@@ -288,5 +292,5 @@ export async function resolveAgentTools(agent: Agent, ownerId: string): Promise<
     if (app.connection === 'google' && !googleConnected) continue
     builtins.push(...app.resolve(ownerId, entry.config ?? {}))
   }
-  return [memoria, fonte, ...http, ...custom, ...fromGrants, ...builtins]
+  return [memoria, fonte, esclarecer, ...http, ...custom, ...fromGrants, ...builtins]
 }

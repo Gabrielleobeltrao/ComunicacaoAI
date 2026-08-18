@@ -8,7 +8,7 @@
 // Pure + dependency-injected: no DB/provider imports here, so the safety logic is
 // unit-tested without IO. Production wiring lives in ./delegationWiring.ts.
 import { ObjectId } from 'mongodb'
-import { buildRetrievalQuery, formatContextWithSources } from './retrievalQuery.js'
+import { breadthNotice, buildRetrievalQuery, formatContextWithSources } from './retrievalQuery.js'
 import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
 import type { Agent } from './agents.js'
 import type { ResolvedTool } from './agentTools.js'
@@ -21,6 +21,8 @@ import { resolveAgentRun } from './agentDefinition.js'
 // O papel que um agente cumpre numa execução de setor. O tipo vive com a raiz da
 // execução, que é quem grava a participação.
 import type { ParticipationRole } from './sectorExecutions.js'
+import { clarificationFrom } from './clarify.js'
+import type { ClarificationRequest } from './clarify.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -302,7 +304,14 @@ export interface DelegationDeps {
     agentId: ObjectId | ObjectId[],
     query: string,
     opts: { sectorId?: ObjectId | null },
-  ) => Promise<{ context: string[]; sources?: { documentId: string | null; title: string | null }[]; status?: string; failed?: boolean }>
+  ) => Promise<{
+    context: string[]
+    sources?: { documentId: string | null; title: string | null }[]
+    status?: string
+    failed?: boolean
+    /** Quantos trechos correspondiam, quando dá para saber — ver `knowledge.ts`. */
+    totalMatches?: number
+  }>
 }
 
 interface TaskRun {
@@ -317,6 +326,14 @@ interface TaskRun {
   model?: string | null
   /** Por que este modelo, quando a escolha foi automática. */
   modelReason?: string | null
+  /**
+   * O especialista pediu para restringir, em vez de responder.
+   *
+   * É o que faltava para o coordenador saber a diferença entre "aqui está a resposta" e
+   * "isto é o começo de 2000 resultados". Sem isso ele recebia texto e tratava tudo como
+   * resposta pronta.
+   */
+  clarification?: ClarificationRequest | null
   // De onde saiu a resposta, para quem PEDIU poder conferir: o veredito da busca e os
   // documentos que entraram — id e título, nunca o texto deles.
   grounding?: string
@@ -518,7 +535,14 @@ async function runAgentTask(
   // etapa de setor são "o agente foi chamado" tanto quanto uma conversa.
   const vivas = deps.livePassages ? await deps.livePassages(ctx.ownerId, target).catch(() => []) : []
   // Numbered references, so the answer can cite what it used. The owner is not named.
+  // O aviso de amplitude vem ANTES das passagens: é o que decide entre responder e
+  // perguntar, e depois delas já seria tarde.
+  const aviso = breadthNotice(
+    Array.isArray(retrieved) ? undefined : (retrieved as { totalMatches?: number }).totalMatches,
+    passages.length,
+  )
   const context = [
+    ...(aviso ? [aviso] : []),
     ...formatContextWithSources(passages, sources),
     ...vivas.map((v) => `[${v.title}]\n${v.content}`),
   ]
@@ -574,7 +598,7 @@ async function runAgentTask(
     toolsExecuted: res.toolCalls.filter((c) => c.ok).length,
   }
   // "Ações com ferramenta" counts calls that actually COMPLETED, not attempts.
-  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources, model: execucao.model, modelReason: execucao.modelReason }
+  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources, model: execucao.model, modelReason: execucao.modelReason, clarification: clarificationFrom(res.toolCalls) }
 }
 
 // ---- delegate_to_agent ------------------------------------------------------
@@ -641,6 +665,22 @@ async function delegateToAgent(deps: DelegationDeps, ctx: DelegationContext, arg
     const run = await runAgentTask(deps, ctx, target, objective, input, asOutputFormat(args.format), `deleg:${recId.toString()}`)
     await deps.finishDelegation(recId, { status: 'succeeded', outputPreview: run.output.slice(0, 500), usage: run.usage })
     await emitAgentEvent(deps, ctx, target, 'delegation', `deleg:${recId.toString()}`, run, 'succeeded')
+    // O especialista pediu para restringir. Devolver isso como se fosse resposta faria o
+    // coordenador consolidar uma pergunta como se fosse um resultado.
+    if (run.clarification) {
+      return {
+        ok: true,
+        result: j({
+          status: 'needs_clarification',
+          agent: target.name,
+          pergunta: run.clarification.question,
+          motivo: run.clarification.reason,
+          ...(run.clarification.options ? { opcoes: run.clarification.options } : {}),
+          instrucao:
+            'NÃO invente a resposta. Faça essa pergunta a quem pediu (adapte a redação se quiser), ou responda-a você mesmo se já souber o recorte e delegue de novo.',
+        }),
+      }
+    }
     return { ok: true, result: j({ status: 'ok', agent: target.name, output: run.output }) }
   } catch (error) {
     // The target requires curated knowledge and there was none: a distinct outcome,

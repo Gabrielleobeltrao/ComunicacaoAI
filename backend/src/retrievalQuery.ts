@@ -35,6 +35,23 @@ export interface CitableSource {
   title: string | null
 }
 
+/**
+ * O aviso de que existe MUITO mais do que isto.
+ *
+ * Uma linha antes das passagens, quando a busca foi cortada. Sem ela o modelo lê seis
+ * trechos e conclui como se fossem tudo; com ela, ele tem o que precisa para preferir
+ * perguntar "qual recorte?" a responder por cima — que é a diferença entre uma resposta
+ * útil e um chute caro.
+ */
+export function breadthNotice(total: number | undefined, mostrados: number): string | null {
+  if (!total || total <= mostrados) return null
+  return (
+    `ATENÇÃO: ${total} trechos correspondem ao pedido; abaixo estão apenas os ${mostrados} mais relevantes. ` +
+    'Se responder exigiria o conjunto todo, NÃO responda por cima: peça um recorte (período, assunto, identificador) ' +
+    'usando a ferramenta de esclarecimento.'
+  )
+}
+
 export function formatContextWithSources(context: string[], sources: CitableSource[] = []): string[] {
   return context.map((passage, index) => {
     const source = sources[index]

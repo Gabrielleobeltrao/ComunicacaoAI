@@ -391,3 +391,34 @@ test('não existe mais um segundo caminho de execução de setor no código', as
     assert.ok(!index.includes(morto), `${morto} voltou a existir — são dois comportamentos de novo`)
   }
 })
+
+// --- amplitude: saber que existe mais do que coube ------------------------------------------
+//
+// Sem isto o agente recebe seis trechos sem saber se são seis de seis ou seis de dois mil.
+// Nos dois casos ele responde com a mesma confiança — e no segundo a resposta é um recorte
+// arbitrário apresentado como conclusão.
+
+test('a busca informa quantos trechos correspondiam, e não só os que couberam', async () => {
+  const pesquisador = agente('Pesquisador')
+  // Vinte documentos que casam com o mesmo termo: a seleção corta bem antes disso.
+  for (let i = 0; i < 20; i++) {
+    await createDocumentFor(
+      { ownerType: 'agent', ownerId: pesquisador._id },
+      { title: `Ata ${i}`, content: `Reunião ${i} sobre BBSE3 e o mercado, com deliberações e anexos.` },
+    )
+  }
+
+  const r = await retrieveContext([pesquisador._id], 'BBSE3')
+  assert.equal(r.status, 'ok')
+  assert.ok(r.totalMatches >= 20, `esperava ao menos 20 correspondências, veio ${r.totalMatches}`)
+  assert.ok(r.context.length < r.totalMatches, 'o que coube é menos que o que existe')
+  assert.equal(r.truncated, true, 'e isso precisa vir dito, não deduzido')
+})
+
+test('quando tudo coube, não há aviso de amplitude', async () => {
+  const pesquisador = agente('Pesquisador')
+  await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'Única', content: BBSE3 })
+
+  const r = await retrieveContext([pesquisador._id], 'BBSE3 em 10/08/2026')
+  assert.equal(r.truncated, undefined, 'inventar amplitude onde não há é tão ruim quanto escondê-la')
+})
