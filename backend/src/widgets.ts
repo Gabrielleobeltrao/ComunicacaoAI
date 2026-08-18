@@ -45,6 +45,17 @@ export interface WidgetMessage {
   agentName?: string | null
   // Provider message id for inbound channel messages (dedupes webhook retries).
   externalId?: string | null
+  /**
+   * Este turno do agente foi uma PERGUNTA de esclarecimento, e as alternativas que ele
+   * ofereceu.
+   *
+   * Ficam guardados porque num canal não existe cliente para devolvê-los: quando a
+   * próxima mensagem chegar, é daqui que sai o "2 significa a segunda opção" e a conta
+   * de quantas vezes já se perguntou. Sem isso o teto e a leitura da escolha valem no
+   * Playground e não valem no WhatsApp — que é onde a conversa realmente acontece.
+   */
+  clarification?: boolean
+  clarificationOptions?: string[]
   createdAt: Date
 }
 
@@ -493,6 +504,8 @@ export async function addMessage(
   content: string,
   agentName: string | null = null,
   externalId: string | null = null,
+  // A marca de esclarecimento, quando este turno é uma pergunta com alternativas.
+  clarify: { options: string[] } | null = null,
 ) {
   const message: Omit<WidgetMessage, '_id'> = {
     widgetId,
@@ -501,6 +514,7 @@ export async function addMessage(
     content,
     agentName,
     externalId,
+    ...(clarify ? { clarification: true, clarificationOptions: clarify.options } : {}),
     createdAt: new Date(),
   }
   const result = await widgetMessages.insertOne(message as WidgetMessage)

@@ -76,3 +76,39 @@ test('sem alternativas, não há o que resolver', () => {
   assert.equal(resolveChoice('2', []), null)
   assert.equal(resolveChoice('', OPCOES), null)
 })
+
+// --- o canal guarda o que o Playground devolve ------------------------------------------
+//
+// Num canal não existe cliente para devolver a marca da pergunta: ela precisa estar
+// gravada com a mensagem. Sem isso o teto e a leitura de "2" valem no Playground e não
+// valem no WhatsApp — que é justamente onde a conversa acontece.
+
+test('a mensagem do canal carrega a marca e as alternativas', async () => {
+  const { startMongo, stopMongo } = await import('./helpers/mongoServer.mjs')
+  process.env.MONGODB_URI = await startMongo()
+  const { addMessage, listMessages } = await import('../dist/widgets.js')
+  const { mongoClient } = await import('../dist/db.js')
+  const { ObjectId } = await import('mongodb')
+
+  const widgetId = new ObjectId()
+  await addMessage(widgetId, 'conversa-1', 'visitor', 'me manda a proposta')
+  await addMessage(widgetId, 'conversa-1', 'agent', 'Qual delas?\n\n1) A enviada\n2) A recebida', null, null, {
+    options: ['A enviada', 'A recebida'],
+  })
+
+  const mensagens = await listMessages(widgetId, 'conversa-1')
+  const pergunta = mensagens.find((m) => m.role === 'agent')
+  assert.equal(pergunta.clarification, true)
+  assert.deepEqual(pergunta.clarificationOptions, ['A enviada', 'A recebida'])
+
+  // E é daqui que sai a leitura da resposta curta na volta seguinte.
+  assert.equal(resolveChoice('2', pergunta.clarificationOptions), 'A recebida')
+
+  // Uma mensagem comum não ganha marca nenhuma.
+  await addMessage(widgetId, 'conversa-1', 'agent', 'Aqui está.')
+  const comum = (await listMessages(widgetId, 'conversa-1')).at(-1)
+  assert.equal(comum.clarification, undefined)
+
+  await mongoClient.close().catch(() => undefined)
+  await stopMongo()
+})

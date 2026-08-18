@@ -220,6 +220,7 @@ import { clarificationFrom, countClarifications } from './clarify.js'
 import { clarificationGuidance } from './clarifyBudget.js'
 import { recallClarifications, rememberClarification } from './clarifyMemory.js'
 import { formatOptions, resolveChoice } from './clarifyChoice.js'
+import type { ClarificationRequest } from './clarify.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -3622,6 +3623,28 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // Keep the raw window short — a compact per-conversation memory (below)
   // carries older context forward instead of resending the whole history.
   const recentMessages = await listMessages(widgetId, conversationId)
+
+  // Num canal não existe cliente para devolver a marca: ela sai do que está gravado.
+  // É isto que faz o teto e a leitura de "2" valerem no WhatsApp, e não só no Playground.
+  const jaPerguntouCanal = recentMessages.filter((m) => m.role === 'agent' && m.clarification).length
+  const ultimaDoAgente = [...recentMessages].reverse().find((m) => m.role === 'agent')
+  if (ultimaDoAgente?.clarification && recentMessages.at(-1)?.role === 'visitor') {
+    const escolhida = resolveChoice(visitorContent, ultimaDoAgente.clarificationOptions ?? [])
+    // "2" vira a opção aqui, sem modelo. E o par pergunta→resposta é guardado, para a
+    // mesma dúvida não voltar amanhã.
+    if (escolhida) visitorContent = escolhida
+    void rememberClarification(
+      { ownerId, agentId: agent._id, sectorId: widget.sectorId ?? null },
+      ultimaDoAgente.content,
+      visitorContent,
+    ).catch((erro) => console.error('não foi possível guardar o esclarecimento:', erro))
+  }
+  const lembradosCanal = await recallClarifications({
+    ownerId,
+    agentId: agent._id,
+    sectorId: widget.sectorId ?? null,
+  }).catch(() => null)
+
   const historyLimit = agent.historyLimit ?? DEFAULT_HISTORY_LIMIT
   const history: ChatTurn[] = recentMessages.slice(-historyLimit).map((message) => ({
     role: message.role === 'visitor' ? 'user' : 'assistant',
@@ -3763,13 +3786,14 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     }).catch(() => undefined)
   }
 
-  const canalTools = await resolveAgentTools(agent, ownerId)
+  const canalTools = await resolveAgentTools(agent, ownerId, jaPerguntouCanal)
   const execucaoCanal = resolveAgentRun(agent, { context: 'chat', toolRisks: canalTools.map((t) => t.risk ?? 'write') })
   const modeloDoCanal = execucaoCanal.model ?? defaultModel(agent.provider)
   const descartadosCanal = describeDropped(execucaoCanal.runConfig)
   if (descartadosCanal) console.info(`[runConfig] canal: ${descartadosCanal}`)
 
   let generatedReply: string
+  let pedidoDoCanal: ClarificationRequest | null = null
   // Zerados e mutáveis: o que foi cobrado precisa sobreviver ao caminho de falha. Lançar
   // antes de copiar o uso, como estava, registrava zero token numa chamada que custou a
   // resposta original mais o reparo.
@@ -3840,6 +3864,8 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
         definition: execucaoCanal.definition,
         taskInstruction: replyObjective === agent.objective ? '' : replyObjective,
         hasUntrustedContext: knowledge.length > 0,
+        // O mesmo teto do chat, e o que já foi esclarecido com esta pessoa.
+        channelBlocks: [clarificationGuidance(jaPerguntouCanal), lembradosCanal].filter((b): b is string => Boolean(b)),
       }),
       knowledge,
       memory: memoryText,
@@ -3856,6 +3882,11 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${interativoCanal.outputProblem ?? 'JSON inválido'}`)
     }
     generatedReply = interativoCanal.text
+    pedidoDoCanal = clarificationFrom(interativoCanal.toolCalls)
+    if (pedidoDoCanal?.options?.length) {
+      // Escritas no texto: num canal não há botão, e a lista precisa viajar na mensagem.
+      generatedReply = `${generatedReply}${formatOptions(pedidoDoCanal.options)}`
+    }
     }
   } catch (error) {
     const kind = error instanceof AgentRunError && error.kind === 'output_invalid'
@@ -3894,7 +3925,17 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       'Vou chamar um atendente humano para continuar com você — só um momento!'
   }
 
-  const agentMessage = await addMessage(widgetId, conversationId, 'agent', replyText, replyAgentName)
+  const agentMessage = await addMessage(
+    widgetId,
+    conversationId,
+    'agent',
+    replyText,
+    replyAgentName,
+    null,
+    // A marca fica com a mensagem: é dela que a próxima volta lê "já perguntei" e "2
+    // significa a segunda opção".
+    pedidoDoCanal?.options?.length ? { options: pedidoDoCanal.options } : pedidoDoCanal ? { options: [] } : null,
+  )
   broadcastMessage(agentMessage, ownerId)
   // Channel telemetry: the REAL executor of this reply, keyed by the agent message
   // id so a re-broadcast never double-counts. Only completed tool calls count.
