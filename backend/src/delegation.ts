@@ -23,6 +23,7 @@ import { resolveAgentRun } from './agentDefinition.js'
 import type { ParticipationRole } from './sectorExecutions.js'
 import { clarificationFrom } from './clarify.js'
 import type { ClarificationRequest } from './clarify.js'
+import { coordinatorBriefing } from './sectorBriefing.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -195,7 +196,9 @@ export interface SectorLite {
   mode: 'organization' | 'orchestrated' | 'pipeline'
   coordinatorAgentId?: ObjectId | null
   instruction?: string
-  members: { agentId: ObjectId; isDefault?: boolean }[]
+  // `routingDescription` é o que o dono escreveu sobre QUANDO mandar para este membro —
+  // é a melhor frase que existe para o coordenador escolher a quem delegar.
+  members: { agentId: ObjectId; isDefault?: boolean; routingDescription?: string }[]
   stages?: SectorStageLite[]
 }
 
@@ -501,6 +504,10 @@ async function runAgentTask(
   eventKey?: string,
   sectorId?: ObjectId | null,
   grant?: { sectorId: string; memberIds: string[] } | null,
+  // Quem está na equipe, para o coordenador. Vem separado do pedido de propósito: é
+  // instrução, e NÃO pode entrar na busca de conhecimento — a consulta passaria a casar
+  // com nomes e competências dos membros em vez da pergunta que foi feita.
+  briefing?: string | null,
 ): Promise<TaskRun> {
   // The child runs under THIS execution's event, so anything it delegates chains to
   // the same root (parent/root lineage).
@@ -565,7 +572,7 @@ async function runAgentTask(
     objective: target.objective || objective,
     // Instruções do agente primeiro, pedido depois: as dele valem para todo trabalho,
     // o pedido é o do momento.
-    instructions: [target.instructions?.trim(), objective?.trim()].filter(Boolean).join('\n\n'),
+    instructions: [target.instructions?.trim(), briefing?.trim(), objective?.trim()].filter(Boolean).join('\n\n'),
     // Função e limites, que antes não chegavam por este caminho.
     definition: { role: target.role ?? null, constraints: target.constraints ?? null },
     // Passages are untrusted DATA (agentRuntime marks them as such), never system
@@ -1033,13 +1040,46 @@ export async function executeSectorTeam(
   if (inChain(coordinatorId)) throw new Error('ciclo de delegação: o coordenador já está na cadeia')
   const coordinator = await deps.loadAgent(ctx.ownerId, coordinatorId)
   if (!coordinator) throw new Error('coordenador não encontrado')
-  const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
   // O time que o coordenador alcança durante ESTA execução: os membros do próprio
   // setor, menos ele. Nada global é aberto, e o filho não herda o direito.
+  const outros = sector.members.filter((m) => m.agentId.toString() !== coordinator._id.toString())
   const grant = {
     sectorId: sector._id.toString(),
-    memberIds: sector.members.map((m) => m.agentId.toString()).filter((id) => id !== coordinator._id.toString()),
+    memberIds: outros.map((m) => m.agentId.toString()),
   }
+
+  /**
+   * A equipe deixa de ser algo a descobrir.
+   *
+   * O direito de chamar os membros já era concedido; a informação de que eles existem,
+   * não. O coordenador recebia o próprio objetivo e o pedido — e um modelo que não sabe
+   * que tem equipe responde sozinho. Como coordenador quase nunca tem base própria, ele
+   * respondia sozinho e errado, com o dado na base de um colega do mesmo setor.
+   *
+   * Agora a lista vai escrita, com id e função de cada um. Isso também POUPA: sem ela,
+   * chegar a um especialista custava uma chamada de descoberta antes da delegação.
+   */
+  const equipe = (await Promise.all(outros.map((m) => deps.loadAgent(ctx.ownerId, m.agentId).catch(() => null))))
+    .map((agente, i) =>
+      agente
+        ? {
+            agentId: agente._id.toString(),
+            name: agente.name,
+            routingDescription: outros[i].routingDescription ?? null,
+            role: agente.role ?? null,
+            objective: agente.objective ?? null,
+            capabilities: agente.capabilities ?? null,
+          }
+        : null,
+    )
+    .filter((m): m is NonNullable<typeof m> => m !== null)
+  if (equipe.length === 0) {
+    // Sem isto o teste mostrava um único participante e parecia quebrado. Está
+    // funcionando: não há mais ninguém no setor para acionar.
+    warnings.push('setor orquestrado sem outros membros: o coordenador respondeu sozinho')
+  }
+  const briefing = coordinatorBriefing(sector.name, equipe)
+  const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
 
   /**
    * A rede de segurança do conhecimento.
@@ -1075,7 +1115,7 @@ export async function executeSectorTeam(
     coordinator,
     instruction,
     opts.input,
-    (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant),
+    (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant, briefing),
     participationOf('coordinator'),
     { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
   )

@@ -99,7 +99,7 @@ export function SectorAgentsDialog({
                 <li key={m.agentId} style={row}>
                   <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span className="truncate" style={{ fontWeight: 600, color: 'var(--text-heading)' }}>{nameById.get(m.agentId) ?? 'Agente removido'}</span>
-                    {m.isDefault ? <span style={pill}>Padrão</span> : null}
+                    {m.isDefault && !sector.coordinatorAgentId ? <span style={pill}>Coordena (padrão)</span> : null}
                   </span>
                   <Button variant="ghost" size="sm" disabled={busyId === m.agentId} aria-label={`Remover ${nameById.get(m.agentId) ?? 'agente'} do setor`} onClick={() => remove(m.agentId)}>
                     {busyId === m.agentId ? 'Removendo…' : 'Remover'}

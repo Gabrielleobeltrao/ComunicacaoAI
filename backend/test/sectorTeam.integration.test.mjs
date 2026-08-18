@@ -481,3 +481,107 @@ test('uma execução comum do time não traz pedido nenhum', async () => {
   const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'oi' })
   assert.equal(run.clarification, null)
 })
+
+// --- o coordenador precisa SABER que tem equipe -------------------------------------------
+//
+// O direito de chamar os membros já era concedido; a informação de que eles existem, não.
+// O coordenador recebia o próprio objetivo e o pedido, e mais nada — e um modelo que não
+// sabe que tem equipe faz o óbvio: responde sozinho. Como coordenador quase nunca tem base
+// própria, ele respondia sozinho e errado, com o dado na base de um colega do mesmo setor.
+
+test('o coordenador recebe a equipe escrita: nome, id e função de cada membro', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager', delegationPolicy: 'none' })
+  const pesquisador = agente('Pesquisador de Mercado', { capabilities: ['renda variável', 'proventos'] })
+  const analista = agente('Analista', { role: 'compara cenários e recomenda' })
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Mesa de análise',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: 'Responda em português.',
+    members: [
+      { agentId: coordenador._id, isDefault: true },
+      { agentId: pesquisador._id, routingDescription: 'quando a pergunta for sobre preço ou provento de uma ação' },
+      { agentId: analista._id },
+    ],
+    stages: [],
+  }
+
+  const f = deps([coordenador, pesquisador, analista], { sector: setor })
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'qual foi o último provento de BBSE3?' })
+
+  const pedidoDoCoordenador = f.chamadas[0]
+  const instrucoes = pedidoDoCoordenador.instructions
+  assert.match(instrucoes, /COORDENA a equipe "Mesa de análise"/)
+  // O id é o que permite delegar sem gastar uma chamada de descoberta antes.
+  assert.ok(instrucoes.includes(pesquisador._id.toString()), 'o id do pesquisador precisa estar na lista')
+  assert.ok(instrucoes.includes(analista._id.toString()), 'o id do analista precisa estar na lista')
+  // A frase que o dono escreveu sobre QUANDO mandar para ele vale mais que o objetivo.
+  assert.match(instrucoes, /quando a pergunta for sobre preço ou provento/)
+  assert.match(instrucoes, /compara cenários e recomenda/, 'sem descrição de roteamento, a função')
+  assert.match(instrucoes, /renda variável, proventos/)
+  // E a regra que fecha o buraco: o que é do especialista, delega.
+  assert.match(instrucoes, /delegate_to_agent/)
+  // O que o setor manda e o pedido continuam lá, depois do briefing.
+  assert.match(instrucoes, /Responda em português\./)
+  assert.match(instrucoes, /qual foi o último provento de BBSE3\?/)
+  assert.equal(run.warnings.length, 0)
+})
+
+test('a equipe escrita NÃO entra na busca de conhecimento', async () => {
+  // A consulta é montada a partir do objetivo e da entrada. Se o briefing entrasse ali,
+  // a busca passaria a casar com nomes e competências dos membros em vez da pergunta —
+  // e num briefing grande a própria pergunta cairia fora do limite de caracteres.
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const pesquisador = agente('Pesquisador de Mercado', { capabilities: ['renda variável'] })
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Mesa de análise',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }, { agentId: pesquisador._id }],
+    stages: [],
+  }
+  const consultas = []
+  const f = deps([coordenador, pesquisador], { sector: setor })
+  const original = f.deps.retrieveContext
+  f.deps.retrieveContext = (agentId, query, opts) => {
+    consultas.push(query)
+    return original(agentId, query, opts)
+  }
+
+  await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'qual foi o último provento de BBSE3?' })
+
+  assert.ok(consultas.length > 0, 'a busca precisa ter acontecido')
+  for (const q of consultas) {
+    assert.ok(!q.includes('COORDENA a equipe'), 'o briefing vazou para a consulta')
+    assert.ok(!q.includes(pesquisador._id.toString()), 'o id do membro vazou para a consulta')
+  }
+  assert.ok(consultas.some((q) => q.includes('BBSE3')), 'a pergunta é que deve ser buscada')
+})
+
+test('setor orquestrado sem outros membros avisa, em vez de parecer quebrado', async () => {
+  // Um único participante no painel de teste parecia defeito. Não é: não há mais ninguém
+  // no setor para acionar, e é isso que o aviso diz.
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Time de um',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }],
+    stages: [],
+  }
+  const f = deps([coordenador], { sector: setor })
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'e aí?' })
+
+  assert.equal(run.participants.length, 1)
+  assert.match(run.warnings.join(' '), /sem outros membros/)
+  // E sem equipe não se inventa instrução de delegação: procurar quem não existe é pior.
+  assert.ok(!f.chamadas[0].instructions.includes('COORDENA a equipe'))
+})

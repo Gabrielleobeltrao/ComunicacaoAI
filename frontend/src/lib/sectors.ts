@@ -40,7 +40,7 @@ export function normalizeSectorMode(mode: unknown): SectorMode {
 
 // Operational readiness — mirrors backend/src/sectors.ts (same codes, same copy),
 // so the wizard, the sector page and the API agree on what is missing.
-export type SectorReadinessCode = 'no_members' | 'no_coordinator' | 'no_stages' | 'stage_without_agent' | 'agent_pending'
+export type SectorReadinessCode = 'no_members' | 'no_coordinator' | 'coordinator_alone' | 'no_stages' | 'stage_without_agent' | 'agent_pending'
 export interface SectorReadinessIssue {
   code: SectorReadinessCode
   message: string
@@ -72,6 +72,11 @@ export function sectorReadiness(input: SectorReadinessInput): { ready: boolean; 
   } else {
     if (!input.coordinatorAgentId) issues.push({ code: 'no_coordinator', message: 'Falta escolher quem coordena a equipe.', action: 'Escolher coordenador', severity: 'blocking' })
     if (input.members.length === 0) issues.push({ code: 'no_members', message: 'A equipe ainda não tem membros.', action: 'Adicionar membros', severity: 'blocking' })
+    // Mesma regra do backend: coordenar sozinho não é coordenar. Executa, por isso é
+    // aviso — mas o teste mostraria um agente só, e pareceria defeito.
+    else if (input.coordinatorAgentId && input.members.every((m) => m.agentId === input.coordinatorAgentId)) {
+      issues.push({ code: 'coordinator_alone', message: 'A equipe só tem o coordenador: não há a quem delegar.', action: 'Adicionar membros', severity: 'warning' })
+    }
   }
   for (const name of input.pendingAgentNames ?? []) {
     issues.push({ code: 'agent_pending', message: `${name} ainda precisa de configuração para trabalhar.`, action: 'Abrir agente', severity: 'warning' })

@@ -103,7 +103,7 @@ export const SECTOR_MODE_LABEL: Record<SectorMode, { title: string; help: string
   pipeline: { title: 'Executar em etapas', help: 'As etapas rodam em ordem, cada uma usando o resultado da anterior.' },
 }
 
-export type SectorReadinessCode = 'no_members' | 'no_coordinator' | 'no_stages' | 'stage_without_agent' | 'agent_pending'
+export type SectorReadinessCode = 'no_members' | 'no_coordinator' | 'coordinator_alone' | 'no_stages' | 'stage_without_agent' | 'agent_pending'
 
 export interface SectorReadinessIssue {
   code: SectorReadinessCode
@@ -143,6 +143,12 @@ export function sectorReadiness(input: SectorReadinessInput): SectorReadiness {
   } else if (mode === 'orchestrated') {
     if (!input.coordinatorAgentId) issues.push({ code: 'no_coordinator', message: 'Falta escolher quem coordena a equipe.', action: 'Escolher coordenador', severity: 'blocking' })
     if (input.members.length === 0) issues.push({ code: 'no_members', message: 'A equipe ainda não tem membros.', action: 'Adicionar membros', severity: 'blocking' })
+    // Coordenar sozinho não é coordenar. O setor executa — por isso é aviso, não
+    // bloqueio —, mas quem testar vai ver um único agente trabalhando e achar que a
+    // orquestração quebrou. Ela não quebrou: não há a quem delegar.
+    else if (input.coordinatorAgentId && input.members.every((m) => m.agentId.toString() === input.coordinatorAgentId?.toString())) {
+      issues.push({ code: 'coordinator_alone', message: 'A equipe só tem o coordenador: não há a quem delegar.', action: 'Adicionar membros', severity: 'warning' })
+    }
   } else {
     const stages = input.stages ?? []
     if (stages.length === 0) issues.push({ code: 'no_stages', message: 'O fluxo ainda não tem nenhuma etapa.', action: 'Adicionar etapa', severity: 'blocking' })

@@ -72,7 +72,10 @@ function OverviewSection({ overview, agents }: { overview: SectorOverview; agent
           </span>
           {/* O nome da ETAPA é o que explica por que este agente está aqui. */}
           {m.stageName && <Badge>{m.stageName}</Badge>}
-          {m.isDefault && !isPipeline && <Badge>Padrão</Badge>}
+          {/* "Padrão" só decide alguma coisa quando ninguém foi escolhido para
+              coordenar: aí ele coordena. Com coordenador definido, o rótulo dizia que
+              havia um agente privilegiado — e não há. */}
+          {m.isDefault && !isPipeline && !sector.coordinatorAgentId && <Badge>Coordena (padrão)</Badge>}
           {m.isCoordinator && <Badge>Coordena</Badge>}
           {full && pendingNames.has(full.name) && (
             <span className="rounded-full px-2 py-0.5 text-xs" style={{ background: 'var(--mango-100, #fef3e6)', color: 'var(--mango-700, #b54708)' }} data-testid="member-pending">
