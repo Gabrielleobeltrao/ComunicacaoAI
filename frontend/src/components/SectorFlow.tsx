@@ -16,11 +16,14 @@ import type { AgentSummary, SectorSummary } from '../lib/types'
 function Node({
   title,
   subtitle,
+  meta,
   to,
   tone = 'plain',
 }: {
   title: string
   subtitle?: string
+  /** Uma terceira linha, mais fraca: o porquê, quando o dono escreveu um. */
+  meta?: string
   to?: string
   tone?: 'plain' | 'edge' | 'lead'
 }) {
@@ -29,6 +32,9 @@ function Node({
       <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-heading)', overflowWrap: 'anywhere' }}>{title}</span>
       {subtitle ? (
         <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2, overflowWrap: 'anywhere' }}>{subtitle}</span>
+      ) : null}
+      {meta ? (
+        <span style={{ display: 'block', fontSize: 11, color: 'var(--text-faint)', marginTop: 2, overflowWrap: 'anywhere' }}>{meta}</span>
       ) : null}
     </>
   )
@@ -76,6 +82,26 @@ export function SectorFlow({ sector, agents }: { sector: SectorSummary; agents: 
   const byId = new Map(agents.map((a) => [a._id, a]))
   const href = (agentId: string) => (fid ? floorAgent(fid, agentId) : `/agents/${agentId}`)
   const nameOf = (agentId: string) => byId.get(agentId)?.name ?? 'Agente removido'
+
+  /**
+   * O QUE ESTE AGENTE É, em uma linha.
+   *
+   * O desenho do fluxo mostrava só o nome — e um nome não diz se aquele quadrado é o
+   * analista ou o redator. O cartão ao lado já dizia; o fluxo, não, e é nele que se olha
+   * para entender o caminho do trabalho.
+   *
+   * A função vem do bloco "Função" da definição. Sem ela, o objetivo serve: é o que o
+   * dono escreveu sobre o que o agente faz.
+   */
+  const funcaoDe = (agentId: string): string | undefined => {
+    const a = byId.get(agentId)
+    if (!a) return undefined
+    const escrita = a.role?.trim()
+    if (escrita) return escrita.length > 90 ? `${escrita.slice(0, 90)}…` : escrita
+    const objetivo = a.objective?.trim()
+    if (!objetivo) return undefined
+    return objetivo.length > 90 ? `${objetivo.slice(0, 90)}…` : objetivo
+  }
   const mode = normalizeSectorMode(sector.mode)
 
   // A group that does not execute gets no Entrada and no Saída — inventing them would
@@ -86,7 +112,9 @@ export function SectorFlow({ sector, agents }: { sector: SectorSummary; agents: 
         {sector.members.length === 0 ? (
           <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>Nenhum agente neste grupo ainda.</p>
         ) : (
-          sector.members.map((m) => <Node key={m.agentId} title={nameOf(m.agentId)} to={href(m.agentId)} />)
+          sector.members.map((m) => (
+            <Node key={m.agentId} title={nameOf(m.agentId)} subtitle={funcaoDe(m.agentId)} to={href(m.agentId)} />
+          ))
         )}
       </div>
     )
@@ -108,13 +136,18 @@ export function SectorFlow({ sector, agents }: { sector: SectorSummary; agents: 
           stages.map((s, i) => (
             <span key={s.id || `s${i}`} style={{ display: 'contents' }}>
               {i > 0 ? <Arrow /> : null}
-              <Node title={`${i + 1}. ${s.name || 'Etapa'}`} subtitle={nameOf(s.agentId)} to={s.agentId ? href(s.agentId) : undefined} />
+              <Node
+                title={`${i + 1}. ${s.name || 'Etapa'}`}
+                subtitle={nameOf(s.agentId)}
+                meta={funcaoDe(s.agentId)}
+                to={s.agentId ? href(s.agentId) : undefined}
+              />
             </span>
           ))
         )
       ) : coordinatorId ? (
         <>
-          <Node title={nameOf(coordinatorId)} subtitle="coordena" to={href(coordinatorId)} tone="lead" />
+          <Node title={nameOf(coordinatorId)} subtitle="coordena" meta={funcaoDe(coordinatorId)} to={href(coordinatorId)} tone="lead" />
           {specialists.length > 0 ? (
             <>
               <Arrow />
@@ -128,7 +161,12 @@ export function SectorFlow({ sector, agents }: { sector: SectorSummary; agents: 
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {specialists.map((m) => (
                     <div key={m.agentId} style={{ flex: '1 1 180px', minWidth: 0 }}>
-                      <Node title={nameOf(m.agentId)} subtitle={m.routingDescription || undefined} to={href(m.agentId)} />
+                      <Node
+                        title={nameOf(m.agentId)}
+                        subtitle={funcaoDe(m.agentId)}
+                        meta={m.routingDescription || undefined}
+                        to={href(m.agentId)}
+                      />
                     </div>
                   ))}
                 </div>

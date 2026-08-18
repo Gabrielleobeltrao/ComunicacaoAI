@@ -163,7 +163,22 @@ async function stub(
 
 const open = async (page: Page) => {
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Ferramentas')
   await expect(page.getByTestId('agent-app-grants')).toBeVisible()
+}
+
+/**
+ * Abre um bloco da aba pelo título.
+ *
+ * "Como trabalha" passou a organizar suas seções em blocos que abrem e fecham, e eles
+ * nascem fechados. Um teste que interage com o conteúdo precisa abrir antes — que é
+ * exatamente o que a pessoa faz. Pelo TÍTULO, e não por um seletor genérico, porque
+ * assim o teste diz qual seção ele está exercitando.
+ */
+async function abrirBloco(page: Page, titulo: string) {
+  const cabecalho = page.getByRole('button', { name: titulo, exact: true })
+  await cabecalho.waitFor()
+  if ((await cabecalho.getAttribute('aria-expanded')) === 'false') await cabecalho.click()
 }
 
 test('marcar uma ação não dispara requisição: é rascunho até salvar', async ({ page }) => {
@@ -282,6 +297,7 @@ test('descartar volta ao estado confirmado', async ({ page }) => {
 test('só conexão conectada pode receber permissão', async ({ page }) => {
   await stub(page, { installations: [{ ...INSTALLATION_ROW, status: 'needs_reauth' }] })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Ferramentas')
   await expect(page.getByTestId('no-installations')).toBeVisible()
 })
 
@@ -302,6 +318,7 @@ test('a aba Como trabalha deixa cadastrar um site para o agente consultar', asyn
     return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
 
   const cartao = page.getByTestId('agent-sources')
   await expect(cartao).toBeVisible()
@@ -328,6 +345,7 @@ test('um endereço inválido é recusado com o motivo na tela', async ({ page })
       : r.fulfill({ json: { sources: [], settings: SETTINGS } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
 
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('exemplo.test/blog')
@@ -344,6 +362,7 @@ test('as fontes que vêm de rotinas aparecem separadas, como leitura', async ({ 
     }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
 
   const doRotina = page.getByTestId('agent-sources-routines')
   await expect(doRotina).toContainText('Notícias')
@@ -361,6 +380,7 @@ test('cada endereço escolhe QUANDO ser consultado, e a tela diz o custo de cada
     return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
 
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('https://exemplo.test/feed.xml')
@@ -393,6 +413,7 @@ test('os limites e o nome da ferramenta são editáveis, e vão junto no salvame
     return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
 
   await page.getByTestId('agent-sources-settings').click()
   await page.getByTestId('agent-sources-max-items').fill('3')
@@ -405,4 +426,59 @@ test('os limites e o nome da ferramenta são editáveis, e vão junto no salvame
   expect(cfg.maxItems).toBe(3)
   expect(cfg.toolName).toBe('olhar_site')
   expect(cfg.toolDescription).toBe('Use quando perguntarem de preço.')
+})
+
+// --- competências: como outro agente encontra este -------------------------------------
+//
+// O campo existia e nenhuma tela o editava — era gravado uma vez, na contratação, a
+// partir do catálogo do modelo-base. É por ele que `list_available_agents` procura.
+
+test('as competências são editáveis, e é o que o coordenador procura', async ({ page }) => {
+  let salvo: Record<string, unknown> | null = null
+  await stub(page)
+  // O PATCH do agente é outra rota que a do stub de permissões — registrada depois,
+  // porque no Playwright a última registrada é a que vale.
+  await page.route(`**/api/agents/${AGENT_ID}`, (r) => {
+    if (r.request().method() !== 'PATCH') return r.fallback()
+    salvo = JSON.parse(r.request().postData() ?? '{}')
+    return r.fulfill({ json: {} })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+
+  const cartao = page.getByTestId('agent-capabilities')
+  await expect(cartao).toBeVisible()
+  await expect(cartao).toContainText('outro agente encontra este')
+
+  await page.getByTestId('agent-capability-input').fill('mercado financeiro')
+  await page.getByTestId('agent-capability-add').click()
+  await expect(page.getByTestId('agent-capability-tag')).toContainText('mercado financeiro')
+
+  await page.getByTestId('agent-capabilities-save').click()
+  await expect(page.getByTestId('agent-capabilities-result')).toContainText('Salvo')
+  expect((salvo as { capabilities: string[] }).capabilities).toEqual(['mercado financeiro'])
+})
+
+test('a mesma competência não entra duas vezes, nem escrita de outro jeito', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+
+  for (const texto of ['jurídico', 'JURIDICO']) {
+    await page.getByTestId('agent-capability-input').fill(texto)
+    await page.getByTestId('agent-capability-add').click()
+  }
+  await expect(page.getByTestId('agent-capability-tag')).toHaveCount(1)
+})
+
+test('uma etiqueta pode ser removida antes de salvar', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+
+  await page.getByTestId('agent-capability-input').fill('tributário')
+  await page.getByTestId('agent-capability-add').click()
+  await page.getByRole('button', { name: 'Remover tributário' }).click()
+
+  await expect(page.getByTestId('agent-capabilities-empty')).toBeVisible()
 })

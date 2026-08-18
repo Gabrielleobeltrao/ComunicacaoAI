@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChangeEvent, FormEvent, ReactNode } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
 import { METRIC_KEY_LABEL } from '../lib/agentStats'
 import { Icon } from '../ui'
 import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue } from './AgentDefinitionFields'
+import { CollapsibleBlock } from './CollapsibleBlock'
 import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
 import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import type {
@@ -60,36 +61,6 @@ const SECTION_BLOCKS: Record<string, string[]> = {
   essencial: ['identidade'],
   ferramentas: ['ferramentas'],
   conhecimento: ['conhecimento'],
-}
-
-// A collapsible advanced group: a clickable header that shows/hides its fields.
-// When it isn't the header context (a single block shown alone), it just renders
-// the children. Children stay mounted (hidden) so their state/focus is kept.
-function CollapsibleBlock({
-  title,
-  showHeader,
-  children,
-}: {
-  title: string
-  showHeader: boolean
-  children: ReactNode
-}) {
-  const [open, setOpen] = useState(false)
-  if (!showHeader) return <>{children}</>
-  return (
-    <div className="border-t border-(--border-subtle) first:border-t-0">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="flex w-full items-center justify-between gap-2 py-3 text-left text-(--text-body) transition hover:text-(--text-heading)"
-      >
-        <span className="text-sm font-semibold">{title}</span>
-        <span className={`text-(--text-faint) transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
-      </button>
-      <div className={open ? 'space-y-3 pb-3' : 'hidden'}>{children}</div>
-    </div>
-  )
 }
 
 interface PendingDoc {
@@ -778,7 +749,9 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   // Advanced groups are collapsible when several stack together (the "Avançado"
   // page, or the create modal with advanced expanded); a block shown alone (a
   // single-block section) gets no header.
-  const stacked = (flat && section === 'avancado') || (!flat && advancedOpen)
+  // "Como trabalha" entra aqui junto de "Avançado": ela também empilha vários blocos, e
+  // sem cabeçalho eles viram uma rolagem longa em que nada é encontrável.
+  const stacked = (flat && (section === 'avancado' || section === 'como-trabalha')) || (!flat && advancedOpen)
 
   return (
     <div className="flex flex-col">

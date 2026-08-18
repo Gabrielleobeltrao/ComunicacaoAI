@@ -54,10 +54,9 @@ export function AgentToolsPicker({ agent, onSaved }: { agent: AgentSummary; onSa
 
   return (
     <Card padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="agent-tools-picker">
-      <div>
-        <h3 style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 800, color: 'var(--text-heading)' }}>{t('agents.tools')}</h3>
-        <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>{t('agents.toolsHelp')}</p>
-      </div>
+      {/* Sem título próprio: quem dá o título é o bloco que abre e fecha, e dois
+          cabeçalhos iguais um embaixo do outro parecem defeito. */}
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>{t('agents.toolsHelp')}</p>
 
       {tools.length === 0 ? (
         <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>{t('agents.noToolsAvailable')}</p>
