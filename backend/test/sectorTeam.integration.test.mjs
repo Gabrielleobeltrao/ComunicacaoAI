@@ -422,3 +422,62 @@ test('quando tudo coube, não há aviso de amplitude', async () => {
   const r = await retrieveContext([pesquisador._id], 'BBSE3 em 10/08/2026')
   assert.equal(r.truncated, undefined, 'inventar amplitude onde não há é tão ruim quanto escondê-la')
 })
+
+// --- o time também pode perguntar em vez de chutar -----------------------------------------
+//
+// O esclarecimento funcionava entre agentes (o especialista devolve `needs_clarification`
+// ao coordenador) e sumia justamente quando quem perguntava era o coordenador — que é
+// quem fala com o visitante.
+
+test('quando o coordenador pede recorte, o pedido chega a quem falou com ele', async () => {
+  const { CLARIFY_TOOL_NAME } = await import('../dist/clarify.js')
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Time',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }],
+    stages: [],
+  }
+  const f = deps([coordenador], {
+    sector: setor,
+    runTask: async () => ({
+      output: 'De qual período você precisa?',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      toolCalls: [
+        {
+          name: CLARIFY_TOOL_NAME,
+          ok: true,
+          arguments: { pergunta: 'De qual período?', motivo: 'o pedido cobre 3 anos', opcoes: ['7 dias', '30 dias'] },
+          result: '{}',
+        },
+      ],
+    }),
+  })
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'me fale do mercado' })
+
+  assert.ok(run.clarification, 'sem isto o canal não tem como marcar o turno nem escrever as opções')
+  assert.equal(run.clarification.question, 'De qual período?')
+  assert.deepEqual(run.clarification.options, ['7 dias', '30 dias'])
+})
+
+test('uma execução comum do time não traz pedido nenhum', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Time',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }],
+    stages: [],
+  }
+  const f = deps([coordenador], { sector: setor })
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'oi' })
+  assert.equal(run.clarification, null)
+})

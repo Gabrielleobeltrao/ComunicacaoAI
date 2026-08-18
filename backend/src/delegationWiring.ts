@@ -59,13 +59,13 @@ export async function resolveToolsWithDelegation(
  * leitura) e as ferramentas de time — sem elas não haveria time para testar. Risco
  * ausente conta como escrita, como em todo lugar.
  */
-export function playgroundDelegationDeps(): DelegationDeps {
+export function playgroundDelegationDeps(jaPerguntou = 0): DelegationDeps {
   const deps = productionDelegationDeps()
   const permitidas = new Set<string>(TEAM_TOOL_NAMES)
   return {
     ...deps,
     resolveTools: async (agent, ownerId, childCtx) => {
-      const todas = await resolveToolsWithDelegation(agent, ownerId, childCtx, deps)
+      const todas = await resolveToolsWithDelegation(agent, ownerId, childCtx, deps, jaPerguntou)
       return todas.filter((t) => (t.risk ?? 'write') === 'read' || permitidas.has(t.name))
     },
   }

@@ -1557,7 +1557,11 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
    * `test` (fica fora das métricas) e as ferramentas que ESCREVEM são removidas de toda
    * a cadeia. Testar não pode mandar e-mail de verdade.
    */
-  const deps = playgroundDelegationDeps()
+  // O teste também tem teto: o cliente devolve a marca de cada pergunta, e a contagem
+  // sai daí. Sem isso o Playground seria o único lugar onde o agente pode perguntar sem
+  // parar — justamente onde o dono vai avaliar se ele sabe conversar.
+  const jaPerguntouSetor = countClarifications(history as { role: string; clarification?: boolean }[])
+  const deps = playgroundDelegationDeps(jaPerguntouSetor)
   const setorParaExecutar = await deps.loadSector(res.locals.userId, sector._id)
   if (!setorParaExecutar) {
     res.status(404).json({ error: 'Sector not found' })
@@ -1640,9 +1644,18 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
       return true
     })
 
+  // A pergunta do time, com as alternativas escritas no texto — o mesmo formato que vai
+  // para qualquer canal.
+  const respostaSetor = run.clarification?.options?.length
+    ? `${run.output}${formatOptions(run.clarification.options)}`
+    : run.output
+
   res.json({
-    reply: run.output,
+    reply: respostaSetor,
     mode,
+    ...(run.clarification
+      ? { clarification: { question: run.clarification.question, reason: run.clarification.reason, options: run.clarification.options ?? [] } }
+      : {}),
     // A identidade desta execução: dá para abrir o registro completo dela em Execuções.
     executionId: execucaoSetorId.toString(),
     participants: run.participants.map((p) => ({
@@ -3836,6 +3849,14 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
         })
         await finishSectorExecution(correlacao, { status: 'succeeded' })
         generatedReply = runSetor.output
+        // O coordenador (ou a etapa final) pediu para restringir: a mesma marca e as
+        // mesmas alternativas do caminho de agente único. Sem isto, o esclarecimento
+        // funcionava entre agentes e sumia justamente quando quem perguntava era quem
+        // fala com o visitante.
+        pedidoDoCanal = runSetor.clarification ?? null
+        if (pedidoDoCanal?.options?.length) {
+          generatedReply = `${generatedReply}${formatOptions(pedidoDoCanal.options)}`
+        }
         // Quem realmente falou, para o registro da conversa dizer a verdade.
         replyAgentName = runSetor.participants.map((p) => p.name).join(' + ') || null
       } catch (erro) {

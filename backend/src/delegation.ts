@@ -854,6 +854,15 @@ export interface SectorTeamRun {
   /** Quem REALMENTE executou, na ordem em que executou. */
   participants: SectorParticipant[]
   warnings: string[]
+  /**
+   * O time pediu para restringir em vez de responder.
+   *
+   * Vem de quem falou por último — o coordenador, ou a etapa final do pipeline. É o que
+   * permite ao canal marcar o turno e escrever as alternativas: sem isto, o
+   * esclarecimento funcionava na delegação entre agentes e sumia quando quem perguntava
+   * era o próprio coordenador.
+   */
+  clarification?: ClarificationRequest | null
 }
 
 export interface SectorTeamOptions {
@@ -894,6 +903,8 @@ export async function executeSectorTeam(
   const format = opts.format
   const participants: SectorParticipant[] = []
   const warnings: string[] = []
+  // O pedido de quem falou por último: é ele que chega a quem pediu.
+  let clarification: ClarificationRequest | null = null
   const sectorExecutionId = opts.sectorExecutionId ?? null
 
   const participationOf = (
@@ -950,6 +961,7 @@ export async function executeSectorTeam(
     }
     // A procedência acompanha quem produziu: quem lê a resposta vê de qual agente veio
     // cada fonte, e não uma pilha anônima.
+    clarification = saida.clarification ?? null
     participants.push({
       ...papel,
       grounding: saida.grounding,
@@ -1012,7 +1024,7 @@ export async function executeSectorTeam(
         throw new Error(`${stage.name}: ${message}`)
       }
     }
-    return { output, participants, warnings }
+    return { output, participants, warnings, clarification }
   }
 
   // orquestrado
@@ -1067,7 +1079,7 @@ export async function executeSectorTeam(
     participationOf('coordinator'),
     { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
   )
-  return { output, participants, warnings }
+  return { output, participants, warnings, clarification }
 }
 
 // ---- delegate_to_sector -----------------------------------------------------

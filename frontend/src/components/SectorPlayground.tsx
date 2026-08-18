@@ -29,6 +29,9 @@ export interface SectorSource {
 interface PlayMessage {
   role: 'user' | 'assistant'
   content: string
+  /** Este turno é uma PERGUNTA do time — a marca volta no próximo envio, para o teto valer. */
+  clarification?: boolean
+  clarificationOptions?: string[]
   participants?: SectorParticipant[]
   grounding?: string
   sources?: SectorSource[]
@@ -77,7 +80,16 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next.map(({ role, content }) => ({ role, content })) }),
+        // A marca volta junto: é dela que sai a contagem de quantas vezes o time já
+        // perguntou nesta conversa, e é o que impede a pergunta de virar laço.
+        body: JSON.stringify({
+          messages: next.map(({ role, content, clarification, clarificationOptions }) => ({
+            role,
+            content,
+            ...(clarification ? { clarification } : {}),
+            ...(clarificationOptions?.length ? { clarificationOptions } : {}),
+          })),
+        }),
       })
       const body = await res.json().catch(() => null)
       if (res.ok && body) {
@@ -94,6 +106,8 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
             usage: body.usage,
             durationMs: body.durationMs,
             executionId: body.executionId,
+            clarification: Boolean(body.clarification),
+            clarificationOptions: body.clarification?.options ?? [],
           },
         ])
       } else {
