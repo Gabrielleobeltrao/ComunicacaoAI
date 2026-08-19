@@ -1,7 +1,7 @@
 # Graph Report - backend  (2026-08-19)
 
 ## Corpus Check
-- 300 files · ~326,364 words
+- 300 files · ~326,932 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `53ce82e5`
+- Built from commit: `3df38bb3`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -84,7 +84,7 @@
 - readiness.test.mjs
 - automations.test.mjs
 - dotenv
-- scheduler.ts
+- sectorAccess.ts
 - delegationWiring.ts
 - automations/repository.ts
 - routine.test.mjs
@@ -94,7 +94,7 @@
 - channelApps.ts
 - widgets.ts
 - agentRoutineRoutes.ts
-- sourceTool.ts
+- scheduler.ts
 - entrypointParity.test.mjs
 - automations/service.ts
 - agentDefinition.ts
@@ -106,7 +106,7 @@
 - agentLiveState.integration.test.mjs
 - executionRoots.integration.test.mjs
 - sourceStaleRun.integration.test.mjs
-- sectorAccess.ts
+- sectorMembership.ts
 - sectorExecutions.integration.test.mjs
 - interactiveRoutes.integration.test.mjs
 - agentBubbleSources.test.mjs
@@ -114,7 +114,7 @@
 - sectors.ts
 - interactiveRun.test.mjs
 - appMigration.integration.test.mjs
-- sectorMembership.ts
+- sourceTool.ts
 - clarify.ts
 - autoModel.ts
 - collaborationGate.test.mjs
@@ -443,9 +443,9 @@ Nodes (3): AGENT, call, ctx
 Cohesion: 0.67
 Nodes (3): bad(), ok(), orderSchema
 
-### Community 76 - "scheduler.ts"
-Cohesion: 0.24
-Nodes (12): advanceFrom(), catchUp(), nextFireAt(), automations, backfillPublishedTriggers(), defaultDeps, ensureSchedulerIndexes(), planSchedules() (+4 more)
+### Community 76 - "sectorAccess.ts"
+Cohesion: 0.21
+Nodes (14): serializeSector(), accessConfigOf(), accessImpact, checkSectorEntry(), ENTRY_POLICY_LABEL, EntryDecision, protectedAgentIds(), SECTOR_ENTRY_POLICIES (+6 more)
 
 ### Community 77 - "delegationWiring.ts"
 Cohesion: 0.09
@@ -475,9 +475,9 @@ Nodes (32): ensureActivationMode(), addMessage(), addOwnerReply(), AgentCardStat
 Cohesion: 0.13
 Nodes (36): describeEventTriggerFlow(), normalizeCondition(), readEventTriggerConfig(), webhookEndpoint(), emptyAppActionPlan(), emptyMemoryPlan(), normalizeAppActionPlan(), normalizeMemoryPlan() (+28 more)
 
-### Community 99 - "sourceTool.ts"
-Cohesion: 0.26
-Nodes (11): listAgentAutomations(), listRoutines(), RoutineSource, STEP_SOURCE, getCheckpoint(), FonteDoAgente, fontesDoAgente(), j() (+3 more)
+### Community 99 - "scheduler.ts"
+Cohesion: 0.24
+Nodes (12): advanceFrom(), catchUp(), nextFireAt(), automations, backfillPublishedTriggers(), defaultDeps, ensureSchedulerIndexes(), planSchedules() (+4 more)
 
 ### Community 100 - "entrypointParity.test.mjs"
 Cohesion: 0.29
@@ -523,9 +523,9 @@ Nodes (5): A1, A2, A3, FLOOR_A, FLOOR_B
 Cohesion: 0.25
 Nodes (5): AGENT, BUILDING, conferirDescartada(), FLOOR, lerRun()
 
-### Community 111 - "sectorAccess.ts"
-Cohesion: 0.21
-Nodes (14): serializeSector(), accessConfigOf(), accessImpact, checkSectorEntry(), ENTRY_POLICY_LABEL, EntryDecision, protectedAgentIds(), SECTOR_ENTRY_POLICIES (+6 more)
+### Community 111 - "sectorMembership.ts"
+Cohesion: 0.16
+Nodes (11): AgentDoc, assignAgentToSector(), AssignOutcome, AssignResult, MembershipFail, sectorOfAgent(), sectors, MAX_SECTOR_MEMBERS (+3 more)
 
 ### Community 112 - "sectorExecutions.integration.test.mjs"
 Cohesion: 0.22
@@ -547,9 +547,9 @@ Nodes (16): createSector(), deleteSector(), enforceSingleMembership(), membersFr
 Cohesion: 0.38
 Nodes (3): agents(), insertAgent(), readAgent()
 
-### Community 119 - "sectorMembership.ts"
-Cohesion: 0.16
-Nodes (11): AgentDoc, assignAgentToSector(), AssignOutcome, AssignResult, MembershipFail, sectorOfAgent(), sectors, MAX_SECTOR_MEMBERS (+3 more)
+### Community 119 - "sourceTool.ts"
+Cohesion: 0.26
+Nodes (11): listAgentAutomations(), listRoutines(), RoutineSource, STEP_SOURCE, getCheckpoint(), FonteDoAgente, fontesDoAgente(), j() (+3 more)
 
 ### Community 120 - "clarify.ts"
 Cohesion: 0.27

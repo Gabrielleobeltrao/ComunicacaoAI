@@ -724,3 +724,41 @@ test('quando a leitura falha, o painel diz que a resposta veio da base anterior'
   // E a resposta saiu mesmo assim, com o que já estava guardado.
   assert.match(r.output, /protocolo vigente/i)
 })
+
+// --- o outro lado da falha: sem base anterior, não se inventa -------------------------------
+//
+// Com base anterior, o agente trabalha com ela (já testado acima). Sem base nenhuma, o
+// honesto é parar: um agente que EXIGE fundamentação não pode responder porque o site
+// caiu — e responder assim mesmo seria inventar com aparência de fonte.
+
+test('site fora do ar e base vazia: o agente que exige base não responde do nada', async () => {
+  const agente = await agenteComSite({ url: `http://127.0.0.1:${porta}/quebrado` })
+  const comExigencia = { ...agente, requireGrounding: true }
+  assert.equal((await documentos(agente._id)).length, 0)
+
+  let chamouOModelo = false
+  const deps = depsDoRuntime(comExigencia, {
+    runTask: async () => {
+      chamouOModelo = true
+      return { output: 'não deveria chegar aqui', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+
+  await assert.rejects(
+    () =>
+      executeSectorTeam(deps, sectorRunContext({ ownerId: OWNER, buildingId: 'predio', correlationId: 'teste' }), setorDeUm(comExigencia), {
+        objective: 'qual é o horário?',
+      }),
+    /base|grounding/i,
+  )
+  // E nem a inferência foi paga: não há o que responder.
+  assert.equal(chamouOModelo, false)
+})
+
+test('site fora do ar e base vazia: sem exigir base, ele responde dizendo que não tem', async () => {
+  // O outro caso: um agente comum continua atendendo — sem base, e sem fingir que tem.
+  const agente = await agenteComSite({ url: `http://127.0.0.1:${porta}/quebrado` })
+  const r = await rodar(agente, 'qual é o horário?')
+  assert.equal(r.participants[0].grounding, 'unavailable')
+  assert.ok(r.output)
+})
