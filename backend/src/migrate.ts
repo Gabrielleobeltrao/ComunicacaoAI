@@ -84,6 +84,26 @@ export async function runMigrations(): Promise<void> {
   await ensureAgentLiveStateIndexes()
   // A conversa de teste que sobrevive à troca de aba (e some sozinha em 30 dias).
   await ensurePlaygroundSessionIndexes()
+
+  /**
+   * Os sites cadastrados passam a ser lidos ANTES de o agente ser usado.
+   *
+   * O padrão de quando a função nasceu era `manual` — "nada acontece sozinho" —, e a
+   * intenção era não consumir banda sem alguém pedir. O efeito prático foi outro: quem
+   * cadastrava um site via o agente responder "não encontrei nada" para sempre, e clicava
+   * em "Atualizar agora" sem entender por quê. Ninguém escolheu `manual`: foi o que
+   * estava lá.
+   *
+   * `on_demand` não gasta nada em segundo plano: lê quando o agente é acionado, e só se o
+   * que está guardado envelheceu. Quem quiser o comportamento anterior escolhe "Só quando
+   * eu pedir" na tela — e a partir daí esta migração não o toca mais, porque ela só roda
+   * uma vez por endereço (marcado em `refreshModeMigratedAt`).
+   */
+  await db.collection('agents').updateMany(
+    { 'watchedSources.refreshMode': 'manual', 'watchedSources.refreshModeMigratedAt': { $exists: false } },
+    { $set: { 'watchedSources.$[fonte].refreshMode': 'on_demand', 'watchedSources.$[fonte].refreshModeMigratedAt': new Date() } },
+    { arrayFilters: [{ 'fonte.refreshMode': 'manual', 'fonte.refreshModeMigratedAt': { $exists: false } }] },
+  )
   await ensureSectorExecutionIndexes()
   await ensureExecutionRootIndexes()
 

@@ -207,3 +207,44 @@ test('rodar a migração de novo não muda absolutamente nada', async () => {
   await runMigrations()
   assert.deepEqual(await snapshot(), first)
 })
+
+// --- o padrão que não lia nada ------------------------------------------------------------
+//
+// Quando a função nasceu, o padrão era `manual`: nada acontecia sozinho. Ninguém ESCOLHEU
+// isso — era o que estava lá —, e o efeito foi um agente com site cadastrado respondendo
+// "não encontrei nada" para sempre. A migração troca o padrão, uma vez, e marca para não
+// voltar a mexer.
+
+test('sites cadastrados passam a ser lidos antes de o agente ser usado', async () => {
+  const { db } = await import('../dist/db.js')
+  const { runMigrations } = await import('../dist/migrate.js')
+  const { ObjectId } = await import('mongodb')
+
+  const agentId = new ObjectId()
+  await db.collection('agents').insertOne({
+    _id: agentId,
+    ownerId: 'dono',
+    name: 'Agente com site',
+    objective: 'x',
+    provider: 'anthropic',
+    watchedSources: [
+      { id: 'f1', name: 'Boletim', kind: 'http', url: 'https://exemplo.test/a', when: 'on_demand', initialWindow: '7d', refreshMode: 'manual' },
+      { id: 'f2', name: 'Agenda', kind: 'http', url: 'https://exemplo.test/b', when: 'on_demand', initialWindow: '7d', refreshMode: 'scheduled', intervalMinutes: 30 },
+    ],
+  })
+
+  await runMigrations()
+
+  const depois = await db.collection('agents').findOne({ _id: agentId })
+  assert.equal(depois.watchedSources[0].refreshMode, 'on_demand', 'o que estava em manual passa a ler antes de usar')
+  assert.ok(depois.watchedSources[0].refreshModeMigratedAt instanceof Date)
+  // Quem já tinha escolha explícita de horário não é tocado.
+  assert.equal(depois.watchedSources[1].refreshMode, 'scheduled')
+  assert.equal(depois.watchedSources[1].refreshModeMigratedAt, undefined)
+
+  // O dono volta para manual DE PROPÓSITO: rodar de novo não pode desfazer a escolha dele.
+  await db.collection('agents').updateOne({ _id: agentId }, { $set: { 'watchedSources.0.refreshMode': 'manual' } })
+  await runMigrations()
+  const final = await db.collection('agents').findOne({ _id: agentId })
+  assert.equal(final.watchedSources[0].refreshMode, 'manual', 'a escolha do dono é respeitada')
+})

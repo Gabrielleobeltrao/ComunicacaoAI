@@ -511,3 +511,61 @@ test('o modo escolhido na tela sobrevive ao salvar', async () => {
   assert.equal(fonte.refreshMode, 'on_demand', `o modo voltou como ${fonte.refreshMode}`)
   assert.equal(fonte.maxStalenessMinutes, 15)
 })
+
+// --- O CASO RELATADO: mandar mensagem no Playground e o site não ser lido ---------------------
+//
+// O caminho exato de quem testa: um agente com um endereço em "Como trabalha", uma
+// mensagem no chat de teste, e a expectativa de que ele passe pelo site ANTES de procurar
+// na base. Aqui isso é verificado por MODO, porque é o modo que decide.
+
+const comSite = async (nome, refreshMode, porta) => {
+  const agente = await criarAgente({ name: nome })
+  const r = await fetch(`${base}/api/agents/${agente._id}/sources`, {
+    method: 'PUT',
+    headers: comSessao(),
+    body: JSON.stringify({
+      sources: [{ name: 'Boletim', kind: 'http', url: `http://127.0.0.1:${porta}/pagina`, when: 'on_demand', refreshMode }],
+    }),
+  })
+  assert.ok(r.ok, `salvar a fonte devolveu ${r.status}`)
+  return agente
+}
+
+const perguntar = (agenteId, texto) =>
+  fetch(`${base}/api/agents/${agenteId}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: texto }] }),
+  })
+
+const documentosDe = async (agenteId) =>
+  (await (await fetch(`${base}/api/agents/${agenteId}/documents`, { headers: comSessao() })).json()).summary?.web ?? 0
+
+test('mandar mensagem no teste dispara a leitura do site — quando o modo permite', async () => {
+  const site = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' })
+    res.end(`<html><head><title>Calendário de agosto</title></head><body><article>${'O calendário de agosto tem feriado no dia 15. '.repeat(20)}</article></body></html>`)
+  })
+  await new Promise((r) => site.listen(0, '127.0.0.1', r))
+  const porta = site.address().port
+
+  try {
+    // ANTES DE USAR O AGENTE: a mensagem dispara a leitura, e a base sai do zero.
+    const sobDemanda = await comSite('Sob demanda', 'on_demand', porta)
+    assert.equal(await documentosDe(sobDemanda._id), 0, 'a base começa vazia')
+    const r1 = await perguntar(sobDemanda._id, 'qual o calendário de agosto?')
+    assert.ok(r1.ok, `playground devolveu ${r1.status}`)
+    assert.equal(await documentosDe(sobDemanda._id), 1, 'a mensagem tinha que ter disparado a leitura')
+
+    // SÓ QUANDO EU PEDIR: a mesma mensagem não lê nada. É o modo, não o motor.
+    const soManual = await comSite('Só manual', 'manual', porta)
+    const r2 = await perguntar(soManual._id, 'qual o calendário de agosto?')
+    assert.ok(r2.ok)
+    assert.equal(await documentosDe(soManual._id), 0, 'em manual, nada é lido por uma pergunta')
+    // E o botão continua funcionando para ele.
+    await fetch(`${base}/api/agents/${soManual._id}/sources/refresh`, { method: 'POST', headers: comSessao() })
+    assert.equal(await documentosDe(soManual._id), 1)
+  } finally {
+    await new Promise((r) => site.close(r))
+  }
+})

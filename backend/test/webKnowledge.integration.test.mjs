@@ -762,3 +762,47 @@ test('site fora do ar e base vazia: sem exigir base, ele responde dizendo que n�
   assert.equal(r.participants[0].grounding, 'unavailable')
   assert.ok(r.output)
 })
+
+// --- o escopo do dono, no filtro que o quebrava ------------------------------------------------
+//
+// `ownerFilter` devolve um `$or` (o formato antigo casa por `agentId`), e o filtro de "veio
+// da web" também é um `$or`. Espalhar os dois no mesmo objeto fazia o segundo APAGAR o
+// primeiro: a listagem ficava sem dono. Não era número errado — era documento de outro
+// agente, e de outra conta, aparecendo na lista.
+
+test('o filtro Web não atravessa a fronteira do dono', async () => {
+  const meu = await comFeed()
+  await ensureAgentWebKnowledgeFresh(OWNER, meu._id ?? meu, 'manual')
+
+  // Outro agente, de OUTRA conta, com documentos web dele.
+  const alheio = new ObjectId()
+  await db.collection('agents').insertOne({ _id: alheio, ownerId: 'outra-conta', name: 'Alheio', objective: 'x', provider: 'anthropic' })
+  await createDocumentFor({ ownerType: 'agent', ownerId: alheio }, {
+    title: 'Segredo do vizinho',
+    content: 'conteúdo que não é meu',
+    source: 'web',
+    web: {
+      sourceType: 'web',
+      sourceId: 'f-alheia',
+      url: 'https://vizinho.test/x',
+      canonicalUrl: 'https://vizinho.test/x',
+      domain: 'vizinho.test',
+      title: 'Segredo do vizinho',
+      fetchedAt: new Date(),
+      contentHash: 'zzz',
+    },
+  })
+
+  const meuId = meu._id ?? meu
+  const web = await listDocumentsPage({ ownerType: 'agent', ownerId: meuId }, { kind: 'web' })
+  assert.ok(!web.items.some((d) => d.title === 'Segredo do vizinho'), 'documento de outra conta apareceu na lista')
+  assert.equal(web.summary.web, 2, 'o resumo conta só o que é meu')
+  // E as contagens fecham: nada de total 0 com web 1.
+  assert.equal(web.summary.total, web.summary.web + web.summary.manual)
+
+  // O mesmo vale com busca e com filtro por fonte.
+  const porBusca = await listDocumentsPage({ ownerType: 'agent', ownerId: meuId }, { kind: 'web', search: 'vizinho' })
+  assert.equal(porBusca.items.length, 0)
+  const porFonte = await listDocumentsPage({ ownerType: 'agent', ownerId: meuId }, { sourceId: 'f-alheia' })
+  assert.equal(porFonte.items.length, 0)
+})

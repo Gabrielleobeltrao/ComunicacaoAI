@@ -163,6 +163,8 @@ export interface WatchedSource {
   sameDomainOnly?: boolean
   /** Endereços que o dono apagou da base e não quer de volta no próximo scan. */
   ignoredUrls?: string[]
+  /** Marca da migração de padrão: `manual` → `on_demand`. Impede que ela rode duas vezes. */
+  refreshModeMigratedAt?: Date
 
   /** O que aconteceu na última leitura. Escrito pelo gerente, lido pela tela. */
   lastFetchedAt?: Date | null
