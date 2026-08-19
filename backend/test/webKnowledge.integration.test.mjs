@@ -26,6 +26,7 @@ let pedidos = []
 let servidor
 let artigosNoFeed = ['1', '2']
 const textoDaMateria = {}
+const tituloDaMateria = {}
 
 before(async () => {
   servidor = createServer((req, res) => {
@@ -48,7 +49,7 @@ before(async () => {
       const n = req.url.replace('/materia-', '')
       res.writeHead(200, { 'content-type': 'text/html' })
       res.end(`<html><head>
-        <title>Matéria ${n}</title>
+        <title>${tituloDaMateria[n] ?? `Matéria ${n}`}</title>
         <link rel="canonical" href="http://127.0.0.1:${porta}/materia-${n}"/>
         <meta property="article:published_time" content="2026-08-${String(10 + Number(n)).padStart(2, '0')}T09:00:00Z"/>
         <meta property="article:author" content="Redação"/>
@@ -89,6 +90,7 @@ beforeEach(async () => {
   corpoDaPagina = '<html><head><title>Boletim</title></head><body>conteúdo original da página</body></html>'
   artigosNoFeed = ['1', '2']
   for (const chave of Object.keys(textoDaMateria)) delete textoDaMateria[chave]
+  for (const chave of Object.keys(tituloDaMateria)) delete tituloDaMateria[chave]
 })
 
 const criarAgente = async (fonte) => {
@@ -432,4 +434,118 @@ test('6) HYBRID: não relê quando está fresca, relê quando envelhece', async 
   const velha = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'on_demand', Date.now() + 31 * 60_000)
   assert.equal(velha[0].refreshed, true)
   assert.ok(pedidos.length > antes)
+})
+
+// --- o que o crawler trouxe, visível e gerenciável ---------------------------------------------
+//
+// Conhecimento é conhecimento, tenha vindo de um arquivo ou de um site. O que muda é a
+// procedência — e é ela que precisa aparecer, junto com o que dá para fazer a respeito.
+
+const { countDocumentsFromSource, createDocumentFor, listDocumentsPage } = await import('../dist/knowledge.js')
+
+test('1) o artigo ingerido aparece na base, marcado como web', async () => {
+  const agentId = await comFeed()
+  await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  // E um documento escrito à mão, para provar que os dois convivem.
+  await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Escrito à mão', content: 'texto do dono' })
+
+  const pagina = await listDocumentsPage({ ownerType: 'agent', ownerId: agentId })
+  assert.equal(pagina.summary.total, 3)
+  assert.equal(pagina.summary.web, 2)
+  assert.equal(pagina.summary.manual, 1)
+  assert.ok(pagina.summary.lastWebFetchAt instanceof Date)
+
+  const web = pagina.items.find((d) => d.web)
+  assert.equal(web.web.sourceType, 'web')
+  assert.equal(web.web.domain, '127.0.0.1')
+  assert.ok(web.web.canonicalUrl)
+})
+
+test('4) os filtros separam manual de web, e a busca acha pelo domínio', async () => {
+  const agentId = await comFeed()
+  await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Manual do produto', content: 'texto do dono' })
+  const dono = { ownerType: 'agent', ownerId: agentId }
+
+  assert.equal((await listDocumentsPage(dono, { kind: 'web' })).items.length, 2)
+  const manuais = await listDocumentsPage(dono, { kind: 'manual' })
+  assert.deepEqual(manuais.items.map((d) => d.title), ['Manual do produto'])
+  // O resumo é da BASE inteira, não do recorte: ele existe para dar o tamanho do todo.
+  assert.equal(manuais.summary.total, 3)
+
+  assert.equal((await listDocumentsPage(dono, { search: '127.0.0.1' })).items.length, 2)
+  assert.equal((await listDocumentsPage(dono, { search: 'Manual do' })).items.length, 1)
+  // Uma busca com caracteres de regex não vira consulta maluca.
+  assert.equal((await listDocumentsPage(dono, { search: '.*' })).items.length, 0)
+})
+
+test('5) o filtro por FONTE mostra só o que aquela fonte produziu', async () => {
+  const agentId = await comFeed()
+  await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  const dono = { ownerType: 'agent', ownerId: agentId }
+
+  assert.equal((await listDocumentsPage(dono, { sourceId: 'f1' })).items.length, 2)
+  assert.equal((await listDocumentsPage(dono, { sourceId: 'outra' })).items.length, 0)
+  // O mesmo número que a tela mostra no "Ver conhecimento gerado (N)".
+  assert.equal(await countDocumentsFromSource(dono, 'f1'), 2)
+})
+
+test('7) a listagem NÃO carrega o conteúdo dos documentos', async () => {
+  const agentId = await comFeed()
+  await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  const pagina = await listDocumentsPage({ ownerType: 'agent', ownerId: agentId })
+  // Centenas de artigos inteiros seriam megabytes para desenhar uma lista.
+  for (const item of pagina.items) assert.equal(item.content, undefined)
+  // E o conteúdo está lá quando alguém abre UM documento.
+  const completo = await db.collection('knowledge_documents').findOne({ _id: pagina.items[0]._id })
+  assert.ok(completo.content.length > 0)
+})
+
+test('a paginação existe, e o resumo não muda com ela', async () => {
+  const agentId = await comFeed()
+  await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  const dono = { ownerType: 'agent', ownerId: agentId }
+  const primeira = await listDocumentsPage(dono, { limit: 1 })
+  const segunda = await listDocumentsPage(dono, { limit: 1, skip: 1 })
+  assert.equal(primeira.items.length, 1)
+  assert.equal(segunda.items.length, 1)
+  assert.notEqual(primeira.items[0]._id.toString(), segunda.items[0]._id.toString())
+  assert.equal(primeira.total, 2)
+  assert.equal(primeira.summary.total, 2)
+})
+
+test('6) excluir e IGNORAR: o artigo não volta, e a fonte continua inteira', async () => {
+  const { ignoreWebUrl } = await import('../dist/webKnowledge.js')
+  const agentId = await comFeed()
+  await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+
+  const doc = await db.collection('knowledge_documents').findOne({ title: 'Matéria 1' })
+  await db.collection('knowledge_documents').deleteOne({ _id: doc._id })
+  await ignoreWebUrl(OWNER, agentId, 'f1', doc.web.canonicalUrl)
+
+  const depois = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  assert.equal(depois[0].ignored, 1, 'o endereço ignorado não voltou')
+  const titulos = (await documentos(agentId)).map((d) => d.title)
+  assert.deepEqual(titulos, ['Matéria 2'])
+
+  // A FONTE continua lá, com a configuração e o resto do que produziu.
+  const agente = await db.collection('agents').findOne({ _id: agentId })
+  assert.equal(agente.watchedSources.length, 1)
+  assert.equal(agente.watchedSources[0].refreshMode, 'manual')
+  assert.deepEqual(agente.watchedSources[0].ignoredUrls, [doc.web.canonicalUrl])
+})
+
+test('8) o RAG continua recuperando o que veio da web', async () => {
+  const agentId = await comFeed()
+  tituloDaMateria['1'] = 'Relatório trimestral da unidade 7'
+  textoDaMateria['1'] = 'O relatório trimestral da unidade 7 apontou crescimento de 12% no período. '.repeat(15)
+  await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+
+  const { retrieveContext } = await import('../dist/knowledge.js')
+
+  const r = await retrieveContext([agentId], 'o que diz o relatório trimestral da unidade 7?')
+  assert.equal(r.status, 'ok')
+  assert.match(r.context.join('\n'), /crescimento de 12%/)
+  // A procedência acompanha o trecho: quem lê a resposta consegue voltar à origem.
+  assert.ok(r.sources.some((f) => (f.title ?? '').includes('Relatório trimestral')))
 })

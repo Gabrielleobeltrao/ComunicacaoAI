@@ -361,4 +361,29 @@ export interface KnowledgeDocumentSummary {
   _id: string
   title: string
   createdAt: string
+  updatedAt?: string
+  /** Como o documento chegou à base: escrito à mão, enviado, ou lido de um site. */
+  source?: string | null
+  indexStatus?: 'indexed' | 'pending' | 'error'
+  chunkCount?: number
+  /** Presente só no que veio da WEB — é o que distingue os dois na lista. */
+  web?: {
+    sourceType: 'web'
+    sourceId: string
+    url: string
+    canonicalUrl: string
+    domain: string
+    title: string | null
+    author?: string | null
+    publishedAt?: string | null
+    modifiedAt?: string | null
+    fetchedAt: string
+    contentHash: string
+  }
+}
+
+export interface KnowledgePage {
+  items: KnowledgeDocumentSummary[]
+  total: number
+  summary: { manual: number; web: number; total: number; lastWebFetchAt: string | null }
 }

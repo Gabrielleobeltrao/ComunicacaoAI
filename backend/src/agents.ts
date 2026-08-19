@@ -161,6 +161,8 @@ export interface WatchedSource {
   maxArticlesPerRun?: number
   maxDepth?: number
   sameDomainOnly?: boolean
+  /** Endereços que o dono apagou da base e não quer de volta no próximo scan. */
+  ignoredUrls?: string[]
 
   /** O que aconteceu na última leitura. Escrito pelo gerente, lido pela tela. */
   lastFetchedAt?: Date | null

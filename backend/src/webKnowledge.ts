@@ -46,6 +46,8 @@ export interface RefreshOutcome {
   unchanged: number
   /** Páginas de índice descartadas: elas descobrem endereços, não viram conhecimento. */
   skippedIndexPages?: number
+  /** Endereços que o dono apagou e mandou ignorar. */
+  ignored?: number
   /** Por onde os endereços foram descobertos nesta rodada. */
   via?: string
   error?: string
@@ -202,7 +204,13 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
     const conteudos = comConteudo.length > 0 ? comConteudo : candidatas
     base.skippedIndexPages = candidatas.length - conteudos.length
 
+    // O que o dono apagou e mandou ignorar não volta pelo scan seguinte.
+    const ignorados = new Set(site.ignoredUrls ?? [])
     for (const { fatos } of conteudos) {
+      if (ignorados.has(fatos.canonicalUrl)) {
+        base.ignored = (base.ignored ?? 0) + 1
+        continue
+      }
       const ref = webSourceRef(site.id, fatos.canonicalUrl)
       const titulo = (fatos.title ?? site.name).slice(0, 200)
       // A procedência fica NO texto: quem lê a resposta precisa poder voltar à origem.
@@ -326,4 +334,21 @@ export async function refreshScheduledWebSources(agora: number = Date.now()): Pr
     atualizados += saida.filter((r) => r.refreshed).length
   }
   return atualizados
+}
+
+/**
+ * "Apaguei, e não quero de volta."
+ *
+ * O endereço fica marcado NA FONTE — que continua existindo, com todo o resto que ela
+ * produziu. Sem isto, apagar um artigo de uma fonte ativa é um gesto que dura até o
+ * próximo scan, o que é pior do que não poder apagar.
+ */
+export async function ignoreWebUrl(ownerId: string, agentId: ObjectId, sourceId: string, canonicalUrl: string): Promise<void> {
+  await agents
+    .updateOne(
+      { _id: agentId, ownerId },
+      { $addToSet: { 'watchedSources.$[fonte].ignoredUrls': canonicalUrl } },
+      { arrayFilters: [{ 'fonte.id': sourceId }] },
+    )
+    .catch((erro) => console.error('não foi possível ignorar o endereço:', erro))
 }

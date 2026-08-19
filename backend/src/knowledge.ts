@@ -221,6 +221,86 @@ export function listDocumentsFor(owner: KnowledgeOwner) {
     .sort({ createdAt: -1 })
     .toArray()
 }
+/**
+ * O filtro de "isto veio da web".
+ *
+ * Duas escritas porque houve duas gerações: os primeiros documentos web trazem só
+ * `source: 'web'`; os de agora trazem também `web.sourceType`. Perguntar pelas duas é o
+ * que faz o que já estava gravado continuar aparecendo na aba certa.
+ */
+const FILTRO_WEB = { $or: [{ 'web.sourceType': 'web' }, { source: 'web' }] }
+
+export interface DocumentQuery {
+  kind?: 'all' | 'manual' | 'web'
+  /** Só os documentos que ESTA fonte cadastrada produziu. */
+  sourceId?: string | null
+  status?: KnowledgeDocument['indexStatus'] | null
+  /** Título, domínio ou endereço. O CONTEÚDO fica de fora — ver a nota abaixo. */
+  search?: string | null
+  limit?: number
+  skip?: number
+}
+
+export interface DocumentPage {
+  items: Omit<KnowledgeDocument, 'content'>[]
+  total: number
+  summary: { manual: number; web: number; total: number; lastWebFetchAt: Date | null }
+}
+
+const escaparRegex = (texto: string): string => texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * Uma página da base, com metadados e SEM o conteúdo.
+ *
+ * O conteúdo fica de fora de propósito: uma base alimentada por um site tem centenas de
+ * artigos, e mandar todos inteiros para a tela seria megabytes para desenhar uma lista. O
+ * texto vem quando alguém abre um documento, e só o dele.
+ *
+ * A busca cobre título, domínio e endereço — o que identifica um documento numa lista.
+ * Procurar dentro do texto exigiria varrer a coleção inteira a cada tecla; para isso
+ * existe a busca de conhecimento, que é o que o agente usa.
+ */
+export async function listDocumentsPage(owner: KnowledgeOwner, query: DocumentQuery = {}): Promise<DocumentPage> {
+  const escopo = ownerFilter(owner)
+  const filtro: Record<string, unknown> = { ...escopo }
+  if (query.kind === 'web') Object.assign(filtro, FILTRO_WEB)
+  if (query.kind === 'manual') Object.assign(filtro, { $nor: [FILTRO_WEB] })
+  if (query.sourceId) filtro['web.sourceId'] = query.sourceId
+  if (query.status) filtro.indexStatus = query.status
+  if (query.search?.trim()) {
+    const padrao = escaparRegex(query.search.trim())
+    filtro.$and = [
+      {
+        $or: [
+          { title: { $regex: padrao, $options: 'i' } },
+          { 'web.canonicalUrl': { $regex: padrao, $options: 'i' } },
+          { 'web.domain': { $regex: padrao, $options: 'i' } },
+        ],
+      },
+    ]
+  }
+
+  const limite = Math.min(Math.max(Number(query.limit) || 50, 1), 200)
+  const pular = Math.max(Number(query.skip) || 0, 0)
+  const [items, total, web, todos, ultimo] = await Promise.all([
+    documents.find(filtro, { projection: { content: 0 } }).sort({ updatedAt: -1, createdAt: -1 }).skip(pular).limit(limite).toArray(),
+    documents.countDocuments(filtro),
+    documents.countDocuments({ ...escopo, ...FILTRO_WEB }),
+    documents.countDocuments(escopo),
+    documents.find({ ...escopo, ...FILTRO_WEB }, { projection: { 'web.fetchedAt': 1 } }).sort({ 'web.fetchedAt': -1 }).limit(1).toArray(),
+  ])
+  return {
+    items: items as Omit<KnowledgeDocument, 'content'>[],
+    total,
+    summary: { manual: todos - web, web, total: todos, lastWebFetchAt: ultimo[0]?.web?.fetchedAt ?? null },
+  }
+}
+
+/** Quantos documentos ESTA fonte cadastrada produziu. É a resposta de "o que ela me deu". */
+export function countDocumentsFromSource(owner: KnowledgeOwner, sourceId: string): Promise<number> {
+  return documents.countDocuments({ ...ownerFilter(owner), 'web.sourceId': sourceId })
+}
+
 export function listDocuments(agentId: ObjectId) {
   return listDocumentsFor({ ownerType: 'agent', ownerId: agentId })
 }
