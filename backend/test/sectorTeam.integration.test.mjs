@@ -1374,7 +1374,11 @@ test('o planner escolhe o agente, e as fontes dele são atualizadas antes da tar
 
   const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'o que há de novo?' })
 
-  assert.deepEqual(ordem, ['fontes', 'tarefa:pesquisar', 'sintese'], 'atualiza, depois executa')
+  // Cada agente verifica as PRÓPRIAS fontes antes de trabalhar — o especialista antes da
+  // tarefa dele, e o coordenador antes de consolidar. O que importa é a ordem dentro de
+  // cada execução: primeiro o site, depois o trabalho.
+  assert.deepEqual(ordem, ['fontes', 'tarefa:pesquisar', 'fontes', 'sintese'], 'atualiza, depois executa')
+  assert.ok(ordem.indexOf('fontes') < ordem.indexOf('tarefa:pesquisar'))
   void run
 })
 

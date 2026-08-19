@@ -315,6 +315,9 @@ function ConnectedList({
   const [renaming, setRenaming] = useState<AppInstallation | null>(null)
   const [confirming, setConfirming] = useState<AppInstallation | null>(null)
   const [settingsFor, setSettingsFor] = useState<AppInstallation | null>(null)
+  // Remover é diferente de desconectar, e por isso tem confirmação própria: desconectar
+  // tira o acesso e mantém o registro; remover tira a conexão da lista.
+  const [removing, setRemoving] = useState<AppInstallation | null>(null)
 
   const appFor = (key: string) => catalog.find((a) => a.key === key)
 
@@ -447,7 +450,7 @@ function ConnectedList({
               <SettingsAction
                 icon="power-off"
                 title="Desconectar"
-                body="Os agentes perdem acesso na hora. O histórico é preservado."
+                body="Os agentes perdem acesso na hora. O histórico é preservado, e a conexão continua na lista."
                 testid="disconnect"
                 danger
                 onClick={() => {
@@ -457,6 +460,52 @@ function ConnectedList({
                 }}
               />
             ) : null}
+            {/* Faltava isto: uma conexão desconectada ficava na lista para sempre, sem
+                ação nenhuma. Desconectar tira o ACESSO; remover tira a CONEXÃO. */}
+            <SettingsAction
+              icon="trash-2"
+              title="Remover da lista"
+              body="Tira esta conexão da lista. O histórico do que já foi feito é preservado; para usar de novo, é conectar outra vez."
+              testid="action-remove"
+              danger
+              onClick={() => {
+                const target = settingsFor
+                setSettingsFor(null)
+                setRemoving(target)
+              }}
+            />
+          </div>
+        ) : null}
+      </Dialog>
+
+      <Dialog open={removing !== null} onClose={() => setRemoving(null)} title="Remover conexão" width={520}>
+        {removing ? (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              {removing.status === 'connected'
+                ? 'A conexão será desconectada e sai da lista. Os agentes que a usam perdem acesso na hora.'
+                : 'A conexão sai da lista.'}
+            </p>
+            <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              O histórico do que já foi feito é preservado. Para usar de novo, basta conectar outra vez.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Button variant="ghost" onClick={() => setRemoving(null)}>
+                Cancelar
+              </Button>
+              <Button
+                variant="primary"
+                data-testid="confirm-remove"
+                onClick={async () => {
+                  // `purge`: a rota apaga a linha em vez de só revogar.
+                  await disconnectInstallation(removing.id, true)
+                  setRemoving(null)
+                  await onChanged()
+                }}
+              >
+                Remover
+              </Button>
+            </div>
           </div>
         ) : null}
       </Dialog>

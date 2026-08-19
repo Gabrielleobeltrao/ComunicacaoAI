@@ -39,6 +39,7 @@ before(async () => {
       DOTENV_CONFIG_PATH: join(RAIZ, 'test/.sem-env'),
       NODE_ENV: 'test',
       LLM_FAKE: '1',
+      ALLOW_LOOPBACK_HTTP_TARGETS: '1',
       PORT: String(PORTA),
       MONGODB_URI: uri,
       BETTER_AUTH_SECRET: 'interativo-'.padEnd(40, 'x'),
@@ -438,4 +439,47 @@ test('conversar acende o balão do agente e o deixa em estado terminal', async (
   assert.ok(['completed', 'failed', 'canceled'].includes(linha.state), `estado final inesperado: ${linha.state}`)
   // E ele expira sozinho — nenhum agente fica preso por causa de um processo que morreu.
   assert.ok(linha.expiresAt instanceof Date)
+})
+
+// --- o site cadastrado na tela vira conhecimento? ------------------------------------------
+//
+// O caminho da PESSOA, pelas rotas de verdade: cadastra o endereço, clica em atualizar,
+// e espera ver o conteúdo na base. O gerente já tem teste próprio; o que falta provar é
+// que a tela chega até ele.
+import { createServer } from 'node:http'
+
+test('cadastrar um site e clicar em atualizar cria conhecimento no agente', async () => {
+  const site = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' })
+    res.end(`<html><head><title>Boletim da empresa</title></head><body><article>${'Conteúdo publicado hoje pela empresa. '.repeat(20)}</article></body></html>`)
+  })
+  await new Promise((r) => site.listen(0, '127.0.0.1', r))
+  const portaDoSite = site.address().port
+
+  try {
+    const agente = await criarAgente({ name: 'Agente com site' })
+
+    const salvou = await fetch(`${base}/api/agents/${agente._id}/sources`, {
+      method: 'PUT',
+      headers: comSessao(),
+      body: JSON.stringify({
+        sources: [{ name: 'Boletim', kind: 'http', url: `http://127.0.0.1:${portaDoSite}/boletim`, when: 'on_demand', refreshMode: 'manual' }],
+      }),
+    })
+    assert.ok(salvou.ok, `salvar a fonte devolveu ${salvou.status}`)
+
+    const atualizou = await fetch(`${base}/api/agents/${agente._id}/sources/refresh`, { method: 'POST', headers: comSessao() })
+    assert.ok(atualizou.ok, `atualizar devolveu ${atualizou.status}`)
+    const resultado = await atualizou.json()
+    assert.equal(resultado.sources?.length, 1, `nenhuma fonte foi processada: ${JSON.stringify(resultado)}`)
+    assert.equal(resultado.sources[0].error, null, `a leitura falhou: ${resultado.sources[0].error}`)
+    assert.equal(resultado.sources[0].created, 1, `nada foi criado: ${JSON.stringify(resultado.sources[0])}`)
+
+    const base_ = await fetch(`${base}/api/agents/${agente._id}/documents`, { headers: comSessao() })
+    const pagina = await base_.json()
+    assert.equal(pagina.summary?.web, 1, `o documento não apareceu na base: ${JSON.stringify(pagina.summary)}`)
+    assert.match(pagina.items[0].title, /Boletim da empresa/)
+  } finally {
+    await new Promise((r) => site.close(r))
+  }
 })
