@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
+import { novaTrilha, useExecutionTrace } from '../lib/executionTrace'
+import { ExecutionTrace } from './ExecutionTrace'
 import type { SectorMode, SectorSummary } from '../lib/types'
 import { MessageContent } from './MessageContent'
 
@@ -69,6 +71,10 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [limpando, setLimpando] = useState(false)
+  // A trilha é criada ANTES do envio: é o que permite o painel acompanhar sem esperar a
+  // resposta final. Um id por envio — a execução anterior fica no histórico do painel.
+  const [traceId, setTraceId] = useState<string | null>(null)
+  const trilha = useExecutionTrace(traceId)
 
   useEffect(() => {
     let vivo = true
@@ -117,6 +123,9 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
     setMessages(next)
     setInput('')
     setSending(true)
+    // Uma trilha por envio, criada antes do pedido sair.
+    const novoTrace = novaTrilha()
+    setTraceId(novoTrace)
     try {
       const res = await fetch(`${API_URL}/api/sectors/${sector._id}/playground`, {
         method: 'POST',
@@ -125,6 +134,7 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
         // A marca volta junto: é dela que sai a contagem de quantas vezes o time já
         // perguntou nesta conversa, e é o que impede a pergunta de virar laço.
         body: JSON.stringify({
+          traceId: novoTrace,
           messages: next.map(({ role, content, clarification, clarificationOptions }) => ({
             role,
             content,
@@ -190,10 +200,11 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
       {/* Mesma contenção do chat de agente: a largura do chat vem da página, nunca do
           que o time respondeu. Aqui pesa ainda mais, porque a tabela de participantes
           tem uma linha por agente. */}
-      <div
-        className="flex h-96 min-w-0 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50"
-        style={{ contain: 'inline-size' }}
-      >
+      <div className="grid gap-3 lg:grid-cols-2" style={{ gridTemplateColumns: undefined }} data-testid="playground-with-trace">
+        <div
+          className="flex h-96 min-w-0 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50"
+          style={{ contain: 'inline-size' }}
+        >
         <div className="flex-1 space-y-2 overflow-y-auto p-3" data-testid="sector-playground-messages">
           {messages.length === 0 && (
             <p className="text-sm text-(--text-muted)">Envie uma mensagem como se fosse o visitante.</p>
@@ -295,6 +306,8 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
             Enviar
           </button>
         </form>
+        </div>
+        <ExecutionTrace events={trilha.events} live={trilha.live} onClear={trilha.clear} />
       </div>
     </div>
   )

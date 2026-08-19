@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
+import { novaTrilha, useExecutionTrace } from '../lib/executionTrace'
+import { ExecutionTrace } from './ExecutionTrace'
 import type { AgentSummary, ToolCall } from '../lib/types'
 import { MessageContent } from './MessageContent'
 import { ToolCalls } from './ToolCalls'
@@ -41,6 +43,10 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [limpando, setLimpando] = useState(false)
+  // A trilha é criada ANTES do envio: é o que permite o painel acompanhar sem esperar a
+  // resposta final. Um id por envio — a execução anterior fica no histórico do painel.
+  const [traceId, setTraceId] = useState<string | null>(null)
+  const trilha = useExecutionTrace(traceId)
 
   // O que já foi conversado, ao abrir. Uma falha aqui não pode impedir o teste: começa
   // vazio e segue.
@@ -75,6 +81,9 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
     setMessages(next)
     setInput('')
     setSending(true)
+    // Uma trilha por envio, criada antes do pedido sair.
+    const novoTrace = novaTrilha()
+    setTraceId(novoTrace)
 
     try {
       const res = await fetch(`${API_URL}/api/agents/${agent._id}/playground`, {
@@ -85,6 +94,7 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
         // quantas vezes já se perguntou nesta conversa, e é o que impede o agente de
         // perguntar sem parar.
         body: JSON.stringify({
+          traceId: novoTrace,
           messages: next.map(({ role, content, clarification, clarificationOptions }) => ({
             role,
             content,
@@ -154,10 +164,11 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
           conversa saía da área e a página inteira ganhava rolagem lateral. Com a
           contenção, o chat recebe a largura de fora e o conteúdo se vira por dentro:
           texto quebra, código rola no próprio bloco, a linha da ferramenta corta. */}
-      <div
-        className="flex h-96 min-w-0 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50"
-        style={{ contain: 'inline-size' }}
-      >
+      <div className="grid gap-3 lg:grid-cols-2" style={{ gridTemplateColumns: undefined }} data-testid="playground-with-trace">
+        <div
+          className="flex h-96 min-w-0 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50"
+          style={{ contain: 'inline-size' }}
+        >
         <div className="flex-1 space-y-2 overflow-y-auto p-3" data-testid="playground-messages">
           {messages.length === 0 && (
             <p className="text-sm text-(--text-muted)">Envie uma mensagem como se fosse o visitante.</p>
@@ -245,6 +256,8 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
             Enviar
           </button>
         </form>
+        </div>
+        <ExecutionTrace events={trilha.events} live={trilha.live} onClear={trilha.clear} />
       </div>
     </div>
   )

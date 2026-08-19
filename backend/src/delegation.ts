@@ -25,6 +25,8 @@ import { clarificationFrom } from './clarify.js'
 import type { ClarificationRequest } from './clarify.js'
 import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
+import { preview, traceEvent } from './executionTrace.js'
+import type { TraceInput } from './executionTrace.js'
 import type { LiveTracker } from './agentLiveTracker.js'
 import {
   MAX_ORCHESTRATION_ROUNDS,
@@ -34,6 +36,7 @@ import {
   buildSynthesisContext,
   dedupeAgainst,
   describePlan,
+  memberScore,
   inputFromDependencies,
   limitationNote,
   parseSufficiency,
@@ -79,6 +82,12 @@ export interface DelegationContext {
   // list, one level deep (childContext drops it), and every other guard —
   // owner, building, depth, cycle, budget — still applies.
   sectorGrant?: { sectorId: string; memberIds: string[] } | null
+  /**
+   * A trilha desta execução, para o painel de acompanhamento. Vem do cliente ANTES de a
+   * execução existir — é o que permite acompanhar sem esperar a resposta. Ausente = não
+   * há ninguém olhando, e nada é emitido.
+   */
+  traceId?: string | null
 }
 
 export type DelegationDenyCode = 'forbidden' | 'unauthorized' | 'depth_exceeded' | 'cycle' | 'budget_exceeded' | 'canceled'
@@ -169,6 +178,7 @@ export function childContext(ctx: DelegationContext, target: Agent): DelegationC
     callerAgentName: target.name,
     ancestry: [...ctx.ancestry, ctx.callerAgentId],
     depth: ctx.depth + 1,
+    traceId: ctx.traceId ?? null,
     // A sector grant belongs to the coordinator's own turn — a member called by it
     // does not inherit the right to call the rest of the team.
     sectorGrant: null,
@@ -184,6 +194,8 @@ export function rootContext(opts: {
   isCanceled?: () => boolean | Promise<boolean>
   // The request this chain belongs to. Every participation it produces points at it.
   rootExecutionId?: ObjectId | null
+  /** A trilha para o painel. Ausente = ninguém está olhando. */
+  traceId?: string | null
 }): DelegationContext {
   return {
     ownerId: opts.ownerId,
@@ -196,6 +208,7 @@ export function rootContext(opts: {
     budget: { tokenLimit: opts.tokenLimit ?? DEFAULT_DELEGATION_TOKEN_BUDGET, tokensSpent: 0 },
     isCanceled: opts.isCanceled,
     rootExecutionId: opts.rootExecutionId ?? null,
+    traceId: opts.traceId ?? null,
   }
 }
 
@@ -563,7 +576,21 @@ async function runAgentTask(
     deps.trackerFor?.(ctx.ownerId, target._id, target.officeId ?? null, (ctx.rootExecutionId ?? ctx.correlationId).toString()) ??
     NOOP_TRACKER
   tracker.report('thinking')
-  const tools = instrumentTools(await deps.resolveTools(target, ctx.ownerId, cctx), tracker)
+  const tools = instrumentTools(await deps.resolveTools(target, ctx.ownerId, cctx), tracker, (evento) => {
+    if (!ctx.traceId) return
+    traceEvent({
+      ownerId: ctx.ownerId,
+      executionId: ctx.traceId,
+      type: 'tool',
+      status: evento.ok ? 'success' : 'error',
+      agentId: target._id.toString(),
+      title: `${target.name}: ${evento.name}`,
+      input: evento.args,
+      output: evento.ok ? preview(String(evento.result ?? ''), 400) : undefined,
+      durationMs: evento.durationMs,
+      metadata: { tool: evento.name, ...(evento.error ? { error: evento.error } : {}) },
+    })
+  })
   const apiKey = await deps.apiKeyFor(ctx.ownerId, target.provider)
   // Curated grounding: the executor's own base, plus the sector's ONLY when this run
   // has an explicit sector context (never implied by the agent's home sector).
@@ -579,6 +606,24 @@ async function runAgentTask(
   const passages = Array.isArray(retrieved) ? (retrieved as string[]) : (retrieved.context ?? [])
   const sources = Array.isArray(retrieved) ? [] : (retrieved.sources ?? [])
   const grounding = (Array.isArray(retrieved) ? undefined : retrieved.status) ?? (!Array.isArray(retrieved) && retrieved.failed ? 'unavailable' : passages.length ? 'ok' : 'empty')
+  if (ctx.traceId && query) {
+    // O que a busca fez, sem o que ela leu: títulos e quantidade dizem se o agente tinha
+    // base, e o conteúdo dela não é assunto de painel.
+    traceEvent({
+      ownerId: ctx.ownerId,
+      executionId: ctx.traceId,
+      type: 'rag',
+      status: grounding === 'ok' ? 'success' : grounding === 'unavailable' ? 'error' : 'info',
+      agentId: target._id.toString(),
+      title: `${target.name}: base — ${grounding === 'ok' ? `${passages.length} trecho(s)` : grounding === 'unavailable' ? 'não foi possível consultar' : grounding === 'empty' ? 'nada encontrado' : 'sem base'}`,
+      input: preview(query, 200),
+      metadata: {
+        grounding,
+        passages: passages.length,
+        sources: sources.map((f) => f.title).filter(Boolean),
+      },
+    })
+  }
   // The target's own rule, honoured wherever it runs: a delegated agent that must
   // answer from curated knowledge does not answer without it, and nothing is spent.
   if (target.requireGrounding && grounding !== 'ok') {
@@ -878,6 +923,8 @@ export function sectorRunContext(opts: {
   tokenLimit?: number
   isCanceled?: () => boolean | Promise<boolean>
   rootExecutionId?: ObjectId | null
+  /** A trilha para o painel. Ausente = ninguém está olhando. */
+  traceId?: string | null
 }): DelegationContext {
   return {
     ownerId: opts.ownerId,
@@ -890,6 +937,7 @@ export function sectorRunContext(opts: {
     budget: { tokenLimit: opts.tokenLimit ?? DEFAULT_DELEGATION_TOKEN_BUDGET, tokensSpent: 0 },
     isCanceled: opts.isCanceled,
     rootExecutionId: opts.rootExecutionId ?? null,
+    traceId: opts.traceId ?? null,
   }
 }
 
@@ -1223,6 +1271,12 @@ export async function executeSectorTeam(
    */
   const nomePorAgente = new Map(equipe.map((m) => [m.agentId, m.name]))
   const inicioDaOrquestracao = Date.now()
+  // O painel recebe os mesmos momentos que o log — quando há alguém olhando. Sem
+  // `traceId` nada é emitido, e a execução não paga por observabilidade que ninguém pediu.
+  const trilha = (entrada: Omit<TraceInput, 'ownerId' | 'executionId'>) => {
+    if (!ctx.traceId) return
+    traceEvent({ ...entrada, ownerId: ctx.ownerId, executionId: ctx.traceId })
+  }
   const prazo = inicioDaOrquestracao + ORCHESTRATION_TIMEOUT_MS
   const execId = sectorExecutionId?.toString() ?? ctx.correlationId
 
@@ -1231,12 +1285,43 @@ export async function executeSectorTeam(
     const base = { taskId: task.id, agentId: task.agentId, agentName, objective: task.objective, dependsOn: task.dependsOn ?? [] }
     const comecou = Date.now()
     const alvo = await deps.loadAgent(ctx.ownerId, new ObjectId(task.agentId)).catch(() => null)
-    if (!alvo) return { ...base, status: 'failed', error: 'agente não encontrado', durationMs: 0 }
+    if (!alvo) {
+      trilha({ type: 'agent', status: 'error', agentId: task.agentId, title: `${agentName}: agente não encontrado` })
+      return { ...base, status: 'failed', error: 'agente não encontrado', durationMs: 0 }
+    }
     // A mesma proteção da delegação: um agente que já está na cadeia não entra de novo,
     // por mais que o plano peça. É o que impede recursão sem fim entre setores.
-    if (inChain(alvo._id)) return { ...base, status: 'skipped', error: 'ciclo de delegação', durationMs: 0 }
+    if (inChain(alvo._id)) {
+      trilha({ type: 'agent', status: 'skipped', agentId: task.agentId, title: `${agentName}: já está na cadeia (ciclo evitado)` })
+      return { ...base, status: 'skipped', error: 'ciclo de delegação', durationMs: 0 }
+    }
 
     console.info(`[task:start] execution=${execId} task=${task.id} agent=${task.agentId} deps=[${base.dependsOn.join(',')}]`)
+    // A DELEGAÇÃO, na direção de ida: quem pediu, para quem, e o que foi pedido.
+    trilha({
+      type: 'delegation',
+      status: 'running',
+      agentId: task.agentId,
+      title: `${coordinator.name} → ${agentName}`,
+      input: preview(task.objective, 400),
+      metadata: { taskId: task.id, from: coordinator.name, to: agentName, dependsOn: base.dependsOn },
+    })
+    trilha({
+      type: 'agent',
+      status: 'running',
+      agentId: task.agentId,
+      provider: alvo.provider,
+      model: alvo.model ?? null,
+      title: `${agentName} executando`,
+      input: preview(task.objective, 400),
+      metadata: {
+        taskId: task.id,
+        role: alvo.role ?? alvo.preset ?? null,
+        dependsOn: base.dependsOn,
+        // As ferramentas DISPONÍVEIS para ele; as usadas saem no evento de resultado.
+        capabilities: alvo.capabilities ?? [],
+      },
+    })
     // A entrada de quem depende: o que os antecessores produziram, com autoria. Sem
     // dependência, o pedido original.
     const entrada = base.dependsOn.length > 0 ? inputFromDependencies(task, resultadosPorId) : opts.input
@@ -1251,6 +1336,35 @@ export async function executeSectorTeam(
       )
       const durationMs = Date.now() - comecou
       console.info(`[task:end] execution=${execId} task=${task.id} agent=${task.agentId} status=succeeded duration=${durationMs}ms`)
+      const participacao = participants.find((p) => p.agentId === task.agentId && p.status === 'succeeded')
+      trilha({
+        type: 'agent',
+        status: 'success',
+        agentId: task.agentId,
+        provider: alvo.provider,
+        model: participacao?.model ?? alvo.model ?? null,
+        title: `${agentName} concluiu`,
+        output: preview(saida, 600),
+        durationMs,
+        metadata: {
+          taskId: task.id,
+          grounding: participacao?.grounding ?? null,
+          toolCalls: participacao?.toolCalls ?? 0,
+          sources: (participacao?.sources ?? []).map((f) => f.title).filter(Boolean),
+          usage: participacao?.usage ?? null,
+          modelReason: participacao?.modelReason ?? null,
+        },
+      })
+      // A DELEGAÇÃO, na direção de volta: o que o colega devolveu a quem pediu.
+      trilha({
+        type: 'delegation',
+        status: 'success',
+        agentId: task.agentId,
+        title: `${agentName} → ${coordinator.name}`,
+        output: preview(saida, 400),
+        durationMs,
+        metadata: { taskId: task.id, from: agentName, to: coordinator.name },
+      })
       return { ...base, status: 'succeeded', output: saida, durationMs }
     } catch (erro) {
       const durationMs = Date.now() - comecou
@@ -1264,6 +1378,15 @@ export async function executeSectorTeam(
             ? 'sem base para responder'
             : 'falha na execução'
       console.info(`[task:end] execution=${execId} task=${task.id} agent=${task.agentId} status=failed duration=${durationMs}ms error=${categoria}`)
+      trilha({
+        type: 'agent',
+        status: 'error',
+        agentId: task.agentId,
+        provider: alvo.provider,
+        title: `${agentName} falhou: ${categoria}`,
+        durationMs,
+        metadata: { taskId: task.id, error: categoria },
+      })
       // A participação com falha é registrada para o painel mostrar quem tentou.
       participants.push({ agentId: alvo._id.toString(), name: alvo.name, role: 'specialist', durationMs, status: 'failed' })
       return { ...base, status: 'failed', error: categoria, durationMs }
@@ -1326,6 +1449,20 @@ export async function executeSectorTeam(
     const entradaFinal = buildSynthesisContext(opts.objective, { ...plan, tasks: feitos.map((r) => ({ id: r.taskId, agentId: r.agentId, objective: r.objective, dependsOn: r.dependsOn })) }, feitos)
     const comecou = Date.now()
     console.info(`[synthesis:start] execution=${execId} agent=${coordinator._id.toString()} results=${feitos.length}`)
+    trilha({
+      type: 'synthesis',
+      status: 'running',
+      agentId: coordinator._id.toString(),
+      provider: coordinator.provider,
+      model: coordinator.model ?? null,
+      title: `${coordinator.name} consolidando ${feitos.length} resultado(s)`,
+      metadata: {
+        // Quais saídas entraram — e o estado de cada uma, que é como se vê se a síntese
+        // recebeu tudo o que era esperado.
+        inputs: feitos.map((r) => ({ agent: r.agentName, status: r.status, durationMs: r.durationMs })),
+        limitation: limitacao ? preview(limitacao, 200) : null,
+      },
+    })
     try {
       const texto = await rodarMembro(
         coordinator,
@@ -1336,10 +1473,26 @@ export async function executeSectorTeam(
         { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
       )
       console.info(`[synthesis:end] execution=${execId} status=succeeded duration=${Date.now() - comecou}ms`)
+      trilha({
+        type: 'synthesis',
+        status: 'success',
+        agentId: coordinator._id.toString(),
+        title: 'Consolidação concluída',
+        output: preview(texto, 600),
+        durationMs: Date.now() - comecou,
+      })
       return texto
     } catch (erro) {
       const montado = assembleWithoutModel(feitos)
       console.info(`[synthesis:end] execution=${execId} status=failed duration=${Date.now() - comecou}ms fallback=${montado ? 'montagem' : 'nenhum'}`)
+      trilha({
+        type: 'synthesis',
+        status: 'error',
+        agentId: coordinator._id.toString(),
+        title: montado ? 'Consolidação falhou — respostas entregues sem juntar' : 'Consolidação falhou',
+        durationMs: Date.now() - comecou,
+        metadata: { fallback: montado ? 'montagem sem modelo' : 'nenhum' },
+      })
       warnings.push('não foi possível consolidar as respostas da equipe')
       if (!montado) throw erro
       return montado
@@ -1362,6 +1515,17 @@ export async function executeSectorTeam(
   let faltou: string | undefined
 
   console.info(`[orchestration:start] execution=${execId} sector=${sector._id.toString()} members=${equipe.length}`)
+  trilha({
+    type: 'orchestration_start',
+    status: 'running',
+    title: `Equipe "${sector.name}" — ${equipe.length} membro(s) disponível(is)`,
+    metadata: {
+      sectorId: sector._id.toString(),
+      backendExecutionId: execId,
+      coordinator: { id: coordinator._id.toString(), name: coordinator.name, provider: coordinator.provider },
+      members: equipe.map((m) => ({ id: m.agentId, name: m.name })),
+    },
+  })
 
   while (rodada < MAX_ORCHESTRATION_ROUNDS) {
     rodada += 1
@@ -1372,6 +1536,32 @@ export async function executeSectorTeam(
       `[plan] execution=${execId} sector=${sector._id.toString()} round=${rodada} source=${rodada === 1 ? origemDoPlano : 'model'} ` +
         `tasks=${planoAtual.tasks.length} ${describePlan(planoAtual, equipe)}`,
     )
+    // Por que ESTES e não os outros: os selecionados com o objetivo de cada um, e os
+    // demais com a afinidade que tiveram. É a pergunta que o painel existe para responder.
+    const selecionados = new Set(planoAtual.tasks.map((t) => t.agentId))
+    trilha({
+      type: 'planner',
+      status: 'success',
+      provider: coordinator.provider,
+      model: rodada === 1 && origemDoPlano === 'fallback' ? 'sem modelo (determinístico)' : 'modelo auxiliar',
+      title: `Plano da rodada ${rodada}: ${planoAtual.tasks.length} tarefa(s)`,
+      input: preview(opts.objective, 300),
+      metadata: {
+        round: rodada,
+        source: rodada === 1 ? origemDoPlano : 'model',
+        available: equipe.map((m) => ({ id: m.agentId, name: m.name })),
+        selected: planoAtual.tasks.map((t) => ({
+          taskId: t.id,
+          agentId: t.agentId,
+          name: nomePorAgente.get(t.agentId) ?? t.agentId,
+          objective: t.objective,
+          dependsOn: t.dependsOn ?? [],
+        })),
+        notSelected: equipe
+          .filter((m) => !selecionados.has(m.agentId))
+          .map((m) => ({ name: m.name, affinity: Number(memberScore(opts.objective, m).toFixed(2)) })),
+      },
+    })
     for (const t of planoAtual.tasks) {
       jaFeitas.add(taskKey(t.agentId, t.objective))
       consultados.add(t.agentId)
@@ -1391,6 +1581,17 @@ export async function executeSectorTeam(
         .then(parseSufficiency)
         .catch(() => ({ sufficient: true }) as Sufficiency)
       console.info(`[sufficiency] execution=${execId} round=${rodada} sufficient=${veredito.sufficient} pending=${naoConsultados.length}`)
+      trilha({
+        type: 'sufficiency',
+        status: veredito.sufficient ? 'success' : 'info',
+        title: veredito.sufficient ? 'Informação suficiente' : 'Falta informação — nova rodada',
+        metadata: {
+          round: rodada,
+          sufficient: veredito.sufficient,
+          missing: veredito.missing ? preview(veredito.missing, 200) : null,
+          stillAvailable: naoConsultados.map((m) => m.name),
+        },
+      })
       if (veredito.sufficient) {
         output = await sintetizar(todos, '')
         break
@@ -1437,6 +1638,14 @@ export async function executeSectorTeam(
     `[orchestration:end] execution=${execId} sector=${sector._id.toString()} rounds=${rodada} tasks=${todos.length} ` +
       `succeeded=${todos.length - falharam.length} failed=${falharam.length} duration=${Date.now() - inicioDaOrquestracao}ms`,
   )
+  trilha({
+    type: 'orchestration_end',
+    status: falharam.length > 0 ? 'error' : 'success',
+    title: `Fim — ${rodada} rodada(s), ${todos.length} tarefa(s), ${falharam.length} falha(s)`,
+    durationMs: Date.now() - inicioDaOrquestracao,
+    metadata: { rounds: rodada, tasks: todos.length, failed: falharam.length, warnings },
+  })
+  trilha({ type: 'final', status: 'success', title: 'Resposta final', output: preview(output, 800) })
   return { output, participants, warnings, clarification }
 }
 
