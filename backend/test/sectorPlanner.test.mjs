@@ -9,8 +9,28 @@ import assert from 'node:assert/strict'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
 
-const { MAX_TASKS, describePlan, fallbackPlan, memberScore, parsePlanJson, planExecution, planPrompt, validatePlan } =
-  await import('../dist/sectorPlanner.js')
+const {
+  MAX_ORCHESTRATION_ROUNDS,
+  MAX_TASKS,
+  MAX_TASKS_TOTAL,
+  ORCHESTRATION_TIMEOUT_MS,
+  assembleWithoutModel,
+  buildSynthesisContext,
+  dedupeAgainst,
+  describePlan,
+  fallbackPlan,
+  inputFromDependencies,
+  limitationNote,
+  memberScore,
+  parsePlanJson,
+  parseSufficiency,
+  planExecution,
+  planPrompt,
+  readyTasks,
+  shouldRun,
+  taskKey,
+  validatePlan,
+} = await import('../dist/sectorPlanner.js')
 
 // Uma equipe genérica de propósito: o motor não pode ter regra de assunto nenhum.
 const JURIDICO = {
@@ -203,4 +223,120 @@ test('o log do plano tem nomes, ids e objetivo — e nada mais', () => {
 test('o plano determinístico nunca inventa agente', () => {
   const plan = fallbackPlan('qualquer coisa', EQUIPE)
   for (const t of plan.tasks) assert.ok(EQUIPE.some((m) => m.agentId === t.agentId))
+})
+
+// --- limites, repetição e suficiência --------------------------------------------------------
+//
+// Um motor que decide sozinho quando parar precisa de um lugar onde a decisão não seja
+// dele. É este.
+
+test('os limites são pequenos, e existem', () => {
+  assert.equal(MAX_ORCHESTRATION_ROUNDS, 2)
+  assert.equal(MAX_TASKS, 4)
+  assert.equal(MAX_TASKS_TOTAL, 6)
+  assert.ok(ORCHESTRATION_TIMEOUT_MS > 0 && ORCHESTRATION_TIMEOUT_MS <= 600_000)
+})
+
+test('a mesma tarefa é a mesma: agente + objetivo, sem se importar com espaço ou caixa', () => {
+  assert.equal(taskKey('a1', 'Buscar  o Contrato'), taskKey('a1', 'buscar o contrato'))
+  assert.notEqual(taskKey('a1', 'buscar o contrato'), taskKey('a2', 'buscar o contrato'))
+  // Outro pedido ao mesmo agente é trabalho novo, não repetição.
+  assert.notEqual(taskKey('a1', 'buscar o contrato'), taskKey('a1', 'resumir o contrato'))
+})
+
+test('o que já foi feito não volta, e o teto total é respeitado', () => {
+  const plano = {
+    tasks: [
+      { id: 't1', agentId: 'a1', objective: 'x' },
+      { id: 't2', agentId: 'a2', objective: 'y' },
+      { id: 't3', agentId: 'a3', objective: 'z', dependsOn: ['t1'] },
+    ],
+  }
+  const feitas = new Set([taskKey('a1', 'x')])
+  const cortado = dedupeAgainst(plano, feitas, 5)
+  assert.deepEqual(cortado.tasks.map((t) => t.agentId), ['a2', 'a3'])
+  // A dependência que apontava para a tarefa removida some: esperar por algo que não vem
+  // é travar de propósito.
+  assert.equal(cortado.tasks[1].dependsOn, undefined)
+  // E o teto total corta o resto.
+  assert.equal(dedupeAgainst(plano, new Set(), 1).tasks.length, 1)
+})
+
+test('suficiência ilegível é tratada como suficiente', () => {
+  // Uma rodada extra por causa de um parse ruim custa uma equipe inteira de inferências.
+  assert.deepEqual(parseSufficiency('sei lá'), { sufficient: true })
+  assert.deepEqual(parseSufficiency('{"sufficient":true}'), { sufficient: true })
+  const falta = parseSufficiency('{"sufficient":false,"missing":"os números de julho"}')
+  assert.equal(falta.sufficient, false)
+  assert.equal(falta.missing, 'os números de julho')
+})
+
+test('a limitação é dita com o que faltou, e proíbe preencher com suposição', () => {
+  const nota = limitationNote('os números de julho', 2)
+  assert.match(nota, /2 rodada/)
+  assert.match(nota, /os números de julho/)
+  assert.match(nota, /não preencha a lacuna com suposição/i)
+})
+
+test('a montagem sem modelo entrega o trabalho com o nome de quem fez', () => {
+  const texto = assembleWithoutModel([
+    { taskId: 't1', agentId: 'a', agentName: 'Agente A', objective: 'o', dependsOn: [], status: 'succeeded', output: 'achei isto', durationMs: 1 },
+    { taskId: 't2', agentId: 'b', agentName: 'Agente B', objective: 'o', dependsOn: [], status: 'failed', error: 'falha', durationMs: 1 },
+  ])
+  assert.match(texto, /Agente A/)
+  assert.match(texto, /achei isto/)
+  assert.ok(!texto.includes('Agente B'), 'quem falhou não tem resultado para montar')
+  assert.match(texto, /não foi possível consolidar/i)
+  // Sem nada que tenha dado certo, não há montagem nenhuma.
+  assert.equal(assembleWithoutModel([]), '')
+})
+
+test('a síntese recebe cada resultado rotulado, e a falha aparece como falha', () => {
+  const plano = { tasks: [{ id: 't1', agentId: 'a', objective: 'parte A' }, { id: 't2', agentId: 'b', objective: 'parte B' }] }
+  const texto = buildSynthesisContext('a pergunta original', plano, [
+    { taskId: 't1', agentId: 'a', agentName: 'Agente A', objective: 'parte A', dependsOn: [], status: 'succeeded', output: 'resultado A', durationMs: 1 },
+    { taskId: 't2', agentId: 'b', agentName: 'Agente B', objective: 'parte B', dependsOn: [], status: 'failed', error: 'tempo esgotado', durationMs: 1 },
+  ])
+  assert.match(texto, /ORIGINAL USER QUESTION\na pergunta original/)
+  assert.match(texto, /EXECUTION PLAN/)
+  assert.match(texto, /\[Agente A\]\nobjective: parte A\nresult:\nresultado A/)
+  assert.match(texto, /\[Agente B\][\s\S]*FALHOU \(tempo esgotado\)/)
+  assert.match(texto, /SYNTHESIS INSTRUCTIONS/)
+  assert.match(texto, /contradiz/i)
+})
+
+test('uma tarefa cujas dependências falharam TODAS não roda', () => {
+  const task = { id: 't3', agentId: 'c', objective: 'junta', dependsOn: ['t1', 't2'] }
+  const falhou = (id) => [id, { taskId: id, agentId: 'x', agentName: 'X', objective: 'o', dependsOn: [], status: 'failed', durationMs: 0 }]
+  const ok = (id) => [id, { taskId: id, agentId: 'x', agentName: 'X', objective: 'o', dependsOn: [], status: 'succeeded', output: 'v', durationMs: 0 }]
+  assert.equal(shouldRun(task, new Map([falhou('t1'), falhou('t2')])), false)
+  // Com uma que deu certo, roda com o que existe: meia entrada vale mais que nenhuma resposta.
+  assert.equal(shouldRun(task, new Map([falhou('t1'), ok('t2')])), true)
+})
+
+test('a onda só libera quem tem as dependências prontas', () => {
+  const plano = {
+    tasks: [
+      { id: 't1', agentId: 'a', objective: 'A' },
+      { id: 't2', agentId: 'b', objective: 'B' },
+      { id: 't3', agentId: 'c', objective: 'C', dependsOn: ['t1', 't2'] },
+    ],
+  }
+  assert.deepEqual(readyTasks(plano, new Set()).map((t) => t.id), ['t1', 't2'])
+  assert.deepEqual(readyTasks(plano, new Set(['t1'])).map((t) => t.id), ['t2'])
+  assert.deepEqual(readyTasks(plano, new Set(['t1', 't2'])).map((t) => t.id), ['t3'])
+})
+
+test('a entrada de quem depende traz autoria, e ignora quem falhou', () => {
+  const task = { id: 't3', agentId: 'c', objective: 'junta', dependsOn: ['t1', 't2'] }
+  const entrada = inputFromDependencies(
+    task,
+    new Map([
+      ['t1', { taskId: 't1', agentId: 'a', agentName: 'Agente A', objective: 'parte A', dependsOn: [], status: 'succeeded', output: 'valor A', durationMs: 1 }],
+      ['t2', { taskId: 't2', agentId: 'b', agentName: 'Agente B', objective: 'parte B', dependsOn: [], status: 'failed', durationMs: 1 }],
+    ]),
+  )
+  assert.match(entrada, /\[Agente A\]/)
+  assert.match(entrada, /valor A/)
+  assert.ok(!entrada.includes('Agente B'))
 })

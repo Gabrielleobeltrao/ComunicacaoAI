@@ -1,16 +1,16 @@
 # Graph Report - backend  (2026-08-18)
 
 ## Corpus Check
-- 290 files · ~302,519 words
+- 290 files · ~305,273 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2521 nodes · 5828 edges · 177 communities (151 shown, 26 thin omitted)
+- 2530 nodes · 5852 edges · 170 communities (148 shown, 22 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 44 edges (avg confidence: 0.72)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `de0d3998`
+- Built from commit: `81d5ddfa`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -26,12 +26,12 @@
 - agents.ts
 - grants.ts
 - agentReadiness.ts
-- refreshMemoryAndIdentity
-- sourceChange.ts
+- respondWithAgentIfLinked
+- runner.ts
 - agentLiveState.ts
 - delegation.ts
 - mongoServer.mjs
-- runner.ts
+- automations/types.ts
 - whatsapp.ts
 - patterns.ts
 - routineExecution.ts
@@ -45,7 +45,7 @@
 - compilerOptions
 - executionCenter.integration.test.mjs
 - logRoutes.integration.test.mjs
-- widgets.ts
+- eventTrigger.ts
 - db.ts
 - sectorExecutions.ts
 - runRepository.ts
@@ -62,8 +62,8 @@
 - validate.ts
 - package.json
 - migrationFixture.integration.test.mjs
-- installations.ts
-- registry.ts
+- listRunTimeline
+- seedAgentBubbles.ts
 - delegation.test.mjs
 - runnerTimeout.test.mjs
 - runtimeHardening.test.mjs
@@ -84,22 +84,22 @@
 - readiness.test.mjs
 - automations.test.mjs
 - dotenv
-- AppDefinition
+- sectorKnowledgeRoutes.ts
 - delegationWiring.ts
 - automations/repository.ts
 - routine.test.mjs
 - seedGuard.test.mjs
 - sectorPlanner.ts
 - seedRestaurantDemo.ts
-- appInstallationRoutes.ts
-- appGrantRoutes.ts
+- channelApps.ts
+- building.ts
 - delegateToAgent
 - llmFake.ts
 - entrypointParity.test.mjs
 - automations/service.ts
 - agentDefinition.ts
-- navigation.ts
-- liveSources.ts
+- installations.ts
+- connections/repository.ts
 - tokenUsage.ts
 - run-tests.mjs
 - builtinTools.ts
@@ -116,7 +116,7 @@
 - appMigration.integration.test.mjs
 - floorCommunication.ts
 - sectorAccess.integration.test.mjs
-- sectorAccess.ts
+- executionRoutes.ts
 - collaborationGate.test.mjs
 - floorWork.integration.test.mjs
 - gateWiring.integration.test.mjs
@@ -131,37 +131,30 @@
 - scopeCache.ts
 - sourceTool.integration.test.mjs
 - timeoutCancellation.test.mjs
-- toolsSecurity.test.mjs
+- autoModel.ts
 - conversationTurns.ts
 - lexicalRetrieval.ts
 - agentDefinition.test.mjs
 - candleAnalyzer.test.mjs
-- delegationLog.ts
-- scheduler.ts
+- offices.ts
+- selectVisualStates
 - appRoutes.integration.test.mjs
 - openai.ts
-- safeHttp.ts
+- executionSummary
 - googleTools.ts
-- config.ts
+- scheduler.integration.test.mjs
 - floors.ts
 - safeError.ts
-- runConfig.ts
 - sectorPlanner.test.mjs
 - scopeGate.test.mjs
 - official/index.ts
-- hubspot/adapter.ts
 - hardening.integration.test.mjs
-- rd-station/adapter.ts
 - agentTools.ts
 - floorWork.ts
-- sourceCheckpoint.ts
-- web-chat/manifest.ts
-- whatsapp/manifest.ts
-- stripe/adapter.ts
+- telegram/manifest.ts
 - apps/types.ts
 - sectorBriefing.ts
 - agentEvents.ts
-- auditMiddleware.ts
 - playgroundSession.ts
 - sourceSsrf.test.mjs
 
@@ -194,39 +187,39 @@
 - 4-file cycle: `src/agentTools.ts -> src/agents.ts -> src/llm.ts -> src/llmFake.ts -> src/agentTools.ts`
 - 4-file cycle: `src/agentTools.ts -> src/agents.ts -> src/llm.ts -> src/openai.ts -> src/agentTools.ts`
 
-## Communities (177 total, 26 thin omitted)
+## Communities (170 total, 22 thin omitted)
 
 ### Community 0 - "llm.ts"
 Cohesion: 0.16
 Nodes (20): extractTextFromFile(), SUPPORTED_IMAGE_TYPES, askAux(), auxiliaryModel(), checkGuardrail(), defaultModel(), extractIdentity(), extractStructuredOutput() (+12 more)
 
 ### Community 1 - "agentRoutineRoutes.ts"
-Cohesion: 0.17
-Nodes (20): getAgentById(), EventTriggerError, normalizeCondition(), webhookEndpoint(), listAgentAutomations(), listRoutines(), readSourceFromDefinition(), RoutineError (+12 more)
+Cohesion: 0.18
+Nodes (22): describeEventTriggerFlow(), normalizeCondition(), readEventTriggerConfig(), webhookEndpoint(), emptyMemoryPlan(), normalizeMemoryPlan(), listAgentAutomations(), listRoutines() (+14 more)
 
 ### Community 2 - "routine.ts"
-Cohesion: 0.12
-Nodes (51): ensureActivationMode(), StepCondition, buildEventTriggerDefinition(), createEventTrigger(), describeEventTriggerFlow(), EventTriggerSpec, getEventTriggerForAgent(), isEventTrigger() (+43 more)
+Cohesion: 0.17
+Nodes (25): StepCondition, EventTriggerSpec, AppActionPlan, MemoryPlan, semTrabalho(), createRoutine(), normalizeSource(), novaGeracaoDeFonte() (+17 more)
 
 ### Community 3 - "agentRuntime.ts"
-Cohesion: 0.10
-Nodes (30): composeAgentPrompt(), enforceOutputContract(), outputDirective(), AgentExecutionRequest, AgentOutputFormat, AgentRunError, AgentRunErrorKind, boundedSchema() (+22 more)
+Cohesion: 0.12
+Nodes (28): enforceOutputContract(), AgentExecutionRequest, AgentRunError, AgentRunErrorKind, boundedSchema(), buildHistory(), buildTaskObjective(), checkJson() (+20 more)
 
 ### Community 4 - "knowledge.ts"
-Cohesion: 0.08
-Nodes (36): chunks, chunkText(), combineKnowledgeHits(), CreateDocumentInput, deleteAllFor(), deleteAllForAgent(), deleteAllForSector(), deleteDocument() (+28 more)
+Cohesion: 0.10
+Nodes (23): chunks, combineKnowledgeHits(), CreateDocumentInput, deleteAllFor(), deleteAllForAgent(), deleteAllForSector(), documents, EMBEDDING_DIMENSIONS (+15 more)
 
 ### Community 5 - "executionCenter.ts"
-Cohesion: 0.07
-Nodes (49): clarificationsSince(), tokensByModelSince(), ACTIVE_RUN_STATUSES, agentConstraint(), agentIdsInSector(), AgentRef, agents, AutomationDoc (+41 more)
+Cohesion: 0.13
+Nodes (22): ACTIVE_RUN_STATUSES, AgentRef, agents, AutomationDoc, automations, ExecutionPage, floors, HISTORY_RUN_STATUSES (+14 more)
 
 ### Community 6 - "src/index.ts"
 Cohesion: 0.04
-Nodes (50): backfillAgentEventAttempts(), ensureAgentEventIndexes(), ensureAuditIndexes(), stopEmbeddedEngine(), ensureExecutionIndexes(), getBuiltinApp(), formatOptions(), resolveChoice() (+42 more)
+Nodes (61): backfillAgentEventAttempts(), ensureAgentEventIndexes(), ensureAuditIndexes(), stopEmbeddedEngine(), ensureExecutionIndexes(), app, AVATAR_MIME_TYPES, channelWebhookUrl() (+53 more)
 
 ### Community 7 - "audit.ts"
-Cohesion: 0.11
-Nodes (24): AUDIT_ACTIONS, AUDIT_ACTOR_TYPES, AUDIT_ENTITY_TYPES, AuditActorType, AuditEvent, AuditEventPublic, AuditFilters, AuditResult (+16 more)
+Cohesion: 0.08
+Nodes (36): AUDIT_ACTIONS, AUDIT_ACTOR_TYPES, AUDIT_ENTITY_TYPES, AuditAction, AuditActorType, AuditEntityType, AuditEvent, AuditEventPublic (+28 more)
 
 ### Community 8 - "agents.ts"
 Cohesion: 0.05
@@ -240,29 +233,29 @@ Nodes (22): missingCapability(), AppStepContext, AppStepError, executeAppStep(),
 Cohesion: 0.09
 Nodes (31): AGENT_PRESET_SPECS, AgentPresetSpec, BY_ID, CAPABILITY_HINTS, presetFillableFields(), agentReadiness(), AgentWiring, callerPolicyFromLegacy() (+23 more)
 
-### Community 11 - "refreshMemoryAndIdentity"
-Cohesion: 0.11
-Nodes (27): conversationMemories, ConversationMemory, getActiveAgentId(), getConversationMemory(), getDoc(), getHumanHandoff(), getLinkedVisitorProfileId(), getStructuredMemory() (+19 more)
+### Community 11 - "respondWithAgentIfLinked"
+Cohesion: 0.08
+Nodes (39): clarificationGuidance(), CLARIFY_LIMIT, formatOptions(), resolveChoice(), semAcento(), conversationMemories, ConversationMemory, getActiveAgentId() (+31 more)
 
-### Community 12 - "sourceChange.ts"
-Cohesion: 0.14
-Nodes (33): RoutineSource, STEP_SOURCE, executeStep(), chaveDoItem(), contentHashOf(), detectHttpChange(), detectRssChange(), HttpChange (+25 more)
+### Community 12 - "runner.ts"
+Cohesion: 0.06
+Nodes (69): sourceSettingsOf(), LivePassage, livePassagesFor(), liveStepIdFor(), STEP(), RoutineSource, AgentCall, delay() (+61 more)
 
 ### Community 13 - "agentLiveState.ts"
-Cohesion: 0.09
-Nodes (30): ACTIVE_TTL_MS, AGENT_BUBBLE_STATES, AgentLiveState, agentLiveStatesForFloor(), AgentLiveStatesResponse, AgentLiveVisualState, AgentSafeDetail, BLOCKED_TTL_MS (+22 more)
+Cohesion: 0.11
+Nodes (23): ACTIVE_TTL_MS, AGENT_BUBBLE_STATES, AgentLiveState, AgentLiveStatesResponse, AgentLiveVisualState, AgentSafeDetail, BLOCKED_TTL_MS, clearAgentState() (+15 more)
 
 ### Community 14 - "delegation.ts"
 Cohesion: 0.09
-Nodes (26): presetSpec(), suggestPresetForCapability(), buildCapabilityMissing(), CapabilityMissing, DEFAULT_DELEGATION_TOKEN_BUDGET, DelegationBudget, DelegationCheck, DelegationContext (+18 more)
+Nodes (24): presetSpec(), suggestPresetForCapability(), AgentOutputFormat, buildCapabilityMissing(), CapabilityMissing, DEFAULT_DELEGATION_TOKEN_BUDGET, DelegationBudget, DelegationCheck (+16 more)
 
 ### Community 15 - "mongoServer.mjs"
 Cohesion: 0.06
-Nodes (17): FLOOR, PAGE, OPCOES, AGENTE, SETOR, startMongo(), stopMongo(), A (+9 more)
+Nodes (16): FLOOR, PAGE, OPCOES, AGENTE, SETOR, startMongo(), stopMongo(), A (+8 more)
 
-### Community 16 - "runner.ts"
-Cohesion: 0.07
-Nodes (31): AgentCall, delay(), DeliverCall, FetchResult, MemoryOps, runDefinition(), RunnerDeps, SourceHalt (+23 more)
+### Community 16 - "automations/types.ts"
+Cohesion: 0.12
+Nodes (21): CreateAutomationInput, UpdateDraftPatch, AI_STEP_TYPES, Automation, AutomationDefinition, AutomationInput, AutomationLimits, DEFAULT_LIMITS (+13 more)
 
 ### Community 17 - "whatsapp.ts"
 Cohesion: 0.12
@@ -273,16 +266,16 @@ Cohesion: 0.09
 Nodes (56): acao, adapters, candleAnalyzerTools(), comuns(), listaDeTexto(), recusa(), rodar(), AnalysisResult (+48 more)
 
 ### Community 19 - "routineExecution.ts"
-Cohesion: 0.12
-Nodes (20): AgentEventStatus, RecordAgentEventInput, AgentExecutionResult, executeRoutineStep(), KnowledgeUnavailableError, persistWithRetry(), RoutineConfigurationError, RoutineExecutionDeps (+12 more)
+Cohesion: 0.11
+Nodes (21): AgentEventStatus, RecordAgentEventInput, AgentExecutionResult, executeRoutineStep(), KnowledgeUnavailableError, persistWithRetry(), RoutineConfigurationError, RoutineExecutionDeps (+13 more)
 
 ### Community 20 - "runProcessor.ts"
-Cohesion: 0.14
-Nodes (27): findAutomation(), findVersion(), publishedSourceFingerprint(), agentIdsOf(), buildDeps(), processRun(), trackersFor(), findRunUnscoped() (+19 more)
+Cohesion: 0.15
+Nodes (26): createLiveTracker(), findAutomation(), publishedSourceFingerprint(), agentIdsOf(), buildDeps(), processRun(), trackersFor(), findRunUnscoped() (+18 more)
 
 ### Community 21 - "googleCalendar.ts"
-Cohesion: 0.18
-Nodes (15): buildGoogleAuthUrl(), connectGoogle(), fetchUserEmail(), getGoogleAccessToken(), getGoogleStatus(), googleConfigured(), SCOPES, TokenResponse (+7 more)
+Cohesion: 0.16
+Nodes (16): decrypt(), getKey(), buildGoogleAuthUrl(), connectGoogle(), fetchUserEmail(), getGoogleStatus(), googleConfigured(), SCOPES (+8 more)
 
 ### Community 22 - "dependencies"
 Cohesion: 0.10
@@ -293,8 +286,8 @@ Cohesion: 0.15
 Nodes (17): events, AgentEventMetrics, AgentOperationalStats, availableMetricKeys(), composeAgentStats(), GENERIC_LABEL, getAgentEventMetricsBatch(), kpiLabel() (+9 more)
 
 ### Community 24 - "migration.ts"
-Cohesion: 0.18
-Nodes (19): AgentBuiltinTool, agents, AppMigrationReport, backfillConnectionAppKeys(), credentialFingerprint(), ensureChannelInstallation(), ensureGoogleInstallation(), ensureGoogleInstallations() (+11 more)
+Cohesion: 0.10
+Nodes (34): catalogIndex(), instrumentTools(), LiveTrackerContext, NOOP_TRACKER, toolDetail(), AgentBuiltinTool, LEGACY_APP_VERSION, agents (+26 more)
 
 ### Community 25 - "records.ts"
 Cohesion: 0.07
@@ -316,49 +309,49 @@ Nodes (15): AGENT_A, AGENT_B, agents(), automations(), FLOOR_A, FLOOR_B, floors(
 Cohesion: 0.14
 Nodes (7): AGENT, AUTOMATION, call(), FLOOR, json(), runs(), seedRun()
 
-### Community 30 - "widgets.ts"
-Cohesion: 0.07
-Nodes (31): addMessage(), addOwnerReply(), AgentCardStats, ConversationFilters, ConversationSummary, countVisitorMessagesSince(), createWhatsAppChannel(), deleteWhatsAppChannel() (+23 more)
+### Community 30 - "eventTrigger.ts"
+Cohesion: 0.22
+Nodes (19): buildEventTriggerDefinition(), EventTriggerError, getEventTriggerForAgent(), isEventTrigger(), listEventTriggers(), updateEventTrigger(), aiStepPlanned(), appStep() (+11 more)
 
 ### Community 31 - "db.ts"
-Cohesion: 0.12
-Nodes (14): auth, db, mongoClient, AgentDoc, aggregateSectorDecisions(), listSectorDecisionsForConversation(), SectorDecision, SectorDecisionAggregate (+6 more)
+Cohesion: 0.07
+Nodes (28): auth, db, mongoClient, col, DelegationFinish, DelegationRecord, DelegationStart, DelegationStatus (+20 more)
 
 ### Community 32 - "sectorExecutions.ts"
 Cohesion: 0.10
 Nodes (24): resolveOwnedSectorId(), PERIODS, requireSector(), sectorExecutionRouter, requireSector(), agentEvents, durationOf(), ExecutionEnvironment (+16 more)
 
 ### Community 33 - "runRepository.ts"
-Cohesion: 0.13
-Nodes (21): artifacts, findRun(), insertRunIdempotent(), listArtifacts(), listRuns(), listStepRuns(), MAX_RUN_CLAIMS, requestCancel() (+13 more)
+Cohesion: 0.12
+Nodes (23): findVersion(), artifacts, findRun(), insertRunIdempotent(), listArtifacts(), listRuns(), listStepRuns(), MAX_RUN_CLAIMS (+15 more)
 
 ### Community 35 - "connections/service.ts"
-Cohesion: 0.08
-Nodes (23): connections, deliveries, insertDeliveryIdempotent(), listDeliveries(), sentDeliveriesByAgent(), updateDelivery(), CONNECTION_CATALOG, createConnection() (+15 more)
+Cohesion: 0.15
+Nodes (16): CONNECTION_CATALOG, createConnection(), CreateConnectionInput, decryptConfig(), getConnection(), isNonEmpty(), normalizeName(), patchConnection() (+8 more)
 
 ### Community 36 - "modelCache.ts"
 Cohesion: 0.29
 Nodes (9): listAvailableModels(), cache, cacheKey(), getCachedModels(), ModelOption, setCachedModels(), humanizeModelId(), isChatModel() (+1 more)
 
 ### Community 37 - "toolExecution.ts"
-Cohesion: 0.23
-Nodes (10): executeToolCall(), ExecuteToolOptions, fillTemplate(), maskHeaders(), maskUrl(), redactSecrets(), ToolExecutionResult, SENSITIVE_HEADER (+2 more)
+Cohesion: 0.14
+Nodes (18): assertPublicUrl(), DEFAULTS, isLoopback(), isPrivateIp(), loopbackAllowed(), safeFetch(), SafeFetchOptions, SafeFetchResult (+10 more)
 
 ### Community 38 - "tools.ts"
-Cohesion: 0.09
-Nodes (21): clamp(), createTool(), deleteTool(), getTool(), getToolsByIds(), listTools(), normalize(), TOOL_AUTH_KINDS (+13 more)
+Cohesion: 0.10
+Nodes (22): revokeInstallation(), encrypt(), clamp(), createTool(), deleteTool(), getTool(), listTools(), normalize() (+14 more)
 
 ### Community 39 - "eventTrigger.integration.test.mjs"
 Cohesion: 0.17
 Nodes (4): AGENT, BUILDING, FLOOR, FOREIGN_AGENT
 
 ### Community 40 - "executionRoots.ts"
-Cohesion: 0.11
-Nodes (21): analyticsPeriodStart(), AnalyticsQuery, AnalyticsResult, AnalyticsScope, BreakdownRow, channelExecutionKey(), executionAnalytics(), executionBreakdown() (+13 more)
+Cohesion: 0.12
+Nodes (20): analyticsPeriodStart(), AnalyticsQuery, AnalyticsResult, AnalyticsScope, BreakdownRow, channelExecutionKey(), executionAnalytics(), executionBreakdown() (+12 more)
 
 ### Community 41 - "jsonSchema.ts"
 Cohesion: 0.23
-Nodes (14): checkJson(), checkStageOutput(), checkJsonText(), JsonCheck, parseJsonText(), describeErrors(), join(), matchesType() (+6 more)
+Nodes (14): runResolvedTool(), checkStageOutput(), checkJsonText(), JsonCheck, parseJsonText(), describeErrors(), join(), matchesType() (+6 more)
 
 ### Community 42 - "executionModes.integration.test.mjs"
 Cohesion: 0.12
@@ -370,7 +363,7 @@ Nodes (11): scripts, build, dev, dev:api, dev:worker, seed:bubbles, seed:demo, s
 
 ### Community 44 - "validate.ts"
 Cohesion: 0.17
-Nodes (20): comoNumero(), comoTexto(), CONDITION_OPERATORS, ConditionOperator, describeCondition(), evaluateCondition(), isConditionOperator(), STEP_TYPES (+12 more)
+Nodes (20): comoNumero(), comoTexto(), CONDITION_OPERATORS, ConditionOperator, describeCondition(), evaluateCondition(), isConditionOperator(), describeFlow() (+12 more)
 
 ### Community 45 - "package.json"
 Cohesion: 0.22
@@ -380,13 +373,13 @@ Nodes (8): author, description, keywords, license, main, name, type, version
 Cohesion: 0.29
 Nodes (6): AGENT, before_, FLOOR, SECTOR, WA_CHANNEL, WIDGET
 
-### Community 47 - "installations.ts"
-Cohesion: 0.15
-Nodes (19): createInstallation(), CreateInstallationInput, deleteInstallation(), getInstallation(), installations, LEGACY_APP_VERSION, markInstallationTested(), normalizeConfig() (+11 more)
+### Community 47 - "listRunTimeline"
+Cohesion: 0.20
+Nodes (16): agentConstraint(), agentIdsInSector(), automationFilter(), averageTokens(), decodeRunCursor(), encodeRunCursor(), listRunsForCenter(), listRunTimeline() (+8 more)
 
-### Community 48 - "registry.ts"
-Cohesion: 0.14
-Nodes (16): AgentBubbleState, catalogIndex(), instrumentTools(), LiveTracker, LiveTrackerContext, NOOP_TRACKER, toolDetail(), OFFICIAL_APPS (+8 more)
+### Community 48 - "seedAgentBubbles.ts"
+Cohesion: 0.27
+Nodes (6): AgentBubbleState, ensureAgentLiveStateIndexes(), LiveTracker, arg(), main(), SHOWCASE
 
 ### Community 49 - "delegation.test.mjs"
 Cohesion: 0.22
@@ -425,12 +418,12 @@ Cohesion: 0.29
 Nodes (4): compose, coolify, envExample, pkg
 
 ### Community 58 - "migrate.ts"
-Cohesion: 0.13
-Nodes (23): ensureAppActionIndexes(), ensureInstallationIndexes(), ensureNavigationIndexes(), ensurePrivateAppIndexes(), ensureAutomationIndexes(), backfillSourceFingerprints(), ensureSourceCheckpointIndexes(), ensureBuildingIndexes() (+15 more)
+Cohesion: 0.19
+Nodes (19): ensureAppActionIndexes(), ensureInstallationIndexes(), ensureNavigationIndexes(), ensurePrivateAppIndexes(), ensureAutomationIndexes(), backfillSourceFingerprints(), ensureSourceCheckpointIndexes(), ensureBuildingIndexes() (+11 more)
 
 ### Community 59 - "privateApps.ts"
-Cohesion: 0.11
-Nodes (30): describeManifestIssues(), exportableManifest(), FORBIDDEN_IN_TEMPLATE, isRecord(), isText(), ManifestIssue, ManifestValidation, sanitizeImportedManifest() (+22 more)
+Cohesion: 0.20
+Nodes (16): describeManifestIssues(), exportableManifest(), archivePrivateApp(), createPrivateApp(), deletePrivateApp(), exportPrivateApp(), getPrivateApp(), listAppsForOwner() (+8 more)
 
 ### Community 60 - "collaboration.test.mjs"
 Cohesion: 0.40
@@ -452,73 +445,73 @@ Nodes (3): AGENT, call, ctx
 Cohesion: 0.67
 Nodes (3): bad(), ok(), orderSchema
 
-### Community 76 - "AppDefinition"
-Cohesion: 0.53
-Nodes (5): native(), num(), schema(), str(), AppDefinition
+### Community 76 - "sectorKnowledgeRoutes.ts"
+Cohesion: 0.17
+Nodes (13): chunkText(), deleteDocument(), deleteDocumentFor(), getDocument(), getDocumentFor(), indexDocumentChunks(), KnowledgeDocument, listDocumentsFor() (+5 more)
 
 ### Community 77 - "delegationWiring.ts"
-Cohesion: 0.23
-Nodes (19): recordAgentEvent(), recordAgentEventSafe(), createLiveTracker(), executeAgentTask(), resolveAgentTools(), agentCanDelegate(), capabilityMissingTool(), finishDelegation() (+11 more)
+Cohesion: 0.26
+Nodes (14): agentCanDelegate(), capabilityMissingTool(), finishDelegation(), startDelegation(), playgroundDelegationDeps(), productionDelegationDeps(), resolveToolsWithDelegation(), listDocuments() (+6 more)
 
 ### Community 78 - "automations/repository.ts"
 Cohesion: 0.14
-Nodes (10): automations, findByWebhookKey(), listActiveAutomations(), listActivePublished(), listAutomations(), ListAutomationsQuery, versions, AutomationVersion (+2 more)
+Nodes (11): automations, findByWebhookKey(), listActiveAutomations(), listActivePublished(), listAutomations(), ListAutomationsQuery, versions, signBody() (+3 more)
 
 ### Community 84 - "sectorPlanner.ts"
-Cohesion: 0.24
-Nodes (14): describeMember(), describePlan(), ExecutionTask, fallbackPlan(), listaCurta(), MAX_TASKS, parsePlanJson(), planExecution() (+6 more)
+Cohesion: 0.16
+Nodes (23): executeSectorTeam(), stageInstruction(), buildSynthesisContext(), describeMember(), describePlan(), ExecutionTask, fallbackPlan(), inputFromDependencies() (+15 more)
 
 ### Community 85 - "seedRestaurantDemo.ts"
 Cohesion: 0.20
 Nodes (15): createAgent(), createDocument(), createDocumentFor(), SEED_CONFIRM_PHRASE, SeedEnv, seedGuard(), seedMayWrite(), SeedPlan (+7 more)
 
-### Community 96 - "appInstallationRoutes.ts"
-Cohesion: 0.18
-Nodes (15): backfillManagedChannelInstallations(), channels, ChannelSyncReport, hasValidChannel(), installations, isManagedChannelApp(), isValidChannel(), listValidChannels() (+7 more)
+### Community 96 - "channelApps.ts"
+Cohesion: 0.29
+Nodes (11): backfillManagedChannelInstallations(), channels, ChannelSyncReport, hasValidChannel(), installations, isManagedChannelApp(), isValidChannel(), listValidChannels() (+3 more)
 
-### Community 97 - "appGrantRoutes.ts"
-Cohesion: 0.23
-Nodes (7): ValidationError, appGrantRouter, auditEntity(), automationRouter, fail(), notFound(), oid()
+### Community 97 - "building.ts"
+Cohesion: 0.16
+Nodes (10): AutomationVersion, BuildingPatch, buildings, ValidationError, appGrantRouter, automationRouter, connectionRouter, fail() (+2 more)
 
 ### Community 98 - "delegateToAgent"
 Cohesion: 0.27
 Nodes (14): agentCard(), asOutputFormat(), buildDelegationTools(), checkDelegation(), delegateToAgent(), delegateToSector(), gateContext(), gateTargetForAgent() (+6 more)
 
 ### Community 99 - "llmFake.ts"
-Cohesion: 0.12
-Nodes (8): AUXILIARY_MODEL, countTokens(), DEFAULT_MODEL, generateAgentReply(), reply(), RouterOption, SectorPlan, StageTransitionOption
+Cohesion: 0.11
+Nodes (9): ToolCallRecord, AUXILIARY_MODEL, countTokens(), DEFAULT_MODEL, generateAgentReply(), reply(), RouterOption, SectorPlan (+1 more)
 
 ### Community 100 - "entrypointParity.test.mjs"
 Cohesion: 0.29
 Nodes (3): AGENTE, AnthropicFalso, enviado
 
 ### Community 101 - "automations/service.ts"
-Cohesion: 0.12
-Nodes (30): assertOwnedAgentRefs(), assertOwnedSectorRefs(), AutomationValidationError, collectSectorRefs(), createAutomation(), CreateAutomationInput, defaultDefinition(), normalizeName() (+22 more)
+Cohesion: 0.17
+Nodes (22): ensureActivationMode(), getAgentById(), createEventTrigger(), assertOwnedAgentRefs(), assertOwnedSectorRefs(), AutomationValidationError, collectSectorRefs(), createAutomation() (+14 more)
 
 ### Community 102 - "agentDefinition.ts"
-Cohesion: 0.11
-Nodes (25): AgentDefinition, definitionOf(), OutputCheck, resolveAgentRun(), resolveCache(), ResolvedAgentRun, ResolveRunOptions, ActionRisk (+17 more)
+Cohesion: 0.09
+Nodes (32): AgentDefinition, composeAgentPrompt(), definitionOf(), OutputCheck, outputDirective(), resolveAgentRun(), resolveCache(), ResolvedAgentRun (+24 more)
 
-### Community 103 - "navigation.ts"
-Cohesion: 0.16
-Nodes (18): installationPublic(), listInstallations(), buildNavigation(), dropPinsForApp(), getNavigationPreferences(), MAX_PINNED_APPS, NavigationApp, NavigationAppStatus (+10 more)
+### Community 103 - "installations.ts"
+Cohesion: 0.08
+Nodes (35): ChannelAppKey, channelOverview, messages, widgets, createInstallation(), CreateInstallationInput, deleteInstallation(), installationPublic() (+27 more)
 
-### Community 104 - "liveSources.ts"
-Cohesion: 0.36
-Nodes (7): sourceSettingsOf(), LivePassage, livePassagesFor(), liveStepIdFor(), STEP(), advanceCheckpoint(), beginCheck()
+### Community 104 - "connections/repository.ts"
+Cohesion: 0.17
+Nodes (6): connections, deliveries, insertDeliveryIdempotent(), listDeliveries(), sentDeliveriesByAgent(), updateDelivery()
 
 ### Community 105 - "tokenUsage.ts"
-Cohesion: 0.18
-Nodes (17): attemptChargeKey(), dayKey(), foldCharge(), getMonthlyTokens(), getUsageSummary(), isDuplicateKey(), recordReplyUsage(), recordReplyUsageOnce() (+9 more)
+Cohesion: 0.17
+Nodes (18): TokenUsage, attemptChargeKey(), dayKey(), foldCharge(), getMonthlyTokens(), getUsageSummary(), isDuplicateKey(), recordReplyUsage() (+10 more)
 
 ### Community 106 - "run-tests.mjs"
 Cohesion: 0.22
 Nodes (7): arquivos, comBanco, dirTestes, LIMITE_MONGO, raiz, semBanco, usaMongo()
 
 ### Community 107 - "builtinTools.ts"
-Cohesion: 0.24
-Nodes (13): APP_GUIDES, BUILTIN_APPS, BuiltinAppGuide, builtinAppsCatalog(), BuiltinConfigField, hubspotTools(), mercadoPagoTools(), num() (+5 more)
+Cohesion: 0.18
+Nodes (18): resolveAppGrantTools(), APP_GUIDES, BUILTIN_APPS, BuiltinAppGuide, builtinAppsCatalog(), BuiltinConfigField, getBuiltinApp(), resolveAgentTools() (+10 more)
 
 ### Community 108 - "agentLiveState.integration.test.mjs"
 Cohesion: 0.16
@@ -533,8 +526,8 @@ Cohesion: 0.25
 Nodes (5): AGENT, BUILDING, conferirDescartada(), FLOOR, lerRun()
 
 ### Community 111 - "clarify.ts"
-Cohesion: 0.24
-Nodes (9): clarificationFrom(), ClarificationRequest, CLARIFY_TOOL_NAME, clarifyTool(), countClarifications(), j(), clarificationGuidance(), CLARIFY_LIMIT (+1 more)
+Cohesion: 0.38
+Nodes (6): ClarificationRequest, CLARIFY_TOOL_NAME, clarifyTool(), countClarifications(), j(), clarifyBudgetSpent()
 
 ### Community 112 - "sectorExecutions.integration.test.mjs"
 Cohesion: 0.22
@@ -549,8 +542,8 @@ Cohesion: 0.29
 Nodes (5): code, DORMANT, files, stripComments(), WITH_SOURCE
 
 ### Community 116 - "sectors.ts"
-Cohesion: 0.12
-Nodes (25): assignAgentToSector(), AssignOutcome, AssignResult, MembershipFail, sectorOfAgent(), sectors, createSector(), deleteSector() (+17 more)
+Cohesion: 0.07
+Nodes (41): serializeSector(), AgentDoc, accessConfigOf(), accessImpact, checkSectorEntry(), ENTRY_POLICY_LABEL, EntryDecision, protectedAgentIds() (+33 more)
 
 ### Community 118 - "appMigration.integration.test.mjs"
 Cohesion: 0.38
@@ -558,15 +551,15 @@ Nodes (3): agents(), insertAgent(), readAgent()
 
 ### Community 119 - "floorCommunication.ts"
 Cohesion: 0.18
-Nodes (13): Building, buildings, COMMUNICATION_LABEL, communicationConfigOf(), communicationImpact, FLOOR_COMMUNICATION_MODES, FloorCommunicationMode, FloorLink (+5 more)
+Nodes (14): Building, buildings, canCommunicate(), COMMUNICATION_LABEL, communicationConfigOf(), communicationImpact, FLOOR_COMMUNICATION_MODES, FloorCommunicationMode (+6 more)
 
 ### Community 120 - "sectorAccess.integration.test.mjs"
 Cohesion: 0.29
 Nodes (3): COORD, OUTSIDER, STAGE_AGENT
 
-### Community 121 - "sectorAccess.ts"
-Cohesion: 0.21
-Nodes (14): serializeSector(), accessConfigOf(), accessImpact, checkSectorEntry(), ENTRY_POLICY_LABEL, EntryDecision, protectedAgentIds(), SECTOR_ENTRY_POLICIES (+6 more)
+### Community 121 - "executionRoutes.ts"
+Cohesion: 0.18
+Nodes (8): EXECUTION_TABS, ExecutionFilters, ExecutionTab, RunTimelineFilters, AnalyticsPeriod, ANALYTICS_PERIODS, executionRouter, parseFilters()
 
 ### Community 123 - "floorWork.integration.test.mjs"
 Cohesion: 0.47
@@ -585,8 +578,8 @@ Cohesion: 0.60
 Nodes (4): addWidget(), messages(), say(), widgets()
 
 ### Community 129 - "engine.ts"
-Cohesion: 0.13
-Nodes (20): CONCURRENCY, embeddedEngineEnabled(), EngineHandle, EngineOptions, engineStatus, LEASE_RENEW_MS, readiness(), RUN_POLL_MS (+12 more)
+Cohesion: 0.07
+Nodes (39): CONCURRENCY, embeddedEngineEnabled(), EngineHandle, EngineOptions, engineStatus, LEASE_RENEW_MS, readiness(), RUN_POLL_MS (+31 more)
 
 ### Community 131 - "sourceCheckpoint.integration.test.mjs"
 Cohesion: 0.25
@@ -604,6 +597,10 @@ Nodes (6): AGENTE, agenteFalso, ANDAR, FEED(), itensDoFeed, servidor
 Cohesion: 0.40
 Nodes (4): AnthropicFalso, comportamento, contadora(), espera()
 
+### Community 137 - "autoModel.ts"
+Cohesion: 0.29
+Nodes (7): AUTO_MODEL, AutoModelChoice, chooseModelTier(), ModelTier, POR_PRESET, resolveAutoModel(), auxModelFor()
+
 ### Community 139 - "conversationTurns.ts"
 Cohesion: 0.23
 Nodes (10): ConversationTurn, EMBEDDING_DIMENSIONS, ensureConversationTurnsVectorIndex(), recordTurn(), searchRelevantTurns(), turns, TURNS_VECTOR_INDEX_NAME, embedText() (+2 more)
@@ -612,101 +609,85 @@ Nodes (10): ConversationTurn, EMBEDDING_DIMENSIONS, ensureConversationTurnsVecto
 Cohesion: 0.18
 Nodes (18): searchKnowledgeLexicallyForOwners(), ABREV_EN, ABREV_PT, escapeRegex(), expandirData(), extractTerms(), extractWindow(), LexicalTerm (+10 more)
 
-### Community 146 - "delegationLog.ts"
-Cohesion: 0.22
-Nodes (8): col, DelegationFinish, DelegationRecord, DelegationStart, DelegationStatus, ensureDelegationIndexes(), listDelegationsForAgent(), succeededDelegationsByCaller()
+### Community 146 - "offices.ts"
+Cohesion: 0.33
+Nodes (4): createOffice(), ensureDefaultOffice(), Office, offices
 
-### Community 147 - "scheduler.ts"
-Cohesion: 0.24
-Nodes (12): advanceFrom(), catchUp(), nextFireAt(), automations, backfillPublishedTriggers(), defaultDeps, ensureSchedulerIndexes(), planSchedules() (+4 more)
+### Community 147 - "selectVisualStates"
+Cohesion: 0.33
+Nodes (5): agentLiveStatesForFloor(), rank(), selectVisualStates(), NOW, row()
 
 ### Community 149 - "openai.ts"
 Cohesion: 0.08
-Nodes (59): MAX_TOOL_ITERATIONS, runResolvedTool(), anthropicUsage(), askAux(), AUXILIARY_MODEL, buildClient(), checkGuardrail(), DEFAULT_MODEL (+51 more)
+Nodes (58): anthropicUsage(), askAux(), AUXILIARY_MODEL, buildClient(), checkGuardrail(), DEFAULT_MODEL, extractIdentity(), extractStructuredOutput() (+50 more)
 
-### Community 150 - "safeHttp.ts"
-Cohesion: 0.33
-Nodes (8): assertPublicUrl(), DEFAULTS, isLoopback(), isPrivateIp(), loopbackAllowed(), safeFetch(), SafeFetchOptions, SafeFetchResult
+### Community 150 - "executionSummary"
+Cohesion: 0.50
+Nodes (4): clarificationsSince(), tokensByModelSince(), executionSummary, windowStart()
 
 ### Community 151 - "googleTools.ts"
-Cohesion: 0.36
-Nodes (6): adapters, manifest, googleCalendarTools(), googleFetch(), googleSheetsTools(), objectSchema()
-
-### Community 152 - "config.ts"
-Cohesion: 0.32
-Nodes (7): clientUrl, isProduction, originList(), port, stripTrailingSlash(), urlVar(), validateConfig()
+Cohesion: 0.50
+Nodes (5): getGoogleAccessToken(), googleCalendarTools(), googleFetch(), googleSheetsTools(), objectSchema()
 
 ### Community 153 - "floors.ts"
-Cohesion: 0.11
-Nodes (33): legacyWorkingMap(), liveStatesEtag(), agentStatesForFloor(), buildingOverview(), floorMetrics, BuildingLanguage, BuildingPatch, buildings (+25 more)
+Cohesion: 0.13
+Nodes (29): agentStatesForFloor(), buildingOverview(), floorMetrics, BuildingLanguage, DEFAULT_TIMEZONE, ensureDefaultBuilding(), isValidTimezone(), LANGUAGES (+21 more)
 
 ### Community 155 - "safeError.ts"
 Cohesion: 0.25
 Nodes (7): ALIAS, DelegationDenyCode, DENY_MESSAGE, KINDS, MESSAGE, publicDelegationError(), safeErrorKind
-
-### Community 156 - "runConfig.ts"
-Cohesion: 0.18
-Nodes (12): dentro(), LIMITS, MATRIX, ModelCapabilities, normalizeRunConfig(), numeroFinito(), REASONING_EFFORTS, ReasoningEffort (+4 more)
 
 ### Community 157 - "sectorPlanner.test.mjs"
 Cohesion: 0.33
 Nodes (4): COZINHA, EQUIPE, FINANCEIRO, JURIDICO
 
 ### Community 159 - "official/index.ts"
-Cohesion: 0.15
-Nodes (11): MODULES, OFFICIAL_ADAPTERS, OfficialAppsError, OfficialModule, adapters, manifest, adapters, manifest (+3 more)
+Cohesion: 0.08
+Nodes (26): manifest, adapters, manifest, adapters, manifest, MODULES, OFFICIAL_ADAPTERS, OfficialAppsError (+18 more)
 
 ### Community 163 - "agentTools.ts"
-Cohesion: 0.38
-Nodes (6): AgentTool, legacyToolToExecutable(), resolveHttpTool(), toolInputSchema(), ExecutableTool, TOOL_DEFAULTS
+Cohesion: 0.32
+Nodes (7): AgentTool, legacyToolToExecutable(), MAX_TOOL_ITERATIONS, resolveHttpTool(), toolInputSchema(), ExecutableTool, TOOL_DEFAULTS
 
 ### Community 165 - "floorWork.ts"
-Cohesion: 0.15
-Nodes (19): Agent, AgentAppGrant, checkCollaboration(), CollaborationDecision, CollaborationDenyCode, discoverable(), GateContext, GateTarget (+11 more)
-
-### Community 166 - "sourceCheckpoint.ts"
-Cohesion: 0.22
-Nodes (9): acquireSourceLease(), checkpoints, ehChaveDuplicada(), LEASE_MS, leases, MAX_SEEN_KEYS, SourceCheckpoint, SourceLease (+1 more)
+Cohesion: 0.16
+Nodes (18): Agent, AgentAppGrant, checkCollaboration(), CollaborationDecision, CollaborationDenyCode, discoverable(), GateContext, GateTarget (+10 more)
 
 ### Community 174 - "apps/types.ts"
-Cohesion: 0.11
-Nodes (14): manifest, manifest, APP_ACTIVATIONS, APP_AVAILABILITIES, AppActionExecution, AppAuthDefinition, AppAuthField, AppAuthKind (+6 more)
+Cohesion: 0.10
+Nodes (26): FORBIDDEN_IN_TEMPLATE, isRecord(), isText(), ManifestIssue, ManifestValidation, sanitizeImportedManifest(), validateAction(), validateAppManifest() (+18 more)
 
 ### Community 175 - "sectorBriefing.ts"
 Cohesion: 0.53
 Nodes (5): BriefingMember, coordinatorBriefing(), limpar(), linhaDe(), ExecutionPlan
 
 ### Community 177 - "agentEvents.ts"
-Cohesion: 0.22
-Nodes (9): AGENT_EVENT_SOURCES, AGENT_EVENT_STATUSES, AgentEventSource, AgentExecutionEvent, finalizeAgentEvent(), finalizeAgentEventSafe(), ModelUsageRow, runEventKey() (+1 more)
-
-### Community 179 - "auditMiddleware.ts"
-Cohesion: 0.22
-Nodes (11): AuditAction, AuditEntityType, recordAudit(), safeMetadata(), auditRequests(), AuditTarget, auditTargetFor(), matches() (+3 more)
+Cohesion: 0.20
+Nodes (11): AGENT_EVENT_SOURCES, AGENT_EVENT_STATUSES, AgentEventSource, AgentExecutionEvent, finalizeAgentEvent(), finalizeAgentEventSafe(), ModelUsageRow, recordAgentEvent() (+3 more)
 
 ### Community 180 - "playgroundSession.ts"
 Cohesion: 0.25
 Nodes (8): guardarTurnoDeTeste(), appendPlaygroundTurns(), clearPlaygroundTurns(), cortar(), loadPlaygroundTurns(), PlaygroundSession, PlaygroundTurn, sessions
 
 ## Knowledge Gaps
-- **623 isolated node(s):** `DEFAULT_MODEL`, `AUXILIARY_MODEL`, `FALLBACK_MODELS`, `DEFAULT_DELEGATION_TOKEN_BUDGET`, `DelegationBudget` (+618 more)
+- **623 isolated node(s):** `DEFAULT_DELEGATION_TOKEN_BUDGET`, `DelegationBudget`, `DelegationDenyCode`, `DelegationCheck`, `OPEN_COMMUNICATION` (+618 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **26 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **22 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `attemptChargeKey()` connect `tokenUsage.ts` to `hardening.integration.test.mjs`, `runProcessor.ts`?**
-  _High betweenness centrality (0.184) - this node is a cross-community bridge._
 - **Why does `execDeps()` connect `hardening.integration.test.mjs` to `tokenUsage.ts`?**
-  _High betweenness centrality (0.184) - this node is a cross-community bridge._
-- **Why does `startMongo()` connect `mongoServer.mjs` to `sourceCheckpoint.integration.test.mjs`, `sourceTool.integration.test.mjs`, `toolsSecurity.test.mjs`, `appRoutes.integration.test.mjs`, `executionCenter.integration.test.mjs`, `logRoutes.integration.test.mjs`, `hardening.integration.test.mjs`, `eventTrigger.integration.test.mjs`, `executionModes.integration.test.mjs`, `migrationFixture.integration.test.mjs`, `schedulerPublish.integration.test.mjs`, `agentHistory.integration.test.mjs`, `routineDelivery.integration.test.mjs`, `memoryStore.integration.test.mjs`, `agentLiveState.integration.test.mjs`, `executionRoots.integration.test.mjs`, `sourceStaleRun.integration.test.mjs`, `sectorExecutions.integration.test.mjs`, `interactiveRoutes.integration.test.mjs`, `appMigration.integration.test.mjs`, `sectorAccess.integration.test.mjs`, `floorWork.integration.test.mjs`, `gateWiring.integration.test.mjs`, `sectorTeam.integration.test.mjs`, `channelApps.integration.test.mjs`, `channelOverview.integration.test.mjs`?**
-  _High betweenness centrality (0.064) - this node is a cross-community bridge._
+  _High betweenness centrality (0.212) - this node is a cross-community bridge._
+- **Why does `attemptChargeKey()` connect `tokenUsage.ts` to `hardening.integration.test.mjs`, `runProcessor.ts`?**
+  _High betweenness centrality (0.211) - this node is a cross-community bridge._
+- **Why does `startMongo()` connect `mongoServer.mjs` to `sourceCheckpoint.integration.test.mjs`, `sourceTool.integration.test.mjs`, `appRoutes.integration.test.mjs`, `scheduler.integration.test.mjs`, `executionCenter.integration.test.mjs`, `logRoutes.integration.test.mjs`, `hardening.integration.test.mjs`, `eventTrigger.integration.test.mjs`, `executionModes.integration.test.mjs`, `migrationFixture.integration.test.mjs`, `schedulerPublish.integration.test.mjs`, `agentHistory.integration.test.mjs`, `routineDelivery.integration.test.mjs`, `memoryStore.integration.test.mjs`, `agentLiveState.integration.test.mjs`, `executionRoots.integration.test.mjs`, `sourceStaleRun.integration.test.mjs`, `sectorExecutions.integration.test.mjs`, `interactiveRoutes.integration.test.mjs`, `appMigration.integration.test.mjs`, `sectorAccess.integration.test.mjs`, `floorWork.integration.test.mjs`, `gateWiring.integration.test.mjs`, `sectorTeam.integration.test.mjs`, `channelApps.integration.test.mjs`, `channelOverview.integration.test.mjs`?**
+  _High betweenness centrality (0.073) - this node is a cross-community bridge._
 - **Are the 8 inferred relationships involving `buildDeps()` (e.g. with `finalizeAgentEvent()` and `runEventKey()`) actually correct?**
   _`buildDeps()` has 8 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `DEFAULT_MODEL`, `AUXILIARY_MODEL`, `FALLBACK_MODELS` to the rest of the system?**
+- **What connects `DEFAULT_DELEGATION_TOKEN_BUDGET`, `DelegationBudget`, `DelegationDenyCode` to the rest of the system?**
   _623 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `routine.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.12337662337662338 - nodes in this community are weakly interconnected._
 - **Should `agentRuntime.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.09659090909090909 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.11827956989247312 - nodes in this community are weakly interconnected._
+- **Should `knowledge.ts` be split into smaller, more focused modules?**
+  _Cohesion score 0.09782608695652174 - nodes in this community are weakly interconnected._

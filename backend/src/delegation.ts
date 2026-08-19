@@ -26,8 +26,25 @@ import type { ClarificationRequest } from './clarify.js'
 import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
 import type { LiveTracker } from './agentLiveTracker.js'
-import { buildSynthesisContext, describePlan, inputFromDependencies, planExecution, readyTasks, shouldRun, synthesisInstruction } from './sectorPlanner.js'
-import type { ExecutionPlan, ExecutionTask, TaskResult } from './sectorPlanner.js'
+import {
+  MAX_ORCHESTRATION_ROUNDS,
+  MAX_TASKS_TOTAL,
+  ORCHESTRATION_TIMEOUT_MS,
+  assembleWithoutModel,
+  buildSynthesisContext,
+  dedupeAgainst,
+  describePlan,
+  inputFromDependencies,
+  limitationNote,
+  parseSufficiency,
+  planExecution,
+  readyTasks,
+  shouldRun,
+  sufficiencyPrompt,
+  synthesisInstruction,
+  taskKey,
+} from './sectorPlanner.js'
+import type { ExecutionPlan, ExecutionTask, Sufficiency, TaskResult } from './sectorPlanner.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -1155,14 +1172,6 @@ export async function executeSectorTeam(
     members: equipe,
     ask: deps.planWithModel ? (prompt) => deps.planWithModel!(ctx.ownerId, coordinator, prompt) : undefined,
   })
-  if (plan.tasks.length > 0) {
-    // O plano gerado, legível: ids, nomes e o começo de cada objetivo. Sem credencial,
-    // sem prompt de sistema e sem conteúdo de base.
-    console.info(
-      `[plan] execution=${sectorExecutionId?.toString() ?? ctx.correlationId} sector=${sector._id.toString()} ` +
-        `source=${origemDoPlano} tasks=${plan.tasks.length} ${describePlan(plan, equipe)}`,
-    )
-  }
   const briefing = coordinatorBriefing(sector.name, equipe, plan)
   const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
 
@@ -1212,9 +1221,10 @@ export async function executeSectorTeam(
    * Sem plano — setor sem outros membros, instalação antiga — nada disto acontece e o
    * coordenador responde como sempre respondeu.
    */
-  const resultados = new Map<string, TaskResult>()
   const nomePorAgente = new Map(equipe.map((m) => [m.agentId, m.name]))
-  const inicioDoPlano = Date.now()
+  const inicioDaOrquestracao = Date.now()
+  const prazo = inicioDaOrquestracao + ORCHESTRATION_TIMEOUT_MS
+  const execId = sectorExecutionId?.toString() ?? ctx.correlationId
 
   const rodarTarefa = async (task: ExecutionTask): Promise<TaskResult> => {
     const agentName = nomePorAgente.get(task.agentId) ?? 'membro'
@@ -1222,15 +1232,14 @@ export async function executeSectorTeam(
     const comecou = Date.now()
     const alvo = await deps.loadAgent(ctx.ownerId, new ObjectId(task.agentId)).catch(() => null)
     if (!alvo) return { ...base, status: 'failed', error: 'agente não encontrado', durationMs: 0 }
+    // A mesma proteção da delegação: um agente que já está na cadeia não entra de novo,
+    // por mais que o plano peça. É o que impede recursão sem fim entre setores.
     if (inChain(alvo._id)) return { ...base, status: 'skipped', error: 'ciclo de delegação', durationMs: 0 }
 
-    console.info(
-      `[task:start] execution=${sectorExecutionId?.toString() ?? ctx.correlationId} task=${task.id} ` +
-        `agent=${task.agentId} deps=[${base.dependsOn.join(',')}]`,
-    )
+    console.info(`[task:start] execution=${execId} task=${task.id} agent=${task.agentId} deps=[${base.dependsOn.join(',')}]`)
     // A entrada de quem depende: o que os antecessores produziram, com autoria. Sem
     // dependência, o pedido original.
-    const entrada = base.dependsOn.length > 0 ? inputFromDependencies(task, resultados) : opts.input
+    const entrada = base.dependsOn.length > 0 ? inputFromDependencies(task, resultadosPorId) : opts.input
     try {
       const saida = await rodarMembro(
         alvo,
@@ -1241,7 +1250,7 @@ export async function executeSectorTeam(
         { agentId: alvo._id.toString(), name: alvo.name, role: 'specialist' },
       )
       const durationMs = Date.now() - comecou
-      console.info(`[task:end] task=${task.id} agent=${task.agentId} status=succeeded duration=${durationMs}ms`)
+      console.info(`[task:end] execution=${execId} task=${task.id} agent=${task.agentId} status=succeeded duration=${durationMs}ms`)
       return { ...base, status: 'succeeded', output: saida, durationMs }
     } catch (erro) {
       const durationMs = Date.now() - comecou
@@ -1254,111 +1263,180 @@ export async function executeSectorTeam(
           : /grounding|base/i.test(mensagem)
             ? 'sem base para responder'
             : 'falha na execução'
-      console.info(`[task:end] task=${task.id} agent=${task.agentId} status=failed duration=${durationMs}ms error=${categoria}`)
+      console.info(`[task:end] execution=${execId} task=${task.id} agent=${task.agentId} status=failed duration=${durationMs}ms error=${categoria}`)
       // A participação com falha é registrada para o painel mostrar quem tentou.
-      participants.push({
-        agentId: alvo._id.toString(),
-        name: alvo.name,
-        role: 'specialist',
-        durationMs,
-        status: 'failed',
-      })
+      participants.push({ agentId: alvo._id.toString(), name: alvo.name, role: 'specialist', durationMs, status: 'failed' })
       return { ...base, status: 'failed', error: categoria, durationMs }
     }
   }
 
-  while (resultados.size < plan.tasks.length) {
-    if (await isCanceled(ctx)) throw new Error('cancelado')
-    if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) {
-      warnings.push('orçamento esgotado antes de concluir o plano')
-      break
-    }
-    const onda = readyTasks(plan, new Set(resultados.keys()))
-    // Impossível com um plano validado (as dependências só apontam para trás), mas um
-    // laço infinito num executor de agentes custa dinheiro de verdade.
-    if (onda.length === 0) break
+  // Os resultados desta rodada, por id de tarefa — é daqui que sai a entrada de quem depende.
+  let resultadosPorId = new Map<string, TaskResult>()
 
-    // As independentes saem JUNTAS. `allSettled` porque uma que falha não pode levar as
-    // outras: o resultado de cada uma é registrado, e a síntese decide o que fazer.
-    const executadas = await Promise.allSettled(
-      onda.map((task) =>
-        shouldRun(task, resultados)
-          ? rodarTarefa(task)
-          : Promise.resolve<TaskResult>({
-              taskId: task.id,
-              agentId: task.agentId,
-              agentName: nomePorAgente.get(task.agentId) ?? 'membro',
-              objective: task.objective,
-              dependsOn: task.dependsOn ?? [],
-              status: 'skipped',
-              error: 'todas as dependências falharam',
-              durationMs: 0,
-            }),
-      ),
-    )
-    for (const [i, r] of executadas.entries()) {
-      const task = onda[i]
-      resultados.set(
-        task.id,
-        r.status === 'fulfilled'
-          ? r.value
-          : {
-              taskId: task.id,
-              agentId: task.agentId,
-              agentName: nomePorAgente.get(task.agentId) ?? 'membro',
-              objective: task.objective,
-              dependsOn: task.dependsOn ?? [],
-              status: 'failed',
-              error: 'falha na execução',
-              durationMs: 0,
-            },
+  /** Uma rodada: as tarefas prontas saem juntas, as dependentes esperam pelas suas. */
+  const executarPlano = async (p: ExecutionPlan): Promise<TaskResult[]> => {
+    resultadosPorId = new Map<string, TaskResult>()
+    while (resultadosPorId.size < p.tasks.length) {
+      if (await isCanceled(ctx)) throw new Error('cancelado')
+      if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) {
+        warnings.push('orçamento esgotado antes de concluir o plano')
+        break
+      }
+      if (Date.now() > prazo) {
+        warnings.push('tempo de orquestração esgotado antes de concluir o plano')
+        break
+      }
+      const onda = readyTasks(p, new Set(resultadosPorId.keys()))
+      // Impossível com um plano validado (as dependências só apontam para trás), mas um
+      // laço infinito num executor de agentes custa dinheiro de verdade.
+      if (onda.length === 0) break
+
+      // As independentes saem JUNTAS. `allSettled` porque uma que falha não pode levar as
+      // outras: o resultado de cada uma é registrado, e a síntese decide o que fazer.
+      const semEntrada = (task: ExecutionTask): TaskResult => ({
+        taskId: task.id,
+        agentId: task.agentId,
+        agentName: nomePorAgente.get(task.agentId) ?? 'membro',
+        objective: task.objective,
+        dependsOn: task.dependsOn ?? [],
+        status: 'skipped',
+        error: 'todas as dependências falharam',
+        durationMs: 0,
+      })
+      const executadas = await Promise.allSettled(
+        onda.map((task) => (shouldRun(task, resultadosPorId) ? rodarTarefa(task) : Promise.resolve(semEntrada(task)))),
       )
+      for (const [i, r] of executadas.entries()) {
+        const task = onda[i]
+        resultadosPorId.set(task.id, r.status === 'fulfilled' ? r.value : { ...semEntrada(task), status: 'failed', error: 'falha na execução' })
+      }
     }
+    return p.tasks.map((t) => resultadosPorId.get(t.id)).filter((r): r is TaskResult => Boolean(r))
   }
-
-  const emOrdem = plan.tasks.map((t) => resultados.get(t.id)).filter((r): r is TaskResult => Boolean(r))
-  const falharam = emOrdem.filter((r) => r.status !== 'succeeded')
-  for (const r of falharam) warnings.push(`${r.agentName}: ${r.error ?? 'não executou'}`)
 
   /**
-   * A SÍNTESE, sempre.
+   * A consolidação, com o que existir até agora.
    *
-   * Mesmo com uma tarefa só: quem perguntou espera uma resposta da equipe, não o
-   * despacho interno de um especialista para o coordenador. E é aqui que se cruza o que
-   * veio de mais de um — que é a razão de existir do plano.
-   *
-   * Quando NINGUÉM executou (setor sem membros), não há o que sintetizar: o coordenador
-   * responde o pedido original, exatamente como antes desta mudança.
+   * Falha aqui NÃO joga fora o trabalho: houve execução de verdade, e devolver vazio
+   * seria o pior desfecho possível. A montagem sem modelo entrega o que cada agente
+   * respondeu, dizendo que a junção não pôde ser feita.
    */
-  const houvePlano = emOrdem.length > 0
-  // A instrução do SETOR continua valendo na consolidação: é onde o dono escreve como a
-  // equipe fala ("responda em português", "seja formal"). Trocá-la pelo pedido de síntese
-  // faria a resposta final ser a única do fluxo a ignorar a configuração do setor.
-  const instrucaoFinal = houvePlano
-    ? [sector.instruction?.trim(), synthesisInstruction(plan)].filter(Boolean).join('\n\n')
-    : instruction
-  const entradaFinal = houvePlano ? buildSynthesisContext(opts.objective, plan, emOrdem) : opts.input
-  if (houvePlano) {
+  const sintetizar = async (feitos: TaskResult[], limitacao: string): Promise<string> => {
+    const instrucaoFinal = [sector.instruction?.trim(), synthesisInstruction(plan), limitacao].filter(Boolean).join('\n\n')
+    const entradaFinal = buildSynthesisContext(opts.objective, { ...plan, tasks: feitos.map((r) => ({ id: r.taskId, agentId: r.agentId, objective: r.objective, dependsOn: r.dependsOn })) }, feitos)
+    const comecou = Date.now()
+    console.info(`[synthesis:start] execution=${execId} agent=${coordinator._id.toString()} results=${feitos.length}`)
+    try {
+      const texto = await rodarMembro(
+        coordinator,
+        instrucaoFinal,
+        entradaFinal,
+        (k) => runAgentTask(depsComTime, ctx, coordinator, instrucaoFinal, entradaFinal, format, k, sector._id, grant, briefing),
+        participationOf('coordinator'),
+        { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
+      )
+      console.info(`[synthesis:end] execution=${execId} status=succeeded duration=${Date.now() - comecou}ms`)
+      return texto
+    } catch (erro) {
+      const montado = assembleWithoutModel(feitos)
+      console.info(`[synthesis:end] execution=${execId} status=failed duration=${Date.now() - comecou}ms fallback=${montado ? 'montagem' : 'nenhum'}`)
+      warnings.push('não foi possível consolidar as respostas da equipe')
+      if (!montado) throw erro
+      return montado
+    }
+  }
+
+  /**
+   * A ORQUESTRAÇÃO: planejar, executar, consolidar — e, se faltou, uma segunda chance.
+   *
+   * O teto de rodadas é o que impede o motor de decidir sozinho quando parar. A pergunta
+   * de suficiência só é feita quando ainda existe alguém não consultado: sem especialista
+   * sobrando, uma segunda rodada não mudaria a resposta e custaria a equipe inteira.
+   */
+  const todos: TaskResult[] = []
+  const jaFeitas = new Set<string>()
+  const consultados = new Set<string>()
+  let planoAtual: ExecutionPlan = plan
+  let rodada = 0
+  let output = ''
+  let faltou: string | undefined
+
+  console.info(`[orchestration:start] execution=${execId} sector=${sector._id.toString()} members=${equipe.length}`)
+
+  while (rodada < MAX_ORCHESTRATION_ROUNDS) {
+    rodada += 1
+    planoAtual = dedupeAgainst(planoAtual, jaFeitas, MAX_TASKS_TOTAL - todos.length)
+    if (planoAtual.tasks.length === 0) break
+
     console.info(
-      `[synthesis:start] execution=${sectorExecutionId?.toString() ?? ctx.correlationId} agent=${coordinator._id.toString()} ` +
-        `results=${emOrdem.length} failed=${falharam.length}`,
+      `[plan] execution=${execId} sector=${sector._id.toString()} round=${rodada} source=${rodada === 1 ? origemDoPlano : 'model'} ` +
+        `tasks=${planoAtual.tasks.length} ${describePlan(planoAtual, equipe)}`,
+    )
+    for (const t of planoAtual.tasks) {
+      jaFeitas.add(taskKey(t.agentId, t.objective))
+      consultados.add(t.agentId)
+    }
+
+    todos.push(...(await executarPlano(planoAtual)))
+    const naoConsultados = equipe.filter((m) => !consultados.has(m.agentId))
+    const ultimaRodada = rodada >= MAX_ORCHESTRATION_ROUNDS || naoConsultados.length === 0 || todos.length >= MAX_TASKS_TOTAL || Date.now() > prazo
+
+    // A suficiência é decidida ANTES da última consolidação, para a nota de limitação
+    // poder entrar nela — dizer o que faltou é parte da resposta, não um adendo.
+    let limitacao = ''
+    if (!ultimaRodada && deps.planWithModel) {
+      const parcial = assembleWithoutModel(todos)
+      const veredito = await deps
+        .planWithModel(ctx.ownerId, coordinator, sufficiencyPrompt(opts.objective, parcial, naoConsultados))
+        .then(parseSufficiency)
+        .catch(() => ({ sufficient: true }) as Sufficiency)
+      console.info(`[sufficiency] execution=${execId} round=${rodada} sufficient=${veredito.sufficient} pending=${naoConsultados.length}`)
+      if (veredito.sufficient) {
+        output = await sintetizar(todos, '')
+        break
+      }
+      faltou = veredito.missing
+      // A rodada seguinte olha SÓ quem não foi consultado: repetir quem já respondeu é
+      // pagar de novo pela mesma resposta.
+      const proximo = await planExecution({
+        question: faltou ? `${opts.objective}\n\nFalta especificamente: ${faltou}` : opts.objective,
+        members: naoConsultados,
+        ask: deps.planWithModel ? (prompt) => deps.planWithModel!(ctx.ownerId, coordinator, prompt) : undefined,
+        max: Math.max(0, MAX_TASKS_TOTAL - todos.length),
+      })
+      planoAtual = proximo.plan
+      if (planoAtual.tasks.length === 0) {
+        output = await sintetizar(todos, '')
+        break
+      }
+      continue
+    }
+
+    // Última rodada possível: se ainda faltava algo, a resposta diz o que faltou.
+    if (faltou) limitacao = limitationNote(faltou, rodada)
+    output = await sintetizar(todos, limitacao)
+    break
+  }
+
+  if (todos.length === 0) {
+    // Sem plano — setor sem outros membros, ou tudo já feito: o coordenador responde o
+    // pedido original, exatamente como antes desta mudança.
+    output = await rodarMembro(
+      coordinator,
+      instruction,
+      opts.input,
+      (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant, briefing),
+      participationOf('coordinator'),
+      { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
     )
   }
-  const comecouSintese = Date.now()
-  const output = await rodarMembro(
-    coordinator,
-    instrucaoFinal,
-    entradaFinal,
-    (k) => runAgentTask(depsComTime, ctx, coordinator, instrucaoFinal, entradaFinal, format, k, sector._id, grant, briefing),
-    participationOf('coordinator'),
-    { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
+  const falharam = todos.filter((r) => r.status !== 'succeeded')
+  for (const r of falharam) warnings.push(`${r.agentName}: ${r.error ?? 'não executou'}`)
+  if (faltou) warnings.push(`informação incompleta: ${faltou.slice(0, 200)}`)
+  console.info(
+    `[orchestration:end] execution=${execId} sector=${sector._id.toString()} rounds=${rodada} tasks=${todos.length} ` +
+      `succeeded=${todos.length - falharam.length} failed=${falharam.length} duration=${Date.now() - inicioDaOrquestracao}ms`,
   )
-  if (houvePlano) {
-    console.info(
-      `[synthesis:end] duration=${Date.now() - comecouSintese}ms plan_total=${Date.now() - inicioDoPlano}ms ` +
-        `tasks=${emOrdem.length} succeeded=${emOrdem.length - falharam.length}`,
-    )
-  }
   return { output, participants, warnings, clarification }
 }
 

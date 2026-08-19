@@ -4,7 +4,7 @@ import { db } from './db.js'
 // the routine step needs it without pulling in the database.
 export { buildRetrievalQuery } from './retrievalQuery.js'
 import { embedText, embedTexts } from './voyage.js'
-import { extractTerms, extractWindow, scoreText, termsToPattern } from './lexicalRetrieval.js'
+import { extractTerms, extractWindow, scoreDocument, scoreText, termsToPattern } from './lexicalRetrieval.js'
 
 // Curated knowledge base (RAG) shared by agents AND sectors. There is ONE store:
 // the same `knowledge_documents` / `knowledge_chunks` collections, the same Voyage
@@ -413,7 +413,8 @@ export async function searchKnowledgeLexicallyForOwners(owners: KnowledgeOwner[]
   return encontrados
     .map((doc) => ({
       content: extractWindow(doc.content ?? '', termos),
-      score: scoreText(`${doc.title ?? ''}\n${doc.content ?? ''}`, termos),
+      // O título conta como evidência específica: é a etiqueta que o dono escreveu.
+      score: scoreDocument(doc.title, doc.content ?? '', termos),
       ownerType: (doc.ownerType ?? 'agent') as KnowledgeOwnerType,
       ownerId: String(doc.ownerId ?? doc.agentId ?? ''),
       documentId: String(doc._id),

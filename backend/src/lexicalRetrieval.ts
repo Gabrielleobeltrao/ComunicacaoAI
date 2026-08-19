@@ -169,6 +169,35 @@ export function scoreText(texto: string, termos: LexicalTerm[]): number {
 }
 
 /**
+ * A nota de um DOCUMENTO, onde o título vale como evidência específica.
+ *
+ * `scoreText` exige um termo específico — código, data, número — para passar do piso, e a
+ * razão é boa: um trecho que só compartilha o assunto não é resposta. Mas isso deixava de
+ * fora a pergunta comum, feita de palavras: "o que mudou na série da Unidade 7" não tem
+ * ticker nem data, então nenhum documento passava, e numa instalação sem busca vetorial
+ * isso significa não achar nada.
+ *
+ * O título é a etiqueta que o DONO escreveu para aquele documento. Duas palavras da
+ * pergunta batendo com ele não é coincidência de assunto — é o documento certo. Então o
+ * título conta como específico, e o conteúdo continua contando como conteúdo.
+ */
+export function scoreDocument(title: string | null | undefined, content: string, termos: LexicalTerm[]): number {
+  const base = scoreText(`${title ?? ''}\n${content}`, termos)
+  if (base >= 0.5 || termos.length === 0) return base
+  const alvoTitulo = normalize(title ?? '')
+  if (!alvoTitulo) return base
+  const noTitulo = termos.filter((t) => alvoTitulo.includes(normalize(t.term)))
+  // Uma palavra só em comum com o título é fraco demais — "dados", "relatório". Duas já
+  // identificam. Um termo específico no título vale sozinho.
+  const forte = noTitulo.some((t) => t.weight > 1) || noTitulo.length >= 2
+  if (!forte) return base
+  const alvo = normalize(`${title ?? ''}\n${content}`)
+  const total = termos.reduce((soma, t) => soma + t.weight, 0)
+  const obtido = termos.filter((t) => alvo.includes(normalize(t.term))).reduce((soma, t) => soma + t.weight, 0)
+  return 0.5 + 0.5 * (obtido / total)
+}
+
+/**
  * O pedaço do documento em volta do que casou.
  *
  * Mandar o documento inteiro estouraria o orçamento de caracteres e afogaria a

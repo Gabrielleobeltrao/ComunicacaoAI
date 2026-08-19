@@ -392,3 +392,122 @@ export function synthesisInstruction(plan: ExecutionPlan): string {
     .filter(Boolean)
     .join('\n')
 }
+
+// --- limites -------------------------------------------------------------------------------
+//
+// Todos pequenos, e todos pelo mesmo motivo: cada rodada é um plano novo, cada tarefa é
+// uma inferência inteira com a base e as ferramentas de um agente, e um motor que decide
+// sozinho quando parar precisa de um lugar onde a decisão não seja dele.
+
+/** Quantas vezes o setor pode replanejar. Dois: a tentativa, e a chance de completar. */
+export const MAX_ORCHESTRATION_ROUNDS = 2
+/** Teto de execuções somando TODAS as rodadas — o de `MAX_TASKS` é por rodada. */
+export const MAX_TASKS_TOTAL = 6
+/** O relógio da orquestração inteira. Cada tarefa já tem o seu; este é o do conjunto. */
+export const ORCHESTRATION_TIMEOUT_MS = 240_000
+
+/**
+ * A identidade de uma tarefa para efeito de repetição: agente + objetivo.
+ *
+ * O mesmo agente com o mesmo objetivo numa segunda rodada é a mesma pergunta feita duas
+ * vezes — custa igual e responde igual. Com objetivo diferente, não: pedir outra coisa
+ * ao mesmo especialista é trabalho novo.
+ */
+export const taskKey = (agentId: string, objective: string): string =>
+  `${agentId}|${normalize(objective).replace(/\s+/g, ' ').trim().slice(0, 200)}`
+
+/** Tira do plano o que já foi feito e o que passaria do teto total. */
+export function dedupeAgainst(plan: ExecutionPlan, jaFeitas: Set<string>, restante: number): ExecutionPlan {
+  const tasks: ExecutionTask[] = []
+  for (const t of plan.tasks) {
+    if (tasks.length >= restante) break
+    if (jaFeitas.has(taskKey(t.agentId, t.objective))) continue
+    tasks.push(t)
+  }
+  // As dependências que sobraram apontando para tarefa removida deixam de existir: a
+  // tarefa roda com o pedido original em vez de esperar por algo que não vem.
+  const ids = new Set(tasks.map((t) => t.id))
+  return {
+    ...plan,
+    tasks: tasks.map((t) => {
+      const dep = (t.dependsOn ?? []).filter((d) => ids.has(d))
+      return dep.length > 0 ? { ...t, dependsOn: dep } : { id: t.id, agentId: t.agentId, objective: t.objective }
+    }),
+  }
+}
+
+// --- suficiência ----------------------------------------------------------------------------
+
+export interface Sufficiency {
+  sufficient: boolean
+  /** O que ficou faltando, na língua da pergunta. Vira o pedido da rodada seguinte. */
+  missing?: string
+}
+
+/**
+ * A pergunta que decide se vale uma segunda rodada.
+ *
+ * Curta de propósito: é uma decisão de sim/não sobre um texto que já existe, e pagar o
+ * modelo principal por ela seria caro sem ser melhor. E ela só é feita quando existe
+ * alguém ainda não consultado — sem especialista sobrando, a resposta não mudaria.
+ */
+export function sufficiencyPrompt(question: string, answer: string, naoConsultados: PlannerMember[]): string {
+  return [
+    'Avalie se a RESPOSTA abaixo já responde à PERGUNTA. Não reescreva a resposta.',
+    '',
+    `PERGUNTA: ${trecho(question, 1000)}`,
+    '',
+    `RESPOSTA OBTIDA: ${trecho(answer, 3000)}`,
+    '',
+    'Ainda não foram consultados:',
+    ...naoConsultados.map((m) => `- ${m.name}: ${describeMember(m)}`),
+    '',
+    'Se a resposta já cobre a pergunta, diga que é suficiente. Só peça mais quando ALGUÉM',
+    'da lista acima puder cobrir o que falta — se ninguém puder, é suficiente assim mesmo.',
+    '',
+    'Responda SOMENTE com JSON: {"sufficient":true} ou {"sufficient":false,"missing":"<o que falta>"}',
+  ].join('\n')
+}
+
+export function parseSufficiency(saida: string): Sufficiency {
+  const bruto = parsePlanJson(saida) as { sufficient?: unknown; missing?: unknown } | null
+  // Sem resposta legível, considera suficiente: uma rodada extra por causa de um parse
+  // ruim custa uma equipe inteira de inferências.
+  if (!bruto || typeof bruto.sufficient !== 'boolean') return { sufficient: true }
+  const missing = typeof bruto.missing === 'string' ? bruto.missing.trim().slice(0, 400) : ''
+  return bruto.sufficient ? { sufficient: true } : { sufficient: false, ...(missing ? { missing } : {}) }
+}
+
+/**
+ * A frase que a resposta final ganha quando a informação não chegou.
+ *
+ * Existe porque o silêncio aqui é uma mentira por omissão: uma resposta parcial
+ * apresentada como completa é pior que uma resposta que diz onde parou.
+ */
+export function limitationNote(missing: string | undefined, rounds: number): string {
+  return [
+    `Depois de ${rounds} rodada(s) de consulta à equipe, ainda falta informação para responder por completo.`,
+    missing ? `Especificamente: ${trecho(missing, 300)}.` : '',
+    'Responda com o que foi obtido e diga claramente, ao final, o que não foi possível apurar. Não preencha a lacuna com suposição.',
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+/**
+ * A resposta de emergência: os resultados, sem modelo nenhum.
+ *
+ * Se a consolidação falhar — provedor fora do ar, orçamento estourado — houve trabalho
+ * de verdade e jogá-lo fora seria o pior desfecho possível. Isto não é uma síntese: é o
+ * que cada agente respondeu, com o nome de quem respondeu, e a frase que diz que a
+ * junção não pôde ser feita.
+ */
+export function assembleWithoutModel(resultados: TaskResult[]): string {
+  const ok = resultados.filter((r) => r.status === 'succeeded' && r.output)
+  if (ok.length === 0) return ''
+  return [
+    ...ok.map((r) => `**${r.agentName}**\n${r.output}`),
+    '',
+    '_(Não foi possível consolidar as respostas automaticamente; acima está o que cada agente respondeu.)_',
+  ].join('\n\n')
+}

@@ -9,7 +9,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const { escapeRegex, expandirData, extractTerms, extractWindow, mesDoNome, normalize, scoreText, termsToPattern } = await import(
+const { escapeRegex, expandirData, extractTerms, extractWindow, mesDoNome, normalize, scoreDocument, scoreText, termsToPattern } = await import(
   '../dist/lexicalRetrieval.js'
 )
 
@@ -167,4 +167,31 @@ test('a janela leva o cabeçalho da tabela junto', () => {
   const janela = extractWindow(doc, extractTerms('VALE3 em 6 de agosto'), 300)
   assert.match(janela, /Aug 6, 2026/, 'a linha pedida')
   assert.match(janela, /Date Open High Low Close/, 'e as colunas, senão qual número é a abertura é chute')
+})
+
+// --- o título do documento é evidência, não decoração ---------------------------------------
+//
+// `scoreText` exige um termo específico — código, data, número — e a razão é boa: assunto
+// em comum não é resposta. Mas a pergunta comum é feita de palavras: "o que mudou na série
+// da Unidade 7" não tem ticker nem data, e numa instalação sem busca vetorial isso
+// significava não achar nada. O título é a etiqueta que o DONO escreveu.
+
+test('duas palavras da pergunta no título fazem o documento passar', () => {
+  const termos = extractTerms('o que mudou na série da Unidade 7?')
+  const conteudo = '2026-08-01 118\n2026-08-04 164'
+  // Sem o título, é só assunto em comum — e não passa.
+  assert.ok(scoreText(conteudo, termos) < 0.5)
+  // Com o título certo, passa.
+  assert.ok(scoreDocument('Série Unidade 7', conteudo, termos) >= 0.5)
+})
+
+test('uma palavra genérica no título não basta', () => {
+  const termos = extractTerms('quais são os dados de ontem?')
+  assert.ok(scoreDocument('Dados gerais', 'qualquer conteúdo', termos) < 0.5, '"dados" sozinho não identifica documento nenhum')
+})
+
+test('o conteúdo continua mandando quando ele responde', () => {
+  const termos = extractTerms('BBSE3 em 10/08/2026')
+  // Termo específico no conteúdo passa sem precisar do título.
+  assert.ok(scoreDocument(null, 'Em 10/08/2026 BBSE3 fechou a R$ 36,42', termos) >= 0.5)
 })
