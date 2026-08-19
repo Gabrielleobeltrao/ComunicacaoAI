@@ -26,8 +26,8 @@ import type { ClarificationRequest } from './clarify.js'
 import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
 import type { LiveTracker } from './agentLiveTracker.js'
-import { describePlan, planExecution } from './sectorPlanner.js'
-import type { ExecutionPlan } from './sectorPlanner.js'
+import { buildSynthesisContext, describePlan, inputFromDependencies, planExecution, readyTasks, shouldRun, synthesisInstruction } from './sectorPlanner.js'
+import type { ExecutionPlan, ExecutionTask, TaskResult } from './sectorPlanner.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -1196,14 +1196,169 @@ export async function executeSectorTeam(
       }
     : deps
 
+  /**
+   * O RUNTIME executa o plano — o coordenador não precisa lembrar de fazê-lo.
+   *
+   * Antes: coordenador chama A, gosta da resposta, e B nunca é consultado. O plano
+   * existia e podia ser ignorado no meio de uma inferência. Agora as tarefas rodam aqui,
+   * em ondas: tudo que não depende de ninguém sai junto, e quem depende espera pelo que
+   * precisa — a mesma ideia das etapas de um pipeline, só que o grafo é descoberto para
+   * esta pergunta.
+   *
+   * Cada tarefa passa pelo executor normal do agente (`runAgentTask`): o provedor dele, o
+   * modelo dele, as instruções dele, as ferramentas dele e a base dele. Nada aqui
+   * substitui a configuração de ninguém.
+   *
+   * Sem plano — setor sem outros membros, instalação antiga — nada disto acontece e o
+   * coordenador responde como sempre respondeu.
+   */
+  const resultados = new Map<string, TaskResult>()
+  const nomePorAgente = new Map(equipe.map((m) => [m.agentId, m.name]))
+  const inicioDoPlano = Date.now()
+
+  const rodarTarefa = async (task: ExecutionTask): Promise<TaskResult> => {
+    const agentName = nomePorAgente.get(task.agentId) ?? 'membro'
+    const base = { taskId: task.id, agentId: task.agentId, agentName, objective: task.objective, dependsOn: task.dependsOn ?? [] }
+    const comecou = Date.now()
+    const alvo = await deps.loadAgent(ctx.ownerId, new ObjectId(task.agentId)).catch(() => null)
+    if (!alvo) return { ...base, status: 'failed', error: 'agente não encontrado', durationMs: 0 }
+    if (inChain(alvo._id)) return { ...base, status: 'skipped', error: 'ciclo de delegação', durationMs: 0 }
+
+    console.info(
+      `[task:start] execution=${sectorExecutionId?.toString() ?? ctx.correlationId} task=${task.id} ` +
+        `agent=${task.agentId} deps=[${base.dependsOn.join(',')}]`,
+    )
+    // A entrada de quem depende: o que os antecessores produziram, com autoria. Sem
+    // dependência, o pedido original.
+    const entrada = base.dependsOn.length > 0 ? inputFromDependencies(task, resultados) : opts.input
+    try {
+      const saida = await rodarMembro(
+        alvo,
+        task.objective,
+        entrada,
+        (k) => runAgentTask(depsComTime, ctx, alvo, task.objective, entrada, format, k, sector._id, null),
+        participationOf('specialist'),
+        { agentId: alvo._id.toString(), name: alvo.name, role: 'specialist' },
+      )
+      const durationMs = Date.now() - comecou
+      console.info(`[task:end] task=${task.id} agent=${task.agentId} status=succeeded duration=${durationMs}ms`)
+      return { ...base, status: 'succeeded', output: saida, durationMs }
+    } catch (erro) {
+      const durationMs = Date.now() - comecou
+      // A CATEGORIA, nunca o texto cru: mensagem de provedor pode carregar payload.
+      const mensagem = erro instanceof Error ? erro.message : 'falha'
+      const categoria = /cancel/i.test(mensagem)
+        ? 'cancelado'
+        : /timeout|exceeded/i.test(mensagem)
+          ? 'tempo esgotado'
+          : /grounding|base/i.test(mensagem)
+            ? 'sem base para responder'
+            : 'falha na execução'
+      console.info(`[task:end] task=${task.id} agent=${task.agentId} status=failed duration=${durationMs}ms error=${categoria}`)
+      // A participação com falha é registrada para o painel mostrar quem tentou.
+      participants.push({
+        agentId: alvo._id.toString(),
+        name: alvo.name,
+        role: 'specialist',
+        durationMs,
+        status: 'failed',
+      })
+      return { ...base, status: 'failed', error: categoria, durationMs }
+    }
+  }
+
+  while (resultados.size < plan.tasks.length) {
+    if (await isCanceled(ctx)) throw new Error('cancelado')
+    if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) {
+      warnings.push('orçamento esgotado antes de concluir o plano')
+      break
+    }
+    const onda = readyTasks(plan, new Set(resultados.keys()))
+    // Impossível com um plano validado (as dependências só apontam para trás), mas um
+    // laço infinito num executor de agentes custa dinheiro de verdade.
+    if (onda.length === 0) break
+
+    // As independentes saem JUNTAS. `allSettled` porque uma que falha não pode levar as
+    // outras: o resultado de cada uma é registrado, e a síntese decide o que fazer.
+    const executadas = await Promise.allSettled(
+      onda.map((task) =>
+        shouldRun(task, resultados)
+          ? rodarTarefa(task)
+          : Promise.resolve<TaskResult>({
+              taskId: task.id,
+              agentId: task.agentId,
+              agentName: nomePorAgente.get(task.agentId) ?? 'membro',
+              objective: task.objective,
+              dependsOn: task.dependsOn ?? [],
+              status: 'skipped',
+              error: 'todas as dependências falharam',
+              durationMs: 0,
+            }),
+      ),
+    )
+    for (const [i, r] of executadas.entries()) {
+      const task = onda[i]
+      resultados.set(
+        task.id,
+        r.status === 'fulfilled'
+          ? r.value
+          : {
+              taskId: task.id,
+              agentId: task.agentId,
+              agentName: nomePorAgente.get(task.agentId) ?? 'membro',
+              objective: task.objective,
+              dependsOn: task.dependsOn ?? [],
+              status: 'failed',
+              error: 'falha na execução',
+              durationMs: 0,
+            },
+      )
+    }
+  }
+
+  const emOrdem = plan.tasks.map((t) => resultados.get(t.id)).filter((r): r is TaskResult => Boolean(r))
+  const falharam = emOrdem.filter((r) => r.status !== 'succeeded')
+  for (const r of falharam) warnings.push(`${r.agentName}: ${r.error ?? 'não executou'}`)
+
+  /**
+   * A SÍNTESE, sempre.
+   *
+   * Mesmo com uma tarefa só: quem perguntou espera uma resposta da equipe, não o
+   * despacho interno de um especialista para o coordenador. E é aqui que se cruza o que
+   * veio de mais de um — que é a razão de existir do plano.
+   *
+   * Quando NINGUÉM executou (setor sem membros), não há o que sintetizar: o coordenador
+   * responde o pedido original, exatamente como antes desta mudança.
+   */
+  const houvePlano = emOrdem.length > 0
+  // A instrução do SETOR continua valendo na consolidação: é onde o dono escreve como a
+  // equipe fala ("responda em português", "seja formal"). Trocá-la pelo pedido de síntese
+  // faria a resposta final ser a única do fluxo a ignorar a configuração do setor.
+  const instrucaoFinal = houvePlano
+    ? [sector.instruction?.trim(), synthesisInstruction(plan)].filter(Boolean).join('\n\n')
+    : instruction
+  const entradaFinal = houvePlano ? buildSynthesisContext(opts.objective, plan, emOrdem) : opts.input
+  if (houvePlano) {
+    console.info(
+      `[synthesis:start] execution=${sectorExecutionId?.toString() ?? ctx.correlationId} agent=${coordinator._id.toString()} ` +
+        `results=${emOrdem.length} failed=${falharam.length}`,
+    )
+  }
+  const comecouSintese = Date.now()
   const output = await rodarMembro(
     coordinator,
-    instruction,
-    opts.input,
-    (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant, briefing),
+    instrucaoFinal,
+    entradaFinal,
+    (k) => runAgentTask(depsComTime, ctx, coordinator, instrucaoFinal, entradaFinal, format, k, sector._id, grant, briefing),
     participationOf('coordinator'),
     { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
   )
+  if (houvePlano) {
+    console.info(
+      `[synthesis:end] duration=${Date.now() - comecouSintese}ms plan_total=${Date.now() - inicioDoPlano}ms ` +
+        `tasks=${emOrdem.length} succeeded=${emOrdem.length - falharam.length}`,
+    )
+  }
   return { output, participants, warnings, clarification }
 }
 

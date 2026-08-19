@@ -277,3 +277,118 @@ export function describePlan(plan: ExecutionPlan, membros: PlannerMember[]): str
   )
   return partes.join(' | ') || '(sem tarefas)'
 }
+
+// --- a execução do plano: ondas, e o que fazer com o que falhou ----------------------------
+
+/** O que aconteceu com uma tarefa. `skipped` é diferente de `failed`: ela nem tentou. */
+export interface TaskResult {
+  taskId: string
+  agentId: string
+  agentName: string
+  objective: string
+  dependsOn: string[]
+  status: 'succeeded' | 'failed' | 'skipped'
+  output?: string
+  /** A CATEGORIA do problema, nunca o texto do provedor nem conteúdo de base. */
+  error?: string
+  durationMs: number
+}
+
+/**
+ * As tarefas que podem rodar AGORA: as que ainda não rodaram e cujas dependências já
+ * terminaram — de qualquer jeito, inclusive mal.
+ *
+ * É a única regra de ordem que existe aqui. `validatePlan` já garante que uma dependência
+ * sempre aponta para trás, então uma onda vazia com tarefas pendentes é impossível na
+ * prática; o runtime confere assim mesmo, porque um laço infinito num executor de agentes
+ * custa dinheiro de verdade.
+ */
+export function readyTasks(plan: ExecutionPlan, concluidas: Set<string>): ExecutionTask[] {
+  return plan.tasks.filter((t) => !concluidas.has(t.id) && (t.dependsOn ?? []).every((d) => concluidas.has(d)))
+}
+
+/**
+ * Vale a pena rodar esta tarefa, visto o que aconteceu com as dependências dela?
+ *
+ * Se TODAS falharam, ela roda sem a entrada de que precisava — e uma tarefa sem entrada
+ * inventa ou repete a pergunta. Se ao menos uma deu certo, roda com o que existe: meia
+ * entrada costuma valer mais que nenhuma resposta.
+ */
+export function shouldRun(task: ExecutionTask, resultados: Map<string, TaskResult>): boolean {
+  const deps = task.dependsOn ?? []
+  if (deps.length === 0) return true
+  return deps.some((d) => resultados.get(d)?.status === 'succeeded')
+}
+
+/** A entrada de uma tarefa dependente: o que os antecessores produziram, com autoria. */
+export function inputFromDependencies(task: ExecutionTask, resultados: Map<string, TaskResult>): string {
+  const partes = (task.dependsOn ?? [])
+    .map((d) => resultados.get(d))
+    .filter((r): r is TaskResult => Boolean(r) && r!.status === 'succeeded' && Boolean(r!.output))
+    .map((r) => `[${r.agentName}] objetivo: ${trecho(r.objective, 200)}\n${r.output}`)
+  return partes.join('\n\n')
+}
+
+// --- a síntese ------------------------------------------------------------------------------
+
+const INSTRUCOES_DE_SINTESE = [
+  'SYNTHESIS INSTRUCTIONS',
+  '- Responda à PERGUNTA ORIGINAL usando os resultados acima, e só eles.',
+  '- CRUZE o que veio de agentes diferentes: relações, causas, e o que um explica no outro.',
+  '- Se dois resultados se contradizem, diga que se contradizem e mostre os dois — não escolha em silêncio.',
+  '- Não repita o último resultado como se fosse a resposta: a resposta é o conjunto.',
+  '- O que ninguém entregou, ninguém sabe: não preencha lacuna com suposição. Diga o que faltou e por quê.',
+  '- Não cite ids de tarefa nem nomes internos de sistema; fale das FONTES pelo nome do agente quando for útil.',
+].join('\n')
+
+/**
+ * O contexto da síntese, em blocos que não se confundem.
+ *
+ * Um bloco por coisa — pergunta, plano, resultado de cada agente — porque a falha que
+ * este passo existe para evitar é justamente misturar: pegar o número de um agente e
+ * atribuí-lo ao assunto de outro. O rótulo `[Nome]` antes de cada resultado é o que
+ * torna a atribuição verificável por quem lê a resposta depois.
+ *
+ * Uma falha aparece como falha, com a categoria. Esconder que um agente não respondeu
+ * faria a síntese parecer completa quando não é.
+ */
+export function buildSynthesisContext(question: string, plan: ExecutionPlan, resultados: TaskResult[]): string {
+  const linhaDoPlano = plan.tasks
+    .map((t) => {
+      const r = resultados.find((x) => x.taskId === t.id)
+      const espera = t.dependsOn?.length ? ` (depois de ${t.dependsOn.join(', ')})` : ''
+      return `- ${t.id}: ${r?.agentName ?? t.agentId}${espera} → ${trecho(t.objective, 200)}`
+    })
+    .join('\n')
+
+  const blocos = resultados.map((r) => {
+    const cabeca = `[${r.agentName}]\nobjective: ${trecho(r.objective, 300)}`
+    if (r.status === 'succeeded') return `${cabeca}\nresult:\n${r.output ?? ''}`
+    if (r.status === 'skipped') return `${cabeca}\nresult: NÃO EXECUTADO — dependia de uma tarefa que falhou.`
+    return `${cabeca}\nresult: FALHOU (${r.error ?? 'motivo não registrado'}). Não há resultado deste agente.`
+  })
+
+  return [
+    'ORIGINAL USER QUESTION',
+    trecho(question, 2000),
+    '',
+    'EXECUTION PLAN',
+    linhaDoPlano || '(sem tarefas)',
+    '',
+    'AGENT RESULTS',
+    blocos.join('\n\n') || '(nenhum agente executou)',
+    '',
+    INSTRUCOES_DE_SINTESE,
+  ].join('\n')
+}
+
+/** A instrução curta que acompanha o contexto — o pedido, não os dados. */
+export function synthesisInstruction(plan: ExecutionPlan): string {
+  return [
+    'Junte os resultados da equipe numa resposta só, para quem perguntou.',
+    plan.synthesisObjective ? `Objetivo da consolidação: ${trecho(plan.synthesisObjective, 300)}` : '',
+    'Os dados estão na entrada, separados por agente. Não invente o que não estiver lá.',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
