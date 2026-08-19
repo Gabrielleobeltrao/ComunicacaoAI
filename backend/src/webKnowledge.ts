@@ -20,11 +20,12 @@ import { ObjectId } from 'mongodb'
 import type { Agent, WatchedSource } from './agents.js'
 import { getAgentById } from './agents.js'
 import { db } from './db.js'
-import { contentHashOf, normalizeHttpContent } from './automations/sourceChange.js'
+import { contentHashOf } from './automations/sourceChange.js'
+import { looksLikeContent, pageFacts } from './webContent.js'
 import { safeFetch } from './net/safeHttp.js'
 import { createDocumentFor, updateDocumentFor } from './knowledge.js'
 import type { KnowledgeDocument } from './knowledge.js'
-import { titleFromPage, urlsFromFeed, urlsFromListing, urlsFromSitemap } from './webDiscovery.js'
+import { planDiscovery, urlsFromFeed, urlsFromListing, urlsFromSitemap } from './webDiscovery.js'
 import { normalizeWebSource, nextScheduledAfter, resolveDiscovery, shouldRefresh } from './webSourcePolicy.js'
 import type { RefreshReason, WebSourceState } from './webSourcePolicy.js'
 
@@ -43,6 +44,10 @@ export interface RefreshOutcome {
   created: number
   updated: number
   unchanged: number
+  /** Páginas de índice descartadas: elas descobrem endereços, não viram conhecimento. */
+  skippedIndexPages?: number
+  /** Por onde os endereços foram descobertos nesta rodada. */
+  via?: string
   error?: string
   durationMs: number
 }
@@ -50,14 +55,39 @@ export interface RefreshOutcome {
 /** Quanto texto de UMA página vira documento. Uma base não é um espelho da internet. */
 const MAX_CARACTERES = 20_000
 
-async function lerPagina(url: string): Promise<{ texto: string; html: string; contentType: string } | null> {
+/** Tempo máximo por página. Um site lento não pode segurar a execução de um agente. */
+const TIMEOUT_POR_PAGINA_MS = 8_000
+/** Tamanho máximo de uma página. Acima disto não é documento, é despejo. */
+const MAX_BYTES = 1_500_000
+/**
+ * Quanto a orquestração espera pela atualização antes de seguir sem ela.
+ *
+ * A leitura acontece na frente de quem perguntou. Esperar indefinidamente por um site
+ * lento seria transformar um problema do site do outro em silêncio no nosso chat — o
+ * agente responde com o que já tem, e o rastro diz que a atualização não terminou.
+ */
+export const WEB_REFRESH_TIMEOUT_MS = 20_000
+/** Quantas páginas são lidas ao mesmo tempo. Educação com o servidor do outro. */
+const CONCORRENCIA = 3
+
+async function lerPagina(url: string): Promise<{ html: string; contentType: string; finalUrl: string } | null> {
   try {
-    const res = await safeFetch(url, { requireOk: true })
-    const contentType = res.contentType ?? ''
-    return { texto: normalizeHttpContent(res.body, contentType).slice(0, MAX_CARACTERES), html: res.body, contentType }
+    const res = await safeFetch(url, { requireOk: true, timeoutMs: TIMEOUT_POR_PAGINA_MS, maxBytes: MAX_BYTES })
+    // O endereço FINAL: um redirect leva a outra página, e é a de chegada que vale como
+    // identidade — senão o mesmo conteúdo entra duas vezes, por dois endereços.
+    return { html: res.body, contentType: res.contentType ?? '', finalUrl: res.finalUrl || url }
   } catch {
     return null
   }
+}
+
+/** Executa em lotes: paralelo o bastante para não demorar, comedido o bastante para não pesar. */
+async function emLotes<T, R>(itens: T[], tamanho: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const saida: R[] = []
+  for (let i = 0; i < itens.length; i += tamanho) {
+    saida.push(...(await Promise.all(itens.slice(i, i + tamanho).map(fn))))
+  }
+  return saida
 }
 
 /**
@@ -66,18 +96,42 @@ async function lerPagina(url: string): Promise<{ texto: string; html: string; co
  * Sempre inclui o próprio endereço cadastrado: mesmo num feed ou num sitemap, a página de
  * origem costuma ter o resumo que dá sentido ao resto.
  */
-async function descobrir(site: WatchedSource, cfg: ReturnType<typeof normalizeWebSource>): Promise<string[]> {
-  const modo = resolveDiscovery(cfg, site.kind, site.url)
-  if (modo === 'single_page') return [site.url]
+interface Descoberta {
+  /** Os endereços a LER — as páginas de conteúdo. */
+  urls: string[]
+  /** Como foram descobertos. Vai para o log e para o registro da fonte. */
+  via: string
+}
 
-  const pagina = await lerPagina(site.url)
-  if (!pagina) return [site.url]
-
+/**
+ * O QUE ler — e a distinção que evita encher a base de navegação.
+ *
+ * Uma página de índice serve para DESCOBRIR endereços; ela não é conhecimento. Guardar
+ * "Home · Sobre · Contato · Assine" como documento é pagar embedding por menu, e depois
+ * recuperar menu quando alguém perguntar algo. Por isso, quando a descoberta encontra
+ * páginas de conteúdo, a página de índice fica de fora — e só entra quando não há mais
+ * nada, que é o caso de um site de uma página só.
+ */
+async function descobrir(site: WatchedSource, cfg: ReturnType<typeof normalizeWebSource>): Promise<Descoberta> {
   const teto = cfg.maxArticlesPerRun
-  if (modo === 'rss') return [...urlsFromFeed(pagina.html, teto)]
-  if (modo === 'sitemap') return [...urlsFromSitemap(pagina.html, teto)]
-  // listing
-  return [site.url, ...urlsFromListing(pagina.html, site.url, { sameDomainOnly: cfg.sameDomainOnly, max: teto })].slice(0, teto + 1)
+  const escolhido = cfg.discoveryMode === 'auto'
+    ? await planDiscovery(site.url, site.kind, { fetch: async (u: string) => { const r = await lerPagina(u); return r ? { body: r.html, contentType: r.contentType } : null } }, { crawlArticles: cfg.crawlArticles })
+    : { via: resolveDiscovery(cfg, site.kind, site.url), url: site.url }
+
+  if (escolhido.via === 'single_page') return { urls: [site.url], via: 'single_page' }
+
+  const pagina = await lerPagina(escolhido.url)
+  if (!pagina) return { urls: [site.url], via: 'single_page' }
+
+  const urls =
+    escolhido.via === 'rss'
+      ? urlsFromFeed(pagina.html, teto)
+      : escolhido.via === 'sitemap'
+        ? urlsFromSitemap(pagina.html, teto)
+        : urlsFromListing(pagina.html, escolhido.url, { sameDomainOnly: cfg.sameDomainOnly, max: teto })
+
+  // Índice sem conteúdo descoberto: aí a própria página é o que existe para ler.
+  return urls.length > 0 ? { urls: urls.slice(0, teto), via: escolhido.via } : { urls: [site.url], via: 'single_page' }
 }
 
 /**
@@ -98,6 +152,7 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
     created: 0,
     updated: 0,
     unchanged: 0,
+    skippedIndexPages: 0,
     durationMs: 0,
   }
 
@@ -115,29 +170,69 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
   const porRef = new Map(existentes.map((d) => [d.sourceRef!, d]))
 
   try {
-    const urls = await descobrir(site, cfg)
+    const { urls, via } = await descobrir(site, cfg)
     base.discovered = urls.length
+    base.via = via
     let lidas = 0
-    for (const url of urls.slice(0, cfg.maxArticlesPerRun + 1)) {
+
+    // A leitura é em lotes: rápida sem ser atropelo no servidor do outro.
+    const paginas = await emLotes(urls.slice(0, cfg.maxArticlesPerRun), CONCORRENCIA, async (url) => {
       const pagina = await lerPagina(url)
-      if (!pagina || !pagina.texto.trim()) continue
+      if (!pagina) return null
+      // O endereço FINAL do redirect é a identidade; o canônico declarado manda sobre ele.
+      const fatos = pageFacts(pagina.html, pagina.finalUrl, new Date(agora))
+      return fatos.text.trim() ? { fatos, html: pagina.html } : null
+    })
+
+    // Dedupe pelo endereço CANÔNICO: `?utm_source=…`, `#secao` e a barra final descrevem a
+    // mesma página, e três documentos iguais custam três embeddings e sujam a resposta.
+    const porCanonica = new Map<string, (typeof paginas)[number]>()
+    for (const p of paginas) {
+      if (!p) continue
       lidas += 1
-      const ref = webSourceRef(site.id, url)
-      const titulo = titleFromPage(pagina.html, url, site.name)
+      if (!porCanonica.has(p.fatos.canonicalUrl)) porCanonica.set(p.fatos.canonicalUrl, p)
+    }
+
+    // Quando há mais de uma página, as de ÍNDICE saem: elas serviram para descobrir, e
+    // menu com banner não responde pergunta nenhuma.
+    const candidatas = [...porCanonica.values()].filter((p): p is NonNullable<typeof p> => Boolean(p))
+    const comConteudo = candidatas.length > 1 ? candidatas.filter((p) => looksLikeContent(p.html, p.fatos.text)) : candidatas
+    // Se o filtro derrubaria TUDO, ele não se aplica: guardar algo que talvez seja índice
+    // é melhor que deixar o agente sem base nenhuma por causa de uma heurística.
+    const conteudos = comConteudo.length > 0 ? comConteudo : candidatas
+    base.skippedIndexPages = candidatas.length - conteudos.length
+
+    for (const { fatos } of conteudos) {
+      const ref = webSourceRef(site.id, fatos.canonicalUrl)
+      const titulo = (fatos.title ?? site.name).slice(0, 200)
       // A procedência fica NO texto: quem lê a resposta precisa poder voltar à origem.
-      const conteudo = `${titulo}\nFonte: ${url}\n\n${pagina.texto}`
+      const conteudo = `${titulo}\nFonte: ${fatos.canonicalUrl}${fatos.publishedAt ? `\nPublicado em: ${fatos.publishedAt.toISOString().slice(0, 10)}` : ''}\n\n${fatos.text}`
+      const web = {
+        sourceType: 'web' as const,
+        sourceId: site.id,
+        url: fatos.url,
+        canonicalUrl: fatos.canonicalUrl,
+        domain: fatos.domain,
+        title: fatos.title,
+        author: fatos.author,
+        publishedAt: fatos.publishedAt,
+        modifiedAt: fatos.modifiedAt,
+        fetchedAt: fatos.fetchedAt,
+        contentHash: fatos.contentHash,
+      }
       const anterior = porRef.get(ref)
       if (!anterior) {
         await createDocumentFor(
           { ownerType: 'agent', ownerId: agent._id },
-          { title: titulo, content: conteudo, source: 'web', sourceRef: ref, authorId: ownerId },
+          { title: titulo, content: conteudo, source: 'web', sourceRef: ref, authorId: ownerId, web },
         )
         base.created += 1
-      } else if (contentHashOf(anterior.content ?? '') !== contentHashOf(conteudo)) {
-        await updateDocumentFor({ ownerType: 'agent', ownerId: agent._id }, anterior._id, { title: titulo, content: conteudo })
+      } else if (anterior.web?.contentHash !== fatos.contentHash) {
+        // Mudou: reescreve e reindexa SÓ este documento.
+        await updateDocumentFor({ ownerType: 'agent', ownerId: agent._id }, anterior._id, { title: titulo, content: conteudo, web })
         base.updated += 1
       } else {
-        // Não mudou: nada é escrito, nada é reindexado, nada é cobrado.
+        // O hash bate: nada é escrito, nada é reindexado, nenhum embedding é gerado.
         base.unchanged += 1
       }
     }

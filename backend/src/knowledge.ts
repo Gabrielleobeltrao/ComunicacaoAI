@@ -34,6 +34,15 @@ export interface KnowledgeDocument {
   source: string | null // e.g. 'manual' | 'run' | 'conversation'
   sourceRef: string | null // safe reference (runId / conversationId), never content
   authorId: string | null // ownerId (account) that saved it
+  /**
+   * A procedência de um documento que veio da WEB.
+   *
+   * Opcional: documento escrito à mão, enviado por arquivo ou salvo de uma execução não
+   * tem nenhum destes campos, e continua exatamente como era. Para o que veio de um site,
+   * é o que permite reconhecer a mesma página amanhã (`contentHash`), voltar à origem
+   * (`canonicalUrl`) e perguntar por período (`publishedAt`).
+   */
+  web?: WebDocumentMeta
   // Indexing state so the UI can show "indexando…" / "erro ao indexar".
   indexStatus: 'indexed' | 'pending' | 'error'
   chunkCount: number
@@ -98,12 +107,29 @@ export function ownerFilter(owner: KnowledgeOwner): Record<string, unknown> {
   return { ownerType: 'sector', ownerId: owner.ownerId }
 }
 
+export interface WebDocumentMeta {
+  sourceType: 'web'
+  /** O endereço cadastrado que produziu este documento. */
+  sourceId: string
+  url: string
+  canonicalUrl: string
+  domain: string
+  title: string | null
+  author?: string | null
+  publishedAt?: Date | null
+  modifiedAt?: Date | null
+  fetchedAt: Date
+  /** Hash do TEXTO limpo. É ele que decide se vale reindexar. */
+  contentHash: string
+}
+
 export interface CreateDocumentInput {
   title: string
   content: string
   source?: string | null
   sourceRef?: string | null
   authorId?: string | null
+  web?: WebDocumentMeta
 }
 
 export async function createDocumentFor(owner: KnowledgeOwner, input: CreateDocumentInput) {
@@ -116,6 +142,7 @@ export async function createDocumentFor(owner: KnowledgeOwner, input: CreateDocu
     content: input.content,
     source: input.source ?? 'manual',
     sourceRef: input.sourceRef ?? null,
+    ...(input.web ? { web: input.web } : {}),
     authorId: input.authorId ?? null,
     indexStatus: 'pending',
     chunkCount: 0,
@@ -205,9 +232,10 @@ export function getDocument(agentId: ObjectId, documentId: ObjectId) {
   return getDocumentFor({ ownerType: 'agent', ownerId: agentId }, documentId)
 }
 
-export async function updateDocumentFor(owner: KnowledgeOwner, documentId: ObjectId, updates: { title?: string; content?: string }) {
+export async function updateDocumentFor(owner: KnowledgeOwner, documentId: ObjectId, updates: { title?: string; content?: string; web?: WebDocumentMeta }) {
   const setFields: Partial<KnowledgeDocument> = { updatedAt: new Date() }
   if (updates.title !== undefined) setFields.title = updates.title
+  if (updates.web !== undefined) setFields.web = updates.web
   if (updates.content !== undefined) {
     setFields.content = updates.content
     setFields.indexStatus = 'pending'
@@ -335,7 +363,12 @@ export interface KnowledgeSource {
 // Vector search across one or more owners (an agent plus, when the execution runs in
 // a sector context, that sector). Owners are resolved server-side from
 // ownership-checked ids, so a tenant can never reach another tenant's chunks.
-export async function searchKnowledgeForOwners(owners: KnowledgeOwner[], query: string, limit = 5): Promise<KnowledgeHit[]> {
+export async function searchKnowledgeForOwners(
+  owners: KnowledgeOwner[],
+  query: string,
+  limit = 5,
+  filtros?: KnowledgeFilters | null,
+): Promise<KnowledgeHit[]> {
   if (owners.length === 0) return []
   const queryEmbedding = await embedText(query, 'query')
   const ownerIds = owners.map((o) => o.ownerId)
@@ -368,6 +401,17 @@ export async function searchKnowledgeForOwners(owners: KnowledgeOwner[], query: 
       // The document's title, for provenance. A lookup bounded to the page of hits,
       // and the base filter above already restricted them to this owner's chunks.
       { $lookup: { from: 'knowledge_documents', localField: 'documentId', foreignField: '_id', as: 'doc' } },
+      // O recorte por metadado mora no DOCUMENTO, não no chunk. Aplicá-lo aqui evita
+      // duplicar `publishedAt`/`domain` em cada pedaço — que envelheceria em separado.
+      ...(Object.keys(metadataFilter(filtros)).length > 0
+        ? [
+            {
+              $match: Object.fromEntries(
+                Object.entries(metadataFilter(filtros)).map(([chave, valor]) => [`doc.${chave.replace(/^web\./, 'web.')}`, valor]),
+              ),
+            },
+          ]
+        : []),
       { $set: { title: { $ifNull: [{ $first: '$doc.title' }, null] } } },
       { $unset: 'doc' },
     ])
@@ -385,7 +429,43 @@ export async function searchKnowledgeForOwners(owners: KnowledgeOwner[], query: 
  * O escopo é o MESMO da vetorial: os donos já resolvidos pelo chamador. Nenhum caminho
  * aqui alcança documento de outra conta.
  */
-export async function searchKnowledgeLexicallyForOwners(owners: KnowledgeOwner[], query: string, limit = 5): Promise<KnowledgeHit[]> {
+/**
+ * Recortes por METADADO, para conteúdo que tem tempo.
+ *
+ * Uma base de notícias sem "só o que saiu esta semana" obriga o modelo a ler tudo e
+ * decidir por conta — que é caro e erra. O recorte é determinístico e acontece ANTES da
+ * busca: o que está fora do período nem chega a ser comparado.
+ *
+ * Ausente = tudo, que é como a busca sempre funcionou.
+ */
+export interface KnowledgeFilters {
+  /** Só documentos publicados a partir desta data (metadado declarado pela página). */
+  publishedAfter?: Date | null
+  publishedBefore?: Date | null
+  /** Só de um domínio, ou de um endereço cadastrado específico. */
+  domain?: string | null
+  sourceId?: string | null
+}
+
+/** O filtro Mongo equivalente. Vazio quando não há recorte nenhum — nada muda. */
+export function metadataFilter(filtros?: KnowledgeFilters | null): Record<string, unknown> {
+  if (!filtros) return {}
+  const filtro: Record<string, unknown> = {}
+  const publicado: Record<string, Date> = {}
+  if (filtros.publishedAfter) publicado.$gte = filtros.publishedAfter
+  if (filtros.publishedBefore) publicado.$lte = filtros.publishedBefore
+  if (Object.keys(publicado).length > 0) filtro['web.publishedAt'] = publicado
+  if (filtros.domain) filtro['web.domain'] = filtros.domain
+  if (filtros.sourceId) filtro['web.sourceId'] = filtros.sourceId
+  return filtro
+}
+
+export async function searchKnowledgeLexicallyForOwners(
+  owners: KnowledgeOwner[],
+  query: string,
+  limit = 5,
+  filtros?: KnowledgeFilters | null,
+): Promise<KnowledgeHit[]> {
   if (owners.length === 0) return []
   const termos = extractTerms(query)
   if (termos.length === 0) return []
@@ -405,7 +485,13 @@ export async function searchKnowledgeLexicallyForOwners(owners: KnowledgeOwner[]
   const encontrados = await documents
     // `padrao` já vem escapado por `termsToPattern`: um termo com `.*` procura os
     // caracteres `.*`, e não "qualquer coisa" — que devolveria a base inteira.
-    .find({ ...escopo, $and: [{ $or: [{ content: { $regex: padrao, $options: 'i' } }, { title: { $regex: padrao, $options: 'i' } }] }] })
+    .find({
+      ...escopo,
+      // O recorte por metadado entra ANTES da comparação de texto: o que está fora do
+      // período nem chega a ser lido.
+      ...metadataFilter(filtros),
+      $and: [{ $or: [{ content: { $regex: padrao, $options: 'i' } }, { title: { $regex: padrao, $options: 'i' } }] }],
+    })
     // Um teto de leitura: o corte por nota acontece depois, em memória.
     .limit(Math.max(limit * 4, 20))
     .toArray()
@@ -505,7 +591,7 @@ export interface RetrievalResult {
 export async function retrieveContext(
   agentIds: ObjectId | ObjectId[],
   query: string,
-  opts: { verifiedSectorId?: ObjectId | null; topK?: number; charBudget?: number; minScore?: number } = {},
+  opts: { verifiedSectorId?: ObjectId | null; topK?: number; charBudget?: number; minScore?: number; filters?: KnowledgeFilters | null } = {},
 ): Promise<RetrievalResult> {
   const ids = Array.isArray(agentIds) ? agentIds : [agentIds]
   const owners: KnowledgeOwner[] = ids.map((id) => ({ ownerType: 'agent' as const, ownerId: id }))
@@ -541,7 +627,7 @@ export async function retrieveContext(
   let selecionados: KnowledgeHit[] = []
   let encontrados = 0
   try {
-    const brutos = await searchKnowledgeForOwners(owners, query, limite)
+    const brutos = await searchKnowledgeForOwners(owners, query, limite, opts.filters)
     encontrados = brutos.length
     selecionados = selectKnowledgeHits(brutos, opts)
   } catch (error) {
@@ -558,7 +644,7 @@ export async function retrieveContext(
   // exatamente o que a semelhança erra e a comparação de texto acerta — e é o caso em que
   // dizer "não há dados" seria mentira sobre uma base que tem a resposta escrita.
   try {
-    const brutosLexicais = await searchKnowledgeLexicallyForOwners(owners, query, limite)
+    const brutosLexicais = await searchKnowledgeLexicallyForOwners(owners, query, limite, opts.filters)
     const lexicais = selectKnowledgeHits(brutosLexicais, opts)
     if (lexicais.length > 0) return emResultado(lexicais, 'ok', false, brutosLexicais.length)
   } catch (error) {

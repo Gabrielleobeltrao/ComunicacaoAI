@@ -1345,3 +1345,59 @@ test('a falha de um agente aparece na trilha como erro', async () => {
   assert.equal(erro.metadata.error, 'falha na execução')
   assert.ok(!JSON.stringify(trilha).includes('provider caiu'))
 })
+
+// --- 4) ON_DEMAND: a base é atualizada ANTES de o agente trabalhar ---------------------------
+//
+// A ordem é o ponto: atualizar depois da execução seria atualizar para a próxima pergunta,
+// e não para esta. E não pode travar — se a leitura demorar, o agente trabalha com o que
+// tem, e o rastro diz que a atualização não terminou.
+
+test('o planner escolhe o agente, e as fontes dele são atualizadas antes da tarefa', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const setor = equipeDe(coordenador, [a])
+  const ordem = []
+
+  const f = deps([coordenador, a], {
+    sector: setor,
+    runTask: async (req) => {
+      ordem.push(/Junte os resultados/.test(req.instructions) ? 'sintese' : `tarefa:${req.instructions}`)
+      return { output: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) =>
+    /sufficient/.test(prompt) ? JSON.stringify({ sufficient: true }) : JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'pesquisar' }] })
+  f.deps.ensureWebKnowledgeFresh = async () => {
+    ordem.push('fontes')
+    return [{ name: 'Boletim', refreshed: true, reason: 'nunca foi lida', created: 2, updated: 0, unchanged: 0 }]
+  }
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'o que há de novo?' })
+
+  assert.deepEqual(ordem, ['fontes', 'tarefa:pesquisar', 'sintese'], 'atualiza, depois executa')
+  void run
+})
+
+test('se a atualização falhar, o agente trabalha com o que já tem', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const setor = equipeDe(coordenador, [a])
+  let executou = false
+
+  const f = deps([coordenador, a], {
+    sector: setor,
+    runTask: async (req) => {
+      if (!/Junte os resultados/.test(req.instructions)) executou = true
+      return { output: 'respondi com a base que eu tinha', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) =>
+    /sufficient/.test(prompt) ? JSON.stringify({ sufficient: true }) : JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'pesquisar' }] })
+  f.deps.ensureWebKnowledgeFresh = async () => {
+    throw new Error('site fora do ar')
+  }
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'e aí?' })
+  assert.equal(executou, true, 'a falha da atualização não impede o trabalho')
+  assert.ok(run.output)
+})

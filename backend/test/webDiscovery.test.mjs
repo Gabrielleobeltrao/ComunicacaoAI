@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
 
-const { titleFromPage, urlsFromFeed, urlsFromListing, urlsFromSitemap } = await import('../dist/webDiscovery.js')
+const { planDiscovery, titleFromPage, urlsFromFeed, urlsFromListing, urlsFromSitemap } = await import('../dist/webDiscovery.js')
 
 test('o sitemap é lido literalmente, sem repetição', () => {
   const xml = `<urlset><url><loc>https://x.test/a</loc></url><url><loc>https://x.test/b</loc></url><url><loc>https://x.test/a</loc></url></urlset>`
@@ -53,4 +53,61 @@ test('lixo não vira endereço', () => {
   assert.deepEqual(urlsFromListing('<a href="javascript:void(0)">x</a>', 'https://x.test/'), [])
   assert.deepEqual(urlsFromListing('<a href="">x</a>', 'não é uma url'), [])
   assert.deepEqual(urlsFromSitemap('isto não é xml'), [])
+})
+
+// --- a ordem da descoberta automática ---------------------------------------------------------
+//
+// Da mais barata para a mais cara: o feed entrega os endereços novos em uma requisição e
+// com data; o sitemap entrega muitos sem data; a listagem exige interpretar HTML; varrer é
+// o último recurso, e o único que multiplica requisições no servidor do outro.
+
+const probe = (paginas) => ({
+  fetch: async (url) => (paginas[url] ? { body: paginas[url], contentType: paginas[url].includes('<rss') || paginas[url].includes('<urlset') ? 'application/xml' : 'text/html' } : null),
+})
+
+test('1º) o feed que a própria página anuncia', async () => {
+  const plano = await planDiscovery(
+    'https://x.test/blog',
+    'http',
+    probe({ 'https://x.test/blog': '<link rel="alternate" type="application/rss+xml" href="/feed.xml"/>' }),
+  )
+  assert.deepEqual(plano, { via: 'rss', url: 'https://x.test/feed.xml' })
+})
+
+test('2º) o sitemap padrão, quando não há feed anunciado', async () => {
+  const plano = await planDiscovery(
+    'https://x.test/blog',
+    'http',
+    probe({ 'https://x.test/blog': '<html>sem feed</html>', 'https://x.test/sitemap.xml': '<urlset><url><loc>https://x.test/a</loc></url></urlset>' }),
+  )
+  assert.deepEqual(plano, { via: 'sitemap', url: 'https://x.test/sitemap.xml' })
+})
+
+test('3º) a listagem — só quando o dono aceitou seguir links', async () => {
+  const paginas = { 'https://x.test/blog': '<html><a href="/a">a</a></html>' }
+  assert.equal((await planDiscovery('https://x.test/blog', 'http', probe(paginas), { crawlArticles: true })).via, 'listing')
+  // Sem a permissão, a página é o conteúdo: varrer multiplica requisições no site do outro.
+  assert.equal((await planDiscovery('https://x.test/blog', 'http', probe(paginas))).via, 'single_page')
+})
+
+test('um endereço que JÁ é feed é reconhecido, mesmo cadastrado como página', async () => {
+  const plano = await planDiscovery('https://x.test/tudo', 'http', probe({ 'https://x.test/tudo': '<rss><channel></channel></rss>' }))
+  assert.equal(plano.via, 'rss')
+})
+
+test('feed cadastrado como feed não gasta requisição para descobrir nada', async () => {
+  let chamou = false
+  const plano = await planDiscovery('https://x.test/feed', 'rss', {
+    fetch: async () => {
+      chamou = true
+      return null
+    },
+  })
+  assert.deepEqual(plano, { via: 'rss', url: 'https://x.test/feed' })
+  assert.equal(chamou, false)
+})
+
+test('site fora do ar: a própria página, e nada de erro', async () => {
+  const plano = await planDiscovery('https://x.test/blog', 'http', { fetch: async () => null })
+  assert.deepEqual(plano, { via: 'single_page', url: 'https://x.test/blog' })
 })
