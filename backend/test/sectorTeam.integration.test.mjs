@@ -652,3 +652,54 @@ test('com duas séries no contexto, o prompt avisa que os documentos são difere
   // Uma fonte só não precisa de aviso nenhum.
   assert.equal(multiSourceNotice([{ documentId: 'a', title: 'Ação Vale3' }]), null)
 })
+
+// --- duas bases no MESMO agente ------------------------------------------------------------
+//
+// A pergunta era direta: com a tabela de cotações E o texto de uma notícia na base do
+// mesmo agente, ele cruza as duas na resposta? A recuperação devolve UMA passagem por
+// documento e corta por nota, top-K e orçamento de caracteres — então cabem as duas,
+// desde que as duas tenham algum termo específico da pergunta.
+
+test('a tabela e a notícia entram juntas no contexto do mesmo agente', async () => {
+  const analista = agente('Analista de Mercado')
+  await createDocumentFor(
+    { ownerType: 'agent', ownerId: analista._id },
+    { title: 'Cotações VALE3', content: serie('Vale S.A. (VALE3.BA)', 22100) },
+  )
+  await createDocumentFor(
+    { ownerType: 'agent', ownerId: analista._id },
+    {
+      title: 'Notícia Vale',
+      content:
+        'Vale (VALE3) anuncia acordo em 6 de agosto de 2026.\n' +
+        'A companhia informou ao mercado que fechou acordo de reparação, com impacto estimado no fluxo de caixa do trimestre. ' +
+        'Analistas avaliaram o anúncio como positivo para o papel no curto prazo.',
+    },
+  )
+
+  const r = await retrieveContext([analista._id], 'o que aconteceu com a VALE3 em 6 de agosto de 2026 e qual foi a cotação?')
+  const titulos = r.sources.map((f) => f.title)
+
+  assert.equal(r.status, 'ok')
+  // As DUAS bases chegam ao modelo — é isso que permite cruzar preço com notícia.
+  assert.ok(titulos.includes('Cotações VALE3'), `faltou a tabela: ${JSON.stringify(titulos)}`)
+  assert.ok(titulos.includes('Notícia Vale'), `faltou a notícia: ${JSON.stringify(titulos)}`)
+  const texto = r.context.join('\n')
+  assert.match(texto, /Aug 6, 2026/, 'a linha do dia pedido')
+  assert.match(texto, /acordo de reparação/, 'e o que a notícia diz')
+})
+
+test('um link solto na base não é a mesma coisa que a notícia', async () => {
+  // Guardar só a URL guarda uma string. Nada lê aquela página na hora da resposta — para
+  // isso existe o site cadastrado em "Como trabalha", que é consultado sob demanda.
+  const analista = agente('Analista de Mercado')
+  await createDocumentFor(
+    { ownerType: 'agent', ownerId: analista._id },
+    { title: 'Link da notícia', content: 'https://exemplo.test/noticias/vale-acordo-agosto-2026' },
+  )
+
+  const r = await retrieveContext([analista._id], 'o que a notícia diz sobre o acordo da Vale?')
+  const texto = r.context.join('\n')
+  // A URL pode até ser recuperada; o que ela NÃO tem é o conteúdo da notícia.
+  assert.ok(!/acordo de reparação/.test(texto), 'não há texto de notícia nenhum guardado aqui')
+})
