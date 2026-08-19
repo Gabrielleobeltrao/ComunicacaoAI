@@ -59,16 +59,16 @@ function Choice({ on, label, help, onClick }: { on: boolean; label: string; help
         textAlign: 'left',
         padding: '10px 12px',
         borderRadius: 'var(--radius-control)',
-        border: `1px solid ${on ? 'var(--accent-500)' : 'var(--border-subtle)'}`,
-        background: on ? 'var(--accent-50)' : 'var(--surface-card)',
-        color: on ? 'var(--accent-700)' : 'var(--text-heading)',
+        border: `1px solid ${on ? 'var(--intent-brand)' : 'var(--border-subtle)'}`,
+        background: on ? 'var(--intent-brand-soft)' : 'var(--surface-card)',
+        color: on ? 'var(--text-heading)' : 'var(--text-heading)',
         cursor: 'pointer',
         fontFamily: 'var(--font-ui)',
         minWidth: 0,
       }}
     >
       <div style={{ fontSize: 13.5, fontWeight: 700 }}>{label}</div>
-      <div style={{ fontSize: 12, color: on ? 'var(--accent-700)' : 'var(--text-muted)', marginTop: 2, lineHeight: 1.4 }}>{help}</div>
+      <div style={{ fontSize: 12, color: on ? 'var(--text-heading)' : 'var(--text-muted)', marginTop: 2, lineHeight: 1.4 }}>{help}</div>
     </button>
   )
 }

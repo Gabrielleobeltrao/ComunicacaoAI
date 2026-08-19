@@ -25,8 +25,20 @@ export function Select({ options = [], children, style, ...rest }: SelectProps) 
           fontFamily: 'var(--font-ui)',
           fontSize: 14.5,
           color: 'var(--text-heading)',
+          // `outline: none` sem nada no lugar era foco invisível: com o teclado não dava
+          // para saber onde se está, e com o mouse o campo não reagia ao clique. O
+          // tratamento é o mesmo do Input — o sistema já tem anel de foco.
           outline: 'none',
           cursor: 'pointer',
+          transition: 'border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard)',
+        }}
+        onFocus={(e) => {
+          e.currentTarget.style.borderColor = 'var(--border-focus)'
+          e.currentTarget.style.boxShadow = 'var(--ring-focus)'
+        }}
+        onBlur={(e) => {
+          e.currentTarget.style.borderColor = 'var(--border-subtle)'
+          e.currentTarget.style.boxShadow = 'none'
         }}
         {...rest}
       >

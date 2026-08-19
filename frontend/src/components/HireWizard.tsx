@@ -123,9 +123,9 @@ function Choice({ on, label, cargo, hint, onClick, testId }: { on: boolean; labe
         textAlign: 'left',
         padding: '10px 12px',
         borderRadius: 'var(--radius-control)',
-        border: `1px solid ${on ? 'var(--accent-500)' : 'var(--border-subtle)'}`,
-        background: on ? 'var(--accent-50)' : 'var(--surface-card)',
-        color: on ? 'var(--accent-700)' : 'var(--text-heading)',
+        border: `1px solid ${on ? 'var(--intent-brand)' : 'var(--border-subtle)'}`,
+        background: on ? 'var(--intent-brand-soft)' : 'var(--surface-card)',
+        color: on ? 'var(--text-heading)' : 'var(--text-heading)',
         cursor: 'pointer',
         fontFamily: 'var(--font-ui)',
         minWidth: 0,
@@ -134,9 +134,9 @@ function Choice({ on, label, cargo, hint, onClick, testId }: { on: boolean; labe
       <div style={{ fontSize: 13.5, fontWeight: 700 }}>
         {label}
         {/* O cargo continua visível: quem já conhece o sistema procura por ele. */}
-        {cargo ? <span style={{ fontWeight: 500, color: on ? 'var(--accent-700)' : 'var(--text-faint)' }}> · {cargo}</span> : null}
+        {cargo ? <span style={{ fontWeight: 500, color: on ? 'var(--text-heading)' : 'var(--text-faint)' }}> · {cargo}</span> : null}
       </div>
-      {hint ? <div style={{ fontSize: 12, color: on ? 'var(--accent-700)' : 'var(--text-muted)', marginTop: 2, lineHeight: 1.4 }}>{hint}</div> : null}
+      {hint ? <div style={{ fontSize: 12, color: on ? 'var(--text-heading)' : 'var(--text-muted)', marginTop: 2, lineHeight: 1.4 }}>{hint}</div> : null}
     </button>
   )
 }
@@ -378,8 +378,8 @@ export function HireWizard({
               padding: '4px 10px',
               borderRadius: 999,
               fontFamily: 'var(--font-ui)',
-              background: i === step ? 'var(--accent-500)' : i < step ? 'var(--accent-50)' : 'var(--surface-sunken)',
-              color: i === step ? 'white' : i < step ? 'var(--accent-700)' : 'var(--text-muted)',
+              background: i === step ? 'var(--intent-brand)' : i < step ? 'var(--intent-brand-soft)' : 'var(--surface-sunken)',
+              color: i === step ? 'var(--text-on-brand)' : i < step ? 'var(--text-heading)' : 'var(--text-muted)',
             }}
           >
             {i + 1}. {label}

@@ -337,7 +337,7 @@ export function SectorForm({ sector, agents, floorId, onSaved, onAgentsChanged, 
             {coordinatorAgentId && agentById.get(coordinatorAgentId)?.preset !== 'manager' && (
               // A warning, never a block: the coordinator reaches the members through
               // the sector context, whatever its own preset is.
-              <p className="mt-1 text-xs text-(--mango-700)" data-testid="coordinator-warning">
+              <p className="mt-1 text-xs text-(--mango-600)" data-testid="coordinator-warning">
                 Este agente não é um gerente. Ele vai funcionar, mas um gerente costuma coordenar melhor.
               </p>
             )}
@@ -451,7 +451,7 @@ export function SectorForm({ sector, agents, floorId, onSaved, onAgentsChanged, 
   const issuesPanel = readiness.issues.length > 0 && (
     <ul className="space-y-1 rounded-lg border border-(--border-subtle) bg-(--surface-sunken) p-3" data-testid="sector-readiness">
       {readiness.issues.map((i, idx) => (
-        <li key={`${i.code}-${idx}`} className={`text-xs ${i.severity === 'blocking' ? 'text-(--coral-600)' : 'text-(--mango-700)'}`}>
+        <li key={`${i.code}-${idx}`} className={`text-xs ${i.severity === 'blocking' ? 'text-(--coral-600)' : 'text-(--mango-600)'}`}>
           {i.message}
         </li>
       ))}

@@ -34,7 +34,7 @@ function ReadinessPanel({ overview, onFix }: { overview: SectorOverview; onFix: 
     <div className="rounded-xl border border-(--border-subtle) bg-(--surface-card) p-4" data-testid="sector-readiness-panel">
       <ul className="space-y-1">
         {issues.map((i, idx) => (
-          <li key={`${i.code}-${idx}`} className={`text-sm ${i.severity === 'blocking' ? 'text-(--coral-600)' : 'text-(--mango-700)'}`}>
+          <li key={`${i.code}-${idx}`} className={`text-sm ${i.severity === 'blocking' ? 'text-(--coral-600)' : 'text-(--mango-600)'}`}>
             {i.message}
           </li>
         ))}

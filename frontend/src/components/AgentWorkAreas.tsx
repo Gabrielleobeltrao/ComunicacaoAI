@@ -398,7 +398,7 @@ function RoutineForm({ agentId, routine, onDone, onCancel }: { agentId: string; 
                   key={i}
                   type="button"
                   onClick={() => setWeekdays((w) => (on ? w.filter((d) => d !== i) : [...w, i]))}
-                  style={{ height: 34, padding: '0 12px', borderRadius: 'var(--radius-control)', border: `1px solid ${on ? 'var(--accent-500)' : 'var(--border-subtle)'}`, background: on ? 'var(--accent-50)' : 'var(--surface-card)', color: on ? 'var(--accent-700)' : 'var(--text-muted)', fontFamily: 'var(--font-ui)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+                  style={{ height: 34, padding: '0 12px', borderRadius: 'var(--radius-control)', border: `1px solid ${on ? 'var(--intent-brand)' : 'var(--border-subtle)'}`, background: on ? 'var(--intent-brand-soft)' : 'var(--surface-card)', color: on ? 'var(--text-heading)' : 'var(--text-muted)', fontFamily: 'var(--font-ui)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
                 >
                   {weekdayLabel}
                 </button>
@@ -589,7 +589,7 @@ function RoutineRow({ agentId, routine, onChanged }: { agentId: string; routine:
               {routine.monitoring.lastError.message}
             </p>
           ) : null}
-          <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-subtle)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }}>{routine.objective}</p>
+          <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 520 }}>{routine.objective}</p>
         </div>
         <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
           {/* "Verificar agora" executa; "Testar fonte", no formulário, não. São
@@ -687,7 +687,7 @@ export function AgentActivations({ agent }: { agent: AgentSummary }) {
       <div>
         {sectionTitle('Como pode ser acionado')}
         {modes.length === 0 ? (
-          <p style={{ margin: 0, fontSize: 13, color: 'var(--text-subtle)' }}>Nenhum acionamento configurado.</p>
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>Nenhum acionamento configurado.</p>
         ) : (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {modes.map((m) => (
@@ -696,7 +696,7 @@ export function AgentActivations({ agent }: { agent: AgentSummary }) {
           </div>
         )}
       </div>
-      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-subtle)' }}>Com quem ele trabalha fica em “Colaboração”, logo abaixo. Competências ficam em “Ajustes”.</p>
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>Com quem ele trabalha fica em “Colaboração”, logo abaixo. Competências ficam em “Ajustes”.</p>
     </div>
   )
 }
