@@ -576,3 +576,42 @@ test('renomear abre a partir da engrenagem', async ({ page }) => {
   await expect(page.getByTestId('connection-settings')).toHaveCount(0)
   await expect(page.getByRole('textbox').first()).toBeVisible()
 })
+
+// --- tirar a conexão da lista ------------------------------------------------------------
+//
+// Desconectar revoga o acesso e MANTÉM o registro, o que é correto: o histórico continua
+// fazendo sentido. Só que não havia nenhuma ação para remover a conexão depois disso —
+// uma vez desconectada, ela ficava na lista para sempre, sem sequer um botão. Quem
+// desconectou e viu o item continuar ali conclui, com razão, que não funcionou.
+
+const REVOGADA = { ...INSTALLATION, status: 'revoked' as const }
+
+test('uma conexão desconectada pode ser removida da lista', async ({ page }) => {
+  await stub(page, { installations: [REVOGADA] })
+  await page.goto('/apps?tab=connected')
+
+  await page.getByTestId('settings-slack').click()
+  // Desconectar já não se aplica — ela JÁ está desconectada. Remover, sim.
+  await expect(page.getByTestId('disconnect')).toHaveCount(0)
+  await page.getByTestId('action-remove').click()
+
+  await expect(page.getByText('A conexão sai da lista.')).toBeVisible()
+  await page.getByTestId('confirm-remove').click()
+
+  // `purge=true` é o que apaga de verdade; sem ele, a rota só revogaria de novo.
+  await expect.poll(() => disconnected?.url).toBeTruthy()
+  expect(disconnected?.url).toContain('purge=true')
+})
+
+test('uma conexão ativa também pode ser removida, com o aviso certo', async ({ page }) => {
+  await stub(page, { installations: [INSTALLATION] })
+  await page.goto('/apps?tab=connected')
+
+  await page.getByTestId('settings-slack').click()
+  await page.getByTestId('action-remove').click()
+  // O aviso muda: aqui alguém perde acesso agora.
+  await expect(page.getByText('perdem acesso na hora', { exact: false })).toBeVisible()
+  await page.getByTestId('confirm-remove').click()
+  await expect.poll(() => disconnected?.url).toBeTruthy()
+  expect(disconnected?.url).toContain('purge=true')
+})
