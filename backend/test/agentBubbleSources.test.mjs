@@ -50,7 +50,12 @@ const WITH_SOURCE = [
   'validating_output', // agentRuntime, when the output schema is checked
   'retrying', // agentRuntime, on a real retry
   'delivering', // runProcessor, when the answer goes to a channel
-  'blocked', // routineExecution, on a refusal
+  'blocked', // routineExecution, on a refusal — e delegation, quando falta base exigida
+  // Conversar É trabalhar: index.ts (chat e canal) e delegation.runAgentTask reportam
+  // isto imediatamente antes da chamada ao modelo. Era o estado que o plano (§8.6) pedia
+  // para o canal desde o começo e ninguém emitia — o mapa ficava parado enquanto um
+  // agente atendia alguém.
+  'responding',
   'completed',
   'failed',
   'canceled',
@@ -58,7 +63,7 @@ const WITH_SOURCE = [
 
 // In the enum and drawable, but nothing in the runtime observes them yet. The plan
 // is explicit: instrument only when there is a verifiable event, never infer.
-const DORMANT = ['researching', 'waiting_external', 'waiting_input', 'responding', 'generating_output']
+const DORMANT = ['researching', 'waiting_external', 'waiting_input', 'generating_output']
 
 test('todo estado que o runtime emite tem uma transição real por trás', () => {
   for (const state of WITH_SOURCE) {

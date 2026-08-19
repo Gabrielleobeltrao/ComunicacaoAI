@@ -16,7 +16,7 @@ import { test, after, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
-import { MongoClient } from 'mongodb'
+import { MongoClient, ObjectId } from 'mongodb'
 import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
 const RAIZ = new URL('..', import.meta.url).pathname
@@ -411,4 +411,31 @@ test('a conversa de teste é do dono do agente, e de mais ninguém', async () =>
   assert.equal(semSessao.status, 401)
   const apagar = await fetch(`${base}/api/agents/${agente._id}/playground`, { method: 'DELETE' })
   assert.equal(apagar.status, 401)
+})
+
+// --- o balão do agente que conversa --------------------------------------------------------
+//
+// Rotina e delegação acendiam o balão; conversar não acendia nada. Quem abrisse o mapa
+// enquanto um agente atendia via um andar parado — e o plano (§8.6) sempre pediu
+// "geração de resposta para canal → responding". O estado é efêmero e não entra em
+// métrica: ele existe para a pessoa ver que o agente está trabalhando.
+
+test('conversar acende o balão do agente e o deixa em estado terminal', async () => {
+  const agente = await criarAgente({ name: 'Agente que aparece no mapa' })
+
+  const antes = await cliente.db().collection('agent_live_states').countDocuments({})
+  const res = await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'oi' }] }),
+  })
+  assert.ok(res.ok, `playground devolveu ${res.status}`)
+
+  const linhas = await cliente.db().collection('agent_live_states').find({ agentId: new ObjectId(agente._id) }).toArray()
+  assert.ok(linhas.length > antes || linhas.length > 0, 'a conversa precisa ter deixado um estado')
+  const linha = linhas.at(-1)
+  // Terminal: uma execução que acabou não pode ficar "pensando" no mapa até o TTL.
+  assert.ok(['completed', 'failed', 'canceled'].includes(linha.state), `estado final inesperado: ${linha.state}`)
+  // E ele expira sozinho — nenhum agente fica preso por causa de um processo que morreu.
+  assert.ok(linha.expiresAt instanceof Date)
 })

@@ -224,6 +224,7 @@ import type { ClarificationRequest } from './clarify.js'
 import { checkScope } from './scopeGate.js'
 import { appendPlaygroundTurns, clearPlaygroundTurns, loadPlaygroundTurns } from './playgroundSession.js'
 import type { PlaygroundTurn } from './playgroundSession.js'
+import { NOOP_TRACKER, createLiveTracker, instrumentTools } from './agentLiveTracker.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -2757,6 +2758,25 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     createdAt: manualStartedAt,
   }).catch(() => null)
 
+  /**
+   * O balão deste agente enquanto ele responde.
+   *
+   * Conversar É trabalhar, e o mapa não sabia disso: rotina e delegação acendiam o
+   * balão, atender alguém não acendia nada — quem abrisse o escritório enquanto um
+   * agente conversava via um andar parado. O plano (§8.6) sempre pediu "geração de
+   * resposta para canal → responding"; faltava a instrumentação.
+   *
+   * Vale também no teste: quem testa ESTÁ fazendo o agente trabalhar. O estado é
+   * efêmero (TTL na projeção) e não entra em métrica nenhuma.
+   */
+  const balao = createLiveTracker({
+    ownerId: res.locals.userId,
+    agentId: agent._id,
+    floorId: agent.officeId ?? null,
+    rootExecutionId: (manualRootId ?? agent._id).toString(),
+  })
+  balao.report('thinking')
+
   const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0, errorKind?: string) => {
     // `modeloDoChat` é resolvido abaixo; este fecho só roda depois da chamada.
     recordAgentEventSafe({
@@ -2829,6 +2849,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     productionDelegationDeps(),
     jaPerguntouChat,
   )
+  const ferramentasDoChat = instrumentTools(chatTools, balao)
   const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: chatTools.map((t) => t.risk ?? 'write') })
   // Quando nada foi escolhido, `model` é null e quem responde é a constante do adapter —
   // a tela precisa do nome dela para não dizer "—" no lugar do modelo que rodou.
@@ -2858,6 +2879,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     )
   }
 
+  balao.report('responding')
   try {
     const interativoChat = await runInteractive({
       reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
@@ -2894,7 +2916,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       }),
       knowledge,
       history,
-      tools: chatTools,
+      tools: ferramentasDoChat,
       runConfig: execucaoChat.runConfig,
       output: execucaoChat.definition.output,
     })
@@ -2925,6 +2947,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     // Cobrança, métrica e auditoria também na falha — senão o contrato quebrado sairia de
     // graça nos números e a fatura do provedor não bateria com nada.
     cobrar()
+    await balao.finish('failed')
     recordManual(kind === 'timeout' ? 'timeout' : 'failed', usage, toolCalls.filter((c) => c.ok).length, kind)
     if (kind === 'output_invalid') {
       // Erro controlado, e não um 500 genérico: 502 é a mesma resposta que este arquivo já
@@ -2937,6 +2960,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     throw error
   }
   cobrar()
+  await balao.finish('completed')
   // Only tool calls that actually COMPLETED count as tool actions.
   recordManual('succeeded', usage, toolCalls.filter((c) => c.ok).length)
   let reply = generated
@@ -3952,12 +3976,33 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     }).catch(() => undefined)
   }
 
-  const canalTools = await resolveAgentTools(agent, ownerId, jaPerguntouCanal)
+  /**
+   * O balão do agente que está atendendo AGORA.
+   *
+   * É aqui que mais importa: no canal ninguém está olhando a tela do teste — o mapa é
+   * a única janela para o que está acontecendo. Antes, um agente conversando com um
+   * visitante deixava o andar inteiro parecendo ocioso.
+   */
+  // Quando quem responde é um SETOR, cada agente do time reporta o próprio balão de
+  // dentro do executor. Acender também um aqui duplicaria a linha do coordenador na
+  // projeção — dois registros para um agente só, dizendo a mesma coisa.
+  const balaoCanal = setorDoCanal
+    ? NOOP_TRACKER
+    : createLiveTracker({
+        ownerId,
+        agentId: agent._id,
+        floorId: agent.officeId ?? null,
+        rootExecutionId: (channelRootId ?? widget._id).toString(),
+      })
+  balaoCanal.report('thinking')
+
+  const canalTools = instrumentTools(await resolveAgentTools(agent, ownerId, jaPerguntouCanal), balaoCanal)
   const execucaoCanal = resolveAgentRun(agent, { context: 'chat', toolRisks: canalTools.map((t) => t.risk ?? 'write') })
   const modeloDoCanal = execucaoCanal.model ?? defaultModel(agent.provider)
   const descartadosCanal = describeDropped(execucaoCanal.runConfig)
   if (descartadosCanal) console.info(`[runConfig] canal: ${descartadosCanal}`)
 
+  balaoCanal.report('responding')
   let generatedReply: string
   let pedidoDoCanal: ClarificationRequest | null = null
   // Zerados e mutáveis: o que foi cobrado precisa sobreviver ao caminho de falha. Lançar
@@ -4082,8 +4127,10 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     )
     // Nada é enviado ao visitante: a resposta que não cumpre o contrato não vira mensagem,
     // não é transmitida pelo socket e não entra no histórico da conversa.
+    await balaoCanal.finish('failed')
     throw error
   }
+  await balaoCanal.finish('completed')
   cobrarCanal()
   logToolCalls(widgetId, conversationId, toolCalls).catch((error) =>
     console.error('Failed to log tool calls:', error),
