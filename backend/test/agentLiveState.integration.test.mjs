@@ -210,3 +210,125 @@ test('agente que exige base e não tem fica bloqueado, sem gastar inferência', 
   assert.equal(called, false)
   assert.equal((await states().findOne({ ownerId: OWNER, rootExecutionId: 'run-real' })).state, 'blocked')
 })
+
+// --- o agente de um TIME também acende o balão -------------------------------------------
+//
+// `reportState` já marcava quem DELEGA ("delegando…"); quem executava não marcava nada.
+// No mapa isso aparecia como o coordenador trabalhando e o especialista parado — sendo
+// que o trabalho estava justamente com o especialista.
+
+const { executeSectorTeam, sectorRunContext } = await import('../dist/delegation.js')
+
+const ALVO = new ObjectId()
+const alvoDoc = (over = {}) => ({
+  _id: ALVO,
+  ownerId: OWNER,
+  officeId: FLOOR,
+  name: 'Especialista',
+  objective: 'Pesquisar',
+  provider: 'anthropic',
+  model: null,
+  preset: 'researcher',
+  delegationPolicy: 'none',
+  callerPolicy: 'all',
+  ...over,
+})
+
+const depsDelegacao = (over = {}) => ({
+  loadAgent: async () => alvoDoc(over.agent ?? {}),
+  loadSector: async () => null,
+  listAgentsInBuilding: async () => [],
+  buildingIdForFloor: async () => 'predio',
+  resolveTools: over.resolveTools ?? (async () => []),
+  apiKeyFor: async () => 'k',
+  retrieveContext: async () => ({ context: ['trecho'], failed: false, status: 'ok', sources: [] }),
+  runTask: over.runTask ?? (async () => ({ output: 'pronto', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] })),
+  startDelegation: async () => new ObjectId(),
+  finishDelegation: async () => undefined,
+  recordEvent: () => undefined,
+  trackerFor: (ownerId, agentId, floorId, rootExecutionId) => createLiveTracker({ ownerId, agentId, floorId, rootExecutionId }),
+})
+
+const ctxTime = () => sectorRunContext({ ownerId: OWNER, buildingId: 'predio', correlationId: 'time-1' })
+
+// Um setor de um: o coordenador É o especialista. Basta para exercitar o caminho por
+// onde TODO agente de time passa.
+const setorDe = (alvo) => ({
+  _id: new ObjectId(),
+  name: 'Mesa',
+  officeId: FLOOR,
+  mode: 'orchestrated',
+  coordinatorAgentId: alvo._id,
+  instruction: '',
+  members: [{ agentId: alvo._id, isDefault: true }],
+  stages: [],
+})
+
+test('um agente acionado pelo time termina concluído no mapa', async () => {
+  const alvo = alvoDoc()
+  const r = await executeSectorTeam(depsDelegacao(), ctxTime(), setorDe(alvo), { objective: 'pesquise BBSE3' })
+  assert.equal(r.output, 'pronto')
+  const doc = await states().findOne({ ownerId: OWNER, agentId: ALVO })
+  assert.equal(doc.state, 'completed')
+  assert.equal(doc.floorId.toString(), FLOOR.toString())
+})
+
+test('se o agente do time falha, o balão termina em failed — não fica pensando', async () => {
+  await states().deleteMany({})
+  const deps = depsDelegacao({
+    runTask: async () => {
+      throw new Error('provider caiu')
+    },
+  })
+  await assert.rejects(() => executeSectorTeam(deps, ctxTime(), setorDe(alvoDoc()), { objective: 'pesquise' }))
+  assert.equal((await states().findOne({ ownerId: OWNER, agentId: ALVO })).state, 'failed')
+})
+
+test('quem exige base e não tem fica bloqueado, e o balão diz isso', async () => {
+  await states().deleteMany({})
+  let chamou = false
+  const deps = depsDelegacao({
+    agent: { requireGrounding: true },
+    runTask: async () => {
+      chamou = true
+      return { output: '', usage: { inputTokens: 0, outputTokens: 0 }, toolCalls: [] }
+    },
+  })
+  deps.retrieveContext = async () => ({ context: [], failed: false, status: 'empty', sources: [] })
+  await assert.rejects(() => executeSectorTeam(deps, ctxTime(), setorDe(alvoDoc({ requireGrounding: true })), { objective: 'pesquise' }))
+  assert.equal(chamou, false, 'não pode gastar inferência')
+  // Terminal, e não 'blocked' pendurado: a execução acabou.
+  assert.equal((await states().findOne({ ownerId: OWNER, agentId: ALVO })).state, 'failed')
+})
+
+test('a ferramenta que o agente do time usa aparece no balão', async () => {
+  await states().deleteMany({})
+  let visto = null
+  const deps = depsDelegacao({
+    resolveTools: async () => [
+      {
+        name: 'google_agenda_criar_evento',
+        description: 'd',
+        inputSchema: {},
+        // Lido DE DENTRO da ferramenta: depois que ela retorna, o balão já voltou para
+        // "pensando" — que é justamente o comportamento desejado.
+        run: async () => {
+          const limite = Date.now() + 2000
+          while (Date.now() < limite && visto?.state !== 'using_tool') {
+            visto = await states().findOne({ ownerId: OWNER, agentId: ALVO })
+            if (visto?.state !== 'using_tool') await new Promise((r) => setTimeout(r, 20))
+          }
+          return 'ok'
+        },
+      },
+    ],
+    runTask: async (req) => {
+      await req.tools[0].run({})
+      return { output: 'pronto', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  await executeSectorTeam(deps, ctxTime(), setorDe(alvoDoc()), { objective: 'agende' })
+  assert.equal(visto?.state, 'using_tool', 'o balão precisa dizer "usando ferramenta" enquanto ela roda')
+  // O rótulo vem do CATÁLOGO, nunca do nome cru da ferramenta do dono.
+  assert.deepEqual(visto.detail, { appKey: 'google', actionLabel: 'Criar evento' })
+})

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import type { SectorMode, SectorSummary } from '../lib/types'
@@ -61,12 +61,54 @@ const GROUNDING_LABEL: Record<string, string> = {
   unavailable: 'a busca na base falhou — não é o mesmo que "não existe"',
 }
 
-// Conversa de teste de um setor — nada é salvo. A resposta mostra quem REALMENTE
-// executou, na ordem, com o que cada um encontrou.
+// Conversa de teste de um setor: fica salva, e a resposta mostra quem REALMENTE executou,
+// na ordem, com o que cada um encontrou. Aqui guardar pesa mais do que num agente só —
+// cada repetição de pergunta acorda o time inteiro.
 export function SectorPlayground({ sector }: { sector: SectorSummary }) {
   const [messages, setMessages] = useState<PlayMessage[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [limpando, setLimpando] = useState(false)
+
+  useEffect(() => {
+    let vivo = true
+    fetch(`${API_URL}/api/sectors/${sector._id}/playground`, { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : { turns: [] }))
+      .then((corpo) => {
+        if (!vivo || !Array.isArray(corpo?.turns)) return
+        // O rastro por agente foi guardado dentro de `diagnostics`; aqui ele volta a ser
+        // o que a tela lê.
+        setMessages(
+          corpo.turns.map((t: Record<string, unknown>) => {
+            const d = (t.diagnostics ?? {}) as Record<string, unknown>
+            return {
+              role: t.role as 'user' | 'assistant',
+              content: String(t.content ?? ''),
+              clarification: Boolean(t.clarification),
+              clarificationOptions: (t.clarificationOptions as string[]) ?? [],
+              participants: (d.participants as SectorParticipant[]) ?? undefined,
+              grounding: (d.grounding as string) ?? undefined,
+              sources: (d.sources as SectorSource[]) ?? undefined,
+              executionId: (d.executionId as string) ?? undefined,
+            }
+          }),
+        )
+      })
+      .catch(() => {})
+    return () => {
+      vivo = false
+    }
+  }, [sector._id])
+
+  async function limpar() {
+    setLimpando(true)
+    try {
+      await fetch(`${API_URL}/api/sectors/${sector._id}/playground`, { method: 'DELETE', credentials: 'include' })
+      setMessages([])
+    } finally {
+      setLimpando(false)
+    }
+  }
 
   async function handleSend(event: FormEvent) {
     event.preventDefault()
@@ -128,12 +170,31 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
 
   return (
     <div>
-      <p className="mb-3 text-xs text-(--text-faint)">
-        Conversa de teste — nada é salvo e as ferramentas que escrevem ficam bloqueadas. O time executa de verdade:
-        abaixo de cada resposta está quem trabalhou e o que consultou.
-      </p>
-      <div className="flex h-96 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50">
-        <div className="flex-1 space-y-2 overflow-y-auto p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-(--text-faint)">
+          Conversa de teste — fica salva aqui, e as ferramentas que escrevem ficam bloqueadas. O time
+          executa de verdade: abaixo de cada resposta está quem trabalhou e o que consultou.
+        </p>
+        {messages.length > 0 && (
+          <button
+            type="button"
+            onClick={() => void limpar()}
+            disabled={limpando}
+            data-testid="sector-playground-clear"
+            className="rounded-lg border border-(--border-strong) px-2.5 py-1 text-xs text-(--text-muted) transition hover:text-(--text-heading) disabled:opacity-50"
+          >
+            Limpar conversa
+          </button>
+        )}
+      </div>
+      {/* Mesma contenção do chat de agente: a largura do chat vem da página, nunca do
+          que o time respondeu. Aqui pesa ainda mais, porque a tabela de participantes
+          tem uma linha por agente. */}
+      <div
+        className="flex h-96 min-w-0 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50"
+        style={{ contain: 'inline-size' }}
+      >
+        <div className="flex-1 space-y-2 overflow-y-auto p-3" data-testid="sector-playground-messages">
           {messages.length === 0 && (
             <p className="text-sm text-(--text-muted)">Envie uma mensagem como se fosse o visitante.</p>
           )}
@@ -142,8 +203,8 @@ export function SectorPlayground({ sector }: { sector: SectorSummary }) {
               <div
                 className={
                   message.role === 'user'
-                    ? 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-(--intent-brand) px-3 py-2 text-sm text-white'
-                    : 'max-w-[85%] rounded-2xl rounded-tl-sm bg-(--surface-sunken) px-3 py-2 text-sm'
+                    ? 'ml-auto max-w-[85%] min-w-0 break-words rounded-2xl rounded-tr-sm bg-(--intent-brand) px-3 py-2 text-sm text-white'
+                    : 'max-w-[85%] min-w-0 break-words rounded-2xl rounded-tl-sm bg-(--surface-sunken) px-3 py-2 text-sm'
                 }
               >
                 <MessageContent content={message.content} />

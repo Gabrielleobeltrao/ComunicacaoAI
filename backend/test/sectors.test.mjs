@@ -16,6 +16,17 @@ test('normalizeSectorMode reads legacy adaptive as orchestrated and unknown as o
   assert.deepEqual([...SECTOR_MODES], ['organization', 'orchestrated', 'pipeline'])
 })
 
+test('setor orquestrado com o coordenador sozinho avisa, sem bloquear', () => {
+  // Executa (por isso não bloqueia), mas não delega para ninguém — e no painel de teste
+  // isso aparece como um agente só, que parece defeito.
+  const c = new ObjectId()
+  const sozinho = sectorReadiness({ mode: 'orchestrated', members: [{ agentId: c }], coordinatorAgentId: c })
+  assert.equal(sozinho.ready, true)
+  assert.ok(sozinho.issues.some((i) => i.code === 'coordinator_alone'))
+  const comTime = sectorReadiness({ mode: 'orchestrated', members: [{ agentId: c }, { agentId: new ObjectId() }], coordinatorAgentId: c })
+  assert.ok(!comTime.issues.some((i) => i.code === 'coordinator_alone'))
+})
+
 test('sectorIsExecutable: only orchestrated/pipeline run', () => {
   assert.equal(sectorIsExecutable('organization'), false)
   assert.equal(sectorIsExecutable('orchestrated'), true)

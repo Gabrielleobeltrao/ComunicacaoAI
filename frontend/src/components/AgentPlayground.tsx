@@ -1,12 +1,17 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import type { AgentSummary, ToolCall } from '../lib/types'
 import { MessageContent } from './MessageContent'
 import { ToolCalls } from './ToolCalls'
 
-// Stateless test chat for a single agent — nothing is persisted and the agent's
-// memory is not used. Reused by the Agents list modal and the agent page.
+// A conversa de teste de um agente, que agora sobrevive à troca de aba.
+//
+// Duas coisas diferentes se chamavam "nada é salvo". A MEMÓRIA DO AGENTE continua fora:
+// ele não lembra de um teste ao atender um visitante de verdade. A TELA, não: sair da
+// aba apagava a conversa, e voltar ao ponto onde se estava exigia repetir as mesmas
+// perguntas — o que custa tokens de verdade. O que está guardado é o que se vê, com o
+// que cada resposta custou. Reaproveitado pelo modal da lista e pela página do agente.
 export function AgentPlayground({ agent }: { agent: AgentSummary }) {
   const [messages, setMessages] = useState<
     {
@@ -35,6 +40,32 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
   >([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [limpando, setLimpando] = useState(false)
+
+  // O que já foi conversado, ao abrir. Uma falha aqui não pode impedir o teste: começa
+  // vazio e segue.
+  useEffect(() => {
+    let vivo = true
+    fetch(`${API_URL}/api/agents/${agent._id}/playground`, { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : { turns: [] }))
+      .then((corpo) => {
+        if (vivo && Array.isArray(corpo?.turns)) setMessages(corpo.turns)
+      })
+      .catch(() => {})
+    return () => {
+      vivo = false
+    }
+  }, [agent._id])
+
+  async function limpar() {
+    setLimpando(true)
+    try {
+      await fetch(`${API_URL}/api/agents/${agent._id}/playground`, { method: 'DELETE', credentials: 'include' })
+      setMessages([])
+    } finally {
+      setLimpando(false)
+    }
+  }
 
   async function enviar(texto: string) {
     const limpo = texto.trim()
@@ -98,12 +129,36 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
 
   return (
     <div>
-      <p className="mb-3 text-xs text-(--text-faint)">
-        Conversa de teste — nada é salvo e a memória do agente não é usada. Ideal pra ajustar o
-        objetivo, estilo e guardrails.
-      </p>
-      <div className="flex h-96 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50">
-        <div className="flex-1 space-y-2 overflow-y-auto p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-(--text-faint)">
+          Conversa de teste — fica salva aqui pra você não repetir as perguntas. A memória do agente
+          não é usada, e nada disto chega a um visitante.
+        </p>
+        {messages.length > 0 && (
+          <button
+            type="button"
+            onClick={() => void limpar()}
+            disabled={limpando}
+            data-testid="playground-clear"
+            className="rounded-lg border border-(--border-strong) px-2.5 py-1 text-xs text-(--text-muted) transition hover:text-(--text-heading) disabled:opacity-50"
+          >
+            Limpar conversa
+          </button>
+        )}
+      </div>
+      {/* `contain: inline-size` decide uma discussão de largura a favor da PÁGINA.
+          Sem isto a largura do chat era negociada pelo que o agente respondia: um bloco
+          de código, uma URL de 120 caracteres ou a linha da ferramenta (que é `truncate`,
+          e portanto `nowrap`) pediam 1116px de largura mínima. A aba é um grid de coluna
+          automática, então a coluna crescia para 1116px dentro de um cartão de 320px — a
+          conversa saía da área e a página inteira ganhava rolagem lateral. Com a
+          contenção, o chat recebe a largura de fora e o conteúdo se vira por dentro:
+          texto quebra, código rola no próprio bloco, a linha da ferramenta corta. */}
+      <div
+        className="flex h-96 min-w-0 flex-col rounded-lg border border-(--border-subtle) bg-(--surface-card)/50"
+        style={{ contain: 'inline-size' }}
+      >
+        <div className="flex-1 space-y-2 overflow-y-auto p-3" data-testid="playground-messages">
           {messages.length === 0 && (
             <p className="text-sm text-(--text-muted)">Envie uma mensagem como se fosse o visitante.</p>
           )}
@@ -112,14 +167,14 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
               <div
                 className={
                   message.role === 'user'
-                    ? 'ml-auto max-w-[85%] rounded-2xl rounded-tr-sm bg-(--intent-brand) px-3 py-2 text-sm text-white'
-                    : 'max-w-[85%] rounded-2xl rounded-tl-sm bg-(--surface-sunken) px-3 py-2 text-sm'
+                    ? 'ml-auto max-w-[85%] min-w-0 break-words rounded-2xl rounded-tr-sm bg-(--intent-brand) px-3 py-2 text-sm text-white'
+                    : 'max-w-[85%] min-w-0 break-words rounded-2xl rounded-tl-sm bg-(--surface-sunken) px-3 py-2 text-sm'
                 }
               >
                 <MessageContent content={message.content} />
               </div>
               {message.toolCalls && message.toolCalls.length > 0 && (
-                <div className="max-w-[85%]">
+                <div className="max-w-[85%] min-w-0">
                   <ToolCalls calls={message.toolCalls} />
                 </div>
               )}

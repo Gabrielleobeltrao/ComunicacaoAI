@@ -136,7 +136,7 @@ import { agentReadiness, callerPolicyFromLegacy, sanitizeCollaborationRefs, trig
 import { collaboratorContext, collaboratorCountFor } from './collaboration.js'
 import type { CollaboratorContext } from './collaboration.js'
 import type { AgentWiring } from './agentReadiness.js'
-import { listRoutines } from './automations/routine.js'
+import { listRoutines, readSourceFromDefinition } from './automations/routine.js'
 import { liveWebhookCountByAgent } from './automations/webhookTriggers.js'
 import { listActivePublished } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
@@ -222,6 +222,9 @@ import { recallClarifications, rememberClarification } from './clarifyMemory.js'
 import { formatOptions, resolveChoice } from './clarifyChoice.js'
 import type { ClarificationRequest } from './clarify.js'
 import { checkScope } from './scopeGate.js'
+import { appendPlaygroundTurns, clearPlaygroundTurns, loadPlaygroundTurns } from './playgroundSession.js'
+import type { PlaygroundTurn } from './playgroundSession.js'
+import { NOOP_TRACKER, createLiveTracker, instrumentTools } from './agentLiveTracker.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -1501,6 +1504,37 @@ app.get('/api/sectors/:sectorId/overview', requireAuth, async (req, res) => {
 // one unified reply, or a clarification) over the supplied history. Nothing is
 // persisted; also reports which specialists were consulted so the owner can see
 // the orchestration decision.
+// A mesma conversa guardada, do lado do setor: quem testa um time repete a pergunta
+// tanto quanto quem testa um agente — e ali cada repetição acorda a equipe inteira.
+app.get('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
+  const sectorId = String(req.params.sectorId)
+  if (!ObjectId.isValid(sectorId)) {
+    res.status(400).json({ error: 'Invalid sector id' })
+    return
+  }
+  const sector = await getSectorById(res.locals.userId, new ObjectId(sectorId))
+  if (!sector) {
+    res.status(404).json({ error: 'Sector not found' })
+    return
+  }
+  res.json({ turns: await loadPlaygroundTurns(res.locals.userId, 'sector', sector._id) })
+})
+
+app.delete('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
+  const sectorId = String(req.params.sectorId)
+  if (!ObjectId.isValid(sectorId)) {
+    res.status(400).json({ error: 'Invalid sector id' })
+    return
+  }
+  const sector = await getSectorById(res.locals.userId, new ObjectId(sectorId))
+  if (!sector) {
+    res.status(404).json({ error: 'Sector not found' })
+    return
+  }
+  await clearPlaygroundTurns(res.locals.userId, 'sector', sector._id)
+  res.status(204).end()
+})
+
 app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
   const sectorIdStr = String(req.params.sectorId)
   if (!ObjectId.isValid(sectorIdStr)) {
@@ -1607,6 +1641,7 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     if (!veredito.inScope) {
       // Nenhuma execução é aberta: recusar não é trabalho do setor, e um registro vazio
       // em Execuções só sujaria a tela.
+      guardarTurnoDeTeste(res.locals.userId, 'sector', sector._id, lastUser.content, { content: GUARDRAIL_REFUSAL_MESSAGE })
       res.json({ reply: GUARDRAIL_REFUSAL_MESSAGE, mode, refusedByGuardrail: true })
       return
     }
@@ -1690,6 +1725,26 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     ? `${run.output}${formatOptions(run.clarification.options)}`
     : run.output
 
+  const participantesSetor = run.participants.map((p) => ({
+    name: p.name,
+    role: p.role,
+    grounding: p.grounding ?? null,
+    toolCalls: p.toolCalls ?? 0,
+    inputTokens: p.usage?.inputTokens ?? 0,
+    outputTokens: p.usage?.outputTokens ?? 0,
+    durationMs: p.durationMs ?? 0,
+    provider: p.provider ?? null,
+    model: p.model ?? null,
+    modelReason: p.modelReason ?? null,
+    ...(p.stageName ? { stage: p.stageName, order: p.order } : {}),
+  }))
+  guardarTurnoDeTeste(res.locals.userId, 'sector', sector._id, lastUser.content, {
+    content: respostaSetor,
+    // O rastro por agente é METADE do que se testa num time: sem ele a conversa
+    // guardada mostraria o texto e esconderia quem trabalhou, e a que preço.
+    diagnostics: { participants: participantesSetor, executionId: execucaoSetorId.toString(), grounding, sources },
+    ...(run.clarification ? { clarification: true, clarificationOptions: run.clarification.options ?? [] } : {}),
+  })
   res.json({
     reply: respostaSetor,
     mode,
@@ -1698,21 +1753,9 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
       : {}),
     // A identidade desta execução: dá para abrir o registro completo dela em Execuções.
     executionId: execucaoSetorId.toString(),
-    participants: run.participants.map((p) => ({
-      name: p.name,
-      role: p.role,
-      grounding: p.grounding ?? null,
-      toolCalls: p.toolCalls ?? 0,
-      // O custo e o tempo de CADA agente. Sem isto, o teste mostrava um texto e nada
-      // sobre o que ele custou — e uma equipe de quatro agentes é quatro chamadas.
-      inputTokens: p.usage?.inputTokens ?? 0,
-      outputTokens: p.usage?.outputTokens ?? 0,
-      durationMs: p.durationMs ?? 0,
-      provider: p.provider ?? null,
-      model: p.model ?? null,
-      modelReason: p.modelReason ?? null,
-      ...(p.stageName ? { stage: p.stageName, order: p.order } : {}),
-    })),
+    // O custo e o tempo de CADA agente. Sem isto, o teste mostrava um texto e nada
+    // sobre o que ele custou — e uma equipe de quatro agentes é quatro chamadas.
+    participants: participantesSetor,
     // O total da execução, para não obrigar a somar de cabeça.
     usage: run.participants.reduce(
       (soma, p) => ({
@@ -2425,6 +2468,11 @@ async function wiringForAgent(ownerId: string, agent: Agent, linkedChannelCount:
     collaboratorCount: collaboratorCountFor(agent, ctx),
     toolCount: (agent.tools?.length ?? 0) + (agent.builtinTools?.length ?? 0),
     knowledgeCount: documents.length,
+    // As duas procedências, como em `fontesDoAgente`: os endereços do próprio agente
+    // (consultados sob demanda) e os das rotinas (com horário e checkpoint).
+    sourceCount:
+      (agent.watchedSources?.length ?? 0) +
+      routines.filter((r) => readSourceFromDefinition(r.draftDefinition).kind !== 'fixed').length,
     deliveryConfigured: routines.some((r) => (r.draftDefinition?.deliveries?.length ?? 0) > 0),
   }
 }
@@ -2547,6 +2595,68 @@ const MAX_PLAYGROUND_MESSAGES = 40
 // Stateless test chat: the panel sends the whole local history and gets one
 // reply back. Nothing is persisted — no widget, no memory, no extraction —
 // so owners can iterate on the objective/style/guardrails safely.
+/**
+ * Grava o par pergunta/resposta da conversa de teste.
+ *
+ * É a TELA que se guarda, não a memória do agente: ele continua sem lembrar de teste
+ * nenhum ao atender um visitante. O que muda é que trocar de aba deixou de apagar a
+ * conversa — e repetir cinco perguntas para voltar ao ponto custava tokens de verdade.
+ *
+ * Nunca derruba a resposta: falhar ao gravar o histórico do Playground não é motivo para
+ * o dono não receber o que acabou de pedir.
+ */
+function guardarTurnoDeTeste(
+  ownerId: string,
+  escopo: 'agent' | 'sector',
+  escopoId: ObjectId,
+  pergunta: string,
+  resposta: Omit<PlaygroundTurn, 'role' | 'at'>,
+): void {
+  const agora = new Date()
+  void appendPlaygroundTurns(ownerId, escopo, escopoId, [
+    { role: 'user', content: pergunta, at: agora },
+    { role: 'assistant', at: agora, ...resposta },
+  ]).catch((erro) => console.error('não foi possível guardar a conversa de teste:', erro))
+}
+
+/**
+ * A conversa de teste guardada deste agente.
+ *
+ * Sem isto o Playground recomeçava vazio a cada visita, e a única forma de recuperar o
+ * ponto onde se estava era perguntar tudo de novo — pagando de novo.
+ */
+app.get('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  if (!ObjectId.isValid(agentId)) {
+    res.status(400).json({ error: 'Invalid agent id' })
+    return
+  }
+  // A checagem de dono vem antes da leitura: a conversa é do dono do agente, e um id
+  // válido de outra pessoa não pode virar uma consulta.
+  const agent = await getAgentById(res.locals.userId, new ObjectId(agentId))
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  res.json({ turns: await loadPlaygroundTurns(res.locals.userId, 'agent', agent._id) })
+})
+
+/** Recomeçar do zero. É a única forma de apagar, e é explícita. */
+app.delete('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  if (!ObjectId.isValid(agentId)) {
+    res.status(400).json({ error: 'Invalid agent id' })
+    return
+  }
+  const agent = await getAgentById(res.locals.userId, new ObjectId(agentId))
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  await clearPlaygroundTurns(res.locals.userId, 'agent', agent._id)
+  res.status(204).end()
+})
+
 app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   const agentId = String(req.params.agentId)
   if (!ObjectId.isValid(agentId)) {
@@ -2598,6 +2708,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
         checkGuardrail(agent.objective, history.slice(0, -1), lastUser.content, agent.provider, auxModelFor(agent), apiKey),
     })
     if (!veredito.inScope) {
+      guardarTurnoDeTeste(res.locals.userId, 'agent', agent._id, lastUser.content, { content: GUARDRAIL_REFUSAL_MESSAGE })
       res.json({ reply: GUARDRAIL_REFUSAL_MESSAGE, refusedByGuardrail: true, handoff: false })
       return
     }
@@ -2646,6 +2757,25 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     environment: 'test',
     createdAt: manualStartedAt,
   }).catch(() => null)
+
+  /**
+   * O balão deste agente enquanto ele responde.
+   *
+   * Conversar É trabalhar, e o mapa não sabia disso: rotina e delegação acendiam o
+   * balão, atender alguém não acendia nada — quem abrisse o escritório enquanto um
+   * agente conversava via um andar parado. O plano (§8.6) sempre pediu "geração de
+   * resposta para canal → responding"; faltava a instrumentação.
+   *
+   * Vale também no teste: quem testa ESTÁ fazendo o agente trabalhar. O estado é
+   * efêmero (TTL na projeção) e não entra em métrica nenhuma.
+   */
+  const balao = createLiveTracker({
+    ownerId: res.locals.userId,
+    agentId: agent._id,
+    floorId: agent.officeId ?? null,
+    rootExecutionId: (manualRootId ?? agent._id).toString(),
+  })
+  balao.report('thinking')
 
   const recordManual = (status: 'succeeded' | 'failed' | 'timeout', u?: { inputTokens: number; outputTokens: number }, okToolCalls = 0, errorKind?: string) => {
     // `modeloDoChat` é resolvido abaixo; este fecho só roda depois da chamada.
@@ -2719,6 +2849,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     productionDelegationDeps(),
     jaPerguntouChat,
   )
+  const ferramentasDoChat = instrumentTools(chatTools, balao)
   const execucaoChat = resolveAgentRun(agent, { context: 'chat', toolRisks: chatTools.map((t) => t.risk ?? 'write') })
   // Quando nada foi escolhido, `model` é null e quem responde é a constante do adapter —
   // a tela precisa do nome dela para não dizer "—" no lugar do modelo que rodou.
@@ -2748,6 +2879,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     )
   }
 
+  balao.report('responding')
   try {
     const interativoChat = await runInteractive({
       reply: ({ objective, knowledge: k, memory: m, history: h, tools, signal, onToolStart }) =>
@@ -2784,7 +2916,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       }),
       knowledge,
       history,
-      tools: chatTools,
+      tools: ferramentasDoChat,
       runConfig: execucaoChat.runConfig,
       output: execucaoChat.definition.output,
     })
@@ -2815,6 +2947,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     // Cobrança, métrica e auditoria também na falha — senão o contrato quebrado sairia de
     // graça nos números e a fatura do provedor não bateria com nada.
     cobrar()
+    await balao.finish('failed')
     recordManual(kind === 'timeout' ? 'timeout' : 'failed', usage, toolCalls.filter((c) => c.ok).length, kind)
     if (kind === 'output_invalid') {
       // Erro controlado, e não um 500 genérico: 502 é a mesma resposta que este arquivo já
@@ -2827,6 +2960,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     throw error
   }
   cobrar()
+  await balao.finish('completed')
   // Only tool calls that actually COMPLETED count as tool actions.
   recordManual('succeeded', usage, toolCalls.filter((c) => c.ok).length)
   let reply = generated
@@ -2836,6 +2970,25 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     handoff = true
     reply = reply.trimStart().slice(HANDOFF_MARKER.length).trim()
   }
+  const diagnosticoChat = {
+    model: execucaoChat.model ?? provedorPadrao,
+    modelChoice: (execucaoChat.modelReason ? 'auto' : agent.model ? 'manual' : 'default') as 'auto' | 'manual' | 'default',
+    modelReason: execucaoChat.modelReason,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    durationMs: Math.max(0, Date.now() - manualStartedAt.getTime()),
+    outputValid: true,
+    ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
+  }
+  guardarTurnoDeTeste(res.locals.userId, 'agent', agent._id, lastUser.content, {
+    content: reply,
+    handoff,
+    toolCalls,
+    diagnostics: diagnosticoChat,
+    ...(pedidoDeEsclarecimento
+      ? { clarification: true, clarificationOptions: pedidoDeEsclarecimento.options ?? [] }
+      : {}),
+  })
   res.json({
     reply,
     refusedByGuardrail: false,
@@ -2851,16 +3004,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
      *
      * Só números e categorias. Nunca prompt, nunca conteúdo de base, nunca credencial.
      */
-    diagnostics: {
-      model: execucaoChat.model ?? provedorPadrao,
-      modelChoice: execucaoChat.modelReason ? 'auto' : agent.model ? 'manual' : 'default',
-      modelReason: execucaoChat.modelReason,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      durationMs: Math.max(0, Date.now() - manualStartedAt.getTime()),
-      outputValid: true,
-      ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
-    },
+    diagnostics: diagnosticoChat,
   })
 })
 
@@ -3832,12 +3976,33 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     }).catch(() => undefined)
   }
 
-  const canalTools = await resolveAgentTools(agent, ownerId, jaPerguntouCanal)
+  /**
+   * O balão do agente que está atendendo AGORA.
+   *
+   * É aqui que mais importa: no canal ninguém está olhando a tela do teste — o mapa é
+   * a única janela para o que está acontecendo. Antes, um agente conversando com um
+   * visitante deixava o andar inteiro parecendo ocioso.
+   */
+  // Quando quem responde é um SETOR, cada agente do time reporta o próprio balão de
+  // dentro do executor. Acender também um aqui duplicaria a linha do coordenador na
+  // projeção — dois registros para um agente só, dizendo a mesma coisa.
+  const balaoCanal = setorDoCanal
+    ? NOOP_TRACKER
+    : createLiveTracker({
+        ownerId,
+        agentId: agent._id,
+        floorId: agent.officeId ?? null,
+        rootExecutionId: (channelRootId ?? widget._id).toString(),
+      })
+  balaoCanal.report('thinking')
+
+  const canalTools = instrumentTools(await resolveAgentTools(agent, ownerId, jaPerguntouCanal), balaoCanal)
   const execucaoCanal = resolveAgentRun(agent, { context: 'chat', toolRisks: canalTools.map((t) => t.risk ?? 'write') })
   const modeloDoCanal = execucaoCanal.model ?? defaultModel(agent.provider)
   const descartadosCanal = describeDropped(execucaoCanal.runConfig)
   if (descartadosCanal) console.info(`[runConfig] canal: ${descartadosCanal}`)
 
+  balaoCanal.report('responding')
   let generatedReply: string
   let pedidoDoCanal: ClarificationRequest | null = null
   // Zerados e mutáveis: o que foi cobrado precisa sobreviver ao caminho de falha. Lançar
@@ -3962,8 +4127,10 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     )
     // Nada é enviado ao visitante: a resposta que não cumpre o contrato não vira mensagem,
     // não é transmitida pelo socket e não entra no histórico da conversa.
+    await balaoCanal.finish('failed')
     throw error
   }
+  await balaoCanal.finish('completed')
   cobrarCanal()
   logToolCalls(widgetId, conversationId, toolCalls).catch((error) =>
     console.error('Failed to log tool calls:', error),

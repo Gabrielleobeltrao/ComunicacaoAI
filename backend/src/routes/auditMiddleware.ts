@@ -42,6 +42,10 @@ const RULES: Rule[] = [
   // recorded as "created an agent", which is exactly backwards.
   R('POST', 'api/agents/:/playground', null, { why: 'test execution, no mutation' }),
   R('POST', 'api/sectors/:/playground', null, { why: 'test execution, no mutation' }),
+  // Apagar a conversa de teste é apagar a TELA do dono, não configuração nem dado de
+  // ninguém: não há o que auditar, e registrar isso só encheria o log.
+  R('DELETE', 'api/agents/:/playground', null, { why: 'clears the owner test chat only' }),
+  R('DELETE', 'api/sectors/:/playground', null, { why: 'clears the owner test chat only' }),
   // Validating a draft only reads it.
   R('POST', 'api/automations/:/validate', null, { why: 'read-only check' }),
   // Runs belong to the EXECUTION history (automation_runs), which is its own

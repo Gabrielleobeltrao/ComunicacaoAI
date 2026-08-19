@@ -23,6 +23,9 @@ import { resolveAgentRun } from './agentDefinition.js'
 import type { ParticipationRole } from './sectorExecutions.js'
 import { clarificationFrom } from './clarify.js'
 import type { ClarificationRequest } from './clarify.js'
+import { coordinatorBriefing } from './sectorBriefing.js'
+import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
+import type { LiveTracker } from './agentLiveTracker.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -195,7 +198,9 @@ export interface SectorLite {
   mode: 'organization' | 'orchestrated' | 'pipeline'
   coordinatorAgentId?: ObjectId | null
   instruction?: string
-  members: { agentId: ObjectId; isDefault?: boolean }[]
+  // `routingDescription` é o que o dono escreveu sobre QUANDO mandar para este membro —
+  // é a melhor frase que existe para o coordenador escolher a quem delegar.
+  members: { agentId: ObjectId; isDefault?: boolean; routingDescription?: string }[]
   stages?: SectorStageLite[]
 }
 
@@ -230,6 +235,14 @@ export interface DelegationDeps {
   // Live map: a delegation leaving is a real transition of the CALLER. Optional so
   // this module stays testable with no database attached.
   reportState?: (input: { ownerId: string; agentId: ObjectId; floorId: ObjectId | null; rootExecutionId: string; state: string; detail?: unknown }) => void
+  /**
+   * O balão de quem está EXECUTANDO — outra coisa do que `reportState`, que marca quem
+   * DELEGOU ("delegando…"). Sem isto, o mapa mostrava o coordenador delegando e o
+   * especialista parado, sendo que o trabalho estava justamente com ele.
+   *
+   * Opcional para este módulo continuar testável sem banco; ausente = não instrumenta.
+   */
+  trackerFor?: (ownerId: string, agentId: ObjectId, floorId: ObjectId | null, rootExecutionId: string) => LiveTracker
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
@@ -501,6 +514,10 @@ async function runAgentTask(
   eventKey?: string,
   sectorId?: ObjectId | null,
   grant?: { sectorId: string; memberIds: string[] } | null,
+  // Quem está na equipe, para o coordenador. Vem separado do pedido de propósito: é
+  // instrução, e NÃO pode entrar na busca de conhecimento — a consulta passaria a casar
+  // com nomes e competências dos membros em vez da pergunta que foi feita.
+  briefing?: string | null,
 ): Promise<TaskRun> {
   // The child runs under THIS execution's event, so anything it delegates chains to
   // the same root (parent/root lineage).
@@ -511,13 +528,20 @@ async function runAgentTask(
     // Only the coordinator receives it (see delegate_to_sector).
     sectorGrant: grant ?? null,
   }
-  const tools = await deps.resolveTools(target, ctx.ownerId, cctx)
+  // O balão deste agente. A raiz é a mesma da cadeia: o mapa não soma execuções
+  // diferentes, e o estado morre com ela (TTL na projeção).
+  const tracker =
+    deps.trackerFor?.(ctx.ownerId, target._id, target.officeId ?? null, (ctx.rootExecutionId ?? ctx.correlationId).toString()) ??
+    NOOP_TRACKER
+  tracker.report('thinking')
+  const tools = instrumentTools(await deps.resolveTools(target, ctx.ownerId, cctx), tracker)
   const apiKey = await deps.apiKeyFor(ctx.ownerId, target.provider)
   // Curated grounding: the executor's own base, plus the sector's ONLY when this run
   // has an explicit sector context (never implied by the agent's home sector).
   // The question includes the objective AND the input, serialized when it is an
   // object — a delegation that hands over JSON used to retrieve nothing.
   const query = buildRetrievalQuery({ objective, input })
+  if (query && deps.retrieveContext) tracker.report('reading_knowledge')
   // A rejected promise is 'unavailable', not "no knowledge": the two must never be
   // confused, and only the first one is a reason to refuse.
   const retrieved = query && deps.retrieveContext
@@ -529,6 +553,10 @@ async function runAgentTask(
   // The target's own rule, honoured wherever it runs: a delegated agent that must
   // answer from curated knowledge does not answer without it, and nothing is spent.
   if (target.requireGrounding && grounding !== 'ok') {
+    // Ele parou, e parou por uma razão. `reportNow` porque o estado precisa estar
+    // gravado antes do `throw` — senão a corrida deixa o balão "pensando" para sempre.
+    await tracker.reportNow('blocked')
+    await tracker.finish('failed')
     throw new GroundingRequiredError(grounding)
   }
   // Os endereços que o dono marcou para entrar sozinhos também valem aqui: delegação e
@@ -559,31 +587,42 @@ async function runAgentTask(
    */
   const execucao = resolveAgentRun(target, { context: 'automation', toolRisks: tools.map((t) => t.risk ?? 'write') })
 
-  const res = await deps.runTask({
-    // O objetivo é o do ALVO; o pedido delegado é a instrução da tarefa. Trocar os dois
-    // faria o agente esquecer para que ele existe e virar executor do pedido da vez.
-    objective: target.objective || objective,
-    // Instruções do agente primeiro, pedido depois: as dele valem para todo trabalho,
-    // o pedido é o do momento.
-    instructions: [target.instructions?.trim(), objective?.trim()].filter(Boolean).join('\n\n'),
-    // Função e limites, que antes não chegavam por este caminho.
-    definition: { role: target.role ?? null, constraints: target.constraints ?? null },
-    // Passages are untrusted DATA (agentRuntime marks them as such), never system
-    // instructions.
-    context: context.length ? context : undefined,
-    input,
-    provider: target.provider,
-    // Resolvido: "Automático" guarda um marcador, não um id de modelo.
-    model: execucao.model,
-    apiKey,
-    tools,
-    // What the target promised to receive and produce, in its own words.
-    contracts: { input: target.inputContract, output: target.outputContract },
-    output: { format: effectiveFormat, jsonSchema: effectiveFormat === 'json' ? (target.outputJsonSchema ?? null) : null },
-    runConfig: execucao.runConfig,
-    enableCaching: execucao.enableCaching,
-    limits: { timeoutMs: TASK_TIMEOUT_MS, maxOutputChars: MAX_OUTPUT_CHARS },
-  })
+  tracker.report('responding')
+  let res: Awaited<ReturnType<typeof deps.runTask>>
+  try {
+    res = await deps.runTask({
+      // O objetivo é o do ALVO; o pedido delegado é a instrução da tarefa. Trocar os dois
+      // faria o agente esquecer para que ele existe e virar executor do pedido da vez.
+      objective: target.objective || objective,
+      // Instruções do agente primeiro, pedido depois: as dele valem para todo trabalho,
+      // o pedido é o do momento.
+      instructions: [target.instructions?.trim(), briefing?.trim(), objective?.trim()].filter(Boolean).join('\n\n'),
+      // Função e limites, que antes não chegavam por este caminho.
+      definition: { role: target.role ?? null, constraints: target.constraints ?? null },
+      // Passages are untrusted DATA (agentRuntime marks them as such), never system
+      // instructions.
+      context: context.length ? context : undefined,
+      input,
+      provider: target.provider,
+      // Resolvido: "Automático" guarda um marcador, não um id de modelo.
+      model: execucao.model,
+      apiKey,
+      tools,
+      // What the target promised to receive and produce, in its own words.
+      contracts: { input: target.inputContract, output: target.outputContract },
+      output: { format: effectiveFormat, jsonSchema: effectiveFormat === 'json' ? (target.outputJsonSchema ?? null) : null },
+      runConfig: execucao.runConfig,
+      enableCaching: execucao.enableCaching,
+        limits: { timeoutMs: TASK_TIMEOUT_MS, maxOutputChars: MAX_OUTPUT_CHARS },
+    })
+  } catch (erro) {
+    // Nenhuma execução pode terminar num estado ativo: sem isto, um agente que falhou
+    // continuaria "pensando" no mapa até o TTL expirar.
+    const mensagem = erro instanceof Error ? erro.message : ''
+    await tracker.finish(/cancel/i.test(mensagem) ? 'canceled' : 'failed')
+    throw erro
+  }
+  await tracker.finish('completed')
   ctx.budget.tokensSpent += res.usage.inputTokens + res.usage.outputTokens
   const telemetry: Record<string, string | number | boolean> = {
     grounding,
@@ -1033,13 +1072,46 @@ export async function executeSectorTeam(
   if (inChain(coordinatorId)) throw new Error('ciclo de delegação: o coordenador já está na cadeia')
   const coordinator = await deps.loadAgent(ctx.ownerId, coordinatorId)
   if (!coordinator) throw new Error('coordenador não encontrado')
-  const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
   // O time que o coordenador alcança durante ESTA execução: os membros do próprio
   // setor, menos ele. Nada global é aberto, e o filho não herda o direito.
+  const outros = sector.members.filter((m) => m.agentId.toString() !== coordinator._id.toString())
   const grant = {
     sectorId: sector._id.toString(),
-    memberIds: sector.members.map((m) => m.agentId.toString()).filter((id) => id !== coordinator._id.toString()),
+    memberIds: outros.map((m) => m.agentId.toString()),
   }
+
+  /**
+   * A equipe deixa de ser algo a descobrir.
+   *
+   * O direito de chamar os membros já era concedido; a informação de que eles existem,
+   * não. O coordenador recebia o próprio objetivo e o pedido — e um modelo que não sabe
+   * que tem equipe responde sozinho. Como coordenador quase nunca tem base própria, ele
+   * respondia sozinho e errado, com o dado na base de um colega do mesmo setor.
+   *
+   * Agora a lista vai escrita, com id e função de cada um. Isso também POUPA: sem ela,
+   * chegar a um especialista custava uma chamada de descoberta antes da delegação.
+   */
+  const equipe = (await Promise.all(outros.map((m) => deps.loadAgent(ctx.ownerId, m.agentId).catch(() => null))))
+    .map((agente, i) =>
+      agente
+        ? {
+            agentId: agente._id.toString(),
+            name: agente.name,
+            routingDescription: outros[i].routingDescription ?? null,
+            role: agente.role ?? null,
+            objective: agente.objective ?? null,
+            capabilities: agente.capabilities ?? null,
+          }
+        : null,
+    )
+    .filter((m): m is NonNullable<typeof m> => m !== null)
+  if (equipe.length === 0) {
+    // Sem isto o teste mostrava um único participante e parecia quebrado. Está
+    // funcionando: não há mais ninguém no setor para acionar.
+    warnings.push('setor orquestrado sem outros membros: o coordenador respondeu sozinho')
+  }
+  const briefing = coordinatorBriefing(sector.name, equipe)
+  const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
 
   /**
    * A rede de segurança do conhecimento.
@@ -1075,7 +1147,7 @@ export async function executeSectorTeam(
     coordinator,
     instruction,
     opts.input,
-    (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant),
+    (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant, briefing),
     participationOf('coordinator'),
     { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
   )

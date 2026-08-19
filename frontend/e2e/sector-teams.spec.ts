@@ -481,7 +481,9 @@ const RESPOSTA_DO_TIME = {
 
 test('o teste do setor mostra quem executou, com modelo, tokens e tempo', async ({ page }) => {
   await stubApi(page, { sectors: [LEGACY_SECTOR] })
-  await page.route('**/api/sectors/*/playground', (r) => r.fulfill({ json: RESPOSTA_DO_TIME }))
+  await page.route('**/api/sectors/*/playground', (r) =>
+    r.request().method() === 'POST' ? r.fulfill({ json: RESPOSTA_DO_TIME }) : r.fulfill({ json: { turns: [] } }),
+  )
   await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}/execucoes`)
 
   await page.getByPlaceholder('Mensagem do visitante...').fill('quanto valia BBSE3?')
@@ -504,7 +506,9 @@ test('o teste do setor mostra quem executou, com modelo, tokens e tempo', async 
 
 test('o teste diz de qual documento a resposta veio, e como a busca terminou', async ({ page }) => {
   await stubApi(page, { sectors: [LEGACY_SECTOR] })
-  await page.route('**/api/sectors/*/playground', (r) => r.fulfill({ json: RESPOSTA_DO_TIME }))
+  await page.route('**/api/sectors/*/playground', (r) =>
+    r.request().method() === 'POST' ? r.fulfill({ json: RESPOSTA_DO_TIME }) : r.fulfill({ json: { turns: [] } }),
+  )
   await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}/execucoes`)
 
   await page.getByPlaceholder('Mensagem do visitante...').fill('quanto valia BBSE3?')
@@ -517,7 +521,9 @@ test('o teste diz de qual documento a resposta veio, e como a busca terminou', a
 test('busca indisponível não é dita como "não existe"', async ({ page }) => {
   await stubApi(page, { sectors: [LEGACY_SECTOR] })
   await page.route('**/api/sectors/*/playground', (r) =>
-    r.fulfill({ json: { ...RESPOSTA_DO_TIME, grounding: 'unavailable', sources: [] } }),
+    r.request().method() === 'POST'
+      ? r.fulfill({ json: { ...RESPOSTA_DO_TIME, grounding: 'unavailable', sources: [] } })
+      : r.fulfill({ json: { turns: [] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}/execucoes`)
 

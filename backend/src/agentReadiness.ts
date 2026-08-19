@@ -64,6 +64,9 @@ export interface AgentWiring {
   collaboratorCount: number // agents/sectors this agent may call (selected ones)
   toolCount: number // custom HTTP tools + enabled built-in apps
   knowledgeCount: number
+  // Sites e feeds que este agente consulta — os dele (sob demanda) e os das rotinas.
+  // Conta como fonte: um pesquisador com um endereço cadastrado TEM onde pesquisar.
+  sourceCount: number
   deliveryConfigured: boolean // a real destination for a communicator
 }
 
@@ -74,6 +77,7 @@ export const EMPTY_WIRING: AgentWiring = {
   collaboratorCount: 0,
   toolCount: 0,
   knowledgeCount: 0,
+  sourceCount: 0,
   deliveryConfigured: false,
 }
 
@@ -225,14 +229,18 @@ export function agentReadiness(agent: Pick<Agent, 'preset' | 'objective' | 'dele
       break
     case 'researcher':
       // Knowledge counts as a source: an agent that only reads a curated base is
-      // still able to answer.
-      if (wiring.toolCount === 0 && wiring.knowledgeCount === 0) issues.push(issue('no_research_source'))
+      // still able to answer. Um SITE cadastrado também: o dono põe o endereço em "Como
+      // trabalha", o agente ganha a ferramenta de consulta, e mesmo assim a tela dizia
+      // que ele não tinha nada para consultar — negando o que ele acabou de configurar.
+      if (wiring.toolCount === 0 && wiring.knowledgeCount === 0 && wiring.sourceCount === 0) issues.push(issue('no_research_source'))
       break
     case 'operator':
       if (wiring.toolCount === 0) issues.push(issue('no_tool'))
       break
     case 'monitor':
-      if (wiring.toolCount === 0 && wiring.knowledgeCount === 0) issues.push(issue('no_monitor_source'))
+      // Monitorar É olhar uma fonte: para este preset o site é o caso principal, não a
+      // exceção.
+      if (wiring.toolCount === 0 && wiring.knowledgeCount === 0 && wiring.sourceCount === 0) issues.push(issue('no_monitor_source'))
       else if (wiring.routineCount === 0) issues.push(issue('no_monitor_source'))
       break
     case 'communicator':

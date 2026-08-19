@@ -25,6 +25,7 @@ import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from '.
 import type { DelegationContext, DelegationDeps } from './delegation.js'
 import { TEAM_TOOL_NAMES } from './delegation.js'
 import { livePassagesFor } from './automations/liveSources.js'
+import { createLiveTracker } from './agentLiveTracker.js'
 
 // The tool list an agent runs with in a delegation-aware context: its own tools,
 // the capability_missing escape hatch (every task agent), plus the delegation tools
@@ -90,6 +91,9 @@ export function productionDelegationDeps(): DelegationDeps {
     startSectorExecution: (input) => startSectorExecution(input),
     finishSectorExecution: (executionKey, outcome) => finishSectorExecution(executionKey, outcome),
     // Fire-and-forget: telemetry never delays or breaks a delegation.
+    // O balão de quem EXECUTA. `reportState` acima é o de quem DELEGA — os dois
+    // existem porque são fatos diferentes acontecendo ao mesmo tempo.
+    trackerFor: (ownerId, agentId, floorId, rootExecutionId) => createLiveTracker({ ownerId, agentId, floorId, rootExecutionId }),
     reportState: (input) => {
       void reportAgentState({
         ownerId: input.ownerId,

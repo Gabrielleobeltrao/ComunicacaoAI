@@ -269,6 +269,8 @@ export interface AgentWiring {
   collaboratorCount: number
   toolCount: number
   knowledgeCount: number
+  // Sites e feeds cadastrados — do agente (sob demanda) e das rotinas.
+  sourceCount: number
   deliveryConfigured: boolean
 }
 export interface ReadinessIssue {

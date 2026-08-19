@@ -583,6 +583,9 @@ test('a pergunta chega com as alternativas ESCRITAS, para qualquer canal', async
   const enviados: Record<string, unknown>[] = []
   await stub(page)
   await page.route('**/api/agents/*/playground', (r) => {
+    // A tela também LÊ esta rota ao abrir (a conversa de teste fica guardada). Só o
+    // envio conta como envio.
+    if (r.request().method() !== 'POST') return r.fulfill({ json: { turns: [] } })
     enviados.push(JSON.parse(r.request().postData() ?? '{}'))
     return r.fulfill({ json: PERGUNTA_DO_AGENTE })
   })
@@ -614,7 +617,9 @@ test('a pergunta chega com as alternativas ESCRITAS, para qualquer canal', async
 test('resposta comum não traz lista de alternativa nenhuma', async ({ page }) => {
   await stub(page)
   await page.route('**/api/agents/*/playground', (r) =>
-    r.fulfill({ json: { reply: 'Aqui está.', handoff: false, toolCalls: [], diagnostics: { model: 'x' } } }),
+    r.request().method() === 'POST'
+      ? r.fulfill({ json: { reply: 'Aqui está.', handoff: false, toolCalls: [], diagnostics: { model: 'x' } } })
+      : r.fulfill({ json: { turns: [] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/atividade`)
 

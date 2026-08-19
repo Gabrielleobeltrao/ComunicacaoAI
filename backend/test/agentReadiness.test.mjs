@@ -92,6 +92,10 @@ test('researcher: needs a source (tool or knowledge)', () => {
   assert.equal(r.issues[0].action, 'Adicionar ferramenta')
   assert.equal(agentReadiness(agent({ preset: 'researcher' }), wiring({ toolCount: 1 })).ready, true)
   assert.equal(agentReadiness(agent({ preset: 'researcher' }), wiring({ knowledgeCount: 3 })).ready, true)
+  // Um SITE cadastrado é fonte. O dono põe o endereço em "Como trabalha", o agente ganha
+  // a ferramenta de consulta — e a tela dizia que ele não tinha nada para consultar,
+  // negando o que acabara de ser configurado.
+  assert.equal(agentReadiness(agent({ preset: 'researcher' }), wiring({ sourceCount: 1 })).ready, true)
 })
 
 test('operator: needs a tool, knowledge is not enough', () => {
@@ -107,6 +111,8 @@ test('monitor: needs a source AND a routine', () => {
   assert.equal(noRoutine.ready, false)
   assert.equal(noRoutine.issues[0].action, 'Criar rotina')
   assert.equal(agentReadiness(agent({ preset: 'monitor' }), wiring({ toolCount: 1, routineCount: 1 })).ready, true)
+  // Monitorar É olhar uma fonte: para este preset o site é o caso principal.
+  assert.equal(agentReadiness(agent({ preset: 'monitor' }), wiring({ sourceCount: 1, routineCount: 1 })).ready, true)
 })
 
 test('communicator: only complains when it was set up to send', () => {

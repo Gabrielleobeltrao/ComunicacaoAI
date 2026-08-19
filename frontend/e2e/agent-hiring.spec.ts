@@ -131,6 +131,17 @@ async function stubApi(page: Page, opts: { overview?: Record<string, unknown> } 
   await page.route('**/api/auth/**', (r) => r.fulfill({ json: { session: { id: 's1', userId: 'u1', expiresAt: new Date(Date.now() + 864e5).toISOString(), token: 't' }, user } }))
 }
 
+// Escolher o papel: os cinco principais estão à vista; Secretário, Monitor e
+// Personalizado ficam atrás de "Outros perfis", e o teste abre a seção como uma pessoa
+// abriria — em vez de a tela deixar tudo aberto só para o teste ser mais curto.
+const escolherPapel = async (page: Page, preset: string) => {
+  const cartao = page.getByTestId(`role-${preset}`)
+  if (!(await cartao.isVisible().catch(() => false))) {
+    await page.getByTestId('role-picker-others-toggle').click()
+  }
+  await cartao.click()
+}
+
 const openWizard = async (page: Page) => {
   await page.goto(`/floors/${FLOOR_ID}/agents`)
   await page.getByRole('button', { name: 'Contratar agente' }).first().click()
@@ -146,10 +157,42 @@ test('the wizard has exactly three steps', async ({ page }) => {
   await expect(page.getByText('4.', { exact: false })).toHaveCount(0)
 })
 
+// --- a escolha do papel, por verbo -----------------------------------------------------
+//
+// Oito cargos lado a lado obrigavam a ler os oito para descobrir que a diferença entre
+// dois deles é quem chama quem. "Analista" e "Pesquisador" soam parecidos, e nada no nome
+// diz que um busca e o outro conclui.
+
+test('a primeira escolha é o que ele FAZ, com cinco opções à vista', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  const escolhas = page.getByTestId('role-picker')
+  for (const verbo of ['Coordena', 'Busca', 'Analisa', 'Age', 'Escreve']) {
+    await expect(escolhas.getByText(verbo, { exact: false }).first()).toBeVisible()
+  }
+  // O cargo continua junto: quem já conhece o sistema procura por ele.
+  await expect(escolhas.getByText('Pesquisador', { exact: false }).first()).toBeVisible()
+  // Casos específicos ficam recolhidos — mas não escondidos.
+  await expect(page.getByTestId('role-monitor')).toHaveCount(0)
+  await page.getByTestId('role-picker-others-toggle').click()
+  await expect(page.getByTestId('role-monitor')).toBeVisible()
+  await expect(page.getByTestId('role-secretary')).toBeVisible()
+  await expect(page.getByTestId('role-custom')).toBeVisible()
+})
+
+test('escolher pelo verbo leva às perguntas daquele papel', async ({ page }) => {
+  // O agrupamento é de apresentação: o que muda atrás dele continua o mesmo.
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'operator')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await expect(page.getByText('Ação que ele executa')).toBeVisible()
+})
+
 test('a manager is asked about colleagues, never about a research topic', async ({ page }) => {
   await stubApi(page)
   await openWizard(page)
-  await page.getByText('Gerente / Orquestrador').click()
+  await escolherPapel(page, 'manager')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await expect(page.getByTestId('work-step')).toBeVisible()
   await expect(page.getByText('Quem ele pode acionar')).toBeVisible()
@@ -159,7 +202,7 @@ test('a manager is asked about colleagues, never about a research topic', async 
 test('a researcher is asked for a topic and format, not for colleagues', async ({ page }) => {
   await stubApi(page)
   await openWizard(page)
-  await page.getByText('Pesquisador', { exact: true }).click()
+  await escolherPapel(page, 'researcher')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await expect(page.getByText('Tema que ele pesquisa')).toBeVisible()
   await expect(page.getByText('Formato da resposta')).toBeVisible()
@@ -169,11 +212,11 @@ test('a researcher is asked for a topic and format, not for colleagues', async (
 test('a communicator gets a tone field; an analyst does not', async ({ page }) => {
   await stubApi(page)
   await openWizard(page)
-  await page.getByText('Comunicador', { exact: true }).click()
+  await escolherPapel(page, 'communicator')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await expect(page.getByText('Tom da escrita')).toBeVisible()
   await page.getByRole('button', { name: 'Voltar' }).click()
-  await page.getByText('Analista', { exact: true }).click()
+  await escolherPapel(page, 'analyst')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await expect(page.getByText('Tom da escrita')).toHaveCount(0)
   await expect(page.getByText('Dados que ele recebe')).toBeVisible()
@@ -197,7 +240,7 @@ test('no technical jargon is shown anywhere in the wizard', async ({ page }) => 
 test('hiring a monitor hands over a checklist instead of pretending it is done', async ({ page }) => {
   await stubApi(page)
   await openWizard(page)
-  await page.getByText('Monitor', { exact: true }).click()
+  await escolherPapel(page, 'monitor')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Contratar agente' }).last().click()
@@ -215,7 +258,7 @@ test('hiring a monitor hands over a checklist instead of pretending it is done',
 test('hiring an analyst closes straight away (nothing pending)', async ({ page }) => {
   await stubApi(page)
   await openWizard(page)
-  await page.getByText('Analista', { exact: true }).click()
+  await escolherPapel(page, 'analyst')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Contratar agente' }).last().click()
@@ -226,7 +269,7 @@ test('the wizard fits a phone screen without horizontal scroll', async ({ page }
   await page.setViewportSize({ width: 390, height: 844 })
   await stubApi(page)
   await openWizard(page)
-  await page.getByText('Pesquisador', { exact: true }).click()
+  await escolherPapel(page, 'researcher')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await expect(page.getByTestId('work-step')).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
@@ -293,7 +336,7 @@ test('a legacy agent_only agent opens normally', async ({ page }) => {
 test('every pendency in the handover is a button to the exact section', async ({ page }) => {
   await stubApi(page)
   await openWizard(page)
-  await page.getByText('Monitor', { exact: true }).click()
+  await escolherPapel(page, 'monitor')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Contratar agente' }).last().click()
@@ -311,7 +354,7 @@ test('a manager with nobody to call is still pending after hiring', async ({ pag
   // The floor has no other agent and no executable sector: 'all' reaches nobody.
   await stubApi(page)
   await openWizard(page)
-  await page.getByText('Gerente / Orquestrador').click()
+  await escolherPapel(page, 'manager')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Contratar agente' }).last().click()
@@ -326,7 +369,7 @@ test('a manager with nobody to call is still pending after hiring', async ({ pag
 test('a specialist is hired without any production trigger', async ({ page }) => {
   await stubApi(page)
   await openWizard(page)
-  await page.getByText('Pesquisador', { exact: true }).click()
+  await escolherPapel(page, 'researcher')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Contratar agente' }).last().click()
@@ -478,7 +521,7 @@ test('the readiness action opens the collaboration editor itself', async ({ page
 test('the hire checklist lands on the collaboration editor', async ({ page }) => {
   await stubCollaboration(page)
   await openWizard(page)
-  await page.getByText('Gerente / Orquestrador').click()
+  await escolherPapel(page, 'manager')
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByRole('button', { name: 'Contratar agente' }).last().click()

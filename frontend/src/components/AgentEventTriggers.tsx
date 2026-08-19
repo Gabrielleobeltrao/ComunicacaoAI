@@ -64,7 +64,7 @@ function CopyButton({ value, children, testId }: { value: string; children: stri
 // comes back: closing this card is the user saying they saved it.
 function SecretOnce({ secret, onDismiss }: { secret: string; onDismiss: () => void }) {
   return (
-    <Card padding="14px 16px" style={{ display: 'grid', gap: 8, borderColor: 'var(--accent-500)' }} data-testid="trigger-secret">
+    <Card padding="14px 16px" style={{ display: 'grid', gap: 8, borderColor: 'var(--intent-brand)' }} data-testid="trigger-secret">
       <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: 'var(--text-heading)' }}>Guarde a credencial agora</p>
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
         Ela é exibida uma única vez. Use-a para assinar o corpo da requisição (HMAC-SHA256) no cabeçalho <strong>x-signature</strong>. Se perder, gere outra — a anterior deixa de valer.

@@ -16,7 +16,7 @@ import { test, after, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
-import { MongoClient } from 'mongodb'
+import { MongoClient, ObjectId } from 'mongodb'
 import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
 const RAIZ = new URL('..', import.meta.url).pathname
@@ -339,4 +339,103 @@ test('a execução do chat grava QUAL modelo rodou, e não só quantos tokens', 
   assert.ok(evento, 'o evento precisa dizer em qual modelo a execução rodou')
   assert.notEqual(evento.model, 'auto', 'o marcador não é nome de modelo')
   assert.ok(evento.inputTokens > 0)
+})
+
+// --- a conversa de teste que fica guardada -------------------------------------------------
+//
+// O Playground apagava tudo ao trocar de aba, e voltar ao ponto onde se estava exigia
+// repetir as mesmas perguntas — o que custa tokens de verdade. O que se guarda é a TELA:
+// a memória do agente continua fora do teste.
+
+const esperarTurnos = async (agenteId, quantos, limiteMs = 8000) => {
+  const fim = Date.now() + limiteMs
+  let corpo = { turns: [] }
+  while (Date.now() < fim) {
+    const res = await fetch(`${base}/api/agents/${agenteId}/playground`, { headers: comSessao() })
+    corpo = await res.json()
+    if ((corpo.turns ?? []).length >= quantos) break
+    await new Promise((r) => setTimeout(r, 150))
+  }
+  return corpo.turns ?? []
+}
+
+test('a conversa de teste é guardada, devolvida e só some quando se pede', async () => {
+  const agente = await criarAgente({ name: 'Agente que lembra da tela' })
+
+  const envio = await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'qual foi o último provento de BBSE3?' }] }),
+  })
+  assert.ok(envio.ok, `playground devolveu ${envio.status}`)
+  const resposta = await envio.json()
+
+  // A gravação é disparada sem `await`: quem pergunta não espera pelo histórico.
+  const turnos = await esperarTurnos(agente._id, 2)
+  assert.equal(turnos.length, 2, 'a pergunta e a resposta ficam guardadas')
+  assert.equal(turnos[0].role, 'user')
+  assert.equal(turnos[0].content, 'qual foi o último provento de BBSE3?')
+  assert.equal(turnos[1].role, 'assistant')
+  assert.equal(turnos[1].content, resposta.reply, 'o que foi guardado é o que a tela mostrou')
+  // O custo também: sem ele a conversa recarregada mentiria por omissão sobre o preço.
+  assert.equal(typeof turnos[1].diagnostics?.model, 'string')
+
+  // Segundo envio: acrescenta, não substitui.
+  const segundo = await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({
+      messages: [
+        { role: 'user', content: 'qual foi o último provento de BBSE3?' },
+        { role: 'assistant', content: resposta.reply },
+        { role: 'user', content: 'e o anterior?' },
+      ],
+    }),
+  })
+  assert.ok(segundo.ok)
+  const depois = await esperarTurnos(agente._id, 4)
+  assert.equal(depois.length, 4)
+  assert.equal(depois[2].content, 'e o anterior?')
+
+  // Limpar é explícito, e é a única forma de apagar.
+  const apagou = await fetch(`${base}/api/agents/${agente._id}/playground`, { method: 'DELETE', headers: comSessao() })
+  assert.equal(apagou.status, 204)
+  const vazio = await fetch(`${base}/api/agents/${agente._id}/playground`, { headers: comSessao() })
+  assert.deepEqual((await vazio.json()).turns, [])
+})
+
+test('a conversa de teste é do dono do agente, e de mais ninguém', async () => {
+  const agente = await criarAgente({ name: 'Agente de outra pessoa' })
+  // Sem sessão: nem ler nem apagar.
+  const semSessao = await fetch(`${base}/api/agents/${agente._id}/playground`)
+  assert.equal(semSessao.status, 401)
+  const apagar = await fetch(`${base}/api/agents/${agente._id}/playground`, { method: 'DELETE' })
+  assert.equal(apagar.status, 401)
+})
+
+// --- o balão do agente que conversa --------------------------------------------------------
+//
+// Rotina e delegação acendiam o balão; conversar não acendia nada. Quem abrisse o mapa
+// enquanto um agente atendia via um andar parado — e o plano (§8.6) sempre pediu
+// "geração de resposta para canal → responding". O estado é efêmero e não entra em
+// métrica: ele existe para a pessoa ver que o agente está trabalhando.
+
+test('conversar acende o balão do agente e o deixa em estado terminal', async () => {
+  const agente = await criarAgente({ name: 'Agente que aparece no mapa' })
+
+  const antes = await cliente.db().collection('agent_live_states').countDocuments({})
+  const res = await fetch(`${base}/api/agents/${agente._id}/playground`, {
+    method: 'POST',
+    headers: comSessao(),
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'oi' }] }),
+  })
+  assert.ok(res.ok, `playground devolveu ${res.status}`)
+
+  const linhas = await cliente.db().collection('agent_live_states').find({ agentId: new ObjectId(agente._id) }).toArray()
+  assert.ok(linhas.length > antes || linhas.length > 0, 'a conversa precisa ter deixado um estado')
+  const linha = linhas.at(-1)
+  // Terminal: uma execução que acabou não pode ficar "pensando" no mapa até o TTL.
+  assert.ok(['completed', 'failed', 'canceled'].includes(linha.state), `estado final inesperado: ${linha.state}`)
+  // E ele expira sozinho — nenhum agente fica preso por causa de um processo que morreu.
+  assert.ok(linha.expiresAt instanceof Date)
 })

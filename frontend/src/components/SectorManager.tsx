@@ -45,8 +45,11 @@ export function SectorManager({ sectors, loading, agents, floorId, onChange, onA
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))', gap: 14 }}>
           {sectors.map((sector) => {
-            const defaultMember = sector.members.find((m) => m.isDefault)
-            const defaultName = (defaultMember && agentNameById.get(defaultMember.agentId)) || null
+            // Quem conduz a equipe. O coordenador escolhido manda; "padrão" é só o
+            // substituto de quando ninguém foi escolhido — e mostrar os dois fazia
+            // parecer que existe um agente privilegiado que responde por todos.
+            const conduzId = sector.coordinatorAgentId ?? sector.members.find((m) => m.isDefault)?.agentId
+            const conduzNome = (conduzId && agentNameById.get(conduzId)) || null
             const names = sector.members.map((m) => agentNameById.get(m.agentId) ?? 'removido')
             const count = sector.members.length
             const modeLabel = SECTOR_MODE_LABEL[normalizeSectorMode(sector.mode)].title
@@ -89,7 +92,7 @@ export function SectorManager({ sectors, loading, agents, floorId, onChange, onA
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
                       <Stat label="Agentes" value={String(count)} />
                       <Stat label="Modo" value={modeLabel} />
-                      <Stat label="Padrão" value={defaultName ?? '—'} />
+                      <Stat label={normalizeSectorMode(sector.mode) === 'pipeline' ? 'Começa em' : 'Coordena'} value={conduzNome ?? '—'} />
                     </div>
                   </div>
                 </Card>

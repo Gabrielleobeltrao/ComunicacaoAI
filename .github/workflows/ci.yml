@@ -76,7 +76,22 @@ jobs:
       # backend/scripts/run-tests.mjs — o runner do GitHub é menor que a máquina
       # de quem desenvolve, e a suíte inteira em paralelo pedia mais do que ele tem.
       - name: Backend tests
-        run: npm test -w backend
+        # `shell: bash` traz `pipefail` junto: sem ele o `tee` engoliria a falha e o
+        # passo ficaria verde com a suíte vermelha.
+        shell: bash
+        run: npm test -w backend 2>&1 | tee /tmp/backend-tests.log
+
+      # O log completo do job exige permissão de administrador; as anotações são
+      # públicas. Sem isto, uma falha que só acontece no runner é uma falha que não dá
+      # para ler — e foi exatamente o que aconteceu.
+      - name: "Backend tests: diagnóstico da falha"
+        if: failure()
+        shell: bash
+        run: |
+          grep -E '^not ok|^ *error:|^ *code:|failureType|AssertionError|Error:' /tmp/backend-tests.log \
+            | head -40 \
+            | while IFS= read -r linha; do echo "::error::${linha:0:400}"; done
+          echo "::error::(as linhas acima saem do relatório TAP do node --test)"
 
       - name: Frontend unit tests
         run: npm test -w frontend
