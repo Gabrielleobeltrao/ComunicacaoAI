@@ -44,6 +44,28 @@ const VAZIAS = new Set([
 
 const RE_DATA_BR = /\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/g
 const RE_DATA_ISO = /\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g
+// "4 de agosto", "6 de agosto de 2026" — como uma pessoa escreve.
+const RE_DATA_PT = /\b(\d{1,2})\s+de\s+([\p{L}]{3,12})(?:\s+de\s+(\d{4}))?/giu
+// "Aug 4, 2026", "August 4 2026" — como as tabelas exportadas escrevem.
+const RE_DATA_EN = /\b([\p{L}]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})?\b/giu
+
+// Os doze meses nas escritas que aparecem de verdade. O índice é o mês - 1.
+const MES_PT = ['janeiro','fevereiro','marco','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro']
+const MES_EN = ['january','february','march','april','may','june','july','august','september','october','november','december']
+const ABREV_EN = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+const ABREV_PT = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez']
+
+/** O número do mês (1-12) a partir do nome, em português ou inglês, inteiro ou abreviado. */
+export function mesDoNome(nome: string): number | null {
+  const n = normalize(nome).replace(/\.$/, '')
+  for (const tabela of [MES_PT, MES_EN, ABREV_EN, ABREV_PT]) {
+    const i = tabela.indexOf(n)
+    if (i >= 0) return i + 1
+  }
+  // "sept" é comum e não está em nenhuma das tabelas.
+  if (n === 'sept') return 9
+  return null
+}
 // Um código alfanumérico: tem letra E dígito, como BBSE3, PETR4, NF-1234, ISO9001.
 const RE_CODIGO = /\b(?=[a-z0-9]*[a-z])(?=[a-z0-9]*\d)[a-z0-9]{3,}\b/gi
 // Um número com casas decimais, com vírgula ou ponto: 36,42 / 36.42 / 1.234,56.
@@ -58,10 +80,23 @@ const pad = (n: string): string => (n.length === 1 ? `0${n}` : n)
  * "10/08/2026" e "2026-08-10" são o mesmo dia, e quem pergunta de um jeito costuma ter
  * guardado do outro. Sem isto, a base responderia vazia por causa de uma barra.
  */
-export function expandirData(dia: string, mes: string, ano: string): string[] {
+export function expandirData(dia: string, mes: string, ano?: string): string[] {
   const d = pad(dia)
   const m = pad(mes)
-  return [`${d}/${m}/${ano}`, `${ano}-${m}-${d}`, `${d}-${m}-${ano}`, `${Number(dia)}/${Number(mes)}/${ano}`]
+  const n = Number(dia)
+  const i = Number(mes) - 1
+  if (i < 0 || i > 11) return []
+  const formas: string[] = []
+  if (ano) {
+    formas.push(`${d}/${m}/${ano}`, `${ano}-${m}-${d}`, `${d}-${m}-${ano}`, `${n}/${Number(mes)}/${ano}`)
+    // A escrita das tabelas exportadas — que é justamente a que o dono carrega na base.
+    formas.push(`${ABREV_EN[i]} ${n}, ${ano}`, `${ABREV_EN[i]} ${n} ${ano}`, `${MES_EN[i]} ${n}, ${ano}`)
+    formas.push(`${n} de ${MES_PT[i]} de ${ano}`)
+  }
+  // Sem ano, a vírgula e o espaço são o que impede "4" de casar dentro de "40": as duas
+  // escritas existem ("Aug 4, 2026" e "Aug 4 2026"), então as duas entram.
+  formas.push(`${ABREV_EN[i]} ${n},`, `${ABREV_EN[i]} ${n} `, `${n} de ${MES_PT[i]}`)
+  return formas
 }
 
 /**
@@ -83,6 +118,16 @@ export function extractTerms(query: string, max = 24): LexicalTerm[] {
 
   for (const m of query.matchAll(RE_DATA_BR)) for (const forma of expandirData(m[1], m[2], m[3])) push(forma, 4)
   for (const m of query.matchAll(RE_DATA_ISO)) for (const forma of expandirData(m[3], m[2], m[1])) push(forma, 4)
+  // "6 de agosto de 2026" e "Aug 6, 2026" são a mesma data que "06/08/2026", e sem isto
+  // uma pergunta escrita por gente nunca encontrava a linha de uma tabela em inglês.
+  for (const m of query.matchAll(RE_DATA_PT)) {
+    const mes = mesDoNome(m[2])
+    if (mes) for (const forma of expandirData(m[1], String(mes), m[3])) push(forma, 4)
+  }
+  for (const m of query.matchAll(RE_DATA_EN)) {
+    const mes = mesDoNome(m[1])
+    if (mes) for (const forma of expandirData(m[2], String(mes), m[3])) push(forma, 4)
+  }
   for (const m of query.matchAll(RE_CODIGO)) push(m[0], 3)
   for (const m of query.matchAll(RE_NUMERO)) push(m[0], 3)
   for (const m of query.matchAll(RE_PALAVRA)) {
@@ -124,6 +169,35 @@ export function scoreText(texto: string, termos: LexicalTerm[]): number {
 }
 
 /**
+ * A nota de um DOCUMENTO, onde o título vale como evidência específica.
+ *
+ * `scoreText` exige um termo específico — código, data, número — para passar do piso, e a
+ * razão é boa: um trecho que só compartilha o assunto não é resposta. Mas isso deixava de
+ * fora a pergunta comum, feita de palavras: "o que mudou na série da Unidade 7" não tem
+ * ticker nem data, então nenhum documento passava, e numa instalação sem busca vetorial
+ * isso significa não achar nada.
+ *
+ * O título é a etiqueta que o DONO escreveu para aquele documento. Duas palavras da
+ * pergunta batendo com ele não é coincidência de assunto — é o documento certo. Então o
+ * título conta como específico, e o conteúdo continua contando como conteúdo.
+ */
+export function scoreDocument(title: string | null | undefined, content: string, termos: LexicalTerm[]): number {
+  const base = scoreText(`${title ?? ''}\n${content}`, termos)
+  if (base >= 0.5 || termos.length === 0) return base
+  const alvoTitulo = normalize(title ?? '')
+  if (!alvoTitulo) return base
+  const noTitulo = termos.filter((t) => alvoTitulo.includes(normalize(t.term)))
+  // Uma palavra só em comum com o título é fraco demais — "dados", "relatório". Duas já
+  // identificam. Um termo específico no título vale sozinho.
+  const forte = noTitulo.some((t) => t.weight > 1) || noTitulo.length >= 2
+  if (!forte) return base
+  const alvo = normalize(`${title ?? ''}\n${content}`)
+  const total = termos.reduce((soma, t) => soma + t.weight, 0)
+  const obtido = termos.filter((t) => alvo.includes(normalize(t.term))).reduce((soma, t) => soma + t.weight, 0)
+  return 0.5 + 0.5 * (obtido / total)
+}
+
+/**
  * O pedaço do documento em volta do que casou.
  *
  * Mandar o documento inteiro estouraria o orçamento de caracteres e afogaria a
@@ -132,6 +206,22 @@ export function scoreText(texto: string, termos: LexicalTerm[]): number {
  */
 export function extractWindow(texto: string, termos: LexicalTerm[], tamanho = 600): string {
   if (texto.length <= tamanho) return texto.trim()
+  /**
+   * O começo do documento, que é o que dá sentido a uma linha solta.
+   *
+   * Numa tabela exportada as primeiras linhas dizem DE QUE é a tabela e QUAIS são as
+   * colunas. Sem elas, "Aug 4, 2026 23,500.00 24,600.00 23,250.00 23,580.00" obriga o
+   * modelo a adivinhar qual número é a abertura — e a acertar por hábito é o tipo de
+   * acerto que um dia sai errado sem avisar. Foi assim que uma cotação de um papel foi
+   * apresentada como sendo de outro.
+   *
+   * Só entram linhas INTEIRAS: um documento de texto corrido sem quebra nenhuma não
+   * ganha um pedaço de frase cortado no meio.
+   */
+  const inicioDoTexto = texto.slice(0, 240)
+  const cabecalho = inicioDoTexto.includes('\n')
+    ? inicioDoTexto.split('\n').slice(0, 3).join('\n').trim()
+    : ''
   const alvo = normalize(texto)
   let posicao = -1
   for (const { term } of [...termos].sort((a, b) => b.weight - a.weight)) {
@@ -150,5 +240,7 @@ export function extractWindow(texto: string, termos: LexicalTerm[], tamanho = 60
     const espaco = texto.lastIndexOf(' ', fim)
     if (espaco > inicio && espaco > fim - 40) fim = espaco
   }
-  return texto.slice(inicio, fim).trim()
+  const janela = texto.slice(inicio, fim).trim()
+  // Só quando o recorte começou DEPOIS dela — senão o cabeçalho apareceria duas vezes.
+  return cabecalho && inicio > cabecalho.length ? `${cabecalho}\n…\n${janela}` : janela
 }

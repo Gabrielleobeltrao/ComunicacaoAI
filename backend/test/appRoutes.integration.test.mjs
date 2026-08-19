@@ -193,11 +193,26 @@ test('a lista avisa quantos agentes dependem da conexão', async () => {
   assert.equal(lista[0].agentCount, 1)
 })
 
+// A auditoria é gravada sem `await` — a resposta de quem conectou não espera pelo log.
+// Por isso o teste ESPERA pelos três registros em vez de ler uma vez: ler antes de a
+// escrita chegar reprova por causa da velocidade da máquina, não do código.
+const esperarAuditoria = async (esperados, limiteMs = 8000) => {
+  const fim = Date.now() + limiteMs
+  let items = []
+  while (Date.now() < fim) {
+    ;({ items } = await listAuditEvents(OWNER, {}, { limit: 25 }))
+    const acoes = new Set(items.map((e) => e.action))
+    if (esperados.every((a) => acoes.has(a))) break
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  return items
+}
+
 test('conectar, testar e desconectar ficam na trilha de auditoria', async () => {
   const { body } = await connectSlack()
   await call('POST', `/api/app-installations/${body.id}/test`)
   await call('DELETE', `/api/app-installations/${body.id}`)
-  const { items } = await listAuditEvents(OWNER, {}, { limit: 25 })
+  const items = await esperarAuditoria(['create', 'test', 'disconnect'])
   const actions = items.map((e) => e.action)
   assert.ok(actions.includes('create'))
   assert.ok(actions.includes('test'))

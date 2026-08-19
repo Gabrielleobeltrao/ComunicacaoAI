@@ -329,6 +329,17 @@ export async function checkGuardrail(
   return parseInScopeResult(text)
 }
 
+/** Uma pergunta de bastidor: prompt entra, texto sai. Ver `claude.ts` para o porquê. */
+export async function askAux(prompt: string, model?: string | null, apiKey?: string | null, maxTokens = 600): Promise<string> {
+  const response = await buildClient(apiKey).chat.completions.create({
+    model: model || DEFAULT_MODEL,
+    max_completion_tokens: maxTokens,
+    reasoning_effort: 'minimal',
+    messages: [{ role: 'user', content: prompt }],
+  })
+  return response.choices[0]?.message?.content ?? ''
+}
+
 export async function planSectorResponse(
   options: RouterOption[],
   currentIndices: number[],

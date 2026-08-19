@@ -135,6 +135,17 @@ export function checkGuardrail(
   return providerFor(provider).checkGuardrail(objective, recentMessages, visitorMessage, model, apiKey)
 }
 
+/** Prompt entra, texto sai — a tarefa de bastidor sem prompt embutido no adaptador. */
+export function askAux(
+  provider: string | null | undefined,
+  prompt: string,
+  model?: string | null,
+  apiKey?: string | null,
+  maxTokens?: number,
+): Promise<string> {
+  return providerFor(provider).askAux(prompt, model, apiKey, maxTokens)
+}
+
 export function planSectorResponse(
   options: RouterOption[],
   currentIndices: number[],

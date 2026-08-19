@@ -8,7 +8,7 @@
 // Pure + dependency-injected: no DB/provider imports here, so the safety logic is
 // unit-tested without IO. Production wiring lives in ./delegationWiring.ts.
 import { ObjectId } from 'mongodb'
-import { breadthNotice, buildRetrievalQuery, formatContextWithSources } from './retrievalQuery.js'
+import { breadthNotice, buildRetrievalQuery, formatContextWithSources, multiSourceNotice } from './retrievalQuery.js'
 import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
 import type { Agent } from './agents.js'
 import type { ResolvedTool } from './agentTools.js'
@@ -26,6 +26,25 @@ import type { ClarificationRequest } from './clarify.js'
 import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
 import type { LiveTracker } from './agentLiveTracker.js'
+import {
+  MAX_ORCHESTRATION_ROUNDS,
+  MAX_TASKS_TOTAL,
+  ORCHESTRATION_TIMEOUT_MS,
+  assembleWithoutModel,
+  buildSynthesisContext,
+  dedupeAgainst,
+  describePlan,
+  inputFromDependencies,
+  limitationNote,
+  parseSufficiency,
+  planExecution,
+  readyTasks,
+  shouldRun,
+  sufficiencyPrompt,
+  synthesisInstruction,
+  taskKey,
+} from './sectorPlanner.js'
+import type { ExecutionPlan, ExecutionTask, Sufficiency, TaskResult } from './sectorPlanner.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -243,6 +262,16 @@ export interface DelegationDeps {
    * Opcional para este módulo continuar testável sem banco; ausente = não instrumenta.
    */
   trackerFor?: (ownerId: string, agentId: ObjectId, floorId: ObjectId | null, rootExecutionId: string) => LiveTracker
+  /**
+   * O modelo auxiliar que distribui o pedido entre os membros. Injetado para este
+   * módulo não conhecer provedor nenhum — e opcional: sem ele o plano é determinístico.
+   */
+  planWithModel?: (ownerId: string, coordinator: Agent, prompt: string) => Promise<string>
+  /**
+   * Os TÍTULOS dos documentos de um agente. Ajudam a escolher quem tem o dado, sem
+   * abrir o dado: nenhum trecho de base passa por aqui.
+   */
+  knowledgeTitlesFor?: (ownerId: string, agentId: ObjectId) => Promise<string[]>
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
@@ -569,8 +598,10 @@ async function runAgentTask(
     Array.isArray(retrieved) ? undefined : (retrieved as { totalMatches?: number }).totalMatches,
     passages.length,
   )
+  const misturado = multiSourceNotice(sources)
   const context = [
     ...(aviso ? [aviso] : []),
+    ...(misturado ? [misturado] : []),
     ...formatContextWithSources(passages, sources),
     ...vivas.map((v) => `[${v.title}]\n${v.content}`),
   ]
@@ -1100,17 +1131,48 @@ export async function executeSectorTeam(
             routingDescription: outros[i].routingDescription ?? null,
             role: agente.role ?? null,
             objective: agente.objective ?? null,
+            instructions: agente.instructions ?? null,
             capabilities: agente.capabilities ?? null,
+            // O que ele CONSEGUE fazer, e não só o que sabe. Nomes, nunca credenciais.
+            tools: [...(agente.tools ?? []).map((t) => t.name), ...(agente.builtinTools ?? []).map((t) => t.key)],
+            // Só os TÍTULOS: o conteúdo da base não sai daqui, nem para escolher.
+            knowledgeTitles: null as string[] | null,
           }
         : null,
     )
     .filter((m): m is NonNullable<typeof m> => m !== null)
+  // Os títulos da base de cada membro, quando quem chamou sabe buscá-los. É o sinal mais
+  // direto de "quem tem o dado" — e continua sendo só título, nunca trecho.
+  if (deps.knowledgeTitlesFor) {
+    await Promise.all(
+      equipe.map(async (m) => {
+        m.knowledgeTitles = await deps.knowledgeTitlesFor!(ctx.ownerId, new ObjectId(m.agentId)).catch(() => null)
+      }),
+    )
+  }
   if (equipe.length === 0) {
     // Sem isto o teste mostrava um único participante e parecia quebrado. Está
     // funcionando: não há mais ninguém no setor para acionar.
     warnings.push('setor orquestrado sem outros membros: o coordenador respondeu sozinho')
   }
-  const briefing = coordinatorBriefing(sector.name, equipe)
+  /**
+   * O PLANO, antes de qualquer trabalho.
+   *
+   * Aqui estava o buraco que sobrou: o coordenador tinha as ferramentas e a lista da
+   * equipe, mas a decisão de acionar alguém continuava sendo um impulso no meio da
+   * resposta — e um modelo que recebe uma pergunta respondível responde. Agora a
+   * distribuição é um passo declarado: quem trabalha, com que objetivo, e quem espera
+   * por quem. Uma pergunta simples continua selecionando um só.
+   *
+   * Sem `planWithModel` (instalação sem modelo auxiliar, teste sem dublê) o plano sai
+   * determinístico — setores existentes continuam funcionando igual.
+   */
+  const { plan, source: origemDoPlano } = await planExecution({
+    question: opts.objective,
+    members: equipe,
+    ask: deps.planWithModel ? (prompt) => deps.planWithModel!(ctx.ownerId, coordinator, prompt) : undefined,
+  })
+  const briefing = coordinatorBriefing(sector.name, equipe, plan)
   const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
 
   /**
@@ -1143,13 +1205,237 @@ export async function executeSectorTeam(
       }
     : deps
 
-  const output = await rodarMembro(
-    coordinator,
-    instruction,
-    opts.input,
-    (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant, briefing),
-    participationOf('coordinator'),
-    { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
+  /**
+   * O RUNTIME executa o plano — o coordenador não precisa lembrar de fazê-lo.
+   *
+   * Antes: coordenador chama A, gosta da resposta, e B nunca é consultado. O plano
+   * existia e podia ser ignorado no meio de uma inferência. Agora as tarefas rodam aqui,
+   * em ondas: tudo que não depende de ninguém sai junto, e quem depende espera pelo que
+   * precisa — a mesma ideia das etapas de um pipeline, só que o grafo é descoberto para
+   * esta pergunta.
+   *
+   * Cada tarefa passa pelo executor normal do agente (`runAgentTask`): o provedor dele, o
+   * modelo dele, as instruções dele, as ferramentas dele e a base dele. Nada aqui
+   * substitui a configuração de ninguém.
+   *
+   * Sem plano — setor sem outros membros, instalação antiga — nada disto acontece e o
+   * coordenador responde como sempre respondeu.
+   */
+  const nomePorAgente = new Map(equipe.map((m) => [m.agentId, m.name]))
+  const inicioDaOrquestracao = Date.now()
+  const prazo = inicioDaOrquestracao + ORCHESTRATION_TIMEOUT_MS
+  const execId = sectorExecutionId?.toString() ?? ctx.correlationId
+
+  const rodarTarefa = async (task: ExecutionTask): Promise<TaskResult> => {
+    const agentName = nomePorAgente.get(task.agentId) ?? 'membro'
+    const base = { taskId: task.id, agentId: task.agentId, agentName, objective: task.objective, dependsOn: task.dependsOn ?? [] }
+    const comecou = Date.now()
+    const alvo = await deps.loadAgent(ctx.ownerId, new ObjectId(task.agentId)).catch(() => null)
+    if (!alvo) return { ...base, status: 'failed', error: 'agente não encontrado', durationMs: 0 }
+    // A mesma proteção da delegação: um agente que já está na cadeia não entra de novo,
+    // por mais que o plano peça. É o que impede recursão sem fim entre setores.
+    if (inChain(alvo._id)) return { ...base, status: 'skipped', error: 'ciclo de delegação', durationMs: 0 }
+
+    console.info(`[task:start] execution=${execId} task=${task.id} agent=${task.agentId} deps=[${base.dependsOn.join(',')}]`)
+    // A entrada de quem depende: o que os antecessores produziram, com autoria. Sem
+    // dependência, o pedido original.
+    const entrada = base.dependsOn.length > 0 ? inputFromDependencies(task, resultadosPorId) : opts.input
+    try {
+      const saida = await rodarMembro(
+        alvo,
+        task.objective,
+        entrada,
+        (k) => runAgentTask(depsComTime, ctx, alvo, task.objective, entrada, format, k, sector._id, null),
+        participationOf('specialist'),
+        { agentId: alvo._id.toString(), name: alvo.name, role: 'specialist' },
+      )
+      const durationMs = Date.now() - comecou
+      console.info(`[task:end] execution=${execId} task=${task.id} agent=${task.agentId} status=succeeded duration=${durationMs}ms`)
+      return { ...base, status: 'succeeded', output: saida, durationMs }
+    } catch (erro) {
+      const durationMs = Date.now() - comecou
+      // A CATEGORIA, nunca o texto cru: mensagem de provedor pode carregar payload.
+      const mensagem = erro instanceof Error ? erro.message : 'falha'
+      const categoria = /cancel/i.test(mensagem)
+        ? 'cancelado'
+        : /timeout|exceeded/i.test(mensagem)
+          ? 'tempo esgotado'
+          : /grounding|base/i.test(mensagem)
+            ? 'sem base para responder'
+            : 'falha na execução'
+      console.info(`[task:end] execution=${execId} task=${task.id} agent=${task.agentId} status=failed duration=${durationMs}ms error=${categoria}`)
+      // A participação com falha é registrada para o painel mostrar quem tentou.
+      participants.push({ agentId: alvo._id.toString(), name: alvo.name, role: 'specialist', durationMs, status: 'failed' })
+      return { ...base, status: 'failed', error: categoria, durationMs }
+    }
+  }
+
+  // Os resultados desta rodada, por id de tarefa — é daqui que sai a entrada de quem depende.
+  let resultadosPorId = new Map<string, TaskResult>()
+
+  /** Uma rodada: as tarefas prontas saem juntas, as dependentes esperam pelas suas. */
+  const executarPlano = async (p: ExecutionPlan): Promise<TaskResult[]> => {
+    resultadosPorId = new Map<string, TaskResult>()
+    while (resultadosPorId.size < p.tasks.length) {
+      if (await isCanceled(ctx)) throw new Error('cancelado')
+      if (ctx.budget.tokensSpent >= ctx.budget.tokenLimit) {
+        warnings.push('orçamento esgotado antes de concluir o plano')
+        break
+      }
+      if (Date.now() > prazo) {
+        warnings.push('tempo de orquestração esgotado antes de concluir o plano')
+        break
+      }
+      const onda = readyTasks(p, new Set(resultadosPorId.keys()))
+      // Impossível com um plano validado (as dependências só apontam para trás), mas um
+      // laço infinito num executor de agentes custa dinheiro de verdade.
+      if (onda.length === 0) break
+
+      // As independentes saem JUNTAS. `allSettled` porque uma que falha não pode levar as
+      // outras: o resultado de cada uma é registrado, e a síntese decide o que fazer.
+      const semEntrada = (task: ExecutionTask): TaskResult => ({
+        taskId: task.id,
+        agentId: task.agentId,
+        agentName: nomePorAgente.get(task.agentId) ?? 'membro',
+        objective: task.objective,
+        dependsOn: task.dependsOn ?? [],
+        status: 'skipped',
+        error: 'todas as dependências falharam',
+        durationMs: 0,
+      })
+      const executadas = await Promise.allSettled(
+        onda.map((task) => (shouldRun(task, resultadosPorId) ? rodarTarefa(task) : Promise.resolve(semEntrada(task)))),
+      )
+      for (const [i, r] of executadas.entries()) {
+        const task = onda[i]
+        resultadosPorId.set(task.id, r.status === 'fulfilled' ? r.value : { ...semEntrada(task), status: 'failed', error: 'falha na execução' })
+      }
+    }
+    return p.tasks.map((t) => resultadosPorId.get(t.id)).filter((r): r is TaskResult => Boolean(r))
+  }
+
+  /**
+   * A consolidação, com o que existir até agora.
+   *
+   * Falha aqui NÃO joga fora o trabalho: houve execução de verdade, e devolver vazio
+   * seria o pior desfecho possível. A montagem sem modelo entrega o que cada agente
+   * respondeu, dizendo que a junção não pôde ser feita.
+   */
+  const sintetizar = async (feitos: TaskResult[], limitacao: string): Promise<string> => {
+    const instrucaoFinal = [sector.instruction?.trim(), synthesisInstruction(plan), limitacao].filter(Boolean).join('\n\n')
+    const entradaFinal = buildSynthesisContext(opts.objective, { ...plan, tasks: feitos.map((r) => ({ id: r.taskId, agentId: r.agentId, objective: r.objective, dependsOn: r.dependsOn })) }, feitos)
+    const comecou = Date.now()
+    console.info(`[synthesis:start] execution=${execId} agent=${coordinator._id.toString()} results=${feitos.length}`)
+    try {
+      const texto = await rodarMembro(
+        coordinator,
+        instrucaoFinal,
+        entradaFinal,
+        (k) => runAgentTask(depsComTime, ctx, coordinator, instrucaoFinal, entradaFinal, format, k, sector._id, grant, briefing),
+        participationOf('coordinator'),
+        { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
+      )
+      console.info(`[synthesis:end] execution=${execId} status=succeeded duration=${Date.now() - comecou}ms`)
+      return texto
+    } catch (erro) {
+      const montado = assembleWithoutModel(feitos)
+      console.info(`[synthesis:end] execution=${execId} status=failed duration=${Date.now() - comecou}ms fallback=${montado ? 'montagem' : 'nenhum'}`)
+      warnings.push('não foi possível consolidar as respostas da equipe')
+      if (!montado) throw erro
+      return montado
+    }
+  }
+
+  /**
+   * A ORQUESTRAÇÃO: planejar, executar, consolidar — e, se faltou, uma segunda chance.
+   *
+   * O teto de rodadas é o que impede o motor de decidir sozinho quando parar. A pergunta
+   * de suficiência só é feita quando ainda existe alguém não consultado: sem especialista
+   * sobrando, uma segunda rodada não mudaria a resposta e custaria a equipe inteira.
+   */
+  const todos: TaskResult[] = []
+  const jaFeitas = new Set<string>()
+  const consultados = new Set<string>()
+  let planoAtual: ExecutionPlan = plan
+  let rodada = 0
+  let output = ''
+  let faltou: string | undefined
+
+  console.info(`[orchestration:start] execution=${execId} sector=${sector._id.toString()} members=${equipe.length}`)
+
+  while (rodada < MAX_ORCHESTRATION_ROUNDS) {
+    rodada += 1
+    planoAtual = dedupeAgainst(planoAtual, jaFeitas, MAX_TASKS_TOTAL - todos.length)
+    if (planoAtual.tasks.length === 0) break
+
+    console.info(
+      `[plan] execution=${execId} sector=${sector._id.toString()} round=${rodada} source=${rodada === 1 ? origemDoPlano : 'model'} ` +
+        `tasks=${planoAtual.tasks.length} ${describePlan(planoAtual, equipe)}`,
+    )
+    for (const t of planoAtual.tasks) {
+      jaFeitas.add(taskKey(t.agentId, t.objective))
+      consultados.add(t.agentId)
+    }
+
+    todos.push(...(await executarPlano(planoAtual)))
+    const naoConsultados = equipe.filter((m) => !consultados.has(m.agentId))
+    const ultimaRodada = rodada >= MAX_ORCHESTRATION_ROUNDS || naoConsultados.length === 0 || todos.length >= MAX_TASKS_TOTAL || Date.now() > prazo
+
+    // A suficiência é decidida ANTES da última consolidação, para a nota de limitação
+    // poder entrar nela — dizer o que faltou é parte da resposta, não um adendo.
+    let limitacao = ''
+    if (!ultimaRodada && deps.planWithModel) {
+      const parcial = assembleWithoutModel(todos)
+      const veredito = await deps
+        .planWithModel(ctx.ownerId, coordinator, sufficiencyPrompt(opts.objective, parcial, naoConsultados))
+        .then(parseSufficiency)
+        .catch(() => ({ sufficient: true }) as Sufficiency)
+      console.info(`[sufficiency] execution=${execId} round=${rodada} sufficient=${veredito.sufficient} pending=${naoConsultados.length}`)
+      if (veredito.sufficient) {
+        output = await sintetizar(todos, '')
+        break
+      }
+      faltou = veredito.missing
+      // A rodada seguinte olha SÓ quem não foi consultado: repetir quem já respondeu é
+      // pagar de novo pela mesma resposta.
+      const proximo = await planExecution({
+        question: faltou ? `${opts.objective}\n\nFalta especificamente: ${faltou}` : opts.objective,
+        members: naoConsultados,
+        ask: deps.planWithModel ? (prompt) => deps.planWithModel!(ctx.ownerId, coordinator, prompt) : undefined,
+        max: Math.max(0, MAX_TASKS_TOTAL - todos.length),
+      })
+      planoAtual = proximo.plan
+      if (planoAtual.tasks.length === 0) {
+        output = await sintetizar(todos, '')
+        break
+      }
+      continue
+    }
+
+    // Última rodada possível: se ainda faltava algo, a resposta diz o que faltou.
+    if (faltou) limitacao = limitationNote(faltou, rodada)
+    output = await sintetizar(todos, limitacao)
+    break
+  }
+
+  if (todos.length === 0) {
+    // Sem plano — setor sem outros membros, ou tudo já feito: o coordenador responde o
+    // pedido original, exatamente como antes desta mudança.
+    output = await rodarMembro(
+      coordinator,
+      instruction,
+      opts.input,
+      (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant, briefing),
+      participationOf('coordinator'),
+      { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
+    )
+  }
+  const falharam = todos.filter((r) => r.status !== 'succeeded')
+  for (const r of falharam) warnings.push(`${r.agentName}: ${r.error ?? 'não executou'}`)
+  if (faltou) warnings.push(`informação incompleta: ${faltou.slice(0, 200)}`)
+  console.info(
+    `[orchestration:end] execution=${execId} sector=${sector._id.toString()} rounds=${rodada} tasks=${todos.length} ` +
+      `succeeded=${todos.length - falharam.length} failed=${falharam.length} duration=${Date.now() - inicioDaOrquestracao}ms`,
   )
   return { output, participants, warnings, clarification }
 }

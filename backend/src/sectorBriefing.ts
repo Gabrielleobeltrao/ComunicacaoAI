@@ -15,6 +15,8 @@
 //
 // Puro de propósito: sem banco, sem modelo. O que entra é o que já foi carregado.
 
+import type { ExecutionPlan } from './sectorPlanner.js'
+
 export interface BriefingMember {
   agentId: string
   name: string
@@ -47,11 +49,31 @@ function linhaDe(m: BriefingMember): string {
  * a quem delegar, e inventar uma instrução de delegação ali faria o modelo procurar
  * gente que não existe.
  */
-export function coordinatorBriefing(sectorName: string, membros: BriefingMember[]): string {
+export function coordinatorBriefing(sectorName: string, membros: BriefingMember[], plano?: ExecutionPlan | null): string {
   if (membros.length === 0) return ''
+  const nomePorId = new Map(membros.map((m) => [m.agentId, m.name]))
+  // O plano vira instrução: a distribuição deixa de ser um impulso no meio da resposta e
+  // passa a ser uma lista de chamadas a fazer. Sem plano, a orientação geral continua
+  // valendo — que é como setores antigos seguem funcionando.
+  const passos =
+    plano && plano.tasks.length > 0
+      ? [
+          '',
+          'PLANO PARA ESTE PEDIDO (siga-o; ele já considerou quem tem o quê):',
+          ...plano.tasks.map((t, i) => {
+            const espera = t.dependsOn?.length
+              ? ` — só depois de ${t.dependsOn.map((d) => `(${d})`).join(' e ')}, usando o que veio de lá`
+              : ''
+            return `(${t.id}) ${i + 1}. Acione ${limpar(nomePorId.get(t.agentId) ?? '', 80)} (id: ${t.agentId}): ${limpar(t.objective, 300)}${espera}`
+          }),
+          plano.synthesisObjective ? `Depois, junte tudo: ${limpar(plano.synthesisObjective, 300)}` : 'Depois, junte as respostas numa só.',
+          'Se ao executar ficar claro que um passo não faz sentido, diga por quê em vez de inventar o resultado dele.',
+        ]
+      : []
   return [
     `Você COORDENA a equipe "${limpar(sectorName, 80)}". Estes são os membros que você pode acionar:`,
     ...membros.map(linhaDe),
+    ...passos,
     '',
     'Como conduzir:',
     '- Use `delegate_to_agent` com o `id` da lista acima. Não precisa procurar quem existe: a equipe é esta.',

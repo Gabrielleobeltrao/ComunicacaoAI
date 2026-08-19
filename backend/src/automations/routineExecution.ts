@@ -16,7 +16,7 @@ import type { ResolvedTool } from '../agentTools.js'
 import type { AgentEventStatus, RecordAgentEventInput } from '../agentEvents.js'
 import type { StepUsage } from './runner.js'
 import { resolveAgentRun } from '../agentDefinition.js'
-import { buildRetrievalQuery, formatContextWithSources } from '../retrievalQuery.js'
+import { buildRetrievalQuery, formatContextWithSources, multiSourceNotice } from '../retrievalQuery.js'
 import { instrumentTools, NOOP_TRACKER } from '../agentLiveTracker.js'
 import type { LiveTracker } from '../agentLiveTracker.js'
 
@@ -215,7 +215,13 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       // Step outputs + curated passages, both handled as untrusted data. The curated
       // ones carry a numbered reference (title + document id) so the answer can cite
       // them; the owner is never named to the model.
-      context: [...call.context, ...formatContextWithSources(retrieved.context, retrieved.sources ?? [])],
+      // O mesmo aviso da conversa: numa rotina ninguém está olhando para conferir se o
+      // número saiu do documento certo.
+      context: [
+        ...call.context,
+        ...(multiSourceNotice(retrieved.sources ?? []) ? [multiSourceNotice(retrieved.sources ?? [])!] : []),
+        ...formatContextWithSources(retrieved.context, retrieved.sources ?? []),
+      ],
       provider: agent.provider,
       // Resolvido: "Automático" guarda um marcador, não um id de modelo.
       model: execucao.model,

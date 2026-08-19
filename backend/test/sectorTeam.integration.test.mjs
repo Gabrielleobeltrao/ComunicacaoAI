@@ -156,7 +156,10 @@ test('o coordenador aciona o pesquisador, e a resposta traz o valor que está na
   // E o pesquisador precisa aparecer como quem trabalhou.
   const nomes = f.chamadas.map((c) => c.objective)
   assert.ok(nomes.some((o) => o === pesquisador.objective), 'o pesquisador precisa ter executado de verdade')
-  assert.equal(run.participants[0].role, 'coordinator')
+  // A ordem mudou quando o runtime passou a executar o plano: o especialista trabalha
+  // primeiro e o coordenador entra no fim, para juntar. Quem executou continua o mesmo.
+  assert.equal(run.participants.at(-1).role, 'coordinator')
+  assert.ok(run.participants.some((p) => p.role === 'specialist'))
 })
 
 test('a data escrita em ISO encontra o documento escrito em português', async () => {
@@ -511,7 +514,8 @@ test('o coordenador recebe a equipe escrita: nome, id e função de cada membro'
   const f = deps([coordenador, pesquisador, analista], { sector: setor })
   const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'qual foi o último provento de BBSE3?' })
 
-  const pedidoDoCoordenador = f.chamadas[0]
+  // O coordenador é o último a rodar: antes dele vão as tarefas do plano.
+  const pedidoDoCoordenador = f.chamadas.at(-1)
   const instrucoes = pedidoDoCoordenador.instructions
   assert.match(instrucoes, /COORDENA a equipe "Mesa de análise"/)
   // O id é o que permite delegar sem gastar uma chamada de descoberta antes.
@@ -584,4 +588,645 @@ test('setor orquestrado sem outros membros avisa, em vez de parecer quebrado', a
   assert.match(run.warnings.join(' '), /sem outros membros/)
   // E sem equipe não se inventa instrução de delegação: procurar quem não existe é pior.
   assert.ok(!f.chamadas[0].instructions.includes('COORDENA a equipe'))
+})
+
+// --- o caso da VALE3 e da BBSE3 ------------------------------------------------------------
+//
+// Relatado: perguntaram a cotação da Vale em 4 de agosto e a resposta veio com os números
+// da BBSE3. Depois, perguntando pelo dia 6, veio de novo a linha do dia 4. As duas séries
+// estavam na base; nenhuma das duas perguntas encontrava a LINHA.
+//
+// A causa não era o modelo. A busca determinística não entendia data escrita por gente
+// ("4 de agosto") nem a data que as tabelas exportadas usam ("Aug 4, 2026") — e sem um
+// termo de data para ancorar, a janela era recortada em volta do ticker, que aparece no
+// TÍTULO. O modelo recebia sempre o começo do documento, nunca a linha pedida.
+
+const CABECA = 'Date Open High Low Close Adj Close Volume'
+const serie = (nome, base) =>
+  [
+    nome,
+    'Currency in BRL. Historical data.',
+    CABECA,
+    ...Array.from({ length: 40 }, (_, i) => `Jul ${i + 1}, 2026 ${base}.00 ${base + 900}.00 ${base - 300}.00 ${base + 100}.00 ${base + 100}.00 1,${100 + i}`),
+    `Aug 4, 2026 ${base + 1400}.00 ${base + 2500}.00 ${base + 1150}.00 ${base + 1480}.00 ${base + 1480}.00 2,088`,
+    `Aug 5, 2026 ${base + 1660}.00 ${base + 1800}.00 ${base + 1400}.00 ${base + 1510}.00 ${base + 1510}.00 1,904`,
+    `Aug 6, 2026 ${base + 1770}.00 ${base + 1880}.00 ${base + 1410}.00 ${base + 1620}.00 ${base + 1620}.00 2,210`,
+  ].join('\n')
+
+test('a linha do dia pedido é encontrada, mesmo escrita como as tabelas escrevem', async () => {
+  const pesquisador = agente('Pesquisador de Mercado')
+  await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'Ação Vale3', content: serie('Vale S.A. (VALE3.BA)', 22100) })
+  await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'dados bbse3', content: serie('BB Seguridade (BBSE3.SA)', 40200) })
+
+  const r = await retrieveContext([pesquisador._id], 'entao agora me da os valores da VALE3 do dia 6 de agosto')
+  const texto = r.context.join('\n---\n')
+
+  assert.equal(r.status, 'ok')
+  // A linha PEDIDA, e não o começo do documento.
+  assert.match(texto, /Aug 6, 2026/, 'a linha do dia 6 precisa estar no contexto')
+  // E com o cabeçalho junto: sem ele, qual número é a abertura é adivinhação.
+  assert.ok(texto.includes(CABECA), 'as colunas precisam viajar com a linha')
+  // O documento certo vem primeiro: quem pergunta por VALE3 não pode receber a série da
+  // BBSE3 como resposta mais relevante.
+  assert.match(r.sources[0].title ?? '', /vale/i)
+})
+
+test('perguntar por outro dia devolve outra linha — e não a mesma de antes', async () => {
+  const pesquisador = agente('Pesquisador de Mercado')
+  await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'Ação Vale3', content: serie('Vale S.A. (VALE3.BA)', 22100) })
+
+  const dia4 = await retrieveContext([pesquisador._id], 'valores da VALE3 no dia 4 de agosto de 2026')
+  const dia6 = await retrieveContext([pesquisador._id], 'valores da VALE3 no dia 6 de agosto de 2026')
+
+  // O sintoma mais claro do defeito: as duas perguntas recebiam exatamente o mesmo texto.
+  assert.notEqual(dia4.context.join(''), dia6.context.join(''), 'dias diferentes não podem devolver o mesmo trecho')
+  assert.match(dia4.context.join('\n'), /Aug 4, 2026/)
+  assert.match(dia6.context.join('\n'), /Aug 6, 2026/)
+})
+
+test('com duas séries no contexto, o prompt avisa que os documentos são diferentes', async () => {
+  const { multiSourceNotice } = await import('../dist/retrievalQuery.js')
+  const aviso = multiSourceNotice([
+    { documentId: 'a', title: 'Ação Vale3' },
+    { documentId: 'b', title: 'dados bbse3' },
+  ])
+  assert.match(aviso, /documentos DIFERENTES/)
+  assert.match(aviso, /Ação Vale3/)
+  assert.match(aviso, /não use o número do outro/)
+  // Uma fonte só não precisa de aviso nenhum.
+  assert.equal(multiSourceNotice([{ documentId: 'a', title: 'Ação Vale3' }]), null)
+})
+
+// --- duas bases no MESMO agente ------------------------------------------------------------
+//
+// A pergunta era direta: com a tabela de cotações E o texto de uma notícia na base do
+// mesmo agente, ele cruza as duas na resposta? A recuperação devolve UMA passagem por
+// documento e corta por nota, top-K e orçamento de caracteres — então cabem as duas,
+// desde que as duas tenham algum termo específico da pergunta.
+
+test('a tabela e a notícia entram juntas no contexto do mesmo agente', async () => {
+  const analista = agente('Analista de Mercado')
+  await createDocumentFor(
+    { ownerType: 'agent', ownerId: analista._id },
+    { title: 'Cotações VALE3', content: serie('Vale S.A. (VALE3.BA)', 22100) },
+  )
+  await createDocumentFor(
+    { ownerType: 'agent', ownerId: analista._id },
+    {
+      title: 'Notícia Vale',
+      content:
+        'Vale (VALE3) anuncia acordo em 6 de agosto de 2026.\n' +
+        'A companhia informou ao mercado que fechou acordo de reparação, com impacto estimado no fluxo de caixa do trimestre. ' +
+        'Analistas avaliaram o anúncio como positivo para o papel no curto prazo.',
+    },
+  )
+
+  const r = await retrieveContext([analista._id], 'o que aconteceu com a VALE3 em 6 de agosto de 2026 e qual foi a cotação?')
+  const titulos = r.sources.map((f) => f.title)
+
+  assert.equal(r.status, 'ok')
+  // As DUAS bases chegam ao modelo — é isso que permite cruzar preço com notícia.
+  assert.ok(titulos.includes('Cotações VALE3'), `faltou a tabela: ${JSON.stringify(titulos)}`)
+  assert.ok(titulos.includes('Notícia Vale'), `faltou a notícia: ${JSON.stringify(titulos)}`)
+  const texto = r.context.join('\n')
+  assert.match(texto, /Aug 6, 2026/, 'a linha do dia pedido')
+  assert.match(texto, /acordo de reparação/, 'e o que a notícia diz')
+})
+
+test('um link solto na base não é a mesma coisa que a notícia', async () => {
+  // Guardar só a URL guarda uma string. Nada lê aquela página na hora da resposta — para
+  // isso existe o site cadastrado em "Como trabalha", que é consultado sob demanda.
+  const analista = agente('Analista de Mercado')
+  await createDocumentFor(
+    { ownerType: 'agent', ownerId: analista._id },
+    { title: 'Link da notícia', content: 'https://exemplo.test/noticias/vale-acordo-agosto-2026' },
+  )
+
+  const r = await retrieveContext([analista._id], 'o que a notícia diz sobre o acordo da Vale?')
+  const texto = r.context.join('\n')
+  // A URL pode até ser recuperada; o que ela NÃO tem é o conteúdo da notícia.
+  assert.ok(!/acordo de reparação/.test(texto), 'não há texto de notícia nenhum guardado aqui')
+})
+
+// --- o plano, no começo do orquestrado -----------------------------------------------------
+//
+// Antes: o coordenador tinha as ferramentas e a lista da equipe, e a decisão de acionar
+// alguém era um impulso no meio da resposta. Agora a distribuição é um passo declarado —
+// e o coordenador recebe a lista de chamadas a fazer, não só a lista de quem existe.
+
+test('o plano chega ao coordenador como passos, com objetivo por membro', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const juridico = agente('Jurídico', { capabilities: ['contratos'] })
+  const financeiro = agente('Financeiro', { capabilities: ['orcamento'] })
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Retaguarda',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [
+      { agentId: coordenador._id, isDefault: true },
+      { agentId: juridico._id, routingDescription: 'quando envolver contrato ou cláusula' },
+      { agentId: financeiro._id, routingDescription: 'quando envolver custo ou orçamento' },
+    ],
+    stages: [],
+  }
+
+  const f = deps([coordenador, juridico, financeiro], { sector: setor })
+  // O "modelo" do planejador, dublado: devolve o plano que o teste quer observar. É o
+  // único ponto em que o planejador fala com fora — por isso ele é injetado.
+  f.deps.planWithModel = async () =>
+    JSON.stringify({
+      tasks: [
+        { id: 'p1', agentId: juridico._id.toString(), objective: 'avaliar o risco da cláusula' },
+        { id: 'p2', agentId: financeiro._id.toString(), objective: 'estimar o custo', dependsOn: ['p1'] },
+      ],
+      synthesisObjective: 'risco e custo numa resposta só',
+    })
+
+  await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'qual o risco da cláusula e quanto custa?' })
+
+  const instrucoes = f.chamadas.at(-1).instructions
+  assert.match(instrucoes, /PLANO PARA ESTE PEDIDO/)
+  assert.match(instrucoes, /Acione Jurídico/)
+  assert.match(instrucoes, /avaliar o risco da cláusula/)
+  assert.match(instrucoes, /Acione Financeiro/)
+  // A dependência vira instrução em português, e não um campo que o modelo teria de decifrar.
+  assert.match(instrucoes, /só depois de \(t1\)/)
+  assert.match(instrucoes, /risco e custo numa resposta só/)
+})
+
+test('sem modelo planejador, o plano determinístico ainda faz o especialista trabalhar', async () => {
+  // Instalação sem modelo auxiliar: o planejador cai no determinístico, e o runtime
+  // executa esse plano igual. É o ponto do objetivo — a equipe deixa de depender de o
+  // coordenador lembrar de chamar alguém.
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const especialista = agente('Especialista')
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Time',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }, { agentId: especialista._id }],
+    stages: [],
+  }
+  const f = deps([coordenador, especialista], { sector: setor })
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'me ajuda com uma coisa' })
+
+  assert.deepEqual(run.participants.map((p) => p.role), ['specialist', 'coordinator'])
+  assert.match(f.chamadas.at(-1).instructions, /Junte os resultados/)
+})
+
+// --- consultar a base de um colega NÃO é acionar o colega ------------------------------------
+//
+// A distinção que o motor precisa manter: achar um trecho na base de alguém é leitura de
+// documento, sai no mesmo turno e não custa inferência nenhuma. Acionar esse alguém é
+// outra execução, com o modelo e as ferramentas dele. Se a primeira contasse como a
+// segunda, o painel mostraria dois agentes trabalhando onde um trabalhou, e a conta de
+// tokens do time deixaria de bater.
+
+test('achar o dado na base de um colega não transforma o colega em participante', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const redator = agente('Redator')
+  const arquivista = agente('Arquivista')
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Mesa',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }, { agentId: redator._id }, { agentId: arquivista._id }],
+    stages: [],
+  }
+  // A base é do ARQUIVISTA. O plano aciona só o REDATOR — então o arquivista é lido, e
+  // não executado. É a distinção inteira em um teste: RAG entre agentes não é colaboração.
+  await createDocumentFor({ ownerType: 'agent', ownerId: arquivista._id }, { title: 'Série BBSE3', content: BBSE3 })
+
+  const f = deps([coordenador, redator, arquivista], { sector: setor })
+  f.deps.planWithModel = async () =>
+    JSON.stringify({ tasks: [{ id: 't1', agentId: redator._id.toString(), objective: 'redigir o resumo' }] })
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'quanto valia BBSE3 em 10/08/2026?' })
+
+  assert.deepEqual(run.participants.map((p) => p.name), ['Redator', 'Coordenador'], 'o dono da base não executou')
+  // E o trecho dele chegou assim mesmo — como conhecimento, não como colaboração.
+  const contextos = f.chamadas.map((c) => (c.context ?? []).join('\n')).join('\n')
+  assert.match(contextos, /36,42/)
+})
+
+// --- o RUNTIME executa o plano ---------------------------------------------------------------
+//
+// Antes: coordenador chama A, gosta da resposta, e B nunca é consultado — o plano existia
+// e podia ser ignorado no meio de uma inferência. Agora as tarefas rodam no runtime, em
+// ondas, e a síntese recebe o que todo mundo produziu.
+
+const equipeDe = (coordenador, membros) => ({
+  _id: new ObjectId(),
+  name: 'Retaguarda',
+  officeId: ANDAR,
+  mode: 'orchestrated',
+  coordinatorAgentId: coordenador._id,
+  instruction: '',
+  members: [{ agentId: coordenador._id, isDefault: true }, ...membros.map((m) => ({ agentId: m._id }))],
+  stages: [],
+})
+
+// A prova de paralelismo é uma BARREIRA, não um cronômetro.
+//
+// Comparar janelas de tempo mente aqui: a busca de conhecimento roda contra um mongod de
+// verdade e leva de 100 a 200 ms, então duas tarefas concorrentes podem ter janelas de
+// modelo que não se sobrepõem mesmo tendo começado juntas. Com a barreira não há dúvida:
+// cada tarefa só termina depois que a outra chegou. Em execução serial isto trava — e o
+// teste falha dizendo isso, em vez de passar por acidente.
+const barreira = (quantos, limiteMs = 5000) => {
+  let chegaram = 0
+  let liberar
+  const todos = new Promise((r) => (liberar = r))
+  return async (nome) => {
+    chegaram += 1
+    if (chegaram >= quantos) liberar()
+    const estourou = new Promise((_, rejeitar) =>
+      setTimeout(() => rejeitar(new Error(`execução serial: ${nome} esperou sozinho`)), limiteMs),
+    )
+    await Promise.race([todos, estourou])
+    return chegaram
+  }
+}
+
+test('tarefas independentes rodam em PARALELO, e a síntese usa as duas', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const b = agente('Agente B')
+  const setor = equipeDe(coordenador, [a, b])
+  const esperar = barreira(2)
+
+  const f = deps([coordenador, a, b], {
+    sector: setor,
+    runTask: async (req) => {
+      if (/Junte os resultados/.test(req.instructions)) {
+        return { output: 'resposta final', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+      }
+      // Só termina quando a outra tarefa também estiver aqui dentro.
+      await esperar(req.instructions)
+      return { output: `saída de ${req.instructions}`, usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  f.deps.planWithModel = async () =>
+    JSON.stringify({
+      tasks: [
+        { id: 't1', agentId: a._id.toString(), objective: 'parte A' },
+        { id: 't2', agentId: b._id.toString(), objective: 'parte B' },
+      ],
+    })
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'preciso de A e de B' })
+
+  // Os três executaram: A, B e o coordenador juntando.
+  assert.equal(run.participants.length, 3)
+  assert.equal(run.output, 'resposta final')
+
+  // E a síntese recebeu os DOIS resultados, cada um com seu autor.
+  const sintese = f.chamadas.find((c) => /Junte os resultados/.test(c.instructions))
+  assert.match(sintese.input, /ORIGINAL USER QUESTION/)
+  assert.match(sintese.input, /preciso de A e de B/)
+  assert.match(sintese.input, /\[Agente A\]/)
+  assert.match(sintese.input, /saída de parte A/)
+  assert.match(sintese.input, /\[Agente B\]/)
+  assert.match(sintese.input, /saída de parte B/)
+  assert.match(sintese.input, /SYNTHESIS INSTRUCTIONS/)
+})
+
+test('quem depende de dois só roda depois dos dois — e recebe o que eles produziram', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const b = agente('Agente B')
+  const c = agente('Agente C')
+  const setor = equipeDe(coordenador, [a, b, c])
+  const ordem = []
+
+  const f = deps([coordenador, a, b, c], {
+    sector: setor,
+    runTask: async (req) => {
+      if (/Junte os resultados/.test(req.instructions)) return { output: 'final', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+      ordem.push(req.instructions)
+      await new Promise((r) => setTimeout(r, 20))
+      return { output: `saída de ${req.instructions}`, usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  f.deps.planWithModel = async () =>
+    JSON.stringify({
+      tasks: [
+        { id: 't1', agentId: a._id.toString(), objective: 'parte A' },
+        { id: 't2', agentId: b._id.toString(), objective: 'parte B' },
+        { id: 't3', agentId: c._id.toString(), objective: 'junta A e B', dependsOn: ['t1', 't2'] },
+      ],
+    })
+
+  await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'A, B e depois C' })
+
+  // C é o último a começar, sempre.
+  assert.equal(ordem.at(-1), 'junta A e B')
+  // E a entrada de C traz o que A e B produziram, com autoria — não a pergunta de novo.
+  const chamadaC = f.chamadas.find((c) => c.instructions === 'junta A e B')
+  assert.match(chamadaC.input, /\[Agente A\]/)
+  assert.match(chamadaC.input, /saída de parte A/)
+  assert.match(chamadaC.input, /\[Agente B\]/)
+  assert.match(chamadaC.input, /saída de parte B/)
+})
+
+test('uma tarefa que falha não leva as outras, e a síntese sabe que faltou', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const b = agente('Agente B')
+  const setor = equipeDe(coordenador, [a, b])
+
+  const f = deps([coordenador, a, b], {
+    sector: setor,
+    runTask: async (req) => {
+      if (/Junte os resultados/.test(req.instructions)) return { output: 'final parcial', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+      if (/parte B/.test(req.instructions)) throw new Error('provider caiu')
+      return { output: 'saída de A', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  f.deps.planWithModel = async () =>
+    JSON.stringify({
+      tasks: [
+        { id: 't1', agentId: a._id.toString(), objective: 'parte A' },
+        { id: 't2', agentId: b._id.toString(), objective: 'parte B' },
+      ],
+    })
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'A e B' })
+
+  assert.equal(run.output, 'final parcial', 'a execução continua e entrega o que deu')
+  // A falha é dita, não escondida.
+  assert.match(run.warnings.join(' '), /Agente B/)
+  const sintese = f.chamadas.find((c) => /Junte os resultados/.test(c.instructions))
+  assert.match(sintese.input, /saída de A/)
+  assert.match(sintese.input, /FALHOU/)
+  // E o painel mostra quem tentou e não conseguiu.
+  const falho = run.participants.find((p) => p.name === 'Agente B')
+  assert.equal(falho.status, 'failed')
+})
+
+test('pergunta simples: uma tarefa só, sem acionar a equipe inteira', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const b = agente('Agente B')
+  const c = agente('Agente C')
+  const setor = equipeDe(coordenador, [a, b, c])
+
+  const f = deps([coordenador, a, b, c], {
+    sector: setor,
+    runTask: async (req) => ({
+      output: /Junte os resultados/.test(req.instructions) ? 'final' : 'só A',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      toolCalls: [],
+    }),
+  })
+  f.deps.planWithModel = async () => JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'só isso' }] })
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'uma coisa simples' })
+
+  const especialistas = run.participants.filter((p) => p.role === 'specialist')
+  assert.equal(especialistas.length, 1, 'ninguém mais foi acionado')
+  assert.equal(especialistas[0].name, 'Agente A')
+  // Duas inferências no total: o especialista e a consolidação para quem perguntou.
+  assert.equal(run.participants.length, 2)
+})
+
+test('setor sem outros membros continua como antes: o coordenador responde o pedido', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const setor = equipeDe(coordenador, [])
+  const f = deps([coordenador], { sector: setor })
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'e aí?' })
+
+  assert.equal(run.participants.length, 1)
+  // Sem plano não há síntese: a instrução é o pedido, como sempre foi.
+  assert.ok(!/Junte os resultados/.test(f.chamadas[0].instructions))
+  assert.match(f.chamadas[0].instructions, /e aí\?/)
+})
+
+// --- ACEITAÇÃO: dois especialistas, conhecimentos distintos, uma resposta cruzada -----------
+//
+// Genérico de propósito: uma entidade qualquer ("Unidade 7"), um agente com a SÉRIE de
+// medições e outro com os EVENTOS do período. A pergunta liga as duas coisas — o que
+// mudou, e o que aconteceu que possa explicar. Nada aqui sabe de domínio nenhum.
+
+const SERIE = [
+  'Unidade 7 — medições diárias',
+  'Data | Leitura',
+  '2026-08-01 | 118',
+  '2026-08-02 | 121',
+  '2026-08-03 | 119',
+  '2026-08-04 | 164',
+  '2026-08-05 | 171',
+].join('\n')
+
+const EVENTOS = [
+  'Unidade 7 — registro de ocorrências',
+  '03/08/2026: troca do equipamento auxiliar, parada de 4 horas.',
+  '04/08/2026: entrada do turno extra, com dobra de operadores.',
+].join('\n')
+
+test('ACEITAÇÃO: séries com um agente, eventos com outro, resposta cruzando os dois', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const dados = agente('Medições', { capabilities: ['series historicas'] })
+  const contexto = agente('Ocorrências', { capabilities: ['eventos operacionais'] })
+  const setor = equipeDe(coordenador, [dados, contexto])
+
+  await createDocumentFor({ ownerType: 'agent', ownerId: dados._id }, { title: 'Série Unidade 7', content: SERIE })
+  await createDocumentFor({ ownerType: 'agent', ownerId: contexto._id }, { title: 'Ocorrências Unidade 7', content: EVENTOS })
+
+  const esperar = barreira(2)
+  const f = deps([coordenador, dados, contexto], {
+    sector: setor,
+    // Cada agente responde a partir do que a base DELE entregou — é o que prova que a
+    // execução real aconteceu, e não uma leitura de base feita por outro.
+    runTask: async (req) => {
+      if (/Junte os resultados/.test(req.instructions)) {
+        const entrada = req.input ?? ''
+        return {
+          output: `Subiu de 119 para 164 em 04/08. ${/turno extra/.test(entrada) ? 'Coincide com a entrada do turno extra em 04/08.' : 'Sem contexto para explicar.'}`,
+          usage: { inputTokens: 1, outputTokens: 1 },
+          toolCalls: [],
+        }
+      }
+      await esperar(req.instructions)
+      const trechos = (req.context ?? []).join('\n')
+      if (/164/.test(trechos)) return { output: 'A leitura passou de 119 em 03/08 para 164 em 04/08.', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+      if (/turno extra/.test(trechos)) return { output: 'Em 04/08 entrou turno extra, com dobra de operadores.', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+      return { output: 'nada encontrado', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) => {
+    // O mesmo dublê responde às duas perguntas do motor: planejar e avaliar suficiência.
+    if (/sufficient/.test(prompt)) return JSON.stringify({ sufficient: true })
+    return JSON.stringify({
+      tasks: [
+        { id: 't1', agentId: dados._id.toString(), objective: 'o que mudou na série da Unidade 7' },
+        { id: 't2', agentId: contexto._id.toString(), objective: 'ocorrências da Unidade 7 no período' },
+      ],
+      synthesisObjective: 'relacionar a mudança com as ocorrências',
+    })
+  }
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, {
+    objective: 'a leitura da Unidade 7 mudou no começo de agosto? o que pode explicar?',
+  })
+
+  // Os dois especialistas executaram (em paralelo — a barreira exige) e o coordenador juntou.
+  assert.deepEqual(run.participants.map((p) => p.role), ['specialist', 'specialist', 'coordinator'])
+  // A síntese recebeu os DOIS, cada um com seu autor.
+  const sintese = f.chamadas.find((c) => /Junte os resultados/.test(c.instructions))
+  assert.match(sintese.input, /\[Medições\]/)
+  assert.match(sintese.input, /119 em 03\/08 para 164/)
+  assert.match(sintese.input, /\[Ocorrências\]/)
+  assert.match(sintese.input, /turno extra/)
+  // E a resposta cruza: a mudança E o evento que a acompanha.
+  assert.match(run.output, /164/)
+  assert.match(run.output, /turno extra/)
+})
+
+// --- suficiência, rodadas e repetição --------------------------------------------------------
+
+test('faltando informação e havendo quem consultar, o motor faz UMA segunda rodada', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const b = agente('Agente B')
+  const setor = equipeDe(coordenador, [a, b])
+  const rodadas = []
+
+  const f = deps([coordenador, a, b], {
+    sector: setor,
+    runTask: async (req) => ({
+      output: /Junte os resultados/.test(req.instructions) ? 'consolidado' : `saída de ${req.instructions}`,
+      usage: { inputTokens: 1, outputTokens: 1 },
+      toolCalls: [],
+    }),
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) => {
+    if (/sufficient/.test(prompt)) return JSON.stringify({ sufficient: false, missing: 'os dados do B' })
+    rodadas.push(prompt)
+    // A segunda rodada só enxerga quem sobrou — o prompt de planejamento prova isso.
+    return rodadas.length === 1
+      ? JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'parte A' }] })
+      : JSON.stringify({ tasks: [{ id: 't1', agentId: b._id.toString(), objective: 'parte B' }] })
+  }
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'preciso de tudo' })
+
+  assert.equal(rodadas.length, 2, 'houve replanejamento')
+  assert.ok(!rodadas[1].includes(a._id.toString()), 'a segunda rodada não reconsulta quem já respondeu')
+  const especialistas = run.participants.filter((p) => p.role === 'specialist').map((p) => p.name)
+  assert.deepEqual(especialistas, ['Agente A', 'Agente B'])
+})
+
+test('o motor não roda para sempre: no teto, responde com o que tem e diz o que faltou', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const b = agente('Agente B')
+  const c = agente('Agente C')
+  const setor = equipeDe(coordenador, [a, b, c])
+  let planejamentos = 0
+
+  const f = deps([coordenador, a, b, c], {
+    sector: setor,
+    runTask: async (req) => ({
+      output: /Junte os resultados/.test(req.instructions) ? 'o que deu' : 'parcial',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      toolCalls: [],
+    }),
+  })
+  // Nunca satisfeito: se não houvesse teto, isto rodaria para sempre.
+  f.deps.planWithModel = async (_o, _c, prompt) => {
+    if (/sufficient/.test(prompt)) return JSON.stringify({ sufficient: false, missing: 'sempre falta algo' })
+    planejamentos += 1
+    const alvo = [a, b, c][Math.min(planejamentos - 1, 2)]
+    return JSON.stringify({ tasks: [{ id: 't1', agentId: alvo._id.toString(), objective: `parte ${planejamentos}` }] })
+  }
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'quero tudo' })
+
+  assert.equal(planejamentos, 2, 'duas rodadas, nunca três')
+  // A limitação é dita, não escondida.
+  assert.match(run.warnings.join(' '), /informação incompleta/)
+  const sintese = f.chamadas.filter((c) => /Junte os resultados/.test(c.instructions)).at(-1)
+  assert.match(sintese.instructions, /ainda falta informação/i)
+  assert.match(sintese.instructions, /sempre falta algo/)
+})
+
+test('quem já respondeu não é reconsultado na rodada seguinte', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const b = agente('Agente B')
+  const setor = equipeDe(coordenador, [a, b])
+  const executadas = []
+
+  const f = deps([coordenador, a, b], {
+    sector: setor,
+    runTask: async (req) => {
+      if (!/Junte os resultados/.test(req.instructions)) executadas.push(req.instructions)
+      return { output: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  // O planejador tenta insistir no MESMO agente na segunda rodada. Ele nem aparece na
+  // lista de candidatos — e, se aparecesse, a chave agente+objetivo o barraria.
+  f.deps.planWithModel = async (_o, _c, prompt) => {
+    if (/sufficient/.test(prompt)) return JSON.stringify({ sufficient: false, missing: 'mais do mesmo' })
+    return JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'a mesma coisa' }] })
+  }
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'pergunta' })
+
+  const vezesDoA = run.participants.filter((p) => p.name === 'Agente A').length
+  assert.equal(vezesDoA, 1, 'o agente A executou uma vez só, em duas rodadas')
+  assert.ok(!executadas.some((i, idx) => idx > 0 && i === executadas[0]), 'nenhuma instrução repetida')
+})
+
+test('sem ninguém sobrando, não se pergunta se falta — e não há segunda rodada', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const setor = equipeDe(coordenador, [a])
+  let perguntouSuficiencia = false
+
+  const f = deps([coordenador, a], {
+    sector: setor,
+    runTask: async () => ({ output: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) => {
+    if (/sufficient/.test(prompt)) {
+      perguntouSuficiencia = true
+      return JSON.stringify({ sufficient: false, missing: 'x' })
+    }
+    return JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'única' }] })
+  }
+
+  await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'pergunta' })
+  assert.equal(perguntouSuficiencia, false, 'uma pergunta que não muda nada é uma pergunta que não se faz')
+})
+
+test('se a consolidação falhar, o trabalho da equipe não é jogado fora', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const setor = equipeDe(coordenador, [a])
+
+  const f = deps([coordenador, a], {
+    sector: setor,
+    runTask: async (req) => {
+      if (/Junte os resultados/.test(req.instructions)) throw new Error('provider caiu')
+      return { output: 'o que o A apurou', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  f.deps.planWithModel = async () => JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'apurar' }] })
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'pergunta' })
+
+  assert.match(run.output, /o que o A apurou/, 'o resultado real sobrevive')
+  assert.match(run.output, /Agente A/, 'com o nome de quem respondeu')
+  assert.match(run.warnings.join(' '), /não foi possível consolidar/)
 })
