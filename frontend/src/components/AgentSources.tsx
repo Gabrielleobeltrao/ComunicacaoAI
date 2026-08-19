@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { API_URL } from '../lib/api'
 import { useActiveFloorId } from '../contexts/BuildingContext'
@@ -130,65 +130,97 @@ export function AgentSources({ agentId }: { agentId: string }) {
   const [resumo, setResumo] = useState<string | null>(null)
   const fid = useActiveFloorId()
 
-  useEffect(() => {
-    let vivo = true
-    fetch(`${API_URL}/api/agents/${agentId}/sources`, { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : []))
-      .then((corpo) => {
-        if (!vivo) return
-        // O GET devolve a lista; as configurações vêm junto quando existem.
-        const lista: AgentSource[] = Array.isArray(corpo) ? corpo : (corpo?.sources ?? [])
-        setProprias(
-          lista
-            .filter((s) => s.origem === 'agente')
-            .map((s, i) => ({
-              id: s.id ?? `${i}`,
-              name: s.name,
-              kind: s.kind,
-              url: s.url ?? '',
-              when: s.when ?? 'on_demand',
-              initialWindow: s.initialWindow ?? '7d',
-              refreshMode: s.refreshMode ?? 'manual',
-              intervalMinutes: s.intervalMinutes ?? 30,
-              maxStalenessMinutes: s.maxStalenessMinutes ?? 30,
-              discoveryMode: s.discoveryMode ?? 'auto',
-              crawlArticles: s.crawlArticles === true,
-              maxArticlesPerRun: s.maxArticlesPerRun ?? 5,
-              sameDomainOnly: s.sameDomainOnly !== false,
-              status: s.status,
-              knowledgeCount: s.knowledgeCount,
-              lastSuccessfulFetchAt: s.lastSuccessfulFetchAt,
-              nextScheduledAt: s.nextScheduledAt,
-              lastError: s.lastError,
-            })),
-        )
-        if (!Array.isArray(corpo) && corpo?.settings) setCfg({ ...PADRAO, ...corpo.settings })
-        setDeRotinas(lista.filter((s) => s.origem === 'rotina'))
-        setCarregando(false)
-      })
-      .catch(() => vivo && setCarregando(false))
-    return () => {
-      vivo = false
+  /** Lê do servidor o que está gravado. Reaproveitado depois de atualizar, porque o
+   *  estado de cada endereço (última leitura, próxima, erro) muda com ela. */
+  const carregar = useCallback(async () => {
+    const r = await fetch(`${API_URL}/api/agents/${agentId}/sources`, { credentials: 'include' }).catch(() => null)
+    if (!r || !r.ok) {
+      setCarregando(false)
+      return
     }
+    const corpo = await r.json().catch(() => null)
+    const lista: AgentSource[] = Array.isArray(corpo) ? corpo : (corpo?.sources ?? [])
+    setProprias(
+      lista
+        .filter((s) => s.origem === 'agente')
+        .map((s, i) => ({
+          id: s.id ?? `${i}`,
+          name: s.name,
+          kind: s.kind,
+          url: s.url ?? '',
+          when: s.when ?? 'on_demand',
+          initialWindow: s.initialWindow ?? '7d',
+          refreshMode: s.refreshMode ?? 'manual',
+          intervalMinutes: s.intervalMinutes ?? 30,
+          maxStalenessMinutes: s.maxStalenessMinutes ?? 30,
+          discoveryMode: s.discoveryMode ?? 'auto',
+          crawlArticles: s.crawlArticles === true,
+          maxArticlesPerRun: s.maxArticlesPerRun ?? 5,
+          sameDomainOnly: s.sameDomainOnly !== false,
+          status: s.status,
+          knowledgeCount: s.knowledgeCount,
+          lastSuccessfulFetchAt: s.lastSuccessfulFetchAt,
+          nextScheduledAt: s.nextScheduledAt,
+          lastError: s.lastError,
+        })),
+    )
+    if (!Array.isArray(corpo) && corpo?.settings) setCfg({ ...PADRAO, ...corpo.settings })
+    setDeRotinas(lista.filter((s) => s.origem === 'rotina'))
+    setCarregando(false)
   }, [agentId])
 
+  useEffect(() => {
+    void carregar()
+  }, [carregar])
+
   /** Lê agora o que está salvo, e conta o que aconteceu com cada endereço. */
+  /**
+   * Lê os endereços AGORA e conta o que aconteceu com cada um.
+   *
+   * Salva antes, sempre. O botão lê o que está GRAVADO, e quem acabou de digitar um
+   * endereço não tem como saber disso: clicava, via "Nada a atualizar agora" e concluía
+   * que a função não funciona. Salvar primeiro elimina a armadilha inteira.
+   */
   async function atualizarAgora() {
     setAtualizando(true)
     setResumo(null)
     try {
+      const salvouAntes = await salvar()
+      if (!salvouAntes) {
+        setResumo('Corrija o endereço antes de atualizar.')
+        return
+      }
       const res = await fetch(`${API_URL}/api/agents/${agentId}/sources/refresh`, { method: 'POST', credentials: 'include' })
       const corpo = await res.json().catch(() => null)
-      const fontes: { name: string; refreshed: boolean; created: number; updated: number; unchanged: number; error: string | null }[] =
-        corpo?.sources ?? []
-      const lidas = fontes.filter((f) => f.refreshed)
+      const fontes: {
+        name: string
+        refreshed: boolean
+        reason?: string
+        discovered?: number
+        created: number
+        updated: number
+        unchanged: number
+        error: string | null
+      }[] = corpo?.sources ?? []
+
       setResumo(
-        lidas.length === 0
-          ? 'Nada a atualizar agora.'
-          : lidas
-              .map((f) => `${f.name}: ${f.error ? `falhou (${f.error})` : `${f.created} nova(s), ${f.updated} atualizada(s), ${f.unchanged} sem mudança`}`)
+        fontes.length === 0
+          ? 'Nenhum endereço cadastrado para ler.'
+          : fontes
+              .map((f) =>
+                f.error
+                  ? `${f.name}: não deu para ler (${f.error})`
+                  : !f.refreshed
+                    ? // O motivo vem do servidor: "lida há 2 min", "fonte desligada". Sem
+                      // ele, "nada a atualizar" parece defeito.
+                      `${f.name}: nada a fazer (${f.reason ?? 'sem motivo registrado'})`
+                    : `${f.name}: ${f.discovered ?? 0} página(s) lida(s) — ${f.created} nova(s), ${f.updated} atualizada(s), ${f.unchanged} sem mudança`,
+              )
               .join(' · '),
       )
+      // O estado de cada endereço (última leitura, próxima, erro) muda com isto: sem
+      // recarregar, a tela continuaria mostrando o de antes.
+      await carregar()
     } catch {
       setResumo('Não foi possível atualizar agora.')
     } finally {
@@ -233,9 +265,10 @@ export function AgentSources({ agentId }: { agentId: string }) {
       if (!res.ok) {
         const corpo = await res.json().catch(() => null)
         setErro(corpo?.error ?? 'Não foi possível salvar.')
-        return
+        return false
       }
       setSalvo(true)
+      return true
     } finally {
       setSalvando(false)
     }
@@ -364,6 +397,15 @@ export function AgentSources({ agentId }: { agentId: string }) {
                        </label>
                      )}
                    </>
+                 )}
+                 {/* O modo padrão não lê nada sozinho — e quem cadastrou um site espera
+                     que ele seja usado. Dizer isso aqui evita a conclusão de que a
+                     função está quebrada. */}
+                 {linha.refreshMode === 'manual' && (
+                   <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }} data-testid="agent-source-manual-hint">
+                     Neste modo nada é lido sozinho: use “Atualizar agora”, ou escolha
+                     “Antes de usar o agente” para o conteúdo entrar na base quando ele for acionado.
+                   </p>
                  )}
                  {/* O que esta fonte PRODUZIU. Sem este número, "manter na base" é uma
                      configuração sem efeito visível. */}

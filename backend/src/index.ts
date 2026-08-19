@@ -228,7 +228,7 @@ import type { PlaygroundTurn } from './playgroundSession.js'
 import { NOOP_TRACKER, createLiveTracker, instrumentTools } from './agentLiveTracker.js'
 import { onTraceEvent, preview as tracePreview, readTrace, traceEvent } from './executionTrace.js'
 import type { TraceInput } from './executionTrace.js'
-import { ignoreWebUrl } from './webKnowledge.js'
+import { ensureFreshWithTimeout, ignoreWebUrl } from './webKnowledge.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -2753,6 +2753,17 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     }
   }
 
+  /**
+   * O site ANTES da busca — o passo que faltava para um agente sozinho.
+   *
+   * No time, o executor compartilhado já fazia isso antes de perguntar à base. No chat de
+   * UM agente, ninguém fazia: quem cadastrava um site via a pergunta ser respondida sem
+   * ele, porque a base nunca tinha sido alimentada. A política da fonte decide se vale a
+   * leitura, e o teto de espera impede que um site lento segure a resposta.
+   */
+  const fontesDoChat = await ensureFreshWithTimeout(res.locals.userId, agent._id, 'on_demand').catch(() => [])
+  const lidasNoChat = fontesDoChat.filter((f) => f.refreshed)
+
   let knowledge: string[] = []
   try {
     const results = await searchKnowledge(agent._id, lastUser.content)
@@ -2822,6 +2833,26 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     input: tracePreview(lastUser.content, 600),
     metadata: { agentId: agent._id.toString(), agent: agent.name },
   })
+  if (lidasNoChat.length > 0) {
+    trilhaChat({
+      type: 'rag',
+      status: lidasNoChat.some((f) => f.error) ? 'error' : 'success',
+      agentId: agent._id.toString(),
+      title: `Fontes web — ${lidasNoChat.reduce((n, f) => n + f.created, 0)} nova(s), ${lidasNoChat.reduce((n, f) => n + f.updated, 0)} atualizada(s)`,
+      metadata: {
+        sources: lidasNoChat.map((f) => ({
+          name: f.name,
+          via: f.via ?? null,
+          reason: f.reason,
+          discovered: f.discovered,
+          new: f.created,
+          updated: f.updated,
+          unchanged: f.unchanged,
+          error: f.error ?? null,
+        })),
+      },
+    })
+  }
   trilhaChat({
     type: 'rag',
     status: knowledge.length > 0 ? 'success' : 'info',
@@ -3972,6 +4003,11 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       return
     }
   }
+
+  // O site antes da base, como no chat de teste: num canal ninguém está olhando, e
+  // responder com a base de ontem é o pior dos dois mundos. Quando quem responde é um
+  // SETOR, cada agente do time cuida da própria fonte dentro do executor.
+  if (!setorDoCanal) await ensureFreshWithTimeout(ownerId, agent._id, 'on_demand').catch(() => [])
 
   // Ground the reply in the knowledge base(s) of the responding agent — or of
   // every consulted specialist, for a sector. Skipped when only clarifying.

@@ -287,6 +287,41 @@ async function gravarEstado(ownerId: string, agentId: ObjectId, sourceId: string
  *
  * Nunca lança: um site fora do ar não pode impedir o agente de trabalhar com o que já tem.
  */
+/**
+ * A mesma verificação, com teto de espera — para quem está atendendo alguém.
+ *
+ * A leitura acontece ANTES da resposta, então ela está na frente de quem perguntou.
+ * Esperar indefinidamente por um site lento transformaria um problema do site do outro em
+ * silêncio no nosso chat: passado o teto, o agente responde com o que já tem na base.
+ */
+export async function ensureFreshWithTimeout(
+  ownerId: string,
+  agentId: ObjectId | string,
+  motivo: RefreshReason = 'on_demand',
+): Promise<RefreshOutcome[]> {
+  const limite = new Promise<'timeout'>((r) => {
+    const t = setTimeout(() => r('timeout'), WEB_REFRESH_TIMEOUT_MS)
+    t.unref?.()
+  })
+  const saida = await Promise.race([ensureAgentWebKnowledgeFresh(ownerId, agentId, motivo), limite])
+  return saida === 'timeout'
+    ? [
+        {
+          sourceId: '',
+          name: 'fontes web',
+          refreshed: true,
+          reason: 'tempo esgotado',
+          discovered: 0,
+          created: 0,
+          updated: 0,
+          unchanged: 0,
+          error: 'a atualização não terminou a tempo',
+          durationMs: WEB_REFRESH_TIMEOUT_MS,
+        },
+      ]
+    : saida
+}
+
 export async function ensureAgentWebKnowledgeFresh(
   ownerId: string,
   agentId: ObjectId | string,

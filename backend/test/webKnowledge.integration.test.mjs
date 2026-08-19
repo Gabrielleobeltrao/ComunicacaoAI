@@ -541,11 +541,124 @@ test('8) o RAG continua recuperando o que veio da web', async () => {
   textoDaMateria['1'] = 'O relatório trimestral da unidade 7 apontou crescimento de 12% no período. '.repeat(15)
   await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
 
-  const { retrieveContext } = await import('../dist/knowledge.js')
 
   const r = await retrieveContext([agentId], 'o que diz o relatório trimestral da unidade 7?')
   assert.equal(r.status, 'ok')
   assert.match(r.context.join('\n'), /crescimento de 12%/)
   // A procedência acompanha o trecho: quem lê a resposta consegue voltar à origem.
   assert.ok(r.sources.some((f) => (f.title ?? '').includes('Relatório trimestral')))
+})
+
+// --- O BUG RELATADO: perguntar antes de passar pelo site ------------------------------------
+//
+// A recuperação rodava primeiro, achava a base vazia e — num agente que EXIGE
+// fundamentação — a execução parava com `GroundingRequiredError` sem nunca ter passado
+// pelo site. O agente tinha a fonte configurada, o site tinha a resposta, e ninguém foi lá.
+
+const { executeSectorTeam, sectorRunContext } = await import('../dist/delegation.js')
+const { retrieveContext } = await import('../dist/knowledge.js')
+const { ensureFreshWithTimeout } = await import('../dist/webKnowledge.js')
+
+const agenteComSite = async (over = {}) => {
+  const _id = await criarAgente({ refreshMode: 'on_demand', maxStalenessMinutes: 30, ...over })
+  return db.collection('agents').findOne({ _id })
+}
+
+// Um setor de UM: o próprio agente coordena. É o caminho por onde todo agente de time
+// passa — e é dentro dele que a atualização acontece antes da recuperação.
+const setorDeUm = (agente) => ({
+  _id: new ObjectId(),
+  name: 'Mesa',
+  officeId: agente.officeId ?? new ObjectId(),
+  mode: 'orchestrated',
+  coordinatorAgentId: agente._id,
+  instruction: '',
+  members: [{ agentId: agente._id, isDefault: true }],
+  stages: [],
+})
+
+const depsDoRuntime = (agente, over = {}) => ({
+  loadAgent: async () => agente,
+  loadSector: async () => setorDeUm(agente),
+  listAgentsInBuilding: async () => [agente],
+  buildingIdForFloor: async () => 'predio',
+  resolveTools: async () => [],
+  apiKeyFor: async () => 'k',
+  retrieveContext: (agentId, query, opts) => retrieveContext(agentId, query, { verifiedSectorId: opts?.sectorId ?? null }),
+  runTask:
+    over.runTask ??
+    (async (req) => ({ output: `li: ${(req.context ?? []).join(' ').slice(0, 120)}`, usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] })),
+  startDelegation: async () => new ObjectId(),
+  finishDelegation: async () => undefined,
+  recordEvent: () => undefined,
+  // O MESMO serviço que a tela usa no "Atualizar agora" e que o relógio usa.
+  ensureWebKnowledgeFresh: (ownerId, agentId) => ensureFreshWithTimeout(ownerId, agentId, 'on_demand'),
+  ...over.deps,
+})
+
+const rodar = (agente, pergunta) =>
+  executeSectorTeam(
+    depsDoRuntime(agente),
+    sectorRunContext({ ownerId: OWNER, buildingId: 'predio', correlationId: 'teste' }),
+    setorDeUm(agente),
+    { objective: pergunta },
+  )
+
+test('1) base vazia + on_demand: a pergunta passa pelo site ANTES de consultar a base', async () => {
+  corpoDaPagina = '<html><head><title>Novo horário de atendimento</title></head><body><article>' + 'O comunicado de hoje informa o novo horário de atendimento, das 9h às 18h. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite()
+  assert.equal((await documentos(agente._id)).length, 0, 'a base começa vazia')
+
+  const r = await rodar(agente, 'qual o novo horário de atendimento?')
+
+  // O documento foi criado ANTES da recuperação — e o que ele diz chegou ao agente.
+  assert.equal((await documentos(agente._id)).length, 1)
+  assert.match(r.output, /novo horário de atendimento/i)
+  assert.equal(r.participants[0].grounding, 'ok')
+})
+
+test('2) requireGrounding não bloqueia antes de tentar o refresh', async () => {
+  corpoDaPagina = '<html><head><title>Tabela de preços vigente</title></head><body><article>' + 'A tabela de preços vigente começa em primeiro de setembro. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite()
+  // O agente EXIGE base. Antes, isto era um erro garantido: a base estava vazia no
+  // momento da checagem, porque ninguém tinha passado pelo site.
+  const comExigencia = { ...agente, requireGrounding: true }
+
+  const r = await rodar(comExigencia, 'quando começa a tabela de preços?')
+  assert.equal(r.participants[0].grounding, 'ok')
+  assert.match(r.output, /tabela de preços/i)
+})
+
+test('6) o site cai, mas a base anterior existe: o agente trabalha com ela', async () => {
+  corpoDaPagina = '<html><head><title>Protocolo antigo em vigor</title></head><body><article>' + 'O protocolo antigo continua valendo até segunda ordem. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite()
+  await ensureAgentWebKnowledgeFresh(OWNER, agente._id, 'manual')
+  const antes = (await documentos(agente._id)).length
+  assert.equal(antes, 1)
+
+  // O site sai do ar. A execução seguinte não pode perder o que já estava guardado.
+  const quebrado = { ...agente, watchedSources: [{ ...agente.watchedSources[0], url: `http://127.0.0.1:${porta}/quebrado` }] }
+  await db.collection('agents').updateOne({ _id: agente._id }, { $set: { watchedSources: quebrado.watchedSources } })
+
+  const r = await rodar(quebrado, 'o protocolo antigo ainda vale?')
+  assert.equal((await documentos(agente._id)).length, antes, 'nada foi apagado')
+  assert.equal(r.participants[0].grounding, 'ok')
+  assert.match(r.output, /protocolo antigo/i)
+})
+
+test('7) manual não é atualizada por uma pergunta', async () => {
+  const agente = await agenteComSite({ refreshMode: 'manual' })
+  const antes = pedidos.length
+  await rodar(agente, 'alguma coisa')
+  assert.equal(pedidos.length, antes, 'nenhuma requisição ao site')
+  assert.equal((await documentos(agente._id)).length, 0)
+})
+
+test('5) hybrid recém-lida não busca de novo a cada pergunta', async () => {
+  const agente = await agenteComSite({ refreshMode: 'hybrid', intervalMinutes: 60, maxStalenessMinutes: 30 })
+  await ensureAgentWebKnowledgeFresh(OWNER, agente._id, 'manual')
+  const antes = pedidos.length
+
+  await rodar(agente, 'de novo')
+  assert.equal(pedidos.length, antes, 'a base recente serve; o site não é tocado')
 })

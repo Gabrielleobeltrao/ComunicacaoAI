@@ -757,3 +757,101 @@ test('a seção de ferramentas tem Salvar, e nenhuma promessa de salvamento auto
   // E o recibo aparece.
   await expect(page.getByTestId('tools-save-state')).toContainText(/Salvo|Salvando/)
 })
+
+// --- "Atualizar agora" que realmente atualiza ------------------------------------------------
+//
+// Relatado: cadastro o site, clico em atualizar, e não aparece conhecimento nenhum. O
+// botão lia o que estava GRAVADO — e quem acabou de digitar um endereço não tem como
+// saber disso. Via "Nada a atualizar agora" e concluía que a função não funciona.
+
+test('atualizar agora salva o endereço antes de ler', async ({ page }) => {
+  const ordem: string[] = []
+  await stub(page)
+  await page.route('**/api/agents/*/sources', (r) => {
+    if (r.request().method() === 'PUT') {
+      ordem.push('salvar')
+      return r.fulfill({ json: { ok: true } })
+    }
+    return r.fulfill({ json: { settings: SETTINGS, sources: [] } })
+  })
+  await page.route('**/api/agents/*/sources/refresh', (r) => {
+    ordem.push('atualizar')
+    return r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: true, discovered: 1, created: 1, updated: 0, unchanged: 0, error: null }] } })
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+
+  await page.getByTestId('agent-source-add').click()
+  await page.getByTestId('agent-source-name').fill('Boletim')
+  await page.getByTestId('agent-source-url').fill('https://exemplo.test/boletim')
+  // Sem clicar em Salvar: é exatamente o caso que falhava em silêncio.
+  await page.getByTestId('agent-sources-refresh').click()
+
+  await expect.poll(() => ordem).toEqual(['salvar', 'atualizar'])
+  await expect(page.getByTestId('agent-sources-refresh-result')).toContainText('1 nova(s)')
+})
+
+test('quando nada é lido, a tela diz POR QUE', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.request().method() === 'PUT' ? r.fulfill({ json: { ok: true } }) : r.fulfill({ json: { settings: SETTINGS, sources: [] } }),
+  )
+  await page.route('**/api/agents/*/sources/refresh', (r) =>
+    r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: false, reason: 'lida há 2 min', created: 0, updated: 0, unchanged: 0, error: null }] } }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+  await page.getByTestId('agent-source-add').click()
+  await page.getByTestId('agent-source-url').fill('https://exemplo.test/boletim')
+  await page.getByTestId('agent-sources-refresh').click()
+
+  // "Nada a atualizar" sem motivo parece defeito. Com motivo, é informação.
+  await expect(page.getByTestId('agent-sources-refresh-result')).toContainText('lida há 2 min')
+})
+
+test('a falha de leitura aparece na tela, e não em silêncio', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.request().method() === 'PUT' ? r.fulfill({ json: { ok: true } }) : r.fulfill({ json: { settings: SETTINGS, sources: [] } }),
+  )
+  await page.route('**/api/agents/*/sources/refresh', (r) =>
+    r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: true, created: 0, updated: 0, unchanged: 0, error: 'HTTP 403' }] } }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+  await page.getByTestId('agent-source-add').click()
+  await page.getByTestId('agent-source-url').fill('https://exemplo.test/boletim')
+  await page.getByTestId('agent-sources-refresh').click()
+
+  await expect(page.getByTestId('agent-sources-refresh-result')).toContainText('não deu para ler (HTTP 403)')
+})
+
+test('o modo padrão avisa que não lê nada sozinho', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.fulfill({
+      json: {
+        settings: SETTINGS,
+        sources: [
+          {
+            routineId: null,
+            origem: 'agente',
+            id: 'f1',
+            name: 'Boletim',
+            kind: 'http',
+            url: 'https://exemplo.test/boletim',
+            when: 'on_demand',
+            refreshMode: 'manual',
+            discoveryMode: 'auto',
+            host: 'exemplo.test',
+          },
+        ],
+      },
+    }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+  await page.getByTestId('agent-source-web').first().click()
+
+  await expect(page.getByTestId('agent-source-manual-hint')).toContainText('nada é lido sozinho')
+})
