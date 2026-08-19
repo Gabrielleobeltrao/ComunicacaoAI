@@ -340,8 +340,9 @@ test('a aba Como trabalha deixa cadastrar um site para o agente consultar', asyn
         url: 'https://exemplo.test/blog',
         when: 'on_demand',
         initialWindow: '7d',
-        // Um endereço novo não lê nada sozinho: quem liga isso é o dono.
-        refreshMode: 'manual',
+        // Um endereço novo passa a ser lido ANTES de o agente ser usado — sem isso,
+        // cadastrar um site e ele nunca ser lido era o comportamento padrão.
+        refreshMode: 'on_demand',
         intervalMinutes: 30,
         maxStalenessMinutes: 30,
         discoveryMode: 'auto',
@@ -854,4 +855,21 @@ test('o modo padrão avisa que não lê nada sozinho', async ({ page }) => {
   await page.getByTestId('agent-source-web').first().click()
 
   await expect(page.getByTestId('agent-source-manual-hint')).toContainText('nada é lido sozinho')
+})
+
+test('um endereço novo já nasce sendo lido antes de o agente ser usado', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.request().method() === 'PUT' ? r.fulfill({ json: { ok: true } }) : r.fulfill({ json: { settings: SETTINGS, sources: [] } }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+  await page.getByTestId('agent-source-add').click()
+
+  // O modo aparece no resumo, sem precisar abrir o bloco: era invisível antes.
+  await expect(page.getByTestId('agent-source-web')).toContainText('antes de usar o agente')
+  await page.getByTestId('agent-source-web').first().click()
+  await expect(page.getByTestId('agent-source-refresh-mode')).toHaveValue('on_demand')
+  // E o aviso de "nada é lido sozinho" não aparece, porque agora é lido.
+  await expect(page.getByTestId('agent-source-manual-hint')).toHaveCount(0)
 })

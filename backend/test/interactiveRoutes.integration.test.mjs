@@ -483,3 +483,31 @@ test('cadastrar um site e clicar em atualizar cria conhecimento no agente', asyn
     await new Promise((r) => site.close(r))
   }
 })
+
+test('o modo escolhido na tela sobrevive ao salvar', async () => {
+  // Se o modo não voltar do jeito que foi gravado, tudo o mais é irrelevante: a política
+  // decide pelo que está no banco.
+  const agente = await criarAgente({ name: 'Agente com modo' })
+  const salvou = await fetch(`${base}/api/agents/${agente._id}/sources`, {
+    method: 'PUT',
+    headers: comSessao(),
+    body: JSON.stringify({
+      sources: [
+        {
+          name: 'Boletim',
+          kind: 'http',
+          url: 'https://exemplo.test/boletim',
+          when: 'on_demand',
+          refreshMode: 'on_demand',
+          maxStalenessMinutes: 15,
+        },
+      ],
+    }),
+  })
+  assert.ok(salvou.ok, `salvar devolveu ${salvou.status}`)
+
+  const lido = await (await fetch(`${base}/api/agents/${agente._id}/sources`, { headers: comSessao() })).json()
+  const fonte = lido.sources.find((f) => f.origem === 'agente')
+  assert.equal(fonte.refreshMode, 'on_demand', `o modo voltou como ${fonte.refreshMode}`)
+  assert.equal(fonte.maxStalenessMinutes, 15)
+})
