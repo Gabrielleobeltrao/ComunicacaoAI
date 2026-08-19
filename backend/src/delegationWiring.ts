@@ -21,6 +21,7 @@ import { finishDelegation, startDelegation } from './delegationLog.js'
 import { recordAgentEvent } from './agentEvents.js'
 import { recordReplyUsageOnce } from './tokenUsage.js'
 import { listDocuments, retrieveContext } from './knowledge.js'
+import { ensureAgentWebKnowledgeFresh } from './webKnowledge.js'
 import { askAux, auxiliaryModel } from './llm.js'
 import { AUTO_MODEL } from './autoModel.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
@@ -108,6 +109,9 @@ export function productionDelegationDeps(): DelegationDeps {
           : auxiliaryModel(coordinator.provider)
       return askAux(coordinator.provider, prompt, modelo, apiKey, 700)
     },
+    // A base viva do agente, verificada antes de ele trabalhar. Quem decide se vale a
+    // leitura é a política da fonte — aqui é só a ligação.
+    ensureWebKnowledgeFresh: (ownerId, agentId) => ensureAgentWebKnowledgeFresh(ownerId, agentId, 'on_demand'),
     // Só os TÍTULOS: dizem quem tem o dado sem abrir o dado.
     knowledgeTitlesFor: async (_ownerId, agentId) => (await listDocuments(agentId)).map((d) => d.title).filter(Boolean),
     // O balão de quem EXECUTA. `reportState` acima é o de quem DELEGA — os dois

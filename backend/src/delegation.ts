@@ -285,6 +285,14 @@ export interface DelegationDeps {
    * abrir o dado: nenhum trecho de base passa por aqui.
    */
   knowledgeTitlesFor?: (ownerId: string, agentId: ObjectId) => Promise<string[]>
+  /**
+   * "A base deste agente está atualizada o bastante para ele trabalhar?"
+   *
+   * A orquestração não sabe o que é um crawler: ela pergunta antes de executar a tarefa, e
+   * quem decide — modo, intervalo, idade do que está guardado — é o gerente de fontes.
+   * Injetado, opcional, e na maioria das vezes a resposta não custa nada.
+   */
+  ensureWebKnowledgeFresh?: (ownerId: string, agentId: ObjectId) => Promise<unknown>
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
@@ -1296,6 +1304,28 @@ export async function executeSectorTeam(
       return { ...base, status: 'skipped', error: 'ciclo de delegação', durationMs: 0 }
     }
 
+    // O planejador escolheu ESTE agente: é agora que as fontes vivas dele valem uma
+    // verificação. Nunca derruba a tarefa — sem conseguir atualizar, ele trabalha com o
+    // que já tem na base.
+    if (deps.ensureWebKnowledgeFresh) {
+      const antesDaFonte = Date.now()
+      const resultado = (await deps.ensureWebKnowledgeFresh(ctx.ownerId, alvo._id).catch(() => [])) as
+        | { name: string; refreshed: boolean; reason: string; created: number; updated: number; unchanged: number; error?: string }[]
+        | undefined
+      const mexidas = (resultado ?? []).filter((r) => r.refreshed)
+      if (mexidas.length > 0) {
+        trilha({
+          type: 'rag',
+          status: mexidas.some((r) => r.error) ? 'error' : 'success',
+          agentId: task.agentId,
+          title: `${agentName}: fontes web atualizadas antes de executar`,
+          durationMs: Date.now() - antesDaFonte,
+          metadata: {
+            sources: mexidas.map((r) => ({ name: r.name, reason: r.reason, new: r.created, updated: r.updated, unchanged: r.unchanged, error: r.error ?? null })),
+          },
+        })
+      }
+    }
     console.info(`[task:start] execution=${execId} task=${task.id} agent=${task.agentId} deps=[${base.dependsOn.join(',')}]`)
     // A DELEGAÇÃO, na direção de ida: quem pediu, para quem, e o que foi pedido.
     trilha({

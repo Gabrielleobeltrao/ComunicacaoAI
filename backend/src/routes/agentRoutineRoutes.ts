@@ -19,6 +19,8 @@ import type { RoutineSource, RoutineSpec } from '../automations/routine.js'
 import { isInitialWindow, normalizeSourceUrl } from '../automations/sourceChange.js'
 import { fontesDoAgente } from '../automations/sourceTool.js'
 import { isExecutionMode } from '../automations/types.js'
+import { normalizeWebSource } from '../webSourcePolicy.js'
+import { ensureAgentWebKnowledgeFresh } from '../webKnowledge.js'
 import type { ExecutionMode } from '../automations/types.js'
 import { aiStepPlanned, normalizeAppActionPlan, normalizeMemoryPlan } from '../automations/executionPlan.js'
 import type { AppActionPlan, MemoryPlan } from '../automations/executionPlan.js'
@@ -213,16 +215,38 @@ agentRoutineRouter.get('/sources', async (req, res) => {
   const porId = new Map((agente?.watchedSources ?? []).map((w) => [w.name, w]))
   res.json({
     settings: sourceSettingsOf(agente ?? {}),
-    sources: fontes.map((f) => ({
+    sources: fontes.map((f) => {
+      const propria = f.origem === 'agente' ? porId.get(f.nome) : undefined
+      return {
       // Sem rotina quando o site é do próprio agente: ele não tem horário.
       routineId: f.automationId ? f.automationId.toString() : null,
       origem: f.origem,
+      // O id do endereço: é por ele que a tela devolve a configuração sem criar outro.
+      id: propria?.id,
       name: f.nome,
       kind: f.source.kind,
       url: f.origem === 'agente' ? f.source.url : undefined,
       // Quando consultar e a janela do feed são escolha do dono, por endereço.
-      when: f.origem === 'agente' ? (porId.get(f.nome)?.when ?? 'on_demand') : undefined,
-      initialWindow: f.origem === 'agente' ? porId.get(f.nome)?.initialWindow : undefined,
+      when: f.origem === 'agente' ? (propria?.when ?? 'on_demand') : undefined,
+      initialWindow: f.origem === 'agente' ? propria?.initialWindow : undefined,
+      // Como o endereço vira conhecimento — e o que aconteceu na última leitura. O
+      // estado é só de leitura: quem escreve é o gerente de fontes.
+      ...(propria
+        ? {
+            refreshMode: propria.refreshMode ?? 'manual',
+            intervalMinutes: propria.intervalMinutes ?? null,
+            maxStalenessMinutes: propria.maxStalenessMinutes ?? null,
+            discoveryMode: propria.discoveryMode ?? 'auto',
+            crawlArticles: propria.crawlArticles === true,
+            maxArticlesPerRun: propria.maxArticlesPerRun ?? null,
+            sameDomainOnly: propria.sameDomainOnly !== false,
+            status: propria.status ?? 'never_run',
+            lastSuccessfulFetchAt: propria.lastSuccessfulFetchAt ?? null,
+            nextScheduledAt: propria.nextScheduledAt ?? null,
+            lastError: propria.lastError ?? null,
+            newDocuments: propria.newDocuments ?? 0,
+          }
+        : {}),
       // O host, e não a URL inteira: uma query string pode carregar token.
       host: (() => {
         try {
@@ -231,7 +255,8 @@ agentRoutineRouter.get('/sources', async (req, res) => {
           return null
         }
       })(),
-    })),
+      }
+    }),
   })
 })
 
@@ -241,6 +266,38 @@ agentRoutineRouter.get('/sources', async (req, res) => {
  * Substitui a lista inteira: é o que a tela edita, e um PATCH parcial aqui obrigaria a
  * inventar identidade para linhas que o dono acabou de digitar.
  */
+/**
+ * "Atualizar agora" — a leitura que o dono pede com um clique.
+ *
+ * Existe porque `manual` é um modo de verdade, e porque em qualquer outro modo alguém
+ * pode querer ver o efeito antes de esperar o relógio. Devolve o que aconteceu com cada
+ * endereço: quantas páginas foram descobertas, quantas viraram documento novo, quantas
+ * mudaram e quantas estavam iguais.
+ */
+agentRoutineRouter.post('/sources/refresh', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  if (!agentId) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const resultados = await ensureAgentWebKnowledgeFresh(res.locals.userId, agentId, 'manual')
+  res.json({
+    sources: resultados.map((r) => ({
+      sourceId: r.sourceId,
+      name: r.name,
+      refreshed: r.refreshed,
+      reason: r.reason,
+      discovered: r.discovered,
+      created: r.created,
+      updated: r.updated,
+      unchanged: r.unchanged,
+      durationMs: r.durationMs,
+      // A categoria do problema, nunca o corpo da resposta de terceiro.
+      error: r.error ?? null,
+    })),
+  })
+})
+
 agentRoutineRouter.put('/sources', async (req, res) => {
   const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
   if (!agentId) {
@@ -257,6 +314,10 @@ agentRoutineRouter.put('/sources', async (req, res) => {
     return
   }
   const sources: WatchedSource[] = []
+  // O que já estava gravado, para preservar o estado de leitura de cada endereço: salvar
+  // a configuração não pode fazer o sistema esquecer que já leu.
+  const agenteAtual = await getAgentById(res.locals.userId, agentId)
+  const existentes = new Map((agenteAtual?.watchedSources ?? []).map((s) => [s.id, s]))
   for (const item of bruto as Record<string, unknown>[]) {
     const url = typeof item?.url === 'string' ? item.url.trim() : ''
     const kind = item?.kind === 'rss' ? 'rss' : 'http'
@@ -273,6 +334,12 @@ agentRoutineRouter.put('/sources', async (req, res) => {
       return
     }
     const name = typeof item?.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 80) : new URL(url).host
+    // A configuração de atualização vem do mesmo formulário. `normalizeWebSource` aplica
+    // os limites seguros (piso de 5 min, teto de páginas por rodada) e o padrão `manual`,
+    // que é o que mantém uma fonte antiga sem consumir banda sozinha.
+    const web = normalizeWebSource(item as Record<string, unknown>)
+    // O estado da última leitura é do SERVIDOR: o cliente não escreve o que aconteceu.
+    const anterior = existentes.get(typeof item?.id === 'string' ? item.id : '')
     sources.push({
       id: typeof item?.id === 'string' && item.id ? item.id : new ObjectId().toHexString(),
       name,
@@ -280,6 +347,16 @@ agentRoutineRouter.put('/sources', async (req, res) => {
       url: normalizeSourceUrl(url),
       when,
       initialWindow,
+      ...web,
+      ...(anterior
+        ? {
+            lastFetchedAt: anterior.lastFetchedAt ?? null,
+            lastSuccessfulFetchAt: anterior.lastSuccessfulFetchAt ?? null,
+            nextScheduledAt: anterior.nextScheduledAt ?? null,
+            lastError: anterior.lastError ?? null,
+            status: anterior.status ?? 'never_run',
+          }
+        : { status: 'never_run' as const }),
     })
   }
   // Os limites e os nomes vêm no mesmo pedido: são a mesma tela, e salvar em dois passos

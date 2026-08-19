@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto'
 import { claimNextRun, ensureRunIndexes, recoverRun, releaseRun, renewLease } from './runRepository.js'
 import { ensureSchedulerIndexes, tickScheduler } from './scheduler.js'
+import { refreshScheduledWebSources } from '../webKnowledge.js'
 import { processRun } from './runProcessor.js'
 
 // How often to look for work. Polling replaces Redis's push delivery: a routine
@@ -90,6 +91,16 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   const runTimer = setInterval(() => {
     void pumpRuns().catch((error) => onError('run poll', error))
   }, RUN_POLL_MS)
+  // As fontes web por horário entram na mesma varredura do agendador — não há relógio
+  // novo. O intervalo mínimo de uma fonte é 5 min, então uma passada por minuto do
+  // agendador é mais que suficiente para nenhuma atrasar.
+  const fontesTimer = setInterval(() => {
+    void refreshScheduledWebSources()
+      .then((quantas) => {
+        if (quantas) console.log(`Fontes web: ${quantas} atualizada(s)`)
+      })
+      .catch((error) => onError('fontes web', error))
+  }, SCHEDULER_POLL_MS)
   const schedulerTimer = setInterval(() => {
     void tickScheduler()
       .then(({ fired, skipped }) => {
@@ -100,6 +111,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   // Never keep the process alive just to poll.
   runTimer.unref()
   schedulerTimer.unref()
+  fontesTimer.unref()
 
   // Do one pass immediately: a restart should pick up pending work at once.
   await tickScheduler().catch((error) => onError('scheduler', error))
@@ -112,6 +124,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
     stop: async () => {
       if (stopping) return
       stopping = true
+      clearInterval(fontesTimer)
       clearInterval(runTimer)
       clearInterval(schedulerTimer)
       // Let in-flight runs finish; their leases keep them ours meanwhile.
