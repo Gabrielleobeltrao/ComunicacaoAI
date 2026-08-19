@@ -585,3 +585,70 @@ test('setor orquestrado sem outros membros avisa, em vez de parecer quebrado', a
   // E sem equipe não se inventa instrução de delegação: procurar quem não existe é pior.
   assert.ok(!f.chamadas[0].instructions.includes('COORDENA a equipe'))
 })
+
+// --- o caso da VALE3 e da BBSE3 ------------------------------------------------------------
+//
+// Relatado: perguntaram a cotação da Vale em 4 de agosto e a resposta veio com os números
+// da BBSE3. Depois, perguntando pelo dia 6, veio de novo a linha do dia 4. As duas séries
+// estavam na base; nenhuma das duas perguntas encontrava a LINHA.
+//
+// A causa não era o modelo. A busca determinística não entendia data escrita por gente
+// ("4 de agosto") nem a data que as tabelas exportadas usam ("Aug 4, 2026") — e sem um
+// termo de data para ancorar, a janela era recortada em volta do ticker, que aparece no
+// TÍTULO. O modelo recebia sempre o começo do documento, nunca a linha pedida.
+
+const CABECA = 'Date Open High Low Close Adj Close Volume'
+const serie = (nome, base) =>
+  [
+    nome,
+    'Currency in BRL. Historical data.',
+    CABECA,
+    ...Array.from({ length: 40 }, (_, i) => `Jul ${i + 1}, 2026 ${base}.00 ${base + 900}.00 ${base - 300}.00 ${base + 100}.00 ${base + 100}.00 1,${100 + i}`),
+    `Aug 4, 2026 ${base + 1400}.00 ${base + 2500}.00 ${base + 1150}.00 ${base + 1480}.00 ${base + 1480}.00 2,088`,
+    `Aug 5, 2026 ${base + 1660}.00 ${base + 1800}.00 ${base + 1400}.00 ${base + 1510}.00 ${base + 1510}.00 1,904`,
+    `Aug 6, 2026 ${base + 1770}.00 ${base + 1880}.00 ${base + 1410}.00 ${base + 1620}.00 ${base + 1620}.00 2,210`,
+  ].join('\n')
+
+test('a linha do dia pedido é encontrada, mesmo escrita como as tabelas escrevem', async () => {
+  const pesquisador = agente('Pesquisador de Mercado')
+  await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'Ação Vale3', content: serie('Vale S.A. (VALE3.BA)', 22100) })
+  await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'dados bbse3', content: serie('BB Seguridade (BBSE3.SA)', 40200) })
+
+  const r = await retrieveContext([pesquisador._id], 'entao agora me da os valores da VALE3 do dia 6 de agosto')
+  const texto = r.context.join('\n---\n')
+
+  assert.equal(r.status, 'ok')
+  // A linha PEDIDA, e não o começo do documento.
+  assert.match(texto, /Aug 6, 2026/, 'a linha do dia 6 precisa estar no contexto')
+  // E com o cabeçalho junto: sem ele, qual número é a abertura é adivinhação.
+  assert.ok(texto.includes(CABECA), 'as colunas precisam viajar com a linha')
+  // O documento certo vem primeiro: quem pergunta por VALE3 não pode receber a série da
+  // BBSE3 como resposta mais relevante.
+  assert.match(r.sources[0].title ?? '', /vale/i)
+})
+
+test('perguntar por outro dia devolve outra linha — e não a mesma de antes', async () => {
+  const pesquisador = agente('Pesquisador de Mercado')
+  await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'Ação Vale3', content: serie('Vale S.A. (VALE3.BA)', 22100) })
+
+  const dia4 = await retrieveContext([pesquisador._id], 'valores da VALE3 no dia 4 de agosto de 2026')
+  const dia6 = await retrieveContext([pesquisador._id], 'valores da VALE3 no dia 6 de agosto de 2026')
+
+  // O sintoma mais claro do defeito: as duas perguntas recebiam exatamente o mesmo texto.
+  assert.notEqual(dia4.context.join(''), dia6.context.join(''), 'dias diferentes não podem devolver o mesmo trecho')
+  assert.match(dia4.context.join('\n'), /Aug 4, 2026/)
+  assert.match(dia6.context.join('\n'), /Aug 6, 2026/)
+})
+
+test('com duas séries no contexto, o prompt avisa que os documentos são diferentes', async () => {
+  const { multiSourceNotice } = await import('../dist/retrievalQuery.js')
+  const aviso = multiSourceNotice([
+    { documentId: 'a', title: 'Ação Vale3' },
+    { documentId: 'b', title: 'dados bbse3' },
+  ])
+  assert.match(aviso, /documentos DIFERENTES/)
+  assert.match(aviso, /Ação Vale3/)
+  assert.match(aviso, /não use o número do outro/)
+  // Uma fonte só não precisa de aviso nenhum.
+  assert.equal(multiSourceNotice([{ documentId: 'a', title: 'Ação Vale3' }]), null)
+})

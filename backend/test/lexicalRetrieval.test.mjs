@@ -9,7 +9,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const { escapeRegex, expandirData, extractTerms, extractWindow, normalize, scoreText, termsToPattern } = await import(
+const { escapeRegex, expandirData, extractTerms, extractWindow, mesDoNome, normalize, scoreText, termsToPattern } = await import(
   '../dist/lexicalRetrieval.js'
 )
 
@@ -119,4 +119,52 @@ test('documento curto volta inteiro, sem recorte', () => {
 test('sem casar nada, devolve o começo — e não uma string vazia', () => {
   const texto = 'a'.repeat(1000)
   assert.equal(extractWindow(texto, extractTerms('BBSE3'), 100).length, 100)
+})
+
+// --- a data como as pessoas escrevem, e como as tabelas escrevem ---------------------------
+//
+// "4 de agosto" nunca encontrava "Aug 4, 2026" — e nem "04/08/2026" encontrava. Uma base
+// exportada de qualquer serviço de cotação vem com o mês em inglês; a pergunta vem em
+// português. Sem esta ponte, a busca respondia com o começo do documento, e o modelo
+// entregava a linha errada com toda a confiança do mundo.
+
+test('a data escrita por extenso vira termo de busca', () => {
+  const t = termos('qual foi o valor da vale 4 de agosto ?')
+  assert.ok(t.includes('4 de agosto'), 'a forma em português')
+  assert.ok(t.some((x) => x.startsWith('aug 4')), 'a forma que a tabela usa')
+})
+
+test('a data numérica também procura a escrita em inglês', () => {
+  const t = termos('VALE3 em 06/08/2026')
+  assert.ok(t.includes('06/08/2026'))
+  assert.ok(t.includes('2026-08-06'))
+  assert.ok(t.includes('aug 6, 2026'), 'é assim que a linha está escrita no documento')
+})
+
+test('a data em inglês na pergunta encontra a escrita brasileira', () => {
+  const t = termos('what happened on Aug 6, 2026?')
+  assert.ok(t.includes('06/08/2026'))
+  assert.ok(t.includes('6 de agosto de 2026'))
+})
+
+test('mês inventado não vira data', () => {
+  assert.equal(mesDoNome('blurgo'), null)
+  // "3 de abacaxi" não é uma data, e não pode virar termo de peso 4.
+  const t = extractTerms('3 de abacaxi')
+  assert.ok(!t.some((x) => x.weight === 4))
+})
+
+test('sem o ano, o dia não casa dentro de outro dia', () => {
+  const formas = expandirData('4', '8')
+  // "aug 4," e "aug 4 " existem porque as duas escritas existem — e as duas impedem que
+  // "4" case dentro de "40".
+  assert.ok(formas.includes('aug 4,'))
+  assert.ok(!formas.some((f) => f === 'aug 4'), 'sem delimitador, casaria "Aug 40"')
+})
+
+test('a janela leva o cabeçalho da tabela junto', () => {
+  const doc = ['Vale S.A. (VALE3.BA)', 'Currency in BRL.', 'Date Open High Low Close', ...Array.from({ length: 60 }, (_, i) => `Jul ${i + 1}, 2026 22,100.00`), 'Aug 6, 2026 23,760.00'].join('\n')
+  const janela = extractWindow(doc, extractTerms('VALE3 em 6 de agosto'), 300)
+  assert.match(janela, /Aug 6, 2026/, 'a linha pedida')
+  assert.match(janela, /Date Open High Low Close/, 'e as colunas, senão qual número é a abertura é chute')
 })

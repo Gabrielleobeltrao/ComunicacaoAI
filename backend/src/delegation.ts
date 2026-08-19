@@ -8,7 +8,7 @@
 // Pure + dependency-injected: no DB/provider imports here, so the safety logic is
 // unit-tested without IO. Production wiring lives in ./delegationWiring.ts.
 import { ObjectId } from 'mongodb'
-import { breadthNotice, buildRetrievalQuery, formatContextWithSources } from './retrievalQuery.js'
+import { breadthNotice, buildRetrievalQuery, formatContextWithSources, multiSourceNotice } from './retrievalQuery.js'
 import { describeErrors, validateAgainstSchema } from './jsonSchema.js'
 import type { Agent } from './agents.js'
 import type { ResolvedTool } from './agentTools.js'
@@ -569,8 +569,10 @@ async function runAgentTask(
     Array.isArray(retrieved) ? undefined : (retrieved as { totalMatches?: number }).totalMatches,
     passages.length,
   )
+  const misturado = multiSourceNotice(sources)
   const context = [
     ...(aviso ? [aviso] : []),
+    ...(misturado ? [misturado] : []),
     ...formatContextWithSources(passages, sources),
     ...vivas.map((v) => `[${v.title}]\n${v.content}`),
   ]

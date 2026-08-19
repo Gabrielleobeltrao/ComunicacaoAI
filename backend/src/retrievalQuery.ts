@@ -52,6 +52,24 @@ export function breadthNotice(total: number | undefined, mostrados: number): str
   )
 }
 
+/**
+ * O aviso de que as passagens NÃO são todas do mesmo documento.
+ *
+ * Perguntaram o preço de um papel e a resposta veio com o número de outro: as duas
+ * séries estavam no contexto, cada uma com seu rótulo, e o modelo pegou a linha errada.
+ * O rótulo sozinho não basta quando dois trechos têm a mesma cara — sete números por
+ * linha, uma data na frente. Uma frase antes deles custa nada e muda o que ele confere.
+ */
+export function multiSourceNotice(sources: CitableSource[]): string | null {
+  const titulos = [...new Set(sources.map((f) => f.title?.trim()).filter((t): t is string => Boolean(t)))]
+  if (titulos.length < 2) return null
+  return (
+    `ATENÇÃO: os trechos abaixo vêm de ${titulos.length} documentos DIFERENTES (${titulos.slice(0, 6).join('; ')}). ` +
+    'Antes de usar qualquer número, confira no rótulo [n] de qual documento ele saiu. ' +
+    'Se o documento certo não tiver o dado pedido, diga isso — não use o número do outro.'
+  )
+}
+
 export function formatContextWithSources(context: string[], sources: CitableSource[] = []): string[] {
   return context.map((passage, index) => {
     const source = sources[index]
