@@ -262,22 +262,31 @@ const escaparRegex = (texto: string): string => texto.replace(/[.*+?^${}()|[\]\\
  */
 export async function listDocumentsPage(owner: KnowledgeOwner, query: DocumentQuery = {}): Promise<DocumentPage> {
   const escopo = ownerFilter(owner)
-  const filtro: Record<string, unknown> = { ...escopo }
-  if (query.kind === 'web') Object.assign(filtro, FILTRO_WEB)
-  if (query.kind === 'manual') Object.assign(filtro, { $nor: [FILTRO_WEB] })
-  if (query.sourceId) filtro['web.sourceId'] = query.sourceId
-  if (query.status) filtro.indexStatus = query.status
+  /**
+   * O escopo do dono entra por `$and`, e nunca por espalhamento.
+   *
+   * `ownerFilter` devolve `{$or: […]}` para um agente (o formato antigo, sem `ownerType`,
+   * casa por `agentId`). O filtro de "isto veio da web" TAMBÉM é um `$or` — e espalhar os
+   * dois no mesmo objeto fazia o segundo apagar o primeiro. O resultado não era um número
+   * errado: era uma listagem SEM dono, capaz de mostrar documento de outro agente e de
+   * outra conta.
+   */
+  const partes: Record<string, unknown>[] = [escopo]
+  if (query.kind === 'web') partes.push(FILTRO_WEB)
+  if (query.kind === 'manual') partes.push({ $nor: [FILTRO_WEB] })
+  const filtro: Record<string, unknown> = { $and: partes }
+  if (query.sourceId) partes.push({ 'web.sourceId': query.sourceId })
+  if (query.status) partes.push({ indexStatus: query.status })
   if (query.search?.trim()) {
     const padrao = escaparRegex(query.search.trim())
-    filtro.$and = [
-      {
-        $or: [
-          { title: { $regex: padrao, $options: 'i' } },
-          { 'web.canonicalUrl': { $regex: padrao, $options: 'i' } },
-          { 'web.domain': { $regex: padrao, $options: 'i' } },
-        ],
-      },
-    ]
+    // Mais uma cláusula do MESMO `$and`: sobrescrevê-lo apagaria o escopo do dono.
+    partes.push({
+      $or: [
+        { title: { $regex: padrao, $options: 'i' } },
+        { 'web.canonicalUrl': { $regex: padrao, $options: 'i' } },
+        { 'web.domain': { $regex: padrao, $options: 'i' } },
+      ],
+    })
   }
 
   const limite = Math.min(Math.max(Number(query.limit) || 50, 1), 200)
@@ -285,9 +294,9 @@ export async function listDocumentsPage(owner: KnowledgeOwner, query: DocumentQu
   const [items, total, web, todos, ultimo] = await Promise.all([
     documents.find(filtro, { projection: { content: 0 } }).sort({ updatedAt: -1, createdAt: -1 }).skip(pular).limit(limite).toArray(),
     documents.countDocuments(filtro),
-    documents.countDocuments({ ...escopo, ...FILTRO_WEB }),
+    documents.countDocuments({ $and: [escopo, FILTRO_WEB] }),
     documents.countDocuments(escopo),
-    documents.find({ ...escopo, ...FILTRO_WEB }, { projection: { 'web.fetchedAt': 1 } }).sort({ 'web.fetchedAt': -1 }).limit(1).toArray(),
+    documents.find({ $and: [escopo, FILTRO_WEB] }, { projection: { 'web.fetchedAt': 1 } }).sort({ 'web.fetchedAt': -1 }).limit(1).toArray(),
   ])
   return {
     items: items as Omit<KnowledgeDocument, 'content'>[],

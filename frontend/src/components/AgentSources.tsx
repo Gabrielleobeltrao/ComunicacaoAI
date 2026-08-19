@@ -344,7 +344,14 @@ export function AgentSources({ agentId }: { agentId: string }) {
                  convivem. */}
              <details style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }} data-testid="agent-source-web">
                <summary style={{ cursor: 'pointer', fontSize: 12.5, color: 'var(--text-muted)' }}>
-                 Manter na base de conhecimento{linha.refreshMode !== 'manual' ? ' · ligado' : ''}
+                 Manter na base de conhecimento ·{' '}
+                 {linha.refreshMode === 'manual'
+                   ? 'só quando eu pedir'
+                   : linha.refreshMode === 'on_demand'
+                     ? 'antes de usar o agente'
+                     : linha.refreshMode === 'scheduled'
+                       ? `a cada ${linha.intervalMinutes} min`
+                       : `a cada ${linha.intervalMinutes} min e antes de usar`}
                </summary>
                <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
                  <Field label="Atualizar" hint="Ler o site e guardar o conteúdo na base deste agente.">
@@ -480,9 +487,19 @@ export function AgentSources({ agentId }: { agentId: string }) {
                     url: '',
                     when: 'on_demand',
                     initialWindow: '7d',
-                    // Nasce sem ler nada sozinho: quem liga a atualização automática é o
-                    // dono, sabendo o que ela custa.
-                    refreshMode: 'manual',
+                    /**
+                     * Nasce lendo ANTES de o agente ser usado.
+                     *
+                     * O padrão era `manual`, para não consumir banda sem alguém pedir. Na
+                     * prática isso significava: cadastrar um site e ele nunca ser lido —
+                     * o dono clicava em "Atualizar agora" para sempre, sem entender por
+                     * quê. `on_demand` não gasta nada em segundo plano: ele só lê quando
+                     * o agente é acionado, e só se o que está guardado envelheceu.
+                     *
+                     * Quem quer o comportamento antigo escolhe "Só quando eu pedir".
+                     * Fontes já gravadas não mudam: quem não declara modo continua manual.
+                     */
+                    refreshMode: 'on_demand',
                     intervalMinutes: 30,
                     maxStalenessMinutes: 30,
                     discoveryMode: 'auto',
