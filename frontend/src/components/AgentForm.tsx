@@ -482,6 +482,38 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     }
   }
 
+  /**
+   * Salvar agora, em vez de esperar.
+   *
+   * A gravação automática continua existindo — ela é a rede que evita perder edição ao
+   * trocar de aba. O botão é para quem quer o recibo na hora: mexeu na ferramenta, clicou,
+   * viu "Salvo". Sem ele, a única confirmação era uma frase dizendo que confiasse.
+   */
+  async function salvarAgora() {
+    if (!agent) return
+    const corpo = JSON.stringify(buildPayload())
+    setAutoSaveState('saving')
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${agent._id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: corpo,
+      })
+      if (!res.ok) {
+        setAutoSaveState('error')
+        return
+      }
+      // O que acabou de ir é a nova linha de base: sem isto, o efeito de gravação
+      // automática dispararia de novo logo em seguida, com o mesmo conteúdo.
+      savedPayloadRef.current = corpo
+      setAutoSaveState('saved')
+      onSaved(await res.json())
+    } catch {
+      setAutoSaveState('error')
+    }
+  }
+
   function buildPayload() {
     return {
       name: editName,
@@ -1453,6 +1485,27 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                 <p className="mb-2 text-sm font-medium">Ferramentas personalizadas (HTTP)</p>
                 <AgentToolsEditor value={editTools} onChange={setEditTools} />
               </div>
+              {/* O recibo na hora. A gravação automática continua embaixo como rede — ela
+                  é o que evita perder edição ao trocar de aba —, mas quem mexeu numa
+                  ferramenta quer ver "Salvo", e não uma frase pedindo confiança. */}
+              {flat && !isCreating && (
+                <div className="flex items-center justify-end gap-3 border-t border-(--border-subtle) pt-4">
+                  {autoSaveState !== 'idle' && (
+                    <span className={`text-xs ${autoSaveState === 'error' ? 'text-(--coral-600)' : 'text-(--text-faint)'}`} data-testid="tools-save-state">
+                      {autoSaveState === 'saving' ? 'Salvando…' : autoSaveState === 'saved' ? 'Salvo ✓' : 'Erro ao salvar'}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void salvarAgora()}
+                    disabled={autoSaveState === 'saving'}
+                    data-testid="tools-save"
+                    className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-(--text-on-brand) transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
+                  >
+                    Salvar
+                  </button>
+                </div>
+              )}
             </div>
           </CollapsibleBlock>
         )}
@@ -1774,16 +1827,18 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       {flat ? (
         // No save button: edits persist automatically. The knowledge-base page
         // manages its docs immediately, so it shows no status line.
-        section !== 'conhecimento' && (
+        // A frase de "salva automaticamente" saiu: ela ocupava espaço para pedir confiança
+        // e não dizia nada sobre o que aconteceu. O que informa é o ESTADO — e ele só
+        // aparece quando há estado.
+        section !== 'conhecimento' &&
+        autoSaveState !== 'idle' && (
           <div className="order-last mt-5 flex justify-end border-t border-(--border-subtle) pt-4 text-sm">
             <span className={autoSaveState === 'error' ? 'text-(--coral-600)' : 'text-(--text-faint)'}>
               {autoSaveState === 'saving'
                 ? 'Salvando...'
                 : autoSaveState === 'saved'
                   ? 'Salvo ✓'
-                  : autoSaveState === 'error'
-                    ? 'Erro ao salvar — ajuste algo para tentar de novo'
-                    : 'As alterações são salvas automaticamente'}
+                  : 'Erro ao salvar — ajuste algo para tentar de novo'}
             </span>
           </div>
         )

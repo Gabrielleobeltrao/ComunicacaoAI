@@ -727,3 +727,33 @@ test('"atualizar agora" lê e conta o que mudou', async ({ page }) => {
   await expect(page.getByTestId('agent-sources-refresh-result')).toContainText('2 nova(s)')
   await expect(page.getByTestId('agent-sources-refresh-result')).toContainText('3 sem mudança')
 })
+
+// --- salvar as ferramentas com um clique -------------------------------------------------
+//
+// A gravação automática continua sendo a rede que evita perder edição ao trocar de aba. O
+// que ela não dava era recibo: a tela dizia "as alterações são salvas automaticamente",
+// que é uma frase pedindo confiança, e não uma confirmação de que algo aconteceu.
+
+test('a seção de ferramentas tem Salvar, e nenhuma promessa de salvamento automático', async ({ page }) => {
+  const gravacoes: string[] = []
+  await stub(page)
+  await page.route('**/api/agents/*', async (r) => {
+    if (r.request().method() === 'PATCH') {
+      gravacoes.push(r.request().postData() ?? '')
+      return r.fulfill({ json: { ...AGENT, tools: [] } })
+    }
+    return r.fallback()
+  })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Ferramentas')
+
+  const salvar = page.getByTestId('tools-save')
+  await expect(salvar).toBeVisible()
+  // A frase que pedia confiança não existe mais em lugar nenhum da aba.
+  await expect(page.getByText('As alterações são salvas automaticamente')).toHaveCount(0)
+
+  await salvar.click()
+  await expect.poll(() => gravacoes.length).toBeGreaterThan(0)
+  // E o recibo aparece.
+  await expect(page.getByTestId('tools-save-state')).toContainText(/Salvo|Salvando/)
+})
