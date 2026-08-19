@@ -20,6 +20,7 @@ import { isInitialWindow, normalizeSourceUrl } from '../automations/sourceChange
 import { fontesDoAgente } from '../automations/sourceTool.js'
 import { isExecutionMode } from '../automations/types.js'
 import { normalizeWebSource } from '../webSourcePolicy.js'
+import { countDocumentsFromSource } from '../knowledge.js'
 import { ensureAgentWebKnowledgeFresh } from '../webKnowledge.js'
 import type { ExecutionMode } from '../automations/types.js'
 import { aiStepPlanned, normalizeAppActionPlan, normalizeMemoryPlan } from '../automations/executionPlan.js'
@@ -211,11 +212,12 @@ agentRoutineRouter.get('/sources', async (req, res) => {
     return
   }
   const fontes = await fontesDoAgente(res.locals.userId, agentId)
+  const documentosDaFonte = (id: ObjectId, sourceId: string) => countDocumentsFromSource({ ownerType: 'agent', ownerId: id }, sourceId)
   const agente = await getAgentById(res.locals.userId, agentId)
   const porId = new Map((agente?.watchedSources ?? []).map((w) => [w.name, w]))
   res.json({
     settings: sourceSettingsOf(agente ?? {}),
-    sources: fontes.map((f) => {
+    sources: await Promise.all(fontes.map(async (f) => {
       const propria = f.origem === 'agente' ? porId.get(f.nome) : undefined
       return {
       // Sem rotina quando o site é do próprio agente: ele não tem horário.
@@ -245,6 +247,9 @@ agentRoutineRouter.get('/sources', async (req, res) => {
             nextScheduledAt: propria.nextScheduledAt ?? null,
             lastError: propria.lastError ?? null,
             newDocuments: propria.newDocuments ?? 0,
+            ignoredUrls: propria.ignoredUrls?.length ?? 0,
+            // Quantos documentos ESTA fonte produziu — a resposta de "o que ela me deu".
+            knowledgeCount: await documentosDaFonte(agentId, propria.id),
           }
         : {}),
       // O host, e não a URL inteira: uma query string pode carregar token.
@@ -256,7 +261,7 @@ agentRoutineRouter.get('/sources', async (req, res) => {
         }
       })(),
       }
-    }),
+    })),
   })
 })
 
@@ -355,6 +360,9 @@ agentRoutineRouter.put('/sources', async (req, res) => {
             nextScheduledAt: anterior.nextScheduledAt ?? null,
             lastError: anterior.lastError ?? null,
             status: anterior.status ?? 'never_run',
+            // A lista de endereços ignorados é do servidor: salvar a configuração não
+            // pode fazer o crawler esquecer o que o dono mandou não trazer de volta.
+            ...(anterior.ignoredUrls?.length ? { ignoredUrls: anterior.ignoredUrls } : {}),
           }
         : { status: 'never_run' as const }),
     })

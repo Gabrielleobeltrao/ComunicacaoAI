@@ -36,6 +36,7 @@ export interface AgentSource {
   maxArticlesPerRun?: number | null
   sameDomainOnly?: boolean
   status?: string
+  knowledgeCount?: number
   lastSuccessfulFetchAt?: string | null
   nextScheduledAt?: string | null
   lastError?: string | null
@@ -59,6 +60,7 @@ interface Linha {
   sameDomainOnly: boolean
   // O que aconteceu na última leitura. Só leitura: quem escreve é o servidor.
   status?: string
+  knowledgeCount?: number
   lastSuccessfulFetchAt?: string | null
   nextScheduledAt?: string | null
   lastError?: string | null
@@ -154,6 +156,7 @@ export function AgentSources({ agentId }: { agentId: string }) {
               maxArticlesPerRun: s.maxArticlesPerRun ?? 5,
               sameDomainOnly: s.sameDomainOnly !== false,
               status: s.status,
+              knowledgeCount: s.knowledgeCount,
               lastSuccessfulFetchAt: s.lastSuccessfulFetchAt,
               nextScheduledAt: s.nextScheduledAt,
               lastError: s.lastError,
@@ -361,6 +364,22 @@ export function AgentSources({ agentId }: { agentId: string }) {
                        </label>
                      )}
                    </>
+                 )}
+                 {/* O que esta fonte PRODUZIU. Sem este número, "manter na base" é uma
+                     configuração sem efeito visível. */}
+                 {typeof linha.knowledgeCount === 'number' && linha.knowledgeCount > 0 && (
+                   <a
+                     href={`?conhecimento=${encodeURIComponent(linha.id)}`}
+                     data-testid="agent-source-knowledge-link"
+                     style={{ fontSize: 12.5, color: 'var(--text-link)' }}
+                     onClick={(e) => {
+                       e.preventDefault()
+                       // A aba Conhecimento passa a mostrar só o que veio daqui.
+                       window.dispatchEvent(new CustomEvent('conhecimento:filtrar-fonte', { detail: { sourceId: linha.id } }))
+                     }}
+                   >
+                     Ver conhecimento gerado ({linha.knowledgeCount})
+                   </a>
                  )}
                  {/* O que aconteceu de verdade — sem isto, "atualização automática" é
                      promessa sem recibo. */}

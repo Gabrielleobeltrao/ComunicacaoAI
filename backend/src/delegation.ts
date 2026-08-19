@@ -1310,18 +1310,47 @@ export async function executeSectorTeam(
     if (deps.ensureWebKnowledgeFresh) {
       const antesDaFonte = Date.now()
       const resultado = (await deps.ensureWebKnowledgeFresh(ctx.ownerId, alvo._id).catch(() => [])) as
-        | { name: string; refreshed: boolean; reason: string; created: number; updated: number; unchanged: number; error?: string }[]
+        | {
+            name: string
+            refreshed: boolean
+            reason: string
+            discovered?: number
+            created: number
+            updated: number
+            unchanged: number
+            ignored?: number
+            skippedIndexPages?: number
+            via?: string
+            error?: string
+            durationMs?: number
+          }[]
         | undefined
       const mexidas = (resultado ?? []).filter((r) => r.refreshed)
       if (mexidas.length > 0) {
+        const totais = mexidas.reduce(
+          (soma, r) => ({ novos: soma.novos + r.created, atualizados: soma.atualizados + r.updated, iguais: soma.iguais + r.unchanged }),
+          { novos: 0, atualizados: 0, iguais: 0 },
+        )
         trilha({
           type: 'rag',
           status: mexidas.some((r) => r.error) ? 'error' : 'success',
           agentId: task.agentId,
-          title: `${agentName}: fontes web atualizadas antes de executar`,
+          title: `${agentName}: base web atualizada — ${totais.novos} nova(s), ${totais.atualizados} atualizada(s), ${totais.iguais} sem mudança`,
           durationMs: Date.now() - antesDaFonte,
           metadata: {
-            sources: mexidas.map((r) => ({ name: r.name, reason: r.reason, new: r.created, updated: r.updated, unchanged: r.unchanged, error: r.error ?? null })),
+            sources: mexidas.map((r) => ({
+              name: r.name,
+              via: r.via ?? null,
+              reason: r.reason,
+              discovered: r.discovered ?? 0,
+              new: r.created,
+              updated: r.updated,
+              unchanged: r.unchanged,
+              ignored: r.ignored ?? 0,
+              skippedIndexPages: r.skippedIndexPages ?? 0,
+              durationMs: r.durationMs ?? 0,
+              error: r.error ?? null,
+            })),
           },
         })
       }

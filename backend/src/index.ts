@@ -90,6 +90,7 @@ import {
   ensureVectorIndex,
   getDocument,
   listDocuments,
+  listDocumentsPage,
   searchKnowledge,
   updateDocument,
 } from './knowledge.js'
@@ -227,6 +228,7 @@ import type { PlaygroundTurn } from './playgroundSession.js'
 import { NOOP_TRACKER, createLiveTracker, instrumentTools } from './agentLiveTracker.js'
 import { onTraceEvent, preview as tracePreview, readTrace, traceEvent } from './executionTrace.js'
 import type { TraceInput } from './executionTrace.js'
+import { ignoreWebUrl } from './webKnowledge.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -3158,8 +3160,24 @@ app.get('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Agent not found' })
     return
   }
-  const documents = await listDocuments(agent._id)
-  res.json(documents)
+  // Uma forma só: itens (sem conteúdo), total e o resumo. O conteúdo de um documento vem
+  // pela rota dele — uma base alimentada por site tem centenas de artigos, e mandar todos
+  // inteiros seria megabytes para desenhar uma lista.
+  const pagina = await listDocumentsPage(
+    { ownerType: 'agent', ownerId: agent._id },
+    {
+      kind: req.query.kind === 'web' || req.query.kind === 'manual' ? req.query.kind : 'all',
+      sourceId: typeof req.query.sourceId === 'string' ? req.query.sourceId : null,
+      status:
+        req.query.status === 'indexed' || req.query.status === 'pending' || req.query.status === 'error'
+          ? req.query.status
+          : null,
+      search: typeof req.query.q === 'string' ? req.query.q.slice(0, 120) : null,
+      limit: Number(req.query.limit) || 50,
+      skip: Number(req.query.skip) || 0,
+    },
+  )
+  res.json(pagina)
 })
 
 app.get('/api/agents/:agentId/documents/:documentId', requireAuth, async (req, res) => {
@@ -3228,10 +3246,23 @@ app.delete('/api/agents/:agentId/documents/:documentId', requireAuth, async (req
     res.status(404).json({ error: 'Agent not found' })
     return
   }
+  /**
+   * Excluir, e — se pedido — deixar de trazer de volta.
+   *
+   * Um documento web apagado volta no próximo scan, porque o endereço continua sendo da
+   * fonte. Isso é correto e é surpresa: quem apagou não espera vê-lo de novo em meia
+   * hora. `?ignore=1` grava o endereço canônico na lista de ignorados DA FONTE — e a
+   * fonte continua existindo, com todo o resto que ela produziu.
+   */
+  const documento = await getDocument(agent._id, new ObjectId(documentId))
   const deleted = await deleteDocument(agent._id, new ObjectId(documentId))
   if (!deleted) {
     res.status(404).json({ error: 'Document not found' })
     return
+  }
+  const ignorar = req.query.ignore === '1' || req.query.ignore === 'true'
+  if (ignorar && documento?.web?.canonicalUrl && documento.web.sourceId) {
+    await ignoreWebUrl(res.locals.userId, agent._id, documento.web.sourceId, documento.web.canonicalUrl)
   }
   res.status(204).end()
 })

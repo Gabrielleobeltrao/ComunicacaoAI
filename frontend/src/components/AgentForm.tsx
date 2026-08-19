@@ -15,6 +15,7 @@ import type {
   ConversationPersistence,
   GuardrailMode,
   KnowledgeDocumentSummary,
+  KnowledgePage,
   Language,
   MemoryType,
   MetricKey,
@@ -211,6 +212,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
 
   const [documents, setDocuments] = useState<KnowledgeDocumentSummary[]>([])
   const [documentsLoading, setDocumentsLoading] = useState(false)
+  // O que a base tem, em números — e o recorte que está sendo olhado. O conteúdo de cada
+  // documento NÃO vem aqui: uma base alimentada por site tem centenas de artigos.
+  const [resumo, setResumo] = useState<KnowledgePage['summary'] | null>(null)
+  const [filtroDoc, setFiltroDoc] = useState<'all' | 'manual' | 'web'>('all')
+  const [buscaDoc, setBuscaDoc] = useState('')
+  const [fonteDoc, setFonteDoc] = useState<string | null>(null)
   const [addMode, setAddMode] = useState<'text' | 'file'>('text')
   const [newDocTitle, setNewDocTitle] = useState('')
   const [newDocContent, setNewDocContent] = useState('')
@@ -400,10 +407,41 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     }
   }, [])
 
-  async function loadDocuments(agentId: string) {
+  // "Ver conhecimento gerado" mora na configuração da fonte; a lista mora aqui. O evento
+  // liga os dois sem que um precise conhecer o estado do outro.
+  useEffect(() => {
+    const aoFiltrar = (evento: Event) => {
+      const sourceId = (evento as CustomEvent<{ sourceId?: string }>).detail?.sourceId
+      if (!sourceId || !agent?._id) return
+      setFiltroDoc('web')
+      setFonteDoc(sourceId)
+      void loadDocuments(agent._id, { kind: 'web', sourceId })
+    }
+    window.addEventListener('conhecimento:filtrar-fonte', aoFiltrar)
+    return () => window.removeEventListener('conhecimento:filtrar-fonte', aoFiltrar)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent?._id])
+
+  async function loadDocuments(agentId: string, over: { kind?: 'all' | 'manual' | 'web'; q?: string; sourceId?: string | null } = {}) {
     setDocumentsLoading(true)
-    const res = await fetch(`${API_URL}/api/agents/${agentId}/documents`, { credentials: 'include' })
-    if (res.ok) setDocuments(await res.json())
+    const params = new URLSearchParams()
+    const kind = over.kind ?? filtroDoc
+    if (kind !== 'all') params.set('kind', kind)
+    const q = over.q ?? buscaDoc
+    if (q.trim()) params.set('q', q.trim())
+    const fonte = over.sourceId === undefined ? fonteDoc : over.sourceId
+    if (fonte) params.set('sourceId', fonte)
+    const busca = params.toString()
+    const res = await fetch(`${API_URL}/api/agents/${agentId}/documents${busca ? `?${busca}` : ''}`, { credentials: 'include' })
+    if (res.ok) {
+      const corpo = await res.json()
+      // Compatibilidade: uma resposta antiga em forma de lista continua funcionando.
+      const pagina: KnowledgePage = Array.isArray(corpo)
+        ? { items: corpo, total: corpo.length, summary: { manual: corpo.length, web: 0, total: corpo.length, lastWebFetchAt: null } }
+        : corpo
+      setDocuments(pagina.items ?? [])
+      setResumo(pagina.summary ?? null)
+    }
     setDocumentsLoading(false)
   }
 
@@ -665,12 +703,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     setNewDocFile(event.target.files?.[0] ?? null)
   }
 
-  async function handleDeleteDocument(documentId: string) {
+  async function handleDeleteDocument(documentId: string, ignorarUrl = false) {
     if (!agent) return
     setDeletingDocId(documentId)
 
     try {
-      const res = await fetch(`${API_URL}/api/agents/${agent._id}/documents/${documentId}`, {
+      const res = await fetch(`${API_URL}/api/agents/${agent._id}/documents/${documentId}${ignorarUrl ? '?ignore=1' : ''}`, {
         method: 'DELETE',
         credentials: 'include',
       })
@@ -1461,16 +1499,95 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                   ))}
                 </ul>
               )
-            ) : documentsLoading ? (
+            ) : (
+              <>
+              {/* O que a base tem, em números. Sem isto, "conhecimento" é uma lista sem
+                  tamanho — e o que veio de site some no meio do que foi escrito à mão. */}
+              {resumo && resumo.total > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-(--text-muted)" data-testid="knowledge-summary">
+                  <span>Manual: <strong className="text-(--text-heading)">{resumo.manual}</strong></span>
+                  <span>Web: <strong className="text-(--text-heading)">{resumo.web}</strong></span>
+                  <span>Total: <strong className="text-(--text-heading)">{resumo.total}</strong></span>
+                  {resumo.lastWebFetchAt && <span>· última leitura web: {new Date(resumo.lastWebFetchAt).toLocaleString('pt-BR')}</span>}
+                </div>
+              )}
+              {resumo && resumo.web > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  {(['all', 'manual', 'web'] as const).map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      data-testid={`knowledge-filter-${k}`}
+                      onClick={() => {
+                        setFiltroDoc(k)
+                        setFonteDoc(null)
+                        if (agent?._id) void loadDocuments(agent._id, { kind: k, sourceId: null })
+                      }}
+                      className={`rounded-full px-2.5 py-0.5 text-xs ${filtroDoc === k && !fonteDoc ? 'bg-(--intent-brand) text-(--text-on-brand)' : 'text-(--text-muted)'}`}
+                    >
+                      {k === 'all' ? 'Todos' : k === 'manual' ? 'Manual' : 'Web'}
+                    </button>
+                  ))}
+                  <input
+                    value={buscaDoc}
+                    onChange={(e) => setBuscaDoc(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && agent?._id) {
+                        e.preventDefault()
+                        void loadDocuments(agent._id, { q: (e.target as HTMLInputElement).value })
+                      }
+                    }}
+                    placeholder="Buscar por título, domínio ou endereço"
+                    data-testid="knowledge-search"
+                    className="min-w-0 flex-1 rounded-lg border border-(--border-strong) bg-(--surface-card) px-2 py-1 text-xs outline-none focus:border-(--border-focus)"
+                  />
+                  {fonteDoc && (
+                    <button
+                      type="button"
+                      data-testid="knowledge-clear-source"
+                      onClick={() => {
+                        setFonteDoc(null)
+                        if (agent?._id) void loadDocuments(agent._id, { sourceId: null })
+                      }}
+                      className="text-xs text-(--text-muted) underline"
+                    >
+                      limpar filtro de fonte
+                    </button>
+                  )}
+                </div>
+              )}
+              {documentsLoading ? (
               <p className="text-sm text-(--text-muted)">Carregando documentos...</p>
             ) : documents.length === 0 ? (
               <p className="text-sm text-(--text-muted)">Nenhum documento adicionado ainda.</p>
             ) : (
               <ul className="space-y-2">
                 {documents.map((doc) => (
-                  <li key={doc._id} className="rounded-lg border border-(--border-subtle) p-2 text-sm">
+                  <li key={doc._id} className="rounded-lg border border-(--border-subtle) p-2 text-sm" data-testid={doc.web ? 'knowledge-web-item' : 'knowledge-manual-item'}>
                     <div className="flex items-center justify-between gap-3">
-                      <span>{doc.title}</span>
+                      <span className="min-w-0">
+                        <span className="flex flex-wrap items-baseline gap-x-2">
+                          {/* O selo separa o que foi escrito do que foi lido de um site —
+                              e o domínio diz de ONDE, que é a primeira pergunta. */}
+                          {doc.web && (
+                            <span className="rounded-full bg-(--intent-brand-soft) px-1.5 py-0.5 text-[10px] font-bold text-(--text-heading)" data-testid="knowledge-web-badge">
+                              WEB
+                            </span>
+                          )}
+                          <span className="break-words">{doc.title}</span>
+                        </span>
+                        {doc.web && (
+                          <span className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-(--text-faint)">
+                            <span>{doc.web.domain}</span>
+                            {doc.web.publishedAt && <span>· publicado {new Date(doc.web.publishedAt).toLocaleDateString('pt-BR')}</span>}
+                            {doc.web.fetchedAt && <span>· lido {new Date(doc.web.fetchedAt).toLocaleString('pt-BR')}</span>}
+                            {typeof doc.chunkCount === 'number' && <span>· {doc.chunkCount} trecho(s)</span>}
+                            {doc.indexStatus && (
+                              <span>· {doc.indexStatus === 'indexed' ? 'indexado' : doc.indexStatus === 'pending' ? 'indexando…' : 'erro ao indexar'}</span>
+                            )}
+                          </span>
+                        )}
+                      </span>
                       <div className="flex gap-3">
                         <button
                           type="button"
@@ -1489,13 +1606,65 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                         >
                           {deletingDocId === doc._id ? 'Excluindo...' : 'Excluir'}
                         </button>
+                        {/* Um artigo apagado volta no próximo scan — o endereço continua
+                            sendo da fonte. Isto apaga E manda não trazer de volta, sem
+                            mexer na fonte nem no resto que ela produziu. */}
+                        {doc.web && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDocument(doc._id, true)}
+                            disabled={deletingDocId === doc._id}
+                            data-testid="knowledge-delete-ignore"
+                            title="Apaga e impede que o próximo scan traga este endereço de volta"
+                            className="text-xs text-(--coral-600) underline transition hover:text-(--coral-600) disabled:opacity-50"
+                          >
+                            Excluir e ignorar
+                          </button>
+                        )}
                       </div>
                     </div>
 
                     {viewingDocId === doc._id && (
-                      <div className="mt-2 border-t border-(--border-subtle) pt-2">
+                      <div className="mt-2 border-t border-(--border-subtle) pt-2" data-testid="knowledge-doc-detail">
                         {viewingDocLoading ? (
                           <p className="text-sm text-(--text-muted)">Carregando...</p>
+                        ) : doc.web ? (
+                          /* O que veio de um site é LEITURA: editar à mão aqui seria
+                             desfeito pelo próximo scan, e o dono não teria como saber. */
+                          <div className="space-y-2">
+                            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                              <dt className="text-(--text-faint)">Endereço</dt>
+                              <dd className="min-w-0 break-all">
+                                <a href={doc.web.canonicalUrl} target="_blank" rel="noopener noreferrer" className="underline" data-testid="knowledge-doc-url">
+                                  {doc.web.canonicalUrl}
+                                </a>
+                              </dd>
+                              <dt className="text-(--text-faint)">Fonte</dt>
+                              <dd className="break-words">{doc.web.domain} · {doc.web.sourceId}</dd>
+                              {doc.web.author && (
+                                <>
+                                  <dt className="text-(--text-faint)">Autoria</dt>
+                                  <dd>{doc.web.author}</dd>
+                                </>
+                              )}
+                              {doc.web.publishedAt && (
+                                <>
+                                  <dt className="text-(--text-faint)">Publicado</dt>
+                                  <dd>{new Date(doc.web.publishedAt).toLocaleString('pt-BR')}</dd>
+                                </>
+                              )}
+                              <dt className="text-(--text-faint)">Última leitura</dt>
+                              <dd>{new Date(doc.web.fetchedAt).toLocaleString('pt-BR')}</dd>
+                              <dt className="text-(--text-faint)">Indexação</dt>
+                              <dd>
+                                {doc.indexStatus === 'indexed' ? 'indexado' : doc.indexStatus === 'pending' ? 'indexando…' : 'erro ao indexar'}
+                                {typeof doc.chunkCount === 'number' ? ` · ${doc.chunkCount} trecho(s)` : ''}
+                              </dd>
+                            </dl>
+                            <pre className="max-h-64 overflow-auto rounded-lg bg-(--surface-sunken) p-2 text-[11px] whitespace-pre-wrap break-words" data-testid="knowledge-doc-content">
+                              {viewingDocContent}
+                            </pre>
+                          </div>
                         ) : (
                           <form onSubmit={handleSaveDocumentView} className="space-y-2">
                             <input
@@ -1526,6 +1695,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                   </li>
                 ))}
               </ul>
+            )}
+              </>
             )}
 
             <form onSubmit={handleAddDocument} className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
