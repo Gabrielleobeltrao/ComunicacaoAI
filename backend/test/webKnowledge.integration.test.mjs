@@ -662,3 +662,65 @@ test('5) hybrid recém-lida não busca de novo a cada pergunta', async () => {
   await rodar(agente, 'de novo')
   assert.equal(pedidos.length, antes, 'a base recente serve; o site não é tocado')
 })
+
+// --- o rastro da leitura, para quem está olhando -----------------------------------------------
+//
+// Quando um site demora, o painel precisa mostrar que a espera é a LEITURA DA FONTE, e não
+// o agente pensando. E quando ela falha, precisa dizer que a resposta veio da base
+// anterior — senão um dado velho passa por atual.
+
+const { clearTrace, onTraceEvent } = await import('../dist/executionTrace.js')
+
+test('o painel mostra o começo e o fim da leitura das fontes', async () => {
+  clearTrace()
+  const trilha = []
+  onTraceEvent((e) => trilha.push(e))
+  corpoDaPagina = '<html><head><title>Comunicado da semana</title></head><body><article>' + 'O comunicado da semana traz o calendário completo. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite()
+
+  await executeSectorTeam(
+    depsDoRuntime(agente),
+    sectorRunContext({ ownerId: OWNER, buildingId: 'predio', correlationId: 'teste', traceId: 'trilha-web' }),
+    setorDeUm(agente),
+    { objective: 'qual é o calendário da semana?' },
+  )
+  onTraceEvent(null)
+
+  const daFonte = trilha.filter((e) => e.type === 'rag' && /fontes web/.test(e.title))
+  assert.ok(daFonte.some((e) => e.status === 'running'), 'o começo da leitura aparece')
+  const fim = daFonte.find((e) => e.status === 'success')
+  assert.ok(fim, 'o fim também')
+  assert.equal(fim.metadata.sources[0].new, 1)
+  assert.ok(typeof fim.durationMs === 'number')
+  // E o evento da BASE vem depois: primeiro o site, depois a pergunta a ela.
+  const posFonte = trilha.findIndex((e) => e === fim)
+  const posBusca = trilha.findIndex((e, i) => i > posFonte && e.type === 'rag' && /base/.test(e.title))
+  assert.ok(posBusca > posFonte, 'a recuperação acontece depois da leitura')
+})
+
+test('quando a leitura falha, o painel diz que a resposta veio da base anterior', async () => {
+  clearTrace()
+  const trilha = []
+  corpoDaPagina = '<html><head><title>Protocolo vigente</title></head><body><article>' + 'O protocolo vigente foi publicado no mês passado. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite()
+  await ensureAgentWebKnowledgeFresh(OWNER, agente._id, 'manual')
+
+  // O site cai depois de a base já existir.
+  const quebrado = { ...agente, watchedSources: [{ ...agente.watchedSources[0], url: `http://127.0.0.1:${porta}/quebrado` }] }
+  await db.collection('agents').updateOne({ _id: agente._id }, { $set: { watchedSources: quebrado.watchedSources } })
+
+  onTraceEvent((e) => trilha.push(e))
+  const r = await executeSectorTeam(
+    depsDoRuntime(quebrado),
+    sectorRunContext({ ownerId: OWNER, buildingId: 'predio', correlationId: 'teste', traceId: 'trilha-falha' }),
+    setorDeUm(quebrado),
+    { objective: 'o protocolo vigente ainda vale?' },
+  )
+  onTraceEvent(null)
+
+  const aviso = trilha.find((e) => e.type === 'rag' && /base anterior/.test(e.title))
+  assert.ok(aviso, 'a falha é dita, e não engolida')
+  assert.equal(aviso.status, 'error')
+  // E a resposta saiu mesmo assim, com o que já estava guardado.
+  assert.match(r.output, /protocolo vigente/i)
+})

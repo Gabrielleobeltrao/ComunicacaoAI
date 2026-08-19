@@ -619,6 +619,18 @@ async function runAgentTask(
    */
   if (deps.ensureWebKnowledgeFresh) {
     const antesDaFonte = Date.now()
+    // O começo, e não só o resultado: quando um site demora, o painel precisa mostrar
+    // que a espera é a leitura da fonte — e não o agente pensando.
+    if (ctx.traceId) {
+      traceEvent({
+        ownerId: ctx.ownerId,
+        executionId: ctx.traceId,
+        type: 'rag',
+        status: 'running',
+        agentId: target._id.toString(),
+        title: `${target.name}: verificando fontes web`,
+      })
+    }
     const fontes = (await deps.ensureWebKnowledgeFresh(ctx.ownerId, target._id).catch(() => [])) as
       | {
           name: string
@@ -633,7 +645,21 @@ async function runAgentTask(
           error?: string
         }[]
       | undefined
-    const mexidas = (fontes ?? []).filter((f) => f.refreshed)
+    // Uma leitura que FALHOU volta com `refreshed: false` — ela não mexeu em nada. Mas é
+    // justamente ela que precisa aparecer: sem isto, o site fora do ar era invisível, e a
+    // resposta com dado velho passava por resposta atual.
+    const mexidas = (fontes ?? []).filter((f) => f.refreshed || f.error)
+    const comFalha = mexidas.filter((f) => f.error)
+    if (comFalha.length > 0) {
+      // Não derruba nada: o agente responde com o que já está na base. Mas fica dito, no
+      // log e no painel — uma resposta com dado velho por causa de um site fora do ar não
+      // pode passar por resposta atual.
+      console.warn(
+        `[web-source] agent=${target._id.toString()} falha ao atualizar: ` +
+          comFalha.map((f) => `${f.name} (${f.error})`).join(', ') +
+          ' — respondendo com o que já está na base',
+      )
+    }
     if (mexidas.length > 0 && ctx.traceId) {
       const totais = mexidas.reduce(
         (soma, f) => ({ novos: soma.novos + f.created, atualizados: soma.atualizados + f.updated, iguais: soma.iguais + f.unchanged }),
@@ -645,7 +671,10 @@ async function runAgentTask(
         type: 'rag',
         status: mexidas.some((f) => f.error) ? 'error' : 'success',
         agentId: target._id.toString(),
-        title: `${target.name}: fontes web — ${totais.novos} nova(s), ${totais.atualizados} atualizada(s), ${totais.iguais} sem mudança`,
+        title:
+          comFalha.length > 0
+            ? `${target.name}: falha ao atualizar fonte — respondendo com a base anterior`
+            : `${target.name}: fontes web — ${totais.novos} nova(s), ${totais.atualizados} atualizada(s), ${totais.iguais} sem mudança`,
         durationMs: Date.now() - antesDaFonte,
         metadata: {
           sources: mexidas.map((f) => ({
