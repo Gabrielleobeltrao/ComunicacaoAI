@@ -225,6 +225,8 @@ import { checkScope } from './scopeGate.js'
 import { appendPlaygroundTurns, clearPlaygroundTurns, loadPlaygroundTurns } from './playgroundSession.js'
 import type { PlaygroundTurn } from './playgroundSession.js'
 import { NOOP_TRACKER, createLiveTracker, instrumentTools } from './agentLiveTracker.js'
+import { onTraceEvent, preview as tracePreview, readTrace, traceEvent } from './executionTrace.js'
+import type { TraceInput } from './executionTrace.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -301,6 +303,15 @@ io.on('connection', (socket) => {
       socket.join(`owner:${session.user.id}`)
     }
   })
+})
+
+/**
+ * O painel de acompanhamento recebe os eventos pelo socket que já existe — sala do dono,
+ * autenticada no `join-owner`. Sem sondagem, sem endpoint novo de tempo real, e sem que
+ * a execução conheça o transporte: ela chama `traceEvent`, e a entrega é assunto daqui.
+ */
+onTraceEvent((evento, ownerId) => {
+  io.to(`owner:${ownerId}`).emit('execution-trace', evento)
 })
 
 function broadcastMessage(message: WidgetMessage, ownerId: string) {
@@ -1671,11 +1682,26 @@ app.post('/api/sectors/:sectorId/playground', requireAuth, async (req, res) => {
     ? anteriores.map((m) => `${m.role === 'user' ? 'Visitante' : 'Agente'}: ${m.content}`).join('\n')
     : undefined
 
+  // A trilha vem do CLIENTE, antes de a execução existir: é o que permite acompanhar sem
+  // esperar a resposta. Opaca e curta; sem ela, nada é emitido.
+  const traceSetor = typeof (req.body ?? {}).traceId === 'string' ? String(req.body.traceId).slice(0, 100) : null
+  if (traceSetor) {
+    traceEvent({
+      ownerId: res.locals.userId,
+      executionId: traceSetor,
+      type: 'user_prompt',
+      status: 'info',
+      title: 'Pedido recebido',
+      input: tracePreview(lastUser.content, 600),
+      metadata: { sectorId: sector._id.toString(), mode },
+    })
+  }
   const ctxSetor = sectorRunContext({
     ownerId: res.locals.userId,
     buildingId: buildingIdSetor,
     correlationId,
     rootExecutionId: execucaoSetorId,
+    traceId: traceSetor,
   })
 
   let run: Awaited<ReturnType<typeof executeSectorTeam>>
@@ -2657,6 +2683,17 @@ app.delete('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   res.status(204).end()
 })
 
+/**
+ * O que já aconteceu nesta execução.
+ *
+ * O socket entrega ao vivo; isto existe para quem chegou depois — recarregou a página,
+ * abriu o painel no meio. Escopo de dono: uma trilha de outra conta não existe aqui.
+ */
+app.get('/api/executions/:traceId/trace', requireAuth, (req, res) => {
+  const traceId = String(req.params.traceId).slice(0, 100)
+  res.json({ events: readTrace(traceId, res.locals.userId) })
+})
+
 app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   const agentId = String(req.params.agentId)
   if (!ObjectId.isValid(agentId)) {
@@ -2769,6 +2806,28 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
    * Vale também no teste: quem testa ESTÁ fazendo o agente trabalhar. O estado é
    * efêmero (TTL na projeção) e não entra em métrica nenhuma.
    */
+  // A trilha do teste de UM agente: sem planejador e sem síntese, mas com pedido, base,
+  // ferramentas e resposta — que é o caminho que ele percorre de verdade.
+  const traceChat = typeof (req.body ?? {}).traceId === 'string' ? String(req.body.traceId).slice(0, 100) : null
+  const trilhaChat = (entrada: Omit<TraceInput, 'ownerId' | 'executionId'>) => {
+    if (!traceChat) return
+    traceEvent({ ...entrada, ownerId: res.locals.userId, executionId: traceChat })
+  }
+  trilhaChat({
+    type: 'user_prompt',
+    status: 'info',
+    title: 'Pedido recebido',
+    input: tracePreview(lastUser.content, 600),
+    metadata: { agentId: agent._id.toString(), agent: agent.name },
+  })
+  trilhaChat({
+    type: 'rag',
+    status: knowledge.length > 0 ? 'success' : 'info',
+    agentId: agent._id.toString(),
+    title: `Base do agente — ${knowledge.length > 0 ? `${knowledge.length} trecho(s)` : 'nada encontrado'}`,
+    metadata: { passages: knowledge.length },
+  })
+
   const balao = createLiveTracker({
     ownerId: res.locals.userId,
     agentId: agent._id,
@@ -2980,6 +3039,23 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     outputValid: true,
     ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
   }
+  trilhaChat({
+    type: 'agent',
+    status: 'success',
+    agentId: agent._id.toString(),
+    provider: agent.provider,
+    model: diagnosticoChat.model,
+    title: `${agent.name} respondeu`,
+    output: tracePreview(reply, 600),
+    durationMs: diagnosticoChat.durationMs,
+    metadata: {
+      usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens },
+      modelChoice: diagnosticoChat.modelChoice,
+      modelReason: diagnosticoChat.modelReason,
+      toolCalls: toolCalls.filter((c) => c.ok).length,
+    },
+  })
+  trilhaChat({ type: 'final', status: 'success', title: 'Resposta final', output: tracePreview(reply, 800) })
   guardarTurnoDeTeste(res.locals.userId, 'agent', agent._id, lastUser.content, {
     content: reply,
     handoff,

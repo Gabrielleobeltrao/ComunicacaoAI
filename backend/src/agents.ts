@@ -141,10 +141,40 @@ export interface WatchedSource {
   name: string
   kind: 'rss' | 'http'
   url: string
+  /** Quando o conteúdo entra no PROMPT: sempre, quando mudar, ou só se o agente pedir. */
   when: WatchedSourceWhen
   /** Só feed: quanto para trás olhar. Ignorado numa página. */
   initialWindow: '24h' | '3d' | '7d'
+
+  /**
+   * Como este endereço vira CONHECIMENTO — documento na base, e não texto de um prompt.
+   *
+   * Tudo opcional, e ausente significa `manual`: uma fonte cadastrada antes disto existir
+   * não passa a consumir banda sozinha. Ver `webSourcePolicy.ts` para a decisão.
+   */
+  enabled?: boolean
+  refreshMode?: WebRefreshMode
+  intervalMinutes?: number
+  maxStalenessMinutes?: number
+  discoveryMode?: WebDiscoveryMode
+  crawlArticles?: boolean
+  maxArticlesPerRun?: number
+  maxDepth?: number
+  sameDomainOnly?: boolean
+
+  /** O que aconteceu na última leitura. Escrito pelo gerente, lido pela tela. */
+  lastFetchedAt?: Date | null
+  lastSuccessfulFetchAt?: Date | null
+  nextScheduledAt?: Date | null
+  lastError?: string | null
+  status?: 'never_run' | 'ok' | 'error' | 'running'
+  discoveredUrls?: number
+  newDocuments?: number
+  updatedDocuments?: number
 }
+
+export type WebRefreshMode = 'scheduled' | 'on_demand' | 'manual' | 'hybrid'
+export type WebDiscoveryMode = 'auto' | 'rss' | 'sitemap' | 'listing' | 'single_page'
 
 /**
  * O que o dono decide sobre o custo dessas consultas.

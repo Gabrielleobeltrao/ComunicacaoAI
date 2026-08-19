@@ -332,7 +332,24 @@ test('a aba Como trabalha deixa cadastrar um site para o agente consultar', asyn
 
   await expect(page.getByTestId('agent-sources-saved')).toBeVisible()
   expect(salvo).toEqual({
-    sources: [{ name: 'Blog da empresa', kind: 'http', url: 'https://exemplo.test/blog', when: 'on_demand', initialWindow: '7d' }],
+    sources: [
+      {
+        id: expect.any(String),
+        name: 'Blog da empresa',
+        kind: 'http',
+        url: 'https://exemplo.test/blog',
+        when: 'on_demand',
+        initialWindow: '7d',
+        // Um endereço novo não lê nada sozinho: quem liga isso é o dono.
+        refreshMode: 'manual',
+        intervalMinutes: 30,
+        maxStalenessMinutes: 30,
+        discoveryMode: 'auto',
+        crawlArticles: false,
+        maxArticlesPerRun: 5,
+        sameDomainOnly: true,
+      },
+    ],
     settings: SETTINGS,
   })
 })
@@ -627,4 +644,86 @@ test('resposta comum não traz lista de alternativa nenhuma', async ({ page }) =
   await page.getByRole('button', { name: 'Enviar' }).click()
 
   await expect(page.getByText(/número da opção/i)).toHaveCount(0)
+})
+
+// --- o site como conhecimento vivo -------------------------------------------------------
+//
+// A configuração fica onde o endereço é cadastrado: o dono escolhe se aquele site vira
+// documento na base, com que frequência e o que ler dele. Nada nasce ligado — uma fonte
+// cadastrada para outra coisa não passa a consumir banda sozinha.
+
+const FONTE_WEB = {
+  settings: { maxItems: 8, charBudget: 2400, maxSources: 5, toolName: '', toolDescription: '' },
+  sources: [
+    {
+      routineId: null,
+      origem: 'agente',
+      id: 'f1',
+      name: 'Boletim',
+      kind: 'http',
+      url: 'https://exemplo.test/boletim',
+      when: 'on_demand',
+      initialWindow: '7d',
+      refreshMode: 'manual',
+      discoveryMode: 'auto',
+      crawlArticles: false,
+      maxArticlesPerRun: 5,
+      sameDomainOnly: true,
+      status: 'ok',
+      lastSuccessfulFetchAt: '2026-08-19T10:00:00.000Z',
+      nextScheduledAt: null,
+      lastError: null,
+      host: 'exemplo.test',
+    },
+  ],
+}
+
+test('o site pode virar base do agente, e o modo escolhe o custo', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.request().method() === 'GET' ? r.fulfill({ json: FONTE_WEB }) : r.fulfill({ json: { ok: true } }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+
+  const bloco = page.getByTestId('agent-source-web').first()
+  await expect(bloco).toBeVisible()
+  await bloco.click()
+
+  // Manual não pergunta frequência nenhuma: nada acontece sozinho.
+  await expect(page.getByTestId('agent-source-interval')).toHaveCount(0)
+
+  // No relógio: aparece de quanto em quanto tempo.
+  await page.getByTestId('agent-source-refresh-mode').selectOption('scheduled')
+  await expect(page.getByTestId('agent-source-interval')).toBeVisible()
+  await expect(page.getByTestId('agent-source-staleness')).toHaveCount(0)
+
+  // Antes de usar: aparece a partir de quando o que está guardado é velho.
+  await page.getByTestId('agent-source-refresh-mode').selectOption('on_demand')
+  await expect(page.getByTestId('agent-source-staleness')).toBeVisible()
+  await expect(page.getByTestId('agent-source-interval')).toHaveCount(0)
+
+  // As duas coisas ao mesmo tempo.
+  await page.getByTestId('agent-source-refresh-mode').selectOption('hybrid')
+  await expect(page.getByTestId('agent-source-interval')).toBeVisible()
+  await expect(page.getByTestId('agent-source-staleness')).toBeVisible()
+
+  // E o recibo da última leitura, sem o qual "automático" é promessa sem prova.
+  await expect(page.getByTestId('agent-source-status')).toContainText('Última leitura')
+})
+
+test('"atualizar agora" lê e conta o que mudou', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.request().method() === 'GET' ? r.fulfill({ json: FONTE_WEB }) : r.fulfill({ json: { ok: true } }),
+  )
+  await page.route('**/api/agents/*/sources/refresh', (r) =>
+    r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: true, created: 2, updated: 1, unchanged: 3, error: null }] } }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Consultar um site')
+
+  await page.getByTestId('agent-sources-refresh').click()
+  await expect(page.getByTestId('agent-sources-refresh-result')).toContainText('2 nova(s)')
+  await expect(page.getByTestId('agent-sources-refresh-result')).toContainText('3 sem mudança')
 })

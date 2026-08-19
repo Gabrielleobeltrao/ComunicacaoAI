@@ -101,6 +101,46 @@ test('MVP: registro, prédio, setor, agente, permissões, execução e log', asy
   await page.getByRole('button', { name: 'Contratar agente' }).last().click()
   await expect(page.getByTestId('hire-wizard')).toBeHidden({ timeout: 30_000 })
 
+  // --- 7b. a conversa de teste sobrevive a sair e voltar ---------------------------
+  // Contra a pilha de VERDADE: navegador, servidor e banco. O teste de integração já
+  // prova a rota; isto prova o caminho da pessoa, que é onde a falha foi relatada.
+  const agenteId = await page.evaluate(async () => {
+    const r = await fetch('/api/agents', { credentials: 'include' })
+    const lista = await r.json()
+    return Array.isArray(lista) && lista[0] ? lista[0]._id : ''
+  })
+  if (!agenteId) throw new Error('smoke: o agente contratado não apareceu na lista')
+
+  await irPara(page, `/floors/${andarId}/agents/${agenteId}/atividade`)
+  const campoDeTeste = page.getByPlaceholder('Mensagem do visitante...')
+  await expect(campoDeTeste).toBeVisible({ timeout: 20_000 })
+  await campoDeTeste.fill('esta conversa precisa sobreviver a um recarregamento')
+  await page.getByRole('button', { name: 'Enviar' }).click()
+  await expect(page.getByTestId('playground-messages')).toContainText('esta conversa precisa sobreviver a um recarregamento', {
+    timeout: 30_000,
+  })
+  // A resposta chegou (o dublê responde qualquer coisa): só então a gravação foi disparada.
+  await expect(page.getByTestId('playground-run-info')).toBeVisible({ timeout: 30_000 })
+
+  // Depois de recarregar, a conversa volta do banco. A pergunta aparece DUAS vezes na
+  // área (o dublê ecoa o texto na resposta), então a asserção é sobre a área inteira —
+  // um `getByText` aqui casaria com dois elementos e falharia por ambiguidade, não por
+  // ausência.
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page.getByTestId('playground-messages')).toContainText('esta conversa precisa sobreviver a um recarregamento', {
+    timeout: 20_000,
+  })
+
+  // E o caminho de verdade, que é o mais usado: trocar de aba dentro da página e voltar.
+  // Recarregar remonta tudo; trocar de aba pode não remontar — e é aí que uma conversa
+  // "salva" pode aparecer vazia.
+  await page.getByRole('button', { name: 'Fluxos' }).click()
+  await expect(page.getByPlaceholder('Mensagem do visitante...')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Atividade' }).click()
+  await expect(page.getByTestId('playground-messages')).toContainText('esta conversa precisa sobreviver a um recarregamento', {
+    timeout: 20_000,
+  })
+
   // --- 8. criar setor e vincular o agente -----------------------------------------
   // O setor também é um assistente: identidade, modo, time. "Só organizar" é o
   // modo que não exige coordenador nem etapas — é o caminho mais curto até um setor

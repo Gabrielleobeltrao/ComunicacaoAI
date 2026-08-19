@@ -80,6 +80,9 @@ const RULES: Rule[] = [
   // Os sites que o agente consulta sob demanda são configuração DELE: mudá-los muda o
   // que ele alcança, e isso é do mesmo tamanho de trocar uma ferramenta.
   R('PUT', 'api/agents/:/sources', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
+  // Ler um site que o dono já cadastrou não muda configuração nem dado de ninguém: o que
+  // ela produz (documento na base) já é auditado por quem grava.
+  R('POST', 'api/agents/:/sources/refresh', null, { why: 'reads the sites already configured' }),
   // "Verificar agora" CRIA uma execução fora do horário — isso é uma ação do dono
   // sobre a rotina, e o histórico precisa dizer quem pediu.
   R('POST', 'api/agents/:/routines/:/check-now', { entityType: 'routine', action: 'run' }, { idAt: 4 }),

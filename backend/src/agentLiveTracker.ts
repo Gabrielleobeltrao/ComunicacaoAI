@@ -81,14 +81,21 @@ function catalogIndex(): Map<string, { appKey: string; actionLabel: string }> {
 // Wrap a tool list so every call reports `using_tool` before and returns to
 // `thinking` after. The wrapper adds nothing the model can see: same name, same
 // description, same schema.
-export function instrumentTools(tools: ResolvedTool[], tracker: LiveTracker): ResolvedTool[] {
-  if (tracker === NOOP_TRACKER || tools.length === 0) return tools
+export function instrumentTools(tools: ResolvedTool[], tracker: LiveTracker, trace?: ToolTrace): ResolvedTool[] {
+  if ((tracker === NOOP_TRACKER && !trace) || tools.length === 0) return tools
   return tools.map((tool) => ({
     ...tool,
     run: async (args) => {
       tracker.report('using_tool', toolDetail(tool.name))
+      const comecou = Date.now()
       try {
-        return await tool.run(args)
+        const saida = await tool.run(args)
+        trace?.({ name: tool.name, args, ok: saida.ok, result: saida.result, durationMs: Date.now() - comecou })
+        return saida
+      } catch (erro) {
+        // A CATEGORIA, não a mensagem crua do provedor: ela pode carregar payload.
+        trace?.({ name: tool.name, args, ok: false, error: erro instanceof Error ? erro.name : 'falha', durationMs: Date.now() - comecou })
+        throw erro
       } finally {
         // The model is reasoning again the moment the tool returns.
         tracker.report('thinking')
@@ -96,3 +103,18 @@ export function instrumentTools(tools: ResolvedTool[], tracker: LiveTracker): Re
     },
   }))
 }
+
+/**
+ * O que uma ferramenta fez, para quem está acompanhando.
+ *
+ * Os argumentos passam pela higiene do painel antes de sair — uma ferramenta de dono pode
+ * receber qualquer coisa, inclusive o que não deveria aparecer numa tela.
+ */
+export type ToolTrace = (evento: {
+  name: string
+  args: Record<string, unknown>
+  ok: boolean
+  result?: string
+  error?: string
+  durationMs: number
+}) => void

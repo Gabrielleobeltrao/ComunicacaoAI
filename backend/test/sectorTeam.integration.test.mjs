@@ -1230,3 +1230,174 @@ test('se a consolidação falhar, o trabalho da equipe não é jogado fora', asy
   assert.match(run.output, /Agente A/, 'com o nome de quem respondeu')
   assert.match(run.warnings.join(' '), /não foi possível consolidar/)
 })
+
+// --- a trilha da execução, vinda da execução DE VERDADE ---------------------------------
+//
+// O painel não pode reconstruir a história depois: ele mostra o que aconteceu, na ordem em
+// que aconteceu. Por isso o teste observa os eventos emitidos DURANTE a execução.
+
+const { clearTrace, onTraceEvent } = await import('../dist/executionTrace.js')
+
+test('a execução emite a trilha: pedido, plano, agentes, delegação, síntese e fim', async () => {
+  clearTrace()
+  const trilha = []
+  onTraceEvent((e) => trilha.push(e))
+
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const b = agente('Agente B')
+  const setor = equipeDe(coordenador, [a, b])
+
+  const f = deps([coordenador, a, b], {
+    sector: setor,
+    runTask: async (req) => ({
+      output: /Junte os resultados/.test(req.instructions) ? 'final' : `saída de ${req.instructions}`,
+      usage: { inputTokens: 3, outputTokens: 2 },
+      toolCalls: [],
+    }),
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) => {
+    if (/sufficient/.test(prompt)) return JSON.stringify({ sufficient: true })
+    return JSON.stringify({
+      tasks: [
+        { id: 't1', agentId: a._id.toString(), objective: 'parte A' },
+        { id: 't2', agentId: b._id.toString(), objective: 'parte B' },
+      ],
+    })
+  }
+
+  const ctx = sectorRunContext({ ownerId: OWNER, buildingId: PREDIO.toString(), correlationId: 'teste', traceId: 'trilha-1' })
+  await executeSectorTeam(f.deps, ctx, setor, { objective: 'preciso de A e de B' })
+  onTraceEvent(null)
+
+  const tipos = trilha.map((e) => e.type)
+  assert.ok(tipos.includes('orchestration_start'))
+  assert.ok(tipos.includes('planner'))
+  assert.ok(tipos.includes('agent'))
+  assert.ok(tipos.includes('delegation'))
+  assert.ok(tipos.includes('synthesis'))
+  assert.ok(tipos.includes('orchestration_end'))
+  assert.equal(tipos.at(-1), 'final')
+  // Tudo na mesma trilha: é o id que liga o painel à execução.
+  assert.ok(trilha.every((e) => e.executionId === 'trilha-1'))
+
+  // O PLANO responde às duas perguntas que o painel existe para responder: quem foi
+  // escolhido, e quem não foi.
+  const plano = trilha.find((e) => e.type === 'planner')
+  assert.equal(plano.metadata.selected.length, 2)
+  assert.deepEqual(plano.metadata.selected.map((t) => t.name), ['Agente A', 'Agente B'])
+  assert.deepEqual(plano.metadata.available.map((m) => m.name), ['Agente A', 'Agente B'])
+  assert.equal(plano.metadata.round, 1)
+
+  // A DELEGAÇÃO aparece nas duas direções, com a mensagem e com o resultado.
+  const ida = trilha.find((e) => e.type === 'delegation' && e.title.includes('→ Agente A'))
+  assert.match(ida.input, /parte A/)
+  const volta = trilha.find((e) => e.type === 'delegation' && e.title.startsWith('Agente A →'))
+  assert.match(volta.output, /saída de parte A/)
+
+  // A SÍNTESE diz o que entrou nela — é assim que se vê se recebeu tudo o que esperava.
+  const sintese = trilha.find((e) => e.type === 'synthesis' && e.status === 'running')
+  assert.deepEqual(sintese.metadata.inputs.map((i) => i.agent), ['Agente A', 'Agente B'])
+  const fim = trilha.find((e) => e.type === 'synthesis' && e.status === 'success')
+  assert.ok(typeof fim.durationMs === 'number')
+})
+
+test('sem alguém olhando, nada é emitido', async () => {
+  clearTrace()
+  const trilha = []
+  onTraceEvent((e) => trilha.push(e))
+
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const setor = equipeDe(coordenador, [a])
+  const f = deps([coordenador, a], { sector: setor })
+
+  // Sem `traceId`: a execução não paga por observabilidade que ninguém pediu.
+  await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'oi' })
+  onTraceEvent(null)
+  assert.equal(trilha.length, 0)
+})
+
+test('a falha de um agente aparece na trilha como erro', async () => {
+  clearTrace()
+  const trilha = []
+  onTraceEvent((e) => trilha.push(e))
+
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const setor = equipeDe(coordenador, [a])
+  const f = deps([coordenador, a], {
+    sector: setor,
+    runTask: async (req) => {
+      if (/Junte os resultados/.test(req.instructions)) return { output: 'final', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+      throw new Error('provider caiu')
+    },
+  })
+  f.deps.planWithModel = async () => JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'tentar' }] })
+
+  const ctx = sectorRunContext({ ownerId: OWNER, buildingId: PREDIO.toString(), correlationId: 'teste', traceId: 'trilha-erro' })
+  await executeSectorTeam(f.deps, ctx, setor, { objective: 'pergunta' })
+  onTraceEvent(null)
+
+  const erro = trilha.find((e) => e.type === 'agent' && e.status === 'error')
+  assert.match(erro.title, /Agente A falhou/)
+  // A categoria, não a mensagem crua do provedor.
+  assert.equal(erro.metadata.error, 'falha na execução')
+  assert.ok(!JSON.stringify(trilha).includes('provider caiu'))
+})
+
+// --- 4) ON_DEMAND: a base é atualizada ANTES de o agente trabalhar ---------------------------
+//
+// A ordem é o ponto: atualizar depois da execução seria atualizar para a próxima pergunta,
+// e não para esta. E não pode travar — se a leitura demorar, o agente trabalha com o que
+// tem, e o rastro diz que a atualização não terminou.
+
+test('o planner escolhe o agente, e as fontes dele são atualizadas antes da tarefa', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const setor = equipeDe(coordenador, [a])
+  const ordem = []
+
+  const f = deps([coordenador, a], {
+    sector: setor,
+    runTask: async (req) => {
+      ordem.push(/Junte os resultados/.test(req.instructions) ? 'sintese' : `tarefa:${req.instructions}`)
+      return { output: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) =>
+    /sufficient/.test(prompt) ? JSON.stringify({ sufficient: true }) : JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'pesquisar' }] })
+  f.deps.ensureWebKnowledgeFresh = async () => {
+    ordem.push('fontes')
+    return [{ name: 'Boletim', refreshed: true, reason: 'nunca foi lida', created: 2, updated: 0, unchanged: 0 }]
+  }
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'o que há de novo?' })
+
+  assert.deepEqual(ordem, ['fontes', 'tarefa:pesquisar', 'sintese'], 'atualiza, depois executa')
+  void run
+})
+
+test('se a atualização falhar, o agente trabalha com o que já tem', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const a = agente('Agente A')
+  const setor = equipeDe(coordenador, [a])
+  let executou = false
+
+  const f = deps([coordenador, a], {
+    sector: setor,
+    runTask: async (req) => {
+      if (!/Junte os resultados/.test(req.instructions)) executou = true
+      return { output: 'respondi com a base que eu tinha', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+    },
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) =>
+    /sufficient/.test(prompt) ? JSON.stringify({ sufficient: true }) : JSON.stringify({ tasks: [{ id: 't1', agentId: a._id.toString(), objective: 'pesquisar' }] })
+  f.deps.ensureWebKnowledgeFresh = async () => {
+    throw new Error('site fora do ar')
+  }
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'e aí?' })
+  assert.equal(executou, true, 'a falha da atualização não impede o trabalho')
+  assert.ok(run.output)
+})

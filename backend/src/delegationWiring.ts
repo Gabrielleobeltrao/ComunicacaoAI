@@ -21,6 +21,7 @@ import { finishDelegation, startDelegation } from './delegationLog.js'
 import { recordAgentEvent } from './agentEvents.js'
 import { recordReplyUsageOnce } from './tokenUsage.js'
 import { listDocuments, retrieveContext } from './knowledge.js'
+import { WEB_REFRESH_TIMEOUT_MS, ensureAgentWebKnowledgeFresh } from './webKnowledge.js'
 import { askAux, auxiliaryModel } from './llm.js'
 import { AUTO_MODEL } from './autoModel.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
@@ -107,6 +108,16 @@ export function productionDelegationDeps(): DelegationDeps {
           ? coordinator.model
           : auxiliaryModel(coordinator.provider)
       return askAux(coordinator.provider, prompt, modelo, apiKey, 700)
+    },
+    // A base viva do agente, verificada antes de ele trabalhar. Quem decide se vale a
+    // leitura é a política da fonte — aqui é só a ligação.
+    ensureWebKnowledgeFresh: async (ownerId, agentId) => {
+      // Teto de espera: a atualização acontece ANTES da tarefa, então ela está na frente
+      // de quem perguntou. Passou disso, o agente trabalha com o que já tem na base — e
+      // o rastro registra que a atualização não terminou a tempo.
+      const limite = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), WEB_REFRESH_TIMEOUT_MS).unref?.())
+      const resultado = await Promise.race([ensureAgentWebKnowledgeFresh(ownerId, agentId, 'on_demand'), limite])
+      return resultado === 'timeout' ? [{ name: 'fontes web', refreshed: true, reason: 'tempo esgotado', created: 0, updated: 0, unchanged: 0, error: 'a atualização não terminou a tempo' }] : resultado
     },
     // Só os TÍTULOS: dizem quem tem o dado sem abrir o dado.
     knowledgeTitlesFor: async (_ownerId, agentId) => (await listDocuments(agentId)).map((d) => d.title).filter(Boolean),
