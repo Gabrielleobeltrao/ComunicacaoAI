@@ -20,7 +20,9 @@ import { ObjectId } from 'mongodb'
 import { finishDelegation, startDelegation } from './delegationLog.js'
 import { recordAgentEvent } from './agentEvents.js'
 import { recordReplyUsageOnce } from './tokenUsage.js'
-import { retrieveContext } from './knowledge.js'
+import { listDocuments, retrieveContext } from './knowledge.js'
+import { askAux, auxiliaryModel } from './llm.js'
+import { AUTO_MODEL } from './autoModel.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
 import type { DelegationContext, DelegationDeps } from './delegation.js'
 import { TEAM_TOOL_NAMES } from './delegation.js'
@@ -91,6 +93,23 @@ export function productionDelegationDeps(): DelegationDeps {
     startSectorExecution: (input) => startSectorExecution(input),
     finishSectorExecution: (executionKey, outcome) => finishSectorExecution(executionKey, outcome),
     // Fire-and-forget: telemetry never delays or breaks a delegation.
+    /**
+     * Quem distribui o pedido entre os membros do setor.
+     *
+     * Usa o modelo AUXILIAR do coordenador: escolher quem trabalha é uma decisão curta
+     * sobre uma lista curta, e pagar o modelo principal por ela seria caro sem ser
+     * melhor. Falha aqui não derruba nada — o planejador cai no determinístico.
+     */
+    planWithModel: async (ownerId, coordinator, prompt) => {
+      const apiKey = await getProviderApiKey(ownerId, coordinator.provider)
+      const modelo =
+        coordinator.cheapAuxModel === false && coordinator.model && coordinator.model !== AUTO_MODEL
+          ? coordinator.model
+          : auxiliaryModel(coordinator.provider)
+      return askAux(coordinator.provider, prompt, modelo, apiKey, 700)
+    },
+    // Só os TÍTULOS: dizem quem tem o dado sem abrir o dado.
+    knowledgeTitlesFor: async (_ownerId, agentId) => (await listDocuments(agentId)).map((d) => d.title).filter(Boolean),
     // O balão de quem EXECUTA. `reportState` acima é o de quem DELEGA — os dois
     // existem porque são fatos diferentes acontecendo ao mesmo tempo.
     trackerFor: (ownerId, agentId, floorId, rootExecutionId) => createLiveTracker({ ownerId, agentId, floorId, rootExecutionId }),

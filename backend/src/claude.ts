@@ -366,6 +366,28 @@ export async function planSectorResponse(
   return parseSectorPlan(textBlock.text, options.length, defaultIndex)
 }
 
+/**
+ * Uma pergunta de bastidor: prompt entra, texto sai.
+ *
+ * Existe porque tudo o mais neste adaptador é uma tarefa específica (guardião, memória,
+ * transição de etapa) com prompt próprio. O planejamento do setor precisa só disto — e
+ * inventar uma sétima função com o prompt embutido esconderia, no adaptador, uma regra
+ * que é do domínio.
+ *
+ * Sem ferramentas, sem histórico e sem estado: o que se manda é o que se recebe.
+ */
+export async function askAux(prompt: string, model?: string | null, apiKey?: string | null, maxTokens = 600): Promise<string> {
+  const response = await buildClient(apiKey).messages.create({
+    model: model || DEFAULT_MODEL,
+    max_tokens: maxTokens,
+    thinking: { type: 'disabled' },
+    output_config: { effort: 'low' },
+    messages: [{ role: 'user', content: prompt }],
+  })
+  const textBlock = response.content.find((block) => block.type === 'text')
+  return textBlock && textBlock.type === 'text' ? textBlock.text : ''
+}
+
 export async function planStageTransition(
   currentStageName: string,
   currentStageGoal: string,

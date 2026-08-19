@@ -703,3 +703,111 @@ test('um link solto na base não é a mesma coisa que a notícia', async () => {
   // A URL pode até ser recuperada; o que ela NÃO tem é o conteúdo da notícia.
   assert.ok(!/acordo de reparação/.test(texto), 'não há texto de notícia nenhum guardado aqui')
 })
+
+// --- o plano, no começo do orquestrado -----------------------------------------------------
+//
+// Antes: o coordenador tinha as ferramentas e a lista da equipe, e a decisão de acionar
+// alguém era um impulso no meio da resposta. Agora a distribuição é um passo declarado —
+// e o coordenador recebe a lista de chamadas a fazer, não só a lista de quem existe.
+
+test('o plano chega ao coordenador como passos, com objetivo por membro', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const juridico = agente('Jurídico', { capabilities: ['contratos'] })
+  const financeiro = agente('Financeiro', { capabilities: ['orcamento'] })
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Retaguarda',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [
+      { agentId: coordenador._id, isDefault: true },
+      { agentId: juridico._id, routingDescription: 'quando envolver contrato ou cláusula' },
+      { agentId: financeiro._id, routingDescription: 'quando envolver custo ou orçamento' },
+    ],
+    stages: [],
+  }
+
+  const f = deps([coordenador, juridico, financeiro], { sector: setor })
+  // O "modelo" do planejador, dublado: devolve o plano que o teste quer observar. É o
+  // único ponto em que o planejador fala com fora — por isso ele é injetado.
+  f.deps.planWithModel = async () =>
+    JSON.stringify({
+      tasks: [
+        { id: 'p1', agentId: juridico._id.toString(), objective: 'avaliar o risco da cláusula' },
+        { id: 'p2', agentId: financeiro._id.toString(), objective: 'estimar o custo', dependsOn: ['p1'] },
+      ],
+      synthesisObjective: 'risco e custo numa resposta só',
+    })
+
+  await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'qual o risco da cláusula e quanto custa?' })
+
+  const instrucoes = f.chamadas[0].instructions
+  assert.match(instrucoes, /PLANO PARA ESTE PEDIDO/)
+  assert.match(instrucoes, /Acione Jurídico/)
+  assert.match(instrucoes, /avaliar o risco da cláusula/)
+  assert.match(instrucoes, /Acione Financeiro/)
+  // A dependência vira instrução em português, e não um campo que o modelo teria de decifrar.
+  assert.match(instrucoes, /só depois de \(t1\)/)
+  assert.match(instrucoes, /risco e custo numa resposta só/)
+})
+
+test('sem planejador, o setor continua funcionando como antes', async () => {
+  // Compatibilidade: instalação sem modelo auxiliar, setor antigo, nada muda para pior.
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const especialista = agente('Especialista')
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Time',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }, { agentId: especialista._id }],
+    stages: [],
+  }
+  const f = deps([coordenador, especialista], { sector: setor })
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'me ajuda com uma coisa' })
+
+  assert.equal(run.participants.length, 1, 'o coordenador executou')
+  const instrucoes = f.chamadas[0].instructions
+  assert.match(instrucoes, /COORDENA a equipe/)
+  // O plano determinístico ainda existe: um membro, um passo.
+  assert.match(instrucoes, /PLANO PARA ESTE PEDIDO/)
+  assert.match(instrucoes, /Acione Especialista/)
+})
+
+// --- consultar a base de um colega NÃO é acionar o colega ------------------------------------
+//
+// A distinção que o motor precisa manter: achar um trecho na base de alguém é leitura de
+// documento, sai no mesmo turno e não custa inferência nenhuma. Acionar esse alguém é
+// outra execução, com o modelo e as ferramentas dele. Se a primeira contasse como a
+// segunda, o painel mostraria dois agentes trabalhando onde um trabalhou, e a conta de
+// tokens do time deixaria de bater.
+
+test('achar o dado na base de um colega não transforma o colega em participante', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const pesquisador = agente('Pesquisador')
+  const setor = {
+    _id: new ObjectId(),
+    name: 'Mesa',
+    officeId: ANDAR,
+    mode: 'orchestrated',
+    coordinatorAgentId: coordenador._id,
+    instruction: '',
+    members: [{ agentId: coordenador._id, isDefault: true }, { agentId: pesquisador._id }],
+    stages: [],
+  }
+  // A base é do PESQUISADOR; quem executa é só o coordenador.
+  await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'Série BBSE3', content: BBSE3 })
+
+  const f = deps([coordenador, pesquisador], { sector: setor })
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'quanto valia BBSE3 em 10/08/2026?' })
+
+  assert.equal(run.participants.length, 1, 'uma execução, um participante')
+  assert.equal(run.participants[0].name, 'Coordenador')
+  // O trecho do colega chegou — como conhecimento, não como colaboração.
+  assert.match((f.chamadas[0].context ?? []).join('\n'), /36,42/)
+  assert.equal(run.participants[0].grounding, 'ok')
+})

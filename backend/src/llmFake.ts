@@ -57,6 +57,12 @@ export async function checkGuardrail(): Promise<boolean> {
   return true
 }
 
+// O dublê não planeja: devolver vazio faz o planejador cair no determinístico, que é o
+// comportamento que o teste quer observar.
+export async function askAux(): Promise<string> {
+  return ''
+}
+
 export async function planSectorResponse(
   options: RouterOption[],
   _currentIndices: number[],

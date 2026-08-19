@@ -26,6 +26,8 @@ import type { ClarificationRequest } from './clarify.js'
 import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
 import type { LiveTracker } from './agentLiveTracker.js'
+import { describePlan, planExecution } from './sectorPlanner.js'
+import type { ExecutionPlan } from './sectorPlanner.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -243,6 +245,16 @@ export interface DelegationDeps {
    * Opcional para este módulo continuar testável sem banco; ausente = não instrumenta.
    */
   trackerFor?: (ownerId: string, agentId: ObjectId, floorId: ObjectId | null, rootExecutionId: string) => LiveTracker
+  /**
+   * O modelo auxiliar que distribui o pedido entre os membros. Injetado para este
+   * módulo não conhecer provedor nenhum — e opcional: sem ele o plano é determinístico.
+   */
+  planWithModel?: (ownerId: string, coordinator: Agent, prompt: string) => Promise<string>
+  /**
+   * Os TÍTULOS dos documentos de um agente. Ajudam a escolher quem tem o dado, sem
+   * abrir o dado: nenhum trecho de base passa por aqui.
+   */
+  knowledgeTitlesFor?: (ownerId: string, agentId: ObjectId) => Promise<string[]>
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
@@ -1102,17 +1114,56 @@ export async function executeSectorTeam(
             routingDescription: outros[i].routingDescription ?? null,
             role: agente.role ?? null,
             objective: agente.objective ?? null,
+            instructions: agente.instructions ?? null,
             capabilities: agente.capabilities ?? null,
+            // O que ele CONSEGUE fazer, e não só o que sabe. Nomes, nunca credenciais.
+            tools: [...(agente.tools ?? []).map((t) => t.name), ...(agente.builtinTools ?? []).map((t) => t.key)],
+            // Só os TÍTULOS: o conteúdo da base não sai daqui, nem para escolher.
+            knowledgeTitles: null as string[] | null,
           }
         : null,
     )
     .filter((m): m is NonNullable<typeof m> => m !== null)
+  // Os títulos da base de cada membro, quando quem chamou sabe buscá-los. É o sinal mais
+  // direto de "quem tem o dado" — e continua sendo só título, nunca trecho.
+  if (deps.knowledgeTitlesFor) {
+    await Promise.all(
+      equipe.map(async (m) => {
+        m.knowledgeTitles = await deps.knowledgeTitlesFor!(ctx.ownerId, new ObjectId(m.agentId)).catch(() => null)
+      }),
+    )
+  }
   if (equipe.length === 0) {
     // Sem isto o teste mostrava um único participante e parecia quebrado. Está
     // funcionando: não há mais ninguém no setor para acionar.
     warnings.push('setor orquestrado sem outros membros: o coordenador respondeu sozinho')
   }
-  const briefing = coordinatorBriefing(sector.name, equipe)
+  /**
+   * O PLANO, antes de qualquer trabalho.
+   *
+   * Aqui estava o buraco que sobrou: o coordenador tinha as ferramentas e a lista da
+   * equipe, mas a decisão de acionar alguém continuava sendo um impulso no meio da
+   * resposta — e um modelo que recebe uma pergunta respondível responde. Agora a
+   * distribuição é um passo declarado: quem trabalha, com que objetivo, e quem espera
+   * por quem. Uma pergunta simples continua selecionando um só.
+   *
+   * Sem `planWithModel` (instalação sem modelo auxiliar, teste sem dublê) o plano sai
+   * determinístico — setores existentes continuam funcionando igual.
+   */
+  const { plan, source: origemDoPlano } = await planExecution({
+    question: opts.objective,
+    members: equipe,
+    ask: deps.planWithModel ? (prompt) => deps.planWithModel!(ctx.ownerId, coordinator, prompt) : undefined,
+  })
+  if (plan.tasks.length > 0) {
+    // O plano gerado, legível: ids, nomes e o começo de cada objetivo. Sem credencial,
+    // sem prompt de sistema e sem conteúdo de base.
+    console.info(
+      `[plan] execution=${sectorExecutionId?.toString() ?? ctx.correlationId} sector=${sector._id.toString()} ` +
+        `source=${origemDoPlano} tasks=${plan.tasks.length} ${describePlan(plan, equipe)}`,
+    )
+  }
+  const briefing = coordinatorBriefing(sector.name, equipe, plan)
   const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
 
   /**
