@@ -950,3 +950,92 @@ test('um agente antigo, sem tipo declarado, continua com tudo', async ({ page })
   await expect(page.getByText('Ferramentas reutilizáveis')).toBeVisible()
 })
 
+
+// --- o celular ---------------------------------------------------------------------------------
+//
+// Um flex sem quebra não estoura a página: ele ENCOLHE os filhos até o min-content para
+// caber. O min-content de um botão é a palavra mais longa do rótulo, então "Adicionar
+// endereço" virava uma torre de uma letra por linha — dentro da largura da tela, e por
+// isso invisível para o teste de rolagem lateral, que só olha o scrollWidth da página.
+
+test('no celular, os botões de fonte continuam botões — e não colunas de letras', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.request().method() === 'GET' ? r.fulfill({ json: FONTE_WEB }) : r.fulfill({ json: { ok: true } }),
+  )
+  // A frase do resultado é o que aperta a linha: ela é longa, e um flex sem quebra
+  // encolhe os VIZINHOS para acomodá-la.
+  await page.route('**/api/agents/*/sources/refresh', (r) =>
+    r.fulfill({
+      json: {
+        sources: [{ name: 'Preço das ações', refreshed: false, created: 0, updated: 0, unchanged: 0, error: 'nenhuma página pôde ser lida' }],
+      },
+    }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Pesquisa web')
+  await page.getByTestId('agent-sources-refresh').click()
+  await expect(page.getByTestId('agent-sources-refresh-result')).toBeVisible()
+
+  for (const id of ['agent-source-add', 'agent-sources-save', 'agent-sources-refresh']) {
+    const caixa = await page.getByTestId(id).boundingBox()
+    expect(caixa, `${id} precisa estar na tela`).not.toBeNull()
+    // Um botão de uma linha tem a altura de um controle. Espremido, ele cresce para
+    // baixo — é a altura que denuncia, e não a largura.
+    expect(caixa!.height, `${id} está espremido (${Math.round(caixa!.height)}px de altura)`).toBeLessThan(64)
+    // E continua largo o bastante para o rótulo caber deitado.
+    expect(caixa!.width, `${id} está estreito demais (${Math.round(caixa!.width)}px)`).toBeGreaterThan(80)
+  }
+})
+
+// "Não foi possível testar agora" era a resposta para três coisas diferentes: o servidor
+// recusou, o servidor não respondeu, e o servidor respondeu algo que não é JSON. Só uma
+// delas tem conserto na tela, e a frase não dizia qual.
+
+test('quando o teste de leitura falha, a tela diz O QUE falhou', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.request().method() === 'GET' ? r.fulfill({ json: FONTE_WEB }) : r.fulfill({ json: { ok: true } }),
+  )
+  // Um servidor mais antigo que esta tela: a rota não existe lá.
+  await page.route('**/api/agents/*/sources/test-read', (r) => r.fulfill({ status: 404, body: 'Cannot POST' }))
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Pesquisa web')
+  await page.getByTestId('agent-source-web').first().click()
+
+  await page.getByTestId('agent-source-test-read').first().click()
+  await expect(page.getByTestId('agent-source-read-result').first()).toContainText('404')
+  await expect(page.getByTestId('agent-source-read-result').first()).toContainText('anterior à desta tela')
+})
+
+test('a página que exige navegador diz que o servidor não tem um — não que o site é ruim', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
+  await page.route('**/api/agents/*/sources', (r) =>
+    r.request().method() === 'GET' ? r.fulfill({ json: FONTE_WEB }) : r.fulfill({ json: { ok: true } }),
+  )
+  await page.route('**/api/agents/*/sources/test-read', (r) =>
+    r.fulfill({
+      json: {
+        ok: false,
+        code: 'BROWSER_UNAVAILABLE',
+        reason: 'esta página só carrega com JavaScript, e este servidor não tem navegador configurado para renderizá-la',
+        readMethod: 'browser',
+        status: 200,
+        strategies: [
+          { strategy: 'http', ok: false, code: 'JS_REQUIRED', reason: 'montada por JavaScript', durationMs: 120 },
+          { strategy: 'browser', ok: false, code: 'BROWSER_UNAVAILABLE', reason: 'sem navegador', durationMs: 0 },
+        ],
+      },
+    }),
+  )
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Pesquisa web')
+  await page.getByTestId('agent-source-web').first().click()
+
+  await page.getByTestId('agent-source-test-read').first().click()
+  const resultado = page.getByTestId('agent-source-read-result').first()
+  await expect(resultado).toContainText('não tem navegador configurado')
+  // E o caminho tentado, que é o que separa "não tentei" de "tentei e não deu".
+  await expect(resultado).toContainText('http ✕ JS_REQUIRED')
+})

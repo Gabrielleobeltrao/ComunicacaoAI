@@ -251,8 +251,31 @@ export function AgentSources({ agentId }: { agentId: string }) {
         body: JSON.stringify({ url: linha.url.trim(), mode: linha.readMode }),
       })
       const r = await res.json().catch(() => null)
+      /**
+       * "Não foi possível testar agora" era a resposta para três coisas diferentes: o
+       * servidor recusou, o servidor não respondeu, e o servidor respondeu algo que não
+       * é JSON. Só uma delas tem conserto na tela, e a frase não dizia qual.
+       *
+       * Um erro do servidor traz o status: é ele que separa "não existe essa rota nesta
+       * versão" (404) de "deu erro ao ler" (500) — e o primeiro quer dizer que a versão
+       * do servidor não bate com a da tela, que não é problema de quem configurou o site.
+       */
+      if (!res.ok) {
+        const motivo = typeof r?.error === 'string' ? r.error : typeof r?.reason === 'string' ? r.reason : ''
+        setLeituras((antes) => ({
+          ...antes,
+          [linha.id]: {
+            ok: false,
+            texto:
+              res.status === 404
+                ? 'Este servidor não tem o teste de leitura (HTTP 404) — a versão dele é anterior à desta tela.'
+                : `O servidor respondeu HTTP ${res.status}${motivo ? `: ${motivo}` : '.'}`,
+          },
+        }))
+        return
+      }
       if (!r) {
-        setLeituras((antes) => ({ ...antes, [linha.id]: { ok: false, texto: 'Não foi possível testar agora.' } }))
+        setLeituras((antes) => ({ ...antes, [linha.id]: { ok: false, texto: 'O servidor respondeu algo que não é JSON.' } }))
         return
       }
       const metodo = r.readMethod === 'browser' ? 'navegador' : 'HTTP'
@@ -285,8 +308,13 @@ export function AgentSources({ agentId }: { agentId: string }) {
               (caminho ? `\nCaminho: ${caminho}` : ''),
         },
       }))
-    } catch {
-      setLeituras((antes) => ({ ...antes, [linha.id]: { ok: false, texto: 'Não foi possível testar agora.' } }))
+    } catch (e) {
+      // Aqui só chega falha de REDE: o pedido não completou. Dizer isso é melhor que
+      // "não foi possível", que também serviria para um erro do servidor.
+      setLeituras((antes) => ({
+        ...antes,
+        [linha.id]: { ok: false, texto: `Não foi possível falar com o servidor: ${e instanceof Error ? e.message : 'a conexão falhou'}` },
+      }))
     } finally {
       setTestando(null)
     }
@@ -379,7 +407,7 @@ export function AgentSources({ agentId }: { agentId: string }) {
                   data-testid="agent-source-url"
                 />
               </Field>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'end' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'end' }}>
                 <Select
                   value={linha.kind}
                   onChange={(e) => alterar(linha.id, { kind: e.target.value as 'rss' | 'http' })}
@@ -447,36 +475,44 @@ export function AgentSources({ agentId }: { agentId: string }) {
                      />
                    </Field>
                  )}
+                 {/* COMO ler não tem relação com QUANDO reler.
+                     
+                     Estes dois campos viviam dentro do "não é manual", e o efeito era o
+                     avesso do que faz sentido: no modo manual — onde toda leitura é sob
+                     demanda, pelo botão "Atualizar agora" — o dono não podia escolher o
+                     modo de leitura nem testar o endereço. Justamente quem mais precisa
+                     testar era quem não tinha o botão. */}
+                     <Field label="Como ler" hint="Automático tenta o caminho barato e só abre o navegador quando o conteúdo depende de JavaScript.">
+                     <Select
+                     value={linha.readMode}
+                     onChange={(e) => alterar(linha.id, { readMode: e.target.value as Linha['readMode'] })}
+                     data-testid="agent-source-read-mode"
+                     options={[
+                       { value: 'auto', label: 'Automático (recomendado)' },
+                       { value: 'http', label: 'Só HTTP — nunca abre navegador' },
+                       { value: 'browser', label: 'Navegador — para páginas que só montam com JavaScript' },
+                     ]}
+                     />
+                   </Field>
+                   <div>
+                     <Button
+                     variant="secondary"
+                     size="sm"
+                     disabled={testando === linha.id || !linha.url.trim()}
+                     onClick={() => void testarLeitura(linha)}
+                     data-testid="agent-source-test-read"
+                     >
+                     {testando === linha.id ? 'Lendo…' : 'Testar leitura'}
+                     </Button>
+                     {leituras[linha.id] && (
+                     <p style={{ margin: '6px 0 0', fontSize: 12, color: leituras[linha.id].ok ? 'var(--text-muted)' : 'var(--coral-600)' }} data-testid="agent-source-read-result">
+                       {leituras[linha.id].texto}
+                     </p>
+                     )}
+                   </div>
+
                  {linha.refreshMode !== 'manual' && (
                    <>
-                     <Field label="Como ler" hint="Automático tenta o caminho barato e só abre o navegador quando o conteúdo depende de JavaScript.">
-                       <Select
-                         value={linha.readMode}
-                         onChange={(e) => alterar(linha.id, { readMode: e.target.value as Linha['readMode'] })}
-                         data-testid="agent-source-read-mode"
-                         options={[
-                           { value: 'auto', label: 'Automático (recomendado)' },
-                           { value: 'http', label: 'Só HTTP — nunca abre navegador' },
-                           { value: 'browser', label: 'Navegador — para páginas que só montam com JavaScript' },
-                         ]}
-                       />
-                     </Field>
-                     <div>
-                       <Button
-                         variant="secondary"
-                         size="sm"
-                         disabled={testando === linha.id || !linha.url.trim()}
-                         onClick={() => void testarLeitura(linha)}
-                         data-testid="agent-source-test-read"
-                       >
-                         {testando === linha.id ? 'Lendo…' : 'Testar leitura'}
-                       </Button>
-                       {leituras[linha.id] && (
-                         <p style={{ margin: '6px 0 0', fontSize: 12, color: leituras[linha.id].ok ? 'var(--text-muted)' : 'var(--coral-600)' }} data-testid="agent-source-read-result">
-                           {leituras[linha.id].texto}
-                         </p>
-                       )}
-                     </div>
                      <Field label="O que ler">
                        <Select
                          value={linha.discoveryMode}
@@ -563,7 +599,14 @@ export function AgentSources({ agentId }: { agentId: string }) {
             </div>
           ))}
 
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* Quebra de linha, e não encolhimento.
+              
+              Sem `flexWrap`, o navegador encolhe cada filho até o min-content para fazer
+              caber — e o min-content de um botão é a palavra mais longa do rótulo. No
+              celular isso transformava "Adicionar endereço" numa torre de uma letra por
+              linha. Com quatro controles e uma frase de resultado, esta linha não cabe em
+              390px: ela tem de quebrar. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
             <Button
               variant="secondary"
               size="sm"
@@ -619,7 +662,7 @@ export function AgentSources({ agentId }: { agentId: string }) {
               </Button>
             )}
             {resumo && (
-              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="agent-sources-refresh-result">
+              <span style={{ flexBasis: '100%', fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="agent-sources-refresh-result">
                 {resumo}
               </span>
             )}

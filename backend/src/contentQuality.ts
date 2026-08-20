@@ -25,6 +25,8 @@ export type ReadErrorCode =
   | 'CONSENT_REQUIRED'
   | 'CONTENT_EMPTY'
   | 'BROWSER_TIMEOUT'
+  /** A página exige navegador e este servidor não tem um. Não é defeito de quem configurou. */
+  | 'BROWSER_UNAVAILABLE'
   | 'EXTRACTION_FAILED'
 
 /** Para que serve a página — escolhe a estratégia de extração, não restringe nada. */

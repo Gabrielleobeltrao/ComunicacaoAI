@@ -365,13 +365,13 @@ export async function readWebPage(url: string, opts: ReadOptions = {}): Promise<
 
   const renderizar = async (motivo: string | null): Promise<ReadResult> => {
     if (!renderer) {
-      return falha(
-        url,
-        'browser',
-        'JS_REQUIRED',
-        'esta página precisa de um navegador para ser lida, e esta instalação não tem um configurado',
-        comecou,
-      )
+      // Este motivo é o MAIS acionável que existe aqui: não é o site que está errado nem
+      // o endereço, é que ler esta página exige um navegador e este servidor não tem um.
+      // Quem configurou não tem o que corrigir na tela — a decisão é de quem opera.
+      return {
+        ...falha(url, 'browser', 'BROWSER_UNAVAILABLE', 'esta página só carrega com JavaScript, e este servidor não tem navegador configurado para renderizá-la', comecou),
+        fallbackReason: motivo,
+      }
     }
     try {
       const pagina = await renderer(url, { timeoutMs: opts.browserTimeoutMs ?? TIMEOUT_BROWSER_MS })
@@ -444,12 +444,18 @@ export async function readWebPage(url: string, opts: ReadOptions = {}): Promise<
    * corpo do HTTP, com o diagnóstico mais acionável dos dois: login, robô e bloqueio
    * dizem o que fazer; "precisa de navegador" só diz onde parou.
    */
-  const acionavel: ReadErrorCode[] = ['LOGIN_REQUIRED', 'CAPTCHA', 'HTTP_BLOCKED', 'CONSENT_REQUIRED']
-  const codigo = primeira.code && acionavel.includes(primeira.code) ? primeira.code : (comNavegador.code ?? primeira.code)
+  const acionavel: ReadErrorCode[] = ['LOGIN_REQUIRED', 'CAPTCHA', 'HTTP_BLOCKED', 'CONSENT_REQUIRED', 'RATE_LIMITED']
+  // O diagnóstico do HTTP ganha quando ele já diz o que fazer: login, robô, bloqueio,
+  // ritmo. Fora esses, quem manda é o navegador — inclusive, e principalmente, quando o
+  // que ele tem a dizer é que não existe navegador aqui. Antes essa frase se perdia: o
+  // dono lia "o conteúdo é montado por JavaScript" e não ficava sabendo que, deste
+  // servidor, aquilo nunca ia ser lido.
+  const usarHttp = Boolean(primeira.code && acionavel.includes(primeira.code))
+  const codigo = usarHttp ? primeira.code : (comNavegador.code ?? primeira.code)
   return anotar({
     ...primeira,
     ...(codigo ? { code: codigo } : {}),
-    reason: codigo === primeira.code ? primeira.reason : comNavegador.reason,
+    reason: usarHttp ? primeira.reason : comNavegador.reason,
     fallbackReason: `${veredito.code}: ${veredito.reason}`,
   })
 }
