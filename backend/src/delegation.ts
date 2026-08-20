@@ -560,7 +560,12 @@ export function checkStageOutput(
 // Run one target agent as a task under `ctx` (ctx.callerAgentId is the delegator).
 // Returns the model output, charging the shared budget. Assumes checkDelegation
 // already passed.
-async function runAgentTask(
+//
+// Exportada porque é AQUI que se decide quem consulta base, quem recebe fonte viva e
+// quem acende o balão de leitura — as três coisas que a divisão de papéis governa. Testar
+// isso por fora exigiria montar um setor inteiro para observar uma decisão que mora nesta
+// função.
+export async function runAgentTask(
   deps: DelegationDeps,
   ctx: DelegationContext,
   target: Agent,
@@ -766,7 +771,11 @@ async function runAgentTask(
   }
 
   const query = buildRetrievalQuery({ objective, input })
-  if (query && deps.retrieveContext) tracker.report('reading_knowledge')
+  // O balão só acende para quem realmente vai procurar. Ele acendia para todo mundo, e
+  // o mapa mostrava o analista e o coordenador "consultando a base" — trabalho que não
+  // estava acontecendo. Um painel que relata o que não houve é tão ruim quanto o
+  // comportamento errado: manda investigar no lugar errado.
+  if (query && deps.retrieveContext && capacidades.knowledge) tracker.report('reading_knowledge')
   // A rejected promise is 'unavailable', not "no knowledge": the two must never be
   // confused, and only the first one is a reason to refuse.
   const buscar = async () =>
@@ -859,7 +868,10 @@ async function runAgentTask(
       }
     }
   }
-  if (ctx.traceId && query) {
+  // Só quem PROCURA aparece com um evento de base. O painel emitia um para todo agente
+  // com pergunta, então o plano mostrava o analista e o coordenador consultando —
+  // exatamente o que a divisão de papéis existe para impedir.
+  if (ctx.traceId && query && capacidades.knowledge) {
     // O que a busca fez, sem o que ela leu: títulos e quantidade dizem se o agente tinha
     // base, e o conteúdo dela não é assunto de painel.
     traceEvent({
@@ -885,18 +897,31 @@ async function runAgentTask(
       },
     })
   }
-  // The target's own rule, honoured wherever it runs: a delegated agent that must
-  // answer from curated knowledge does not answer without it, and nothing is spent.
-  if (target.requireGrounding && grounding !== 'ok') {
+  /**
+   * "Só responder com base no conhecimento" — para quem TEM conhecimento a consultar.
+   *
+   * A regra vale onde quer que o agente rode. Mas para quem não consulta base por papel,
+   * ela é impossível de satisfazer: a busca nem acontece, `grounding` é sempre 'no_base',
+   * e o agente ficaria bloqueado para sempre — um analista que nunca analisa. A exigência
+   * dele é outra, e já existe: ele precisa de ENTRADA, não de base.
+   */
+  if (target.requireGrounding && capacidades.knowledge && grounding !== 'ok') {
     // Ele parou, e parou por uma razão. `reportNow` porque o estado precisa estar
     // gravado antes do `throw` — senão a corrida deixa o balão "pensando" para sempre.
     await tracker.reportNow('blocked')
     await tracker.finish('failed')
     throw new GroundingRequiredError(grounding)
   }
-  // Os endereços que o dono marcou para entrar sozinhos também valem aqui: delegação e
-  // etapa de setor são "o agente foi chamado" tanto quanto uma conversa.
-  const vivas = deps.livePassages ? await deps.livePassages(ctx.ownerId, target).catch(() => []) : []
+  /**
+   * Os endereços que o dono marcou para entrar sozinhos — para quem CONSULTA.
+   *
+   * Valem aqui porque delegação e etapa de setor são "o agente foi chamado" tanto quanto
+   * uma conversa. Mas eram injetados em qualquer papel: um coordenador com uma fonte viva
+   * recebia o conteúdo do site no prompt, o que é a mesma coisa que consultar base — pela
+   * porta dos fundos. Quem analisa trabalha sobre o que recebe; quem conduz, sobre o que
+   * o time trouxe.
+   */
+  const vivas = deps.livePassages && capacidades.knowledge ? await deps.livePassages(ctx.ownerId, target).catch(() => []) : []
   // Numbered references, so the answer can cite what it used. The owner is not named.
   // O aviso de amplitude vem ANTES das passagens: é o que decide entre responder e
   // perguntar, e depois delas já seria tarde.
@@ -1497,15 +1522,18 @@ export async function executeSectorTeam(
   const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
 
   /**
-   * A rede de segurança do conhecimento.
+   * A rede de segurança do conhecimento — para QUEM CONSULTA.
    *
-   * O coordenador costuma não ter base própria — quem tem é o especialista. Se ele não
-   * delegar (e ele pode não delegar), a resposta sairia "não tenho esses dados" com o
-   * dado guardado ali do lado, na base de um colega do MESMO setor. Então: primeiro a
-   * base dele; se não vier nada, as bases do time.
+   * Ela nasceu para o coordenador: ele não tem base própria, e se não delegasse, a
+   * resposta sairia "não tenho esses dados" com o dado guardado na base de um colega. Essa
+   * justificativa envelheceu: hoje o coordenador não consulta base nenhuma, por regra — o
+   * gate de capacidades o impede antes de chegar aqui.
    *
-   * Continua dentro do escopo já autorizado — os membros deste setor, desta conta.
-   * Nada global é aberto, e a base do setor entra pelo mesmo `sectorId` de sempre.
+   * O que sobrou é o caso real: um PESQUISADOR cuja própria base não tem a resposta, e a
+   * de um colega do mesmo setor tem. Ele continua sendo quem procura — só procura em mais
+   * lugares. Os outros papéis nem chegam a esta função.
+   *
+   * Continua dentro do escopo já autorizado: os membros deste setor, desta conta.
    */
   // Os colegas que a busca ainda NÃO cobriu. Sem nenhum, não há segunda busca a fazer:
   // repetir a mesma consulta nos mesmos donos custa e não descobre nada.
@@ -1518,7 +1546,9 @@ export async function executeSectorTeam(
         retrieveContext: async (agentId, query, o) => {
           const propria = await deps.retrieveContext!(agentId, query, o)
           if (achou(propria)) return propria
-          const doTime = await deps.retrieveContext!([coordinator._id, ...colegas], query, o)
+          // Sem o coordenador: ele não coleta, então a base dele não é fonte de nada —
+          // incluí-la era consultar, por outro caminho, exatamente quem não consulta.
+          const doTime = await deps.retrieveContext!(colegas, query, o)
           // Só substitui quando o time REALMENTE achou: um 'empty' do time não pode
           // apagar um 'unavailable' da base própria, que significa outra coisa.
           return achou(doTime) ? doTime : propria
