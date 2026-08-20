@@ -32,6 +32,7 @@ export interface AgentSource {
   intervalMinutes?: number | null
   maxStalenessMinutes?: number | null
   discoveryMode?: DiscoveryMode
+  readMode?: 'auto' | 'http' | 'browser'
   crawlArticles?: boolean
   maxArticlesPerRun?: number | null
   sameDomainOnly?: boolean
@@ -55,6 +56,8 @@ interface Linha {
   intervalMinutes: number
   maxStalenessMinutes: number
   discoveryMode: DiscoveryMode
+  /** Como LER cada página: automático, só HTTP, ou navegador. */
+  readMode: 'auto' | 'http' | 'browser'
   crawlArticles: boolean
   maxArticlesPerRun: number
   sameDomainOnly: boolean
@@ -128,6 +131,8 @@ export function AgentSources({ agentId }: { agentId: string }) {
   const [salvo, setSalvo] = useState(false)
   const [atualizando, setAtualizando] = useState(false)
   const [resumo, setResumo] = useState<string | null>(null)
+  const [testando, setTestando] = useState<string | null>(null)
+  const [leituras, setLeituras] = useState<Record<string, { ok: boolean; texto: string }>>({})
   const fid = useActiveFloorId()
 
   /** Lê do servidor o que está gravado. Reaproveitado depois de atualizar, porque o
@@ -154,6 +159,7 @@ export function AgentSources({ agentId }: { agentId: string }) {
           intervalMinutes: s.intervalMinutes ?? 30,
           maxStalenessMinutes: s.maxStalenessMinutes ?? 30,
           discoveryMode: s.discoveryMode ?? 'auto',
+          readMode: s.readMode ?? 'auto',
           crawlArticles: s.crawlArticles === true,
           maxArticlesPerRun: s.maxArticlesPerRun ?? 5,
           sameDomainOnly: s.sameDomainOnly !== false,
@@ -228,6 +234,53 @@ export function AgentSources({ agentId }: { agentId: string }) {
     }
   }
 
+  /**
+   * O que este endereço devolve, agora — sem gravar nada.
+   *
+   * Cadastrar um site e descobrir só depois que ele exige login, ou que o conteúdo só
+   * aparece com JavaScript, é descobrir tarde. E o motivo vem com NOME: "não foi possível
+   * ler" não diz o que fazer a respeito.
+   */
+  async function testarLeitura(linha: Linha) {
+    setTestando(linha.id)
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${agentId}/sources/test-read`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: linha.url.trim(), mode: linha.readMode }),
+      })
+      const r = await res.json().catch(() => null)
+      if (!r) {
+        setLeituras((antes) => ({ ...antes, [linha.id]: { ok: false, texto: 'Não foi possível testar agora.' } }))
+        return
+      }
+      const metodo = r.readMethod === 'browser' ? 'navegador' : 'HTTP'
+      const estruturado = [
+        r.structured?.tables ? `${r.structured.tables} tabela(s)` : '',
+        r.structured?.jsonLd ? `${r.structured.jsonLd} bloco(s) de dados` : '',
+        r.structured?.pairs ? `${r.structured.pairs} campo(s)` : '',
+      ]
+        .filter(Boolean)
+        .join(', ')
+      setLeituras((antes) => ({
+        ...antes,
+        [linha.id]: {
+          ok: Boolean(r.ok),
+          texto: r.ok
+            ? `Lido por ${metodo} · ${r.kind} · ${r.usefulChars} caracteres úteis${estruturado ? ` · ${estruturado}` : ''} · ${r.durationMs} ms` +
+              (r.title ? ` · "${r.title}"` : '') +
+              (r.preview ? `\n${r.preview.slice(0, 200)}…` : '')
+            : `${r.code ?? 'ERRO'}: ${r.reason}${r.fallbackReason ? ` (tentou navegador: ${r.fallbackReason})` : ''}`,
+        },
+      }))
+    } catch {
+      setLeituras((antes) => ({ ...antes, [linha.id]: { ok: false, texto: 'Não foi possível testar agora.' } }))
+    } finally {
+      setTestando(null)
+    }
+  }
+
   const alterar = (id: string, patch: Partial<Linha>) => {
     setSalvo(false)
     setProprias((antes) => antes.map((l) => (l.id === id ? { ...l, ...patch } : l)))
@@ -255,6 +308,7 @@ export function AgentSources({ agentId }: { agentId: string }) {
               intervalMinutes: l.intervalMinutes,
               maxStalenessMinutes: l.maxStalenessMinutes,
               discoveryMode: l.discoveryMode,
+              readMode: l.readMode,
               crawlArticles: l.crawlArticles,
               maxArticlesPerRun: l.maxArticlesPerRun,
               sameDomainOnly: l.sameDomainOnly,
@@ -384,6 +438,34 @@ export function AgentSources({ agentId }: { agentId: string }) {
                  )}
                  {linha.refreshMode !== 'manual' && (
                    <>
+                     <Field label="Como ler" hint="Automático tenta o caminho barato e só abre o navegador quando o conteúdo depende de JavaScript.">
+                       <Select
+                         value={linha.readMode}
+                         onChange={(e) => alterar(linha.id, { readMode: e.target.value as Linha['readMode'] })}
+                         data-testid="agent-source-read-mode"
+                         options={[
+                           { value: 'auto', label: 'Automático (recomendado)' },
+                           { value: 'http', label: 'Só HTTP — nunca abre navegador' },
+                           { value: 'browser', label: 'Navegador — para páginas que só montam com JavaScript' },
+                         ]}
+                       />
+                     </Field>
+                     <div>
+                       <Button
+                         variant="secondary"
+                         size="sm"
+                         disabled={testando === linha.id || !linha.url.trim()}
+                         onClick={() => void testarLeitura(linha)}
+                         data-testid="agent-source-test-read"
+                       >
+                         {testando === linha.id ? 'Lendo…' : 'Testar leitura'}
+                       </Button>
+                       {leituras[linha.id] && (
+                         <p style={{ margin: '6px 0 0', fontSize: 12, color: leituras[linha.id].ok ? 'var(--text-muted)' : 'var(--coral-600)' }} data-testid="agent-source-read-result">
+                           {leituras[linha.id].texto}
+                         </p>
+                       )}
+                     </div>
                      <Field label="O que ler">
                        <Select
                          value={linha.discoveryMode}
@@ -503,6 +585,7 @@ export function AgentSources({ agentId }: { agentId: string }) {
                     intervalMinutes: 30,
                     maxStalenessMinutes: 30,
                     discoveryMode: 'auto',
+                    readMode: 'auto',
                     crawlArticles: false,
                     maxArticlesPerRun: 5,
                     sameDomainOnly: true,

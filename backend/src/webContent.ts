@@ -188,3 +188,92 @@ export function pageFacts(html: string, url: string, agora: Date = new Date()): 
   const text = extractReadableText(html)
   return { ...meta, url, text, contentHash: contentHashOf(text), fetchedAt: agora }
 }
+
+// --- dados que não são texto corrido -----------------------------------------------------
+//
+// Uma cotação, um placar, uma tabela de horários: o valor está numa célula, não numa
+// frase. Guardar só o texto achatado perde a estrutura — e perde a hora em que aquilo
+// valia, que para um número que muda é metade da informação.
+//
+// Nada aqui interpreta o significado do dado: extrai o que a página já entregou, do jeito
+// que ela entregou. Sem modelo, sem regra de assunto, sem nome de site.
+
+export interface ExtractedTable {
+  /** O texto do cabeçalho, quando a tabela tem um. */
+  headers: string[]
+  /** As linhas, já como texto de célula. Limitadas: uma tabela não é um banco de dados. */
+  rows: string[][]
+  caption?: string | null
+}
+
+const semTags = (html: string): string =>
+  html
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+/** As tabelas da página, com cabeçalho e linhas. */
+export function extractTables(html: string, opts: { maxTables?: number; maxRows?: number } = {}): ExtractedTable[] {
+  const maxTabelas = opts.maxTables ?? 5
+  const maxLinhas = opts.maxRows ?? 50
+  const saida: ExtractedTable[] = []
+  for (const m of html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)) {
+    if (saida.length >= maxTabelas) break
+    const corpo = m[1]
+    const linhas: string[][] = []
+    let headers: string[] = []
+    for (const linha of corpo.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+      const celulas = [...linha[1].matchAll(/<(t[hd])\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((c) => semTags(c[2]))
+      if (celulas.length === 0) continue
+      const ehCabecalho = /<th\b/i.test(linha[1])
+      if (ehCabecalho && headers.length === 0) headers = celulas
+      else if (linhas.length < maxLinhas) linhas.push(celulas)
+    }
+    if (headers.length === 0 && linhas.length === 0) continue
+    const caption = semTags(corpo.match(/<caption\b[^>]*>([\s\S]*?)<\/caption>/i)?.[1] ?? '') || null
+    saida.push({ headers, rows: linhas, caption })
+  }
+  return saida
+}
+
+/** O JSON-LD que a página publica. É dado estruturado que o próprio site declarou. */
+export function extractJsonLd(html: string, max = 5): Record<string, unknown>[] {
+  const saida: Record<string, unknown>[] = []
+  for (const m of html.matchAll(/<script[^>]+type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    if (saida.length >= max) break
+    try {
+      const lido = JSON.parse(m[1].trim())
+      for (const item of Array.isArray(lido) ? lido : [lido]) {
+        if (item && typeof item === 'object' && saida.length < max) saida.push(item as Record<string, unknown>)
+      }
+    } catch {
+      // JSON-LD quebrado é comum; ele simplesmente não entra.
+    }
+  }
+  return saida
+}
+
+/**
+ * Pares rótulo/valor visíveis — o formato de "ficha" que muita página usa.
+ *
+ * `<dt>/<dd>` é o caso declarado; uma linha de tabela de duas colunas é o mesmo par
+ * escrito de outro jeito. Só isso: adivinhar par em texto solto produziria ruído.
+ */
+export function extractPairs(html: string, max = 40): Record<string, string> {
+  const pares: Record<string, string> = {}
+  for (const m of html.matchAll(/<dt\b[^>]*>([\s\S]*?)<\/dt>\s*<dd\b[^>]*>([\s\S]*?)<\/dd>/gi)) {
+    const chave = semTags(m[1]).slice(0, 80)
+    if (chave && Object.keys(pares).length < max) pares[chave] = semTags(m[2]).slice(0, 200)
+  }
+  for (const tabela of extractTables(html)) {
+    if (tabela.headers.length > 0) continue
+    for (const linha of tabela.rows) {
+      if (linha.length !== 2) continue
+      const chave = linha[0].slice(0, 80)
+      if (chave && !(chave in pares) && Object.keys(pares).length < max) pares[chave] = linha[1].slice(0, 200)
+    }
+  }
+  return pares
+}

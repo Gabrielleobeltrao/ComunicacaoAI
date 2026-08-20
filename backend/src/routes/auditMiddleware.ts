@@ -83,6 +83,8 @@ const RULES: Rule[] = [
   // Ler um site que o dono já cadastrou não muda configuração nem dado de ninguém: o que
   // ela produz (documento na base) já é auditado por quem grava.
   R('POST', 'api/agents/:/sources/refresh', null, { why: 'reads the sites already configured' }),
+  // Testar leitura não grava nada: é a mesma leitura, sem ingestão.
+  R('POST', 'api/agents/:/sources/test-read', null, { why: 'reads a URL to show what it returns' }),
   // "Verificar agora" CRIA uma execução fora do horário — isso é uma ação do dono
   // sobre a rotina, e o histórico precisa dizer quem pediu.
   R('POST', 'api/agents/:/routines/:/check-now', { entityType: 'routine', action: 'run' }, { idAt: 4 }),

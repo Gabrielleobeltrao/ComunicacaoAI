@@ -20,6 +20,8 @@ import { isInitialWindow, normalizeSourceUrl } from '../automations/sourceChange
 import { fontesDoAgente } from '../automations/sourceTool.js'
 import { isExecutionMode } from '../automations/types.js'
 import { normalizeWebSource } from '../webSourcePolicy.js'
+import { readWebPage } from '../adaptiveWebReader.js'
+import { rendererAtivo } from '../browserRenderer.js'
 import { countDocumentsFromSource } from '../knowledge.js'
 import { ensureAgentWebKnowledgeFresh } from '../webKnowledge.js'
 import type { ExecutionMode } from '../automations/types.js'
@@ -239,6 +241,7 @@ agentRoutineRouter.get('/sources', async (req, res) => {
             intervalMinutes: propria.intervalMinutes ?? null,
             maxStalenessMinutes: propria.maxStalenessMinutes ?? null,
             discoveryMode: propria.discoveryMode ?? 'auto',
+            readMode: propria.readMode ?? 'auto',
             crawlArticles: propria.crawlArticles === true,
             maxArticlesPerRun: propria.maxArticlesPerRun ?? null,
             sameDomainOnly: propria.sameDomainOnly !== false,
@@ -300,6 +303,51 @@ agentRoutineRouter.post('/sources/refresh', async (req, res) => {
       // A categoria do problema, nunca o corpo da resposta de terceiro.
       error: r.error ?? null,
     })),
+  })
+})
+
+/**
+ * "Testar leitura": o que este endereço devolve, agora, sem gravar nada.
+ *
+ * Existe porque cadastrar um site e descobrir só depois que ele exige login — ou que o
+ * conteúdo só aparece com JavaScript — é descobrir tarde. Aqui o dono vê o método usado,
+ * a classificação, quantos caracteres úteis vieram, o que foi capturado como dado
+ * estruturado e, quando falha, o motivo COM NOME.
+ */
+agentRoutineRouter.post('/sources/test-read', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  if (!agentId) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const url = typeof (req.body ?? {}).url === 'string' ? String(req.body.url).trim() : ''
+  if (!/^https?:\/\//i.test(url)) {
+    res.status(400).json({ error: 'O endereço precisa começar com http:// ou https://', code: 'INVALID_URL' })
+    return
+  }
+  const mode = req.body?.mode === 'http' || req.body?.mode === 'browser' ? req.body.mode : 'auto'
+  // O MESMO leitor do runtime e do "Atualizar agora": testar com regra mais frouxa que a
+  // execução seria pior que não testar.
+  const r = await readWebPage(url, { mode, renderer: rendererAtivo() })
+  res.json({
+    ok: r.ok,
+    readMethod: r.readMethod,
+    status: r.metadata.status,
+    code: r.code ?? null,
+    reason: r.reason,
+    fallbackReason: r.fallbackReason ?? null,
+    kind: r.kind,
+    title: r.metadata.title,
+    usefulChars: r.metadata.usefulChars,
+    durationMs: r.durationMs,
+    structured: {
+      tables: r.structuredData?.tables?.length ?? 0,
+      jsonLd: r.structuredData?.jsonLd?.length ?? 0,
+      pairs: Object.keys(r.structuredData?.pairs ?? {}).length,
+      capturedAt: r.structuredData?.capturedAt ?? null,
+    },
+    // Um trecho, para reconhecer a página. Nunca o corpo inteiro.
+    preview: r.text.slice(0, 400),
   })
 })
 

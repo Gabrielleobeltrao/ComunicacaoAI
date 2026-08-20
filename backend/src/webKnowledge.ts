@@ -22,7 +22,9 @@ import { getAgentById } from './agents.js'
 import { db } from './db.js'
 import { contentHashOf } from './automations/sourceChange.js'
 import { looksLikeContent, pageFacts } from './webContent.js'
-import { safeFetch } from './net/safeHttp.js'
+import { readWebPage } from './adaptiveWebReader.js'
+import type { ReadMode, ReadResult } from './adaptiveWebReader.js'
+import { rendererAtivo } from './browserRenderer.js'
 import { createDocumentFor, updateDocumentFor } from './knowledge.js'
 import type { KnowledgeDocument } from './knowledge.js'
 import { planDiscovery, urlsFromFeed, urlsFromListing, urlsFromSitemap } from './webDiscovery.js'
@@ -52,6 +54,28 @@ export interface RefreshOutcome {
   via?: string
   error?: string
   durationMs: number
+  /**
+   * O caminho que cada página tomou até virar (ou não virar) conhecimento.
+   *
+   * Sem isto, "0 novos" é indistinguível de "0 lidos": o painel mostrava o resultado sem
+   * mostrar a leitura, e um site que só monta com JavaScript ficava com a mesma cara de
+   * um site sem novidade.
+   */
+  reads?: WebReadTrace[]
+}
+
+export interface WebReadTrace {
+  url: string
+  method: 'http' | 'browser'
+  ok: boolean
+  /** O motivo COM NOME quando falhou: login, robô, JavaScript, página vazia. */
+  code?: string
+  reason?: string
+  /** Por que o HTTP não bastou, quando o navegador entrou. */
+  fallbackReason?: string
+  kind?: string
+  usefulChars?: number
+  durationMs?: number
 }
 
 /** Quanto texto de UMA página vira documento. Uma base não é um espelho da internet. */
@@ -72,15 +96,30 @@ export const WEB_REFRESH_TIMEOUT_MS = 20_000
 /** Quantas páginas são lidas ao mesmo tempo. Educação com o servidor do outro. */
 const CONCORRENCIA = 3
 
-async function lerPagina(url: string): Promise<{ html: string; contentType: string; finalUrl: string } | null> {
-  try {
-    const res = await safeFetch(url, { requireOk: true, timeoutMs: TIMEOUT_POR_PAGINA_MS, maxBytes: MAX_BYTES })
-    // O endereço FINAL: um redirect leva a outra página, e é a de chegada que vale como
-    // identidade — senão o mesmo conteúdo entra duas vezes, por dois endereços.
-    return { html: res.body, contentType: res.contentType ?? '', finalUrl: res.finalUrl || url }
-  } catch {
-    return null
+/**
+ * A ÚNICA porta de leitura — a mesma para a descoberta, para a ingestão, para o botão
+ * "Atualizar agora" e para a execução do agente.
+ *
+ * Ela decide o método pelo que a página é: HTTP quando basta, navegador quando o conteúdo
+ * só existe depois do JavaScript. E quando não dá para ler, o motivo tem nome.
+ */
+async function lerPagina(url: string, mode: ReadMode = 'auto', trilha?: WebReadTrace[]): Promise<ReadResult | null> {
+  const r = await readWebPage(url, { mode, renderer: rendererAtivo(), timeoutMs: TIMEOUT_POR_PAGINA_MS, maxBytes: MAX_BYTES })
+  if (trilha && trilha.length < 30) {
+    trilha.push({
+      url,
+      method: r.readMethod,
+      ok: r.ok,
+      ...(r.code ? { code: r.code, reason: r.reason } : {}),
+      ...(r.fallbackReason ? { fallbackReason: r.fallbackReason } : {}),
+      kind: r.kind,
+      usefulChars: r.metadata.usefulChars,
+      durationMs: r.durationMs,
+    })
   }
+  // Uma leitura que não serve não vira documento — mas o motivo sobe, para o log e para a
+  // tela. `null` só quando não há nem diagnóstico.
+  return r
 }
 
 /** Executa em lotes: paralelo o bastante para não demorar, comedido o bastante para não pesar. */
@@ -114,16 +153,26 @@ interface Descoberta {
  * páginas de conteúdo, a página de índice fica de fora — e só entra quando não há mais
  * nada, que é o caso de um site de uma página só.
  */
-async function descobrir(site: WatchedSource, cfg: ReturnType<typeof normalizeWebSource>): Promise<Descoberta> {
+async function descobrir(site: WatchedSource, cfg: ReturnType<typeof normalizeWebSource>, trilha?: WebReadTrace[]): Promise<Descoberta> {
   const teto = cfg.maxArticlesPerRun
   const escolhido = cfg.discoveryMode === 'auto'
-    ? await planDiscovery(site.url, site.kind, { fetch: async (u: string) => { const r = await lerPagina(u); return r ? { body: r.html, contentType: r.contentType } : null } }, { crawlArticles: cfg.crawlArticles })
+    ? await planDiscovery(
+        site.url,
+        site.kind,
+        {
+          fetch: async (u: string) => {
+            const r = await lerPagina(u, site.readMode ?? 'auto', trilha)
+            return r && r.html ? { body: r.html, contentType: 'text/html' } : null
+          },
+        },
+        { crawlArticles: cfg.crawlArticles },
+      )
     : { via: resolveDiscovery(cfg, site.kind, site.url), url: site.url }
 
   if (escolhido.via === 'single_page') return { urls: [site.url], via: 'single_page' }
 
-  const pagina = await lerPagina(escolhido.url)
-  if (!pagina) return { urls: [site.url], via: 'single_page' }
+  const pagina = await lerPagina(escolhido.url, site.readMode ?? 'auto', trilha)
+  if (!pagina || !pagina.html) return { urls: [site.url], via: 'single_page' }
 
   const urls =
     escolhido.via === 'rss'
@@ -181,18 +230,27 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
   const porRef = new Map(existentes.map((d) => [d.sourceRef!, d]))
 
   try {
-    const { urls, via } = await descobrir(site, cfg)
+    const trilha: WebReadTrace[] = []
+    base.reads = trilha
+    const { urls, via } = await descobrir(site, cfg, trilha)
     base.discovered = urls.length
     base.via = via
     let lidas = 0
 
     // A leitura é em lotes: rápida sem ser atropelo no servidor do outro.
+    const problemas: string[] = []
     const paginas = await emLotes(urls.slice(0, cfg.maxArticlesPerRun), CONCORRENCIA, async (url) => {
-      const pagina = await lerPagina(url)
-      if (!pagina) return null
+      const lida = await lerPagina(url, site.readMode ?? 'auto', trilha)
+      if (!lida) return null
+      if (!lida.ok) {
+        // O motivo com NOME: login, robô, JavaScript, página vazia. "Não deu para ler"
+        // não diz o que fazer a respeito.
+        problemas.push(`${lida.code ?? 'EXTRACTION_FAILED'}: ${lida.reason}`)
+        return null
+      }
       // O endereço FINAL do redirect é a identidade; o canônico declarado manda sobre ele.
-      const fatos = pageFacts(pagina.html, pagina.finalUrl, new Date(agora))
-      return fatos.text.trim() ? { fatos, html: pagina.html } : null
+      const fatos = pageFacts(lida.html, lida.url, new Date(agora))
+      return fatos.text.trim() ? { fatos, html: lida.html, lida } : null
     })
 
     // Dedupe pelo endereço CANÔNICO: `?utm_source=…`, `#secao` e a barra final descrevem a
@@ -215,7 +273,7 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
 
     // O que o dono apagou e mandou ignorar não volta pelo scan seguinte.
     const ignorados = new Set(site.ignoredUrls ?? [])
-    for (const { fatos } of conteudos) {
+    for (const { fatos, lida } of conteudos) {
       if (ignorados.has(fatos.canonicalUrl)) {
         base.ignored = (base.ignored ?? 0) + 1
         continue
@@ -223,7 +281,25 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
       const ref = webSourceRef(site.id, fatos.canonicalUrl)
       const titulo = (fatos.title ?? site.name).slice(0, 200)
       // A procedência fica NO texto: quem lê a resposta precisa poder voltar à origem.
-      const conteudo = `${titulo}\nFonte: ${fatos.canonicalUrl}${fatos.publishedAt ? `\nPublicado em: ${fatos.publishedAt.toISOString().slice(0, 10)}` : ''}\n\n${fatos.text}`
+      // Tabela vira LINHA DE TEXTO com o cabeçalho junto de cada valor. Uma tabela
+      // guardada como grade não é recuperável por busca: quem pergunta "quanto deu no dia
+      // 02" precisa que "02" e "121" estejam na mesma linha, com o nome da coluna.
+      const estruturado = lida.structuredData
+      const tabelas = (estruturado?.tables ?? [])
+        .slice(0, 5)
+        .map((t) => {
+          const linhas = t.rows
+            .slice(0, 60)
+            .map((linha) => linha.map((celula, i) => `${t.headers[i] ?? `col${i + 1}`}: ${celula}`).join(' | '))
+            .join('\n')
+          return `${t.caption ? `${t.caption}\n` : ''}${linhas}`
+        })
+        .filter((t) => t.trim())
+      const pares = Object.entries(estruturado?.pairs ?? {})
+        .slice(0, 40)
+        .map(([k, v]) => `${k}: ${v}`)
+      const dados = [...tabelas, ...(pares.length ? [pares.join('\n')] : [])].join('\n\n')
+      const conteudo = `${titulo}\nFonte: ${fatos.canonicalUrl}${fatos.publishedAt ? `\nPublicado em: ${fatos.publishedAt.toISOString().slice(0, 10)}` : ''}\n\n${fatos.text}${dados && estruturado ? `\n\nDados capturados em ${new Date(estruturado.capturedAt).toISOString().slice(0, 16).replace('T', ' ')}:\n${dados}` : ''}`
       const web = {
         sourceType: 'web' as const,
         sourceId: site.id,
@@ -236,6 +312,17 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
         modifiedAt: fatos.modifiedAt,
         fetchedAt: fatos.fetchedAt,
         contentHash: fatos.contentHash,
+        readMethod: lida.readMethod,
+        ...(estruturado && (tabelas.length || (estruturado.jsonLd ?? []).length || pares.length)
+          ? {
+              structured: {
+                capturedAt: new Date(estruturado.capturedAt),
+                tables: estruturado.tables ?? [],
+                jsonLd: estruturado.jsonLd ?? [],
+                pairs: estruturado.pairs ?? {},
+              },
+            }
+          : {}),
       }
       const anterior = porRef.get(ref)
       if (!anterior) {
@@ -253,7 +340,7 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
         base.unchanged += 1
       }
     }
-    if (lidas === 0) throw new Error('nenhuma página pôde ser lida')
+    if (lidas === 0) throw new Error(problemas[0] ?? 'nenhuma página pôde ser lida')
     await gravarEstado(ownerId, agent._id, site.id, {
       lastFetchedAt: new Date(agora),
       lastSuccessfulFetchAt: new Date(agora),

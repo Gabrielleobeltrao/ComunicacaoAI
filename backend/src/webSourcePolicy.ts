@@ -41,6 +41,8 @@ export interface WebSourceConfig {
   maxStalenessMinutes?: number
   discoveryMode?: DiscoveryMode
   crawlArticles?: boolean
+  /** Como ler cada página. Ver `adaptiveWebReader`. */
+  readMode?: 'auto' | 'http' | 'browser'
   maxArticlesPerRun?: number
   maxDepth?: number
   sameDomainOnly?: boolean
@@ -103,6 +105,8 @@ export function normalizeWebSource(cfg: WebSourceConfig | undefined | null): Req
       MAX_INTERVAL_MINUTES,
     ),
     discoveryMode: DISCOVERY_MODES.includes(bruto.discoveryMode as DiscoveryMode) ? (bruto.discoveryMode as DiscoveryMode) : 'auto',
+    // `auto` é o padrão: tenta o barato primeiro e só abre navegador quando precisa.
+    readMode: bruto.readMode === 'http' || bruto.readMode === 'browser' ? bruto.readMode : 'auto',
     crawlArticles: bruto.crawlArticles === true,
     maxArticlesPerRun: limitar(Number(bruto.maxArticlesPerRun) || DEFAULT_ARTICLES_PER_RUN, 1, MAX_ARTICLES_PER_RUN),
     maxDepth: limitar(Number(bruto.maxDepth) || 1, 1, MAX_DEPTH),

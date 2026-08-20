@@ -21,7 +21,10 @@ const { db, mongoClient } = await import('../dist/db.js')
 
 const OWNER = 'dono-web'
 let porta = 0
-let corpoDaPagina = '<html><head><title>Boletim</title></head><body>conteúdo original da página</body></html>'
+let corpoDaPagina =
+  '<html><head><title>Boletim</title></head><body><article>' +
+  'Este é o conteúdo original da página, publicado pela empresa nesta semana. '.repeat(6) +
+  '</article></body></html>'
 let pedidos = []
 let servidor
 let artigosNoFeed = ['1', '2']
@@ -65,13 +68,35 @@ before(async () => {
       res.end(`<rss><channel><item><title>Um</title><link>http://127.0.0.1:${porta}/artigo-1</link></item></channel></rss>`)
       return
     }
+    if (req.url === '/so-js') {
+      // 200, corpo válido, e nada que sirva: a página só existe depois do JavaScript.
+      res.writeHead(200, { 'content-type': 'text/html' })
+      res.end('<html><body><div id="root"></div><script src="/a.js"></script><script src="/b.js"></script><script src="/c.js"></script></body></html>')
+      return
+    }
+    if (req.url === '/painel') {
+      res.writeHead(200, { 'content-type': 'text/html' })
+      res.end(`<html><head><title>Painel de leituras</title></head><body><main>
+        <p>${'O painel resume as leituras do período por unidade. '.repeat(6)}</p>
+        <table><caption>Leituras por dia</caption>
+          <tr><th>Dia</th><th>Unidade</th><th>Consumo</th></tr>
+          <tr><td>01/08</td><td>Norte</td><td>118 kWh</td></tr>
+          <tr><td>02/08</td><td>Sul</td><td>1274 kWh</td></tr>
+        </table>
+      </main></body></html>`)
+      return
+    }
     if (req.url === '/quebrado') {
       res.writeHead(500)
       res.end('erro')
       return
     }
     res.writeHead(200, { 'content-type': 'text/html' })
-    res.end(req.url?.startsWith('/artigo') ? `<html><head><title>Artigo ${req.url}</title></head><body>texto do ${req.url}</body></html>` : corpoDaPagina)
+    res.end(
+        req.url?.startsWith('/artigo')
+          ? `<html><head><title>Artigo ${req.url}</title></head><body><article>${`Texto completo do artigo ${req.url}, com parágrafos de verdade. `.repeat(6)}</article></body></html>`
+          : corpoDaPagina,
+      )
   })
   await new Promise((r) => servidor.listen(0, '127.0.0.1', r))
   porta = servidor.address().port
@@ -87,7 +112,10 @@ beforeEach(async () => {
   await db.collection('agents').deleteMany({})
   await db.collection('knowledge_documents').deleteMany({})
   pedidos = []
-  corpoDaPagina = '<html><head><title>Boletim</title></head><body>conteúdo original da página</body></html>'
+  corpoDaPagina =
+    '<html><head><title>Boletim</title></head><body><article>' +
+    'Este é o conteúdo original da página, publicado pela empresa nesta semana. '.repeat(6) +
+    '</article></body></html>'
   artigosNoFeed = ['1', '2']
   for (const chave of Object.keys(textoDaMateria)) delete textoDaMateria[chave]
   for (const chave of Object.keys(tituloDaMateria)) delete tituloDaMateria[chave]
@@ -139,7 +167,10 @@ test('o que não mudou não vira escrita nem reindexação', async () => {
 test('página mudou: o MESMO documento é atualizado', async () => {
   const agentId = await criarAgente({ refreshMode: 'manual' })
   await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
-  corpoDaPagina = '<html><head><title>Boletim</title></head><body>conteúdo NOVO de hoje</body></html>'
+  corpoDaPagina =
+    '<html><head><title>Boletim</title></head><body><article>' +
+    'Este é o conteúdo NOVO de hoje, reescrito pela empresa nesta manhã. '.repeat(6) +
+    '</article></body></html>'
   const segunda = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
 
   assert.equal(segunda[0].updated, 1)
@@ -909,4 +940,52 @@ test('a trilha mostra a primeira leitura e a nova consulta', async () => {
   assert.match(inicial.title, /base estava vazia/)
   const denovo = trilha.find((e) => e.metadata?.retry === true)
   assert.ok(denovo, 'e a nova consulta à base também')
+})
+
+// --- o leitor adaptativo, de ponta a ponta ---------------------------------------------------
+
+test('10) o clique e a tarefa passam pelo MESMO leitor: mesmo motivo, com nome', async () => {
+  const agentId = await criarAgente({ url: `http://127.0.0.1:${porta}/so-js`, when: 'manual' })
+  // O clique em "Atualizar agora".
+  const clique = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  // A tarefa do agente, sem clique nenhum.
+  const tarefa = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'bootstrap')
+
+  for (const [caminho, r] of [['clique', clique[0]], ['tarefa', tarefa[0]]]) {
+    // Não há navegador nesta instalação: o esperado é o motivo com NOME, e não um
+    // silêncio que passa por "site sem novidade".
+    assert.equal(r.created, 0, caminho)
+    const trilha = (r.reads ?? []).find((l) => l.url.endsWith('/so-js'))
+    assert.ok(trilha, `${caminho}: a leitura tem de aparecer na trilha`)
+    assert.equal(trilha.ok, false, caminho)
+    assert.equal(trilha.code, 'JS_REQUIRED', caminho)
+  }
+})
+
+test('11) uma tabela vira conhecimento recuperável — com a hora da captura', async () => {
+  const agentId = await criarAgente({ url: `http://127.0.0.1:${porta}/painel` })
+  const [r] = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  assert.equal(r.created, 1)
+
+  const [doc] = await documentos(agentId)
+  assert.equal(doc.web.sourceType, 'web')
+  assert.equal(doc.web.readMethod, 'http')
+  assert.equal(doc.web.structured.tables[0].caption, 'Leituras por dia')
+  assert.ok(doc.web.structured.capturedAt instanceof Date)
+
+  // O que decide se o RAG acha: cabeçalho JUNTO do valor, na mesma linha. Uma tabela
+  // guardada como grade não responde "quanto deu no dia 02".
+  const salvo = await db.collection('knowledge_documents').findOne({ _id: doc._id })
+  assert.match(salvo.content, /Dia: 02\/08 \| Unidade: Sul \| Consumo: 1274 kWh/)
+  assert.match(salvo.content, /Dados capturados em/)
+})
+
+test('a trilha de leitura chega ao painel: método, tipo e tamanho', async () => {
+  const agentId = await criarAgente({ url: `http://127.0.0.1:${porta}/painel` })
+  const [r] = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  const leitura = (r.reads ?? []).find((l) => l.url.endsWith('/painel'))
+  assert.equal(leitura.method, 'http')
+  assert.equal(leitura.ok, true)
+  assert.ok(leitura.usefulChars > 200)
+  assert.equal(typeof leitura.durationMs, 'number')
 })

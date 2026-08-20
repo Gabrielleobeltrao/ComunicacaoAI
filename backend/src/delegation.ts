@@ -678,6 +678,7 @@ async function runAgentTask(
           ignored?: number
           via?: string
           error?: string
+          reads?: { url: string; method: string; ok: boolean; code?: string; reason?: string; fallbackReason?: string; kind?: string; usefulChars?: number; durationMs?: number }[]
         }[]
       | undefined
     // Uma leitura que FALHOU volta com `refreshed: false` — ela não mexeu em nada. Mas é
@@ -722,6 +723,22 @@ async function runAgentTask(
             unchanged: f.unchanged,
             error: f.error ?? null,
           })),
+          // A LEITURA, e não só o resultado: por HTTP ou por navegador, o que a página
+          // era, quantos caracteres úteis vieram e — quando falhou — o motivo com nome.
+          // Sem isto, "0 novos" tem a mesma cara de "0 lidos".
+          reads: mexidas.flatMap((f) =>
+            (f.reads ?? []).slice(0, 8).map((r) => ({
+              url: r.url,
+              method: r.method,
+              ok: r.ok,
+              kind: r.kind ?? null,
+              usefulChars: r.usefulChars ?? 0,
+              code: r.code ?? null,
+              reason: r.reason ?? null,
+              fallbackReason: r.fallbackReason ?? null,
+              durationMs: r.durationMs ?? null,
+            })),
+          ),
         },
       })
     }

@@ -157,6 +157,11 @@ export interface WatchedSource {
   intervalMinutes?: number
   maxStalenessMinutes?: number
   discoveryMode?: WebDiscoveryMode
+  /**
+   * Como LER cada página: `auto` tenta HTTP e cai para o navegador quando o conteúdo só
+   * existe depois do JavaScript; `http` nunca abre navegador; `browser` já começa nele.
+   */
+  readMode?: 'auto' | 'http' | 'browser'
   crawlArticles?: boolean
   maxArticlesPerRun?: number
   maxDepth?: number
