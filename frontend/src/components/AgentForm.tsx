@@ -281,6 +281,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   const [viewingDocContent, setViewingDocContent] = useState('')
   const [viewingDocLoading, setViewingDocLoading] = useState(false)
   const [savingDocView, setSavingDocView] = useState(false)
+  const [reindexando, setReindexando] = useState<string | null>(null)
   const [docViewError, setDocViewError] = useState<string | null>(null)
   // Executable contract (advanced, all optional): the shape a task produces and,
   // for JSON, the schema it must satisfy. Absent = exactly today's behaviour.
@@ -871,6 +872,24 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   // Whether a field block is visible. On the agent page it follows the active
   // section; in the create modal (single screen) the essentials + knowledge are
   // always shown and the rest is revealed under "Configurações avançadas".
+  /**
+   * Tentar indexar de novo, e ver o motivo se falhar outra vez.
+   *
+   * A indexação só acontece na ESCRITA, e o texto de uma página relida não muda — então,
+   * sem isto, um documento que falhou uma vez ficava com zero trechos para sempre: na
+   * tela com o conteúdo certo, e fora da busca.
+   */
+  async function reindexar(documentId: string) {
+    if (!agent?._id) return
+    setReindexando(documentId)
+    try {
+      const res = await fetch(`${API_URL}/api/agents/${agent._id}/documents/${documentId}/reindex`, { method: 'POST', credentials: 'include' })
+      if (res.ok) await loadDocuments(agent._id)
+    } finally {
+      setReindexando(null)
+    }
+  }
+
   const showBlock = (block: string) => {
     if (flat && section === 'como-trabalha') return blocosDoPapel.includes(block)
     if (flat) return section == null || (SECTION_BLOCKS[section] ?? []).includes(block)
@@ -2018,6 +2037,25 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                               <dd>
                                 {doc.indexStatus === 'indexed' ? 'indexado' : doc.indexStatus === 'pending' ? 'indexando…' : 'erro ao indexar'}
                                 {typeof doc.chunkCount === 'number' ? ` · ${doc.chunkCount} trecho(s)` : ''}
+                                {/* O MOTIVO. "Erro ao indexar" sozinho é uma parede: chave ausente,
+                                    cota, modelo e tamanho pedem ações diferentes, e nenhuma delas
+                                    dá para escolher sem saber qual é o caso. */}
+                                {doc.indexStatus === 'error' && (
+                                  <span className="mt-1 block text-(--coral-600)" data-testid="knowledge-index-error">
+                                    {doc.indexError || 'motivo não registrado — a próxima tentativa vai gravá-lo'}
+                                  </span>
+                                )}
+                                {doc.indexStatus === 'error' && agent?._id && (
+                                  <button
+                                    type="button"
+                                    data-testid="knowledge-reindex"
+                                    disabled={reindexando === doc._id}
+                                    onClick={() => void reindexar(doc._id)}
+                                    className="mt-1 text-xs text-(--text-link) underline disabled:opacity-50"
+                                  >
+                                    {reindexando === doc._id ? 'Indexando…' : 'Tentar novamente'}
+                                  </button>
+                                )}
                               </dd>
                             </dl>
                             <pre className="max-h-64 overflow-auto rounded-lg bg-(--surface-sunken) p-2 text-[11px] whitespace-pre-wrap break-words" data-testid="knowledge-doc-content">

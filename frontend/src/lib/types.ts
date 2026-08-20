@@ -380,6 +380,8 @@ export interface KnowledgeDocumentSummary {
   /** Como o documento chegou à base: escrito à mão, enviado, ou lido de um site. */
   source?: string | null
   indexStatus?: 'indexed' | 'pending' | 'error'
+  /** POR QUE a indexação falhou. Sem isto, "erro ao indexar" é uma parede. */
+  indexError?: string | null
   chunkCount?: number
   /** Presente só no que veio da WEB — é o que distingue os dois na lista. */
   web?: {

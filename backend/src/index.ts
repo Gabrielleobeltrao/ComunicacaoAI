@@ -91,7 +91,7 @@ import {
   getDocument,
   listDocuments,
   listDocumentsPage,
-  searchKnowledge,
+  reindexDocumentFor,
   updateDocument,
 } from './knowledge.js'
 import {
@@ -143,7 +143,7 @@ import { listActivePublished } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import { sectorExecutionRouter } from './routes/sectorExecutionRoutes.js'
-import type { KnowledgeOwner } from './knowledge.js'
+import type { GroundingStatus, KnowledgeOwner } from './knowledge.js'
 import { availableMetricKeys, composeAgentStats, getAgentEventMetricsBatch, periodSince, PERIODS, resolveMetricKey } from './agentMetrics.js'
 import type { Period } from './agentMetrics.js'
 import { listToolCalls, logToolCalls } from './toolCallLog.js'
@@ -2764,13 +2764,26 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   const fontesDoChat = await ensureFreshWithTimeout(res.locals.userId, agent._id, 'on_demand').catch(() => [])
   const lidasNoChat = fontesDoChat.filter((f) => f.refreshed)
 
-  let knowledge: string[] = []
-  try {
-    const results = await searchKnowledge(agent._id, lastUser.content)
-    knowledge = results.map((result) => result.content)
-  } catch (error) {
-    console.error('Playground knowledge search failed, replying without grounding:', error)
-  }
+  /**
+   * A MESMA busca que o resto do sistema usa. Este era o buraco.
+   *
+   * Aqui chamava-se `searchKnowledge`, que é só a metade VETORIAL. A outra metade — a
+   * comparação de texto — existe exatamente para o caso em que a vetorial não tem o que
+   * comparar: um documento cujos trechos nunca foram gerados. E é esse o caso comum,
+   * porque a indexação depende de um provedor externo que pode falhar.
+   *
+   * O efeito era o pior possível de diagnosticar: a página lida, o texto guardado e
+   * visível na tela de Conhecimento, e o chat de teste respondendo "não tenho esse dado"
+   * — enquanto a mesma pergunta, feita através de um setor, encontrava. Duas buscas
+   * diferentes para a mesma base davam duas respostas diferentes.
+   */
+  const buscarBase = async (): Promise<{ context: string[]; status: GroundingStatus }> =>
+    retrieveContext([agent._id], lastUser.content).catch((error) => {
+      console.error('Playground knowledge search failed, replying without grounding:', error)
+      return { context: [] as string[], status: 'unavailable' as GroundingStatus }
+    })
+  let leitura = await buscarBase()
+  let knowledge: string[] = [...leitura.context]
   /**
    * Base vazia e um site cadastrado: lê UMA vez, e procura de novo.
    *
@@ -2778,15 +2791,12 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
    * isto, um agente recém-configurado responde "não encontrei nada" sobre um site que
    * ninguém nunca abriu.
    */
-  if (knowledge.length === 0) {
+  if (leitura.status !== 'ok') {
     const iniciadas = await ensureFreshWithTimeout(res.locals.userId, agent._id, 'bootstrap').catch(() => [])
-    if (iniciadas.some((f) => f.created > 0 || f.updated > 0)) {
+    if (iniciadas.some((f) => f.created > 0 || f.updated > 0 || (f.reindexed ?? 0) > 0)) {
       lidasNoChat.push(...iniciadas.filter((f) => f.refreshed))
-      try {
-        knowledge = (await searchKnowledge(agent._id, lastUser.content)).map((r) => r.content)
-      } catch (error) {
-        console.error('Playground knowledge search failed after bootstrap:', error)
-      }
+      leitura = await buscarBase()
+      knowledge = [...leitura.context]
     }
   }
   // Os endereços que o dono marcou para entrar sozinhos quando o agente é chamado.
@@ -2871,12 +2881,21 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       },
     })
   }
+  // "Não achei" e "não consegui procurar" são coisas diferentes, e o painel dizia a
+  // primeira nos dois casos — o que fazia uma busca quebrada parecer uma base vazia.
   trilhaChat({
     type: 'rag',
-    status: knowledge.length > 0 ? 'success' : 'info',
+    status: knowledge.length > 0 ? 'success' : leitura.status === 'unavailable' ? 'error' : 'info',
     agentId: agent._id.toString(),
-    title: `Base do agente — ${knowledge.length > 0 ? `${knowledge.length} trecho(s)` : 'nada encontrado'}`,
-    metadata: { passages: knowledge.length },
+    title:
+      knowledge.length > 0
+        ? `Base do agente — ${knowledge.length} trecho(s)`
+        : leitura.status === 'unavailable'
+          ? 'Base do agente — não foi possível consultar'
+          : leitura.status === 'no_base'
+            ? 'Base do agente — sem base'
+            : 'Base do agente — nada encontrado',
+    metadata: { passages: knowledge.length, grounding: leitura.status },
   })
 
   const balao = createLiveTracker({
@@ -3281,6 +3300,36 @@ app.patch('/api/agents/:agentId/documents/:documentId', requireAuth, async (req,
     console.error('Failed to update knowledge document:', error)
     res.status(502).json({ error: 'Failed to process document. Check the embedding service configuration.' })
   }
+})
+
+/**
+ * "Tentar novamente" para um documento do AGENTE.
+ *
+ * Existia só para setor. No agente, um documento que falhou ao indexar não tinha como
+ * ser reprocessado: a indexação só acontece na escrita, e o texto não muda — então ele
+ * ficava com zero trechos, visível na tela e invisível para a busca, sem nada que o dono
+ * pudesse fazer a respeito.
+ */
+app.post('/api/agents/:agentId/documents/:documentId/reindex', requireAuth, async (req, res) => {
+  const agentId = String(req.params.agentId)
+  const documentId = String(req.params.documentId)
+  if (!ObjectId.isValid(agentId) || !ObjectId.isValid(documentId)) {
+    res.status(400).json({ error: 'Invalid id' })
+    return
+  }
+  const agent = await getAgentById(res.locals.userId, new ObjectId(agentId))
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  const doc = await reindexDocumentFor({ ownerType: 'agent', ownerId: agent._id }, new ObjectId(documentId))
+  if (!doc) {
+    res.status(404).json({ error: 'Document not found' })
+    return
+  }
+  // Sem o conteúdo: a listagem não o carrega, e esta resposta atualiza a mesma linha.
+  const { content: _conteudo, ...semConteudo } = doc as Record<string, unknown>
+  res.json(semConteudo)
 })
 
 app.delete('/api/agents/:agentId/documents/:documentId', requireAuth, async (req, res) => {
