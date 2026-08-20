@@ -1,7 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AgentCapabilities } from '../components/AgentCapabilities'
-import { CollapsibleBlock } from '../components/CollapsibleBlock'
-import { AgentToolsPicker } from '../components/AgentToolsPicker'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
 import { AgentPlayground } from '../components/AgentPlayground'
@@ -12,7 +9,7 @@ import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
 import type { CharacterResolver } from '../lib/agentAvatar'
-import { roleLabelOf, skillsOf } from '../lib/agentPresentation'
+import { modelLabelOf, roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import { API_URL } from '../lib/api'
 import { getAgentStats, METRIC_KEY_LABEL, PERIOD_LABEL, type StatsPeriod } from '../lib/agentStats'
 import { formatCount, formatDuration, formatPercent, formatTokens } from '../lib/metricFormat'
@@ -24,7 +21,6 @@ import type { AgentOverview, AgentStatsResponse, AgentSummary } from '../lib/typ
 import { Button, Card, MetricStat, StatusPill, Tag } from '../ui'
 import type { AgentStatus } from '../ui'
 import { Illustration } from '../office/Illustration'
-import { roleConfigOf } from '../lib/agentCapabilities'
 
 // The agent page mirrors the design: a profile card + "colegas" + "onde é usado"
 // on the left, and metric cards over a tabbed panel on the right. Each tab hosts
@@ -195,6 +191,9 @@ function AgentSummaryCard({ agent, overview }: { agent: AgentSummary; overview: 
     ['O que faz', agent.objective || '—'],
     ['Recebe', agent.inputContract || '—'],
     ['Entrega', agent.outputContract || '—'],
+    // O modelo tem linha própria. Ele estava ocupando a linha de "Função", onde não
+    // responde a pergunta que a visão geral faz.
+    ['Modelo', modelLabelOf(agent)],
   ]
   const w = overview.wiring
   return (
@@ -561,42 +560,11 @@ export function AgentDetail() {
                     {/* Competências abrem a aba: é por elas que outro agente encontra
                         este, antes de ferramenta, conhecimento ou site. Aberto por padrão
                         para a aba não abrir como uma lista de títulos vazia. */}
-                    {active === 'como-trabalha' ? (
-                      <CollapsibleBlock
-                        title="Competências"
-                        showHeader
-                        defaultOpen
-                        hint={(agent.capabilities ?? []).length ? `${(agent.capabilities ?? []).length}` : 'nenhuma'}
-                      >
-                        <AgentCapabilities key={`${agent._id}:caps`} agent={agent} onSaved={load} />
-                      </CollapsibleBlock>
-                    ) : null}
+                    {/* Competências e ferramentas reutilizáveis mudaram para dentro do
+                        formulário, junto dos blocos que elas complementam. Aqui elas
+                        ficavam soltas, uma antes e outra depois, e a aba abria com três
+                        blocos que não conversavam entre si. */}
                     <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} availableMetrics={overview.availableMetrics} />
-                    {/* Which reusable Custom Tools this agent may call. Assignment
-                        IS the permission — the backend refuses anything not here. */}
-                    {active === 'como-trabalha' ? (
-                      // Blocos que abrem e fecham, no mesmo padrão do resto do formulário:
-                      // a aba juntou competências, ferramentas, conhecimento e sites, e
-                      // tudo aberto de uma vez vira uma rolagem em que nada se acha.
-                      <div>
-                        {/* Ferramenta é de quem EXECUTA. Um coordenador com a ferramenta na
-                            mão usa a ferramenta — é o caminho mais curto — e o time deixa
-                            de existir. O runtime já não a entrega a ele; oferecer aqui
-                            seria configurar algo que o motor ignora. */}
-                        {roleConfigOf(agent).allowedTools ? (
-                          <CollapsibleBlock
-                            title="Ferramentas reutilizáveis"
-                            showHeader
-                            hint={(agent.toolIds ?? []).length ? `${(agent.toolIds ?? []).length}` : 'nenhuma'}
-                          >
-                            <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
-                          </CollapsibleBlock>
-                        ) : null}
-                        {/* "Pesquisa web" mora no formulário, entre as fontes e o
-                            conhecimento gerado: é o que acontece entre os dois. Aqui ela
-                            ficava por último, depois do resultado que ela produz. */}
-                      </div>
-                    ) : null}
                     {/* Deleting lives in Avançado, after every setting, and is
                         mounted ONLY there — it used to sit under Visão geral, the
                         first thing anyone opens. */}

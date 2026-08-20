@@ -465,54 +465,61 @@ export function AgentSources({ agentId }: { agentId: string }) {
                      />
                    </Field>
                  )}
-                 {(linha.refreshMode === 'on_demand' || linha.refreshMode === 'hybrid') && (
-                   <Field label="Considerar velho depois de" hint="Antes de usar o agente, relê só se passou disso.">
-                     <Select
-                       value={String(linha.maxStalenessMinutes)}
-                       onChange={(e) => alterar(linha.id, { maxStalenessMinutes: Number(e.target.value) })}
-                       data-testid="agent-source-staleness"
-                       options={INTERVALO_OPCOES.map((o) => ({ value: o.value, label: o.label.replace('a cada ', '').replace('uma vez por dia', '1 dia') }))}
-                     />
-                   </Field>
-                 )}
-                 {/* COMO ler não tem relação com QUANDO reler.
-                     
-                     Estes dois campos viviam dentro do "não é manual", e o efeito era o
-                     avesso do que faz sentido: no modo manual — onde toda leitura é sob
-                     demanda, pelo botão "Atualizar agora" — o dono não podia escolher o
-                     modo de leitura nem testar o endereço. Justamente quem mais precisa
-                     testar era quem não tinha o botão. */}
-                     <Field label="Como ler" hint="Automático tenta o caminho barato e só abre o navegador quando o conteúdo depende de JavaScript.">
-                     <Select
-                     value={linha.readMode}
-                     onChange={(e) => alterar(linha.id, { readMode: e.target.value as Linha['readMode'] })}
-                     data-testid="agent-source-read-mode"
-                     options={[
-                       { value: 'auto', label: 'Automático (recomendado)' },
-                       { value: 'http', label: 'Só HTTP — nunca abre navegador' },
-                       { value: 'browser', label: 'Navegador — para páginas que só montam com JavaScript' },
-                     ]}
-                     />
-                   </Field>
-                   <div>
-                     <Button
+                 {/* Testar leitura fica no NÍVEL DE CIMA: é o que responde "esse
+                     endereço vai funcionar?", que é a pergunta de quem acabou de
+                     cadastrar um site. Tudo que é ajuste fino desce para o Avançado. */}
+                 <div>
+                   <Button
                      variant="secondary"
                      size="sm"
                      disabled={testando === linha.id || !linha.url.trim()}
                      onClick={() => void testarLeitura(linha)}
                      data-testid="agent-source-test-read"
-                     >
+                   >
                      {testando === linha.id ? 'Lendo…' : 'Testar leitura'}
-                     </Button>
-                     {leituras[linha.id] && (
-                     <p style={{ margin: '6px 0 0', fontSize: 12, color: leituras[linha.id].ok ? 'var(--text-muted)' : 'var(--coral-600)' }} data-testid="agent-source-read-result">
+                   </Button>
+                   {leituras[linha.id] && (
+                     <p
+                       style={{ margin: '6px 0 0', fontSize: 12, color: leituras[linha.id].ok ? 'var(--text-muted)' : 'var(--coral-600)' }}
+                       data-testid="agent-source-read-result"
+                     >
                        {leituras[linha.id].texto}
                      </p>
-                     )}
-                   </div>
+                   )}
+                 </div>
 
-                 {linha.refreshMode !== 'manual' && (
-                   <>
+                 {/* AVANÇADO — o que existe para um caso específico, e não para todo dia.
+                     
+                     Nenhum campo foi removido: eles só deixaram de disputar atenção com
+                     os dois que decidem o comportamento normal (quando reler, e se o
+                     endereço funciona). Quem precisa de um deles sabe que precisa. */}
+                 <details data-testid="agent-source-advanced">
+                   <summary style={{ cursor: 'pointer', fontSize: 12.5, color: 'var(--text-muted)' }}>
+                     Ajustes avançados desta fonte
+                   </summary>
+                   <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+                     {(linha.refreshMode === 'on_demand' || linha.refreshMode === 'hybrid') && (
+                       <Field label="Considerar velho depois de" hint="Antes de usar o agente, relê só se passou disso.">
+                         <Select
+                           value={String(linha.maxStalenessMinutes)}
+                           onChange={(e) => alterar(linha.id, { maxStalenessMinutes: Number(e.target.value) })}
+                           data-testid="agent-source-staleness"
+                           options={INTERVALO_OPCOES.map((o) => ({ value: o.value, label: o.label.replace('a cada ', '').replace('uma vez por dia', '1 dia') }))}
+                         />
+                       </Field>
+                     )}
+                     <Field label="Como ler" hint="Automático tenta o caminho barato e só abre o navegador quando o conteúdo depende de JavaScript.">
+                       <Select
+                         value={linha.readMode}
+                         onChange={(e) => alterar(linha.id, { readMode: e.target.value as Linha['readMode'] })}
+                         data-testid="agent-source-read-mode"
+                         options={[
+                           { value: 'auto', label: 'Automático (recomendado)' },
+                           { value: 'http', label: 'Só HTTP — nunca abre navegador' },
+                           { value: 'browser', label: 'Navegador — para páginas que só montam com JavaScript' },
+                         ]}
+                       />
+                     </Field>
                      <Field label="O que ler">
                        <Select
                          value={linha.discoveryMode}
@@ -532,8 +539,8 @@ export function AgentSources({ agentId }: { agentId: string }) {
                          Seguir os links desta página (até {linha.maxArticlesPerRun} por leitura, mesmo domínio)
                        </label>
                      )}
-                   </>
-                 )}
+                   </div>
+                 </details>
                  {/* O modo padrão não lê nada sozinho — e quem cadastrou um site espera
                      que ele seja usado. Dizer isso aqui evita a conclusão de que a
                      função está quebrada. */}
