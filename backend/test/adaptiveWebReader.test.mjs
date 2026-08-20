@@ -8,6 +8,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
+// Um teste precisa de um servidor de verdade para ver o que CHEGA nele. O mesmo escape
+// dos outros testes de rede: só loopback, e a produção recusa subir com ele ligado.
+process.env.ALLOW_LOOPBACK_HTTP_TARGETS = '1'
 
 const { readWebPage, resetRateLimits } = await import('../dist/adaptiveWebReader.js')
 const { checkContentQuality, classifyPage } = await import('../dist/contentQuality.js')
@@ -245,6 +248,9 @@ test('8c) depois do 429, o mesmo domínio nem é procurado — sem loop', async 
     const r = await readWebPage(`https://ritmo2.test${caminho}`, { fetchPage: buscar })
     assert.equal(r.code, 'RATE_LIMITED')
     assert.equal(r.strategies[0].strategy, 'cooldown')
+    // A frase precisa dizer que NÃO houve pedido: quem lê "o site respondeu 503" de novo
+    // conclui que o site continua fora, quando ninguém perguntou nada a ele.
+    assert.match(r.reason, /aguardando \d+s antes de tentar de novo/)
   }
   assert.equal(requisicoes, 1, 'o site já disse quanto esperar; obedecer é mais barato que descobrir a alternativa')
 
@@ -304,4 +310,58 @@ test('o tempo esgotado tem nome próprio: ninguém recusou nada', async () => {
   })
   assert.equal(r.code, 'TIMEOUT')
   assert.deepEqual(r.strategies.map((t) => t.strategy), ['http'])
+})
+
+// --- como o leitor se apresenta ------------------------------------------------------------
+//
+// Um pedido sem `User-Agent` é a assinatura mais comum de robô mal-feito, e muita borda
+// de rede responde 503 ou 403 a ele sem olhar o resto — o que chegava aqui como "o site
+// está fora do ar" com o site de pé.
+
+test('o leitor se identifica, e com o nome verdadeiro', async () => {
+  resetRateLimits()
+  let recebidos = null
+  const { safeFetch } = await import('../dist/net/safeHttp.js')
+  assert.equal(typeof safeFetch, 'function')
+
+  // O caminho real de rede: um servidor de verdade, para ver o que chega nele.
+  const { createServer } = await import('node:http')
+  const srv = createServer((req, res) => {
+    recebidos = req.headers
+    res.writeHead(200, { 'content-type': 'text/html' })
+    res.end(`<html><head><title>Ok</title></head><body><article>${'Conteúdo suficiente para passar no veredito de qualidade. '.repeat(8)}</article></body></html>`)
+  })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  const porta = srv.address().port
+
+  const r = await readWebPage(`http://127.0.0.1:${porta}/x`)
+  await new Promise((r2) => srv.close(r2))
+
+  assert.equal(r.ok, true)
+  assert.ok(recebidos['user-agent'], 'sem User-Agent, muita borda de rede recusa antes de olhar o resto')
+  // Verdadeiro: diz o que é. Fingir ser um navegador resolveria mais casos, e é
+  // exatamente o que este sistema não faz.
+  assert.match(recebidos['user-agent'], /ComunicacaoAI/)
+  assert.ok(!/Mozilla|Chrome|Safari/.test(recebidos['user-agent']), 'não se passa por navegador')
+  assert.match(recebidos['accept'], /text\/html/)
+})
+
+test('503 com barreira anti-robô não é falta de ritmo — e as ações são opostas', async () => {
+  resetRateLimits()
+  // Esperar resolve a falta de ritmo. Contra uma barreira, esperar não resolve nunca:
+  // quem configurou precisa saber que aquele site não vem por este caminho.
+  const r = await readWebPage('https://barreira.test/p', {
+    fetchPage: async () => pagina('<html><body>Just a moment... checking your browser</body></html>', { status: 503, retryAfterSeconds: 30 }),
+  })
+  assert.equal(r.code, 'CAPTCHA')
+  assert.match(r.reason, /503/)
+})
+
+test('503 de verdade continua sendo ritmo', async () => {
+  resetRateLimits()
+  const r = await readWebPage('https://manutencao.test/p', {
+    fetchPage: async () => pagina('<html><body>Service Unavailable — manutenção programada</body></html>', { status: 503, retryAfterSeconds: 30 }),
+  })
+  assert.equal(r.code, 'RATE_LIMITED')
+  assert.equal(r.retryAfterSeconds, 30)
 })
