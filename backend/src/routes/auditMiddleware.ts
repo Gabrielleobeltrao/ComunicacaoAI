@@ -112,6 +112,7 @@ const RULES: Rule[] = [
   R('PUT', 'api/sectors/:/members', { entityType: 'sector', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/sectors/:/move', { entityType: 'sector', action: 'move' }, { idAt: 2 }),
   R('POST', 'api/sectors/:/documents/:/reindex', { entityType: 'knowledge', action: 'update' }, { idAt: 4 }),
+  R('POST', 'api/agents/:/documents/:/reindex', { entityType: 'knowledge', action: 'update' }, { idAt: 4 }),
   R('POST', 'api/sectors/:/documents', { entityType: 'knowledge', action: 'create' }),
   R('PATCH', 'api/sectors/:/documents/:', { entityType: 'knowledge', action: 'update' }, { idAt: 4 }),
   R('DELETE', 'api/sectors/:/documents/:', { entityType: 'knowledge', action: 'delete' }, { idAt: 4 }),

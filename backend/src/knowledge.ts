@@ -45,6 +45,15 @@ export interface KnowledgeDocument {
   web?: WebDocumentMeta
   // Indexing state so the UI can show "indexando…" / "erro ao indexar".
   indexStatus: 'indexed' | 'pending' | 'error'
+  /**
+   * POR QUE a indexação falhou. Sem isto, "erro ao indexar" é uma parede.
+   *
+   * O documento aparecia na tela com o texto certo e zero trechos, e não havia como
+   * saber se o problema era chave ausente, cota estourada, modelo inexistente ou tamanho
+   * — cada um com uma ação diferente, e nenhum deles visível para quem opera. O motivo
+   * fica curto e sem segredo: nunca a chave, nunca o corpo inteiro da resposta.
+   */
+  indexError?: string | null
   chunkCount: number
   createdAt: Date
   updatedAt: Date
@@ -176,11 +185,40 @@ export function createDocument(agentId: ObjectId, title: string, content: string
 // Re-chunk + re-embed a document. Indexing state is persisted so the UI can show it,
 // and an embedding failure marks the document 'error' instead of throwing away the
 // content the user already saved.
-async function indexDocumentChunks(owner: KnowledgeOwner, documentId: ObjectId, content: string): Promise<{ indexStatus: KnowledgeDocument['indexStatus']; chunkCount: number }> {
+/**
+ * O motivo em uma frase, sem segredo e sem parágrafo.
+ *
+ * A mensagem do provedor pode carregar a chave numa URL ou repetir o texto enviado. Aqui
+ * sai só o suficiente para AGIR: qual é o problema e de quem é a vez de resolver.
+ */
+function limparMotivo(mensagem: string): string {
+  return mensagem
+    .replace(/(Bearer\s+|api[_-]?key["'\s:=]+)\S+/gi, '$1***')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200)
+}
+
+function motivoDeIndexacao(error: unknown): string {
+  const bruto = error instanceof Error ? error.message : String(error)
+  // Os casos que têm ação conhecida ganham a frase que diz QUAL é a ação.
+  if (/VOYAGE_API_KEY is not set/i.test(bruto)) return 'o provedor de embedding não está configurado neste servidor (VOYAGE_API_KEY ausente)'
+  if (/\(401\)|unauthorized|invalid api key/i.test(bruto)) return 'o provedor de embedding recusou a chave (401)'
+  if (/\(402\)|quota|insufficient|billing|credit/i.test(bruto)) return 'a conta do provedor de embedding está sem crédito ou cota (402)'
+  if (/\(429\)|rate limit/i.test(bruto)) return 'o provedor de embedding pediu para diminuir o ritmo (429) — a próxima leitura tenta de novo'
+  if (/model|not found|\(404\)/i.test(bruto)) return `o provedor não reconheceu o modelo de embedding configurado: ${limparMotivo(bruto)}`
+  return limparMotivo(bruto)
+}
+
+async function indexDocumentChunks(
+  owner: KnowledgeOwner,
+  documentId: ObjectId,
+  content: string,
+): Promise<{ indexStatus: KnowledgeDocument['indexStatus']; chunkCount: number; indexError?: string }> {
   const pieces = chunkText(content)
   if (pieces.length === 0) {
     await chunks.deleteMany({ documentId })
-    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: 0 } })
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: 0, indexError: null } })
     return { indexStatus: 'indexed', chunkCount: 0 }
   }
   // Embed FIRST, swap after: the previous chunks stay searchable until the new ones
@@ -189,10 +227,11 @@ async function indexDocumentChunks(owner: KnowledgeOwner, documentId: ObjectId, 
   try {
     embeddings = await embedTexts(pieces, 'document')
   } catch (error) {
-    console.error('knowledge indexing failed (previous version kept searchable):', (error as Error).message)
+    const motivo = motivoDeIndexacao(error)
+    console.error('knowledge indexing failed (previous version kept searchable):', motivo)
     const kept = await chunks.countDocuments({ documentId })
-    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'error', chunkCount: kept } })
-    return { indexStatus: 'error', chunkCount: kept }
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'error', chunkCount: kept, indexError: motivo } })
+    return { indexStatus: 'error', chunkCount: kept, indexError: motivo }
   }
   const generation = new ObjectId() // marks this indexing round
   const chunkDocs: Omit<KnowledgeChunk, '_id'>[] = pieces.map((piece, index) => ({
@@ -208,15 +247,16 @@ async function indexDocumentChunks(owner: KnowledgeOwner, documentId: ObjectId, 
   try {
     await chunks.insertMany(chunkDocs as KnowledgeChunk[])
   } catch (error) {
-    console.error('knowledge chunk write failed (previous version kept searchable):', (error as Error).message)
+    const motivo = `ao gravar os trechos: ${limparMotivo((error as Error).message)}`
+    console.error('knowledge chunk write failed (previous version kept searchable):', motivo)
     await chunks.deleteMany({ documentId, generation }) // roll back the partial write
     const kept = await chunks.countDocuments({ documentId })
-    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'error', chunkCount: kept } })
-    return { indexStatus: 'error', chunkCount: kept }
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'error', chunkCount: kept, indexError: motivo } })
+    return { indexStatus: 'error', chunkCount: kept, indexError: motivo }
   }
   // New generation is live — now drop the old one.
   await chunks.deleteMany({ documentId, generation: { $ne: generation } })
-  await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: chunkDocs.length } })
+  await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: chunkDocs.length, indexError: null } })
   return { indexStatus: 'indexed', chunkCount: chunkDocs.length }
 }
 

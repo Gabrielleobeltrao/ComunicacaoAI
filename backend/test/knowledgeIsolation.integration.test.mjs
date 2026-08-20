@@ -13,7 +13,7 @@ after(async () => {
   await mongoClient.close().catch(() => undefined)
   await stopMongo()
 })
-const { createDocumentFor, listDocumentsFor, getDocumentFor, updateDocumentFor, deleteDocumentFor, deleteAllFor, retrieveContext, countUnindexedFor } = await import('../dist/knowledge.js')
+const { createDocumentFor, listDocumentsFor, getDocumentFor, updateDocumentFor, deleteDocumentFor, deleteAllFor, retrieveContext, countUnindexedFor, reindexDocumentFor } = await import('../dist/knowledge.js')
 
 const A = { ownerType: 'sector', ownerId: new ObjectId() } // tenant A's sector
 const B = { ownerType: 'sector', ownerId: new ObjectId() } // tenant B's sector
@@ -91,4 +91,41 @@ test('a contagem de não indexados é por DONO', async () => {
   assert.equal(await countUnindexedFor([{ ownerType: 'agent', ownerId: meu }]), 0)
   assert.equal(await countUnindexedFor([{ ownerType: 'agent', ownerId: outro }]), 1)
   assert.equal(await countUnindexedFor([]), 0)
+})
+
+// --- "erro ao indexar" precisa dizer O QUE houve --------------------------------------------
+//
+// Sem o motivo, o dono vê o texto certo na tela, zero trechos, e uma parede. Chave
+// ausente, cota estourada, modelo desconhecido e ritmo pedem ações DIFERENTES — e
+// nenhuma delas dá para escolher sem saber qual é o caso.
+
+test('a falha de indexação grava o motivo, e ele diz de quem é a vez', async () => {
+  const agentId = new ObjectId()
+  // Sem chave de embedding — o caso mais comum, e o mais fácil de confundir com defeito.
+  const doc = await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Nota', content: 'Um conteúdo qualquer para indexar.' })
+
+  assert.equal(doc.indexStatus, 'error')
+  const salvo = await db.collection('knowledge_documents').findOne({ _id: doc._id })
+  assert.match(salvo.indexError, /não está configurado neste servidor/)
+  assert.match(salvo.indexError, /VOYAGE_API_KEY/)
+})
+
+test('o motivo nunca carrega a chave nem o corpo inteiro da resposta', async () => {
+  const agentId = new ObjectId()
+  const doc = await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Nota', content: 'x'.repeat(50) })
+  const salvo = await db.collection('knowledge_documents').findOne({ _id: doc._id })
+  assert.ok(salvo.indexError.length <= 200, 'motivo é uma frase, não um parágrafo')
+  assert.ok(!/Bearer\s+\S/.test(salvo.indexError))
+})
+
+test('quando a indexação dá certo, o motivo antigo é apagado', async () => {
+  const agentId = new ObjectId()
+  // Conteúdo vazio não gera trecho nenhum: indexa com sucesso sem chamar o provedor.
+  const doc = await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Nota', content: 'algo' })
+  await db.collection('knowledge_documents').updateOne({ _id: doc._id }, { $set: { content: '' } })
+
+  const r = await reindexDocumentFor({ ownerType: 'agent', ownerId: agentId }, doc._id)
+  assert.equal(r.indexStatus, 'indexed')
+  const salvo = await db.collection('knowledge_documents').findOne({ _id: doc._id })
+  assert.equal(salvo.indexError, null, 'um motivo que sobra depois do conserto vira mentira na tela')
 })
