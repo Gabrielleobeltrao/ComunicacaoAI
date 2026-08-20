@@ -541,7 +541,7 @@ const perguntar = (agenteId, texto) =>
 const documentosDe = async (agenteId) =>
   (await (await fetch(`${base}/api/agents/${agenteId}/documents`, { headers: comSessao() })).json()).summary?.web ?? 0
 
-test('mandar mensagem no teste dispara a leitura do site — quando o modo permite', async () => {
+test('mandar mensagem no teste dispara a leitura do site — e a base vazia é inicializada em qualquer modo', async () => {
   const site = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' })
     res.end(`<html><head><title>Calendário de agosto</title></head><body><article>${'O calendário de agosto tem feriado no dia 15. '.repeat(20)}</article></body></html>`)
@@ -557,14 +557,21 @@ test('mandar mensagem no teste dispara a leitura do site — quando o modo permi
     assert.ok(r1.ok, `playground devolveu ${r1.status}`)
     assert.equal(await documentosDe(sobDemanda._id), 1, 'a mensagem tinha que ter disparado a leitura')
 
-    // SÓ QUANDO EU PEDIR: a mesma mensagem não lê nada. É o modo, não o motor.
+    // SÓ QUANDO EU PEDIR: a PRIMEIRA pergunta ainda inicializa a base — "não leia a toda
+    // hora" não quer dizer "nunca leia, nem uma vez". Da segunda em diante, o modo manda.
     const soManual = await comSite('Só manual', 'manual', porta)
     const r2 = await perguntar(soManual._id, 'qual o calendário de agosto?')
     assert.ok(r2.ok)
-    assert.equal(await documentosDe(soManual._id), 0, 'em manual, nada é lido por uma pergunta')
+    assert.equal(await documentosDe(soManual._id), 1, 'a base vazia é inicializada na primeira pergunta')
+
+    const r3 = await perguntar(soManual._id, 'e o calendário de agosto, mudou?')
+    assert.ok(r3.ok)
+    assert.equal(await documentosDe(soManual._id), 1, 'a segunda pergunta não lê de novo em manual')
+
     // E o botão continua funcionando para ele.
-    await fetch(`${base}/api/agents/${soManual._id}/sources/refresh`, { method: 'POST', headers: comSessao() })
-    assert.equal(await documentosDe(soManual._id), 1)
+    const clique = await fetch(`${base}/api/agents/${soManual._id}/sources/refresh`, { method: 'POST', headers: comSessao() })
+    assert.ok(clique.ok)
+    assert.equal(await documentosDe(soManual._id), 1, 'ler de novo o mesmo conteúdo não duplica')
   } finally {
     await new Promise((r) => site.close(r))
   }

@@ -806,3 +806,107 @@ test('o filtro Web não atravessa a fronteira do dono', async () => {
   const porFonte = await listDocumentsPage({ ownerType: 'agent', ownerId: meuId }, { sourceId: 'f-alheia' })
   assert.equal(porFonte.items.length, 0)
 })
+
+// --- BOOTSTRAP: a primeira leitura de uma base vazia ------------------------------------------
+//
+// Um pesquisador com site cadastrado e nenhum documento não tem o que responder: a busca
+// volta vazia e, se ele exige fundamentação, a tarefa morre antes de começar. `manual` e
+// `scheduled` querem dizer "não leia a toda hora" — não "nunca leia, nem uma vez".
+
+const comBootstrap = (agente, over = {}) =>
+  depsDoRuntime(agente, {
+    ...over,
+    deps: { bootstrapWebKnowledge: (ownerId, agentId) => ensureFreshWithTimeout(ownerId, agentId, 'bootstrap'), ...over.deps },
+  })
+
+const rodarCom = (agente, pergunta, over = {}) =>
+  executeSectorTeam(
+    comBootstrap(agente, over),
+    sectorRunContext({ ownerId: OWNER, buildingId: 'predio', correlationId: 'teste', traceId: over.traceId }),
+    setorDeUm(agente),
+    { objective: pergunta },
+  )
+
+test('1) base vazia + fonte MANUAL: a tarefa dispara a primeira leitura', async () => {
+  corpoDaPagina = '<html><head><title>Tabela de horários</title></head><body><article>' + 'A tabela de horários vale a partir de segunda-feira. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite({ refreshMode: 'manual' })
+  assert.equal((await documentos(agente._id)).length, 0)
+
+  const r = await rodarCom(agente, 'qual é a tabela de horários?')
+
+  assert.equal((await documentos(agente._id)).length, 1, 'a base foi inicializada')
+  assert.equal(r.participants[0].grounding, 'ok', 'e a busca foi REFEITA depois da leitura')
+  assert.match(r.output, /tabela de horários/i)
+})
+
+test('2) base vazia + SCHEDULED: mesma coisa — o relógio não impede a primeira', async () => {
+  corpoDaPagina = '<html><head><title>Calendário de provas</title></head><body><article>' + 'O calendário de provas foi publicado nesta semana. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite({ refreshMode: 'scheduled', intervalMinutes: 1440 })
+  const r = await rodarCom(agente, 'quando sai o calendário de provas?')
+  assert.equal((await documentos(agente._id)).length, 1)
+  assert.equal(r.participants[0].grounding, 'ok')
+})
+
+test('4) base EXISTENTE + manual: a pergunta não lê nada', async () => {
+  corpoDaPagina = '<html><head><title>Regulamento interno</title></head><body><article>' + 'O regulamento interno foi revisado no ano passado. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite({ refreshMode: 'manual' })
+  await ensureAgentWebKnowledgeFresh(OWNER, agente._id, 'manual')
+  const antes = pedidos.length
+
+  await rodarCom(agente, 'o que diz o regulamento interno?')
+  // A fonte já produziu: o bootstrap não se aplica, e manual volta a mandar.
+  assert.equal(pedidos.length, antes, 'nenhuma requisição nova ao site')
+  assert.equal((await documentos(agente._id)).length, 1)
+})
+
+test('5) o bootstrap não duplica: ele roda uma vez, e só', async () => {
+  corpoDaPagina = '<html><head><title>Manual de uso</title></head><body><article>' + 'O manual de uso descreve o passo a passo completo. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite({ refreshMode: 'manual' })
+
+  await rodarCom(agente, 'o que diz o manual de uso?')
+  const depoisDaPrimeira = pedidos.length
+  await rodarCom(agente, 'e o manual de uso, tem mais alguma coisa?')
+
+  assert.equal((await documentos(agente._id)).length, 1, 'um documento, não dois')
+  assert.equal(pedidos.length, depoisDaPrimeira, 'a segunda pergunta não leu o site de novo')
+})
+
+test('6) a leitura falha e não havia base: o erro vem DEPOIS da tentativa', async () => {
+  const agente = await agenteComSite({ refreshMode: 'manual', url: `http://127.0.0.1:${porta}/quebrado` })
+  const comExigencia = { ...agente, requireGrounding: true }
+  const antes = pedidos.length
+
+  await assert.rejects(
+    () => rodarCom(comExigencia, 'qualquer coisa'),
+    /base|grounding/i,
+  )
+  // A tentativa aconteceu — o erro não é de quem nunca foi ao site.
+  assert.ok(pedidos.length > antes, 'o site chegou a ser procurado')
+})
+
+test('3) on_demand continua se comportando como antes', async () => {
+  corpoDaPagina = '<html><head><title>Aviso de manutenção</title></head><body><article>' + 'O aviso de manutenção vale para o fim de semana. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite({ refreshMode: 'on_demand', maxStalenessMinutes: 30 })
+  await rodarCom(agente, 'tem aviso de manutenção?')
+  const antes = pedidos.length
+  // Recém-lida: a próxima pergunta não toca no site.
+  await rodarCom(agente, 'e o aviso de manutenção de novo?')
+  assert.equal(pedidos.length, antes)
+})
+
+test('a trilha mostra a primeira leitura e a nova consulta', async () => {
+  clearTrace()
+  const trilha = []
+  onTraceEvent((e) => trilha.push(e))
+  corpoDaPagina = '<html><head><title>Boletim de vagas</title></head><body><article>' + 'O boletim de vagas traz as posições abertas. '.repeat(20) + '</article></body></html>'
+  const agente = await agenteComSite({ refreshMode: 'manual' })
+
+  await rodarCom(agente, 'quais são as vagas abertas?', { traceId: 'trilha-bootstrap' })
+  onTraceEvent(null)
+
+  const inicial = trilha.find((e) => e.metadata?.bootstrap === true)
+  assert.ok(inicial, 'a primeira leitura aparece como tal')
+  assert.match(inicial.title, /base estava vazia/)
+  const denovo = trilha.find((e) => e.metadata?.retry === true)
+  assert.ok(denovo, 'e a nova consulta à base também')
+})
