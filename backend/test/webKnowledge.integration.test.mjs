@@ -990,3 +990,43 @@ test('a trilha de leitura chega ao painel: método, tipo e tamanho', async () =>
   assert.ok(leitura.usefulChars > 200)
   assert.equal(typeof leitura.durationMs, 'number')
 })
+
+// --- o documento que ficou preso sem trechos ------------------------------------------------
+//
+// O hash bate a cada leitura, então nada é reescrito. E como a indexação só acontece na
+// escrita, um documento que falhou ao indexar UMA vez continuava com zero trechos para
+// sempre: o texto guardado, visível na tela, e o agente respondendo que não tem o dado.
+
+test('conteúdo igual, mas sem trechos: a leitura seguinte reindexa sozinha', async () => {
+  const agentId = await criarAgente({ url: `http://127.0.0.1:${porta}/pagina` })
+  const [primeira] = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  assert.equal(primeira.created, 1)
+
+  // O estado real do defeito: texto guardado, indexação falhada, zero trechos.
+  // (`content` vazio porque aqui não há provedor de embedding: assim a reindexação
+  // consegue concluir e o que se prova é o CAMINHO, não o provedor.)
+  const [doc] = await documentos(agentId)
+  await db
+    .collection('knowledge_documents')
+    .updateOne({ _id: doc._id }, { $set: { indexStatus: 'error', chunkCount: 0, content: '' } })
+
+  const [segunda] = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  // Não conta como atualização: o conteúdo não mudou, só voltou a ser alcançável.
+  assert.equal(segunda.updated, 0)
+  assert.equal(segunda.unchanged, 1)
+  assert.equal(segunda.reindexed, 1)
+
+  const depois = await db.collection('knowledge_documents').findOne({ _id: doc._id })
+  assert.notEqual(depois.indexStatus, 'error', 'sem isto ele fica preso para sempre')
+})
+
+test('documento íntegro não é reindexado à toa — reindexar custa embedding', async () => {
+  const agentId = await criarAgente({ url: `http://127.0.0.1:${porta}/pagina` })
+  await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  const [doc] = await documentos(agentId)
+  await db.collection('knowledge_documents').updateOne({ _id: doc._id }, { $set: { indexStatus: 'indexed', chunkCount: 3 } })
+
+  const [segunda] = await ensureAgentWebKnowledgeFresh(OWNER, agentId, 'manual')
+  assert.equal(segunda.unchanged, 1)
+  assert.equal(segunda.reindexed, undefined)
+})

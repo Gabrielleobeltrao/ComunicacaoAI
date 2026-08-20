@@ -25,7 +25,7 @@ import { looksLikeContent, pageFacts } from './webContent.js'
 import { readWebPage } from './adaptiveWebReader.js'
 import type { ReadMode, ReadResult } from './adaptiveWebReader.js'
 import { rendererAtivo } from './browserRenderer.js'
-import { createDocumentFor, updateDocumentFor } from './knowledge.js'
+import { createDocumentFor, reindexDocumentFor, updateDocumentFor } from './knowledge.js'
 import type { KnowledgeDocument } from './knowledge.js'
 import { planDiscovery, urlsFromFeed, urlsFromListing, urlsFromSitemap } from './webDiscovery.js'
 import { normalizeWebSource, nextScheduledAfter, resolveDiscovery, shouldRefresh } from './webSourcePolicy.js'
@@ -50,6 +50,8 @@ export interface RefreshOutcome {
   skippedIndexPages?: number
   /** Endereços que o dono apagou e mandou ignorar. */
   ignored?: number
+  /** Documentos que não tinham mudado, mas estavam sem trechos — e voltaram para a busca. */
+  reindexed?: number
   /** Por onde os endereços foram descobertos nesta rodada. */
   via?: string
   error?: string
@@ -357,6 +359,21 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
         // Mudou: reescreve e reindexa SÓ este documento.
         await updateDocumentFor({ ownerType: 'agent', ownerId: agent._id }, anterior._id, { title: titulo, content: conteudo, web })
         base.updated += 1
+      } else if (anterior.indexStatus === 'error') {
+        /**
+         * O texto é o mesmo, e mesmo assim há trabalho: ele nunca chegou a ser indexado.
+         *
+         * Sem isto o documento ficava preso. O hash bate a cada leitura, então nada é
+         * reescrito — e como a indexação só acontece na escrita, um documento que falhou
+         * uma vez continuava com zero trechos para sempre. Na prática: o texto guardado,
+         * visível na tela de Conhecimento, e o agente respondendo "não tenho esse dado".
+         *
+         * Aqui ele se conserta sozinho, na leitura seguinte. Não conta como atualização:
+         * o conteúdo não mudou, só voltou a ser alcançável.
+         */
+        const r = await reindexDocumentFor({ ownerType: 'agent', ownerId: agent._id }, anterior._id).catch(() => null)
+        base.unchanged += 1
+        if (r?.indexStatus === 'indexed') base.reindexed = (base.reindexed ?? 0) + 1
       } else {
         // O hash bate: nada é escrito, nada é reindexado, nenhum embedding é gerado.
         base.unchanged += 1
