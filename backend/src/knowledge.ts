@@ -580,6 +580,18 @@ export function metadataFilter(filtros?: KnowledgeFilters | null): Record<string
   return filtro
 }
 
+/**
+ * Quantos documentos DESTES donos existem com a indexação falhada.
+ *
+ * Exportada porque o escopo de dono é a parte que precisa de teste: uma contagem que
+ * vaze para outra conta faria a busca de um dono ficar indisponível por causa do
+ * documento quebrado de outro.
+ */
+export async function countUnindexedFor(owners: KnowledgeOwner[]): Promise<number> {
+  if (owners.length === 0) return 0
+  return documents.countDocuments({ $and: [{ $or: owners.map(ownerFilter) }, { indexStatus: 'error' }] }).catch(() => 0)
+}
+
 export async function searchKnowledgeLexicallyForOwners(
   owners: KnowledgeOwner[],
   query: string,
@@ -774,7 +786,20 @@ export async function retrieveContext(
     return emResultado([], 'unavailable', true)
   }
 
-  // Nenhuma das duas achou. Se a semântica sequer rodou, o honesto é 'unavailable': a
-  // busca exata não substitui a outra, e afirmar ausência aqui seria afirmar demais.
+  /**
+   * Nenhuma das duas achou. Mas "não achei" e "não consegui procurar" são coisas
+   * diferentes, e a base pode estar num terceiro estado: TEM o documento e não conseguiu
+   * indexá-lo.
+   *
+   * Esse caso produzia a pior resposta possível. O agente lia "nada encontrado",
+   * concluía que não tinha base e respondia "não tenho acesso a esse tipo de dado" — com
+   * o texto guardado, visível na tela de Conhecimento, e sem um único trecho para a
+   * busca semântica alcançar. Dizer 'unavailable' aqui não conserta a indexação; impede
+   * a resposta que afirma ausência sobre uma base que tem a informação.
+   */
+  if ((await countUnindexedFor(owners)) > 0) return emResultado([], 'unavailable', true)
+
+  // Se a semântica sequer rodou, o honesto é 'unavailable': a busca exata não substitui
+  // a outra, e afirmar ausência aqui seria afirmar demais.
   return emResultado([], vetorialFalhou ? 'unavailable' : 'empty', vetorialFalhou)
 }

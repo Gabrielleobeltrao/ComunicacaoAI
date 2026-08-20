@@ -8,12 +8,12 @@ import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 // A REAL mongod is started for this file (mongodb-memory-server runs the actual
 // binary), so tenant isolation is verified against MongoDB itself — never skipped.
 process.env.MONGODB_URI = await startMongo()
-const { mongoClient } = await import('../dist/db.js')
+const { mongoClient, db } = await import('../dist/db.js')
 after(async () => {
   await mongoClient.close().catch(() => undefined)
   await stopMongo()
 })
-const { createDocumentFor, listDocumentsFor, getDocumentFor, updateDocumentFor, deleteDocumentFor, deleteAllFor } = await import('../dist/knowledge.js')
+const { createDocumentFor, listDocumentsFor, getDocumentFor, updateDocumentFor, deleteDocumentFor, deleteAllFor, retrieveContext, countUnindexedFor } = await import('../dist/knowledge.js')
 
 const A = { ownerType: 'sector', ownerId: new ObjectId() } // tenant A's sector
 const B = { ownerType: 'sector', ownerId: new ObjectId() } // tenant B's sector
@@ -57,4 +57,38 @@ test('deleteAllFor removes only that owner base', async () => {
   assert.equal((await listDocumentsFor(A)).length, 0)
   assert.ok((await listDocumentsFor(B)).some((d) => d._id.toString() === keep._id.toString()))
   await deleteAllFor(B) // cleanup
+})
+
+// --- a base não mente sobre si mesma -----------------------------------------------------
+//
+// Um documento que existe e NÃO pôde ser indexado deixava a base com cara de vazia. O
+// agente lia "nada encontrado", concluía que não tinha base e respondia "não tenho acesso
+// a esse tipo de dado" — com o texto guardado e visível na tela de Conhecimento.
+
+test('documento não indexado torna a busca INDISPONÍVEL, e não vazia', async () => {
+  const agentId = new ObjectId()
+  const doc = await createDocumentFor(
+    { ownerType: 'agent', ownerId: agentId },
+    { title: 'Histórico de leituras', content: 'Uma tabela longa que o provedor de embedding recusou.' },
+  )
+  // O estado real do caso: texto guardado, zero trechos.
+  await db.collection('knowledge_documents').updateOne({ _id: doc._id }, { $set: { indexStatus: 'error', chunkCount: 0 } })
+
+  const r = await retrieveContext([agentId], 'uma pergunta que não casa com nada disto')
+  assert.equal(r.status, 'unavailable', 'afirmar ausência sobre uma base que tem o texto é a pior resposta possível')
+  assert.equal(r.context.length, 0)
+})
+
+test('a contagem de não indexados é por DONO', async () => {
+  // Uma contagem que vaze para outra conta deixaria a busca de um dono indisponível por
+  // causa do documento quebrado de outro. Aqui a busca inteira não distingue os estados
+  // (sem chave de embedding tudo volta indisponível), então o que se prova é o escopo.
+  const meu = new ObjectId()
+  const outro = new ObjectId()
+  const doAgente = await createDocumentFor({ ownerType: 'agent', ownerId: outro }, { title: 'Do outro', content: 'x' })
+  await db.collection('knowledge_documents').updateOne({ _id: doAgente._id }, { $set: { indexStatus: 'error', chunkCount: 0 } })
+
+  assert.equal(await countUnindexedFor([{ ownerType: 'agent', ownerId: meu }]), 0)
+  assert.equal(await countUnindexedFor([{ ownerType: 'agent', ownerId: outro }]), 1)
+  assert.equal(await countUnindexedFor([]), 0)
 })
