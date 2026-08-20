@@ -1,4 +1,7 @@
 import { ObjectId } from 'mongodb'
+import { roleUIConfigOf } from './agentCapabilities.js'
+import { MAX_ORCHESTRATION_ROUNDS, MAX_TASKS } from './sectorPlanner.js'
+import type { RoleUIConfig } from './agentCapabilities.js'
 import { db } from './db.js'
 import { isValidToolSchema } from './jsonSchema.js'
 import type { Provider } from './llm.js'
@@ -330,6 +333,35 @@ export interface Agent {
   // answers anyway and is told the base was unavailable.
   requireGrounding?: boolean
   /**
+   * QUANDO mandar trabalho para este agente — a frase do dono.
+   *
+   * Já existia por SETOR, no membro. Ela é a informação mais útil que o planejador tem,
+   * e ficava indisponível para todo agente que não estivesse num setor — e para o dono,
+   * que só a encontrava editando o setor, longe do agente que ela descreve.
+   *
+   * Aqui é o padrão do agente; o valor escrito no membro do setor continua mandando
+   * quando existe. Nada foi migrado: um setor que já tem a frase não muda em nada.
+   */
+  routingDescription?: string
+  /**
+   * Os limites de quem CONDUZ. Só o coordenador usa; ausente = o padrão do sistema.
+   *
+   * Não são preferências: cada tarefa é uma inferência inteira, com a base e as
+   * ferramentas de um agente. Quem paga a conta decide o teto.
+   */
+  orchestration?: {
+    /** Quantos agentes o plano pode acionar por pedido. */
+    maxTasks?: number
+    /** Quantas rodadas de planejamento, quando a primeira não bastou. */
+    maxRounds?: number
+    /**
+     * Um membro falhou e os outros responderam. Consolidar o que veio, dizendo o que
+     * faltou, ou não responder? Padrão: consolidar — meia resposta declarada é melhor
+     * que nenhuma, desde que a falta esteja escrita.
+     */
+    onPartialFailure?: 'synthesize' | 'fail'
+  }
+  /**
    * A porta de saída da regra do TIPO: liga (ou desliga) a base própria à mão.
    *
    * Ausente = o tipo decide (ver `agentCapabilities`). Um analista não consulta base
@@ -379,7 +411,22 @@ function deriveCallerPolicy(a: Agent): DelegationPolicy {
 // means "keep the stored one" (see parseTools).
 export const MASKED_HEADER_VALUE = '***'
 
-export function toPublicAgent<T extends { tools?: AgentTool[]; builtinTools?: AgentBuiltinTool[] }>(agent: T): T {
+/**
+ * O agente como a API o entrega — com o que ele PODE fazer já resolvido.
+ *
+ * `roleConfig` é derivado, nunca guardado: é a mesma matriz que o runtime consulta na
+ * hora de montar as ferramentas. Vai junto para a tela não precisar manter uma segunda
+ * cópia da regra — uma cópia que envelhece sozinha e acaba escondendo um campo que o
+ * motor ainda usa, ou oferecendo um que ele ignora.
+ */
+export function toPublicAgent<T extends { tools?: AgentTool[]; builtinTools?: AgentBuiltinTool[]; preset?: AgentPreset; knowledgeEnabled?: boolean | null }>(
+  agent: T,
+): T & { roleConfig: RoleUIConfig } {
+  const roleConfig = roleUIConfigOf({ preset: agent.preset ?? 'custom', knowledgeEnabled: agent.knowledgeEnabled })
+  return { ...publicFields(agent), roleConfig }
+}
+
+function publicFields<T extends { tools?: AgentTool[]; builtinTools?: AgentBuiltinTool[] }>(agent: T): T {
   // Legacy built-in config could hold a token in the clear. Until the migration has
   // moved every one of them into an installation, nothing from it leaves the API
   // with a readable value.
@@ -442,6 +489,8 @@ export interface AgentModelFields {
   allowedCallerAgentIds?: string[]
   toolIds?: string[]
   metricProfile?: MetricProfile
+  routingDescription?: string
+  orchestration?: { maxTasks?: number; maxRounds?: number; onPartialFailure?: 'synthesize' | 'fail' }
 }
 
 // Parse + validate the agent-as-primary-unit fields from a request body. Only sets a
@@ -504,6 +553,29 @@ export function parseAgentModelFields(body: Record<string, unknown>): { fields: 
   if (body.requireGrounding !== undefined) {
     if (typeof body.requireGrounding !== 'boolean') return { fields, error: 'requireGrounding must be a boolean' }
     fields.requireGrounding = body.requireGrounding
+  }
+  if (body.routingDescription !== undefined) {
+    if (typeof body.routingDescription !== 'string') return { fields, error: 'routingDescription must be a string' }
+    fields.routingDescription = body.routingDescription.slice(0, 400)
+  }
+  if (body.orchestration !== undefined) {
+    const bruto = (body.orchestration ?? {}) as Record<string, unknown>
+    if (typeof bruto !== 'object' || Array.isArray(bruto)) return { fields, error: 'orchestration must be an object' }
+    // Os tetos são do SISTEMA; o dono escolhe dentro deles. Um número maior aqui não
+    // compraria mais cobertura — compraria mais inferência pela mesma resposta.
+    const inteiro = (v: unknown, min: number, max: number): number | undefined => {
+      if (v === undefined || v === null || v === '') return undefined
+      const n = Math.trunc(Number(v))
+      return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : undefined
+    }
+    const maxTasks = inteiro(bruto.maxTasks, 1, MAX_TASKS)
+    const maxRounds = inteiro(bruto.maxRounds, 1, MAX_ORCHESTRATION_ROUNDS)
+    const onPartialFailure = bruto.onPartialFailure === 'fail' ? 'fail' : bruto.onPartialFailure === 'synthesize' ? 'synthesize' : undefined
+    fields.orchestration = {
+      ...(maxTasks !== undefined ? { maxTasks } : {}),
+      ...(maxRounds !== undefined ? { maxRounds } : {}),
+      ...(onPartialFailure ? { onPartialFailure } : {}),
+    }
   }
   if (body.knowledgeEnabled !== undefined) {
     // `null` volta a decisão para o TIPO — é como se desfaz a escolha manual.

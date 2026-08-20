@@ -141,8 +141,12 @@ export function memberScore(pergunta: string, m: PlannerMember): number {
 export function fallbackPlan(pergunta: string, membros: PlannerMember[], max = MAX_TASKS): ExecutionPlan {
   if (membros.length === 0) return { tasks: [] }
   // Sem modelo, quem coleta vem primeiro: um analista sozinho não teria o que analisar.
-  const coleta = membros.filter((m) => (m.type ?? 'executor') !== 'analyst')
-  const candidatos = coleta.length > 0 ? coleta : membros
+  // E quem CONDUZ nunca é tarefa: um coordenador dentro do plano é o time inteiro parado
+  // esperando por alguém que também estava esperando.
+  const operacionais = membros.filter((m) => (m.type ?? 'executor') !== 'coordinator')
+  const base = operacionais.length > 0 ? operacionais : membros
+  const coleta = base.filter((m) => (m.type ?? 'executor') !== 'analyst')
+  const candidatos = coleta.length > 0 ? coleta : base
   const notas = candidatos.map((m) => ({ m, nota: memberScore(pergunta, m) }))
   const relevantes = notas.filter((n) => n.nota > 0).sort((a, b) => b.nota - a.nota)
   // Ninguém casou: manda para um só, e não para todos. Chutar largo custa N inferências.
@@ -177,6 +181,11 @@ export function validatePlan(bruto: unknown, membros: PlannerMember[], pergunta:
     // Um agente que não é membro deste setor não entra. O portão de colaboração ainda
     // decidiria depois, mas um plano que já nasce impossível só gera ruído no log.
     if (!validos.has(agentId)) continue
+    // Quem CONDUZ não vira tarefa operacional. O modelo sugere isso com frequência —
+    // "peça ao gerente que levante os dados" —, e o resultado é um coordenador
+    // respondendo sozinho com a equipe parada ao lado. Se a tarefa precisa de
+    // ferramenta ou de base, ela é de quem tem uma.
+    if ((validos.get(agentId)!.type ?? 'executor') === 'coordinator') continue
     // Um agente por plano nesta etapa: duas tarefas para o mesmo agente são, quase
     // sempre, a mesma pergunta escrita duas vezes — e custam duas inferências.
     if (porAgente.has(agentId)) continue

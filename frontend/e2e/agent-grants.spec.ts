@@ -348,6 +348,9 @@ test('a aba Como trabalha deixa cadastrar um site para o agente consultar', asyn
         initialWindow: '7d',
         // Um endereço novo passa a ser lido ANTES de o agente ser usado — sem isso,
         // cadastrar um site e ele nunca ser lido era o comportamento padrão.
+        // O modo de LEITURA da página, novo: automático tenta HTTP e só abre o
+        // navegador quando o conteúdo depende de JavaScript.
+        readMode: 'auto',
         refreshMode: 'on_demand',
         intervalMinutes: 30,
         maxStalenessMinutes: 30,
@@ -882,33 +885,58 @@ test('um endereço novo já nasce sendo lido antes de o agente ser usado', async
 
 // --- a tela mostra o que cada TIPO usa -------------------------------------------------------
 //
-// Um analista com um bloco de base em branco é uma promessa que o runtime não cumpre: ele
-// analisa o que recebe. Esconder sem dizer nada pareceria defeito — então no lugar do
-// bloco fica a razão, e a porta de saída.
+// Uma capacidade que não pertence ao papel simplesmente NÃO é desenhada. Havia um cartão
+// no lugar, explicando a ausência — ele ocupava o mesmo espaço do bloco de verdade, com a
+// diferença de não servir para nada. Quem quer a exceção liga em Avançado.
 
-test('o analista não recebe base nem sites, e a tela diz por quê', async ({ page }) => {
+test('o analista não recebe base nem sites: no lugar, o que ele espera receber', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'analyst' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
 
-  await expect(page.getByTestId('knowledge-not-for-type')).toBeVisible()
-  await expect(page.getByTestId('knowledge-not-for-type')).toContainText('trabalha sobre o que recebe')
+  // Nem o bloco, nem um cartão explicando por que o bloco não está lá.
+  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
   await expect(page.getByTestId('agent-sources')).toHaveCount(0)
-  // E quem sabe o que quer religa.
-  await expect(page.getByTestId('enable-knowledge')).toBeVisible()
+  await expect(page.getByText('Ferramentas reutilizáveis')).toHaveCount(0)
+
+  // O que ele tem no lugar: o que precisa RECEBER para concluir, e em que forma entrega.
+  await abrirBloco(page, 'O que ele espera receber')
+  await expect(page.getByTestId('agent-input-contract')).toBeVisible()
+  await abrirBloco(page, 'Formato da análise')
+  await expect(page.getByTestId('agent-output-contract')).toBeVisible()
 })
 
-test('o coordenador também não, e por outra razão', async ({ page }) => {
+test('o coordenador só vê orquestração — nem app, nem ferramenta, nem base', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'manager' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await expect(page.getByTestId('knowledge-not-for-type')).toContainText('planeja, delega e consolida')
+
+  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
+  await expect(page.getByTestId('agent-sources')).toHaveCount(0)
+  await expect(page.getByText('Ferramentas reutilizáveis')).toHaveCount(0)
+  await expect(page.getByText('Ferramentas personalizadas (HTTP)')).toHaveCount(0)
+
+  // Quem conduz configura os tetos da condução: cada tarefa é uma inferência inteira.
+  await abrirBloco(page, 'Orquestração')
+  await expect(page.getByTestId('orchestration-max-tasks')).toBeVisible()
+  await expect(page.getByTestId('orchestration-max-rounds')).toBeVisible()
+  await expect(page.getByTestId('orchestration-partial-failure')).toBeVisible()
 })
 
-test('o pesquisador recebe os dois blocos', async ({ page }) => {
+test('o pesquisador mantém base, sites e ferramentas', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
+  await expect(page.getByText('Ferramentas reutilizáveis')).toBeVisible()
   await abrirBloco(page, 'Consultar um site')
   await expect(page.getByTestId('agent-sources')).toBeVisible()
+})
+
+test('"quando chamar este agente" existe em todo papel', async ({ page }) => {
+  // É a frase que o planejador lê para escolher quem trabalha. Sem ela, a escolha depende
+  // de o pedido por acaso repetir palavras do objetivo do agente.
+  for (const preset of ['analyst', 'manager', 'researcher', 'operator'] as const) {
+    await stub(page, { agent: { ...AGENT, preset } })
+    await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+    await expect(page.getByTestId('agent-routing-description')).toHaveCount(1)
+  }
 })
 
 test('um agente antigo, sem tipo declarado, continua com tudo', async ({ page }) => {
@@ -917,5 +945,6 @@ test('um agente antigo, sem tipo declarado, continua com tudo', async ({ page })
   delete (semPreset as { preset?: unknown }).preset
   await stub(page, { agent: semPreset })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
+  await expect(page.getByText('Ferramentas reutilizáveis')).toBeVisible()
 })
+

@@ -26,6 +26,17 @@ export interface RoleCapabilities {
   orchestrates: boolean
   /** Trabalha sobre o que RECEBEU: sem entrada, não tem o que fazer. */
   needsInputs: boolean
+  /**
+   * Chama ferramenta de fora: app conectado, HTTP personalizado, integração.
+   *
+   * Quem CONDUZ não executa. Um coordenador com a ferramenta na mão usa a ferramenta —
+   * é o caminho mais curto — e o time deixa de existir: ele vira um agente sozinho com
+   * uma equipe decorativa. Quando a tarefa precisa de ferramenta, o plano tem de
+   * escolher quem a tem.
+   */
+  externalTools: boolean
+  /** A memória operacional (buscar_memoria). Quem só conduz não guarda operação. */
+  memory: boolean
   /** Uma linha para o painel e para o log — por que ele age assim. */
   summary: string
 }
@@ -37,6 +48,8 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     webSources: true,
     orchestrates: false,
     needsInputs: false,
+    externalTools: true,
+    memory: true,
     summary: 'coleta: consulta a própria base e os sites cadastrados',
   },
   monitor: {
@@ -45,6 +58,8 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     webSources: true,
     orchestrates: false,
     needsInputs: false,
+    externalTools: true,
+    memory: true,
     summary: 'acompanha uma fonte: consulta base e sites',
   },
   analyst: {
@@ -55,6 +70,8 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     webSources: false,
     orchestrates: false,
     needsInputs: true,
+    externalTools: false,
+    memory: true,
     summary: 'analisa o que recebe: não busca base própria',
   },
   manager: {
@@ -63,6 +80,8 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     webSources: false,
     orchestrates: true,
     needsInputs: false,
+    externalTools: false,
+    memory: false,
     summary: 'conduz: planeja, delega e consolida',
   },
   secretary: {
@@ -71,6 +90,8 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     webSources: false,
     orchestrates: true,
     needsInputs: false,
+    externalTools: false,
+    memory: false,
     summary: 'organiza e encaminha',
   },
   operator: {
@@ -80,6 +101,8 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     webSources: true,
     orchestrates: false,
     needsInputs: false,
+    externalTools: true,
+    memory: true,
     summary: 'executa ações com as ferramentas concedidas',
   },
   communicator: {
@@ -88,6 +111,8 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     webSources: true,
     orchestrates: false,
     needsInputs: true,
+    externalTools: true,
+    memory: true,
     summary: 'escreve a partir do que recebe',
   },
   custom: {
@@ -98,6 +123,8 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     webSources: true,
     orchestrates: false,
     needsInputs: false,
+    externalTools: true,
+    memory: true,
     summary: 'perfil personalizado: mantém todas as capacidades',
   },
 }
@@ -127,4 +154,78 @@ export const ROLE_LABEL: Record<AgentRole, string> = {
   analyst: 'analisa',
   coordinator: 'conduz',
   executor: 'executa',
+}
+
+// --- o que a TELA mostra para cada papel ------------------------------------------------
+//
+// A tela e o runtime derivam da MESMA matriz acima, e é isso que evita o pior defeito
+// possível aqui: um campo escondido que o motor continua usando, ou — pior — um campo
+// oferecido que o motor ignora. O dono configurava uma coisa e via outra acontecer.
+//
+// Note o que NÃO existe nesta lista: um bloco "este agente não tem conhecimento". Uma
+// capacidade que não pertence ao papel simplesmente não é desenhada. Explicar a ausência
+// de uma coisa que nunca deveria estar ali só transforma uma tela limpa numa tela cheia
+// de justificativa.
+
+/** Cada bloco de configuração de "Como trabalha". O nome é do PAPEL, não do campo. */
+export type RoleSection =
+  /** Função, instruções e limites — com o rótulo do papel. */
+  | 'definicao'
+  | 'conhecimento'
+  | 'web'
+  | 'ferramentas'
+  /** O que ele espera RECEBER para trabalhar. */
+  | 'entrada'
+  /** Em que forma ele entrega o resultado. */
+  | 'entrega'
+  /** Os tetos e a política de quem conduz. */
+  | 'orquestracao'
+  /** Quando mandar trabalho para ele. */
+  | 'roteamento'
+
+const SECOES: Record<AgentRole, RoleSection[]> = {
+  // Quem coleta fatos: onde procurar, com que ferramenta, e em que forma entregar o achado.
+  researcher: ['definicao', 'conhecimento', 'web', 'ferramentas', 'entrega', 'roteamento'],
+  // Quem analisa o que recebe: o que espera receber, como comparar, o que fazer com
+  // conflito e com lacuna. Nada sobre ONDE buscar — ele não busca.
+  analyst: ['definicao', 'entrada', 'entrega', 'roteamento'],
+  // Quem conduz: só orquestração. Sem base, sem site, sem app, sem ferramenta HTTP.
+  coordinator: ['definicao', 'orquestracao', 'roteamento'],
+  // Quem executa: o que pode acionar, com que permissão, o que precisa receber e entregar.
+  executor: ['definicao', 'ferramentas', 'entrada', 'entrega', 'roteamento'],
+}
+
+/**
+ * A configuração de UM agente: que blocos desenhar e o que o motor vai de fato usar.
+ *
+ * É a resposta única para "o que este agente é". A API devolve isto junto do agente, e a
+ * tela obedece — em vez de manter uma segunda cópia da regra que envelhece sozinha.
+ */
+export interface RoleUIConfig {
+  role: AgentRole
+  sections: RoleSection[]
+  capabilities: RoleCapabilities
+  allowedTools: boolean
+  allowedKnowledge: boolean
+  allowedWeb: boolean
+  allowedApps: boolean
+  summary: string
+}
+
+export function roleUIConfigOf(agent: Pick<Agent, 'preset'> & { knowledgeEnabled?: boolean | null }): RoleUIConfig {
+  const capacidades = capabilitiesOf(agent)
+  const secoes = SECOES[capacidades.role]
+  // O override do dono não muda só o runtime: ele traz o bloco de volta para a tela.
+  // Esconder um bloco que o motor passou a usar seria a mesma inconsistência ao contrário.
+  const comBase = capacidades.knowledge && !secoes.includes('conhecimento') ? (['conhecimento', 'web'] as RoleSection[]) : []
+  return {
+    role: capacidades.role,
+    sections: [...comBase, ...secoes].filter((s) => (s === 'conhecimento' || s === 'web' ? capacidades.knowledge : true)),
+    capabilities: capacidades,
+    allowedTools: capacidades.externalTools,
+    allowedKnowledge: capacidades.knowledge,
+    allowedWeb: capacidades.webSources,
+    allowedApps: capacidades.externalTools,
+    summary: capacidades.summary,
+  }
 }
