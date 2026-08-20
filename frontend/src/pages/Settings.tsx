@@ -3,6 +3,7 @@ import { LOCALE_LABEL, LOCALES, useI18n } from '../i18n'
 import type { ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { ApiKeysPanel, MonthlyCapField } from '../components/ApiKeySettings'
+import { EmbeddingUsagePanel } from '../components/EmbeddingUsagePanel'
 import { AppLayout } from '../components/AppLayout'
 import { API_URL } from '../lib/api'
 import { signOut, useSession } from '../lib/auth-client'
@@ -179,6 +180,13 @@ export function Settings() {
           >
             Abrir logs e auditoria
           </Link>
+        </Section>
+
+        <Section
+          title="Embeddings"
+          description="A busca por semelhança usa um provedor externo com franquia. Aqui está quanto dela já foi usado — e o teto que impede uma cobrança acidental."
+        >
+          <EmbeddingUsagePanel />
         </Section>
 
         <Section title="Chaves de API">

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 // Re-exported so every caller keeps importing it from here; it lives apart because
@@ -54,6 +55,15 @@ export interface KnowledgeDocument {
    * fica curto e sem segredo: nunca a chave, nunca o corpo inteiro da resposta.
    */
   indexError?: string | null
+  /**
+   * O hash do conteúdo que gerou os trechos ATUAIS.
+   *
+   * Embedding se paga por token, e reindexar um texto idêntico é gasto puro: mesma
+   * conta, mesmo resultado. Salvar um documento sem mexer no texto — trocar o título,
+   * reabrir o formulário, um autosave — refazia todos os trechos. Com o hash, só o que
+   * mudou custa.
+   */
+  indexedHash?: string | null
   chunkCount: number
   createdAt: Date
   updatedAt: Date
@@ -215,17 +225,43 @@ async function indexDocumentChunks(
   documentId: ObjectId,
   content: string,
 ): Promise<{ indexStatus: KnowledgeDocument['indexStatus']; chunkCount: number; indexError?: string }> {
+  /**
+   * Mesmo texto, mesmos trechos: não há o que refazer.
+   *
+   * `indexDocumentChunks` é o funil de TODA indexação — criar, atualizar e o "tentar
+   * novamente". Colocar a comparação aqui cobre os três de uma vez, e evita o pior caso:
+   * uma reindexação em laço (salvar → indexar → salvar) gastando franquia a cada volta
+   * para chegar exatamente ao mesmo resultado.
+   *
+   * A verificação só vale quando os trechos EXISTEM. Um documento com hash igual e zero
+   * trechos é o que falhou ao indexar — esse precisa tentar de novo.
+   */
+  const hash = hashDoConteudo(content)
+  const atual = await documents.findOne({ _id: documentId }, { projection: { indexedHash: 1, chunkCount: 1 } })
+  // A condição é "existem trechos, e eles vieram DESTE texto". O `indexStatus` não entra:
+  // quem atualiza marca `pending` antes de chamar aqui, e olhar para ele faria a
+  // verificação nunca valer justamente no caminho que ela existe para proteger.
+  if (atual?.indexedHash === hash && (atual.chunkCount ?? 0) > 0) {
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', indexError: null } })
+    return { indexStatus: 'indexed', chunkCount: atual.chunkCount ?? 0 }
+  }
+
   const pieces = chunkText(content)
   if (pieces.length === 0) {
     await chunks.deleteMany({ documentId })
-    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: 0, indexError: null } })
+    await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: 0, indexError: null, indexedHash: hash } })
     return { indexStatus: 'indexed', chunkCount: 0 }
   }
   // Embed FIRST, swap after: the previous chunks stay searchable until the new ones
   // exist, so a failing embedding call never leaves the document unsearchable.
   let embeddings: number[][]
   try {
-    embeddings = await embedTexts(pieces, 'document')
+    embeddings = await embedTexts(pieces, 'document', {
+      operation: 'knowledge:index',
+      ownerId: owner.ownerType === 'agent' ? null : owner.ownerId.toString(),
+      agentId: owner.ownerType === 'agent' ? owner.ownerId.toString() : null,
+      sectorId: owner.ownerType === 'sector' ? owner.ownerId.toString() : null,
+    })
   } catch (error) {
     const motivo = motivoDeIndexacao(error)
     console.error('knowledge indexing failed (previous version kept searchable):', motivo)
@@ -256,7 +292,7 @@ async function indexDocumentChunks(
   }
   // New generation is live — now drop the old one.
   await chunks.deleteMany({ documentId, generation: { $ne: generation } })
-  await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: chunkDocs.length, indexError: null } })
+  await documents.updateOne({ _id: documentId }, { $set: { indexStatus: 'indexed', chunkCount: chunkDocs.length, indexError: null, indexedHash: hash } })
   return { indexStatus: 'indexed', chunkCount: chunkDocs.length }
 }
 
@@ -391,6 +427,9 @@ export async function updateDocumentFor(owner: KnowledgeOwner, documentId: Objec
   }
   return result
 }
+
+/** O hash de um conteúdo, para decidir se vale gastar embedding com ele. */
+const hashDoConteudo = (texto: string): string => createHash('sha256').update(texto).digest('hex')
 export function updateDocument(agentId: ObjectId, documentId: ObjectId, updates: { title?: string; content?: string }) {
   return updateDocumentFor({ ownerType: 'agent', ownerId: agentId }, documentId, updates)
 }
@@ -523,7 +562,11 @@ export async function searchKnowledgeForOwners(
   filtros?: KnowledgeFilters | null,
 ): Promise<KnowledgeHit[]> {
   if (owners.length === 0) return []
-  const queryEmbedding = await embedText(query, 'query')
+  const queryEmbedding = await embedText(query, 'query', {
+    operation: 'knowledge:search',
+    agentId: owners.find((o) => o.ownerType === 'agent')?.ownerId.toString() ?? null,
+    sectorId: owners.find((o) => o.ownerType === 'sector')?.ownerId.toString() ?? null,
+  })
   const ownerIds = owners.map((o) => o.ownerId)
   // Legacy rows have no ownerId — match them by agentId for the agent owners.
   const agentIds = owners.filter((o) => o.ownerType === 'agent').map((o) => o.ownerId)
