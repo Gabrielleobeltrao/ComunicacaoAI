@@ -537,7 +537,7 @@ test('as seções da aba nascem fechadas, menos as competências', async ({ page
   // Aberta: é por ela que outro agente encontra este, e a aba não pode abrir como uma
   // lista de títulos vazia.
   await expect(page.getByRole('button', { name: 'Competências', exact: true })).toHaveAttribute('aria-expanded', 'true')
-  for (const titulo of ['Ferramentas', 'Fontes de conhecimento', 'Conhecimento gerado', 'Ferramentas reutilizáveis', 'Pesquisa web']) {
+  for (const titulo of ['Ferramentas', 'Fontes de conhecimento', 'Conhecimento gerado', 'Pesquisa web']) {
     await expect(page.getByRole('button', { name: titulo, exact: true })).toHaveAttribute('aria-expanded', 'false')
   }
 })
@@ -712,10 +712,12 @@ test('o site pode virar base do agente, e o modo escolhe o custo', async ({ page
 
   // Antes de usar: aparece a partir de quando o que está guardado é velho.
   await page.getByTestId('agent-source-refresh-mode').selectOption('on_demand')
+  await page.getByTestId('agent-source-advanced').click()
   await expect(page.getByTestId('agent-source-staleness')).toBeVisible()
   await expect(page.getByTestId('agent-source-interval')).toHaveCount(0)
 
-  // As duas coisas ao mesmo tempo.
+  // As duas coisas ao mesmo tempo. (O <details> já ficou aberto acima — clicar de novo
+  // fecharia, e o teste passaria a provar o contrário do que diz.)
   await page.getByTestId('agent-source-refresh-mode').selectOption('hybrid')
   await expect(page.getByTestId('agent-source-interval')).toBeVisible()
   await expect(page.getByTestId('agent-source-staleness')).toBeVisible()
@@ -898,7 +900,7 @@ test('o analista não recebe base nem sites: no lugar, o que ele espera receber'
   // Nem o bloco, nem um cartão explicando por que o bloco não está lá.
   await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
   await expect(page.getByTestId('agent-sources')).toHaveCount(0)
-  await expect(page.getByText('Ferramentas reutilizáveis')).toHaveCount(0)
+  await expect(page.getByText('O que ele aciona')).toHaveCount(0)
 
   // O que ele tem no lugar: o que precisa RECEBER para concluir, e em que forma entrega.
   await abrirBloco(page, 'O que ele espera receber')
@@ -913,7 +915,7 @@ test('o coordenador só vê orquestração — nem app, nem ferramenta, nem base
 
   await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
   await expect(page.getByTestId('agent-sources')).toHaveCount(0)
-  await expect(page.getByText('Ferramentas reutilizáveis')).toHaveCount(0)
+  await expect(page.getByText('O que ele aciona')).toHaveCount(0)
   await expect(page.getByText('Ferramentas personalizadas (HTTP)')).toHaveCount(0)
 
   // Quem conduz configura os tetos da condução: cada tarefa é uma inferência inteira.
@@ -926,7 +928,7 @@ test('o coordenador só vê orquestração — nem app, nem ferramenta, nem base
 test('o pesquisador mantém base, sites e ferramentas', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await expect(page.getByText('Ferramentas reutilizáveis')).toBeVisible()
+  await expect(page.getByText('O que ele aciona')).toBeVisible()
   await abrirBloco(page, 'Pesquisa web')
   await expect(page.getByTestId('agent-sources')).toBeVisible()
 })
@@ -947,7 +949,7 @@ test('um agente antigo, sem tipo declarado, continua com tudo', async ({ page })
   delete (semPreset as { preset?: unknown }).preset
   await stub(page, { agent: semPreset })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await expect(page.getByText('Ferramentas reutilizáveis')).toBeVisible()
+  await expect(page.getByText('O que ele aciona')).toBeVisible()
 })
 
 

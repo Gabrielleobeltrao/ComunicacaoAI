@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChangeEvent, FormEvent } from 'react'
+import type { ChangeEvent, FormEvent, ReactNode } from 'react'
 import { API_URL } from '../lib/api'
 import { randomAgentName } from '../lib/agentNames'
 import { METRIC_KEY_LABEL } from '../lib/agentStats'
@@ -24,6 +24,8 @@ import type {
   ResponseDetail,
   ResponseTone,
 } from '../lib/types'
+import { AgentCapabilities } from './AgentCapabilities'
+import { AgentToolsPicker } from './AgentToolsPicker'
 import { AgentSources } from './AgentSources'
 import { AgentAppGrantsEditor } from './AgentAppGrantsEditor'
 import { AgentToolsEditor } from './AgentToolsEditor'
@@ -102,6 +104,27 @@ const ROTULOS: Record<AgentRole, { definicao: string; entrada: [string, string];
     entrega: ['O que ele deve devolver', 'Ex.: a confirmação com o identificador da operação.'],
     roteamento: ['Quando chamar este executor', 'Ex.: "quando for para enviar o e-mail de cobrança".'],
   },
+}
+
+/**
+ * O nome do GRUPO — o que os blocos abaixo têm em comum.
+ *
+ * A aba tinha dez blocos soltos, todos no mesmo nível, todos com a mesma cara. Nenhum
+ * deles era difícil sozinho; juntos viravam uma lista em que não dá para saber onde
+ * procurar. Nada foi removido: os blocos agora respondem a três perguntas, e é a
+ * pergunta que orienta quem chegou.
+ */
+function GrupoDeBlocos({ titulo, resumo, ativo, children }: { titulo: string; resumo: string; ativo: boolean; children: ReactNode }) {
+  // Fora da aba "Como trabalha" não há grupo nenhum: no assistente de contratação os
+  // mesmos campos aparecem em sequência, e um cabeçalho ali seria enfeite.
+  if (!ativo) return <>{children}</>
+  return (
+    <section className="mt-6 first:mt-0">
+      <h3 className="text-sm font-semibold text-(--text-heading)">{titulo}</h3>
+      <p className="mt-0.5 mb-1 text-xs text-(--text-faint)">{resumo}</p>
+      <div className="rounded-xl border border-(--border-subtle) px-3">{children}</div>
+    </section>
+  )
 }
 
 interface PendingDoc {
@@ -1006,6 +1029,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
             !flat && advancedOpen ? 'mt-3 rounded-xl border border-(--border-subtle) bg-(--surface-card)/40 px-4 py-1' : ''
           }
         >
+          {/* GRUPO 1 — quem ele é e o que ele entrega. Cinco blocos que respondem à
+              mesma pergunta: a definição, o que espera receber, em que forma entrega e
+              quando deve ser chamado. Soltos, eram cinco linhas indistinguíveis. */}
+          <GrupoDeBlocos
+            ativo={flat && section === 'como-trabalha'}
+            titulo="Quem ele é e o que entrega"
+            resumo="A função, o que espera receber, em que forma responde e quando deve ser chamado."
+          >
           {showBlock('definicao') && (
             <CollapsibleBlock title={rotulos.definicao} showHeader={stacked} testId="agent-definition-block">
               <AgentDefinitionFields
@@ -1025,6 +1056,20 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           {/* O que ele precisa RECEBER. Quem analisa só trabalha sobre isto; quem executa
               não deve agir sem isto. O campo é antigo (`inputContract`) e nunca teve onde
               ser escrito — vivia só na API. */}
+          {/* Vinha ANTES do formulário, renderizada pela página — o primeiro bloco da
+              aba, longe da definição que ela complementa. É por estas etiquetas que outro
+              agente encontra este; elas são parte de quem ele é. */}
+          {flat && section === 'como-trabalha' && agent && (
+            <CollapsibleBlock
+              title="Competências"
+              showHeader
+              defaultOpen
+              hint={(agent.capabilities ?? []).length ? `${(agent.capabilities ?? []).length}` : 'nenhuma'}
+            >
+              <AgentCapabilities key={`${agent._id}:caps`} agent={agent} onSaved={() => onSaved(agent)} />
+            </CollapsibleBlock>
+          )}
+
           {showBlock('entrada') && (
             <CollapsibleBlock title={rotulos.entrada[0]} showHeader={stacked}>
               <textarea
@@ -1128,6 +1173,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               </p>
             </CollapsibleBlock>
           )}
+          </GrupoDeBlocos>
 
           {/* A porta de saída da regra do TIPO. Fica em Avançado, e não no meio de "Como
               trabalha": é uma exceção deliberada, não um passo da configuração. */}
@@ -1704,6 +1750,15 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           </CollapsibleBlock>
         )}
 
+        {/* GRUPO 2 — o que ele ACIONA. Apps conectados, ferramentas HTTP próprias e as
+            reutilizáveis da conta: três lugares diferentes para a mesma pergunta, que
+            agora ficam juntos. */}
+        {showBlock('ferramentas') && (
+        <GrupoDeBlocos
+          ativo={flat && section === 'como-trabalha'}
+          titulo="O que ele aciona"
+          resumo="Os apps e as ferramentas que ele pode chamar. Conceder é o que autoriza."
+        >
         {showBlock('ferramentas') && (
           <CollapsibleBlock title="Ferramentas" showHeader={stacked}>
             <div className="space-y-5">
@@ -1718,6 +1773,15 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                 <p className="mb-2 text-sm font-medium">Ferramentas personalizadas (HTTP)</p>
                 <AgentToolsEditor value={editTools} onChange={setEditTools} />
               </div>
+              {/* As reutilizáveis da conta. Ficavam num bloco separado, fora do
+                  formulário — três lugares para a mesma pergunta ("o que ele pode
+                  acionar?"), e nenhum deles dizia que os outros dois existiam. */}
+              {agent && (
+                <div className="border-t border-(--border-subtle) pt-4">
+                  <p className="mb-2 text-sm font-medium">Ferramentas reutilizáveis da conta</p>
+                  <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={() => onSaved(agent)} />
+                </div>
+              )}
               {/* O recibo na hora. A gravação automática continua embaixo como rede — ela
                   é o que evita perder edição ao trocar de aba —, mas quem mexeu numa
                   ferramenta quer ver "Salvo", e não uma frase pedindo confiança. */}
@@ -1742,6 +1806,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
             </div>
           </CollapsibleBlock>
         )}
+        </GrupoDeBlocos>
+        )}
         </div>
       </div>
 
@@ -1750,12 +1816,20 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           conhecimento" ocupa o mesmo espaço do bloco de verdade, com a diferença de não
           servir para nada. Quem quiser a base num tipo que não a usa liga em Avançado. */}
       {showKb && (
-        <div className="order-2">
+        /* GRUPO 3 — o que ele CONSULTA. Depois do que ele é e do que ele aciona: é a
+           ordem em que a pergunta aparece de verdade. Antes vinha primeiro, empurrando a
+           identidade do agente para baixo de uma lista de documentos. */
+        <div className="order-4">
           {section == null && <div className="my-5 border-t border-(--border-subtle)" />}
 
           {/* Recolhível como os outros blocos da aba: era o único que ficava sempre
               aberto, e é justamente o mais alto — a lista de documentos empurrava todo o
               resto para fora da tela. */}
+          <GrupoDeBlocos
+            ativo={flat && section === 'como-trabalha'}
+            titulo="O que ele consulta"
+            resumo="De onde ele tira as respostas: o que você escreve, os sites que ele lê, e o que já foi guardado."
+          >
           {/* FONTES DE CONHECIMENTO — o que ENTRA. Separado do que foi gerado porque são
               duas perguntas diferentes: "de onde ele tira" e "o que ele já tem". Estavam
               no mesmo bloco, e a lista de documentos empurrava o formulário de adicionar
@@ -2098,6 +2172,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
 
           </div>
           </CollapsibleBlock>
+          </GrupoDeBlocos>
         </div>
       )}
 
