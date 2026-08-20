@@ -253,7 +253,10 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
     const problemas: string[] = []
     const paginas = await emLotes(urls.slice(0, cfg.maxArticlesPerRun), CONCORRENCIA, async (url) => {
       const lida = await lerPagina(url, site.readMode ?? 'auto', trilha)
-      if (!lida) return null
+      if (!lida) {
+        problemas.push('EXTRACTION_FAILED: não foi possível ler este endereço')
+        return null
+      }
       if (!lida.ok) {
         // O motivo com NOME: login, robô, JavaScript, página vazia. "Não deu para ler"
         // não diz o que fazer a respeito.
@@ -262,7 +265,14 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
       }
       // O endereço FINAL do redirect é a identidade; o canônico declarado manda sobre ele.
       const fatos = pageFacts(lida.html, lida.url, new Date(agora))
-      return fatos.text.trim() ? { fatos, html: lida.html, lida } : null
+      if (!fatos.text.trim()) {
+        // Passou no veredito e ainda assim não sobrou texto. É raro, mas cair aqui em
+        // silêncio era o que produzia "nenhuma página pôde ser lida" — uma frase que não
+        // diz o que houve nem o que fazer.
+        problemas.push('CONTENT_EMPTY: a página foi lida, mas não sobrou texto aproveitável')
+        return null
+      }
+      return { fatos, html: lida.html, lida }
     })
 
     // Dedupe pelo endereço CANÔNICO: `?utm_source=…`, `#secao` e a barra final descrevem a

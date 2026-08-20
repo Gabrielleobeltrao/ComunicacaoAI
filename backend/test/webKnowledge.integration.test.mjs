@@ -958,7 +958,8 @@ test('10) o clique e a tarefa passam pelo MESMO leitor: mesmo motivo, com nome',
     const trilha = (r.reads ?? []).find((l) => l.url.endsWith('/so-js'))
     assert.ok(trilha, `${caminho}: a leitura tem de aparecer na trilha`)
     assert.equal(trilha.ok, false, caminho)
-    assert.equal(trilha.code, 'JS_REQUIRED', caminho)
+    // Os dois caminhos param no MESMO lugar, com o MESMO motivo: não há navegador aqui.
+    assert.equal(trilha.code, 'BROWSER_UNAVAILABLE', caminho)
   }
 })
 

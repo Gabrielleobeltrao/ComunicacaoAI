@@ -148,8 +148,12 @@ test('9) login, robô e bloqueio produzem erros distintos — e não tentam nave
 test('sem navegador nesta instalação, o motivo é dito — não é uma leitura vazia', async () => {
   const r = await readWebPage('https://x.test/p', { fetchPage: servindo(CASCA), renderer: null })
   assert.equal(r.ok, false)
-  assert.equal(r.code, 'JS_REQUIRED')
-  assert.match(r.reason, /JavaScript/)
+  // O motivo mais acionável dos dois. "O conteúdo é montado por JavaScript" descreve a
+  // página; quem configurou não tem o que fazer com isso. Saber que ESTE servidor não
+  // tem navegador diz onde está a decisão — e que ela não é dele.
+  assert.equal(r.code, 'BROWSER_UNAVAILABLE')
+  assert.match(r.reason, /não tem navegador configurado/)
+  assert.match(r.fallbackReason, /JS_REQUIRED/)
   // E o HTML do HTTP sobrevive: é ele que a descoberta usa para achar links.
   assert.ok(r.html.length > 0)
 })

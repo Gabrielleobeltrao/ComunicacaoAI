@@ -187,10 +187,13 @@ test('3) página montada por JavaScript: sem navegador, o motivo é dito — e n
 
   assert.equal(r.created, 0)
   const leitura = (r.reads ?? []).find((l) => l.url.endsWith('/app'))
-  assert.equal(leitura.code, 'JS_REQUIRED')
-  // O caminho tentado fica registrado: HTTP tentou, o navegador não existe aqui.
-  assert.ok(leitura.strategies.some((t) => t.strategy === 'http'))
-  assert.ok(leitura.strategies.some((t) => t.strategy === 'browser' && t.code === 'JS_REQUIRED'))
+  // O motivo mais acionável dos dois: não é o site que está errado, é que ler esta
+  // página exige navegador e este servidor não tem um. Quem configurou não tem o que
+  // corrigir na tela — a decisão é de quem opera.
+  assert.equal(leitura.code, 'BROWSER_UNAVAILABLE')
+  // O caminho tentado fica registrado: HTTP viu que era JavaScript, o navegador não existe aqui.
+  assert.ok(leitura.strategies.some((t) => t.strategy === 'http' && t.code === 'JS_REQUIRED'))
+  assert.ok(leitura.strategies.some((t) => t.strategy === 'browser' && t.code === 'BROWSER_UNAVAILABLE'))
   assert.equal((await docs(agentId)).length, 0, 'casca vazia não vira conhecimento')
 })
 
