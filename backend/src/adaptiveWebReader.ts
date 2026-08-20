@@ -27,6 +27,7 @@ import {
   domainOf,
   extractJsonLd,
   extractPairs,
+  extractLinks,
   extractReadableText,
   extractTables,
   extractPageMeta,
@@ -43,6 +44,8 @@ export interface ReaderPage {
   contentType: string
   finalUrl: string
   status: number
+  /** O que o site respondeu no `Retry-After`, quando respondeu. */
+  retryAfterSeconds?: number
 }
 
 /**
@@ -65,6 +68,12 @@ export interface ReadOptions {
   fetchPage?: (url: string, opts: { timeoutMs: number; maxBytes: number }) => Promise<ReaderPage>
 }
 
+/** Um link que a página oferece. Serve para descobrir, e para dizer de onde veio o dado. */
+export interface ExtractedLink {
+  url: string
+  text: string
+}
+
 export interface ReadResult {
   ok: boolean
   url: string
@@ -72,6 +81,22 @@ export interface ReadResult {
   readMethod: 'http' | 'browser'
   /** Por que trocou de método, quando trocou. */
   fallbackReason?: string | null
+  /**
+   * O que foi TENTADO, em ordem, e no que deu.
+   *
+   * Sem isto, uma leitura que falhou é um código de erro sem história: não dá para saber
+   * se o navegador chegou a ser tentado, nem por que ele não foi. O painel mostra esta
+   * lista, e é ela que transforma "não deu" em "tentei isto, deu isso, então parei".
+   */
+  strategies: StrategyAttempt[]
+  /** O que o servidor disse que estava mandando. */
+  contentType: string
+  /** Quando esta leitura aconteceu. Vale para TODO resultado, não só para o estruturado. */
+  capturedAt: string
+  /** Os links da página. É deles que sai a descoberta de outras páginas. */
+  links: ExtractedLink[]
+  /** Quantos segundos o site pediu para esperar, quando pediu (429/503). */
+  retryAfterSeconds?: number
   code?: ReadErrorCode
   reason: string
   kind: PageKind
@@ -99,15 +124,66 @@ export interface ReadResult {
   durationMs: number
 }
 
+/** Uma tentativa de ler, e no que deu. */
+export interface StrategyAttempt {
+  strategy: 'http' | 'browser' | 'cooldown'
+  ok: boolean
+  code?: ReadErrorCode
+  reason: string
+  durationMs: number
+}
+
 const TIMEOUT_HTTP_MS = 8_000
 const TIMEOUT_BROWSER_MS = 20_000
 const MAX_BYTES = 1_500_000
+
+/**
+ * O freio: um domínio que pediu calma não é procurado de novo até a hora passar.
+ *
+ * Sem isto, um 429 na primeira página de uma rodada era seguido por mais dezenove
+ * requisições ao mesmo site — cada uma levando outro 429, e cada uma aproximando o
+ * bloqueio permanente que o limite temporário existia para evitar. O site já disse
+ * quanto esperar; obedecer é mais barato que descobrir a alternativa.
+ *
+ * Em memória de propósito: é uma proteção de rodada, não um estado a persistir. Reiniciar
+ * o processo é justamente quando faz sentido tentar de novo.
+ */
+const emEspera = new Map<string, { ate: number; motivo: string }>()
+/** Quando o site não diz quanto esperar. Curto: a intenção é frear a rodada, não punir. */
+const ESPERA_PADRAO_S = 60
+const ESPERA_MAXIMA_S = 3_600
+
+/** Só para o teste — nenhuma rodada de produção precisa esquecer o que acabou de aprender. */
+export const resetRateLimits = (): void => emEspera.clear()
+
+function aindaEsperando(url: string, agora: number): { ate: number; motivo: string } | null {
+  const dominio = domainOf(url)
+  const espera = emEspera.get(dominio)
+  if (!espera) return null
+  if (espera.ate <= agora) {
+    emEspera.delete(dominio)
+    return null
+  }
+  return espera
+}
+
+function anotarEspera(url: string, segundos: number | undefined, motivo: string, agora: number): number {
+  const espera = Math.min(Math.max(segundos ?? ESPERA_PADRAO_S, 1), ESPERA_MAXIMA_S)
+  emEspera.set(domainOf(url), { ate: agora + espera * 1000, motivo })
+  return espera
+}
 
 const buscarPadrao = async (url: string, opts: { timeoutMs: number; maxBytes: number }): Promise<ReaderPage> => {
   // `requireOk: false`: um 403 com corpo é informação — é ele que diz se o site recusou,
   // pediu login ou mandou um desafio. Lançar aqui apagaria o diagnóstico.
   const res = await safeFetch(url, { timeoutMs: opts.timeoutMs, maxBytes: opts.maxBytes })
-  return { html: res.body, contentType: res.contentType ?? '', finalUrl: res.finalUrl || url, status: res.status }
+  return {
+    html: res.body,
+    contentType: res.contentType ?? '',
+    finalUrl: res.finalUrl || url,
+    status: res.status,
+    ...(res.retryAfterSeconds !== undefined ? { retryAfterSeconds: res.retryAfterSeconds } : {}),
+  }
 }
 
 /**
@@ -120,6 +196,28 @@ const buscarPadrao = async (url: string, opts: { timeoutMs: number; maxBytes: nu
 const ehDocumentoXml = (pagina: ReaderPage): boolean =>
   /xml|rss|atom/i.test(pagina.contentType) || /^\s*<\?xml|^\s*<(rss|feed|urlset|sitemapindex)\b/i.test(pagina.html.slice(0, 200))
 
+/** Num feed ou sitemap os endereços vêm em <link> ou <loc>, e não em <a>. */
+function linksDeXml(xml: string, base: string): ExtractedLink[] {
+  const saida: ExtractedLink[] = []
+  const vistos = new Set<string>()
+  const re = /<(?:link|loc)\b[^>]*>([\s\S]*?)<\/(?:link|loc)>|<link\b[^>]*href\s*=\s*["']([^"']+)["']/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(xml)) && saida.length < 200) {
+    const bruto = (m[1] ?? m[2] ?? '').trim()
+    if (!bruto) continue
+    let absoluto: string
+    try {
+      absoluto = new URL(bruto, base).toString()
+    } catch {
+      continue
+    }
+    if (!/^https?:/i.test(absoluto) || vistos.has(absoluto)) continue
+    vistos.add(absoluto)
+    saida.push({ url: absoluto, text: '' })
+  }
+  return saida
+}
+
 /** Monta o resultado a partir de uma página já obtida — o mesmo para HTTP e navegador. */
 function extrair(pagina: ReaderPage, metodo: 'http' | 'browser', comecou: number, fallbackReason: string | null): ReadResult {
   if (ehDocumentoXml(pagina)) {
@@ -131,6 +229,12 @@ function extrair(pagina: ReaderPage, metodo: 'http' | 'browser', comecou: number
       fallbackReason,
       reason: 'documento XML (feed ou sitemap)',
       kind: 'structured_data',
+      strategies: [],
+      contentType: pagina.contentType,
+      capturedAt: new Date().toISOString(),
+      // Num feed, os "links" estão em <link>, não em <a>. Os endereços saem daqui do
+      // mesmo jeito: quem descobre não precisa saber em que tag eles vieram.
+      links: linksDeXml(pagina.html, pagina.finalUrl),
       text: texto,
       html: pagina.html,
       contentHash: contentHashOf(texto),
@@ -163,6 +267,10 @@ function extrair(pagina: ReaderPage, metodo: 'http' | 'browser', comecou: number
     ...(veredito.code ? { code: veredito.code } : {}),
     reason: veredito.reason,
     kind: classifyPage(pagina.html, texto, { tables: tabelas.length, jsonLd: jsonLd.length }),
+    strategies: [],
+    contentType: pagina.contentType,
+    capturedAt: new Date().toISOString(),
+    links: extractLinks(pagina.html, pagina.finalUrl),
     text: texto,
     html: pagina.html,
     contentHash: contentHashOf(texto),
@@ -197,6 +305,10 @@ const falha = (url: string, metodo: 'http' | 'browser', code: ReadErrorCode, rea
   code,
   reason,
   kind: 'unknown',
+  strategies: [],
+  contentType: '',
+  capturedAt: new Date().toISOString(),
+  links: [],
   text: '',
   html: '',
   contentHash: '',
@@ -224,6 +336,32 @@ export async function readWebPage(url: string, opts: ReadOptions = {}): Promise<
   const modo = opts.mode ?? 'auto'
   const buscar = opts.fetchPage ?? buscarPadrao
   const renderer = opts.renderer ?? null
+  // O histórico do que foi tentado. É o que transforma "não deu" em "tentei isto, deu
+  // isso, então parei" — no painel e no log.
+  const tentativas: StrategyAttempt[] = []
+  const anotar = <T extends ReadResult>(r: T): T => ({ ...r, strategies: [...tentativas, ...r.strategies] })
+  const registrar = (strategy: StrategyAttempt['strategy'], r: ReadResult, desde: number) => {
+    tentativas.push({
+      strategy,
+      ok: r.ok,
+      ...(r.code ? { code: r.code } : {}),
+      reason: r.reason,
+      durationMs: Date.now() - desde,
+    })
+  }
+
+  /**
+   * O site pediu calma há pouco: nem chega a perguntar de novo.
+   *
+   * Esta é a diferença entre respeitar um limite e transformá-lo num bloqueio. E o
+   * conhecimento anterior fica intacto — uma leitura que não aconteceu não apaga nada.
+   */
+  const espera = aindaEsperando(url, comecou)
+  if (espera) {
+    const faltam = Math.ceil((espera.ate - comecou) / 1000)
+    const r = falha(url, 'http', 'RATE_LIMITED', `${espera.motivo} — nova tentativa em ${faltam}s`, comecou)
+    return { ...r, retryAfterSeconds: faltam, strategies: [{ strategy: 'cooldown', ok: false, code: 'RATE_LIMITED', reason: r.reason, durationMs: 0 }] }
+  }
 
   const renderizar = async (motivo: string | null): Promise<ReadResult> => {
     if (!renderer) {
@@ -250,27 +388,53 @@ export async function readWebPage(url: string, opts: ReadOptions = {}): Promise<
     }
   }
 
-  if (modo === 'browser') return renderizar('modo navegador escolhido pelo dono')
+  if (modo === 'browser') {
+    const desde = Date.now()
+    const r = await renderizar('modo navegador escolhido pelo dono')
+    registrar('browser', r, desde)
+    return anotar(r)
+  }
 
   let pagina: ReaderPage
+  const desdeHttp = Date.now()
   try {
     pagina = await buscar(url, { timeoutMs: opts.timeoutMs ?? TIMEOUT_HTTP_MS, maxBytes: opts.maxBytes ?? MAX_BYTES })
   } catch (erro) {
     const mensagem = erro instanceof Error ? erro.message : ''
     // Endereço recusado pela proteção de rede não é caso de tentar de novo com navegador:
-    // a recusa é a mesma nos dois caminhos, e é proposital.
-    return falha(url, 'http', 'HTTP_BLOCKED', /timeout|abort/i.test(mensagem) ? 'o site não respondeu a tempo' : 'não foi possível acessar o endereço', comecou)
+    // a recusa é a mesma nos dois caminhos, e é proposital. Já o tempo esgotado é outra
+    // coisa — ninguém recusou nada, o site só não respondeu.
+    const expirou = /timeout|abort/i.test(mensagem)
+    const r = falha(
+      url,
+      'http',
+      expirou ? 'TIMEOUT' : 'HTTP_BLOCKED',
+      expirou ? 'o site não respondeu a tempo' : 'não foi possível acessar o endereço',
+      comecou,
+    )
+    registrar('http', r, desdeHttp)
+    return anotar(r)
   }
 
   const primeira = extrair(pagina, 'http', comecou, null)
-  if (primeira.ok || modo === 'http') return primeira
+  registrar('http', primeira, desdeHttp)
+
+  // Pediu calma: anota até quando, para as outras páginas desta rodada não insistirem.
+  if (primeira.code === 'RATE_LIMITED') {
+    const segundos = anotarEspera(url, pagina.retryAfterSeconds, primeira.reason, comecou)
+    return anotar({ ...primeira, retryAfterSeconds: segundos })
+  }
+
+  if (primeira.ok || modo === 'http') return anotar(primeira)
 
   // O que veio não serve. Vale um navegador?
   const veredito = checkContentQuality(pagina.html, primeira.text, { status: pagina.status })
-  if (!veredito.retryWithBrowser) return primeira
+  if (!veredito.retryWithBrowser) return anotar(primeira)
 
+  const desdeNavegador = Date.now()
   const comNavegador = await renderizar(`${veredito.code}: ${veredito.reason}`)
-  if (comNavegador.ok) return comNavegador
+  registrar('browser', comNavegador, desdeNavegador)
+  if (comNavegador.ok) return anotar(comNavegador)
 
   /**
    * Nenhum dos dois serviu — mas o HTML do HTTP continua valendo.
@@ -282,10 +446,10 @@ export async function readWebPage(url: string, opts: ReadOptions = {}): Promise<
    */
   const acionavel: ReadErrorCode[] = ['LOGIN_REQUIRED', 'CAPTCHA', 'HTTP_BLOCKED', 'CONSENT_REQUIRED']
   const codigo = primeira.code && acionavel.includes(primeira.code) ? primeira.code : (comNavegador.code ?? primeira.code)
-  return {
+  return anotar({
     ...primeira,
     ...(codigo ? { code: codigo } : {}),
     reason: codigo === primeira.code ? primeira.reason : comNavegador.reason,
     fallbackReason: `${veredito.code}: ${veredito.reason}`,
-  }
+  })
 }

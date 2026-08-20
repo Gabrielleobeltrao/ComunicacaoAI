@@ -332,6 +332,13 @@ agentRoutineRouter.post('/sources/test-read', async (req, res) => {
   res.json({
     ok: r.ok,
     readMethod: r.readMethod,
+    // O que foi TENTADO, em ordem. Sem isto, "não deu" não diz se o navegador chegou a
+    // ser tentado — nem por que não foi.
+    strategies: r.strategies,
+    contentType: r.contentType,
+    capturedAt: r.capturedAt,
+    links: r.links.length,
+    ...(r.retryAfterSeconds !== undefined ? { retryAfterSeconds: r.retryAfterSeconds } : {}),
     status: r.metadata.status,
     code: r.code ?? null,
     reason: r.reason,

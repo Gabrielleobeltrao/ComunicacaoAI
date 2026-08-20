@@ -376,7 +376,7 @@ export interface DelegationDeps {
     opts: { sectorId?: ObjectId | null },
   ) => Promise<{
     context: string[]
-    sources?: { documentId: string | null; title: string | null }[]
+    sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
     status?: string
     failed?: boolean
     /** Quantos trechos correspondiam, quando dá para saber — ver `knowledge.ts`. */
@@ -407,7 +407,7 @@ interface TaskRun {
   // De onde saiu a resposta, para quem PEDIU poder conferir: o veredito da busca e os
   // documentos que entraram — id e título, nunca o texto deles.
   grounding?: string
-  sources?: { documentId: string | null; title: string | null }[]
+  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
 }
 
 // Emit a per-agent telemetry event for a delegation/sector run (fire-and-forget via
@@ -679,7 +679,21 @@ async function runAgentTask(
           ignored?: number
           via?: string
           error?: string
-          reads?: { url: string; method: string; ok: boolean; code?: string; reason?: string; fallbackReason?: string; kind?: string; usefulChars?: number; durationMs?: number }[]
+          reads?: {
+            url: string
+            method: string
+            ok: boolean
+            code?: string
+            reason?: string
+            fallbackReason?: string
+            kind?: string
+            usefulChars?: number
+            durationMs?: number
+            contentType?: string
+            links?: number
+            retryAfterSeconds?: number
+            strategies?: { strategy: string; ok: boolean; code?: string; reason: string; durationMs: number }[]
+          }[]
         }[]
       | undefined
     // Uma leitura que FALHOU volta com `refreshed: false` — ela não mexeu em nada. Mas é
@@ -738,6 +752,12 @@ async function runAgentTask(
               reason: r.reason ?? null,
               fallbackReason: r.fallbackReason ?? null,
               durationMs: r.durationMs ?? null,
+              contentType: r.contentType ?? null,
+              links: r.links ?? 0,
+              // O caminho inteiro da tentativa: HTTP, veredito, navegador. É isto que
+              // separa "não achei nada" de "não consegui olhar".
+              strategies: r.strategies ?? [],
+              ...(r.retryAfterSeconds !== undefined ? { retryAfterSeconds: r.retryAfterSeconds } : {}),
             })),
           ),
         },
@@ -854,6 +874,14 @@ async function runAgentTask(
         grounding,
         passages: passages.length,
         sources: sources.map((f) => f.title).filter(Boolean),
+        // De ONDE veio a evidência. Para quem pergunta, manual e web são a mesma coisa —
+        // a resposta. Para quem confere, não: um número lido de um site tem hora de
+        // captura e endereço para voltar. Sem isto, uma resposta que mistura os dois não
+        // dá para auditar.
+        origins: {
+          manual: sources.filter((f) => f.origin === 'manual').length,
+          web: sources.filter((f) => f.origin === 'web').length,
+        },
       },
     })
   }
@@ -1183,7 +1211,7 @@ export interface SectorParticipant {
   /** Quantas ferramentas ele completou. Um número, nunca argumentos ou resultado. */
   toolCalls?: number
   /** Os documentos que entraram na resposta: id e título, nunca o texto. */
-  sources?: { documentId: string | null; title: string | null }[]
+  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
   /** O que ESTE agente custou. Quem paga a conta precisa ver a conta separada. */
   usage?: { inputTokens: number; outputTokens: number }
   /** Quanto ele demorou, em milissegundos. */

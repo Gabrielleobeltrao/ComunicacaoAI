@@ -24,6 +24,7 @@ import type {
   ResponseDetail,
   ResponseTone,
 } from '../lib/types'
+import { AgentSources } from './AgentSources'
 import { AgentAppGrantsEditor } from './AgentAppGrantsEditor'
 import { AgentToolsEditor } from './AgentToolsEditor'
 import { roleConfigOf } from '../lib/agentCapabilities'
@@ -1736,16 +1737,104 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           {/* Recolhível como os outros blocos da aba: era o único que ficava sempre
               aberto, e é justamente o mais alto — a lista de documentos empurrava todo o
               resto para fora da tela. */}
+          {/* FONTES DE CONHECIMENTO — o que ENTRA. Separado do que foi gerado porque são
+              duas perguntas diferentes: "de onde ele tira" e "o que ele já tem". Estavam
+              no mesmo bloco, e a lista de documentos empurrava o formulário de adicionar
+              para fora da tela. */}
+          <CollapsibleBlock title="Fontes de conhecimento" showHeader={stacked} testId="knowledge-sources-block">
+            <div className="space-y-3">
+              <p className="text-sm text-(--text-muted)">
+                Textos que o agente usa para responder com precisão (cardápio, horários, políticas...).
+                {isCreating && ' Eles serão enviados assim que o agente for criado.'}
+              </p>
+            <form onSubmit={handleAddDocument} className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAddMode('text')}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    addMode === 'text' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
+                  }`}
+                >
+                  Colar texto
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddMode('file')}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    addMode === 'file' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
+                  }`}
+                >
+                  Enviar arquivo/imagem
+                </button>
+              </div>
+
+              <input
+                value={newDocTitle}
+                onChange={(e) => setNewDocTitle(e.target.value)}
+                placeholder="Título (ex: Cardápio)"
+                required
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+              />
+
+              {addMode === 'text' ? (
+                <textarea
+                  value={newDocContent}
+                  onChange={(e) => setNewDocContent(e.target.value)}
+                  placeholder="Cole aqui o conteúdo (cardápio, horários, políticas...)"
+                  rows={4}
+                  required
+                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                />
+              ) : (
+                <input
+                  type="file"
+                  accept=".txt,.pdf,image/jpeg,image/png,image/gif,image/webp"
+                  onChange={handleFileChange}
+                  required
+                  className="w-full text-sm text-(--text-muted) file:mr-3 file:rounded-lg file:border-0 file:bg-(--surface-sunken) file:px-3 file:py-1.5 file:text-sm file:text-(--text-heading)"
+                />
+              )}
+
+              {addMode === 'file' && (
+                <p className="text-xs text-(--text-faint)">
+                  Aceita .txt, .pdf ou imagens (o texto é extraído automaticamente — em imagens, o
+                  provedor de LLM do agente transcreve o conteúdo).
+                </p>
+              )}
+
+              {docError && <p className="text-sm text-(--coral-600)">{docError}</p>}
+              <button
+                type="submit"
+                disabled={addingDoc}
+                className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
+              >
+                {addingDoc ? 'Adicionando...' : 'Adicionar documento'}
+              </button>
+            </form>
+            </div>
+          </CollapsibleBlock>
+
+          {/* PESQUISA WEB — entre "de onde ele tira" e "o que ele já tem", porque é
+              exatamente o que acontece entre as duas: como cada site é lido, com que
+              profundidade e com que limite. Ficava depois do conhecimento gerado, o que
+              invertia causa e efeito. Só para quem COLETA: quem analisa trabalha sobre o
+              que recebe, e quem conduz não lê site. */}
+          {agent?._id && cfg.allowedWeb && (
+            <CollapsibleBlock title="Pesquisa web" showHeader={stacked} testId="web-research-block">
+              <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+            </CollapsibleBlock>
+          )}
+
+          {/* CONHECIMENTO GERADO — o que ele JÁ TEM, venha de onde vier: o que foi escrito
+              à mão e o que os sites produziram, com o filtro para separar os dois. */}
           <CollapsibleBlock
-            title="Base de conhecimento"
+            title="Conhecimento gerado"
             showHeader={stacked}
+            testId="knowledge-generated-block"
             hint={documents.length ? `${documents.length}` : undefined}
           >
           <div className="space-y-3">
-            <p className="text-sm text-(--text-muted)">
-              Textos que o agente usa para responder com precisão (cardápio, horários, políticas...).
-              {isCreating && ' Eles serão enviados assim que o agente for criado.'}
-            </p>
 
             {isCreating ? (
               pendingDocs.length === 0 ? (
@@ -1969,71 +2058,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               </>
             )}
 
-            <form onSubmit={handleAddDocument} className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setAddMode('text')}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    addMode === 'text' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
-                  }`}
-                >
-                  Colar texto
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAddMode('file')}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    addMode === 'file' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
-                  }`}
-                >
-                  Enviar arquivo/imagem
-                </button>
-              </div>
-
-              <input
-                value={newDocTitle}
-                onChange={(e) => setNewDocTitle(e.target.value)}
-                placeholder="Título (ex: Cardápio)"
-                required
-                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-              />
-
-              {addMode === 'text' ? (
-                <textarea
-                  value={newDocContent}
-                  onChange={(e) => setNewDocContent(e.target.value)}
-                  placeholder="Cole aqui o conteúdo (cardápio, horários, políticas...)"
-                  rows={4}
-                  required
-                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-                />
-              ) : (
-                <input
-                  type="file"
-                  accept=".txt,.pdf,image/jpeg,image/png,image/gif,image/webp"
-                  onChange={handleFileChange}
-                  required
-                  className="w-full text-sm text-(--text-muted) file:mr-3 file:rounded-lg file:border-0 file:bg-(--surface-sunken) file:px-3 file:py-1.5 file:text-sm file:text-(--text-heading)"
-                />
-              )}
-
-              {addMode === 'file' && (
-                <p className="text-xs text-(--text-faint)">
-                  Aceita .txt, .pdf ou imagens (o texto é extraído automaticamente — em imagens, o
-                  provedor de LLM do agente transcreve o conteúdo).
-                </p>
-              )}
-
-              {docError && <p className="text-sm text-(--coral-600)">{docError}</p>}
-              <button
-                type="submit"
-                disabled={addingDoc}
-                className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
-              >
-                {addingDoc ? 'Adicionando...' : 'Adicionar documento'}
-              </button>
-            </form>
           </div>
           </CollapsibleBlock>
         </div>

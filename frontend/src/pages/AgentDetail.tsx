@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AgentCapabilities } from '../components/AgentCapabilities'
 import { CollapsibleBlock } from '../components/CollapsibleBlock'
-import { AgentSources } from '../components/AgentSources'
 import { AgentToolsPicker } from '../components/AgentToolsPicker'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
@@ -593,18 +592,9 @@ export function AgentDetail() {
                             <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
                           </CollapsibleBlock>
                         ) : null}
-                        {/* Olhar um site é capacidade do agente, e é aqui que se pergunta
-                            o que ele consegue fazer. Antes isso existia só dentro de uma
-                            rotina, atrás de um horário.
-
-                            Só para quem USA base: um analista trabalha sobre o que recebe,
-                            e um coordenador conduz — oferecer um site a eles seria oferecer
-                            uma configuração que o motor não vai ler. */}
-                        {roleConfigOf(agent).allowedWeb ? (
-                          <CollapsibleBlock title="Consultar um site" showHeader>
-                            <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
-                          </CollapsibleBlock>
-                        ) : null}
+                        {/* "Pesquisa web" mora no formulário, entre as fontes e o
+                            conhecimento gerado: é o que acontece entre os dois. Aqui ela
+                            ficava por último, depois do resultado que ela produz. */}
                       </div>
                     ) : null}
                     {/* Deleting lives in Avançado, after every setting, and is

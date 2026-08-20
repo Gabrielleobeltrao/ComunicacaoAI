@@ -277,3 +277,39 @@ export function extractPairs(html: string, max = 40): Record<string, string> {
   }
   return pares
 }
+
+/**
+ * Os links da página, absolutos e sem repetição.
+ *
+ * A descoberta já fazia isto por conta própria, cada caminho do seu jeito. Aqui é uma vez
+ * só: o leitor devolve os links junto do texto, e quem quiser descobrir páginas não
+ * precisa reprocessar o HTML — nem manter uma segunda regra sobre o que conta como link.
+ *
+ * Âncora, `javascript:` e `mailto:` ficam de fora: nenhum leva a uma página para ler.
+ */
+export function extractLinks(html: string, base: string, max = 200): { url: string; text: string }[] {
+  const saida: { url: string; text: string }[] = []
+  const vistos = new Set<string>()
+  const re = /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(html)) && saida.length < max) {
+    const bruto = m[1].trim()
+    if (!bruto || /^(#|javascript:|mailto:|tel:|data:)/i.test(bruto)) continue
+    let absoluto: string
+    try {
+      absoluto = new URL(bruto, base).toString()
+    } catch {
+      continue
+    }
+    if (!/^https?:/i.test(absoluto)) continue
+    if (vistos.has(absoluto)) continue
+    vistos.add(absoluto)
+    const texto = m[2]
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 200)
+    saida.push({ url: absoluto, text: texto })
+  }
+  return saida
+}
