@@ -1,3 +1,4 @@
+import type { RoleConfig } from './agentCapabilities'
 import type { RunConfig } from './runConfig'
 export type WidgetPosition = 'right' | 'left'
 
@@ -196,6 +197,18 @@ export interface AgentSummary {
   requireGrounding?: boolean
   /** Liga/desliga a base própria à mão; ausente = o tipo do agente decide. */
   knowledgeEnabled?: boolean
+  /**
+   * O que este agente PODE fazer, derivado pelo servidor a partir do tipo.
+   *
+   * Vem em toda resposta que devolve um agente. É a mesma matriz que o runtime usa para
+   * montar as ferramentas — por isso a tela pergunta a ela, e não a uma cópia local que
+   * pode divergir do motor sem ninguém notar.
+   */
+  roleConfig?: RoleConfig
+  /** QUANDO mandar trabalho para este agente. O membro do setor sobrescreve, quando escrito. */
+  routingDescription?: string
+  /** Os tetos de quem CONDUZ. Só o coordenador usa; ausente = padrão do sistema. */
+  orchestration?: { maxTasks?: number; maxRounds?: number; onPartialFailure?: 'synthesize' | 'fail' }
   delegationPolicy: DelegationPolicy
   callerPolicy: DelegationPolicy
   callableAgentIds: string[]

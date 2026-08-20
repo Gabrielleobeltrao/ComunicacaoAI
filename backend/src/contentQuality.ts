@@ -15,6 +15,10 @@
 /** O que impediu a leitura. Cada código corresponde a uma ação diferente de quem lê. */
 export type ReadErrorCode =
   | 'HTTP_BLOCKED'
+  /** O site pediu para diminuir o ritmo. Diferente de bloqueio: é temporário, e tem hora para passar. */
+  | 'RATE_LIMITED'
+  /** O site não respondeu a tempo. Diferente de recusa: ninguém disse não. */
+  | 'TIMEOUT'
   | 'JS_REQUIRED'
   | 'CAPTCHA'
   | 'LOGIN_REQUIRED'
@@ -47,7 +51,8 @@ const SINAIS = {
   captcha: /\b(captcha|recaptcha|hcaptcha|are you a human|verifique que você (é|e) humano|cf-challenge|checking your browser|just a moment)\b/i,
   login: /\b(faça login|faca login|entre na sua conta|sign in to continue|log in to continue|please log ?in|acesso restrito|assine para (ler|continuar)|subscribers? only)\b/i,
   consent: /\b(aceitar (todos os )?cookies|gerenciar cookies|consent(imento)?|we use cookies|utilizamos cookies|política de privacidade e cookies)\b/i,
-  bloqueio: /\b(access denied|acesso negado|403 forbidden|you (have been|were) blocked|blocked by|request blocked|rate limit)\b/i,
+  bloqueio: /\b(access denied|acesso negado|403 forbidden|you (have been|were) blocked|blocked by|request blocked)\b/i,
+  ritmo: /\b(rate limit(ed)?|too many requests|slow down|limite de requisi(ç|c)(õ|o)es)\b/i,
   jsOnly: /\b(enable javascript|javascript (is )?(required|disabled)|habilite o javascript|ative o javascript|you need to enable javascript|<noscript>)\b/i,
 }
 
@@ -78,8 +83,17 @@ export function checkContentQuality(
   if (status === 401 || status === 403) {
     return { ok: false, code: 'HTTP_BLOCKED', reason: `o site respondeu ${status}`, retryWithBrowser: false, usefulChars: util.length }
   }
-  if (status === 429) {
-    return { ok: false, code: 'HTTP_BLOCKED', reason: 'o site pediu para diminuir o ritmo (429)', retryWithBrowser: false, usefulChars: util.length }
+  // 429 e 503 são "volte depois", não "não pode". A diferença importa: bloqueio é
+  // configuração para revisar, ritmo é espera para respeitar — e insistir contra um
+  // pedido de calma é como um limite temporário vira um bloqueio permanente.
+  if (status === 429 || status === 503) {
+    return {
+      ok: false,
+      code: 'RATE_LIMITED',
+      reason: status === 429 ? 'o site pediu para diminuir o ritmo (429)' : 'o site está indisponível no momento (503)',
+      retryWithBrowser: false,
+      usefulChars: util.length,
+    }
   }
 
   // A ordem importa: um desafio anti-robô costuma vir junto de aviso de cookie, e o que
@@ -89,6 +103,9 @@ export function checkContentQuality(
   }
   if (SINAIS.login.test(html) && util.length < minimo * 3) {
     return { ok: false, code: 'LOGIN_REQUIRED', reason: 'a página pede login ou assinatura', retryWithBrowser: false, usefulChars: util.length }
+  }
+  if (SINAIS.ritmo.test(html) && util.length < minimo * 3) {
+    return { ok: false, code: 'RATE_LIMITED', reason: 'o site pediu para diminuir o ritmo', retryWithBrowser: false, usefulChars: util.length }
   }
   if (SINAIS.bloqueio.test(html) && util.length < minimo * 3) {
     return { ok: false, code: 'HTTP_BLOCKED', reason: 'o site recusou a leitura', retryWithBrowser: false, usefulChars: util.length }

@@ -451,6 +451,15 @@ export interface KnowledgeHit {
   // id and a short title, both from the owner's own documents.
   documentId?: string
   title?: string
+  /**
+   * De onde este trecho veio: escrito à mão ou lido de um site.
+   *
+   * Para quem PERGUNTA os dois são a mesma coisa — a resposta. Para quem confere, não:
+   * um número lido de um site tem uma hora de captura e um endereço para voltar; um
+   * texto escrito à mão tem um autor. Sem a marca, uma resposta que mistura os dois não
+   * dá para auditar.
+   */
+  origin?: 'manual' | 'web'
 }
 
 // Where a passage came from. Never crosses accounts: the hits it is built from are
@@ -460,6 +469,8 @@ export interface KnowledgeSource {
   title: string | null
   ownerType: KnowledgeOwnerType
   ownerId: string
+  /** Escrito à mão ou lido de um site. Ausente quando a origem não foi resolvida. */
+  origin?: 'manual' | 'web'
 }
 
 // Vector search across one or more owners (an agent plus, when the execution runs in
@@ -514,7 +525,14 @@ export async function searchKnowledgeForOwners(
             },
           ]
         : []),
-      { $set: { title: { $ifNull: [{ $first: '$doc.title' }, null] } } },
+      {
+        $set: {
+          title: { $ifNull: [{ $first: '$doc.title' }, null] },
+          // A origem vem do documento, e não do chunk: é o documento que sabe se nasceu
+          // de um site ou da mão de alguém.
+          origin: { $cond: [{ $ifNull: [{ $first: '$doc.web' }, false] }, 'web', 'manual'] },
+        },
+      },
       { $unset: 'doc' },
     ])
     .toArray()
@@ -607,6 +625,7 @@ export async function searchKnowledgeLexicallyForOwners(
       ownerId: String(doc.ownerId ?? doc.agentId ?? ''),
       documentId: String(doc._id),
       title: doc.title ?? undefined,
+      origin: doc.web ? ('web' as const) : ('manual' as const),
     }))
     .filter((hit) => hit.score > 0 && hit.content)
 }
@@ -715,6 +734,7 @@ export async function retrieveContext(
       title: hit.title ? String(hit.title).slice(0, 120) : null,
       ownerType: hit.ownerType,
       ownerId: hit.ownerId,
+      ...(hit.origin ? { origin: hit.origin } : {}),
     })),
     status,
     failed,

@@ -1,4 +1,5 @@
 import type { Agent } from './agents.js'
+import { capabilitiesOf } from './agentCapabilities.js'
 import { memorySearchTool } from './memory/tool.js'
 import { sourceCheckTool } from './automations/sourceTool.js'
 import { clarifyTool } from './clarify.js'
@@ -241,6 +242,19 @@ export async function resolveAgentTools(
   // ninguém do outro lado para responder, e o teto é imediato (ver o Playground/canal).
   jaPerguntou = 0,
 ): Promise<ResolvedTool[]> {
+  /**
+   * O que este TIPO de agente pode acionar — decidido aqui, e não em cada chamador.
+   *
+   * Este é o funil por onde todo agente passa: o Playground, o canal, a automação e a
+   * delegação. Filtrar em cada um deles seria a mesma regra escrita quatro vezes, e três
+   * delas ficariam para trás na primeira mudança.
+   *
+   * Nada é apagado do banco. Um coordenador que tem app concedido continua com o app
+   * gravado — ele só não recebe a ferramenta na mão, porque quem conduz não executa. Se
+   * o dono mudar o tipo do agente, tudo volta sozinho.
+   */
+  const capacidades = capabilitiesOf(agent)
+
   // Lembrar é uma capacidade de todo agente, não um app que se conecta: a memória
   // já existe no prédio dele. A ferramenta busca sob demanda em vez de despejar
   // tudo no prompt — ver memory/tool.ts.
@@ -254,13 +268,13 @@ export async function resolveAgentTools(
   // pedido amplo demais o modelo só sabe responder por cima — e cobrar por isso.
   const esclarecer = clarifyTool(jaPerguntou)
   // Legacy per-agent HTTP tools, kept working untouched.
-  const http = (agent.tools ?? []).map(resolveHttpTool)
+  const http = capacidades.externalTools ? (agent.tools ?? []).map(resolveHttpTool) : []
 
   // Reusable Custom Tools: the agent may call ONLY the ones assigned to it, and
   // getToolsByIds is owner-scoped, so a stale or foreign id resolves to nothing.
   // Each tool gets its own per-run counter, which is what stops a model from
   // hammering the same endpoint in a loop.
-  const assigned = await getToolsByIds(ownerId, agent.toolIds ?? [])
+  const assigned = capacidades.externalTools ? await getToolsByIds(ownerId, agent.toolIds ?? []) : []
   const custom: ResolvedTool[] = assigned
     .filter((tool) => tool.enabled)
     .map((tool) => {
@@ -280,13 +294,16 @@ export async function resolveAgentTools(
 
   // Apps the owner connected once on the account, granted to this agent action by
   // action. The credential lives in the encrypted installation — never here.
-  const fromGrants = await resolveAppGrantTools(agent, ownerId)
+  const fromGrants = capacidades.externalTools ? await resolveAppGrantTools(agent, ownerId) : []
 
   // DEPRECATED path, kept for agents not migrated yet. An entry the migration has
   // already moved carries `migratedAt`: its credential is gone from this document
   // and resolving it here would silently produce a tool that cannot authenticate.
-  const enabled = (agent.builtinTools ?? []).filter((entry) => !entry.migratedAt)
-  if (enabled.length === 0) return [memoria, fonte, esclarecer, ...http, ...custom, ...fromGrants]
+  const enabled = capacidades.externalTools ? (agent.builtinTools ?? []).filter((entry) => !entry.migratedAt) : []
+  // A memória é do agente que OPERA. Quem só conduz não tem operação para lembrar — e o
+  // "olhar a fonte" é leitura de site, que segue a mesma regra da base.
+  const proprias = [...(capacidades.memory ? [memoria] : []), ...(capacidades.webSources ? [fonte] : []), esclarecer]
+  if (enabled.length === 0) return [...proprias, ...http, ...custom, ...fromGrants]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')
   const googleConnected = needsGoogle ? (await getGoogleStatus(ownerId)).connected : false
@@ -298,5 +315,5 @@ export async function resolveAgentTools(
     if (app.connection === 'google' && !googleConnected) continue
     builtins.push(...app.resolve(ownerId, entry.config ?? {}))
   }
-  return [memoria, fonte, esclarecer, ...http, ...custom, ...fromGrants, ...builtins]
+  return [...proprias, ...http, ...custom, ...fromGrants, ...builtins]
 }

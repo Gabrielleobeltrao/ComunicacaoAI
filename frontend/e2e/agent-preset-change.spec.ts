@@ -149,10 +149,14 @@ async function stubApi(page: Page, agente: Record<string, unknown>) {
 }
 
 const abrirAvancado = async (page: Page) => {
-  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
-  // Os blocos avançados nascem fechados (os filhos ficam montados, só escondidos), então
-  // abrir "Definição do agente" faz parte do caminho que um dono percorre.
-  await page.getByRole('button', { name: 'Definição do agente' }).click()
+  // A definição mora em "Como trabalha": ela É como o agente trabalha, e o título dela
+  // muda com o papel — "Estratégia de pesquisa" para quem coleta, "Como conduzir a
+  // equipe" para quem conduz. Por isso o bloco é alcançado pelo nome estável, e não
+  // pelo título visível.
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  // Os blocos nascem fechados (os filhos ficam montados, só escondidos), então abrir
+  // faz parte do caminho que um dono percorre.
+  await page.getByTestId('agent-definition-block').getByRole('button').first().click()
   await expect(page.getByTestId('agent-definition-fields')).toBeVisible()
 }
 

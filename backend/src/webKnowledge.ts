@@ -68,6 +68,14 @@ export interface WebReadTrace {
   url: string
   method: 'http' | 'browser'
   ok: boolean
+  /** O que o servidor disse que estava mandando. */
+  contentType?: string
+  /** O que foi TENTADO, em ordem — e por que parou onde parou. */
+  strategies?: { strategy: string; ok: boolean; code?: string; reason: string; durationMs: number }[]
+  /** Quantos endereços a página oferece. É deles que sai a descoberta. */
+  links?: number
+  /** Quantos segundos o site pediu para esperar, quando pediu. */
+  retryAfterSeconds?: number
   /** O motivo COM NOME quando falhou: login, robô, JavaScript, página vazia. */
   code?: string
   reason?: string
@@ -115,6 +123,10 @@ async function lerPagina(url: string, mode: ReadMode = 'auto', trilha?: WebReadT
       kind: r.kind,
       usefulChars: r.metadata.usefulChars,
       durationMs: r.durationMs,
+      contentType: r.contentType,
+      strategies: r.strategies,
+      links: r.links.length,
+      ...(r.retryAfterSeconds !== undefined ? { retryAfterSeconds: r.retryAfterSeconds } : {}),
     })
   }
   // Uma leitura que não serve não vira documento — mas o motivo sobe, para o log e para a

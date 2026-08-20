@@ -256,6 +256,12 @@ export function AgentSources({ agentId }: { agentId: string }) {
         return
       }
       const metodo = r.readMethod === 'browser' ? 'navegador' : 'HTTP'
+      // O caminho inteiro, e não só o fim: sem isto, "não deu" não diz se o navegador
+      // chegou a ser tentado — nem por que não foi.
+      const caminho = (r.strategies ?? [])
+        .map((t: { strategy: string; ok: boolean; code?: string }) => `${t.strategy}${t.ok ? ' ✓' : ` ✕${t.code ? ` ${t.code}` : ''}`}`)
+        .join(' → ')
+      const tipo = String(r.contentType ?? '').split(';')[0]
       const estruturado = [
         r.structured?.tables ? `${r.structured.tables} tabela(s)` : '',
         r.structured?.jsonLd ? `${r.structured.jsonLd} bloco(s) de dados` : '',
@@ -268,10 +274,15 @@ export function AgentSources({ agentId }: { agentId: string }) {
         [linha.id]: {
           ok: Boolean(r.ok),
           texto: r.ok
-            ? `Lido por ${metodo} · ${r.kind} · ${r.usefulChars} caracteres úteis${estruturado ? ` · ${estruturado}` : ''} · ${r.durationMs} ms` +
+            ? `Lido por ${metodo} · HTTP ${r.status}${tipo ? ` · ${tipo}` : ''} · ${r.kind} · ${r.usefulChars} caracteres úteis` +
+              `${estruturado ? ` · ${estruturado}` : ''}${r.links ? ` · ${r.links} link(s)` : ''} · ${r.durationMs} ms` +
               (r.title ? ` · "${r.title}"` : '') +
+              (caminho ? `\nCaminho: ${caminho}` : '') +
               (r.preview ? `\n${r.preview.slice(0, 200)}…` : '')
-            : `${r.code ?? 'ERRO'}: ${r.reason}${r.fallbackReason ? ` (tentou navegador: ${r.fallbackReason})` : ''}`,
+            : `${r.code ?? 'ERRO'}: ${r.reason}` +
+              (r.retryAfterSeconds ? ` — o site pediu ${r.retryAfterSeconds}s de espera` : '') +
+              (r.status ? ` (HTTP ${r.status})` : '') +
+              (caminho ? `\nCaminho: ${caminho}` : ''),
         },
       }))
     } catch {

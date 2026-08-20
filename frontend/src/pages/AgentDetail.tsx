@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AgentCapabilities } from '../components/AgentCapabilities'
 import { CollapsibleBlock } from '../components/CollapsibleBlock'
-import { AgentSources } from '../components/AgentSources'
 import { AgentToolsPicker } from '../components/AgentToolsPicker'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
@@ -25,7 +24,7 @@ import type { AgentOverview, AgentStatsResponse, AgentSummary } from '../lib/typ
 import { Button, Card, MetricStat, StatusPill, Tag } from '../ui'
 import type { AgentStatus } from '../ui'
 import { Illustration } from '../office/Illustration'
-import { usesKnowledge } from '../lib/agentCapabilities'
+import { roleConfigOf } from '../lib/agentCapabilities'
 
 // The agent page mirrors the design: a profile card + "colegas" + "onde é usado"
 // on the left, and metric cards over a tabbed panel on the right. Each tab hosts
@@ -580,25 +579,22 @@ export function AgentDetail() {
                       // a aba juntou competências, ferramentas, conhecimento e sites, e
                       // tudo aberto de uma vez vira uma rolagem em que nada se acha.
                       <div>
-                        <CollapsibleBlock
-                          title="Ferramentas reutilizáveis"
-                          showHeader
-                          hint={(agent.toolIds ?? []).length ? `${(agent.toolIds ?? []).length}` : 'nenhuma'}
-                        >
-                          <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
-                        </CollapsibleBlock>
-                        {/* Olhar um site é capacidade do agente, e é aqui que se pergunta
-                            o que ele consegue fazer. Antes isso existia só dentro de uma
-                            rotina, atrás de um horário.
-
-                            Só para quem USA base: um analista trabalha sobre o que recebe,
-                            e um coordenador conduz — oferecer um site a eles seria oferecer
-                            uma configuração que o motor não vai ler. */}
-                        {usesKnowledge(agent.preset, agent.knowledgeEnabled) ? (
-                          <CollapsibleBlock title="Consultar um site" showHeader>
-                            <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+                        {/* Ferramenta é de quem EXECUTA. Um coordenador com a ferramenta na
+                            mão usa a ferramenta — é o caminho mais curto — e o time deixa
+                            de existir. O runtime já não a entrega a ele; oferecer aqui
+                            seria configurar algo que o motor ignora. */}
+                        {roleConfigOf(agent).allowedTools ? (
+                          <CollapsibleBlock
+                            title="Ferramentas reutilizáveis"
+                            showHeader
+                            hint={(agent.toolIds ?? []).length ? `${(agent.toolIds ?? []).length}` : 'nenhuma'}
+                          >
+                            <AgentToolsPicker key={`${agent._id}:tools`} agent={agent} onSaved={load} />
                           </CollapsibleBlock>
                         ) : null}
+                        {/* "Pesquisa web" mora no formulário, entre as fontes e o
+                            conhecimento gerado: é o que acontece entre os dois. Aqui ela
+                            ficava por último, depois do resultado que ela produz. */}
                       </div>
                     ) : null}
                     {/* Deleting lives in Avançado, after every setting, and is

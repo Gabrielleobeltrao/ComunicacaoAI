@@ -324,7 +324,7 @@ test('a aba Como trabalha deixa cadastrar um site para o agente consultar', asyn
     return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   const cartao = page.getByTestId('agent-sources')
   await expect(cartao).toBeVisible()
@@ -348,6 +348,9 @@ test('a aba Como trabalha deixa cadastrar um site para o agente consultar', asyn
         initialWindow: '7d',
         // Um endereço novo passa a ser lido ANTES de o agente ser usado — sem isso,
         // cadastrar um site e ele nunca ser lido era o comportamento padrão.
+        // O modo de LEITURA da página, novo: automático tenta HTTP e só abre o
+        // navegador quando o conteúdo depende de JavaScript.
+        readMode: 'auto',
         refreshMode: 'on_demand',
         intervalMinutes: 30,
         maxStalenessMinutes: 30,
@@ -369,7 +372,7 @@ test('um endereço inválido é recusado com o motivo na tela', async ({ page })
       : r.fulfill({ json: { sources: [], settings: SETTINGS } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('exemplo.test/blog')
@@ -386,7 +389,7 @@ test('as fontes que vêm de rotinas aparecem separadas, como leitura', async ({ 
     }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   const doRotina = page.getByTestId('agent-sources-routines')
   await expect(doRotina).toContainText('Notícias')
@@ -404,7 +407,7 @@ test('cada endereço escolhe QUANDO ser consultado, e a tela diz o custo de cada
     return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('https://exemplo.test/feed.xml')
@@ -437,7 +440,7 @@ test('os limites e o nome da ferramenta são editáveis, e vão junto no salvame
     return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   await page.getByTestId('agent-sources-settings').click()
   await page.getByTestId('agent-sources-max-items').fill('3')
@@ -468,7 +471,7 @@ test('as competências são editáveis, e é o que o coordenador procura', async
     return r.fulfill({ json: {} })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   const cartao = page.getByTestId('agent-capabilities')
   await expect(cartao).toBeVisible()
@@ -486,7 +489,7 @@ test('as competências são editáveis, e é o que o coordenador procura', async
 test('a mesma competência não entra duas vezes, nem escrita de outro jeito', async ({ page }) => {
   await stub(page)
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   for (const texto of ['jurídico', 'JURIDICO']) {
     await page.getByTestId('agent-capability-input').fill(texto)
@@ -498,7 +501,7 @@ test('a mesma competência não entra duas vezes, nem escrita de outro jeito', a
 test('uma etiqueta pode ser removida antes de salvar', async ({ page }) => {
   await stub(page)
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   await page.getByTestId('agent-capability-input').fill('tributário')
   await page.getByTestId('agent-capability-add').click()
@@ -507,22 +510,24 @@ test('uma etiqueta pode ser removida antes de salvar', async ({ page }) => {
   await expect(page.getByTestId('agent-capabilities-empty')).toBeVisible()
 })
 
-test('a Base de conhecimento também abre e fecha, como as outras seções', async ({ page }) => {
-  // Era a única seção da aba que ficava sempre aberta — e a mais alta: a lista de
-  // documentos empurrava tudo que vem depois para fora da tela.
+test('o que ENTRA e o que ele JÁ TEM são dois blocos, e os dois abrem e fecham', async ({ page }) => {
+  // Eram um só, e o mais alto da aba: a lista de documentos empurrava o formulário de
+  // adicionar para fora da tela. São duas perguntas diferentes — "de onde ele tira" e
+  // "o que ele já tem" —, então são dois blocos.
   await stub(page)
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
 
-  const cabecalho = page.getByRole('button', { name: 'Base de conhecimento', exact: true })
-  await expect(cabecalho).toBeVisible()
-  await expect(cabecalho).toHaveAttribute('aria-expanded', 'false')
-
-  await cabecalho.click()
-  await expect(cabecalho).toHaveAttribute('aria-expanded', 'true')
+  const fontes = page.getByRole('button', { name: 'Fontes de conhecimento', exact: true })
+  await expect(fontes).toHaveAttribute('aria-expanded', 'false')
+  await fontes.click()
+  await expect(fontes).toHaveAttribute('aria-expanded', 'true')
   await expect(page.getByText('Textos que o agente usa para responder com precisão', { exact: false })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Adicionar documento' })).toBeVisible()
 
-  await cabecalho.click()
-  await expect(cabecalho).toHaveAttribute('aria-expanded', 'false')
+  const gerado = page.getByRole('button', { name: 'Conhecimento gerado', exact: true })
+  await expect(gerado).toHaveAttribute('aria-expanded', 'false')
+  await gerado.click()
+  await expect(gerado).toHaveAttribute('aria-expanded', 'true')
 })
 
 test('as seções da aba nascem fechadas, menos as competências', async ({ page }) => {
@@ -532,7 +537,7 @@ test('as seções da aba nascem fechadas, menos as competências', async ({ page
   // Aberta: é por ela que outro agente encontra este, e a aba não pode abrir como uma
   // lista de títulos vazia.
   await expect(page.getByRole('button', { name: 'Competências', exact: true })).toHaveAttribute('aria-expanded', 'true')
-  for (const titulo of ['Ferramentas', 'Base de conhecimento', 'Ferramentas reutilizáveis', 'Consultar um site']) {
+  for (const titulo of ['Ferramentas', 'Fontes de conhecimento', 'Conhecimento gerado', 'Ferramentas reutilizáveis', 'Pesquisa web']) {
     await expect(page.getByRole('button', { name: titulo, exact: true })).toHaveAttribute('aria-expanded', 'false')
   }
 })
@@ -691,7 +696,7 @@ test('o site pode virar base do agente, e o modo escolhe o custo', async ({ page
     r.request().method() === 'GET' ? r.fulfill({ json: FONTE_WEB }) : r.fulfill({ json: { ok: true } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   const bloco = page.getByTestId('agent-source-web').first()
   await expect(bloco).toBeVisible()
@@ -728,7 +733,7 @@ test('"atualizar agora" lê e conta o que mudou', async ({ page }) => {
     r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: true, created: 2, updated: 1, unchanged: 3, error: null }] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   await page.getByTestId('agent-sources-refresh').click()
   await expect(page.getByTestId('agent-sources-refresh-result')).toContainText('2 nova(s)')
@@ -786,7 +791,7 @@ test('atualizar agora salva o endereço antes de ler', async ({ page }) => {
     return r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: true, discovered: 1, created: 1, updated: 0, unchanged: 0, error: null }] } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
 
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-name').fill('Boletim')
@@ -807,7 +812,7 @@ test('quando nada é lido, a tela diz POR QUE', async ({ page }) => {
     r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: false, reason: 'lida há 2 min', created: 0, updated: 0, unchanged: 0, error: null }] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('https://exemplo.test/boletim')
   await page.getByTestId('agent-sources-refresh').click()
@@ -825,7 +830,7 @@ test('a falha de leitura aparece na tela, e não em silêncio', async ({ page })
     r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: true, created: 0, updated: 0, unchanged: 0, error: 'HTTP 403' }] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('https://exemplo.test/boletim')
   await page.getByTestId('agent-sources-refresh').click()
@@ -857,7 +862,7 @@ test('o modo padrão avisa que não lê nada sozinho', async ({ page }) => {
     }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
   await page.getByTestId('agent-source-web').first().click()
 
   await expect(page.getByTestId('agent-source-manual-hint')).toContainText('nada é lido sozinho')
@@ -869,7 +874,7 @@ test('um endereço novo já nasce sendo lido antes de o agente ser usado', async
     r.request().method() === 'PUT' ? r.fulfill({ json: { ok: true } }) : r.fulfill({ json: { settings: SETTINGS, sources: [] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Consultar um site')
+  await abrirBloco(page, 'Pesquisa web')
   await page.getByTestId('agent-source-add').click()
 
   // O modo aparece no resumo, sem precisar abrir o bloco: era invisível antes.
@@ -882,33 +887,58 @@ test('um endereço novo já nasce sendo lido antes de o agente ser usado', async
 
 // --- a tela mostra o que cada TIPO usa -------------------------------------------------------
 //
-// Um analista com um bloco de base em branco é uma promessa que o runtime não cumpre: ele
-// analisa o que recebe. Esconder sem dizer nada pareceria defeito — então no lugar do
-// bloco fica a razão, e a porta de saída.
+// Uma capacidade que não pertence ao papel simplesmente NÃO é desenhada. Havia um cartão
+// no lugar, explicando a ausência — ele ocupava o mesmo espaço do bloco de verdade, com a
+// diferença de não servir para nada. Quem quer a exceção liga em Avançado.
 
-test('o analista não recebe base nem sites, e a tela diz por quê', async ({ page }) => {
+test('o analista não recebe base nem sites: no lugar, o que ele espera receber', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'analyst' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
 
-  await expect(page.getByTestId('knowledge-not-for-type')).toBeVisible()
-  await expect(page.getByTestId('knowledge-not-for-type')).toContainText('trabalha sobre o que recebe')
+  // Nem o bloco, nem um cartão explicando por que o bloco não está lá.
+  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
   await expect(page.getByTestId('agent-sources')).toHaveCount(0)
-  // E quem sabe o que quer religa.
-  await expect(page.getByTestId('enable-knowledge')).toBeVisible()
+  await expect(page.getByText('Ferramentas reutilizáveis')).toHaveCount(0)
+
+  // O que ele tem no lugar: o que precisa RECEBER para concluir, e em que forma entrega.
+  await abrirBloco(page, 'O que ele espera receber')
+  await expect(page.getByTestId('agent-input-contract')).toBeVisible()
+  await abrirBloco(page, 'Formato da análise')
+  await expect(page.getByTestId('agent-output-contract')).toBeVisible()
 })
 
-test('o coordenador também não, e por outra razão', async ({ page }) => {
+test('o coordenador só vê orquestração — nem app, nem ferramenta, nem base', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'manager' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await expect(page.getByTestId('knowledge-not-for-type')).toContainText('planeja, delega e consolida')
+
+  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
+  await expect(page.getByTestId('agent-sources')).toHaveCount(0)
+  await expect(page.getByText('Ferramentas reutilizáveis')).toHaveCount(0)
+  await expect(page.getByText('Ferramentas personalizadas (HTTP)')).toHaveCount(0)
+
+  // Quem conduz configura os tetos da condução: cada tarefa é uma inferência inteira.
+  await abrirBloco(page, 'Orquestração')
+  await expect(page.getByTestId('orchestration-max-tasks')).toBeVisible()
+  await expect(page.getByTestId('orchestration-max-rounds')).toBeVisible()
+  await expect(page.getByTestId('orchestration-partial-failure')).toBeVisible()
 })
 
-test('o pesquisador recebe os dois blocos', async ({ page }) => {
+test('o pesquisador mantém base, sites e ferramentas', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
-  await abrirBloco(page, 'Consultar um site')
+  await expect(page.getByText('Ferramentas reutilizáveis')).toBeVisible()
+  await abrirBloco(page, 'Pesquisa web')
   await expect(page.getByTestId('agent-sources')).toBeVisible()
+})
+
+test('"quando chamar este agente" existe em todo papel', async ({ page }) => {
+  // É a frase que o planejador lê para escolher quem trabalha. Sem ela, a escolha depende
+  // de o pedido por acaso repetir palavras do objetivo do agente.
+  for (const preset of ['analyst', 'manager', 'researcher', 'operator'] as const) {
+    await stub(page, { agent: { ...AGENT, preset } })
+    await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+    await expect(page.getByTestId('agent-routing-description')).toHaveCount(1)
+  }
 })
 
 test('um agente antigo, sem tipo declarado, continua com tudo', async ({ page }) => {
@@ -917,5 +947,6 @@ test('um agente antigo, sem tipo declarado, continua com tudo', async ({ page })
   delete (semPreset as { preset?: unknown }).preset
   await stub(page, { agent: semPreset })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
+  await expect(page.getByText('Ferramentas reutilizáveis')).toBeVisible()
 })
+

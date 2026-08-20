@@ -9,10 +9,12 @@ import assert from 'node:assert/strict'
 
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
 
-const { readWebPage } = await import('../dist/adaptiveWebReader.js')
+const { readWebPage, resetRateLimits } = await import('../dist/adaptiveWebReader.js')
 const { checkContentQuality, classifyPage } = await import('../dist/contentQuality.js')
 
 const pagina = (html, over = {}) => ({ html, contentType: 'text/html', finalUrl: 'https://x.test/p', status: 200, ...over })
+// Cada teste começa sem memória do que outro site pediu.
+resetRateLimits()
 const servindo = (html, over = {}) => async () => pagina(html, over)
 
 const ARTIGO = `<html><head><title>O relatório de agosto</title>
@@ -204,4 +206,98 @@ test('o veredito de qualidade diz quantos caracteres úteis existem', () => {
   const vazio = checkContentQuality('<html><body></body></html>', '')
   assert.equal(vazio.code, 'CONTENT_EMPTY')
   assert.equal(vazio.retryWithBrowser, true)
+})
+
+// --- o site pedindo calma ---------------------------------------------------------------------
+//
+// 429 não é "não pode", é "volte depois". A diferença importa: bloqueio é configuração
+// para revisar, ritmo é espera para respeitar — e insistir contra um pedido de calma é
+// como um limite temporário vira um bloqueio permanente.
+
+test('8b) 429: erro próprio, com os segundos que o site pediu', async () => {
+  resetRateLimits()
+  const r = await readWebPage('https://ritmo.test/p', {
+    fetchPage: async () => pagina('<html><body>Too many requests</body></html>', { status: 429, retryAfterSeconds: 45 }),
+    renderer: async () => pagina(RENDERIZADA),
+  })
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'RATE_LIMITED')
+  assert.equal(r.retryAfterSeconds, 45)
+  assert.equal(r.readMethod, 'http', 'abrir um navegador contra um limite de ritmo é insistir de outro jeito')
+})
+
+test('8c) depois do 429, o mesmo domínio nem é procurado — sem loop', async () => {
+  resetRateLimits()
+  let requisicoes = 0
+  const buscar = async () => {
+    requisicoes += 1
+    return pagina('<html><body>Too many requests</body></html>', { status: 429, retryAfterSeconds: 60 })
+  }
+  await readWebPage('https://ritmo2.test/a', { fetchPage: buscar })
+  assert.equal(requisicoes, 1)
+
+  // As outras páginas da mesma rodada, no mesmo site: nenhuma requisição nova.
+  for (const caminho of ['/b', '/c', '/d']) {
+    const r = await readWebPage(`https://ritmo2.test${caminho}`, { fetchPage: buscar })
+    assert.equal(r.code, 'RATE_LIMITED')
+    assert.equal(r.strategies[0].strategy, 'cooldown')
+  }
+  assert.equal(requisicoes, 1, 'o site já disse quanto esperar; obedecer é mais barato que descobrir a alternativa')
+
+  // Outro domínio não paga pelo pedido de calma deste.
+  const outro = await readWebPage('https://outro.test/p', { fetchPage: servindo(ARTIGO) })
+  assert.equal(outro.ok, true)
+})
+
+test('503 também é ritmo, e não recusa', async () => {
+  resetRateLimits()
+  const r = await readWebPage('https://indisponivel.test/p', {
+    fetchPage: async () => pagina('<html><body>Service Unavailable</body></html>', { status: 503 }),
+  })
+  assert.equal(r.code, 'RATE_LIMITED')
+})
+
+// --- o resultado normalizado ----------------------------------------------------------------------
+
+test('toda leitura devolve os mesmos campos, venha de onde vier', async () => {
+  resetRateLimits()
+  const html = `<html><head><title>Guia</title><link rel="canonical" href="https://x.test/guia"/></head>
+    <body><main>${'Este guia explica o procedimento com detalhes suficientes. '.repeat(8)}
+    <a href="/passo-1">Passo 1</a><a href="https://outro.test/x">Externo</a></main></body></html>`
+  const r = await readWebPage('https://x.test/p', { fetchPage: servindo(html, { contentType: 'text/html; charset=utf-8' }) })
+
+  assert.equal(r.contentType, 'text/html; charset=utf-8')
+  assert.equal(r.metadata.status, 200)
+  assert.equal(r.metadata.canonicalUrl, 'https://x.test/guia')
+  assert.equal(r.readMethod, 'http')
+  assert.ok(!Number.isNaN(new Date(r.capturedAt).getTime()), 'quando esta leitura aconteceu vale para TODO resultado')
+  // Os links vêm absolutos: é deles que sai a descoberta de outras páginas.
+  assert.deepEqual(r.links.map((l) => l.url), ['https://x.test/passo-1', 'https://outro.test/x'])
+  assert.equal(r.links[0].text, 'Passo 1')
+  // E o caminho tentado fica registrado.
+  assert.deepEqual(r.strategies.map((t) => t.strategy), ['http'])
+  assert.equal(r.strategies[0].ok, true)
+})
+
+test('num feed, os endereços saem do <link> — quem descobre não precisa saber a tag', async () => {
+  resetRateLimits()
+  const r = await readWebPage('https://x.test/feed', {
+    fetchPage: async () =>
+      pagina('<?xml version="1.0"?><rss><channel><item><link>https://x.test/1</link></item><item><link>https://x.test/2</link></item></channel></rss>', {
+        contentType: 'application/rss+xml',
+      }),
+  })
+  assert.deepEqual(r.links.map((l) => l.url), ['https://x.test/1', 'https://x.test/2'])
+  assert.equal(r.contentType, 'application/rss+xml')
+})
+
+test('o tempo esgotado tem nome próprio: ninguém recusou nada', async () => {
+  resetRateLimits()
+  const r = await readWebPage('https://lento.test/p', {
+    fetchPage: async () => {
+      throw new Error('The operation was aborted due to timeout')
+    },
+  })
+  assert.equal(r.code, 'TIMEOUT')
+  assert.deepEqual(r.strategies.map((t) => t.strategy), ['http'])
 })

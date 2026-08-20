@@ -13,10 +13,13 @@ export function CollapsibleBlock({
   showHeader,
   hint,
   defaultOpen = false,
+  testId,
   children,
 }: {
   title: string
   showHeader: boolean
+  /** Um nome estável para o bloco. O título muda com o papel do agente; isto não. */
+  testId?: string
   /** Uma palavra ao lado do título — quantos, quais — para o estado fechado ainda informar. */
   hint?: string
   defaultOpen?: boolean
@@ -25,7 +28,7 @@ export function CollapsibleBlock({
   const [open, setOpen] = useState(defaultOpen)
   if (!showHeader) return <>{children}</>
   return (
-    <div className="border-t border-(--border-subtle) first:border-t-0" data-testid="collapsible-block">
+    <div className="border-t border-(--border-subtle) first:border-t-0" data-testid={testId ?? 'collapsible-block'}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}

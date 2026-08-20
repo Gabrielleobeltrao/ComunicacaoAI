@@ -234,7 +234,9 @@ async function abrirConhecimento(page: Page, pedidos: string[] = []) {
     return r.fulfill({ json: { ...PAGINA_CONHECIMENTO, items: itens, total: itens.length } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Base de conhecimento')
+  // O que ele JÁ TEM tem bloco próprio agora, separado de onde ele tira: eram um só, e
+  // a lista de documentos empurrava o formulário de adicionar para fora da tela.
+  await abrirBloco(page, 'Conhecimento gerado')
 }
 
 test('o que veio de um site aparece na base, com selo e procedência', async ({ page }) => {
@@ -298,7 +300,9 @@ test('excluir e ignorar avisa o servidor para não trazer o endereço de volta',
     return r.fulfill({ json: PAGINA_CONHECIMENTO })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Base de conhecimento')
+  // O que ele JÁ TEM tem bloco próprio agora, separado de onde ele tira: eram um só, e
+  // a lista de documentos empurrava o formulário de adicionar para fora da tela.
+  await abrirBloco(page, 'Conhecimento gerado')
 
   await page.getByTestId('knowledge-delete-ignore').click()
   await expect.poll(() => apagados.length).toBeGreaterThan(0)

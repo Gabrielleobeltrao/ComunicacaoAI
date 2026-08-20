@@ -31,6 +31,7 @@ import type { TraceInput } from './executionTrace.js'
 import type { LiveTracker } from './agentLiveTracker.js'
 import {
   MAX_ORCHESTRATION_ROUNDS,
+  MAX_TASKS,
   MAX_TASKS_TOTAL,
   ORCHESTRATION_TIMEOUT_MS,
   assembleWithoutModel,
@@ -375,7 +376,7 @@ export interface DelegationDeps {
     opts: { sectorId?: ObjectId | null },
   ) => Promise<{
     context: string[]
-    sources?: { documentId: string | null; title: string | null }[]
+    sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
     status?: string
     failed?: boolean
     /** Quantos trechos correspondiam, quando dá para saber — ver `knowledge.ts`. */
@@ -406,7 +407,7 @@ interface TaskRun {
   // De onde saiu a resposta, para quem PEDIU poder conferir: o veredito da busca e os
   // documentos que entraram — id e título, nunca o texto deles.
   grounding?: string
-  sources?: { documentId: string | null; title: string | null }[]
+  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
 }
 
 // Emit a per-agent telemetry event for a delegation/sector run (fire-and-forget via
@@ -678,7 +679,21 @@ async function runAgentTask(
           ignored?: number
           via?: string
           error?: string
-          reads?: { url: string; method: string; ok: boolean; code?: string; reason?: string; fallbackReason?: string; kind?: string; usefulChars?: number; durationMs?: number }[]
+          reads?: {
+            url: string
+            method: string
+            ok: boolean
+            code?: string
+            reason?: string
+            fallbackReason?: string
+            kind?: string
+            usefulChars?: number
+            durationMs?: number
+            contentType?: string
+            links?: number
+            retryAfterSeconds?: number
+            strategies?: { strategy: string; ok: boolean; code?: string; reason: string; durationMs: number }[]
+          }[]
         }[]
       | undefined
     // Uma leitura que FALHOU volta com `refreshed: false` — ela não mexeu em nada. Mas é
@@ -737,6 +752,12 @@ async function runAgentTask(
               reason: r.reason ?? null,
               fallbackReason: r.fallbackReason ?? null,
               durationMs: r.durationMs ?? null,
+              contentType: r.contentType ?? null,
+              links: r.links ?? 0,
+              // O caminho inteiro da tentativa: HTTP, veredito, navegador. É isto que
+              // separa "não achei nada" de "não consegui olhar".
+              strategies: r.strategies ?? [],
+              ...(r.retryAfterSeconds !== undefined ? { retryAfterSeconds: r.retryAfterSeconds } : {}),
             })),
           ),
         },
@@ -853,6 +874,14 @@ async function runAgentTask(
         grounding,
         passages: passages.length,
         sources: sources.map((f) => f.title).filter(Boolean),
+        // De ONDE veio a evidência. Para quem pergunta, manual e web são a mesma coisa —
+        // a resposta. Para quem confere, não: um número lido de um site tem hora de
+        // captura e endereço para voltar. Sem isto, uma resposta que mistura os dois não
+        // dá para auditar.
+        origins: {
+          manual: sources.filter((f) => f.origin === 'manual').length,
+          web: sources.filter((f) => f.origin === 'web').length,
+        },
       },
     })
   }
@@ -1182,7 +1211,7 @@ export interface SectorParticipant {
   /** Quantas ferramentas ele completou. Um número, nunca argumentos ou resultado. */
   toolCalls?: number
   /** Os documentos que entraram na resposta: id e título, nunca o texto. */
-  sources?: { documentId: string | null; title: string | null }[]
+  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
   /** O que ESTE agente custou. Quem paga a conta precisa ver a conta separada. */
   usage?: { inputTokens: number; outputTokens: number }
   /** Quanto ele demorou, em milissegundos. */
@@ -1405,7 +1434,9 @@ export async function executeSectorTeam(
         ? {
             agentId: agente._id.toString(),
             name: agente.name,
-            routingDescription: outros[i].routingDescription ?? null,
+            // O que o dono escreveu no MEMBRO manda; o do agente é o padrão. Um setor que
+            // já tem a frase não muda em nada, e um agente sem setor deixa de ficar mudo.
+            routingDescription: outros[i].routingDescription || agente.routingDescription || null,
             role: agente.role ?? null,
             // O TIPO funcional, para o planejador não tratar quem analisa como quem coleta.
             type: roleOf(agente.preset),
@@ -1446,10 +1477,21 @@ export async function executeSectorTeam(
    * Sem `planWithModel` (instalação sem modelo auxiliar, teste sem dublê) o plano sai
    * determinístico — setores existentes continuam funcionando igual.
    */
+  /**
+   * Os tetos deste coordenador — dentro dos tetos do sistema.
+   *
+   * Cada tarefa é uma inferência inteira, com a base e as ferramentas de um agente. Quem
+   * paga a conta escolhe quantas; o sistema é que diz o máximo. Ausente = o padrão, que é
+   * o comportamento de sempre.
+   */
+  const limites = coordinator.orchestration ?? {}
+  const tetoDeTarefas = Math.min(limites.maxTasks ?? MAX_TASKS, MAX_TASKS)
+  const tetoDeRodadas = Math.min(limites.maxRounds ?? MAX_ORCHESTRATION_ROUNDS, MAX_ORCHESTRATION_ROUNDS)
   const { plan, source: origemDoPlano } = await planExecution({
     question: opts.objective,
     members: equipe,
     ask: deps.planWithModel ? (prompt) => deps.planWithModel!(ctx.ownerId, coordinator, prompt) : undefined,
+    max: tetoDeTarefas,
   })
   const briefing = coordinatorBriefing(sector.name, equipe, plan)
   const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
@@ -1758,7 +1800,7 @@ export async function executeSectorTeam(
     },
   })
 
-  while (rodada < MAX_ORCHESTRATION_ROUNDS) {
+  while (rodada < tetoDeRodadas) {
     rodada += 1
     planoAtual = dedupeAgainst(planoAtual, jaFeitas, MAX_TASKS_TOTAL - todos.length)
     if (planoAtual.tasks.length === 0) break
@@ -1800,7 +1842,7 @@ export async function executeSectorTeam(
 
     todos.push(...(await executarPlano(planoAtual)))
     const naoConsultados = equipe.filter((m) => !consultados.has(m.agentId))
-    const ultimaRodada = rodada >= MAX_ORCHESTRATION_ROUNDS || naoConsultados.length === 0 || todos.length >= MAX_TASKS_TOTAL || Date.now() > prazo
+    const ultimaRodada = rodada >= tetoDeRodadas || naoConsultados.length === 0 || todos.length >= MAX_TASKS_TOTAL || Date.now() > prazo
 
     // A suficiência é decidida ANTES da última consolidação, para a nota de limitação
     // poder entrar nela — dizer o que faltou é parte da resposta, não um adendo.
@@ -1834,7 +1876,7 @@ export async function executeSectorTeam(
         question: faltou ? `${opts.objective}\n\nFalta especificamente: ${faltou}` : opts.objective,
         members: naoConsultados,
         ask: deps.planWithModel ? (prompt) => deps.planWithModel!(ctx.ownerId, coordinator, prompt) : undefined,
-        max: Math.max(0, MAX_TASKS_TOTAL - todos.length),
+        max: Math.min(tetoDeTarefas, Math.max(0, MAX_TASKS_TOTAL - todos.length)),
       })
       planoAtual = proximo.plan
       if (planoAtual.tasks.length === 0) {
@@ -1864,6 +1906,24 @@ export async function executeSectorTeam(
   }
   const falharam = todos.filter((r) => r.status !== 'succeeded')
   for (const r of falharam) warnings.push(`${r.agentName}: ${r.error ?? 'não executou'}`)
+  /**
+   * Um membro falhou e os outros responderam: entregar meia resposta, ou nenhuma?
+   *
+   * O padrão é entregar — com a falta escrita, que é o que separa "parcial declarado"
+   * de "parcial disfarçado de completo". Mas há trabalho em que meia resposta é pior
+   * que nenhuma (um número que vai para um relatório, um saldo, uma contagem), e para
+   * esse caso o coordenador pode exigir que a execução falhe inteira.
+   */
+  if (limites.onPartialFailure === 'fail' && falharam.length > 0 && todos.length > 0) {
+    const quem = falharam.map((r) => r.agentName).join(', ')
+    trilha({
+      type: 'orchestration_end',
+      status: 'error',
+      title: `Execução interrompida: ${falharam.length} membro(s) não responderam`,
+      metadata: { policy: 'fail', failed: falharam.map((r) => ({ agent: r.agentName, error: r.error ?? null })) },
+    })
+    throw new Error(`resposta parcial recusada por configuração do coordenador: ${quem} não respondeu`)
+  }
   if (faltou) warnings.push(`informação incompleta: ${faltou.slice(0, 200)}`)
   console.info(
     `[orchestration:end] execution=${execId} sector=${sector._id.toString()} rounds=${rodada} tasks=${todos.length} ` +

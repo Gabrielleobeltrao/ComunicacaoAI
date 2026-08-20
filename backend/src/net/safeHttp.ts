@@ -80,6 +80,14 @@ export interface SafeFetchResult {
   contentType: string
   body: string
   finalUrl: string
+  /**
+   * Quantos segundos o servidor pediu para esperar (`Retry-After`), quando pediu.
+   *
+   * Só faz sentido em 429 e 503. Existe porque insistir contra um site que acabou de
+   * pedir calma é a maneira mais rápida de trocar um limite temporário por um bloqueio
+   * permanente — e o número certo de segundos está na resposta, não num chute nosso.
+   */
+  retryAfterSeconds?: number
 }
 
 const DEFAULTS = { timeoutMs: 10_000, maxBytes: 2_000_000, maxRedirects: 3 }
@@ -133,7 +141,18 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
       throw new Error(`Resposta grande demais (${declared} bytes)`)
     }
     const text = (await res.text()).slice(0, maxBytes)
-    return { status: res.status, contentType, body: text, finalUrl: url.toString() }
+    // `Retry-After` vem em segundos ou como data HTTP. As duas formas viram segundos.
+    const bruto = res.headers.get('retry-after')
+    let retryAfterSeconds: number | undefined
+    if (bruto) {
+      const segundos = Number(bruto)
+      if (Number.isFinite(segundos) && segundos >= 0) retryAfterSeconds = Math.min(segundos, 86_400)
+      else {
+        const quando = Date.parse(bruto)
+        if (Number.isFinite(quando)) retryAfterSeconds = Math.max(0, Math.min(Math.round((quando - Date.now()) / 1000), 86_400))
+      }
+    }
+    return { status: res.status, contentType, body: text, finalUrl: url.toString(), ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}) }
   }
   throw new Error('Redirecionamentos demais')
 }

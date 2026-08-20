@@ -24,9 +24,11 @@ import type {
   ResponseDetail,
   ResponseTone,
 } from '../lib/types'
+import { AgentSources } from './AgentSources'
 import { AgentAppGrantsEditor } from './AgentAppGrantsEditor'
 import { AgentToolsEditor } from './AgentToolsEditor'
-import { WHY_NO_KNOWLEDGE, roleOfPreset, usesKnowledge } from '../lib/agentCapabilities'
+import { roleConfigOf } from '../lib/agentCapabilities'
+import type { AgentRole } from '../lib/agentCapabilities'
 
 interface AgentFormProps {
   // null = creating a new agent; otherwise editing this one.
@@ -54,15 +56,52 @@ interface AgentFormProps {
 // kept as aliases so an old bookmark still lands somewhere sensible.
 const SECTION_BLOCKS: Record<string, string[]> = {
   'visao-geral': ['identidade'],
-  'como-trabalha': ['ferramentas', 'conhecimento'],
+  // "como-trabalha" não está aqui: os blocos dela vêm do PAPEL do agente (ver
+  // `blocosDoPapel`). Uma lista fixa era o que fazia um coordenador e um pesquisador
+  // abrirem exatamente o mesmo formulário.
   // "Definição" abre a lista de propósito: é o bloco que o dono revisa, e o que mais
   // muda o comportamento do agente. "Modelo e execução" vem logo depois, e quase ninguém
   // precisa tocar — todo campo dele começa em "Padrão do sistema".
-  avancado: ['definicao', 'execucao', 'metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
+  avancado: ['capacidades', 'execucao', 'metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
   // legacy aliases
   essencial: ['identidade'],
   ferramentas: ['ferramentas'],
   conhecimento: ['conhecimento'],
+}
+
+/**
+ * O mesmo campo, o nome que o papel usa.
+ *
+ * "O que espera receber" quer dizer coisas diferentes para quem analisa e para quem
+ * executa; "formato" quer dizer evidência para um e relatório para outro. O campo
+ * gravado é o mesmo — o que muda é a pergunta feita a quem configura, e é a pergunta que
+ * decide se a resposta vai ser útil.
+ */
+const ROTULOS: Record<AgentRole, { definicao: string; entrada: [string, string]; entrega: [string, string]; roteamento: [string, string] }> = {
+  researcher: {
+    definicao: 'Estratégia de pesquisa',
+    entrada: ['O que ele precisa receber', 'Ex.: o período e a empresa a pesquisar.'],
+    entrega: ['Formato das evidências', 'Como cada achado deve vir: com a fonte, a data e o trecho? Em lista? Com número e unidade?'],
+    roteamento: ['Quando chamar este pesquisador', 'Ex.: "quando a pergunta for sobre preços da concorrência ou notícias do setor".'],
+  },
+  analyst: {
+    definicao: 'Objetivo e critérios da análise',
+    entrada: ['O que ele espera receber', 'Ele analisa o que RECEBE das tarefas anteriores. Diga que evidências precisa ter em mãos para concluir.'],
+    entrega: ['Formato da análise', 'Ex.: comparação lado a lado, recomendação com o porquê, riscos separados das certezas.'],
+    roteamento: ['Quando chamar este analista', 'Ex.: "depois que os dados forem coletados, para comparar e concluir".'],
+  },
+  coordinator: {
+    definicao: 'Como conduzir a equipe',
+    entrada: ['O que o pedido precisa trazer', 'Ex.: o prazo e o resultado esperado.'],
+    entrega: ['Formato da consolidação', 'Como juntar o que os membros produzirem.'],
+    roteamento: ['Quando este coordenador deve conduzir', 'Ex.: "quando o pedido envolver mais de uma área e precisar de resposta única".'],
+  },
+  executor: {
+    definicao: 'Como executar',
+    entrada: ['O que ele precisa receber para agir', 'Ex.: o destinatário, o valor e a data — sem isso ele não deve executar.'],
+    entrega: ['O que ele deve devolver', 'Ex.: a confirmação com o identificador da operação.'],
+    roteamento: ['Quando chamar este executor', 'Ex.: "quando for para enviar o e-mail de cobrança".'],
+  },
 }
 
 interface PendingDoc {
@@ -148,6 +187,13 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   const [presetSalvo, setPresetSalvo] = useState(agent?.preset ?? 'custom')
   // `undefined` = o tipo decide; `true`/`false` = escolha explícita do dono.
   const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | undefined>(agent?.knowledgeEnabled)
+  // Campos que já existiam no servidor e não tinham onde ser escritos. O rótulo de cada
+  // um muda com o papel — "o que espera receber" quer dizer uma coisa para quem analisa e
+  // outra para quem executa —, mas o campo gravado é o mesmo.
+  const [editRouting, setEditRouting] = useState(agent?.routingDescription ?? '')
+  const [editInputContract, setEditInputContract] = useState(agent?.inputContract ?? '')
+  const [editOutputContract, setEditOutputContract] = useState(agent?.outputContract ?? '')
+  const [editOrchestration, setEditOrchestration] = useState<NonNullable<AgentSummary['orchestration']>>(agent?.orchestration ?? {})
   const [definitionEditedAt, setDefinitionEditedAt] = useState<string | null>(agent?.definitionEditedAt ?? null)
   const isCreating = agent === null
   const flat = layout === 'flat'
@@ -305,6 +351,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       setEditPromptCaching(agent.promptCaching ?? true)
       setEditMetricProfile(agent.metricProfile ?? 'auto')
       setEditTools(agent.tools ?? [])
+      setEditRouting(agent.routingDescription ?? '')
+      setEditInputContract(agent.inputContract ?? '')
+      setEditOutputContract(agent.outputContract ?? '')
+      setEditOrchestration(agent.orchestration ?? {})
     setEditDefaultOutputFormat(agent.defaultOutputFormat ?? '')
     setEditOutputJsonSchema(agent.outputJsonSchema ? JSON.stringify(agent.outputJsonSchema, null, 2) : '')
     setEditRequireGrounding(agent.requireGrounding === true)
@@ -340,6 +390,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       setEditPromptCaching(true)
       setEditMetricProfile('auto')
       setEditTools([])
+      setEditRouting('')
+      setEditInputContract('')
+      setEditOutputContract('')
+      setEditOrchestration({})
       setEditBuiltinTools([])
       setDocuments([])
       setPendingDocs([])
@@ -559,6 +613,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       defaultOutputFormat: editDefaultOutputFormat || null,
       outputJsonSchema: parseSchemaField(editOutputJsonSchema),
       requireGrounding: editRequireGrounding,
+      routingDescription: editRouting.trim(),
+      inputContract: editInputContract.trim(),
+      outputContract: editOutputContract.trim(),
+      orchestration: editOrchestration,
     }
   }
 
@@ -814,6 +872,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   // section; in the create modal (single screen) the essentials + knowledge are
   // always shown and the rest is revealed under "Configurações avançadas".
   const showBlock = (block: string) => {
+    if (flat && section === 'como-trabalha') return blocosDoPapel.includes(block)
     if (flat) return section == null || (SECTION_BLOCKS[section] ?? []).includes(block)
     if (block === 'identidade' || block === 'conhecimento') return true
     return advancedOpen
@@ -825,8 +884,21 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
    * cumpre: ele analisa o que recebe. Nada é apagado — o que já estava gravado continua
    * lá —, e quem sabe o que quer religa no próprio bloco.
    */
-  const tipoDoAgente = roleOfPreset(presetSalvo as AgentSummary['preset'])
-  const usaBase = usesKnowledge(presetSalvo as AgentSummary['preset'], knowledgeEnabled)
+  /**
+   * O que ESTE agente pode fazer — a resposta do servidor, quando ela vale.
+   *
+   * Vale enquanto o tipo na tela é o mesmo que está gravado. Assim que o dono troca o
+   * tipo no formulário, a resposta guardada descreve o agente anterior, e a derivação
+   * local assume: a tela precisa mudar na hora da escolha, e não depois de salvar.
+   */
+  const cfg = roleConfigOf({
+    preset: presetSalvo as AgentSummary['preset'],
+    knowledgeEnabled,
+    roleConfig: presetSalvo === agent?.preset ? agent?.roleConfig : undefined,
+  })
+  const rotulos = ROTULOS[cfg.role]
+  const usaBase = cfg.allowedKnowledge
+  const blocosDoPapel = cfg.sections as string[]
   const showKb = showBlock('conhecimento') && usaBase
   // Advanced groups are collapsible when several stack together (the "Avançado"
   // page, or the create modal with advanced expanded); a block shown alone (a
@@ -916,7 +988,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           }
         >
           {showBlock('definicao') && (
-            <CollapsibleBlock title="Definição do agente" showHeader={stacked}>
+            <CollapsibleBlock title={rotulos.definicao} showHeader={stacked} testId="agent-definition-block">
               <AgentDefinitionFields
                 value={editDefinicao}
                 onChange={setEditDefinicao}
@@ -927,6 +999,136 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                 definitionEditedAt={definitionEditedAt}
                 onApplyPreset={trocarPreset}
               />
+            </CollapsibleBlock>
+          )}
+
+
+          {/* O que ele precisa RECEBER. Quem analisa só trabalha sobre isto; quem executa
+              não deve agir sem isto. O campo é antigo (`inputContract`) e nunca teve onde
+              ser escrito — vivia só na API. */}
+          {showBlock('entrada') && (
+            <CollapsibleBlock title={rotulos.entrada[0]} showHeader={stacked}>
+              <textarea
+                value={editInputContract}
+                onChange={(e) => setEditInputContract(e.target.value)}
+                rows={3}
+                data-testid="agent-input-contract"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+              />
+              <p className="mt-1 text-xs text-(--text-faint)">{rotulos.entrada[1]}</p>
+            </CollapsibleBlock>
+          )}
+
+          {showBlock('entrega') && (
+            <CollapsibleBlock title={rotulos.entrega[0]} showHeader={stacked}>
+              <textarea
+                value={editOutputContract}
+                onChange={(e) => setEditOutputContract(e.target.value)}
+                rows={3}
+                data-testid="agent-output-contract"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+              />
+              <p className="mt-1 text-xs text-(--text-faint)">{rotulos.entrega[1]}</p>
+            </CollapsibleBlock>
+          )}
+
+          {/* Quem conduz não executa: aqui não há app, ferramenta nem base — só os tetos
+              da orquestração. Cada tarefa é uma inferência inteira, com a base e as
+              ferramentas de um agente; quem paga a conta escolhe quantas. */}
+          {showBlock('orquestracao') && (
+            <CollapsibleBlock title="Orquestração" showHeader={stacked}>
+              <div className="space-y-4" data-testid="orchestration-block">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm text-(--text-muted)">Agentes por pedido</label>
+                    <select
+                      value={editOrchestration.maxTasks ?? ''}
+                      onChange={(e) => setEditOrchestration({ ...editOrchestration, maxTasks: e.target.value ? Number(e.target.value) : undefined })}
+                      data-testid="orchestration-max-tasks"
+                      className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                    >
+                      <option value="">Padrão do sistema (até 4)</option>
+                      <option value="1">1 — sempre um só</option>
+                      <option value="2">2</option>
+                      <option value="3">3</option>
+                      <option value="4">4</option>
+                    </select>
+                    <p className="mt-1 text-xs text-(--text-faint)">Quantos membros o plano pode acionar. Cada um é uma execução completa.</p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm text-(--text-muted)">Rodadas de planejamento</label>
+                    <select
+                      value={editOrchestration.maxRounds ?? ''}
+                      onChange={(e) => setEditOrchestration({ ...editOrchestration, maxRounds: e.target.value ? Number(e.target.value) : undefined })}
+                      data-testid="orchestration-max-rounds"
+                      className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                    >
+                      <option value="">Padrão do sistema (até 2)</option>
+                      <option value="1">1 — não tenta de novo</option>
+                      <option value="2">2</option>
+                    </select>
+                    <p className="mt-1 text-xs text-(--text-faint)">Uma segunda rodada só acontece quando a primeira não respondeu tudo.</p>
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm text-(--text-muted)">Quando um membro falha</label>
+                  <select
+                    value={editOrchestration.onPartialFailure ?? ''}
+                    onChange={(e) =>
+                      setEditOrchestration({ ...editOrchestration, onPartialFailure: (e.target.value || undefined) as 'synthesize' | 'fail' | undefined })
+                    }
+                    data-testid="orchestration-partial-failure"
+                    className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                  >
+                    <option value="">Responder com o que veio, dizendo o que faltou (padrão)</option>
+                    <option value="fail">Não responder: falhar a execução inteira</option>
+                  </select>
+                  <p className="mt-1 text-xs text-(--text-faint)">
+                    Meia resposta declarada serve para quase tudo. Para um número que vai virar decisão, às vezes não responder é o certo.
+                  </p>
+                </div>
+              </div>
+            </CollapsibleBlock>
+          )}
+
+          {/* Vale para TODO papel: é a frase que o planejador lê para escolher quem
+              trabalha. Sem ela, a escolha depende de o pedido por acaso repetir palavras
+              do objetivo do agente. */}
+          {showBlock('roteamento') && (
+            <CollapsibleBlock title={rotulos.roteamento[0]} showHeader={stacked}>
+              <textarea
+                value={editRouting}
+                onChange={(e) => setEditRouting(e.target.value)}
+                rows={2}
+                maxLength={400}
+                data-testid="agent-routing-description"
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+              />
+              <p className="mt-1 text-xs text-(--text-faint)">
+                {rotulos.roteamento[1]} Um setor pode sobrescrever isto no próprio membro.
+              </p>
+            </CollapsibleBlock>
+          )}
+
+          {/* A porta de saída da regra do TIPO. Fica em Avançado, e não no meio de "Como
+              trabalha": é uma exceção deliberada, não um passo da configuração. */}
+          {showBlock('capacidades') && (
+            <CollapsibleBlock title="Capacidades do tipo" showHeader={stacked}>
+              <p className="text-sm text-(--text-muted)">{cfg.summary ?? 'O tipo do agente decide o que ele consulta e o que ele aciona.'}</p>
+              <label className="mt-3 flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={knowledgeEnabled === true}
+                  onChange={(e) => setKnowledgeEnabled(e.target.checked ? true : undefined)}
+                  data-testid="enable-knowledge"
+                />
+                <span>
+                  Usar base própria neste agente mesmo assim
+                  <span className="block text-xs text-(--text-faint)">
+                    Liga a base e os sites num tipo que não os usa por padrão. Nada é apagado ao desmarcar — a configuração continua gravada.
+                  </span>
+                </span>
+              </label>
             </CollapsibleBlock>
           )}
 
@@ -1524,34 +1726,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
         </div>
       </div>
 
-      {/* Quem NÃO usa base: no lugar do bloco, a razão e a porta de saída. Esconder sem
-          dizer nada faria parecer defeito. */}
-      {showBlock('conhecimento') && !usaBase && (
-        <div className="order-2" data-testid="knowledge-not-for-type">
-          <div className="rounded-lg border border-(--border-subtle) p-3">
-            <p className="text-sm font-medium text-(--text-heading)">Base de conhecimento</p>
-            <p className="mt-1 text-xs text-(--text-muted)">{WHY_NO_KNOWLEDGE[tipoDoAgente] || 'Este tipo de agente não consulta base própria.'}</p>
-            <button
-              type="button"
-              data-testid="enable-knowledge"
-              onClick={() => {
-                setKnowledgeEnabled(true)
-                if (agent?._id) {
-                  void fetch(`${API_URL}/api/agents/${agent._id}`, {
-                    method: 'PATCH',
-                    credentials: 'include',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ knowledgeEnabled: true }),
-                  })
-                }
-              }}
-              className="mt-2 text-xs text-(--text-link) underline"
-            >
-              Usar base própria neste agente mesmo assim
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Não há bloco explicando a ausência de nada. Uma capacidade que não pertence ao
+          papel simplesmente não é desenhada: um cartão dizendo "este agente não tem
+          conhecimento" ocupa o mesmo espaço do bloco de verdade, com a diferença de não
+          servir para nada. Quem quiser a base num tipo que não a usa liga em Avançado. */}
       {showKb && (
         <div className="order-2">
           {section == null && <div className="my-5 border-t border-(--border-subtle)" />}
@@ -1559,16 +1737,104 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           {/* Recolhível como os outros blocos da aba: era o único que ficava sempre
               aberto, e é justamente o mais alto — a lista de documentos empurrava todo o
               resto para fora da tela. */}
+          {/* FONTES DE CONHECIMENTO — o que ENTRA. Separado do que foi gerado porque são
+              duas perguntas diferentes: "de onde ele tira" e "o que ele já tem". Estavam
+              no mesmo bloco, e a lista de documentos empurrava o formulário de adicionar
+              para fora da tela. */}
+          <CollapsibleBlock title="Fontes de conhecimento" showHeader={stacked} testId="knowledge-sources-block">
+            <div className="space-y-3">
+              <p className="text-sm text-(--text-muted)">
+                Textos que o agente usa para responder com precisão (cardápio, horários, políticas...).
+                {isCreating && ' Eles serão enviados assim que o agente for criado.'}
+              </p>
+            <form onSubmit={handleAddDocument} className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAddMode('text')}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    addMode === 'text' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
+                  }`}
+                >
+                  Colar texto
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddMode('file')}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    addMode === 'file' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
+                  }`}
+                >
+                  Enviar arquivo/imagem
+                </button>
+              </div>
+
+              <input
+                value={newDocTitle}
+                onChange={(e) => setNewDocTitle(e.target.value)}
+                placeholder="Título (ex: Cardápio)"
+                required
+                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+              />
+
+              {addMode === 'text' ? (
+                <textarea
+                  value={newDocContent}
+                  onChange={(e) => setNewDocContent(e.target.value)}
+                  placeholder="Cole aqui o conteúdo (cardápio, horários, políticas...)"
+                  rows={4}
+                  required
+                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                />
+              ) : (
+                <input
+                  type="file"
+                  accept=".txt,.pdf,image/jpeg,image/png,image/gif,image/webp"
+                  onChange={handleFileChange}
+                  required
+                  className="w-full text-sm text-(--text-muted) file:mr-3 file:rounded-lg file:border-0 file:bg-(--surface-sunken) file:px-3 file:py-1.5 file:text-sm file:text-(--text-heading)"
+                />
+              )}
+
+              {addMode === 'file' && (
+                <p className="text-xs text-(--text-faint)">
+                  Aceita .txt, .pdf ou imagens (o texto é extraído automaticamente — em imagens, o
+                  provedor de LLM do agente transcreve o conteúdo).
+                </p>
+              )}
+
+              {docError && <p className="text-sm text-(--coral-600)">{docError}</p>}
+              <button
+                type="submit"
+                disabled={addingDoc}
+                className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
+              >
+                {addingDoc ? 'Adicionando...' : 'Adicionar documento'}
+              </button>
+            </form>
+            </div>
+          </CollapsibleBlock>
+
+          {/* PESQUISA WEB — entre "de onde ele tira" e "o que ele já tem", porque é
+              exatamente o que acontece entre as duas: como cada site é lido, com que
+              profundidade e com que limite. Ficava depois do conhecimento gerado, o que
+              invertia causa e efeito. Só para quem COLETA: quem analisa trabalha sobre o
+              que recebe, e quem conduz não lê site. */}
+          {agent?._id && cfg.allowedWeb && (
+            <CollapsibleBlock title="Pesquisa web" showHeader={stacked} testId="web-research-block">
+              <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+            </CollapsibleBlock>
+          )}
+
+          {/* CONHECIMENTO GERADO — o que ele JÁ TEM, venha de onde vier: o que foi escrito
+              à mão e o que os sites produziram, com o filtro para separar os dois. */}
           <CollapsibleBlock
-            title="Base de conhecimento"
+            title="Conhecimento gerado"
             showHeader={stacked}
+            testId="knowledge-generated-block"
             hint={documents.length ? `${documents.length}` : undefined}
           >
           <div className="space-y-3">
-            <p className="text-sm text-(--text-muted)">
-              Textos que o agente usa para responder com precisão (cardápio, horários, políticas...).
-              {isCreating && ' Eles serão enviados assim que o agente for criado.'}
-            </p>
 
             {isCreating ? (
               pendingDocs.length === 0 ? (
@@ -1792,71 +2058,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               </>
             )}
 
-            <form onSubmit={handleAddDocument} className="space-y-2 rounded-lg border border-(--border-subtle) p-3">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setAddMode('text')}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    addMode === 'text' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
-                  }`}
-                >
-                  Colar texto
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAddMode('file')}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    addMode === 'file' ? 'bg-(--intent-brand) text-white' : 'border border-(--border-strong) text-(--text-muted)'
-                  }`}
-                >
-                  Enviar arquivo/imagem
-                </button>
-              </div>
-
-              <input
-                value={newDocTitle}
-                onChange={(e) => setNewDocTitle(e.target.value)}
-                placeholder="Título (ex: Cardápio)"
-                required
-                className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-              />
-
-              {addMode === 'text' ? (
-                <textarea
-                  value={newDocContent}
-                  onChange={(e) => setNewDocContent(e.target.value)}
-                  placeholder="Cole aqui o conteúdo (cardápio, horários, políticas...)"
-                  rows={4}
-                  required
-                  className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-                />
-              ) : (
-                <input
-                  type="file"
-                  accept=".txt,.pdf,image/jpeg,image/png,image/gif,image/webp"
-                  onChange={handleFileChange}
-                  required
-                  className="w-full text-sm text-(--text-muted) file:mr-3 file:rounded-lg file:border-0 file:bg-(--surface-sunken) file:px-3 file:py-1.5 file:text-sm file:text-(--text-heading)"
-                />
-              )}
-
-              {addMode === 'file' && (
-                <p className="text-xs text-(--text-faint)">
-                  Aceita .txt, .pdf ou imagens (o texto é extraído automaticamente — em imagens, o
-                  provedor de LLM do agente transcreve o conteúdo).
-                </p>
-              )}
-
-              {docError && <p className="text-sm text-(--coral-600)">{docError}</p>}
-              <button
-                type="submit"
-                disabled={addingDoc}
-                className="rounded-lg bg-(--intent-brand) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--intent-brand-hover) disabled:opacity-50"
-              >
-                {addingDoc ? 'Adicionando...' : 'Adicionar documento'}
-              </button>
-            </form>
           </div>
           </CollapsibleBlock>
         </div>
