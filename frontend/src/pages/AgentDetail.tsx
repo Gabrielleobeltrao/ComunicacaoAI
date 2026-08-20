@@ -25,6 +25,7 @@ import type { AgentOverview, AgentStatsResponse, AgentSummary } from '../lib/typ
 import { Button, Card, MetricStat, StatusPill, Tag } from '../ui'
 import type { AgentStatus } from '../ui'
 import { Illustration } from '../office/Illustration'
+import { usesKnowledge } from '../lib/agentCapabilities'
 
 // The agent page mirrors the design: a profile card + "colegas" + "onde é usado"
 // on the left, and metric cards over a tabbed panel on the right. Each tab hosts
@@ -588,10 +589,16 @@ export function AgentDetail() {
                         </CollapsibleBlock>
                         {/* Olhar um site é capacidade do agente, e é aqui que se pergunta
                             o que ele consegue fazer. Antes isso existia só dentro de uma
-                            rotina, atrás de um horário. */}
-                        <CollapsibleBlock title="Consultar um site" showHeader>
-                          <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
-                        </CollapsibleBlock>
+                            rotina, atrás de um horário.
+
+                            Só para quem USA base: um analista trabalha sobre o que recebe,
+                            e um coordenador conduz — oferecer um site a eles seria oferecer
+                            uma configuração que o motor não vai ler. */}
+                        {usesKnowledge(agent.preset, agent.knowledgeEnabled) ? (
+                          <CollapsibleBlock title="Consultar um site" showHeader>
+                            <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+                          </CollapsibleBlock>
+                        ) : null}
                       </div>
                     ) : null}
                     {/* Deleting lives in Avançado, after every setting, and is

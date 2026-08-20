@@ -25,6 +25,7 @@ import { clarificationFrom } from './clarify.js'
 import type { ClarificationRequest } from './clarify.js'
 import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
+import { ROLE_LABEL, capabilitiesOf, roleOf } from './agentCapabilities.js'
 import { preview, traceEvent } from './executionTrace.js'
 import type { TraceInput } from './executionTrace.js'
 import type { LiveTracker } from './agentLiveTracker.js'
@@ -622,7 +623,36 @@ async function runAgentTask(
    * envelheceu. Na maioria das chamadas isso não custa nada — e nunca derruba a execução:
    * sem conseguir atualizar, o agente trabalha com o que já tem.
    */
-  if (deps.ensureWebKnowledgeFresh) {
+  /**
+   * O que este TIPO de agente faz — decidido antes de qualquer busca.
+   *
+   * Um analista analisa o que RECEBE: buscar base própria aqui é o caminho curto para uma
+   * análise isolada, feita sobre o que ele mesmo guardou em vez de sobre as evidências
+   * que lhe foram entregues. Um coordenador que consulta base vira mais um pesquisador.
+   * Quem sabe o que quer liga a base à mão (`knowledgeEnabled`), e aí ela volta.
+   */
+  const capacidades = capabilitiesOf(target)
+  if (ctx.traceId) {
+    traceEvent({
+      ownerId: ctx.ownerId,
+      executionId: ctx.traceId,
+      type: 'agent',
+      status: 'info',
+      agentId: target._id.toString(),
+      title: `${target.name} — ${ROLE_LABEL[capacidades.role]}`,
+      input: preview(typeof input === 'string' ? input : input ? JSON.stringify(input) : '', 300),
+      metadata: {
+        agentType: capacidades.role,
+        preset: target.preset ?? 'custom',
+        knowledge: capacidades.knowledge,
+        webSources: capacidades.webSources,
+        tools: tools.length,
+        reason: capacidades.summary,
+      },
+    })
+  }
+
+  if (deps.ensureWebKnowledgeFresh && capacidades.webSources) {
     const antesDaFonte = Date.now()
     // O começo, e não só o resultado: quando um site demora, o painel precisa mostrar
     // que a espera é a leitura da fonte — e não o agente pensando.
@@ -702,7 +732,7 @@ async function runAgentTask(
   // A rejected promise is 'unavailable', not "no knowledge": the two must never be
   // confused, and only the first one is a reason to refuse.
   const buscar = async () =>
-    query && deps.retrieveContext
+    query && deps.retrieveContext && capacidades.knowledge
       ? await deps
           .retrieveContext(target._id, query, { sectorId: sectorId ?? null })
           .catch(() => ({ context: [], sources: [], status: 'unavailable', failed: true }))
@@ -734,7 +764,7 @@ async function runAgentTask(
   // busca vetorial, base vazia responde `unavailable` ("não consegui procurar") e não
   // `empty` — e exigir `empty` deixava justamente o caso real de fora. Chamar demais aqui
   // não custa: o gerente só lê a fonte que ainda não produziu nada.
-  if (grounding !== 'ok' && deps.bootstrapWebKnowledge && query) {
+  if (grounding !== 'ok' && deps.bootstrapWebKnowledge && query && capacidades.knowledge) {
     const comecouBootstrap = Date.now()
     const iniciadas = ((await deps.bootstrapWebKnowledge(ctx.ownerId, target._id).catch(() => [])) ?? []) as {
       name: string
@@ -1360,6 +1390,8 @@ export async function executeSectorTeam(
             name: agente.name,
             routingDescription: outros[i].routingDescription ?? null,
             role: agente.role ?? null,
+            // O TIPO funcional, para o planejador não tratar quem analisa como quem coleta.
+            type: roleOf(agente.preset),
             objective: agente.objective ?? null,
             instructions: agente.instructions ?? null,
             capabilities: agente.capabilities ?? null,

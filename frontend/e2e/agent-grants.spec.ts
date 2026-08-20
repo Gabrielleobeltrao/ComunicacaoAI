@@ -107,7 +107,13 @@ let stored: Record<string, unknown>[] = []
 
 async function stub(
   page: Page,
-  opts: { installations?: unknown[]; grants?: unknown[]; patch?: (body: Record<string, unknown>) => { status: number; json: unknown } | Promise<{ status: number; json: unknown }> } = {},
+  opts: {
+    installations?: unknown[]
+    grants?: unknown[]
+    /** O agente do teste — usado para variar o TIPO, que decide quais blocos aparecem. */
+    agent?: Record<string, unknown>
+    patch?: (body: Record<string, unknown>) => { status: number; json: unknown } | Promise<{ status: number; json: unknown }>
+  } = {},
 ) {
   patches = []
   stored = (opts.grants as Record<string, unknown>[]) ?? []
@@ -132,7 +138,7 @@ async function stub(
   await page.route('**/api/agents/*/overview', (r) =>
     r.fulfill({
       json: {
-        agent: AGENT,
+        agent: opts.agent ?? AGENT,
         stats: { conversations: 0, conversationsThisWeek: 0, messagesThisWeek: 0, attendedConversations: 0, handoffs: 0, qualifiedLeads: 0 },
         channelLinked: false,
         availableMetrics: ['executions'],
@@ -872,4 +878,44 @@ test('um endereço novo já nasce sendo lido antes de o agente ser usado', async
   await expect(page.getByTestId('agent-source-refresh-mode')).toHaveValue('on_demand')
   // E o aviso de "nada é lido sozinho" não aparece, porque agora é lido.
   await expect(page.getByTestId('agent-source-manual-hint')).toHaveCount(0)
+})
+
+// --- a tela mostra o que cada TIPO usa -------------------------------------------------------
+//
+// Um analista com um bloco de base em branco é uma promessa que o runtime não cumpre: ele
+// analisa o que recebe. Esconder sem dizer nada pareceria defeito — então no lugar do
+// bloco fica a razão, e a porta de saída.
+
+test('o analista não recebe base nem sites, e a tela diz por quê', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'analyst' } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+
+  await expect(page.getByTestId('knowledge-not-for-type')).toBeVisible()
+  await expect(page.getByTestId('knowledge-not-for-type')).toContainText('trabalha sobre o que recebe')
+  await expect(page.getByTestId('agent-sources')).toHaveCount(0)
+  // E quem sabe o que quer religa.
+  await expect(page.getByTestId('enable-knowledge')).toBeVisible()
+})
+
+test('o coordenador também não, e por outra razão', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'manager' } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await expect(page.getByTestId('knowledge-not-for-type')).toContainText('planeja, delega e consolida')
+})
+
+test('o pesquisador recebe os dois blocos', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
+  await abrirBloco(page, 'Consultar um site')
+  await expect(page.getByTestId('agent-sources')).toBeVisible()
+})
+
+test('um agente antigo, sem tipo declarado, continua com tudo', async ({ page }) => {
+  // Tirar capacidade de quem nunca declarou nada quebraria agentes que já funcionam.
+  const semPreset = { ...AGENT }
+  delete (semPreset as { preset?: unknown }).preset
+  await stub(page, { agent: semPreset })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await expect(page.getByTestId('knowledge-not-for-type')).toHaveCount(0)
 })

@@ -321,9 +321,13 @@ test('um setor de organização não é executado por este caminho', async () =>
   await assert.rejects(() => executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'x' }), /coordenador nem membros/)
 })
 
-test('o fallback do time procura na base dos colegas quando a do coordenador não responde', async () => {
+test('o dado do colega chega à resposta — agora porque o colega EXECUTA', async () => {
+  // A rede de segurança antiga injetava a base do colega no turno do coordenador. Ela
+  // continua existindo para quem liga a base do coordenador à mão, mas deixou de ser o
+  // caminho normal: um coordenador não consulta base própria (ver `agentCapabilities`), e
+  // quem tem o dado é quem executa a tarefa.
   const coordenador = agente('Coordenador', { preset: 'manager' })
-  const pesquisador = agente('Pesquisador')
+  const pesquisador = agente('Pesquisador', { preset: 'researcher' })
   const setor = {
     _id: new ObjectId(),
     name: 'Time',
@@ -334,17 +338,22 @@ test('o fallback do time procura na base dos colegas quando a do coordenador nã
     members: [{ agentId: coordenador._id, isDefault: true }, { agentId: pesquisador._id }],
     stages: [],
   }
-  // A base é do pesquisador; o coordenador não tem nenhuma.
   await createDocumentFor({ ownerType: 'agent', ownerId: pesquisador._id }, { title: 'BBSE3', content: BBSE3 })
 
-  // O coordenador NÃO delega — é o pior caso, e é onde a rede de segurança vale.
   const f = deps([coordenador, pesquisador], {
     sector: setor,
-    runTask: async (req) => ({ output: (req.context ?? []).join('\n'), usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
+    // O especialista responde a partir do que a base DELE entregou; o coordenador junta.
+    runTask: async (req) =>
+      /Junte os resultados/.test(req.instructions)
+        ? { output: `consolidado: ${String(req.input ?? '')}`, usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+        : { output: (req.context ?? []).join('\n'), usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] },
   })
 
   const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'BBSE3 em 10/08/2026' })
-  assert.match(run.output, /36,42/, 'a base do colega do mesmo setor é consultada antes de concluir ausência')
+  assert.match(run.output, /36,42/, 'o dado da base do colega chegou à resposta')
+  // E o coordenador não consultou base nenhuma: quem buscou foi o pesquisador.
+  const doCoordenador = f.chamadas.find((c) => /Junte os resultados/.test(c.instructions))
+  assert.equal((doCoordenador.context ?? []).length, 0)
 })
 
 // --- um executor só, pelas três portas ------------------------------------------------------
@@ -808,7 +817,10 @@ test('achar o dado na base de um colega não transforma o colega em participante
 
   const f = deps([coordenador, redator, arquivista], { sector: setor })
   f.deps.planWithModel = async () =>
-    JSON.stringify({ tasks: [{ id: 't1', agentId: redator._id.toString(), objective: 'redigir o resumo' }] })
+    // O objetivo da tarefa carrega a pergunta, como um planejador escreveria — é ele que
+    // vira a consulta à base. Antes este trecho chegava pela busca do COORDENADOR, que
+    // não consulta mais base própria.
+    JSON.stringify({ tasks: [{ id: 't1', agentId: redator._id.toString(), objective: 'quanto valia BBSE3 em 10/08/2026?' }] })
   const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'quanto valia BBSE3 em 10/08/2026?' })
 
   assert.deepEqual(run.participants.map((p) => p.name), ['Redator', 'Coordenador'], 'o dono da base não executou')
@@ -1377,8 +1389,9 @@ test('o planner escolhe o agente, e as fontes dele são atualizadas antes da tar
   // Cada agente verifica as PRÓPRIAS fontes antes de trabalhar — o especialista antes da
   // tarefa dele, e o coordenador antes de consolidar. O que importa é a ordem dentro de
   // cada execução: primeiro o site, depois o trabalho.
-  assert.deepEqual(ordem, ['fontes', 'tarefa:pesquisar', 'fontes', 'sintese'], 'atualiza, depois executa')
-  assert.ok(ordem.indexOf('fontes') < ordem.indexOf('tarefa:pesquisar'))
+  // O especialista verifica as fontes dele antes de trabalhar. O COORDENADOR não: ele
+  // conduz e consolida, e não tem base operacional própria (ver `agentCapabilities`).
+  assert.deepEqual(ordem, ['fontes', 'tarefa:pesquisar', 'sintese'], 'atualiza, depois executa')
   void run
 })
 
@@ -1404,4 +1417,150 @@ test('se a atualização falhar, o agente trabalha com o que já tem', async () 
   const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'e aí?' })
   assert.equal(executou, true, 'a falha da atualização não impede o trabalho')
   assert.ok(run.output)
+})
+
+// --- cada tipo trabalha do seu jeito ----------------------------------------------------------
+//
+// O que se prova aqui é comportamento, não etiqueta: quem coleta consulta base, quem
+// analisa recebe evidência, e quem conduz não faz nem uma coisa nem outra.
+
+test('1 e 2) o pesquisador consulta a base; o analista NÃO', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const pesquisador = agente('Pesquisador', { preset: 'researcher' })
+  const analista = agente('Analista', { preset: 'analyst' })
+  const setor = equipeDe(coordenador, [pesquisador, analista])
+  const consultas = []
+
+  const f = deps([coordenador, pesquisador, analista], {
+    sector: setor,
+    runTask: async (req) => ({ output: `ok: ${req.instructions}`, usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
+  })
+  const original = f.deps.retrieveContext
+  f.deps.retrieveContext = (agentId, query, opts) => {
+    consultas.push(String(agentId))
+    return original(agentId, query, opts)
+  }
+  f.deps.planWithModel = async (_o, _c, prompt) =>
+    /sufficient/.test(prompt)
+      ? JSON.stringify({ sufficient: true })
+      : JSON.stringify({
+          tasks: [
+            { id: 't1', agentId: pesquisador._id.toString(), objective: 'levantar os dados' },
+            { id: 't2', agentId: analista._id.toString(), objective: 'analisar', dependsOn: ['t1'] },
+          ],
+        })
+
+  await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'dados e análise' })
+
+  assert.ok(consultas.includes(pesquisador._id.toString()), 'quem coleta consulta a base')
+  assert.ok(!consultas.includes(analista._id.toString()), 'quem analisa não busca base própria')
+  // 5) e quem conduz também não.
+  assert.ok(!consultas.includes(coordenador._id.toString()), 'quem conduz não consulta base')
+})
+
+test('3) o analista recebe o que o pesquisador produziu', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const pesquisador = agente('Pesquisador', { preset: 'researcher' })
+  const analista = agente('Analista', { preset: 'analyst' })
+  const setor = equipeDe(coordenador, [pesquisador, analista])
+
+  const f = deps([coordenador, pesquisador, analista], {
+    sector: setor,
+    runTask: async (req) =>
+      /Junte os resultados/.test(req.instructions)
+        ? { output: 'final', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }
+        : { output: `saída de ${req.instructions}`, usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] },
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) =>
+    /sufficient/.test(prompt)
+      ? JSON.stringify({ sufficient: true })
+      : JSON.stringify({
+          tasks: [
+            { id: 't1', agentId: pesquisador._id.toString(), objective: 'levantar os dados' },
+            { id: 't2', agentId: analista._id.toString(), objective: 'analisar', dependsOn: ['t1'] },
+          ],
+        })
+
+  await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'dados e análise' })
+
+  const doAnalista = f.chamadas.find((c) => c.instructions === 'analisar')
+  assert.match(String(doAnalista.input), /\[Pesquisador\]/, 'a evidência chega com autoria')
+  assert.match(String(doAnalista.input), /saída de levantar os dados/)
+})
+
+test('4) analista sem entrada: o plano é corrigido, não executado como está', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const pesquisador = agente('Pesquisador', { preset: 'researcher' })
+  const analista = agente('Analista', { preset: 'analyst' })
+  const setor = equipeDe(coordenador, [pesquisador, analista])
+
+  const f = deps([coordenador, pesquisador, analista], {
+    sector: setor,
+    runTask: async (req) => ({ output: `ok`, usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
+  })
+  // O planejador propõe o analista SEM dependência — o erro que produz análise sobre nada.
+  f.deps.planWithModel = async (_o, _c, prompt) =>
+    /sufficient/.test(prompt)
+      ? JSON.stringify({ sufficient: true })
+      : JSON.stringify({
+          tasks: [
+            { id: 't1', agentId: pesquisador._id.toString(), objective: 'levantar' },
+            { id: 't2', agentId: analista._id.toString(), objective: 'analisar' },
+          ],
+        })
+
+  await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'preciso de análise' })
+
+  // Corrigido: ele passou a depender de quem coleta, e recebeu a saída dele.
+  const doAnalista = f.chamadas.find((c) => c.instructions === 'analisar')
+  assert.ok(doAnalista, 'o analista executou')
+  assert.match(String(doAnalista.input), /\[Pesquisador\]/, 'com a evidência de quem coletou')
+})
+
+test('4b) analista SOZINHO no plano não é selecionado', async () => {
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const analista = agente('Analista', { preset: 'analyst' })
+  const pesquisador = agente('Pesquisador', { preset: 'researcher' })
+  const setor = equipeDe(coordenador, [analista, pesquisador])
+
+  const f = deps([coordenador, analista, pesquisador], {
+    sector: setor,
+    runTask: async () => ({ output: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, toolCalls: [] }),
+  })
+  f.deps.planWithModel = async (_o, _c, prompt) =>
+    /sufficient/.test(prompt)
+      ? JSON.stringify({ sufficient: true })
+      : JSON.stringify({ tasks: [{ id: 't1', agentId: analista._id.toString(), objective: 'analisar do nada' }] })
+
+  const run = await executeSectorTeam(f.deps, ctxPessoa(), setor, { objective: 'analise isso' })
+
+  // Sem ninguém para coletar antes dele, o plano cai no determinístico — que prefere
+  // quem coleta. Analisar o nada não é resposta.
+  const nomes = run.participants.filter((p) => p.role === 'specialist').map((p) => p.name)
+  assert.ok(!nomes.includes('Analista') || nomes.includes('Pesquisador'), `selecionou só o analista: ${nomes}`)
+})
+
+test('a trilha diz o tipo do agente e se a base foi habilitada', async () => {
+  clearTrace()
+  const trilha = []
+  onTraceEvent((e) => trilha.push(e))
+  const coordenador = agente('Coordenador', { preset: 'manager' })
+  const analista = agente('Analista', { preset: 'analyst' })
+  const setor = equipeDe(coordenador, [analista])
+  const f = deps([coordenador, analista], { sector: setor })
+  f.deps.planWithModel = async (_o, _c, prompt) =>
+    /sufficient/.test(prompt)
+      ? JSON.stringify({ sufficient: true })
+      : JSON.stringify({ tasks: [{ id: 't1', agentId: analista._id.toString(), objective: 'analisar', dependsOn: [] }] })
+
+  const ctx = sectorRunContext({ ownerId: OWNER, buildingId: PREDIO.toString(), correlationId: 'teste', traceId: 'trilha-tipos' })
+  await executeSectorTeam(f.deps, ctx, setor, { objective: 'pergunta' })
+  onTraceEvent(null)
+
+  const doAnalista = trilha.find((e) => e.type === 'agent' && e.metadata?.agentType === 'analyst')
+  assert.ok(doAnalista, 'o tipo aparece na trilha')
+  assert.equal(doAnalista.metadata.knowledge, false)
+  assert.match(doAnalista.metadata.reason, /não busca base própria/)
+  const doCoordenador = trilha.find((e) => e.type === 'agent' && e.metadata?.agentType === 'coordinator')
+  assert.equal(doCoordenador.metadata.knowledge, false)
 })

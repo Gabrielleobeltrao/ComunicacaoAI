@@ -26,6 +26,7 @@ import type {
 } from '../lib/types'
 import { AgentAppGrantsEditor } from './AgentAppGrantsEditor'
 import { AgentToolsEditor } from './AgentToolsEditor'
+import { WHY_NO_KNOWLEDGE, roleOfPreset, usesKnowledge } from '../lib/agentCapabilities'
 
 interface AgentFormProps {
   // null = creating a new agent; otherwise editing this one.
@@ -145,6 +146,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   // agente para trocar: na criação, quem escolhe o molde é o assistente de contratação.
   const [presets, setPresets] = useState<AgentPresetSpec[]>([])
   const [presetSalvo, setPresetSalvo] = useState(agent?.preset ?? 'custom')
+  // `undefined` = o tipo decide; `true`/`false` = escolha explícita do dono.
+  const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | undefined>(agent?.knowledgeEnabled)
   const [definitionEditedAt, setDefinitionEditedAt] = useState<string | null>(agent?.definitionEditedAt ?? null)
   const isCreating = agent === null
   const flat = layout === 'flat'
@@ -815,7 +818,16 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     if (block === 'identidade' || block === 'conhecimento') return true
     return advancedOpen
   }
-  const showKb = showBlock('conhecimento')
+  /**
+   * Base e sites só aparecem para quem os USA.
+   *
+   * Um analista com um bloco de conhecimento em branco é uma promessa que o runtime não
+   * cumpre: ele analisa o que recebe. Nada é apagado — o que já estava gravado continua
+   * lá —, e quem sabe o que quer religa no próprio bloco.
+   */
+  const tipoDoAgente = roleOfPreset(presetSalvo as AgentSummary['preset'])
+  const usaBase = usesKnowledge(presetSalvo as AgentSummary['preset'], knowledgeEnabled)
+  const showKb = showBlock('conhecimento') && usaBase
   // Advanced groups are collapsible when several stack together (the "Avançado"
   // page, or the create modal with advanced expanded); a block shown alone (a
   // single-block section) gets no header.
@@ -1512,6 +1524,34 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
         </div>
       </div>
 
+      {/* Quem NÃO usa base: no lugar do bloco, a razão e a porta de saída. Esconder sem
+          dizer nada faria parecer defeito. */}
+      {showBlock('conhecimento') && !usaBase && (
+        <div className="order-2" data-testid="knowledge-not-for-type">
+          <div className="rounded-lg border border-(--border-subtle) p-3">
+            <p className="text-sm font-medium text-(--text-heading)">Base de conhecimento</p>
+            <p className="mt-1 text-xs text-(--text-muted)">{WHY_NO_KNOWLEDGE[tipoDoAgente] || 'Este tipo de agente não consulta base própria.'}</p>
+            <button
+              type="button"
+              data-testid="enable-knowledge"
+              onClick={() => {
+                setKnowledgeEnabled(true)
+                if (agent?._id) {
+                  void fetch(`${API_URL}/api/agents/${agent._id}`, {
+                    method: 'PATCH',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ knowledgeEnabled: true }),
+                  })
+                }
+              }}
+              className="mt-2 text-xs text-(--text-link) underline"
+            >
+              Usar base própria neste agente mesmo assim
+            </button>
+          </div>
+        </div>
+      )}
       {showKb && (
         <div className="order-2">
           {section == null && <div className="my-5 border-t border-(--border-subtle)" />}
