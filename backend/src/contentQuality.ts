@@ -88,7 +88,16 @@ export function checkContentQuality(
   // 429 e 503 são "volte depois", não "não pode". A diferença importa: bloqueio é
   // configuração para revisar, ritmo é espera para respeitar — e insistir contra um
   // pedido de calma é como um limite temporário vira um bloqueio permanente.
+  //
+  // Mas o CORPO é olhado antes do número: uma barreira anti-robô costuma vir vestida de
+  // 503, e as duas coisas pedem ações opostas. Esperar resolve a falta de ritmo; contra
+  // uma barreira, esperar não resolve nunca — quem configurou a fonte precisa saber que
+  // aquele site não vai ser lido por este caminho, em vez de ficar tentando de hora em
+  // hora achando que é temporário.
   if (status === 429 || status === 503) {
+    if (SINAIS.captcha.test(html)) {
+      return { ok: false, code: 'CAPTCHA', reason: `o site respondeu ${status} com uma verificação anti-robô`, retryWithBrowser: false, usefulChars: util.length }
+    }
     return {
       ok: false,
       code: 'RATE_LIMITED',

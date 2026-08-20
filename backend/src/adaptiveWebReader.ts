@@ -19,6 +19,7 @@
 // Nada aqui contorna login, paywall ou verificação anti-robô: quando a página pede isso,
 // a leitura para e diz o que aconteceu.
 import { safeFetch } from './net/safeHttp.js'
+import { config } from './config.js'
 import { checkContentQuality, classifyPage } from './contentQuality.js'
 import type { PageKind, QualityVerdict, ReadErrorCode } from './contentQuality.js'
 import {
@@ -173,10 +174,32 @@ function anotarEspera(url: string, segundos: number | undefined, motivo: string,
   return espera
 }
 
+/**
+ * Como este leitor se APRESENTA a quem ele visita.
+ *
+ * Não mandava cabeçalho nenhum. Um pedido sem `User-Agent` é a assinatura mais comum de
+ * robô mal-feito, e muita borda de rede responde 503 ou 403 a ele sem nem olhar o resto —
+ * o que chegava aqui como "o site está fora do ar" quando o site estava de pé.
+ *
+ * O nome é VERDADEIRO de propósito. Fingir ser um navegador resolveria mais casos e é
+ * exatamente o que este sistema não faz: um site que recusa robôs tem o direito de nos
+ * recusar, e a recusa precisa ser visível para quem configurou a fonte — não contornada.
+ * Quem opera pode trocar a linha por `WEB_USER_AGENT`, inclusive para pôr um endereço de
+ * contato, que é o que um administrador do outro lado procura quando quer falar conosco.
+ */
+const IDENTIFICACAO = process.env.WEB_USER_AGENT?.trim() || `ComunicacaoAI-Leitor/1.0 (+${config.publicUrl})`
+
+const CABECALHOS: Record<string, string> = {
+  'User-Agent': IDENTIFICACAO,
+  // Sem isto, alguns servidores devolvem outra representação — ou recusam.
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
+  'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+}
+
 const buscarPadrao = async (url: string, opts: { timeoutMs: number; maxBytes: number }): Promise<ReaderPage> => {
   // `requireOk: false`: um 403 com corpo é informação — é ele que diz se o site recusou,
   // pediu login ou mandou um desafio. Lançar aqui apagaria o diagnóstico.
-  const res = await safeFetch(url, { timeoutMs: opts.timeoutMs, maxBytes: opts.maxBytes })
+  const res = await safeFetch(url, { timeoutMs: opts.timeoutMs, maxBytes: opts.maxBytes, headers: CABECALHOS })
   return {
     html: res.body,
     contentType: res.contentType ?? '',
@@ -359,7 +382,10 @@ export async function readWebPage(url: string, opts: ReadOptions = {}): Promise<
   const espera = aindaEsperando(url, comecou)
   if (espera) {
     const faltam = Math.ceil((espera.ate - comecou) / 1000)
-    const r = falha(url, 'http', 'RATE_LIMITED', `${espera.motivo} — nova tentativa em ${faltam}s`, comecou)
+    // A frase diz que NÃO houve pedido. Antes ela repetia o motivo original, e quem lia
+    // entendia que o site tinha respondido de novo — quando na verdade ninguém perguntou
+    // nada: estamos cumprindo a espera que ele mesmo pediu.
+    const r = falha(url, 'http', 'RATE_LIMITED', `aguardando ${faltam}s antes de tentar de novo (o site pediu para esperar: ${espera.motivo})`, comecou)
     return { ...r, retryAfterSeconds: faltam, strategies: [{ strategy: 'cooldown', ok: false, code: 'RATE_LIMITED', reason: r.reason, durationMs: 0 }] }
   }
 
