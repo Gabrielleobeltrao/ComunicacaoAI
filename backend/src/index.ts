@@ -129,6 +129,8 @@ import {
   setMonthlyTokenCap,
   setProviderApiKey,
 } from './userSettings.js'
+import { embeddingBudgetConfig, embeddingUsageReport, ensureEmbeddingUsageIndexes } from './embeddings/budget.js'
+import { VOYAGE_MODELS, voyageFallbackModel, voyageModel } from './voyage.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
 import { channelExecutionKey, finishExecutionRoot, manualExecutionKey, openRunningRoot } from './executionRoots.js'
@@ -424,6 +426,26 @@ app.get('/api/settings', requireAuth, async (_req, res) => {
 })
 
 const MAX_MONTHLY_TOKEN_CAP = 1_000_000_000
+
+/**
+ * O estado da franquia de embedding: quanto foi usado, quanto resta, e a que custo.
+ *
+ * É de instalação, não de dono: a franquia pertence à conta do provedor, e trocar de
+ * usuário logado não troca de fatura. Por isso os números são os mesmos para todos —
+ * qualquer sessão autenticada vê o mesmo painel.
+ *
+ * Nada aqui devolve chave, cabeçalho ou corpo de resposta de terceiro.
+ */
+app.get('/api/settings/embeddings', requireAuth, async (_req, res) => {
+  const cfg = embeddingBudgetConfig()
+  const relatorio = await embeddingUsageReport(cfg, voyageModel(), voyageFallbackModel())
+  res.json({
+    ...relatorio,
+    availableModels: [...VOYAGE_MODELS],
+    // A chave está configurada? Só isso — nunca o valor, nem um prefixo dele.
+    configured: Boolean(process.env.VOYAGE_API_KEY),
+  })
+})
 
 app.put('/api/settings/monthly-token-cap', requireAuth, async (req, res) => {
   const { cap } = req.body ?? {}
@@ -4560,6 +4582,9 @@ async function start() {
   backfillAgentEventAttempts()
     .then((n) => n && console.log(`Backfilled attempt bookkeeping on ${n} agent event(s)`))
     .catch((error) => console.error('backfillAgentEventAttempts failed:', error))
+  ensureEmbeddingUsageIndexes().catch((error) => {
+    console.error('Could not create the embedding usage indexes:', error)
+  })
   ensureTokenUsageIndexes().catch((error) => {
     console.error('ensureTokenUsageIndexes failed:', error)
   })

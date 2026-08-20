@@ -3,6 +3,10 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { ObjectId } from 'mongodb'
+import { createHash } from 'node:crypto'
+
+/** O mesmo hash que a indexação usa para decidir se vale gastar embedding. */
+const hashDe = (t) => createHash('sha256').update(t).digest('hex')
 import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
 // A REAL mongod is started for this file (mongodb-memory-server runs the actual
@@ -128,4 +132,48 @@ test('quando a indexação dá certo, o motivo antigo é apagado', async () => {
   assert.equal(r.indexStatus, 'indexed')
   const salvo = await db.collection('knowledge_documents').findOne({ _id: doc._id })
   assert.equal(salvo.indexError, null, 'um motivo que sobra depois do conserto vira mentira na tela')
+})
+
+// --- não pagar duas vezes pelo mesmo texto ---------------------------------------------------
+//
+// Embedding se paga por token, e reindexar um texto idêntico é gasto puro: mesma conta,
+// mesmo resultado. Salvar um documento sem mexer no conteúdo — trocar o título, reabrir o
+// formulário, um autosave — refazia todos os trechos.
+
+test('conteúdo idêntico não é reindexado: o hash decide', async () => {
+  const agentId = new ObjectId()
+  const doc = await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Nota', content: 'algum conteúdo' })
+  // Simula uma indexação que deu certo (aqui não há provedor de embedding).
+  await db
+    .collection('knowledge_documents')
+    .updateOne({ _id: doc._id }, { $set: { indexStatus: 'indexed', chunkCount: 4, indexedHash: hashDe('algum conteúdo') } })
+
+  const r = await updateDocumentFor({ ownerType: 'agent', ownerId: agentId }, doc._id, { content: 'algum conteúdo', title: 'Outro título' })
+  assert.equal(r.indexStatus, 'indexed')
+  assert.equal(r.chunkCount, 4, 'os trechos de antes continuam valendo — nenhum embedding foi pedido')
+  assert.equal(r.title, 'Outro título', 'e o que MUDOU foi gravado')
+})
+
+test('conteúdo diferente é reindexado', async () => {
+  const agentId = new ObjectId()
+  const doc = await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Nota', content: 'texto original' })
+  await db
+    .collection('knowledge_documents')
+    .updateOne({ _id: doc._id }, { $set: { indexStatus: 'indexed', chunkCount: 4, indexedHash: hashDe('texto original') } })
+
+  // Sem provedor de embedding a reindexação falha — e é exatamente isso que prova que
+  // ela foi TENTADA.
+  const r = await updateDocumentFor({ ownerType: 'agent', ownerId: agentId }, doc._id, { content: 'texto novo e diferente' })
+  assert.equal(r.indexStatus, 'error')
+})
+
+test('hash igual mas ZERO trechos: tenta de novo — este é o documento preso', async () => {
+  const agentId = new ObjectId()
+  const doc = await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Nota', content: 'conteúdo qualquer' })
+  await db
+    .collection('knowledge_documents')
+    .updateOne({ _id: doc._id }, { $set: { indexStatus: 'error', chunkCount: 0, indexedHash: hashDe('conteúdo qualquer') } })
+
+  const r = await reindexDocumentFor({ ownerType: 'agent', ownerId: agentId }, doc._id)
+  assert.equal(r.indexStatus, 'error', 'tentou de novo (e falhou por falta de provedor, não por causa do hash)')
 })

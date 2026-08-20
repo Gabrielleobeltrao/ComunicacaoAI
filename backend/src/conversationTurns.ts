@@ -58,7 +58,7 @@ export async function recordTurn(
   role: ConversationTurn['role'],
   content: string,
 ) {
-  const embedding = await embedText(content, 'document')
+  const embedding = await embedText(content, 'document', { operation: 'memory:index' })
   const turn: Omit<ConversationTurn, '_id'> = {
     agentId,
     widgetId,
@@ -77,7 +77,7 @@ export async function searchRelevantTurns(
   query: string,
   limit = 6,
 ) {
-  const queryEmbedding = await embedText(query, 'query')
+  const queryEmbedding = await embedText(query, 'query', { operation: 'memory:search' })
 
   return turns
     .aggregate<{ role: ConversationTurn['role']; content: string; score: number }>([
