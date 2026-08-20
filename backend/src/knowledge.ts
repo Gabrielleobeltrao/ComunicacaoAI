@@ -121,6 +121,19 @@ export interface WebDocumentMeta {
   fetchedAt: Date
   /** Hash do TEXTO limpo. É ele que decide se vale reindexar. */
   contentHash: string
+  /** Como esta página foi lida — HTTP direto ou navegador. */
+  readMethod?: 'http' | 'browser'
+  /**
+   * O que a página trazia em forma de dado, e não de prosa: tabelas, JSON-LD, pares
+   * rótulo/valor. Vem com a HORA DA CAPTURA porque, para um número que muda, "quando
+   * isto valia" é metade da informação.
+   */
+  structured?: {
+    capturedAt: Date
+    tables?: { caption?: string | null; headers: string[]; rows: string[][] }[]
+    jsonLd?: unknown[]
+    pairs?: Record<string, string>
+  }
 }
 
 export interface CreateDocumentInput {
