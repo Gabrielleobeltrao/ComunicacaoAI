@@ -42,9 +42,21 @@ export const browserRendererEnabled = (): boolean => process.env.WEB_BROWSER_REN
 async function abrirNavegador(): Promise<{ newContext: (o: unknown) => Promise<unknown> } | null> {
   if (navegador) return navegador as { newContext: (o: unknown) => Promise<unknown> }
   try {
-    // Importação preguiçosa e por nome montado: sem isto, um `import` estático faria o
-    // build exigir um pacote que a maioria das instalações não tem.
-    const mod = (await import(/* @vite-ignore */ 'playwright')) as {
+    /**
+     * Importação preguiçosa E por nome montado. As duas coisas, e por razões diferentes.
+     *
+     * Preguiçosa para não pagar o custo de carregar um navegador em toda instalação que
+     * não usa um. Por nome MONTADO porque o compilador resolve especificador literal: com
+     * `import('playwright')` escrito por extenso, o `tsc` exige o pacote para compilar —
+     * e o pacote não é dependência daqui de propósito.
+     *
+     * Isso não aparecia no desenvolvimento: o Playwright existe na raiz do monorepo,
+     * içado pelo workspace do frontend, e a resolução do Node sobe até lá. Já a imagem do
+     * backend instala só o `package.json` deste diretório, e lá ele não existe — o build
+     * quebrava na imagem, e só nela.
+     */
+    const nome = ['play', 'wright'].join('')
+    const mod = (await import(nome)) as {
       chromium: { launch: (o: unknown) => Promise<unknown> }
     }
     navegador = await mod.chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] })
