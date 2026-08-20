@@ -195,33 +195,3 @@ export function suggestPresetForCapability(capability: string): AgentPreset {
   return 'researcher'
 }
 
-/**
- * O que uma troca de preset pode preencher, dado o que já está escrito.
- *
- * `definitionEditedAt` deixa de ser estado morto aqui: ele é a diferença entre "este
- * texto veio de um molde" e "uma pessoa escreveu isto". Sem a marca, a única regra
- * possível seria olhar campo a campo — e um campo que a pessoa apagou de propósito
- * seria repreenchido, o que é a mesma coisa que sobrescrever.
- *
- * Devolve apenas os campos que PODEM ser preenchidos. Campo com texto nunca entra, e
- * quando a definição foi editada por gente, nada entra: sugerir por cima do trabalho de
- * alguém, sem avisar, é perder esse trabalho.
- */
-export function presetFillableFields(
-  atual: { objective?: string | null; role?: string | null; instructions?: string | null; constraints?: string | null; definitionEditedAt?: Date | null },
-  spec: Pick<AgentPresetSpec, 'objective' | 'role' | 'instructions' | 'constraints'>,
-): { objective?: string; role?: string; instructions?: string; constraints?: string } {
-  // Definição tocada por uma pessoa: o preset não mexe em nada. A interface pede
-  // confirmação antes de aplicar.
-  if (atual.definitionEditedAt) return {}
-
-  const vazio = (v: string | null | undefined): boolean => !(typeof v === 'string' && v.trim())
-  return {
-    // O objetivo entra junto: ele é um dos quatro blocos da definição e sua ausência
-    // deixaria o agente sem o que o molde tem de mais concreto a dizer.
-    ...(vazio(atual.objective) && spec.objective ? { objective: spec.objective } : {}),
-    ...(vazio(atual.role) && spec.role ? { role: spec.role } : {}),
-    ...(vazio(atual.instructions) && spec.instructions ? { instructions: spec.instructions } : {}),
-    ...(vazio(atual.constraints) && spec.constraints ? { constraints: spec.constraints } : {}),
-  }
-}

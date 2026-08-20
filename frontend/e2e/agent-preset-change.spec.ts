@@ -162,97 +162,42 @@ const abrirAvancado = async (page: Page) => {
 
 const patchesDePreset = () => patches.filter((p) => 'preset' in p)
 
-test('existe um seletor de modelo-base no formulário avançado', async ({ page }) => {
+// --- o tipo do agente é escolhido UMA vez ------------------------------------------------
+//
+// Havia um seletor de modelo-base aqui, com uma confirmação que explicava quais campos
+// vazios seriam preenchidos. Ele saiu inteiro.
+//
+// Não por simplificação: trocar o tipo mudava o que o agente PODE fazer — base própria,
+// sites, ferramentas, e o lugar dele num plano de equipe — sem tocar em uma linha do que
+// estava escrito nele. Sobrava um agente com a definição de pesquisador e o comportamento
+// de coordenador, e nada na tela ligava uma coisa à outra para quem fosse investigar.
+// Quem quer outro tipo contrata outro agente.
+
+test('não há seletor de modelo-base na edição', async ({ page }) => {
   await stubApi(page, agenteBase())
   await abrirAvancado(page)
 
-  const seletor = page.getByTestId('agent-preset-select')
-  await expect(seletor).toBeVisible()
-  await expect(seletor).toHaveValue('researcher')
-})
-
-test('a confirmação diz, ANTES, quais campos vazios serão preenchidos', async ({ page }) => {
-  await stubApi(page, agenteBase())
-  await abrirAvancado(page)
-
-  await page.getByTestId('agent-preset-select').selectOption('analyst')
-
-  const confirmacao = page.getByTestId('agent-preset-confirm')
-  await expect(confirmacao).toBeVisible()
-  await expect(confirmacao).toContainText('Analista')
-  await expect(page.getByTestId('agent-preset-fields')).toContainText(['Objetivo', 'Função', 'Instruções', 'Limites'].join(''))
-  // Nada foi enviado só por ter mexido no seletor.
-  expect(patchesDePreset()).toHaveLength(0)
-})
-
-test('cancelar não troca nada e não chama a API', async ({ page }) => {
-  await stubApi(page, agenteBase())
-  await abrirAvancado(page)
-
-  await page.getByTestId('agent-preset-select').selectOption('analyst')
-  await page.getByTestId('agent-preset-cancel').click()
-
+  await expect(page.getByTestId('agent-preset-select')).toHaveCount(0)
   await expect(page.getByTestId('agent-preset-confirm')).toHaveCount(0)
-  await expect(page.getByTestId('agent-preset-select')).toHaveValue('researcher')
-  expect(patchesDePreset()).toHaveLength(0)
 })
 
-test('confirmar preenche os vazios — e é o servidor que decide, com applyPresetSuggestions', async ({ page }) => {
+test('a origem continua dita, e a definição continua editável', async ({ page }) => {
+  // Esconder o seletor sem dizer de onde o agente veio deixaria a pergunta "por que ele
+  // se comporta assim?" sem resposta na tela.
   await stubApi(page, agenteBase())
   await abrirAvancado(page)
 
-  await page.getByTestId('agent-preset-select').selectOption('analyst')
-  await page.getByTestId('agent-preset-apply').click()
-
-  await expect(page.getByTestId('agent-role')).toHaveValue(/Analista/)
-  await expect(page.getByTestId('agent-instructions')).toHaveValue(/analista/)
-
-  const pedido = patchesDePreset()
-  expect(pedido).toHaveLength(1)
-  expect(pedido[0].preset).toBe('analyst')
-  expect(pedido[0].applyPresetSuggestions).toBe(true)
+  await expect(page.getByTestId('agent-preset-origin')).toContainText('não muda depois da contratação')
+  // O que o agente faz continua sendo escrito por quem configura.
+  await page.getByTestId('agent-role').fill('Analista de suporte do plano empresarial')
+  await expect(page.getByTestId('agent-role')).toHaveValue('Analista de suporte do plano empresarial')
 })
 
-test('"só trocar" muda o molde e deixa os campos como estavam', async ({ page }) => {
+test('nenhuma requisição troca o tipo', async ({ page }) => {
   await stubApi(page, agenteBase())
   await abrirAvancado(page)
+  await page.getByTestId('agent-instructions').fill('Confira o contrato antes de responder.')
+  await page.waitForTimeout(1200)
 
-  await page.getByTestId('agent-preset-select').selectOption('communicator')
-  await page.getByTestId('agent-preset-only').click()
-
-  const pedido = patchesDePreset()
-  expect(pedido).toHaveLength(1)
-  expect(pedido[0].preset).toBe('communicator')
-  expect(pedido[0].applyPresetSuggestions).toBe(false)
-  await expect(page.getByTestId('agent-role')).toHaveValue('')
-})
-
-test('definição escrita à mão: a tela avisa que nada será preenchido', async ({ page }) => {
-  await stubApi(
-    page,
-    agenteBase({ role: 'Atendente do plano empresarial.', definitionEditedAt: NOW, objective: 'Resolver chamados.' }),
-  )
-  await abrirAvancado(page)
-
-  await page.getByTestId('agent-preset-select').selectOption('analyst')
-
-  const confirmacao = page.getByTestId('agent-preset-confirm')
-  await expect(confirmacao).toContainText('nada será preenchido')
-  // Nem o botão de preencher é oferecido: não há promessa a fazer.
-  await expect(page.getByTestId('agent-preset-apply')).toHaveCount(0)
-
-  await page.getByTestId('agent-preset-only').click()
-  await expect(page.getByTestId('agent-role')).toHaveValue('Atendente do plano empresarial.')
-  expect(patchesDePreset()[0].applyPresetSuggestions).toBe(false)
-})
-
-test('campo com texto não entra na lista do que será preenchido', async ({ page }) => {
-  await stubApi(page, agenteBase({ role: 'Já escrito aqui.' }))
-  await abrirAvancado(page)
-
-  await page.getByTestId('agent-preset-select').selectOption('analyst')
-
-  const lista = page.getByTestId('agent-preset-fields')
-  await expect(lista).not.toContainText('Função')
-  await expect(lista).toContainText('Instruções')
+  expect(patchesDePreset(), 'a tela não tem por onde pedir uma troca de tipo').toEqual([])
 })
