@@ -496,10 +496,32 @@ export interface AgentModelFields {
 // Parse + validate the agent-as-primary-unit fields from a request body. Only sets a
 // key when the client sent a valid value, so a PATCH stays a true partial update.
 // Returns an error string when a present value is the wrong type/shape.
-export function parseAgentModelFields(body: Record<string, unknown>): { fields: AgentModelFields; error?: string } {
+export function parseAgentModelFields(
+  body: Record<string, unknown>,
+  /** O agente como está gravado. Ausente = criação, onde tudo pode ser definido. */
+  atual?: { preset?: AgentPreset } | null,
+): { fields: AgentModelFields; error?: string } {
   const fields: AgentModelFields = {}
   if (body.preset !== undefined) {
     if (typeof body.preset !== 'string' || !(AGENT_PRESETS as string[]).includes(body.preset)) return { fields, error: 'Unknown preset' }
+    /**
+     * O tipo é escolhido UMA vez, na contratação.
+     *
+     * Trocá-lo depois mudava o que o agente pode fazer — base própria, sites,
+     * ferramentas, e o lugar dele num plano — sem tocar em uma linha do que estava
+     * escrito nele. Sobrava um agente com a definição de pesquisador e o comportamento
+     * de coordenador, e nada ligava uma coisa à outra para quem fosse investigar.
+     *
+     * Quem quer outro tipo contrata outro agente. Aqui o campo só é aceito para
+     * DEFINIR o que ainda não existe: um documento antigo, gravado antes de o tipo
+     * existir, continua podendo ganhar o seu. Recusar seria quebrar quem já funciona.
+     */
+    // `custom` é a AUSÊNCIA de molde — é o que um documento antigo lê por padrão, e é o
+    // que "Personalizado, do zero" quer dizer. Ele ainda pode ganhar um tipo de verdade,
+    // uma vez. Um tipo já declarado não muda mais.
+    if (atual?.preset && atual.preset !== 'custom' && atual.preset !== body.preset) {
+      return { fields, error: 'O tipo do agente é definido na contratação e não pode ser trocado depois.' }
+    }
     fields.preset = body.preset as AgentPreset
   }
   if (body.activationModes !== undefined) {

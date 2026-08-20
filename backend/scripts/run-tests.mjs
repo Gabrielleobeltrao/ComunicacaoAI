@@ -64,7 +64,20 @@ function rodar(lista, concorrencia, rotulo) {
     const p = spawn(process.execPath, ['--test', '--experimental-test-module-mocks', `--test-concurrency=${concorrencia}`, ...lista], {
       cwd: raiz,
       stdio: 'inherit',
-      env: process.env,
+      /**
+       * Nenhum teste fala com um provedor pago. Nunca.
+       *
+       * Um arquivo de teste apagava `VOYAGE_API_KEY` no topo — e qualquer módulo do
+       * `dist` que importa `dotenv/config` depois disso a trazia de volta do `.env`. O
+       * resultado: a suíte chamando a API de embedding de verdade, gastando cota,
+       * ficando lenta e falhando por 429 de forma intermitente — uma falha que não tem
+       * nada a ver com o código sendo testado.
+       *
+       * Vazia (e não ausente) de propósito: `dotenv` não sobrescreve o que já existe no
+       * ambiente, então isto vence o `.env` sem depender da ordem dos imports. E vazia é
+       * falsa, que é exatamente como o código trata "não configurado".
+       */
+      env: { ...process.env, VOYAGE_API_KEY: '' },
     })
     p.on('exit', (codigo) => resolver(codigo ?? 1))
   })

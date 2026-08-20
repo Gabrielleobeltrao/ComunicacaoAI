@@ -198,69 +198,45 @@ test('contrato cumprido continua sendo 200 — o erro é do JSON, não da rota',
   assert.match(corpo.reply, /\[fake\]/)
 })
 
-// --- troca de modelo-base -----------------------------------------------------------------
+// --- o tipo do agente é escolhido UMA vez ----------------------------------------------------
+//
+// Havia um seletor de modelo-base na tela de edição. Trocá-lo mudava o que o agente PODE
+// fazer — base própria, sites, ferramentas, e o lugar dele num plano — sem tocar em uma
+// linha do que estava escrito nele: sobrava um agente com a definição de pesquisador e o
+// comportamento de coordenador, e nada ligava uma coisa à outra para quem investigasse.
 
-test('trocar de modelo-base preenche os campos VAZIOS quando confirmado', async () => {
-  const agente = await criarAgente({ name: 'Vazio' })
-  assert.equal(agente.role ?? '', '', 'o agente nasce sem definição escrita')
+test('o tipo não pode ser trocado depois da contratação', async () => {
+  const agente = await criarAgente({ preset: 'researcher' })
+  const res = await patch(agente._id, { preset: 'manager' })
+  assert.equal(res.status, 400)
+  assert.match((await res.json()).error, /definido na contratação/)
 
-  const res = await patch(agente._id, { preset: 'researcher', applyPresetSuggestions: true })
-  assert.ok(res.ok, `patch devolveu ${res.status}`)
-  const atualizado = await res.json()
-
-  assert.equal(atualizado.preset, 'researcher', 'o modelo-base escolhido fica gravado')
-  assert.match(atualizado.role, /Pesquisador/)
-  assert.ok(atualizado.instructions.trim(), 'as instruções do molde entram no campo vazio')
-  assert.ok(atualizado.constraints.trim())
-  assert.ok(atualizado.objective.trim(), 'o objetivo também é um campo vazio a preencher')
+  // E nada foi gravado pela metade.
+  const depois = await cliente.db().collection('agents').findOne({ _id: new ObjectId(agente._id) })
+  assert.equal(depois.preset, 'researcher')
 })
 
-test('sem confirmação, a troca muda só o modelo-base', async () => {
-  const agente = await criarAgente({ name: 'Só o molde' })
+test('mandar o MESMO tipo continua funcionando — o autosave manda o corpo inteiro', async () => {
+  const agente = await criarAgente({ preset: 'researcher' })
+  const res = await patch(agente._id, { preset: 'researcher', objective: 'coletar preços' })
+  assert.equal(res.status, 200)
+  assert.equal((await res.json()).objective, 'coletar preços')
+})
+
+test('agente sem tipo declarado ainda pode ganhar um — uma vez', async () => {
+  // `custom` é a AUSÊNCIA de molde: é o que um documento antigo lê por padrão, e é o que
+  // "Personalizado, do zero" quer dizer. Recusar aqui quebraria quem já funciona.
+  const agente = await criarAgente({})
+  await cliente.db().collection('agents').updateOne({ _id: new ObjectId(agente._id) }, { $unset: { preset: '' } })
+
   const res = await patch(agente._id, { preset: 'analyst' })
-  assert.ok(res.ok)
-  const atualizado = await res.json()
+  assert.equal(res.status, 200)
+  assert.equal((await res.json()).preset, 'analyst')
 
-  assert.equal(atualizado.preset, 'analyst')
-  assert.equal(atualizado.role ?? '', '', 'sem applyPresetSuggestions, nada é preenchido')
-  assert.equal(atualizado.instructions ?? '', '')
-  assert.equal(atualizado.objective ?? '', '')
+  // E a partir daí ele está declarado: não muda mais.
+  assert.equal((await patch(agente._id, { preset: 'manager' })).status, 400)
 })
 
-test('texto escrito à mão nunca é sobrescrito por uma troca de molde', async () => {
-  const agente = await criarAgente({ name: 'Escrito' })
-  const meu = 'Atendente do plano empresarial, e mais ninguém.'
-  const escreveu = await patch(agente._id, { role: meu })
-  assert.ok(escreveu.ok)
-
-  const res = await patch(agente._id, { preset: 'manager', applyPresetSuggestions: true })
-  const atualizado = await res.json()
-
-  assert.equal(atualizado.role, meu, 'o que a pessoa escreveu fica exatamente como estava')
-  // E a marca de edição bloqueia o resto: sugerir por cima de uma definição humana, ainda
-  // que num campo vazio, é decidir pelo dono sem ele ver.
-  assert.equal(atualizado.instructions ?? '', '')
-  assert.equal(atualizado.preset, 'manager', 'o molde escolhido ainda assim é gravado')
-})
-
-test('salvar o formulário sem mudar nada não conta como escrever à mão', async () => {
-  // O autosave manda os quatro campos da definição em TODO salvamento. Marcar a edição
-  // pela presença fazia o primeiro salvamento matar a sugestão para sempre.
-  const agente = await criarAgente({ name: 'Autosave' })
-  const comoVeio = await patch(agente._id, {
-    name: 'Autosave',
-    objective: agente.objective ?? '',
-    role: agente.role ?? '',
-    instructions: agente.instructions ?? '',
-    constraints: agente.constraints ?? '',
-  })
-  assert.ok(comoVeio.ok)
-  assert.equal((await comoVeio.json()).definitionEditedAt ?? null, null, 'salvar igual não é editar')
-
-  const res = await patch(agente._id, { preset: 'communicator', applyPresetSuggestions: true })
-  const atualizado = await res.json()
-  assert.ok(atualizado.role.trim(), 'a sugestão continua disponível depois de um autosave')
-})
 
 // --- o teste diz qual modelo rodou ---------------------------------------------------------
 //
@@ -287,9 +263,10 @@ test('o Playground do agente informa o modelo, a origem da escolha e o custo', a
 })
 
 test('com "Automático", o diagnóstico diz o modelo escolhido E o motivo', async () => {
-  const agente = await criarAgente({ name: 'Automático' })
-  // Comunicador: transforma um texto que já existe — a regra manda o modelo barato.
-  const r = await patch(agente._id, { model: 'auto', preset: 'communicator' })
+  // Comunicador: transforma um texto que já existe — a regra manda o modelo barato. O
+  // tipo vai na CRIAÇÃO: ele não é mais trocável depois.
+  const agente = await criarAgente({ name: 'Automático', preset: 'communicator' })
+  const r = await patch(agente._id, { model: 'auto' })
   assert.ok(r.ok, `patch devolveu ${r.status}`)
 
   const res = await fetch(`${base}/api/agents/${agente._id}/playground`, {
@@ -306,8 +283,8 @@ test('com "Automático", o diagnóstico diz o modelo escolhido E o motivo', asyn
 })
 
 test('um perfil que planeja recebe o modelo principal, e o motivo diz isso', async () => {
-  const agente = await criarAgente({ name: 'Gerente' })
-  await patch(agente._id, { model: 'auto', preset: 'manager' })
+  const agente = await criarAgente({ name: 'Gerente', preset: 'manager' })
+  await patch(agente._id, { model: 'auto' })
 
   const res = await fetch(`${base}/api/agents/${agente._id}/playground`, {
     method: 'POST',

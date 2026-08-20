@@ -11,7 +11,6 @@ import type { NextFunction, Request, Response } from 'express'
 import multer from 'multer'
 import { ObjectId } from 'mongodb'
 import { normalizeRunConfig } from './runConfig.js'
-import { presetFillableFields } from './agentPresets.js'
 import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
 import { describeDropped, runInteractive } from './interactiveRun.js'
 import { AgentRunError } from './agentRuntime.js'
@@ -2243,29 +2242,12 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
   if (editouDefinicao) (updates as Record<string, unknown>).definitionEditedAt = new Date()
 
   /**
-   * Trocar de preset preenche o que está vazio, e nada além disso.
+   * Não há mais "trocar de preset": o tipo é escolhido na contratação e fica.
    *
-   * A regra vive no servidor porque a interface é uma das formas de chegar aqui, não a
-   * única — e porque é aqui que se sabe o que já está gravado. `presetFillableFields`
-   * usa `definitionEditedAt` para distinguir "veio de um molde" de "uma pessoa escreveu
-   * isto": no segundo caso, nada é preenchido.
+   * O que existia aqui preenchia os campos vazios da definição ao trocar de molde. Sem
+   * troca, não há o que preencher — o assistente de contratação já grava a definição
+   * inicial no momento da criação, que é o único momento em que um molde tem sentido.
    */
-  // O `preset` em si é gravado adiante, por `parseAgentModelFields`, que também o valida.
-  // Aqui só se decide o que ele PREENCHE.
-  if (typeof corpo.preset === 'string' && corpo.applyPresetSuggestions === true) {
-    const spec = AGENT_PRESET_SPECS.find((p) => p.preset === corpo.preset)
-    if (spec) {
-      const preencher = presetFillableFields(gravado, spec)
-      for (const [campo, valor] of Object.entries(preencher)) {
-        // O corpo da requisição continua ganhando: se o cliente mandou o campo com texto,
-        // é uma edição explícita e vale mais que a sugestão. Campo vindo VAZIO não conta
-        // como texto — o autosave manda os quatro sempre, e tratá-los como escolha
-        // deliberada anularia a sugestão que o dono acabou de confirmar.
-        const jaVeio = (updates as Record<string, unknown>)[campo]
-        if (typeof jaVeio !== 'string' || !jaVeio.trim()) (updates as Record<string, unknown>)[campo] = valor
-      }
-    }
-  }
 
   // Como o modelo é chamado. Saneado e limitado no servidor: a tela é uma das formas de
   // chegar aqui, não a única.
@@ -2391,7 +2373,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
     }
     updates.builtinTools = parsedBuiltins
   }
-  const { fields: modelFields, error: modelError } = parseAgentModelFields(req.body ?? {})
+  const { fields: modelFields, error: modelError } = parseAgentModelFields(req.body ?? {}, gravado)
   if (modelError) {
     res.status(400).json({ error: modelError })
     return

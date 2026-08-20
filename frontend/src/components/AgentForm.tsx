@@ -6,7 +6,6 @@ import { METRIC_KEY_LABEL } from '../lib/agentStats'
 import { Icon } from '../ui'
 import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue } from './AgentDefinitionFields'
 import { CollapsibleBlock } from './CollapsibleBlock'
-import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
 import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import type {
   AgentBuiltinTool,
@@ -204,10 +203,16 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     constraints: agent?.constraints ?? '',
   })
   const [editRunConfig, setEditRunConfig] = useState<RunConfig>(agent?.runConfig ?? {})
-  // O catálogo de modelos-base, para o seletor da definição. Só é buscado quando há um
-  // agente para trocar: na criação, quem escolhe o molde é o assistente de contratação.
-  const [presets, setPresets] = useState<AgentPresetSpec[]>([])
-  const [presetSalvo, setPresetSalvo] = useState(agent?.preset ?? 'custom')
+  /**
+   * O tipo do agente, como está gravado. Só leitura.
+   *
+   * Era estado editável porque havia um seletor para trocá-lo. Trocar o tipo mudava o
+   * que o agente PODE fazer — base, sites, ferramentas — sem tocar em nada do que estava
+   * escrito nele: sobrava um agente com a definição de pesquisador e o comportamento de
+   * coordenador, e nada na tela ligava uma coisa à outra. O tipo é escolhido uma vez, na
+   * contratação.
+   */
+  const presetSalvo = agent?.preset ?? 'custom'
   // `undefined` = o tipo decide; `true`/`false` = escolha explícita do dono.
   const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | undefined>(agent?.knowledgeEnabled)
   // Campos que já existiam no servidor e não tinham onde ser escritos. O rótulo de cada
@@ -217,24 +222,10 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   const [editInputContract, setEditInputContract] = useState(agent?.inputContract ?? '')
   const [editOutputContract, setEditOutputContract] = useState(agent?.outputContract ?? '')
   const [editOrchestration, setEditOrchestration] = useState<NonNullable<AgentSummary['orchestration']>>(agent?.orchestration ?? {})
-  const [definitionEditedAt, setDefinitionEditedAt] = useState<string | null>(agent?.definitionEditedAt ?? null)
   const isCreating = agent === null
   const flat = layout === 'flat'
 
   const [providers, setProviders] = useState<ProviderInfo[]>([])
-
-  useEffect(() => {
-    if (!agent) return
-    let vivo = true
-    listAgentPresets()
-      .then((lista) => vivo && setPresets(lista))
-      // Sem catálogo, o seletor simplesmente não aparece: é melhor do que uma lista
-      // vazia que promete uma troca impossível.
-      .catch(() => undefined)
-    return () => {
-      vivo = false
-    }
-  }, [agent?._id])
 
   const [editName, setEditName] = useState('')
   const [editObjective, setEditObjective] = useState('')
@@ -526,42 +517,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     setDocumentsLoading(false)
   }
 
-  /**
-   * Troca o modelo-base — e só depois de o dono confirmar, na tela, o que vai acontecer.
-   *
-   * Quem decide o que preencher é o SERVIDOR: mandamos `preset` e `applyPresetSuggestions`
-   * e adotamos o que ele devolver. A regra de "só campo vazio, e nada quando a definição
-   * foi escrita à mão" vive num lugar só, e a tela não tem como divergir dela.
-   */
-  async function trocarPreset(novo: AgentSummary['preset'], aplicarSugestoes: boolean) {
-    if (!agent) return
-    setAutoSaveState('saving')
-    try {
-      const res = await fetch(`${API_URL}/api/agents/${agent._id}`, {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ preset: novo, applyPresetSuggestions: aplicarSugestoes }),
-      })
-      if (!res.ok) {
-        setAutoSaveState('error')
-        return
-      }
-      const atualizado: AgentSummary = await res.json()
-      setPresetSalvo(atualizado.preset)
-      setDefinitionEditedAt(atualizado.definitionEditedAt ?? null)
-      setEditObjective(atualizado.objective ?? '')
-      setEditDefinicao({
-        role: atualizado.role ?? '',
-        instructions: atualizado.instructions ?? '',
-        constraints: atualizado.constraints ?? '',
-      })
-      setAutoSaveState('saved')
-      onSaved(atualizado)
-    } catch {
-      setAutoSaveState('error')
-    }
-  }
 
   /**
    * Salvar agora, em vez de esperar.
@@ -1039,16 +994,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           >
           {showBlock('definicao') && (
             <CollapsibleBlock title={rotulos.definicao} showHeader={stacked} testId="agent-definition-block">
-              <AgentDefinitionFields
-                value={editDefinicao}
-                onChange={setEditDefinicao}
-                presetLabel={agent?.preset ?? null}
-                preset={presetSalvo}
-                presets={agent ? presets : []}
-                objective={editObjective}
-                definitionEditedAt={definitionEditedAt}
-                onApplyPreset={trocarPreset}
-              />
+              <AgentDefinitionFields value={editDefinicao} onChange={setEditDefinicao} presetLabel={agent?.preset ?? null} />
             </CollapsibleBlock>
           )}
 
