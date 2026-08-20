@@ -194,6 +194,8 @@ export interface AgentSummary {
   defaultOutputFormat?: 'text' | 'markdown' | 'json' | null
   outputJsonSchema?: Record<string, unknown> | null
   requireGrounding?: boolean
+  /** Liga/desliga a base própria à mão; ausente = o tipo do agente decide. */
+  knowledgeEnabled?: boolean
   delegationPolicy: DelegationPolicy
   callerPolicy: DelegationPolicy
   callableAgentIds: string[]

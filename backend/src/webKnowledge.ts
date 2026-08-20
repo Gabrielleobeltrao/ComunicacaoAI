@@ -158,6 +158,15 @@ async function atualizarFonte(ownerId: string, agent: Agent, site: WatchedSource
     durationMs: 0,
   }
 
+  // O bootstrap é para a fonte que ainda não deu nada. Uma que já produziu documento
+  // volta a obedecer ao modo — senão "primeira leitura" viraria "leitura a toda hora".
+  if (motivo === 'bootstrap') {
+    const jaProduziu = await documentos.countDocuments({
+      $and: [{ ownerType: 'agent', ownerId: agent._id }, { 'web.sourceId': site.id }],
+    })
+    if (jaProduziu > 0) return { ...base, reason: 'a fonte já tem conhecimento' }
+  }
+
   const decisao = shouldRefresh(site, site, motivo, agora)
   if (!decisao.refresh) return { ...base, reason: decisao.reason }
 

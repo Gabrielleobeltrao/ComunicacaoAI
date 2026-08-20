@@ -113,6 +113,8 @@ export function productionDelegationDeps(): DelegationDeps {
     // leitura é a política da fonte — aqui é só a ligação.
     // O teto de espera mora no gerente, e é o mesmo para o time e para o agente sozinho.
     ensureWebKnowledgeFresh: (ownerId, agentId) => ensureFreshWithTimeout(ownerId, agentId, 'on_demand'),
+    // O MESMO pipeline, outro motivo: a primeira leitura de uma base vazia.
+    bootstrapWebKnowledge: (ownerId, agentId) => ensureFreshWithTimeout(ownerId, agentId, 'bootstrap'),
     // Só os TÍTULOS: dizem quem tem o dado sem abrir o dado.
     knowledgeTitlesFor: async (_ownerId, agentId) => (await listDocuments(agentId)).map((d) => d.title).filter(Boolean),
     // O balão de quem EXECUTA. `reportState` acima é o de quem DELEGA — os dois

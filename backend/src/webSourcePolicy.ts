@@ -20,7 +20,17 @@ export type DiscoveryMode = 'auto' | 'rss' | 'sitemap' | 'listing' | 'single_pag
 export type SourceHealth = 'never_run' | 'ok' | 'error' | 'running'
 
 /** O motivo desta verificação. Cada modo responde de um jeito a cada motivo. */
-export type RefreshReason = 'scheduled' | 'on_demand' | 'manual'
+/**
+ * `bootstrap` é o motivo que existe para um caso só: a base está VAZIA.
+ *
+ * Um pesquisador com um site cadastrado e nenhum documento não tem o que responder — e,
+ * se ele exige fundamentação, a tarefa morre antes de começar. Nesse estado, o modo não
+ * deveria decidir: `manual` e `scheduled` querem dizer "não fique lendo a toda hora", e
+ * não "nunca leia, nem uma primeira vez".
+ *
+ * A primeira leitura é a única que o bootstrap faz. A partir dela, o modo volta a mandar.
+ */
+export type RefreshReason = 'scheduled' | 'on_demand' | 'manual' | 'bootstrap'
 
 export interface WebSourceConfig {
   enabled?: boolean
@@ -129,6 +139,9 @@ export function shouldRefresh(
   if (!c.enabled) return { refresh: false, reason: 'fonte desligada' }
   // Um clique é sempre atendido: quem pediu está olhando.
   if (motivo === 'manual') return { refresh: true, reason: 'pedido manual' }
+  // A primeira leitura de uma base vazia acontece em qualquer modo. Quem chama já
+  // confirmou que não há conhecimento; aqui só falta a fonte estar ligada.
+  if (motivo === 'bootstrap') return { refresh: true, reason: 'primeira leitura (base vazia)' }
 
   const ultima = emMs(estado?.lastSuccessfulFetchAt) ?? emMs(estado?.lastFetchedAt)
   const idadeMin = ultima === null ? Number.POSITIVE_INFINITY : (agora - ultima) / 60_000

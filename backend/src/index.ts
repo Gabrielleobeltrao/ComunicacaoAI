@@ -2771,6 +2771,24 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('Playground knowledge search failed, replying without grounding:', error)
   }
+  /**
+   * Base vazia e um site cadastrado: lê UMA vez, e procura de novo.
+   *
+   * O modo diz com que frequência reler — não se a primeira leitura pode acontecer. Sem
+   * isto, um agente recém-configurado responde "não encontrei nada" sobre um site que
+   * ninguém nunca abriu.
+   */
+  if (knowledge.length === 0) {
+    const iniciadas = await ensureFreshWithTimeout(res.locals.userId, agent._id, 'bootstrap').catch(() => [])
+    if (iniciadas.some((f) => f.created > 0 || f.updated > 0)) {
+      lidasNoChat.push(...iniciadas.filter((f) => f.refreshed))
+      try {
+        knowledge = (await searchKnowledge(agent._id, lastUser.content)).map((r) => r.content)
+      } catch (error) {
+        console.error('Playground knowledge search failed after bootstrap:', error)
+      }
+    }
+  }
   // Os endereços que o dono marcou para entrar sozinhos quando o agente é chamado.
   // Nunca lançam: site fora do ar não derruba o atendimento.
   for (const viva of await livePassagesFor(res.locals.userId, agent)) {

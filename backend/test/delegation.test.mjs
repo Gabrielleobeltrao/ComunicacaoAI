@@ -432,7 +432,9 @@ test("the target's contracts are part of what it is asked", async () => {
 
 test('a JSON input is delegated as data and is part of the retrieval question', async () => {
   const a = mkAgent()
-  const b = mkAgent()
+  // Quem consulta base é quem COLETA: um gerente não busca base própria (ver
+  // `agentCapabilities`), e a pergunta deste teste é sobre a consulta.
+  const b = mkAgent({ preset: 'researcher' })
   let request = null
   let askedQuery = ''
   const f = fakeDeps([a, b], {

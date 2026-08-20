@@ -47,6 +47,13 @@ export interface ExecutionPlan {
 export interface PlannerMember {
   agentId: string
   name: string
+  /**
+   * O TIPO funcional — diferente de `role`, que é a "Função" escrita pelo dono.
+   *
+   * Não é etiqueta: quem analisa trabalha sobre o que recebe, e um plano que o aciona sem
+   * entrada produz análise sobre o nada.
+   */
+  type?: 'researcher' | 'analyst' | 'coordinator' | 'executor' | null
   /** Quando mandar para ele — a frase escrita pelo dono, e a mais útil que existe aqui. */
   routingDescription?: string | null
   role?: string | null
@@ -79,6 +86,7 @@ const trecho = (texto: string | null | undefined, max: number): string =>
 export function describeMember(m: PlannerMember): string {
   return [
     m.name,
+    m.type ? `[${m.type}]` : '',
     trecho(m.routingDescription, 200),
     trecho(m.role, 160),
     trecho(m.objective, 200),
@@ -132,7 +140,10 @@ export function memberScore(pergunta: string, m: PlannerMember): number {
  */
 export function fallbackPlan(pergunta: string, membros: PlannerMember[], max = MAX_TASKS): ExecutionPlan {
   if (membros.length === 0) return { tasks: [] }
-  const notas = membros.map((m) => ({ m, nota: memberScore(pergunta, m) }))
+  // Sem modelo, quem coleta vem primeiro: um analista sozinho não teria o que analisar.
+  const coleta = membros.filter((m) => (m.type ?? 'executor') !== 'analyst')
+  const candidatos = coleta.length > 0 ? coleta : membros
+  const notas = candidatos.map((m) => ({ m, nota: memberScore(pergunta, m) }))
   const relevantes = notas.filter((n) => n.nota > 0).sort((a, b) => b.nota - a.nota)
   // Ninguém casou: manda para um só, e não para todos. Chutar largo custa N inferências.
   const escolhidos = relevantes.length > 0 ? relevantes.slice(0, max) : [notas[0]]
@@ -193,6 +204,28 @@ export function validatePlan(bruto: unknown, membros: PlannerMember[], pergunta:
     else delete tarefa.dependsOn
   }
 
+  /**
+   * Quem ANALISA precisa receber alguma coisa.
+   *
+   * Um analista sem dependência analisa o que existir na entrada — que é o pedido cru — e
+   * devolve uma leitura sem evidência, com toda a aparência de uma análise fundamentada.
+   * Duas correções, nesta ordem: se há quem colete no mesmo plano, ele passa a depender
+   * de todos; se não há, ele sai. Não selecionar é melhor que selecionar para produzir
+   * texto sobre o nada.
+   */
+  const papel = new Map(membros.map((m) => [m.agentId, m.type ?? 'executor']))
+  const coletores = tarefas.filter((t) => papel.get(t.agentId) === 'researcher' || papel.get(t.agentId) === 'executor')
+  const corrigidas = tarefas.filter((t) => {
+    if (papel.get(t.agentId) !== 'analyst') return true
+    if ((t.dependsOn ?? []).length > 0) return true
+    const antes = coletores.filter((c) => tarefas.indexOf(c) < tarefas.indexOf(t)).map((c) => c.id)
+    if (antes.length === 0) return false
+    t.dependsOn = antes
+    return true
+  })
+  tarefas.length = 0
+  tarefas.push(...corrigidas)
+
   if (tarefas.length === 0) return fallbackPlan(pergunta, membros, max)
   const sintese = texto(cru.synthesisObjective).slice(0, 400)
   return { tasks: tarefas, ...(sintese ? { synthesisObjective: sintese } : {}) }
@@ -214,6 +247,8 @@ export function planPrompt(pergunta: string, membros: PlannerMember[], max = MAX
     '- Um membro que não tem nada a ver com o pedido fica de fora.',
     '- Dois membros que fariam a mesma coisa: escolha um.',
     '- Se um membro precisa do resultado de outro, declare em dependsOn.',
+    '- Quem ANALISA trabalha sobre o que recebe: acione um [analyst] apenas com dependsOn apontando para quem coleta.',
+    '- Quem CONDUZ ([coordinator]) não é pesquisador: ele consolida no fim, e não entra como tarefa.',
     '- Cada objective descreve só a parte daquele membro, na língua do pedido.',
     '',
     'Responda SOMENTE com JSON neste formato, sem cercas de código:',

@@ -25,6 +25,7 @@ import { clarificationFrom } from './clarify.js'
 import type { ClarificationRequest } from './clarify.js'
 import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
+import { ROLE_LABEL, capabilitiesOf, roleOf } from './agentCapabilities.js'
 import { preview, traceEvent } from './executionTrace.js'
 import type { TraceInput } from './executionTrace.js'
 import type { LiveTracker } from './agentLiveTracker.js'
@@ -293,6 +294,11 @@ export interface DelegationDeps {
    * Injetado, opcional, e na maioria das vezes a resposta não custa nada.
    */
   ensureWebKnowledgeFresh?: (ownerId: string, agentId: ObjectId) => Promise<unknown>
+  /**
+   * A primeira leitura de uma base vazia, em qualquer modo. Só é chamada quando a busca
+   * já voltou sem nada — nunca antes.
+   */
+  bootstrapWebKnowledge?: (ownerId: string, agentId: ObjectId) => Promise<unknown>
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
@@ -617,7 +623,36 @@ async function runAgentTask(
    * envelheceu. Na maioria das chamadas isso não custa nada — e nunca derruba a execução:
    * sem conseguir atualizar, o agente trabalha com o que já tem.
    */
-  if (deps.ensureWebKnowledgeFresh) {
+  /**
+   * O que este TIPO de agente faz — decidido antes de qualquer busca.
+   *
+   * Um analista analisa o que RECEBE: buscar base própria aqui é o caminho curto para uma
+   * análise isolada, feita sobre o que ele mesmo guardou em vez de sobre as evidências
+   * que lhe foram entregues. Um coordenador que consulta base vira mais um pesquisador.
+   * Quem sabe o que quer liga a base à mão (`knowledgeEnabled`), e aí ela volta.
+   */
+  const capacidades = capabilitiesOf(target)
+  if (ctx.traceId) {
+    traceEvent({
+      ownerId: ctx.ownerId,
+      executionId: ctx.traceId,
+      type: 'agent',
+      status: 'info',
+      agentId: target._id.toString(),
+      title: `${target.name} — ${ROLE_LABEL[capacidades.role]}`,
+      input: preview(typeof input === 'string' ? input : input ? JSON.stringify(input) : '', 300),
+      metadata: {
+        agentType: capacidades.role,
+        preset: target.preset ?? 'custom',
+        knowledge: capacidades.knowledge,
+        webSources: capacidades.webSources,
+        tools: tools.length,
+        reason: capacidades.summary,
+      },
+    })
+  }
+
+  if (deps.ensureWebKnowledgeFresh && capacidades.webSources) {
     const antesDaFonte = Date.now()
     // O começo, e não só o resultado: quando um site demora, o painel precisa mostrar
     // que a espera é a leitura da fonte — e não o agente pensando.
@@ -696,12 +731,96 @@ async function runAgentTask(
   if (query && deps.retrieveContext) tracker.report('reading_knowledge')
   // A rejected promise is 'unavailable', not "no knowledge": the two must never be
   // confused, and only the first one is a reason to refuse.
-  const retrieved = query && deps.retrieveContext
-    ? await deps.retrieveContext(target._id, query, { sectorId: sectorId ?? null }).catch(() => ({ context: [], sources: [], status: 'unavailable', failed: true }))
-    : { context: [], sources: [], status: 'no_base' as const, failed: false }
-  const passages = Array.isArray(retrieved) ? (retrieved as string[]) : (retrieved.context ?? [])
-  const sources = Array.isArray(retrieved) ? [] : (retrieved.sources ?? [])
-  const grounding = (Array.isArray(retrieved) ? undefined : retrieved.status) ?? (!Array.isArray(retrieved) && retrieved.failed ? 'unavailable' : passages.length ? 'ok' : 'empty')
+  const buscar = async () =>
+    query && deps.retrieveContext && capacidades.knowledge
+      ? await deps
+          .retrieveContext(target._id, query, { sectorId: sectorId ?? null })
+          .catch(() => ({ context: [], sources: [], status: 'unavailable', failed: true }))
+      : { context: [], sources: [], status: 'no_base' as const, failed: false }
+  const leitura = (r: Awaited<ReturnType<typeof buscar>>) => {
+    const passagens = Array.isArray(r) ? (r as string[]) : (r.context ?? [])
+    return {
+      passages: passagens,
+      sources: Array.isArray(r) ? [] : (r.sources ?? []),
+      grounding:
+        (Array.isArray(r) ? undefined : r.status) ?? (!Array.isArray(r) && r.failed ? 'unavailable' : passagens.length ? 'ok' : 'empty'),
+      total: Array.isArray(r) ? undefined : (r as { totalMatches?: number }).totalMatches,
+    }
+  }
+
+  let retrieved = await buscar()
+  let { passages, sources, grounding, total: totalMatches } = leitura(retrieved)
+
+  /**
+   * A PRIMEIRA leitura de uma base vazia — mesmo quando o modo diz "não fique lendo".
+   *
+   * Um pesquisador com site cadastrado e nenhum documento não tem o que responder: a
+   * busca volta vazia e, se ele exige fundamentação, a tarefa morre antes de começar.
+   * `manual` e `scheduled` querem dizer "não leia a toda hora", não "nunca leia" — então,
+   * com a base zerada, a fonte é lida uma vez e a busca é REFEITA. Da segunda em diante o
+   * modo volta a mandar, porque a fonte já produziu conhecimento.
+   */
+  // Qualquer resultado que NÃO seja utilizável dispara a tentativa: numa instalação sem
+  // busca vetorial, base vazia responde `unavailable` ("não consegui procurar") e não
+  // `empty` — e exigir `empty` deixava justamente o caso real de fora. Chamar demais aqui
+  // não custa: o gerente só lê a fonte que ainda não produziu nada.
+  if (grounding !== 'ok' && deps.bootstrapWebKnowledge && query && capacidades.knowledge) {
+    const comecouBootstrap = Date.now()
+    const iniciadas = ((await deps.bootstrapWebKnowledge(ctx.ownerId, target._id).catch(() => [])) ?? []) as {
+      name: string
+      refreshed: boolean
+      reason: string
+      discovered?: number
+      created: number
+      updated: number
+      unchanged: number
+      error?: string
+    }[]
+    const produziu = iniciadas.filter((f) => f.created > 0 || f.updated > 0)
+    if (ctx.traceId && iniciadas.some((f) => f.refreshed || f.error)) {
+      traceEvent({
+        ownerId: ctx.ownerId,
+        executionId: ctx.traceId,
+        type: 'rag',
+        status: produziu.length > 0 ? 'success' : iniciadas.some((f) => f.error) ? 'error' : 'info',
+        agentId: target._id.toString(),
+        title:
+          produziu.length > 0
+            ? `${target.name}: base estava vazia — primeira leitura trouxe ${produziu.reduce((n, f) => n + f.created, 0)} documento(s)`
+            : `${target.name}: base vazia e a primeira leitura não trouxe nada`,
+        durationMs: Date.now() - comecouBootstrap,
+        metadata: {
+          bootstrap: true,
+          sources: iniciadas.map((f) => ({
+            name: f.name,
+            reason: f.reason,
+            discovered: f.discovered ?? 0,
+            new: f.created,
+            updated: f.updated,
+            unchanged: f.unchanged,
+            error: f.error ?? null,
+          })),
+        },
+      })
+    }
+    if (produziu.length > 0) {
+      // A busca é refeita: sem isto, a leitura teria acontecido tarde demais para ESTA
+      // pergunta — e o agente responderia sem o que acabou de chegar.
+      retrieved = await buscar()
+      ;({ passages, sources, grounding, total: totalMatches } = leitura(retrieved))
+      if (ctx.traceId) {
+        traceEvent({
+          ownerId: ctx.ownerId,
+          executionId: ctx.traceId,
+          type: 'rag',
+          status: grounding === 'ok' ? 'success' : 'info',
+          agentId: target._id.toString(),
+          title: `${target.name}: base consultada de novo — ${passages.length} trecho(s)`,
+          metadata: { grounding, passages: passages.length, retry: true },
+        })
+      }
+    }
+  }
   if (ctx.traceId && query) {
     // O que a busca fez, sem o que ela leu: títulos e quantidade dizem se o agente tinha
     // base, e o conteúdo dela não é assunto de painel.
@@ -735,10 +854,7 @@ async function runAgentTask(
   // Numbered references, so the answer can cite what it used. The owner is not named.
   // O aviso de amplitude vem ANTES das passagens: é o que decide entre responder e
   // perguntar, e depois delas já seria tarde.
-  const aviso = breadthNotice(
-    Array.isArray(retrieved) ? undefined : (retrieved as { totalMatches?: number }).totalMatches,
-    passages.length,
-  )
+  const aviso = breadthNotice(totalMatches, passages.length)
   const misturado = multiSourceNotice(sources)
   const context = [
     ...(aviso ? [aviso] : []),
@@ -1274,6 +1390,8 @@ export async function executeSectorTeam(
             name: agente.name,
             routingDescription: outros[i].routingDescription ?? null,
             role: agente.role ?? null,
+            // O TIPO funcional, para o planejador não tratar quem analisa como quem coleta.
+            type: roleOf(agente.preset),
             objective: agente.objective ?? null,
             instructions: agente.instructions ?? null,
             capabilities: agente.capabilities ?? null,

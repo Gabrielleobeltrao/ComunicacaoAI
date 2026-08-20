@@ -324,6 +324,14 @@ export interface Agent {
   // failed or found nothing above the relevance floor). Default false: the agent
   // answers anyway and is told the base was unavailable.
   requireGrounding?: boolean
+  /**
+   * A porta de saída da regra do TIPO: liga (ou desliga) a base própria à mão.
+   *
+   * Ausente = o tipo decide (ver `agentCapabilities`). Um analista não consulta base
+   * própria por padrão, e um coordenador também não — mas quem sabe o que quer pode
+   * ligar. Nada é apagado: a configuração antiga continua gravada, só não é usada.
+   */
+  knowledgeEnabled?: boolean
   delegationPolicy: DelegationPolicy // outgoing: whom this agent may delegate to
   callerPolicy: DelegationPolicy // incoming: who may call this agent
   callableAgentIds: string[] // when delegationPolicy='selected': the agents this one may call
@@ -413,6 +421,8 @@ export function withAgentDefaults(a: Agent): Agent {
 
 export interface AgentModelFields {
   preset?: AgentPreset
+  /** Liga ou desliga a base própria à mão; `undefined` deixa o TIPO decidir. */
+  knowledgeEnabled?: boolean
   capabilities?: string[]
   activationModes?: ActivationMode[]
   inputContract?: string
@@ -489,6 +499,13 @@ export function parseAgentModelFields(body: Record<string, unknown>): { fields: 
   if (body.requireGrounding !== undefined) {
     if (typeof body.requireGrounding !== 'boolean') return { fields, error: 'requireGrounding must be a boolean' }
     fields.requireGrounding = body.requireGrounding
+  }
+  if (body.knowledgeEnabled !== undefined) {
+    // `null` volta a decisão para o TIPO — é como se desfaz a escolha manual.
+    if (body.knowledgeEnabled !== null && typeof body.knowledgeEnabled !== 'boolean') {
+      return { fields, error: 'knowledgeEnabled must be a boolean or null' }
+    }
+    fields.knowledgeEnabled = body.knowledgeEnabled as boolean | undefined
   }
   return { fields }
 }

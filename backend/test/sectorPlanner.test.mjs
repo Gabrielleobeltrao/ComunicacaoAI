@@ -340,3 +340,61 @@ test('a entrada de quem depende traz autoria, e ignora quem falhou', () => {
   assert.match(entrada, /valor A/)
   assert.ok(!entrada.includes('Agente B'))
 })
+
+// --- o planejador conhece o TIPO ------------------------------------------------------------
+//
+// Quem analisa trabalha sobre o que recebe. Um plano que o aciona sem dependência produz
+// uma leitura sem evidência — com toda a aparência de análise fundamentada.
+
+const COLETOR = { agentId: 'a-coleta', name: 'Coletor', type: 'researcher', capabilities: ['dados'] }
+const ANALISTA = { agentId: 'a-analise', name: 'Analista', type: 'analyst', capabilities: ['comparacao'] }
+const TIME = [COLETOR, ANALISTA]
+
+test('o analista sem dependência passa a depender de quem coleta', () => {
+  const plan = validatePlan(
+    {
+      tasks: [
+        { id: 't1', agentId: 'a-coleta', objective: 'levantar' },
+        { id: 't2', agentId: 'a-analise', objective: 'analisar' },
+      ],
+    },
+    TIME,
+    'pergunta',
+  )
+  assert.equal(plan.tasks.length, 2)
+  assert.deepEqual(plan.tasks[1].dependsOn, ['t1'], 'a correção é ligar, não descartar')
+})
+
+test('o analista sem ninguém antes dele sai do plano', () => {
+  // Não selecionar é melhor que selecionar para produzir texto sobre o nada.
+  const plan = validatePlan({ tasks: [{ id: 't1', agentId: 'a-analise', objective: 'analisar' }] }, TIME, 'pergunta')
+  assert.ok(!plan.tasks.some((t) => t.agentId === 'a-analise' && !t.dependsOn?.length))
+})
+
+test('a dependência declarada pelo modelo é respeitada', () => {
+  const plan = validatePlan(
+    {
+      tasks: [
+        { id: 'x', agentId: 'a-coleta', objective: 'levantar' },
+        { id: 'y', agentId: 'a-analise', objective: 'analisar', dependsOn: ['x'] },
+      ],
+    },
+    TIME,
+    'pergunta',
+  )
+  assert.deepEqual(plan.tasks[1].dependsOn, ['t1'])
+})
+
+test('sem modelo, o determinístico prefere quem coleta', () => {
+  const plan = fallbackPlan('qualquer pergunta', TIME)
+  assert.equal(plan.tasks.length, 1)
+  assert.equal(plan.tasks[0].agentId, 'a-coleta')
+})
+
+test('o prompt do planejador leva o tipo de cada membro e a regra', () => {
+  const p = planPrompt('pergunta', TIME)
+  assert.match(p, /\[researcher\]/)
+  assert.match(p, /\[analyst\]/)
+  assert.match(p, /acione um \[analyst\] apenas com dependsOn/)
+  assert.match(p, /\[coordinator\]\) não é pesquisador/)
+})
