@@ -21,6 +21,8 @@ export interface Evidence {
 
 export interface SearchRunOutcome {
   ok: boolean
+  /** O motivo COM NOME quando falhou. `monthly_limit_reached` é o da franquia. */
+  code?: string
   provider: string
   query: string
   /** Quantos o serviço devolveu, antes de qualquer escolha. */
@@ -90,7 +92,16 @@ export async function runWebSearch(
   try {
     resultados = await provider.search(query, { maxResults: cfg.maxSearchResults, timeoutMs: cfg.searchTimeoutMs })
   } catch (erro) {
-    return { ...base, error: erro instanceof Error ? erro.message.slice(0, 200) : 'falha na busca', durationMs: Date.now() - comecou }
+    // A franquia acabou é diferente de o serviço falhou: um é decisão de configuração
+    // (ou espera até o mês virar), o outro é problema do outro lado. O agente segue com
+    // o que já tinha da base nos dois casos.
+    const code = erro instanceof Error && erro.name === 'SearchBudgetError' ? 'monthly_limit_reached' : 'search_failed'
+    return {
+      ...base,
+      code,
+      error: erro instanceof Error ? erro.message.slice(0, 200) : 'falha na busca',
+      durationMs: Date.now() - comecou,
+    }
   }
 
   // O teto vale mesmo que o serviço devolva mais: quem paga a leitura é esta instalação.

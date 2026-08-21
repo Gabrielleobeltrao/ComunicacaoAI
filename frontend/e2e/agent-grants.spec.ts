@@ -324,7 +324,7 @@ test('a aba Como trabalha deixa cadastrar um site para o agente consultar', asyn
     return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   const cartao = page.getByTestId('agent-sources')
   await expect(cartao).toBeVisible()
@@ -372,7 +372,7 @@ test('um endereço inválido é recusado com o motivo na tela', async ({ page })
       : r.fulfill({ json: { sources: [], settings: SETTINGS } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('exemplo.test/blog')
@@ -389,7 +389,7 @@ test('as fontes que vêm de rotinas aparecem separadas, como leitura', async ({ 
     }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   const doRotina = page.getByTestId('agent-sources-routines')
   await expect(doRotina).toContainText('Notícias')
@@ -407,7 +407,7 @@ test('cada endereço escolhe QUANDO ser consultado, e a tela diz o custo de cada
     return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('https://exemplo.test/feed.xml')
@@ -440,7 +440,7 @@ test('os limites e o nome da ferramenta são editáveis, e vão junto no salvame
     return r.fulfill({ json: { sources: [], settings: SETTINGS } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   await page.getByTestId('agent-sources-settings').click()
   await page.getByTestId('agent-sources-max-items').fill('3')
@@ -471,7 +471,7 @@ test('as competências são editáveis, e é o que o coordenador procura', async
     return r.fulfill({ json: {} })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   const cartao = page.getByTestId('agent-capabilities')
   await expect(cartao).toBeVisible()
@@ -489,7 +489,7 @@ test('as competências são editáveis, e é o que o coordenador procura', async
 test('a mesma competência não entra duas vezes, nem escrita de outro jeito', async ({ page }) => {
   await stub(page)
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   for (const texto of ['jurídico', 'JURIDICO']) {
     await page.getByTestId('agent-capability-input').fill(texto)
@@ -501,7 +501,7 @@ test('a mesma competência não entra duas vezes, nem escrita de outro jeito', a
 test('uma etiqueta pode ser removida antes de salvar', async ({ page }) => {
   await stub(page)
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   await page.getByTestId('agent-capability-input').fill('tributário')
   await page.getByTestId('agent-capability-add').click()
@@ -537,7 +537,7 @@ test('as seções da aba nascem fechadas, menos as competências', async ({ page
   // Aberta: é por ela que outro agente encontra este, e a aba não pode abrir como uma
   // lista de títulos vazia.
   await expect(page.getByRole('button', { name: 'Competências', exact: true })).toHaveAttribute('aria-expanded', 'true')
-  for (const titulo of ['Ferramentas', 'Fontes de conhecimento', 'Conhecimento gerado', 'Pesquisa web']) {
+  for (const titulo of ['Ferramentas', 'Fontes de conhecimento', 'Conhecimento gerado', 'Web']) {
     await expect(page.getByRole('button', { name: titulo, exact: true })).toHaveAttribute('aria-expanded', 'false')
   }
 })
@@ -696,7 +696,7 @@ test('o site pode virar base do agente, e o modo escolhe o custo', async ({ page
     r.request().method() === 'GET' ? r.fulfill({ json: FONTE_WEB }) : r.fulfill({ json: { ok: true } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   const bloco = page.getByTestId('agent-source-web').first()
   await expect(bloco).toBeVisible()
@@ -735,7 +735,7 @@ test('"atualizar agora" lê e conta o que mudou', async ({ page }) => {
     r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: true, created: 2, updated: 1, unchanged: 3, error: null }] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   await page.getByTestId('agent-sources-refresh').click()
   await expect(page.getByTestId('agent-sources-refresh-result')).toContainText('2 nova(s)')
@@ -793,7 +793,7 @@ test('atualizar agora salva o endereço antes de ler', async ({ page }) => {
     return r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: true, discovered: 1, created: 1, updated: 0, unchanged: 0, error: null }] } })
   })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
 
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-name').fill('Boletim')
@@ -814,7 +814,7 @@ test('quando nada é lido, a tela diz POR QUE', async ({ page }) => {
     r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: false, reason: 'lida há 2 min', created: 0, updated: 0, unchanged: 0, error: null }] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('https://exemplo.test/boletim')
   await page.getByTestId('agent-sources-refresh').click()
@@ -832,7 +832,7 @@ test('a falha de leitura aparece na tela, e não em silêncio', async ({ page })
     r.fulfill({ json: { sources: [{ name: 'Boletim', refreshed: true, created: 0, updated: 0, unchanged: 0, error: 'HTTP 403' }] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
   await page.getByTestId('agent-source-add').click()
   await page.getByTestId('agent-source-url').fill('https://exemplo.test/boletim')
   await page.getByTestId('agent-sources-refresh').click()
@@ -864,7 +864,7 @@ test('o modo padrão avisa que não lê nada sozinho', async ({ page }) => {
     }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
   await page.getByTestId('agent-source-web').first().click()
 
   await expect(page.getByTestId('agent-source-manual-hint')).toContainText('nada é lido sozinho')
@@ -876,7 +876,7 @@ test('um endereço novo já nasce sendo lido antes de o agente ser usado', async
     r.request().method() === 'PUT' ? r.fulfill({ json: { ok: true } }) : r.fulfill({ json: { settings: SETTINGS, sources: [] } }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
   await page.getByTestId('agent-source-add').click()
 
   // O modo aparece no resumo, sem precisar abrir o bloco: era invisível antes.
@@ -929,7 +929,7 @@ test('o pesquisador mantém base, sites e ferramentas', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
   await expect(page.getByText('O que ele aciona')).toBeVisible()
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
   await expect(page.getByTestId('agent-sources')).toBeVisible()
 })
 
@@ -976,7 +976,7 @@ test('no celular, os botões de fonte continuam botões — e não colunas de le
     }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
   await page.getByTestId('agent-sources-refresh').click()
   await expect(page.getByTestId('agent-sources-refresh-result')).toBeVisible()
 
@@ -1003,7 +1003,7 @@ test('quando o teste de leitura falha, a tela diz O QUE falhou', async ({ page }
   // Um servidor mais antigo que esta tela: a rota não existe lá.
   await page.route('**/api/agents/*/sources/test-read', (r) => r.fulfill({ status: 404, body: 'Cannot POST' }))
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
   await page.getByTestId('agent-source-web').first().click()
 
   await page.getByTestId('agent-source-test-read').first().click()
@@ -1032,7 +1032,7 @@ test('a página que exige navegador diz que o servidor não tem um — não que 
     }),
   )
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Pesquisa web')
+  await abrirBloco(page, 'Web')
   await page.getByTestId('agent-source-web').first().click()
 
   await page.getByTestId('agent-source-test-read').first().click()
@@ -1044,13 +1044,14 @@ test('a página que exige navegador diz que o servidor não tem um — não que 
 
 // --- buscar na internet: só o pesquisador, e desligado por padrão ----------------------------
 //
-// "Pesquisa web" lê os endereços que o dono cadastrou. "Buscar na internet" procura
-// endereços que ninguém cadastrou. Custa mais, erra mais, e por isso é opcional.
+// "Sites específicos" lê os endereços que o dono cadastrou. "Busca em toda a web"
+// procura endereços que ninguém cadastrou. Custa mais, erra mais, e por isso é opcional
+// — e por isso as duas viraram uma seção só, com a diferença escrita entre elas.
 
 test('o pesquisador tem o interruptor de busca, e ele nasce desligado', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Buscar na internet')
+  await abrirBloco(page, 'Web')
 
   await expect(page.getByTestId('web-search-enabled')).not.toBeChecked()
   // Desligado, o resto nem aparece: um agente que não busca não precisa de teto de busca.
@@ -1061,7 +1062,7 @@ test('o pesquisador tem o interruptor de busca, e ele nasce desligado', async ({
 test('ligando, aparecem a política e os avançados — fechados', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Buscar na internet')
+  await abrirBloco(page, 'Web')
   await page.getByTestId('web-search-enabled').check()
 
   await expect(page.getByTestId('web-search-policy')).toHaveValue('fallback_only')
@@ -1075,9 +1076,10 @@ test('ligando, aparecem a política e os avançados — fechados', async ({ page
 test('a tela explica que isto NÃO é o mesmo que os sites cadastrados', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await abrirBloco(page, 'Buscar na internet')
-  await expect(page.getByTestId('web-search-block')).toContainText('endereços que você cadastrou')
-  await expect(page.getByTestId('web-search-block')).toContainText('ninguém cadastrou')
+  await abrirBloco(page, 'Web')
+  // A distinção fica ENTRE os dois sub-blocos, que é onde a confusão acontecia.
+  await expect(page.getByTestId('web-sites-block')).toContainText('Você escolhe quais sites')
+  await expect(page.getByTestId('web-search-block')).toContainText('páginas que você não cadastrou')
 })
 
 test('analista e coordenador não têm o bloco', async ({ page }) => {
@@ -1086,4 +1088,63 @@ test('analista e coordenador não têm o bloco', async ({ page }) => {
     await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
     await expect(page.getByTestId('web-search-block')).toHaveCount(0)
   }
+})
+
+// --- o servidor tem a última palavra sobre a busca ---------------------------------------------
+//
+// Um interruptor ligado com nenhum buscador configurado é uma promessa vazia: o agente
+// não procura nada, e quem ligou conclui que a função está quebrada.
+
+const comStatusDeBusca = async (page: Page, status: Record<string, unknown>) => {
+  await page.route('**/api/settings/web-search', (r) => r.fulfill({ json: status }))
+  await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Web')
+}
+
+test('sem buscador configurado, a tela avisa antes de o dono ligar', async ({ page }) => {
+  await comStatusDeBusca(page, {
+    configured: false, provider: 'brave', used: 0, limit: 900, remaining: 900,
+    period: '2026-08', resetAt: '2026-09-01T00:00:00.000Z', paidUsageEnabled: false,
+  })
+  await expect(page.getByTestId('web-search-status')).toContainText('Nenhum buscador configurado')
+})
+
+test('com franquia acabada, a tela diz que o agente segue com a base', async ({ page }) => {
+  await comStatusDeBusca(page, {
+    configured: true, provider: 'brave', used: 900, limit: 900, remaining: 0,
+    period: '2026-08', resetAt: '2026-09-01T00:00:00.000Z', paidUsageEnabled: false,
+  })
+  const status = page.getByTestId('web-search-status')
+  await expect(status).toContainText('franquia mensal acabou')
+  await expect(status).toContainText('900 de 900')
+  await expect(status).toContainText('continua respondendo com o que já está na base')
+})
+
+test('com saldo, mostra provedor, uso e renovação — e o alcance do contador', async ({ page }) => {
+  await comStatusDeBusca(page, {
+    configured: true, provider: 'brave', used: 120, limit: 900, remaining: 780,
+    period: '2026-08', resetAt: '2026-09-01T00:00:00.000Z', paidUsageEnabled: false,
+  })
+  const status = page.getByTestId('web-search-status')
+  await expect(status).toContainText('brave')
+  await expect(status).toContainText('120 de 900')
+  await expect(status).toContainText('780 restantes')
+  // O alcance importa: a mesma chave usada fora daqui não passa por este contador.
+  await expect(status).toContainText('Buscas feitas fora dele')
+})
+
+test('no celular, a seção Web não estoura nem espreme os controles', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await comStatusDeBusca(page, {
+    configured: true, provider: 'brave', used: 10, limit: 900, remaining: 890,
+    period: '2026-08', resetAt: '2026-09-01T00:00:00.000Z', paidUsageEnabled: false,
+  })
+  await page.getByTestId('web-search-enabled').check()
+  const caixa = await page.getByTestId('web-search-policy').boundingBox()
+  expect(caixa).not.toBeNull()
+  expect(caixa!.width, 'o seletor de política precisa caber na largura do telefone').toBeLessThanOrEqual(390)
+  expect(caixa!.height, 'espremido, ele cresce para baixo').toBeLessThan(64)
+  const { sw, cw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
+  expect(sw, 'a página não pode rolar de lado').toBeLessThanOrEqual(cw + 1)
 })

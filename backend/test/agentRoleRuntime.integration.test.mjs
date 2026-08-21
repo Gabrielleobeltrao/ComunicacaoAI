@@ -265,11 +265,14 @@ let proximoTrace = 0
 const comBusca = async (preset, webSearch, over = {}) => {
   const traceId = `busca-${proximoTrace++}`
   const { alvo, deps, chamadas } = bancada(preset, { webSearch, ...over })
+  // O adaptador genérico, para o teste não depender de credencial de nenhum serviço.
+  process.env.WEB_SEARCH_PROVIDER = 'http'
   process.env.WEB_SEARCH_URL = 'https://busca.test/api?q={query}'
   try {
     await runAgentTask(deps, contexto(alvo, traceId), alvo, 'qual foi o resultado do trimestre?', '', 'text')
   } finally {
     delete process.env.WEB_SEARCH_URL
+    delete process.env.WEB_SEARCH_PROVIDER
   }
   return { chamadas, alvo, traceId }
 }

@@ -10,6 +10,22 @@
 // configuração não há busca — e "não há busca" é dito com todas as letras, em vez de
 // virar uma lista vazia que parece "não achei nada".
 import { safeFetch } from '../net/safeHttp.js'
+import { releaseSearchRequest, reserveSearchRequest } from './budget.js'
+
+/**
+ * O erro de quem foi barrado pela franquia — antes de a chamada sair.
+ *
+ * Tem tipo próprio porque a ação é diferente de qualquer outra falha: não é o serviço que
+ * está fora, ninguém foi cobrado, e tentar de novo agora dá no mesmo. É uma decisão de
+ * configuração — ou uma espera até o mês virar.
+ */
+export class SearchBudgetError extends Error {
+  code = 'monthly_limit_reached' as const
+  constructor(reason: string) {
+    super(reason)
+    this.name = 'SearchBudgetError'
+  }
+}
 
 /** Um resultado de busca: o suficiente para DECIDIR se vale abrir, e nada além. */
 export interface SearchResult {
@@ -94,6 +110,75 @@ function providerHttp(): WebSearchProvider | null {
 }
 
 /**
+ * O Brave Search.
+ *
+ * Endereço fixo e credencial vinda EXCLUSIVAMENTE de `BRAVE_SEARCH_API_KEY`, no cabeçalho
+ * que o serviço define. A chave não é gravada em lugar nenhum, não volta para a tela, não
+ * entra em log e não aparece em mensagem de erro — nem em pedaço. O corpo de uma resposta
+ * de erro também não sai daqui: ele costuma repetir o que foi enviado.
+ */
+const BRAVE_URL = 'https://api.search.brave.com/res/v1/web/search'
+
+/**
+ * O endereço usado de fato.
+ *
+ * Em produção é sempre o oficial: a variável de desvio é IGNORADA lá, para que uma
+ * configuração errada (ou mal-intencionada) não consiga mandar a credencial para outro
+ * host. Fora de produção ela existe para o teste conferir o que sai daqui sem falar com
+ * o serviço real.
+ */
+const braveUrl = (): string =>
+  process.env.NODE_ENV === 'production' ? BRAVE_URL : (process.env.BRAVE_SEARCH_BASE_URL_FOR_TEST?.trim() || BRAVE_URL)
+
+interface BraveResposta {
+  web?: { results?: { title?: string; url?: string; description?: string }[] }
+}
+
+function providerBrave(): WebSearchProvider | null {
+  const chave = process.env.BRAVE_SEARCH_API_KEY?.trim()
+  if (!chave) return null
+  return {
+    name: 'brave',
+    async search(query, opts) {
+      // A franquia é contada ANTES da chamada. Uma tentativa que sai conta mesmo se
+      // falhar: do lado do Brave ela foi uma requisição, e um contador que diverge para
+      // menos é o que produz a fatura surpresa.
+      const reserva = await reserveSearchRequest('brave')
+      if (!reserva.ok) throw new SearchBudgetError(reserva.reason!)
+
+      const alvo = `${braveUrl()}?q=${encodeURIComponent(query)}&count=${Math.min(Math.max(opts.maxResults, 1), 20)}`
+      let res
+      try {
+        res = await safeFetch(alvo, {
+          timeoutMs: opts.timeoutMs,
+          maxBytes: 1_000_000,
+          headers: { 'X-Subscription-Token': chave, Accept: 'application/json' },
+        })
+      } catch (erro) {
+        // A requisição pode não ter chegado a sair (endereço recusado, DNS, timeout do
+        // nosso lado). Devolver a reserva aqui é o único caso legítimo.
+        await releaseSearchRequest('brave')
+        throw new Error(`não foi possível falar com o serviço de busca: ${erro instanceof Error ? erro.message.slice(0, 120) : 'falha'}`)
+      }
+
+      if (res.status < 200 || res.status > 299) {
+        // Sai o código, nunca o corpo: ele pode repetir o cabeçalho enviado.
+        throw new Error(`o serviço de busca respondeu ${res.status}`)
+      }
+      const corpo = JSON.parse(res.body) as BraveResposta
+      return (corpo.web?.results ?? [])
+        .slice(0, opts.maxResults)
+        .map((r) => ({
+          title: String(r.title ?? '').slice(0, 300),
+          url: String(r.url ?? '').trim(),
+          snippet: String(r.description ?? '').replace(/\s+/g, ' ').slice(0, 600),
+        }))
+        .filter((r) => /^https?:\/\//i.test(r.url))
+    },
+  }
+}
+
+/**
  * O provedor configurado, ou nulo.
  *
  * Nulo é uma resposta legítima e comum: a maioria das instalações não tem serviço de
@@ -101,5 +186,15 @@ function providerHttp(): WebSearchProvider | null {
  * "procurei e não achei" — e a diferença aparece no painel.
  */
 export function activeSearchProvider(): WebSearchProvider | null {
-  return providerHttp()
+  // `brave` é o padrão porque é a integração oficial; `http` continua disponível para
+  // quem já apontou o adaptador genérico para outro serviço. Nenhum dos dois existe sem
+  // configuração — e a ausência é dita, nunca disfarçada de "não achei nada".
+  const escolhido = (process.env.WEB_SEARCH_PROVIDER ?? 'brave').trim().toLowerCase()
+  if (escolhido === 'http') return providerHttp()
+  if (escolhido === 'brave') return providerBrave()
+  console.warn(`[busca] WEB_SEARCH_PROVIDER="${escolhido}" não é um provedor conhecido; nenhuma busca será feita`)
+  return null
 }
+
+/** O nome do provedor escolhido, mesmo quando ele não está configurado. Para o painel. */
+export const configuredProviderName = (): string => (process.env.WEB_SEARCH_PROVIDER ?? 'brave').trim().toLowerCase() || 'brave'

@@ -930,7 +930,9 @@ export async function runAgentTask(
           agentId: target._id.toString(),
           title: r.ok
             ? `${target.name}: busca na web — ${r.found} resultado(s), ${r.read.length} página(s) lida(s), ${r.evidence.length} evidência(s)`
-            : `${target.name}: a busca na web falhou — respondendo com o que já tinha`,
+            : r.code === 'monthly_limit_reached'
+              ? `${target.name}: a franquia mensal de busca acabou — respondendo com a base`
+              : `${target.name}: a busca na web falhou — respondendo com o que já tinha`,
           input: preview(query, 200),
           durationMs: r.durationMs,
           metadata: {
@@ -944,6 +946,7 @@ export async function runAgentTask(
             read: r.read,
             evidence: r.evidence.map((e) => ({ url: e.url, title: e.title })),
             error: r.error ?? null,
+            code: r.code ?? null,
           },
         })
       }

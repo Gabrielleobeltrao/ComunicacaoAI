@@ -130,6 +130,8 @@ import {
   setProviderApiKey,
 } from './userSettings.js'
 import { embeddingBudgetConfig, embeddingUsageReport, ensureEmbeddingUsageIndexes } from './embeddings/budget.js'
+import { activeSearchProvider, configuredProviderName } from './webSearch/provider.js'
+import { ensureWebSearchIndexes, searchBudgetConfig, searchBudgetStatus } from './webSearch/budget.js'
 import { VOYAGE_MODELS, voyageFallbackModel, voyageModel } from './voyage.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
@@ -445,6 +447,21 @@ app.get('/api/settings/embeddings', requireAuth, async (_req, res) => {
     // A chave está configurada? Só isso — nunca o valor, nem um prefixo dele.
     configured: Boolean(process.env.VOYAGE_API_KEY),
   })
+})
+
+/**
+ * O estado da busca na web: provedor, uso do mês e quanto resta.
+ *
+ * Devolve OITO campos e nada mais. Nem a chave, nem um pedaço dela, nem o nome da
+ * variável — `configured` é tudo o que se diz sobre a credencial: existe ou não existe.
+ *
+ * Os números são desta INSTALAÇÃO. Se a mesma chave for usada em outro lugar, aquelas
+ * chamadas não passam por aqui e este contador não as conhece — a tela diz isso.
+ */
+app.get('/api/settings/web-search', requireAuth, async (_req, res) => {
+  const provider = configuredProviderName()
+  const cfg = searchBudgetConfig()
+  res.json(await searchBudgetStatus(provider, Boolean(activeSearchProvider()), cfg))
 })
 
 app.put('/api/settings/monthly-token-cap', requireAuth, async (req, res) => {
@@ -4582,6 +4599,9 @@ async function start() {
   backfillAgentEventAttempts()
     .then((n) => n && console.log(`Backfilled attempt bookkeeping on ${n} agent event(s)`))
     .catch((error) => console.error('backfillAgentEventAttempts failed:', error))
+  ensureWebSearchIndexes().catch((error) => {
+    console.error('Could not create the web search indexes:', error)
+  })
   ensureEmbeddingUsageIndexes().catch((error) => {
     console.error('Could not create the embedding usage indexes:', error)
   })

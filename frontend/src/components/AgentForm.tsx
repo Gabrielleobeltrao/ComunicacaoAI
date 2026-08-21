@@ -25,6 +25,7 @@ import type {
 } from '../lib/types'
 import { AgentCapabilities } from './AgentCapabilities'
 import { AgentToolsPicker } from './AgentToolsPicker'
+import { WebSearchStatusLine } from './WebSearchStatusLine'
 import { AgentSources } from './AgentSources'
 import { AgentAppGrantsEditor } from './AgentAppGrantsEditor'
 import { AgentToolsEditor } from './AgentToolsEditor'
@@ -1105,97 +1106,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
             </CollapsibleBlock>
           )}
 
-          {/* BUSCA NA WEB — descobrir páginas que NINGUÉM cadastrou.
-              
-              Diferente do bloco acima, e a diferença é o ponto: "Pesquisa web" lê os
-              endereços que você escolheu; isto procura endereços novos na internet. Custa
-              mais, erra mais, e por isso é opcional e nasce desligada. */}
-          {showBlock('busca-web') && (
-            <CollapsibleBlock title="Buscar na internet" showHeader={stacked} testId="web-search-block">
-              <div className="space-y-4">
-                <label className="flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={editWebSearch.enabled === true}
-                    onChange={(e) => setEditWebSearch({ ...editWebSearch, enabled: e.target.checked })}
-                    data-testid="web-search-enabled"
-                  />
-                  <span>
-                    Permitir busca na web
-                    <span className="block text-xs text-(--text-faint)">
-                      Permite que o pesquisador procure novas fontes na internet quando o conhecimento e os sites cadastrados não forem
-                      suficientes, ou quando a tarefa exigir informação atual.
-                    </span>
-                  </span>
-                </label>
-
-                <p className="rounded-lg border border-(--border-subtle) p-2 text-xs text-(--text-muted)">
-                  <strong>Não é a mesma coisa que “Pesquisa web” acima.</strong> Lá ele lê os endereços que você cadastrou — você escolhe as
-                  fontes. Aqui ele procura endereços que ninguém cadastrou, e quem escolhe é o buscador.
-                </p>
-
-                {editWebSearch.enabled && (
-                  <>
-                    <div>
-                      <label className="mb-1 block text-sm text-(--text-muted)">Quando pesquisar</label>
-                      <select
-                        value={editWebSearch.policy ?? 'fallback_only'}
-                        onChange={(e) => setEditWebSearch({ ...editWebSearch, policy: e.target.value as 'automatic' | 'fallback_only' | 'always' })}
-                        data-testid="web-search-policy"
-                        className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-                      >
-                        <option value="fallback_only">Só quando a base não responder (recomendado)</option>
-                        <option value="automatic">Automático — também quando a base trouxer pouco</option>
-                        <option value="always">Sempre, mesmo com a base cheia</option>
-                      </select>
-                      <p className="mt-1 text-xs text-(--text-faint)">
-                        Cada busca é uma requisição a um serviço externo, e cada página escolhida é uma leitura completa. “Sempre” faz as duas
-                        coisas em toda tarefa.
-                      </p>
-                    </div>
-
-                    {/* O ajuste fino de quem já sabe o que quer. Fechado: os padrões
-                        servem para a maioria, e cinco números abertos escondem o
-                        interruptor que de fato importa. */}
-                    <details data-testid="web-search-advanced">
-                      <summary className="cursor-pointer text-xs text-(--text-muted)">Configurações avançadas de busca</summary>
-                      <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                        {(
-                          [
-                            ['maxSearchResults', 'Resultados por busca', 10, 'Só título, endereço e trecho — baratos.'],
-                            ['maxPagesToRead', 'Páginas abertas', 5, 'Esta é a que custa: cada uma é uma leitura completa.'],
-                            ['maxCharsPerPage', 'Caracteres por página', 15000, 'Quanto de cada página é considerado.'],
-                            ['maxEvidenceChunks', 'Trechos de evidência', 8, 'O que chega ao modelo. Página inteira piora a resposta.'],
-                            ['searchTimeoutMs', 'Tempo limite da busca (ms)', 8000, ''],
-                            ['pageReadTimeoutMs', 'Tempo limite por página (ms)', 12000, ''],
-                          ] as const
-                        ).map(([campo, rotulo, padrao, ajuda]) => (
-                          <div key={campo}>
-                            <label className="mb-1 block text-xs text-(--text-muted)">{rotulo}</label>
-                            <input
-                              type="number"
-                              min={1}
-                              value={editWebSearch[campo] ?? ''}
-                              placeholder={String(padrao)}
-                              onChange={(e) =>
-                                setEditWebSearch({ ...editWebSearch, [campo]: e.target.value ? Number(e.target.value) : undefined })
-                              }
-                              data-testid={`web-search-${campo}`}
-                              className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-                            />
-                            {ajuda && <p className="mt-0.5 text-[11px] text-(--text-faint)">{ajuda}</p>}
-                          </div>
-                        ))}
-                      </div>
-                      <p className="mt-2 text-[11px] text-(--text-faint)">
-                        Em branco = o padrão. O servidor tem tetos próprios: um número acima deles é reduzido ao teto, não aceito.
-                      </p>
-                    </details>
-                  </>
-                )}
-              </div>
-            </CollapsibleBlock>
-          )}
 
           {/* Vale para TODO papel: é a frase que o planejador lê para escolher quem
               trabalha. Sem ela, a escolha depende de o pedido por acaso repetir palavras
@@ -1955,9 +1865,115 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               profundidade e com que limite. Ficava depois do conhecimento gerado, o que
               invertia causa e efeito. Só para quem COLETA: quem analisa trabalha sobre o
               que recebe, e quem conduz não lê site. */}
-          {agent?._id && cfg.allowedWeb && (
-            <CollapsibleBlock title="Pesquisa web" showHeader={stacked} testId="web-research-block">
-              <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+          {/* WEB — uma seção, dois sub-blocos, porque são duas coisas que é fácil confundir:
+              "Sites específicos" é ler os endereços que VOCÊ escolheu; "Busca em toda a
+              web" é descobrir endereços que ninguém escolheu. Eram dois blocos irmãos com
+              o mesmo peso visual, e nada dizia que um não era o outro. */}
+          {agent?._id && (cfg.allowedWeb || showBlock('busca-web')) && (
+            <CollapsibleBlock title="Web" showHeader={stacked} testId="web-block">
+              <div className="space-y-4">
+                {cfg.allowedWeb && (
+                  <div data-testid="web-sites-block">
+                    <p className="text-sm font-medium">Sites específicos</p>
+                    <p className="mb-2 text-xs text-(--text-faint)">
+                      Você escolhe quais sites ele acompanha. Ele lê esses endereços — e só esses.
+                    </p>
+                    <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+                  </div>
+                )}
+          {/* O segundo sub-bloco: descobrir páginas que NINGUÉM cadastrou.
+              
+              Fica logo abaixo de "Sites específicos" de propósito, e a diferença está
+              escrita entre os dois: lá você escolhe as fontes, aqui quem escolhe é o
+              buscador. Custa mais, erra mais, e por isso nasce desligado. */}
+          {showBlock('busca-web') && (
+            <div className="space-y-4 border-t border-(--border-subtle) pt-4" data-testid="web-search-block">
+              <div>
+                <p className="text-sm font-medium">Busca em toda a web</p>
+                <p className="text-xs text-(--text-faint)">
+                  O buscador descobre páginas que você não cadastrou. Acima, em “Sites específicos”, é o contrário: você escolhe quais sites ele
+                  acompanha.
+                </p>
+              </div>
+              <WebSearchStatusLine />
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editWebSearch.enabled === true}
+                    onChange={(e) => setEditWebSearch({ ...editWebSearch, enabled: e.target.checked })}
+                    data-testid="web-search-enabled"
+                  />
+                  <span>
+                    Permitir busca na web
+                    <span className="block text-xs text-(--text-faint)">
+                      Permite que o pesquisador procure novas fontes na internet quando o conhecimento e os sites cadastrados não forem
+                      suficientes, ou quando a tarefa exigir informação atual.
+                    </span>
+                  </span>
+                </label>
+
+                {editWebSearch.enabled && (
+                  <>
+                    <div>
+                      <label className="mb-1 block text-sm text-(--text-muted)">Quando pesquisar</label>
+                      <select
+                        value={editWebSearch.policy ?? 'fallback_only'}
+                        onChange={(e) => setEditWebSearch({ ...editWebSearch, policy: e.target.value as 'automatic' | 'fallback_only' | 'always' })}
+                        data-testid="web-search-policy"
+                        className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                      >
+                        <option value="fallback_only">Só quando a base não responder (recomendado)</option>
+                        <option value="automatic">Automático — também quando a base trouxer pouco</option>
+                        <option value="always">Sempre, mesmo com a base cheia</option>
+                      </select>
+                      <p className="mt-1 text-xs text-(--text-faint)">
+                        Cada busca é uma requisição a um serviço externo, e cada página escolhida é uma leitura completa. “Sempre” faz as duas
+                        coisas em toda tarefa.
+                      </p>
+                    </div>
+
+                    {/* O ajuste fino de quem já sabe o que quer. Fechado: os padrões
+                        servem para a maioria, e cinco números abertos escondem o
+                        interruptor que de fato importa. */}
+                    <details data-testid="web-search-advanced">
+                      <summary className="cursor-pointer text-xs text-(--text-muted)">Configurações avançadas de busca</summary>
+                      <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                        {(
+                          [
+                            ['maxSearchResults', 'Resultados por busca', 10, 'Só título, endereço e trecho — baratos.'],
+                            ['maxPagesToRead', 'Páginas abertas', 5, 'Esta é a que custa: cada uma é uma leitura completa.'],
+                            ['maxCharsPerPage', 'Caracteres por página', 15000, 'Quanto de cada página é considerado.'],
+                            ['maxEvidenceChunks', 'Trechos de evidência', 8, 'O que chega ao modelo. Página inteira piora a resposta.'],
+                            ['searchTimeoutMs', 'Tempo limite da busca (ms)', 8000, ''],
+                            ['pageReadTimeoutMs', 'Tempo limite por página (ms)', 12000, ''],
+                          ] as const
+                        ).map(([campo, rotulo, padrao, ajuda]) => (
+                          <div key={campo}>
+                            <label className="mb-1 block text-xs text-(--text-muted)">{rotulo}</label>
+                            <input
+                              type="number"
+                              min={1}
+                              value={editWebSearch[campo] ?? ''}
+                              placeholder={String(padrao)}
+                              onChange={(e) =>
+                                setEditWebSearch({ ...editWebSearch, [campo]: e.target.value ? Number(e.target.value) : undefined })
+                              }
+                              data-testid={`web-search-${campo}`}
+                              className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                            />
+                            {ajuda && <p className="mt-0.5 text-[11px] text-(--text-faint)">{ajuda}</p>}
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[11px] text-(--text-faint)">
+                        Em branco = o padrão. O servidor tem tetos próprios: um número acima deles é reduzido ao teto, não aceito.
+                      </p>
+                    </details>
+                  </>
+                )}
+            </div>
+          )}
+              </div>
             </CollapsibleBlock>
           )}
 
