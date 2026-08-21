@@ -27,6 +27,10 @@ import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
 import { ROLE_LABEL, capabilitiesOf, roleOf } from './agentCapabilities.js'
 import { preview, traceEvent } from './executionTrace.js'
+import { activeSearchProvider } from './webSearch/provider.js'
+import { normalizeWebSearch, shouldSearch } from './webSearch/policy.js'
+import type { WebSearchSettings } from './webSearch/policy.js'
+import { runWebSearch } from './webSearch/run.js'
 import type { TraceInput } from './executionTrace.js'
 import type { LiveTracker } from './agentLiveTracker.js'
 import {
@@ -898,6 +902,67 @@ export async function runAgentTask(
     })
   }
   /**
+   * PROCURAR páginas novas, quando a base não bastou — e só quem coleta.
+   *
+   * A ordem é a que economiza: a base já respondeu (ou não) acima, e é essa resposta que
+   * decide se vale procurar fora. Buscar antes seria pagar por uma pergunta que o próprio
+   * agente já sabia responder.
+   *
+   * Nada disto acontece com o interruptor desligado, que é o padrão, nem para analista,
+   * coordenador ou executor — a capacidade não existe para eles.
+   */
+  const buscaWeb: WebSearchSettings = normalizeWebSearch(target.webSearch)
+  const provedorDeBusca = capacidades.webSearch ? activeSearchProvider() : null
+  const evidenciasDaWeb: string[] = []
+  if (capacidades.webSearch && query) {
+    const decisao = shouldSearch(buscaWeb, { grounding, passages: passages.length, canSearch: Boolean(provedorDeBusca) })
+    if (decisao.search && provedorDeBusca) {
+      tracker.report('reading_knowledge')
+      const r = await runWebSearch(provedorDeBusca, query, buscaWeb)
+      for (const e of r.evidence) evidenciasDaWeb.push(`[${e.title}]\nFonte: ${e.url}\n\n${e.text}`)
+      if (r.evidence.length > 0) grounding = 'ok'
+      if (ctx.traceId) {
+        traceEvent({
+          ownerId: ctx.ownerId,
+          executionId: ctx.traceId,
+          type: 'rag',
+          status: r.ok ? (r.evidence.length > 0 ? 'success' : 'info') : 'error',
+          agentId: target._id.toString(),
+          title: r.ok
+            ? `${target.name}: busca na web — ${r.found} resultado(s), ${r.read.length} página(s) lida(s), ${r.evidence.length} evidência(s)`
+            : `${target.name}: a busca na web falhou — respondendo com o que já tinha`,
+          input: preview(query, 200),
+          durationMs: r.durationMs,
+          metadata: {
+            provider: r.provider,
+            policy: buscaWeb.policy,
+            reason: decisao.reason,
+            found: r.found,
+            // Só endereço e título: o conteúdo lido não é assunto de painel, e nenhuma
+            // credencial passa por aqui.
+            selected: r.selected.map((s) => ({ url: s.url, title: s.title, score: s.score })),
+            read: r.read,
+            evidence: r.evidence.map((e) => ({ url: e.url, title: e.title })),
+            error: r.error ?? null,
+          },
+        })
+      }
+    } else if (ctx.traceId && buscaWeb.enabled) {
+      // Não procurou — e o motivo importa tanto quanto a busca. Sem isto, "não procurou"
+      // e "procurou e não achou" ficam iguais no painel.
+      traceEvent({
+        ownerId: ctx.ownerId,
+        executionId: ctx.traceId,
+        type: 'rag',
+        status: 'info',
+        agentId: target._id.toString(),
+        title: `${target.name}: busca na web não foi necessária`,
+        metadata: { policy: buscaWeb.policy, reason: decisao.reason },
+      })
+    }
+  }
+
+  /**
    * "Só responder com base no conhecimento" — para quem TEM conhecimento a consultar.
    *
    * A regra vale onde quer que o agente rode. Mas para quem não consulta base por papel,
@@ -932,6 +997,9 @@ export async function runAgentTask(
     ...(misturado ? [misturado] : []),
     ...formatContextWithSources(passages, sources),
     ...vivas.map((v) => `[${v.title}]\n${v.content}`),
+    // O que veio da busca: TRECHOS com procedência, nunca a página inteira. Página no
+    // prompt custa token e piora a resposta — o que responde fica enterrado no menu.
+    ...evidenciasDaWeb,
   ]
   const startedAt = new Date()
   // The TARGET decides how it answers: an agent configured to produce JSON is not
@@ -1469,7 +1537,13 @@ export async function executeSectorTeam(
             instructions: agente.instructions ?? null,
             capabilities: agente.capabilities ?? null,
             // O que ele CONSEGUE fazer, e não só o que sabe. Nomes, nunca credenciais.
-            tools: [...(agente.tools ?? []).map((t) => t.name), ...(agente.builtinTools ?? []).map((t) => t.key)],
+            // "busca_na_web" entra como capacidade: sem isso o planejador manda uma
+            // pergunta sobre algo ATUAL para quem só alcança o que já está guardado.
+            tools: [
+              ...(agente.tools ?? []).map((t) => t.name),
+              ...(agente.builtinTools ?? []).map((t) => t.key),
+              ...(capabilitiesOf(agente).webSearch ? ['busca_na_web'] : []),
+            ],
             // Só os TÍTULOS: o conteúdo da base não sai daqui, nem para escolher.
             knowledgeTitles: null as string[] | null,
           }

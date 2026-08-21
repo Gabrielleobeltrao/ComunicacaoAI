@@ -209,6 +209,22 @@ export interface AgentSummary {
   routingDescription?: string
   /** Os tetos de quem CONDUZ. Só o coordenador usa; ausente = padrão do sistema. */
   orchestration?: { maxTasks?: number; maxRounds?: number; onPartialFailure?: 'synthesize' | 'fail' }
+  /**
+   * Procurar páginas NOVAS na internet. Só o pesquisador; ausente = desligado.
+   *
+   * Não confundir com os sites cadastrados: aquilo é ler endereços que o dono escolheu,
+   * isto é descobrir endereços que ninguém escolheu.
+   */
+  webSearch?: {
+    enabled?: boolean
+    policy?: 'automatic' | 'fallback_only' | 'always'
+    maxSearchResults?: number
+    maxPagesToRead?: number
+    maxCharsPerPage?: number
+    maxEvidenceChunks?: number
+    searchTimeoutMs?: number
+    pageReadTimeoutMs?: number
+  }
   delegationPolicy: DelegationPolicy
   callerPolicy: DelegationPolicy
   callableAgentIds: string[]

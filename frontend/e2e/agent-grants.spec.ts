@@ -1041,3 +1041,49 @@ test('a página que exige navegador diz que o servidor não tem um — não que 
   // E o caminho tentado, que é o que separa "não tentei" de "tentei e não deu".
   await expect(resultado).toContainText('http ✕ JS_REQUIRED')
 })
+
+// --- buscar na internet: só o pesquisador, e desligado por padrão ----------------------------
+//
+// "Pesquisa web" lê os endereços que o dono cadastrou. "Buscar na internet" procura
+// endereços que ninguém cadastrou. Custa mais, erra mais, e por isso é opcional.
+
+test('o pesquisador tem o interruptor de busca, e ele nasce desligado', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Buscar na internet')
+
+  await expect(page.getByTestId('web-search-enabled')).not.toBeChecked()
+  // Desligado, o resto nem aparece: um agente que não busca não precisa de teto de busca.
+  await expect(page.getByTestId('web-search-policy')).toHaveCount(0)
+  await expect(page.getByTestId('web-search-advanced')).toHaveCount(0)
+})
+
+test('ligando, aparecem a política e os avançados — fechados', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Buscar na internet')
+  await page.getByTestId('web-search-enabled').check()
+
+  await expect(page.getByTestId('web-search-policy')).toHaveValue('fallback_only')
+  const avancado = page.getByTestId('web-search-advanced')
+  await expect(avancado).toBeVisible()
+  await expect(page.getByTestId('web-search-maxPagesToRead')).not.toBeVisible()
+  await avancado.click()
+  await expect(page.getByTestId('web-search-maxPagesToRead')).toBeVisible()
+})
+
+test('a tela explica que isto NÃO é o mesmo que os sites cadastrados', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Buscar na internet')
+  await expect(page.getByTestId('web-search-block')).toContainText('endereços que você cadastrou')
+  await expect(page.getByTestId('web-search-block')).toContainText('ninguém cadastrou')
+})
+
+test('analista e coordenador não têm o bloco', async ({ page }) => {
+  for (const preset of ['analyst', 'manager'] as const) {
+    await stub(page, { agent: { ...AGENT, preset } })
+    await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+    await expect(page.getByTestId('web-search-block')).toHaveCount(0)
+  }
+})

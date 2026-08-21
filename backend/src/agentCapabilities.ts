@@ -37,6 +37,15 @@ export interface RoleCapabilities {
   externalTools: boolean
   /** A memória operacional (buscar_memoria). Quem só conduz não guarda operação. */
   memory: boolean
+  /**
+   * Pode PROCURAR páginas novas na internet — quando o dono liga.
+   *
+   * Diferente de `webSources`, e a distinção é o ponto: `webSources` é ler os endereços
+   * que o dono cadastrou; isto é descobrir endereços que ninguém cadastrou. Só quem
+   * COLETA pode, e só quando explicitamente ligado: um agente que já funciona com três
+   * sites conhecidos não passa a varrer a internet por causa de uma versão nova.
+   */
+  webSearch: boolean
   /** Uma linha para o painel e para o log — por que ele age assim. */
   summary: string
 }
@@ -50,6 +59,7 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     needsInputs: false,
     externalTools: true,
     memory: true,
+    webSearch: true,
     summary: 'coleta: consulta a própria base e os sites cadastrados',
   },
   monitor: {
@@ -60,6 +70,7 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     needsInputs: false,
     externalTools: true,
     memory: true,
+    webSearch: true,
     summary: 'acompanha uma fonte: consulta base e sites',
   },
   analyst: {
@@ -72,6 +83,7 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     needsInputs: true,
     externalTools: false,
     memory: true,
+    webSearch: false,
     summary: 'analisa o que recebe: não busca base própria',
   },
   manager: {
@@ -82,6 +94,7 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     needsInputs: false,
     externalTools: false,
     memory: false,
+    webSearch: false,
     summary: 'conduz: planeja, delega e consolida',
   },
   secretary: {
@@ -92,6 +105,7 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     needsInputs: false,
     externalTools: false,
     memory: false,
+    webSearch: false,
     summary: 'organiza e encaminha',
   },
   operator: {
@@ -103,6 +117,7 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     needsInputs: false,
     externalTools: true,
     memory: true,
+    webSearch: false,
     summary: 'executa ações com as ferramentas concedidas',
   },
   communicator: {
@@ -113,6 +128,7 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     needsInputs: true,
     externalTools: true,
     memory: true,
+    webSearch: false,
     summary: 'escreve a partir do que recebe',
   },
   custom: {
@@ -125,15 +141,24 @@ const POR_PRESET: Record<AgentPreset, RoleCapabilities> = {
     needsInputs: false,
     externalTools: true,
     memory: true,
+    webSearch: false,
     summary: 'perfil personalizado: mantém todas as capacidades',
   },
 }
 
 /** O que este agente FAZ, já considerando a escolha explícita do dono. */
 export function capabilitiesOf(
-  agent: Pick<Agent, 'preset'> & { knowledgeEnabled?: boolean | null },
+  agent: Pick<Agent, 'preset'> & { knowledgeEnabled?: boolean | null; webSearch?: { enabled?: boolean } | null },
 ): RoleCapabilities {
-  const base = POR_PRESET[agent.preset ?? 'custom'] ?? POR_PRESET.custom
+  const bruto = POR_PRESET[agent.preset ?? 'custom'] ?? POR_PRESET.custom
+  /**
+   * Procurar na internet é uma porta que se ABRE, nunca uma que já vem aberta.
+   *
+   * A matriz diz quem PODE ter a capacidade — só quem coleta. O interruptor do dono diz
+   * se ela está ligada. Sem os dois, não há busca: assim nenhum agente existente muda de
+   * comportamento por causa de uma versão nova.
+   */
+  const base: RoleCapabilities = { ...bruto, webSearch: bruto.webSearch && agent.webSearch?.enabled === true }
   // A porta de saída: o dono pode ligar a base num tipo que não a usa por padrão. É
   // escolha explícita, e por isso ela manda sobre o tipo — a regra existe para o caso
   // comum, não para amarrar quem sabe o que quer.
@@ -182,10 +207,12 @@ export type RoleSection =
   | 'orquestracao'
   /** Quando mandar trabalho para ele. */
   | 'roteamento'
+  /** Procurar páginas novas na internet. Só de quem coleta. */
+  | 'busca-web'
 
 const SECOES: Record<AgentRole, RoleSection[]> = {
   // Quem coleta fatos: onde procurar, com que ferramenta, e em que forma entregar o achado.
-  researcher: ['definicao', 'conhecimento', 'web', 'ferramentas', 'entrega', 'roteamento'],
+  researcher: ['definicao', 'conhecimento', 'web', 'busca-web', 'ferramentas', 'entrega', 'roteamento'],
   // Quem analisa o que recebe: o que espera receber, como comparar, o que fazer com
   // conflito e com lacuna. Nada sobre ONDE buscar — ele não busca.
   analyst: ['definicao', 'entrada', 'entrega', 'roteamento'],
@@ -209,6 +236,8 @@ export interface RoleUIConfig {
   allowedKnowledge: boolean
   allowedWeb: boolean
   allowedApps: boolean
+  /** Pode procurar páginas novas na internet? Só o pesquisador, e só se ligado. */
+  allowedWebSearch: boolean
   summary: string
 }
 
@@ -226,6 +255,7 @@ export function roleUIConfigOf(agent: Pick<Agent, 'preset'> & { knowledgeEnabled
     allowedKnowledge: capacidades.knowledge,
     allowedWeb: capacidades.webSources,
     allowedApps: capacidades.externalTools,
+    allowedWebSearch: capacidades.webSearch,
     summary: capacidades.summary,
   }
 }

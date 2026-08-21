@@ -17,7 +17,17 @@ import type { AgentPreset } from './types'
 
 export type AgentRole = 'researcher' | 'analyst' | 'coordinator' | 'executor'
 
-export type RoleSection = 'definicao' | 'conhecimento' | 'web' | 'ferramentas' | 'entrada' | 'entrega' | 'orquestracao' | 'roteamento'
+export type RoleSection =
+  | 'definicao'
+  | 'conhecimento'
+  | 'web'
+  /** Procurar páginas NOVAS na internet. Só de quem coleta. */
+  | 'busca-web'
+  | 'ferramentas'
+  | 'entrada'
+  | 'entrega'
+  | 'orquestracao'
+  | 'roteamento'
 
 export interface RoleConfig {
   role: AgentRole
@@ -26,12 +36,14 @@ export interface RoleConfig {
   allowedKnowledge: boolean
   allowedWeb: boolean
   allowedApps: boolean
+  /** Pode procurar páginas novas na internet? Só o pesquisador, e só se ligado. */
+  allowedWebSearch?: boolean
   summary?: string
 }
 
 /** Espelho de `SECOES` no servidor. Só para o agente que ainda não existe. */
 const SECOES: Record<AgentRole, RoleSection[]> = {
-  researcher: ['definicao', 'conhecimento', 'web', 'ferramentas', 'entrega', 'roteamento'],
+  researcher: ['definicao', 'conhecimento', 'web', 'busca-web', 'ferramentas', 'entrega', 'roteamento'],
   analyst: ['definicao', 'entrada', 'entrega', 'roteamento'],
   coordinator: ['definicao', 'orquestracao', 'roteamento'],
   executor: ['definicao', 'ferramentas', 'entrada', 'entrega', 'roteamento'],
@@ -70,6 +82,7 @@ export function roleConfigOf(agent: { preset?: AgentPreset | null; knowledgeEnab
     allowedKnowledge: knowledge,
     allowedWeb: knowledge,
     allowedApps: base.tools,
+    allowedWebSearch: false,
   }
 }
 

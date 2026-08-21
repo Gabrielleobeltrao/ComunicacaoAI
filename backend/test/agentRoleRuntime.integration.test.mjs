@@ -192,7 +192,7 @@ const bancada = (preset, over = {}) => {
 }
 
 /** O contexto de uma execução no topo da cadeia — o mesmo formato do runtime. */
-const contexto = (alvo) => ({
+const contexto = (alvo, traceId = 't1') => ({
   ownerId: OWNER,
   buildingId: new ObjectId().toString(),
   correlationId: 'c1',
@@ -201,7 +201,7 @@ const contexto = (alvo) => ({
   ancestry: [],
   depth: 0,
   budget: { tokenLimit: 300_000, tokensSpent: 0 },
-  traceId: 't1',
+  traceId,
 })
 
 const rodar = async (preset, over) => {
@@ -254,4 +254,49 @@ test('o pesquisador que EXIGE base continua sendo barrado quando não acha nada'
   }
   await assert.rejects(() => runAgentTask(deps, contexto(alvo), alvo, 'pergunta', '', 'text'))
   assert.equal(chamadas.retrieve, 1, 'ele procurou, não achou, e por isso parou — que é a regra funcionando')
+})
+
+// --- busca na web: só o pesquisador, só ligada -------------------------------------------------
+
+const { readTrace } = await import('../dist/executionTrace.js')
+
+/** Cada execução com a SUA trilha: o painel guarda por id, e reusar um id mistura testes. */
+let proximoTrace = 0
+const comBusca = async (preset, webSearch, over = {}) => {
+  const traceId = `busca-${proximoTrace++}`
+  const { alvo, deps, chamadas } = bancada(preset, { webSearch, ...over })
+  process.env.WEB_SEARCH_URL = 'https://busca.test/api?q={query}'
+  try {
+    await runAgentTask(deps, contexto(alvo, traceId), alvo, 'qual foi o resultado do trimestre?', '', 'text')
+  } finally {
+    delete process.env.WEB_SEARCH_URL
+  }
+  return { chamadas, alvo, traceId }
+}
+
+test('9) o painel mostra a decisão de NÃO buscar, com o motivo', async () => {
+  // "Não procurou" e "procurou e não achou" precisam ser distinguíveis: só um deles é
+  // motivo para mexer na configuração.
+  const { alvo, traceId } = await comBusca('researcher', { enabled: true, policy: 'fallback_only' })
+  const eventos = readTrace(traceId, OWNER)
+  const busca = eventos.find((e) => /busca na web/.test(e.title))
+  assert.ok(busca, `nenhum evento de busca; vieram: ${eventos.map((e) => e.title).join(' | ')}`)
+  assert.match(busca.title, /não foi necessária/, 'a base respondeu, então não se procura fora')
+  assert.match(busca.metadata.reason, /a base já respondeu/)
+  assert.equal(busca.metadata.policy, 'fallback_only')
+  assert.ok(alvo)
+})
+
+test('o pesquisador com a busca DESLIGADA não gera evento nenhum de busca', async () => {
+  const { traceId } = await comBusca('researcher', { enabled: false })
+  const eventos = readTrace(traceId, OWNER)
+  assert.equal(eventos.filter((e) => /busca na web/.test(e.title)).length, 0)
+})
+
+test('analista e coordenador não buscam nem com o interruptor ligado', async () => {
+  for (const preset of ['analyst', 'manager']) {
+    const { traceId } = await comBusca(preset, { enabled: true, policy: 'always' })
+    const eventos = readTrace(traceId, OWNER)
+    assert.equal(eventos.filter((e) => /busca na web/.test(e.title)).length, 0, preset)
+  }
 })
