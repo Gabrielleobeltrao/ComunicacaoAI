@@ -224,6 +224,14 @@ export interface AgentSummary {
     maxEvidenceChunks?: number
     searchTimeoutMs?: number
     pageReadTimeoutMs?: number
+    /**
+     * Por quantos dias uma página achada pela busca continua respondendo. 0 = não guardar.
+     *
+     * Ela vira documento na base, e é isso que evita procurar de novo. O prazo existe
+     * porque uma página achada uma vez não tem releitura automática — ao contrário de um
+     * site cadastrado, que o dono mandou reler.
+     */
+    rememberDays?: number
   }
   delegationPolicy: DelegationPolicy
   callerPolicy: DelegationPolicy

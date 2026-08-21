@@ -23,6 +23,18 @@ export interface WebSearchSettings {
   maxEvidenceChunks: number
   searchTimeoutMs: number
   pageReadTimeoutMs: number
+  /**
+   * Por quantos dias uma página achada pela busca continua valendo. 0 = não guardar.
+   *
+   * Ela vira documento na base do agente, e é isso que evita procurar de novo: a busca
+   * na base roda ANTES da busca na web, então uma pergunta parecida encontra o que já
+   * foi lido e a requisição nem sai.
+   *
+   * A validade existe porque uma página achada uma vez não tem política de releitura —
+   * ao contrário de um site cadastrado, que o dono mandou reler. Sem prazo, um dado de
+   * três meses atrás seria respondido como se fosse de hoje.
+   */
+  rememberDays: number
 }
 
 /** Os tetos do SISTEMA. A configuração do dono escolhe dentro deles, nunca acima. */
@@ -33,6 +45,7 @@ export const WEB_SEARCH_LIMITS = {
   maxEvidenceChunks: { padrao: 8, min: 1, max: 20 },
   searchTimeoutMs: { padrao: 8_000, min: 1_000, max: 30_000 },
   pageReadTimeoutMs: { padrao: 12_000, min: 1_000, max: 60_000 },
+  rememberDays: { padrao: 7, min: 0, max: 365 },
 } as const
 
 const limitar = (valor: unknown, faixa: { padrao: number; min: number; max: number }): number => {
@@ -58,7 +71,58 @@ export function normalizeWebSearch(bruto: Partial<WebSearchSettings> | null | un
     maxEvidenceChunks: limitar(cfg.maxEvidenceChunks, WEB_SEARCH_LIMITS.maxEvidenceChunks),
     searchTimeoutMs: limitar(cfg.searchTimeoutMs, WEB_SEARCH_LIMITS.searchTimeoutMs),
     pageReadTimeoutMs: limitar(cfg.pageReadTimeoutMs, WEB_SEARCH_LIMITS.pageReadTimeoutMs),
+    // Zero é uma escolha legítima — "não guarde nada" —, e por isso não cai no padrão.
+    rememberDays:
+      cfg.rememberDays === 0
+        ? 0
+        : limitar(cfg.rememberDays, WEB_SEARCH_LIMITS.rememberDays as { padrao: number; min: number; max: number }),
   }
+}
+
+/**
+ * A pergunta quer o estado de AGORA?
+ *
+ * Isto existe por um erro que o prazo de validade sozinho não evita. Uma página lida
+ * ontem diz "hoje o produto custa X". Amanhã alguém pergunta "quanto custa hoje?" — e a
+ * página guardada casa perfeitamente com a pergunta, inclusive na palavra "hoje". O
+ * agente responde o preço de ontem com a convicção de quem tem fonte.
+ *
+ * Quando a pergunta pede o agora, uma página que um buscador trouxe UMA VEZ não serve
+ * como resposta pronta: ela vale como pista, e o certo é olhar de novo. Só palavras de
+ * TEMPO entram aqui — nenhum assunto, nenhum domínio, nenhum ramo de negócio.
+ */
+const AGORA = [
+  'hoje',
+  'agora',
+  'atual',
+  'atuais',
+  'atualmente',
+  'neste momento',
+  'no momento',
+  'mais recente',
+  'recentes',
+  'ultima',
+  'ultimas',
+  'ultimo',
+  'ultimos',
+  'esta semana',
+  'nesta semana',
+  'este mes',
+  'neste mes',
+  'este ano',
+  'neste ano',
+  'em tempo real',
+  'ao vivo',
+  'nesta data',
+  'do dia',
+  'de hoje',
+]
+
+const semAcento = (t: string): string => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+
+export function wantsCurrentInfo(pergunta: string): boolean {
+  const alvo = semAcento(pergunta)
+  return AGORA.some((termo) => new RegExp(`\\b${termo}\\b`).test(alvo))
 }
 
 export interface SearchDecision {
@@ -79,12 +143,34 @@ export interface SearchDecision {
  */
 export function shouldSearch(
   cfg: WebSearchSettings,
-  estado: { grounding: string; passages: number; canSearch: boolean },
+  estado: {
+    grounding: string
+    passages: number
+    canSearch: boolean
+    /** A pergunta pede o estado de AGORA? */
+    wantsCurrent?: boolean
+    /** O que a base respondeu veio SÓ de páginas que um buscador trouxe? */
+    onlySearchMemory?: boolean
+  },
 ): SearchDecision {
   if (!cfg.enabled) return { search: false, reason: 'busca na web desligada neste agente' }
   if (!estado.canSearch) return { search: false, reason: 'nenhum serviço de busca configurado neste servidor' }
 
   if (cfg.policy === 'always') return { search: true, reason: 'política: sempre procurar' }
+
+  /**
+   * A pergunta quer AGORA, e o que a base tem veio de uma busca anterior.
+   *
+   * Este é o caso perigoso: a página guardada casa com a pergunta — ela também fala
+   * "hoje" — e responderia o valor de ontem como se fosse o de agora. Uma página que um
+   * buscador trouxe uma vez não tem política de releitura; a única forma de saber se
+   * ainda vale é olhar de novo.
+   *
+   * O que o dono CUROU não entra nesta regra: se ele escreveu, é responsabilidade dele.
+   */
+  if (estado.wantsCurrent && estado.onlySearchMemory) {
+    return { search: true, reason: 'a pergunta é sobre agora, e o que a base tem veio de uma busca anterior' }
+  }
 
   if (cfg.policy === 'fallback_only') {
     if (estado.grounding === 'ok' && estado.passages > 0) {

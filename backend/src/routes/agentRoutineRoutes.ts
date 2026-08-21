@@ -21,6 +21,7 @@ import { fontesDoAgente } from '../automations/sourceTool.js'
 import { isExecutionMode } from '../automations/types.js'
 import { normalizeWebSource } from '../webSourcePolicy.js'
 import { readWebPage } from '../adaptiveWebReader.js'
+import { agentSearchStats } from '../webSearch/budget.js'
 import { rendererAtivo } from '../browserRenderer.js'
 import { countDocumentsFromSource } from '../knowledge.js'
 import { ensureAgentWebKnowledgeFresh } from '../webKnowledge.js'
@@ -356,6 +357,26 @@ agentRoutineRouter.post('/sources/test-read', async (req, res) => {
     // Um trecho, para reconhecer a página. Nunca o corpo inteiro.
     preview: r.text.slice(0, 400),
   })
+})
+
+/**
+ * Quanto ESTE pesquisador buscou — e quanto ele deixou de buscar.
+ *
+ * O painel de Configurações mostra o gasto da instalação, que é o que protege a fatura.
+ * Isto responde outra pergunta: este agente está valendo a busca? Um número global não
+ * diz de quem foi o gasto, e um agente que busca demais sem achar nada é um problema de
+ * configuração dele, não do servidor.
+ *
+ * "Buscas evitadas" é o retorno da memória: pergunta que a base já respondia e não virou
+ * requisição ao buscador.
+ */
+agentRoutineRouter.get('/search-stats', async (req, res) => {
+  const agentId = await requireAgent(res.locals.userId, String((req.params as Record<string, string>).agentId))
+  if (!agentId) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+  res.json(await agentSearchStats(agentId.toString()))
 })
 
 agentRoutineRouter.put('/sources', async (req, res) => {

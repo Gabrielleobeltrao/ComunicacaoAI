@@ -33,6 +33,10 @@ export function buildRetrievalQuery(
 export interface CitableSource {
   documentId: string | null
   title: string | null
+  /** QUANDO o conteúdo foi capturado. Uma resposta sobre "hoje" precisa da idade da fonte. */
+  capturedAt?: string | null
+  /** De onde veio: o que o dono curou, um site cadastrado, ou uma busca de uma vez só. */
+  origin?: 'manual' | 'web' | 'search'
 }
 
 /**
@@ -77,7 +81,22 @@ export function formatContextWithSources(context: string[], sources: CitableSour
     const documentId = source?.documentId ? String(source.documentId) : null
     // Without provenance the passage is still numbered, so a citation can refer to
     // it — it just has nothing to name.
-    const label = [title, documentId ? `doc ${documentId}` : null].filter(Boolean).join(' · ')
+    /**
+     * A IDADE da fonte entra no rótulo — e é ela que evita a pior resposta possível.
+     *
+     * Uma página lida ontem diz "hoje o produto custa X". Perguntada amanhã, ela casa
+     * com a pergunta inclusive na palavra "hoje", e o modelo repete o número de ontem
+     * como se fosse o de agora. Com a data escrita ao lado do trecho, ele vê a distância
+     * entre o que foi capturado e o que está sendo perguntado.
+     *
+     * "Lido em" e não "publicado em": o que importa aqui é quando NÓS vimos.
+     */
+    const capturado = source?.capturedAt ? new Date(source.capturedAt) : null
+    const idade =
+      capturado && !Number.isNaN(capturado.getTime())
+        ? `lido em ${capturado.toISOString().slice(0, 10)}${source?.origin === 'search' ? ' · encontrado por busca, sem releitura automática' : ''}`
+        : null
+    const label = [title, documentId ? `doc ${documentId}` : null, idade].filter(Boolean).join(' · ')
     return `[${index + 1}]${label ? ` ${label}` : ''}\n${passage}`
   })
 }

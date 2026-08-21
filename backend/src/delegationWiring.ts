@@ -22,6 +22,8 @@ import { recordAgentEvent } from './agentEvents.js'
 import { recordReplyUsageOnce } from './tokenUsage.js'
 import { listDocuments, retrieveContext } from './knowledge.js'
 import { ensureFreshWithTimeout } from './webKnowledge.js'
+import { rememberSearchPages } from './webSearch/memory.js'
+import type { ReadResult } from './adaptiveWebReader.js'
 import { askAux, auxiliaryModel } from './llm.js'
 import { AUTO_MODEL } from './autoModel.js'
 import { agentCanDelegate, buildDelegationTools, capabilityMissingTool } from './delegation.js'
@@ -115,6 +117,10 @@ export function productionDelegationDeps(): DelegationDeps {
     ensureWebKnowledgeFresh: (ownerId, agentId) => ensureFreshWithTimeout(ownerId, agentId, 'on_demand'),
     // O MESMO pipeline, outro motivo: a primeira leitura de uma base vazia.
     bootstrapWebKnowledge: (ownerId, agentId) => ensureFreshWithTimeout(ownerId, agentId, 'bootstrap'),
+    // O que a busca leu vira memória do agente — a próxima pergunta parecida encontra
+    // isto na base, e a requisição ao buscador nem sai.
+    rememberSearchPages: (ownerId, agentId, query, pages, rememberDays) =>
+      rememberSearchPages(agentId, ownerId, query, pages as ReadResult[], rememberDays),
     // Só os TÍTULOS: dizem quem tem o dado sem abrir o dado.
     knowledgeTitlesFor: async (_ownerId, agentId) => (await listDocuments(agentId)).map((d) => d.title).filter(Boolean),
     // O balão de quem EXECUTA. `reportState` acima é o de quem DELEGA — os dois

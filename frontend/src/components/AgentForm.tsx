@@ -25,6 +25,7 @@ import type {
 } from '../lib/types'
 import { AgentCapabilities } from './AgentCapabilities'
 import { AgentToolsPicker } from './AgentToolsPicker'
+import { AgentSearchStats } from './AgentSearchStats'
 import { WebSearchStatusLine } from './WebSearchStatusLine'
 import { AgentSources } from './AgentSources'
 import { AgentAppGrantsEditor } from './AgentAppGrantsEditor'
@@ -1896,6 +1897,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                 </p>
               </div>
               <WebSearchStatusLine />
+              {agent?._id && editWebSearch.enabled === true && <AgentSearchStats agentId={agent._id} />}
                 <label className="flex items-start gap-2 text-sm">
                   <input
                     type="checkbox"
@@ -1944,6 +1946,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                             ['maxPagesToRead', 'Páginas abertas', 5, 'Esta é a que custa: cada uma é uma leitura completa.'],
                             ['maxCharsPerPage', 'Caracteres por página', 15000, 'Quanto de cada página é considerado.'],
                             ['maxEvidenceChunks', 'Trechos de evidência', 8, 'O que chega ao modelo. Página inteira piora a resposta.'],
+                            [
+                              'rememberDays',
+                              'Guardar o que achou por (dias)',
+                              7,
+                              '0 = não guardar. Uma página achada uma vez não tem releitura automática: passado o prazo, ela deixa de responder.',
+                            ],
                             ['searchTimeoutMs', 'Tempo limite da busca (ms)', 8000, ''],
                             ['pageReadTimeoutMs', 'Tempo limite por página (ms)', 12000, ''],
                           ] as const
@@ -1952,7 +1960,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                             <label className="mb-1 block text-xs text-(--text-muted)">{rotulo}</label>
                             <input
                               type="number"
-                              min={1}
+                              min={campo === 'rememberDays' ? 0 : 1}
                               value={editWebSearch[campo] ?? ''}
                               placeholder={String(padrao)}
                               onChange={(e) =>

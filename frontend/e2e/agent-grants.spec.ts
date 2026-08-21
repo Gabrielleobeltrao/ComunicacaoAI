@@ -1148,3 +1148,52 @@ test('no celular, a seção Web não estoura nem espreme os controles', async ({
   const { sw, cw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
   expect(sw, 'a página não pode rolar de lado').toBeLessThanOrEqual(cw + 1)
 })
+
+// --- o bloco de contagem do pesquisador -------------------------------------------------------
+//
+// "Evitadas" é o retorno de guardar as páginas: pergunta que a base já respondia e não
+// virou requisição ao buscador.
+
+test('com a busca ligada, o pesquisador mostra quanto buscou e quanto evitou', async ({ page }) => {
+  await page.route('**/api/agents/*/search-stats', (r) =>
+    r.fulfill({
+      json: {
+        searchesThisMonth: 12, searchesToday: 2, avoidedThisMonth: 8,
+        pagesRead: 31, documentsSaved: 24, failures: 1,
+        lastSearchAt: '2026-08-21T10:00:00.000Z', lastQuery: 'faturamento do trimestre',
+      },
+    }),
+  )
+  await stub(page, { agent: { ...AGENT, preset: 'researcher', webSearch: { enabled: true } } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Web')
+
+  const bloco = page.getByTestId('agent-search-stats')
+  await expect(bloco).toContainText('12')
+  await expect(bloco).toContainText('8')
+  await expect(bloco).toContainText('40% das perguntas')
+  await expect(bloco).toContainText('31')
+  await expect(bloco).toContainText('24')
+  await expect(page.getByTestId('search-stat-failures')).toContainText('respondeu com o que já tinha')
+  await expect(page.getByTestId('search-stat-last')).toContainText('faturamento do trimestre')
+})
+
+test('com a busca desligada, não há bloco de contagem — não há o que contar', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Web')
+  await expect(page.getByTestId('agent-search-stats')).toHaveCount(0)
+})
+
+test('o prazo de validade fica nos avançados, e aceita zero', async ({ page }) => {
+  await stub(page, { agent: { ...AGENT, preset: 'researcher', webSearch: { enabled: true } } })
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
+  await abrirBloco(page, 'Web')
+  await page.getByTestId('web-search-advanced').click()
+
+  const campo = page.getByTestId('web-search-rememberDays')
+  await expect(campo).toBeVisible()
+  await expect(campo).toHaveAttribute('placeholder', '7')
+  // Zero é uma escolha legítima: "não guarde nada".
+  await expect(campo).toHaveAttribute('min', '0')
+})

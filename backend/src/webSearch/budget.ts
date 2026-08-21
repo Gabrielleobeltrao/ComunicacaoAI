@@ -63,6 +63,8 @@ const orcamento = db.collection<SearchBudgetDoc>('web_search_budget')
 export async function ensureWebSearchIndexes(): Promise<void> {
   // Idempotente: `createIndex` sobre um índice que já existe não faz nada.
   await orcamento.createIndex({ provider: 1, period: 1 })
+  await eventos.createIndex({ agentId: 1, month: 1 })
+  await eventos.createIndex({ agentId: 1, createdAt: -1 })
 }
 
 /** O mês em UTC. É o fuso do provedor de nuvem, e não o de quem olha a tela. */
@@ -130,6 +132,98 @@ export async function releaseSearchRequest(provider: string, agora: Date = new D
   await orcamento.updateOne({ _id: `${provider}:${searchPeriod(agora)}`, used: { $gt: 0 } }, { $inc: { used: -1 } }).catch(() => undefined)
 }
 
+/**
+ * Uma busca que aconteceu — por AGENTE.
+ *
+ * O orçamento acima conta requisições da instalação, que é o que protege a fatura. Isto
+ * conta outra coisa: quem gastou, no quê, e com que resultado. São perguntas diferentes,
+ * e um número global não responde "este pesquisador está valendo a pena?".
+ */
+export interface SearchEvent {
+  agentId: string | null
+  ownerId: string | null
+  provider: string
+  query: string
+  /** Aconteceu, ou foi evitada porque a base já respondia? */
+  performed: boolean
+  skipReason?: string | null
+  found: number
+  pagesRead: number
+  evidence: number
+  /** Quantas páginas viraram documento na base do agente. */
+  saved: number
+  ok: boolean
+  code?: string | null
+  durationMs: number
+  createdAt: Date
+  day: string
+  month: string
+}
+
+const eventos = db.collection<SearchEvent>('web_search_events')
+
+export async function recordSearchEvent(e: Omit<SearchEvent, 'createdAt' | 'day' | 'month'>, agora: Date = new Date()): Promise<void> {
+  await eventos
+    .insertOne({
+      ...e,
+      // A consulta é do dono, e pode carregar o que ele digitou. Vai cortada, e é o
+      // suficiente para reconhecer a busca no painel.
+      query: (e.query ?? '').slice(0, 200),
+      createdAt: agora,
+      day: agora.toISOString().slice(0, 10),
+      month: searchPeriod(agora),
+    } as SearchEvent)
+    .catch(() => undefined)
+}
+
+export interface AgentSearchStats {
+  /** No mês corrente (UTC), que é o período da franquia. */
+  searchesThisMonth: number
+  searchesToday: number
+  /** Buscas que NÃO aconteceram porque a base já respondia. É a economia. */
+  avoidedThisMonth: number
+  pagesRead: number
+  documentsSaved: number
+  failures: number
+  lastSearchAt: string | null
+  lastQuery: string | null
+}
+
+/** O que este agente gastou — e o que ele deixou de gastar. */
+export async function agentSearchStats(agentId: string, agora: Date = new Date()): Promise<AgentSearchStats> {
+  const month = searchPeriod(agora)
+  const day = agora.toISOString().slice(0, 10)
+  const [resumo] = await eventos
+    .aggregate<{ feitas: number; evitadas: number; hoje: number; paginas: number; salvos: number; falhas: number }>([
+      { $match: { agentId, month } },
+      {
+        $group: {
+          _id: null,
+          feitas: { $sum: { $cond: ['$performed', 1, 0] } },
+          evitadas: { $sum: { $cond: ['$performed', 0, 1] } },
+          hoje: { $sum: { $cond: [{ $and: ['$performed', { $eq: ['$day', day] }] }, 1, 0] } },
+          paginas: { $sum: '$pagesRead' },
+          salvos: { $sum: '$saved' },
+          falhas: { $sum: { $cond: [{ $and: ['$performed', { $eq: ['$ok', false] }] }, 1, 0] } },
+        },
+      },
+    ])
+    .toArray()
+    .catch(() => [])
+
+  const [ultima] = await eventos.find({ agentId, performed: true }).sort({ createdAt: -1 }).limit(1).toArray().catch(() => [])
+  return {
+    searchesThisMonth: resumo?.feitas ?? 0,
+    searchesToday: resumo?.hoje ?? 0,
+    avoidedThisMonth: resumo?.evitadas ?? 0,
+    pagesRead: resumo?.paginas ?? 0,
+    documentsSaved: resumo?.salvos ?? 0,
+    failures: resumo?.falhas ?? 0,
+    lastSearchAt: ultima?.createdAt ? ultima.createdAt.toISOString() : null,
+    lastQuery: ultima?.query ?? null,
+  }
+}
+
 export interface SearchBudgetStatus {
   configured: boolean
   provider: string
@@ -170,4 +264,5 @@ export async function searchBudgetStatus(
 /** Só para teste. */
 export async function resetSearchBudget(provider = 'brave'): Promise<void> {
   await orcamento.deleteMany({ provider })
+  await eventos.deleteMany({ provider })
 }

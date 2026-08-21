@@ -28,7 +28,8 @@ import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
 import { ROLE_LABEL, capabilitiesOf, roleOf } from './agentCapabilities.js'
 import { preview, traceEvent } from './executionTrace.js'
 import { activeSearchProvider } from './webSearch/provider.js'
-import { normalizeWebSearch, shouldSearch } from './webSearch/policy.js'
+import { normalizeWebSearch, shouldSearch, wantsCurrentInfo } from './webSearch/policy.js'
+import { recordSearchEvent } from './webSearch/budget.js'
 import type { WebSearchSettings } from './webSearch/policy.js'
 import { runWebSearch } from './webSearch/run.js'
 import type { TraceInput } from './executionTrace.js'
@@ -304,6 +305,17 @@ export interface DelegationDeps {
    * já voltou sem nada — nunca antes.
    */
   bootstrapWebKnowledge?: (ownerId: string, agentId: ObjectId) => Promise<unknown>
+  /**
+   * Guarda na base as páginas que a busca leu. Injetada porque escreve no banco, e este
+   * módulo é puro. Ausente = a busca funciona e nada é guardado.
+   */
+  rememberSearchPages?: (
+    ownerId: string,
+    agentId: ObjectId,
+    query: string,
+    pages: unknown[],
+    rememberDays: number,
+  ) => Promise<{ saved: number; updated: number; unchanged: number }>
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
@@ -380,7 +392,7 @@ export interface DelegationDeps {
     opts: { sectorId?: ObjectId | null },
   ) => Promise<{
     context: string[]
-    sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
+    sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' | 'search'; capturedAt?: string | null }[]
     status?: string
     failed?: boolean
     /** Quantos trechos correspondiam, quando dá para saber — ver `knowledge.ts`. */
@@ -411,7 +423,7 @@ interface TaskRun {
   // De onde saiu a resposta, para quem PEDIU poder conferir: o veredito da busca e os
   // documentos que entraram — id e título, nunca o texto deles.
   grounding?: string
-  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
+  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' | 'search'; capturedAt?: string | null }[]
 }
 
 // Emit a per-agent telemetry event for a delegation/sector run (fire-and-forget via
@@ -915,12 +927,46 @@ export async function runAgentTask(
   const provedorDeBusca = capacidades.webSearch ? activeSearchProvider() : null
   const evidenciasDaWeb: string[] = []
   if (capacidades.webSearch && query) {
-    const decisao = shouldSearch(buscaWeb, { grounding, passages: passages.length, canSearch: Boolean(provedorDeBusca) })
+    // O que a base respondeu veio SÓ de páginas que um buscador trouxe? A distinção
+    // decide se uma pergunta sobre "agora" pode ser respondida com o que está guardado.
+    const soMemoriaDeBusca = sources.length > 0 && sources.every((f) => f.origin === 'search')
+    const decisao = shouldSearch(buscaWeb, {
+      grounding,
+      passages: passages.length,
+      canSearch: Boolean(provedorDeBusca),
+      wantsCurrent: wantsCurrentInfo(query),
+      onlySearchMemory: soMemoriaDeBusca,
+    })
     if (decisao.search && provedorDeBusca) {
       tracker.report('reading_knowledge')
       const r = await runWebSearch(provedorDeBusca, query, buscaWeb)
-      for (const e of r.evidence) evidenciasDaWeb.push(`[${e.title}]\nFonte: ${e.url}\n\n${e.text}`)
+      // A data de captura vai JUNTO da evidência: sem ela, um trecho que diz "hoje" é
+      // lido como se fosse de hoje, qualquer que seja o dia em que foi escrito.
+      const lidoEm = new Date().toISOString().slice(0, 10)
+      for (const e of r.evidence) evidenciasDaWeb.push(`[${e.title}] · lido em ${lidoEm}\nFonte: ${e.url}\n\n${e.text}`)
       if (r.evidence.length > 0) grounding = 'ok'
+
+      // O que foi lido vira memória do agente: a próxima pergunta parecida encontra isto
+      // na base, e a requisição ao buscador nem sai.
+      const guardado =
+        deps.rememberSearchPages && r.pages.length > 0
+          ? await deps.rememberSearchPages(ctx.ownerId, target._id, query, r.pages, buscaWeb.rememberDays).catch(() => null)
+          : null
+
+      await recordSearchEvent({
+        agentId: target._id.toString(),
+        ownerId: ctx.ownerId,
+        provider: r.provider,
+        query,
+        performed: true,
+        found: r.found,
+        pagesRead: r.read.length,
+        evidence: r.evidence.length,
+        saved: (guardado?.saved ?? 0) + (guardado?.updated ?? 0),
+        ok: r.ok,
+        code: r.code ?? null,
+        durationMs: r.durationMs,
+      })
       if (ctx.traceId) {
         traceEvent({
           ownerId: ctx.ownerId,
@@ -950,7 +996,24 @@ export async function runAgentTask(
           },
         })
       }
-    } else if (ctx.traceId && buscaWeb.enabled) {
+    } else if (buscaWeb.enabled) {
+      // A busca EVITADA também é registrada: é ela que mostra a economia de ter memória.
+      await recordSearchEvent({
+        agentId: target._id.toString(),
+        ownerId: ctx.ownerId,
+        provider: 'brave',
+        query,
+        performed: false,
+        skipReason: decisao.reason,
+        found: 0,
+        pagesRead: 0,
+        evidence: 0,
+        saved: 0,
+        ok: true,
+        durationMs: 0,
+      })
+    }
+    if (!decisao.search && ctx.traceId && buscaWeb.enabled) {
       // Não procurou — e o motivo importa tanto quanto a busca. Sem isto, "não procurou"
       // e "procurou e não achou" ficam iguais no painel.
       traceEvent({
@@ -1307,7 +1370,7 @@ export interface SectorParticipant {
   /** Quantas ferramentas ele completou. Um número, nunca argumentos ou resultado. */
   toolCalls?: number
   /** Os documentos que entraram na resposta: id e título, nunca o texto. */
-  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
+  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' | 'search'; capturedAt?: string | null }[]
   /** O que ESTE agente custou. Quem paga a conta precisa ver a conta separada. */
   usage?: { inputTokens: number; outputTokens: number }
   /** Quanto ele demorou, em milissegundos. */

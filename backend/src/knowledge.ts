@@ -143,6 +143,18 @@ export interface WebDocumentMeta {
   /** Como esta página foi lida — HTTP direto ou navegador. */
   readMethod?: 'http' | 'browser'
   /**
+   * Quem trouxe esta página: um site CADASTRADO pelo dono, ou uma BUSCA.
+   *
+   * A diferença governa o tempo de vida. Um site cadastrado tem política de releitura —
+   * o dono mandou reler. Uma página achada por busca não tem: foi encontrada uma vez,
+   * para uma pergunta, e sem prazo viraria um dado velho respondido como atual.
+   */
+  discoveredBy?: 'source' | 'search'
+  /** A pergunta que levou até esta página. Ajuda a entender por que ela está na base. */
+  query?: string | null
+  /** Depois disto ela não é mais usada para responder. Ausente = não expira. */
+  expiresAt?: Date | null
+  /**
    * O que a página trazia em forma de dado, e não de prosa: tabelas, JSON-LD, pares
    * rótulo/valor. Vem com a HORA DA CAPTURA porque, para um número que muda, "quando
    * isto valia" é metade da informação.
@@ -530,6 +542,8 @@ export interface KnowledgeHit {
   // id and a short title, both from the owner's own documents.
   documentId?: string
   title?: string
+  /** QUANDO este conteúdo foi capturado. Para um dado que muda, é metade da informação. */
+  capturedAt?: Date
   /**
    * De onde este trecho veio: escrito à mão ou lido de um site.
    *
@@ -538,7 +552,7 @@ export interface KnowledgeHit {
    * texto escrito à mão tem um autor. Sem a marca, uma resposta que mistura os dois não
    * dá para auditar.
    */
-  origin?: 'manual' | 'web'
+  origin?: 'manual' | 'web' | 'search'
 }
 
 // Where a passage came from. Never crosses accounts: the hits it is built from are
@@ -548,8 +562,10 @@ export interface KnowledgeSource {
   title: string | null
   ownerType: KnowledgeOwnerType
   ownerId: string
+  /** QUANDO foi capturado. Uma resposta sobre "hoje" precisa saber a idade da fonte. */
+  capturedAt?: string | null
   /** Escrito à mão ou lido de um site. Ausente quando a origem não foi resolvida. */
-  origin?: 'manual' | 'web'
+  origin?: 'manual' | 'web' | 'search'
 }
 
 // Vector search across one or more owners (an agent plus, when the execution runs in
@@ -599,6 +615,13 @@ export async function searchKnowledgeForOwners(
       { $lookup: { from: 'knowledge_documents', localField: 'documentId', foreignField: '_id', as: 'doc' } },
       // O recorte por metadado mora no DOCUMENTO, não no chunk. Aplicá-lo aqui evita
       // duplicar `publishedAt`/`domain` em cada pedaço — que envelheceria em separado.
+      // O que VENCEU não responde — nem aqui, nem na busca exata. E o recorte por
+      // metadado mora no DOCUMENTO, não no chunk.
+      {
+        $match: {
+          $or: [{ 'doc.web.expiresAt': { $exists: false } }, { 'doc.web.expiresAt': null }, { 'doc.web.expiresAt': { $gt: new Date() } }],
+        },
+      },
       ...(Object.keys(metadataFilter(filtros)).length > 0
         ? [
             {
@@ -613,7 +636,14 @@ export async function searchKnowledgeForOwners(
           title: { $ifNull: [{ $first: '$doc.title' }, null] },
           // A origem vem do documento, e não do chunk: é o documento que sabe se nasceu
           // de um site ou da mão de alguém.
-          origin: { $cond: [{ $ifNull: [{ $first: '$doc.web' }, false] }, 'web', 'manual'] },
+          origin: {
+            $cond: [
+              { $eq: [{ $first: '$doc.web.discoveredBy' }, 'search'] },
+              'search',
+              { $cond: [{ $ifNull: [{ $first: '$doc.web' }, false] }, 'web', 'manual'] },
+            ],
+          },
+          capturedAt: { $first: '$doc.web.fetchedAt' },
         },
       },
       { $unset: 'doc' },
@@ -675,6 +705,19 @@ export async function countUnindexedFor(owners: KnowledgeOwner[]): Promise<numbe
   return documents.countDocuments({ $and: [{ $or: owners.map(ownerFilter) }, { indexStatus: 'error' }] }).catch(() => 0)
 }
 
+/**
+ * O filtro que exclui o que VENCEU.
+ *
+ * Uma página que um buscador trouxe tem prazo: ela foi encontrada uma vez, para uma
+ * pergunta, e ninguém mandou relê-la. Passado o prazo, ela não responde mais — nem por
+ * semelhança, nem por texto exato.
+ *
+ * Documento sem `expiresAt` (tudo que o dono curou, e todo site cadastrado) não expira:
+ * a ausência do campo é o comportamento de sempre, o que mantém as bases existentes
+ * intactas.
+ */
+const naoVencido = (agora: Date) => ({ $or: [{ 'web.expiresAt': { $exists: false } }, { 'web.expiresAt': null }, { 'web.expiresAt': { $gt: agora } }] })
+
 export async function searchKnowledgeLexicallyForOwners(
   owners: KnowledgeOwner[],
   query: string,
@@ -705,7 +748,7 @@ export async function searchKnowledgeLexicallyForOwners(
       // O recorte por metadado entra ANTES da comparação de texto: o que está fora do
       // período nem chega a ser lido.
       ...metadataFilter(filtros),
-      $and: [{ $or: [{ content: { $regex: padrao, $options: 'i' } }, { title: { $regex: padrao, $options: 'i' } }] }],
+      $and: [naoVencido(new Date()), { $or: [{ content: { $regex: padrao, $options: 'i' } }, { title: { $regex: padrao, $options: 'i' } }] }],
     })
     // Um teto de leitura: o corte por nota acontece depois, em memória.
     .limit(Math.max(limit * 4, 20))
@@ -720,7 +763,10 @@ export async function searchKnowledgeLexicallyForOwners(
       ownerId: String(doc.ownerId ?? doc.agentId ?? ''),
       documentId: String(doc._id),
       title: doc.title ?? undefined,
-      origin: doc.web ? ('web' as const) : ('manual' as const),
+      // Três origens, e a diferença governa a CONFIANÇA: o que o dono escreveu, o site
+      // que ele cadastrou, e o que um buscador trouxe uma vez. A última é a que envelhece
+      // sem ninguém mandar reler.
+      origin: doc.web?.discoveredBy === 'search' ? ('search' as const) : doc.web ? ('web' as const) : ('manual' as const),
     }))
     .filter((hit) => hit.score > 0 && hit.content)
 }
@@ -830,6 +876,7 @@ export async function retrieveContext(
       ownerType: hit.ownerType,
       ownerId: hit.ownerId,
       ...(hit.origin ? { origin: hit.origin } : {}),
+      ...(hit.capturedAt ? { capturedAt: new Date(hit.capturedAt).toISOString() } : {}),
     })),
     status,
     failed,

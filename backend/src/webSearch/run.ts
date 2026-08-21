@@ -10,6 +10,7 @@
 import { readWebPage } from '../adaptiveWebReader.js'
 import { rendererAtivo } from '../browserRenderer.js'
 import { extractTerms, extractWindow, scoreText } from '../lexicalRetrieval.js'
+import type { ReadResult } from '../adaptiveWebReader.js'
 import type { SearchResult, WebSearchProvider } from './provider.js'
 import type { WebSearchSettings } from './policy.js'
 
@@ -32,6 +33,8 @@ export interface SearchRunOutcome {
   /** Os que foram abertos de fato, com o resultado da leitura. */
   read: { url: string; ok: boolean; code?: string; usefulChars: number; durationMs: number }[]
   evidence: Evidence[]
+  /** As páginas que foram lidas com sucesso — é delas que sai a memória do agente. */
+  pages: ReadResult[]
   durationMs: number
   error?: string
 }
@@ -85,6 +88,7 @@ export async function runWebSearch(
     selected: [],
     read: [],
     evidence: [],
+    pages: [],
     durationMs: 0,
   }
 
@@ -126,6 +130,7 @@ export async function runWebSearch(
       durationMs: lida.durationMs,
     })
     if (!lida.ok || !lida.text.trim()) continue
+    base.pages.push(lida)
     for (const trecho of evidenciasDe(lida.text, query, cfg.maxCharsPerPage, cfg.maxEvidenceChunks)) {
       if (base.evidence.length >= cfg.maxEvidenceChunks) break
       base.evidence.push({ title: lida.metadata.title || r.title, url: lida.metadata.canonicalUrl || r.url, text: trecho })
