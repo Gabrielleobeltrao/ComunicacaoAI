@@ -144,7 +144,19 @@ export interface SearchEvent {
   ownerId: string | null
   provider: string
   query: string
-  /** Aconteceu, ou foi evitada porque a base já respondia? */
+  /**
+   * O que aconteceu, em três estados que pedem ações diferentes:
+   *
+   *   `sent`    — a requisição saiu e gastou franquia.
+   *   `blocked` — a franquia acabou: NÃO saiu e NÃO gastou. Nada a corrigir no agente.
+   *   `avoided` — a base já respondia: não precisou sair. É a economia da memória.
+   *
+   * Antes havia só `performed`, e um bloqueio de franquia era gravado como busca feita —
+   * o painel mostrava consumo que não existiu, e um agente parado por falta de cota
+   * parecia um agente gastando.
+   */
+  outcome?: 'sent' | 'blocked' | 'avoided'
+  /** Mantido: `outcome === 'sent'`. Continua aqui para não quebrar leitor antigo. */
   performed: boolean
   skipReason?: string | null
   found: number
@@ -163,9 +175,14 @@ export interface SearchEvent {
 const eventos = db.collection<SearchEvent>('web_search_events')
 
 export async function recordSearchEvent(e: Omit<SearchEvent, 'createdAt' | 'day' | 'month'>, agora: Date = new Date()): Promise<void> {
+  // `performed` é derivado de `outcome` quando ele vem, para os dois campos nunca
+  // discordarem. Um evento antigo, sem `outcome`, é lido pelo `performed` que já tinha.
+  const outcome = e.outcome ?? (e.performed ? 'sent' : 'avoided')
   await eventos
     .insertOne({
       ...e,
+      outcome,
+      performed: outcome === 'sent',
       // A consulta é do dono, e pode carregar o que ele digitou. Vai cortada, e é o
       // suficiente para reconhecer a busca no painel.
       query: (e.query ?? '').slice(0, 200),
@@ -177,11 +194,13 @@ export async function recordSearchEvent(e: Omit<SearchEvent, 'createdAt' | 'day'
 }
 
 export interface AgentSearchStats {
-  /** No mês corrente (UTC), que é o período da franquia. */
+  /** Buscas que SAÍRAM no mês corrente (UTC) — as que gastaram franquia. */
   searchesThisMonth: number
   searchesToday: number
   /** Buscas que NÃO aconteceram porque a base já respondia. É a economia. */
   avoidedThisMonth: number
+  /** Buscas barradas pela franquia: não saíram e não gastaram. Não são consumo. */
+  blockedThisMonth: number
   pagesRead: number
   documentsSaved: number
   failures: number
@@ -193,18 +212,23 @@ export interface AgentSearchStats {
 export async function agentSearchStats(agentId: string, agora: Date = new Date()): Promise<AgentSearchStats> {
   const month = searchPeriod(agora)
   const day = agora.toISOString().slice(0, 10)
+  // `outcome` decide; um evento antigo, sem ele, é lido pelo `performed`. Assim a leitura
+  // nunca conta um bloqueio de franquia como consumo — que era o defeito.
+  const estado = { $ifNull: ['$outcome', { $cond: ['$performed', 'sent', 'avoided'] }] }
+  const enviada = { $eq: [estado, 'sent'] }
   const [resumo] = await eventos
-    .aggregate<{ feitas: number; evitadas: number; hoje: number; paginas: number; salvos: number; falhas: number }>([
+    .aggregate<{ feitas: number; evitadas: number; bloqueadas: number; hoje: number; paginas: number; salvos: number; falhas: number }>([
       { $match: { agentId, month } },
       {
         $group: {
           _id: null,
-          feitas: { $sum: { $cond: ['$performed', 1, 0] } },
-          evitadas: { $sum: { $cond: ['$performed', 0, 1] } },
-          hoje: { $sum: { $cond: [{ $and: ['$performed', { $eq: ['$day', day] }] }, 1, 0] } },
+          feitas: { $sum: { $cond: [enviada, 1, 0] } },
+          evitadas: { $sum: { $cond: [{ $eq: [estado, 'avoided'] }, 1, 0] } },
+          bloqueadas: { $sum: { $cond: [{ $eq: [estado, 'blocked'] }, 1, 0] } },
+          hoje: { $sum: { $cond: [{ $and: [enviada, { $eq: ['$day', day] }] }, 1, 0] } },
           paginas: { $sum: '$pagesRead' },
           salvos: { $sum: '$saved' },
-          falhas: { $sum: { $cond: [{ $and: ['$performed', { $eq: ['$ok', false] }] }, 1, 0] } },
+          falhas: { $sum: { $cond: [{ $and: [enviada, { $eq: ['$ok', false] }] }, 1, 0] } },
         },
       },
     ])
@@ -216,6 +240,7 @@ export async function agentSearchStats(agentId: string, agora: Date = new Date()
     searchesThisMonth: resumo?.feitas ?? 0,
     searchesToday: resumo?.hoje ?? 0,
     avoidedThisMonth: resumo?.evitadas ?? 0,
+    blockedThisMonth: resumo?.bloqueadas ?? 0,
     pagesRead: resumo?.paginas ?? 0,
     documentsSaved: resumo?.salvos ?? 0,
     failures: resumo?.falhas ?? 0,

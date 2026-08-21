@@ -519,6 +519,52 @@ export async function ensureKnowledgeIndexes(): Promise<void> {
   await documents.createIndex({ ownerType: 1, ownerId: 1, createdAt: -1 })
   await chunks.createIndex({ ownerType: 1, ownerId: 1 })
   await chunks.createIndex({ documentId: 1 })
+  /**
+   * Um documento por endereço, por dono — garantido pelo BANCO.
+   *
+   * Duas buscas simultâneas podem achar a mesma página. Sem esta garantia, as duas
+   * "não encontram nada" ao mesmo tempo e as duas criam: viram duas cópias, dois
+   * embeddings pagos e o mesmo texto aparecendo duas vezes na resposta.
+   *
+   * PARCIAL de propósito: só vale onde `sourceRef` existe. Documento escrito à mão não
+   * tem o campo e fica de fora — a regra não pode impedir dois documentos manuais.
+   *
+   * A criação é tolerante: numa base que já tenha duplicados de antes, o índice único
+   * falha ao ser criado. Nesse caso o aviso fica no log e o sistema segue — a proteção
+   * de escrita (abaixo) não depende dele para funcionar, e apagar dado de alguém para
+   * criar um índice não é uma troca aceitável.
+   */
+  await documents
+    .createIndex(
+      { ownerType: 1, ownerId: 1, sourceRef: 1 },
+      { unique: true, partialFilterExpression: { sourceRef: { $type: 'string' } }, name: 'owner_sourceRef_unico' },
+    )
+    .catch((erro) => {
+      console.warn(
+        '[conhecimento] não foi possível criar o índice único de sourceRef (provavelmente há duplicados anteriores). ' +
+          'A gravação continua protegida contra corrida; convém consolidar os duplicados:',
+        (erro as Error).message,
+      )
+    })
+}
+
+/**
+ * O documento deste dono com esta marca de origem — ou nada.
+ *
+ * Existe para não carregar a base inteira só para procurar um endereço. Numa base de
+ * quinhentos documentos, achar um por varredura em memória é meio segundo e um pico de
+ * memória por busca.
+ */
+export async function findBySourceRef(owner: KnowledgeOwner, sourceRef: string): Promise<KnowledgeDocument | null> {
+  return documents.findOne({ ...ownerFilter(owner), sourceRef }, { projection: { content: 0 } }) as Promise<KnowledgeDocument | null>
+}
+
+/** Só o carimbo de validade: renovar não reescreve texto e não gera embedding. */
+export async function touchWebDocument(owner: KnowledgeOwner, documentId: ObjectId, fetchedAt: Date, expiresAt: Date | null): Promise<void> {
+  await documents.updateOne(
+    { _id: documentId, ...ownerFilter(owner) },
+    { $set: { 'web.fetchedAt': fetchedAt, 'web.expiresAt': expiresAt, updatedAt: new Date() } },
+  )
 }
 
 // Idempotent, non-destructive backfill: stamp ownerType/ownerId on rows written

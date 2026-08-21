@@ -5,6 +5,7 @@ import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue 
 import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
 import { PAPEIS_OUTROS, PAPEIS_PRINCIPAIS, ehPrincipal } from '../lib/agentRoles'
+import { roleConfigOf } from '../lib/agentCapabilities'
 import { reachableCollaboratorCount } from '../lib/agentReadiness'
 import { useBuildingPeers } from '../lib/useBuildingPeers'
 import { assignAgentToSector } from '../lib/sectors'
@@ -176,6 +177,17 @@ export function HireWizard({
   const [definicao, setDefinicao] = useState<AgentDefinitionValue>({ role: '', instructions: '', constraints: '' })
   const [runConfig, setRunConfig] = useState<RunConfig>({})
   const [avancadoAberto, setAvancadoAberto] = useState(false)
+  /**
+   * Busca na web, escolhida JÁ na contratação.
+   *
+   * Antes ela só existia na edição, e por um motivo acidental: o bloco inteiro dependia
+   * de um agente já criado, porque os SITES precisam de um id para serem gravados. A
+   * busca não precisa — ela é configuração, e vai junto no primeiro salvamento.
+   */
+  const [buscaWeb, setBuscaWeb] = useState<{ enabled: boolean; policy: 'automatic' | 'fallback_only' | 'always'; rememberDays?: number; maxPagesToRead?: number }>({
+    enabled: false,
+    policy: 'fallback_only',
+  })
   // O catálogo real de provedores/modelos, o MESMO da edição. Fixar `anthropic`/`null`
   // aqui obrigava a contratar e depois editar para escolher o modelo — e a escolha do
   // modelo é justamente o que muda custo e qualidade desde a primeira execução.
@@ -225,6 +237,8 @@ export function HireWizard({
 
   const spec = useMemo(() => presets.find((p) => p.preset === preset), [presets, preset])
   const form = ROLE_FORM[preset]
+  // A mesma regra do resto do sistema: só quem COLETA pode procurar páginas novas.
+  const podeBuscar = roleConfigOf({ preset }).sections.includes('busca-web')
   // Collaboration spans the whole building: a colleague one floor up is a real
   // collaborator, and the backend has always counted it as one.
   const peers = useBuildingPeers()
@@ -309,6 +323,9 @@ export function HireWizard({
           activationModes: spec?.activationModes ?? [],
           inputContract: subject.trim(),
           outputContract: deliverable.trim(),
+          // Só para quem PODE buscar. Mandar o campo para outro papel gravaria uma
+          // configuração que o motor ignora — e que apareceria como promessa na tela.
+          ...(podeBuscar && buscaWeb.enabled ? { webSearch: buscaWeb } : {}),
           ...(form.tone ? { responseTone: tone } : {}),
           delegationPolicy,
           callableAgentIds: picked ? collaborators : [],
@@ -556,6 +573,61 @@ export function HireWizard({
         {avancadoAberto ? (
           <div className="mt-3 grid gap-5" data-testid="hire-advanced">
             <AgentDefinitionFields value={definicao} onChange={setDefinicao} presetLabel={spec?.label ?? null} />
+
+            {/* BUSCA EM TODA A WEB — só para quem coleta, e desligada por padrão.
+
+                Os SITES específicos ficam para depois de criar: cada endereço é gravado
+                na hora em que é adicionado, e para isso o agente precisa existir. Esta
+                configuração não precisa, então não há razão para adiá-la. */}
+            {podeBuscar && (
+              <div className="grid gap-2 rounded-lg border border-(--border-subtle) p-3" data-testid="hire-web-search">
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={buscaWeb.enabled}
+                    onChange={(e) => setBuscaWeb({ ...buscaWeb, enabled: e.target.checked })}
+                    data-testid="hire-web-search-enabled"
+                  />
+                  <span>
+                    Permitir busca na web
+                    <span className="block text-xs text-(--text-faint)">
+                      Deixa o pesquisador procurar novas fontes na internet quando a base e os sites cadastrados não bastarem. Os sites você
+                      cadastra depois de criar.
+                    </span>
+                  </span>
+                </label>
+                {buscaWeb.enabled && (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs text-(--text-muted)">Quando pesquisar</label>
+                      <select
+                        value={buscaWeb.policy}
+                        onChange={(e) => setBuscaWeb({ ...buscaWeb, policy: e.target.value as typeof buscaWeb.policy })}
+                        data-testid="hire-web-search-policy"
+                        className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                      >
+                        <option value="fallback_only">Só quando a base não responder</option>
+                        <option value="automatic">Automático</option>
+                        <option value="always">Sempre</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs text-(--text-muted)">Guardar o que achou por (dias)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        placeholder="7"
+                        value={buscaWeb.rememberDays ?? ''}
+                        onChange={(e) => setBuscaWeb({ ...buscaWeb, rememberDays: e.target.value ? Number(e.target.value) : undefined })}
+                        data-testid="hire-web-search-remember"
+                        className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                      />
+                      <p className="mt-0.5 text-[11px] text-(--text-faint)">0 = não guardar. O resto se ajusta depois, no agente.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div>

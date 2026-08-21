@@ -47,7 +47,7 @@ export function WebSearchStatusLine() {
     <div className="rounded-lg border border-(--border-subtle) p-2 text-xs" style={{ color: tom }} data-testid="web-search-status">
       {!s.configured ? (
         <p>
-          <strong>Nenhum buscador configurado neste servidor.</strong> Ligar a chave abaixo não faz o agente procurar nada até que a
+          <strong>Nenhum buscador configurado neste servidor.</strong> Ativar a opção abaixo não faz o agente procurar nada até que a
           configuração exista.
         </p>
       ) : esgotou ? (

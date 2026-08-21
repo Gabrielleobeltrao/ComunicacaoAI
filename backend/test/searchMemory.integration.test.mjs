@@ -247,3 +247,66 @@ test('a contagem é por AGENTE: um pesquisador não vê o gasto do outro', async
   assert.equal((await agentSearchStats(b)).searchesThisMonth, 0)
   assert.equal((await agentSearchStats(a)).searchesThisMonth, 1)
 })
+
+// --- duas buscas simultâneas trazendo a MESMA página --------------------------------------------
+//
+// Sem o índice único, ambas "não encontram nada" ao mesmo tempo e ambas criam: duas
+// cópias, dois embeddings pagos, o mesmo texto duas vezes na resposta. Com ele, a segunda
+// gravação falha por chave duplicada — e essa falha é a informação de que alguém chegou
+// primeiro.
+
+const { ensureKnowledgeIndexes } = await import('../dist/knowledge.js')
+
+test('duas buscas paralelas com a mesma URL geram UM documento', async () => {
+  await ensureKnowledgeIndexes()
+  const agentId = new ObjectId()
+  const p = pagina('https://exemplo.test/mesma', 'Um conteúdo qualquer para as duas buscas.')
+
+  await Promise.all([
+    rememberSearchPages(agentId, OWNER, 'pergunta A', [p], 7),
+    rememberSearchPages(agentId, OWNER, 'pergunta B', [p], 7),
+  ])
+
+  const docs = await listDocumentsFor({ ownerType: 'agent', ownerId: agentId })
+  assert.equal(docs.length, 1, 'a mesma página não pode virar duas cópias')
+  assert.equal(docs[0].sourceRef, searchDocRef('https://exemplo.test/mesma'))
+})
+
+test('o índice único é por DONO: dois agentes podem guardar a mesma página', async () => {
+  await ensureKnowledgeIndexes()
+  const a = new ObjectId()
+  const b = new ObjectId()
+  const p = pagina('https://exemplo.test/compartilhada', 'Conteúdo visto por dois agentes.')
+  await rememberSearchPages(a, OWNER, 'q', [p], 7)
+  await rememberSearchPages(b, OWNER, 'q', [p], 7)
+
+  assert.equal((await listDocumentsFor({ ownerType: 'agent', ownerId: a })).length, 1)
+  assert.equal((await listDocumentsFor({ ownerType: 'agent', ownerId: b })).length, 1, 'a base de um não é a do outro')
+})
+
+test('o índice não impede dois documentos MANUAIS — eles não têm sourceRef', async () => {
+  await ensureKnowledgeIndexes()
+  const agentId = new ObjectId()
+  const { createDocumentFor } = await import('../dist/knowledge.js')
+  await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Nota 1', content: 'primeira' })
+  await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: 'Nota 2', content: 'segunda' })
+  assert.equal((await listDocumentsFor({ ownerType: 'agent', ownerId: agentId })).length, 2)
+})
+
+test('conteúdo inalterado só renova o carimbo — nada é reescrito', async () => {
+  await ensureKnowledgeIndexes()
+  const agentId = new ObjectId()
+  const p = pagina('https://exemplo.test/estavel', 'Texto que não muda.')
+  await rememberSearchPages(agentId, OWNER, 'q', [p], 7)
+
+  const antes = await db.collection('knowledge_documents').findOne({ 'web.canonicalUrl': 'https://exemplo.test/estavel' })
+  await new Promise((r) => setTimeout(r, 20))
+  const r = await rememberSearchPages(agentId, OWNER, 'q', [p], 30)
+  const depois = await db.collection('knowledge_documents').findOne({ _id: antes._id })
+
+  assert.equal(r.unchanged, 1)
+  assert.equal(depois.content, antes.content, 'o texto não foi reescrito')
+  assert.equal(depois.chunkCount, antes.chunkCount, 'e nenhum embedding foi pedido')
+  assert.ok(depois.web.expiresAt > antes.web.expiresAt, 'só o prazo andou')
+  assert.ok(depois.web.fetchedAt > antes.web.fetchedAt)
+})

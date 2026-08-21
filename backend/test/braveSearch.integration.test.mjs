@@ -26,6 +26,19 @@ let recebido = []
 before(async () => {
   servidor = createServer((req, res) => {
     recebido.push({ url: req.url, headers: req.headers })
+    if (req.url?.startsWith('/erro-500')) {
+      res.writeHead(500, { 'content-type': 'application/json' })
+      res.end('{"error":"boom"}')
+      return
+    }
+    if (req.url?.startsWith('/lento')) {
+      // Responde tarde demais de propósito: o pedido CHEGOU, e é isso que importa.
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end('{"web":{"results":[]}}')
+      }, 1500)
+      return
+    }
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(
       JSON.stringify({
@@ -59,11 +72,60 @@ beforeEach(async () => {
 
 // --- a escolha do provedor -------------------------------------------------------------------
 
-test('o padrão é brave, e sem chave não há provedor — a ausência é dita, não disfarçada', () => {
-  delete process.env.WEB_SEARCH_PROVIDER
-  delete process.env.BRAVE_SEARCH_API_KEY
-  assert.equal(configuredProviderName(), 'brave')
+// --- a escolha do provedor sem variável explícita ------------------------------------------
+//
+// O padrão era `brave` fixo, e isso quebraria uma instalação que já apontava o adaptador
+// genérico: sem chave do Brave ela passaria de "buscando" para "não configurado" só por
+// subir uma versão nova, sem ninguém ter mexido em nada.
+
+test('sem nada configurado: nenhum provedor, e o nome diz isso', () => {
+  for (const k of ['WEB_SEARCH_PROVIDER', 'BRAVE_SEARCH_API_KEY', 'WEB_SEARCH_URL']) delete process.env[k]
+  assert.equal(configuredProviderName(), 'none')
   assert.equal(activeSearchProvider(), null, 'sem provedor, o agente sabe que não pode procurar')
+})
+
+test('sem variável explícita, quem estiver CONFIGURADO decide', () => {
+  for (const k of ['WEB_SEARCH_PROVIDER', 'BRAVE_SEARCH_API_KEY', 'WEB_SEARCH_URL']) delete process.env[k]
+
+  // Uma instalação antiga, que só tem o adaptador genérico: continua nele.
+  process.env.WEB_SEARCH_URL = `http://127.0.0.1:${porta}/generico?q={query}`
+  assert.equal(configuredProviderName(), 'http')
+  assert.equal(activeSearchProvider()?.name, 'http')
+
+  // Com a chave do Brave presente, ele é o preferido — é a integração oficial.
+  process.env.BRAVE_SEARCH_API_KEY = CHAVE_DE_TESTE
+  assert.equal(configuredProviderName(), 'brave')
+
+  for (const k of ['BRAVE_SEARCH_API_KEY', 'WEB_SEARCH_URL']) delete process.env[k]
+})
+
+test('a escolha EXPLÍCITA manda, mesmo sobre o que está configurado', () => {
+  process.env.BRAVE_SEARCH_API_KEY = CHAVE_DE_TESTE
+  process.env.WEB_SEARCH_URL = `http://127.0.0.1:${porta}/generico?q={query}`
+  process.env.WEB_SEARCH_PROVIDER = 'http'
+  assert.equal(configuredProviderName(), 'http', 'quem escreveu a variável decidiu')
+
+  process.env.WEB_SEARCH_PROVIDER = 'nao-existe'
+  assert.equal(configuredProviderName(), 'none', 'nome desconhecido não vira um provedor qualquer')
+  assert.equal(activeSearchProvider(), null)
+
+  for (const k of ['WEB_SEARCH_PROVIDER', 'BRAVE_SEARCH_API_KEY', 'WEB_SEARCH_URL']) delete process.env[k]
+})
+
+test('a chave do Brave NUNCA vai para uma URL configurável', async () => {
+  // Mandar a credencial oficial para um endereço vindo de variável de ambiente seria
+  // entregá-la a qualquer host que alguém escrevesse ali.
+  process.env.WEB_SEARCH_PROVIDER = 'http'
+  process.env.BRAVE_SEARCH_API_KEY = CHAVE_DE_TESTE
+  process.env.WEB_SEARCH_URL = `http://127.0.0.1:${porta}/generico?q={query}`
+  delete process.env.WEB_SEARCH_API_KEY
+  try {
+    await activeSearchProvider().search('assunto', { maxResults: 2, timeoutMs: 5000 })
+    const enviado = JSON.stringify(recebido.at(-1).headers)
+    assert.ok(!enviado.includes(CHAVE_DE_TESTE), 'a credencial do Brave não pode sair por aqui')
+  } finally {
+    for (const k of ['WEB_SEARCH_PROVIDER', 'BRAVE_SEARCH_API_KEY', 'WEB_SEARCH_URL']) delete process.env[k]
+  }
 })
 
 test('o adaptador genérico continua funcionando quando escolhido', async () => {
@@ -222,4 +284,85 @@ test('sem chave, o status diz que NÃO está configurado', async () => {
   const s = await searchBudgetStatus('brave', false)
   assert.equal(s.configured, false)
   assert.equal(s.used, 0)
+})
+
+// --- o que CONTA como requisição gasta ---------------------------------------------------------
+//
+// Havia uma devolução da reserva quando a chamada lançava, na ideia de que ela não teria
+// saído. Isso é falso na maioria dos casos: tempo esgotado, conexão cortada e erro ao ler
+// o corpo acontecem DEPOIS de o pedido chegar ao Brave — e ele já contou.
+//
+// Contar a mais custa uma busca. Contar a menos custa uma fatura: "ainda tenho saldo"
+// quando não tem mais é exatamente como se ultrapassa a franquia.
+
+const usadoAgora = async () => (await db.collection('web_search_budget').findOne({ _id: `brave:${searchPeriod()}` }))?.used ?? 0
+
+test('resposta 2xx conta', async () => {
+  await comBrave(async () => {
+    await activeSearchProvider().search('assunto', { maxResults: 2, timeoutMs: 5000 })
+    assert.equal(await usadoAgora(), 1)
+  })
+})
+
+test('resposta de ERRO do serviço também conta — o pedido chegou lá', async () => {
+  await comBrave(async () => {
+    process.env.BRAVE_SEARCH_BASE_URL_FOR_TEST = `http://127.0.0.1:${porta}/erro-500`
+    await activeSearchProvider()
+      .search('assunto', { maxResults: 2, timeoutMs: 5000 })
+      .catch((e) => assert.match(e.message, /respondeu 500/))
+    assert.equal(await usadoAgora(), 1, 'o Brave não devolve cota porque a resposta deu erro')
+  })
+})
+
+test('tempo esgotado depois da reserva conta — não dá para saber se chegou', async () => {
+  await comBrave(async () => {
+    process.env.BRAVE_SEARCH_BASE_URL_FOR_TEST = `http://127.0.0.1:${porta}/lento`
+    await activeSearchProvider()
+      .search('assunto', { maxResults: 2, timeoutMs: 250 })
+      .catch(() => undefined)
+    assert.equal(await usadoAgora(), 1, 'devolver aqui deixaria nosso número abaixo do dele')
+  })
+})
+
+test('falha de rede depois da reserva conta', async () => {
+  await comBrave(async () => {
+    // Uma porta onde não há ninguém: a conexão falha, e a reserva NÃO volta.
+    process.env.BRAVE_SEARCH_BASE_URL_FOR_TEST = 'http://127.0.0.1:1/res/v1/web/search'
+    await activeSearchProvider()
+      .search('assunto', { maxResults: 1, timeoutMs: 800 })
+      .catch(() => undefined)
+    assert.equal(await usadoAgora(), 1)
+  })
+})
+
+test('a tentativa bloqueada pela franquia NÃO sai e NÃO conta', async () => {
+  process.env.BRAVE_MONTHLY_REQUEST_LIMIT = '2'
+  await comBrave(async () => {
+    const p = activeSearchProvider()
+    await p.search('um', { maxResults: 1, timeoutMs: 5000 })
+    await p.search('dois', { maxResults: 1, timeoutMs: 5000 })
+    assert.equal(await usadoAgora(), 2)
+
+    const antes = recebido.length
+    await assert.rejects(() => p.search('tres', { maxResults: 1, timeoutMs: 5000 }), /franquia mensal/)
+    assert.equal(recebido.length, antes, 'a terceira não chegou ao serviço')
+    assert.equal(await usadoAgora(), 2, 'e não incrementou o contador')
+  })
+  delete process.env.BRAVE_MONTHLY_REQUEST_LIMIT
+})
+
+test('o adaptador genérico conta na SUA própria franquia', async () => {
+  process.env.WEB_SEARCH_PROVIDER = 'http'
+  process.env.WEB_SEARCH_URL = `http://127.0.0.1:${porta}/generico?q={query}`
+  process.env.WEB_SEARCH_RESULTS_PATH = 'web.results'
+  try {
+    await activeSearchProvider().search('assunto', { maxResults: 2, timeoutMs: 5000 })
+    const doc = await db.collection('web_search_budget').findOne({ _id: `http:${searchPeriod()}` })
+    assert.equal(doc.used, 1)
+    // E não mistura com o contador do Brave: são contas diferentes.
+    assert.equal(await usadoAgora(), 0)
+  } finally {
+    for (const k of ['WEB_SEARCH_PROVIDER', 'WEB_SEARCH_URL', 'WEB_SEARCH_RESULTS_PATH']) delete process.env[k]
+    await resetSearchBudget('http')
+  }
 })

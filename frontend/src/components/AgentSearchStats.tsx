@@ -15,6 +15,7 @@ interface Stats {
   searchesThisMonth: number
   searchesToday: number
   avoidedThisMonth: number
+  blockedThisMonth?: number
   pagesRead: number
   documentsSaved: number
   failures: number
@@ -63,6 +64,12 @@ export function AgentSearchStats({ agentId }: { agentId: string }) {
         ))}
       </div>
 
+      {(s.blockedThisMonth ?? 0) > 0 && (
+        <p className="mt-2 text-xs text-(--coral-600)" data-testid="search-stat-blocked">
+          {s.blockedThisMonth} busca(s) barradas pela franquia mensal do servidor — elas não saíram e não gastaram nada. O agente respondeu com
+          o que já tinha na base.
+        </p>
+      )}
       {s.failures > 0 && (
         <p className="mt-2 text-xs text-(--coral-600)" data-testid="search-stat-failures">
           {s.failures} busca(s) falharam neste mês. O agente respondeu com o que já tinha na base.

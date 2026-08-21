@@ -27,7 +27,7 @@ import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
 import { ROLE_LABEL, capabilitiesOf, roleOf } from './agentCapabilities.js'
 import { preview, traceEvent } from './executionTrace.js'
-import { activeSearchProvider } from './webSearch/provider.js'
+import { activeSearchProvider, configuredProviderName } from './webSearch/provider.js'
 import { normalizeWebSearch, shouldSearch, wantsCurrentInfo } from './webSearch/policy.js'
 import { recordSearchEvent } from './webSearch/budget.js'
 import type { WebSearchSettings } from './webSearch/policy.js'
@@ -958,7 +958,11 @@ export async function runAgentTask(
         ownerId: ctx.ownerId,
         provider: r.provider,
         query,
-        performed: true,
+        // A franquia barrou = a requisição NÃO saiu e não gastou. Gravar isso como busca
+        // feita mostrava consumo que não existiu, e um agente parado por falta de cota
+        // parecia um agente gastando.
+        outcome: r.code === 'monthly_limit_reached' ? 'blocked' : 'sent',
+        performed: r.code !== 'monthly_limit_reached',
         found: r.found,
         pagesRead: r.read.length,
         evidence: r.evidence.length,
@@ -1001,8 +1005,11 @@ export async function runAgentTask(
       await recordSearchEvent({
         agentId: target._id.toString(),
         ownerId: ctx.ownerId,
-        provider: 'brave',
+        // O provedor em jogo, e não um nome fixo: uma instalação no adaptador genérico
+        // via "brave" no painel sem nunca ter falado com o Brave.
+        provider: configuredProviderName(),
         query,
+        outcome: 'avoided',
         performed: false,
         skipReason: decisao.reason,
         found: 0,

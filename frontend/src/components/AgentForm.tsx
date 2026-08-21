@@ -1870,7 +1870,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               "Sites específicos" é ler os endereços que VOCÊ escolheu; "Busca em toda a
               web" é descobrir endereços que ninguém escolheu. Eram dois blocos irmãos com
               o mesmo peso visual, e nada dizia que um não era o outro. */}
-          {agent?._id && (cfg.allowedWeb || showBlock('busca-web')) && (
+          {(cfg.allowedWeb || showBlock('busca-web')) && (
             <CollapsibleBlock title="Web" showHeader={stacked} testId="web-block">
               <div className="space-y-4">
                 {cfg.allowedWeb && (
@@ -1879,7 +1879,16 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                     <p className="mb-2 text-xs text-(--text-faint)">
                       Você escolhe quais sites ele acompanha. Ele lê esses endereços — e só esses.
                     </p>
-                    <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+                    {/* Cada endereço é gravado no agente assim que você o adiciona, então
+                        ele precisa de um agente que exista. A busca abaixo não precisa:
+                        ela é configuração, e vai junto no primeiro salvamento. */}
+                    {agent?._id ? (
+                      <AgentSources key={`${agent._id}:sources`} agentId={agent._id} />
+                    ) : (
+                      <p className="rounded-lg border border-(--border-subtle) p-2 text-xs text-(--text-muted)" data-testid="web-sites-after-save">
+                        Você cadastra os sites depois de criar o agente — cada endereço é salvo na hora em que é adicionado.
+                      </p>
+                    )}
                   </div>
                 )}
           {/* O segundo sub-bloco: descobrir páginas que NINGUÉM cadastrou.

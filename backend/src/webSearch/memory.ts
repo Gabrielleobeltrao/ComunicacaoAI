@@ -15,7 +15,7 @@
 //   * A procedência fica gravada. Quem olha a base precisa distinguir o que ele mesmo
 //     curou do que um buscador trouxe — a confiança nas duas coisas é diferente.
 import { ObjectId } from 'mongodb'
-import { createDocumentFor, listDocumentsFor, updateDocumentFor } from '../knowledge.js'
+import { createDocumentFor, findBySourceRef, touchWebDocument, updateDocumentFor } from '../knowledge.js'
 import type { ReadResult } from '../adaptiveWebReader.js'
 import { canonicalizeUrl, domainOf } from '../webContent.js'
 
@@ -46,10 +46,7 @@ export async function rememberSearchPages(
   if (rememberDays <= 0) return saida
 
   const expiresAt = new Date(agora.getTime() + rememberDays * 24 * 60 * 60 * 1000)
-  // O que já existe, para não criar em cima. Sem o conteúdo: só o `sourceRef` importa
-  // aqui, e o hash gravado é quem decide se mudou.
-  const existentes = await listDocumentsFor({ ownerType: 'agent', ownerId: agentId }).catch(() => [])
-  const porRef = new Map(existentes.filter((d) => d.sourceRef).map((d) => [d.sourceRef as string, d]))
+  const owner = { ownerType: 'agent' as const, ownerId: agentId }
 
   for (const pagina of paginas) {
     if (!pagina.ok || !pagina.text.trim()) continue
@@ -76,18 +73,39 @@ export async function rememberSearchPages(
       expiresAt,
     }
 
-    const anterior = porRef.get(ref)
+    /**
+     * Achar, ou criar — e a corrida entre as duas coisas.
+     *
+     * Duas buscas simultâneas podem trazer a mesma página. Sem o índice único, ambas não
+     * encontram nada e ambas criam: duas cópias, dois embeddings pagos, o mesmo texto
+     * duas vezes na resposta. Com ele, a segunda gravação falha por CHAVE DUPLICADA — e
+     * essa falha é a informação de que alguém chegou primeiro. Aí basta recarregar e
+     * atualizar o que já existe.
+     */
     try {
+      // Uma consulta direta, não a base inteira em memória.
+      let anterior = await findBySourceRef(owner, ref)
+
       if (!anterior) {
-        await createDocumentFor({ ownerType: 'agent', ownerId: agentId }, { title: titulo, content: conteudo, source: 'web', sourceRef: ref, authorId: ownerId, web })
-        saida.saved += 1
-      } else if (anterior.web?.contentHash !== pagina.contentHash) {
-        await updateDocumentFor({ ownerType: 'agent', ownerId: agentId }, anterior._id, { title: titulo, content: conteudo, web })
+        try {
+          await createDocumentFor(owner, { title: titulo, content: conteudo, source: 'web', sourceRef: ref, authorId: ownerId, web })
+          saida.saved += 1
+          continue
+        } catch (erro) {
+          // 11000 = chave duplicada: outra busca criou entre a consulta e a gravação.
+          if ((erro as { code?: number }).code !== 11000) throw erro
+          anterior = await findBySourceRef(owner, ref)
+          if (!anterior) throw erro
+        }
+      }
+
+      if (anterior.web?.contentHash !== pagina.contentHash) {
+        await updateDocumentFor(owner, anterior._id, { title: titulo, content: conteudo, web })
         saida.updated += 1
       } else {
-        // O texto é o mesmo: nada é reescrito e nenhum embedding é gerado. Só o prazo
-        // é esticado — a página continua valendo, e reencontrá-la é a prova disso.
-        await updateDocumentFor({ ownerType: 'agent', ownerId: agentId }, anterior._id, { web: { ...anterior.web!, expiresAt, fetchedAt: agora } })
+        // O texto é o mesmo: nada é reescrito e nenhum embedding é gerado. Só o carimbo
+        // de validade é renovado — reencontrar a página é a prova de que ela ainda existe.
+        await touchWebDocument(owner, anterior._id, agora, expiresAt)
         saida.unchanged += 1
       }
     } catch {

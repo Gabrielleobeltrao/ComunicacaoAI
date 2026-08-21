@@ -10,7 +10,7 @@
 // configuração não há busca — e "não há busca" é dito com todas as letras, em vez de
 // virar uma lista vazia que parece "não achei nada".
 import { safeFetch } from '../net/safeHttp.js'
-import { releaseSearchRequest, reserveSearchRequest } from './budget.js'
+import { reserveSearchRequest } from './budget.js'
 
 /**
  * O erro de quem foi barrado pela franquia — antes de a chamada sair.
@@ -64,6 +64,13 @@ function providerHttp(): WebSearchProvider | null {
   const campoUrl = (process.env.WEB_SEARCH_URL_FIELD ?? 'url').trim()
   const campoTrecho = (process.env.WEB_SEARCH_SNIPPET_FIELD ?? 'snippet').trim()
   const nomeDoCabecalho = (process.env.WEB_SEARCH_API_KEY_HEADER ?? 'Authorization').trim()
+  /**
+   * A credencial do adaptador genérico é a DELE.
+   *
+   * `BRAVE_SEARCH_API_KEY` nunca é lida aqui, nem como reserva: mandar a chave do Brave
+   * para um endereço configurável por variável de ambiente seria entregá-la a qualquer
+   * host que alguém escrevesse ali.
+   */
   const chave = process.env.WEB_SEARCH_API_KEY?.trim()
   const prefixo = process.env.WEB_SEARCH_API_KEY_PREFIX ?? (nomeDoCabecalho.toLowerCase() === 'authorization' ? 'Bearer ' : '')
 
@@ -80,6 +87,11 @@ function providerHttp(): WebSearchProvider | null {
   return {
     name: (process.env.WEB_SEARCH_PROVIDER_NAME ?? 'http').trim() || 'http',
     async search(query, opts) {
+      // O mesmo teto do Brave, pelo mesmo motivo: quem configurou um serviço genérico
+      // também tem uma conta lá. E a partir da reserva a requisição está gasta.
+      const reserva = await reserveSearchRequest('http')
+      if (!reserva.ok) throw new SearchBudgetError(reserva.reason!)
+
       const alvo = url.includes('{query}')
         ? url.replace('{query}', encodeURIComponent(query))
         : `${url}${url.includes('?') ? '&' : '?'}q=${encodeURIComponent(query)}`
@@ -146,20 +158,27 @@ function providerBrave(): WebSearchProvider | null {
       const reserva = await reserveSearchRequest('brave')
       if (!reserva.ok) throw new SearchBudgetError(reserva.reason!)
 
+      /**
+       * A partir daqui a requisição está GASTA, aconteça o que acontecer.
+       *
+       * Havia uma devolução da reserva quando `safeFetch` lançava, na ideia de que a
+       * chamada não teria saído. Isso é falso na maioria dos casos: tempo esgotado,
+       * conexão cortada, redirecionamento recusado e erro ao ler o corpo acontecem
+       * DEPOIS de o pedido chegar ao Brave — e ele já contou.
+       *
+       * Devolver aí fazia nosso número ficar abaixo do dele, que é o lado perigoso:
+       * "ainda tenho saldo" quando não tem mais é exatamente como se ultrapassa a
+       * franquia. Contar a mais custa uma busca; contar a menos custa uma fatura.
+       */
       const alvo = `${braveUrl()}?q=${encodeURIComponent(query)}&count=${Math.min(Math.max(opts.maxResults, 1), 20)}`
-      let res
-      try {
-        res = await safeFetch(alvo, {
-          timeoutMs: opts.timeoutMs,
-          maxBytes: 1_000_000,
-          headers: { 'X-Subscription-Token': chave, Accept: 'application/json' },
-        })
-      } catch (erro) {
-        // A requisição pode não ter chegado a sair (endereço recusado, DNS, timeout do
-        // nosso lado). Devolver a reserva aqui é o único caso legítimo.
-        await releaseSearchRequest('brave')
+      const res = await safeFetch(alvo, {
+        timeoutMs: opts.timeoutMs,
+        maxBytes: 1_000_000,
+        headers: { 'X-Subscription-Token': chave, Accept: 'application/json' },
+      }).catch((erro) => {
+        // Sem `releaseSearchRequest`: ver acima. A mensagem não repete o que foi enviado.
         throw new Error(`não foi possível falar com o serviço de busca: ${erro instanceof Error ? erro.message.slice(0, 120) : 'falha'}`)
-      }
+      })
 
       if (res.status < 200 || res.status > 299) {
         // Sai o código, nunca o corpo: ele pode repetir o cabeçalho enviado.
@@ -185,16 +204,35 @@ function providerBrave(): WebSearchProvider | null {
  * busca. O pesquisador trata isso como "não há como procurar", que é diferente de
  * "procurei e não achei" — e a diferença aparece no painel.
  */
+/**
+ * Qual provedor está em jogo — pela configuração que EXISTE, não por um padrão fixo.
+ *
+ * O padrão era `brave`, e isso quebraria uma instalação que já apontava o adaptador
+ * genérico: sem chave do Brave ela passaria de "buscando" para "não configurado" só por
+ * subir uma versão nova, sem ninguém ter mexido em nada.
+ *
+ * A ordem resolve: escolha explícita manda; sem ela, o que estiver configurado decide; e
+ * sem nada configurado o resultado é "nenhum" — dito com todas as letras, nunca
+ * disfarçado de "não achei nada".
+ */
+export function resolveProviderName(): 'brave' | 'http' | 'none' {
+  const explicito = process.env.WEB_SEARCH_PROVIDER?.trim().toLowerCase()
+  if (explicito === 'brave' || explicito === 'http') return explicito
+  if (explicito) {
+    console.warn(`[busca] WEB_SEARCH_PROVIDER="${explicito}" não é um provedor conhecido; nenhuma busca será feita`)
+    return 'none'
+  }
+  if (process.env.BRAVE_SEARCH_API_KEY?.trim()) return 'brave'
+  if (process.env.WEB_SEARCH_URL?.trim()) return 'http'
+  return 'none'
+}
+
 export function activeSearchProvider(): WebSearchProvider | null {
-  // `brave` é o padrão porque é a integração oficial; `http` continua disponível para
-  // quem já apontou o adaptador genérico para outro serviço. Nenhum dos dois existe sem
-  // configuração — e a ausência é dita, nunca disfarçada de "não achei nada".
-  const escolhido = (process.env.WEB_SEARCH_PROVIDER ?? 'brave').trim().toLowerCase()
+  const escolhido = resolveProviderName()
   if (escolhido === 'http') return providerHttp()
   if (escolhido === 'brave') return providerBrave()
-  console.warn(`[busca] WEB_SEARCH_PROVIDER="${escolhido}" não é um provedor conhecido; nenhuma busca será feita`)
   return null
 }
 
-/** O nome do provedor escolhido, mesmo quando ele não está configurado. Para o painel. */
-export const configuredProviderName = (): string => (process.env.WEB_SEARCH_PROVIDER ?? 'brave').trim().toLowerCase() || 'brave'
+/** O nome do provedor em jogo, mesmo sem ele estar utilizável. Para o painel e as métricas. */
+export const configuredProviderName = (): string => resolveProviderName()
