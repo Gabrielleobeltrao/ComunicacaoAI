@@ -70,7 +70,15 @@ export function Widget() {
       try {
         const configRes = await fetch(`${API_URL}/api/public/widgets/${key}`)
         if (!configRes.ok) {
-          setError('Widget não encontrado.')
+          /**
+           * O motivo vem do servidor, quando ele manda um.
+           *
+           * "Widget não encontrado" para tudo escondia dois casos diferentes e
+           * acionáveis: o App foi desativado (410) e o destino não atende mais (409). Os
+           * dois têm conserto do lado de quem administra — e nenhum deles é chave errada.
+           */
+          const corpo = (await configRes.json().catch(() => null)) as { error?: string } | null
+          setError(corpo?.error || 'Widget não encontrado.')
           return
         }
         const configData: WidgetConfig = await configRes.json()
@@ -170,9 +178,13 @@ export function Widget() {
         return
       }
       if (!res.ok) {
-        // Recuperável: o texto volta para o campo, para a pessoa não perder o que escreveu.
+        // Recuperável: o texto volta para o campo, para a pessoa não perder o que
+        // escreveu. E a frase é a do SERVIDOR quando ele manda uma — ele sabe se o
+        // chat foi desativado ou se o destino deixou de atender, e "tente de novo"
+        // seria um conselho errado nos dois casos.
+        const corpo = (await res.json().catch(() => null)) as { error?: string } | null
         setInput(content)
-        setNotice('Não foi possível enviar agora. Tente de novo.')
+        setNotice(corpo?.error || 'Não foi possível enviar agora. Tente de novo.')
         return
       }
 

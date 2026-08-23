@@ -4,6 +4,8 @@ import { executeToolCall } from './toolExecution.js'
 import { MASKED_HEADER_VALUE, pullToolFromAgents, toPublicAgent } from './agents.js'
 import { resolveWidgetDestination } from './widgetDestination.js'
 import { webChatAccessFor } from './apps/publicChannelAccess.js'
+import { resolveRuntimeDestination } from './widgetRuntimeDestination.js'
+import { listWidgetsBySector } from './widgets.js'
 import { readiness, startEmbeddedEngine, stopEmbeddedEngine } from './automations/engine.js'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
@@ -1243,6 +1245,45 @@ app.get('/api/sectors', requireAuth, async (req, res) => {
   res.json(sectors.map(serializeSector))
 })
 
+/**
+ * Esta mudança deixaria um setor USADO POR WIDGET sem conseguir atender?
+ *
+ * Quem edita o setor não vê a lista de widgets. Tirar o coordenador, esvaziar a equipe
+ * ou virar "só organizar" derruba, em silêncio, um chat que está no ar — e a consequência
+ * só aparece quando um visitante escreve e ninguém responde.
+ *
+ * Setor SEM widget não passa por aqui: ele continua editável como sempre, inclusive para
+ * estados incompletos no meio de uma configuração.
+ */
+async function bloqueiaSePrejudicaWidget(
+  ownerId: string,
+  sectorId: ObjectId,
+  proposto: { mode?: unknown; members?: { agentId: ObjectId }[]; coordinatorAgentId?: ObjectId | null; stages?: unknown },
+  atual: { mode: string; members?: { agentId: ObjectId }[]; coordinatorAgentId?: ObjectId | null; stages?: unknown; name: string },
+): Promise<{ error: string; widgets: { id: string; name: string }[] } | null> {
+  const usados = await listWidgetsBySector(ownerId, sectorId)
+  if (usados.length === 0) return null
+
+  const doDono = await listAgents(ownerId)
+  const veredito = resolveWidgetDestination({
+    sectorId,
+    sector: {
+      _id: sectorId,
+      name: atual.name,
+      mode: (proposto.mode ?? atual.mode) as never,
+      members: proposto.members ?? atual.members ?? [],
+      coordinatorAgentId: proposto.coordinatorAgentId !== undefined ? proposto.coordinatorAgentId : (atual.coordinatorAgentId ?? null),
+      stages: (proposto.stages ?? atual.stages ?? []) as never,
+      knownAgentIds: doDono.map((a) => a._id.toString()),
+    },
+  })
+  if (veredito.ok) return null
+  return {
+    error: `${veredito.reason} — e ${usados.length} widget(s) dependem dele.`,
+    widgets: usados.map((w) => ({ id: w._id.toString(), name: w.name })),
+  }
+}
+
 app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
   const sectorId = String(req.params.sectorId)
   if (!ObjectId.isValid(sectorId)) {
@@ -1317,6 +1358,17 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     ...(updates.stages ?? []).map((e) => e.agentId),
   ]
   if (await recusarSeJaEhEtapaDeOutro(res, res.locals.userId, new ObjectId(sectorId), entrando)) return
+
+  const prejuizo = await bloqueiaSePrejudicaWidget(
+    res.locals.userId,
+    new ObjectId(sectorId),
+    { mode: updates.mode, members: updates.members, coordinatorAgentId: updates.coordinatorAgentId, stages: updates.stages },
+    existing,
+  )
+  if (prejuizo) {
+    res.status(409).json({ error: prejuizo.error, code: 'sector_in_use_by_widget', widgets: prejuizo.widgets })
+    return
+  }
 
   const sector = await updateSector(res.locals.userId, new ObjectId(sectorId), updates)
   if (!sector) {
@@ -1414,6 +1466,13 @@ app.put('/api/sectors/:sectorId/members', requireAuth, async (req, res) => {
       return
     }
   }
+  // Trocar os membros também pode derrubar um chat no ar: uma equipe esvaziada não atende.
+  const prejuizoMembros = await bloqueiaSePrejudicaWidget(ownerId, new ObjectId(sectorId), { members: parsed }, existing)
+  if (prejuizoMembros) {
+    res.status(409).json({ error: prejuizoMembros.error, code: 'sector_in_use_by_widget', widgets: prejuizoMembros.widgets })
+    return
+  }
+
   const sector = await updateSector(ownerId, new ObjectId(sectorId), { members: parsed })
   if (!sector) {
     res.status(404).json({ error: 'Sector not found' })
@@ -3958,6 +4017,14 @@ app.get('/api/public/widgets/:publicKey', async (req, res) => {
     res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
     return
   }
+  // O destino é revalidado AGORA: o agente pode ter sido excluído e o setor arquivado
+  // depois de o widget ser criado. Sem isto o chat monta, aceita a pergunta e responde
+  // com silêncio — o pior resultado possível num site de cliente.
+  const destino = await resolveRuntimeDestination(widget)
+  if (!destino.ok) {
+    res.status(destino.status!).json({ error: destino.error, code: destino.code })
+    return
+  }
   const agent = await getWidgetConfigAgent(widget)
   res.json({
     name: widget.name,
@@ -4008,6 +4075,14 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
   const acesso = await webChatAccessFor(widget.ownerId)
   if (!acesso.ok) {
     res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
+    return
+  }
+  // Idem, e aqui vale o dobro: antes de GRAVAR a mensagem e antes de disparar qualquer
+  // execução. Recusar depois de gravar deixaria a conversa com uma pergunta que nunca
+  // teve para onde ir.
+  const destinoAtual = await resolveRuntimeDestination(widget)
+  if (!destinoAtual.ok) {
+    res.status(destinoAtual.status!).json({ error: destinoAtual.error, code: destinoAtual.code })
     return
   }
   const { conversationId, content } = req.body ?? {}

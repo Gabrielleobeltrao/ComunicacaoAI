@@ -112,7 +112,10 @@
 
   fetch(apiOrigin + '/api/public/widgets/' + encodeURIComponent(publicKey))
     .then(function (res) {
-      if (!res.ok) throw new Error('widget not found')
+      // Configuração indisponível = o widget simplesmente NÃO monta. Nada é desenhado no
+      // site do cliente: um botão de chat que abre e não atende é pior que botão nenhum.
+      // O motivo fica no console, para quem administra encontrar.
+      if (!res.ok) throw new Error('widget indisponível (HTTP ' + res.status + ')')
       return res.json()
     })
     .then(buildWidget)

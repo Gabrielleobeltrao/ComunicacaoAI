@@ -528,3 +528,14 @@ export async function inboundAlreadySeen(widgetId: ObjectId, externalId: string)
   const existing = await widgetMessages.findOne({ widgetId, externalId })
   return existing !== null
 }
+
+/**
+ * Os widgets que dependem deste setor.
+ *
+ * Existe para uma edição de setor não derrubar um chat que está no ar sem avisar: quem
+ * tira o coordenador não vê a lista de widgets, e a consequência só aparece quando um
+ * visitante escreve e ninguém responde.
+ */
+export function listWidgetsBySector(ownerId: string, sectorId: ObjectId) {
+  return widgets.find({ ownerId, sectorId }).project<{ _id: ObjectId; name: string }>({ name: 1 }).toArray()
+}
