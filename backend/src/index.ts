@@ -3,6 +3,7 @@ import { createTool, deleteTool, getTool, listTools, toPublicTool, ToolValidatio
 import { executeToolCall } from './toolExecution.js'
 import { MASKED_HEADER_VALUE, pullToolFromAgents, toPublicAgent } from './agents.js'
 import { resolveWidgetDestination } from './widgetDestination.js'
+import { webChatAccessFor } from './apps/publicChannelAccess.js'
 import { readiness, startEmbeddedEngine, stopEmbeddedEngine } from './automations/engine.js'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
@@ -3950,6 +3951,13 @@ app.get('/api/public/widgets/:publicKey', async (req, res) => {
     res.status(404).json({ error: 'Widget not found' })
     return
   }
+  // App desativado = o widget nem monta. Sem isto, "revogado" era um rótulo na tela do
+  // dono enquanto o chat seguia atendendo no site do cliente.
+  const acesso = await webChatAccessFor(widget.ownerId)
+  if (!acesso.ok) {
+    res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
+    return
+  }
   const agent = await getWidgetConfigAgent(widget)
   res.json({
     name: widget.name,
@@ -3969,6 +3977,13 @@ app.get('/api/public/widgets/:publicKey/messages', async (req, res) => {
     res.status(404).json({ error: 'Widget not found' })
     return
   }
+  // O histórico AUTENTICADO continua intacto — o dono vê tudo na aba de conversas. O que
+  // para é a porta pública.
+  const acesso = await webChatAccessFor(widget.ownerId)
+  if (!acesso.ok) {
+    res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
+    return
+  }
   const conversationId = String(req.query.conversationId ?? '')
   if (!conversationId) {
     res.status(400).json({ error: 'conversationId is required' })
@@ -3982,6 +3997,17 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
   const widget = await getWidgetByPublicKey(req.params.publicKey)
   if (!widget) {
     res.status(404).json({ error: 'Widget not found' })
+    return
+  }
+  /**
+   * A recusa vem ANTES de qualquer gravação e de qualquer inferência.
+   *
+   * Uma recusa que custa uma chamada ao modelo não é uma recusa: o App está desativado e
+   * a conta continuaria pagando por mensagem que ninguém vai ler.
+   */
+  const acesso = await webChatAccessFor(widget.ownerId)
+  if (!acesso.ok) {
+    res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
     return
   }
   const { conversationId, content } = req.body ?? {}
