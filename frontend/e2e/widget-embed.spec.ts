@@ -133,8 +133,9 @@ test('falha ao enviar devolve o texto ao campo, sem perder o que a pessoa escrev
   await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
     r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
   )
+  // Um erro SEM mensagem do servidor: aí a frase genérica é a certa.
   await page.route(`**/api/public/widgets/${CHAVE}/messages**`, (r) =>
-    r.request().method() === 'POST' ? r.fulfill({ status: 500, json: { error: 'boom' } }) : r.fulfill({ json: [] }),
+    r.request().method() === 'POST' ? r.fulfill({ status: 500, body: 'erro interno' }) : r.fulfill({ json: [] }),
   )
 
   await page.goto(`/widget/${CHAVE}`)
@@ -142,5 +143,41 @@ test('falha ao enviar devolve o texto ao campo, sem perder o que a pessoa escrev
   await page.getByRole('button', { name: /enviar/i }).click()
 
   await expect(page.getByText(/não foi possível enviar/i)).toBeVisible()
+  await expect(page.getByRole('textbox')).toHaveValue('preciso de ajuda')
+})
+
+// --- o App desativado, e o destino que deixou de atender ---------------------------------------
+//
+// Os dois têm conserto do lado de quem administra, e nenhum deles é chave errada. Dizer
+// "widget não encontrado" para os três casos manda procurar no lugar errado.
+
+test('App revogado: o chat não monta e diz o motivo do servidor', async ({ page }) => {
+  await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
+    r.fulfill({ status: 410, json: { error: 'Este chat está indisponível no momento.', code: 'web_chat_inactive' } }),
+  )
+  await page.goto(`/widget/${CHAVE}`)
+
+  await expect(page.getByText('Este chat está indisponível no momento.')).toBeVisible()
+  // Sem campo de escrita: não há para onde a mensagem ir.
+  await expect(page.getByRole('textbox')).toHaveCount(0)
+})
+
+test('destino que deixou de atender: a mensagem NÃO é aceita, e o texto não se perde', async ({ page }) => {
+  await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
+    r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
+  )
+  await page.route(`**/api/public/widgets/${CHAVE}/messages**`, (r) =>
+    r.request().method() === 'POST'
+      ? r.fulfill({ status: 409, json: { error: 'Este agente não existe mais nesta conta.', code: 'widget_destination_invalid' } })
+      : r.fulfill({ json: [] }),
+  )
+
+  await page.goto(`/widget/${CHAVE}`)
+  await page.getByRole('textbox').fill('preciso de ajuda')
+  await page.getByRole('button', { name: /enviar/i }).click()
+
+  // A frase é a do SERVIDOR: "tente de novo" seria um conselho errado aqui.
+  await expect(page.getByText('Este agente não existe mais nesta conta.')).toBeVisible()
+  // O texto continua no CAMPO — é isso que prova que ele não foi consumido.
   await expect(page.getByRole('textbox')).toHaveValue('preciso de ajuda')
 })

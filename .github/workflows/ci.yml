@@ -96,6 +96,23 @@ jobs:
       - name: Frontend unit tests
         run: npm test -w frontend
 
+      # O widget embutido é a única parte do produto que roda no site de OUTRA pessoa: o
+      # loader carrega de uma origem e fala com outra, e quando isso quebra não há erro
+      # visível em lugar nenhum — o chat simplesmente não aparece. Foi assim que ele
+      # ficou fora do ar sem ninguém notar.
+      #
+      # A jornada existia e não rodava aqui. Um teste que não roda é um teste que não
+      # protege nada.
+      - name: Install Chromium (widget e2e)
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      # `--workers=1`: as jornadas do widget compartilham chave pública e rotas
+      # interceptadas, e em paralelo uma interceptação atende o pedido da outra.
+      - name: Widget embed e2e (Chromium)
+        run: npx playwright test e2e/widget-embed.spec.ts --project=chromium --workers=1
+        working-directory: frontend
+
       # As imagens são construídas no CI porque um Dockerfile que só é exercitado na
       # hora do deploy é um Dockerfile que falha na hora do deploy. Aqui o custo de
       # descobrir é um job vermelho; lá, é um rollback.
