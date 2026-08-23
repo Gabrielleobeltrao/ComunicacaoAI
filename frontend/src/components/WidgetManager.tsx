@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { API_URL } from '../lib/api'
 import type { AgentSummary, SectorSummary, WidgetPosition, WidgetSummary } from '../lib/types'
+import { normalizeSectorMode, sectorReadiness } from '../lib/sectors'
 import { Modal } from './Modal'
 
 const DEFAULT_COLOR = '#111827'
@@ -17,15 +18,75 @@ interface WidgetManagerProps {
 
 // The "answered by" selector encodes the choice as agent:<id> or sector:<id>.
 function parseTarget(target: string): { agentId: string | null; sectorId: string | null } {
-  if (target.startsWith('sector:')) return { agentId: null, sectorId: target.slice(5) }
+  if (target.startsWith('sector:')) return { agentId: null, sectorId: target.slice(7) }
   if (target.startsWith('agent:')) return { agentId: target.slice(6), sectorId: null }
   return { agentId: null, sectorId: null }
+}
+
+/**
+ * Por que este setor NÃO pode atender — ou nada, se ele pode.
+ *
+ * A mesma verificação da página do setor, para as duas telas nunca discordarem. Um setor
+ * "só organizar" agrupa agentes no mapa e não executa: apontar um chat para ele produz
+ * silêncio, que é o pior resultado possível num site de cliente.
+ */
+function porQueNaoAtende(sector: SectorSummary): string | null {
+  if (normalizeSectorMode(sector.mode) === 'organization') return 'só organiza, não atende'
+  const { ready, issues } = sectorReadiness({
+    mode: normalizeSectorMode(sector.mode),
+    members: sector.members ?? [],
+    coordinatorAgentId: sector.coordinatorAgentId ?? null,
+    stages: sector.stages ?? [],
+  })
+  if (ready) return null
+  return issues.find((i) => i.severity === 'blocking')?.message ?? 'ainda não consegue trabalhar'
 }
 
 export function WidgetManager({ widgets, loading, agents, agentsLoading, sectors, onChange }: WidgetManagerProps) {
   const [isCreating, setIsCreating] = useState(false)
   const [deletingWidgetId, setDeletingWidgetId] = useState<string | null>(null)
   const [listError, setListError] = useState<string | null>(null)
+  /**
+   * O andar de cada um, para distinguir homônimos.
+   *
+   * Duas contas reais têm "Suporte" em dois andares. Uma lista só com o nome obriga a
+   * adivinhar qual dos dois, e escolher errado só aparece quando um visitante fala com
+   * a equipe errada.
+   */
+  const [andares, setAndares] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let vivo = true
+    fetch(`${API_URL}/api/floors`, { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((lista: { _id: string; name: string }[]) => {
+        if (vivo && Array.isArray(lista)) setAndares(Object.fromEntries(lista.map((f) => [f._id, f.name])))
+      })
+      .catch(() => undefined)
+    return () => {
+      vivo = false
+    }
+  }, [])
+
+  const [copiado, setCopiado] = useState<string | null>(null)
+
+  /** A chave inteira não precisa estar na tela: ela vive no trecho de código abaixo. */
+  const mascarar = (chave: string) => (chave.length <= 10 ? chave : `${chave.slice(0, 6)}…${chave.slice(-4)}`)
+
+  async function copiar(id: string, texto: string) {
+    try {
+      await navigator.clipboard.writeText(texto)
+      setCopiado(id)
+      setTimeout(() => setCopiado((atual) => (atual === id ? null : atual)), 2000)
+    } catch {
+      // Sem permissão de área de transferência o trecho continua visível para seleção.
+    }
+  }
+
+  const nomeComAndar = (nome: string, floorId?: string | null) => {
+    const andar = floorId ? andares[floorId] : null
+    return andar ? `${nome} · ${andar}` : nome
+  }
 
   const [editingWidget, setEditingWidget] = useState<WidgetSummary | null>(null)
   const [editName, setEditName] = useState('')
@@ -260,10 +321,12 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, sectors
             const linkedTeam = sectors.find((sector) => sector._id === widget.sectorId)
             const linkedAgent = agents.find((agent) => agent._id === widget.agentId)
             const attendedBy = linkedTeam
-              ? `Setor "${linkedTeam.name}"`
+              ? `Setor “${nomeComAndar(linkedTeam.name, linkedTeam.floorId)}”`
               : linkedAgent
-                ? `Agente "${linkedAgent.name}"`
-                : 'Sem atendimento'
+                ? `Agente “${nomeComAndar(linkedAgent.name, linkedAgent.floorId)}”`
+                : // O destino sumiu depois de configurado (agente excluído, setor arquivado).
+                  // Dizer isso é melhor que "Sem atendimento", que parece uma escolha.
+                  'Precisa de configuração — o destino não existe mais'
 
             return (
               <li key={widget._id} className="rounded-lg border border-(--border-subtle) p-3">
@@ -291,9 +354,33 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, sectors
                     </button>
                   </div>
                 </div>
-                <code className="block overflow-x-auto rounded bg-(--surface-card) p-2 text-xs text-(--text-body)">
+                <p className="mb-1 text-xs text-(--text-faint)" data-testid="widget-key">
+                  Chave pública: <code>{mascarar(widget.publicKey)}</code>
+                </p>
+                <code className="block overflow-x-auto rounded bg-(--surface-card) p-2 text-xs text-(--text-body)" data-testid="widget-snippet">
                   {snippet}
                 </code>
+                {/* Copiar à mão um trecho que rola de lado é onde o cliente erra: falta
+                    um pedaço, e o widget não monta sem dizer por quê. */}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void copiar(widget._id, snippet)}
+                    data-testid="widget-copy"
+                    className="rounded-lg border border-(--border-strong) px-3 py-1.5 text-xs transition hover:bg-(--surface-sunken)"
+                  >
+                    {copiado === widget._id ? 'Copiado ✓' : 'Copiar código'}
+                  </button>
+                  <a
+                    href={`/widget/${encodeURIComponent(widget.publicKey)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-testid="widget-preview"
+                    className="rounded-lg border border-(--border-strong) px-3 py-1.5 text-xs transition hover:bg-(--surface-sunken)"
+                  >
+                    Abrir prévia
+                  </a>
+                </div>
               </li>
             )
           })}
@@ -323,30 +410,45 @@ export function WidgetManager({ widgets, loading, agents, agentsLoading, sectors
           </div>
 
           <div>
-            <label className="mb-1 block text-sm text-(--text-muted)">Atendido por</label>
+            {/* `htmlFor`/`id`: sem o par, o rótulo é só um texto por perto — quem usa
+                leitor de tela não sabe o que este campo pede. */}
+            <label htmlFor="widget-target" className="mb-1 block text-sm text-(--text-muted)">
+              Atendido por
+            </label>
             <select
+              id="widget-target"
+              data-testid="widget-target"
               value={editTarget}
               onChange={(e) => setEditTarget(e.target.value)}
               className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
             >
-              <option value="">Sem atendimento</option>
+              {/* Não há "Sem atendimento": um widget sem destino é um chat que recebe
+                  perguntas e nunca responde — e nada na tela dizia por quê. */}
+              <option value="">Escolha quem atende…</option>
               {sectors.length > 0 && (
                 <optgroup label="Setores">
-                  {sectors.map((sector) => (
-                    <option key={sector._id} value={`sector:${sector._id}`}>
-                      {sector.name}
-                    </option>
-                  ))}
+                  {sectors.map((sector) => {
+                    const impedimento = porQueNaoAtende(sector)
+                    return (
+                      <option key={sector._id} value={`sector:${sector._id}`} disabled={Boolean(impedimento)}>
+                        {nomeComAndar(sector.name, sector.floorId)}
+                        {impedimento ? ` — ${impedimento}` : ''}
+                      </option>
+                    )
+                  })}
                 </optgroup>
               )}
               <optgroup label="Agentes">
                 {agents.map((agent) => (
                   <option key={agent._id} value={`agent:${agent._id}`}>
-                    {agent.name}
+                    {nomeComAndar(agent.name, agent.floorId)}
                   </option>
                 ))}
               </optgroup>
             </select>
+            <p className="mt-1 text-xs text-(--text-faint)">
+              Um setor só aparece disponível se ele executa. “Só organizar” agrupa agentes no mapa e não atende ninguém.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

@@ -66,6 +66,21 @@ Opcionais (chaves de provedor; o app sobe sem elas):
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `VOYAGE_API_KEY`,
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`.
 
+Busca na web (opcional — sem ela o pesquisador continua usando base e sites
+cadastrados, e a tela avisa que a busca não está configurada):
+
+| Variável | Valor | Para que serve |
+|---|---|---|
+| `WEB_SEARCH_PROVIDER` | `brave` | `brave` é a integração oficial; `http` é o adaptador genérico |
+| `BRAVE_SEARCH_API_KEY` | *(a chave)* | Lida só do ambiente: nunca vai para o banco, para a tela ou para o log |
+| `BRAVE_MONTHLY_REQUEST_LIMIT` | `900` | A franquia do plano gratuito, por mês UTC |
+| `BRAVE_PAID_USAGE_ENABLED` | `false` | Em `false`, nenhum número acima de 900 é aceito |
+
+O contador é **global desta instalação** — a franquia pertence à chave, não ao
+usuário. Buscas feitas com a mesma chave fora daqui não passam por este contador e
+não são conhecidas por ele. Ao atingir o teto, o agente continua respondendo com o
+que já está na base; nada é cobrado e nenhum outro buscador é acionado no lugar.
+
 Ajustes finos do motor (todos com padrão seguro, mexa só se precisar):
 `WORKER_CONCURRENCY`, `RUN_POLL_MS`, `SCHEDULER_POLL_MS`, `RUN_LEASE_MS`,
 `MAX_RUN_CLAIMS`.

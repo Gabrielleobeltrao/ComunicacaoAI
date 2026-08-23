@@ -27,6 +27,11 @@ import { coordinatorBriefing } from './sectorBriefing.js'
 import { NOOP_TRACKER, instrumentTools } from './agentLiveTracker.js'
 import { ROLE_LABEL, capabilitiesOf, roleOf } from './agentCapabilities.js'
 import { preview, traceEvent } from './executionTrace.js'
+import { activeSearchProvider, configuredProviderName } from './webSearch/provider.js'
+import { normalizeWebSearch, shouldSearch, wantsCurrentInfo } from './webSearch/policy.js'
+import { recordSearchEvent } from './webSearch/budget.js'
+import type { WebSearchSettings } from './webSearch/policy.js'
+import { runWebSearch } from './webSearch/run.js'
 import type { TraceInput } from './executionTrace.js'
 import type { LiveTracker } from './agentLiveTracker.js'
 import {
@@ -300,6 +305,17 @@ export interface DelegationDeps {
    * já voltou sem nada — nunca antes.
    */
   bootstrapWebKnowledge?: (ownerId: string, agentId: ObjectId) => Promise<unknown>
+  /**
+   * Guarda na base as páginas que a busca leu. Injetada porque escreve no banco, e este
+   * módulo é puro. Ausente = a busca funciona e nada é guardado.
+   */
+  rememberSearchPages?: (
+    ownerId: string,
+    agentId: ObjectId,
+    query: string,
+    pages: unknown[],
+    rememberDays: number,
+  ) => Promise<{ saved: number; updated: number; unchanged: number }>
   loadAgent: (ownerId: string, id: ObjectId) => Promise<Agent | null>
   loadSector: (ownerId: string, id: ObjectId) => Promise<SectorLite | null>
   listAgentsInBuilding: (ownerId: string, buildingId: string) => Promise<Agent[]>
@@ -376,7 +392,7 @@ export interface DelegationDeps {
     opts: { sectorId?: ObjectId | null },
   ) => Promise<{
     context: string[]
-    sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
+    sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' | 'search'; capturedAt?: string | null }[]
     status?: string
     failed?: boolean
     /** Quantos trechos correspondiam, quando dá para saber — ver `knowledge.ts`. */
@@ -407,7 +423,7 @@ interface TaskRun {
   // De onde saiu a resposta, para quem PEDIU poder conferir: o veredito da busca e os
   // documentos que entraram — id e título, nunca o texto deles.
   grounding?: string
-  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
+  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' | 'search'; capturedAt?: string | null }[]
 }
 
 // Emit a per-agent telemetry event for a delegation/sector run (fire-and-forget via
@@ -560,7 +576,12 @@ export function checkStageOutput(
 // Run one target agent as a task under `ctx` (ctx.callerAgentId is the delegator).
 // Returns the model output, charging the shared budget. Assumes checkDelegation
 // already passed.
-async function runAgentTask(
+//
+// Exportada porque é AQUI que se decide quem consulta base, quem recebe fonte viva e
+// quem acende o balão de leitura — as três coisas que a divisão de papéis governa. Testar
+// isso por fora exigiria montar um setor inteiro para observar uma decisão que mora nesta
+// função.
+export async function runAgentTask(
   deps: DelegationDeps,
   ctx: DelegationContext,
   target: Agent,
@@ -766,7 +787,11 @@ async function runAgentTask(
   }
 
   const query = buildRetrievalQuery({ objective, input })
-  if (query && deps.retrieveContext) tracker.report('reading_knowledge')
+  // O balão só acende para quem realmente vai procurar. Ele acendia para todo mundo, e
+  // o mapa mostrava o analista e o coordenador "consultando a base" — trabalho que não
+  // estava acontecendo. Um painel que relata o que não houve é tão ruim quanto o
+  // comportamento errado: manda investigar no lugar errado.
+  if (query && deps.retrieveContext && capacidades.knowledge) tracker.report('reading_knowledge')
   // A rejected promise is 'unavailable', not "no knowledge": the two must never be
   // confused, and only the first one is a reason to refuse.
   const buscar = async () =>
@@ -859,7 +884,10 @@ async function runAgentTask(
       }
     }
   }
-  if (ctx.traceId && query) {
+  // Só quem PROCURA aparece com um evento de base. O painel emitia um para todo agente
+  // com pergunta, então o plano mostrava o analista e o coordenador consultando —
+  // exatamente o que a divisão de papéis existe para impedir.
+  if (ctx.traceId && query && capacidades.knowledge) {
     // O que a busca fez, sem o que ela leu: títulos e quantidade dizem se o agente tinha
     // base, e o conteúdo dela não é assunto de painel.
     traceEvent({
@@ -885,18 +913,153 @@ async function runAgentTask(
       },
     })
   }
-  // The target's own rule, honoured wherever it runs: a delegated agent that must
-  // answer from curated knowledge does not answer without it, and nothing is spent.
-  if (target.requireGrounding && grounding !== 'ok') {
+  /**
+   * PROCURAR páginas novas, quando a base não bastou — e só quem coleta.
+   *
+   * A ordem é a que economiza: a base já respondeu (ou não) acima, e é essa resposta que
+   * decide se vale procurar fora. Buscar antes seria pagar por uma pergunta que o próprio
+   * agente já sabia responder.
+   *
+   * Nada disto acontece com o interruptor desligado, que é o padrão, nem para analista,
+   * coordenador ou executor — a capacidade não existe para eles.
+   */
+  const buscaWeb: WebSearchSettings = normalizeWebSearch(target.webSearch)
+  const provedorDeBusca = capacidades.webSearch ? activeSearchProvider() : null
+  const evidenciasDaWeb: string[] = []
+  if (capacidades.webSearch && query) {
+    // O que a base respondeu veio SÓ de páginas que um buscador trouxe? A distinção
+    // decide se uma pergunta sobre "agora" pode ser respondida com o que está guardado.
+    const soMemoriaDeBusca = sources.length > 0 && sources.every((f) => f.origin === 'search')
+    const decisao = shouldSearch(buscaWeb, {
+      grounding,
+      passages: passages.length,
+      canSearch: Boolean(provedorDeBusca),
+      wantsCurrent: wantsCurrentInfo(query),
+      onlySearchMemory: soMemoriaDeBusca,
+    })
+    if (decisao.search && provedorDeBusca) {
+      tracker.report('reading_knowledge')
+      const r = await runWebSearch(provedorDeBusca, query, buscaWeb)
+      // A data de captura vai JUNTO da evidência: sem ela, um trecho que diz "hoje" é
+      // lido como se fosse de hoje, qualquer que seja o dia em que foi escrito.
+      const lidoEm = new Date().toISOString().slice(0, 10)
+      for (const e of r.evidence) evidenciasDaWeb.push(`[${e.title}] · lido em ${lidoEm}\nFonte: ${e.url}\n\n${e.text}`)
+      if (r.evidence.length > 0) grounding = 'ok'
+
+      // O que foi lido vira memória do agente: a próxima pergunta parecida encontra isto
+      // na base, e a requisição ao buscador nem sai.
+      const guardado =
+        deps.rememberSearchPages && r.pages.length > 0
+          ? await deps.rememberSearchPages(ctx.ownerId, target._id, query, r.pages, buscaWeb.rememberDays).catch(() => null)
+          : null
+
+      await recordSearchEvent({
+        agentId: target._id.toString(),
+        ownerId: ctx.ownerId,
+        provider: r.provider,
+        query,
+        // A franquia barrou = a requisição NÃO saiu e não gastou. Gravar isso como busca
+        // feita mostrava consumo que não existiu, e um agente parado por falta de cota
+        // parecia um agente gastando.
+        outcome: r.code === 'monthly_limit_reached' ? 'blocked' : 'sent',
+        performed: r.code !== 'monthly_limit_reached',
+        found: r.found,
+        pagesRead: r.read.length,
+        evidence: r.evidence.length,
+        saved: (guardado?.saved ?? 0) + (guardado?.updated ?? 0),
+        ok: r.ok,
+        code: r.code ?? null,
+        durationMs: r.durationMs,
+      })
+      if (ctx.traceId) {
+        traceEvent({
+          ownerId: ctx.ownerId,
+          executionId: ctx.traceId,
+          type: 'rag',
+          status: r.ok ? (r.evidence.length > 0 ? 'success' : 'info') : 'error',
+          agentId: target._id.toString(),
+          title: r.ok
+            ? `${target.name}: busca na web — ${r.found} resultado(s), ${r.read.length} página(s) lida(s), ${r.evidence.length} evidência(s)`
+            : r.code === 'monthly_limit_reached'
+              ? `${target.name}: a franquia mensal de busca acabou — respondendo com a base`
+              : `${target.name}: a busca na web falhou — respondendo com o que já tinha`,
+          input: preview(query, 200),
+          durationMs: r.durationMs,
+          metadata: {
+            provider: r.provider,
+            policy: buscaWeb.policy,
+            reason: decisao.reason,
+            found: r.found,
+            // Só endereço e título: o conteúdo lido não é assunto de painel, e nenhuma
+            // credencial passa por aqui.
+            selected: r.selected.map((s) => ({ url: s.url, title: s.title, score: s.score })),
+            read: r.read,
+            evidence: r.evidence.map((e) => ({ url: e.url, title: e.title })),
+            error: r.error ?? null,
+            code: r.code ?? null,
+          },
+        })
+      }
+    } else if (buscaWeb.enabled) {
+      // A busca EVITADA também é registrada: é ela que mostra a economia de ter memória.
+      await recordSearchEvent({
+        agentId: target._id.toString(),
+        ownerId: ctx.ownerId,
+        // O provedor em jogo, e não um nome fixo: uma instalação no adaptador genérico
+        // via "brave" no painel sem nunca ter falado com o Brave.
+        provider: configuredProviderName(),
+        query,
+        outcome: 'avoided',
+        performed: false,
+        skipReason: decisao.reason,
+        found: 0,
+        pagesRead: 0,
+        evidence: 0,
+        saved: 0,
+        ok: true,
+        durationMs: 0,
+      })
+    }
+    if (!decisao.search && ctx.traceId && buscaWeb.enabled) {
+      // Não procurou — e o motivo importa tanto quanto a busca. Sem isto, "não procurou"
+      // e "procurou e não achou" ficam iguais no painel.
+      traceEvent({
+        ownerId: ctx.ownerId,
+        executionId: ctx.traceId,
+        type: 'rag',
+        status: 'info',
+        agentId: target._id.toString(),
+        title: `${target.name}: busca na web não foi necessária`,
+        metadata: { policy: buscaWeb.policy, reason: decisao.reason },
+      })
+    }
+  }
+
+  /**
+   * "Só responder com base no conhecimento" — para quem TEM conhecimento a consultar.
+   *
+   * A regra vale onde quer que o agente rode. Mas para quem não consulta base por papel,
+   * ela é impossível de satisfazer: a busca nem acontece, `grounding` é sempre 'no_base',
+   * e o agente ficaria bloqueado para sempre — um analista que nunca analisa. A exigência
+   * dele é outra, e já existe: ele precisa de ENTRADA, não de base.
+   */
+  if (target.requireGrounding && capacidades.knowledge && grounding !== 'ok') {
     // Ele parou, e parou por uma razão. `reportNow` porque o estado precisa estar
     // gravado antes do `throw` — senão a corrida deixa o balão "pensando" para sempre.
     await tracker.reportNow('blocked')
     await tracker.finish('failed')
     throw new GroundingRequiredError(grounding)
   }
-  // Os endereços que o dono marcou para entrar sozinhos também valem aqui: delegação e
-  // etapa de setor são "o agente foi chamado" tanto quanto uma conversa.
-  const vivas = deps.livePassages ? await deps.livePassages(ctx.ownerId, target).catch(() => []) : []
+  /**
+   * Os endereços que o dono marcou para entrar sozinhos — para quem CONSULTA.
+   *
+   * Valem aqui porque delegação e etapa de setor são "o agente foi chamado" tanto quanto
+   * uma conversa. Mas eram injetados em qualquer papel: um coordenador com uma fonte viva
+   * recebia o conteúdo do site no prompt, o que é a mesma coisa que consultar base — pela
+   * porta dos fundos. Quem analisa trabalha sobre o que recebe; quem conduz, sobre o que
+   * o time trouxe.
+   */
+  const vivas = deps.livePassages && capacidades.knowledge ? await deps.livePassages(ctx.ownerId, target).catch(() => []) : []
   // Numbered references, so the answer can cite what it used. The owner is not named.
   // O aviso de amplitude vem ANTES das passagens: é o que decide entre responder e
   // perguntar, e depois delas já seria tarde.
@@ -907,6 +1070,9 @@ async function runAgentTask(
     ...(misturado ? [misturado] : []),
     ...formatContextWithSources(passages, sources),
     ...vivas.map((v) => `[${v.title}]\n${v.content}`),
+    // O que veio da busca: TRECHOS com procedência, nunca a página inteira. Página no
+    // prompt custa token e piora a resposta — o que responde fica enterrado no menu.
+    ...evidenciasDaWeb,
   ]
   const startedAt = new Date()
   // The TARGET decides how it answers: an agent configured to produce JSON is not
@@ -1211,7 +1377,7 @@ export interface SectorParticipant {
   /** Quantas ferramentas ele completou. Um número, nunca argumentos ou resultado. */
   toolCalls?: number
   /** Os documentos que entraram na resposta: id e título, nunca o texto. */
-  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' }[]
+  sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' | 'search'; capturedAt?: string | null }[]
   /** O que ESTE agente custou. Quem paga a conta precisa ver a conta separada. */
   usage?: { inputTokens: number; outputTokens: number }
   /** Quanto ele demorou, em milissegundos. */
@@ -1444,7 +1610,13 @@ export async function executeSectorTeam(
             instructions: agente.instructions ?? null,
             capabilities: agente.capabilities ?? null,
             // O que ele CONSEGUE fazer, e não só o que sabe. Nomes, nunca credenciais.
-            tools: [...(agente.tools ?? []).map((t) => t.name), ...(agente.builtinTools ?? []).map((t) => t.key)],
+            // "busca_na_web" entra como capacidade: sem isso o planejador manda uma
+            // pergunta sobre algo ATUAL para quem só alcança o que já está guardado.
+            tools: [
+              ...(agente.tools ?? []).map((t) => t.name),
+              ...(agente.builtinTools ?? []).map((t) => t.key),
+              ...(capabilitiesOf(agente).webSearch ? ['busca_na_web'] : []),
+            ],
             // Só os TÍTULOS: o conteúdo da base não sai daqui, nem para escolher.
             knowledgeTitles: null as string[] | null,
           }
@@ -1497,15 +1669,18 @@ export async function executeSectorTeam(
   const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
 
   /**
-   * A rede de segurança do conhecimento.
+   * A rede de segurança do conhecimento — para QUEM CONSULTA.
    *
-   * O coordenador costuma não ter base própria — quem tem é o especialista. Se ele não
-   * delegar (e ele pode não delegar), a resposta sairia "não tenho esses dados" com o
-   * dado guardado ali do lado, na base de um colega do MESMO setor. Então: primeiro a
-   * base dele; se não vier nada, as bases do time.
+   * Ela nasceu para o coordenador: ele não tem base própria, e se não delegasse, a
+   * resposta sairia "não tenho esses dados" com o dado guardado na base de um colega. Essa
+   * justificativa envelheceu: hoje o coordenador não consulta base nenhuma, por regra — o
+   * gate de capacidades o impede antes de chegar aqui.
    *
-   * Continua dentro do escopo já autorizado — os membros deste setor, desta conta.
-   * Nada global é aberto, e a base do setor entra pelo mesmo `sectorId` de sempre.
+   * O que sobrou é o caso real: um PESQUISADOR cuja própria base não tem a resposta, e a
+   * de um colega do mesmo setor tem. Ele continua sendo quem procura — só procura em mais
+   * lugares. Os outros papéis nem chegam a esta função.
+   *
+   * Continua dentro do escopo já autorizado: os membros deste setor, desta conta.
    */
   // Os colegas que a busca ainda NÃO cobriu. Sem nenhum, não há segunda busca a fazer:
   // repetir a mesma consulta nos mesmos donos custa e não descobre nada.
@@ -1518,7 +1693,9 @@ export async function executeSectorTeam(
         retrieveContext: async (agentId, query, o) => {
           const propria = await deps.retrieveContext!(agentId, query, o)
           if (achou(propria)) return propria
-          const doTime = await deps.retrieveContext!([coordinator._id, ...colegas], query, o)
+          // Sem o coordenador: ele não coleta, então a base dele não é fonte de nada —
+          // incluí-la era consultar, por outro caminho, exatamente quem não consulta.
+          const doTime = await deps.retrieveContext!(colegas, query, o)
           // Só substitui quando o time REALMENTE achou: um 'empty' do time não pode
           // apagar um 'unavailable' da base própria, que significa outra coisa.
           return achou(doTime) ? doTime : propria

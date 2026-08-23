@@ -2,6 +2,10 @@ import 'dotenv/config'
 import { createTool, deleteTool, getTool, listTools, toPublicTool, ToolValidationError, UNSAFE_METHODS, updateTool } from './tools.js'
 import { executeToolCall } from './toolExecution.js'
 import { MASKED_HEADER_VALUE, pullToolFromAgents, toPublicAgent } from './agents.js'
+import { resolveWidgetDestination } from './widgetDestination.js'
+import { webChatAccessFor } from './apps/publicChannelAccess.js'
+import { resolveRuntimeDestination } from './widgetRuntimeDestination.js'
+import { listWidgetsBySector } from './widgets.js'
 import { readiness, startEmbeddedEngine, stopEmbeddedEngine } from './automations/engine.js'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
@@ -130,6 +134,8 @@ import {
   setProviderApiKey,
 } from './userSettings.js'
 import { embeddingBudgetConfig, embeddingUsageReport, ensureEmbeddingUsageIndexes } from './embeddings/budget.js'
+import { activeSearchProvider, configuredProviderName } from './webSearch/provider.js'
+import { ensureWebSearchIndexes, searchBudgetConfig, searchBudgetStatus } from './webSearch/budget.js'
 import { VOYAGE_MODELS, voyageFallbackModel, voyageModel } from './voyage.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
 import { backfillAgentEventAttempts, ensureAgentEventIndexes, recordAgentEventSafe, telemetrySince } from './agentEvents.js'
@@ -447,6 +453,21 @@ app.get('/api/settings/embeddings', requireAuth, async (_req, res) => {
   })
 })
 
+/**
+ * O estado da busca na web: provedor, uso do mês e quanto resta.
+ *
+ * Devolve OITO campos e nada mais. Nem a chave, nem um pedaço dela, nem o nome da
+ * variável — `configured` é tudo o que se diz sobre a credencial: existe ou não existe.
+ *
+ * Os números são desta INSTALAÇÃO. Se a mesma chave for usada em outro lugar, aquelas
+ * chamadas não passam por aqui e este contador não as conhece — a tela diz isso.
+ */
+app.get('/api/settings/web-search', requireAuth, async (_req, res) => {
+  const provider = configuredProviderName()
+  const cfg = searchBudgetConfig()
+  res.json(await searchBudgetStatus(provider, Boolean(activeSearchProvider()), cfg))
+})
+
 app.put('/api/settings/monthly-token-cap', requireAuth, async (req, res) => {
   const { cap } = req.body ?? {}
   if (typeof cap !== 'number' || !Number.isInteger(cap) || cap < 0 || cap > MAX_MONTHLY_TOKEN_CAP) {
@@ -746,6 +767,60 @@ async function resolveOwnedSectorId(ownerId: string, sectorId: unknown) {
   return { sectorObjectId: sector._id, error: null }
 }
 
+/**
+ * Quem vai atender este chat — decidido no servidor, não só na tela.
+ *
+ * A tela é UMA das formas de chegar aqui. Sem esta verificação, uma requisição direta
+ * criava um widget sem destino (que engole mensagem em silêncio), com os dois destinos
+ * ao mesmo tempo, ou apontado para um setor que só organiza o mapa e não executa nada.
+ */
+async function resolverDestinoDoWidget(
+  ownerId: string,
+  entrada: { agentId?: unknown; sectorId?: unknown },
+): Promise<{ ok: true; agentId: ObjectId | null; sectorId: ObjectId | null } | { ok: false; status: number; error: string; code?: string }> {
+  const temAgente = typeof entrada.agentId === 'string' && entrada.agentId.length > 0
+  const temSetor = typeof entrada.sectorId === 'string' && entrada.sectorId.length > 0
+
+  if (temAgente && temSetor) {
+    return { ok: false, status: 400, code: 'destination_conflict', error: 'Escolha um agente OU um setor para atender — não os dois.' }
+  }
+  if (!temAgente && !temSetor) {
+    return { ok: false, status: 400, code: 'destination_required', error: 'Escolha quem vai atender este chat: um agente ou um setor.' }
+  }
+
+  if (temAgente) {
+    const { agentObjectId, error } = await resolveOwnedAgentId(ownerId, entrada.agentId)
+    if (error || !agentObjectId) return { ok: false, status: 400, code: 'invalid_agent', error: error ?? 'Agent not found' }
+    const veredito = resolveWidgetDestination({ agentId: agentObjectId, agentPresent: true })
+    if (!veredito.ok) return { ok: false, status: 400, code: veredito.code, error: veredito.reason! }
+    // Trocar de destino LIMPA o outro lado, e é por isso que os dois campos vêm daqui.
+    return { ok: true, agentId: veredito.destination!.agentId, sectorId: null }
+  }
+
+  const { sectorObjectId, error: sectorError } = await resolveOwnedSectorId(ownerId, entrada.sectorId)
+  if (sectorError || !sectorObjectId) return { ok: false, status: 400, code: 'invalid_sector', error: sectorError ?? 'Sector not found' }
+  const sector = await getSectorById(ownerId, sectorObjectId)
+  if (!sector) return { ok: false, status: 400, code: 'invalid_sector', error: 'Sector not found' }
+
+  // Os agentes que existem: uma etapa apontando para agente removido não é executável.
+  const doDono = await listAgents(ownerId)
+  const veredito = resolveWidgetDestination({
+    sectorId: sectorObjectId,
+    sector: {
+      _id: sector._id,
+      name: sector.name,
+      mode: sector.mode,
+      members: sector.members ?? [],
+      coordinatorAgentId: sector.coordinatorAgentId ?? null,
+      stages: sector.stages ?? [],
+      knownAgentIds: doDono.map((a) => a._id.toString()),
+      archivedAt: (sector as { archivedAt?: Date | null }).archivedAt ?? null,
+    },
+  })
+  if (!veredito.ok) return { ok: false, status: 400, code: veredito.code, error: veredito.reason! }
+  return { ok: true, agentId: null, sectorId: veredito.destination!.sectorId }
+}
+
 app.post('/api/widgets', requireAuth, async (req, res) => {
   const { name, primaryColor, welcomeTitle, welcomeMessage, position, agentId, sectorId } = req.body ?? {}
   if (!name) {
@@ -757,14 +832,11 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     return
   }
 
-  const { sectorObjectId, error: sectorError } = await resolveOwnedSectorId(res.locals.userId, sectorId)
-  if (sectorError) {
-    res.status(400).json({ error: sectorError })
-    return
-  }
-  const { agentObjectId, error } = await resolveOwnedAgentId(res.locals.userId, agentId)
-  if (error) {
-    res.status(400).json({ error })
+  // Um destino, obrigatório e único. Sem isto, um widget podia nascer sem ninguém para
+  // atender: um chat no site do cliente que recebe perguntas e nunca responde.
+  const destino = await resolverDestinoDoWidget(res.locals.userId, { agentId, sectorId })
+  if (!destino.ok) {
+    res.status(destino.status).json({ error: destino.error, code: destino.code })
     return
   }
 
@@ -773,9 +845,10 @@ app.post('/api/widgets', requireAuth, async (req, res) => {
     welcomeTitle: typeof welcomeTitle === 'string' ? welcomeTitle : undefined,
     welcomeMessage: typeof welcomeMessage === 'string' ? welcomeMessage : undefined,
     position,
-    // A widget is answered by a sector OR a single agent, never both.
-    sectorId: sectorObjectId,
-    agentId: sectorObjectId ? null : agentObjectId,
+    // Atendido por um setor OU por um agente, nunca pelos dois: o resolvedor já zerou
+    // o lado que não vale, então trocar de destino não deixa o anterior gravado embaixo.
+    sectorId: destino.sectorId,
+    agentId: destino.agentId,
   })
   auditEntity(res, { id: widget._id.toString(), label: widget.name })
   res.status(201).json(widget)
@@ -815,24 +888,31 @@ app.patch('/api/widgets/:widgetId', requireAuth, async (req, res) => {
     }
     updates.position = position
   }
-  // The widget target: a sector wins over a single agent when both are sent.
-  if (sectorId !== undefined) {
-    const { sectorObjectId, error } = await resolveOwnedSectorId(res.locals.userId, sectorId)
-    if (error) {
-      res.status(400).json({ error })
+  /**
+   * Trocar de destino é UMA decisão, não dois campos independentes.
+   *
+   * Antes cada um se resolvia sozinho e "limpar o outro lado" dependia da ordem em que
+   * chegaram — com os dois preenchidos, o setor ganhava em silêncio. Agora a escolha é
+   * validada inteira: exatamente um destino, e o outro lado sai zerado.
+   */
+  if (agentId !== undefined || sectorId !== undefined) {
+    // A posse é conferida aqui: o widget de outra conta não é lido, e muito menos editado.
+    const atual = await getWidgetById(new ObjectId(widgetId))
+    if (!atual || atual.ownerId !== res.locals.userId) {
+      res.status(404).json({ error: 'Widget not found' })
       return
     }
-    updates.sectorId = sectorObjectId
-    if (sectorObjectId) updates.agentId = null
-  }
-  if (agentId !== undefined && !updates.sectorId) {
-    const { agentObjectId, error } = await resolveOwnedAgentId(res.locals.userId, agentId)
-    if (error) {
-      res.status(400).json({ error })
+    const destino = await resolverDestinoDoWidget(res.locals.userId, {
+      // O que não veio no corpo permanece: editar a cor não mexe em quem atende.
+      agentId: agentId !== undefined ? agentId : (atual.agentId?.toString() ?? null),
+      sectorId: sectorId !== undefined ? sectorId : (atual.sectorId?.toString() ?? null),
+    })
+    if (!destino.ok) {
+      res.status(destino.status).json({ error: destino.error, code: destino.code })
       return
     }
-    updates.agentId = agentObjectId
-    if (agentObjectId) updates.sectorId = null
+    updates.agentId = destino.agentId
+    updates.sectorId = destino.sectorId
   }
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -1165,6 +1245,45 @@ app.get('/api/sectors', requireAuth, async (req, res) => {
   res.json(sectors.map(serializeSector))
 })
 
+/**
+ * Esta mudança deixaria um setor USADO POR WIDGET sem conseguir atender?
+ *
+ * Quem edita o setor não vê a lista de widgets. Tirar o coordenador, esvaziar a equipe
+ * ou virar "só organizar" derruba, em silêncio, um chat que está no ar — e a consequência
+ * só aparece quando um visitante escreve e ninguém responde.
+ *
+ * Setor SEM widget não passa por aqui: ele continua editável como sempre, inclusive para
+ * estados incompletos no meio de uma configuração.
+ */
+async function bloqueiaSePrejudicaWidget(
+  ownerId: string,
+  sectorId: ObjectId,
+  proposto: { mode?: unknown; members?: { agentId: ObjectId }[]; coordinatorAgentId?: ObjectId | null; stages?: unknown },
+  atual: { mode: string; members?: { agentId: ObjectId }[]; coordinatorAgentId?: ObjectId | null; stages?: unknown; name: string },
+): Promise<{ error: string; widgets: { id: string; name: string }[] } | null> {
+  const usados = await listWidgetsBySector(ownerId, sectorId)
+  if (usados.length === 0) return null
+
+  const doDono = await listAgents(ownerId)
+  const veredito = resolveWidgetDestination({
+    sectorId,
+    sector: {
+      _id: sectorId,
+      name: atual.name,
+      mode: (proposto.mode ?? atual.mode) as never,
+      members: proposto.members ?? atual.members ?? [],
+      coordinatorAgentId: proposto.coordinatorAgentId !== undefined ? proposto.coordinatorAgentId : (atual.coordinatorAgentId ?? null),
+      stages: (proposto.stages ?? atual.stages ?? []) as never,
+      knownAgentIds: doDono.map((a) => a._id.toString()),
+    },
+  })
+  if (veredito.ok) return null
+  return {
+    error: `${veredito.reason} — e ${usados.length} widget(s) dependem dele.`,
+    widgets: usados.map((w) => ({ id: w._id.toString(), name: w.name })),
+  }
+}
+
 app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
   const sectorId = String(req.params.sectorId)
   if (!ObjectId.isValid(sectorId)) {
@@ -1239,6 +1358,17 @@ app.patch('/api/sectors/:sectorId', requireAuth, async (req, res) => {
     ...(updates.stages ?? []).map((e) => e.agentId),
   ]
   if (await recusarSeJaEhEtapaDeOutro(res, res.locals.userId, new ObjectId(sectorId), entrando)) return
+
+  const prejuizo = await bloqueiaSePrejudicaWidget(
+    res.locals.userId,
+    new ObjectId(sectorId),
+    { mode: updates.mode, members: updates.members, coordinatorAgentId: updates.coordinatorAgentId, stages: updates.stages },
+    existing,
+  )
+  if (prejuizo) {
+    res.status(409).json({ error: prejuizo.error, code: 'sector_in_use_by_widget', widgets: prejuizo.widgets })
+    return
+  }
 
   const sector = await updateSector(res.locals.userId, new ObjectId(sectorId), updates)
   if (!sector) {
@@ -1336,6 +1466,13 @@ app.put('/api/sectors/:sectorId/members', requireAuth, async (req, res) => {
       return
     }
   }
+  // Trocar os membros também pode derrubar um chat no ar: uma equipe esvaziada não atende.
+  const prejuizoMembros = await bloqueiaSePrejudicaWidget(ownerId, new ObjectId(sectorId), { members: parsed }, existing)
+  if (prejuizoMembros) {
+    res.status(409).json({ error: prejuizoMembros.error, code: 'sector_in_use_by_widget', widgets: prejuizoMembros.widgets })
+    return
+  }
+
   const sector = await updateSector(ownerId, new ObjectId(sectorId), { members: parsed })
   if (!sector) {
     res.status(404).json({ error: 'Sector not found' })
@@ -3873,6 +4010,21 @@ app.get('/api/public/widgets/:publicKey', async (req, res) => {
     res.status(404).json({ error: 'Widget not found' })
     return
   }
+  // App desativado = o widget nem monta. Sem isto, "revogado" era um rótulo na tela do
+  // dono enquanto o chat seguia atendendo no site do cliente.
+  const acesso = await webChatAccessFor(widget.ownerId)
+  if (!acesso.ok) {
+    res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
+    return
+  }
+  // O destino é revalidado AGORA: o agente pode ter sido excluído e o setor arquivado
+  // depois de o widget ser criado. Sem isto o chat monta, aceita a pergunta e responde
+  // com silêncio — o pior resultado possível num site de cliente.
+  const destino = await resolveRuntimeDestination(widget)
+  if (!destino.ok) {
+    res.status(destino.status!).json({ error: destino.error, code: destino.code })
+    return
+  }
   const agent = await getWidgetConfigAgent(widget)
   res.json({
     name: widget.name,
@@ -3892,6 +4044,13 @@ app.get('/api/public/widgets/:publicKey/messages', async (req, res) => {
     res.status(404).json({ error: 'Widget not found' })
     return
   }
+  // O histórico AUTENTICADO continua intacto — o dono vê tudo na aba de conversas. O que
+  // para é a porta pública.
+  const acesso = await webChatAccessFor(widget.ownerId)
+  if (!acesso.ok) {
+    res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
+    return
+  }
   const conversationId = String(req.query.conversationId ?? '')
   if (!conversationId) {
     res.status(400).json({ error: 'conversationId is required' })
@@ -3905,6 +4064,25 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
   const widget = await getWidgetByPublicKey(req.params.publicKey)
   if (!widget) {
     res.status(404).json({ error: 'Widget not found' })
+    return
+  }
+  /**
+   * A recusa vem ANTES de qualquer gravação e de qualquer inferência.
+   *
+   * Uma recusa que custa uma chamada ao modelo não é uma recusa: o App está desativado e
+   * a conta continuaria pagando por mensagem que ninguém vai ler.
+   */
+  const acesso = await webChatAccessFor(widget.ownerId)
+  if (!acesso.ok) {
+    res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
+    return
+  }
+  // Idem, e aqui vale o dobro: antes de GRAVAR a mensagem e antes de disparar qualquer
+  // execução. Recusar depois de gravar deixaria a conversa com uma pergunta que nunca
+  // teve para onde ir.
+  const destinoAtual = await resolveRuntimeDestination(widget)
+  if (!destinoAtual.ok) {
+    res.status(destinoAtual.status!).json({ error: destinoAtual.error, code: destinoAtual.code })
     return
   }
   const { conversationId, content } = req.body ?? {}
@@ -4582,6 +4760,9 @@ async function start() {
   backfillAgentEventAttempts()
     .then((n) => n && console.log(`Backfilled attempt bookkeeping on ${n} agent event(s)`))
     .catch((error) => console.error('backfillAgentEventAttempts failed:', error))
+  ensureWebSearchIndexes().catch((error) => {
+    console.error('Could not create the web search indexes:', error)
+  })
   ensureEmbeddingUsageIndexes().catch((error) => {
     console.error('Could not create the embedding usage indexes:', error)
   })

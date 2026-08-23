@@ -611,3 +611,46 @@ test('the simple sections stay simple — no schema in sight', async ({ page }) 
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
   await expect(page.getByTestId('output-contract-block')).toHaveCount(0)
 })
+
+// --- busca na web já na contratação -----------------------------------------------------------
+//
+// O bloco inteiro dependia de um agente criado, por um motivo acidental: os SITES
+// precisam de um id para serem gravados. A busca não precisa — é configuração, e vai
+// junto no primeiro salvamento.
+
+test('o pesquisador pode ligar a busca na web ao ser contratado', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'researcher')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+
+  await page.getByTestId('hire-advanced-toggle').click()
+  await page.getByTestId('hire-web-search-enabled').check()
+  await page.getByTestId('hire-web-search-policy').selectOption('always')
+  await page.getByTestId('hire-web-search-remember').fill('1')
+
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Contratar agente' }).last().click()
+
+  expect(created?.webSearch).toMatchObject({ enabled: true, policy: 'always', rememberDays: 1 })
+})
+
+test('sem ligar, nada de busca vai no payload — o padrão é não procurar', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'researcher')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Contratar agente' }).last().click()
+
+  expect(created?.webSearch).toBeUndefined()
+})
+
+test('quem não coleta não vê a opção — nem no avançado', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'analyst')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByTestId('hire-advanced-toggle').click()
+  await expect(page.getByTestId('hire-web-search')).toHaveCount(0)
+})

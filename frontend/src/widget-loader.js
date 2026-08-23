@@ -1,3 +1,16 @@
+// O script que o cliente cola no site dele.
+//
+// Ele vive em DUAS origens ao mesmo tempo, e confundir as duas era o defeito: o arquivo é
+// servido pelo FRONTEND (e o chat abre num iframe de lá), mas a configuração e as
+// mensagens vêm do BACKEND, que é outro domínio em produção.
+//
+// Antes tudo usava a origem do script. Em desenvolvimento funcionava — o Vite faz proxy
+// de /api para o backend —, e em produção o nginx do frontend não faz: o loader recebia
+// o index.html no lugar do JSON, o `res.json()` estourava, e o widget simplesmente não
+// aparecia. Nenhum erro visível no site do cliente, nada no ar.
+//
+// `__API_ORIGIN__` é substituído no build pelo mesmo `VITE_API_URL` que o resto do app
+// usa (ver vite.config.ts). Nada de domínio fixo no fonte.
 ;(function () {
   var currentScript = document.currentScript
   var publicKey = currentScript && currentScript.getAttribute('data-widget-key')
@@ -7,7 +20,20 @@
     return
   }
 
-  var origin = new URL(currentScript.src).origin
+  // De onde o CHAT é servido: o iframe continua saindo daqui.
+  var frontendOrigin = new URL(currentScript.src).origin
+
+  /**
+   * De onde a CONFIGURAÇÃO e as MENSAGENS vêm.
+   *
+   * Ordem: o que o cliente escreveu em `data-api-url` (escape para instalação fora do
+   * padrão), o valor do build, e por último a origem do script — que é o que faz o
+   * desenvolvimento continuar funcionando, onde o proxy do Vite resolve /api.
+   *
+   * O snippet ANTIGO, sem `data-api-url`, cai no valor do build: por isso ele continua
+   * funcionando sem o cliente trocar uma linha.
+   */
+  var apiOrigin = (currentScript.getAttribute('data-api-url') || '__API_ORIGIN__' || frontendOrigin).replace(/\/+$/, '')
   var open = false
 
   function buildWidget(config) {
@@ -47,7 +73,7 @@
     }
 
     var iframe = document.createElement('iframe')
-    iframe.src = origin + '/widget/' + encodeURIComponent(publicKey)
+    iframe.src = frontendOrigin + '/widget/' + encodeURIComponent(publicKey)
     iframe.title = 'Chat'
     iframe.style.cssText = [
       'position:fixed',
@@ -84,9 +110,12 @@
     }
   }
 
-  fetch(origin + '/api/public/widgets/' + encodeURIComponent(publicKey))
+  fetch(apiOrigin + '/api/public/widgets/' + encodeURIComponent(publicKey))
     .then(function (res) {
-      if (!res.ok) throw new Error('widget not found')
+      // Configuração indisponível = o widget simplesmente NÃO monta. Nada é desenhado no
+      // site do cliente: um botão de chat que abre e não atende é pior que botão nenhum.
+      // O motivo fica no console, para quem administra encontrar.
+      if (!res.ok) throw new Error('widget indisponível (HTTP ' + res.status + ')')
       return res.json()
     })
     .then(buildWidget)

@@ -209,6 +209,30 @@ export interface AgentSummary {
   routingDescription?: string
   /** Os tetos de quem CONDUZ. Só o coordenador usa; ausente = padrão do sistema. */
   orchestration?: { maxTasks?: number; maxRounds?: number; onPartialFailure?: 'synthesize' | 'fail' }
+  /**
+   * Procurar páginas NOVAS na internet. Só o pesquisador; ausente = desligado.
+   *
+   * Não confundir com os sites cadastrados: aquilo é ler endereços que o dono escolheu,
+   * isto é descobrir endereços que ninguém escolheu.
+   */
+  webSearch?: {
+    enabled?: boolean
+    policy?: 'automatic' | 'fallback_only' | 'always'
+    maxSearchResults?: number
+    maxPagesToRead?: number
+    maxCharsPerPage?: number
+    maxEvidenceChunks?: number
+    searchTimeoutMs?: number
+    pageReadTimeoutMs?: number
+    /**
+     * Por quantos dias uma página achada pela busca continua respondendo. 0 = não guardar.
+     *
+     * Ela vira documento na base, e é isso que evita procurar de novo. O prazo existe
+     * porque uma página achada uma vez não tem releitura automática — ao contrário de um
+     * site cadastrado, que o dono mandou reler.
+     */
+    rememberDays?: number
+  }
   delegationPolicy: DelegationPolicy
   callerPolicy: DelegationPolicy
   callableAgentIds: string[]

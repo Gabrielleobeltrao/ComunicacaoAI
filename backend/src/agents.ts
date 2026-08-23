@@ -1,6 +1,8 @@
 import { ObjectId } from 'mongodb'
 import { roleUIConfigOf } from './agentCapabilities.js'
 import { MAX_ORCHESTRATION_ROUNDS, MAX_TASKS } from './sectorPlanner.js'
+import { normalizeWebSearch } from './webSearch/policy.js'
+import type { WebSearchSettings } from './webSearch/policy.js'
 import type { RoleUIConfig } from './agentCapabilities.js'
 import { db } from './db.js'
 import { isValidToolSchema } from './jsonSchema.js'
@@ -344,6 +346,23 @@ export interface Agent {
    */
   routingDescription?: string
   /**
+   * Procurar páginas NOVAS na internet. Só o pesquisador usa; ausente = desligado.
+   *
+   * Não confundir com `watchedSources`: aquilo é ler os endereços que o dono cadastrou,
+   * isto é descobrir endereços que ninguém cadastrou. Custo, risco e configuração
+   * diferentes — por isso campo separado, e por isso desligado por padrão.
+   */
+  webSearch?: {
+    enabled?: boolean
+    policy?: 'automatic' | 'fallback_only' | 'always'
+    maxSearchResults?: number
+    maxPagesToRead?: number
+    maxCharsPerPage?: number
+    maxEvidenceChunks?: number
+    searchTimeoutMs?: number
+    pageReadTimeoutMs?: number
+  }
+  /**
    * Os limites de quem CONDUZ. Só o coordenador usa; ausente = o padrão do sistema.
    *
    * Não são preferências: cada tarefa é uma inferência inteira, com a base e as
@@ -491,6 +510,7 @@ export interface AgentModelFields {
   metricProfile?: MetricProfile
   routingDescription?: string
   orchestration?: { maxTasks?: number; maxRounds?: number; onPartialFailure?: 'synthesize' | 'fail' }
+  webSearch?: Partial<WebSearchSettings>
 }
 
 // Parse + validate the agent-as-primary-unit fields from a request body. Only sets a
@@ -598,6 +618,13 @@ export function parseAgentModelFields(
       ...(maxRounds !== undefined ? { maxRounds } : {}),
       ...(onPartialFailure ? { onPartialFailure } : {}),
     }
+  }
+  if (body.webSearch !== undefined) {
+    const bruto = (body.webSearch ?? {}) as Record<string, unknown>
+    if (typeof bruto !== 'object' || Array.isArray(bruto)) return { fields, error: 'webSearch must be an object' }
+    // `normalizeWebSearch` aplica os TETOS do sistema: o dono escolhe dentro deles, e um
+    // número absurdo vindo pela API não vira dez leituras de página por tarefa.
+    fields.webSearch = normalizeWebSearch(bruto as Partial<WebSearchSettings>)
   }
   if (body.knowledgeEnabled !== undefined) {
     // `null` volta a decisão para o TIPO — é como se desfaz a escolha manual.

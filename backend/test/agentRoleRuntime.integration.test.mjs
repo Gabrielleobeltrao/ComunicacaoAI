@@ -132,3 +132,174 @@ test('agente antigo, sem preset: a API responde do mesmo jeito, sem quebrar', as
   assert.equal(publico.roleConfig.role, 'executor')
   assert.equal(publico.roleConfig.allowedKnowledge, true)
 })
+
+// --- num PLANO, quem procura é o pesquisador -------------------------------------------------
+//
+// O plano mostrava o analista e o coordenador consultando a base. O gate da busca já os
+// impedia, mas três coisas ao redor dele vazavam: o balão acendia "consultando a base"
+// para todo mundo, o painel emitia um evento de base para todo mundo, e as fontes vivas
+// (o conteúdo de um site marcado para entrar sozinho) eram injetadas em qualquer papel —
+// que é consultar base pela porta dos fundos.
+
+const { runAgentTask } = await import('../dist/delegation.js')
+
+/** As dependências mínimas para rodar UMA tarefa, com espiões no que interessa. */
+const bancada = (preset, over = {}) => {
+  const chamadas = { retrieve: 0, livePassages: 0, estados: [], trace: [] }
+  const alvo = {
+    _id: new ObjectId(),
+    ownerId: OWNER,
+    name: `Agente ${preset}`,
+    preset,
+    objective: 'trabalhar',
+    provider: 'anthropic',
+    ...over,
+  }
+  const deps = {
+    loadAgent: async () => alvo,
+    resolveTools: async () => [],
+    apiKeyFor: async () => 'k',
+    // A forma COMPLETA do que o executor devolve: um duplo que mente sobre o formato
+    // faria o teste falhar por um motivo que não é o assunto dele.
+    runTask: async () => ({
+      status: 'succeeded',
+      output: 'pronto',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      toolCalls: [],
+      format: { repaired: false },
+      model: 'fake',
+      provider: 'anthropic',
+    }),
+    retrieveContext: async () => {
+      chamadas.retrieve += 1
+      return { context: ['um trecho da base'], sources: [], status: 'ok' }
+    },
+    livePassages: async () => {
+      chamadas.livePassages += 1
+      return [{ title: 'Site vivo', content: 'conteúdo do site' }]
+    },
+    trackerFor: () => ({
+      report: (estado) => chamadas.estados.push(estado),
+      reportNow: async (estado) => chamadas.estados.push(estado),
+      finish: async () => undefined,
+    }),
+    recordEvent: async () => undefined,
+    chargeUsage: async () => undefined,
+    startDelegation: async () => null,
+    finishDelegation: async () => undefined,
+  }
+  return { alvo, deps, chamadas }
+}
+
+/** O contexto de uma execução no topo da cadeia — o mesmo formato do runtime. */
+const contexto = (alvo, traceId = 't1') => ({
+  ownerId: OWNER,
+  buildingId: new ObjectId().toString(),
+  correlationId: 'c1',
+  callerAgentId: alvo._id.toString(),
+  callerAgentName: alvo.name,
+  ancestry: [],
+  depth: 0,
+  budget: { tokenLimit: 300_000, tokensSpent: 0 },
+  traceId,
+})
+
+const rodar = async (preset, over) => {
+  const { alvo, deps, chamadas } = bancada(preset, over)
+  await runAgentTask(deps, contexto(alvo), alvo, 'qual foi o resultado do período?', 'entrada vinda de quem coletou', 'text')
+  return chamadas
+}
+
+test('o analista NÃO consulta base, nem acende o balão, nem recebe site vivo', async () => {
+  const c = await rodar('analyst')
+  assert.equal(c.retrieve, 0, 'quem analisa trabalha sobre o que recebe')
+  assert.equal(c.livePassages, 0, 'site vivo no prompt é consultar base pela porta dos fundos')
+  assert.ok(!c.estados.includes('reading_knowledge'), 'o mapa mostrava trabalho que não estava acontecendo')
+})
+
+test('o coordenador também não — nem a própria base, nem fonte viva', async () => {
+  for (const preset of ['manager', 'secretary']) {
+    const c = await rodar(preset)
+    assert.equal(c.retrieve, 0, preset)
+    assert.equal(c.livePassages, 0, preset)
+    assert.ok(!c.estados.includes('reading_knowledge'), preset)
+  }
+})
+
+test('o pesquisador consulta — é o trabalho dele', async () => {
+  const c = await rodar('researcher')
+  assert.equal(c.retrieve, 1)
+  assert.equal(c.livePassages, 1)
+  assert.ok(c.estados.includes('reading_knowledge'))
+})
+
+test('o override do dono devolve a consulta a quem não a tem por padrão', async () => {
+  const c = await rodar('analyst', { knowledgeEnabled: true })
+  assert.equal(c.retrieve, 1, 'escolha explícita manda sobre o tipo — e a tela mostra o bloco')
+})
+
+test('"só responder com base no conhecimento" não bloqueia quem não consulta', async () => {
+  // Sem isto, `grounding` é sempre 'no_base' para o analista e ele nunca responde: um
+  // analista que nunca analisa. A exigência dele é ter ENTRADA, não ter base.
+  const c = await rodar('analyst', { requireGrounding: true })
+  assert.equal(c.retrieve, 0)
+  assert.ok(!c.estados.includes('blocked'), 'a exigência é impossível para este papel, não é uma barreira legítima')
+})
+
+test('o pesquisador que EXIGE base continua sendo barrado quando não acha nada', async () => {
+  const { alvo, deps, chamadas } = bancada('researcher', { requireGrounding: true })
+  deps.retrieveContext = async () => {
+    chamadas.retrieve += 1
+    return { context: [], sources: [], status: 'empty' }
+  }
+  await assert.rejects(() => runAgentTask(deps, contexto(alvo), alvo, 'pergunta', '', 'text'))
+  assert.equal(chamadas.retrieve, 1, 'ele procurou, não achou, e por isso parou — que é a regra funcionando')
+})
+
+// --- busca na web: só o pesquisador, só ligada -------------------------------------------------
+
+const { readTrace } = await import('../dist/executionTrace.js')
+
+/** Cada execução com a SUA trilha: o painel guarda por id, e reusar um id mistura testes. */
+let proximoTrace = 0
+const comBusca = async (preset, webSearch, over = {}) => {
+  const traceId = `busca-${proximoTrace++}`
+  const { alvo, deps, chamadas } = bancada(preset, { webSearch, ...over })
+  // O adaptador genérico, para o teste não depender de credencial de nenhum serviço.
+  process.env.WEB_SEARCH_PROVIDER = 'http'
+  process.env.WEB_SEARCH_URL = 'https://busca.test/api?q={query}'
+  try {
+    await runAgentTask(deps, contexto(alvo, traceId), alvo, 'qual foi o resultado do trimestre?', '', 'text')
+  } finally {
+    delete process.env.WEB_SEARCH_URL
+    delete process.env.WEB_SEARCH_PROVIDER
+  }
+  return { chamadas, alvo, traceId }
+}
+
+test('9) o painel mostra a decisão de NÃO buscar, com o motivo', async () => {
+  // "Não procurou" e "procurou e não achou" precisam ser distinguíveis: só um deles é
+  // motivo para mexer na configuração.
+  const { alvo, traceId } = await comBusca('researcher', { enabled: true, policy: 'fallback_only' })
+  const eventos = readTrace(traceId, OWNER)
+  const busca = eventos.find((e) => /busca na web/.test(e.title))
+  assert.ok(busca, `nenhum evento de busca; vieram: ${eventos.map((e) => e.title).join(' | ')}`)
+  assert.match(busca.title, /não foi necessária/, 'a base respondeu, então não se procura fora')
+  assert.match(busca.metadata.reason, /a base já respondeu/)
+  assert.equal(busca.metadata.policy, 'fallback_only')
+  assert.ok(alvo)
+})
+
+test('o pesquisador com a busca DESLIGADA não gera evento nenhum de busca', async () => {
+  const { traceId } = await comBusca('researcher', { enabled: false })
+  const eventos = readTrace(traceId, OWNER)
+  assert.equal(eventos.filter((e) => /busca na web/.test(e.title)).length, 0)
+})
+
+test('analista e coordenador não buscam nem com o interruptor ligado', async () => {
+  for (const preset of ['analyst', 'manager']) {
+    const { traceId } = await comBusca(preset, { enabled: true, policy: 'always' })
+    const eventos = readTrace(traceId, OWNER)
+    assert.equal(eventos.filter((e) => /busca na web/.test(e.title)).length, 0, preset)
+  }
+})
