@@ -1824,6 +1824,15 @@ export async function executeSectorTeam(
     const contratoDoAlvo = agentContractOf(alvo)
     const membroDoPlano = equipe.find((m) => m.agentId === task.agentId)
     const fichaDaEtapa: Record<string, string | number | boolean> = {
+      /**
+       * A qual EXECUÇÃO esta etapa pertence — e a qual raiz.
+       *
+       * Sem os dois, uma etapa é um fato solto: dá para ver que ela rodou e não dá para
+       * ligá-la ao pedido que a causou nem à cadeia em que ela estava. É o primeiro
+       * agrupamento que qualquer investigação faz.
+       */
+      executionId: execId,
+      ...(ctx.rootExecutionId ? { rootExecutionId: ctx.rootExecutionId.toString() } : {}),
       planId,
       stepId: task.id,
       agentId: task.agentId,
@@ -1845,6 +1854,15 @@ export async function executeSectorTeam(
         : {}),
       ...(contratoDoAlvo.executorKind === 'llm' ? { model: alvo.model ?? '', provider: alvo.provider } : {}),
       responseMode: task.responseMode ?? contratoDoAlvo.responseMode,
+      /**
+       * Qual TENTATIVA desta etapa, e quando ela começou.
+       *
+       * O plano é replanejado até duas vezes, e uma etapa pode aparecer de novo na segunda
+       * rodada. Sem o número, duas linhas idênticas na auditoria não dizem se foram duas
+       * tentativas do mesmo trabalho ou duas etapas diferentes que por acaso se parecem.
+       */
+      attempt: rodada,
+      startedAt: new Date(comecou).toISOString(),
       ...(contratoDoAlvo.inputJsonSchema ? { inputSchemaHash: schemaHash(contratoDoAlvo.inputJsonSchema) } : {}),
       ...(task.outputSchemaHash ? { outputSchemaHash: task.outputSchemaHash } : {}),
       dependsOn: base.dependsOn.join(','),
@@ -1928,7 +1946,18 @@ export async function executeSectorTeam(
             // A MESMA ficha vai para o registro de execução, que é onde a auditoria fica
             // depois que o painel fecha. Um segundo vocabulário para o mesmo fato obrigaria
             // a cruzar dois formatos para responder uma pergunta só.
-            return { ...r, telemetry: { ...(r.telemetry ?? {}), ...fichaDaEtapa } }
+            //
+            // `latencyMs` é o tempo do PROVEDOR — diferente da duração da etapa, que inclui
+            // a busca na base, a montagem do prompt e a validação. Quando uma etapa demora,
+            // a primeira pergunta é qual das duas coisas demorou.
+            return {
+              ...r,
+              telemetry: {
+                ...(r.telemetry ?? {}),
+                ...fichaDaEtapa,
+                latencyMs: Math.max(0, r.finishedAt.getTime() - r.startedAt.getTime()),
+              },
+            }
           }
           const comecouPasso = Date.now()
           const r = await dispatchAgentExecution(alvo, {
@@ -2009,6 +2038,10 @@ export async function executeSectorTeam(
           // criou e que o painel precisa mostrar sem misturar de novo.
           hasStructured: conferida.structured !== undefined,
           hasText: Boolean(conferida.text),
+          finishedAt: new Date().toISOString(),
+          // O tempo do PROVEDOR, separado do tempo da etapa: a etapa inclui base, prompt e
+          // validação, e quando ela demora a primeira pergunta é qual das duas demorou.
+          latencyMs: Math.max(0, saida.finishedAt.getTime() - saida.startedAt.getTime()),
           grounding: participacao?.grounding ?? null,
           toolCalls: participacao?.toolCalls ?? 0,
           sources: (participacao?.sources ?? []).map((f) => f.title).filter(Boolean),

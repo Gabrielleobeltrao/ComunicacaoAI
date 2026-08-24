@@ -383,3 +383,101 @@ test('o mesmo plano tem o mesmo id; um plano diferente, outro', () => {
   assert.equal(planIdOf(a), planIdOf(b), 'dois planos iguais SÃO o mesmo plano')
   assert.notEqual(planIdOf(a), planIdOf(c))
 })
+
+// --- o detalhe que FICA, depois que o painel fecha -----------------------------------------
+//
+// A trilha ao vivo some com a aba. O registro de execução é o que sobra — e ele contava a
+// mesma execução sem dizer quem a executou: uma função determinística e uma inferência
+// apareciam como duas participações iguais.
+
+test('a ficha atravessa do runtime até o detalhe persistido da execução', async () => {
+  const { sectorExecutionTimeline, startSectorExecution, finishSectorExecution } = await import('../dist/sectorExecutions.js')
+  const { recordAgentEvent, ensureAgentEventIndexes } = await import('../dist/agentEvents.js')
+  await ensureAgentEventIndexes()
+
+  const sectorId = new ObjectId()
+  const raiz = await startSectorExecution({
+    executionKey: `auditoria:${sectorId.toString()}`,
+    ownerId: OWNER,
+    sectorId,
+    sectorName: 'Mesa',
+    sectorMode: 'orchestrated',
+    source: 'manual',
+    environment: 'test',
+    startedAt: new Date(0),
+  })
+  assert.ok(raiz, 'a execução precisa existir para ter detalhe')
+
+  await recordAgentEvent({
+    eventKey: `run:${raiz.toString()}:t2:x`,
+    ownerId: OWNER,
+    agentId: new ObjectId(),
+    source: 'sector',
+    status: 'succeeded',
+    startedAt: new Date(0),
+    finishedAt: new Date(40),
+    inputTokens: 0,
+    outputTokens: 0,
+    sectorExecutionId: raiz,
+    metadata: {
+      planId: 'abc123',
+      stepId: 't2',
+      executorKind: 'function',
+      functionName: 'auditoria.margem',
+      functionVersion: '2.1.0',
+      capability: 'calculo',
+      dependsOn: 't1',
+      inputOrigins: 'receita<-$steps.t1.receita custo<-$steps.t1.custo',
+      inputValid: true,
+      outputValid: true,
+      hasStructured: true,
+      hasText: false,
+    },
+  })
+  await finishSectorExecution(OWNER, raiz, { status: 'succeeded', finishedAt: new Date(50) }).catch(() => undefined)
+
+  const detalhe = await sectorExecutionTimeline(OWNER, raiz)
+  const etapa = detalhe.steps[0]
+  assert.equal(etapa.executorKind, 'function')
+  assert.equal(etapa.ran, 'auditoria.margem@2.1.0', 'a versão precisa sobreviver: a mesma função muda entre versões')
+  assert.equal(etapa.stepId, 't2')
+  assert.equal(etapa.planId, 'abc123')
+  assert.deepEqual(etapa.dependsOn, ['t1'])
+  assert.deepEqual(etapa.inputOrigins, ['receita<-$steps.t1.receita', 'custo<-$steps.t1.custo'])
+  assert.equal(etapa.inputValid, true)
+  assert.equal(etapa.hasText, false)
+})
+
+test('uma execução gravada ANTES desta fase continua desenhando como sempre', async () => {
+  const { sectorExecutionTimeline, startSectorExecution } = await import('../dist/sectorExecutions.js')
+  const { recordAgentEvent } = await import('../dist/agentEvents.js')
+  const raiz = await startSectorExecution({
+    executionKey: `auditoria:legado:${new ObjectId().toString()}`,
+    ownerId: OWNER,
+    sectorId: new ObjectId(),
+    sectorName: 'Antiga',
+    sectorMode: 'orchestrated',
+    source: 'manual',
+    environment: 'test',
+    startedAt: new Date(0),
+  })
+  await recordAgentEvent({
+    eventKey: `run:${raiz.toString()}:legado:y`,
+    ownerId: OWNER,
+    agentId: new ObjectId(),
+    source: 'sector',
+    status: 'succeeded',
+    startedAt: new Date(0),
+    finishedAt: new Date(10),
+    sectorExecutionId: raiz,
+    // Sem ficha nenhuma: é o que existe nas contas de verdade.
+    metadata: { role: 'specialist' },
+  })
+
+  const etapa = (await sectorExecutionTimeline(OWNER, raiz)).steps[0]
+  // Ausente quer dizer o de sempre: uma execução por modelo.
+  assert.equal(etapa.executorKind, 'llm')
+  assert.equal(etapa.planId, null)
+  assert.deepEqual(etapa.dependsOn, [])
+  assert.equal(etapa.outputRepaired, false)
+})

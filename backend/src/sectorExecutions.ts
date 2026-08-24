@@ -386,6 +386,49 @@ export interface SectorExecutionTimelineStep {
   toolCalls: number
   // Categorised only: the stored message is never returned.
   errorKind: string | null
+  /**
+   * COMO esta etapa foi executada — a ficha que o runtime gravou.
+   *
+   * O painel ao vivo mostrava isso e sumia junto com a aba. Este é o detalhe que FICA, e
+   * ele contava a mesma execução sem dizer quem a executou: uma função determinística e
+   * uma inferência apareciam como duas participações iguais, com a diferença entre zero
+   * token e uma chamada paga invisível justamente para quem paga.
+   *
+   * Só o que já está gravado como escalar seguro. Nada é buscado de novo, nada é derivado.
+   */
+  planId: string | null
+  stepId: string | null
+  executorKind: 'llm' | 'function' | 'tool'
+  /** A referência do que rodou: `função@versão`, `app.ação`, ou o modelo. */
+  ran: string | null
+  capability: string | null
+  dependsOn: string[]
+  inputOrigins: string[]
+  inputValid: boolean | null
+  outputValid: boolean | null
+  hasStructured: boolean | null
+  hasText: boolean | null
+  outputRepaired: boolean
+  /** O tempo do PROVEDOR, quando houve um. A duração da etapa inclui base e validação. */
+  latencyMs: number | null
+}
+
+const texto = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
+const bool = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null)
+const listaDe = (v: unknown): string[] => (typeof v === 'string' && v ? v.split(/[, ]+/).filter(Boolean) : [])
+
+/** O que rodou, em uma referência — pelo tipo, porque cada tipo tem a sua. */
+function referenciaDe(m: Record<string, unknown> | undefined, kind: string): string | null {
+  if (kind === 'function') {
+    const nome = texto(m?.functionName)
+    return nome ? `${nome}${texto(m?.functionVersion) ? `@${texto(m?.functionVersion)}` : ''}` : null
+  }
+  if (kind === 'tool') {
+    const app = texto(m?.appKey)
+    const acao = texto(m?.actionKey)
+    return app && acao ? `${app}.${acao}` : texto(m?.toolId)
+  }
+  return texto(m?.model) ?? texto(m?.provider)
 }
 
 // The sanitized timeline of one execution. Owner is in the query, so an id from
@@ -412,6 +455,27 @@ export async function sectorExecutionTimeline(
     tokens: (p.inputTokens ?? 0) + (p.outputTokens ?? 0),
     toolCalls: Number((p as { toolCalls?: number }).toolCalls ?? 0),
     errorKind: typeof p.metadata?.errorKind === 'string' ? (p.metadata.errorKind as string) : null,
+    ...(() => {
+      const m = p.metadata as Record<string, unknown> | undefined
+      // Ausente = o de sempre. Uma participação gravada antes desta fase não tem ficha, e
+      // ela era — e continua sendo — uma execução por modelo.
+      const kind = (texto(m?.executorKind) ?? 'llm') as 'llm' | 'function' | 'tool'
+      return {
+        planId: texto(m?.planId),
+        stepId: texto(m?.stepId),
+        executorKind: kind,
+        ran: referenciaDe(m, kind),
+        capability: texto(m?.capability),
+        dependsOn: listaDe(m?.dependsOn),
+        inputOrigins: listaDe(m?.inputOrigins),
+        inputValid: bool(m?.inputValid),
+        outputValid: bool(m?.outputValid),
+        hasStructured: bool(m?.hasStructured),
+        hasText: bool(m?.hasText),
+        outputRepaired: m?.outputRepaired === true,
+        latencyMs: typeof m?.latencyMs === 'number' ? m.latencyMs : null,
+      }
+    })(),
   }))
 
   return {

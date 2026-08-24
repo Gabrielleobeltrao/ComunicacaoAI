@@ -259,8 +259,35 @@ test('a timeline mostra a ordem real e nada do que foi dito', async () => {
   assert.equal(timeline.steps[1].status, 'failed')
   // Categoria, nunca a mensagem.
   assert.equal(timeline.steps[1].errorKind, 'provider')
-  const json = JSON.stringify(timeline)
-  for (const forbidden of ['prompt', 'output', 'arguments', 'message']) assert.ok(!json.includes(forbidden), `vazou ${forbidden}`)
+  /**
+   * Nada do que foi DITO sai daqui.
+   *
+   * A versão anterior procurava as substrings 'prompt', 'output', 'arguments' e 'message'
+   * no JSON inteiro — o que acusava `outputValid`, um sinalizador booleano que é
+   * exatamente o oposto de um vazamento. Procurar palavra em texto serializado confunde
+   * o NOME do campo com o conteúdo dele.
+   *
+   * A forma forte da mesma ideia: fixar o conjunto de chaves. Um campo novo que carregue
+   * conteúdo falha aqui, e um sinalizador novo obriga quem o adiciona a declará-lo.
+   */
+  const PERMITIDAS = new Set([
+    'agentId', 'role', 'stageId', 'stageName', 'stageOrder', 'status', 'startedAt', 'finishedAt',
+    'durationMs', 'attempts', 'tokens', 'toolCalls', 'errorKind',
+    // A ficha do executor: tipo, referência e sinalizadores. Nomes e números, nunca valores.
+    'planId', 'stepId', 'executorKind', 'ran', 'capability', 'dependsOn', 'inputOrigins',
+    'inputValid', 'outputValid', 'hasStructured', 'hasText', 'outputRepaired', 'latencyMs',
+  ])
+  for (const step of timeline.steps) {
+    for (const chave of Object.keys(step)) {
+      assert.ok(PERMITIDAS.has(chave), `campo não declarado no detalhe da execução: ${chave}`)
+    }
+  }
+  // E os sinalizadores são SINALIZADORES: nenhum deles carrega texto livre.
+  for (const step of timeline.steps) {
+    for (const chave of ['inputValid', 'outputValid', 'hasStructured', 'hasText', 'outputRepaired']) {
+      assert.ok(step[chave] === null || typeof step[chave] === 'boolean', `${chave} precisa ser booleano`)
+    }
+  }
 })
 
 test('a timeline de outro dono não existe', async () => {

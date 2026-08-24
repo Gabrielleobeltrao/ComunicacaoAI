@@ -176,6 +176,18 @@ Ao implementar um, mantenha:
 | erro sem stack nem mensagem crua | executores | caminho de arquivo e valor de variável não saem |
 | redação central + teto de tamanho + hash | `executionTrace.ts` | um painel não é um arquivo, e não é lugar de credencial |
 
+## Idempotência
+
+Índice e migração rodam no arranque de TODA instância: num deploy com mais de uma, rodam
+concorrentes; num rollback, rodam de novo sobre dados que já passaram por elas. Se a
+segunda execução não for igual à primeira, o defeito aparece durante um deploy — e
+sempre em produção, porque em desenvolvimento ninguém sobe o processo duas vezes contra
+o mesmo banco. `test/executorMigrations.integration.test.mjs` roda tudo duas vezes contra
+um mongod real e compara a assinatura dos índices.
+
+O índice único em `agent_execution_events.eventKey` é o que impede uma rotina
+reexecutada de contar duas vezes — e é a razão de a criação dele precisar ser idempotente.
+
 ## Auditoria
 
 Não há sistema de log paralelo: os quatro que já existiam continuam sendo os
@@ -184,14 +196,30 @@ registro por execução), `delegationLog` e o Execution Center.
 
 Cada etapa registra, nos dois destinos e com o mesmo vocabulário:
 
+- `executionId` e `rootExecutionId` — sem eles a etapa é um fato solto, sem ligação
+  com o pedido que a causou;
 - `planId` (derivado do conteúdo do plano), `stepId`, `agentId`;
+- `attempt`, `startedAt` e `finishedAt` — o plano é replanejado até duas vezes, e sem
+  o número duas linhas idênticas não dizem se foram duas tentativas ou duas etapas;
 - `executorKind` e a `capability` que casou — o "por que este agente";
 - `functionName@version`, `appKey.actionKey` ou `provider`/`model`, conforme o tipo;
 - `inputSchemaHash` e `outputSchemaHash` — o hash responde "mudou?" sem guardar o quê;
 - `inputValid`, `outputValid`, `error`, `field`;
 - `dependsOn` e `inputOrigins` (as ORIGENS, nunca os valores);
 - `hasStructured` / `hasText`, `outputRepaired`;
-- `durationMs`, `usage.inputTokens`, `usage.outputTokens`.
+- `durationMs` (a etapa inteira) e `latencyMs` (só o provedor) — quando uma etapa
+  demora, a primeira pergunta é se demorou o modelo ou a busca na base;
+- `usage.inputTokens`, `usage.outputTokens`.
+
+**Custo é medido em TOKEN, não em moeda.** Não há tabela de preços neste repositório, e
+inventar uma produziria um número com cara de autoridade que envelhece na primeira
+mudança de tabela do provedor — e que ninguém sabe que envelheceu. O que se compara é
+token e tempo; a conversão para dinheiro é de quem tem a fatura.
+
+A ficha vai para os dois lugares com o mesmo vocabulário: para a trilha ao vivo, que
+some com a aba, e para `agent_execution_events`, que é o detalhe que FICA — e é ele que
+alimenta `GET /api/sectors/:id/executions/:execId`. Uma participação gravada antes desta
+fase não tem ficha, e ausente quer dizer o de sempre: execução por modelo.
 
 O painel lê os MESMOS eventos por outro ângulo (aba "Auditoria"): plano com
 dependências, origem dos inputs, validações separadas por entrada e saída, dado e

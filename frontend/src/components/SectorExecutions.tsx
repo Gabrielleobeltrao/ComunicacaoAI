@@ -227,6 +227,37 @@ function ExecutionRow({ sectorId, row, nameOf }: { sectorId: string; row: Sector
                   {step.toolCalls} {step.toolCalls === 1 ? 'ferramenta' : 'ferramentas'}
                   {step.attempts > 1 ? ` · ${step.attempts} tentativas` : ''}
                 </span>
+                {/*
+                  COMO a etapa foi executada.
+                  Sem isto, uma função determinística e uma inferência aparecem como duas
+                  participações iguais — e a diferença entre zero token e uma chamada paga
+                  fica invisível justamente para quem paga. Só aparece quando existe: uma
+                  execução gravada antes desta fase continua desenhando como sempre.
+                */}
+                {step.executorKind && step.executorKind !== 'llm' ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-faint)' }} data-testid="step-executor">
+                    {step.executorKind === 'function' ? 'Função' : 'Ferramenta'}
+                    {step.ran ? ` · ${step.ran}` : ''}
+                    {step.capability ? ` · ${step.capability}` : ''}
+                  </span>
+                ) : null}
+                {step.inputValid === false || step.outputValid === false ? (
+                  <span style={{ fontSize: 12, color: 'var(--coral-600, #d92d20)' }} data-testid="step-validation">
+                    {/* Entrada e saída SEPARADAS: são dois defeitos, em lugares diferentes. */}
+                    {step.inputValid === false ? 'Entrada não conferiu' : 'Saída não conferiu'}
+                  </span>
+                ) : null}
+                {step.dependsOn?.length || step.inputOrigins?.length ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-faint)' }} data-testid="step-inputs">
+                    {step.dependsOn?.length ? `depois de ${step.dependsOn.join(', ')}` : ''}
+                    {step.inputOrigins?.length ? `${step.dependsOn?.length ? ' · ' : ''}${step.inputOrigins.join(' ')}` : ''}
+                  </span>
+                ) : null}
+                {step.outputRepaired ? (
+                  <span style={{ fontSize: 12, color: 'var(--text-faint)' }} data-testid="step-repaired">
+                    Precisou de uma correção de formato — uma chamada a mais ao modelo.
+                  </span>
+                ) : null}
                 {step.errorKind ? (
                   <span style={{ fontSize: 12.5, color: 'var(--coral-600, #d92d20)' }}>Parou aqui: {step.errorKind}</span>
                 ) : null}
