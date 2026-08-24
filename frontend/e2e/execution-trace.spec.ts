@@ -189,6 +189,25 @@ const TRILHA = [
   },
   { executionId: 'x', timestamp: '2026-08-19T10:00:02.000Z', type: 'delegation', status: 'running', title: 'Coordenador → Medições', input: 'o que mudou na série' },
   { executionId: 'x', timestamp: '2026-08-19T10:00:03.000Z', type: 'rag', status: 'success', title: 'Medições: base — 2 trecho(s)', metadata: { passages: 2 } },
+  {
+    executionId: 'x',
+    timestamp: '2026-08-19T10:00:04.000Z',
+    type: 'web_search',
+    status: 'success',
+    title: 'Medições: busca na web — 8 resultado(s), 3 página(s) lida(s), 2 evidência(s)',
+    input: 'preço do açúcar hoje',
+    metadata: {
+      provider: 'brave',
+      reason: 'a base não respondeu',
+      found: 8,
+      selected: [{ url: 'https://a.com', title: 'A', score: 9 }],
+      read: [
+        { url: 'https://a.com', ok: true, usefulChars: 900, durationMs: 120 },
+        { url: 'https://b.com', ok: false, code: 'blocked', usefulChars: 0, durationMs: 80 },
+      ],
+      evidence: [{ url: 'https://a.com', title: 'A' }],
+    },
+  },
   { executionId: 'x', timestamp: '2026-08-19T10:00:04.000Z', type: 'tool', status: 'error', title: 'Medições: consultar_fonte', metadata: { error: 'Error' } },
   { executionId: 'x', timestamp: '2026-08-19T10:00:05.000Z', type: 'agent', status: 'success', title: 'Medições concluiu', durationMs: 1200, model: 'claude-sonnet-5', metadata: { usage: { inputTokens: 900, outputTokens: 120 } } },
   { executionId: 'x', timestamp: '2026-08-19T10:00:06.000Z', type: 'synthesis', status: 'success', title: 'Consolidação concluída', durationMs: 800 },
@@ -256,4 +275,43 @@ test('limpar esvazia o painel sem tocar na conversa', async ({ page }) => {
   await expect(painel.getByTestId('trace-event')).toHaveCount(0)
   // A conversa continua onde estava: são duas coisas, e limpar uma não apaga a outra.
   await expect(page.getByTestId('playground-messages')).toContainText('quanto foi o mês?')
+})
+
+
+// --- a busca na web, com lugar próprio -------------------------------------------------------
+//
+// Ela saía como "Base" — mesmo ícone, mesmo rótulo, mesmo filtro da leitura do que já
+// estava guardado. Consultar a base é local e de graça; ir para a internet gasta uma
+// requisição da franquia e traz a página de um terceiro.
+
+test('a busca na web aparece separada da leitura da base', async ({ page }) => {
+  await abrirComTrilha(page)
+
+  const busca = page.getByTestId('trace-event').filter({ hasText: 'busca na web' })
+  await expect(busca).toBeVisible()
+  await expect(busca).toHaveAttribute('data-type', 'web_search')
+
+  // O filtro próprio: quem abre o painel querendo saber "ele foi para a internet?" não
+  // precisa mais ler evento por evento dentro de "Base".
+  await page.getByTestId('trace-filter-web').click()
+  await expect(page.getByTestId('trace-event')).toHaveCount(1)
+  await expect(page.getByTestId('trace-event')).toContainText('busca na web')
+})
+
+test('a busca abre mostrando o funil e as páginas que não abriram', async ({ page }) => {
+  await abrirComTrilha(page)
+  const busca = page.getByTestId('trace-event').filter({ hasText: 'busca na web' })
+  await busca.getByTestId('trace-event-toggle').click()
+
+  // O funil é a história da busca: dezenas encontradas, poucas escolhidas, menos abertas,
+  // e de algumas sai texto. Quando a resposta vem fraca, a pergunta é em qual degrau ela
+  // afinou.
+  const detalhe = busca.getByTestId('trace-web-search')
+  await expect(detalhe).toContainText('encontrados')
+  await expect(detalhe).toContainText('com evidência')
+
+  // Um site que bloqueia leitura é a causa mais comum de "buscou e não trouxe nada", e
+  // sem a lista ele ficava invisível.
+  await expect(busca.getByTestId('trace-web-pages')).toContainText('b.com')
+  await expect(detalhe).toContainText('via brave')
 })

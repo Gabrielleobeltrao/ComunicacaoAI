@@ -21,6 +21,15 @@ export type TraceEventType =
   | 'delegation'
   | 'tool'
   | 'rag'
+  /**
+   * PROCURAR na internet — separado de `rag` de propósito.
+   *
+   * Consultar a base é local e sai de graça; buscar na web gasta uma requisição da
+   * franquia mensal e lê a página de um terceiro. Com o mesmo tipo, as duas apareciam com
+   * o mesmo ícone e o mesmo rótulo — e o painel escondia exatamente a diferença que custa
+   * dinheiro, que é a pergunta que se faz ao investigar uma conta alta.
+   */
+  | 'web_search'
   | 'synthesis'
   | 'sufficiency'
   | 'orchestration_end'

@@ -115,7 +115,7 @@ export async function gatherWebEvidence(
       trilha({
         ownerId,
         executionId: deps.traceId!,
-        type: 'rag',
+        type: 'web_search',
         status: 'info',
         agentId: agent._id.toString(),
         title: `${agent.name}: busca na web não foi necessária`,
@@ -161,7 +161,7 @@ export async function gatherWebEvidence(
   trilha({
     ownerId,
     executionId: deps.traceId!,
-    type: 'rag',
+    type: 'web_search',
     status: r.ok ? (r.evidence.length > 0 ? 'success' : 'info') : 'error',
     agentId: agent._id.toString(),
     title: r.ok

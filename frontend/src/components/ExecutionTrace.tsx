@@ -21,6 +21,10 @@ const CARA: Record<TraceEvent['type'], { icone: string; cor: string; rotulo: str
   delegation: { icone: '↔', cor: 'var(--sky-600)', rotulo: 'Delegação' },
   tool: { icone: '🔧', cor: 'var(--mango-600)', rotulo: 'Ferramenta' },
   rag: { icone: '📚', cor: 'var(--mint-600)', rotulo: 'Base' },
+  /* Ícone, cor e rótulo próprios: ler a base é local e de graça; ir para a internet gasta
+     uma requisição da franquia e traz a página de um terceiro. Com a mesma cara, o painel
+     escondia justamente a diferença que custa. */
+  web_search: { icone: '🌐', cor: 'var(--sky-600)', rotulo: 'Busca na web' },
   synthesis: { icone: '🧩', cor: 'var(--grape-600)', rotulo: 'Consolidação' },
   sufficiency: { icone: '❓', cor: 'var(--mango-600)', rotulo: 'Suficiência' },
   orchestration_end: { icone: '■', cor: 'var(--text-muted)', rotulo: 'Fim' },
@@ -34,6 +38,7 @@ const FILTROS: { chave: TraceFilter; rotulo: string }[] = [
   { chave: 'agents', rotulo: 'Agentes' },
   { chave: 'tools', rotulo: 'Ferramentas' },
   { chave: 'rag', rotulo: 'Base' },
+  { chave: 'web', rotulo: 'Web' },
   { chave: 'errors', rotulo: 'Erros' },
 ]
 
@@ -49,6 +54,66 @@ function Detalhe({ rotulo, children }: { rotulo: string; children: React.ReactNo
     <div className="mt-1.5">
       <div className="text-[10px] font-semibold tracking-wide text-(--text-faint) uppercase">{rotulo}</div>
       <div className="mt-0.5 text-xs text-(--text-body)">{children}</div>
+    </div>
+  )
+}
+
+/**
+ * A busca, contada como ela acontece: um FUNIL.
+ *
+ * O buscador devolve dezenas; poucos são escolhidos; menos ainda abrem; e de alguns sai
+ * texto aproveitável. Quando a resposta vem fraca, a pergunta é sempre em qual desses
+ * degraus ela afinou — e a lista de chave/valor genérica não respondia, porque tratava
+ * "encontrados", "lidos" e "evidências" como três números sem relação entre si.
+ */
+function DetalheDaBusca({ meta }: { meta: Record<string, unknown> }) {
+  const n = (v: unknown): number => (typeof v === 'number' ? v : Array.isArray(v) ? v.length : 0)
+  const degraus = [
+    { rotulo: 'encontrados', valor: n(meta.found) },
+    { rotulo: 'escolhidos', valor: n(meta.selected) },
+    { rotulo: 'abertos', valor: n(meta.read) },
+    { rotulo: 'com evidência', valor: n(meta.evidence) },
+  ]
+  const maior = Math.max(1, ...degraus.map((d) => d.valor))
+  const paginas = Array.isArray(meta.read) ? (meta.read as { url: string; ok: boolean; code?: string }[]) : []
+
+  return (
+    <div className="mb-2" data-testid="trace-web-search">
+      <div className="grid gap-1">
+        {degraus.map((d) => (
+          <div key={d.rotulo} className="grid grid-cols-[88px_1fr_28px] items-center gap-2">
+            <span className="text-[10px] text-(--text-faint)">{d.rotulo}</span>
+            <span className="h-1.5 rounded-full bg-(--border-subtle)">
+              <span
+                className="block h-1.5 rounded-full"
+                style={{ width: `${(d.valor / maior) * 100}%`, background: 'var(--sky-600)' }}
+              />
+            </span>
+            <span className="text-right text-[11px] tabular-nums text-(--text-body)">{d.valor}</span>
+          </div>
+        ))}
+      </div>
+      {/* O endereço de cada página e se ela abriu. Um site que bloqueia leitura é a causa
+          mais comum de "buscou e não trouxe nada", e sem isto ele fica invisível. */}
+      {paginas.length > 0 && (
+        <ul className="mt-2 space-y-0.5" data-testid="trace-web-pages">
+          {paginas.slice(0, 8).map((p, i) => (
+            <li key={`${p.url}-${i}`} className="flex items-baseline gap-1.5 text-[11px]">
+              <span aria-hidden style={{ color: p.ok ? 'var(--mint-600)' : 'var(--coral-600)' }}>
+                {p.ok ? '✓' : '✕'}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-(--text-muted)">{p.url}</span>
+              {!p.ok && p.code ? <span className="text-(--text-faint)">{p.code}</span> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      {typeof meta.provider === 'string' && (
+        <p className="mt-1.5 text-[10px] text-(--text-faint)">
+          via {meta.provider}
+          {typeof meta.reason === 'string' ? ` · ${meta.reason}` : ''}
+        </p>
+      )}
     </div>
   )
 }
@@ -89,6 +154,7 @@ function Evento({ evento }: { evento: TraceEvent }) {
       </button>
       {aberto && temDetalhe && (
         <div className="mt-1 mb-2 rounded-lg border border-(--border-subtle) bg-(--surface-sunken) p-2" data-testid="trace-event-detail">
+          {evento.type === 'web_search' && <DetalheDaBusca meta={meta} />}
           {evento.input !== undefined && (
             <Detalhe rotulo={evento.type === 'tool' ? 'Parâmetros' : 'Entrada'}>
               <pre className="overflow-x-auto whitespace-pre-wrap break-words text-[11px]">{texto(evento.input)}</pre>
