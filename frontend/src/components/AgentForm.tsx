@@ -121,15 +121,30 @@ const ROTULOS: Record<AgentRole, { definicao: string; entrada: [string, string];
  * procurar. Nada foi removido: os blocos agora respondem a três perguntas, e é a
  * pergunta que orienta quem chegou.
  */
+/**
+ * Uma SEÇÃO: título, uma linha, e os blocos.
+ *
+ * Ela não é uma caixa. Era — e a caixa da seção em volta das caixas dos blocos é o que
+ * fazia a tela parecer aninhada três vezes para mostrar um campo. A caixa é do bloco; a
+ * seção só agrupa e nomeia.
+ *
+ * Espaçamento pelos tokens do produto: 32 entre seções (`--space-8`), 12 do título até o
+ * primeiro bloco (`--space-3`). Sem margens por elemento, que somem e dobram conforme o
+ * vizinho.
+ */
 function GrupoDeBlocos({ titulo, resumo, ativo, children }: { titulo: string; resumo: string; ativo: boolean; children: ReactNode }) {
   // Fora da aba "Como trabalha" não há grupo nenhum: no assistente de contratação os
   // mesmos campos aparecem em sequência, e um cabeçalho ali seria enfeite.
   if (!ativo) return <>{children}</>
   return (
-    <section className="mt-6 first:mt-0">
-      <h3 className="text-sm font-semibold text-(--text-heading)">{titulo}</h3>
-      <p className="mt-0.5 mb-1 text-xs text-(--text-faint)">{resumo}</p>
-      <div className="rounded-xl border border-(--border-subtle) px-3">{children}</div>
+    <section className="mt-8 flex flex-col gap-3 first:mt-0" data-testid="agent-section">
+      <div>
+        <h3 className="text-sm font-semibold text-(--text-heading)">{titulo}</h3>
+        <p className="mt-0.5 text-xs text-(--text-faint)">{resumo}</p>
+      </div>
+      {/* Os blocos irmãos: uma caixa só, com divisores entre eles. Duas caixas coladas
+          criam uma borda dupla; o divisor é uma linha, e é a mesma linha sempre. */}
+      <div className="overflow-hidden rounded-[18px] border border-(--border-subtle) bg-(--surface-card)">{children}</div>
     </section>
   )
 }
@@ -1100,9 +1115,38 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
             !flat && advancedOpen ? 'mt-3 rounded-xl border border-(--border-subtle) bg-(--surface-card)/40 px-4 py-1' : ''
           }
         >
-          {/* GRUPO 1 — quem ele é e o que ele entrega. Cinco blocos que respondem à
-              mesma pergunta: a definição, o que espera receber, em que forma entrega e
-              quando deve ser chamado. Soltos, eram cinco linhas indistinguíveis. */}
+          {/* A PRIMEIRA seção: quem faz o trabalho decide se as seguintes fazem sentido.
+              Ela ficava solta entre dois grupos, sem a caixa que os vizinhos tinham. */}
+          <GrupoDeBlocos
+            ativo={flat && section === 'como-trabalha'}
+            titulo="Como este agente executa"
+            resumo="Quem faz o trabalho — e o que ele devolve."
+          >
+          {showBlock('executor') && (
+            <CollapsibleBlock title="Como este agente executa" showHeader={stacked} testId="agent-executor-block" defaultOpen>
+              <AgentExecutorSection
+                draft={executor}
+                onChange={setExecutor}
+                onContractDerived={(c) => {
+                  // O que o servidor vai gravar de qualquer jeito, mostrado antes de salvar.
+                  setEditInputJsonSchema(c.inputJsonSchema ? JSON.stringify(c.inputJsonSchema, null, 2) : '')
+                  setEditOutputJsonSchema(c.outputJsonSchema ? JSON.stringify(c.outputJsonSchema, null, 2) : '')
+                }}
+              />
+              {problemasDeSalvamento.length > 0 && (
+                <ul className="mt-2 space-y-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid="executor-problems">
+                  {problemasDeSalvamento.map((p) => (
+                    <li key={p}>{p}</li>
+                  ))}
+                </ul>
+              )}
+            </CollapsibleBlock>
+          )}
+          </GrupoDeBlocos>
+
+          {/* Cinco blocos que respondem à mesma pergunta: a definição, o que espera
+              receber, em que forma entrega e quando deve ser chamado. Soltos, eram cinco
+              linhas indistinguíveis. */}
           <GrupoDeBlocos
             ativo={flat && section === 'como-trabalha'}
             titulo="Quem ele é e o que entrega"
@@ -1238,28 +1282,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           )}
           </GrupoDeBlocos>
 
-          {/* A porta de saída da regra do TIPO. Fica em Avançado, e não no meio de "Como
-              trabalha": é uma exceção deliberada, não um passo da configuração. */}
-          {showBlock('executor') && (
-            <CollapsibleBlock title="Como este agente executa" showHeader={stacked} testId="agent-executor-block" defaultOpen>
-              <AgentExecutorSection
-                draft={executor}
-                onChange={setExecutor}
-                onContractDerived={(c) => {
-                  // O que o servidor vai gravar de qualquer jeito, mostrado antes de salvar.
-                  setEditInputJsonSchema(c.inputJsonSchema ? JSON.stringify(c.inputJsonSchema, null, 2) : '')
-                  setEditOutputJsonSchema(c.outputJsonSchema ? JSON.stringify(c.outputJsonSchema, null, 2) : '')
-                }}
-              />
-              {problemasDeSalvamento.length > 0 && (
-                <ul className="mt-2 space-y-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid="executor-problems">
-                  {problemasDeSalvamento.map((p) => (
-                    <li key={p}>{p}</li>
-                  ))}
-                </ul>
-              )}
-            </CollapsibleBlock>
-          )}
+
 
           {showBlock('capacidades') && (
             <CollapsibleBlock title="Capacidades do tipo" showHeader={stacked}>
@@ -1851,9 +1874,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
         {/* GRUPO 2 — o que ele ACIONA. Apps conectados, ferramentas HTTP próprias e as
             reutilizáveis da conta: três lugares diferentes para a mesma pergunta, que
             agora ficam juntos. */}
-        {showBlock('ferramentas') && (
+        {/* Uma função não conversa com ferramenta nem lê base: estas duas seções ficariam
+            vazias, ou pior, prometendo o que não acontece. Somem junto com os blocos de
+            modelo, estilo e memória — pela mesma razão. */}
+        {/* A seção só existe quando tem bloco dentro.
+            Um título com uma caixa vazia embaixo é pior que a ausência: ele afirma que o
+            agente aciona alguma coisa, e um analista não aciona nada. */}
         <GrupoDeBlocos
-          ativo={flat && section === 'como-trabalha'}
+          ativo={flat && section === 'como-trabalha' && executor.kind === 'llm' && showBlock('ferramentas')}
           titulo="O que ele aciona"
           resumo="Os apps e as ferramentas que ele pode chamar. Conceder é o que autoriza."
         >
@@ -1905,7 +1933,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           </CollapsibleBlock>
         )}
         </GrupoDeBlocos>
-        )}
         </div>
       </div>
 
@@ -1924,7 +1951,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               aberto, e é justamente o mais alto — a lista de documentos empurrava todo o
               resto para fora da tela. */}
           <GrupoDeBlocos
-            ativo={flat && section === 'como-trabalha'}
+            ativo={flat && section === 'como-trabalha' && executor.kind === 'llm'}
             titulo="O que ele consulta"
             resumo="De onde ele tira as respostas: o que você escreve, os sites que ele lê, e o que já foi guardado."
           >

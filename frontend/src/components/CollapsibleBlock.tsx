@@ -28,7 +28,7 @@ export function CollapsibleBlock({
   const [open, setOpen] = useState(defaultOpen)
   if (!showHeader) return <>{children}</>
   return (
-    <div className="border-t border-(--border-subtle) first:border-t-0" data-testid={testId ?? 'collapsible-block'}>
+    <div className="border-t border-(--border-subtle) px-6 first:border-t-0" data-testid={testId ?? 'collapsible-block'}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -44,7 +44,9 @@ export function CollapsibleBlock({
         </span>
         <span className={`text-(--text-faint) transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
       </button>
-      <div className={open ? 'space-y-3 pb-3' : 'hidden'}>{children}</div>
+      {/* Respiro do bloco: 16 embaixo (`--space-4`) e 12 entre campos (`--space-3`).
+          Os mesmos dois números em todo bloco — antes cada um escolhia o seu. */}
+      <div className={open ? 'space-y-3 pb-4' : 'hidden'}>{children}</div>
     </div>
   )
 }

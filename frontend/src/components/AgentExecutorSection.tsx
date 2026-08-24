@@ -181,7 +181,7 @@ export function AgentExecutorSection({
 
   return (
     <div className="space-y-4" data-testid="executor-section">
-      <p className="text-xs text-(--text-muted)" data-testid="executor-summary">
+      <p className="pb-1 text-xs text-(--text-muted)" data-testid="executor-summary">
         {resumo.join(' · ')}
         {pendencias.length > 0 && (
           <span style={{ color: 'var(--status-blocked)' }} data-testid="executor-summary-pending">
@@ -191,7 +191,8 @@ export function AgentExecutorSection({
         )}
       </p>
       <fieldset disabled={disabled} className="space-y-2">
-        <legend className="mb-1 text-sm text-(--text-muted)">Como este agente executa?</legend>
+        {/* Sem legenda: o bloco que contém isto já se chama "Como este agente executa", e
+            a pergunta repetida logo abaixo do título era a mesma frase duas vezes. */}
         <div className="grid gap-2 sm:grid-cols-3">
           {TIPOS.map((t) => (
             <label
@@ -409,6 +410,8 @@ export function AgentExecutorSection({
       )}
 
       <fieldset disabled={disabled} className="space-y-2">
+        {/* A seção já diz "quem faz o trabalho — e o que ele devolve". Aqui basta o
+            rótulo; repetir a frase seria a mesma ideia em duas redações. */}
         <legend className="mb-1 text-sm text-(--text-muted)">O que ele devolve</legend>
         {modosPossiveis.length === 1 && (
           <p className="text-xs text-(--text-faint)" data-testid="response-mode-forced">

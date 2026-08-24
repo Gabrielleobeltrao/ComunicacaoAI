@@ -41,9 +41,21 @@ export function presetVerbOf(agent: Pick<AgentSummary, 'preset'>): string {
   return papelDe(agent.preset)?.verbo ?? 'Executa'
 }
 
-/** Em que motor ele roda. Era isto que aparecia como "Função". */
-export function modelLabelOf(agent: AgentSummary): string {
-  return agent.model || `${agent.provider === 'openai' ? 'OpenAI' : 'Anthropic'} · padrão do sistema`
+/**
+ * A descrição SEM repetir o cargo que já está na etiqueta ao lado.
+ *
+ * O texto padrão de cada molde começa pelo próprio cargo — "Pesquisador: encontra e resume
+ * informação". Com a etiqueta "Pesquisador" ao lado, a tela mostra a palavra duas vezes
+ * seguidas, e a segunda não acrescenta nada.
+ *
+ * Só o prefixo que COINCIDE com o cargo sai. Uma descrição escrita à mão que por acaso
+ * comece com outra palavra seguida de dois-pontos é preservada inteira: ela é do dono.
+ */
+export function roleDescriptionOf(agent: AgentSummary): string {
+  const texto = roleLabelOf(agent)
+  const cargo = presetLabelOf(agent)
+  const prefixo = `${cargo}:`
+  return texto.toLowerCase().startsWith(prefixo.toLowerCase()) ? texto.slice(prefixo.length).trim() : texto
 }
 
 // Skill tags derived from what the agent can actually do. Tolerant of older
