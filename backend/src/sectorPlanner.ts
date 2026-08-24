@@ -1112,11 +1112,20 @@ export function inputForTask(
   resultados: Map<string, TaskResult>,
   contexto?: Record<string, unknown>,
 ): { text: string; input?: Record<string, unknown>; missing: string[] } {
-  const doTexto = inputFromDependencies(task, resultados)
-  if (isLegacyTask(task)) return { text: doTexto, missing: [] }
+  // Tarefa LEGADA: a entrada é o texto dos antecessores, com autoria, exatamente como
+  // sempre foi. É o adaptador, e ele fica.
+  if (isLegacyTask(task)) return { text: inputFromDependencies(task, resultados), missing: [] }
+  /**
+   * Tarefa NOVA: só os campos declarados.
+   *
+   * Anexar também a prosa do antecessor desfaz o que o plano acabou de decidir. O agente
+   * recebe o campo `faturamento: 120000` E o parágrafo onde o número aparece com outro
+   * contexto — e passa a escolher entre os dois, no meio da inferência, sem que ninguém
+   * saiba qual ele escolheu. Um campo tem uma origem só; é essa a ideia inteira.
+   */
   const { input, missing } = resolveBindings(task.inputBindings, { context: contexto, steps: stepOutputs(resultados) })
   const campos = Object.entries(input).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
-  return { text: [campos.join('\n'), doTexto].filter(Boolean).join('\n\n'), input, missing }
+  return { text: campos.join('\n'), input, missing }
 }
 
 /** A tarefa que, ao falhar, derruba o plano inteiro. Nula quando não houve nenhuma. */
@@ -1177,7 +1186,18 @@ export function buildSynthesisContext(question: string, plan: ExecutionPlan, res
 
   const blocos = resultados.map((r) => {
     const cabeca = `[${r.agentName}]\nobjective: ${trecho(r.objective, 300)}`
-    if (r.status === 'succeeded') return `${cabeca}\nresult:\n${r.output ?? ''}`
+    /**
+     * A síntese é o ponto em que o dado PRECISA ser apresentado a uma pessoa.
+     *
+     * Uma etapa `structured` não produz texto — de propósito, para não virar prosa na
+     * entrada da etapa seguinte. Mas aqui, no fim, esconder o dado faria a consolidação
+     * relatar uma etapa que "não devolveu nada" logo depois de ela ter devolvido o número
+     * que responde à pergunta.
+     */
+    if (r.status === 'succeeded') {
+      const dado = r.structured !== undefined ? JSON.stringify(r.structured) : ''
+      return `${cabeca}\nresult:\n${[dado, r.output ?? ''].filter(Boolean).join('\n')}`
+    }
     if (r.status === 'skipped') return `${cabeca}\nresult: NÃO EXECUTADO — dependia de uma tarefa que falhou.`
     return `${cabeca}\nresult: FALHOU (${r.error ?? 'motivo não registrado'}). Não há resultado deste agente.`
   })
@@ -1332,10 +1352,10 @@ export function limitationNote(missing: string | undefined, rounds: number): str
  * junção não pôde ser feita.
  */
 export function assembleWithoutModel(resultados: TaskResult[]): string {
-  const ok = resultados.filter((r) => r.status === 'succeeded' && r.output)
+  const ok = resultados.filter((r) => r.status === 'succeeded' && (r.output || r.structured !== undefined))
   if (ok.length === 0) return ''
   return [
-    ...ok.map((r) => `**${r.agentName}**\n${r.output}`),
+    ...ok.map((r) => `**${r.agentName}**\n${r.output || JSON.stringify(r.structured)}`),
     '',
     '_(Não foi possível consolidar as respostas automaticamente; acima está o que cada agente respondeu.)_',
   ].join('\n\n')

@@ -52,6 +52,7 @@ import {
   planExecution,
   readyTasks,
   shouldRun,
+  stepOutputs,
   wantsReplan,
   sufficiencyPrompt,
   synthesisInstruction,
@@ -59,6 +60,8 @@ import {
 } from './sectorPlanner.js'
 import type { ExecutionPlan, ExecutionTask, Sufficiency, TaskResult } from './sectorPlanner.js'
 import { agentContractOf } from './executors/contract.js'
+import { dispatchAgentExecution } from './executors/dispatcher.js'
+import { describeStepError, finishStep, prepareStepInput, stepAgentOf } from './executors/stepExecution.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -406,6 +409,16 @@ export interface DelegationDeps {
 
 interface TaskRun {
   output: string
+  /**
+   * O DADO, quando o agente produz dado.
+   *
+   * O texto sempre existiu; o dado era descartado aqui e reconstruído mais adiante por
+   * quem precisasse dele — reparseando uma string que já tinha sido um objeto. Carregá-lo
+   * é o que permite a etapa seguinte ler `$steps.t1.campo` em vez de procurar o número
+   * dentro da prosa.
+   */
+  json?: unknown
+  format?: { requested: string; valid: boolean; repaired: boolean }
   usage: { inputTokens: number; outputTokens: number }
   toolCalls: number
   startedAt: Date
@@ -510,6 +523,15 @@ function participationTelemetry(
 }
 
 const TASK_TIMEOUT_MS = 120_000
+/**
+ * Quantas correções de formato uma tarefa ganha do modelo.
+ *
+ * Uma, que é o que sempre houve. Configurável porque as duas pontas são escolhas
+ * legítimas: zero para quem quer o contrato ou nada, e mais de uma para um contrato
+ * grande que o modelo acerta na segunda. Cada uma é uma inferência paga — por isso um
+ * teto, e não um laço. Opcional: sem a variável, o comportamento é o de antes.
+ */
+const MAX_OUTPUT_REPAIRS = Math.max(0, Number(process.env.MAX_OUTPUT_REPAIRS ?? 1) || 0)
 const MAX_OUTPUT_CHARS = 40_000
 
 function j(v: unknown): string {
@@ -1117,7 +1139,7 @@ export async function runAgentTask(
       output: { format: effectiveFormat, jsonSchema: effectiveFormat === 'json' ? (target.outputJsonSchema ?? null) : null },
       runConfig: execucao.runConfig,
       enableCaching: execucao.enableCaching,
-        limits: { timeoutMs: TASK_TIMEOUT_MS, maxOutputChars: MAX_OUTPUT_CHARS },
+        limits: { timeoutMs: TASK_TIMEOUT_MS, maxOutputChars: MAX_OUTPUT_CHARS, maxOutputRepairs: MAX_OUTPUT_REPAIRS },
     })
   } catch (erro) {
     // Nenhuma execução pode terminar num estado ativo: sem isto, um agente que falhou
@@ -1141,7 +1163,7 @@ export async function runAgentTask(
     toolsExecuted: res.toolCalls.filter((c) => c.ok).length,
   }
   // "Ações com ferramenta" counts calls that actually COMPLETED, not attempts.
-  return { output: res.output, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources, model: execucao.model, modelReason: execucao.modelReason, clarification: clarificationFrom(res.toolCalls) }
+  return { output: res.output, json: res.json, format: res.format, usage: res.usage, toolCalls: res.toolCalls.filter((c) => c.ok).length, startedAt, finishedAt: new Date(), telemetry, grounding, sources, model: execucao.model, modelReason: execucao.modelReason, clarification: clarificationFrom(res.toolCalls) }
 }
 
 // ---- delegate_to_agent ------------------------------------------------------
@@ -1468,7 +1490,9 @@ export async function executeSectorTeam(
     executar: (eventKey: string) => Promise<TaskRun>,
     participation: ReturnType<typeof participationOf>,
     papel: SectorParticipant,
-  ): Promise<string> => {
+    // Devolve a EXECUÇÃO, não só o texto dela: o dado estruturado morria aqui, e a etapa
+    // seguinte tinha que extraí-lo da prosa.
+  ): Promise<TaskRun> => {
     void input
     let saida: TaskRun
     if (opts.parentDelegationId) {
@@ -1521,7 +1545,7 @@ export async function executeSectorTeam(
       modelReason: saida.modelReason ?? null,
       status: 'succeeded',
     })
-    return saida.output
+    return saida
   }
 
   if (sector.mode === 'pipeline') {
@@ -1547,14 +1571,16 @@ export async function executeSectorTeam(
       const instruction = stageInstruction(stage.instruction || opts.objective, stage.expectedOutput)
       const order = stages.indexOf(stage) + 1
       try {
-        const out = await rodarMembro(
-          agent,
-          instruction,
-          input,
-          (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id),
-          participationOf('pipeline_stage', { id: stage.id, name: stage.name, order }),
-          { agentId: agent._id.toString(), name: agent.name, role: 'pipeline_stage', stageId: stage.id, stageName: stage.name, order },
-        )
+        const out = (
+          await rodarMembro(
+            agent,
+            instruction,
+            input,
+            (k) => runWithRetry(deps, ctx, agent, instruction, input, format, stage.retryPolicy.maxAttempts, k, sector._id),
+            participationOf('pipeline_stage', { id: stage.id, name: stage.name, order }),
+            { agentId: agent._id.toString(), name: agent.name, role: 'pipeline_stage', stageId: stage.id, stageName: stage.name, order },
+          )
+        ).output
         // Conferida ANTES de a próxima etapa consumir: estrutural quando a etapa produz
         // JSON, e só "saiu alguma coisa" no resto.
         const verdict = checkStageOutput(out, agent, format)
@@ -1807,30 +1833,99 @@ export async function executeSectorTeam(
       },
     })
     /**
-     * A entrada desta tarefa: os campos que o plano declarou, mais o que os antecessores
-     * produziram, com autoria. Sem dependência e sem campos declarados, o pedido original.
+     * A CONFERÊNCIA DE ENTRADA — a primeira das duas paradas obrigatórias.
      *
-     * Um campo declarado e não entregue PARA a tarefa. É a mesma decisão do compilador,
-     * agora em tempo de execução: seguir com o campo faltando é entregar a prosa ao agente
-     * e deixá-lo deduzir o número — e o número deduzido sai na resposta com a mesma cara
-     * de um apurado.
+     * O plano é uma promessa; o que chega aqui é outra coisa. A etapa anterior pode ter
+     * devolvido um número onde o contrato pedia texto, ou nada onde ele exigia um valor.
+     * Sem esta parada, o desencontro vira entrada do agente — e um agente que recebe
+     * entrada errada não falha: ele responde, com convicção, a partir do que entendeu.
+     *
+     * Não executar é barato. Executar com o campo errado custa uma resposta plausível e
+     * falsa, que é o desfecho mais caro que existe aqui.
      */
-    const ligada = inputForTask(task, resultadosPorId)
-    if (ligada.missing.length > 0) {
-      const faltando = ligada.missing.join(', ')
-      trilha({ type: 'agent', status: 'skipped', agentId: task.agentId, title: `${agentName}: entrada insuficiente (${faltando})` })
-      return { ...base, status: 'skipped', error: `entrada insuficiente: ${faltando}`, durationMs: 0 }
+    const passo = stepAgentOf(task.agentId, alvo)
+    const preparada = prepareStepInput(task, passo, { steps: stepOutputs(resultadosPorId) })
+    if (!preparada.ok) {
+      const e = preparada.error
+      console.info(`[task:input] execution=${execId} ${describeStepError(e)}`)
+      trilha({
+        type: 'agent',
+        status: 'skipped',
+        agentId: task.agentId,
+        title: `${agentName}: entrada não confere (${e.field ?? e.code})`,
+        // Etapa, agente, campo e código. Nunca o valor do campo.
+        metadata: { taskId: task.id, error: e.code, field: e.field ?? null },
+      })
+      return { ...base, status: 'skipped', error: `entrada não confere: ${e.message}`, durationMs: 0 }
     }
+    const ligada = inputForTask(task, resultadosPorId)
     const entrada = ligada.text || opts.input
     try {
+      /**
+       * O DISPATCHER, e não uma segunda cópia da decisão.
+       *
+       * Um agente de função ou de ferramenta não é um agente de modelo com outro nome: ele
+       * não improvisa a partir de prosa, e mandá-lo ao provedor seria pagar uma inferência
+       * para não fazer o trabalho. Quem decide é o mesmo ponto da fase 2 — o executor de
+       * modelo continua sendo o runtime de sempre, injetado aqui.
+       */
       const saida = await rodarMembro(
         alvo,
         task.objective,
         entrada,
-        (k) => runAgentTask(depsComTime, ctx, alvo, task.objective, entrada, format, k, sector._id, null),
+        async (k) => {
+          const contrato = agentContractOf(alvo)
+          if (contrato.executorKind === 'llm') return runAgentTask(depsComTime, ctx, alvo, task.objective, entrada, format, k, sector._id, null)
+          const comecouPasso = Date.now()
+          const r = await dispatchAgentExecution(alvo, {
+            agentId: alvo._id,
+            ownerId: ctx.ownerId,
+            objective: task.objective,
+            input: preparada.input,
+            correlationId: ctx.correlationId,
+          })
+          if (!r.ok) throw new Error(r.error?.message ?? 'a etapa não completou')
+          return {
+            output: r.text ?? '',
+            json: r.structured?.data,
+            usage: { inputTokens: r.telemetry.inputTokens ?? 0, outputTokens: r.telemetry.outputTokens ?? 0 },
+            toolCalls: r.telemetry.externalCalls ?? 0,
+            startedAt: new Date(comecouPasso),
+            finishedAt: new Date(),
+            telemetry: { executorKind: contrato.executorKind, externalCalls: r.telemetry.externalCalls ?? 0 },
+          }
+        },
         participationOf('specialist'),
         { agentId: alvo._id.toString(), name: alvo.name, role: 'specialist' },
       )
+      /**
+       * A CONFERÊNCIA DE SAÍDA — a segunda parada.
+       *
+       * O que não cumpre o contrato não vira entrada de ninguém: um dado inválido propagado
+       * é o mesmo defeito uma etapa adiante, e lá ele já não tem de onde ser explicado.
+       * `responseMode` recorta o que sai — quem pediu dado recebe dado, e não a frase que o
+       * envolvia.
+       */
+      const conferida = finishStep(task, passo, {
+        ok: true,
+        ...(saida.json !== undefined
+          ? { structured: { data: saida.json, valid: saida.format?.valid !== false, repaired: saida.format?.repaired === true } }
+          : {}),
+        text: saida.output,
+        metadata: {},
+        telemetry: { durationMs: Date.now() - comecou },
+      })
+      if (!conferida.ok) {
+        console.info(`[task:output] execution=${execId} ${describeStepError(conferida.error)}`)
+        trilha({
+          type: 'agent',
+          status: 'error',
+          agentId: task.agentId,
+          title: `${agentName}: saída não confere (${conferida.error.field ?? conferida.error.code})`,
+          metadata: { taskId: task.id, error: conferida.error.code, field: conferida.error.field ?? null },
+        })
+        return { ...base, status: 'failed', error: `saída não confere: ${conferida.error.message}`, durationMs: Date.now() - comecou }
+      }
       const durationMs = Date.now() - comecou
       console.info(`[task:end] execution=${execId} task=${task.id} agent=${task.agentId} status=succeeded duration=${durationMs}ms`)
       const participacao = participants.find((p) => p.agentId === task.agentId && p.status === 'succeeded')
@@ -1841,7 +1936,7 @@ export async function executeSectorTeam(
         provider: alvo.provider,
         model: participacao?.model ?? alvo.model ?? null,
         title: `${agentName} concluiu`,
-        output: preview(saida, 600),
+        output: preview(conferida.text ?? '', 600),
         durationMs,
         metadata: {
           taskId: task.id,
@@ -1858,22 +1953,35 @@ export async function executeSectorTeam(
         status: 'success',
         agentId: task.agentId,
         title: `${agentName} → ${coordinator.name}`,
-        output: preview(saida, 400),
+        output: preview(conferida.text ?? '', 400),
         durationMs,
         metadata: { taskId: task.id, from: agentName, to: coordinator.name },
       })
-      return { ...base, status: 'succeeded', output: saida, durationMs }
+      // O dado vai junto com o texto: é ele que a etapa seguinte lê em `$steps.<id>.campo`.
+      return { ...base, status: 'succeeded', output: conferida.text ?? '', structured: conferida.structured?.data, durationMs }
     } catch (erro) {
       const durationMs = Date.now() - comecou
       // A CATEGORIA, nunca o texto cru: mensagem de provedor pode carregar payload.
       const mensagem = erro instanceof Error ? erro.message : 'falha'
+      /**
+       * A CATEGORIA, nunca o texto cru — com uma exceção que vale a pena.
+       *
+       * A mensagem de um provedor pode carregar o payload que foi enviado; por isso ela
+       * vira categoria. Já a de uma função ou de uma ferramenta é escrita por este
+       * repositório: nome de campo, tipo esperado, código do executor — sem corpo de
+       * terceiro, sem credencial e sem pilha (fase 2). Trocá-la por "falha na execução"
+       * apagaria a única informação que permite consertar: qual campo saiu errado.
+       */
+      const doExecutor = agentContractOf(alvo).executorKind !== 'llm'
       const categoria = /cancel/i.test(mensagem)
         ? 'cancelado'
         : /timeout|exceeded/i.test(mensagem)
           ? 'tempo esgotado'
-          : /grounding|base/i.test(mensagem)
-            ? 'sem base para responder'
-            : 'falha na execução'
+          : doExecutor
+            ? mensagem.slice(0, 200)
+            : /grounding|base/i.test(mensagem)
+              ? 'sem base para responder'
+              : 'falha na execução'
       console.info(`[task:end] execution=${execId} task=${task.id} agent=${task.agentId} status=failed duration=${durationMs}ms error=${categoria}`)
       trilha({
         type: 'agent',
@@ -1951,6 +2059,27 @@ export async function executeSectorTeam(
    * respondeu, dizendo que a junção não pôde ser feita.
    */
   const sintetizar = async (feitos: TaskResult[], limitacao: string): Promise<string> => {
+    /**
+     * A síntese em prosa existe para uma coisa: apresentar a resposta a uma PESSOA.
+     *
+     * Quando quem pediu quer dado, transformá-lo em frase e devolver a frase é gastar uma
+     * inferência para piorar o resultado — o consumidor teria que extrair do texto o que já
+     * estava estruturado. Dado intermediário não precisa virar sentença.
+     */
+    const dados = feitos.filter((r) => r.status === 'succeeded' && r.structured !== undefined)
+    if (agentContractOf(coordinator).responseMode === 'structured' && dados.length > 0) {
+      console.info(`[synthesis:skipped] execution=${execId} reason=structured results=${dados.length}`)
+      trilha({
+        type: 'synthesis',
+        status: 'success',
+        agentId: coordinator._id.toString(),
+        title: 'Entrega estruturada — sem consolidação em texto',
+        metadata: { inputs: dados.map((r) => ({ agent: r.agentName, status: r.status })) },
+      })
+      // Um resultado sai sozinho; vários saem endereçados por etapa, porque juntá-los numa
+      // estrutura inventada aqui seria este arquivo decidindo o formato de saída de alguém.
+      return JSON.stringify(dados.length === 1 ? dados[0].structured : Object.fromEntries(dados.map((r) => [r.taskId, r.structured])))
+    }
     const instrucaoFinal = [sector.instruction?.trim(), synthesisInstruction(plan), limitacao].filter(Boolean).join('\n\n')
     const entradaFinal = buildSynthesisContext(opts.objective, { ...plan, tasks: feitos.map((r) => ({ id: r.taskId, agentId: r.agentId, objective: r.objective, dependsOn: r.dependsOn })) }, feitos)
     const comecou = Date.now()
@@ -1970,7 +2099,7 @@ export async function executeSectorTeam(
       },
     })
     try {
-      const texto = await rodarMembro(
+      const { output: texto } = await rodarMembro(
         coordinator,
         instrucaoFinal,
         entradaFinal,
@@ -2135,14 +2264,16 @@ export async function executeSectorTeam(
   if (todos.length === 0) {
     // Sem plano — setor sem outros membros, ou tudo já feito: o coordenador responde o
     // pedido original, exatamente como antes desta mudança.
-    output = await rodarMembro(
-      coordinator,
-      instruction,
-      opts.input,
-      (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant, briefing),
-      participationOf('coordinator'),
-      { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
-    )
+    output = (
+      await rodarMembro(
+        coordinator,
+        instruction,
+        opts.input,
+        (k) => runAgentTask(depsComTime, ctx, coordinator, instruction, opts.input, format, k, sector._id, grant, briefing),
+        participationOf('coordinator'),
+        { agentId: coordinator._id.toString(), name: coordinator.name, role: 'coordinator' },
+      )
+    ).output
   }
   const falharam = todos.filter((r) => r.status !== 'succeeded')
   for (const r of falharam) warnings.push(`${r.agentName}: ${r.error ?? 'não executou'}`)

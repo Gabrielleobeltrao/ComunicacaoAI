@@ -105,7 +105,11 @@ export async function executeRegisteredFunction(
     if (!v.valid) {
       // Sem pedir correção a ninguém: isto é defeito de código, e repetir daria no mesmo.
       console.error(`[function] ${config.functionName} devolveu fora do contrato:`, describeErrors(v.errors))
-      return falha('invalid_output', `A função "${config.functionName}" devolveu um resultado fora do contrato.`, comecou, metadata)
+      // O CAMPO vai na mensagem, como já vai no erro de entrada. É o nome do campo e o tipo
+      // esperado — o vocabulário do schema, escrito por quem configurou o agente. Sem ele,
+      // quem administra sabe que algo quebrou e não sabe o quê, e o único lugar com a
+      // resposta é o log do servidor.
+      return falha('invalid_output', `A função "${config.functionName}" devolveu fora do contrato: ${describeErrors(v.errors)}`, comecou, metadata)
     }
   }
 

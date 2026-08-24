@@ -50,7 +50,13 @@ export interface AgentExecutionRequest {
    * configuração.
    */
   runConfig?: EffectiveRunConfig
-  limits?: { maxOutputChars?: number; timeoutMs?: number }
+  /**
+   * `maxOutputRepairs`: quantas correções de formato o modelo ganha. Padrão 1 — o que
+   * sempre houve. Zero é uma escolha legítima: quem quer o contrato ou nada não paga por
+   * uma segunda inferência para descobrir a mesma coisa. Acima de 1, cada tentativa custa
+   * tokens de verdade, e é por isso que há um teto em vez de um laço.
+   */
+  limits?: { maxOutputChars?: number; timeoutMs?: number; maxOutputRepairs?: number }
   enableCaching?: boolean
   // Operational transitions, for the live map. A plain callback: this module stays
   // pure and testable, and the caller — which knows the owner, the agent and the
@@ -388,17 +394,29 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
     return { output: first.output, json: first.json, usage, toolCalls: result.toolCalls, format: { requested, valid: true, repaired: false } }
   }
 
+  // Zero correções: o contrato falhou e não há segunda chance paga. A tarefa termina como
+  // `validation`, que é o mesmo desfecho de uma correção que não deu certo.
+  const tetoDeReparos = Math.max(0, req.limits?.maxOutputRepairs ?? 1)
+  if (tetoDeReparos === 0) throw new AgentRunError('validation', `saída JSON inválida: ${first.problem}`)
+
+  let problema = first.problem
+  let ultimoTexto = result.text
+  let corrigida: ReturnType<typeof checkJson> = first
+  for (let reparo = 0; reparo < tetoDeReparos; reparo += 1) {
   const repairHistory: ChatTurn[] = [
     ...history,
-    { role: 'assistant', content: result.text },
+    { role: 'assistant', content: ultimoTexto },
     {
       role: 'user',
-      content: `A resposta anterior não é um JSON válido para o contrato pedido: ${first.problem}. Responda de novo com APENAS o objeto JSON corrigido, sem texto fora dele.`,
+      // SÓ os erros de validação. Mandar de volta a resposta inteira comentada gasta tokens
+      // de entrada para repetir ao modelo o que ele mesmo escreveu; o que ele não sabe é o
+      // que estava errado nela.
+      content: `A resposta anterior não é um JSON válido para o contrato pedido: ${problema}. Responda de novo com APENAS o objeto JSON corrigido, sem texto fora dele.`,
     },
   ]
   // The contract failed once: the correction round-trip IS a retry, and it is
   // reported as one instead of looking like normal thinking.
-  req.progress?.('retrying')
+  req.progress?.('retrying', { tentativa: reparo + 1 })
   let repairResult: AgentReplyResult
   try {
     // NO TOOLS. This second call exists only to reformat the answer the model has
@@ -421,15 +439,21 @@ export async function executeAgentTask(req: AgentExecutionRequest, replyFn?: Rep
     if (error instanceof AgentRunError) throw error
     throw new AgentRunError('provider', error instanceof Error ? error.message : 'provider error')
   }
-  // The correction costs what it costs, and the owner is charged for it.
+  // The correction costs what it costs, and the owner is charged for it. Cada tentativa
+  // soma na mesma conta: o dono paga o que rodou, e o painel mostra o total.
   usage.inputTokens += repairResult.usage.inputTokens
   usage.outputTokens += repairResult.usage.outputTokens
 
-  const second = checkJson(clip(repairResult.text), req.output?.jsonSchema)
-  if (!second.ok) throw new AgentRunError('validation', `saída JSON inválida após correção: ${second.problem}`)
+  ultimoTexto = repairResult.text
+  corrigida = checkJson(clip(repairResult.text), req.output?.jsonSchema)
+  if (corrigida.ok) break
+  problema = corrigida.problem
+  }
+
+  if (!corrigida.ok) throw new AgentRunError('validation', `saída JSON inválida após correção: ${corrigida.problem}`)
   return {
-    output: second.output,
-    json: second.json,
+    output: corrigida.output,
+    json: corrigida.json,
     usage,
     // Only the original execution's calls: the repair ran without tools, so it has
     // none, and inventing entries here would misreport what happened.
@@ -452,7 +476,10 @@ function checkJson(
   }
   if (schema) {
     const validation = validateAgainstSchema(schema, json)
-    if (!validation.valid) return { ok: false, problem: describeErrors(validation.errors) }
+    // Os primeiros erros, não todos: uma lista de quarenta linhas vinda de um array grande
+    // empurra o resto do pedido para fora do contexto e piora a correção que ela deveria
+    // guiar. Os primeiros bastam — corrigido um padrão, os iguais somem juntos.
+    if (!validation.valid) return { ok: false, problem: describeErrors(validation.errors.slice(0, 5)) }
   }
   return { ok: true, output, json }
 }
