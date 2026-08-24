@@ -15,6 +15,7 @@ import type { ResolvedTool } from './agentTools.js'
 import { checkCollaboration } from './collaborationGate.js'
 import type { GateContext, GateTarget } from './collaborationGate.js'
 import type { FloorCommunicationConfig } from './floorCommunication.js'
+import { AgentRunError } from './agentRuntime.js'
 import type { AgentExecutionRequest, AgentExecutionResult, AgentOutputFormat } from './agentRuntime.js'
 import { presetSpec, suggestPresetForCapability } from './agentPresets.js'
 import { resolveAgentRun } from './agentDefinition.js'
@@ -570,6 +571,40 @@ function asOutputFormat(value: unknown): AgentOutputFormat | undefined {
 }
 
 // A pipeline stage says what it must hand over; the model has to be told.
+/**
+ * A execução de um agente que NÃO é de modelo, no formato que o runtime já entende.
+ *
+ * Nenhuma inferência, nenhum token: o custo de uma função determinística é zero, e é essa
+ * a diferença que a arquitetura inteira existe para tornar possível.
+ */
+async function executarPorDespacho(
+  target: Agent,
+  contrato: ReturnType<typeof agentContractOf>,
+  objective: string,
+  input: unknown,
+  ctx: DelegationContext,
+): Promise<TaskRun> {
+  const startedAt = new Date()
+  const r = await dispatchAgentExecution(target, {
+    agentId: target._id,
+    ownerId: ctx.ownerId,
+    objective,
+    // A entrada estruturada quando existe; a de texto continua chegando como sempre.
+    input: input && typeof input === 'object' ? input : undefined,
+    correlationId: ctx.correlationId,
+  })
+  if (!r.ok) throw new AgentRunError('tool', r.error?.message ?? 'a execução não completou')
+  return {
+    output: r.text ?? '',
+    json: r.structured?.data,
+    usage: { inputTokens: 0, outputTokens: 0 },
+    toolCalls: r.telemetry.externalCalls ?? 0,
+    startedAt,
+    finishedAt: new Date(),
+    telemetry: { executorKind: contrato.executorKind, externalCalls: r.telemetry.externalCalls ?? 0 },
+  }
+}
+
 export function stageInstruction(instruction: string, expectedOutput?: string): string {
   const expected = (expectedOutput ?? '').trim()
   return expected ? `${instruction}\n\nO resultado desta etapa deve ser: ${expected}` : instruction
@@ -627,6 +662,18 @@ export async function runAgentTask(
   // com nomes e competências dos membros em vez da pergunta que foi feita.
   briefing?: string | null,
 ): Promise<TaskRun> {
+  /**
+   * O TIPO decide, e decide aqui.
+   *
+   * Este é o caminho de toda execução operacional: rotina, gatilho, delegação direta e
+   * etapa de setor. Um agente de função que chegasse aqui era executado como agente de
+   * modelo — o provedor era chamado, os tokens eram gastos, e a função que ele existe
+   * para rodar nunca rodava. O plano de setor tinha o desvio; ninguém mais tinha.
+   */
+  const contratoDoAlvo = agentContractOf(target)
+  if (contratoDoAlvo.executorKind !== 'llm') {
+    return executarPorDespacho(target, contratoDoAlvo, objective, input, ctx)
+  }
   // The child runs under THIS execution's event, so anything it delegates chains to
   // the same root (parent/root lineage).
   const cctx = {
@@ -1440,6 +1487,15 @@ export interface SectorTeamRun {
 export interface SectorTeamOptions {
   objective: string
   input?: unknown
+  /**
+   * O contexto ESTRUTURADO do pedido — os campos que `$context.campo` alcança.
+   *
+   * Diferente de `input`, que é o texto. A gramática de bindings sempre teve as duas
+   * metades, e a estruturada nunca chegava a valer: o planejador escrevia
+   * `$context.portfolio_value`, o compilador aceitava (contexto desconhecido passa) e em
+   * execução o campo não existia — a tarefa era pulada por entrada insuficiente.
+   */
+  context?: Record<string, unknown>
   format?: AgentOutputFormat
   /**
    * O registro de delegação pai, quando a execução veio de um agente. Ausente numa
@@ -1714,11 +1770,22 @@ export async function executeSectorTeam(
   const limites = coordinator.orchestration ?? {}
   const tetoDeTarefas = Math.min(limites.maxTasks ?? MAX_TASKS, MAX_TASKS)
   const tetoDeRodadas = Math.min(limites.maxRounds ?? MAX_ORCHESTRATION_ROUNDS, MAX_ORCHESTRATION_ROUNDS)
+  /**
+   * O CONTEXTO estruturado do pedido — o que `$context.campo` alcança.
+   *
+   * Sem ele o planejador podia escrever `$context.portfolio_value`, o compilador aceitava
+   * (contexto desconhecido passa), e em execução o campo não existia: a tarefa era pulada
+   * por entrada insuficiente. A metade estruturada da gramática nunca chegou a valer.
+   */
+  const contextoDoPedido = opts.context && typeof opts.context === 'object' && !Array.isArray(opts.context) ? opts.context : undefined
   const { plan, source: origemDoPlano, diagnostics, clarification: faltaDeDado } = await planExecution({
     question: opts.objective,
     members: equipe,
     ask: deps.planWithModel ? (prompt) => deps.planWithModel!(ctx.ownerId, coordinator, prompt) : undefined,
     max: tetoDeTarefas,
+    // Enumerado quando existe; ausente quando quem chamou não sabe dizer. São coisas
+    // diferentes, e o compilador trata cada uma do seu jeito.
+    ...(contextoDoPedido ? { contextFields: Object.keys(contextoDoPedido) } : {}),
   })
   /**
    * O que a compilação apontou.
@@ -1910,7 +1977,9 @@ export async function executeSectorTeam(
      * falsa, que é o desfecho mais caro que existe aqui.
      */
     const passo = stepAgentOf(task.agentId, alvo)
-    const preparada = prepareStepInput(task, passo, { steps: stepOutputs(resultadosPorId) })
+    // O contexto do PEDIDO entra aqui: sem ele, `$context.campo` resolvia sempre para
+    // "ausente" e toda tarefa que dependesse do pedido era pulada por falta de entrada.
+    const preparada = prepareStepInput(task, passo, { context: contextoDoPedido, steps: stepOutputs(resultadosPorId) })
     if (!preparada.ok) {
       const e = preparada.error
       console.info(`[task:input] execution=${execId} ${describeStepError(e)}`)
@@ -1924,7 +1993,7 @@ export async function executeSectorTeam(
       })
       return { ...base, status: 'skipped', error: `entrada não confere: ${e.message}`, durationMs: 0 }
     }
-    const ligada = inputForTask(task, resultadosPorId)
+    const ligada = inputForTask(task, resultadosPorId, contextoDoPedido)
     const entrada = ligada.text || opts.input
     try {
       /**
@@ -1940,42 +2009,33 @@ export async function executeSectorTeam(
         task.objective,
         entrada,
         async (k) => {
-          const contrato = agentContractOf(alvo)
-          if (contrato.executorKind === 'llm') {
-            const r = await runAgentTask(depsComTime, ctx, alvo, task.objective, entrada, format, k, sector._id, null)
-            // A MESMA ficha vai para o registro de execução, que é onde a auditoria fica
-            // depois que o painel fecha. Um segundo vocabulário para o mesmo fato obrigaria
-            // a cruzar dois formatos para responder uma pergunta só.
-            //
-            // `latencyMs` é o tempo do PROVEDOR — diferente da duração da etapa, que inclui
-            // a busca na base, a montagem do prompt e a validação. Quando uma etapa demora,
-            // a primeira pergunta é qual das duas coisas demorou.
-            return {
-              ...r,
-              telemetry: {
-                ...(r.telemetry ?? {}),
-                ...fichaDaEtapa,
-                latencyMs: Math.max(0, r.finishedAt.getTime() - r.startedAt.getTime()),
-              },
-            }
-          }
-          const comecouPasso = Date.now()
-          const r = await dispatchAgentExecution(alvo, {
-            agentId: alvo._id,
-            ownerId: ctx.ownerId,
-            objective: task.objective,
-            input: preparada.input,
-            correlationId: ctx.correlationId,
-          })
-          if (!r.ok) throw new Error(r.error?.message ?? 'a etapa não completou')
+          /**
+           * UM caminho, para todos os tipos.
+           *
+           * O desvio para o dispatcher vivia aqui, e só aqui: rotina, gatilho e delegação
+           * direta passavam por `runAgentTask` sem ele e executavam um agente de função
+           * como agente de modelo. Agora a decisão é de `runAgentTask`, que é por onde
+           * todos passam — e este ponto voltou a ser o que sempre foi: uma chamada.
+           *
+           * A entrada muda com o tipo: um agente de modelo lê texto, um de função recebe
+           * os campos que o plano declarou.
+           */
+          const entradaDaEtapa = contratoDoAlvo.executorKind === 'llm' ? entrada : (preparada.input ?? entrada)
+          const r = await runAgentTask(depsComTime, ctx, alvo, task.objective, entradaDaEtapa, format, k, sector._id, null)
+          // A MESMA ficha vai para o registro de execução, que é onde a auditoria fica
+          // depois que o painel fecha. Um segundo vocabulário para o mesmo fato obrigaria
+          // a cruzar dois formatos para responder uma pergunta só.
+          //
+          // `latencyMs` é o tempo do PROVEDOR — diferente da duração da etapa, que inclui a
+          // busca na base, a montagem do prompt e a validação. Quando uma etapa demora, a
+          // primeira pergunta é qual das duas coisas demorou.
           return {
-            output: r.text ?? '',
-            json: r.structured?.data,
-            usage: { inputTokens: r.telemetry.inputTokens ?? 0, outputTokens: r.telemetry.outputTokens ?? 0 },
-            toolCalls: r.telemetry.externalCalls ?? 0,
-            startedAt: new Date(comecouPasso),
-            finishedAt: new Date(),
-            telemetry: { ...fichaDaEtapa, externalCalls: r.telemetry.externalCalls ?? 0, latencyMs: Date.now() - comecouPasso },
+            ...r,
+            telemetry: {
+              ...(r.telemetry ?? {}),
+              ...fichaDaEtapa,
+              latencyMs: Math.max(0, r.finishedAt.getTime() - r.startedAt.getTime()),
+            },
           }
         },
         participationOf('specialist'),

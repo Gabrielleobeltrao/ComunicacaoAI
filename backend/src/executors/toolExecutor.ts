@@ -133,10 +133,29 @@ export async function executeAgentTool(
  * como ferramenta — de propósito, para o modelo saber que a ação não aconteceu. Quando o
  * que volta é uma recusa, ela é executada e a mensagem dela vira o erro.
  */
+/**
+ * A ação EXATA, e nenhuma outra.
+ *
+ * O `?? ferramentas[0]` que havia aqui era um estrago esperando acontecer: um agente
+ * configurado para `criar_evento` cujo grant mudasse de forma executaria a primeira ação
+ * da lista — que pode ser `apagar_evento`. "Quase certo" não existe em execução de ação;
+ * ou é a que o dono autorizou, ou é nenhuma.
+ *
+ * A comparação continua tolerante ao PREFIXO de namespace (`agenda__criar_evento`), porque
+ * é assim que o nome chega ao modelo — mas o sufixo tem que bater inteiro.
+ */
 function escolherAcao(ferramentas: ResolvedTool[], actionKey: string): ResolvedTool | null {
   const normal = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '')
   const alvo = normal(actionKey)
-  return ferramentas.find((f) => normal(f.name).includes(alvo)) ?? ferramentas[0] ?? null
+  return (
+    ferramentas.find((f) => normal(f.name) === alvo) ??
+    // O nome namespaced do App: `agenda__criar_evento` para a ação `criar_evento`.
+    ferramentas.find((f) => {
+      const nome = normal(f.name)
+      return nome.endsWith(`__${alvo}`) || nome.endsWith(`_${alvo}`)
+    }) ??
+    null
+  )
 }
 
 function normalizar(ok: boolean, resultado: string, comecou: number, metadata: Record<string, unknown>): ExecutorResult {

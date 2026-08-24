@@ -8,6 +8,7 @@
 // significar uma mudança — é o que permite adicionar isto sem migração destrutiva e sem
 // tocar em um único documento existente.
 import { isValidToolSchema } from '../jsonSchema.js'
+import { findFunction } from './functionRegistry.js'
 import type { ExecutorConfig, ExecutorKind, ResponseMode } from './types.js'
 
 export const EXECUTOR_KINDS: ExecutorKind[] = ['llm', 'function', 'tool']
@@ -114,6 +115,10 @@ export interface ContractParseResult {
     responseMode: ResponseMode
     executorConfig: ExecutorConfig
     inputJsonSchema: Record<string, unknown> | null
+    /** Derivado do registro para uma função — nunca lido do que o cliente mandou. */
+    outputJsonSchema: Record<string, unknown> | null
+    /** Idem: as capacidades de um agente de função são as da função. */
+    capabilities: string[]
   }>
   error?: string
 }
@@ -124,6 +129,30 @@ export interface ContractParseResult {
  * Um payload antigo, sem nenhum destes campos, sai daqui sem nenhum campo — o agente é
  * gravado exatamente como sempre foi. É isso que mantém as APIs anteriores funcionando.
  */
+/**
+ * O contrato de uma FUNÇÃO vem do registro. Sempre.
+ *
+ * Deixar o cliente gravar os schemas de um agente de função cria duas verdades sobre o
+ * que ela aceita: a do formulário e a do código que roda. Elas começam iguais e divergem
+ * na primeira vez que a função muda — e a que estiver errada é descoberta em produção,
+ * como uma entrada válida recusada ou, pior, uma inválida aceita.
+ *
+ * Aqui só existe uma: a do registro.
+ */
+export function contractFromFunction(functionName: string, version?: string): {
+  inputJsonSchema: Record<string, unknown>
+  outputJsonSchema: Record<string, unknown>
+  version: string
+  capabilities: string[]
+} | { error: string } {
+  const f = findFunction(functionName)
+  if (!f) return { error: `A função "${functionName}" não está disponível neste servidor.` }
+  if (version && version !== f.version) {
+    return { error: `A função "${functionName}" está na versão ${f.version}, e foi pedida a ${version}.` }
+  }
+  return { inputJsonSchema: f.inputSchema, outputJsonSchema: f.outputSchema, version: f.version, capabilities: f.capabilities }
+}
+
 export function parseAgentContract(body: Record<string, unknown>, atual?: { executorKind?: unknown } | null): ContractParseResult {
   const fields: ContractParseResult['fields'] = {}
 
@@ -151,9 +180,20 @@ export function parseAgentContract(body: Record<string, unknown>, atual?: { exec
     }
   }
 
+  /**
+   * O TIPO que vale nesta gravação: o que está sendo enviado, ou o que já está no banco.
+   *
+   * A validação abaixo precisa rodar mesmo quando `executorConfig` NÃO veio no corpo.
+   * Antes ela só rodava dentro do `if`, e mandar `executorKind: 'function'` sozinho
+   * gravava um agente de função sem função nenhuma: ele passava pela API, aparecia na
+   * tela como configurado, e falhava na primeira execução com "não configurado" — longe
+   * daqui, e sem nada que apontasse para o pedido que o criou.
+   */
+  const kindEfetivo = (fields.executorKind ??
+    (EXECUTOR_KINDS.includes(atual?.executorKind as ExecutorKind) ? (atual!.executorKind as ExecutorKind) : 'llm')) as ExecutorKind
+
   if (body.executorConfig !== undefined) {
-    // O tipo que vale é o que está sendo gravado agora; sem ele, o que já está no banco.
-    const kind = (fields.executorKind ?? (EXECUTOR_KINDS.includes(atual?.executorKind as ExecutorKind) ? (atual!.executorKind as ExecutorKind) : 'llm')) as ExecutorKind
+    const kind = kindEfetivo
     const cfg = body.executorConfig
     if (cfg !== null && (typeof cfg !== 'object' || Array.isArray(cfg))) {
       return { fields, error: 'executorConfig must be an object' }
@@ -172,6 +212,41 @@ export function parseAgentContract(body: Record<string, unknown>, atual?: { exec
       return { fields, error: 'executorConfig requires toolId, or appKey with actionKey, for executorKind "tool"' }
     }
     fields.executorConfig = normalizada
+  }
+
+  /**
+   * O tipo mudou e a configuração não veio junto.
+   *
+   * Um `executorKind` sem a referência do que executar é uma promessa sem cumprimento.
+   * Recusar aqui é o único lugar onde existe alguém para avisar.
+   */
+  if (fields.executorKind !== undefined && fields.executorConfig === undefined) {
+    if (fields.executorKind === 'function') {
+      return { fields, error: 'executorConfig.functionName is required for executorKind "function"' }
+    }
+    if (fields.executorKind === 'tool') {
+      return { fields, error: 'executorConfig requires toolId, or appKey with actionKey, for executorKind "tool"' }
+    }
+    // Voltar para `llm` limpa a configuração do tipo anterior: deixá-la gravada seria
+    // guardar uma promessa que ninguém mais cumpre.
+    fields.executorConfig = { kind: 'llm' }
+  }
+
+  /**
+   * Uma FUNÇÃO manda no próprio contrato.
+   *
+   * Os schemas enviados pelo cliente são ignorados aqui — não recusados, derivados: o que
+   * vale é o registro, e é ele que preenche. Assim o formulário pode mandar o que quiser
+   * que o banco continua tendo uma verdade só.
+   */
+  const cfgFinal = fields.executorConfig
+  if (kindEfetivo === 'function' && cfgFinal?.kind === 'function' && cfgFinal.functionName) {
+    const derivado = contractFromFunction(cfgFinal.functionName, cfgFinal.version)
+    if ('error' in derivado) return { fields, error: derivado.error }
+    fields.inputJsonSchema = derivado.inputJsonSchema
+    fields.outputJsonSchema = derivado.outputJsonSchema
+    fields.executorConfig = { ...cfgFinal, version: derivado.version }
+    fields.capabilities = derivado.capabilities
   }
 
   return { fields }

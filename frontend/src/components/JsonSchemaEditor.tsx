@@ -122,12 +122,23 @@ export function JsonSchemaEditor({
   value,
   onChange,
   testId,
+  readOnly,
+  readOnlyReason,
 }: {
   label: string
   hint: string
   value: string
   onChange: (v: string) => void
   testId: string
+  /**
+   * O contrato de uma FUNÇÃO não se edita aqui.
+   *
+   * Ele vem do registro do servidor, que é quem executa. Deixar editar criaria duas
+   * verdades sobre o que a função aceita: a do formulário e a do código que roda. Elas
+   * começam iguais e divergem na primeira mudança — e a errada é descoberta em produção.
+   */
+  readOnly?: boolean
+  readOnlyReason?: string
 }) {
   const [aberto, setAberto] = useState(false)
   const { problems, parsed } = useMemo(() => checkSchema(value), [value])
@@ -147,7 +158,7 @@ export function JsonSchemaEditor({
         <label className="text-sm text-(--text-muted)" htmlFor={testId}>
           {label}
         </label>
-        <div className="flex flex-wrap gap-2">
+        <div className={`flex flex-wrap gap-2 ${readOnly ? 'hidden' : ''}`}>
           <button
             type="button"
             onClick={formatar}
@@ -189,15 +200,23 @@ export function JsonSchemaEditor({
         id={testId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        readOnly={readOnly}
         rows={7}
         spellCheck={false}
-        aria-invalid={problems.length > 0}
+        aria-readonly={readOnly}
+        aria-invalid={!readOnly && problems.length > 0}
         aria-describedby={problems.length > 0 ? `${testId}-erros` : undefined}
         placeholder={'{\n  "type": "object",\n  "properties": { "cnpj": { "type": "string" } },\n  "required": ["cnpj"]\n}'}
-        className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 font-mono text-xs outline-none focus:border-(--border-focus)"
+        className={`w-full rounded-lg border border-(--border-strong) px-3 py-2 font-mono text-xs outline-none focus:border-(--border-focus) ${
+          readOnly ? 'bg-(--surface-sunken) text-(--text-muted)' : 'bg-(--surface-card)'
+        }`}
         data-testid={testId}
       />
-      {problems.length > 0 ? (
+      {readOnly && readOnlyReason ? (
+        <p className="text-xs text-(--text-faint)" data-testid={`${testId}-readonly`}>
+          {readOnlyReason}
+        </p>
+      ) : problems.length > 0 ? (
         <ul id={`${testId}-erros`} className="space-y-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid={`${testId}-errors`}>
           {problems.map((p, i) => (
             <li key={`${p.path}-${i}`}>{p.path ? `${p.path}: ${p.message}` : p.message}</li>

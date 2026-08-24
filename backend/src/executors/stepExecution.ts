@@ -128,6 +128,21 @@ export function finishStep(
     }
   }
 
+  /**
+   * `structured_and_text` promete as DUAS coisas.
+   *
+   * Um executor de função ou de ferramenta produz dado; prosa é trabalho de modelo.
+   * Entregar string vazia como se fosse o texto relataria sucesso completo para uma entrega
+   * pela metade — e quem consome descobriria em produção, com um campo em branco no lugar
+   * de uma explicação.
+   */
+  if (modo === 'structured_and_text' && !resultado.text) {
+    return erro(
+      'invalid_output',
+      'Este agente promete dados E texto, e produziu só dados. Uma função ou ferramenta não escreve prosa: encadeie um agente de IA para apresentar o resultado, ou mude o modo para "Dados estruturados".',
+    )
+  }
+
   return {
     ok: true,
     ...(modo !== 'text' && resultado.structured ? { structured: resultado.structured } : {}),

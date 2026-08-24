@@ -588,8 +588,18 @@ export function validatePlan(bruto: unknown, membros: PlannerMember[], pergunta:
           resolvidas.push(alvo)
         }
       }
-      if (Object.keys(traduzidos).length > 0) tarefa.inputBindings = traduzidos
-      else delete tarefa.inputBindings
+      /**
+       * Uma tarefa CONTRATADA continua contratada, mesmo perdendo todos os bindings.
+       *
+       * `delete` a devolvia para o modo legado — e legado quer dizer "recebe o texto do
+       * antecessor e se vira". Uma tarefa cujas origens foram todas descartadas por serem
+       * inválidas é o oposto disso: ela é a que MAIS precisa ser barrada. Deletar
+       * transformava o defeito em silêncio, e o agente rodava com a prosa.
+       *
+       * Vazio é o estado certo: `compilePlan` aponta cada campo obrigatório sem origem, e
+       * o runtime não executa.
+       */
+      tarefa.inputBindings = traduzidos
     }
     if (resolvidas.length > 0) tarefa.dependsOn = [...new Set(resolvidas)]
     else delete tarefa.dependsOn
@@ -1138,6 +1148,7 @@ export function stepOutputs(resultados: Map<string, TaskResult>): Record<string,
 export function inputForTask(
   task: ExecutionTask,
   resultados: Map<string, TaskResult>,
+  /** O contexto do PEDIDO — é o que faz `$context.campo` valer em execução. */
   contexto?: Record<string, unknown>,
 ): { text: string; input?: Record<string, unknown>; missing: string[] } {
   // Tarefa LEGADA: a entrada é o texto dos antecessores, com autoria, exatamente como

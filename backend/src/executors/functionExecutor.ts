@@ -13,6 +13,13 @@ import { findAdapterFor, findFunction } from './functionRegistry.js'
 import type { FunctionExecutorConfig } from './types.js'
 import type { ExecutorError, ExecutorResult } from './types.js'
 
+/**
+ * Teto de entrada. Generoso para dado de verdade, pequeno perto do que derruba um processo.
+ */
+const MAX_ENTRADA_CHARS = 256_000
+/** A mesma peneira de nomes que a trilha usa, pelo mesmo motivo. */
+const CHAVE_DE_SEGREDO = /(authorization|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|bearer|token|secret|password|senha|credential|cookie|private[-_]?key)/i
+
 const falha = (kind: ExecutorError['kind'], message: string, comecou: number, metadata: Record<string, unknown> = {}): ExecutorResult => ({
   ok: false,
   metadata,
@@ -72,6 +79,33 @@ export async function executeRegisteredFunction(
 
   const entrada = (input && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, unknown>
 
+  /**
+   * O TAMANHO da entrada, antes do schema.
+   *
+   * O validador percorre a estrutura inteira; um payload de dezenas de megabytes o faz
+   * percorrer dezenas de megabytes, no event loop, antes de recusar. A recusa precisa vir
+   * antes do trabalho que ela evita.
+   */
+  const tamanho = JSON.stringify(entrada)?.length ?? 0
+  if (tamanho > MAX_ENTRADA_CHARS) {
+    return falha('invalid_input', `Entrada grande demais: ${tamanho} caracteres (máximo ${MAX_ENTRADA_CHARS}).`, comecou, metadata)
+  }
+
+  /**
+   * Os PARÂMETROS que o dono fixou no agente — dados, nunca segredo.
+   *
+   * Uma credencial aqui ficaria em texto claro no documento do agente, e um documento
+   * vazado viraria acesso vazado. A recusa é por NOME de campo, com a mesma peneira que o
+   * resto do sistema usa, e acontece antes de o handler ver qualquer coisa.
+   */
+  const parametros = config.config
+  if (parametros) {
+    const suspeita = Object.keys(parametros).find((k) => CHAVE_DE_SEGREDO.test(k))
+    if (suspeita) {
+      return falha('invalid_input', `O parâmetro "${suspeita}" parece uma credencial. Credenciais ficam na conexão do App, não na configuração do agente.`, comecou, metadata)
+    }
+  }
+
   // ANTES: o handler nunca vê dado que não cumpre o contrato de entrada.
   if (registrada) {
     const v = validateAgainstSchema(registrada.inputSchema, entrada)
@@ -83,7 +117,10 @@ export async function executeRegisteredFunction(
   const timeoutMs = registrada?.timeoutMs ?? 10_000
   let saida: unknown
   try {
-    saida = await comLimite(Promise.resolve(registrada ? registrada.handler(entrada) : adaptador!.invoke(config.functionName, entrada, { timeoutMs })), timeoutMs)
+    saida = await comLimite(
+      Promise.resolve(registrada ? registrada.handler(entrada, parametros) : adaptador!.invoke(config.functionName, entrada, { timeoutMs })),
+      timeoutMs,
+    )
   } catch (erro) {
     const expirou = erro instanceof Error && erro.message === '__timeout__'
     if (expirou) {
@@ -120,3 +157,15 @@ export async function executeRegisteredFunction(
     telemetry: { durationMs: Date.now() - comecou },
   }
 }
+
+/**
+ * Uma função produz DADO. Ela não produz prosa.
+ *
+ * Um agente de função marcado como `structured_and_text` promete as duas coisas e entrega
+ * uma. Devolver string vazia como se fosse o texto seria relatar sucesso completo para uma
+ * entrega pela metade — e quem consome descobriria em produção, com um campo em branco.
+ *
+ * A saída honesta é dizer que falta uma etapa de MODELO para apresentar o dado.
+ */
+export const TEXTO_NAO_PRODUZIDO =
+  'Este agente executa uma função e produz dados, não texto. Para uma resposta escrita, encadeie um agente de IA que apresente o resultado.'

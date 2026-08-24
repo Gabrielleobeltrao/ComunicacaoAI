@@ -724,6 +724,23 @@ export async function createAgent(
     activationModes?: ActivationMode[]
     inputContract?: string
     outputContract?: string
+    /**
+     * O CONTRATO, na criação e não só no PATCH.
+     *
+     * O documento aqui é montado campo a campo — de propósito, para nada que o cliente
+     * mande entrar no banco sem passar por uma decisão. O efeito colateral é que um campo
+     * que não esteja escrito aqui é descartado em silêncio: o `...modelFields` do chamador
+     * não reclama, porque espalhamento não dispara verificação de propriedade excedente.
+     * Um agente de função criado pela API saía como agente de modelo, sem erro nenhum, e
+     * só se descobria na primeira execução.
+     */
+    executorKind?: ExecutorKind
+    responseMode?: ResponseMode
+    executorConfig?: ExecutorConfig
+    inputJsonSchema?: Record<string, unknown> | null
+    outputJsonSchema?: Record<string, unknown> | null
+    defaultOutputFormat?: 'text' | 'markdown' | 'json'
+    requireGrounding?: boolean
     delegationPolicy?: DelegationPolicy
     callerPolicy?: DelegationPolicy
     callableAgentIds?: string[]
@@ -780,6 +797,18 @@ export async function createAgent(
     activationModes: sanitizeActivationWrite(options.activationModes ?? ['manual', 'channel']).activationModes,
     inputContract: options.inputContract ?? '',
     outputContract: options.outputContract ?? '',
+    /**
+     * Só o que FOI ENVIADO. Um agente criado sem nenhum destes campos fica sem nenhum deles
+     * no banco — e `agentContractOf` o lê como `llm`/`text`, que é o que ele sempre foi.
+     * Gravar um padrão aqui criaria, em todo agente novo, um campo que ninguém pediu.
+     */
+    ...(options.executorKind !== undefined ? { executorKind: options.executorKind } : {}),
+    ...(options.responseMode !== undefined ? { responseMode: options.responseMode } : {}),
+    ...(options.executorConfig !== undefined ? { executorConfig: options.executorConfig } : {}),
+    ...(options.inputJsonSchema !== undefined ? { inputJsonSchema: options.inputJsonSchema } : {}),
+    ...(options.outputJsonSchema !== undefined ? { outputJsonSchema: options.outputJsonSchema } : {}),
+    ...(options.defaultOutputFormat !== undefined ? { defaultOutputFormat: options.defaultOutputFormat } : {}),
+    ...(options.requireGrounding !== undefined ? { requireGrounding: options.requireGrounding } : {}),
     callableAgentIds: options.callableAgentIds ?? [],
     callableSectorIds: options.callableSectorIds ?? [],
     toolIds: options.toolIds ?? [],
@@ -844,6 +873,18 @@ export async function updateAgent(
     capabilities?: string[]
     activationModes?: ActivationMode[]
     inputContract?: string
+    /**
+     * O contrato, DECLARADO.
+     *
+     * O `$set` grava o que receber, então estes campos já chegavam ao banco — por acidente
+     * do espalhamento, não por decisão. Declará-los é o que faz o compilador cobrar o tipo
+     * certo, e o que impede o próximo campo de contrato de depender da mesma sorte.
+     */
+    executorKind?: ExecutorKind
+    responseMode?: ResponseMode
+    executorConfig?: ExecutorConfig
+    inputJsonSchema?: Record<string, unknown> | null
+    outputJsonSchema?: Record<string, unknown> | null
     outputContract?: string
     delegationPolicy?: DelegationPolicy
     callerPolicy?: DelegationPolicy

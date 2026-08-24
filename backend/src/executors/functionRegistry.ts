@@ -17,8 +17,24 @@
 // escolheu o código". Aqui, sempre quem escreveu o repositório.
 import { validateAgainstSchema, describeErrors } from '../jsonSchema.js'
 
-/** O que roda de fato. Recebe dado validado e devolve dado — sem rede por padrão. */
-export type FunctionHandler = (input: Record<string, unknown>) => Promise<unknown> | unknown
+/**
+ * O que roda de fato. Recebe dado validado e devolve dado — sem rede por padrão.
+ *
+ * `config` são os PARÂMETROS que o dono fixou no agente (uma moeda, um arredondamento, um
+ * limite). Dados, nunca segredo: uma credencial aqui ficaria em texto claro no documento
+ * do agente, e um documento vazado viraria acesso vazado. O executor recusa chaves que
+ * pareçam credencial antes de chamar o handler.
+ *
+ * SOBRE O TETO DE TEMPO: ele corre num `setTimeout` do mesmo processo. Isso interrompe a
+ * ESPERA por uma promessa, não a CPU de um laço síncrono — um handler que trava o event
+ * loop trava o servidor inteiro, e nenhum timeout aqui salva. Handler registrado é código
+ * deste repositório justamente por isso: mantenha-o não bloqueante, e o trabalho pesado
+ * atrás de um adaptador (ver `FunctionAdapter`), em outro processo.
+ */
+export type FunctionHandler = (
+  input: Record<string, unknown>,
+  config?: Record<string, unknown>,
+) => Promise<unknown> | unknown
 
 export interface RegisteredFunction {
   /** A chave que o agente guarda. Estável: mudá-la quebra os agentes que a usam. */

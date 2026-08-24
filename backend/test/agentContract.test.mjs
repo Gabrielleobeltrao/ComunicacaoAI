@@ -111,9 +111,34 @@ test('configuração que declara OUTRO tipo é ambígua — e recusada', () => {
 })
 
 test('sem `executorKind` no corpo, vale o que já está gravado', () => {
-  const r = parseAgentContract({ executorConfig: { functionName: 'somar' } }, { executorKind: 'function' })
+  // A função precisa EXISTIR: o contrato de um agente de função vem do registro, e um nome
+  // inventado passaria pela API para falhar na primeira execução.
+  const r = parseAgentContract({ executorConfig: { functionName: 'math.summary' } }, { executorKind: 'function' })
   assert.equal(r.error, undefined)
-  assert.equal(r.fields.executorConfig.functionName, 'somar')
+  assert.equal(r.fields.executorConfig.functionName, 'math.summary')
+})
+
+test('função que não está no registro é recusada na gravação', () => {
+  const r = parseAgentContract({ executorConfig: { functionName: 'somar' } }, { executorKind: 'function' })
+  assert.match(r.error, /não está disponível/)
+})
+
+test('o contrato de uma função vem do REGISTRO, não do que o cliente mandou', () => {
+  // Duas verdades sobre o que a função aceita começam iguais e divergem na primeira
+  // mudança — e a errada é descoberta em produção, recusando entrada boa ou aceitando má.
+  const r = parseAgentContract({
+    executorKind: 'function',
+    executorConfig: { kind: 'function', functionName: 'math.summary' },
+    inputJsonSchema: { type: 'object', properties: { inventado: { type: 'string' } } },
+    outputJsonSchema: { type: 'object', properties: { tambemInventado: { type: 'string' } } },
+  })
+  assert.equal(r.error, undefined)
+  assert.ok(!('inventado' in r.fields.inputJsonSchema.properties), 'o schema do cliente não pode vencer o do registro')
+  assert.ok('values' in r.fields.inputJsonSchema.properties)
+  assert.ok('sum' in r.fields.outputJsonSchema.properties)
+  // Versão e capacidades também: são da função, não do formulário.
+  assert.ok(r.fields.executorConfig.version)
+  assert.ok(Array.isArray(r.fields.capabilities))
 })
 
 test('executorConfig que não é objeto é recusado', () => {
@@ -134,7 +159,17 @@ test('payload SEM nenhum campo novo não grava nenhum campo novo', () => {
 test('os valores aceitos são exatamente os do desenho', () => {
   assert.deepEqual([...EXECUTOR_KINDS], ['llm', 'function', 'tool'])
   assert.deepEqual([...RESPONSE_MODES], ['structured', 'text', 'structured_and_text'])
-  for (const k of EXECUTOR_KINDS) assert.equal(parseAgentContract({ executorKind: k }).error, undefined)
+  // `llm` sozinho é completo: ele não tem configuração própria.
+  assert.equal(parseAgentContract({ executorKind: 'llm' }).error, undefined)
+  /**
+   * Os outros dois NÃO são completos sozinhos.
+   *
+   * `executorKind: 'function'` sem função é uma promessa sem cumprimento: gravava um
+   * agente que aparecia configurado na tela e falhava na primeira execução com "não
+   * configurado" — longe daqui, e sem nada que apontasse para o pedido que o criou.
+   */
+  assert.match(parseAgentContract({ executorKind: 'function' }).error, /functionName is required/)
+  assert.match(parseAgentContract({ executorKind: 'tool' }).error, /requires toolId/)
   assert.match(parseAgentContract({ executorKind: 'executionMode' }).error, /executorKind must be one of/)
 })
 

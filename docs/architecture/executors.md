@@ -98,6 +98,21 @@ resolve bindings → valida contra inputJsonSchema → [NÃO EXECUTA se falhar]
 Um campo declarado e não entregue **para** a tarefa: seguir sem ele é entregar a
 prosa ao agente e deixá-lo deduzir o número.
 
+### O teto de tempo NÃO cancela CPU síncrona
+
+`timeoutMs` corre num `setTimeout` do mesmo processo. Isso interrompe a **espera** por uma
+promessa — não a CPU de um laço síncrono. Um handler que trava o event loop trava o
+servidor inteiro, e nenhum timeout aqui salva ninguém.
+
+É por isso que handler registrado é código deste repositório, revisado como qualquer
+outro. Ao escrever um:
+
+- mantenha-o não bloqueante: nada de laço sobre entrada de tamanho arbitrário, nada de
+  regex com retrocesso exponencial, nada de `while` esperando condição;
+- confie no teto de entrada (256k) e no schema para limitar o trabalho, não no timeout;
+- trabalho pesado vai para **outro processo**, atrás de um `FunctionAdapter` — lá o
+  timeout vale, porque o que se cancela é uma espera de rede.
+
 ## Criar uma nova função registrada
 
 Uma função é código deste repositório. O agente guarda o NOME; o corpo vive no
@@ -119,10 +134,18 @@ registerFunction({
     properties: { margem: { type: 'number' } },
     required: ['margem'],
   },
-  handler: ({ receita, custo }) => ({ margem: ((receita - custo) / receita) * 100 }),
+  // `config` são os PARÂMETROS que o dono fixou no agente (uma moeda, um arredondamento).
+  // Dados, nunca segredo: o executor recusa chaves que pareçam credencial antes de chamar.
+  handler: ({ receita, custo }, config) => ({
+    margem: Number((((receita - custo) / receita) * 100).toFixed(Number(config?.casas ?? 2))),
+  }),
   timeoutMs: 5_000,                    // obrigatório: sem teto é uma execução que pode não terminar
 })
 ```
+
+O contrato do AGENTE é derivado daqui. Ao escolher esta função no formulário, o servidor
+grava `inputJsonSchema`, `outputJsonSchema`, a versão e as capacidades a partir do
+registro, e ignora o que o cliente enviar. Uma verdade só.
 
 Regras que o registro impõe (`assertRegistryIsSound`):
 
@@ -171,6 +194,9 @@ Ao implementar um, mantenha:
 | gramática de bindings sem expressão | `sectorPlanner.ts` | o plano é escrito por um modelo a partir de texto de qualquer pessoa |
 | `__proto__`/`prototype`/`constructor` recusados | parse, compilação, runtime e sanitização | poluição de protótipo |
 | teto de tempo obrigatório por função | `functionRegistry.ts` | execução que não termina |
+| teto de tamanho da entrada (256k) | `functionExecutor.ts` | o validador percorre a estrutura inteira antes de recusar |
+| `config` sem chave que pareça credencial | `functionExecutor.ts` | ela ficaria em texto claro no documento do agente |
+| ação de App por correspondência EXATA | `toolExecutor.ts` | "a primeira ação" executaria `apagar` no lugar de `criar` |
 | escopo de dono em ferramenta e agente | `getToolsByIds`, `resolveGrant`, membros do setor | um agente de outra conta não existe para este |
 | credencial só na instalação cifrada | `resolveGrant` | um documento de agente vazado não vira acesso vazado |
 | erro sem stack nem mensagem crua | executores | caminho de arquivo e valor de variável não saem |

@@ -270,6 +270,37 @@ test('a escolha completa é gravada — tipo, referência e modo de resposta', a
   expect(corpo.executorConfig).toEqual({ kind: 'function', functionName: 'math.summary', version: '1.0.0' })
 })
 
+test('escolher a função PREENCHE o contrato — e ele fica somente leitura', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+  await page.getByTestId('function-option-math.summary').click()
+  await abrirContrato(page)
+
+  // Quem escolhe uma função não deveria copiar o contrato dela à mão: o servidor já sabe
+  // qual é, e vai sobrescrever o que for enviado. Preencher aqui é mostrar antes o que vai
+  // valer, em vez de deixar descobrir depois de salvar.
+  await expect(page.getByTestId('input-json-schema')).toHaveValue(/values/)
+  await expect(page.getByTestId('output-json-schema')).toHaveValue(/sum/)
+  // Editável, criaria duas verdades sobre o que a função aceita — a do formulário e a do
+  // código que roda. Elas começam iguais e divergem na primeira mudança.
+  await expect(page.getByTestId('input-json-schema')).toHaveAttribute('readonly', '')
+  await expect(page.getByTestId('input-json-schema-readonly')).toContainText('duas verdades')
+})
+
+test('uma ação de App sem contrato de saída avisa em vez de prometer', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-tool').click()
+  await page.getByTestId('tool-app').selectOption('agenda')
+  await page.getByTestId('tool-action').selectOption('criar_evento')
+  // O contrato de ENTRADA vem da ação; o de saída, não — e dizer isso é mais barato do
+  // que deixar descobrir na primeira execução.
+  await abrirContrato(page)
+  await expect(page.getByTestId('input-json-schema')).toHaveValue(/titulo/)
+  await expect(page.getByTestId('tool-no-output-contract')).toContainText('não pode servir de contrato estruturado')
+})
+
 test('o contrato é conferido pelo CAMINHO, e o incoerente não salva', async ({ page }) => {
   await stubApi(page, agenteBase())
   await abrirAvancado(page)

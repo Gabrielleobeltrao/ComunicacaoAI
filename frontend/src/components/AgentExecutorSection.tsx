@@ -49,10 +49,19 @@ export function AgentExecutorSection({
   draft,
   onChange,
   disabled,
+  onContractDerived,
 }: {
   draft: ExecutorDraft
   onChange: (d: ExecutorDraft) => void
   disabled?: boolean
+  /**
+   * Os schemas que a escolha IMPLICA.
+   *
+   * Quem escolhe uma função não deveria precisar copiar o contrato dela à mão: o servidor
+   * já sabe qual é, e vai sobrescrever o que for enviado. Preencher aqui é mostrar antes o
+   * que vai valer, em vez de deixar o dono descobrir depois de salvar.
+   */
+  onContractDerived?: (c: { inputJsonSchema: Record<string, unknown> | null; outputJsonSchema: Record<string, unknown> | null }) => void
 }) {
   const [funcoes, setFuncoes] = useState<CatalogFunction[]>([])
   const [acoes, setAcoes] = useState<CatalogAction[]>([])
@@ -164,7 +173,10 @@ export function AgentExecutorSection({
               <li key={f.functionName}>
                 <button
                   type="button"
-                  onClick={() => set({ functionName: f.functionName, functionVersion: f.version })}
+                  onClick={() => {
+                    set({ functionName: f.functionName, functionVersion: f.version })
+                    onContractDerived?.({ inputJsonSchema: f.inputSchema, outputJsonSchema: f.outputSchema })
+                  }}
                   aria-pressed={draft.functionName === f.functionName}
                   className={`w-full rounded-md border p-2 text-left ${
                     draft.functionName === f.functionName ? 'border-(--border-focus)' : 'border-transparent hover:border-(--border-subtle)'
@@ -232,7 +244,13 @@ export function AgentExecutorSection({
               <select
                 id="tool-action"
                 value={draft.actionKey}
-                onChange={(e) => set({ actionKey: e.target.value })}
+                onChange={(e) => {
+                  set({ actionKey: e.target.value })
+                  const acao = acoesDoApp.find((a) => a.actionKey === e.target.value)
+                  // A ação declara o que RECEBE. O que ela devolve é o corpo de um
+                  // terceiro, e o manifesto quase nunca sabe a forma dele.
+                  onContractDerived?.({ inputJsonSchema: acao?.inputSchema ?? null, outputJsonSchema: null })
+                }}
                 className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                 data-testid="tool-action"
               >
@@ -253,6 +271,15 @@ export function AgentExecutorSection({
               <p className="mt-1">{acaoEscolhida.description}</p>
               <p className="mt-1">Recebe: {campos(acaoEscolhida.inputSchema) || '—'}</p>
               {/* A credencial vive na conexão, cifrada. Ela não passa por esta tela. */}
+              {/*
+                Sem contrato de SAÍDA declarado, o modo estruturado é uma promessa que a
+                primeira resposta diferente desmente. Dizer isso aqui é mais barato do que
+                deixar descobrir na primeira execução.
+              */}
+              <p className="mt-1 text-(--text-faint)" data-testid="tool-no-output-contract">
+                Esta ação não declara o formato da resposta: a saída deste agente não pode servir de contrato estruturado enquanto isso
+                não for configurado no App.
+              </p>
               <p className="mt-1 text-(--text-faint)">A credencial fica na conexão do App e não aparece aqui.</p>
             </div>
           )}

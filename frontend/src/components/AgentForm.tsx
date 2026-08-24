@@ -1224,7 +1224,15 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               trabalha": é uma exceção deliberada, não um passo da configuração. */}
           {showBlock('executor') && (
             <CollapsibleBlock title="Como este agente executa" showHeader={stacked} testId="agent-executor-block" defaultOpen>
-              <AgentExecutorSection draft={executor} onChange={setExecutor} />
+              <AgentExecutorSection
+                draft={executor}
+                onChange={setExecutor}
+                onContractDerived={(c) => {
+                  // O que o servidor vai gravar de qualquer jeito, mostrado antes de salvar.
+                  setEditInputJsonSchema(c.inputJsonSchema ? JSON.stringify(c.inputJsonSchema, null, 2) : '')
+                  setEditOutputJsonSchema(c.outputJsonSchema ? JSON.stringify(c.outputJsonSchema, null, 2) : '')
+                }}
+              />
               {problemasDeSalvamento.length > 0 && (
                 <ul className="mt-2 space-y-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid="executor-problems">
                   {problemasDeSalvamento.map((p) => (
@@ -1693,6 +1701,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                 value={editInputJsonSchema}
                 onChange={setEditInputJsonSchema}
                 testId="input-json-schema"
+                readOnly={executor.kind === 'function'}
+                readOnlyReason="O contrato vem da função registrada no servidor — que é quem executa. Editá-lo aqui criaria duas verdades sobre o que ela aceita."
               />
               <div>
                 <label className="mb-1 block text-sm text-(--text-muted)" htmlFor="default-output-format">
@@ -1711,7 +1721,12 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                   <option value="json">JSON</option>
                 </select>
               </div>
-              {(editDefaultOutputFormat === 'json' || executor.responseMode !== 'text') && (
+              {/*
+                Aparece quando alguém pede dado — ou quando JÁ EXISTE um contrato de saída.
+                Um agente de função tem o dele derivado do registro no momento da escolha, e
+                escondê-lo até o modo mudar faria o dono achar que não há contrato nenhum.
+              */}
+              {(editDefaultOutputFormat === 'json' || executor.responseMode !== 'text' || editOutputJsonSchema.trim() !== '') && (
                 <div>
                   <JsonSchemaEditor
                     label="O que ele promete devolver (JSON Schema)"
@@ -1719,6 +1734,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                     value={editOutputJsonSchema}
                     onChange={setEditOutputJsonSchema}
                     testId="output-json-schema"
+                    readOnly={executor.kind === 'function'}
+                    readOnlyReason="O contrato de saída também é da função registrada."
                   />
                 </div>
               )}
