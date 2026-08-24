@@ -4,6 +4,8 @@ import { executeToolCall } from './toolExecution.js'
 import { MASKED_HEADER_VALUE, pullToolFromAgents, toPublicAgent } from './agents.js'
 import { resolveWidgetDestination } from './widgetDestination.js'
 import { webChatAccessFor } from './apps/publicChannelAccess.js'
+import { listPublicFunctions } from './executors/functionRegistry.js'
+import { listAppsForOwner } from './apps/privateApps.js'
 import { resolveRuntimeDestination } from './widgetRuntimeDestination.js'
 import { listWidgetsBySector } from './widgets.js'
 import { readiness, startEmbeddedEngine, stopEmbeddedEngine } from './automations/engine.js'
@@ -462,6 +464,37 @@ app.get('/api/settings/embeddings', requireAuth, async (_req, res) => {
  * Os números são desta INSTALAÇÃO. Se a mesma chave for usada em outro lugar, aquelas
  * chamadas não passam por aqui e este contador não as conhece — a tela diz isso.
  */
+/**
+ * O que um agente PODE ser configurado para executar.
+ *
+ * Só leitura, e só o que descreve: nome, versão, descrição, competências e os schemas de
+ * entrada e saída. O `handler` é código e não sai daqui; nenhuma credencial passa por
+ * aqui, nem o nome de uma.
+ *
+ * As ações de App vêm do catálogo já resolvido para ESTE dono, com o mesmo escopo que o
+ * resto do sistema usa — um App privado de outra conta não aparece.
+ */
+app.get('/api/executors/catalog', requireAuth, async (_req, res) => {
+  const funcoes = listPublicFunctions()
+  const apps = await listAppsForOwner(res.locals.userId).catch(() => [])
+  res.json({
+    functions: funcoes,
+    // Referência apenas: chave do App e chave da ação. Quem autoriza continua sendo o
+    // grant do agente, não esta lista.
+    actions: apps.flatMap((app) =>
+      (app.actions ?? []).map((a) => ({
+        appKey: app.key,
+        appName: app.name,
+        actionKey: a.key,
+        name: a.name,
+        description: a.description,
+        risk: a.risk,
+        inputSchema: a.inputSchema,
+      })),
+    ),
+  })
+})
+
 app.get('/api/settings/web-search', requireAuth, async (_req, res) => {
   const provider = configuredProviderName()
   const cfg = searchBudgetConfig()
