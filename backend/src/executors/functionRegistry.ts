@@ -45,6 +45,17 @@ export interface RegisteredFunction {
   capabilities: string[]
   inputSchema: Record<string, unknown>
   outputSchema: Record<string, unknown>
+  /**
+   * Os PARÂMETROS que o dono pode fixar — declarados, e por isso geráveis como formulário.
+   *
+   * Sem isto a única forma de oferecer `config` seria um editor JSON livre: o dono digita
+   * o que quiser, o handler recebe o que vier, e nada diz quais campos existem. Com o
+   * schema, a tela mostra os campos certos e o servidor recusa o resto.
+   *
+   * Só tipos simples, e nunca segredo: uma credencial aqui ficaria em texto claro no
+   * documento do agente. Credencial vive na conexão do App.
+   */
+  configSchema?: Record<string, unknown>
   handler: FunctionHandler
   /** Teto de tempo. Uma função sem teto é uma execução que pode não terminar. */
   timeoutMs: number
@@ -105,6 +116,8 @@ export interface PublicFunction {
   capabilities: string[]
   inputSchema: Record<string, unknown>
   outputSchema: Record<string, unknown>
+  /** Os parâmetros configuráveis. Ausente = a função não aceita nenhum. */
+  configSchema: Record<string, unknown> | null
   timeoutMs: number
   metadata: Record<string, string>
 }
@@ -118,6 +131,7 @@ export const listPublicFunctions = (): PublicFunction[] =>
       capabilities: f.capabilities,
       inputSchema: f.inputSchema,
       outputSchema: f.outputSchema,
+      configSchema: f.configSchema ?? null,
       timeoutMs: f.timeoutMs,
       metadata: f.metadata ?? {},
     }))
@@ -159,14 +173,26 @@ registerFunction({
     required: ['count', 'sum', 'average', 'min', 'max'],
   },
   timeoutMs: 2_000,
-  handler: (input) => {
+  /**
+   * Um parâmetro de verdade, para o formulário gerado ter o que mostrar — e para o caminho
+   * `config` ficar exercitado por uma função que existe, e não só por teste.
+   */
+  configSchema: {
+    type: 'object',
+    properties: {
+      decimals: { type: 'integer', minimum: 0, maximum: 6, description: 'Casas decimais da média' },
+    },
+  },
+  handler: (input, config) => {
+    const casas = typeof config?.decimals === 'number' ? config.decimals : null
     const values = (input.values as number[]) ?? []
     if (values.length === 0) return { count: 0, sum: 0, average: 0, min: 0, max: 0 }
     const sum = values.reduce((a, b) => a + b, 0)
+    const media = sum / values.length
     return {
       count: values.length,
       sum,
-      average: sum / values.length,
+      average: casas === null ? media : Number(media.toFixed(casas)),
       min: Math.min(...values),
       max: Math.max(...values),
     }
@@ -192,6 +218,11 @@ registerFunction({
 })
 
 /** Conferência de contrato: uma função cujo schema não valida seria um contrato de mentira. */
+/** Os tipos que o formulário gerado sabe desenhar. Prometer mais seria prometer o que não há. */
+const TIPOS_DE_CONFIG = new Set(['string', 'number', 'integer', 'boolean'])
+/** A mesma peneira de nomes do executor: parâmetro não é lugar de credencial. */
+const CONFIG_PROIBIDA = /(authorization|api[-_]?key|apikey|token|secret|password|senha|credential|cookie|private[-_]?key)/i
+
 export function assertRegistryIsSound(): void {
   for (const f of registro.values()) {
     for (const [nome, schema] of [
@@ -203,6 +234,23 @@ export function assertRegistryIsSound(): void {
       // interessa aqui é que ele consiga ser interpretado.
       if (r.errors.some((e) => /schema/i.test(e.message))) {
         throw new Error(`${f.functionName}: ${nome} inválido — ${describeErrors(r.errors)}`)
+      }
+    }
+    /**
+     * O `configSchema` gera um FORMULÁRIO, e um formulário só desenha o que ele sabe
+     * desenhar. Um tipo fora da lista viraria um campo em branco na tela; um nome que
+     * pareça credencial viraria uma credencial em texto claro no documento do agente.
+     */
+    if (f.configSchema) {
+      const props = (f.configSchema as { properties?: Record<string, unknown> }).properties ?? {}
+      for (const [campo, def] of Object.entries(props)) {
+        if (CONFIG_PROIBIDA.test(campo)) {
+          throw new Error(`${f.functionName}: configSchema.${campo} parece uma credencial — credenciais ficam na conexão do App.`)
+        }
+        const tipo = (def as { type?: unknown })?.type
+        if (typeof tipo !== 'string' || !TIPOS_DE_CONFIG.has(tipo)) {
+          throw new Error(`${f.functionName}: configSchema.${campo} usa o tipo "${String(tipo)}", que o formulário não desenha.`)
+        }
       }
     }
   }

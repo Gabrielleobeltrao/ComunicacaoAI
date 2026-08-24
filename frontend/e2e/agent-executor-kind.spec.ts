@@ -29,6 +29,7 @@ const CATALOGO = {
       capabilities: ['calculo'],
       inputSchema: { type: 'object', properties: { values: { type: 'array' } }, required: ['values'] },
       outputSchema: { type: 'object', properties: { sum: { type: 'number' } }, required: ['sum'] },
+      configSchema: { type: 'object', properties: { decimals: { type: 'integer', minimum: 0, maximum: 6, description: 'Casas decimais da média' } } },
       timeoutMs: 5000,
     },
     {
@@ -42,7 +43,8 @@ const CATALOGO = {
     },
   ],
   actions: [
-    { appKey: 'agenda', appName: 'Agenda', actionKey: 'criar_evento', name: 'Criar evento', description: 'Cria um evento', risk: 'write', inputSchema: { type: 'object', properties: { titulo: { type: 'string' } }, required: ['titulo'] } },
+    { appKey: 'agenda', appName: 'Agenda', actionKey: 'criar_evento', name: 'Criar evento', description: 'Cria um evento', risk: 'write', inputSchema: { type: 'object', properties: { titulo: { type: 'string' } }, required: ['titulo'] }, outputSchema: null },
+    { appKey: 'agenda', appName: 'Agenda', actionKey: 'buscar_evento', name: 'Buscar evento', description: 'Busca um evento', risk: 'read', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] }, outputSchema: { type: 'object', properties: { titulo: { type: 'string' }, quando: { type: 'string' } }, required: ['titulo'] } },
     { appKey: 'naoconectado', appName: 'App Sem Conexão', actionKey: 'algo', name: 'Fazer algo', description: '', risk: 'read', inputSchema: null },
   ],
 }
@@ -298,7 +300,9 @@ test('uma ação de App sem contrato de saída avisa em vez de prometer', async 
   // que deixar descobrir na primeira execução.
   await abrirContrato(page)
   await expect(page.getByTestId('input-json-schema')).toHaveValue(/titulo/)
-  await expect(page.getByTestId('tool-no-output-contract')).toContainText('não pode servir de contrato estruturado')
+  // A frase mudou de tom junto com o comportamento: antes o modo estruturado era oferecido
+  // e avisado; agora ele nem aparece, e o texto diz o que de fato acontece.
+  await expect(page.getByTestId('tool-no-output-contract')).toContainText('fica como texto')
 })
 
 test('o contrato é conferido pelo CAMINHO, e o incoerente não salva', async ({ page }) => {
@@ -312,4 +316,90 @@ test('o contrato é conferido pelo CAMINHO, e o incoerente não salva', async ({
 
   await editor.fill('{"type":"object","properties":{"cnpj":{"type":"string"}},"required":["cnpj"]}')
   await expect(page.getByTestId('input-json-schema-summary')).toContainText('obrigatório')
+})
+
+
+// --- o painel minimalista: só o que o tipo escolhido usa ------------------------------------
+
+test('o resumo compacto responde as três perguntas de quem abre a tela', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await expect(page.getByTestId('executor-summary')).toContainText('Executa por: IA')
+
+  await page.getByTestId('executor-kind-function').click()
+  // Ainda sem função escolhida: a pendência aparece no resumo, não escondida três blocos
+  // abaixo.
+  await expect(page.getByTestId('executor-summary-pending')).toContainText('Escolha a função')
+
+  await page.getByTestId('function-option-math.summary').click()
+  await expect(page.getByTestId('executor-summary')).toContainText('Executa por: Função')
+  await expect(page.getByTestId('executor-summary')).toContainText('Entrada válida')
+  await expect(page.getByTestId('executor-summary')).toContainText('Saída: Dados')
+  await expect(page.getByTestId('executor-summary-pending')).toHaveCount(0)
+})
+
+test('uma função só pode devolver DADOS — as outras opções somem', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+  await page.getByTestId('function-option-math.summary').click()
+
+  // Oferecer "Texto" para uma função é deixar escolher uma promessa que o servidor desfaz
+  // por baixo — a tela mostraria uma coisa e o agente faria outra.
+  await expect(page.getByTestId('response-mode-structured')).toBeVisible()
+  await expect(page.getByTestId('response-mode-text')).toHaveCount(0)
+  await expect(page.getByTestId('response-mode-structured_and_text')).toHaveCount(0)
+  await expect(page.getByTestId('response-mode-forced')).toContainText('encadeie um agente de IA')
+})
+
+test('os parâmetros da função viram um formulário pequeno — nunca um editor JSON', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+  await page.getByTestId('function-option-math.summary').click()
+
+  const config = page.getByTestId('function-config')
+  await expect(config).toContainText('Casas decimais')
+  // Livre, o dono digita o que quiser e nada diz quais campos existem — e é onde uma
+  // credencial acaba parando.
+  await expect(config.locator('textarea')).toHaveCount(0)
+  await config.getByTestId('function-config-decimals').fill('2')
+
+  await expect.poll(() => patches.filter((p) => 'executorConfig' in p).length, { timeout: 10_000 }).toBeGreaterThan(0)
+  const corpo = patches.filter((p) => 'executorConfig' in p).at(-1)!
+  expect((corpo.executorConfig as Record<string, unknown>).config).toEqual({ decimals: 2 })
+})
+
+test('a função não mostra provedor, modelo, estilo nem ferramentas', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+  for (const bloco of ['Modelo e custo', 'Modelo e execução', 'Estilo de resposta', 'Memória']) {
+    await expect(page.getByText(bloco, { exact: false })).toHaveCount(0)
+  }
+})
+
+test('uma ação COM contrato de saída pode devolver dados — e não mostra o aviso', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-tool').click()
+  await page.getByTestId('tool-app').selectOption('agenda')
+  await page.getByTestId('tool-action').selectOption('buscar_evento')
+
+  await expect(page.getByTestId('tool-detail')).toContainText('Devolve: titulo*, quando')
+  // O aviso com o schema presente ensinaria o contrário do que o sistema faz.
+  await expect(page.getByTestId('tool-no-output-contract')).toHaveCount(0)
+  await expect(page.getByTestId('response-mode-structured')).toBeVisible()
+})
+
+test('uma ação SEM contrato de saída fica em texto, e diz por quê', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-tool').click()
+  await page.getByTestId('tool-app').selectOption('agenda')
+  await page.getByTestId('tool-action').selectOption('criar_evento')
+
+  await expect(page.getByTestId('tool-no-output-contract')).toContainText('fica como texto')
+  await expect(page.getByTestId('response-mode-structured')).toHaveCount(0)
+  await expect(page.getByTestId('executor-summary')).toContainText('Saída: Texto')
 })

@@ -17,6 +17,7 @@ const draft = (over: Partial<ExecutorDraft> = {}): ExecutorDraft => ({
   appKey: '',
   actionKey: '',
   responseMode: 'text',
+  config: {},
   ...over,
 })
 

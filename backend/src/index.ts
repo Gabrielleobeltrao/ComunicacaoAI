@@ -513,11 +513,29 @@ async function derivarContratoDeFerramenta(
 async function aplicarContratoDeFerramenta(
   ownerId: string,
   campos: { executorKind?: string; executorConfig?: unknown; inputJsonSchema?: unknown; outputJsonSchema?: unknown },
+  /**
+   * O tipo que o agente JÁ TEM.
+   *
+   * Num PATCH parcial o cliente manda só a ação nova, sem repetir `executorKind` — e sem
+   * isto a derivação não reconhecia um agente de ferramenta, deixava o contrato antigo no
+   * lugar e o agente passava a executar uma ação com o schema de outra.
+   */
+  tipoGravado?: string,
 ): Promise<{ error?: string; warning?: string }> {
-  const r = await derivarContratoDeFerramenta(ownerId, campos as Parameters<typeof derivarContratoDeFerramenta>[1])
+  const efetivo = { ...campos, executorKind: campos.executorKind ?? tipoGravado }
+  const r = await derivarContratoDeFerramenta(ownerId, efetivo as Parameters<typeof derivarContratoDeFerramenta>[1])
   if (r.error) return { error: r.error }
   if (r.inputJsonSchema) campos.inputJsonSchema = r.inputJsonSchema
   if (r.outputJsonSchema !== undefined) campos.outputJsonSchema = r.outputJsonSchema
+  /**
+   * Sem contrato de saída declarado, o modo estruturado é impossível.
+   *
+   * Corrigir aqui em vez de recusar: quem trocou de ação não escolheu perder o modo, e uma
+   * recusa faria a edição falhar por uma consequência que ninguém pediu. A tela explica.
+   */
+  if (r.inputJsonSchema && !r.outputJsonSchema) {
+    ;(campos as { responseMode?: string }).responseMode = 'text'
+  }
   return r.warning ? { warning: r.warning } : {}
 }
 
@@ -537,6 +555,9 @@ app.get('/api/executors/catalog', requireAuth, async (_req, res) => {
         description: a.description,
         risk: a.risk,
         inputSchema: a.inputSchema,
+        // O que a ação DEVOLVE, quando ela sabe dizer. Sem isto a tela não tinha como
+        // saber se o modo estruturado vale, e avisava que não valia mesmo quando valia.
+        outputSchema: a.outputSchema ?? null,
       })),
     ),
   })
@@ -871,6 +892,24 @@ async function resolverDestinoDoWidget(
   if (temAgente) {
     const { agentObjectId, error } = await resolveOwnedAgentId(ownerId, entrada.agentId)
     if (error || !agentObjectId) return { ok: false, status: 400, code: 'invalid_agent', error: error ?? 'Agent not found' }
+    /**
+     * Um chat é uma CONVERSA. Quem não conversa não pode ser ligado a um.
+     *
+     * O runtime já se recusava a responder, e essa recusa acontecia tarde: o vínculo era
+     * salvo, o chat montava, o visitante escrevia e ninguém respondia. Quem configurou não
+     * ficava sabendo, e quem escreveu ficava esperando. A hora de recusar é agora, com a
+     * frase que diz como consertar.
+     */
+    const alvo = await getAgentById(ownerId, agentObjectId)
+    const tipo = agentContractOf(alvo).executorKind
+    if (alvo && tipo !== 'llm') {
+      return {
+        ok: false,
+        status: 400,
+        code: 'agent_not_conversational',
+        error: `"${alvo.name}" executa por ${tipo === 'function' ? 'função' : 'App/ferramenta'} e não conversa. Ligue um agente de IA a este chat — este aqui continua disponível em rotinas, gatilhos, setores e no teste.`,
+      }
+    }
     const veredito = resolveWidgetDestination({ agentId: agentObjectId, agentPresent: true })
     if (!veredito.ok) return { ok: false, status: 400, code: veredito.code, error: veredito.reason! }
     // Trocar de destino LIMPA o outro lado, e é por isso que os dois campos vêm daqui.
@@ -2642,7 +2681,7 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
       ),
     )
   }
-  const derivadoNaEdicao = await aplicarContratoDeFerramenta(res.locals.userId, modelFields)
+  const derivadoNaEdicao = await aplicarContratoDeFerramenta(res.locals.userId, modelFields, gravado?.executorKind)
   if (derivadoNaEdicao.error) {
     res.status(400).json({ error: derivadoNaEdicao.error })
     return

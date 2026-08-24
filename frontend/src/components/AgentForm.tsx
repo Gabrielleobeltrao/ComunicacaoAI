@@ -322,6 +322,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     appKey: '',
     actionKey: '',
     responseMode: 'text',
+    config: {},
   })
   const [editRequireGrounding, setEditRequireGrounding] = useState(false)
 
@@ -403,6 +404,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       appKey: c?.executorConfig?.kind === 'tool' ? (c.executorConfig.appKey ?? '') : '',
       actionKey: c?.executorConfig?.kind === 'tool' ? (c.executorConfig.actionKey ?? '') : '',
       responseMode: c?.responseMode ?? 'text',
+      config: c?.executorConfig?.kind === 'function' ? ((c.executorConfig as { config?: Record<string, unknown> }).config ?? {}) : {},
     })
     setEditRequireGrounding(agent.requireGrounding === true)
       setEditBuiltinTools(agent.builtinTools ?? [])
@@ -653,7 +655,13 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       // depois e conclui que o agente chama uma função.
       executorConfig:
         executor.kind === 'function'
-          ? { kind: 'function' as const, functionName: executor.functionName, ...(executor.functionVersion ? { version: executor.functionVersion } : {}) }
+          ? {
+              kind: 'function' as const,
+              functionName: executor.functionName,
+              ...(executor.functionVersion ? { version: executor.functionVersion } : {}),
+              // Só quando há parâmetro: um objeto vazio gravado seria um campo que ninguém pediu.
+              ...(Object.keys(executor.config).length > 0 ? { config: executor.config } : {}),
+            }
           : executor.kind === 'tool'
             ? { kind: 'tool' as const, appKey: executor.appKey, actionKey: executor.actionKey }
             : { kind: 'llm' as const },
@@ -963,7 +971,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
    * Escondido, não apagado: o que já estava gravado continua gravado, e voltar o tipo para
    * "IA / LLM" traz tudo de volta como estava.
    */
-  const soDeModelo = new Set(['modelo', 'execucao', 'estilo', 'memoria', 'ferramentas', 'conhecimento'])
+  const soDeModelo = new Set(['modelo', 'execucao', 'estilo', 'memoria', 'ferramentas', 'conhecimento', 'guardrails', 'identificacao'])
   const showBlock = (block: string) => {
     if (executor.kind !== 'llm' && soDeModelo.has(block)) return false
     if (flat && section === 'como-trabalha') return blocosDoPapel.includes(block)
@@ -1684,6 +1692,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           </CollapsibleBlock>
         )}
 
+        {/*
+          Para função e ferramenta o contrato é DERIVADO e somente leitura: ele já aparece
+          resumido no bloco de execução, e o detalhe técnico fica aqui, recolhido, para
+          quem for conferir.
+        */}
         {showBlock('contrato') && (
           <CollapsibleBlock title="Contratos de entrada e saída" showHeader={stacked} testId="agent-contract-block">
             <div className="space-y-3 rounded-lg border border-(--border-subtle) p-3" data-testid="output-contract-block">

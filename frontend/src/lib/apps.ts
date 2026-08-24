@@ -216,6 +216,8 @@ export interface CatalogFunction {
   capabilities: string[]
   inputSchema: Record<string, unknown>
   outputSchema: Record<string, unknown>
+  /** Os parâmetros configuráveis, quando a função aceita algum. */
+  configSchema?: Record<string, unknown> | null
   timeoutMs: number
   metadata?: Record<string, string>
 }
@@ -228,6 +230,8 @@ export interface CatalogAction {
   description: string
   risk: string
   inputSchema?: Record<string, unknown> | null
+  /** O que a ação devolve. Ausente = a saída não serve de contrato estruturado. */
+  outputSchema?: Record<string, unknown> | null
 }
 
 export const listExecutorCatalog = () =>

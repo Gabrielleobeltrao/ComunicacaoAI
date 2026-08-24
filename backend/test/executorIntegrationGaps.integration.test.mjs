@@ -288,11 +288,33 @@ test('binding inválido NÃO devolve a tarefa para o modo legado', () => {
 
 // --- 6. structured_and_text honesto -------------------------------------------------------------------
 
-test('função marcada como "dados + texto" não devolve texto vazio como sucesso', async () => {
-  const { finishStep } = await import('../dist/executors/stepExecution.js')
-  const task = { id: 't1', agentId: 'a1', objective: 'x' }
+test('uma função NÃO PODE ser marcada como "dados + texto" — o modo é ajustado ao que ela faz', () => {
+  // Garantia mais forte que recusar a saída vazia: a promessa impossível deixa de existir.
+  // Uma função produz dado; prosa é trabalho de modelo, e a tela mostrava "Texto" para um
+  // agente que devolve dados.
   const passo = stepAgentOf('a1', { executorKind: 'function', responseMode: 'structured_and_text' })
-  const r = finishStep(task, passo, { ok: true, structured: { data: { a: 1 }, valid: true, repaired: false }, text: '', metadata: {}, telemetry: { durationMs: 1 } })
+  assert.equal(passo.contract.responseMode, 'structured')
+  // E a gravação recusa em voz alta, que é onde existe alguém para avisar.
+  assert.match(
+    parseAgentModelFields({
+      executorKind: 'function',
+      executorConfig: { kind: 'function', functionName: 'math.summary' },
+      responseMode: 'text',
+    }).error,
+    /precisa ser "structured"/,
+  )
+})
+
+test('quem PODE produzir texto e não produz não passa como sucesso completo', async () => {
+  const { finishStep } = await import('../dist/executors/stepExecution.js')
+  const passo = stepAgentOf('a1', { responseMode: 'structured_and_text' })
+  const r = finishStep({ id: 't1', agentId: 'a1', objective: 'x' }, passo, {
+    ok: true,
+    structured: { data: { a: 1 }, valid: true, repaired: false },
+    text: '',
+    metadata: {},
+    telemetry: { durationMs: 1 },
+  })
   assert.equal(r.ok, false)
   assert.match(r.error.message, /encadeie um agente de IA/)
 })
@@ -327,4 +349,84 @@ test('um agente de função nunca chega ao runtime de modelo, mesmo com ele inje
   assert.equal(r.ok, true)
   assert.equal(r.structured.data.sum, 6)
   assert.equal(r.telemetry.inputTokens, undefined, 'uma função não consome token')
+})
+
+// --- o modo que o executor CONSEGUE cumprir ----------------------------------------------
+
+test('uma ferramenta sem contrato de saída promete TEXTO, não dados', () => {
+  // Ela devolve o corpo de um terceiro, cuja forma o manifesto não controla. Prometer
+  // dados ali é um contrato que a primeira resposta diferente desmente.
+  const semSchema = stepAgentOf('t', { executorKind: 'tool', responseMode: 'structured' })
+  assert.equal(semSchema.contract.responseMode, 'text')
+
+  const comSchema = stepAgentOf('t', {
+    executorKind: 'tool',
+    responseMode: 'structured',
+    outputJsonSchema: { type: 'object', properties: { id: { type: 'string' } } },
+  })
+  assert.equal(comSchema.contract.responseMode, 'structured', 'com o formato declarado, o modo vale')
+})
+
+test('a conferência de entrada vale para TODO caminho, não só para o setor', async () => {
+  const agente = await criarFuncao('Conferido')
+  // Sem entrada nenhuma: o contrato exige `values`, e a recusa vem do dispatcher — que é
+  // por onde Playground, rotina, gatilho, delegação e setor passam.
+  const r = await dispatchAgentExecution(agente, { agentId: agente._id, ownerId: OWNER, objective: 'somar' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.kind, 'invalid_input')
+  assert.match(r.error.message, /values/)
+})
+
+test('os parâmetros são conferidos contra o schema da função na GRAVAÇÃO', () => {
+  const bom = parseAgentModelFields({
+    executorKind: 'function',
+    executorConfig: { kind: 'function', functionName: 'math.summary', config: { decimals: 2 } },
+  })
+  assert.equal(bom.error, undefined)
+  assert.deepEqual(bom.fields.executorConfig.config, { decimals: 2 })
+
+  // Um campo que a função não declara é ruído no documento do agente — e o campo extra de
+  // hoje é o que alguém tenta usar amanhã achando que vale. O validador já recusa por
+  // padrão, e é dele a mensagem: uma segunda regra aqui teria outra redação para o mesmo.
+  assert.match(
+    parseAgentModelFields({
+      executorKind: 'function',
+      executorConfig: { kind: 'function', functionName: 'math.summary', config: { inventado: 1 } },
+    }).error,
+    /inventado: campo não previsto/,
+  )
+  // Fora da faixa declarada.
+  assert.match(
+    parseAgentModelFields({
+      executorKind: 'function',
+      executorConfig: { kind: 'function', functionName: 'math.summary', config: { decimals: 99 } },
+    }).error,
+    /fora do contrato/,
+  )
+  // Uma função sem `configSchema` não aceita parâmetro nenhum.
+  assert.match(
+    parseAgentModelFields({
+      executorKind: 'function',
+      executorConfig: { kind: 'function', functionName: 'text.wordCount', config: { x: 1 } },
+    }).error,
+    /não aceita parâmetros/,
+  )
+})
+
+test('o parâmetro fixado muda o resultado da função de verdade', async () => {
+  const { fields } = parseAgentModelFields({
+    executorKind: 'function',
+    executorConfig: { kind: 'function', functionName: 'math.summary', config: { decimals: 1 } },
+  })
+  const agente = await createAgent(OWNER, ANDAR, 'Arredondado', fields)
+  const r = await dispatchAgentExecution(agente, { agentId: agente._id, ownerId: OWNER, objective: 'x', input: { values: [1, 2] } })
+  assert.equal(r.ok, true, JSON.stringify(r.error))
+  assert.equal(r.structured.data.average, 1.5)
+
+  const semConfig = await createAgent(OWNER, ANDAR, 'Cru', parseAgentModelFields({
+    executorKind: 'function',
+    executorConfig: { kind: 'function', functionName: 'math.summary' },
+  }).fields)
+  const r2 = await dispatchAgentExecution(semConfig, { agentId: semConfig._id, ownerId: OWNER, objective: 'x', input: { values: [1, 2, 2] } })
+  assert.equal(r2.structured.data.average, 5 / 3, 'sem parâmetro, nada é arredondado')
 })

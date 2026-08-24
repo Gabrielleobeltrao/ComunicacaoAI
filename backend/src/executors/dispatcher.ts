@@ -8,6 +8,7 @@
 // O executor de modelo é uma ADAPTAÇÃO do runtime que já existe: prompt, ferramentas,
 // repetição e cobrança continuam lá, e não há uma segunda cópia de nada disso aqui. O que
 // este arquivo faz é traduzir o resultado para o formato comum.
+import { describeErrors, validateAgainstSchema } from '../jsonSchema.js'
 import { agentContractOf } from './contract.js'
 import { executeRegisteredFunction } from './functionExecutor.js'
 import { executeAgentTool } from './toolExecutor.js'
@@ -62,26 +63,103 @@ export async function dispatchAgentExecution(
   const comecou = Date.now()
   const contrato = agentContractOf(agent)
 
+  /**
+   * A CONFERÊNCIA DE ENTRADA, aqui e em nenhum outro lugar.
+   *
+   * Ela existia só no caminho do setor. Playground, rotina, gatilho e delegação executavam
+   * sem conferir nada — e um agente com contrato declarado recebia o que viesse. Quatro
+   * lugares para a mesma regra é a garantia de que um deles vai ficar para trás; este é o
+   * ponto por onde todos passam.
+   */
+  const entradaRuim = conferirEntrada(contrato.inputJsonSchema, request.input)
+  if (entradaRuim) return falha('invalid_input', entradaRuim, comecou, { executorKind: contrato.executorKind })
+
+  let resultado: ExecutorResult
   if (contrato.executorKind === 'function') {
-    if (contrato.executorConfig.kind !== 'function') {
-      return semConfiguracao('function', comecou)
-    }
-    return executeRegisteredFunction(contrato.executorConfig, request.input)
+    if (contrato.executorConfig.kind !== 'function') return semConfiguracao('function', comecou)
+    resultado = await executeRegisteredFunction(contrato.executorConfig, request.input)
+  } else if (contrato.executorKind === 'tool') {
+    if (contrato.executorConfig.kind !== 'tool') return semConfiguracao('tool', comecou)
+    resultado = await executeAgentTool(agent, request.ownerId, contrato.executorConfig, request.input)
+  } else {
+    if (!deps.runLlm) return semConfiguracao('llm', comecou)
+    resultado = fromLlmResult(await deps.runLlm(request, agent), comecou)
   }
 
-  if (contrato.executorKind === 'tool') {
-    if (contrato.executorConfig.kind !== 'tool') {
-      return semConfiguracao('tool', comecou)
-    }
-    return executeAgentTool(agent, request.ownerId, contrato.executorConfig, request.input)
-  }
-
-  if (!deps.runLlm) {
-    return semConfiguracao('llm', comecou)
-  }
-  const r = await deps.runLlm(request, agent)
-  return fromLlmResult(r, comecou)
+  if (!resultado.ok) return resultado
+  return conferirSaida(contrato, resultado, comecou)
 }
+
+/** A entrada cumpre o contrato? Sem contrato declarado, não há o que conferir. */
+function conferirEntrada(schema: Record<string, unknown> | null, input: unknown): string | null {
+  if (!schema) return null
+  // Ausente é diferente de inválido: um agente com contrato chamado SEM entrada é um
+  // pedido incompleto, e o schema dirá quais campos faltam.
+  const v = validateAgainstSchema(schema, input ?? {})
+  return v.valid ? null : `Entrada fora do contrato: ${describeErrors(v.errors.slice(0, 3))}`
+}
+
+/**
+ * A saída cumpre o contrato, e o modo entrega o que prometeu.
+ *
+ * Para `function` e `tool`, uma saída inválida é o fim: pedir a um modelo que conserte o
+ * retorno de uma função esconderia um defeito de código e cobraria por isso. O executor de
+ * modelo já teve a correção dele lá dentro, uma vez, e chega aqui decidido.
+ */
+function conferirSaida(
+  contrato: ReturnType<typeof agentContractOf>,
+  resultado: ExecutorResult,
+  comecou: number,
+): ExecutorResult {
+  const modo = contrato.responseMode
+  const metadata = { ...resultado.metadata, executorKind: contrato.executorKind, responseMode: modo }
+
+  if (modo !== 'text') {
+    if (!resultado.structured) {
+      return falha('invalid_output', 'Este agente promete dados e devolveu apenas texto.', comecou, metadata)
+    }
+    if (contrato.outputJsonSchema) {
+      const v = validateAgainstSchema(contrato.outputJsonSchema, resultado.structured.data)
+      if (!v.valid) {
+        return falha('invalid_output', `Saída fora do contrato: ${describeErrors(v.errors.slice(0, 3))}`, comecou, metadata)
+      }
+    }
+  }
+  // `structured_and_text` promete as duas coisas. Uma função produz dado; prosa é trabalho
+  // de modelo. Texto vazio aqui seria relatar sucesso completo para meia entrega.
+  if (modo === 'structured_and_text' && !resultado.text?.trim()) {
+    return falha(
+      'invalid_output',
+      'Este agente promete dados E texto, e produziu só dados. Encadeie um agente de IA para apresentar o resultado, ou mude o modo para "Dados estruturados".',
+      comecou,
+      metadata,
+    )
+  }
+  if (modo === 'text' && !resultado.text?.trim()) {
+    return falha('invalid_output', 'Este agente promete texto e não produziu nenhum.', comecou, metadata)
+  }
+
+  // O MODO recorta o que sai. Entregar o que não foi pedido é como um dado intermediário
+  // vira frase, e a frase vira a entrada do próximo.
+  return {
+    ...resultado,
+    metadata,
+    ...(modo === 'text' ? { structured: undefined } : {}),
+    ...(modo === 'structured' ? { text: undefined } : {}),
+  }
+}
+
+const falha = (
+  kind: 'invalid_input' | 'invalid_output',
+  message: string,
+  comecou: number,
+  metadata: Record<string, unknown>,
+): ExecutorResult => ({
+  ok: false,
+  metadata,
+  telemetry: { durationMs: Date.now() - comecou },
+  error: { kind, message },
+})
 
 const semConfiguracao = (kind: string, comecou: number): ExecutorResult => ({
   ok: false,

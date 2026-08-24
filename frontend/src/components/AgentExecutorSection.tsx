@@ -35,6 +35,8 @@ export interface ExecutorDraft {
   appKey: string
   actionKey: string
   responseMode: ResponseMode
+  /** Os parâmetros que o dono fixou. Só os campos que a função declara. */
+  config: Record<string, unknown>
 }
 
 /** O que impede de salvar. Vazio = coerente. */
@@ -43,6 +45,42 @@ export function executorProblems(d: ExecutorDraft): string[] {
   if (d.kind === 'function' && !d.functionName) problemas.push('Escolha a função que este agente executa.')
   if (d.kind === 'tool' && !(d.appKey && d.actionKey)) problemas.push('Escolha o App e a ação que este agente executa.')
   return problemas
+}
+
+/**
+ * Os modos que ESTE executor consegue cumprir.
+ *
+ * Uma função produz dado; prosa é trabalho de modelo. Uma ferramenta só promete dado
+ * quando a ação declara o formato da resposta. Oferecer o modo impossível é deixar o dono
+ * escolher uma promessa que o servidor vai corrigir por baixo — e a tela passa a mostrar
+ * uma coisa enquanto o agente faz outra.
+ */
+export function modesFor(kind: ExecutorKind, temSchemaDeSaida: boolean): ResponseMode[] {
+  if (kind === 'function') return ['structured']
+  if (kind === 'tool') return temSchemaDeSaida ? ['structured', 'text', 'structured_and_text'] : ['text']
+  return ['structured', 'text', 'structured_and_text']
+}
+
+/** Os campos que o formulário de parâmetros desenha. Nada além do que o schema declara. */
+export function configFields(schema: Record<string, unknown> | null | undefined): {
+  name: string
+  type: string
+  description: string
+  minimum?: number
+  maximum?: number
+}[] {
+  const props = (schema as { properties?: Record<string, unknown> } | null)?.properties
+  if (!props || typeof props !== 'object' || Array.isArray(props)) return []
+  return Object.entries(props as Record<string, unknown>).map(([name, def]) => {
+    const d = (def ?? {}) as { type?: unknown; description?: unknown; minimum?: unknown; maximum?: unknown }
+    return {
+      name,
+      type: typeof d.type === 'string' ? d.type : 'string',
+      description: typeof d.description === 'string' ? d.description : '',
+      ...(typeof d.minimum === 'number' ? { minimum: d.minimum } : {}),
+      ...(typeof d.maximum === 'number' ? { maximum: d.maximum } : {}),
+    }
+  })
 }
 
 export function AgentExecutorSection({
@@ -111,8 +149,47 @@ export function AgentExecutorSection({
 
   const set = (parcial: Partial<ExecutorDraft>) => onChange({ ...draft, ...parcial })
 
+  // O que este executor CONSEGUE devolver — não o que alguém gostaria.
+  const temSchemaDeSaida = draft.kind === 'function' ? true : Boolean(acaoEscolhida?.outputSchema)
+  const modosPossiveis = modesFor(draft.kind, temSchemaDeSaida)
+  const parametros = configFields(escolhida?.configSchema)
+
+  // O modo escolhido deixou de ser possível (trocou de tipo, trocou de ação): corrige na
+  // hora, em vez de deixar a tela mostrando uma promessa que o servidor vai desfazer.
+  useEffect(() => {
+    if (!modosPossiveis.includes(draft.responseMode)) onChange({ ...draft, responseMode: modosPossiveis[0] })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.kind, draft.responseMode, temSchemaDeSaida])
+
+  /**
+   * O RESUMO, em uma linha.
+   *
+   * Quem abre a tela quer saber três coisas: quem executa, se a entrada está definida e o
+   * que sai. Elas estavam espalhadas por três blocos e dois níveis de detalhe — e a
+   * pergunta "está pronto?" só tinha resposta lendo tudo.
+   */
+  const pendencias = executorProblems(draft)
+  const resumo = [
+    `Executa por: ${draft.kind === 'function' ? 'Função' : draft.kind === 'tool' ? 'App' : 'IA'}`,
+    draft.kind === 'llm'
+      ? 'Entrada: texto'
+      : (draft.kind === 'function' ? escolhida?.inputSchema : acaoEscolhida?.inputSchema)
+        ? 'Entrada válida'
+        : 'Entrada não definida',
+    `Saída: ${draft.responseMode === 'text' ? 'Texto' : draft.responseMode === 'structured' ? 'Dados' : 'Dados + texto'}`,
+  ]
+
   return (
     <div className="space-y-4" data-testid="executor-section">
+      <p className="text-xs text-(--text-muted)" data-testid="executor-summary">
+        {resumo.join(' · ')}
+        {pendencias.length > 0 && (
+          <span style={{ color: 'var(--status-blocked)' }} data-testid="executor-summary-pending">
+            {' '}
+            · {pendencias[0]}
+          </span>
+        )}
+      </p>
       <fieldset disabled={disabled} className="space-y-2">
         <legend className="mb-1 text-sm text-(--text-muted)">Como este agente executa?</legend>
         <div className="grid gap-2 sm:grid-cols-3">
@@ -189,6 +266,50 @@ export function AgentExecutorSection({
               </li>
             ))}
           </ul>
+          {escolhida && parametros.length > 0 && (
+            <div className="space-y-2 rounded-md border border-(--border-subtle) p-2" data-testid="function-config">
+              <p className="text-xs text-(--text-muted)">Parâmetros desta função</p>
+              {/*
+                Um formulário GERADO do schema, e não um editor JSON livre.
+                Livre, o dono digita o que quiser, o handler recebe o que vier, e nada diz
+                quais campos existem. E um campo livre é onde uma credencial acaba parando.
+              */}
+              {parametros.map((campo) => (
+                <div key={campo.name}>
+                  <label className="mb-1 block text-xs text-(--text-muted)" htmlFor={`config-${campo.name}`}>
+                    {campo.description || campo.name}
+                  </label>
+                  {campo.type === 'boolean' ? (
+                    <input
+                      id={`config-${campo.name}`}
+                      type="checkbox"
+                      checked={Boolean(draft.config[campo.name])}
+                      onChange={(e) => set({ config: { ...draft.config, [campo.name]: e.target.checked } })}
+                      data-testid={`function-config-${campo.name}`}
+                    />
+                  ) : (
+                    <input
+                      id={`config-${campo.name}`}
+                      type={campo.type === 'string' ? 'text' : 'number'}
+                      value={String(draft.config[campo.name] ?? '')}
+                      min={campo.minimum}
+                      max={campo.maximum}
+                      onChange={(e) => {
+                        const bruto = e.target.value
+                        const valor = campo.type === 'string' ? bruto : bruto === '' ? undefined : Number(bruto)
+                        const proximo = { ...draft.config }
+                        if (valor === undefined || valor === '') delete proximo[campo.name]
+                        else proximo[campo.name] = valor
+                        set({ config: proximo })
+                      }}
+                      className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+                      data-testid={`function-config-${campo.name}`}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           {escolhida && (
             <div className="rounded-md border border-(--border-subtle) p-2 text-xs text-(--text-muted)" data-testid="function-detail">
               <p>
@@ -270,16 +391,17 @@ export function AgentExecutorSection({
               </p>
               <p className="mt-1">{acaoEscolhida.description}</p>
               <p className="mt-1">Recebe: {campos(acaoEscolhida.inputSchema) || '—'}</p>
-              {/* A credencial vive na conexão, cifrada. Ela não passa por esta tela. */}
+              <p>Devolve: {campos(acaoEscolhida.outputSchema) || '—'}</p>
               {/*
-                Sem contrato de SAÍDA declarado, o modo estruturado é uma promessa que a
-                primeira resposta diferente desmente. Dizer isso aqui é mais barato do que
-                deixar descobrir na primeira execução.
+                O aviso só quando ele é VERDADE. Mostrá-lo com o schema presente ensinava o
+                contrário do que o sistema faz, e quem lesse acreditaria.
               */}
-              <p className="mt-1 text-(--text-faint)" data-testid="tool-no-output-contract">
-                Esta ação não declara o formato da resposta: a saída deste agente não pode servir de contrato estruturado enquanto isso
-                não for configurado no App.
-              </p>
+              {!acaoEscolhida.outputSchema && (
+                <p className="mt-1 text-(--text-faint)" data-testid="tool-no-output-contract">
+                  Esta ação não declara o formato da resposta: a saída fica como texto até que o App declare um.
+                </p>
+              )}
+              {/* A credencial vive na conexão, cifrada. Ela não passa por esta tela. */}
               <p className="mt-1 text-(--text-faint)">A credencial fica na conexão do App e não aparece aqui.</p>
             </div>
           )}
@@ -288,8 +410,15 @@ export function AgentExecutorSection({
 
       <fieldset disabled={disabled} className="space-y-2">
         <legend className="mb-1 text-sm text-(--text-muted)">O que ele devolve</legend>
+        {modosPossiveis.length === 1 && (
+          <p className="text-xs text-(--text-faint)" data-testid="response-mode-forced">
+            {draft.kind === 'function'
+              ? 'Uma função produz dados. Para uma resposta escrita, encadeie um agente de IA que apresente o resultado.'
+              : 'Esta ação não declara o formato da resposta, então a saída fica como texto.'}
+          </p>
+        )}
         <div className="grid gap-2 sm:grid-cols-3">
-          {MODOS.map((m) => (
+          {MODOS.filter((m) => modosPossiveis.includes(m.modo)).map((m) => (
             <label
               key={m.modo}
               data-testid={`response-mode-${m.modo}`}

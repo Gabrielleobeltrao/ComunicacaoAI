@@ -48,6 +48,49 @@ ele sempre teve. Nenhuma migração destrutiva, nenhum documento tocado.
 Entregar o que não foi pedido não é generosidade: é como um dado intermediário
 vira frase e a frase vira a entrada do próximo.
 
+**O modo é ajustado ao que o executor consegue cumprir**, em `agentContractOf`:
+
+| tipo | modo possível |
+|---|---|
+| `function` | sempre `structured` — prosa é trabalho de modelo |
+| `tool` com `outputSchema` na ação | qualquer um |
+| `tool` sem `outputSchema` | `text` — ela devolve o corpo de um terceiro |
+| `llm` | qualquer um |
+
+A gravação recusa um agente de função com outro modo, em voz alta; a leitura corrige o que
+já estiver no banco. A tela só oferece os modos possíveis, para ninguém escolher uma
+promessa que o servidor desfaz por baixo.
+
+### Onde a validação acontece
+
+Em **um** lugar: `dispatchAgentExecution`. Entrada contra `inputJsonSchema` antes de
+executar, saída contra `outputJsonSchema` depois, e o `responseMode` recortando o que sai.
+Playground, setor, delegação, rotina e gatilho passam por ali — quatro lugares para a mesma
+regra é a garantia de que um deles fica para trás.
+
+Para `function` e `tool`, saída inválida é o fim: pedir a um modelo que conserte o retorno
+de uma função esconderia um defeito de código e cobraria por isso. O executor de modelo já
+teve a correção dele lá dentro, uma vez, e chega ao dispatcher decidido.
+
+### Onde cada tipo pode ser usado
+
+| superfície | `llm` | `function` / `tool` |
+|---|---|---|
+| widget, WhatsApp, canais | sim | **não** — recusado no vínculo, não na mensagem |
+| Playground, setor, delegação, rotina, gatilho | sim | sim |
+
+Um chat é uma conversa. O runtime já se recusava a responder, e a recusa acontecia tarde:
+o vínculo era salvo, o chat montava, o visitante escrevia e ninguém respondia — quem
+configurou não ficava sabendo, e quem escreveu ficava esperando.
+
+### A rotina não prepara inferência para quem não usa modelo
+
+`executeRoutineStep` desvia pelo dispatcher ANTES de buscar na base, resolver o modelo,
+carregar a chave e montar as ferramentas. Para uma função, tudo isso é conta que não devia
+existir — e no fim o modelo improvisava o que a função faria. A contabilidade, a
+idempotência por tentativa, o `settle` e a auditoria são os mesmos; o que muda é que a
+conta dá zero.
+
 ## O plano
 
 O planejador recebe cada membro com o CONTRATO, não só com a descrição: tipo de
@@ -155,6 +198,17 @@ Regras que o registro impõe (`assertRegistryIsSound`):
 
 A função aparece sozinha no catálogo (`GET /api/executors/catalog`) e no seletor
 do formulário. **O `handler` nunca sai para o cliente.**
+
+### Parâmetros configuráveis (`configSchema`)
+
+Declare `configSchema` para a função aceitar parâmetros que o dono fixa no agente. A tela
+gera um formulário pequeno a partir dele — nunca um editor JSON livre, onde o dono digita
+o que quiser, o handler recebe o que vier e nada diz quais campos existem (e onde uma
+credencial acaba parando).
+
+Só `string`, `number`, `integer` e `boolean`: um tipo fora da lista viraria um campo em
+branco na tela. Nome que pareça credencial é recusado no arranque, por
+`assertRegistryIsSound` — credencial vive na conexão do App, não no documento do agente.
 
 Ao mudar o comportamento de uma função, suba a `version`. Um agente que fixou a
 versão anterior passa a recusar com `not_configured` em vez de mudar de

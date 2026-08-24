@@ -19,6 +19,8 @@ import { resolveAgentRun } from '../agentDefinition.js'
 import { buildRetrievalQuery, formatContextWithSources, multiSourceNotice } from '../retrievalQuery.js'
 import { instrumentTools, NOOP_TRACKER } from '../agentLiveTracker.js'
 import type { LiveTracker } from '../agentLiveTracker.js'
+import { agentContractOf } from '../executors/contract.js'
+import { dispatchAgentExecution } from '../executors/dispatcher.js'
 
 // The knowledge the step requires could not be consulted (the embedding or the
 // vector search failed), and this agent is configured to refuse rather than answer
@@ -29,6 +31,24 @@ export class KnowledgeUnavailableError extends Error {
   constructor(message = 'a base de conhecimento não pôde ser consultada') {
     super(message)
     this.name = 'KnowledgeUnavailableError'
+  }
+}
+
+/**
+ * A execução por função ou ferramenta falhou pelo CONTRATO ou pela configuração.
+ *
+ * Não é transitório: uma função que devolve fora do formato devolve igual na segunda vez,
+ * e uma ação que não existe continua não existindo. Repetir gastaria as tentativas do
+ * runner para chegar ao mesmo lugar, e atrasaria o diagnóstico que já está pronto.
+ */
+export class RoutineExecutorError extends Error {
+  readonly retryable = false
+  constructor(
+    message: string,
+    readonly kind: string = 'executor',
+  ) {
+    super(message)
+    this.name = 'RoutineExecutorError'
   }
 }
 
@@ -124,6 +144,144 @@ export interface RoutineStepResult {
   settle: Promise<boolean>
 }
 
+/**
+ * Um passo de rotina executado por função ou por ferramenta.
+ *
+ * Mesma contabilidade, mesma idempotência, mesma auditoria — `settle` é montado do mesmo
+ * jeito e continua sendo aguardado pelo runner FORA do prazo do passo. O que muda é o que
+ * roda no meio, e a conta: zero token, porque nenhum provedor foi chamado.
+ */
+async function executarPassoPorDespacho(
+  agent: Agent,
+  contrato: ReturnType<typeof agentContractOf>,
+  call: RoutineStepCall,
+  ctx: RoutineRunContext,
+  deps: RoutineExecutionDeps,
+  tracker: LiveTracker,
+  sleep: (ms: number) => Promise<void>,
+): Promise<RoutineStepResult> {
+  const startedAt = new Date()
+  const eventKey = deps.eventKeyFor(ctx.runId, call.stepId, agent._id.toString())
+  const semCusto = { inputTokens: 0, outputTokens: 0 }
+  const baseEvent = {
+    eventKey,
+    ownerId: ctx.ownerId,
+    agentId: agent._id,
+    buildingId: ctx.buildingId,
+    floorId: ctx.floorId,
+    source: 'routine' as const,
+    preset: agent.preset,
+    startedAt,
+    attemptCount: call.attempt,
+    rootExecutionId: ctx.rootExecutionId ?? null,
+    metadata: {
+      runId: ctx.runId,
+      stepId: call.stepId,
+      attempt: call.attempt,
+      executorKind: contrato.executorKind,
+      ...(contrato.executorConfig.kind === 'function'
+        ? { functionName: contrato.executorConfig.functionName, functionVersion: contrato.executorConfig.version ?? '' }
+        : {}),
+      ...(contrato.executorConfig.kind === 'tool'
+        ? { appKey: contrato.executorConfig.appKey ?? '', actionKey: contrato.executorConfig.actionKey ?? '', toolId: contrato.executorConfig.toolId ?? '' }
+        : {}),
+      // Sem base, sem modelo, sem chave: nada disso acontece por este caminho.
+      grounding: 'no_base',
+      ragChunks: 0,
+      ragSources: 0,
+      toolsAvailable: 0,
+      runConfigDropped: '',
+    },
+  }
+
+  tracker.report('thinking')
+  const r = await dispatchAgentExecution(agent, {
+    agentId: agent._id,
+    ownerId: ctx.ownerId,
+    objective: String(agent.objective ?? call.objective ?? ''),
+    // A entrada da etapa quando ela é estruturada; sem isso o contrato não tem o que
+    // conferir e a conferência central recusa antes de rodar.
+    input: call.input,
+    correlationId: ctx.runId,
+  })
+
+  if (!r.ok) {
+    const canceled = deps.isCanceled ? await deps.isCanceled().catch(() => false) : false
+    const status: AgentEventStatus = canceled ? 'canceled' : r.error?.kind === 'timeout' ? 'timeout' : 'failed'
+    await tracker.finish(canceled ? 'canceled' : 'failed')
+    await persistWithRetry(
+      'finalizeAgentEvent',
+      () =>
+        deps.finalizeEvent({
+          ...baseEvent,
+          status,
+          finishedAt: new Date(),
+          metadata: { ...baseEvent.metadata, outputValid: false, error: r.error?.kind ?? 'executor', durationMs: Date.now() - startedAt.getTime() },
+        }),
+      sleep,
+    )
+    // Erro de contrato ou de configuração NÃO se conserta repetindo: uma função que
+    // devolve fora do formato devolve igual na segunda vez.
+    throw new RoutineExecutorError(r.error?.message ?? 'a execução não completou', r.error?.kind ?? 'executor')
+  }
+
+  /**
+   * A mesma persistência crítica do caminho de modelo.
+   *
+   * A cobrança continua sendo chamada — com uso zero — porque a idempotência por tentativa
+   * é dela, e pular a chamada faria uma rotina de função ficar fora do registro de
+   * tentativas que todo o resto usa.
+   */
+  const settle = (async () => {
+    const charged = await persistWithRetry(
+      'recordReplyUsageOnce',
+      () => deps.charge(ctx.ownerId, semCusto, deps.chargeKeyFor(ctx.runId, call.stepId, agent._id.toString(), call.attempt)),
+      sleep,
+    )
+    const recorded = await persistWithRetry(
+      'finalizeAgentEvent',
+      () =>
+        deps.finalizeEvent({
+          ...baseEvent,
+          status: 'succeeded' as AgentEventStatus,
+          finishedAt: new Date(),
+          // ZERO. Uma função determinística não fala com provedor nenhum, e o número
+          // existe para provar isso a quem paga.
+          inputTokens: 0,
+          outputTokens: 0,
+          model: null,
+          toolCalls: r.telemetry.externalCalls ?? 0,
+          metadata: {
+            ...baseEvent.metadata,
+            outputFormat: contrato.responseMode,
+            outputValid: true,
+            outputRepaired: false,
+            hasStructured: r.structured !== undefined,
+            hasText: Boolean(r.text),
+            externalCalls: r.telemetry.externalCalls ?? 0,
+            durationMs: Date.now() - startedAt.getTime(),
+          },
+        }),
+      sleep,
+    )
+    return charged && recorded
+  })()
+
+  await tracker.finish('completed')
+  /**
+   * O que a etapa seguinte recebe.
+   *
+   * `structured` não produz prosa — e a etapa seguinte de uma automação consome TEXTO.
+   * Serializar o dado é o que mantém a cadeia funcionando sem transformar o dado em frase
+   * por um modelo: quem quiser a frase encadeia um agente de IA depois.
+   */
+  return {
+    output: r.text ?? (r.structured !== undefined ? JSON.stringify(r.structured.data) : ''),
+    usage: semCusto,
+    settle,
+  }
+}
+
 export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunContext, deps: RoutineExecutionDeps): Promise<RoutineStepResult> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)))
   const tracker = deps.trackerFor?.(call.agentId) ?? NOOP_TRACKER
@@ -137,6 +295,24 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
   if (call.sectorId) {
     verifiedSectorId = await deps.resolveOwnedSectorId(ctx.ownerId, call.sectorId)
     if (!verifiedSectorId) throw new RoutineConfigurationError()
+  }
+
+  /**
+   * (1b) O TIPO decide, antes de qualquer gasto.
+   *
+   * Tudo abaixo — buscar na base, resolver o modelo, carregar a chave, montar as
+   * ferramentas — existe para uma chamada a provedor. Um agente de função não faz nenhuma
+   * dessas coisas: ele recebe campos e roda código. Passá-lo por aqui era pagar a
+   * preparação inteira de uma inferência para depois pedir ao modelo que IMPROVISASSE o
+   * que a função faria — e a rotina entregava uma resposta plausível, em prosa, que nunca
+   * tocou o código configurado.
+   *
+   * O desvio vem antes da busca de propósito: base, chave e modelo não são só inúteis
+   * aqui, são a conta que não devia existir.
+   */
+  const contrato = agentContractOf(agent)
+  if (contrato.executorKind !== 'llm') {
+    return executarPassoPorDespacho(agent, contrato, call, ctx, deps, tracker, sleep)
   }
 
   // (2) Grounding + model. The question includes the objective, the instructions AND

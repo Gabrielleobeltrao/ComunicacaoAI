@@ -7,7 +7,7 @@
 // A regra que governa tudo: AUSENTE é o padrão de hoje. Um campo que falta nunca pode
 // significar uma mudança — é o que permite adicionar isto sem migração destrutiva e sem
 // tocar em um único documento existente.
-import { isValidToolSchema } from '../jsonSchema.js'
+import { describeErrors, isValidToolSchema, validateAgainstSchema } from '../jsonSchema.js'
 import { findFunction } from './functionRegistry.js'
 import type { ExecutorConfig, ExecutorKind, ResponseMode } from './types.js'
 
@@ -58,17 +58,35 @@ export const DEFAULT_EXECUTOR: ExecutorConfig = { kind: 'llm' }
 export function agentContractOf(agent: AgentContractInput | null | undefined): AgentContract {
   const a = agent ?? {}
   const executorKind = EXECUTOR_KINDS.includes(a.executorKind as ExecutorKind) ? (a.executorKind as ExecutorKind) : 'llm'
-  const responseMode = RESPONSE_MODES.includes(a.responseMode as ResponseMode)
+  const declarado = RESPONSE_MODES.includes(a.responseMode as ResponseMode)
     ? (a.responseMode as ResponseMode)
     : responseModeFromLegacy(a.defaultOutputFormat)
+  const outputJsonSchema = isValidToolSchema(a.outputJsonSchema) ? (a.outputJsonSchema as Record<string, unknown>) : null
 
   return {
     executorKind,
-    responseMode,
+    responseMode: modoPossivel(executorKind, declarado, outputJsonSchema),
     executorConfig: normalizeExecutorConfig(executorKind, a.executorConfig),
     inputJsonSchema: isValidToolSchema(a.inputJsonSchema) ? (a.inputJsonSchema as Record<string, unknown>) : null,
-    outputJsonSchema: isValidToolSchema(a.outputJsonSchema) ? (a.outputJsonSchema as Record<string, unknown>) : null,
+    outputJsonSchema,
   }
+}
+
+/**
+ * O modo que o executor CONSEGUE cumprir — não o que alguém escreveu.
+ *
+ * Uma função produz dado; prosa é trabalho de modelo. Um agente de função marcado como
+ * "texto" prometia uma coisa e entregava outra, e o desencontro só aparecia na execução,
+ * como resposta vazia ou como erro de contrato num lugar onde ninguém tinha o que
+ * consertar. Aqui a promessa é ajustada ao que existe.
+ *
+ * Ferramenta é diferente: ela devolve o corpo de um terceiro. Só promete dado quando a
+ * ação declara o formato; sem isso, o que ela tem é texto, e é isso que ela promete.
+ */
+function modoPossivel(kind: ExecutorKind, declarado: ResponseMode, outputSchema: Record<string, unknown> | null): ResponseMode {
+  if (kind === 'function') return 'structured'
+  if (kind === 'tool' && declarado !== 'text' && !outputSchema) return 'text'
+  return declarado
 }
 
 /**
@@ -144,13 +162,20 @@ export function contractFromFunction(functionName: string, version?: string): {
   outputJsonSchema: Record<string, unknown>
   version: string
   capabilities: string[]
+  configSchema: Record<string, unknown> | null
 } | { error: string } {
   const f = findFunction(functionName)
   if (!f) return { error: `A função "${functionName}" não está disponível neste servidor.` }
   if (version && version !== f.version) {
     return { error: `A função "${functionName}" está na versão ${f.version}, e foi pedida a ${version}.` }
   }
-  return { inputJsonSchema: f.inputSchema, outputJsonSchema: f.outputSchema, version: f.version, capabilities: f.capabilities }
+  return {
+    inputJsonSchema: f.inputSchema,
+    outputJsonSchema: f.outputSchema,
+    version: f.version,
+    capabilities: f.capabilities,
+    configSchema: f.configSchema ?? null,
+  }
 }
 
 export function parseAgentContract(body: Record<string, unknown>, atual?: { executorKind?: unknown } | null): ContractParseResult {
@@ -239,10 +264,40 @@ export function parseAgentContract(body: Record<string, unknown>, atual?: { exec
    * vale é o registro, e é ele que preenche. Assim o formulário pode mandar o que quiser
    * que o banco continua tendo uma verdade só.
    */
+  /**
+   * Uma função é `structured`. Pedir outro modo é pedir o que ela não faz.
+   *
+   * Aceitar em silêncio e corrigir na leitura funcionaria — e deixaria a tela mostrando
+   * "Texto" para um agente que devolve dados. A recusa acontece aqui porque aqui existe
+   * alguém para avisar.
+   */
+  if (kindEfetivo === 'function' && fields.responseMode !== undefined && fields.responseMode !== 'structured') {
+    return { fields, error: 'Um agente de função produz dados: responseMode precisa ser "structured".' }
+  }
+  if (kindEfetivo === 'function') fields.responseMode = 'structured'
+
   const cfgFinal = fields.executorConfig
   if (kindEfetivo === 'function' && cfgFinal?.kind === 'function' && cfgFinal.functionName) {
     const derivado = contractFromFunction(cfgFinal.functionName, cfgFinal.version)
     if ('error' in derivado) return { fields, error: derivado.error }
+    /**
+     * Os PARÂMETROS, contra o schema que a função declara.
+     *
+     * Uma função que não declara `configSchema` não aceita parâmetro nenhum — e guardar um
+     * seria guardar um campo que o handler nunca lê. Uma que declara aceita só o que está
+     * lá: o resto é ruído no documento do agente, e um campo extra hoje é o campo que
+     * alguém tenta usar amanhã achando que vale.
+     */
+    const parametros = cfgFinal.config
+    if (parametros && Object.keys(parametros).length > 0) {
+      if (!derivado.configSchema) {
+        return { fields, error: `A função "${cfgFinal.functionName}" não aceita parâmetros de configuração.` }
+      }
+      // O validador já recusa campo não previsto por padrão — uma segunda checagem aqui
+      // seria uma segunda regra sobre a mesma coisa, com outra mensagem.
+      const v = validateAgainstSchema(derivado.configSchema, parametros)
+      if (!v.valid) return { fields, error: `Parâmetros fora do contrato: ${describeErrors(v.errors.slice(0, 3))}` }
+    }
     fields.inputJsonSchema = derivado.inputJsonSchema
     fields.outputJsonSchema = derivado.outputJsonSchema
     fields.executorConfig = { ...cfgFinal, version: derivado.version }
