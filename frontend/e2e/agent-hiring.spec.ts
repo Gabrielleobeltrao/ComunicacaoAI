@@ -575,7 +575,10 @@ test('choosing "ninguém" reaches nobody however many colleagues exist', async (
 // convention every other advanced block follows.
 const openOutputContract = async (page: Page) => {
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
-  await page.getByRole('button', { name: 'Contrato de saída' }).click()
+  // O bloco passou a ter as DUAS metades do contrato: o que ele aceita receber e o que
+  // promete devolver. Só a saída era editável antes, e um contrato pela metade não dá
+  // para conferir — a entrada errada chegava ao agente sem ninguém olhar.
+  await page.getByRole('button', { name: 'Contratos de entrada e saída' }).click()
 }
 
 test('the output contract lives in Avançado and defaults to nothing', async ({ page }) => {
@@ -586,6 +589,9 @@ test('the output contract lives in Avançado and defaults to nothing', async ({ 
   await expect(page.getByTestId('default-output-format')).toHaveValue('')
   // The schema field only exists once JSON is the chosen shape.
   await expect(page.getByTestId('output-json-schema')).toHaveCount(0)
+  // A entrada, sim: é ela que decide se o agente recebe campos ou prosa, e ela existe
+  // independentemente do formato da resposta.
+  await expect(page.getByTestId('input-json-schema')).toBeVisible()
   await expect(page.getByTestId('require-grounding')).not.toBeChecked()
 })
 
@@ -597,11 +603,14 @@ test('choosing JSON reveals the schema field and validates what is typed', async
   const schema = page.getByTestId('output-json-schema')
   await expect(schema).toBeVisible()
   await schema.fill('{ isso não é json }')
-  await expect(page.getByTestId('schema-error')).toBeVisible()
+  await expect(page.getByTestId('output-json-schema-errors')).toBeVisible()
 
   await schema.fill('{"type":"object","properties":{"titulo":{"type":"string"}}}')
-  await expect(page.getByTestId('schema-error')).toHaveCount(0)
-  await expect(page.getByTestId('output-contract-block')).toContainText('UMA chance de corrigir')
+  await expect(page.getByTestId('output-json-schema-errors')).toHaveCount(0)
+  // O contrato de volta em português: é lendo isto que se percebe o schema que está certo
+  // na sintaxe e descreve o contrato errado.
+  await expect(page.getByTestId('output-json-schema-summary')).toContainText('titulo')
+  await expect(page.getByTestId('output-json-schema-summary')).toContainText('opcional')
 })
 
 test('the simple sections stay simple — no schema in sight', async ({ page }) => {

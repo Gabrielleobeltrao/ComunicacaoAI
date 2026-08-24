@@ -19,6 +19,7 @@ import { ObjectId } from 'mongodb'
 import { normalizeRunConfig } from './runConfig.js'
 import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
 import { describeDropped, runInteractive } from './interactiveRun.js'
+import { validateAgainstSchema } from './jsonSchema.js'
 import { AgentRunError } from './agentRuntime.js'
 import { executeSectorTeam, sectorRunContext } from './delegation.js'
 import type { DelegationDeps } from './delegation.js'
@@ -3023,6 +3024,27 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
    */
   // A trilha do teste de UM agente: sem planejador e sem síntese, mas com pedido, base,
   // ferramentas e resposta — que é o caminho que ele percorre de verdade.
+  /**
+   * A ENTRADA ESTRUTURADA do teste.
+   *
+   * Um agente que declara `inputJsonSchema` recebe campos, não uma frase — e testá-lo
+   * digitando prosa testa outra coisa. Aqui o dono manda o objeto, ele é conferido contra
+   * o mesmo schema que o runtime usa, e a recusa diz o CAMINHO do campo errado. Sem
+   * schema, nada muda: o campo é ignorado e o teste continua sendo uma conversa.
+   */
+  const entradaDeTeste = (req.body ?? {}).input
+  if (entradaDeTeste !== undefined && entradaDeTeste !== null && agent.inputJsonSchema) {
+    if (typeof entradaDeTeste !== 'object' || Array.isArray(entradaDeTeste)) {
+      res.status(400).json({ error: 'input deve ser um objeto JSON', code: 'invalid_input' })
+      return
+    }
+    const conferida = validateAgainstSchema(agent.inputJsonSchema, entradaDeTeste)
+    if (!conferida.valid) {
+      // O caminho e o que se esperava — o vocabulário do schema, que é do próprio dono.
+      res.status(400).json({ error: 'A entrada não cumpre o contrato deste agente.', code: 'invalid_input', errors: conferida.errors })
+      return
+    }
+  }
   const traceChat = typeof (req.body ?? {}).traceId === 'string' ? String(req.body.traceId).slice(0, 100) : null
   const trilhaChat = (entrada: Omit<TraceInput, 'ownerId' | 'executionId'>) => {
     if (!traceChat) return
@@ -3173,6 +3195,8 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
 
   // A cobrança acontece UMA vez, dê certo ou não. A trava existe porque agora há dois
   // caminhos até aqui — o de sucesso e o de falha — e cobrar nos dois seria cobrar duas.
+  // O dado e a marca de reparo desta execução, preenchidos quando ela completa.
+  let dadoDoTeste: { data?: unknown; repaired: boolean } = { repaired: false }
   let cobrado = false
   const cobrar = () => {
     if (cobrado || (usage.inputTokens === 0 && usage.outputTokens === 0)) return
@@ -3215,7 +3239,13 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
         hasUntrustedContext: knowledge.length > 0,
         // Já perguntou antes? Então a orientação muda: da segunda vez em diante, decidir
         // e declarar a suposição vale mais que perguntar de novo.
-        channelBlocks: [clarificationGuidance(jaPerguntouChat), lembrados].filter((b): b is string => Boolean(b)),
+        channelBlocks: [
+          clarificationGuidance(jaPerguntouChat),
+          lembrados,
+          // Escrito pelo DONO, no painel de teste dele: é dado autorizado, não material de
+          // terceiro. Por isso vai como bloco do canal e não como contexto não confiável.
+          entradaDeTeste && agent.inputJsonSchema ? `DADOS DE ENTRADA (conferidos contra o contrato)\n${JSON.stringify(entradaDeTeste, null, 2)}` : null,
+        ].filter((b): b is string => Boolean(b)),
       }),
       knowledge,
       history,
@@ -3234,6 +3264,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${problemaContrato}`)
     }
     generated = interativoChat.text
+    dadoDoTeste = { data: interativoChat.json, repaired: interativoChat.outputRepaired }
     // O agente perguntou em vez de responder: a marca acompanha o turno para a próxima
     // rodada saber que já houve uma pergunta.
     pedidoDeEsclarecimento = clarificationFrom(interativoChat.toolCalls)
@@ -3281,6 +3312,8 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     outputTokens: usage.outputTokens,
     durationMs: Math.max(0, Date.now() - manualStartedAt.getTime()),
     outputValid: true,
+    // Precisou de correção de formato? Custou uma chamada a mais, e quem testa paga por ela.
+    outputRepaired: dadoDoTeste.repaired,
     ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
   }
   trilhaChat({
@@ -3325,6 +3358,14 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
      * Só números e categorias. Nunca prompt, nunca conteúdo de base, nunca credencial.
      */
     diagnostics: diagnosticoChat,
+    /**
+     * O DADO, separado do texto.
+     *
+     * Quem testa um agente estruturado precisa ver o objeto — não o objeto embrulhado numa
+     * frase, nem a frase com o objeto colado dentro. Ausente quando o agente responde em
+     * prosa, que é o caso da maioria.
+     */
+    ...(dadoDoTeste.data !== undefined ? { data: dadoDoTeste.data } : {}),
   })
 })
 

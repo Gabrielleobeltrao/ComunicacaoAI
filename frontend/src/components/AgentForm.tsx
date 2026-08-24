@@ -30,6 +30,9 @@ import { WebSearchStatusLine } from './WebSearchStatusLine'
 import { AgentSources } from './AgentSources'
 import { AgentAppGrantsEditor } from './AgentAppGrantsEditor'
 import { AgentToolsEditor } from './AgentToolsEditor'
+import { AgentExecutorSection, executorProblems } from './AgentExecutorSection'
+import type { ExecutorDraft } from './AgentExecutorSection'
+import { JsonSchemaEditor, checkSchema } from './JsonSchemaEditor'
 import { roleConfigOf } from '../lib/agentCapabilities'
 import type { AgentRole } from '../lib/agentCapabilities'
 
@@ -65,7 +68,8 @@ const SECTION_BLOCKS: Record<string, string[]> = {
   // "Definição" abre a lista de propósito: é o bloco que o dono revisa, e o que mais
   // muda o comportamento do agente. "Modelo e execução" vem logo depois, e quase ninguém
   // precisa tocar — todo campo dele começa em "Padrão do sistema".
-  avancado: ['capacidades', 'execucao', 'metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
+  // "executor" vem primeiro: é a escolha que decide quais dos blocos abaixo fazem sentido.
+  avancado: ['executor', 'capacidades', 'execucao', 'metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
   // legacy aliases
   essencial: ['identidade'],
   ferramentas: ['ferramentas'],
@@ -304,8 +308,22 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   // for JSON, the schema it must satisfy. Absent = exactly today's behaviour.
   const [editDefaultOutputFormat, setEditDefaultOutputFormat] = useState<'' | 'text' | 'markdown' | 'json'>('')
   const [editOutputJsonSchema, setEditOutputJsonSchema] = useState('')
+  const [editInputJsonSchema, setEditInputJsonSchema] = useState('')
+  /**
+   * COMO ele executa. Um agente antigo lê como `llm` — que é o que ele sempre foi.
+   *
+   * O padrão vem do servidor (`contract`), já resolvido: derivar aqui seria uma segunda
+   * cópia da regra, e uma das duas envelheceria.
+   */
+  const [executor, setExecutor] = useState<ExecutorDraft>({
+    kind: 'llm',
+    functionName: '',
+    functionVersion: '',
+    appKey: '',
+    actionKey: '',
+    responseMode: 'text',
+  })
   const [editRequireGrounding, setEditRequireGrounding] = useState(false)
-  const [schemaError, setSchemaError] = useState<string | null>(null)
 
   useEffect(() => {
     async function loadProviders() {
@@ -376,6 +394,16 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       setEditWebSearch(agent.webSearch ?? {})
     setEditDefaultOutputFormat(agent.defaultOutputFormat ?? '')
     setEditOutputJsonSchema(agent.outputJsonSchema ? JSON.stringify(agent.outputJsonSchema, null, 2) : '')
+    setEditInputJsonSchema(agent.inputJsonSchema ? JSON.stringify(agent.inputJsonSchema, null, 2) : '')
+    const c = agent.contract
+    setExecutor({
+      kind: c?.executorKind ?? 'llm',
+      functionName: c?.executorConfig?.kind === 'function' ? c.executorConfig.functionName : '',
+      functionVersion: c?.executorConfig?.kind === 'function' ? (c.executorConfig.version ?? '') : '',
+      appKey: c?.executorConfig?.kind === 'tool' ? (c.executorConfig.appKey ?? '') : '',
+      actionKey: c?.executorConfig?.kind === 'tool' ? (c.executorConfig.actionKey ?? '') : '',
+      responseMode: c?.responseMode ?? 'text',
+    })
     setEditRequireGrounding(agent.requireGrounding === true)
       setEditBuiltinTools(agent.builtinTools ?? [])
       setPendingDocs([])
@@ -434,6 +462,18 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       return
     }
     if (payloadJson === savedPayloadRef.current) return
+    /**
+     * A gravação automática também obedece à conferência.
+     *
+     * Aqui é o caminho que grava de verdade na página do agente — o botão só existe na
+     * criação. Sem esta linha, "impedir salvar incoerente" valeria para o modal e não
+     * valeria para o lugar onde as pessoas editam, que é o pior dos dois mundos: a regra
+     * existe, parece cumprida, e não é.
+     */
+    if (problemasDeSalvamento.length > 0) {
+      setAutoSaveState('error')
+      return
+    }
 
     setAutoSaveState('saving')
     const agentId = agent._id
@@ -467,12 +507,21 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   // request finish after the component unmounts.
   const flushRef = useRef<{ agentId: string; json: string } | null>(null)
   useEffect(() => {
-    if (flat && !isCreating && agent) flushRef.current = { agentId: agent._id, json: payloadJson }
+    // Só o que passou pela conferência é candidato a ser descarregado na saída.
+    flushRef.current = flat && !isCreating && agent && problemasDeSalvamento.length === 0 ? { agentId: agent._id, json: payloadJson } : null
   })
   useEffect(() => {
     return () => {
       const pending = flushRef.current
-      if (pending && pending.json !== savedPayloadRef.current) {
+      /**
+       * Sem LINHA DE BASE, não há edição pendente — há um formulário que ainda não carregou.
+       *
+       * `savedPayloadRef` só recebe valor depois que o agente chega. Antes disso o
+       * formulário guarda os padrões (nome vazio, histórico 6), e sair da tela nessa janela
+       * mandava justamente isso: um PATCH que apaga o nome do agente com uma string vazia.
+       * A comparação com `null` dizia "mudou" para um formulário que nunca foi preenchido.
+       */
+      if (pending && savedPayloadRef.current !== null && pending.json !== savedPayloadRef.current) {
         fetch(`${API_URL}/api/agents/${pending.agentId}`, {
           method: 'PATCH',
           credentials: 'include',
@@ -596,6 +645,18 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       // saved exactly as it always was.
       defaultOutputFormat: editDefaultOutputFormat || null,
       outputJsonSchema: parseSchemaField(editOutputJsonSchema),
+      inputJsonSchema: parseSchemaField(editInputJsonSchema),
+      executorKind: executor.kind,
+      responseMode: executor.responseMode,
+      // A configuração acompanha o TIPO e só ele: guardar `functionName` num agente de
+      // modelo é guardar uma promessa que ninguém cumpre — o campo fica lá, alguém o lê
+      // depois e conclui que o agente chama uma função.
+      executorConfig:
+        executor.kind === 'function'
+          ? { kind: 'function' as const, functionName: executor.functionName, ...(executor.functionVersion ? { version: executor.functionVersion } : {}) }
+          : executor.kind === 'tool'
+            ? { kind: 'tool' as const, appKey: executor.appKey, actionKey: executor.actionKey }
+            : { kind: 'llm' as const },
       requireGrounding: editRequireGrounding,
       routingDescription: editRouting.trim(),
       inputContract: editInputContract.trim(),
@@ -618,9 +679,26 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     }
   }
 
+  /**
+   * O que impede de salvar.
+   *
+   * Uma configuração incoerente gravada não fica parada: ela vira uma execução que falha
+   * no primeiro uso, longe daqui, com uma mensagem que não fala do formulário. Barrar aqui
+   * é o único lugar onde o dono ainda tem o contexto para entender.
+   */
+  const problemasDeSalvamento = [
+    ...executorProblems(executor),
+    ...checkSchema(editInputJsonSchema).problems.map((p) => `Contrato de entrada — ${p.path ? `${p.path}: ` : ''}${p.message}`),
+    ...checkSchema(editOutputJsonSchema).problems.map((p) => `Contrato de saída — ${p.path ? `${p.path}: ` : ''}${p.message}`),
+  ]
+
   async function handleSave(event: FormEvent) {
     event.preventDefault()
     setEditError(null)
+    if (problemasDeSalvamento.length > 0) {
+      setEditError(problemasDeSalvamento[0])
+      return
+    }
     setSaving(true)
     const payload = buildPayload()
 
@@ -874,10 +952,24 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     }
   }
 
+  /**
+   * Os blocos que só existem para um agente de MODELO.
+   *
+   * Provedor, temperatura, estilo de resposta, memória de conversa, ferramentas: nada
+   * disso significa coisa alguma para uma função determinística ou uma ação de App. E um
+   * campo sem significado não fica inofensivo na tela — ele é preenchido, e depois alguém
+   * passa uma tarde entendendo por que a temperatura não mudou o resultado de uma soma.
+   *
+   * Escondido, não apagado: o que já estava gravado continua gravado, e voltar o tipo para
+   * "IA / LLM" traz tudo de volta como estava.
+   */
+  const soDeModelo = new Set(['modelo', 'execucao', 'estilo', 'memoria', 'ferramentas', 'conhecimento'])
   const showBlock = (block: string) => {
+    if (executor.kind !== 'llm' && soDeModelo.has(block)) return false
     if (flat && section === 'como-trabalha') return blocosDoPapel.includes(block)
     if (flat) return section == null || (SECTION_BLOCKS[section] ?? []).includes(block)
     if (block === 'identidade' || block === 'conhecimento') return true
+    if (block === 'executor') return advancedOpen
     return advancedOpen
   }
   /**
@@ -1130,6 +1222,19 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
 
           {/* A porta de saída da regra do TIPO. Fica em Avançado, e não no meio de "Como
               trabalha": é uma exceção deliberada, não um passo da configuração. */}
+          {showBlock('executor') && (
+            <CollapsibleBlock title="Como este agente executa" showHeader={stacked} testId="agent-executor-block" defaultOpen>
+              <AgentExecutorSection draft={executor} onChange={setExecutor} />
+              {problemasDeSalvamento.length > 0 && (
+                <ul className="mt-2 space-y-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid="executor-problems">
+                  {problemasDeSalvamento.map((p) => (
+                    <li key={p}>{p}</li>
+                  ))}
+                </ul>
+              )}
+            </CollapsibleBlock>
+          )}
+
           {showBlock('capacidades') && (
             <CollapsibleBlock title="Capacidades do tipo" showHeader={stacked}>
               <p className="text-sm text-(--text-muted)">{cfg.summary ?? 'O tipo do agente decide o que ele consulta e o que ele aciona.'}</p>
@@ -1572,14 +1677,29 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
         )}
 
         {showBlock('contrato') && (
-          <CollapsibleBlock title="Contrato de saída" showHeader={stacked}>
+          <CollapsibleBlock title="Contratos de entrada e saída" showHeader={stacked} testId="agent-contract-block">
             <div className="space-y-3 rounded-lg border border-(--border-subtle) p-3" data-testid="output-contract-block">
               <p className="text-sm text-(--text-muted)">
-                Para tarefas automáticas (rotinas, gatilhos e delegações). Deixe em branco para manter o comportamento atual.
+                O que ele aceita receber e o que promete devolver — verificável, e conferido antes e depois de cada execução. Deixe em branco para manter o comportamento atual.
               </p>
+              {/*
+                O contrato de ENTRADA. É ele que faz uma etapa receber campos em vez da prosa
+                da etapa anterior — e é ele que recusa a execução quando o campo não chega,
+                em vez de deixar o agente deduzir o valor.
+              */}
+              <JsonSchemaEditor
+                label="O que ele aceita receber (JSON Schema)"
+                hint="Sem contrato de entrada, ele recebe texto — como sempre recebeu."
+                value={editInputJsonSchema}
+                onChange={setEditInputJsonSchema}
+                testId="input-json-schema"
+              />
               <div>
-                <label className="mb-1 block text-sm text-(--text-muted)">Formato padrão do resultado</label>
+                <label className="mb-1 block text-sm text-(--text-muted)" htmlFor="default-output-format">
+                  Formato padrão do resultado
+                </label>
                 <select
+                  id="default-output-format"
                   value={editDefaultOutputFormat}
                   onChange={(e) => setEditDefaultOutputFormat(e.target.value as '' | 'text' | 'markdown' | 'json')}
                   className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
@@ -1591,30 +1711,15 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                   <option value="json">JSON</option>
                 </select>
               </div>
-              {editDefaultOutputFormat === 'json' && (
+              {(editDefaultOutputFormat === 'json' || executor.responseMode !== 'text') && (
                 <div>
-                  <label className="mb-1 block text-sm text-(--text-muted)">Estrutura do JSON (JSON Schema, opcional)</label>
-                  <textarea
+                  <JsonSchemaEditor
+                    label="O que ele promete devolver (JSON Schema)"
+                    hint="A resposta é validada. Se não bater, o agente de modelo tem uma chance de corrigir; persistindo, a execução falha em vez de entregar algo fora do formato."
                     value={editOutputJsonSchema}
-                    onChange={(e) => {
-                      setEditOutputJsonSchema(e.target.value)
-                      setSchemaError(e.target.value.trim() && !parseSchemaField(e.target.value) ? 'Isso não é um objeto JSON válido.' : null)
-                    }}
-                    rows={5}
-                    spellCheck={false}
-                    placeholder={'{\n  "type": "object",\n  "properties": { "titulo": { "type": "string" } },\n  "required": ["titulo"]\n}'}
-                    className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 font-mono text-xs outline-none focus:border-(--border-focus)"
-                    data-testid="output-json-schema"
+                    onChange={setEditOutputJsonSchema}
+                    testId="output-json-schema"
                   />
-                  {schemaError ? (
-                    <p className="mt-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid="schema-error">
-                      {schemaError}
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-xs text-(--text-faint)">
-                      A resposta é validada. Se não bater, o agente tem UMA chance de corrigir; persistindo, a execução falha em vez de entregar algo fora do formato.
-                    </p>
-                  )}
                 </div>
               )}
               <label className="flex items-start gap-2 text-sm">
