@@ -2,6 +2,9 @@ import { ObjectId } from 'mongodb'
 import { roleUIConfigOf } from './agentCapabilities.js'
 import { MAX_ORCHESTRATION_ROUNDS, MAX_TASKS } from './sectorPlanner.js'
 import { normalizeWebSearch } from './webSearch/policy.js'
+import type { ExecutorConfig, ExecutorKind, ResponseMode } from './executors/types.js'
+import { agentContractOf, parseAgentContract } from './executors/contract.js'
+import type { AgentContract, AgentContractInput } from './executors/contract.js'
 import type { WebSearchSettings } from './webSearch/policy.js'
 import type { RoleUIConfig } from './agentCapabilities.js'
 import { db } from './db.js'
@@ -322,6 +325,26 @@ export interface Agent {
   activationModes: ActivationMode[] // how this agent may be triggered
   inputContract: string // what data the agent expects to receive (free text)
   outputContract: string // what result the agent must produce (free text)
+  /**
+   * COMO o trabalho deste agente é feito.
+   *
+   * Hoje todo agente é uma chamada a um modelo, e vai continuar sendo: ausente lê como
+   * `llm`. Nem todo trabalho precisa de um, porém — somar uma coluna ou chamar um
+   * endpoint por modelo é caro, lento e não determinístico, e para uma soma isso não
+   * serve.
+   *
+   * Não se chama `executionMode`: esse nome já é das rotinas, e dois campos com o mesmo
+   * nome e sentidos diferentes é um erro esperando quem for ler depois. Também não é o
+   * `preset` — aquele diz o PAPEL do agente (quem coleta, quem conduz), que é outra
+   * pergunta.
+   */
+  executorKind?: ExecutorKind
+  /** O que ele devolve: dado, texto, ou os dois. Ausente = derivado de `defaultOutputFormat`. */
+  responseMode?: ResponseMode
+  /** A configuração do executor, coerente com o tipo. Nunca credencial. */
+  executorConfig?: ExecutorConfig
+  /** O que ele espera RECEBER, verificável. O `inputContract` em texto continua existindo. */
+  inputJsonSchema?: Record<string, unknown> | null
   // --- executable side of the contract (all optional, all additive) --------------
   // The format a task produces when the caller does not ask for a specific one.
   // Absent = the previous behaviour (whatever the caller requested, else text).
@@ -440,9 +463,18 @@ export const MASKED_HEADER_VALUE = '***'
  */
 export function toPublicAgent<T extends { tools?: AgentTool[]; builtinTools?: AgentBuiltinTool[]; preset?: AgentPreset; knowledgeEnabled?: boolean | null }>(
   agent: T,
-): T & { roleConfig: RoleUIConfig } {
+): T & { roleConfig: RoleUIConfig; contract: AgentContract } {
   const roleConfig = roleUIConfigOf({ preset: agent.preset ?? 'custom', knowledgeEnabled: agent.knowledgeEnabled })
-  return { ...publicFields(agent), roleConfig }
+  /**
+   * O contrato já resolvido, como o `roleConfig`.
+   *
+   * Um agente antigo não tem nenhum destes campos gravados, e a tela não deveria precisar
+   * saber disso: aqui ele sai completo, com o padrão que descreve o comportamento que ele
+   * SEMPRE teve. Derivar do lado do cliente criaria uma segunda cópia da regra, e uma das
+   * duas envelheceria.
+   */
+  const contract = agentContractOf(agent as AgentContractInput)
+  return { ...publicFields(agent), roleConfig, contract }
 }
 
 function publicFields<T extends { tools?: AgentTool[]; builtinTools?: AgentBuiltinTool[] }>(agent: T): T {
@@ -508,6 +540,10 @@ export interface AgentModelFields {
   allowedCallerAgentIds?: string[]
   toolIds?: string[]
   metricProfile?: MetricProfile
+  executorKind?: ExecutorKind
+  responseMode?: ResponseMode
+  executorConfig?: ExecutorConfig
+  inputJsonSchema?: Record<string, unknown> | null
   routingDescription?: string
   orchestration?: { maxTasks?: number; maxRounds?: number; onPartialFailure?: 'synthesize' | 'fail' }
   webSearch?: Partial<WebSearchSettings>
@@ -519,7 +555,7 @@ export interface AgentModelFields {
 export function parseAgentModelFields(
   body: Record<string, unknown>,
   /** O agente como está gravado. Ausente = criação, onde tudo pode ser definido. */
-  atual?: { preset?: AgentPreset } | null,
+  atual?: { preset?: AgentPreset; executorKind?: ExecutorKind } | null,
 ): { fields: AgentModelFields; error?: string } {
   const fields: AgentModelFields = {}
   if (body.preset !== undefined) {
@@ -619,6 +655,12 @@ export function parseAgentModelFields(
       ...(onPartialFailure ? { onPartialFailure } : {}),
     }
   }
+  // O contrato de execução. Só mexe no que FOI ENVIADO: um payload antigo sai daqui sem
+  // nenhum destes campos, e o agente é gravado exatamente como sempre foi.
+  const contrato = parseAgentContract(body, atual)
+  if (contrato.error) return { fields, error: contrato.error }
+  Object.assign(fields, contrato.fields)
+
   if (body.webSearch !== undefined) {
     const bruto = (body.webSearch ?? {}) as Record<string, unknown>
     if (typeof bruto !== 'object' || Array.isArray(bruto)) return { fields, error: 'webSearch must be an object' }

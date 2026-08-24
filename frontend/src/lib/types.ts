@@ -1,3 +1,29 @@
+/** Como o trabalho de um agente é feito. Não confundir com `executionMode`, que é de rotina. */
+export type ExecutorKind = 'llm' | 'function' | 'tool'
+
+/** O que o agente devolve: dado, texto, ou os dois. */
+export type ResponseMode = 'structured' | 'text' | 'structured_and_text'
+
+/**
+ * A configuração do executor, coerente com o tipo — e NUNCA credencial.
+ *
+ * `llm` é vazio de propósito: provedor, modelo e `runConfig` já são campos do agente.
+ * `tool` guarda referência: a chave vive na instalação cifrada do App.
+ */
+export type ExecutorConfig =
+  | { kind: 'llm' }
+  | { kind: 'function'; functionName: string; version?: string; config?: Record<string, unknown> }
+  | { kind: 'tool'; toolId?: string; appKey?: string; actionKey?: string }
+
+/** O contrato já resolvido, como o servidor o entrega. Sempre completo. */
+export interface AgentContract {
+  executorKind: ExecutorKind
+  responseMode: ResponseMode
+  executorConfig: ExecutorConfig
+  inputJsonSchema: Record<string, unknown> | null
+  outputJsonSchema: Record<string, unknown> | null
+}
+
 import type { RoleConfig } from './agentCapabilities'
 import type { RunConfig } from './runConfig'
 export type WidgetPosition = 'right' | 'left'
@@ -194,6 +220,21 @@ export interface AgentSummary {
   // for JSON, the schema the answer must satisfy.
   defaultOutputFormat?: 'text' | 'markdown' | 'json' | null
   outputJsonSchema?: Record<string, unknown> | null
+  /**
+   * COMO o trabalho deste agente é feito, e o que ele devolve.
+   *
+   * Vem RESOLVIDO do servidor, como o `roleConfig`: um agente antigo não tem nenhum
+   * destes campos gravados, e a tela não precisa saber disso. Derivar aqui seria uma
+   * segunda cópia da regra, e uma das duas envelheceria.
+   *
+   * Fase 1: os tipos existem e a API já os entrega; nenhuma tela os edita ainda.
+   */
+  contract?: AgentContract
+  executorKind?: ExecutorKind
+  responseMode?: ResponseMode
+  executorConfig?: ExecutorConfig
+  /** O que ele espera RECEBER, verificável. O `inputContract` em texto continua existindo. */
+  inputJsonSchema?: Record<string, unknown> | null
   requireGrounding?: boolean
   /** Liga/desliga a base própria à mão; ausente = o tipo do agente decide. */
   knowledgeEnabled?: boolean
