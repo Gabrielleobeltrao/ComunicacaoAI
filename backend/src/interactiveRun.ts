@@ -60,6 +60,14 @@ export interface InteractiveRunResult {
   outputValid: boolean
   outputRepaired: boolean
   outputProblem?: string
+  /**
+   * O DADO, quando o contrato pede dado.
+   *
+   * Quem consome recebia a string e reparseava — cada um do seu jeito, e o de quem
+   * esquecesse ficava mostrando JSON cru numa tela de conversa. Aqui ele sai já lido,
+   * uma vez, por quem acabou de validá-lo.
+   */
+  json?: unknown
 }
 
 const espera = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
@@ -172,6 +180,16 @@ export async function runInteractive(opts: InteractiveRunOptions): Promise<Inter
     return reparo.text
   })
 
+  // Lido uma vez, aqui, por quem acabou de validá-lo. `valid` já garante que dá para ler.
+  let dado: unknown
+  if (opts.output?.format === 'json' && conferido.valid) {
+    try {
+      dado = JSON.parse(conferido.text)
+    } catch {
+      dado = undefined
+    }
+  }
+
   return {
     text: conferido.text,
     usage,
@@ -179,6 +197,7 @@ export async function runInteractive(opts: InteractiveRunOptions): Promise<Inter
     outputValid: conferido.valid,
     outputRepaired: conferido.repaired,
     ...(conferido.problem ? { outputProblem: conferido.problem } : {}),
+    ...(dado !== undefined ? { json: dado } : {}),
   }
 }
 

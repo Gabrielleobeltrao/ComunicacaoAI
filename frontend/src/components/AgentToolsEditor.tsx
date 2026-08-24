@@ -21,10 +21,10 @@ export function AgentToolsEditor({
 
   return (
     <div className="space-y-3">
+      {/* A seção "O que ele aciona" já diz que isto é o que ele pode chamar. O que falta
+          é o que só vale aqui: o modelo escolhe sozinho, pelo nome e pela descrição. */}
       <p className="text-sm text-(--text-muted)">
-        Ferramentas deixam o agente chamar uma API sua durante a conversa (ex: checar disponibilidade,
-        criar pedido). O modelo decide quando usar com base no nome e na descrição, preenche os
-        parâmetros e o resultado volta pra ele continuar a resposta.
+        Uma API sua, que o modelo decide chamar sozinho — pelo nome e pela descrição que você der.
       </p>
 
       {value.length === 0 && <p className="text-sm text-(--text-faint)">Nenhuma ferramenta ainda.</p>}

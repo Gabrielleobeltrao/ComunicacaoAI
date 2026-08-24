@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ExecutionAudit } from './ExecutionAudit'
 import { duracaoTotal, filtrarEventos, formatarDuracao, tokensDaTrilha } from '../lib/executionTrace'
 import type { TraceEvent, TraceFilter } from '../lib/executionTrace'
 
@@ -113,6 +114,10 @@ function Evento({ evento }: { evento: TraceEvent }) {
 
 export function ExecutionTrace({ events, live, onClear }: { events: TraceEvent[]; live: boolean; onClear: () => void }) {
   const [filtro, setFiltro] = useState<TraceFilter>('all')
+  // A auditoria é um FILTRO como os outros: os mesmos eventos, lidos por quem investiga em
+  // vez de por quem acompanha. Uma tela separada obrigaria a sair da execução para
+  // entendê-la, e a voltar para conferir o que se entendeu.
+  const [aba, setAba] = useState<'trilha' | 'auditoria'>('trilha')
   const visiveis = useMemo(() => filtrarEventos(events, filtro), [events, filtro])
   const total = useMemo(() => duracaoTotal(events), [events])
   const tokens = useMemo(() => tokensDaTrilha(events), [events])
@@ -140,16 +145,30 @@ export function ExecutionTrace({ events, live, onClear }: { events: TraceEvent[]
           <button
             key={f.chave}
             type="button"
-            onClick={() => setFiltro(f.chave)}
+            onClick={() => {
+              setFiltro(f.chave)
+              setAba('trilha')
+            }}
             data-testid={`trace-filter-${f.chave}`}
-            className={`rounded-full px-2 py-0.5 text-[10px] ${filtro === f.chave ? 'bg-(--intent-brand) text-(--text-on-brand)' : 'text-(--text-muted)'}`}
+            className={`rounded-full px-2 py-0.5 text-[10px] ${aba === 'trilha' && filtro === f.chave ? 'bg-(--intent-brand) text-(--text-on-brand)' : 'text-(--text-muted)'}`}
           >
             {f.rotulo}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => setAba('auditoria')}
+          data-testid="trace-filter-audit"
+          aria-pressed={aba === 'auditoria'}
+          className={`ml-auto rounded-full px-2 py-0.5 text-[10px] ${aba === 'auditoria' ? 'bg-(--intent-brand) text-(--text-on-brand)' : 'text-(--text-muted)'}`}
+        >
+          Auditoria
+        </button>
       </div>
       <div className="flex-1 overflow-y-auto p-3">
-        {events.length === 0 ? (
+        {aba === 'auditoria' ? (
+          <ExecutionAudit events={events} />
+        ) : events.length === 0 ? (
           <p className="text-xs text-(--text-muted)">
             Mande uma mensagem: cada passo da execução aparece aqui — quem foi escolhido, o que foi pedido a cada agente, o que a base
             devolveu e onde o tempo foi gasto.

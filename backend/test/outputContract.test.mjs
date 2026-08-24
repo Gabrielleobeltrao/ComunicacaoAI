@@ -133,3 +133,54 @@ test('a JSON input reaches the model as data, not as a lost object', async () =>
   assert.match(userTurn.content, /"pedido"/)
   assert.match(userTurn.content, /A-1/)
 })
+
+// --- quantas correções, e a conta delas ------------------------------------------------
+//
+// Uma correção é uma inferência inteira: mesmo prompt, mesmo modelo, mesma conta. O
+// padrão continua sendo uma — é o que sempre houve — mas as duas pontas são escolhas
+// legítimas, e nenhuma delas deveria exigir mudar o código.
+
+test('o padrão continua sendo UMA correção', async () => {
+  const reply = replyWith('{"resumo":"sem titulo"}', '{"titulo":"Agora sim"}')
+  const result = await executeAgentTask(req({ output: { format: 'json', jsonSchema: SCHEMA } }), reply)
+  assert.equal(reply.calls.length, 2)
+  assert.equal(result.format.repaired, true)
+})
+
+test('zero correções: o contrato falhou e não há segunda chance paga', async () => {
+  const reply = replyWith('{"resumo":"sem titulo"}', '{"titulo":"seria consertado"}')
+  await assert.rejects(
+    () => executeAgentTask(req({ output: { format: 'json', jsonSchema: SCHEMA }, limits: { maxOutputRepairs: 0 } }), reply),
+    /JSON inválida/,
+  )
+  assert.equal(reply.calls.length, 1, 'quem quer o contrato ou nada não paga para descobrir a mesma coisa duas vezes')
+})
+
+test('duas correções: a segunda acontece, e é cobrada', async () => {
+  const reply = replyWith('{"resumo":"a"}', '{"resumo":"b"}', '{"titulo":"na terceira"}')
+  const result = await executeAgentTask(req({ output: { format: 'json', jsonSchema: SCHEMA }, limits: { maxOutputRepairs: 2 } }), reply)
+  assert.equal(reply.calls.length, 3)
+  assert.deepEqual(result.json, { titulo: 'na terceira' })
+  // 3 chamadas × (10 entrada + 5 saída): cada tentativa entra na mesma conta.
+  assert.equal(result.usage.inputTokens, 30)
+  assert.equal(result.usage.outputTokens, 15)
+})
+
+test('o pedido de correção leva os ERROS, e não a resposta comentada', async () => {
+  const reply = replyWith('{"resumo":"sem titulo"}', '{"titulo":"ok"}')
+  await executeAgentTask(req({ output: { format: 'json', jsonSchema: SCHEMA } }), reply)
+  const pedido = reply.calls[1].history.at(-1).content
+  assert.match(pedido, /titulo/, 'o modelo precisa saber QUAL campo faltou')
+  assert.match(pedido, /APENAS o objeto JSON/)
+})
+
+test('uma lista enorme de erros não vira o pedido inteiro', async () => {
+  // Um array com muitos itens errados gera um erro por item. Mandar os quarenta empurra o
+  // resto do pedido para fora do contexto — e piora justamente a correção que deveria guiar.
+  const schema = { type: 'object', properties: { itens: { type: 'array', items: { type: 'number' } } }, required: ['itens'] }
+  const ruim = JSON.stringify({ itens: Array.from({ length: 40 }, (_, i) => `n${i}`) })
+  const reply = replyWith(ruim, '{"itens":[1,2,3]}')
+  await executeAgentTask(req({ output: { format: 'json', jsonSchema: schema }, limits: { maxOutputRepairs: 1 } }), reply)
+  const pedido = reply.calls[1].history.at(-1).content
+  assert.ok(!pedido.includes('itens[9]'), 'os primeiros erros bastam: corrigido o padrão, os iguais somem juntos')
+})

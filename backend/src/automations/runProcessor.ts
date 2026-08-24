@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb'
+import { rememberSearchPages } from '../webSearch/memory.js'
 import {
   findRunUnscoped,
   insertArtifact,
@@ -145,6 +146,10 @@ function buildDeps(run: AutomationRun): RunnerDeps {
             ),
           apiKeyFor: (ownerId, provider) => getProviderApiKey(ownerId, provider as Provider),
           runTask: executeAgentTask,
+          // O que a busca ler vira conhecimento do agente: a rotina de amanhã encontra na
+          // base o que a de hoje trouxe, e a requisição ao buscador nem sai.
+          rememberSearchPages: (ownerId, agentId, query, pages, rememberDays) =>
+            rememberSearchPages(agentId, ownerId, query, pages as Parameters<typeof rememberSearchPages>[3], rememberDays),
           charge: recordReplyUsageOnce,
           chargeKeyFor: attemptChargeKey,
           finalizeEvent: finalizeAgentEvent,

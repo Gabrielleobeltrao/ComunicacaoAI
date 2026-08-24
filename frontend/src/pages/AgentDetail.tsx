@@ -9,7 +9,7 @@ import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
 import type { CharacterResolver } from '../lib/agentAvatar'
-import { modelLabelOf, roleLabelOf, skillsOf } from '../lib/agentPresentation'
+import { presetLabelOf, presetVerbOf, roleDescriptionOf, roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import { API_URL } from '../lib/api'
 import { getAgentStats, METRIC_KEY_LABEL, PERIOD_LABEL, type StatsPeriod } from '../lib/agentStats'
 import { formatCount, formatDuration, formatPercent, formatTokens } from '../lib/metricFormat'
@@ -184,34 +184,61 @@ function TeamsPanel({ overview, fid }: { overview: AgentOverview; fid: string | 
   )
 }
 
-// The four questions the overview must answer at a glance.
+/**
+ * O que a Visão geral responde — e o que ela parou de responder duas vezes.
+ *
+ * Ela mostrava `O que faz` numa linha de leitura e outra vez, dois dedos abaixo, no campo
+ * onde se escreve. E mostrava `Papel: Pesquisador` seguido de `Função: Pesquisador:
+ * encontra e resume…`, porque o texto padrão do molde já começa pelo cargo — a mesma
+ * palavra duas vezes seguidas, e a segunda sem acrescentar nada.
+ *
+ * A regra que sobrou: o que é EDITÁVEL mora no campo; o resumo mostra o que já existe.
+ */
 function AgentSummaryCard({ agent, overview }: { agent: AgentSummary; overview: AgentOverview }) {
+  const descricao = roleDescriptionOf(agent)
   const rows: [string, string][] = [
-    ['Função', roleLabelOf(agent)],
-    ['O que faz', agent.objective || '—'],
-    ['Recebe', agent.inputContract || '—'],
-    ['Entrega', agent.outputContract || '—'],
-    // O modelo tem linha própria. Ele estava ocupando a linha de "Função", onde não
-    // responde a pergunta que a visão geral faz.
-    ['Modelo', modelLabelOf(agent)],
+    ['Recebe', agent.inputContract || ''],
+    ['Entrega', agent.outputContract || ''],
   ]
   const w = overview.wiring
+  // Só o que EXISTE. "0 canal(is)" gasta uma ficha inteira para dizer que não há nada, e
+  // ausência já é o estado padrão de tudo aqui.
+  const fichas = w
+    ? ([
+        [w.toolCount, 'ferramenta'],
+        [w.knowledgeCount, 'documento'],
+        [w.sourceCount, 'fonte na web'],
+        [w.routineCount, 'rotina'],
+        [w.channelCount, 'canal'],
+      ] as const
+    ).filter(([n]) => n > 0)
+    : []
   return (
     <Card padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="agent-summary">
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'baseline' }}>
+        <span style={{ minWidth: 110, fontSize: 13, color: 'var(--text-muted)' }}>Papel</span>
+        <span style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', minWidth: 0, flex: 1 }}>
+          <Tag data-testid="agent-summary-role">{presetLabelOf(agent)}</Tag>
+          {descricao ? <span style={{ fontSize: 13.5, color: 'var(--text-heading)' }}>{descricao}</span> : null}
+        </span>
+      </div>
       {rows.map(([label, value]) => (
         <div key={label} style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ minWidth: 110, fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
-          <span style={{ fontSize: 13.5, color: 'var(--text-heading)', minWidth: 0, flex: 1 }}>{value}</span>
+          {/* "não definido" e não "—": um travessão não diz se o campo é opcional. */}
+          <span style={{ fontSize: 13.5, color: value ? 'var(--text-heading)' : 'var(--text-faint)', minWidth: 0, flex: 1 }}>
+            {value || 'não definido'}
+          </span>
         </div>
       ))}
-      {w ? (
+      {fichas.length > 0 ? (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 4 }}>
-          <Tag>{w.toolCount} ferramenta(s)</Tag>
-          <Tag>{w.knowledgeCount} documento(s)</Tag>
-          {/* O site cadastrado também é fonte, e some do resumo se não for contado. */}
-          {w.sourceCount > 0 ? <Tag>{w.sourceCount} fonte(s) na web</Tag> : null}
-          <Tag>{w.routineCount} rotina(s)</Tag>
-          <Tag>{w.channelCount} canal(is)</Tag>
+          {fichas.map(([n, nome]) => (
+            <Tag key={nome}>
+              {n} {nome}
+              {n > 1 ? 's' : ''}
+            </Tag>
+          ))}
         </div>
       ) : null}
     </Card>
@@ -235,6 +262,12 @@ function ProfileCard({ agent, stats, accent, portrait }: { agent: AgentSummary; 
       />
       <span style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, letterSpacing: '-.02em', color: 'var(--text-heading)' }}>
         {agent.name}
+      </span>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+        <Tag color={accent} data-testid="agent-header-role">
+          {presetLabelOf(agent)}
+        </Tag>
+        <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>{presetVerbOf(agent)}</span>
       </span>
       <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{roleLabel}</span>
       <StatusPill status={status} />

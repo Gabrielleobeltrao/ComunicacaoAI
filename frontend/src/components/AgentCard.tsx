@@ -3,7 +3,7 @@ import { accentFor, portraitFor, statusFor } from '../lib/agentAvatar'
 import type { AgentStat } from '../lib/agentAvatar'
 import { useActiveFloorId } from '../contexts/BuildingContext'
 import { floorAgent } from '../lib/floorRoutes'
-import { roleLabelOf, skillsOf } from '../lib/agentPresentation'
+import { presetLabelOf, presetVerbOf, roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import type { AgentSummary } from '../lib/types'
 import { AgentAvatar, Card, Icon, StatusPill, Tag } from '../ui'
 
@@ -46,6 +46,19 @@ export function AgentCard({ agent, stats, sectorName, portrait, needsSetup }: { 
             }}
           >
             {agent.name}
+          </span>
+          {/*
+            O PAPEL como etiqueta, e a descrição embaixo.
+            Antes a frase escrita pelo dono SUBSTITUÍA o cargo: um agente com "analisa
+            contratos de fornecedores" escrito não mostrava em lugar nenhum que ele é um
+            Analista — e o papel não é enfeite, é a regra que decide se ele busca na base,
+            se entra num plano com dependência e o que faz sozinho.
+          */}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <Tag color={accent} data-testid="agent-card-role">
+              {presetLabelOf(agent)}
+            </Tag>
+            <span style={{ fontSize: 12, color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>{presetVerbOf(agent)}</span>
           </span>
           <span style={{ fontSize: 13, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {roleLabelOf(agent)}

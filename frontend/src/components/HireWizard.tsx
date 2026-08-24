@@ -5,6 +5,8 @@ import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue 
 import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import { listAgentPresets, type AgentPresetSpec } from '../lib/agentPresets'
 import { PAPEIS_OUTROS, PAPEIS_PRINCIPAIS, ehPrincipal } from '../lib/agentRoles'
+import { AgentExecutorSection, executorProblems } from './AgentExecutorSection'
+import type { ExecutorDraft } from './AgentExecutorSection'
 import { roleConfigOf } from '../lib/agentCapabilities'
 import { reachableCollaboratorCount } from '../lib/agentReadiness'
 import { useBuildingPeers } from '../lib/useBuildingPeers'
@@ -178,6 +180,24 @@ export function HireWizard({
   const [runConfig, setRunConfig] = useState<RunConfig>({})
   const [avancadoAberto, setAvancadoAberto] = useState(false)
   /**
+   * COMO ele executa — a decisão mais consequente do formulário.
+   *
+   * Ela vivia só na edição, sob "Avançado": não dava para CRIAR um agente de função pelo
+   * painel. Era preciso criar um agente de IA, salvar, entrar nele e trocar o tipo — três
+   * passos para uma escolha que muda tudo o que vem depois, e que quem não sabia que
+   * existia nunca encontrava.
+   */
+  const [executor, setExecutor] = useState<ExecutorDraft>({
+    kind: 'llm',
+    functionName: '',
+    functionVersion: '',
+    appKey: '',
+    actionKey: '',
+    responseMode: 'text',
+    config: {},
+  })
+  const executando = executor.kind !== 'llm'
+  /**
    * Busca na web, escolhida JÁ na contratação.
    *
    * Antes ela só existia na edição, e por um motivo acidental: o bloco inteiro dependia
@@ -293,7 +313,10 @@ export function HireWizard({
     return items
   }, [form, reachable])
 
-  const canAdvance = step !== 1 || name.trim().length > 0
+  // Um agente de função sem função escolhida é uma configuração que a API recusa. Barrar
+  // aqui é a diferença entre uma frase no formulário e um erro depois de clicar em criar.
+  const problemasDoExecutor = executorProblems(executor)
+  const canAdvance = step !== 1 || (name.trim().length > 0 && problemasDoExecutor.length === 0)
 
   const submit = async () => {
     setSaving(true)
@@ -339,6 +362,32 @@ export function HireWizard({
           instructions: definicao.instructions.trim(),
           constraints: definicao.constraints.trim(),
           runConfig: cleanRunConfig(runConfig),
+          /**
+           * O tipo e a referência, na CRIAÇÃO.
+           *
+           * Só quando não é `llm`: um agente de IA continua sendo gravado exatamente como
+           * sempre foi, sem ganhar campo que ninguém pediu. Os schemas não vão daqui — o
+           * servidor os deriva do registro, que é quem executa.
+           */
+          ...(executor.kind === 'function'
+            ? {
+                executorKind: 'function',
+                responseMode: 'structured',
+                executorConfig: {
+                  kind: 'function',
+                  functionName: executor.functionName,
+                  ...(executor.functionVersion ? { version: executor.functionVersion } : {}),
+                  ...(Object.keys(executor.config).length > 0 ? { config: executor.config } : {}),
+                },
+              }
+            : {}),
+          ...(executor.kind === 'tool'
+            ? {
+                executorKind: 'tool',
+                responseMode: executor.responseMode,
+                executorConfig: { kind: 'tool', appKey: executor.appKey, actionKey: executor.actionKey },
+              }
+            : {}),
         }),
       })
       if (!res.ok) throw new Error(String(res.status))
@@ -488,12 +537,22 @@ export function HireWizard({
               <Textarea rows={3} value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Descreva em uma ou duas frases." />
             </Field>
 
-            {form.subject ? (
+            {/*
+              A escolha do EXECUTOR, entre as perguntas principais.
+              Ela decide se este agente chama um provedor ou roda código — e decide quais
+              das perguntas abaixo fazem sentido. Escondê-la em "avançado" era pedir que
+              alguém adivinhasse que ela existe.
+            */}
+            <div data-testid="hire-executor">
+              <AgentExecutorSection draft={executor} onChange={setExecutor} />
+            </div>
+
+            {!executando && form.subject ? (
               <Field label={form.subject.label} hint={form.subject.help}>
                 <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={form.subject.placeholder} />
               </Field>
             ) : null}
-            {form.deliverable ? (
+            {!executando && form.deliverable ? (
               <Field label={form.deliverable.label}>
                 <Input value={deliverable} onChange={(e) => setDeliverable(e.target.value)} placeholder={form.deliverable.placeholder} />
               </Field>

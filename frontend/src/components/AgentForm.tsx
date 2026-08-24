@@ -30,6 +30,9 @@ import { WebSearchStatusLine } from './WebSearchStatusLine'
 import { AgentSources } from './AgentSources'
 import { AgentAppGrantsEditor } from './AgentAppGrantsEditor'
 import { AgentToolsEditor } from './AgentToolsEditor'
+import { AgentExecutorSection, executorProblems } from './AgentExecutorSection'
+import type { ExecutorDraft } from './AgentExecutorSection'
+import { JsonSchemaEditor, checkSchema } from './JsonSchemaEditor'
 import { roleConfigOf } from '../lib/agentCapabilities'
 import type { AgentRole } from '../lib/agentCapabilities'
 
@@ -65,6 +68,9 @@ const SECTION_BLOCKS: Record<string, string[]> = {
   // "Definição" abre a lista de propósito: é o bloco que o dono revisa, e o que mais
   // muda o comportamento do agente. "Modelo e execução" vem logo depois, e quase ninguém
   // precisa tocar — todo campo dele começa em "Padrão do sistema".
+  // "executor" saiu daqui: ele é a resposta da pergunta que a aba "Como trabalha" faz, e
+  // estava ao lado da métrica do card e da exclusão do agente. Para algo que decide se há
+  // chamada a provedor, era o lugar errado.
   avancado: ['capacidades', 'execucao', 'metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
   // legacy aliases
   essencial: ['identidade'],
@@ -115,15 +121,30 @@ const ROTULOS: Record<AgentRole, { definicao: string; entrada: [string, string];
  * procurar. Nada foi removido: os blocos agora respondem a três perguntas, e é a
  * pergunta que orienta quem chegou.
  */
+/**
+ * Uma SEÇÃO: título, uma linha, e os blocos.
+ *
+ * Ela não é uma caixa. Era — e a caixa da seção em volta das caixas dos blocos é o que
+ * fazia a tela parecer aninhada três vezes para mostrar um campo. A caixa é do bloco; a
+ * seção só agrupa e nomeia.
+ *
+ * Espaçamento pelos tokens do produto: 32 entre seções (`--space-8`), 12 do título até o
+ * primeiro bloco (`--space-3`). Sem margens por elemento, que somem e dobram conforme o
+ * vizinho.
+ */
 function GrupoDeBlocos({ titulo, resumo, ativo, children }: { titulo: string; resumo: string; ativo: boolean; children: ReactNode }) {
   // Fora da aba "Como trabalha" não há grupo nenhum: no assistente de contratação os
   // mesmos campos aparecem em sequência, e um cabeçalho ali seria enfeite.
   if (!ativo) return <>{children}</>
   return (
-    <section className="mt-6 first:mt-0">
-      <h3 className="text-sm font-semibold text-(--text-heading)">{titulo}</h3>
-      <p className="mt-0.5 mb-1 text-xs text-(--text-faint)">{resumo}</p>
-      <div className="rounded-xl border border-(--border-subtle) px-3">{children}</div>
+    <section className="mt-8 flex flex-col gap-3 first:mt-0" data-testid="agent-section">
+      <div>
+        <h3 className="text-sm font-semibold text-(--text-heading)">{titulo}</h3>
+        <p className="mt-0.5 text-xs text-(--text-faint)">{resumo}</p>
+      </div>
+      {/* Os blocos irmãos: uma caixa só, com divisores entre eles. Duas caixas coladas
+          criam uma borda dupla; o divisor é uma linha, e é a mesma linha sempre. */}
+      <div className="overflow-hidden rounded-[18px] border border-(--border-subtle) bg-(--surface-card)">{children}</div>
     </section>
   )
 }
@@ -304,8 +325,23 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   // for JSON, the schema it must satisfy. Absent = exactly today's behaviour.
   const [editDefaultOutputFormat, setEditDefaultOutputFormat] = useState<'' | 'text' | 'markdown' | 'json'>('')
   const [editOutputJsonSchema, setEditOutputJsonSchema] = useState('')
+  const [editInputJsonSchema, setEditInputJsonSchema] = useState('')
+  /**
+   * COMO ele executa. Um agente antigo lê como `llm` — que é o que ele sempre foi.
+   *
+   * O padrão vem do servidor (`contract`), já resolvido: derivar aqui seria uma segunda
+   * cópia da regra, e uma das duas envelheceria.
+   */
+  const [executor, setExecutor] = useState<ExecutorDraft>({
+    kind: 'llm',
+    functionName: '',
+    functionVersion: '',
+    appKey: '',
+    actionKey: '',
+    responseMode: 'text',
+    config: {},
+  })
   const [editRequireGrounding, setEditRequireGrounding] = useState(false)
-  const [schemaError, setSchemaError] = useState<string | null>(null)
 
   useEffect(() => {
     async function loadProviders() {
@@ -376,6 +412,17 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       setEditWebSearch(agent.webSearch ?? {})
     setEditDefaultOutputFormat(agent.defaultOutputFormat ?? '')
     setEditOutputJsonSchema(agent.outputJsonSchema ? JSON.stringify(agent.outputJsonSchema, null, 2) : '')
+    setEditInputJsonSchema(agent.inputJsonSchema ? JSON.stringify(agent.inputJsonSchema, null, 2) : '')
+    const c = agent.contract
+    setExecutor({
+      kind: c?.executorKind ?? 'llm',
+      functionName: c?.executorConfig?.kind === 'function' ? c.executorConfig.functionName : '',
+      functionVersion: c?.executorConfig?.kind === 'function' ? (c.executorConfig.version ?? '') : '',
+      appKey: c?.executorConfig?.kind === 'tool' ? (c.executorConfig.appKey ?? '') : '',
+      actionKey: c?.executorConfig?.kind === 'tool' ? (c.executorConfig.actionKey ?? '') : '',
+      responseMode: c?.responseMode ?? 'text',
+      config: c?.executorConfig?.kind === 'function' ? ((c.executorConfig as { config?: Record<string, unknown> }).config ?? {}) : {},
+    })
     setEditRequireGrounding(agent.requireGrounding === true)
       setEditBuiltinTools(agent.builtinTools ?? [])
       setPendingDocs([])
@@ -434,6 +481,18 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       return
     }
     if (payloadJson === savedPayloadRef.current) return
+    /**
+     * A gravação automática também obedece à conferência.
+     *
+     * Aqui é o caminho que grava de verdade na página do agente — o botão só existe na
+     * criação. Sem esta linha, "impedir salvar incoerente" valeria para o modal e não
+     * valeria para o lugar onde as pessoas editam, que é o pior dos dois mundos: a regra
+     * existe, parece cumprida, e não é.
+     */
+    if (problemasDeSalvamento.length > 0) {
+      setAutoSaveState('error')
+      return
+    }
 
     setAutoSaveState('saving')
     const agentId = agent._id
@@ -467,12 +526,21 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   // request finish after the component unmounts.
   const flushRef = useRef<{ agentId: string; json: string } | null>(null)
   useEffect(() => {
-    if (flat && !isCreating && agent) flushRef.current = { agentId: agent._id, json: payloadJson }
+    // Só o que passou pela conferência é candidato a ser descarregado na saída.
+    flushRef.current = flat && !isCreating && agent && problemasDeSalvamento.length === 0 ? { agentId: agent._id, json: payloadJson } : null
   })
   useEffect(() => {
     return () => {
       const pending = flushRef.current
-      if (pending && pending.json !== savedPayloadRef.current) {
+      /**
+       * Sem LINHA DE BASE, não há edição pendente — há um formulário que ainda não carregou.
+       *
+       * `savedPayloadRef` só recebe valor depois que o agente chega. Antes disso o
+       * formulário guarda os padrões (nome vazio, histórico 6), e sair da tela nessa janela
+       * mandava justamente isso: um PATCH que apaga o nome do agente com uma string vazia.
+       * A comparação com `null` dizia "mudou" para um formulário que nunca foi preenchido.
+       */
+      if (pending && savedPayloadRef.current !== null && pending.json !== savedPayloadRef.current) {
         fetch(`${API_URL}/api/agents/${pending.agentId}`, {
           method: 'PATCH',
           credentials: 'include',
@@ -596,6 +664,24 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       // saved exactly as it always was.
       defaultOutputFormat: editDefaultOutputFormat || null,
       outputJsonSchema: parseSchemaField(editOutputJsonSchema),
+      inputJsonSchema: parseSchemaField(editInputJsonSchema),
+      executorKind: executor.kind,
+      responseMode: executor.responseMode,
+      // A configuração acompanha o TIPO e só ele: guardar `functionName` num agente de
+      // modelo é guardar uma promessa que ninguém cumpre — o campo fica lá, alguém o lê
+      // depois e conclui que o agente chama uma função.
+      executorConfig:
+        executor.kind === 'function'
+          ? {
+              kind: 'function' as const,
+              functionName: executor.functionName,
+              ...(executor.functionVersion ? { version: executor.functionVersion } : {}),
+              // Só quando há parâmetro: um objeto vazio gravado seria um campo que ninguém pediu.
+              ...(Object.keys(executor.config).length > 0 ? { config: executor.config } : {}),
+            }
+          : executor.kind === 'tool'
+            ? { kind: 'tool' as const, appKey: executor.appKey, actionKey: executor.actionKey }
+            : { kind: 'llm' as const },
       requireGrounding: editRequireGrounding,
       routingDescription: editRouting.trim(),
       inputContract: editInputContract.trim(),
@@ -618,9 +704,26 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     }
   }
 
+  /**
+   * O que impede de salvar.
+   *
+   * Uma configuração incoerente gravada não fica parada: ela vira uma execução que falha
+   * no primeiro uso, longe daqui, com uma mensagem que não fala do formulário. Barrar aqui
+   * é o único lugar onde o dono ainda tem o contexto para entender.
+   */
+  const problemasDeSalvamento = [
+    ...executorProblems(executor),
+    ...checkSchema(editInputJsonSchema).problems.map((p) => `Contrato de entrada — ${p.path ? `${p.path}: ` : ''}${p.message}`),
+    ...checkSchema(editOutputJsonSchema).problems.map((p) => `Contrato de saída — ${p.path ? `${p.path}: ` : ''}${p.message}`),
+  ]
+
   async function handleSave(event: FormEvent) {
     event.preventDefault()
     setEditError(null)
+    if (problemasDeSalvamento.length > 0) {
+      setEditError(problemasDeSalvamento[0])
+      return
+    }
     setSaving(true)
     const payload = buildPayload()
 
@@ -874,10 +977,32 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     }
   }
 
+  /**
+   * Os blocos que só existem para um agente de MODELO.
+   *
+   * Provedor, temperatura, estilo de resposta, memória de conversa, ferramentas: nada
+   * disso significa coisa alguma para uma função determinística ou uma ação de App. E um
+   * campo sem significado não fica inofensivo na tela — ele é preenchido, e depois alguém
+   * passa uma tarde entendendo por que a temperatura não mudou o resultado de uma soma.
+   *
+   * Escondido, não apagado: o que já estava gravado continua gravado, e voltar o tipo para
+   * "IA / LLM" traz tudo de volta como estava.
+   */
+  const soDeModelo = new Set(['modelo', 'execucao', 'estilo', 'memoria', 'ferramentas', 'conhecimento', 'guardrails', 'identificacao'])
   const showBlock = (block: string) => {
+    if (executor.kind !== 'llm' && soDeModelo.has(block)) return false
+    /**
+     * "Como este agente executa" abre a aba "Como trabalha".
+     *
+     * Os outros blocos dela vêm do PAPEL (`blocosDoPapel`), resolvido pelo servidor. Este
+     * não: ele vale para todo agente, porque a pergunta "quem faz o trabalho" existe antes
+     * de qualquer papel — e é ela que decide quais dos blocos seguintes fazem sentido.
+     */
+    if (block === 'executor' && flat) return section == null || section === 'como-trabalha'
     if (flat && section === 'como-trabalha') return blocosDoPapel.includes(block)
     if (flat) return section == null || (SECTION_BLOCKS[section] ?? []).includes(block)
     if (block === 'identidade' || block === 'conhecimento') return true
+    if (block === 'executor') return advancedOpen
     return advancedOpen
   }
   /**
@@ -990,9 +1115,38 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
             !flat && advancedOpen ? 'mt-3 rounded-xl border border-(--border-subtle) bg-(--surface-card)/40 px-4 py-1' : ''
           }
         >
-          {/* GRUPO 1 — quem ele é e o que ele entrega. Cinco blocos que respondem à
-              mesma pergunta: a definição, o que espera receber, em que forma entrega e
-              quando deve ser chamado. Soltos, eram cinco linhas indistinguíveis. */}
+          {/* A PRIMEIRA seção: quem faz o trabalho decide se as seguintes fazem sentido.
+              Ela ficava solta entre dois grupos, sem a caixa que os vizinhos tinham. */}
+          <GrupoDeBlocos
+            ativo={flat && section === 'como-trabalha'}
+            titulo="Como este agente executa"
+            resumo="Quem faz o trabalho — e o que ele devolve."
+          >
+          {showBlock('executor') && (
+            <CollapsibleBlock title="Como este agente executa" showHeader={stacked} testId="agent-executor-block" defaultOpen>
+              <AgentExecutorSection
+                draft={executor}
+                onChange={setExecutor}
+                onContractDerived={(c) => {
+                  // O que o servidor vai gravar de qualquer jeito, mostrado antes de salvar.
+                  setEditInputJsonSchema(c.inputJsonSchema ? JSON.stringify(c.inputJsonSchema, null, 2) : '')
+                  setEditOutputJsonSchema(c.outputJsonSchema ? JSON.stringify(c.outputJsonSchema, null, 2) : '')
+                }}
+              />
+              {problemasDeSalvamento.length > 0 && (
+                <ul className="mt-2 space-y-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid="executor-problems">
+                  {problemasDeSalvamento.map((p) => (
+                    <li key={p}>{p}</li>
+                  ))}
+                </ul>
+              )}
+            </CollapsibleBlock>
+          )}
+          </GrupoDeBlocos>
+
+          {/* Cinco blocos que respondem à mesma pergunta: a definição, o que espera
+              receber, em que forma entrega e quando deve ser chamado. Soltos, eram cinco
+              linhas indistinguíveis. */}
           <GrupoDeBlocos
             ativo={flat && section === 'como-trabalha'}
             titulo="Quem ele é e o que entrega"
@@ -1128,8 +1282,8 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           )}
           </GrupoDeBlocos>
 
-          {/* A porta de saída da regra do TIPO. Fica em Avançado, e não no meio de "Como
-              trabalha": é uma exceção deliberada, não um passo da configuração. */}
+
+
           {showBlock('capacidades') && (
             <CollapsibleBlock title="Capacidades do tipo" showHeader={stacked}>
               <p className="text-sm text-(--text-muted)">{cfg.summary ?? 'O tipo do agente decide o que ele consulta e o que ele aciona.'}</p>
@@ -1571,15 +1725,37 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           </CollapsibleBlock>
         )}
 
+        {/*
+          Para função e ferramenta o contrato é DERIVADO e somente leitura: ele já aparece
+          resumido no bloco de execução, e o detalhe técnico fica aqui, recolhido, para
+          quem for conferir.
+        */}
         {showBlock('contrato') && (
-          <CollapsibleBlock title="Contrato de saída" showHeader={stacked}>
+          <CollapsibleBlock title="Contratos de entrada e saída" showHeader={stacked} testId="agent-contract-block">
             <div className="space-y-3 rounded-lg border border-(--border-subtle) p-3" data-testid="output-contract-block">
               <p className="text-sm text-(--text-muted)">
-                Para tarefas automáticas (rotinas, gatilhos e delegações). Deixe em branco para manter o comportamento atual.
+                O que ele aceita receber e o que promete devolver — verificável, e conferido antes e depois de cada execução. Deixe em branco para manter o comportamento atual.
               </p>
+              {/*
+                O contrato de ENTRADA. É ele que faz uma etapa receber campos em vez da prosa
+                da etapa anterior — e é ele que recusa a execução quando o campo não chega,
+                em vez de deixar o agente deduzir o valor.
+              */}
+              <JsonSchemaEditor
+                label="O que ele aceita receber (JSON Schema)"
+                hint="Sem contrato de entrada, ele recebe texto — como sempre recebeu."
+                value={editInputJsonSchema}
+                onChange={setEditInputJsonSchema}
+                testId="input-json-schema"
+                readOnly={executor.kind === 'function'}
+                readOnlyReason="O contrato vem da função registrada no servidor — que é quem executa. Editá-lo aqui criaria duas verdades sobre o que ela aceita."
+              />
               <div>
-                <label className="mb-1 block text-sm text-(--text-muted)">Formato padrão do resultado</label>
+                <label className="mb-1 block text-sm text-(--text-muted)" htmlFor="default-output-format">
+                  Formato padrão do resultado
+                </label>
                 <select
+                  id="default-output-format"
                   value={editDefaultOutputFormat}
                   onChange={(e) => setEditDefaultOutputFormat(e.target.value as '' | 'text' | 'markdown' | 'json')}
                   className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
@@ -1591,30 +1767,22 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
                   <option value="json">JSON</option>
                 </select>
               </div>
-              {editDefaultOutputFormat === 'json' && (
+              {/*
+                Aparece quando alguém pede dado — ou quando JÁ EXISTE um contrato de saída.
+                Um agente de função tem o dele derivado do registro no momento da escolha, e
+                escondê-lo até o modo mudar faria o dono achar que não há contrato nenhum.
+              */}
+              {(editDefaultOutputFormat === 'json' || executor.responseMode !== 'text' || editOutputJsonSchema.trim() !== '') && (
                 <div>
-                  <label className="mb-1 block text-sm text-(--text-muted)">Estrutura do JSON (JSON Schema, opcional)</label>
-                  <textarea
+                  <JsonSchemaEditor
+                    label="O que ele promete devolver (JSON Schema)"
+                    hint="A resposta é validada. Se não bater, o agente de modelo tem uma chance de corrigir; persistindo, a execução falha em vez de entregar algo fora do formato."
                     value={editOutputJsonSchema}
-                    onChange={(e) => {
-                      setEditOutputJsonSchema(e.target.value)
-                      setSchemaError(e.target.value.trim() && !parseSchemaField(e.target.value) ? 'Isso não é um objeto JSON válido.' : null)
-                    }}
-                    rows={5}
-                    spellCheck={false}
-                    placeholder={'{\n  "type": "object",\n  "properties": { "titulo": { "type": "string" } },\n  "required": ["titulo"]\n}'}
-                    className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 font-mono text-xs outline-none focus:border-(--border-focus)"
-                    data-testid="output-json-schema"
+                    onChange={setEditOutputJsonSchema}
+                    testId="output-json-schema"
+                    readOnly={executor.kind === 'function'}
+                    readOnlyReason="O contrato de saída também é da função registrada."
                   />
-                  {schemaError ? (
-                    <p className="mt-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid="schema-error">
-                      {schemaError}
-                    </p>
-                  ) : (
-                    <p className="mt-1 text-xs text-(--text-faint)">
-                      A resposta é validada. Se não bater, o agente tem UMA chance de corrigir; persistindo, a execução falha em vez de entregar algo fora do formato.
-                    </p>
-                  )}
                 </div>
               )}
               <label className="flex items-start gap-2 text-sm">
@@ -1706,9 +1874,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
         {/* GRUPO 2 — o que ele ACIONA. Apps conectados, ferramentas HTTP próprias e as
             reutilizáveis da conta: três lugares diferentes para a mesma pergunta, que
             agora ficam juntos. */}
-        {showBlock('ferramentas') && (
+        {/* Uma função não conversa com ferramenta nem lê base: estas duas seções ficariam
+            vazias, ou pior, prometendo o que não acontece. Somem junto com os blocos de
+            modelo, estilo e memória — pela mesma razão. */}
+        {/* A seção só existe quando tem bloco dentro.
+            Um título com uma caixa vazia embaixo é pior que a ausência: ele afirma que o
+            agente aciona alguma coisa, e um analista não aciona nada. */}
         <GrupoDeBlocos
-          ativo={flat && section === 'como-trabalha'}
+          ativo={flat && section === 'como-trabalha' && executor.kind === 'llm' && showBlock('ferramentas')}
           titulo="O que ele aciona"
           resumo="Os apps e as ferramentas que ele pode chamar. Conceder é o que autoriza."
         >
@@ -1760,7 +1933,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
           </CollapsibleBlock>
         )}
         </GrupoDeBlocos>
-        )}
         </div>
       </div>
 
@@ -1779,7 +1951,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               aberto, e é justamente o mais alto — a lista de documentos empurrava todo o
               resto para fora da tela. */}
           <GrupoDeBlocos
-            ativo={flat && section === 'como-trabalha'}
+            ativo={flat && section === 'como-trabalha' && executor.kind === 'llm'}
             titulo="O que ele consulta"
             resumo="De onde ele tira as respostas: o que você escreve, os sites que ele lê, e o que já foi guardado."
           >

@@ -4,6 +4,8 @@ import { executeToolCall } from './toolExecution.js'
 import { MASKED_HEADER_VALUE, pullToolFromAgents, toPublicAgent } from './agents.js'
 import { resolveWidgetDestination } from './widgetDestination.js'
 import { webChatAccessFor } from './apps/publicChannelAccess.js'
+import { listPublicFunctions } from './executors/functionRegistry.js'
+import { listAppsForOwner } from './apps/privateApps.js'
 import { resolveRuntimeDestination } from './widgetRuntimeDestination.js'
 import { listWidgetsBySector } from './widgets.js'
 import { readiness, startEmbeddedEngine, stopEmbeddedEngine } from './automations/engine.js'
@@ -17,6 +19,9 @@ import { ObjectId } from 'mongodb'
 import { normalizeRunConfig } from './runConfig.js'
 import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
 import { describeDropped, runInteractive } from './interactiveRun.js'
+import { validateAgainstSchema } from './jsonSchema.js'
+import { agentContractOf } from './executors/contract.js'
+import { dispatchAgentExecution } from './executors/dispatcher.js'
 import { AgentRunError } from './agentRuntime.js'
 import { executeSectorTeam, sectorRunContext } from './delegation.js'
 import type { DelegationDeps } from './delegation.js'
@@ -135,6 +140,9 @@ import {
 } from './userSettings.js'
 import { embeddingBudgetConfig, embeddingUsageReport, ensureEmbeddingUsageIndexes } from './embeddings/budget.js'
 import { activeSearchProvider, configuredProviderName } from './webSearch/provider.js'
+import { gatherWebEvidence } from './webSearch/step.js'
+import { rememberSearchPages } from './webSearch/memory.js'
+import { capabilitiesOf } from './agentCapabilities.js'
 import { ensureWebSearchIndexes, searchBudgetConfig, searchBudgetStatus } from './webSearch/budget.js'
 import { VOYAGE_MODELS, voyageFallbackModel, voyageModel } from './voyage.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
@@ -462,6 +470,102 @@ app.get('/api/settings/embeddings', requireAuth, async (_req, res) => {
  * Os números são desta INSTALAÇÃO. Se a mesma chave for usada em outro lugar, aquelas
  * chamadas não passam por aqui e este contador não as conhece — a tela diz isso.
  */
+/**
+ * O que um agente PODE ser configurado para executar.
+ *
+ * Só leitura, e só o que descreve: nome, versão, descrição, competências e os schemas de
+ * entrada e saída. O `handler` é código e não sai daqui; nenhuma credencial passa por
+ * aqui, nem o nome de uma.
+ *
+ * As ações de App vêm do catálogo já resolvido para ESTE dono, com o mesmo escopo que o
+ * resto do sistema usa — um App privado de outra conta não aparece.
+ */
+/**
+ * O contrato de um agente de FERRAMENTA vem da ação, como o de função vem do registro.
+ *
+ * A diferença é que a ação de um App é do dono — precisa de uma consulta com escopo de
+ * conta, e por isso a derivação mora aqui e não no módulo puro do contrato.
+ *
+ * `outputJsonSchema` só é preenchido quando a AÇÃO declara um. A maioria devolve o corpo
+ * de um terceiro, cuja forma o manifesto não controla; inventar um schema ali seria criar
+ * um contrato que a primeira resposta diferente desmente. Sem ele, quem chamou recebe o
+ * aviso — em vez de descobrir na primeira execução que o modo estruturado não vale.
+ */
+async function derivarContratoDeFerramenta(
+  ownerId: string,
+  campos: { executorKind?: string; executorConfig?: { kind?: string; appKey?: string; actionKey?: string; toolId?: string } },
+): Promise<{ inputJsonSchema?: Record<string, unknown>; outputJsonSchema?: Record<string, unknown> | null; warning?: string; error?: string }> {
+  const cfg = campos.executorConfig
+  if (campos.executorKind !== 'tool' || cfg?.kind !== 'tool' || !cfg.appKey || !cfg.actionKey) return {}
+  const apps = await listAppsForOwner(ownerId).catch(() => [])
+  const app = apps.find((a) => a.key === cfg.appKey)
+  if (!app) return { error: `O App "${cfg.appKey}" não está disponível nesta conta.` }
+  // Correspondência EXATA. "A primeira ação" seria executar outra coisa com o nome certo.
+  const acao = (app.actions ?? []).find((a) => a.key === cfg.actionKey)
+  if (!acao) return { error: `A ação "${cfg.actionKey}" não existe no App "${cfg.appKey}".` }
+  return {
+    inputJsonSchema: acao.inputSchema,
+    outputJsonSchema: acao.outputSchema ?? null,
+    ...(acao.outputSchema
+      ? {}
+      : { warning: `A ação "${acao.name}" não declara o formato da resposta. A saída deste agente não pode ser usada como contrato estruturado enquanto a ação não declarar um.` }),
+  }
+}
+
+/** Aplica a derivação aos campos que vão para o banco. Devolve o erro, quando há. */
+async function aplicarContratoDeFerramenta(
+  ownerId: string,
+  campos: { executorKind?: string; executorConfig?: unknown; inputJsonSchema?: unknown; outputJsonSchema?: unknown },
+  /**
+   * O tipo que o agente JÁ TEM.
+   *
+   * Num PATCH parcial o cliente manda só a ação nova, sem repetir `executorKind` — e sem
+   * isto a derivação não reconhecia um agente de ferramenta, deixava o contrato antigo no
+   * lugar e o agente passava a executar uma ação com o schema de outra.
+   */
+  tipoGravado?: string,
+): Promise<{ error?: string; warning?: string }> {
+  const efetivo = { ...campos, executorKind: campos.executorKind ?? tipoGravado }
+  const r = await derivarContratoDeFerramenta(ownerId, efetivo as Parameters<typeof derivarContratoDeFerramenta>[1])
+  if (r.error) return { error: r.error }
+  if (r.inputJsonSchema) campos.inputJsonSchema = r.inputJsonSchema
+  if (r.outputJsonSchema !== undefined) campos.outputJsonSchema = r.outputJsonSchema
+  /**
+   * Sem contrato de saída declarado, o modo estruturado é impossível.
+   *
+   * Corrigir aqui em vez de recusar: quem trocou de ação não escolheu perder o modo, e uma
+   * recusa faria a edição falhar por uma consequência que ninguém pediu. A tela explica.
+   */
+  if (r.inputJsonSchema && !r.outputJsonSchema) {
+    ;(campos as { responseMode?: string }).responseMode = 'text'
+  }
+  return r.warning ? { warning: r.warning } : {}
+}
+
+app.get('/api/executors/catalog', requireAuth, async (_req, res) => {
+  const funcoes = listPublicFunctions()
+  const apps = await listAppsForOwner(res.locals.userId).catch(() => [])
+  res.json({
+    functions: funcoes,
+    // Referência apenas: chave do App e chave da ação. Quem autoriza continua sendo o
+    // grant do agente, não esta lista.
+    actions: apps.flatMap((app) =>
+      (app.actions ?? []).map((a) => ({
+        appKey: app.key,
+        appName: app.name,
+        actionKey: a.key,
+        name: a.name,
+        description: a.description,
+        risk: a.risk,
+        inputSchema: a.inputSchema,
+        // O que a ação DEVOLVE, quando ela sabe dizer. Sem isto a tela não tinha como
+        // saber se o modo estruturado vale, e avisava que não valia mesmo quando valia.
+        outputSchema: a.outputSchema ?? null,
+      })),
+    ),
+  })
+})
+
 app.get('/api/settings/web-search', requireAuth, async (_req, res) => {
   const provider = configuredProviderName()
   const cfg = searchBudgetConfig()
@@ -791,6 +895,24 @@ async function resolverDestinoDoWidget(
   if (temAgente) {
     const { agentObjectId, error } = await resolveOwnedAgentId(ownerId, entrada.agentId)
     if (error || !agentObjectId) return { ok: false, status: 400, code: 'invalid_agent', error: error ?? 'Agent not found' }
+    /**
+     * Um chat é uma CONVERSA. Quem não conversa não pode ser ligado a um.
+     *
+     * O runtime já se recusava a responder, e essa recusa acontecia tarde: o vínculo era
+     * salvo, o chat montava, o visitante escrevia e ninguém respondia. Quem configurou não
+     * ficava sabendo, e quem escreveu ficava esperando. A hora de recusar é agora, com a
+     * frase que diz como consertar.
+     */
+    const alvo = await getAgentById(ownerId, agentObjectId)
+    const tipo = agentContractOf(alvo).executorKind
+    if (alvo && tipo !== 'llm') {
+      return {
+        ok: false,
+        status: 400,
+        code: 'agent_not_conversational',
+        error: `"${alvo.name}" executa por ${tipo === 'function' ? 'função' : 'App/ferramenta'} e não conversa. Ligue um agente de IA a este chat — este aqui continua disponível em rotinas, gatilhos, setores e no teste.`,
+      }
+    }
     const veredito = resolveWidgetDestination({ agentId: agentObjectId, agentPresent: true })
     if (!veredito.ok) return { ok: false, status: 400, code: veredito.code, error: veredito.reason! }
     // Trocar de destino LIMPA o outro lado, e é por isso que os dois campos vêm daqui.
@@ -2164,6 +2286,11 @@ app.post('/api/agents', requireAuth, async (req, res) => {
     res.status(400).json({ error: modelError })
     return
   }
+  const derivadoNaCriacao = await aplicarContratoDeFerramenta(res.locals.userId, modelFields)
+  if (derivadoNaCriacao.error) {
+    res.status(400).json({ error: derivadoNaCriacao.error })
+    return
+  }
   const officeId = await resolveFloorOffice(res.locals.userId, req.body?.floorId)
   // Same validation as the update path: a new agent can only be wired to colleagues
   // and teams that really exist in ITS building.
@@ -2557,6 +2684,11 @@ app.patch('/api/agents/:agentId', requireAuth, async (req, res) => {
       ),
     )
   }
+  const derivadoNaEdicao = await aplicarContratoDeFerramenta(res.locals.userId, modelFields, gravado?.executorKind)
+  if (derivadoNaEdicao.error) {
+    res.status(400).json({ error: derivadoNaEdicao.error })
+    return
+  }
   Object.assign(updates, modelFields)
   if (Object.keys(updates).length === 0) {
     res.status(400).json({ error: 'Nothing to update' })
@@ -2945,6 +3077,24 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   for (const viva of await livePassagesFor(res.locals.userId, agent)) {
     knowledge.push(`[${viva.title}]\n${viva.content}`)
   }
+  /**
+   * PROCURAR na web — o mesmo passo do setor e da delegação.
+   *
+   * Ele não existia aqui. O interruptor ficava marcado, o provedor configurado, e o teste
+   * respondia só com o que já estava guardado: os sites CADASTRADOS eram lidos (é o que a
+   * chamada acima faz), mas nenhuma busca era feita. Quem configurou não tinha como
+   * distinguir "procurei e não achei" de "ninguém procurou".
+   */
+  if (capabilitiesOf(agent).webSearch) {
+    const achado = await gatherWebEvidence(
+      agent,
+      res.locals.userId,
+      lastUser.content,
+      { grounding: leitura.status, passages: leitura.context.length },
+      { rememberSearchPages: (dono, agentId, q, pages, dias) => rememberSearchPages(agentId, dono, q, pages as Parameters<typeof rememberSearchPages>[3], dias) },
+    )
+    knowledge.push(...achado.evidence)
+  }
 
   const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
   const behaviorInstruction = [
@@ -2990,6 +3140,77 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
    */
   // A trilha do teste de UM agente: sem planejador e sem síntese, mas com pedido, base,
   // ferramentas e resposta — que é o caminho que ele percorre de verdade.
+  /**
+   * A ENTRADA ESTRUTURADA do teste.
+   *
+   * Um agente que declara `inputJsonSchema` recebe campos, não uma frase — e testá-lo
+   * digitando prosa testa outra coisa. Aqui o dono manda o objeto, ele é conferido contra
+   * o mesmo schema que o runtime usa, e a recusa diz o CAMINHO do campo errado. Sem
+   * schema, nada muda: o campo é ignorado e o teste continua sendo uma conversa.
+   */
+  const entradaDeTeste = (req.body ?? {}).input
+  if (entradaDeTeste !== undefined && entradaDeTeste !== null && agent.inputJsonSchema) {
+    if (typeof entradaDeTeste !== 'object' || Array.isArray(entradaDeTeste)) {
+      res.status(400).json({ error: 'input deve ser um objeto JSON', code: 'invalid_input' })
+      return
+    }
+    const conferida = validateAgainstSchema(agent.inputJsonSchema, entradaDeTeste)
+    if (!conferida.valid) {
+      // O caminho e o que se esperava — o vocabulário do schema, que é do próprio dono.
+      res.status(400).json({ error: 'A entrada não cumpre o contrato deste agente.', code: 'invalid_input', errors: conferida.errors })
+      return
+    }
+  }
+  /**
+   * O agente que NÃO é de modelo não conversa: ele executa.
+   *
+   * Este teste chamava `generateAgentReply` para todo mundo. Um agente de função testado
+   * aqui gastava uma inferência para o modelo IMPROVISAR o que a função faria — e o dono
+   * via uma resposta plausível, em prosa, que não passou perto do código que ele
+   * configurou. O teste dizia que estava funcionando, e não estava.
+   */
+  const contratoDeTeste = agentContractOf(agent)
+  if (contratoDeTeste.executorKind !== 'llm') {
+    const comecouDespacho = Date.now()
+    const r = await dispatchAgentExecution(agent, {
+      agentId: agent._id,
+      ownerId: res.locals.userId,
+      objective: lastUser.content,
+      input: entradaDeTeste ?? undefined,
+      correlationId: `playground:${agent._id.toString()}`,
+    })
+    const duracao = Date.now() - comecouDespacho
+    if (!r.ok) {
+      res.status(422).json({
+        error: r.error?.message ?? 'A execução não completou.',
+        code: r.error?.kind ?? 'executor',
+        diagnostics: { executorKind: contratoDeTeste.executorKind, durationMs: duracao, inputTokens: 0, outputTokens: 0 },
+      })
+      return
+    }
+    res.json({
+      // O texto quando existe; para `structured` não existe, e é isso mesmo.
+      reply: r.text ?? '',
+      refusedByGuardrail: false,
+      handoff: false,
+      toolCalls: [],
+      ...(r.structured !== undefined ? { data: r.structured.data } : {}),
+      diagnostics: {
+        executorKind: contratoDeTeste.executorKind,
+        // ZERO. Uma função determinística não fala com provedor nenhum, e o número existe
+        // para provar isso a quem paga.
+        inputTokens: 0,
+        outputTokens: 0,
+        durationMs: duracao,
+        outputValid: r.structured?.valid !== false,
+        outputRepaired: false,
+        model: null,
+        modelChoice: 'default' as const,
+        modelReason: null,
+      },
+    })
+    return
+  }
   const traceChat = typeof (req.body ?? {}).traceId === 'string' ? String(req.body.traceId).slice(0, 100) : null
   const trilhaChat = (entrada: Omit<TraceInput, 'ownerId' | 'executionId'>) => {
     if (!traceChat) return
@@ -3140,6 +3361,8 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
 
   // A cobrança acontece UMA vez, dê certo ou não. A trava existe porque agora há dois
   // caminhos até aqui — o de sucesso e o de falha — e cobrar nos dois seria cobrar duas.
+  // O dado e a marca de reparo desta execução, preenchidos quando ela completa.
+  let dadoDoTeste: { data?: unknown; repaired: boolean } = { repaired: false }
   let cobrado = false
   const cobrar = () => {
     if (cobrado || (usage.inputTokens === 0 && usage.outputTokens === 0)) return
@@ -3182,7 +3405,13 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
         hasUntrustedContext: knowledge.length > 0,
         // Já perguntou antes? Então a orientação muda: da segunda vez em diante, decidir
         // e declarar a suposição vale mais que perguntar de novo.
-        channelBlocks: [clarificationGuidance(jaPerguntouChat), lembrados].filter((b): b is string => Boolean(b)),
+        channelBlocks: [
+          clarificationGuidance(jaPerguntouChat),
+          lembrados,
+          // Escrito pelo DONO, no painel de teste dele: é dado autorizado, não material de
+          // terceiro. Por isso vai como bloco do canal e não como contexto não confiável.
+          entradaDeTeste && agent.inputJsonSchema ? `DADOS DE ENTRADA (conferidos contra o contrato)\n${JSON.stringify(entradaDeTeste, null, 2)}` : null,
+        ].filter((b): b is string => Boolean(b)),
       }),
       knowledge,
       history,
@@ -3201,6 +3430,7 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       throw new AgentRunError('output_invalid', `a resposta não cumpriu o contrato de saída: ${problemaContrato}`)
     }
     generated = interativoChat.text
+    dadoDoTeste = { data: interativoChat.json, repaired: interativoChat.outputRepaired }
     // O agente perguntou em vez de responder: a marca acompanha o turno para a próxima
     // rodada saber que já houve uma pergunta.
     pedidoDeEsclarecimento = clarificationFrom(interativoChat.toolCalls)
@@ -3248,6 +3478,8 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     outputTokens: usage.outputTokens,
     durationMs: Math.max(0, Date.now() - manualStartedAt.getTime()),
     outputValid: true,
+    // Precisou de correção de formato? Custou uma chamada a mais, e quem testa paga por ela.
+    outputRepaired: dadoDoTeste.repaired,
     ...(descartadosChat ? { runConfigDropped: descartadosChat } : {}),
   }
   trilhaChat({
@@ -3292,6 +3524,14 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
      * Só números e categorias. Nunca prompt, nunca conteúdo de base, nunca credencial.
      */
     diagnostics: diagnosticoChat,
+    /**
+     * O DADO, separado do texto.
+     *
+     * Quem testa um agente estruturado precisa ver o objeto — não o objeto embrulhado numa
+     * frase, nem a frase com o objeto colado dentro. Ausente quando o agente responde em
+     * prosa, que é o caso da maioria.
+     */
+    ...(dadoDoTeste.data !== undefined ? { data: dadoDoTeste.data } : {}),
   })
 })
 
@@ -4268,6 +4508,23 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     // Idem no canal: quem escolheu "sempre" ou "quando mudar" espera o conteúdo aqui.
     ...(await livePassagesFor(ownerId, agent)).map((viva) => `[${viva.title}]\n${viva.content}`),
   ]
+  /**
+   * E a busca também aqui — num canal ninguém está olhando.
+   *
+   * Só quando o canal aponta para UM agente: com setor, cada membro do time cuida da
+   * própria busca dentro do executor, e repetir aqui seria buscar duas vezes pela mesma
+   * pergunta e pagar duas.
+   */
+  if (!setorDoCanal && capabilitiesOf(agent).webSearch) {
+    const achado = await gatherWebEvidence(
+      agent,
+      ownerId,
+      visitorContent,
+      { grounding: knowledgeBase.length > 0 ? 'ok' : 'empty', passages: knowledgeBase.length },
+      { rememberSearchPages: (dono, agentId, q, pages, dias) => rememberSearchPages(agentId, dono, q, pages as Parameters<typeof rememberSearchPages>[3], dias) },
+    )
+    knowledge.push(...achado.evidence)
+  }
 
   // If a previous turn in this conversation already resolved who the
   // visitor is, their memory lives on the profile (shared across every
@@ -4388,6 +4645,25 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       })
   balaoCanal.report('thinking')
 
+  /**
+   * Um canal é uma CONVERSA. Quem não conversa não atende aqui.
+   *
+   * Um agente de função ou de ferramenta ligado a um widget seria executado como agente de
+   * modelo — o provedor improvisaria a resposta que a função daria, e o visitante receberia
+   * uma frase plausível no lugar de um resultado. Recusar em silêncio (não responder) é
+   * pior ainda: o visitante fica esperando e o dono não fica sabendo.
+   *
+   * Então o canal se cala para o visitante e o motivo fica no log, que é onde quem
+   * configurou vai procurar.
+   */
+  const contratoDoCanal = agentContractOf(agent)
+  if (contratoDoCanal.executorKind !== 'llm') {
+    console.warn(
+      `[canal] widget=${widgetId.toString()} agente=${agent._id.toString()} é do tipo "${contratoDoCanal.executorKind}" e não atende conversa. ` +
+        'Ligue um agente de IA ao canal, ou use este por rotina, gatilho ou setor.',
+    )
+    return
+  }
   const canalTools = instrumentTools(await resolveAgentTools(agent, ownerId, jaPerguntouCanal), balaoCanal)
   const execucaoCanal = resolveAgentRun(agent, { context: 'chat', toolRisks: canalTools.map((t) => t.risk ?? 'write') })
   const modeloDoCanal = execucaoCanal.model ?? defaultModel(agent.provider)

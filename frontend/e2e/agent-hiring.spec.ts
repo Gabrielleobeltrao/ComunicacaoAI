@@ -117,6 +117,26 @@ async function stubApi(page: Page, opts: { overview?: Record<string, unknown> } 
     return r.fulfill({ json: [] })
   })
   await page.route('**/api/agents/*/overview', (r) => r.fulfill({ json: opts.overview ?? overview() }))
+  await page.route('**/api/executors/catalog', (r) =>
+    r.fulfill({
+      json: {
+        functions: [
+          {
+            functionName: 'math.summary',
+            version: '1.0.0',
+            description: 'Soma, média, mínimo e máximo de uma lista de números.',
+            capabilities: ['cálculo'],
+            inputSchema: { type: 'object', properties: { values: { type: 'array' } }, required: ['values'] },
+            outputSchema: { type: 'object', properties: { sum: { type: 'number' } }, required: ['sum'] },
+            configSchema: null,
+            timeoutMs: 2000,
+          },
+        ],
+        actions: [],
+      },
+    }),
+  )
+  await page.route('**/api/app-installations**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents/*/documents', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents/*/routines', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents/*/history**', (r) => r.fulfill({ json: { total: 0, items: [], delegations: [] } }))
@@ -575,7 +595,10 @@ test('choosing "ninguém" reaches nobody however many colleagues exist', async (
 // convention every other advanced block follows.
 const openOutputContract = async (page: Page) => {
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
-  await page.getByRole('button', { name: 'Contrato de saída' }).click()
+  // O bloco passou a ter as DUAS metades do contrato: o que ele aceita receber e o que
+  // promete devolver. Só a saída era editável antes, e um contrato pela metade não dá
+  // para conferir — a entrada errada chegava ao agente sem ninguém olhar.
+  await page.getByRole('button', { name: 'Contratos de entrada e saída' }).click()
 }
 
 test('the output contract lives in Avançado and defaults to nothing', async ({ page }) => {
@@ -586,6 +609,9 @@ test('the output contract lives in Avançado and defaults to nothing', async ({ 
   await expect(page.getByTestId('default-output-format')).toHaveValue('')
   // The schema field only exists once JSON is the chosen shape.
   await expect(page.getByTestId('output-json-schema')).toHaveCount(0)
+  // A entrada, sim: é ela que decide se o agente recebe campos ou prosa, e ela existe
+  // independentemente do formato da resposta.
+  await expect(page.getByTestId('input-json-schema')).toBeVisible()
   await expect(page.getByTestId('require-grounding')).not.toBeChecked()
 })
 
@@ -597,11 +623,14 @@ test('choosing JSON reveals the schema field and validates what is typed', async
   const schema = page.getByTestId('output-json-schema')
   await expect(schema).toBeVisible()
   await schema.fill('{ isso não é json }')
-  await expect(page.getByTestId('schema-error')).toBeVisible()
+  await expect(page.getByTestId('output-json-schema-errors')).toBeVisible()
 
   await schema.fill('{"type":"object","properties":{"titulo":{"type":"string"}}}')
-  await expect(page.getByTestId('schema-error')).toHaveCount(0)
-  await expect(page.getByTestId('output-contract-block')).toContainText('UMA chance de corrigir')
+  await expect(page.getByTestId('output-json-schema-errors')).toHaveCount(0)
+  // O contrato de volta em português: é lendo isto que se percebe o schema que está certo
+  // na sintaxe e descreve o contrato errado.
+  await expect(page.getByTestId('output-json-schema-summary')).toContainText('titulo')
+  await expect(page.getByTestId('output-json-schema-summary')).toContainText('opcional')
 })
 
 test('the simple sections stay simple — no schema in sight', async ({ page }) => {
@@ -653,4 +682,62 @@ test('quem não coleta não vê a opção — nem no avançado', async ({ page }
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByTestId('hire-advanced-toggle').click()
   await expect(page.getByTestId('hire-web-search')).toHaveCount(0)
+})
+
+
+// --- contratar um agente que NÃO é de IA --------------------------------------------------
+//
+// Isto não existia. A escolha do executor vivia só na edição, sob "Avançado": para ter um
+// agente de função era preciso criar um de IA, salvar, entrar nele e trocar o tipo — três
+// passos para a decisão mais consequente do formulário, e invisível para quem não sabia
+// que ela existia.
+
+test('dá para contratar um agente de FUNÇÃO — e a escolha está entre as perguntas principais', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'custom')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await expect(page.getByTestId('work-step')).toBeVisible()
+
+  // À vista, sem abrir "Configuração avançada".
+  const executor = page.getByTestId('hire-executor')
+  await expect(executor).toBeVisible()
+  await executor.getByTestId('executor-kind-function').click()
+  await executor.getByTestId('function-option-math.summary').click()
+
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByTestId('hire-wizard').getByRole('button', { name: 'Contratar agente' }).click()
+
+  await expect.poll(() => created).not.toBeNull()
+  expect(created!.executorKind).toBe('function')
+  expect(created!.responseMode).toBe('structured')
+  expect(created!.executorConfig).toEqual({ kind: 'function', functionName: 'math.summary', version: '1.0.0' })
+  // Os schemas NÃO vão daqui: o servidor os deriva do registro, que é quem executa.
+  expect(created!.inputJsonSchema).toBeUndefined()
+})
+
+test('escolher função sem escolher QUAL não deixa avançar', async ({ page }) => {
+  // A API recusa; barrar aqui é a diferença entre uma frase no formulário e um erro
+  // depois de clicar em contratar.
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'custom')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByTestId('hire-executor').getByTestId('executor-kind-function').click()
+  await expect(page.getByRole('button', { name: 'Próximo' })).toBeDisabled()
+})
+
+test('um agente de IA continua sendo contratado exatamente como antes', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'researcher')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByTestId('hire-wizard').getByRole('button', { name: 'Contratar agente' }).click()
+
+  await expect.poll(() => created).not.toBeNull()
+  // Nenhum campo novo: quem não escolheu nada não ganha configuração que não pediu.
+  expect(created!.executorKind).toBeUndefined()
+  expect(created!.executorConfig).toBeUndefined()
+  expect(created!.preset).toBe('researcher')
 })

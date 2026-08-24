@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { presetLabelOf } from '../lib/agentPresentation'
 import { API_URL } from '../lib/api'
 import { SectorApiError, assignAgentToSector } from '../lib/sectors'
 import type { AgentSummary, SectorSummary } from '../lib/types'
@@ -123,7 +124,18 @@ export function SectorAgentsDialog({
                 return (
                   <li key={a._id} style={row}>
                     <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-                      <span className="truncate" style={{ fontWeight: 600, color: 'var(--text-heading)' }}>{a.name}</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                        <span className="truncate" style={{ fontWeight: 600, color: 'var(--text-heading)' }}>{a.name}</span>
+                        {/*
+                          O PAPEL, aqui de todos os lugares.
+                          Montar um setor é decidir quem coleta, quem analisa e quem
+                          conduz — e a lista mostrava só nome e objetivo, deixando a
+                          escolha para o palpite de quem lembrasse do nome.
+                        */}
+                        <span style={{ fontSize: 11, color: 'var(--text-faint)', whiteSpace: 'nowrap' }} data-testid="picker-role">
+                          {presetLabelOf(a)}
+                        </span>
+                      </span>
                       {from ? <span style={{ fontSize: 12, color: 'var(--mango-700,#b54708)' }}>Sairá de {from}</span> : a.objective ? <span className="truncate" style={{ fontSize: 12, color: 'var(--text-muted)' }}>{a.objective}</span> : null}
                     </span>
                     <Button variant="secondary" size="sm" icon="plus" disabled={busyId === a._id} onClick={() => add(a)}>

@@ -21,6 +21,8 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
       content: string
       handoff?: boolean
       toolCalls?: ToolCall[]
+      /** O DADO, separado do texto — quando o agente produz dado. */
+      data?: unknown
       /** Este turno é uma PERGUNTA do agente — a marca volta no próximo envio. */
       clarification?: boolean
       /** As alternativas oferecidas — devolvidas no próximo envio para "2" virar a opção. */
@@ -41,6 +43,15 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
     }[]
   >([])
   const [input, setInput] = useState('')
+  /**
+   * A entrada ESTRUTURADA, para um agente que declara contrato de entrada.
+   *
+   * Testar com prosa um agente que recebe campos testa outra coisa: em produção ele nunca
+   * vai ver uma frase, e o que se aprende aqui não vale para lá.
+   */
+  const schemaDeEntrada = agent.contract?.inputJsonSchema ?? null
+  const [inputJson, setInputJson] = useState('')
+  const [erroDeEntrada, setErroDeEntrada] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [limpando, setLimpando] = useState(false)
   // A trilha é criada ANTES do envio: é o que permite o painel acompanhar sem esperar a
@@ -77,6 +88,18 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
     const limpo = texto.trim()
     if (!limpo || sending) return
 
+    // Conferido AQUI antes de sair: um JSON quebrado não precisa de uma ida ao servidor
+    // para ser reconhecido como quebrado.
+    let dadosDeEntrada: unknown
+    if (schemaDeEntrada && inputJson.trim()) {
+      try {
+        dadosDeEntrada = JSON.parse(inputJson)
+      } catch {
+        setErroDeEntrada('Isso não é um JSON válido.')
+        return
+      }
+    }
+    setErroDeEntrada(null)
     const next = [...messages, { role: 'user' as const, content: limpo }]
     setMessages(next)
     setInput('')
@@ -95,6 +118,7 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
         // perguntar sem parar.
         body: JSON.stringify({
           traceId: novoTrace,
+          ...(dadosDeEntrada !== undefined ? { input: dadosDeEntrada } : {}),
           messages: next.map(({ role, content, clarification, clarificationOptions }) => ({
             role,
             content,
@@ -113,19 +137,30 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
             content: body.reply,
             handoff: body.handoff,
             toolCalls: body.toolCalls,
+            data: body.data,
             diagnostics: body.diagnostics,
             clarification: Boolean(body.clarification),
             clarificationOptions: body.clarification?.options ?? [],
           },
         ])
       } else {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'assistant',
-            content: 'Não foi possível gerar a resposta — verifique a chave de API em Configurações.',
-          },
-        ])
+        // A recusa por contrato de entrada é do DONO para o dono: ela diz qual campo está
+        // errado, e mostrá-la como "erro de chave de API" mandaria procurar no lugar errado.
+        const corpo = await res.json().catch(() => null)
+        if (corpo?.code === 'invalid_input') {
+          const caminhos = Array.isArray(corpo.errors)
+            ? corpo.errors.map((e: { path?: string; message?: string }) => `${e.path ? `${e.path}: ` : ''}${e.message ?? ''}`).join('; ')
+            : ''
+          setErroDeEntrada(`${corpo.error}${caminhos ? ` (${caminhos})` : ''}`)
+        } else {
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              content: 'Não foi possível gerar a resposta — verifique a chave de API em Configurações.',
+            },
+          ])
+        }
       }
     } finally {
       setSending(false)
@@ -199,6 +234,20 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
                   canais que só transportam texto. O visitante responde "2" e o servidor
                   entende, sem gastar inferência para adivinhar. */}
 
+              {/*
+                DADO e TEXTO em painéis separados.
+                Colados, o dado aparece como JSON cru no meio de uma conversa e o texto
+                aparece como se fosse o resultado — e quem testa não consegue dizer qual
+                dos dois o próximo consumidor vai receber.
+              */}
+              {message.data !== undefined && (
+                <pre
+                  className="mt-2 max-h-56 overflow-auto rounded-lg border border-(--border-subtle) p-2 font-mono text-[11px] text-(--text-muted)"
+                  data-testid="playground-data"
+                >
+                  {JSON.stringify(message.data, null, 2)}
+                </pre>
+              )}
               {message.diagnostics?.model && (
                 <span className="mt-1 text-[10px] text-(--text-faint)" data-testid="playground-run-info">
                   ↳ {message.diagnostics.model}
@@ -215,8 +264,13 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
                 </span>
               )}
 
+              {message.diagnostics?.outputValid && (
+                <p className="mt-1 text-[10px] text-(--text-faint)" data-testid="playground-validation-ok">
+                  Contrato de saída conferido.
+                </p>
+              )}
               {message.diagnostics?.outputValid === false && (
-                <p className="mt-1 text-xs font-medium text-amber-400">
+                <p className="mt-1 text-xs font-medium text-amber-400" data-testid="playground-validation-error">
                   ⚠ A resposta não cumpriu o formato JSON configurado
                   {message.diagnostics.outputProblem ? ` (${message.diagnostics.outputProblem})` : ''} — num
                   canal real ela não seria enviada.
@@ -241,7 +295,31 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
           ))}
           {sending && <p className="text-sm text-(--text-faint)">Digitando...</p>}
         </div>
-        <form onSubmit={handleSend} className="flex gap-2 border-t border-(--border-subtle) p-3">
+        <form onSubmit={handleSend} className="space-y-2 border-t border-(--border-subtle) p-3">
+        {schemaDeEntrada && (
+          <div>
+            <label className="mb-1 block text-xs text-(--text-muted)" htmlFor="playground-input-json">
+              Entrada (JSON) — este agente declara um contrato de entrada
+            </label>
+            <textarea
+              id="playground-input-json"
+              value={inputJson}
+              onChange={(e) => setInputJson(e.target.value)}
+              rows={4}
+              spellCheck={false}
+              aria-invalid={Boolean(erroDeEntrada)}
+              placeholder={JSON.stringify(exemploDoSchema(schemaDeEntrada), null, 2)}
+              className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 font-mono text-xs outline-none focus:border-(--border-focus)"
+              data-testid="playground-input-json"
+            />
+            {erroDeEntrada && (
+              <p className="mt-1 text-xs" style={{ color: 'var(--status-blocked)' }} data-testid="playground-input-error">
+                {erroDeEntrada}
+              </p>
+            )}
+          </div>
+        )}
+        <div className="flex gap-2">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -255,10 +333,28 @@ export function AgentPlayground({ agent }: { agent: AgentSummary }) {
           >
             Enviar
           </button>
+        </div>
         </form>
         </div>
         <ExecutionTrace events={trilha.events} live={trilha.live} onClear={trilha.clear} />
       </div>
     </div>
   )
+}
+
+/**
+ * Um exemplo a partir do contrato — só os NOMES dos campos e o tipo.
+ *
+ * Serve de placeholder: quem testa não deveria precisar abrir o formulário noutra aba
+ * para lembrar como o objeto se chama.
+ */
+function exemploDoSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const props = schema.properties
+  if (!props || typeof props !== 'object' || Array.isArray(props)) return {}
+  const exemplo: Record<string, unknown> = {}
+  for (const [campo, def] of Object.entries(props as Record<string, unknown>)) {
+    const tipo = (def as { type?: unknown })?.type
+    exemplo[campo] = tipo === 'number' || tipo === 'integer' ? 0 : tipo === 'boolean' ? false : tipo === 'array' ? [] : tipo === 'object' ? {} : ''
+  }
+  return exemplo
 }

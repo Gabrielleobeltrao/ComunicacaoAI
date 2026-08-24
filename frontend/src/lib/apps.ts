@@ -202,3 +202,37 @@ export const archivePrivateApp = (key: string, archived: boolean) =>
   request<AppCatalogEntry>(priv(key, '/archive'), { method: 'POST', body: JSON.stringify({ archived }) })
 
 export const deletePrivateApp = (key: string) => request<{ deleted: boolean }>(priv(key), { method: 'DELETE' })
+
+// --- o catálogo de executores ---------------------------------------------------------
+//
+// O que este servidor sabe executar sem passar por um modelo. Só leitura, e só o que pode
+// aparecer numa tela: nome, versão, descrição e contratos. Nunca o corpo da função, nunca
+// credencial — o agente guarda a REFERÊNCIA, e o código vive no servidor.
+
+export interface CatalogFunction {
+  functionName: string
+  version: string
+  description: string
+  capabilities: string[]
+  inputSchema: Record<string, unknown>
+  outputSchema: Record<string, unknown>
+  /** Os parâmetros configuráveis, quando a função aceita algum. */
+  configSchema?: Record<string, unknown> | null
+  timeoutMs: number
+  metadata?: Record<string, string>
+}
+
+export interface CatalogAction {
+  appKey: string
+  appName: string
+  actionKey: string
+  name: string
+  description: string
+  risk: string
+  inputSchema?: Record<string, unknown> | null
+  /** O que a ação devolve. Ausente = a saída não serve de contrato estruturado. */
+  outputSchema?: Record<string, unknown> | null
+}
+
+export const listExecutorCatalog = () =>
+  request<{ functions: CatalogFunction[]; actions: CatalogAction[] }>('/api/executors/catalog')

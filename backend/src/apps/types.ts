@@ -110,6 +110,15 @@ export interface AppActionDefinition {
   description: string
   risk: ActionRisk
   inputSchema: Record<string, unknown>
+  /**
+   * O que a ação DEVOLVE, quando ela sabe dizer.
+   *
+   * Opcional de propósito: a maioria das ações de App devolve o corpo de um terceiro, cuja
+   * forma o manifesto não controla. Sem isto declarado, a saída não pode servir de contrato
+   * estruturado — e é melhor dizer isso do que inventar um schema que a primeira resposta
+   * diferente desmente.
+   */
+  outputSchema?: Record<string, unknown>
   execution: AppActionExecution
   resourceFields?: AppResourceField[]
   scopes?: string[]

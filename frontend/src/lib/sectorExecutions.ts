@@ -64,6 +64,23 @@ export interface SectorTimelineStep {
   tokens: number
   toolCalls: number
   errorKind: string | null
+  /**
+   * COMO a etapa foi executada. Ausente numa execução gravada antes da fase 6 — e ausente
+   * quer dizer o de sempre: uma execução por modelo.
+   */
+  planId?: string | null
+  stepId?: string | null
+  executorKind?: 'llm' | 'function' | 'tool'
+  ran?: string | null
+  capability?: string | null
+  dependsOn?: string[]
+  inputOrigins?: string[]
+  inputValid?: boolean | null
+  outputValid?: boolean | null
+  hasStructured?: boolean | null
+  hasText?: boolean | null
+  outputRepaired?: boolean
+  latencyMs?: number | null
 }
 
 const get = async <T>(path: string): Promise<T> => {
