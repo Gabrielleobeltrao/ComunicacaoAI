@@ -42,19 +42,23 @@ import {
   assembleWithoutModel,
   buildSynthesisContext,
   dedupeAgainst,
+  describeDiagnostics,
   describePlan,
   memberScore,
-  inputFromDependencies,
+  haltingFailure,
+  inputForTask,
   limitationNote,
   parseSufficiency,
   planExecution,
   readyTasks,
   shouldRun,
+  wantsReplan,
   sufficiencyPrompt,
   synthesisInstruction,
   taskKey,
 } from './sectorPlanner.js'
 import type { ExecutionPlan, ExecutionTask, Sufficiency, TaskResult } from './sectorPlanner.js'
+import { agentContractOf } from './executors/contract.js'
 
 export const DELEGATION_MAX_DEPTH = 4
 export const DEFAULT_DELEGATION_TOKEN_BUDGET = 300_000
@@ -1595,9 +1599,12 @@ export async function executeSectorTeam(
    * chegar a um especialista custava uma chamada de descoberta antes da delegação.
    */
   const equipe = (await Promise.all(outros.map((m) => deps.loadAgent(ctx.ownerId, m.agentId).catch(() => null))))
-    .map((agente, i) =>
-      agente
-        ? {
+    .map((agente, i) => {
+      if (!agente) return null
+      // Lido pelo mesmo caminho leniente da fase 1: um agente criado antes de qualquer um
+      // destes campos existir lê como sempre leu, e chega aqui com o contrato padrão.
+      const contrato = agentContractOf(agente)
+      return {
             agentId: agente._id.toString(),
             name: agente.name,
             // O que o dono escreveu no MEMBRO manda; o do agente é o padrão. Um setor que
@@ -1617,11 +1624,29 @@ export async function executeSectorTeam(
               ...(agente.builtinTools ?? []).map((t) => t.key),
               ...(capabilitiesOf(agente).webSearch ? ['busca_na_web'] : []),
             ],
+            // As ações de App autorizadas — referência, nunca credencial.
+            actions: (agente.appGrants ?? []).flatMap((g) => g.actionKeys.map((k) => `${g.appKey}.${k}`)),
+            /**
+             * O CONTRATO, e não só a descrição.
+             *
+             * Escolher por nome e por prosa é como o plano acabava mandando a pergunta para
+             * quem tinha o rótulo certo e a capacidade errada. Com o tipo de executor e os
+             * schemas na mesa, o planejador sabe quem aceita campos em vez de prosa, quem
+             * produz o que o outro precisa, e quando não existe ninguém que produza.
+             */
+            executorKind: contrato.executorKind,
+            inputJsonSchema: contrato.inputJsonSchema,
+            outputJsonSchema: contrato.outputJsonSchema,
+            executorConfig:
+              contrato.executorConfig.kind === 'function'
+                ? { functionName: contrato.executorConfig.functionName, ...(contrato.executorConfig.version ? { version: contrato.executorConfig.version } : {}) }
+                : contrato.executorConfig.kind === 'tool'
+                  ? { ...contrato.executorConfig }
+                  : null,
             // Só os TÍTULOS: o conteúdo da base não sai daqui, nem para escolher.
             knowledgeTitles: null as string[] | null,
-          }
-        : null,
-    )
+      }
+    })
     .filter((m): m is NonNullable<typeof m> => m !== null)
   // Os títulos da base de cada membro, quando quem chamou sabe buscá-los. É o sinal mais
   // direto de "quem tem o dado" — e continua sendo só título, nunca trecho.
@@ -1659,12 +1684,21 @@ export async function executeSectorTeam(
   const limites = coordinator.orchestration ?? {}
   const tetoDeTarefas = Math.min(limites.maxTasks ?? MAX_TASKS, MAX_TASKS)
   const tetoDeRodadas = Math.min(limites.maxRounds ?? MAX_ORCHESTRATION_ROUNDS, MAX_ORCHESTRATION_ROUNDS)
-  const { plan, source: origemDoPlano } = await planExecution({
+  const { plan, source: origemDoPlano, diagnostics, clarification: faltaDeDado } = await planExecution({
     question: opts.objective,
     members: equipe,
     ask: deps.planWithModel ? (prompt) => deps.planWithModel!(ctx.ownerId, coordinator, prompt) : undefined,
     max: tetoDeTarefas,
   })
+  /**
+   * O que a compilação apontou.
+   *
+   * O diagnóstico vai para o log de quem administra — é lá que ele serve. O ESCLARECIMENTO
+   * vai para a resposta: quando um dado que ninguém produz é o que falta, quem perguntou
+   * precisa saber disso em vez de receber um número que o agente completou sozinho.
+   */
+  if (diagnostics?.length) console.info(`[plan:diagnostics] sector=${sector._id.toString()} ${describeDiagnostics(diagnostics)}`)
+  if (faltaDeDado) warnings.push(faltaDeDado)
   const briefing = coordinatorBriefing(sector.name, equipe, plan)
   const instruction = sector.instruction ? `${sector.instruction}\n\n${opts.objective}` : opts.objective
 
@@ -1772,9 +1806,22 @@ export async function executeSectorTeam(
         capabilities: alvo.capabilities ?? [],
       },
     })
-    // A entrada de quem depende: o que os antecessores produziram, com autoria. Sem
-    // dependência, o pedido original.
-    const entrada = base.dependsOn.length > 0 ? inputFromDependencies(task, resultadosPorId) : opts.input
+    /**
+     * A entrada desta tarefa: os campos que o plano declarou, mais o que os antecessores
+     * produziram, com autoria. Sem dependência e sem campos declarados, o pedido original.
+     *
+     * Um campo declarado e não entregue PARA a tarefa. É a mesma decisão do compilador,
+     * agora em tempo de execução: seguir com o campo faltando é entregar a prosa ao agente
+     * e deixá-lo deduzir o número — e o número deduzido sai na resposta com a mesma cara
+     * de um apurado.
+     */
+    const ligada = inputForTask(task, resultadosPorId)
+    if (ligada.missing.length > 0) {
+      const faltando = ligada.missing.join(', ')
+      trilha({ type: 'agent', status: 'skipped', agentId: task.agentId, title: `${agentName}: entrada insuficiente (${faltando})` })
+      return { ...base, status: 'skipped', error: `entrada insuficiente: ${faltando}`, durationMs: 0 }
+    }
+    const entrada = ligada.text || opts.input
     try {
       const saida = await rodarMembro(
         alvo,
@@ -1882,6 +1929,15 @@ export async function executeSectorTeam(
       for (const [i, r] of executadas.entries()) {
         const task = onda[i]
         resultadosPorId.set(task.id, r.status === 'fulfilled' ? r.value : { ...semEntrada(task), status: 'failed', error: 'falha na execução' })
+      }
+      // `onFailure: 'stop'` — uma etapa que o plano declarou indispensável falhou. Seguir
+      // com as outras produziria uma resposta montada sobre o que sobrou, sem dizer que a
+      // parte que sustentava o resto não existe.
+      const parou = haltingFailure(p, resultadosPorId)
+      if (parou) {
+        warnings.push(`${nomePorAgente.get(parou.agentId) ?? 'um membro'}: etapa indispensável falhou; o plano parou`)
+        for (const t of p.tasks) if (!resultadosPorId.has(t.id)) resultadosPorId.set(t.id, { ...semEntrada(t), error: 'o plano parou antes desta etapa' })
+        break
       }
     }
     return p.tasks.map((t) => resultadosPorId.get(t.id)).filter((r): r is TaskResult => Boolean(r))
@@ -2026,10 +2082,17 @@ export async function executeSectorTeam(
     let limitacao = ''
     if (!ultimaRodada && deps.planWithModel) {
       const parcial = assembleWithoutModel(todos)
-      const veredito = await deps
-        .planWithModel(ctx.ownerId, coordinator, sufficiencyPrompt(opts.objective, parcial, naoConsultados))
-        .then(parseSufficiency)
-        .catch(() => ({ sufficient: true }) as Sufficiency)
+      /**
+       * `onFailure: 'replan'` — o plano já disse que, se esta etapa falhar, vale tentar de
+       * outro jeito. Perguntar ao modelo se a resposta ficou suficiente seria pagar por uma
+       * opinião sobre uma decisão que já está escrita no plano.
+       */
+      const veredito: Sufficiency = wantsReplan(planoAtual, resultadosPorId)
+        ? { sufficient: false, missing: faltou }
+        : await deps
+            .planWithModel(ctx.ownerId, coordinator, sufficiencyPrompt(opts.objective, parcial, naoConsultados))
+            .then(parseSufficiency)
+            .catch(() => ({ sufficient: true }) as Sufficiency)
       console.info(`[sufficiency] execution=${execId} round=${rodada} sufficient=${veredito.sufficient} pending=${naoConsultados.length}`)
       trilha({
         type: 'sufficiency',

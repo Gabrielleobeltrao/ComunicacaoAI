@@ -24,7 +24,153 @@
 //
 // Puro de propósito: sem banco, sem provedor e sem relógio. Quem chama o modelo injeta
 // a função; quem não tiver modelo ainda recebe um plano — o determinístico, abaixo.
+import { createHash } from 'node:crypto'
 import { normalize } from './lexicalRetrieval.js'
+import { RESPONSE_MODES } from './executors/contract.js'
+import { findFunction } from './executors/functionRegistry.js'
+import type { ExecutorKind, ResponseMode } from './executors/types.js'
+
+// --- de onde vem cada campo de uma entrada -------------------------------------------------
+//
+// Três origens, e só três: o contexto do pedido, o resultado de uma etapa anterior, ou um
+// valor escrito no próprio plano.
+//
+// A tentação aqui é aceitar uma expressão — um JSONPath com filtro, um `eval` "pequeno",
+// um trecho de código que o modelo escreve na hora. Não: o plano é redigido por um MODELO,
+// a partir de uma pergunta que qualquer pessoa pode fazer. Uma expressão avaliável nesse
+// caminho é execução arbitrária com passos a mais. O que existe é um caminho de nomes.
+export type Binding =
+  | { from: 'context'; path: string[] }
+  | { from: 'step'; stepId: string; path: string[] }
+  | { from: 'literal'; value: unknown }
+
+/**
+ * Nomes que atravessam o objeto e chegam no protótipo.
+ *
+ * Nenhum deles é campo de ninguém, e um binding que os alcança não está lendo um dado: está
+ * escrevendo no protótipo de todo objeto do processo.
+ */
+const PERIGOSOS = new Set(['__proto__', 'prototype', 'constructor'])
+
+/** Um segmento de caminho: nome de campo, nada mais. Sem colchete, ponto, curinga ou filtro. */
+export const isSafeSegment = (s: string): boolean => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(s) && !PERIGOSOS.has(s)
+
+/** Um literal precisa ser JSON — e JSON que não carrega chave perigosa por dentro. */
+function unsafeLiteral(valor: unknown, profundidade = 0): string | null {
+  if (profundidade > 6) return 'literal aninhado demais'
+  if (typeof valor === 'function' || typeof valor === 'symbol' || typeof valor === 'bigint') return 'literal precisa ser JSON'
+  if (Array.isArray(valor)) {
+    for (const v of valor) {
+      const e = unsafeLiteral(v, profundidade + 1)
+      if (e) return e
+    }
+    return null
+  }
+  if (valor && typeof valor === 'object') {
+    for (const chave of Object.keys(valor as object)) {
+      if (PERIGOSOS.has(chave)) return `chave proibida "${chave}" no literal`
+      const e = unsafeLiteral((valor as Record<string, unknown>)[chave], profundidade + 1)
+      if (e) return e
+    }
+  }
+  return null
+}
+
+/**
+ * Lê o que o modelo escreveu como origem de um campo.
+ *
+ * `$context.campo`, `$steps.etapa.campo` ou um valor JSON. Uma string que começa com `$` e
+ * não é nenhum dos dois é ERRO, não literal: aceitá-la como texto transformaria uma
+ * referência escrita errado num valor inventado, entregue ao agente como se fosse dado.
+ * `$$` escapa, para o literal que por acaso começa com cifrão.
+ */
+export function parseBinding(bruto: unknown): { binding?: Binding; error?: string } {
+  if (typeof bruto !== 'string') {
+    const erro = unsafeLiteral(bruto)
+    return erro ? { error: erro } : { binding: { from: 'literal', value: bruto } }
+  }
+  if (bruto.startsWith('$$')) return { binding: { from: 'literal', value: bruto.slice(1) } }
+  if (!bruto.startsWith('$')) return { binding: { from: 'literal', value: bruto } }
+
+  const partes = bruto.slice(1).split('.')
+  const raiz = partes.shift() ?? ''
+  const invalido = (p: string[]) => p.find((x) => !isSafeSegment(x))
+
+  if (raiz === 'context') {
+    if (partes.length === 0) return { error: `${bruto}: falta o nome do campo` }
+    const ruim = invalido(partes)
+    if (ruim !== undefined) return { error: `${bruto}: segmento inválido "${ruim}"` }
+    return { binding: { from: 'context', path: partes } }
+  }
+  if (raiz === 'steps') {
+    const stepId = partes.shift() ?? ''
+    if (!isSafeSegment(stepId)) return { error: `${bruto}: id de etapa inválido` }
+    if (partes.length === 0) return { error: `${bruto}: falta o nome do campo` }
+    const ruim = invalido(partes)
+    if (ruim !== undefined) return { error: `${bruto}: segmento inválido "${ruim}"` }
+    return { binding: { from: 'step', stepId, path: partes } }
+  }
+  return { error: `${bruto}: use $context.campo, $steps.etapa.campo ou um valor literal` }
+}
+
+/** O mapa inteiro. O NOME do campo de destino passa pela mesma peneira que o caminho. */
+export function parseBindings(bruto: unknown): { bindings: Record<string, Binding>; errors: string[] } {
+  const bindings: Record<string, Binding> = {}
+  const errors: string[] = []
+  if (!bruto || typeof bruto !== 'object' || Array.isArray(bruto)) return { bindings, errors }
+  for (const [chave, valor] of Object.entries(bruto as Record<string, unknown>)) {
+    if (!isSafeSegment(chave)) {
+      errors.push(`campo de destino inválido "${chave}"`)
+      continue
+    }
+    const { binding, error } = parseBinding(valor)
+    if (error || !binding) errors.push(`${chave}: ${error ?? 'origem inválida'}`)
+    else bindings[chave] = binding
+  }
+  return { bindings, errors }
+}
+
+/** A origem de volta em texto — para o log, o prompt e a mensagem de diagnóstico. */
+export const describeBinding = (b: Binding): string =>
+  b.from === 'context' ? `$context.${b.path.join('.')}` : b.from === 'step' ? `$steps.${b.stepId}.${b.path.join('.')}` : JSON.stringify(b.value)
+
+const lerCaminho = (raiz: unknown, path: string[]): unknown => {
+  let atual = raiz
+  for (const p of path) {
+    if (!atual || typeof atual !== 'object' || Array.isArray(atual)) return undefined
+    // `hasOwnProperty`: sem isto, `$steps.t1.toString` devolveria uma função herdada do
+    // protótipo como se fosse um dado que a etapa produziu.
+    if (!Object.prototype.hasOwnProperty.call(atual, p)) return undefined
+    atual = (atual as Record<string, unknown>)[p]
+  }
+  return atual
+}
+
+/**
+ * A entrada montada — e o que NÃO foi encontrado, dito em voz alta.
+ *
+ * Campo sem origem não vira `null` nem string vazia: vira `missing`. A diferença é a que
+ * separa "não sei" de "sei que é nada", e um agente que recebe a segunda responde com
+ * convicção sobre um valor que ninguém produziu.
+ */
+export function resolveBindings(
+  bindings: Record<string, Binding> | undefined,
+  fontes: { context?: unknown; steps?: Record<string, unknown> },
+): { input: Record<string, unknown>; missing: string[] } {
+  const input: Record<string, unknown> = {}
+  const missing: string[] = []
+  for (const [chave, b] of Object.entries(bindings ?? {})) {
+    if (b.from === 'literal') {
+      input[chave] = b.value
+      continue
+    }
+    const raiz = b.from === 'context' ? fontes.context : (fontes.steps ?? {})[b.stepId]
+    const valor = lerCaminho(raiz, b.path)
+    if (valor === undefined) missing.push(chave)
+    else input[chave] = valor
+  }
+  return { input, missing }
+}
 
 /** Uma execução de agente dentro do plano. */
 export interface ExecutionTask {
@@ -35,6 +181,35 @@ export interface ExecutionTask {
   objective: string
   /** As tarefas cujo resultado entra como entrada desta. Vazio = roda com o pedido. */
   dependsOn?: string[]
+  /**
+   * De onde vem cada campo da entrada.
+   *
+   * AUSENTE é diferente de VAZIO: ausente é uma tarefa legada, que recebe o texto dos
+   * antecessores como sempre recebeu. Declarar um campo aqui é dizer que a tarefa PRECISA
+   * dele — se ele não chegar, ela não roda.
+   */
+  inputBindings?: Record<string, Binding>
+  /** O contrato de saída do agente no momento em que o plano foi montado. */
+  expectedOutputSchema?: Record<string, unknown>
+  /** A impressão digital do schema acima: muda quando o contrato do agente muda. */
+  outputSchemaHash?: string
+  /** Depois que der certo. `stop` encerra o plano ali — uma etapa que decide se há mais. */
+  onSuccess?: 'continue' | 'stop'
+  /** E quando falhar. `skip` é o de sempre: os dependentes não rodam, o resto continua. */
+  onFailure?: 'stop' | 'skip' | 'replan'
+  /** Quando esta tarefa precisa de um formato diferente do padrão do agente. */
+  responseMode?: ResponseMode
+}
+
+/** A impressão digital de um contrato — chaves ordenadas, para não depender da ordem. */
+export function schemaHash(schema: unknown): string {
+  const canonico = (v: unknown): unknown =>
+    Array.isArray(v)
+      ? v.map(canonico)
+      : v && typeof v === 'object'
+        ? Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, canonico((v as Record<string, unknown>)[k])]))
+        : v
+  return createHash('sha256').update(JSON.stringify(canonico(schema) ?? null)).digest('hex').slice(0, 16)
 }
 
 export interface ExecutionPlan {
@@ -62,8 +237,45 @@ export interface PlannerMember {
   capabilities?: string[] | null
   /** Nomes das ferramentas concedidas: dizem o que ele CONSEGUE fazer, não só saber. */
   tools?: string[] | null
+  /** As ações de App autorizadas, como "appKey.actionKey". Referência, nunca credencial. */
+  actions?: string[] | null
   /** Títulos dos documentos da base dele. Nunca o conteúdo. */
   knowledgeTitles?: string[] | null
+  /**
+   * COMO ele executa. Um agente de função não é um agente de modelo com outro nome: ele
+   * não improvisa a partir de prosa, e mandar-lhe uma pergunta em vez dos campos que o
+   * schema pede é uma tarefa que nasce falhando.
+   */
+  executorKind?: ExecutorKind | null
+  /** O que ele ACEITA receber. É por aqui que se sabe se a entrada da tarefa existe. */
+  inputJsonSchema?: Record<string, unknown> | null
+  /** O que ele PRODUZ. É por aqui que se sabe se a saída de um serve de entrada para o outro. */
+  outputJsonSchema?: Record<string, unknown> | null
+  /**
+   * A referência do que ele executa quando não é modelo.
+   *
+   * Nome e chave, nunca código nem credencial: é o mesmo princípio do executor da fase 2,
+   * e o planejador não é lugar para a primeira exceção a ele.
+   */
+  executorConfig?: { functionName?: string; version?: string; toolId?: string; appKey?: string; actionKey?: string } | null
+}
+
+/** Os nomes dos campos de um schema. É o sinal de contrato mais direto que existe aqui. */
+export const schemaFields = (schema: unknown): string[] => {
+  const p = (schema as { properties?: unknown } | null)?.properties
+  return p && typeof p === 'object' && !Array.isArray(p) ? Object.keys(p as object) : []
+}
+
+/** Os campos sem os quais o agente não trabalha. */
+export const requiredFields = (schema: unknown): string[] => {
+  const r = (schema as { required?: unknown } | null)?.required
+  return Array.isArray(r) ? r.filter((x): x is string => typeof x === 'string') : []
+}
+
+const tipoDoCampo = (schema: unknown, campo: string): string | null => {
+  const props = (schema as { properties?: Record<string, unknown> } | null)?.properties
+  const t = (props?.[campo] as { type?: unknown } | undefined)?.type
+  return typeof t === 'string' ? t : null
 }
 
 /**
@@ -84,15 +296,27 @@ const trecho = (texto: string | null | undefined, max: number): string =>
 
 /** Tudo que descreve um membro, em uma linha — a mesma base para o modelo e para a nota. */
 export function describeMember(m: PlannerMember): string {
+  const entrada = schemaFields(m.inputJsonSchema)
+  const saida = schemaFields(m.outputJsonSchema)
+  const obrigatorios = new Set(requiredFields(m.inputJsonSchema))
   return [
     m.name,
     m.type ? `[${m.type}]` : '',
+    // COMO ele executa vem antes do resto: é o que decide se a tarefa recebe campos ou prosa.
+    m.executorKind && m.executorKind !== 'llm' ? `executa:${m.executorKind}` : '',
+    m.executorConfig?.functionName ? `função:${m.executorConfig.functionName}` : '',
+    m.executorConfig?.appKey && m.executorConfig?.actionKey ? `ação:${m.executorConfig.appKey}.${m.executorConfig.actionKey}` : '',
     trecho(m.routingDescription, 200),
     trecho(m.role, 160),
     trecho(m.objective, 200),
     trecho(m.instructions, 160),
     listaCurta(m.capabilities),
     listaCurta(m.tools),
+    listaCurta(m.actions),
+    // Os campos do contrato, com `*` no que é obrigatório: sem isso o modelo escreve
+    // bindings para campos que o agente não tem e inventa os que ele exige.
+    entrada.length > 0 ? `entrada:{${entrada.map((c) => (obrigatorios.has(c) ? `${c}*` : c)).slice(0, 12).join(',')}}` : '',
+    saida.length > 0 ? `saída:{${saida.slice(0, 12).join(',')}}` : '',
     listaCurta(m.knowledgeTitles),
   ]
     .filter(Boolean)
@@ -120,16 +344,39 @@ const palavrasDe = (texto: string): string[] =>
 /**
  * Quanto este membro tem a ver com a pergunta, entre 0 e 1.
  *
- * Conta quantas palavras da PERGUNTA aparecem no perfil dele. Bruto de propósito: a
- * decisão fina é do modelo; isto só precisa separar quem tem alguma relação de quem não
- * tem nenhuma.
+ * Não é uma contagem sobre o perfil inteiro: o que ele SABE FAZER pesa, o que ele se CHAMA
+ * quase não. Um agente batizado de "Financeiro" casa com metade das perguntas de uma
+ * empresa sem que isso diga nada sobre o que ele consegue entregar — e escolher por nome é
+ * como o plano acabava mandando a pergunta para quem tinha o rótulo certo e a capacidade
+ * errada. Capacidade, ferramenta e contrato são a evidência; nome é contexto secundário.
+ *
+ * Bruto de propósito: a decisão fina é do modelo; isto separa quem tem alguma relação de
+ * quem não tem nenhuma, e é o desempate quando não há modelo.
  */
 export function memberScore(pergunta: string, m: PlannerMember): number {
-  const alvo = normalize(describeMember(m))
   const palavras = [...new Set(palavrasDe(pergunta))]
   if (palavras.length === 0) return 0
-  const casadas = palavras.filter((p) => alvo.includes(p)).length
-  return casadas / palavras.length
+  const baldes: { texto: string; peso: number }[] = [
+    { texto: listaCurta(m.capabilities, 24), peso: 3 },
+    { texto: `${listaCurta(m.tools, 24)} ${listaCurta(m.actions, 24)}`, peso: 3 },
+    { texto: m.routingDescription ?? '', peso: 3 },
+    // Os campos do contrato: "faturamento", "cnpj" são competência declarada, não prosa.
+    { texto: [...schemaFields(m.inputJsonSchema), ...schemaFields(m.outputJsonSchema)].join(' '), peso: 2 },
+    { texto: [m.role, m.objective, m.instructions].filter(Boolean).join(' '), peso: 2 },
+    { texto: listaCurta(m.knowledgeTitles, 24), peso: 1 },
+    { texto: m.name ?? '', peso: 0.5 },
+  ]
+  let soma = 0
+  let total = 0
+  for (const b of baldes) {
+    const alvo = normalize(b.texto)
+    // Balde vazio não conta contra ninguém: um membro sem base declarada não é pior
+    // candidato por isso, só tem menos evidência.
+    if (!alvo.trim()) continue
+    total += b.peso
+    soma += b.peso * (palavras.filter((p) => alvo.includes(p)).length / palavras.length)
+  }
+  return total === 0 ? 0 : soma / total
 }
 
 /**
@@ -138,7 +385,12 @@ export function memberScore(pergunta: string, m: PlannerMember): number {
  * Nunca devolve vazio com equipe presente — um plano vazio faria o coordenador
  * responder sozinho, que é exatamente o que se quer evitar.
  */
-export function fallbackPlan(pergunta: string, membros: PlannerMember[], max = MAX_TASKS): ExecutionPlan {
+export function fallbackPlan(
+  pergunta: string,
+  membros: PlannerMember[],
+  max = MAX_TASKS,
+  opts: { contextFields?: string[] } = {},
+): ExecutionPlan {
   if (membros.length === 0) return { tasks: [] }
   // Sem modelo, quem coleta vem primeiro: um analista sozinho não teria o que analisar.
   // E quem CONDUZ nunca é tarefa: um coordenador dentro do plano é o time inteiro parado
@@ -151,9 +403,72 @@ export function fallbackPlan(pergunta: string, membros: PlannerMember[], max = M
   const relevantes = notas.filter((n) => n.nota > 0).sort((a, b) => b.nota - a.nota)
   // Ninguém casou: manda para um só, e não para todos. Chutar largo custa N inferências.
   const escolhidos = relevantes.length > 0 ? relevantes.slice(0, max) : [notas[0]]
-  return {
-    tasks: escolhidos.map(({ m }, i) => ({ id: `t${i + 1}`, agentId: m.agentId, objective: pergunta })),
+  const tasks: ExecutionTask[] = []
+
+  /**
+   * Um agente que declara contrato de entrada recebe CAMPOS, não prosa.
+   *
+   * E só os campos cuja origem existe de verdade: o que estiver no contexto do pedido, ou o
+   * que uma tarefa anterior deste mesmo plano declara produzir. O que não tiver origem fica
+   * de fora — `compilePlan` o aponta como `missing_input`, que é o comportamento certo.
+   * Preencher aqui seria o motor inventando o valor.
+   */
+  const ligar = (m: PlannerMember): { bindings: Record<string, Binding>; deps: string[]; faltando: string[] } => {
+    const bindings: Record<string, Binding> = {}
+    const deps = new Set<string>()
+    const faltando: string[] = []
+    for (const campo of requiredFields(m.inputJsonSchema)) {
+      if (!isSafeSegment(campo)) continue
+      if ((opts.contextFields ?? []).includes(campo)) {
+        bindings[campo] = { from: 'context', path: [campo] }
+        continue
+      }
+      const fonte = tasks.find((t) => schemaFields(membros.find((x) => x.agentId === t.agentId)?.outputJsonSchema).includes(campo))
+      if (fonte) {
+        bindings[campo] = { from: 'step', stepId: fonte.id, path: [campo] }
+        deps.add(fonte.id)
+      } else faltando.push(campo)
+    }
+    return { bindings, deps: [...deps], faltando }
   }
+
+  const incluir = (m: PlannerMember) => {
+    const task: ExecutionTask = { id: `t${tasks.length + 1}`, agentId: m.agentId, objective: pergunta }
+    const { bindings, deps } = ligar(m)
+    // Sem contrato de entrada, nada de bindings: a tarefa continua legada, recebendo o texto
+    // dos antecessores exatamente como sempre recebeu.
+    if (Object.keys(bindings).length > 0) task.inputBindings = bindings
+    if (deps.length > 0) task.dependsOn = deps
+    if (m.outputJsonSchema) {
+      task.expectedOutputSchema = m.outputJsonSchema
+      task.outputSchemaHash = schemaHash(m.outputJsonSchema)
+    }
+    tasks.push(task)
+  }
+
+  for (const { m } of escolhidos) incluir(m)
+
+  /**
+   * O analista volta ao plano — mas só quando o contrato dele está atendido.
+   *
+   * Ele foi excluído lá em cima por uma razão que continua valendo: analista sem entrada
+   * produz leitura sem evidência. O que mudou é que agora dá para SABER se ele tem entrada,
+   * em vez de supor. Se todos os campos que ele exige são produzidos por quem já está no
+   * plano, ele deixa de ser um chute e passa a ser uma etapa com origem para cada campo.
+   */
+  const jaTem = new Set(tasks.map((t) => t.agentId))
+  const analistas = base
+    .filter((m) => (m.type ?? 'executor') === 'analyst' && !jaTem.has(m.agentId) && requiredFields(m.inputJsonSchema).length > 0)
+    .map((m) => ({ m, nota: memberScore(pergunta, m) }))
+    .filter((n) => n.nota > 0)
+    .sort((a, b) => b.nota - a.nota)
+  for (const { m } of analistas) {
+    if (tasks.length >= max) break
+    const { faltando, deps } = ligar(m)
+    if (faltando.length > 0 || deps.length === 0) continue
+    incluir(m)
+  }
+  return { tasks }
 }
 
 // --- validação -----------------------------------------------------------------------------
@@ -193,12 +508,32 @@ export function validatePlan(bruto: unknown, membros: PlannerMember[], pergunta:
     const id = `t${tarefas.length + 1}`
     const original = texto(item?.id)
     if (original) idsOriginais.set(original, id)
+    const membro = validos.get(agentId)!
+    const bindings = item?.inputBindings !== undefined ? parseBindings(item.inputBindings).bindings : undefined
+    const falha = texto(item?.onFailure)
+    const modo = texto(item?.responseMode)
     tarefas.push({
       id,
       agentId,
       // Sem objetivo próprio, o pedido original é melhor que uma tarefa vazia.
       objective: texto(item?.objective).slice(0, 600) || pergunta,
       dependsOn: Array.isArray(item?.dependsOn) ? (item.dependsOn as unknown[]).map(texto).filter(Boolean) : [],
+      // Origem inválida some aqui e reaparece em `compilePlan` como campo sem origem, que é
+      // o diagnóstico verdadeiro: o problema não é a sintaxe, é o dado que não vem.
+      ...(bindings && Object.keys(bindings).length > 0 ? { inputBindings: bindings } : {}),
+      /**
+       * O contrato de saída vem do MEMBRO, nunca do modelo.
+       *
+       * Deixar o planejador declarar o que a etapa devolve é deixá-lo prometer em nome de
+       * outro: o schema que vale é o que o agente tem agora, e o hash é o que denuncia que
+       * ele mudou depois que o plano foi montado.
+       */
+      ...(membro.outputJsonSchema
+        ? { expectedOutputSchema: membro.outputJsonSchema, outputSchemaHash: schemaHash(membro.outputJsonSchema) }
+        : {}),
+      ...(texto(item?.onSuccess) === 'stop' ? { onSuccess: 'stop' as const } : {}),
+      ...(falha === 'stop' || falha === 'skip' || falha === 'replan' ? { onFailure: falha } : {}),
+      ...(RESPONSE_MODES.includes(modo as ResponseMode) ? { responseMode: modo as ResponseMode } : {}),
     })
   }
 
@@ -209,6 +544,25 @@ export function validatePlan(bruto: unknown, membros: PlannerMember[], pergunta:
     const resolvidas = (tarefa.dependsOn ?? [])
       .map((d) => idsOriginais.get(d) ?? d)
       .filter((d) => posicao.has(d) && posicao.get(d)! < i)
+    // Os bindings apontam para os ids que o MODELO escolheu; os ids do plano são outros.
+    // Sem esta tradução o campo apontaria para uma etapa que não existe — e o agente
+    // rodaria sem ele, que é o começo de toda resposta inventada.
+    if (tarefa.inputBindings) {
+      const traduzidos: Record<string, Binding> = {}
+      for (const [chave, b] of Object.entries(tarefa.inputBindings)) {
+        if (b.from !== 'step') {
+          traduzidos[chave] = b
+          continue
+        }
+        const alvo = idsOriginais.get(b.stepId) ?? b.stepId
+        if (posicao.has(alvo) && posicao.get(alvo)! < i) {
+          traduzidos[chave] = { ...b, stepId: alvo }
+          resolvidas.push(alvo)
+        }
+      }
+      if (Object.keys(traduzidos).length > 0) tarefa.inputBindings = traduzidos
+      else delete tarefa.inputBindings
+    }
     if (resolvidas.length > 0) tarefa.dependsOn = [...new Set(resolvidas)]
     else delete tarefa.dependsOn
   }
@@ -240,9 +594,306 @@ export function validatePlan(bruto: unknown, membros: PlannerMember[], pergunta:
   return { tasks: tarefas, ...(sintese ? { synthesisObjective: sintese } : {}) }
 }
 
+// --- a compilação: o plano vira executável, ou vira diagnóstico -----------------------------
+//
+// `validatePlan` é indulgente de propósito — ela recebe a sugestão de um modelo e salva o
+// que dá para salvar. Este passo é o oposto: roda ANTES de qualquer execução e ou o plano
+// está de pé, ou está escrito por que não está.
+//
+// A pergunta que ele responde é sempre a mesma: cada campo que uma tarefa recebe TEM
+// origem? Um plano onde a resposta é não roda assim mesmo — e o agente, sem o dado,
+// preenche a lacuna com o que for plausível. É por isso que a falha aqui é preferível: ela
+// custa uma mensagem, e a outra custa uma resposta errada com cara de certa.
+
+export type PlanDiagnosticCode =
+  | 'unknown_agent'
+  | 'capability_mismatch'
+  | 'invalid_id'
+  | 'duplicate_id'
+  | 'unknown_step'
+  | 'forward_reference'
+  | 'undeclared_dependency'
+  | 'cycle'
+  | 'missing_input'
+  | 'unknown_context_field'
+  | 'incompatible_output'
+  | 'unknown_function'
+  | 'unsafe_reference'
+
+export interface PlanDiagnostic {
+  code: PlanDiagnosticCode
+  taskId?: string
+  /** O campo em questão, quando há um. Nome de campo, nunca o valor dele. */
+  field?: string
+  message: string
+}
+
+export interface CompileOptions {
+  /**
+   * Os campos que o pedido traz.
+   *
+   * AUSENTE não é a mesma coisa que VAZIO: ausente quer dizer que quem chamou não sabe
+   * enumerar o contexto, e aí `$context.x` passa. Vazio quer dizer que não há contexto
+   * nenhum, e aí qualquer `$context.x` é um campo sem origem.
+   */
+  contextFields?: string[]
+  /** Existe esta função? Injetável para teste; o padrão é o registro real do servidor. */
+  functionExists?: (functionName: string, version?: string) => boolean
+}
+
+export interface CompiledPlan {
+  ok: boolean
+  plan: ExecutionPlan
+  diagnostics: PlanDiagnostic[]
+  /** O que ninguém produz e o contexto não tem. É daqui que sai o pedido de esclarecimento. */
+  unmet: { taskId: string; agentId: string; field: string }[]
+}
+
+const funcaoExiste = (nome: string, versao?: string): boolean => {
+  const f = findFunction(nome)
+  return Boolean(f) && (!versao || f!.version === versao)
+}
+
+export function compilePlan(plan: ExecutionPlan, membros: PlannerMember[], opts: CompileOptions = {}): CompiledPlan {
+  const diagnostics: PlanDiagnostic[] = []
+  const unmet: CompiledPlan['unmet'] = []
+  const porId = new Map(membros.map((m) => [m.agentId, m]))
+  const existe = opts.functionExists ?? funcaoExiste
+  const vistos = new Set<string>()
+  const posicao = new Map<string, number>()
+  for (const [i, t] of plan.tasks.entries()) if (!posicao.has(t.id)) posicao.set(t.id, i)
+
+  for (const [i, task] of plan.tasks.entries()) {
+    const diga = (code: PlanDiagnosticCode, message: string, field?: string) =>
+      diagnostics.push({ code, taskId: task.id, message, ...(field ? { field } : {}) })
+
+    if (!isSafeSegment(task.id)) diga('invalid_id', `id de etapa inválido: "${task.id}"`)
+    if (vistos.has(task.id)) diga('duplicate_id', `id repetido: "${task.id}"`)
+    vistos.add(task.id)
+
+    // AUTORIZADO quer dizer: membro deste setor. O portão de colaboração ainda decide
+    // depois, mas um plano que já nasce impossível não deve chegar até lá.
+    const membro = porId.get(task.agentId)
+    if (!membro) {
+      diga('unknown_agent', `${task.agentId} não é membro deste setor`)
+      continue
+    }
+
+    // Quem CONDUZ não executa tarefa operacional, e quem ANALISA precisa receber algo.
+    if ((membro.type ?? 'executor') === 'coordinator') diga('capability_mismatch', `${membro.name} conduz a equipe; não executa etapa`)
+    if ((membro.type ?? 'executor') === 'analyst' && (task.dependsOn ?? []).length === 0 && !task.inputBindings)
+      diga('capability_mismatch', `${membro.name} analisa o que recebe, e esta etapa não recebe nada`)
+
+    // O que ele executa precisa EXISTIR. Um agente de função apontando para uma função que
+    // não está no registro é uma etapa que falha depois de o plano inteiro já ter começado.
+    if (membro.executorKind === 'function') {
+      const nome = membro.executorConfig?.functionName ?? ''
+      if (!nome || !existe(nome, membro.executorConfig?.version))
+        diga('unknown_function', `${membro.name}: função "${nome || '(vazia)'}" não existe no registro`)
+    }
+    if (membro.executorKind === 'tool') {
+      const cfg = membro.executorConfig ?? {}
+      if (!cfg.toolId && !(cfg.appKey && cfg.actionKey)) diga('unknown_function', `${membro.name}: ferramenta ou ação não configurada`)
+      else if (cfg.appKey && cfg.actionKey && membro.actions && !membro.actions.includes(`${cfg.appKey}.${cfg.actionKey}`))
+        diga('unknown_function', `${membro.name}: ação ${cfg.appKey}.${cfg.actionKey} não está autorizada`)
+    }
+
+    // As dependências: existem, e vêm ANTES. Uma etapa que espera por outra que roda depois
+    // dela é um ciclo escrito de um jeito que não parece um.
+    for (const d of task.dependsOn ?? []) {
+      if (!posicao.has(d)) diga('unknown_step', `depende de "${d}", que não existe no plano`)
+      else if (posicao.get(d)! >= i) diga('forward_reference', `depende de "${d}", que só roda depois`)
+    }
+
+    // Os bindings: origem existente, declarada, e sem nome perigoso.
+    const declaradas = new Set(task.dependsOn ?? [])
+    for (const [campo, b] of Object.entries(task.inputBindings ?? {})) {
+      if (!isSafeSegment(campo) || (b.from !== 'literal' && b.path.some((x) => !isSafeSegment(x)))) {
+        diga('unsafe_reference', `${campo}: referência proibida em ${describeBinding(b)}`, campo)
+        continue
+      }
+      if (b.from === 'context') {
+        if (opts.contextFields && !opts.contextFields.includes(b.path[0]))
+          diga('unknown_context_field', `${campo}: o pedido não traz "${b.path[0]}"`, campo)
+        continue
+      }
+      if (b.from !== 'step') continue
+      if (!posicao.has(b.stepId)) {
+        diga('unknown_step', `${campo}: lê de "${b.stepId}", que não existe no plano`, campo)
+        continue
+      }
+      if (posicao.get(b.stepId)! >= i) {
+        diga('forward_reference', `${campo}: lê de "${b.stepId}", que só roda depois`, campo)
+        continue
+      }
+      if (!declaradas.has(b.stepId)) diga('undeclared_dependency', `${campo}: lê de "${b.stepId}" sem declará-la em dependsOn`, campo)
+      // A saída da origem serve de entrada aqui? Só dá para responder quando a origem
+      // declara o que produz — quando não declara, o silêncio é honesto e não vira erro.
+      const origem = porId.get(plan.tasks[posicao.get(b.stepId)!].agentId)
+      const produz = schemaFields(origem?.outputJsonSchema)
+      if (produz.length > 0 && b.path.length === 1 && !produz.includes(b.path[0])) {
+        diga('incompatible_output', `${campo}: "${b.stepId}" não produz "${b.path[0]}"`, campo)
+        continue
+      }
+      const tipoOrigem = b.path.length === 1 ? tipoDoCampo(origem?.outputJsonSchema, b.path[0]) : null
+      const tipoDestino = tipoDoCampo(membro.inputJsonSchema, campo)
+      if (tipoOrigem && tipoDestino && tipoOrigem !== tipoDestino)
+        diga('incompatible_output', `${campo}: "${b.stepId}" produz ${tipoOrigem}, e aqui é ${tipoDestino}`, campo)
+    }
+
+    /**
+     * O campo obrigatório sem origem — o defeito que este arquivo existe para pegar.
+     *
+     * Uma etapa que precisa de um dado que nenhuma etapa anterior produz e que o pedido não
+     * traz roda mesmo assim: o agente lê a prosa, não acha o número, e escreve um plausível.
+     * A resposta sai completa, com aparência de fundamentada, e errada. Aqui ela vira uma
+     * frase dizendo qual campo falta.
+     */
+    for (const campo of requiredFields(membro.inputJsonSchema)) {
+      if (task.inputBindings && campo in task.inputBindings) continue
+      // Tarefa legada não declara binding nenhum: a entrada dela é o texto do antecessor, e
+      // cobrar contrato de quem foi planejado antes de o contrato existir seria quebrar o
+      // que já roda. Só cobra quem declarou bindings, ou quem não tem de quem herdar texto.
+      if (!task.inputBindings && (task.dependsOn ?? []).length > 0) continue
+      diga('missing_input', `${membro.name} exige "${campo}", e nada no plano produz esse campo`, campo)
+      unmet.push({ taskId: task.id, agentId: task.agentId, field: campo })
+    }
+  }
+
+  // Os ciclos, olhando o grafo inteiro. As duas checagens acima já barram o caso comum
+  // (dependência para a frente), mas um plano montado à mão pode chegar aqui de outro jeito.
+  const restantes = new Map(plan.tasks.map((t) => [t.id, new Set((t.dependsOn ?? []).filter((d) => posicao.has(d)))]))
+  let mudou = true
+  while (mudou) {
+    mudou = false
+    for (const [id, deps] of restantes) {
+      if (deps.size > 0) continue
+      restantes.delete(id)
+      for (const outras of restantes.values()) outras.delete(id)
+      mudou = true
+    }
+  }
+  if (restantes.size > 0)
+    diagnostics.push({ code: 'cycle', message: `dependência circular entre: ${[...restantes.keys()].join(', ')}` })
+
+  return { ok: diagnostics.length === 0, plan, diagnostics, unmet }
+}
+
+/** O diagnóstico em uma linha — para o log e para a mensagem de quem administra. */
+export const describeDiagnostics = (ds: PlanDiagnostic[]): string =>
+  ds.map((d) => `${d.code}${d.taskId ? `@${d.taskId}` : ''}: ${d.message}`).join('; ')
+
+/**
+ * A pergunta que se faz quando o dado não existe em lugar nenhum.
+ *
+ * A quarta saída — preencher com um valor plausível — é a que este projeto não tem.
+ */
+export function clarificationFor(unmet: CompiledPlan['unmet']): string {
+  const campos = [...new Set(unmet.map((u) => u.field))]
+  if (campos.length === 0) return ''
+  return `Para seguir, falta ${campos.length === 1 ? 'um dado' : 'um dado ou mais'} que ninguém da equipe produz: ${campos.join(', ')}.`
+}
+
+/**
+ * O fornecedor que faltava.
+ *
+ * Antes de perguntar, procura: existe no setor alguém que DECLARA produzir o campo que
+ * falta e que ainda não está no plano? Se existe, ele entra antes de quem precisa do campo.
+ * Se não existe, devolve nulo — e quem chamou pergunta ou falha com o diagnóstico.
+ */
+export function supplyMissing(
+  plan: ExecutionPlan,
+  membros: PlannerMember[],
+  unmet: CompiledPlan['unmet'],
+  max = MAX_TASKS,
+): ExecutionPlan | null {
+  if (unmet.length === 0) return null
+  const noPlano = new Set(plan.tasks.map((t) => t.agentId))
+  const fornecedores: ExecutionTask[] = []
+  const porCampo = new Map<string, string>()
+
+  for (const falta of unmet) {
+    if (porCampo.has(falta.field)) continue
+    // Um fornecedor já convocado costuma entregar mais de um campo — e convocar outro para
+    // o segundo campo do mesmo cadastro é pagar duas inferências pela mesma consulta.
+    const jaConvocado = fornecedores.find((f) =>
+      schemaFields(membros.find((m) => m.agentId === f.agentId)?.outputJsonSchema).includes(falta.field),
+    )
+    if (jaConvocado) {
+      porCampo.set(falta.field, jaConvocado.id)
+      continue
+    }
+    const quem = membros.find(
+      (m) => !noPlano.has(m.agentId) && (m.type ?? 'executor') !== 'coordinator' && schemaFields(m.outputJsonSchema).includes(falta.field),
+    )
+    if (!quem) return null
+    noPlano.add(quem.agentId)
+    const id = `p${fornecedores.length + 1}`
+    fornecedores.push({
+      id,
+      agentId: quem.agentId,
+      objective: `Levantar ${falta.field} para a equipe.`,
+      ...(quem.outputJsonSchema ? { expectedOutputSchema: quem.outputJsonSchema, outputSchemaHash: schemaHash(quem.outputJsonSchema) } : {}),
+    })
+    porCampo.set(falta.field, id)
+  }
+  // Teto é teto: um plano que cresce para se consertar deixa de ser o plano que o dono
+  // autorizou pagar. Sem espaço, é melhor perguntar.
+  if (fornecedores.length + plan.tasks.length > max) return null
+
+  const tasks = plan.tasks.map((t) => {
+    const meus = unmet.filter((u) => u.taskId === t.id && porCampo.has(u.field))
+    if (meus.length === 0) return t
+    const bindings: Record<string, Binding> = { ...(t.inputBindings ?? {}) }
+    const deps = new Set(t.dependsOn ?? [])
+    for (const u of meus) {
+      const fonte = porCampo.get(u.field)!
+      bindings[u.field] = { from: 'step', stepId: fonte, path: [u.field] }
+      deps.add(fonte)
+    }
+    return { ...t, inputBindings: bindings, dependsOn: [...deps] }
+  })
+  // Os fornecedores vão na FRENTE: dependência só aponta para trás, e essa é a única
+  // ordem em que a regra continua verdadeira.
+  return { ...plan, tasks: [...fornecedores, ...tasks] }
+}
+
+// --- planos antigos ---------------------------------------------------------------------
+
+/** Sem bindings declarados: a entrada é o texto dos antecessores, como sempre foi. */
+export const isLegacyTask = (t: ExecutionTask): boolean => t.inputBindings === undefined
+
+/**
+ * Um plano gravado antes desta fase, lido de volta.
+ *
+ * Ele continua válido e continua rodando: nenhum campo novo é obrigatório, e um plano sem
+ * nenhum deles é exatamente o plano de antes. O adaptador existe para que um registro
+ * antigo passe por `compilePlan` sem virar erro por não falar a língua nova.
+ */
+export function adaptLegacyPlan(bruto: unknown): ExecutionPlan {
+  const cru = (bruto ?? {}) as { tasks?: unknown; synthesisObjective?: unknown }
+  const tasks: ExecutionTask[] = []
+  for (const item of (Array.isArray(cru.tasks) ? cru.tasks : []) as Record<string, unknown>[]) {
+    const agentId = texto(item?.agentId)
+    if (!agentId) continue
+    const id = texto(item?.id) || `t${tasks.length + 1}`
+    const deps = Array.isArray(item?.dependsOn) ? (item.dependsOn as unknown[]).map(texto).filter(Boolean) : []
+    tasks.push({
+      id,
+      agentId,
+      objective: texto(item?.objective),
+      ...(deps.length > 0 ? { dependsOn: deps } : {}),
+      // Sem `inputBindings`, de propósito: é o que a marca como legada.
+    })
+  }
+  const sintese = texto(cru.synthesisObjective)
+  return { tasks, ...(sintese ? { synthesisObjective: sintese } : {}) }
+}
+
 // --- o pedido ao modelo --------------------------------------------------------------------
 
-export function planPrompt(pergunta: string, membros: PlannerMember[], max = MAX_TASKS): string {
+export function planPrompt(pergunta: string, membros: PlannerMember[], max = MAX_TASKS, contextFields?: string[]): string {
+  const comContrato = membros.some((m) => schemaFields(m.inputJsonSchema).length > 0)
   return [
     'Você distribui UM pedido entre os membros de uma equipe. Não responda ao pedido.',
     '',
@@ -250,18 +901,34 @@ export function planPrompt(pergunta: string, membros: PlannerMember[], max = MAX
     ...membros.map((m) => `- id: ${m.agentId} | ${describeMember(m)}`),
     '',
     `Pedido: ${trecho(pergunta, 1500)}`,
+    ...(contextFields && contextFields.length > 0 ? ['', `Campos que o pedido traz: ${contextFields.slice(0, 24).join(', ')}`] : []),
     '',
     'Regras:',
     `- Escolha de 1 a ${max} membros. O objetivo é COBERTURA, não chamar todos.`,
+    // A regra que mudou nesta fase: escolher por CAPACIDADE, não por rótulo. Um nome bonito
+    // casa com qualquer pedido e não diz nada sobre o que o agente consegue entregar.
+    '- Escolha por CAPACIDADE e por CONTRATO: o que ele sabe fazer, as ferramentas dele e os campos que ele aceita e produz. O NOME é o último critério, não o primeiro.',
     '- Um membro que não tem nada a ver com o pedido fica de fora.',
     '- Dois membros que fariam a mesma coisa: escolha um.',
     '- Se um membro precisa do resultado de outro, declare em dependsOn.',
     '- Quem ANALISA trabalha sobre o que recebe: acione um [analyst] apenas com dependsOn apontando para quem coleta.',
     '- Quem CONDUZ ([coordinator]) não é pesquisador: ele consolida no fim, e não entra como tarefa.',
     '- Cada objective descreve só a parte daquele membro, na língua do pedido.',
+    ...(comContrato
+      ? [
+          '',
+          'Entradas (inputBindings) — quem tem entrada:{...} recebe CAMPOS, não a pergunta:',
+          '- Cada campo tem UMA origem: "$context.campo" (o pedido), "$steps.<id>.campo" (etapa anterior) ou um valor JSON literal.',
+          '- Os campos marcados com * são obrigatórios: declare a origem de todos.',
+          '- Só aponte para um campo que a etapa de origem realmente produz (veja "saída:{...}") e declare essa etapa em dependsOn.',
+          '- Se um campo obrigatório não existe no pedido nem na saída de ninguém, NÃO INVENTE: inclua antes um membro que produza esse campo, ou deixe o campo de fora.',
+          '- Nada de expressão, fórmula, filtro ou código: só nome de campo.',
+        ]
+      : []),
     '',
     'Responda SOMENTE com JSON neste formato, sem cercas de código:',
-    '{"tasks":[{"id":"t1","agentId":"<id>","objective":"<o que ele entrega>","dependsOn":[]}],"synthesisObjective":"<como juntar>"}',
+    '{"tasks":[{"id":"t1","agentId":"<id>","objective":"<o que ele entrega>","dependsOn":[],"inputBindings":{},"onFailure":"skip"}],"synthesisObjective":"<como juntar>"}',
+    'onFailure: "skip" (o resto continua), "stop" (o plano para) ou "replan" (vale replanejar).',
   ].join('\n')
 }
 
@@ -286,22 +953,68 @@ export function parsePlanJson(saida: string): unknown {
  * Falha do modelo NUNCA derruba a execução: cair para o determinístico é pior que o
  * ideal e melhor que não responder.
  */
+export interface PlanOutcome {
+  plan: ExecutionPlan
+  source: 'model' | 'fallback' | 'empty'
+  /** O que a compilação apontou. Vazio quando o plano está de pé. */
+  diagnostics?: PlanDiagnostic[]
+  /** O que perguntar a quem pediu, quando o dado não existe em lugar nenhum. */
+  clarification?: string
+}
+
 export async function planExecution(opts: {
   question: string
   members: PlannerMember[]
   ask?: (prompt: string) => Promise<string>
   max?: number
-}): Promise<{ plan: ExecutionPlan; source: 'model' | 'fallback' | 'empty' }> {
+  /** Os campos que o pedido traz. Ausente = quem chamou não sabe enumerá-los. */
+  contextFields?: string[]
+  functionExists?: CompileOptions['functionExists']
+}): Promise<PlanOutcome> {
   const max = opts.max ?? MAX_TASKS
   if (opts.members.length === 0) return { plan: { tasks: [] }, source: 'empty' }
-  if (!opts.ask) return { plan: fallbackPlan(opts.question, opts.members, max), source: 'fallback' }
+
+  const compilar = (plan: ExecutionPlan) =>
+    compilePlan(plan, opts.members, { contextFields: opts.contextFields, functionExists: opts.functionExists })
+
+  /**
+   * O plano depois da compilação — consertado, esclarecido ou recusado, nesta ordem.
+   *
+   * A quarta possibilidade, que é a que se quer evitar, seria seguir com o campo faltando e
+   * deixar o agente completá-lo: a resposta sairia inteira, com aparência de fundamentada, e
+   * sem ninguém saber de onde veio o número.
+   */
+  const conferir = (plan: ExecutionPlan, source: PlanOutcome['source']): PlanOutcome => {
+    const compilado = compilar(plan)
+    if (compilado.ok) return { plan: compilado.plan, source }
+    if (compilado.unmet.length > 0) {
+      // 1. alguém do setor produz o que falta? Ele entra antes de quem precisa.
+      const reforcado = supplyMissing(plan, opts.members, compilado.unmet, max)
+      if (reforcado) {
+        const segunda = compilar(reforcado)
+        if (segunda.ok) return { plan: segunda.plan, source }
+      }
+      // 2. ninguém produz: pergunta, em vez de inventar.
+      return {
+        plan: compilado.plan,
+        source,
+        diagnostics: compilado.diagnostics,
+        clarification: clarificationFor(compilado.unmet),
+      }
+    }
+    // 3. o resto (ciclo, referência inválida, capacidade errada) sai com o diagnóstico. O
+    // plano continua junto: quem chamou decide entre executar o que sobrou e desistir.
+    return { plan: compilado.plan, source, diagnostics: compilado.diagnostics }
+  }
+
+  if (!opts.ask) return conferir(fallbackPlan(opts.question, opts.members, max, { contextFields: opts.contextFields }), 'fallback')
   try {
-    const saida = await opts.ask(planPrompt(opts.question, opts.members, max))
+    const saida = await opts.ask(planPrompt(opts.question, opts.members, max, opts.contextFields))
     const bruto = parsePlanJson(saida)
-    if (!bruto) return { plan: fallbackPlan(opts.question, opts.members, max), source: 'fallback' }
-    return { plan: validatePlan(bruto, opts.members, opts.question, max), source: 'model' }
+    if (!bruto) return conferir(fallbackPlan(opts.question, opts.members, max, { contextFields: opts.contextFields }), 'fallback')
+    return conferir(validatePlan(bruto, opts.members, opts.question, max), 'model')
   } catch {
-    return { plan: fallbackPlan(opts.question, opts.members, max), source: 'fallback' }
+    return conferir(fallbackPlan(opts.question, opts.members, max, { contextFields: opts.contextFields }), 'fallback')
   }
 }
 
@@ -317,6 +1030,10 @@ export function describePlan(plan: ExecutionPlan, membros: PlannerMember[]): str
     (t) =>
       `${t.id}=${nome.get(t.agentId) ?? '?'}(${t.agentId})` +
       `${t.dependsOn?.length ? ` after:${t.dependsOn.join(',')}` : ''}` +
+      // As ORIGENS, nunca os valores: o log diz de onde o campo vem, e quem lê o log não
+      // fica sabendo o que estava escrito nele.
+      `${t.inputBindings ? ` in:{${Object.entries(t.inputBindings).map(([k, b]) => `${k}=${b.from === 'literal' ? 'literal' : describeBinding(b)}`).join(',')}}` : ''}` +
+      `${t.onFailure && t.onFailure !== 'skip' ? ` onFailure:${t.onFailure}` : ''}` +
       ` "${trecho(t.objective, 120)}"`,
   )
   return partes.join(' | ') || '(sem tarefas)'
@@ -333,6 +1050,8 @@ export interface TaskResult {
   dependsOn: string[]
   status: 'succeeded' | 'failed' | 'skipped'
   output?: string
+  /** O DADO que a etapa produziu, quando ela produz dado. É o que os bindings leem. */
+  structured?: unknown
   /** A CATEGORIA do problema, nunca o texto do provedor nem conteúdo de base. */
   error?: string
   durationMs: number
@@ -362,6 +1081,57 @@ export function shouldRun(task: ExecutionTask, resultados: Map<string, TaskResul
   const deps = task.dependsOn ?? []
   if (deps.length === 0) return true
   return deps.some((d) => resultados.get(d)?.status === 'succeeded')
+}
+
+/**
+ * O que cada etapa produziu, endereçável por `$steps.<id>.campo`.
+ *
+ * Quando o agente devolve dado, é o dado. Quando devolve prosa, ainda dá para ler o JSON
+ * que ele escreveu no meio do texto — e, na pior das hipóteses, `$steps.<id>.text`.
+ */
+export function stepOutputs(resultados: Map<string, TaskResult>): Record<string, unknown> {
+  const fontes: Record<string, unknown> = {}
+  for (const [id, r] of resultados) {
+    if (r.status !== 'succeeded') continue
+    const dado = r.structured ?? (r.output ? parsePlanJson(r.output) : null)
+    fontes[id] = dado && typeof dado === 'object' && !Array.isArray(dado) ? { text: r.output ?? '', ...(dado as object) } : { text: r.output ?? '' }
+  }
+  return fontes
+}
+
+/**
+ * A entrada desta tarefa: os campos que o plano declarou, e o texto de quem veio antes.
+ *
+ * `missing` é o ponto do arquivo inteiro. Um campo declarado em `inputBindings` é um campo
+ * que a tarefa PRECISA — e se ele não chegou, rodar assim mesmo significa entregar a prosa
+ * ao agente e deixá-lo deduzir o número. Quem chama decide o que fazer; o que não existe é
+ * a opção de preencher.
+ */
+export function inputForTask(
+  task: ExecutionTask,
+  resultados: Map<string, TaskResult>,
+  contexto?: Record<string, unknown>,
+): { text: string; input?: Record<string, unknown>; missing: string[] } {
+  const doTexto = inputFromDependencies(task, resultados)
+  if (isLegacyTask(task)) return { text: doTexto, missing: [] }
+  const { input, missing } = resolveBindings(task.inputBindings, { context: contexto, steps: stepOutputs(resultados) })
+  const campos = Object.entries(input).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+  return { text: [campos.join('\n'), doTexto].filter(Boolean).join('\n\n'), input, missing }
+}
+
+/** A tarefa que, ao falhar, derruba o plano inteiro. Nula quando não houve nenhuma. */
+export function haltingFailure(plan: ExecutionPlan, resultados: Map<string, TaskResult>): ExecutionTask | null {
+  return plan.tasks.find((t) => t.onFailure === 'stop' && resultados.get(t.id)?.status === 'failed') ?? null
+}
+
+/** Alguma falha pediu explicitamente por um replanejamento. */
+export function wantsReplan(plan: ExecutionPlan, resultados: Map<string, TaskResult>): boolean {
+  return plan.tasks.some((t) => t.onFailure === 'replan' && resultados.get(t.id)?.status !== 'succeeded')
+}
+
+/** A etapa que encerra o plano ao dar certo — um portão que decide que já basta. */
+export function stopsAfterSuccess(plan: ExecutionPlan, resultados: Map<string, TaskResult>): boolean {
+  return plan.tasks.some((t) => t.onSuccess === 'stop' && resultados.get(t.id)?.status === 'succeeded')
 }
 
 /** A entrada de uma tarefa dependente: o que os antecessores produziram, com autoria. */
@@ -470,12 +1240,27 @@ export function dedupeAgainst(plan: ExecutionPlan, jaFeitas: Set<string>, restan
   }
   // As dependências que sobraram apontando para tarefa removida deixam de existir: a
   // tarefa roda com o pedido original em vez de esperar por algo que não vem.
-  const ids = new Set(tasks.map((t) => t.id))
+  /**
+   * Um binding órfão é outra história.
+   *
+   * Perder uma dependência textual custa contexto; perder a ORIGEM de um campo declarado
+   * custa o campo — e a tarefa rodaria pedindo ao agente que deduzisse o que a etapa
+   * removida ia entregar. Quem ficou sem origem sai do plano junto.
+   */
+  let inteiras = tasks
+  for (let antes = -1; antes !== inteiras.length; ) {
+    antes = inteiras.length
+    const vivos = new Set(inteiras.map((t) => t.id))
+    // Em ponto fixo: quem some leva junto quem lia dele, e quem lia desse último também.
+    inteiras = inteiras.filter((t) => Object.values(t.inputBindings ?? {}).every((b) => b.from !== 'step' || vivos.has(b.stepId)))
+  }
   return {
     ...plan,
-    tasks: tasks.map((t) => {
-      const dep = (t.dependsOn ?? []).filter((d) => ids.has(d))
-      return dep.length > 0 ? { ...t, dependsOn: dep } : { id: t.id, agentId: t.agentId, objective: t.objective }
+    tasks: inteiras.map((t) => {
+      const dep = (t.dependsOn ?? []).filter((d) => inteiras.some((x) => x.id === d))
+      if (dep.length > 0) return { ...t, dependsOn: dep }
+      const { dependsOn: _fora, ...resto } = t
+      return resto
     }),
   }
 }
