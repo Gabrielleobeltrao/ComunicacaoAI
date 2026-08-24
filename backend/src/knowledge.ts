@@ -892,6 +892,15 @@ export interface RetrievalResult {
    * recorte arbitrário apresentado como conclusão.
    */
   totalMatches?: number
+  /**
+   * A RELEVÂNCIA do melhor trecho, de 0 a 1.
+   *
+   * Ela era calculada e jogada fora aqui. Quem decide se vale procurar na web recebia só a
+   * CONTAGEM de trechos — e dois trechos que apenas mencionam o assunto contam igual a
+   * dois que respondem a pergunta. Era por isso que uma base com informação incompleta
+   * bloqueava a busca: "trouxe 2 trechos" parecia suficiente.
+   */
+  topScore?: number
   /** A seleção foi cortada: existe mais do que o que está aqui. */
   truncated?: boolean
 }
@@ -915,6 +924,7 @@ export async function retrieveContext(
     encontrados?: number,
   ): RetrievalResult => ({
     context: selected.map((hit) => hit.content),
+    ...(selected.length > 0 ? { topScore: Math.max(...selected.map((h) => (typeof h.score === 'number' ? h.score : 0))) } : {}),
     sources: selected.map((hit) => ({
       documentId: hit.documentId ?? null,
       // Short by construction: a title is a label, not a document.

@@ -172,3 +172,36 @@ describe('o custo por tipo de executor', () => {
     expect(custoPorTipo([ETAPA_MODELO])).toHaveLength(1)
   })
 })
+
+// --- a busca na web tem lugar próprio na trilha -------------------------------------------
+//
+// Ela saía como `rag`, o mesmo tipo da leitura da base — mesmo ícone, mesmo rótulo, mesmo
+// filtro. Consultar a base é local e sai de graça; buscar na web gasta uma requisição da
+// franquia mensal e traz a página de um terceiro. Com a mesma cara, o painel escondia
+// exatamente a diferença que custa dinheiro.
+describe('a busca na web, separada da leitura da base', () => {
+  const daBase = evento({ type: 'rag', title: 'leu a base', status: 'success' })
+  const daWeb = evento({
+    type: 'web_search',
+    status: 'success',
+    title: 'Vitória: busca na web — 8 resultado(s), 3 página(s) lida(s), 2 evidência(s)',
+    metadata: { provider: 'brave', found: 8, selected: [1, 2, 3, 4], read: [{ url: 'a', ok: true }], evidence: [1, 2] },
+  })
+
+  it('o filtro "Web" traz só a busca, e o de "Base" só a base', async () => {
+    const { filtrarEventos } = await import('../executionTrace')
+    expect(filtrarEventos([daBase, daWeb], 'web').map((e) => e.type)).toEqual(['web_search'])
+    expect(filtrarEventos([daBase, daWeb], 'rag').map((e) => e.type)).toEqual(['rag'])
+  })
+
+  it('"Tudo" continua trazendo os dois', async () => {
+    const { filtrarEventos } = await import('../executionTrace')
+    expect(filtrarEventos([daBase, daWeb], 'all')).toHaveLength(2)
+  })
+
+  it('uma busca que falhou aparece no filtro de erros, como qualquer outra falha', async () => {
+    const { filtrarEventos } = await import('../executionTrace')
+    const falhou = { ...daWeb, status: 'error' as const }
+    expect(filtrarEventos([daBase, falhou], 'errors')).toHaveLength(1)
+  })
+})

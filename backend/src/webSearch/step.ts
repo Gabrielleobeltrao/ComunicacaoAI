@@ -14,7 +14,7 @@
 // Aqui está o passo inteiro — decisão, execução, memória, contabilidade e trilha — para
 // que os cinco caminhos façam a MESMA coisa. Um sexto caminho que apareça amanhã chama
 // esta função ou não busca; o que não pode voltar a existir é uma cópia parcial.
-import { normalizeWebSearch, shouldSearch, wantsCurrentInfo } from './policy.js'
+import { normalizeWebSearch, respondeAoValorPedido, shouldSearch, wantsCurrentInfo } from './policy.js'
 import { activeSearchProvider, configuredProviderName } from './provider.js'
 import { runWebSearch } from './run.js'
 import { recordSearchEvent } from './budget.js'
@@ -28,6 +28,15 @@ export interface EstadoDaBase {
   passages: number
   /** As origens do que a base devolveu: `search` quer dizer "veio de uma busca anterior". */
   sourceOrigins?: (string | undefined)[]
+  /**
+   * A relevância do melhor trecho (0 a 1), quando a busca na base soube dizer.
+   *
+   * É o número que separa "trouxe texto sobre o assunto" de "respondeu a pergunta" — e
+   * era ele que faltava para a decisão parar de contar trechos.
+   */
+  topScore?: number
+  /** O TEXTO dos trechos, para conferir se a pergunta por um valor foi respondida. */
+  passageTexts?: string[]
 }
 
 export interface PassoDeBuscaDeps {
@@ -84,6 +93,10 @@ export async function gatherWebEvidence(
     canSearch: Boolean(provedor),
     wantsCurrent: wantsCurrentInfo(query),
     onlySearchMemory: soMemoriaDeBusca,
+    topScore: base.topScore,
+    // Só dá para responder isto com o texto em mãos. Sem ele, `undefined` — e a decisão
+    // não usa o sinal, em vez de supor que está tudo bem.
+    ...(base.passageTexts ? { answersValue: respondeAoValorPedido(query, base.passageTexts) } : {}),
   })
 
   const trilha = (entrada: Parameters<typeof traceEvent>[0]) => {
@@ -115,7 +128,7 @@ export async function gatherWebEvidence(
       trilha({
         ownerId,
         executionId: deps.traceId!,
-        type: 'rag',
+        type: 'web_search',
         status: 'info',
         agentId: agent._id.toString(),
         title: `${agent.name}: busca na web não foi necessária`,
@@ -161,7 +174,7 @@ export async function gatherWebEvidence(
   trilha({
     ownerId,
     executionId: deps.traceId!,
-    type: 'rag',
+    type: 'web_search',
     status: r.ok ? (r.evidence.length > 0 ? 'success' : 'info') : 'error',
     agentId: agent._id.toString(),
     title: r.ok

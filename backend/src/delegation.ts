@@ -409,6 +409,12 @@ export interface DelegationDeps {
     failed?: boolean
     /** Quantos trechos correspondiam, quando dá para saber — ver `knowledge.ts`. */
     totalMatches?: number
+    /**
+     * A relevância do melhor trecho (0 a 1). É ela que separa "trouxe texto sobre o
+     * assunto" de "respondeu a pergunta" — e é o sinal que faltava para a decisão de
+     * buscar na web parar de contar trechos.
+     */
+    topScore?: number
   }>
 }
 
@@ -885,6 +891,7 @@ export async function runAgentTask(
       grounding:
         (Array.isArray(r) ? undefined : r.status) ?? (!Array.isArray(r) && r.failed ? 'unavailable' : passagens.length ? 'ok' : 'empty'),
       total: Array.isArray(r) ? undefined : (r as { totalMatches?: number }).totalMatches,
+      topScore: Array.isArray(r) ? undefined : (r as { topScore?: number }).topScore,
     }
   }
 
@@ -1005,7 +1012,7 @@ export async function runAgentTask(
       target,
       ctx.ownerId,
       query,
-      { grounding, passages: passages.length, sourceOrigins: sources.map((f) => f.origin) },
+      { grounding, passages: passages.length, sourceOrigins: sources.map((f) => f.origin), topScore: (retrieved as { topScore?: number }).topScore, passageTexts: passages },
       { rememberSearchPages: deps.rememberSearchPages, traceId: ctx.traceId, report: (e) => tracker.report(e) },
     )
     evidenciasDaWeb.push(...achado.evidence)

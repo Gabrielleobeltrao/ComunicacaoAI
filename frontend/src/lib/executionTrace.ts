@@ -11,7 +11,21 @@ import { socket } from './socket'
 export interface TraceEvent {
   executionId: string
   timestamp: string
-  type: 'user_prompt' | 'orchestration_start' | 'planner' | 'agent' | 'delegation' | 'tool' | 'rag' | 'synthesis' | 'sufficiency' | 'orchestration_end' | 'final' | 'error'
+  type:
+    | 'user_prompt'
+    | 'orchestration_start'
+    | 'planner'
+    | 'agent'
+    | 'delegation'
+    | 'tool'
+    | 'rag'
+    /** PROCURAR na internet — separado de `rag`: aquilo é local e de graça, isto custa. */
+    | 'web_search'
+    | 'synthesis'
+    | 'sufficiency'
+    | 'orchestration_end'
+    | 'final'
+    | 'error'
   status?: 'queued' | 'running' | 'success' | 'error' | 'skipped' | 'info'
   agentId?: string
   provider?: string | null
@@ -78,13 +92,21 @@ export function useExecutionTrace(traceId: string | null): { events: TraceEvent[
 // Fora do componente porque são regras, não desenho: o que cada filtro mostra, quanto a
 // execução levou e quanto custou. Assim dá para testá-las sem montar uma tela.
 
-export type TraceFilter = 'all' | 'planner' | 'agents' | 'tools' | 'rag' | 'errors'
+export type TraceFilter = 'all' | 'planner' | 'agents' | 'tools' | 'rag' | 'web' | 'errors'
 
 const POR_FILTRO: Record<Exclude<TraceFilter, 'all' | 'errors'>, TraceEvent['type'][]> = {
   planner: ['planner', 'sufficiency', 'orchestration_start', 'orchestration_end'],
   agents: ['agent', 'delegation', 'synthesis'],
   tools: ['tool'],
   rag: ['rag'],
+  /**
+   * A busca tem filtro PRÓPRIO.
+   *
+   * Dentro de "Base" ela ficava misturada à leitura do que já estava guardado — e quem
+   * abre o painel querendo saber "ele foi para a internet?" tinha que ler evento por
+   * evento para descobrir quais dos itens de "Base" eram, na verdade, uma ida para fora.
+   */
+  web: ['web_search'],
 }
 
 export function filtrarEventos(eventos: TraceEvent[], filtro: TraceFilter): TraceEvent[] {

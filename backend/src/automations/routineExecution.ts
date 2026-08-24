@@ -360,7 +360,13 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       agent,
       ctx.ownerId,
       knowledgeQuery,
-      { grounding, passages: retrieved.context.length, sourceOrigins: (retrieved.sources ?? []).map((f) => (f as { origin?: string }).origin) },
+      {
+        grounding,
+        passages: retrieved.context.length,
+        sourceOrigins: (retrieved.sources ?? []).map((f) => (f as { origin?: string }).origin),
+        topScore: (retrieved as { topScore?: number }).topScore,
+        passageTexts: retrieved.context,
+      },
       { rememberSearchPages: deps.rememberSearchPages, report: (e) => tracker.report(e) },
     )
     evidenciasDaWeb.push(...achado.evidence)

@@ -4,6 +4,7 @@ import { useParams } from 'react-router'
 import { API_URL } from '../lib/api'
 import { socket } from '../lib/socket'
 import { MessageContent } from '../components/MessageContent'
+import { TypingDots } from '../components/TypingDots'
 
 type ConversationPersistence = 'same_browser' | 'always_new'
 
@@ -46,6 +47,15 @@ export function Widget() {
   const [messages, setMessages] = useState<WidgetMessage[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  /**
+   * A resposta está sendo preparada.
+   *
+   * Diferente de `sending`: aquele acaba quando o POST volta, e o POST volta assim que a
+   * mensagem do VISITANTE é gravada. A do agente vem depois, pelo socket — e é justamente
+   * esse intervalo, o de uma inferência (e às vezes de uma busca na web em cima dela), que
+   * ficava sem nada na tela.
+   */
+  const [aguardandoDesde, setAguardandoDesde] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   /**
@@ -116,6 +126,8 @@ export function Widget() {
 
     function handleMessage(message: WidgetMessage) {
       if (message.conversationId !== id) return
+      // A resposta chegou: os pontinhos cumpriram o que prometiam e saem.
+      if (message.role === 'agent') setAguardandoDesde(null)
       // Por `_id`: a mesma mensagem pode chegar pelo socket e pelo polling, e uma
       // reconexão pode reentregar o que já está na tela.
       setMessages((prev) => (prev.some((m) => m._id === message._id) ? prev : [...prev, message]))
@@ -144,7 +156,14 @@ export function Widget() {
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`${API_URL}/api/public/widgets/${publicKey}/messages?conversationId=${conversationId}`)
-        if (res.ok) setMessages(await res.json())
+        if (res.ok) {
+          const lista = (await res.json()) as WidgetMessage[]
+          setMessages(lista)
+          // A rede de segurança também desliga os pontinhos: se o evento do socket se
+          // perdeu, a resposta chega por aqui — e deixar a animação girando sobre uma
+          // resposta já visível é pior do que nunca tê-la mostrado.
+          if (lista.at(-1)?.role === 'agent') setAguardandoDesde(null)
+        }
       } catch {
         // Uma falha de rede aqui não é notícia: a próxima volta em quinze segundos.
       }
@@ -155,7 +174,25 @@ export function Widget() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, aguardandoDesde])
+
+  /**
+   * O TETO da espera.
+   *
+   * Nem toda mensagem ganha resposta: o atendimento pode ter passado para uma pessoa, a
+   * franquia do mês pode ter acabado, o limite diário pode ter sido atingido. Sem teto, os
+   * pontinhos giram para sempre prometendo algo que não vem — e uma promessa quebrada na
+   * tela é pior do que nunca ter prometido.
+   *
+   * Ao expirar eles somem em silêncio. A resposta que chegar depois aparece do mesmo
+   * jeito; anunciar "ninguém respondeu" seria dar por perdida uma resposta que ainda pode
+   * estar a caminho.
+   */
+  useEffect(() => {
+    if (aguardandoDesde === null) return
+    const relogio = setTimeout(() => setAguardandoDesde(null), 90_000)
+    return () => clearTimeout(relogio)
+  }, [aguardandoDesde])
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -205,6 +242,10 @@ export function Widget() {
           return novas.length > 0 ? [...prev, ...novas] : prev
         })
       }
+      // A partir daqui alguém está preparando a resposta.
+      // O INSTANTE, e não um sinal de liga/desliga: uma segunda pergunta durante a espera
+      // reinicia o teto, em vez de herdar o relógio da primeira e sumir no meio dela.
+      setAguardandoDesde(Date.now())
     } catch {
       setInput(content)
       setNotice('Não foi possível enviar agora. Tente de novo.')
@@ -270,6 +311,7 @@ export function Widget() {
             <MessageContent content={message.content} />
           </div>
         ))}
+        {aguardandoDesde !== null && <TypingDots />}
         <div ref={messagesEndRef} />
       </div>
 
