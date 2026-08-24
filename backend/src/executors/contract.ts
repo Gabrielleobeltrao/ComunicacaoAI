@@ -9,9 +9,10 @@
 // tocar em um único documento existente.
 import { describeErrors, isValidToolSchema, validateAgainstSchema } from '../jsonSchema.js'
 import { findFunction } from './functionRegistry.js'
+import { compilarFormula, executarFormula, schemaDeEntrada, schemaDeSaida } from './formula.js'
 import type { ExecutorConfig, ExecutorKind, ResponseMode } from './types.js'
 
-export const EXECUTOR_KINDS: ExecutorKind[] = ['llm', 'function', 'tool']
+export const EXECUTOR_KINDS: ExecutorKind[] = ['llm', 'function', 'tool', 'formula']
 export const RESPONSE_MODES: ResponseMode[] = ['structured', 'text', 'structured_and_text']
 
 /** O que o agente carrega hoje, e o que ele passa a poder carregar. */
@@ -84,7 +85,8 @@ export function agentContractOf(agent: AgentContractInput | null | undefined): A
  * ação declara o formato; sem isso, o que ela tem é texto, e é isso que ela promete.
  */
 function modoPossivel(kind: ExecutorKind, declarado: ResponseMode, outputSchema: Record<string, unknown> | null): ResponseMode {
-  if (kind === 'function') return 'structured'
+  // Uma fórmula calcula: ela produz dado, e prosa é trabalho de modelo — igual à função.
+  if (kind === 'function' || kind === 'formula') return 'structured'
   if (kind === 'tool' && declarado !== 'text' && !outputSchema) return 'text'
   return declarado
 }
@@ -109,6 +111,10 @@ export function normalizeExecutorConfig(kind: ExecutorKind, bruto: unknown): Exe
         ? { config: cfg.config as Record<string, unknown> }
         : {}),
     }
+  }
+
+  if (kind === 'formula') {
+    return { kind: 'formula', expression: typeof cfg.expression === 'string' ? cfg.expression : '' }
   }
 
   if (kind === 'tool') {
@@ -246,6 +252,9 @@ export function parseAgentContract(body: Record<string, unknown>, atual?: { exec
    * Recusar aqui é o único lugar onde existe alguém para avisar.
    */
   if (fields.executorKind !== undefined && fields.executorConfig === undefined) {
+    if (fields.executorKind === 'formula') {
+      return { fields, error: 'executorConfig.expression is required for executorKind "formula"' }
+    }
     if (fields.executorKind === 'function') {
       return { fields, error: 'executorConfig.functionName is required for executorKind "function"' }
     }
@@ -271,10 +280,36 @@ export function parseAgentContract(body: Record<string, unknown>, atual?: { exec
    * "Texto" para um agente que devolve dados. A recusa acontece aqui porque aqui existe
    * alguém para avisar.
    */
-  if (kindEfetivo === 'function' && fields.responseMode !== undefined && fields.responseMode !== 'structured') {
-    return { fields, error: 'Um agente de função produz dados: responseMode precisa ser "structured".' }
+  if ((kindEfetivo === 'function' || kindEfetivo === 'formula') && fields.responseMode !== undefined && fields.responseMode !== 'structured') {
+    return { fields, error: 'Este agente calcula e produz dados: responseMode precisa ser "structured".' }
   }
-  if (kindEfetivo === 'function') fields.responseMode = 'structured'
+  if (kindEfetivo === 'function' || kindEfetivo === 'formula') fields.responseMode = 'structured'
+
+  /**
+   * A FÓRMULA declara o próprio contrato.
+   *
+   * As variáveis livres são a entrada; os nomes atribuídos são a saída. Um schema escrito
+   * à mão ao lado do cálculo começa igual e envelhece — e o que envelhece recusa entrada
+   * boa ou aceita entrada ruim, sem ninguém perceber.
+   *
+   * Ela é COMPILADA aqui: uma fórmula que não compila é recusada na gravação, com a linha
+   * e o motivo, e não na primeira execução longe do formulário.
+   */
+  if (kindEfetivo === 'formula' && fields.executorConfig?.kind === 'formula') {
+    const compilada = compilarFormula(fields.executorConfig.expression)
+    if (!compilada.ok || !compilada.compilada) {
+      const e = compilada.errors[0]
+      return { fields, error: `Linha ${e?.line ?? 1}: ${e?.message ?? 'a fórmula não é válida'}` }
+    }
+    fields.inputJsonSchema = schemaDeEntrada(compilada.compilada)
+    // A saída sai de uma execução com valores de exemplo: o tipo de `se(x>0,"alta",0)`
+    // depende do valor, e nenhuma análise estática honesta diria qual é.
+    const amostra = executarFormula(
+      compilada.compilada,
+      Object.fromEntries(compilada.compilada.entradas.map((n) => [n, 1])),
+    )
+    fields.outputJsonSchema = schemaDeSaida(compilada.compilada, amostra.ok ? amostra.data : {})
+  }
 
   const cfgFinal = fields.executorConfig
   if (kindEfetivo === 'function' && cfgFinal?.kind === 'function' && cfgFinal.functionName) {

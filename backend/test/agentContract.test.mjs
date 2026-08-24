@@ -157,7 +157,9 @@ test('payload SEM nenhum campo novo não grava nenhum campo novo', () => {
 })
 
 test('os valores aceitos são exatamente os do desenho', () => {
-  assert.deepEqual([...EXECUTOR_KINDS], ['llm', 'function', 'tool'])
+  // `formula` entrou: é o único executor cujo "código" mora no documento do agente, e só
+  // é seguro porque a linguagem não tem capacidade nenhuma além de calcular.
+  assert.deepEqual([...EXECUTOR_KINDS], ['llm', 'function', 'tool', 'formula'])
   assert.deepEqual([...RESPONSE_MODES], ['structured', 'text', 'structured_and_text'])
   // `llm` sozinho é completo: ele não tem configuração própria.
   assert.equal(parseAgentContract({ executorKind: 'llm' }).error, undefined)
@@ -170,6 +172,7 @@ test('os valores aceitos são exatamente os do desenho', () => {
    */
   assert.match(parseAgentContract({ executorKind: 'function' }).error, /functionName is required/)
   assert.match(parseAgentContract({ executorKind: 'tool' }).error, /requires toolId/)
+  assert.match(parseAgentContract({ executorKind: 'formula' }).error, /expression is required/)
   assert.match(parseAgentContract({ executorKind: 'executionMode' }).error, /executorKind must be one of/)
 })
 

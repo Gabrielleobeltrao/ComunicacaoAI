@@ -10,6 +10,7 @@
 // este arquivo faz é traduzir o resultado para o formato comum.
 import { describeErrors, validateAgainstSchema } from '../jsonSchema.js'
 import { agentContractOf } from './contract.js'
+import { executeFormula } from './formulaExecutor.js'
 import { executeRegisteredFunction } from './functionExecutor.js'
 import { executeAgentTool } from './toolExecutor.js'
 import type { Agent } from '../agents.js'
@@ -78,6 +79,9 @@ export async function dispatchAgentExecution(
   if (contrato.executorKind === 'function') {
     if (contrato.executorConfig.kind !== 'function') return semConfiguracao('function', comecou)
     resultado = await executeRegisteredFunction(contrato.executorConfig, request.input)
+  } else if (contrato.executorKind === 'formula') {
+    if (contrato.executorConfig.kind !== 'formula') return semConfiguracao('formula', comecou)
+    resultado = await executeFormula(contrato.executorConfig, request.input)
   } else if (contrato.executorKind === 'tool') {
     if (contrato.executorConfig.kind !== 'tool') return semConfiguracao('tool', comecou)
     resultado = await executeAgentTool(agent, request.ownerId, contrato.executorConfig, request.input)

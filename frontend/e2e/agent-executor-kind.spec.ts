@@ -441,3 +441,68 @@ test('uma ação SEM contrato de saída fica em texto, e diz por quê', async ({
   await expect(page.getByTestId('response-mode-structured')).toHaveCount(0)
   await expect(page.getByTestId('executor-summary')).toContainText('Saída: Texto')
 })
+
+
+// --- a FÓRMULA: cálculo do cliente, sem execução arbitrária ------------------------------------
+//
+// O pedido foi colar código no agente. Numa plataforma multi-inquilino isso significa o
+// código de um cliente rodando no mesmo processo que tem a chave do banco e os dados de
+// todas as outras contas. A saída foi uma linguagem sem capacidade nenhuma além de
+// calcular — e é isso que estas provas fixam na tela.
+
+test('a fórmula é o quarto tipo, e tem editor próprio', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-formula').click()
+  await expect(page.getByTestId('formula-editor')).toBeVisible()
+  // Nada de provedor, modelo ou estilo: uma fórmula não fala com modelo nenhum.
+  await expect(page.getByText('Modelo e custo')).toHaveCount(0)
+})
+
+test('a fórmula declara o próprio contrato — a tela mostra antes de salvar', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-formula').click()
+  await page.getByTestId('formula-expression').fill('margem = (receita - custo) / receita * 100')
+
+  // Os campos LIDOS e não definidos são a entrada. Ninguém escreve schema.
+  await expect(page.getByTestId('formula-inputs')).toContainText('custo, receita')
+  await expect(page.getByTestId('executor-summary')).toContainText('Entrada: custo, receita')
+  // Ela calcula: prosa é trabalho de modelo, e as outras opções somem.
+  await expect(page.getByTestId('response-mode-text')).toHaveCount(0)
+})
+
+test('fórmula vazia não deixa salvar', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-formula').click()
+  await expect(page.getByTestId('executor-problems')).toContainText('Escreva a fórmula')
+  await page.waitForTimeout(1500)
+  expect(patches.filter((p) => 'executorKind' in p)).toHaveLength(0)
+})
+
+test('a fórmula é gravada como está escrita — quem compila é o servidor', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-formula').click()
+  await page.getByTestId('formula-expression').fill('total = a + b')
+
+  await expect.poll(() => patches.filter((p) => 'executorConfig' in p).length, { timeout: 10_000 }).toBeGreaterThan(0)
+  const corpo = patches.filter((p) => 'executorConfig' in p).at(-1)!
+  expect(corpo.executorKind).toBe('formula')
+  expect(corpo.responseMode).toBe('structured')
+  expect(corpo.executorConfig).toEqual({ kind: 'formula', expression: 'total = a + b' })
+  // Os schemas NÃO vão preenchidos daqui: o servidor os deriva da própria fórmula, e o que
+  // o formulário manda é o campo vazio que ele já mandava antes de existir fórmula.
+  expect(corpo.inputJsonSchema).toBeNull()
+})
+
+test('a ajuda diz o que NÃO dá para fazer, e para onde ir quando precisar', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-formula').click()
+  await page.getByTestId('formula-editor').getByRole('group').click()
+  const editor = page.getByTestId('formula-editor')
+  await expect(editor).toContainText('não existem na linguagem')
+  await expect(editor).toContainText('Ferramenta personalizada')
+})

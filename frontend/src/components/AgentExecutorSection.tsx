@@ -20,6 +20,11 @@ const TIPOS: { kind: ExecutorKind; titulo: string; resumo: string }[] = [
   { kind: 'llm', titulo: 'IA / LLM', resumo: 'Um modelo lê o pedido e responde. É como todo agente sempre funcionou.' },
   { kind: 'function', titulo: 'Função do sistema', resumo: 'Um cálculo determinístico do servidor. Mesma entrada, mesma saída, sem custo de modelo.' },
   { kind: 'tool', titulo: 'App / Ferramenta', resumo: 'Uma ação de um App conectado. O agente executa; ele não conversa sobre isso.' },
+  {
+    kind: 'formula',
+    titulo: 'Fórmula',
+    resumo: 'Um cálculo que você escreve. Contas, condições e texto — sem custo de modelo.',
+  },
 ]
 
 const MODOS: { modo: ResponseMode; titulo: string; quando: string }[] = [
@@ -30,6 +35,8 @@ const MODOS: { modo: ResponseMode; titulo: string; quando: string }[] = [
 
 export interface ExecutorDraft {
   kind: ExecutorKind
+  /** A fórmula, quando o tipo é `formula`. É ela que declara o contrato do agente. */
+  expression: string
   functionName: string
   functionVersion: string
   appKey: string
@@ -44,6 +51,7 @@ export function executorProblems(d: ExecutorDraft): string[] {
   const problemas: string[] = []
   if (d.kind === 'function' && !d.functionName) problemas.push('Escolha a função que este agente executa.')
   if (d.kind === 'tool' && !(d.appKey && d.actionKey)) problemas.push('Escolha o App e a ação que este agente executa.')
+  if (d.kind === 'formula' && !d.expression.trim()) problemas.push('Escreva a fórmula que este agente calcula.')
   return problemas
 }
 
@@ -56,9 +64,39 @@ export function executorProblems(d: ExecutorDraft): string[] {
  * uma coisa enquanto o agente faz outra.
  */
 export function modesFor(kind: ExecutorKind, temSchemaDeSaida: boolean): ResponseMode[] {
-  if (kind === 'function') return ['structured']
+  // Uma fórmula calcula: ela produz dado, e prosa é trabalho de modelo — igual à função.
+  if (kind === 'function' || kind === 'formula') return ['structured']
   if (kind === 'tool') return temSchemaDeSaida ? ['structured', 'text', 'structured_and_text'] : ['text']
   return ['structured', 'text', 'structured_and_text']
+}
+
+/**
+ * Os campos que a FÓRMULA lê e não define — a entrada dela.
+ *
+ * Uma leitura de superfície, só para a tela: o servidor faz a análise de verdade ao gravar
+ * e é ele quem grava o contrato. Mostrar aqui é dizer antes o que vai valer, em vez de
+ * deixar o dono descobrir depois de salvar.
+ */
+export function camposDaFormula(fonte: string): string[] {
+  const definidos = new Set<string>()
+  const lidos = new Set<string>()
+  for (const linha of fonte.split('\n')) {
+    const texto = linha.trim()
+    if (!texto || texto.startsWith('#')) continue
+    const igual = texto.indexOf('=')
+    if (igual <= 0 || ['<', '>', '='].includes(texto[igual - 1]) || texto[igual + 1] === '=') continue
+    const nome = texto.slice(0, igual).trim()
+    for (const m of texto.slice(igual + 1).matchAll(/[A-Za-zÀ-ÿ_][A-Za-zÀ-ÿ0-9_]*/g)) {
+      const t = m[0]
+      // Uma palavra seguida de `(` é chamada de função, não campo.
+      const depois = texto.slice(igual + 1 + (m.index ?? 0) + t.length).trimStart()
+      if (depois.startsWith('(')) continue
+      if (['e', 'ou', 'nao', 'verdadeiro', 'falso'].includes(t.toLowerCase())) continue
+      if (!definidos.has(t)) lidos.add(t)
+    }
+    definidos.add(nome)
+  }
+  return [...lidos].sort()
 }
 
 /** Os campos que o formulário de parâmetros desenha. Nada além do que o schema declara. */
@@ -150,9 +188,10 @@ export function AgentExecutorSection({
   const set = (parcial: Partial<ExecutorDraft>) => onChange({ ...draft, ...parcial })
 
   // O que este executor CONSEGUE devolver — não o que alguém gostaria.
-  const temSchemaDeSaida = draft.kind === 'function' ? true : Boolean(acaoEscolhida?.outputSchema)
+  const temSchemaDeSaida = draft.kind === 'function' || draft.kind === 'formula' ? true : Boolean(acaoEscolhida?.outputSchema)
   const modosPossiveis = modesFor(draft.kind, temSchemaDeSaida)
   const parametros = configFields(escolhida?.configSchema)
+  const entradasDaFormula = draft.kind === 'formula' ? camposDaFormula(draft.expression) : []
 
   // O modo escolhido deixou de ser possível (trocou de tipo, trocou de ação): corrige na
   // hora, em vez de deixar a tela mostrando uma promessa que o servidor vai desfazer.
@@ -173,9 +212,14 @@ export function AgentExecutorSection({
     `Executa por: ${draft.kind === 'function' ? 'Função' : draft.kind === 'tool' ? 'App' : 'IA'}`,
     draft.kind === 'llm'
       ? 'Entrada: texto'
-      : (draft.kind === 'function' ? escolhida?.inputSchema : acaoEscolhida?.inputSchema)
-        ? 'Entrada válida'
-        : 'Entrada não definida',
+      : draft.kind === 'formula'
+        ? // A fórmula declara o próprio contrato: os campos que ela lê SÃO a entrada.
+          entradasDaFormula.length > 0
+          ? `Entrada: ${entradasDaFormula.join(', ')}`
+          : 'Entrada não definida'
+        : (draft.kind === 'function' ? escolhida?.inputSchema : acaoEscolhida?.inputSchema)
+          ? 'Entrada válida'
+          : 'Entrada não definida',
     `Saída: ${draft.responseMode === 'text' ? 'Texto' : draft.responseMode === 'structured' ? 'Dados' : 'Dados + texto'}`,
   ]
 
@@ -324,6 +368,56 @@ export function AgentExecutorSection({
         </div>
       )}
 
+      {draft.kind === 'formula' && (
+        <div className="space-y-2 rounded-lg border border-(--border-subtle) p-3" data-testid="formula-editor">
+          <label className="block text-sm text-(--text-muted)" htmlFor="formula-expression">
+            A fórmula
+          </label>
+          {/*
+            Uma FÓRMULA, e não JavaScript.
+            A diferença não é de sintaxe: esta linguagem não tem rede, disco nem acesso ao
+            processo, e não tem laço — então toda fórmula termina. JavaScript aqui seria o
+            código de um cliente rodando no mesmo servidor que guarda os dados de todos os
+            outros.
+          */}
+          <textarea
+            id="formula-expression"
+            value={draft.expression}
+            onChange={(e) => set({ expression: e.target.value })}
+            rows={6}
+            spellCheck={false}
+            placeholder={'margem = arred((receita - custo) / receita * 100, 2)\nfaixa  = se(margem >= 30, "alta", "baixa")'}
+            className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 font-mono text-xs outline-none focus:border-(--border-focus)"
+            data-testid="formula-expression"
+          />
+          <p className="text-xs text-(--text-faint)">
+            Uma linha por resultado, no formato <span className="font-mono">nome = expressão</span>. Os campos que ela lê e não define viram a
+            entrada do agente; os nomes definidos viram a saída.
+          </p>
+          {entradasDaFormula.length > 0 && (
+            <p className="text-xs text-(--text-muted)" data-testid="formula-inputs">
+              Recebe: <span className="font-mono">{entradasDaFormula.join(', ')}</span>
+            </p>
+          )}
+          <details>
+            <summary className="cursor-pointer text-xs text-(--text-muted)">O que dá para escrever</summary>
+            <div className="mt-2 space-y-1 text-xs text-(--text-faint)">
+              <p>
+                <span className="font-mono">+ - * / %</span> · comparações <span className="font-mono">= &lt;&gt; &lt; &lt;= &gt; &gt;=</span> ·{' '}
+                <span className="font-mono">e ou nao</span>
+              </p>
+              <p className="font-mono">se · min · max · soma · media · arred · abs · teto · piso</p>
+              <p className="font-mono">texto · numero · maiusc · minusc · concat · substituir · contem</p>
+              <p className="font-mono">tamanho · primeiro · ultimo</p>
+              <p>
+                Não há como abrir rede, ler arquivo ou fazer laço — essas operações não existem na linguagem. Para isso, use uma Ferramenta
+                personalizada, que roda no seu servidor.
+              </p>
+            </div>
+          </details>
+        </div>
+      )}
+
       {draft.kind === 'tool' && (
         <div className="space-y-2 rounded-lg border border-(--border-subtle) p-3" data-testid="tool-picker">
           <label className="block text-sm text-(--text-muted)" htmlFor="tool-app">
@@ -416,7 +510,7 @@ export function AgentExecutorSection({
         {modosPossiveis.length === 1 && (
           <p className="text-xs text-(--text-faint)" data-testid="response-mode-forced">
             {draft.kind === 'function'
-              ? 'Uma função produz dados. Para uma resposta escrita, encadeie um agente de IA que apresente o resultado.'
+              ? 'Isto calcula e produz dados. Para uma resposta escrita, encadeie um agente de IA que apresente o resultado.'
               : 'Esta ação não declara o formato da resposta, então a saída fica como texto.'}
           </p>
         )}

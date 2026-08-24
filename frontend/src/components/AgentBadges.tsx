@@ -3,7 +3,7 @@ import { presetLabelOf, presetVerbOf } from '../lib/agentPresentation'
 import type { AgentSummary } from '../lib/types'
 import { Badge } from '../ui'
 
-const EXECUTOR_LABEL = { function: 'Função', tool: 'App' } as const
+const EXECUTOR_LABEL = { function: 'Função', tool: 'App', formula: 'Fórmula' } as const
 const MODE_LABEL = { structured: 'Dados', structured_and_text: 'Dados + texto' } as const
 
 // Quick config facts about an agent, shown on its cards (list, sector members,

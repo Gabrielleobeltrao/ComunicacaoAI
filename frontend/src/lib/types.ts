@@ -1,5 +1,5 @@
 /** Como o trabalho de um agente é feito. Não confundir com `executionMode`, que é de rotina. */
-export type ExecutorKind = 'llm' | 'function' | 'tool'
+export type ExecutorKind = 'llm' | 'function' | 'tool' | 'formula'
 
 /** O que o agente devolve: dado, texto, ou os dois. */
 export type ResponseMode = 'structured' | 'text' | 'structured_and_text'
@@ -14,6 +14,12 @@ export type ExecutorConfig =
   | { kind: 'llm' }
   | { kind: 'function'; functionName: string; version?: string; config?: Record<string, unknown> }
   | { kind: 'tool'; toolId?: string; appKey?: string; actionKey?: string }
+  /**
+   * A FÓRMULA é o único executor cujo "código" mora no documento do agente — e só é
+   * seguro porque a linguagem não tem capacidade nenhuma além de calcular: sem rede, sem
+   * disco, e sem laço, o que faz toda fórmula terminar por construção.
+   */
+  | { kind: 'formula'; expression: string }
 
 /** O contrato já resolvido, como o servidor o entrega. Sempre completo. */
 export interface AgentContract {
