@@ -206,7 +206,10 @@ export function HireWizard({
    */
   const [buscaWeb, setBuscaWeb] = useState<{ enabled: boolean; policy: 'automatic' | 'fallback_only' | 'always'; rememberDays?: number; maxPagesToRead?: number }>({
     enabled: false,
-    policy: 'fallback_only',
+    // O padrão passa a ser o que evita resposta incompleta: procurar também quando a base
+    // responde de longe. "Só quando não tiver nada" deixava passar o caso comum — trechos
+    // que falam do assunto sem responder à pergunta.
+    policy: 'automatic',
   })
   // O catálogo real de provedores/modelos, o MESMO da edição. Fixar `anthropic`/`null`
   // aqui obrigava a contratar e depois editar para escolher o modelo — e a escolha do

@@ -141,6 +141,32 @@ export interface SearchDecision {
  * a primeira também procura quando a base trouxe pouca coisa — uma resposta magra é
  * quase sempre pior que nenhuma, porque tem cara de resposta.
  */
+/**
+ * A pergunta pede um VALOR — e a base trouxe algum?
+ *
+ * É o caso que fazia o agente responder errado com cara de certo: perguntam "quanto está
+ * a ação", a base tem dois trechos que FALAM da ação sem trazer preço nenhum, e a decisão
+ * antiga via "dois trechos" e chamava de suficiente. O agente então respondia com o que
+ * tinha — incompleto — em vez de ir procurar.
+ *
+ * O teste é grosseiro de propósito: se a pergunta pede quantidade e nenhum trecho tem
+ * número, a base não respondeu. Ele erra para o lado de procurar, que é o lado barato:
+ * uma busca a mais custa uma requisição; uma resposta incompleta custa uma decisão errada.
+ *
+ * ponytail: heurística léxica em português e inglês. Se aparecer um terceiro idioma, o
+ * caminho é a verificação por modelo (uma pergunta de sim/não sobre o contexto), não mais
+ * palavras nesta lista.
+ */
+const PEDE_VALOR =
+  /\b(quanto|quantos|quantas|qual\s+(?:é\s+)?(?:o|a)\s+(?:valor|pre[çc]o|cota[çc][ãa]o|taxa|custo|total|saldo|n[úu]mero|percentual)|pre[çc]o|cota[çc][ãa]o|valor|taxa|custo|how\s+much|how\s+many|price|rate)\b/i
+/** Um número de verdade: dígito com vizinhança de número, não um ano solto num texto. */
+const TEM_NUMERO = /\d[\d.,]*\s*(%|reais|r\$|us\$|usd|brl|mil|milh|bilh)|r\$\s*\d|\d+[.,]\d/i
+
+export function respondeAoValorPedido(query: string, passages: string[]): boolean {
+  if (!PEDE_VALOR.test(query)) return true
+  return passages.some((p) => TEM_NUMERO.test(p))
+}
+
 export function shouldSearch(
   cfg: WebSearchSettings,
   estado: {
@@ -151,6 +177,13 @@ export function shouldSearch(
     wantsCurrent?: boolean
     /** O que a base respondeu veio SÓ de páginas que um buscador trouxe? */
     onlySearchMemory?: boolean
+    /**
+     * A RELEVÂNCIA do melhor trecho (0 a 1). Ausente = desconhecida, e aí a contagem
+     * volta a ser o único sinal — como era antes.
+     */
+    topScore?: number
+    /** A pergunta pede um valor, e a base trouxe algum? Ausente = não dá para saber. */
+    answersValue?: boolean
   },
 ): SearchDecision {
   if (!cfg.enabled) return { search: false, reason: 'busca na web desligada neste agente' }
@@ -172,6 +205,17 @@ export function shouldSearch(
     return { search: true, reason: 'a pergunta é sobre agora, e o que a base tem veio de uma busca anterior' }
   }
 
+  /**
+   * A pergunta pede um valor e a base não tem valor nenhum.
+   *
+   * Vale nas duas políticas automáticas, e antes de qualquer contagem: uma base que fala
+   * do assunto sem trazer o número pedido NÃO respondeu, por mais trechos que devolva. Era
+   * exatamente aqui que a resposta incompleta passava por completa.
+   */
+  if (estado.answersValue === false) {
+    return { search: true, reason: 'a pergunta pede um valor e a base não trouxe nenhum' }
+  }
+
   if (cfg.policy === 'fallback_only') {
     if (estado.grounding === 'ok' && estado.passages > 0) {
       return { search: false, reason: 'a base já respondeu: não há por que procurar fora' }
@@ -179,13 +223,40 @@ export function shouldSearch(
     return { search: true, reason: `a base não respondeu (${estado.grounding}): procurando fora` }
   }
 
-  // automatic
-  const MAGRO = 2
-  if (estado.grounding === 'ok' && estado.passages >= MAGRO) {
-    return { search: false, reason: `a base trouxe ${estado.passages} trecho(s): suficiente` }
+  /**
+   * `automatic`: procura quando a base não responde BEM — e "bem" deixou de ser contagem.
+   *
+   * Contar trechos media a quantidade de texto recuperado, nunca a qualidade da resposta:
+   * dois trechos que só MENCIONAM o assunto contavam igual a dois que o respondem. Agora
+   * o critério é a relevância do melhor trecho, que é o número que a busca já calculava e
+   * jogava fora.
+   */
+  if (estado.grounding === 'ok') {
+    const relevancia = estado.topScore
+    if (relevancia !== undefined && relevancia < RELEVANCIA_FRACA) {
+      return { search: true, reason: `a base respondeu fraco (relevância ${relevancia.toFixed(2)})` }
+    }
+    // Sem relevância conhecida, a contagem volta a ser o único sinal — como era antes.
+    if (relevancia !== undefined || estado.passages >= MINIMO_DE_TRECHOS) {
+      return {
+        search: false,
+        reason: relevancia !== undefined ? `a base respondeu bem (relevância ${relevancia.toFixed(2)})` : `a base trouxe ${estado.passages} trecho(s): suficiente`,
+      }
+    }
   }
   return {
     search: true,
     reason: estado.grounding === 'ok' ? `a base trouxe só ${estado.passages} trecho(s)` : `a base não respondeu (${estado.grounding})`,
   }
 }
+
+/**
+ * Abaixo disto a base "respondeu", mas de longe.
+ *
+ * `RETRIEVAL_MIN_SCORE` (0.5) é o piso para um trecho ENTRAR na resposta. Este é outro
+ * limiar, mais alto: entrar é uma coisa, responder bem é outra — e é justamente a faixa
+ * entre os dois que produzia resposta incompleta com cara de completa.
+ */
+const RELEVANCIA_FRACA = 0.65
+/** Quantos trechos bastam quando não há relevância para consultar. O critério antigo. */
+const MINIMO_DE_TRECHOS = 2

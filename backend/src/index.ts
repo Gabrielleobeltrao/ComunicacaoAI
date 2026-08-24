@@ -3090,7 +3090,9 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
       agent,
       res.locals.userId,
       lastUser.content,
-      { grounding: leitura.status, passages: leitura.context.length },
+      // O TEXTO junto: é com ele que se sabe se a pergunta por um valor foi respondida.
+      // Sem isso, uma base que fala do assunto sem trazer o número bloqueava a busca.
+      { grounding: leitura.status, passages: leitura.context.length, passageTexts: leitura.context },
       { rememberSearchPages: (dono, agentId, q, pages, dias) => rememberSearchPages(agentId, dono, q, pages as Parameters<typeof rememberSearchPages>[3], dias) },
     )
     knowledge.push(...achado.evidence)
@@ -4520,7 +4522,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
       agent,
       ownerId,
       visitorContent,
-      { grounding: knowledgeBase.length > 0 ? 'ok' : 'empty', passages: knowledgeBase.length },
+      { grounding: knowledgeBase.length > 0 ? 'ok' : 'empty', passages: knowledgeBase.length, passageTexts: knowledgeBase },
       { rememberSearchPages: (dono, agentId, q, pages, dias) => rememberSearchPages(agentId, dono, q, pages as Parameters<typeof rememberSearchPages>[3], dias) },
     )
     knowledge.push(...achado.evidence)

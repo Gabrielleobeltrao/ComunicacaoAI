@@ -157,6 +157,21 @@ interface PendingDoc {
   file?: File
 }
 
+/**
+ * O que cada política FAZ — não o que ela custa.
+ *
+ * O defeito que isto acompanha: o agente encontrava informação incompleta na base e
+ * respondia com ela, porque a decisão de procurar contava trechos em vez de medir se eles
+ * respondiam. Quem lia a tela não tinha como saber disso, e a explicação só falava de
+ * requisições e leituras.
+ */
+const POLITICA_DE_BUSCA: Record<'fallback_only' | 'automatic' | 'always', string> = {
+  fallback_only: 'Procura só quando a base não devolve nada — e quando a pergunta pede um valor que ela não tem.',
+  automatic:
+    'Procura também quando a base responde de longe: trechos que falam do assunto sem responder à pergunta. É o que evita uma resposta incompleta com cara de completa.',
+  always: 'Procura em toda tarefa, mesmo com a base respondendo bem. Use quando o dado muda o tempo todo.',
+}
+
 const DEFAULT_HISTORY_LIMIT = 6
 const MAX_HISTORY_LIMIT = 30
 const MAX_IDENTITY_FIELDS = 5
@@ -2097,21 +2112,33 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
 
                 {editWebSearch.enabled && (
                   <>
+                    {/*
+                      As opções falam do RESULTADO, e não do gasto.
+                      A versão anterior explicava só o custo — "cada busca é uma
+                      requisição" — e deixava a pergunta que importa sem resposta: em que
+                      situação ele vai procurar? Quem lia escolhia a mais barata e depois
+                      recebia resposta incompleta sem entender por quê.
+                    */}
                     <div>
-                      <label className="mb-1 block text-sm text-(--text-muted)">Quando pesquisar</label>
+                      <label className="mb-1 block text-sm text-(--text-muted)" htmlFor="web-search-policy">
+                        Quando pesquisar
+                      </label>
                       <select
+                        id="web-search-policy"
                         value={editWebSearch.policy ?? 'fallback_only'}
                         onChange={(e) => setEditWebSearch({ ...editWebSearch, policy: e.target.value as 'automatic' | 'fallback_only' | 'always' })}
                         data-testid="web-search-policy"
                         className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
                       >
-                        <option value="fallback_only">Só quando a base não responder (recomendado)</option>
-                        <option value="automatic">Automático — também quando a base trouxer pouco</option>
+                        <option value="fallback_only">Quando a base não tiver a resposta</option>
+                        <option value="automatic">Também quando a resposta vier fraca (recomendado)</option>
                         <option value="always">Sempre, mesmo com a base cheia</option>
                       </select>
+                      <p className="mt-1 text-xs text-(--text-faint)" data-testid="web-search-policy-hint">
+                        {POLITICA_DE_BUSCA[editWebSearch.policy ?? 'fallback_only']}
+                      </p>
                       <p className="mt-1 text-xs text-(--text-faint)">
-                        Cada busca é uma requisição a um serviço externo, e cada página escolhida é uma leitura completa. “Sempre” faz as duas
-                        coisas em toda tarefa.
+                        Uma busca é uma requisição da franquia mensal, e cada página escolhida é uma leitura completa.
                       </p>
                     </div>
 

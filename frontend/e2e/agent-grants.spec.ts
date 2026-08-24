@@ -1065,7 +1065,14 @@ test('ligando, aparecem a política e os avançados — fechados', async ({ page
   await abrirBloco(page, 'Web')
   await page.getByTestId('web-search-enabled').check()
 
+  // Um agente que já existe mantém o que tinha: o padrão do servidor continua sendo
+  // "quando a base não tiver a resposta", e ligar a busca não muda a política dele.
   await expect(page.getByTestId('web-search-policy')).toHaveValue('fallback_only')
+  // A explicação diz o que a opção FAZ. Antes ela falava só do custo, e a pergunta que
+  // importa — em que situação ele procura — ficava sem resposta.
+  await expect(page.getByTestId('web-search-policy-hint')).toContainText('quando a base não devolve nada')
+  await page.getByTestId('web-search-policy').selectOption('automatic')
+  await expect(page.getByTestId('web-search-policy-hint')).toContainText('responde de longe')
   const avancado = page.getByTestId('web-search-advanced')
   await expect(avancado).toBeVisible()
   await expect(page.getByTestId('web-search-maxPagesToRead')).not.toBeVisible()

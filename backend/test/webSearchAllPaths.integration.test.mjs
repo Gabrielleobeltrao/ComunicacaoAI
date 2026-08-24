@@ -148,3 +148,76 @@ test('procurar exige as DUAS coisas: o papel certo e o interruptor ligado', asyn
   assert.equal(capabilitiesOf({ preset: 'analyst', webSearch: ligado }).webSearch, false, 'analista não coleta')
   assert.equal(capabilitiesOf({ preset: 'manager', webSearch: ligado }).webSearch, false, 'coordenador não coleta')
 })
+
+// --- a base que responde INCOMPLETO ---------------------------------------------------------
+//
+// O relato: o agente encontra informação incompleta no conhecimento e responde com ela, em
+// vez de perceber que está incompleta e ir procurar.
+//
+// A causa: a decisão CONTAVA trechos. Dois trechos que apenas mencionam o assunto contavam
+// igual a dois que respondem a pergunta — e "trouxe 2 trechos" bloqueava a busca. Contagem
+// mede quantidade de texto recuperado; nunca mediu se ele responde.
+
+const { shouldSearch, respondeAoValorPedido } = await import('../dist/webSearch/policy.js')
+
+const automatico = { enabled: true, policy: 'automatic', rememberDays: 7, maxPagesToRead: 2 }
+const base = { grounding: 'ok', canSearch: true }
+
+test('a base fala do assunto sem trazer o número pedido: PROCURA', async () => {
+  // "Qual o valor da ação da VALE hoje?" com dois trechos que falam da VALE e não têm
+  // preço nenhum. Antes: "trouxe 2 trechos, suficiente" — e a resposta saía incompleta.
+  const d = shouldSearch(automatico, { ...base, passages: 2, topScore: 0.8, answersValue: false })
+  assert.equal(d.search, true)
+  assert.match(d.reason, /pede um valor e a base não trouxe nenhum/)
+})
+
+test('com o número presente, a base responde e a busca não sai', () => {
+  const d = shouldSearch(automatico, { ...base, passages: 2, topScore: 0.8, answersValue: true })
+  assert.equal(d.search, false)
+})
+
+test('a relevância substitui a contagem — dois trechos fracos não são resposta', () => {
+  // O caso do meio: os trechos existem, entraram no contexto, e são de longe. Entrar é
+  // uma coisa; responder bem é outra, e é essa faixa que produzia resposta com cara de
+  // completa.
+  const fraca = shouldSearch(automatico, { ...base, passages: 2, topScore: 0.55 })
+  assert.equal(fraca.search, true)
+  assert.match(fraca.reason, /respondeu fraco/)
+
+  const forte = shouldSearch(automatico, { ...base, passages: 2, topScore: 0.9 })
+  assert.equal(forte.search, false)
+  assert.match(forte.reason, /respondeu bem/)
+})
+
+test('sem relevância conhecida, a contagem volta a valer — como era antes', () => {
+  // Nenhum agente existente muda de comportamento por não ter o sinal novo.
+  assert.equal(shouldSearch(automatico, { ...base, passages: 2 }).search, false)
+  assert.equal(shouldSearch(automatico, { ...base, passages: 1 }).search, true)
+})
+
+test('"só quando a base não responder" também procura se o valor pedido não veio', () => {
+  // Sem isto, a política recomendada — a que a maioria usa — continuaria respondendo
+  // incompleto: para ela, "a base trouxe algo" sempre bastou.
+  const d = shouldSearch({ ...automatico, policy: 'fallback_only' }, { ...base, passages: 3, answersValue: false })
+  assert.equal(d.search, true)
+})
+
+test('a conferência do valor pedido: pede número, tem número', () => {
+  const pergunta = 'qual o valor da ação da VALE hoje?'
+  assert.equal(respondeAoValorPedido(pergunta, ['A VALE é uma mineradora brasileira.']), false)
+  assert.equal(respondeAoValorPedido(pergunta, ['VALE3 fechou a R$ 36,42 em 10/08.']), true)
+  // Pergunta que não pede número não é afetada — o sinal não inventa exigência.
+  assert.equal(respondeAoValorPedido('quem é o presidente da VALE?', ['A VALE é uma mineradora.']), true)
+})
+
+test('a conferência entende "quanto", "preço" e "cotação"', () => {
+  const semNumero = ['O açúcar é uma commodity agrícola negociada em bolsa.']
+  for (const p of ['quanto custa o açúcar', 'qual o preço do açúcar', 'qual a cotação do açúcar hoje', 'how much is sugar']) {
+    assert.equal(respondeAoValorPedido(p, semNumero), false, p)
+  }
+})
+
+test('"sempre" continua procurando sempre, e "desligado" continua sem procurar', () => {
+  assert.equal(shouldSearch({ ...automatico, policy: 'always' }, { ...base, passages: 9, topScore: 1 }).search, true)
+  assert.equal(shouldSearch({ ...automatico, enabled: false }, { ...base, passages: 0 }).search, false)
+})
