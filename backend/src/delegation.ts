@@ -30,7 +30,7 @@ import { ROLE_LABEL, capabilitiesOf, roleOf } from './agentCapabilities.js'
 import { preview, traceEvent } from './executionTrace.js'
 import { activeSearchProvider, configuredProviderName } from './webSearch/provider.js'
 import { normalizeWebSearch, shouldSearch, wantsCurrentInfo } from './webSearch/policy.js'
-import { recordSearchEvent } from './webSearch/budget.js'
+import { gatherWebEvidence } from './webSearch/step.js'
 import type { WebSearchSettings } from './webSearch/policy.js'
 import { runWebSearch } from './webSearch/run.js'
 import type { TraceInput } from './executionTrace.js'
@@ -993,123 +993,23 @@ export async function runAgentTask(
   /**
    * PROCURAR páginas novas, quando a base não bastou — e só quem coleta.
    *
-   * A ordem é a que economiza: a base já respondeu (ou não) acima, e é essa resposta que
-   * decide se vale procurar fora. Buscar antes seria pagar por uma pergunta que o próprio
-   * agente já sabia responder.
-   *
-   * Nada disto acontece com o interruptor desligado, que é o padrão, nem para analista,
-   * coordenador ou executor — a capacidade não existe para eles.
+   * O passo inteiro vive em `webSearch/step.ts`, e não aqui, porque este NÃO é o único
+   * caminho: o teste do agente, o canal e a rotina montam o próprio contexto. Enquanto a
+   * busca morava só aqui, os três respondiam com o que já estava guardado — com o
+   * interruptor marcado e o provedor configurado, e nada falhando, que é a pior forma de
+   * um defeito se apresentar.
    */
-  const buscaWeb: WebSearchSettings = normalizeWebSearch(target.webSearch)
-  const provedorDeBusca = capacidades.webSearch ? activeSearchProvider() : null
   const evidenciasDaWeb: string[] = []
   if (capacidades.webSearch && query) {
-    // O que a base respondeu veio SÓ de páginas que um buscador trouxe? A distinção
-    // decide se uma pergunta sobre "agora" pode ser respondida com o que está guardado.
-    const soMemoriaDeBusca = sources.length > 0 && sources.every((f) => f.origin === 'search')
-    const decisao = shouldSearch(buscaWeb, {
-      grounding,
-      passages: passages.length,
-      canSearch: Boolean(provedorDeBusca),
-      wantsCurrent: wantsCurrentInfo(query),
-      onlySearchMemory: soMemoriaDeBusca,
-    })
-    if (decisao.search && provedorDeBusca) {
-      tracker.report('reading_knowledge')
-      const r = await runWebSearch(provedorDeBusca, query, buscaWeb)
-      // A data de captura vai JUNTO da evidência: sem ela, um trecho que diz "hoje" é
-      // lido como se fosse de hoje, qualquer que seja o dia em que foi escrito.
-      const lidoEm = new Date().toISOString().slice(0, 10)
-      for (const e of r.evidence) evidenciasDaWeb.push(`[${e.title}] · lido em ${lidoEm}\nFonte: ${e.url}\n\n${e.text}`)
-      if (r.evidence.length > 0) grounding = 'ok'
-
-      // O que foi lido vira memória do agente: a próxima pergunta parecida encontra isto
-      // na base, e a requisição ao buscador nem sai.
-      const guardado =
-        deps.rememberSearchPages && r.pages.length > 0
-          ? await deps.rememberSearchPages(ctx.ownerId, target._id, query, r.pages, buscaWeb.rememberDays).catch(() => null)
-          : null
-
-      await recordSearchEvent({
-        agentId: target._id.toString(),
-        ownerId: ctx.ownerId,
-        provider: r.provider,
-        query,
-        // A franquia barrou = a requisição NÃO saiu e não gastou. Gravar isso como busca
-        // feita mostrava consumo que não existiu, e um agente parado por falta de cota
-        // parecia um agente gastando.
-        outcome: r.code === 'monthly_limit_reached' ? 'blocked' : 'sent',
-        performed: r.code !== 'monthly_limit_reached',
-        found: r.found,
-        pagesRead: r.read.length,
-        evidence: r.evidence.length,
-        saved: (guardado?.saved ?? 0) + (guardado?.updated ?? 0),
-        ok: r.ok,
-        code: r.code ?? null,
-        durationMs: r.durationMs,
-      })
-      if (ctx.traceId) {
-        traceEvent({
-          ownerId: ctx.ownerId,
-          executionId: ctx.traceId,
-          type: 'rag',
-          status: r.ok ? (r.evidence.length > 0 ? 'success' : 'info') : 'error',
-          agentId: target._id.toString(),
-          title: r.ok
-            ? `${target.name}: busca na web — ${r.found} resultado(s), ${r.read.length} página(s) lida(s), ${r.evidence.length} evidência(s)`
-            : r.code === 'monthly_limit_reached'
-              ? `${target.name}: a franquia mensal de busca acabou — respondendo com a base`
-              : `${target.name}: a busca na web falhou — respondendo com o que já tinha`,
-          input: preview(query, 200),
-          durationMs: r.durationMs,
-          metadata: {
-            provider: r.provider,
-            policy: buscaWeb.policy,
-            reason: decisao.reason,
-            found: r.found,
-            // Só endereço e título: o conteúdo lido não é assunto de painel, e nenhuma
-            // credencial passa por aqui.
-            selected: r.selected.map((s) => ({ url: s.url, title: s.title, score: s.score })),
-            read: r.read,
-            evidence: r.evidence.map((e) => ({ url: e.url, title: e.title })),
-            error: r.error ?? null,
-            code: r.code ?? null,
-          },
-        })
-      }
-    } else if (buscaWeb.enabled) {
-      // A busca EVITADA também é registrada: é ela que mostra a economia de ter memória.
-      await recordSearchEvent({
-        agentId: target._id.toString(),
-        ownerId: ctx.ownerId,
-        // O provedor em jogo, e não um nome fixo: uma instalação no adaptador genérico
-        // via "brave" no painel sem nunca ter falado com o Brave.
-        provider: configuredProviderName(),
-        query,
-        outcome: 'avoided',
-        performed: false,
-        skipReason: decisao.reason,
-        found: 0,
-        pagesRead: 0,
-        evidence: 0,
-        saved: 0,
-        ok: true,
-        durationMs: 0,
-      })
-    }
-    if (!decisao.search && ctx.traceId && buscaWeb.enabled) {
-      // Não procurou — e o motivo importa tanto quanto a busca. Sem isto, "não procurou"
-      // e "procurou e não achou" ficam iguais no painel.
-      traceEvent({
-        ownerId: ctx.ownerId,
-        executionId: ctx.traceId,
-        type: 'rag',
-        status: 'info',
-        agentId: target._id.toString(),
-        title: `${target.name}: busca na web não foi necessária`,
-        metadata: { policy: buscaWeb.policy, reason: decisao.reason },
-      })
-    }
+    const achado = await gatherWebEvidence(
+      target,
+      ctx.ownerId,
+      query,
+      { grounding, passages: passages.length, sourceOrigins: sources.map((f) => f.origin) },
+      { rememberSearchPages: deps.rememberSearchPages, traceId: ctx.traceId, report: (e) => tracker.report(e) },
+    )
+    evidenciasDaWeb.push(...achado.evidence)
+    if (achado.found) grounding = 'ok'
   }
 
   /**

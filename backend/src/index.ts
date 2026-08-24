@@ -140,6 +140,9 @@ import {
 } from './userSettings.js'
 import { embeddingBudgetConfig, embeddingUsageReport, ensureEmbeddingUsageIndexes } from './embeddings/budget.js'
 import { activeSearchProvider, configuredProviderName } from './webSearch/provider.js'
+import { gatherWebEvidence } from './webSearch/step.js'
+import { rememberSearchPages } from './webSearch/memory.js'
+import { capabilitiesOf } from './agentCapabilities.js'
 import { ensureWebSearchIndexes, searchBudgetConfig, searchBudgetStatus } from './webSearch/budget.js'
 import { VOYAGE_MODELS, voyageFallbackModel, voyageModel } from './voyage.js'
 import { ensureTokenUsageIndexes, getMonthlyTokens, getUsageSummary, recordReplyUsage, settlePendingCharges } from './tokenUsage.js'
@@ -3074,6 +3077,24 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   for (const viva of await livePassagesFor(res.locals.userId, agent)) {
     knowledge.push(`[${viva.title}]\n${viva.content}`)
   }
+  /**
+   * PROCURAR na web — o mesmo passo do setor e da delegação.
+   *
+   * Ele não existia aqui. O interruptor ficava marcado, o provedor configurado, e o teste
+   * respondia só com o que já estava guardado: os sites CADASTRADOS eram lidos (é o que a
+   * chamada acima faz), mas nenhuma busca era feita. Quem configurou não tinha como
+   * distinguir "procurei e não achei" de "ninguém procurou".
+   */
+  if (capabilitiesOf(agent).webSearch) {
+    const achado = await gatherWebEvidence(
+      agent,
+      res.locals.userId,
+      lastUser.content,
+      { grounding: leitura.status, passages: leitura.context.length },
+      { rememberSearchPages: (dono, agentId, q, pages, dias) => rememberSearchPages(agentId, dono, q, pages as Parameters<typeof rememberSearchPages>[3], dias) },
+    )
+    knowledge.push(...achado.evidence)
+  }
 
   const identityFields = agent.identityEnabled ? (agent.identityFields ?? []) : []
   const behaviorInstruction = [
@@ -4487,6 +4508,23 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     // Idem no canal: quem escolheu "sempre" ou "quando mudar" espera o conteúdo aqui.
     ...(await livePassagesFor(ownerId, agent)).map((viva) => `[${viva.title}]\n${viva.content}`),
   ]
+  /**
+   * E a busca também aqui — num canal ninguém está olhando.
+   *
+   * Só quando o canal aponta para UM agente: com setor, cada membro do time cuida da
+   * própria busca dentro do executor, e repetir aqui seria buscar duas vezes pela mesma
+   * pergunta e pagar duas.
+   */
+  if (!setorDoCanal && capabilitiesOf(agent).webSearch) {
+    const achado = await gatherWebEvidence(
+      agent,
+      ownerId,
+      visitorContent,
+      { grounding: knowledgeBase.length > 0 ? 'ok' : 'empty', passages: knowledgeBase.length },
+      { rememberSearchPages: (dono, agentId, q, pages, dias) => rememberSearchPages(agentId, dono, q, pages as Parameters<typeof rememberSearchPages>[3], dias) },
+    )
+    knowledge.push(...achado.evidence)
+  }
 
   // If a previous turn in this conversation already resolved who the
   // visitor is, their memory lives on the profile (shared across every

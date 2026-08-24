@@ -19,6 +19,8 @@ import { resolveAgentRun } from '../agentDefinition.js'
 import { buildRetrievalQuery, formatContextWithSources, multiSourceNotice } from '../retrievalQuery.js'
 import { instrumentTools, NOOP_TRACKER } from '../agentLiveTracker.js'
 import type { LiveTracker } from '../agentLiveTracker.js'
+import { capabilitiesOf } from '../agentCapabilities.js'
+import { gatherWebEvidence } from '../webSearch/step.js'
 import { agentContractOf } from '../executors/contract.js'
 import { dispatchAgentExecution } from '../executors/dispatcher.js'
 
@@ -104,6 +106,17 @@ export interface RoutineExecutionDeps {
   // Per-agent telemetry, idempotent per (eventKey, attempt).
   finalizeEvent: (input: RecordAgentEventInput) => Promise<void>
   eventKeyFor: (runId: string, stepId: string, agentId: string) => string
+  /**
+   * Guarda na base as páginas que a busca leu. Injetada porque escreve no banco.
+   * Ausente = a busca funciona e nada é guardado — o que é o comportamento do teste.
+   */
+  rememberSearchPages?: (
+    ownerId: string,
+    agentId: ObjectId,
+    query: string,
+    pages: unknown[],
+    rememberDays: number,
+  ) => Promise<{ saved: number; updated: number } | null>
   isCanceled?: () => Promise<boolean>
   // Live map projection. Injected because this module must stay testable without a
   // database — absent means no instrumentation at all, never a fake state.
@@ -331,6 +344,28 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       grounding === 'unavailable' ? 'a base de conhecimento não pôde ser consultada' : 'nenhum trecho relevante foi encontrado na base',
     )
   }
+  /**
+   * PROCURAR na web — o mesmo passo do setor, do canal e do teste.
+   *
+   * Ele não existia aqui. Uma rotina de pesquisador com a busca ligada rodava todo dia
+   * respondendo com o que já estava guardado, e o resultado ficava mais velho a cada
+   * execução sem nada indicar isso — que é o oposto do que uma rotina de pesquisa existe
+   * para fazer.
+   *
+   * Depois da base e antes do modelo: é a resposta da base que decide se vale procurar.
+   */
+  const evidenciasDaWeb: string[] = []
+  if (capabilitiesOf(agent).webSearch && knowledgeQuery) {
+    const achado = await gatherWebEvidence(
+      agent,
+      ctx.ownerId,
+      knowledgeQuery,
+      { grounding, passages: retrieved.context.length, sourceOrigins: (retrieved.sources ?? []).map((f) => (f as { origin?: string }).origin) },
+      { rememberSearchPages: deps.rememberSearchPages, report: (e) => tracker.report(e) },
+    )
+    evidenciasDaWeb.push(...achado.evidence)
+  }
+
   // Each tool reports when it starts and when it hands control back.
   const tools = instrumentTools(await deps.resolveTools(agent, ctx.ownerId), tracker)
   const apiKey = await deps.apiKeyFor(ctx.ownerId, agent.provider)
@@ -395,6 +430,9 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
       // número saiu do documento certo.
       context: [
         ...call.context,
+        // O que a busca trouxe entra junto do resto, como dado não confiável — igual às
+        // passagens da base.
+        ...evidenciasDaWeb,
         ...(multiSourceNotice(retrieved.sources ?? []) ? [multiSourceNotice(retrieved.sources ?? [])!] : []),
         ...formatContextWithSources(retrieved.context, retrieved.sources ?? []),
       ],
