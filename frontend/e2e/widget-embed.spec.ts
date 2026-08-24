@@ -181,3 +181,88 @@ test('destino que deixou de atender: a mensagem NÃO é aceita, e o texto não s
   // O texto continua no CAMPO — é isso que prova que ele não foi consumido.
   await expect(page.getByRole('textbox')).toHaveValue('preciso de ajuda')
 })
+
+// --- os três pontinhos: a promessa de que a resposta está vindo ------------------------------
+//
+// O pedido some no instante em que é enviado: a mensagem do visitante aparece, e depois há
+// silêncio até o agente responder. Esse silêncio dura o tempo de uma inferência — e às
+// vezes de uma busca na web em cima dela. Sem nada na tela, a pessoa não sabe se o chat
+// travou, se precisa reenviar, ou se ninguém vai responder.
+
+const stubChat = async (page: Page, respostaDoAgente?: { atrasoMs: number; texto: string }) => {
+  await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
+    r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
+  )
+  // A página faz um GET ao abrir, ANTES de qualquer envio. Sem esta marca, era ele quem
+  // consumia a resposta do agente — e o teste media o carregamento, não a espera.
+  let jaEnviou = false
+  await page.route(`**/api/public/widgets/${CHAVE}/messages**`, async (r) => {
+    const corpo = r.request().method() === 'POST' ? JSON.parse(r.request().postData() ?? '{}') : null
+    if (corpo) {
+      jaEnviou = true
+      return r.fulfill({
+        status: 201,
+        json: [{ _id: 'm1', conversationId: corpo.conversationId, role: 'visitor', content: corpo.content, createdAt: NOW }],
+      })
+    }
+    // O GET é a rede de segurança de 15s. É por ele que a resposta chega neste teste,
+    // porque o socket não sobe com a API dublada.
+    if (respostaDoAgente && jaEnviou) {
+      return r.fulfill({
+        json: [
+          { _id: 'm1', conversationId: 'c', role: 'visitor', content: 'bom dia', createdAt: NOW },
+          { _id: 'm2', conversationId: 'c', role: 'agent', content: respostaDoAgente.texto, createdAt: NOW },
+        ],
+      })
+    }
+    return r.fulfill({ json: [] })
+  })
+}
+
+test('enquanto o agente prepara a resposta, os três pontinhos aparecem', async ({ page }) => {
+  await stubChat(page)
+  await page.goto(`/widget/${CHAVE}`)
+  await expect(page.getByTestId('typing-dots')).toHaveCount(0, { timeout: 2000 })
+
+  await page.getByRole('textbox').fill('bom dia')
+  await page.getByRole('button', { name: /enviar/i }).click()
+
+  // Logo depois do envio — não depois de a resposta chegar, que é justamente o intervalo
+  // que ficava mudo.
+  await expect(page.getByTestId('typing-dots')).toBeVisible({ timeout: 3000 })
+  // Quem usa leitor de tela também precisa saber: para ele o silêncio é ainda maior.
+  await expect(page.getByTestId('typing-dots')).toHaveAttribute('aria-live', 'polite')
+})
+
+test('os pontinhos somem quando a resposta chega', async ({ page }) => {
+  await stubChat(page, { atrasoMs: 0, texto: 'bom dia! como posso ajudar?' })
+  await page.goto(`/widget/${CHAVE}`)
+  await page.getByRole('textbox').fill('bom dia')
+  await page.getByRole('button', { name: /enviar/i }).click()
+  await expect(page.getByTestId('typing-dots')).toBeVisible({ timeout: 3000 })
+
+  // A rede de segurança roda de 15 em 15 segundos; a resposta chega por ela.
+  await expect(page.getByText('como posso ajudar')).toBeVisible({ timeout: 20_000 })
+  // Deixar a animação girando sobre uma resposta já visível é pior do que nunca tê-la
+  // mostrado: ela passaria a prometer uma segunda resposta que não vem.
+  await expect(page.getByTestId('typing-dots')).toHaveCount(0)
+})
+
+test('uma falha no envio NÃO acende os pontinhos', async ({ page }) => {
+  // Não há resposta a caminho: prometer uma seria mentir na tela, e a pessoa esperaria
+  // em vez de reenviar.
+  await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
+    r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
+  )
+  await page.route(`**/api/public/widgets/${CHAVE}/messages**`, (r) =>
+    r.request().method() === 'POST' ? r.fulfill({ status: 500, json: { error: 'falhou' } }) : r.fulfill({ json: [] }),
+  )
+  await page.goto(`/widget/${CHAVE}`)
+  await page.getByRole('textbox').fill('bom dia')
+  await page.getByRole('button', { name: /enviar/i }).click()
+
+  // A frase é a do SERVIDOR quando ele manda uma — ele sabe o motivo, e "tente de novo"
+  // seria um conselho errado em metade dos casos.
+  await expect(page.getByText('falhou')).toBeVisible({ timeout: 3000 })
+  await expect(page.getByTestId('typing-dots')).toHaveCount(0)
+})
