@@ -42,7 +42,11 @@ import {
   assembleWithoutModel,
   buildSynthesisContext,
   dedupeAgainst,
+  describeBinding,
   describeDiagnostics,
+  matchedCapabilities,
+  planIdOf,
+  schemaHash,
   describePlan,
   memberScore,
   haltingFailure,
@@ -1806,7 +1810,50 @@ export async function executeSectorTeam(
       return { ...base, status: 'skipped', error: 'ciclo de delegação', durationMs: 0 }
     }
 
-    console.info(`[task:start] execution=${execId} task=${task.id} agent=${task.agentId} deps=[${base.dependsOn.join(',')}]`)
+    /**
+     * A FICHA da etapa — montada uma vez, usada nos dois destinos.
+     *
+     * O painel e o registro de execução contavam a mesma história com vocabulários
+     * diferentes, e nenhum dos dois dizia COMO a etapa foi executada. Investigar "por que
+     * este agente" ou "quanto custou a função" exigia ler o log do servidor.
+     *
+     * Só escalares e nomes: tipo de executor, referência do que roda, versão, e as
+     * impressões digitais dos contratos. Nunca o corpo de um schema (que é grande e muda),
+     * nunca um valor de campo, nunca credencial. O hash responde "mudou?" sem guardar o quê.
+     */
+    const contratoDoAlvo = agentContractOf(alvo)
+    const membroDoPlano = equipe.find((m) => m.agentId === task.agentId)
+    const fichaDaEtapa: Record<string, string | number | boolean> = {
+      planId,
+      stepId: task.id,
+      agentId: task.agentId,
+      executorKind: contratoDoAlvo.executorKind,
+      // POR QUE ele: as capacidades dele que a pergunta encostou.
+      capability: membroDoPlano ? matchedCapabilities(opts.objective, membroDoPlano).join(', ') : '',
+      ...(contratoDoAlvo.executorConfig.kind === 'function'
+        ? {
+            functionName: contratoDoAlvo.executorConfig.functionName,
+            functionVersion: contratoDoAlvo.executorConfig.version ?? '',
+          }
+        : {}),
+      ...(contratoDoAlvo.executorConfig.kind === 'tool'
+        ? {
+            appKey: contratoDoAlvo.executorConfig.appKey ?? '',
+            actionKey: contratoDoAlvo.executorConfig.actionKey ?? '',
+            toolId: contratoDoAlvo.executorConfig.toolId ?? '',
+          }
+        : {}),
+      ...(contratoDoAlvo.executorKind === 'llm' ? { model: alvo.model ?? '', provider: alvo.provider } : {}),
+      responseMode: task.responseMode ?? contratoDoAlvo.responseMode,
+      ...(contratoDoAlvo.inputJsonSchema ? { inputSchemaHash: schemaHash(contratoDoAlvo.inputJsonSchema) } : {}),
+      ...(task.outputSchemaHash ? { outputSchemaHash: task.outputSchemaHash } : {}),
+      dependsOn: base.dependsOn.join(','),
+      // De ONDE veio cada campo. As origens; nunca os valores.
+      inputOrigins: Object.entries(task.inputBindings ?? {})
+        .map(([campo, b]) => `${campo}<-${b.from === 'literal' ? 'literal' : describeBinding(b)}`)
+        .join(' '),
+    }
+    console.info(`[task:start] execution=${execId} plan=${planId} task=${task.id} agent=${task.agentId} kind=${contratoDoAlvo.executorKind} deps=[${base.dependsOn.join(',')}]`)
     // A DELEGAÇÃO, na direção de ida: quem pediu, para quem, e o que foi pedido.
     trilha({
       type: 'delegation',
@@ -1825,6 +1872,7 @@ export async function executeSectorTeam(
       title: `${agentName} executando`,
       input: preview(task.objective, 400),
       metadata: {
+        ...fichaDaEtapa,
         taskId: task.id,
         role: alvo.role ?? alvo.preset ?? null,
         dependsOn: base.dependsOn,
@@ -1854,7 +1902,7 @@ export async function executeSectorTeam(
         agentId: task.agentId,
         title: `${agentName}: entrada não confere (${e.field ?? e.code})`,
         // Etapa, agente, campo e código. Nunca o valor do campo.
-        metadata: { taskId: task.id, error: e.code, field: e.field ?? null },
+        metadata: { ...fichaDaEtapa, taskId: task.id, inputValid: false, error: e.code, field: e.field ?? null, durationMs: 0 },
       })
       return { ...base, status: 'skipped', error: `entrada não confere: ${e.message}`, durationMs: 0 }
     }
@@ -1875,7 +1923,13 @@ export async function executeSectorTeam(
         entrada,
         async (k) => {
           const contrato = agentContractOf(alvo)
-          if (contrato.executorKind === 'llm') return runAgentTask(depsComTime, ctx, alvo, task.objective, entrada, format, k, sector._id, null)
+          if (contrato.executorKind === 'llm') {
+            const r = await runAgentTask(depsComTime, ctx, alvo, task.objective, entrada, format, k, sector._id, null)
+            // A MESMA ficha vai para o registro de execução, que é onde a auditoria fica
+            // depois que o painel fecha. Um segundo vocabulário para o mesmo fato obrigaria
+            // a cruzar dois formatos para responder uma pergunta só.
+            return { ...r, telemetry: { ...(r.telemetry ?? {}), ...fichaDaEtapa } }
+          }
           const comecouPasso = Date.now()
           const r = await dispatchAgentExecution(alvo, {
             agentId: alvo._id,
@@ -1892,7 +1946,7 @@ export async function executeSectorTeam(
             toolCalls: r.telemetry.externalCalls ?? 0,
             startedAt: new Date(comecouPasso),
             finishedAt: new Date(),
-            telemetry: { executorKind: contrato.executorKind, externalCalls: r.telemetry.externalCalls ?? 0 },
+            telemetry: { ...fichaDaEtapa, externalCalls: r.telemetry.externalCalls ?? 0, latencyMs: Date.now() - comecouPasso },
           }
         },
         participationOf('specialist'),
@@ -1922,7 +1976,15 @@ export async function executeSectorTeam(
           status: 'error',
           agentId: task.agentId,
           title: `${agentName}: saída não confere (${conferida.error.field ?? conferida.error.code})`,
-          metadata: { taskId: task.id, error: conferida.error.code, field: conferida.error.field ?? null },
+          metadata: {
+            ...fichaDaEtapa,
+            taskId: task.id,
+            inputValid: true,
+            outputValid: false,
+            error: conferida.error.code,
+            field: conferida.error.field ?? null,
+            durationMs: Date.now() - comecou,
+          },
         })
         return { ...base, status: 'failed', error: `saída não confere: ${conferida.error.message}`, durationMs: Date.now() - comecou }
       }
@@ -1939,12 +2001,22 @@ export async function executeSectorTeam(
         output: preview(conferida.text ?? '', 600),
         durationMs,
         metadata: {
+          ...fichaDaEtapa,
           taskId: task.id,
+          inputValid: true,
+          outputValid: true,
+          // O que SAIU: dado e texto contados separadamente, que é a diferença que a fase 4
+          // criou e que o painel precisa mostrar sem misturar de novo.
+          hasStructured: conferida.structured !== undefined,
+          hasText: Boolean(conferida.text),
           grounding: participacao?.grounding ?? null,
           toolCalls: participacao?.toolCalls ?? 0,
           sources: (participacao?.sources ?? []).map((f) => f.title).filter(Boolean),
           usage: participacao?.usage ?? null,
+          // Uma correção de formato é uma inferência a mais, paga. Ela precisa aparecer.
+          outputRepaired: saida.format?.repaired === true,
           modelReason: participacao?.modelReason ?? null,
+          durationMs,
         },
       })
       // A DELEGAÇÃO, na direção de volta: o que o colega devolveu a quem pediu.
@@ -1990,7 +2062,7 @@ export async function executeSectorTeam(
         provider: alvo.provider,
         title: `${agentName} falhou: ${categoria}`,
         durationMs,
-        metadata: { taskId: task.id, error: categoria },
+        metadata: { ...fichaDaEtapa, taskId: task.id, inputValid: true, error: categoria, durationMs },
       })
       // A participação com falha é registrada para o painel mostrar quem tentou.
       participants.push({ agentId: alvo._id.toString(), name: alvo.name, role: 'specialist', durationMs, status: 'failed' })
@@ -2000,9 +2072,14 @@ export async function executeSectorTeam(
 
   // Os resultados desta rodada, por id de tarefa — é daqui que sai a entrada de quem depende.
   let resultadosPorId = new Map<string, TaskResult>()
+  /** O plano em execução agora. Vazio antes da primeira rodada. */
+  let planId = ''
 
   /** Uma rodada: as tarefas prontas saem juntas, as dependentes esperam pelas suas. */
   const executarPlano = async (p: ExecutionPlan): Promise<TaskResult[]> => {
+    // A identidade do plano DESTA rodada: a segunda rodada é outro plano, e correlacionar
+    // as duas sob o mesmo id esconderia justamente que houve replanejamento.
+    planId = planIdOf(p)
     resultadosPorId = new Map<string, TaskResult>()
     while (resultadosPorId.size < p.tasks.length) {
       if (await isCanceled(ctx)) throw new Error('cancelado')
@@ -2183,15 +2260,35 @@ export async function executeSectorTeam(
       input: preview(opts.objective, 300),
       metadata: {
         round: rodada,
+        planId: planIdOf(planoAtual),
         source: rodada === 1 ? origemDoPlano : 'model',
         available: equipe.map((m) => ({ id: m.agentId, name: m.name })),
-        selected: planoAtual.tasks.map((t) => ({
-          taskId: t.id,
-          agentId: t.agentId,
-          name: nomePorAgente.get(t.agentId) ?? t.agentId,
-          objective: t.objective,
-          dependsOn: t.dependsOn ?? [],
-        })),
+        selected: planoAtual.tasks.map((t) => {
+          const membro = equipe.find((m) => m.agentId === t.agentId)
+          return {
+            taskId: t.id,
+            agentId: t.agentId,
+            name: nomePorAgente.get(t.agentId) ?? t.agentId,
+            objective: t.objective,
+            dependsOn: t.dependsOn ?? [],
+            // POR QUE este, e COMO ele executa — as duas perguntas que o painel não
+            // respondia sobre um plano.
+            executorKind: membro?.executorKind ?? 'llm',
+            capability: membro ? matchedCapabilities(opts.objective, membro) : [],
+            /**
+             * De onde vem cada campo — como LINHA, não como objeto.
+             *
+             * A sanitização da trilha para de descer na quarta profundidade, de propósito:
+             * é o que impede um payload aninhado de virar um despejo. `metadata.selected[]
+             * .inputOrigins[]{}` é exatamente a quarta, e o objeto sairia como "[…]".
+             * Achatar em texto respeita o limite em vez de afrouxá-lo.
+             */
+            inputOrigins: Object.entries(t.inputBindings ?? {}).map(
+              ([campo, b]) => `${campo}<-${b.from === 'literal' ? 'literal' : describeBinding(b)}`,
+            ),
+            onFailure: t.onFailure ?? 'skip',
+          }
+        }),
         notSelected: equipe
           .filter((m) => !selecionados.has(m.agentId))
           .map((m) => ({ name: m.name, affinity: Number(memberScore(opts.objective, m).toFixed(2)) })),

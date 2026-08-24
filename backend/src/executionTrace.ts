@@ -11,6 +11,8 @@
 // O QUE NUNCA ENTRA AQUI: chave, credencial, cabeçalho de autorização, prompt de sistema
 // e raciocínio privado do modelo. O que entra é o que ACONTECEU — decisão, instrução
 // operacional, resultado — e o que entra é cortado, porque um painel não é um arquivo.
+import { createHash } from 'node:crypto'
+
 export type TraceEventType =
   | 'user_prompt'
   | 'orchestration_start'
@@ -67,22 +69,73 @@ const trilhas = new Map<string, Trilha>()
 // A allowlist é do lado de quem EMITE: quem chama decide o que mandar. Aqui fica a última
 // linha, que trata o que nenhum chamador deveria mandar mas um dia manda.
 
-const CHAVES_PROIBIDAS = /^(authorization|api[-_]?key|apikey|token|secret|password|senha|credential|cookie|x-api-key)$/i
-const VALOR_SUSPEITO = /\b(sk-[a-z0-9-]{10,}|bearer\s+[a-z0-9._-]{10,})/i
+/**
+ * Os nomes que NUNCA acompanham um valor até um painel.
+ *
+ * Casa por CONTENÇÃO, não por igualdade: o campo raramente se chama `token` — ele se chama
+ * `refreshToken`, `x_api_token`, `githubAccessToken`. Uma lista de nomes exatos deixa
+ * passar exatamente as variações que aparecem num payload real.
+ */
+const CHAVES_PROIBIDAS =
+  /(authorization|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|id[-_]?token|bearer|token|secret|password|senha|passwd|credential|cookie|private[-_]?key|signature|session[-_]?id)/i
+
+/**
+ * Os nomes que CONTÊM uma palavra proibida e não são segredo nenhum.
+ *
+ * `inputTokens` contém "token" e é uma contagem — a conta que o painel mostra. Sem esta
+ * lista, endurecer a regra acima apagaria justamente os números que existem para o dono
+ * saber quanto a execução custou: uma proteção que remove a informação certa não protege
+ * nada, só cega quem paga.
+ */
+const CHAVES_SEGURAS = new Set([
+  'tokens',
+  'inputTokens',
+  'outputTokens',
+  'totalTokens',
+  'tokensSpent',
+  'tokenLimit',
+  'maxTokens',
+  'maxOutputTokens',
+  'tokenCap',
+])
+/**
+ * As formas que uma credencial tem quando aparece SOLTA no meio de um texto.
+ *
+ * Aqui não há nome de campo para consultar: é um pedaço de string dentro de uma mensagem
+ * de erro, de um corpo copiado, de uma URL. O que sobra é reconhecer o formato.
+ */
+const VALOR_SUSPEITO =
+  /(\bsk-[a-z0-9_-]{10,}|\bbearer\s+[a-z0-9._-]{10,}|\bghp_[a-z0-9]{20,}|\bxox[baprs]-[a-z0-9-]{10,}|\bAIza[a-z0-9_-]{20,}|\bAKIA[a-z0-9]{16}|eyJ[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,})/i
+
+/**
+ * Um preview com IDENTIDADE — para o que passa do tamanho.
+ *
+ * Cortar e escrever "+9000 caracteres" perde a única coisa que ainda serviria: saber se
+ * duas execuções produziram o mesmo resultado gigante. Com o hash, dá para comparar sem
+ * guardar; sem ele, o corte é só uma perda.
+ */
+const recorte = (texto: string): string =>
+  `${texto.slice(0, MAX_TEXTO)}… [+${texto.length - MAX_TEXTO} caracteres · sha256:${createHash('sha256').update(texto).digest('hex').slice(0, 12)}]`
 
 export function sanitize(valor: unknown, profundidade = 0): unknown {
   if (valor === null || valor === undefined) return valor
   if (typeof valor === 'string') {
     const limpo = VALOR_SUSPEITO.test(valor) ? '[removido]' : valor
-    return limpo.length > MAX_TEXTO ? `${limpo.slice(0, MAX_TEXTO)}… (+${limpo.length - MAX_TEXTO} caracteres)` : limpo
+    return limpo.length > MAX_TEXTO ? recorte(limpo) : limpo
   }
   if (typeof valor === 'number' || typeof valor === 'boolean') return valor
   if (profundidade >= 4) return '[…]'
-  if (Array.isArray(valor)) return valor.slice(0, 30).map((v) => sanitize(v, profundidade + 1))
+  if (Array.isArray(valor)) {
+    const cortado = valor.slice(0, 30).map((v) => sanitize(v, profundidade + 1))
+    return valor.length > 30 ? [...cortado, `[+${valor.length - 30} itens]`] : cortado
+  }
   if (typeof valor === 'object') {
     const saida: Record<string, unknown> = {}
     for (const [chave, v] of Object.entries(valor as Record<string, unknown>)) {
-      if (CHAVES_PROIBIDAS.test(chave)) continue
+      if (!CHAVES_SEGURAS.has(chave) && CHAVES_PROIBIDAS.test(chave)) continue
+      // Um objeto vindo de `JSON.parse` pode trazer `__proto__` como chave PRÓPRIA. Copiá-lo
+      // com atribuição escreveria no protótipo de todo objeto do processo.
+      if (chave === '__proto__' || chave === 'constructor' || chave === 'prototype') continue
       saida[chave] = sanitize(v, profundidade + 1)
     }
     return saida

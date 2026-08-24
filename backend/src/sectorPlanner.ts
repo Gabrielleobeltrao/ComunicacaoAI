@@ -201,6 +201,34 @@ export interface ExecutionTask {
   responseMode?: ResponseMode
 }
 
+/**
+ * A identidade de um PLANO, para correlacionar a auditoria.
+ *
+ * Derivada do conteúdo, e não sorteada: este módulo não tem relógio nem gerador aleatório
+ * — de propósito, porque um plano precisa sair igual duas vezes para o mesmo pedido no
+ * teste. E derivar tem uma vantagem que sortear não teria: dois planos com o mesmo id são
+ * literalmente o mesmo plano, o que é a pergunta que se faz ao investigar uma repetição.
+ */
+export const planIdOf = (plan: ExecutionPlan): string =>
+  schemaHash(plan.tasks.map((t) => [t.id, t.agentId, t.objective, t.dependsOn ?? [], t.inputBindings ?? {}]))
+
+/**
+ * As capacidades DESTE membro que a pergunta encostou.
+ *
+ * É a resposta para "por que ele?" na auditoria. Sem isso, o registro diz que o agente foi
+ * escolhido e não diz o que nele casou — e a única forma de investigar uma escolha errada
+ * seria reproduzir a pergunta inteira.
+ */
+export function matchedCapabilities(pergunta: string, m: PlannerMember): string[] {
+  const palavras = new Set(palavrasDe(pergunta))
+  return (m.capabilities ?? [])
+    .filter((c) => {
+      const alvo = normalize(String(c))
+      return [...palavras].some((p) => alvo.includes(p))
+    })
+    .slice(0, 8)
+}
+
 /** A impressão digital de um contrato — chaves ordenadas, para não depender da ordem. */
 export function schemaHash(schema: unknown): string {
   const canonico = (v: unknown): unknown =>

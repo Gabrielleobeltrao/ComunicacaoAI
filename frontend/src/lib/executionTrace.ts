@@ -113,3 +113,142 @@ export function tokensDaTrilha(eventos: TraceEvent[]): number {
 
 export const formatarDuracao = (ms?: number): string =>
   ms === undefined || ms === null ? '' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`
+
+// --- a auditoria de uma execução, lida da MESMA trilha ------------------------------------
+//
+// Nada aqui busca nada: os eventos já chegaram, e o que falta é lê-los como quem investiga
+// em vez de como quem acompanha. As perguntas são sempre as mesmas quando algo dá errado —
+// quem trabalhou, com que contrato, de onde vieram os campos, o que foi validado, e quanto
+// custou cada tipo de executor. Elas estavam todas espalhadas por uma pilha de eventos.
+
+export type ExecutorKind = 'llm' | 'function' | 'tool'
+
+export interface StepAudit {
+  stepId: string
+  agentId: string
+  title: string
+  status: TraceEvent['status']
+  executorKind: ExecutorKind
+  /** A referência do que rodou: modelo, função@versão, ou app.ação. */
+  ran: string
+  capability: string
+  dependsOn: string[]
+  inputOrigins: string[]
+  inputValid?: boolean
+  outputValid?: boolean
+  hasStructured?: boolean
+  hasText?: boolean
+  /** Precisou de uma correção de formato — uma inferência a mais, paga. */
+  repaired: boolean
+  error?: string
+  field?: string
+  durationMs: number
+  tokens: number
+}
+
+export interface PlanAudit {
+  planId: string
+  round: number
+  source: string
+  steps: {
+    taskId: string
+    name: string
+    executorKind: string
+    dependsOn: string[]
+    inputOrigins: string[]
+    onFailure: string
+    objective: string
+  }[]
+}
+
+const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+const lista = (v: unknown): string[] =>
+  Array.isArray(v) ? v.map(String) : typeof v === 'string' && v ? v.split(/[, ]+/).filter(Boolean) : []
+
+/** O que cada etapa executou — uma linha por etapa que produziu um desfecho. */
+export function auditarEtapas(eventos: TraceEvent[]): StepAudit[] {
+  const finais = eventos.filter(
+    (e) => e.type === 'agent' && e.status !== 'running' && str((e.metadata as Record<string, unknown>)?.stepId),
+  )
+  return finais.map((e) => {
+    const m = (e.metadata ?? {}) as Record<string, unknown>
+    const kind = (str(m.executorKind) || 'llm') as ExecutorKind
+    const uso = m.usage as { inputTokens?: number; outputTokens?: number } | undefined
+    return {
+      stepId: str(m.stepId),
+      agentId: str(m.agentId),
+      title: e.title,
+      status: e.status,
+      executorKind: kind,
+      ran:
+        kind === 'function'
+          ? `${str(m.functionName)}${str(m.functionVersion) ? `@${str(m.functionVersion)}` : ''}`
+          : kind === 'tool'
+            ? [str(m.appKey), str(m.actionKey)].filter(Boolean).join('.') || str(m.toolId)
+            : str(e.model) || str(m.model) || str(m.provider),
+      capability: str(m.capability),
+      dependsOn: lista(m.dependsOn),
+      inputOrigins: lista(m.inputOrigins),
+      ...(typeof m.inputValid === 'boolean' ? { inputValid: m.inputValid } : {}),
+      ...(typeof m.outputValid === 'boolean' ? { outputValid: m.outputValid } : {}),
+      ...(typeof m.hasStructured === 'boolean' ? { hasStructured: m.hasStructured } : {}),
+      ...(typeof m.hasText === 'boolean' ? { hasText: m.hasText } : {}),
+      repaired: m.outputRepaired === true,
+      ...(str(m.error) ? { error: str(m.error) } : {}),
+      ...(str(m.field) ? { field: str(m.field) } : {}),
+      durationMs: typeof m.durationMs === 'number' ? m.durationMs : (e.durationMs ?? 0),
+      tokens: (uso?.inputTokens ?? 0) + (uso?.outputTokens ?? 0),
+    }
+  })
+}
+
+/** Os planos desta execução — um por rodada. */
+export function auditarPlanos(eventos: TraceEvent[]): PlanAudit[] {
+  return eventos
+    .filter((e) => e.type === 'planner' && (e.metadata as Record<string, unknown>)?.selected)
+    .map((e) => {
+      const m = e.metadata as Record<string, unknown>
+      const selected = Array.isArray(m.selected) ? (m.selected as Record<string, unknown>[]) : []
+      return {
+        planId: str(m.planId),
+        round: typeof m.round === 'number' ? m.round : 1,
+        source: str(m.source),
+        steps: selected.map((t) => ({
+          taskId: str(t.taskId),
+          name: str(t.name),
+          executorKind: str(t.executorKind) || 'llm',
+          dependsOn: lista(t.dependsOn),
+          inputOrigins: lista(t.inputOrigins),
+          onFailure: str(t.onFailure) || 'skip',
+          objective: str(t.objective),
+        })),
+      }
+    })
+}
+
+export interface CustoPorTipo {
+  executorKind: ExecutorKind
+  etapas: number
+  tokens: number
+  durationMs: number
+}
+
+/**
+ * O que cada TIPO de executor custou nesta execução.
+ *
+ * É a comparação que justifica a arquitetura inteira, e ela não existia: sem separar por
+ * tipo, uma função determinística e uma inferência aparecem como "duas etapas" — e a
+ * diferença entre zero token e uma chamada paga fica invisível justamente para quem
+ * decide se vale a pena tirar um trabalho do modelo.
+ */
+export function custoPorTipo(eventos: TraceEvent[]): CustoPorTipo[] {
+  const por = new Map<ExecutorKind, CustoPorTipo>()
+  for (const etapa of auditarEtapas(eventos)) {
+    const atual = por.get(etapa.executorKind) ?? { executorKind: etapa.executorKind, etapas: 0, tokens: 0, durationMs: 0 }
+    atual.etapas += 1
+    atual.tokens += etapa.tokens
+    atual.durationMs += etapa.durationMs
+    por.set(etapa.executorKind, atual)
+  }
+  return [...por.values()].sort((a, b) => b.tokens - a.tokens || b.durationMs - a.durationMs)
+}
