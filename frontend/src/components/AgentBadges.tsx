@@ -1,4 +1,5 @@
 import { GUARDRAIL_LABELS, MEMORY_LABELS } from '../lib/agentLabels'
+import { presetLabelOf, presetVerbOf } from '../lib/agentPresentation'
 import type { AgentSummary } from '../lib/types'
 import { Badge } from '../ui'
 
@@ -24,6 +25,15 @@ export function AgentBadges({ agent }: { agent: AgentSummary }) {
 
   return (
     <div className="flex flex-wrap gap-1.5">
+      {/*
+        O PAPEL primeiro, e sempre.
+        Ele decide se o agente busca na base, se entra num plano com dependência e o que
+        ele faz sozinho — e aparecia só quando o dono não tinha escrito uma descrição, que
+        é justamente o caso em que ele some. Aqui ele é uma etiqueta, ao lado do resto.
+      */}
+      <Badge tone="brand" title={`${presetVerbOf(agent)} — o papel decide o que este agente pode fazer`}>
+        {presetLabelOf(agent)}
+      </Badge>
       {/*
         Provedor e modelo só valem para quem é executado por um modelo. Numa função
         determinística eles não são só irrelevantes: são falsos — nenhum provedor é

@@ -117,6 +117,26 @@ async function stubApi(page: Page, opts: { overview?: Record<string, unknown> } 
     return r.fulfill({ json: [] })
   })
   await page.route('**/api/agents/*/overview', (r) => r.fulfill({ json: opts.overview ?? overview() }))
+  await page.route('**/api/executors/catalog', (r) =>
+    r.fulfill({
+      json: {
+        functions: [
+          {
+            functionName: 'math.summary',
+            version: '1.0.0',
+            description: 'Soma, média, mínimo e máximo de uma lista de números.',
+            capabilities: ['cálculo'],
+            inputSchema: { type: 'object', properties: { values: { type: 'array' } }, required: ['values'] },
+            outputSchema: { type: 'object', properties: { sum: { type: 'number' } }, required: ['sum'] },
+            configSchema: null,
+            timeoutMs: 2000,
+          },
+        ],
+        actions: [],
+      },
+    }),
+  )
+  await page.route('**/api/app-installations**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents/*/documents', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents/*/routines', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents/*/history**', (r) => r.fulfill({ json: { total: 0, items: [], delegations: [] } }))
@@ -662,4 +682,62 @@ test('quem não coleta não vê a opção — nem no avançado', async ({ page }
   await page.getByRole('button', { name: 'Próximo' }).click()
   await page.getByTestId('hire-advanced-toggle').click()
   await expect(page.getByTestId('hire-web-search')).toHaveCount(0)
+})
+
+
+// --- contratar um agente que NÃO é de IA --------------------------------------------------
+//
+// Isto não existia. A escolha do executor vivia só na edição, sob "Avançado": para ter um
+// agente de função era preciso criar um de IA, salvar, entrar nele e trocar o tipo — três
+// passos para a decisão mais consequente do formulário, e invisível para quem não sabia
+// que ela existia.
+
+test('dá para contratar um agente de FUNÇÃO — e a escolha está entre as perguntas principais', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'custom')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await expect(page.getByTestId('work-step')).toBeVisible()
+
+  // À vista, sem abrir "Configuração avançada".
+  const executor = page.getByTestId('hire-executor')
+  await expect(executor).toBeVisible()
+  await executor.getByTestId('executor-kind-function').click()
+  await executor.getByTestId('function-option-math.summary').click()
+
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByTestId('hire-wizard').getByRole('button', { name: 'Contratar agente' }).click()
+
+  await expect.poll(() => created).not.toBeNull()
+  expect(created!.executorKind).toBe('function')
+  expect(created!.responseMode).toBe('structured')
+  expect(created!.executorConfig).toEqual({ kind: 'function', functionName: 'math.summary', version: '1.0.0' })
+  // Os schemas NÃO vão daqui: o servidor os deriva do registro, que é quem executa.
+  expect(created!.inputJsonSchema).toBeUndefined()
+})
+
+test('escolher função sem escolher QUAL não deixa avançar', async ({ page }) => {
+  // A API recusa; barrar aqui é a diferença entre uma frase no formulário e um erro
+  // depois de clicar em contratar.
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'custom')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByTestId('hire-executor').getByTestId('executor-kind-function').click()
+  await expect(page.getByRole('button', { name: 'Próximo' })).toBeDisabled()
+})
+
+test('um agente de IA continua sendo contratado exatamente como antes', async ({ page }) => {
+  await stubApi(page)
+  await openWizard(page)
+  await escolherPapel(page, 'researcher')
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await page.getByTestId('hire-wizard').getByRole('button', { name: 'Contratar agente' }).click()
+
+  await expect.poll(() => created).not.toBeNull()
+  // Nenhum campo novo: quem não escolheu nada não ganha configuração que não pediu.
+  expect(created!.executorKind).toBeUndefined()
+  expect(created!.executorConfig).toBeUndefined()
+  expect(created!.preset).toBe('researcher')
 })

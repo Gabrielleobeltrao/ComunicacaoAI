@@ -102,8 +102,24 @@ const agenteBase = (over: Record<string, unknown> = {}) => ({
 
 let patches: Record<string, unknown>[] = []
 
-async function stubApi(page: Page, agente: Record<string, unknown>, opts: { conectados?: string[] } = {}) {
+async function stubApi(page: Page, agenteInicial: Record<string, unknown>, opts: { conectados?: string[] } = {}) {
   patches = []
+  /**
+   * O agente COMO ELE ESTÁ, e não como ele foi criado.
+   *
+   * A página recarrega do `overview` depois de cada gravação. Um dublê que devolve sempre
+   * o documento original faria a tela mostrar o estado anterior — e a prova mediria o
+   * dublê, não a regra.
+   */
+  let agente = agenteInicial
+  // O mesmo `agentContractOf` do servidor, no que a prova precisa: o contrato resolvido.
+  const contratoDe = (a: Record<string, unknown>) => ({
+    executorKind: (a.executorKind as string) ?? 'llm',
+    responseMode: (a.responseMode as string) ?? 'text',
+    executorConfig: a.executorConfig ?? { kind: 'llm' },
+    inputJsonSchema: a.inputJsonSchema ?? null,
+    outputJsonSchema: a.outputJsonSchema ?? null,
+  })
   const conectados = opts.conectados ?? ['agenda']
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   await page.route('**/api/executors/catalog', (r) => r.fulfill({ json: CATALOGO }))
@@ -127,7 +143,7 @@ async function stubApi(page: Page, agente: Record<string, unknown>, opts: { cone
   await page.route('**/api/agents/*/overview', (r) =>
     r.fulfill({
       json: {
-        agent: agente,
+        agent: { ...agente, contract: contratoDe(agente) },
         stats: { conversations: 0, conversationsThisWeek: 0, messagesThisWeek: 0, attendedConversations: 0, handoffs: 0, qualifiedLeads: 0 },
         channelLinked: false,
         wiring: { routineCount: 0, channelCount: 0, webhookCount: 0, collaboratorCount: 0, toolCount: 0, knowledgeCount: 0, deliveryConfigured: false },
@@ -145,7 +161,19 @@ async function stubApi(page: Page, agente: Record<string, unknown>, opts: { cone
     if (r.request().method() !== 'PATCH') return r.fulfill({ json: agente })
     const corpo = JSON.parse(r.request().postData() ?? '{}') as Record<string, unknown>
     patches.push(corpo)
-    return r.fulfill({ json: { ...agente, ...corpo } })
+    // O servidor DERIVA o contrato de uma função a partir do registro e devolve o agente
+    // com ele. Sem isto o dublê responderia diferente do que a API responde, e a prova
+    // passaria a medir o dublê.
+    const cfg = corpo.executorConfig as { kind?: string; functionName?: string } | undefined
+    const fn = cfg?.kind === 'function' ? CATALOGO.functions.find((f) => f.functionName === cfg.functionName) : null
+    const derivado = fn ? { inputJsonSchema: fn.inputSchema, outputJsonSchema: fn.outputSchema } : {}
+    agente = { ...agente, ...corpo, ...derivado }
+    return r.fulfill({
+      json: {
+        ...agente,
+        contract: contratoDe(agente),
+      },
+    })
   })
   await page.route('**/api/agents/*/documents', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents?**', (r) => r.fulfill({ json: [] }))
@@ -164,14 +192,21 @@ async function stubApi(page: Page, agente: Record<string, unknown>, opts: { cone
   await page.route('**/api/auth/**', (r) => r.fulfill({ json: { session: { id: 's1', userId: 'u1', expiresAt: new Date(Date.now() + 864e5).toISOString(), token: 't' }, user } }))
 }
 
+/**
+ * "Como este agente executa" mora em COMO TRABALHA.
+ *
+ * É a resposta da pergunta que a aba faz. Antes ela estava em "Avançado", ao lado da
+ * métrica do card e da exclusão do agente — para algo que decide se há chamada a provedor,
+ * era o lugar errado.
+ */
 const abrirAvancado = async (page: Page) => {
-  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
-  // O bloco abre por padrão: é a escolha que decide quais dos outros fazem sentido, e
-  // deixá-la fechada esconderia justamente a pergunta que vem primeiro.
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
   await expect(page.getByTestId('executor-section')).toBeVisible()
 }
 
+/** O CONTRATO é detalhe técnico e continua recolhido em Avançado. */
 const abrirContrato = async (page: Page) => {
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
   await page.getByTestId('agent-contract-block').getByRole('button', { name: 'Contratos de entrada e saída' }).click()
   await expect(page.getByTestId('output-contract-block')).toBeVisible()
 }
@@ -180,7 +215,8 @@ test('a escolha existe, e um agente antigo já chega como "IA / LLM"', async ({ 
   await stubApi(page, agenteBase())
   await abrirAvancado(page)
   await expect(page.getByTestId('executor-kind-llm-input')).toBeChecked()
-  // O que sempre existiu continua existindo: o bloco de modelo está lá.
+  // O que sempre existiu continua existindo — em Avançado, que é onde ele sempre esteve.
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/avancado`)
   await expect(page.getByText('Modelo e custo')).toBeVisible()
 })
 
@@ -277,6 +313,9 @@ test('escolher a função PREENCHE o contrato — e ele fica somente leitura', a
   await abrirAvancado(page)
   await page.getByTestId('executor-kind-function').click()
   await page.getByTestId('function-option-math.summary').click()
+  // A escolha é gravada sozinha, e é o SERVIDOR que deriva o contrato. Navegar antes disso
+  // leria o agente anterior — o teste mediria a corrida, não a regra.
+  await expect.poll(() => patches.filter((p) => 'executorConfig' in p).length, { timeout: 10_000 }).toBeGreaterThan(0)
   await abrirContrato(page)
 
   // Quem escolhe uma função não deveria copiar o contrato dela à mão: o servidor já sabe
@@ -298,8 +337,7 @@ test('uma ação de App sem contrato de saída avisa em vez de prometer', async 
   await page.getByTestId('tool-action').selectOption('criar_evento')
   // O contrato de ENTRADA vem da ação; o de saída, não — e dizer isso é mais barato do
   // que deixar descobrir na primeira execução.
-  await abrirContrato(page)
-  await expect(page.getByTestId('input-json-schema')).toHaveValue(/titulo/)
+  await expect(page.getByTestId('tool-detail')).toContainText('Recebe: titulo*')
   // A frase mudou de tom junto com o comportamento: antes o modo estruturado era oferecido
   // e avisado; agora ele nem aparece, e o texto diz o que de fato acontece.
   await expect(page.getByTestId('tool-no-output-contract')).toContainText('fica como texto')

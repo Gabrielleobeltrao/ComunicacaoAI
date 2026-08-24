@@ -273,3 +273,27 @@ test('colegas, setor e onde é usado ficam depois do painel', async ({ page }) =
   ])
   expect(contexto!.y).toBeGreaterThan(painel!.y)
 })
+
+// --- o PAPEL do agente, visível ------------------------------------------------------------
+//
+// O papel decide o que o agente pode fazer: se busca na base, se entra num plano com
+// dependência, o que faz sozinho. Ele aparecia só quando o dono NÃO tinha escrito uma
+// descrição — porque a descrição o substituía. Ou seja: sumia exatamente para os agentes
+// mais configurados, que são aqueles em que a diferença mais importa.
+
+test('o papel aparece no card, junto com a descrição — não no lugar dela', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents`)
+  const card = page.getByTestId('agent-card').first()
+  await expect(card).toBeVisible()
+  await expect(card.getByTestId('agent-card-role')).toBeVisible()
+})
+
+test('o papel aparece na página do agente, no cabeçalho e na visão geral', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/visao-geral`)
+  await expect(page.getByTestId('agent-header-role')).toBeVisible()
+  // E como linha própria: "Papel" e "Função" respondem perguntas diferentes, e ocupavam
+  // a mesma linha.
+  await expect(page.getByTestId('agent-summary')).toContainText('Papel')
+})

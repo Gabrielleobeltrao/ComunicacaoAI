@@ -21,6 +21,26 @@ export function roleLabelOf(agent: AgentSummary): string {
   return papelDe(agent.preset)?.cargo ?? '—'
 }
 
+/**
+ * O CARGO — sempre, e separado do que o dono escreveu.
+ *
+ * `roleLabelOf` prefere a frase do dono, e é isso que se quer numa descrição. Mas a frase
+ * SUBSTITUÍA o cargo: um agente com "analisa contratos de fornecedores" escrito deixava de
+ * mostrar em lugar nenhum que ele é um Analista — e "Analista" não é enfeite, é a regra
+ * que decide se ele busca na base, se entra num plano com dependência e o que ele pode
+ * fazer sozinho. Quem lê o card ficava sem a informação que mais muda o comportamento.
+ *
+ * Os dois passam a conviver: o cargo como etiqueta, a frase como descrição.
+ */
+export function presetLabelOf(agent: Pick<AgentSummary, 'preset'>): string {
+  return papelDe(agent.preset)?.cargo ?? 'Personalizado'
+}
+
+/** O VERBO do papel — o que ele faz, em uma palavra. Para onde não cabe uma frase. */
+export function presetVerbOf(agent: Pick<AgentSummary, 'preset'>): string {
+  return papelDe(agent.preset)?.verbo ?? 'Executa'
+}
+
 /** Em que motor ele roda. Era isto que aparecia como "Função". */
 export function modelLabelOf(agent: AgentSummary): string {
   return agent.model || `${agent.provider === 'openai' ? 'OpenAI' : 'Anthropic'} · padrão do sistema`

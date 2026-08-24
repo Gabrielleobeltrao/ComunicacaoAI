@@ -9,7 +9,7 @@ import { AppLayout } from '../components/AppLayout'
 import { DangerZone } from '../components/DangerZone'
 import { accentFor, buildCharacterResolver } from '../lib/agentAvatar'
 import type { CharacterResolver } from '../lib/agentAvatar'
-import { modelLabelOf, roleLabelOf, skillsOf } from '../lib/agentPresentation'
+import { modelLabelOf, presetLabelOf, presetVerbOf, roleLabelOf, skillsOf } from '../lib/agentPresentation'
 import { API_URL } from '../lib/api'
 import { getAgentStats, METRIC_KEY_LABEL, PERIOD_LABEL, type StatsPeriod } from '../lib/agentStats'
 import { formatCount, formatDuration, formatPercent, formatTokens } from '../lib/metricFormat'
@@ -187,6 +187,9 @@ function TeamsPanel({ overview, fid }: { overview: AgentOverview; fid: string | 
 // The four questions the overview must answer at a glance.
 function AgentSummaryCard({ agent, overview }: { agent: AgentSummary; overview: AgentOverview }) {
   const rows: [string, string][] = [
+    // O PAPEL e a DESCRIÇÃO são coisas diferentes, e ocupavam a mesma linha: quem escrevia
+    // a descrição perdia o papel de vista, e é o papel que decide o comportamento.
+    ['Papel', `${presetLabelOf(agent)} · ${presetVerbOf(agent).toLowerCase()}`],
     ['Função', roleLabelOf(agent)],
     ['O que faz', agent.objective || '—'],
     ['Recebe', agent.inputContract || '—'],
@@ -235,6 +238,12 @@ function ProfileCard({ agent, stats, accent, portrait }: { agent: AgentSummary; 
       />
       <span style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 800, letterSpacing: '-.02em', color: 'var(--text-heading)' }}>
         {agent.name}
+      </span>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+        <Tag color={accent} data-testid="agent-header-role">
+          {presetLabelOf(agent)}
+        </Tag>
+        <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>{presetVerbOf(agent)}</span>
       </span>
       <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{roleLabel}</span>
       <StatusPill status={status} />

@@ -68,8 +68,10 @@ const SECTION_BLOCKS: Record<string, string[]> = {
   // "Definição" abre a lista de propósito: é o bloco que o dono revisa, e o que mais
   // muda o comportamento do agente. "Modelo e execução" vem logo depois, e quase ninguém
   // precisa tocar — todo campo dele começa em "Padrão do sistema".
-  // "executor" vem primeiro: é a escolha que decide quais dos blocos abaixo fazem sentido.
-  avancado: ['executor', 'capacidades', 'execucao', 'metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
+  // "executor" saiu daqui: ele é a resposta da pergunta que a aba "Como trabalha" faz, e
+  // estava ao lado da métrica do card e da exclusão do agente. Para algo que decide se há
+  // chamada a provedor, era o lugar errado.
+  avancado: ['capacidades', 'execucao', 'metrica', 'modelo', 'estilo', 'memoria', 'guardrails', 'identificacao', 'dados', 'contrato'],
   // legacy aliases
   essencial: ['identidade'],
   ferramentas: ['ferramentas'],
@@ -974,6 +976,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
   const soDeModelo = new Set(['modelo', 'execucao', 'estilo', 'memoria', 'ferramentas', 'conhecimento', 'guardrails', 'identificacao'])
   const showBlock = (block: string) => {
     if (executor.kind !== 'llm' && soDeModelo.has(block)) return false
+    /**
+     * "Como este agente executa" abre a aba "Como trabalha".
+     *
+     * Os outros blocos dela vêm do PAPEL (`blocosDoPapel`), resolvido pelo servidor. Este
+     * não: ele vale para todo agente, porque a pergunta "quem faz o trabalho" existe antes
+     * de qualquer papel — e é ela que decide quais dos blocos seguintes fazem sentido.
+     */
+    if (block === 'executor' && flat) return section == null || section === 'como-trabalha'
     if (flat && section === 'como-trabalha') return blocosDoPapel.includes(block)
     if (flat) return section == null || (SECTION_BLOCKS[section] ?? []).includes(block)
     if (block === 'identidade' || block === 'conhecimento') return true
