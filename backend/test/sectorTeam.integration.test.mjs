@@ -853,7 +853,12 @@ const equipeDe = (coordenador, membros) => ({
 // modelo que não se sobrepõem mesmo tendo começado juntas. Com a barreira não há dúvida:
 // cada tarefa só termina depois que a outra chegou. Em execução serial isto trava — e o
 // teste falha dizendo isso, em vez de passar por acidente.
-const barreira = (quantos, limiteMs = 5000) => {
+// O limite não é o que o teste afirma: em execução SERIAL a barreira nunca libera, e o
+// teste falha de qualquer jeito. Ele é só o detector de travamento — e cinco segundos de
+// relógio começaram a estourar por carga da máquina, não por seriedade do código, à
+// medida que a suíte cresceu. Vinte segundos mantêm a mesma afirmação sem depender de
+// quantos mongods estão de pé ao mesmo tempo.
+const barreira = (quantos, limiteMs = 20000) => {
   let chegaram = 0
   let liberar
   const todos = new Promise((r) => (liberar = r))

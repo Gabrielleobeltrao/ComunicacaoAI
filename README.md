@@ -253,7 +253,12 @@ agentes que existem; o Arquiteto decide **quais recursos precisam existir**.
 **A LLM só produz a proposta.** Validação e aplicação são código determinístico: o
 blueprint referencia tudo por `key` — nunca por id de banco —, a posse é lida do banco
 e conferida antes de qualquer escrita, e a mesma proposta sempre produz a mesma prévia
-e o mesmo hash.
+e o mesmo hash. Quando um item vai **reaproveitar** algo que já existe, quem escolhe é
+você, de uma lista que só tem recurso da sua conta.
+
+**Cada conhecimento no lugar dele.** Agente e setor ganham base de conhecimento
+indexada; andar e prédio, memória. Sem conteúdo, nenhum dos dois grava nada — fica a
+pendência.
 
 **O que ele nunca faz:**
 
@@ -261,18 +266,25 @@ e o mesmo hash.
   pendência *"Enviar o cardápio"*, e quem depende dela não fica pronto.
 - **Não conecta App nem guarda credencial.** Credencial colada na conversa é mascarada
   na entrada e nunca chega ao banco. Permissão só sai com instalação ativa **e**
-  aprovação explícita — sem as duas, vira item de checklist.
+  aprovação explícita — sem as duas, vira item de checklist. E *conectado* não é
+  *concedido*: o App conectado é da conta, a permissão é de cada agente, e a pendência
+  só se resolve quando as duas existem.
+- **Não altera nada sem aprovação individual.** Mudança em recurso que já existe — e no
+  nome do prédio — vem desmarcada na confirmação, e o que não foi marcado não acontece.
 - **Não cria nada antes da confirmação**, não apaga nem altera recurso existente em
   silêncio, e **não publica rotina**: ela nasce rascunho, e só manual ou agendada —
   webhook e gatilho por evento armam um recebedor, e isso é decisão de outra tela.
 
-**Aplicação retomável.** Cada recurso criado é registrado com a chave que o originou,
-antes do passo seguinte. Aplicar duas vezes não duplica; uma queda no meio deixa o que
-já foi feito de pé e *Retomar* continua de onde parou. O desfazer só remove o que
-aquela aplicação criou, que ainda existe e que ninguém editou depois — o resto fica e
-vira aviso.
+**Aplicação retomável.** Cada recurso criado leva uma marca de origem — projeto,
+aplicação e o item que o gerou — gravada junto com ele. Aplicar duas vezes não duplica;
+uma queda no meio deixa o que já foi feito de pé e *Retomar* continua de onde parou,
+encontrando pela marca até o que foi criado no instante anterior à queda. Duas retomadas
+simultâneas viram uma. O desfazer só remove o que aquela aplicação criou, que ainda
+existe e que ninguém editou depois, e sempre pelo caminho canônico — um documento sai
+levando seus trechos, uma rotina leva versões e execuções. O resto fica e vira aviso.
 
-**Tokens.** Cada rodada confere o limite mensal da conta **antes** de chamar o modelo e
+**Tokens.** Cada rodada confere o limite mensal da conta **antes de cada chamada** —
+inclusive a tentativa de reparo — e
 registra o consumo exatamente uma vez, contra a mesma chave de cobrança — repetir a
 rodada depois de um erro de rede não cobra de novo. Uma resposta ilegível tem **uma**
 tentativa de reparo, e só uma.
