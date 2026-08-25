@@ -37,7 +37,6 @@ backend/src/delegation.ts      o runtime que executa o plano e audita cada etapa
 | `llm` | um provedor de modelo | sim |
 | `function` | código deste repositório, registrado por nome | zero |
 | `tool` | uma ferramenta da conta ou uma ação de App instalado | zero (paga a API de terceiro) |
-| `formula` | uma expressão escrita pelo dono, no documento do agente | zero |
 
 **Ausente é `llm`.** Um agente criado antes de qualquer um destes campos lê como
 `llm`, com `responseMode: 'text'` e sem schemas — exatamente o comportamento que
@@ -91,41 +90,6 @@ carregar a chave e montar as ferramentas. Para uma função, tudo isso é conta 
 existir — e no fim o modelo improvisava o que a função faria. A contabilidade, a
 idempotência por tentativa, o `settle` e a auditoria são os mesmos; o que muda é que a
 conta dá zero.
-
-## A fórmula: o único "código" que mora no documento
-
-O pedido recorrente é colar código no agente. Numa plataforma multi-inquilino isso
-significa o código de um cliente rodando no mesmo processo que tem a chave do banco, as
-credenciais cifradas dos Apps e os dados de todas as outras contas. Um `while(true)`
-derruba o serviço inteiro; um escape do sandbox entrega tudo.
-
-A saída foi **não dar capacidade nenhuma**, em vez de dar e depois bloquear:
-
-- **sem rede, sem disco, sem processo** — não porque algo os proíbe, mas porque essas
-  funções não existem no interpretador. A lista em `FUNCOES` é a fronteira inteira;
-- **sem laço e sem recursão na gramática** — toda fórmula termina por construção, não por
-  um limite imposto;
-- **uma variável só resolve para um campo da entrada**, por `hasOwnProperty` — não há
-  objeto para navegar, logo não há `constructor` nem protótipo a alcançar;
-- tetos de tamanho, de linhas, de aninhamento e de passos, contra texto absurdo.
-
-```
-margem = arred((receita - custo) / receita * 100, 2)
-faixa  = se(margem >= 30, "alta", "baixa")
-```
-
-**A fórmula declara o próprio contrato:** as variáveis livres (`receita`, `custo`) são o
-`inputJsonSchema`; os nomes atribuídos (`margem`, `faixa`) são o `outputJsonSchema`. Um
-schema escrito à mão ao lado do cálculo começa igual e envelhece — e o que envelhece
-recusa entrada boa ou aceita entrada ruim sem ninguém perceber.
-
-O tipo da saída sai de uma **execução** com valores de exemplo: `se(x > 0, "alta", 0)` não
-tem tipo estático honesto, e como a linguagem não tem efeito colateral, executar de novo
-não custa nem muda nada.
-
-**Quem precisa de mais que cálculo** usa Ferramenta personalizada (HTTP): o código roda no
-servidor de quem o escreveu, e a plataforma só chama, com schema, domínio permitido e teto
-de tempo. É a fronteira certa — o código do cliente na infraestrutura do cliente.
 
 ## O plano
 

@@ -18,7 +18,6 @@ const draft = (over: Partial<ExecutorDraft> = {}): ExecutorDraft => ({
   actionKey: '',
   responseMode: 'text',
   config: {},
-  expression: '',
   ...over,
 })
 

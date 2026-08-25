@@ -17,7 +17,7 @@
 import type { ObjectId } from 'mongodb'
 
 /** Como o trabalho deste agente é feito. Não confundir com `executionMode`, que é de rotina. */
-export type ExecutorKind = 'llm' | 'function' | 'tool' | 'formula'
+export type ExecutorKind = 'llm' | 'function' | 'tool'
 
 /** O que o agente devolve: dado, texto, ou os dois. */
 export type ResponseMode = 'structured' | 'text' | 'structured_and_text'
@@ -66,21 +66,7 @@ export interface ToolExecutorConfig {
   actionKey?: string
 }
 
-/**
- * Uma FÓRMULA escrita pelo dono do agente.
- *
- * Este é o único executor cujo "código" mora no documento — e só é seguro porque a
- * linguagem não tem capacidade nenhuma além de calcular: sem rede, sem disco, sem acesso
- * ao processo, e sem laço, o que faz toda fórmula terminar por construção. Guardar
- * JavaScript aqui seria execução arbitrária com outro nome.
- */
-export interface FormulaExecutorConfig {
-  kind: 'formula'
-  /** O programa: uma atribuição por linha, `nome = expressão`. */
-  expression: string
-}
-
-export type ExecutorConfig = LlmExecutorConfig | FunctionExecutorConfig | ToolExecutorConfig | FormulaExecutorConfig
+export type ExecutorConfig = LlmExecutorConfig | FunctionExecutorConfig | ToolExecutorConfig
 
 // --- o contrato de execução -------------------------------------------------------------------
 

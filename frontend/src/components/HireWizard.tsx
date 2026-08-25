@@ -195,7 +195,6 @@ export function HireWizard({
     actionKey: '',
     responseMode: 'text',
     config: {},
-    expression: '',
   })
   const executando = executor.kind !== 'llm'
   /**

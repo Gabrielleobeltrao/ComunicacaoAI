@@ -355,7 +355,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
     actionKey: '',
     responseMode: 'text',
     config: {},
-    expression: '',
   })
   const [editRequireGrounding, setEditRequireGrounding] = useState(false)
 
@@ -438,7 +437,6 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       actionKey: c?.executorConfig?.kind === 'tool' ? (c.executorConfig.actionKey ?? '') : '',
       responseMode: c?.responseMode ?? 'text',
       config: c?.executorConfig?.kind === 'function' ? ((c.executorConfig as { config?: Record<string, unknown> }).config ?? {}) : {},
-      expression: c?.executorConfig?.kind === 'formula' ? c.executorConfig.expression : '',
     })
     setEditRequireGrounding(agent.requireGrounding === true)
       setEditBuiltinTools(agent.builtinTools ?? [])
@@ -687,11 +685,11 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
        * O modo que o tipo PERMITE, e não o que está no rascunho.
        *
        * A tela corrige o rascunho por um efeito, e efeito é corrida: trocar o tipo e
-       * escrever no mesmo instante podia gravar o modo anterior. O servidor recusaria — e
-       * o dono veria um erro sobre uma escolha que ele não fez. Aqui o valor é derivado do
+       * escrever no mesmo instante gravava o modo anterior. O servidor recusaria — e o
+       * dono veria um erro sobre uma escolha que ele não fez. Aqui o valor é derivado do
        * tipo, que é a mesma regra que o servidor aplica.
        */
-      responseMode: executor.kind === 'function' || executor.kind === 'formula' ? 'structured' : executor.responseMode,
+      responseMode: executor.kind === 'function' ? 'structured' : executor.responseMode,
       // A configuração acompanha o TIPO e só ele: guardar `functionName` num agente de
       // modelo é guardar uma promessa que ninguém cumpre — o campo fica lá, alguém o lê
       // depois e conclui que o agente chama uma função.
@@ -706,11 +704,7 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
             }
           : executor.kind === 'tool'
             ? { kind: 'tool' as const, appKey: executor.appKey, actionKey: executor.actionKey }
-            : executor.kind === 'formula'
-              ? // A fórmula vai como está escrita: é o servidor que a compila, deriva o
-                // contrato dela e recusa com a linha quando ela não fecha.
-                { kind: 'formula' as const, expression: executor.expression }
-              : { kind: 'llm' as const },
+            : { kind: 'llm' as const },
       requireGrounding: editRequireGrounding,
       routingDescription: editRouting.trim(),
       inputContract: editInputContract.trim(),
