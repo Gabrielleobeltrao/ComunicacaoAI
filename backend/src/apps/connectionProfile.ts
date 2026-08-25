@@ -103,8 +103,15 @@ export async function resolveConnection(
 
   const auth = decryptInstallationConfig(installation)
   const resource = installation.publicMetadata ?? {}
-  const perfil = app.connection!
-  const base = perfil.baseUrlByEnvironment?.[environment] ?? perfil.baseUrl
+  /**
+   * Sem perfil REST, a conexão resolve mesmo assim — com base vazia.
+   *
+   * Só chega aqui quem pediu `requireConnectable: false`, e quem pede isso não quer
+   * base nenhuma: um App de streaming autentica por mensagem no socket, não por
+   * cabeçalho HTTP. Presumir que o perfil existe era o que fazia esse caminho estourar.
+   */
+  const perfil = app.connection
+  const base = perfil ? (perfil.baseUrlByEnvironment?.[environment] ?? perfil.baseUrl) : ''
 
   return {
     ok: true,
@@ -112,7 +119,7 @@ export async function resolveConnection(
     appName: app.name,
     environment,
     baseUrl: interpolar(base, auth, resource),
-    headers: (perfil.headers ?? []).map((h: { key: string; value: string }) => ({ key: h.key, value: interpolar(h.value, auth, resource) })),
+    headers: (perfil?.headers ?? []).map((h: { key: string; value: string }) => ({ key: h.key, value: interpolar(h.value, auth, resource) })),
     allowedDomains: app.allowedDomains,
     installationName: installation.name,
   }

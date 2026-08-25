@@ -100,7 +100,12 @@ let pinnedSent: string[] | null = null
 
 async function stub(
   page: Page,
-  opts: { installations?: unknown[]; navigation?: unknown[]; access?: { ok: boolean; reason?: string; appName?: string; activationRoute?: string } } = {},
+  opts: {
+    installations?: unknown[]
+    navigation?: unknown[]
+    access?: { ok: boolean; reason?: string; appName?: string; activationRoute?: string }
+    streams?: unknown[]
+  } = {},
 ) {
   created = null
   disconnected = null
@@ -126,6 +131,10 @@ async function stub(
     return r.fulfill({ json: INSTALLATION })
   })
   await page.route('**/api/app-installations/*/test', (r) => r.fulfill({ json: { ok: true, message: 'Configuração lida com sucesso.' } }))
+  // Streaming é exceção nesta tela: quase toda conexão é REST e devolve lista vazia.
+  await page.route('**/api/streams', (r) => r.fulfill({ json: opts.streams ?? [] }))
+  await page.route('**/api/streams/*/pause', (r) => r.fulfill({ json: { ...(opts.streams?.[0] ?? {}), state: 'paused' } }))
+  await page.route('**/api/streams/*/reconnect', (r) => r.fulfill({ json: { ...(opts.streams?.[0] ?? {}), state: 'connecting', lastError: null } }))
   await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: opts.navigation ?? [], pinned: [] } }))
   // The surface guard asks this before rendering any App page.
   await page.route('**/api/apps/*/surfaces/*/access', (r) => {
@@ -614,4 +623,53 @@ test('uma conexão ativa também pode ser removida, com o aviso certo', async ({
   await page.getByTestId('confirm-remove').click()
   await expect.poll(() => disconnected?.url).toBeTruthy()
   expect(disconnected?.url).toContain('purge=true')
+})
+
+// --- stream de mercado na conexão --------------------------------------------------
+
+const STREAM = {
+  id: 'stream-1',
+  installationId: INSTALLATION.id,
+  appKey: 'slack',
+  environment: 'paper',
+  symbols: ['PETR4', 'VALE3'],
+  state: 'connected',
+  lastConnectedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  lastEventAt: new Date(Date.now() - 60_000).toISOString(),
+  lastError: null,
+  eventCount: 42,
+}
+
+test('uma conexão com stream mostra estado, último dado e as ações', async ({ page }) => {
+  await stub(page, { installations: [INSTALLATION], streams: [STREAM] })
+  await page.goto('/apps?tab=connected')
+  const painel = page.getByTestId('stream-panel')
+  await expect(painel.getByTestId('stream-state')).toHaveText('Recebendo')
+  // "Último dado" é a linha que denuncia um stream conectado e mudo.
+  await expect(painel).toContainText('último dado')
+
+  await painel.getByTestId('stream-details-toggle').click()
+  await expect(painel.getByTestId('stream-details')).toContainText('PETR4, VALE3')
+  await expect(painel.getByTestId('stream-details')).toContainText('simulação')
+
+  await painel.getByTestId('stream-pause').click()
+  await expect(painel.getByTestId('stream-state')).toHaveText('Pausado')
+  // Pausado foi decisão de alguém: reconectar sozinho anularia a decisão.
+  await expect(painel.getByTestId('stream-reconnect')).toBeDisabled()
+})
+
+test('a falha do stream aparece na conexão, e reconectar a limpa', async ({ page }) => {
+  const comErro = { ...STREAM, state: 'error', lastError: { message: 'conexão encerrada pelo outro lado', at: new Date().toISOString() } }
+  await stub(page, { installations: [INSTALLATION], streams: [comErro] })
+  await page.goto('/apps?tab=connected')
+  await expect(page.getByTestId('stream-error')).toContainText('encerrada pelo outro lado')
+  await page.getByTestId('stream-reconnect').click()
+  await expect(page.getByTestId('stream-error')).toHaveCount(0)
+})
+
+test('uma conexão sem stream não ganha painel nenhum', async ({ page }) => {
+  await stub(page, { installations: [INSTALLATION] })
+  await page.goto('/apps?tab=connected')
+  await expect(page.getByTestId('installation-card').first()).toBeVisible()
+  await expect(page.getByTestId('stream-panel')).toHaveCount(0)
 })

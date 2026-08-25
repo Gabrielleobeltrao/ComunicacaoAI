@@ -13,6 +13,9 @@ import { claimNextRun, ensureRunIndexes, recoverRun, releaseRun, renewLease } fr
 import { ensureSchedulerIndexes, tickScheduler } from './scheduler.js'
 import { refreshScheduledWebSources } from '../webKnowledge.js'
 import { processRun } from './runProcessor.js'
+import { claimNextEvent, ensureEventIndexes, processEvent } from '../events/bus.js'
+import { ensureStreamIndexes } from '../streams/repository.js'
+import { createStreamManager, restoreStreams, shutdownStreams } from '../streams/service.js'
 
 // How often to look for work. Polling replaces Redis's push delivery: a routine
 // fires within one tick of its instant, which for daily/weekly schedules is
@@ -22,6 +25,12 @@ const SCHEDULER_POLL_MS = Number(process.env.SCHEDULER_POLL_MS ?? 15_000)
 const CONCURRENCY = Number(process.env.WORKER_CONCURRENCY ?? 4)
 // Renew a claim well before the lease expires, so a long run is never stolen.
 const LEASE_RENEW_MS = Number(process.env.LEASE_RENEW_MS ?? 60_000)
+// O barramento interno tem o próprio ritmo: um evento de mercado não pode esperar o
+// intervalo de uma rotina agendada.
+const EVENT_POLL_MS = Number(process.env.EVENT_POLL_MS ?? 1_000)
+// Quantos eventos drenar por passada. Sem teto, uma rajada de preços monopoliza a
+// passada e as rotinas ficam esperando.
+const EVENT_BATCH = Number(process.env.EVENT_BATCH ?? 20)
 
 export interface EngineHandle {
   // Identifies this instance in `claimedBy`, so an abandoned run is traceable.
@@ -42,6 +51,8 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
 
   await ensureRunIndexes()
   await ensureSchedulerIndexes()
+  await ensureEventIndexes()
+  await ensureStreamIndexes()
 
   let stopping = false
   // In-flight runs, so shutdown can wait for them instead of cutting them off.
@@ -88,9 +99,23 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
     }
   }
 
+  // O barramento interno: reivindica, processa, devolve. Mesma mecânica dos runs, e é
+  // de propósito — dois jeitos diferentes de tentar de novo seriam dois lugares para o
+  // retry estar errado.
+  const pumpEvents = async () => {
+    for (let i = 0; i < EVENT_BATCH && !stopping; i += 1) {
+      const evento = await claimNextEvent(id)
+      if (!evento) return
+      await processEvent(evento)
+    }
+  }
+
   const runTimer = setInterval(() => {
     void pumpRuns().catch((error) => onError('run poll', error))
   }, RUN_POLL_MS)
+  const eventTimer = setInterval(() => {
+    void pumpEvents().catch((error) => onError('event poll', error))
+  }, EVENT_POLL_MS)
   // As fontes web por horário entram na mesma varredura do agendador — não há relógio
   // novo. O intervalo mínimo de uma fonte é 5 min, então uma passada por minuto do
   // agendador é mais que suficiente para nenhuma atrasar.
@@ -112,10 +137,18 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   runTimer.unref()
   schedulerTimer.unref()
   fontesTimer.unref()
+  eventTimer.unref()
 
   // Do one pass immediately: a restart should pick up pending work at once.
   await tickScheduler().catch((error) => onError('scheduler', error))
   await pumpRuns().catch((error) => onError('run poll', error))
+
+  // Os streams que estavam de pé antes do restart voltam a ficar. Sem isto, reiniciar
+  // o worker significaria silenciar todo mundo até alguém reparar.
+  createStreamManager(onError)
+  await restoreStreams(onError)
+    .then((quantos) => quantos && console.log(`Streams: ${quantos} restaurado(s)`))
+    .catch((error) => onError('streams', error))
 
   console.log(`Automation engine up (${id}, concurrency ${concurrency}) — runs a cada ${RUN_POLL_MS}ms, agendador a cada ${SCHEDULER_POLL_MS}ms`)
 
@@ -127,6 +160,8 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
       clearInterval(fontesTimer)
       clearInterval(runTimer)
       clearInterval(schedulerTimer)
+      clearInterval(eventTimer)
+      await shutdownStreams().catch((error) => onError('streams', error))
       // Let in-flight runs finish; their leases keep them ours meanwhile.
       await Promise.allSettled([...active])
       console.log('Automation engine stopped')

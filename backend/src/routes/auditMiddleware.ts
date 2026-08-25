@@ -161,6 +161,13 @@ const RULES: Rule[] = [
   R('POST', 'api/app-installations/:/test', { entityType: 'connection', action: 'test' }, { idAt: 2 }),
   R('POST', 'api/app-installations/:/reconnect', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/app-installations/:', { entityType: 'connection', action: 'disconnect' }, { idAt: 2 }),
+  // O stream de mercado é a conexão em outro estado, e mexer nele é mexer na conexão:
+  // pausar tira o dono do ar até alguém retomar, e isso precisa constar no histórico.
+  R('POST', 'api/streams/:/pause', { entityType: 'connection', action: 'pause' }, { idAt: 2 }),
+  R('POST', 'api/streams/:/resume', { entityType: 'connection', action: 'activate' }, { idAt: 2 }),
+  R('POST', 'api/streams/:/reconnect', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
+  // Testar não muda nada — e é registrado como teste, igual ao da conexão.
+  R('POST', 'api/streams/test', { entityType: 'connection', action: 'test' }),
   // Granting or revoking an App on an agent changes what that agent may do.
   R('PATCH', 'api/agents/:/app-grants', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/connections', { entityType: 'connection', action: 'create' }),

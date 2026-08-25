@@ -17,6 +17,8 @@ import { ensureExecutionRootIndexes } from './executionRoots.js'
 import { backfillFloorCommunication } from './floorCommunication.js'
 import { backfillManagedChannelInstallations } from './apps/channelApps.js'
 import { ensureAppActionIndexes } from './apps/grants.js'
+import { ensureEventIndexes } from './events/bus.js'
+import { ensureStreamIndexes } from './streams/repository.js'
 import { migrateAppsAndInstallations } from './apps/migration.js'
 
 async function renameCollectionIfNeeded(from: string, to: string): Promise<void> {
@@ -124,6 +126,8 @@ export async function runMigrations(): Promise<void> {
   // Existing buildings keep collaborating exactly as they do today.
   await backfillFloorCommunication()
   await ensureAppActionIndexes()
+  await ensureEventIndexes()
+  await ensureStreamIndexes()
 
   // Apps: connections learn their appKey, Google gains an installation, and every
   // credential still sitting in an agent document moves into an encrypted one.

@@ -5,6 +5,9 @@ import { CustomToolsPanel } from './Tools'
 import { PrivateAppsPanel } from '../components/PrivateAppsPanel'
 import { AppLogo } from '../components/AppLogo'
 import { AppDetailDialog } from '../components/AppDetailDialog'
+import { StreamPanel } from '../components/StreamPanel'
+import { listStreams } from '../lib/streams'
+import type { MarketStream } from '../lib/streams'
 import {
   disconnectInstallation,
   listAppCatalog,
@@ -314,6 +317,20 @@ function ConnectedList({
   }
   const [renaming, setRenaming] = useState<AppInstallation | null>(null)
   const [confirming, setConfirming] = useState<AppInstallation | null>(null)
+  /**
+   * Os streams por conexão. Uma busca só, e falha em silêncio de propósito: streaming
+   * é exceção nesta tela, e um erro dele não pode esconder a lista de conexões.
+   */
+  const [streams, setStreams] = useState<Record<string, MarketStream>>({})
+  useEffect(() => {
+    let vivo = true
+    listStreams()
+      .then((lista) => vivo && setStreams(Object.fromEntries(lista.map((s) => [s.installationId, s]))))
+      .catch(() => undefined)
+    return () => {
+      vivo = false
+    }
+  }, [])
   const [settingsFor, setSettingsFor] = useState<AppInstallation | null>(null)
   // Remover é diferente de desconectar, e por isso tem confirmação própria: desconectar
   // tira o acesso e mantém o registro; remover tira a conexão da lista.
@@ -394,6 +411,12 @@ function ConnectedList({
                   testid="installation-usage"
                 />
               </dl>
+
+              {/* O stream aparece só onde existe: a maioria das conexões é REST e não
+                  tem nada de tempo real para contar. */}
+              {streams[i.id] ? (
+                <StreamPanel stream={streams[i.id]} onChange={(s) => setStreams((prev) => ({ ...prev, [s.installationId]: s }))} />
+              ) : null}
 
               {message?.id === i.appKey || message?.id === i.id ? (
                 <p style={{ margin: 0, fontSize: 12.5, color: message.ok ? 'var(--intent-brand)' : 'var(--coral-600, #d92d20)' }}>{message.text}</p>
