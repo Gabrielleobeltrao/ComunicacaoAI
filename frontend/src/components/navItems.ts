@@ -12,6 +12,9 @@ export const NAV: NavLink[] = [
   // AI-building pivot: the Prédio (Térreo) entry appears only when its flag is on.
   ...(featureFlags.aiBuilding ? [{ to: '/building', label: 'Prédio', icon: 'building-2' } as NavLink] : []),
   { to: '/dashboard', label: 'Escritório', icon: 'layout-dashboard' },
+  // Também na navegação antiga: a tela existe nos dois modos, e um item só num deles
+  // é um recurso que some sem aviso dependendo de como a conta foi construída.
+  { to: '/architect', label: 'Montar operação', icon: 'sparkles' },
   // "Automação" is not a product surface: scheduled work lives inside each agent
   // as Rotinas, so there is no standalone Automações nav entry.
   { to: '/agents', label: 'Agentes', icon: 'users-round' },
