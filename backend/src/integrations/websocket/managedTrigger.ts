@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { ValidationError } from '../../building.js'
 import { getAgentById } from '../../agents.js'
-import { resolveOwnedSectorId } from '../../sectors.js'
+import { getSectorById, resolveOwnedSectorId } from '../../sectors.js'
 import { getFloor } from '../../floors.js'
 import { getAutomation } from '../../automations/service.js'
 import { createEventTrigger, updateEventTrigger } from '../../automations/eventTrigger.js'
@@ -54,8 +54,49 @@ export async function assertDestinationOwned(ownerId: string, destino: WsDestina
   }
 }
 
-/** O agente que responde por este destino — é dele que saem as permissões da execução. */
-const agenteDe = (destino: WsDestination): string | null => (destino.kind === 'agent' ? (destino.agentId ?? null) : null)
+/**
+ * O agente que EXECUTA por este destino.
+ *
+ * Para um agente, é ele mesmo. Para um setor, é a porta de entrada dele — e qual é
+ * depende do modo, que já é o mesmo critério que o resto do sistema usa:
+ *
+ *   `orchestrated`: o coordenador recebe, delega e consolida;
+ *   `pipeline`: a primeira etapa é por onde a entrada passa;
+ *   `organization`: não existe porta única — o setor é um grupo, não um ponto de entrada.
+ *
+ * Sem porta, a resposta é um erro de configuração e não um `null` empurrado adiante:
+ * antes daqui `createEventTrigger` recebia `agentId` nulo e estourava com uma mensagem
+ * que não dizia nada sobre setor.
+ */
+async function agenteExecutor(ownerId: string, destino: WsDestination): Promise<ObjectId> {
+  if (destino.kind === 'agent') {
+    const oid = id(destino.agentId)
+    if (!oid) throw new ValidationError('Agente: identificador inválido.')
+    return oid
+  }
+
+  const setorId = id(destino.sectorId)
+  if (!setorId) throw new ValidationError('Setor: identificador inválido.')
+  const setor = await getSectorById(ownerId, setorId)
+  if (!setor) throw new ValidationError('Setor não encontrado nesta conta.')
+
+  if (setor.mode === 'orchestrated') {
+    if (!setor.coordinatorAgentId) {
+      throw new ValidationError(`O setor "${setor.name}" ainda não tem coordenador — escolha um antes de usá-lo como destino.`)
+    }
+    return setor.coordinatorAgentId
+  }
+  if (setor.mode === 'pipeline') {
+    const primeira = (setor.stages ?? [])[0]
+    if (!primeira?.agentId) {
+      throw new ValidationError(`O setor "${setor.name}" não tem a primeira etapa configurada — sem ela não há por onde a mensagem entrar.`)
+    }
+    return primeira.agentId
+  }
+  throw new ValidationError(
+    `O setor "${setor.name}" trabalha em modo organização, que não tem uma porta de entrada única. Escolha um agente, ou mude o setor para coordenado ou sequencial.`,
+  )
+}
 
 /**
  * Cria (ou atualiza) o gatilho gerenciado desta assinatura.
@@ -76,11 +117,8 @@ export async function syncManagedTrigger(
     return null
   }
 
-  const agentId = agenteDe(destino)
-  // Para um setor, quem executa é o coordenador dele — o mesmo caminho que o gatilho por
-  // evento já usa quando alguém escolhe um setor como contexto.
-  const alvo = agentId ? id(agentId) : null
-  if (destino.kind === 'agent' && !alvo) throw new ValidationError('Agente: identificador inválido.')
+  // Quem executa. Para setor, é a porta de entrada dele — resolvida, nunca nula.
+  const alvo = await agenteExecutor(ownerId, destino)
 
   const spec = {
     name: `WebSocket · ${assinatura.name}`,
@@ -92,8 +130,15 @@ export async function syncManagedTrigger(
     market: {
       enabled: true,
       eventType: 'integration.websocket.message',
-      // A assinatura é o filtro: só o que ela reivindicou dispara este gatilho.
       installationId: assinatura.installationId,
+      /**
+       * A ASSINATURA é o filtro — não só a conexão.
+       *
+       * Duas assinaturas na mesma conexão têm destinos diferentes, e filtrar só por
+       * conexão fazia a mensagem de uma disparar o destino da outra. O evento carrega o
+       * `subscriptionId`, e é por ele que este gatilho reconhece o que é dele.
+       */
+      subscriptionId: assinatura._id.toString(),
       symbols: [],
       timeframe: null,
       includeSeries: false,
@@ -104,13 +149,13 @@ export async function syncManagedTrigger(
   if (anterior) {
     const oid = id(anterior)
     if (oid && (await getAutomation(ownerId, oid))) {
-      await updateEventTrigger(ownerId, alvo!, oid, spec)
+      await updateEventTrigger(ownerId, alvo, oid, spec)
       await setStatus(ownerId, oid, assinatura.active ? 'active' : 'paused')
       return anterior
     }
   }
 
-  const { trigger } = await createEventTrigger(ownerId, alvo!, spec)
+  const { trigger } = await createEventTrigger(ownerId, alvo, spec)
   if (!assinatura.active) await setStatus(ownerId, trigger._id, 'paused')
   return trigger._id.toString()
 }

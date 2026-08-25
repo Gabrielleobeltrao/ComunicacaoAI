@@ -109,6 +109,14 @@ export function WebSocketMessages() {
                 {m.channel ? <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{m.channel}</span> : null}
                 <span style={{ fontSize: 12.5, color: 'var(--text-faint)' }}>{quando(m.receivedAt)}</span>
               </div>
+              {/* O motivo de não ter virado evento. Sem ele, "Filtrada" e "Sem
+                  assinatura" são adivinhação — e as duas se corrigem em lugares
+                  diferentes. */}
+              {m.reason ? (
+                <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="ws-message-reason">
+                  {m.reason}
+                </span>
+              ) : null}
               {/* Um trecho, e não a mensagem: ela vem de fora e ninguém a revisou. */}
               <pre
                 style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--text-muted)' }}

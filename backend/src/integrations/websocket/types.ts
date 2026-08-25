@@ -58,16 +58,34 @@ export interface WsSubscription {
   updatedAt: Date
 }
 
-/** Por que uma mensagem NÃO virou evento. É o que a tela de Mensagens mostra como status. */
-export type WsMessageStatus = 'accepted' | 'filtered' | 'invalid' | 'duplicate' | 'rate_limited' | 'too_large'
+/**
+ * O que aconteceu com a mensagem. É o que a tela de Mensagens mostra como situação.
+ *
+ * `filtered` e `ignored` parecem a mesma coisa e não são: `filtered` é o filtro da
+ * CONEXÃO recusando (configuração de quem conectou), e `ignored` é a mensagem ter
+ * passado e nenhuma assinatura tê-la reivindicado. A primeira se corrige mexendo na
+ * conexão; a segunda, criando ou ajustando uma assinatura.
+ */
+export type WsMessageStatus = 'accepted' | 'filtered' | 'ignored' | 'invalid' | 'duplicate' | 'rate_limited' | 'too_large' | 'failed'
 
 export interface WsMessage {
   _id: ObjectId
   ownerId: string
   installationId: string
+  /** A primeira assinatura que a reivindicou. Mantido para o histórico já gravado. */
   subscriptionId: string | null
+  /**
+   * TODAS as assinaturas que a reivindicaram.
+   *
+   * Uma mensagem pode servir a mais de uma — canais que se sobrepõem, filtros que se
+   * cruzam — e cada uma tem o seu destino. Guardar só a primeira fazia as outras
+   * sumirem do histórico como se nunca tivessem recebido nada.
+   */
+  subscriptionIds?: string[]
   channel: string
   status: WsMessageStatus
+  /** Por que ela não virou evento, quando não virou. Uma frase nossa, nunca o conteúdo. */
+  reason?: string
   /**
    * Um PEDAÇO do conteúdo, cortado.
    *
@@ -76,8 +94,9 @@ export interface WsMessage {
    */
   preview: string
   messageId: string | null
-  /** O evento publicado, quando houve. É o fio entre esta tela e o barramento. */
+  /** Os eventos publicados — um por assinatura. É o fio entre esta tela e o barramento. */
   eventId: string | null
+  eventIds?: string[]
   occurredAt: Date
   receivedAt: Date
   expiresAt: Date

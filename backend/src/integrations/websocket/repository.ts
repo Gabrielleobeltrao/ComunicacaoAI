@@ -16,6 +16,7 @@ export async function ensureWebSocketIndexes(): Promise<void> {
   await subscriptions.createIndex({ ownerId: 1, installationId: 1, createdAt: -1 })
   await messages.createIndex({ ownerId: 1, installationId: 1, receivedAt: -1 })
   await messages.createIndex({ ownerId: 1, subscriptionId: 1, receivedAt: -1 })
+  await messages.createIndex({ ownerId: 1, subscriptionIds: 1, receivedAt: -1 })
   await messages.createIndex({ ownerId: 1, status: 1, receivedAt: -1 })
   // A dedupe por identificador. Único de propósito: é o índice que faz a garantia ser
   // do banco, e não de uma leitura seguida de escrita que duas mensagens simultâneas
@@ -99,7 +100,9 @@ export interface MessageQuery {
 export async function listMessages(ownerId: string, q: MessageQuery): Promise<{ items: WsMessage[]; total: number }> {
   const filtro: Record<string, unknown> = { ownerId }
   if (q.installationId) filtro.installationId = q.installationId
-  if (q.subscriptionId) filtro.subscriptionId = q.subscriptionId
+  // Uma mensagem pode ter servido a mais de uma assinatura: filtrar pelo campo antigo
+  // esconderia todas menos a primeira.
+  if (q.subscriptionId) filtro.$or = [{ subscriptionId: q.subscriptionId }, { subscriptionIds: q.subscriptionId }]
   if (q.channel) filtro.channel = q.channel
   if (q.status) filtro.status = q.status
   const [items, total] = await Promise.all([

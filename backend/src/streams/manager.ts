@@ -70,6 +70,7 @@ const PROBE_MS = Number(process.env.STREAM_PROBE_TIMEOUT_MS ?? 8_000)
 
 interface Vivo {
   record: StreamRecord
+  /** Remontado a cada tentativa quando ele vem da conexão — ver `conectar`. */
   adapter: StreamAdapter
   socket: StreamSocket | null
   state: StreamState
@@ -378,6 +379,27 @@ export class StreamManager {
     // A partir daqui, tudo que vier de um socket anterior é passado.
     const geracao = (vivo.geracao += 1)
     this.limparTimers(vivo)
+
+    /**
+     * O adapter é REMONTADO a cada tentativa, quando ele é montado a partir da conexão.
+     *
+     * Duas coisas dependem disso. O DNS é resolvido e conferido de novo — um nome que
+     * apontava para um endereço público na primeira vez pode apontar para a rede interna
+     * na reconexão, e sem isto a conferência só valia para a primeira. E a configuração
+     * que mudou passa a valer sem esperar um restart.
+     */
+    if (this.deps.adapterFor) {
+      try {
+        const novo = await this.deps.adapterFor(vivo.record)
+        if (novo) vivo.adapter = novo
+      } catch (error) {
+        // Recusado agora: a conexão não sobe, e o motivo fica visível.
+        vivo.state = 'error'
+        this.vivos.delete(id)
+        await setStreamError(vivo.record._id, naoLoga(error instanceof Error ? error.message : 'endereço recusado', vivo.segredos))
+        return
+      }
+    }
     vivo.state = vivo.tentativas === 0 ? 'connecting' : 'reconnecting'
     await setStreamState(vivo.record._id, vivo.state)
 
@@ -400,6 +422,7 @@ export class StreamManager {
       socket = this.deps.createSocket(vivo.adapter.url(vivo.record.environment), {
         headers: vivo.adapter.handshakeHeaders?.(credencial),
         protocols: vivo.adapter.protocols?.(),
+        pinnedAddress: vivo.adapter.pinnedAddress?.(),
       })
     } catch (error) {
       await this.quebrou(vivo, error instanceof Error ? error.message : 'falha ao abrir o socket', geracao)

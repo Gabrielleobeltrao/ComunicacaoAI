@@ -9,7 +9,7 @@ import {
   testSubscription,
   updateSubscription,
 } from '../../lib/websocketApp'
-import type { WsConnection, WsDestination, WsSubscription, WsTargets } from '../../lib/websocketApp'
+import type { WsConnection, WsDestination, WsFilter, WsSubscription, WsTargets } from '../../lib/websocketApp'
 import { Button, Card, EmptyState, Field, Input, Textarea } from '../../ui'
 import { SemConexao, WsPage, quando } from './shared'
 import { DestinationFields } from './DestinationFields'
@@ -44,6 +44,14 @@ interface Rascunho {
   unsubscribeMessage: string
   active: boolean
   destination: WsDestination
+  /**
+   * Os filtros DESTA assinatura — diferentes dos da conexão.
+   *
+   * Os da conexão decidem o que entra; estes decidem o que é desta assinatura. Duas
+   * assinaturas na mesma conexão se distinguem por eles, e o backend já os suportava:
+   * só a tela não deixava preenchê-los.
+   */
+  filters: WsFilter[]
 }
 
 const vazio = (installationId: string): Rascunho => ({
@@ -55,6 +63,7 @@ const vazio = (installationId: string): Rascunho => ({
   unsubscribeMessage: '',
   active: true,
   destination: { kind: 'history' },
+  filters: [],
 })
 
 const deAssinatura = (s: WsSubscription): Rascunho => ({
@@ -66,6 +75,7 @@ const deAssinatura = (s: WsSubscription): Rascunho => ({
   unsubscribeMessage: s.unsubscribeMessage,
   active: s.active,
   destination: s.destination,
+  filters: s.filters ?? [],
 })
 
 export function WebSocketSubscriptions() {
@@ -105,6 +115,7 @@ export function WebSocketSubscriptions() {
         unsubscribeMessage: rascunho.unsubscribeMessage,
         active: rascunho.active,
         destination: rascunho.destination,
+        filters: rascunho.filters,
       }
       if (rascunho.id) await updateSubscription(rascunho.id, corpo)
       else await createSubscription(corpo)
@@ -115,6 +126,11 @@ export function WebSocketSubscriptions() {
     } finally {
       setOcupado(null)
     }
+  }
+
+  const setFiltro = (i: number, patch: Partial<WsFilter>) => {
+    if (!rascunho) return
+    setRascunho({ ...rascunho, filters: rascunho.filters.map((f, idx) => (idx === i ? { ...f, ...patch } : f)) })
   }
 
   const alternar = async (s: WsSubscription) => {
@@ -174,6 +190,46 @@ export function WebSocketSubscriptions() {
               </Field>
               <Field label="Mensagem de cancelamento" hint="Mandada ao pausar ou remover.">
                 <Textarea rows={2} value={rascunho.unsubscribeMessage} onChange={(e) => setRascunho({ ...rascunho, unsubscribeMessage: e.target.value })} data-testid="ws-sub-unsubscribe" />
+              </Field>
+
+              <Field label="Filtros da assinatura" hint="Só o que casar com todos pertence a esta assinatura. Vazio aceita tudo que passar pela conexão.">
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {rascunho.filters.map((f, i) => (
+                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 1fr auto', gap: 6 }}>
+                      <Input
+                        value={f.path}
+                        onChange={(e) => setFiltro(i, { path: e.target.value })}
+                        placeholder="data.tipo"
+                        data-testid={`ws-sub-filter-path-${i}`}
+                      />
+                      <select
+                        style={selectStyle}
+                        value={f.operator}
+                        onChange={(e) => setFiltro(i, { operator: e.target.value as 'equals' | 'contains' })}
+                        data-testid={`ws-sub-filter-op-${i}`}
+                      >
+                        <option value="equals">é igual a</option>
+                        <option value="contains">contém</option>
+                      </select>
+                      <Input value={f.value} onChange={(e) => setFiltro(i, { value: e.target.value })} data-testid={`ws-sub-filter-value-${i}`} />
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon="trash-2"
+                        onClick={() => setRascunho({ ...rascunho, filters: rascunho.filters.filter((_, idx) => idx !== i) })}
+                      />
+                    </div>
+                  ))}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon="plus"
+                    onClick={() => setRascunho({ ...rascunho, filters: [...rascunho.filters, { path: '', operator: 'equals', value: '' }] })}
+                    data-testid="ws-sub-add-filter"
+                  >
+                    Adicionar filtro
+                  </Button>
+                </div>
               </Field>
 
               <DestinationFields destination={rascunho.destination} targets={alvos} onChange={(d) => setRascunho({ ...rascunho, destination: d })} />

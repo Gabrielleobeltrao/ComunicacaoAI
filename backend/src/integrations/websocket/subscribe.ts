@@ -102,6 +102,8 @@ export async function testSubscription(
   deps: {
     adapterFor: (record: StreamRecord) => Promise<StreamAdapter | null>
     credentialsOf: (ownerId: string, installationId: string) => Promise<Record<string, string> | null>
+    /** A configuração da conexão — é dela que sai onde o canal mora na mensagem. */
+    configOf: (ownerId: string, installationId: string) => Promise<{ paths: { channel: string } } | null>
   },
 ): Promise<{ ok: boolean; message: string }> {
   const gerente = streamManager()
@@ -125,14 +127,27 @@ export async function testSubscription(
   const credencial = await deps.credentialsOf(ownerId, assinatura.installationId)
   if (!credencial) return { ok: false, message: 'A conexão está revogada ou não existe mais.' }
 
+  /**
+   * Onde o canal mora NESTA conexão.
+   *
+   * Antes daqui o teste procurava um campo chamado `channel`, que é o nome que ele tem
+   * em alguns serviços e em nenhum outro. Uma assinatura por canal era aprovada por
+   * engano — o campo não existia, a comparação era pulada, e qualquer mensagem servia.
+   */
+  const config = await deps.configOf(ownerId, assinatura.installationId)
+  const caminhoDoCanal = config?.paths.channel ?? ''
+
   const resultado = await gerente.probe(adapter, 'default', credencial, TEST_TIMEOUT_MS, {
     frame: assinatura.subscribeMessage,
     // "Serve" é a mesma pergunta que a entrega faz: canal e filtros da assinatura. Uma
     // prova mais frouxa aprovaria uma assinatura que nunca vai receber nada.
     aceita: (bruto) => {
       if (assinatura.channel) {
-        const canal = readAt(bruto, 'channel')
-        if (typeof canal === 'string' && canal !== assinatura.channel) return false
+        // Sem caminho configurado não há como saber o canal — e aprovar assim mesmo
+        // seria aprovar o que não foi conferido.
+        if (!caminhoDoCanal) return false
+        const canal = readAt(bruto, caminhoDoCanal)
+        if (canal === undefined || canal === null || String(canal) !== assinatura.channel) return false
       }
       return matchesFilters(bruto, assinatura.filters)
     },

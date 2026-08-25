@@ -122,6 +122,17 @@ jobs:
         run: npx playwright test e2e/widget-embed.spec.ts --project=chromium --workers=1
         working-directory: frontend
 
+      # O App de WebSocket é a única superfície do produto cujas telas dependem de um
+      # App ATIVADO para renderizar: o guarda de superfície recusa a página quando ele
+      # não está. Um erro aí não aparece como exceção — a página simplesmente fica
+      # vazia, que é o mesmo sintoma de "nada configurado ainda".
+      #
+      # Os stubs desta jornada compartilham rota interceptada, então `--workers=1` pelo
+      # mesmo motivo do widget.
+      - name: WebSocket App e2e (Chromium)
+        run: npx playwright test e2e/websocket-app.spec.ts --project=chromium --workers=1
+        working-directory: frontend
+
       # As imagens são construídas no CI porque um Dockerfile que só é exercitado na
       # hora do deploy é um Dockerfile que falha na hora do deploy. Aqui o custo de
       # descobrir é um job vermelho; lá, é um rollback.

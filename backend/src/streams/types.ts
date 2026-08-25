@@ -44,6 +44,15 @@ export interface StreamAdapter {
   /** Subprotocolos oferecidos. Alguns serviços exigem um para aceitar a conexão. */
   protocols?(): string[]
   /**
+   * O endereço JÁ CONFERIDO em que esta conexão deve ser aberta.
+   *
+   * Conferir um nome e depois conectar por ele deixa uma janela: entre as duas coisas,
+   * o DNS pode passar a responder outra coisa. Fixando o endereço, não há intervalo em
+   * que a resposta possa mudar o destino — e o nome continua indo à parte, para o SNI e
+   * o cabeçalho `Host` continuarem certos.
+   */
+  pinnedAddress?(): { address: string; family: 4 | 6 } | null
+  /**
    * Os intervalos DESTA conexão, quando ela tem os seus.
    *
    * Ausentes, valem os do ambiente. Presentes, ganham — quem conectou sabe melhor do

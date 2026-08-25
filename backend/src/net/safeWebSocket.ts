@@ -38,8 +38,13 @@ const HOSTS_PROIBIDOS = [/^localhost$/i, /\.local$/i, /\.internal$/i, /^metadata
 
 export interface CheckedTarget {
   url: URL
-  /** O IP que o nome resolveu AGORA. Guardado para o log dizer para onde a conexão foi. */
+  /** O endereço em que a conexão DEVE ser aberta — já conferido. */
   address: string
+  /** O nome original, para o SNI e o cabeçalho `Host` continuarem certos. */
+  hostname: string
+  family: 4 | 6
+  /** Todos os endereços que o nome devolveu. Todos foram conferidos. */
+  addresses: string[]
 }
 
 /**
@@ -70,23 +75,48 @@ export async function assertPublicWebSocketUrl(bruto: string): Promise<CheckedTa
   if (net.isIP(host)) {
     // Um IP escrito à mão pula o DNS — e é justamente por isso que ele precisa da
     // mesma conferência.
-    if (isPrivateIp(host) && !(loopbackLiberado() && ehLoopback(host))) {
-      throw new WebSocketTargetError('Endereço de rede interna não é permitido.')
-    }
-    return { url, address: host }
+    if (bloqueado(host)) throw new WebSocketTargetError('Endereço de rede interna não é permitido.')
+    return { url, address: host, hostname: host, family: net.isIPv6(host) ? 6 : 4, addresses: [host] }
   }
 
-  let address: string
+  /**
+   * TODOS os endereços do nome, e todos conferidos.
+   *
+   * `lookup` sem `all` devolve um só — e um nome com dois registros, um público e um
+   * interno, passava pelo público e conectava no que o sistema operacional escolhesse
+   * na hora. Conferir um e conectar em outro é não conferir nada.
+   */
+  let enderecos: { address: string; family: number }[]
   try {
-    ;({ address } = await lookup(host))
+    enderecos = await lookup(host, { all: true })
   } catch {
     throw new WebSocketTargetError('Não foi possível resolver o domínio.')
   }
-  if (isPrivateIp(address) && !(loopbackLiberado() && ehLoopback(address))) {
-    throw new WebSocketTargetError('O domínio aponta para uma rede interna.')
+  if (enderecos.length === 0) throw new WebSocketTargetError('O domínio não resolveu para endereço nenhum.')
+
+  const proibido = enderecos.find((e) => bloqueado(e.address))
+  if (proibido) throw new WebSocketTargetError('O domínio aponta para uma rede interna.')
+
+  /**
+   * O primeiro conferido é o que a conexão vai usar — e ela usa o ENDEREÇO, não o nome.
+   *
+   * É o que fecha a janela do rebinding: entre conferir e conectar, o nome pode passar a
+   * resolver para outra coisa. Conectando no endereço já conferido, não há intervalo em
+   * que a resposta do DNS possa mudar o destino. O nome continua viajando à parte, para
+   * o SNI e o `Host` continuarem certos.
+   */
+  const escolhido = enderecos[0]
+  return {
+    url,
+    address: escolhido.address,
+    hostname: host,
+    family: escolhido.family === 6 ? 6 : 4,
+    addresses: enderecos.map((e) => e.address),
   }
-  return { url, address }
 }
+
+/** Um endereço que a plataforma nunca alcança — com a exceção de loopback nos testes. */
+const bloqueado = (ip: string): boolean => isPrivateIp(ip) && !(loopbackLiberado() && ehLoopback(ip))
 
 /** A mesma conferência, em forma de resposta — para a tela poder explicar antes de salvar. */
 export async function checkWebSocketUrl(bruto: string): Promise<{ ok: boolean; message: string }> {

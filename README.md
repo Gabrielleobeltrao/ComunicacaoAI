@@ -193,7 +193,14 @@ barramento durável de eventos e os mesmos gatilhos internos.
    e auditoria de qualquer outro. A relação fica à vista na assinatura, muda com ela e é
    arquivada quando ela é removida.
 5. **Acompanhar** — *Mensagens* mostra o que chegou **e o que foi recusado, com o
-   motivo**; *Logs* mostra conexão, reconexão, descarte e disparo.
+   motivo** (filtrada, sem assinatura, inválida, repetida, acima do limite, falhou na
+   entrega); *Logs* mostra conexão, reconexão, descarte e disparo.
+
+**Sem assinatura não há evento.** Uma mensagem que nenhuma assinatura ativa reivindica
+fica no histórico como *Sem assinatura* e para ali — publicar assim mesmo criaria um
+fato que ninguém pediu. Quando mais de uma reivindica, **cada uma vira o seu próprio
+evento**: assim uma falha na entrega de uma não impede a outra, e a retentativa de uma
+não repete a outra.
 
 Fixe no menu como o Chat Web: fixado, ele vira um grupo expansível com as quatro
 páginas. Desfixar tira só a navegação — conexão, assinaturas e histórico ficam.
@@ -201,7 +208,9 @@ páginas. Desfixar tira só a navegação — conexão, assinaturas e histórico
 **O que ele não faz, de propósito:** não aceita expressão, JavaScript nem template
 executável. Endereço, caminho, filtro e limite são dados; o servidor lê caminho de
 objeto e compara texto, e nada além disso. Em produção só `wss://` é aceito, e
-localhost, IP privado, link-local e metadata de nuvem são recusados — com o DNS
+localhost, IP privado, link-local e metadata de nuvem são recusados. **Todos** os
+endereços que o nome devolve são conferidos, e a conexão abre no endereço já conferido
+(o nome continua indo à parte, para o SNI e o `Host` continuarem certos) — com o DNS
 resolvido de novo a cada conexão e reconexão, que é o que fecha o rebinding.
 
 Conteúdo que chega por aí é marcado como **não confiável** no evento, e um evento nunca

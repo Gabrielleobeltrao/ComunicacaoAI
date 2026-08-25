@@ -83,17 +83,60 @@ export function matchesFilters(valor: unknown, filtros: readonly WsFilter[]): bo
  * O socket de uma conexão vive em UM processo, então a contagem em memória é exata para
  * ele. O banco continua como piso depois de um restart, quando a memória zerou.
  */
-const janelas = new Map<string, number[]>()
+interface Janela {
+  /** Quando cada mensagem aceita entrou. É o que define a janela deslizante. */
+  aceitas: number[]
+  /** Quantas foram descartadas desde o último resumo. */
+  descartadas: number
+  /** Quando o último resumo foi escrito. */
+  resumoEm: number
+}
 
-export function withinRateLimit(chave: string, limite: number, agora: number): boolean {
-  const recentes = (janelas.get(chave) ?? []).filter((t) => agora - t < 60_000)
-  if (recentes.length >= limite) {
-    janelas.set(chave, recentes)
-    return false
+const janelas = new Map<string, Janela>()
+
+/** De quanto em quanto tempo resumir um excesso contínuo, em vez de registrar cada um. */
+const RESUMO_MS = Number(process.env.WS_OVERFLOW_SUMMARY_MS ?? 60_000)
+
+export interface OverflowVerdict {
+  limited: boolean
+  /** A PRIMEIRA do excesso: vale uma linha no histórico, para a tela mostrar que houve. */
+  first: boolean
+  /** Chegou a hora de resumir o resto. */
+  summarize: boolean
+  dropped: number
+}
+
+/**
+ * O limite por minuto, e o custo do excesso.
+ *
+ * Duas coisas ao mesmo tempo. A primeira: contar na MEMÓRIA do processo que tem o
+ * socket — contar no banco antes de gravar é leitura-depois-escrita, e uma rajada, que
+ * é quando o limite importa, atravessa a janela entre as duas.
+ *
+ * A segunda: o excedente não pode custar escrita. Um serviço em loop gerava duas
+ * gravações por mensagem descartada, que é o oposto de proteger o banco. Agora a
+ * primeira do excesso deixa registro, o resto só incrementa um contador, e um resumo
+ * sai por janela.
+ */
+export function registerOverflow(ownerId: string, installationId: string, limite: number, agora: number): OverflowVerdict {
+  const chave = `${ownerId}:${installationId}`
+  const j = janelas.get(chave) ?? { aceitas: [], descartadas: 0, resumoEm: 0 }
+  j.aceitas = j.aceitas.filter((t) => agora - t < 60_000)
+
+  if (j.aceitas.length < limite) {
+    j.aceitas.push(agora)
+    janelas.set(chave, j)
+    return { limited: false, first: false, summarize: false, dropped: 0 }
   }
-  recentes.push(agora)
-  janelas.set(chave, recentes)
-  return true
+
+  j.descartadas += 1
+  const primeira = j.descartadas === 1
+  const resumir = !primeira && agora - j.resumoEm >= RESUMO_MS
+  if (primeira || resumir) j.resumoEm = agora
+  const descartadas = j.descartadas
+  if (resumir) j.descartadas = 0
+  janelas.set(chave, j)
+  return { limited: true, first: primeira, summarize: resumir, dropped: descartadas }
 }
 
 /** Só para os testes: a janela é global por processo. */
@@ -164,13 +207,24 @@ export function parseMessage(bruto: string, config: WsConnectionConfig): ParsedM
   }
 }
 
-/** A assinatura a que esta mensagem pertence. `null` quando nenhuma ativa a reivindica. */
-export function subscriptionFor(bruta: unknown, canal: string, assinaturas: readonly WsSubscription[]): WsSubscription | null {
-  return (
-    assinaturas.find((s) => {
-      if (!s.active) return false
-      if (s.channel && s.channel !== canal) return false
-      return matchesFilters(bruta, s.filters)
-    }) ?? null
-  )
+/**
+ * TODAS as assinaturas ativas que reivindicam esta mensagem.
+ *
+ * Antes daqui era `find`, que devolvia a primeira: duas assinaturas com canais que se
+ * sobrepõem — uma ouvindo `pedidos` e outra ouvindo tudo — faziam a segunda nunca
+ * receber nada, e nada na tela explicava por quê.
+ *
+ * Cada uma tem o seu destino, e cada uma vira o seu próprio evento: assim uma falha na
+ * entrega de uma não impede a outra, e a retentativa de uma não repete a outra.
+ */
+export function subscriptionsFor(bruta: unknown, canal: string, assinaturas: readonly WsSubscription[]): WsSubscription[] {
+  return assinaturas.filter((s) => {
+    if (!s.active) return false
+    if (s.channel && s.channel !== canal) return false
+    return matchesFilters(bruta, s.filters)
+  })
 }
+
+/** A primeira delas. Existe para quem só precisa saber se ALGUMA reivindicou. */
+export const subscriptionFor = (bruta: unknown, canal: string, assinaturas: readonly WsSubscription[]): WsSubscription | null =>
+  subscriptionsFor(bruta, canal, assinaturas)[0] ?? null

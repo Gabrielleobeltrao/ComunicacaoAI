@@ -46,6 +46,8 @@ export interface MarketTriggerPlan {
   eventType: string
   /** Uma conexão específica, ou qualquer uma da conta. */
   installationId: string | null
+  /** Uma assinatura específica, para os eventos que têm uma. */
+  subscriptionId: string | null
   symbols: string[]
   timeframe: string | null
   /** Entregar a série fechada junto. É o que torna a análise possível sem outro passo. */
@@ -57,6 +59,7 @@ export const emptyMarketPlan = (): MarketTriggerPlan => ({
   enabled: false,
   eventType: 'market.candle.closed',
   installationId: null,
+  subscriptionId: null,
   symbols: [],
   timeframe: null,
   includeSeries: true,
@@ -76,6 +79,7 @@ export function normalizeMarketPlan(raw: unknown): MarketTriggerPlan {
     enabled: true,
     eventType: p.eventType,
     installationId: typeof p.installationId === 'string' && p.installationId.trim() ? p.installationId.trim() : null,
+    subscriptionId: typeof p.subscriptionId === 'string' && p.subscriptionId.trim() ? p.subscriptionId.trim() : null,
     symbols,
     timeframe: isTimeframe(p.timeframe) ? p.timeframe : null,
     includeSeries: p.includeSeries !== false,
@@ -87,6 +91,7 @@ export const marketTriggerOf = (plan: MarketTriggerPlan): InternalEventTrigger =
   type: 'internal_event',
   eventType: plan.eventType,
   installationId: plan.installationId,
+  subscriptionId: plan.subscriptionId,
   symbols: plan.symbols,
   timeframe: plan.timeframe,
   includeSeries: plan.includeSeries,

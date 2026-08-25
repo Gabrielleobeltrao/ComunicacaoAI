@@ -32,7 +32,12 @@ const asString = (v: unknown): string => (typeof v === 'string' ? v : '')
 export function matchesInternalTrigger(trigger: InternalEventTrigger, event: Pick<PlatformEvent, 'type' | 'payload'>): boolean {
   if (trigger.eventType !== event.type) return false
   const p = event.payload ?? {}
-  if (trigger.installationId && asString(p.installationId) !== trigger.installationId) return false
+  if (trigger.installationId && asString(p.installationId) !== trigger.installationId) {
+    // Um evento de WebSocket chama a conexão de `connectionId`; os de mercado, de
+    // `installationId`. É a mesma coisa com dois nomes, e o filtro entende as duas.
+    if (asString(p.connectionId) !== trigger.installationId) return false
+  }
+  if (trigger.subscriptionId && asString(p.subscriptionId) !== trigger.subscriptionId) return false
   if (trigger.symbols?.length) {
     const symbol = asString(p.symbol).toUpperCase()
     if (!trigger.symbols.map((s) => s.toUpperCase()).includes(symbol)) return false

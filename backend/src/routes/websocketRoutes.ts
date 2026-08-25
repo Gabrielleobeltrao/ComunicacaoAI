@@ -377,13 +377,32 @@ websocketRouter.patch('/subscriptions/:id', async (req, res, next) => {
     }
 
     /**
-     * Ligar manda a inscrição; desligar manda o cancelamento.
+     * O ciclo da edição: CANCELA com o que valia, e ASSINA com o que passou a valer.
      *
-     * Sem isto, pausar tirava a assinatura da entrega mas deixava o serviço mandando —
-     * a mensagem continuava chegando e sendo descartada, gastando banda e limite.
+     * Cancelar com a configuração nova é o defeito clássico daqui: trocar de canal, de
+     * frame ou de conexão mandaria o cancelamento do canal novo — que ninguém assinou —
+     * e deixaria o antigo assinado para sempre. Uma assinatura fantasma continua
+     * chegando, gastando banda e limite, e não aparece em lugar nenhum da tela.
+     *
+     * Por isso os dois lados usam o documento certo: `atual` para sair, `atualizada`
+     * para entrar. Se o cancelamento falhar, a inscrição nova ainda acontece — ficar
+     * sem as duas seria pior do que ficar com uma sobrando.
      */
-    if (set.active === true && !atual.active) await sendSubscribe(res.locals.userId, atualizada.installationId, atualizada)
-    if (set.active === false && atual.active) await sendUnsubscribe(res.locals.userId, atual.installationId, atual)
+    const eraAtiva = atual.active
+    const ficouAtiva = atualizada.active
+    const mudouOQueSeAssina =
+      atual.installationId !== atualizada.installationId ||
+      atual.subscribeMessage !== atualizada.subscribeMessage ||
+      atual.unsubscribeMessage !== atualizada.unsubscribeMessage ||
+      atual.channel !== atualizada.channel ||
+      JSON.stringify(atual.filters) !== JSON.stringify(atualizada.filters)
+
+    if (eraAtiva && (!ficouAtiva || mudouOQueSeAssina)) {
+      await sendUnsubscribe(res.locals.userId, atual.installationId, atual).catch(() => undefined)
+    }
+    if (ficouAtiva && (!eraAtiva || mudouOQueSeAssina)) {
+      await sendSubscribe(res.locals.userId, atualizada.installationId, atualizada).catch(() => undefined)
+    }
 
     auditEntity(res, { id: atualizada._id.toString(), label: atualizada.name })
     res.json(subscriptionPublic({ ...atualizada, managedAutomationId: gerenciada }))
@@ -402,7 +421,22 @@ websocketRouter.post('/subscriptions/:id/test', async (req, res, next) => {
     const id = oid(req.params.id)
     const assinatura = id ? await findSubscription(res.locals.userId, id) : null
     if (!assinatura) return notFound(res)
-    res.json(await testSubscription(res.locals.userId, assinatura, { adapterFor: websocketAdapterFor, credentialsOf: streamCredentials }))
+    res.json(
+      await testSubscription(res.locals.userId, assinatura, {
+        adapterFor: websocketAdapterFor,
+        credentialsOf: streamCredentials,
+        // Onde o canal mora é configuração da CONEXÃO, e não um nome fixo.
+        configOf: async (dono, instalacaoId) => {
+          const inst = await getInstallation(dono, oid(instalacaoId)!)
+          if (!inst) return null
+          try {
+            return readConnectionConfig(inst.publicMetadata)
+          } catch {
+            return null
+          }
+        },
+      }),
+    )
   } catch (error) {
     fail(res, error, next)
   }
@@ -443,8 +477,11 @@ websocketRouter.get('/messages', async (req, res) => {
       id: m._id.toString(),
       installationId: m.installationId,
       subscriptionId: m.subscriptionId,
+      subscriptionIds: m.subscriptionIds ?? (m.subscriptionId ? [m.subscriptionId] : []),
       channel: m.channel,
       status: m.status,
+      // Por que ela não virou evento. Uma frase nossa, sobre a configuração.
+      reason: m.reason ?? null,
       // Um trecho, e nunca a mensagem inteira: ela vem de fora e ninguém a revisou.
       preview: m.preview,
       eventId: m.eventId,

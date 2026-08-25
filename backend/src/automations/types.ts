@@ -128,6 +128,13 @@ export interface InternalEventTrigger {
   eventType: string
   /** Uma conexão específica. Vazio = qualquer conexão da conta. */
   installationId?: string | null
+  /**
+   * Uma ASSINATURA específica, para os eventos que têm uma.
+   *
+   * Duas assinaturas na mesma conexão têm destinos diferentes: filtrar só por conexão
+   * fazia a mensagem de uma disparar o destino da outra.
+   */
+  subscriptionId?: string | null
   /** Vazio = todos os símbolos. */
   symbols?: string[]
   /** Vazio = todos os timeframes. */

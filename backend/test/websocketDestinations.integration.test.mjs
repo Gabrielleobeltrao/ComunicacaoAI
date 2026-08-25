@@ -171,3 +171,85 @@ test('arquivar a automação de outra conta não faz nada', async () => {
   // O dono está na consulta: o vizinho simplesmente não a encontra.
   assert.equal((await getAutomation(DONO, new ObjectId(criada))).status, 'active')
 })
+
+// --- setor: a porta de entrada, resolvida ------------------------------------------------
+
+test('setor coordenado executa pelo COORDENADOR', async () => {
+  // Antes daqui `agentId` ia nulo para o criador do gatilho, que estourava com uma
+  // mensagem que não dizia nada sobre setor.
+  const { updateSector } = await import('../dist/sectors.js')
+  await updateSector(DONO, setor._id, { mode: 'orchestrated', coordinatorAgentId: agente._id, members: [{ agentId: agente._id, role: 'executor' }] })
+
+  const criada = await syncManagedTrigger(DONO, assinatura({ kind: 'sector', sectorId: setor._id.toString() }))
+  assert.ok(criada)
+  const passo = (await getAutomation(DONO, new ObjectId(criada))).draftDefinition.steps.find((p) => p.type === 'agent.execute')
+  assert.equal(passo.config.agentId, agente._id.toString(), 'quem executa é o coordenador')
+})
+
+test('setor sem coordenador diz o que falta, em vez de estourar', async () => {
+  const { updateSector } = await import('../dist/sectors.js')
+  await updateSector(DONO, setor._id, { mode: 'orchestrated', coordinatorAgentId: null, members: [{ agentId: agente._id, role: 'executor' }] })
+  await assert.rejects(
+    () => syncManagedTrigger(DONO, assinatura({ kind: 'sector', sectorId: setor._id.toString() })),
+    /coordenador/,
+  )
+})
+
+test('setor em modo organização não tem porta única — e a mensagem explica isso', async () => {
+  // Ele é um grupo, não um ponto de entrada. Escolher um agente é a saída, e a frase diz.
+  await assert.rejects(
+    () => syncManagedTrigger(DONO, assinatura({ kind: 'sector', sectorId: setor._id.toString() })),
+    /organização|agente/,
+  )
+})
+
+test('setor sequencial entra pela primeira etapa', async () => {
+  const { updateSector } = await import('../dist/sectors.js')
+  await updateSector(DONO, setor._id, {
+    mode: 'pipeline',
+    members: [{ agentId: agente._id, role: 'executor' }],
+    stages: [
+      {
+        id: 'e1',
+        name: 'Triagem',
+        agentId: agente._id,
+        instruction: 'Triar o que chegou',
+        dependsOn: [],
+        inputMapping: {},
+        expectedOutput: 'texto',
+        retryPolicy: { maxAttempts: 1, backoffMs: 0 },
+      },
+    ],
+  })
+  const criada = await syncManagedTrigger(DONO, assinatura({ kind: 'sector', sectorId: setor._id.toString() }))
+  const passo = (await getAutomation(DONO, new ObjectId(criada))).draftDefinition.steps.find((p) => p.type === 'agent.execute')
+  assert.equal(passo.config.agentId, agente._id.toString())
+})
+
+// --- isolamento por assinatura --------------------------------------------------------------
+
+test('o gatilho gerenciado filtra pela ASSINATURA, e não só pela conexão', async () => {
+  // Duas assinaturas na mesma conexão têm destinos diferentes: filtrar só por conexão
+  // fazia a mensagem de uma disparar o destino da outra.
+  const s = assinatura({ kind: 'agent', agentId: agente._id.toString() })
+  const criada = await syncManagedTrigger(DONO, s)
+  const trigger = (await getAutomation(DONO, new ObjectId(criada))).draftDefinition.trigger
+  assert.equal(trigger.installationId, s.installationId)
+  assert.equal(trigger.subscriptionId, s._id.toString())
+})
+
+test('o evento da assinatura A não casa com o gatilho da assinatura B', async () => {
+  const { matchesInternalTrigger } = await import('../dist/automations/internalEvents.js')
+  const conexaoId = new ObjectId().toString()
+  const a = assinatura({ kind: 'agent', agentId: agente._id.toString() }, { installationId: conexaoId })
+  const b = assinatura({ kind: 'agent', agentId: agente._id.toString() }, { installationId: conexaoId })
+  const gatilhoA = (await getAutomation(DONO, new ObjectId(await syncManagedTrigger(DONO, a)))).draftDefinition.trigger
+  const gatilhoB = (await getAutomation(DONO, new ObjectId(await syncManagedTrigger(DONO, b)))).draftDefinition.trigger
+
+  const eventoDeA = {
+    type: 'integration.websocket.message',
+    payload: { connectionId: conexaoId, subscriptionId: a._id.toString() },
+  }
+  assert.equal(matchesInternalTrigger(gatilhoA, eventoDeA), true)
+  assert.equal(matchesInternalTrigger(gatilhoB, eventoDeA), false, 'a mensagem de A nunca dispara o destino de B')
+})

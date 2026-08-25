@@ -28,12 +28,19 @@ export type WsIngest = (
   installationId: string,
   raw: string,
   config: WsConnectionConfig,
-) => Promise<{ status: string; eventId: string | null }>
+) => Promise<{ status: string; eventIds: string[] }>
 
 /** As inscrições guardadas desta conexão. Injetado para o adapter não puxar o banco. */
 export type WsFrames = (ownerId: string, installationId: string) => Promise<string[]>
 
-export function buildWebSocketAdapter(config: WsConnectionConfig, credencial: string, ingest: WsIngest, frames: WsFrames): StreamAdapter {
+export function buildWebSocketAdapter(
+  config: WsConnectionConfig,
+  credencial: string,
+  ingest: WsIngest,
+  frames: WsFrames,
+  /** O endereço já conferido. A conexão abre nele; o nome vai à parte, no SNI. */
+  pinned?: { address: string; family: 4 | 6 } | null,
+): StreamAdapter {
   return {
     appKey: 'websocket',
 
@@ -50,6 +57,8 @@ export function buildWebSocketAdapter(config: WsConnectionConfig, credencial: st
       config.auth.kind === 'header' && credencial ? { [config.auth.name]: `${config.auth.prefix}${credencial}` } : {},
 
     protocols: () => config.protocols,
+
+    pinnedAddress: () => pinned ?? null,
 
     // A primeira mensagem, quando é assim que o serviço autentica. `{{token}}` é o único
     // template que existe: uma substituição, de um nome conhecido, por um valor conhecido.
@@ -93,8 +102,10 @@ export function buildWebSocketAdapter(config: WsConnectionConfig, credencial: st
     parse: (): PublishInput[] => [],
 
     ingest: async (raw, ctx) => {
-      const { status } = await ingest(ctx.ownerId, ctx.installationId, raw, config)
-      return status === 'accepted' ? 1 : 0
+      // A contagem do stream é de EVENTOS publicados: uma mensagem que serviu a duas
+      // assinaturas produziu dois fatos, e uma que não serviu a nenhuma produziu zero.
+      const { eventIds } = await ingest(ctx.ownerId, ctx.installationId, raw, config)
+      return eventIds.length
     },
   }
 }

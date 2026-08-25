@@ -210,9 +210,13 @@ test('salvar manda a configuração — e o segredo só quando ele foi digitado'
 // --- mensagens ----------------------------------------------------------------------------
 
 const MENSAGENS = [
-  { id: 'm1', installationId: INSTALLATION_ID, subscriptionId: null, channel: 'pedidos', status: 'accepted', preview: '{"total":42}', eventId: 'e1', occurredAt: NOW, receivedAt: NOW },
-  { id: 'm2', installationId: INSTALLATION_ID, subscriptionId: null, channel: '', status: 'filtered', preview: '{"tipo":"outro"}', eventId: null, occurredAt: NOW, receivedAt: NOW },
-  { id: 'm3', installationId: INSTALLATION_ID, subscriptionId: null, channel: '', status: 'invalid', preview: 'não é json', eventId: null, occurredAt: NOW, receivedAt: NOW },
+  { id: 'm1', installationId: INSTALLATION_ID, subscriptionId: 'sub-1', subscriptionIds: ['sub-1'], channel: 'pedidos', status: 'accepted', reason: null, preview: '{"total":42}', eventId: 'e1', occurredAt: NOW, receivedAt: NOW },
+  { id: 'm2', installationId: INSTALLATION_ID, subscriptionId: null, subscriptionIds: [], channel: '', status: 'filtered', reason: 'não passou pelos filtros da conexão', preview: '{"tipo":"outro"}', eventId: null, occurredAt: NOW, receivedAt: NOW },
+  { id: 'm3', installationId: INSTALLATION_ID, subscriptionId: null, subscriptionIds: [], channel: '', status: 'invalid', reason: 'a mensagem não é um JSON válido', preview: 'não é json', eventId: null, occurredAt: NOW, receivedAt: NOW },
+  { id: 'm4', installationId: INSTALLATION_ID, subscriptionId: null, subscriptionIds: [], channel: '', status: 'ignored', reason: 'nenhuma assinatura ativa reivindicou esta mensagem', preview: '{"v":1}', eventId: null, occurredAt: NOW, receivedAt: NOW },
+  { id: 'm5', installationId: INSTALLATION_ID, subscriptionId: null, subscriptionIds: [], channel: '', status: 'duplicate', reason: 'já recebida antes (deduplicação)', preview: '{"id":"x"}', eventId: null, occurredAt: NOW, receivedAt: NOW },
+  { id: 'm6', installationId: INSTALLATION_ID, subscriptionId: null, subscriptionIds: [], channel: '', status: 'rate_limited', reason: 'acima de 120 mensagens por minuto', preview: '{"n":9}', eventId: null, occurredAt: NOW, receivedAt: NOW },
+  { id: 'm7', installationId: INSTALLATION_ID, subscriptionId: 'sub-1', subscriptionIds: ['sub-1'], channel: '', status: 'failed', reason: 'nem todas as assinaturas receberam o evento', preview: '{"v":2}', eventId: null, occurredAt: NOW, receivedAt: NOW },
 ]
 
 test('as mensagens mostram o que passou E o que foi recusado, com o motivo', async ({ page }) => {
@@ -221,10 +225,30 @@ test('as mensagens mostram o que passou E o que foi recusado, com o motivo', asy
   await stub(page, { messages: MENSAGENS })
   await page.goto('/apps/websocket/messages')
   const itens = page.getByTestId('ws-message')
-  await expect(itens).toHaveCount(3)
+  await expect(itens).toHaveCount(7)
   await expect(itens.first()).toContainText('Recebida')
   await expect(itens.nth(1)).toContainText('Filtrada')
   await expect(itens.nth(2)).toContainText('Inválida')
+})
+
+test('cada situação diz POR QUE a mensagem não virou evento', async ({ page }) => {
+  // Sem o motivo, "Filtrada" e "Sem assinatura" são adivinhação — e as duas se corrigem
+  // em lugares diferentes: uma na conexão, outra criando uma assinatura.
+  await stub(page, { messages: MENSAGENS })
+  await page.goto('/apps/websocket/messages')
+  const itens = page.getByTestId('ws-message')
+  for (const [i, esperado] of [
+    [1, 'não passou pelos filtros'],
+    [2, 'não é um JSON válido'],
+    [3, 'nenhuma assinatura ativa'],
+    [4, 'deduplicação'],
+    [5, 'acima de 120 mensagens'],
+    [6, 'nem todas as assinaturas'],
+  ] as const) {
+    await expect(itens.nth(i).getByTestId('ws-message-reason')).toContainText(esperado)
+  }
+  await expect(itens.nth(3)).toContainText('Sem assinatura')
+  await expect(itens.nth(6)).toContainText('Falhou na entrega')
 })
 
 test('as mensagens filtram por conexão, situação e canal', async ({ page }) => {
@@ -476,4 +500,38 @@ test('os subprotocolos viram lista ao salvar', async ({ page }) => {
   await page.getByTestId('ws-protocols').fill('graphql-ws, wamp')
   await page.getByTestId('ws-save-connection').click()
   await expect.poll(() => salvo).toMatchObject({ config: { protocols: ['graphql-ws', 'wamp'] } })
+})
+
+// --- filtros por assinatura -------------------------------------------------------------
+
+test('uma assinatura pode ter os seus próprios filtros', async ({ page }) => {
+  // Os da conexão decidem o que entra; estes decidem o que é DESTA assinatura. O backend
+  // já os suportava: só a tela não deixava preencher.
+  await stub(page)
+  await page.goto('/apps/websocket/subscriptions')
+  await page.getByTestId('ws-new-sub').click()
+  await page.getByTestId('ws-sub-name').fill('Só urgentes')
+  await page.getByTestId('ws-sub-add-filter').click()
+  await page.getByTestId('ws-sub-filter-path-0').fill('data.prioridade')
+  await page.getByTestId('ws-sub-filter-op-0').selectOption('equals')
+  await page.getByTestId('ws-sub-filter-value-0').fill('alta')
+  await page.getByTestId('ws-sub-save').click()
+  await expect.poll(() => assinaturaCriada).toMatchObject({
+    name: 'Só urgentes',
+    filters: [{ path: 'data.prioridade', operator: 'equals', value: 'alta' }],
+  })
+})
+
+test('editar traz os filtros da assinatura preenchidos', async ({ page }) => {
+  const comFiltro = { ...ASSINATURA, filters: [{ path: 'tipo', operator: 'contains', value: 'pedido' }] }
+  await stub(page, { subscriptions: [comFiltro] })
+  await page.goto('/apps/websocket/subscriptions')
+  await page.getByTestId('ws-sub-edit').click()
+  await expect(page.getByTestId('ws-sub-filter-path-0')).toHaveValue('tipo')
+  await expect(page.getByTestId('ws-sub-filter-op-0')).toHaveValue('contains')
+  await expect(page.getByTestId('ws-sub-filter-value-0')).toHaveValue('pedido')
+
+  await page.getByTestId('ws-sub-filter-value-0').fill('aviso')
+  await page.getByTestId('ws-sub-save').click()
+  await expect.poll(() => assinaturaEditada).toMatchObject({ filters: [{ path: 'tipo', operator: 'contains', value: 'aviso' }] })
 })

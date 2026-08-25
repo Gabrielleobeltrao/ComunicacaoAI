@@ -56,9 +56,13 @@ export const SemConexao = () => (
 /** Verde só para o que virou dado. O resto é informação de descarte, não de erro. */
 const COR: Record<WsMessageStatus, string> = {
   accepted: 'var(--intent-brand)',
+  // Descarte esperado é cinza; o que exige ação é vermelho. "Sem assinatura" fica no
+  // meio: não é erro, mas é quase sempre configuração faltando.
   filtered: 'var(--text-faint)',
   duplicate: 'var(--text-faint)',
+  ignored: 'var(--mango-600)',
   invalid: 'var(--coral-600, #d92d20)',
+  failed: 'var(--coral-600, #d92d20)',
   rate_limited: 'var(--mango-600)',
   too_large: 'var(--mango-600)',
 }

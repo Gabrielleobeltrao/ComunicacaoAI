@@ -10,7 +10,7 @@ import { API_URL } from './api'
 export type WsFormat = 'json' | 'text'
 export type WsAuthKind = 'none' | 'header' | 'query' | 'message'
 export type WsDedupeStrategy = 'none' | 'message_id' | 'payload_hash'
-export type WsMessageStatus = 'accepted' | 'filtered' | 'invalid' | 'duplicate' | 'rate_limited' | 'too_large'
+export type WsMessageStatus = 'accepted' | 'filtered' | 'ignored' | 'invalid' | 'duplicate' | 'rate_limited' | 'too_large' | 'failed'
 export type WsDestinationKind = 'history' | 'memory' | 'routine' | 'agent' | 'sector'
 
 export interface WsFilter {
@@ -92,7 +92,10 @@ export interface WsMessage {
   subscriptionId: string | null
   channel: string
   status: WsMessageStatus
+  /** Por que ela não virou evento, quando não virou. */
+  reason: string | null
   preview: string
+  subscriptionIds: string[]
   eventId: string | null
   occurredAt: string
   receivedAt: string
@@ -165,10 +168,15 @@ export const emptyConfig = (): WsConnectionConfig => ({
 export const STATUS_LABEL: Record<WsMessageStatus, string> = {
   accepted: 'Recebida',
   filtered: 'Filtrada',
+  // "Filtrada" é o filtro da CONEXÃO recusando; "Sem assinatura" é ter passado e
+  // ninguém tê-la reivindicado. A primeira se corrige na conexão; a segunda, criando
+  // ou ajustando uma assinatura.
+  ignored: 'Sem assinatura',
   invalid: 'Inválida',
   duplicate: 'Repetida',
   rate_limited: 'Acima do limite',
   too_large: 'Grande demais',
+  failed: 'Falhou na entrega',
 }
 
 export const DESTINATION_LABEL: Record<WsDestinationKind, string> = {

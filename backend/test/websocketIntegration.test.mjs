@@ -117,6 +117,27 @@ async function ate(condicao, oque = 'condição', tentativas = 400) {
 
 const mensagens = (dono = DONO) => db.collection('websocket_messages').find({ ownerId: dono }).sort({ receivedAt: 1 }).toArray()
 
+/** Uma assinatura que aceita tudo. Sem uma, a mensagem é histórico e não vira evento. */
+const assinaturaAberta = (installationId, over = {}) =>
+  repo.insertSubscription({
+    _id: new ObjectId(),
+    ownerId: DONO,
+    installationId,
+    name: 'Tudo',
+    subscribeMessage: '',
+    unsubscribeMessage: '',
+    filters: [],
+    channel: '',
+    active: true,
+    destination: { kind: 'history' },
+    managedAutomationId: null,
+    messageCount: 0,
+    lastMessageAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...over,
+  })
+
 // --- conectar, autenticar, assinar --------------------------------------------------------
 
 test('conecta de verdade e autentica pela primeira mensagem', async () => {
@@ -152,6 +173,8 @@ test('oferece o subprotocolo pedido', async () => {
 
 test('recebe JSON e guarda o que interessa', async () => {
   const conexao = await comConexao({ paths: { payload: 'data', messageId: 'id', channel: 'canal', occurredAt: '' } })
+  // Sem assinatura não há evento: ele existe porque alguém pediu aquilo.
+  await assinaturaAberta(conexao._id.toString())
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
   servidor.enviar({ id: 'm-1', canal: 'pedidos', data: { total: 42 } })
@@ -174,6 +197,7 @@ test('recebe JSON e guarda o que interessa', async () => {
 
 test('recebe texto quando o formato é texto', async () => {
   const conexao = await comConexao({ format: 'text' })
+  await assinaturaAberta(conexao._id.toString())
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
   servidor.enviar('uma linha de log')
@@ -185,6 +209,7 @@ test('recebe texto quando o formato é texto', async () => {
 
 test('o que não passa no filtro é registrado como filtrado, e não vira evento', async () => {
   const conexao = await comConexao({ filters: [{ path: 'tipo', operator: 'equals', value: 'pedido' }] })
+  await assinaturaAberta(conexao._id.toString())
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
   servidor.enviar({ tipo: 'outro' })
@@ -205,27 +230,40 @@ test('schema inválido é recusado e fica registrado com o motivo', async () => 
   assert.ok(logs.some((l) => l.kind === 'invalid' && /schema/.test(l.message)))
 })
 
-test('a mesma mensagem duas vezes é guardada uma vez', async () => {
+test('a mesma mensagem duas vezes vira UM evento — e a repetição fica registrada', async () => {
   const conexao = await comConexao({ dedupe: 'message_id', paths: { payload: '', messageId: 'id', channel: '', occurredAt: '' } })
+  await assinaturaAberta(conexao._id.toString())
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
   servidor.enviar({ id: 'repetida', v: 1 })
   await ate(async () => (await mensagens()).length === 1, 'a primeira')
   servidor.enviar({ id: 'repetida', v: 1 })
-  await new Promise((r) => setTimeout(r, 150))
-  assert.equal((await mensagens()).length, 1, 'a segunda não entra')
-  assert.equal((await bus.listEvents(DONO, { type: 'integration.websocket.message' })).length, 1)
+  await ate(async () => (await mensagens()).length === 2, 'o registro da repetida')
+
+  const todas = await mensagens()
+  assert.equal(todas[0].status, 'accepted')
+  // A repetida FICA no histórico: antes ela sumia, e a tela oferecia o filtro
+  // "Repetida" sem nunca ter o que mostrar nele.
+  assert.equal(todas[1].status, 'duplicate')
+  assert.match(todas[1].reason, /deduplica/)
+  assert.equal((await bus.listEvents(DONO, { type: 'integration.websocket.message' })).length, 1, 'um fato só')
 })
 
-test('acima do limite por minuto, a mensagem é descartada com registro', async () => {
+test('acima do limite, o excedente custa UMA gravação — não uma por mensagem', async () => {
+  // Um serviço em loop gerava duas escritas por mensagem descartada, que é o oposto de
+  // proteger o banco. Agora a primeira do excesso fica registrada e o resto é contado.
   const conexao = await comConexao({ maxMessagesPerMinute: 2 })
+  await assinaturaAberta(conexao._id.toString())
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
-  for (let i = 0; i < 4; i += 1) servidor.enviar({ n: i })
-  await ate(async () => (await mensagens()).length >= 3, 'as mensagens')
+  for (let i = 0; i < 40; i += 1) servidor.enviar({ n: i })
+  await ate(async () => (await mensagens()).filter((m) => m.status === 'rate_limited').length === 1, 'o registro do excesso')
+  await new Promise((r) => setTimeout(r, 200))
+
   const todas = await mensagens()
-  assert.ok(todas.some((m) => m.status === 'rate_limited'), 'o limite foi aplicado')
-  assert.equal(todas.filter((m) => m.status === 'accepted').length, 2)
+  assert.equal(todas.filter((m) => m.status === 'accepted').length, 2, 'só o que cabia no limite')
+  assert.equal(todas.filter((m) => m.status === 'rate_limited').length, 1, 'e uma linha para o excesso inteiro')
+  assert.ok(todas.length <= 4, `38 descartadas não podem virar 38 linhas (foram ${todas.length})`)
 })
 
 test('mensagem grande demais é recusada sem ser interpretada', async () => {
@@ -283,6 +321,7 @@ test('revogar a conexão desliga o stream e pausa as assinaturas', async () => {
 
 test('a mensagem de uma conta não aparece na outra', async () => {
   const conexao = await comConexao()
+  await assinaturaAberta(conexao._id.toString())
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
   servidor.enviar({ a: 1 })
@@ -311,6 +350,7 @@ test('coletar não gasta token nenhum', async () => {
   // A promessa do modo "só coletar": nenhuma execução, nenhuma inferência, nenhum
   // registro de consumo. Medido, e não presumido.
   const conexao = await comConexao()
+  await assinaturaAberta(conexao._id.toString())
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
   servidor.enviar({ a: 1 })
@@ -476,6 +516,7 @@ test('nem log nem mensagem guardam credencial', async () => {
   // O log é lido por quem administra e às vezes por quem dá suporte — é o lugar mais
   // fácil de vazar o que o resto do sistema protege.
   const conexao = await comConexao({ auth: { kind: 'header', name: 'Authorization', prefix: 'Bearer ' } })
+  await assinaturaAberta(conexao._id.toString())
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
   servidor.enviar({ a: 1 })
@@ -620,7 +661,16 @@ test('testar a assinatura abre, autentica, inscreve, espera e fecha', async () =
   const assinatura = assinaturaDe(conexao._id.toString())
 
   const antes = servidor.estado.conexoes
-  const r = await testSubscription(DONO, assinatura, { adapterFor: websocketAdapterFor, credentialsOf: streamCredentials })
+  const r = await testSubscription(DONO, assinatura, {
+    adapterFor: websocketAdapterFor,
+    credentialsOf: streamCredentials,
+    configOf: async (dono, instalacaoId) => {
+      const { getInstallation } = await import('../dist/apps/installations.js')
+      const { readConnectionConfig } = await import('../dist/integrations/websocket/service.js')
+      const inst = await getInstallation(dono, new ObjectId(instalacaoId))
+      return inst ? readConnectionConfig(inst.publicMetadata) : null
+    },
+  })
   assert.equal(r.ok, true)
   assert.match(r.message, /compatível/)
   assert.ok(!JSON.stringify(r).includes(SEGREDO), 'o teste não ecoa a credencial')
@@ -638,6 +688,7 @@ test('testar uma assinatura que não recebe nada devolve isso, sem inventar suce
     const r = await testSubscription(DONO, assinaturaDe(conexao._id.toString()), {
       adapterFor: websocketAdapterFor,
       credentialsOf: streamCredentials,
+      configOf: async () => ({ paths: { channel: '' } }),
     })
     assert.equal(r.ok, false)
     assert.match(r.message, /nenhuma mensagem compatível/)
@@ -648,9 +699,12 @@ test('testar uma assinatura que não recebe nada devolve isso, sem inventar suce
 
 // --- uma mensagem sem assinatura ------------------------------------------------------------
 
-test('mensagem sem assinatura vira histórico — e não dispara nada', async () => {
-  const { registerWebSocketDestinations } = await import('../dist/integrations/websocket/destinations.js')
-  registerWebSocketDestinations()
+test('mensagem sem assinatura fica no histórico e NÃO vira evento', async () => {
+  /**
+   * A regra que fecha o ciclo: publicar sem assinatura criaria um fato que ninguém
+   * pediu — ocupando o barramento, custando retentativa, e ao alcance de um gatilho
+   * escrito à mão que o dono nunca ligou àquela conexão.
+   */
   const conexao = await comConexao()
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
@@ -658,12 +712,148 @@ test('mensagem sem assinatura vira histórico — e não dispara nada', async ()
   await ate(async () => (await mensagens()).length === 1, 'a mensagem')
 
   const [m] = await mensagens()
-  assert.equal(m.status, 'accepted', 'ela foi recebida')
-  assert.equal(m.subscriptionId, null, 'e nenhuma assinatura a reivindicou')
+  assert.equal(m.status, 'ignored', 'recebida, e sem ninguém para reivindicá-la')
+  assert.match(m.reason, /nenhuma assinatura/)
+  assert.deepEqual(m.subscriptionIds, [])
 
-  // O evento existe — o histórico é durável —, mas processá-lo não produz execução
-  // nenhuma: sem assinatura não há destino.
-  const evento = await bus.claimNextEvent('w1')
-  assert.equal(await bus.processEvent(evento), 'done')
+  // Nenhum evento — e não um evento que não faz nada.
+  assert.equal((await bus.listEvents(DONO, { type: 'integration.websocket.message' })).length, 0)
+  assert.equal(await bus.claimNextEvent('w1'), null)
   assert.equal(await db.collection('automation_runs').countDocuments({}), 0)
+})
+
+// --- várias assinaturas na mesma conexão -------------------------------------------------
+
+test('todas as assinaturas compatíveis recebem — não só a primeira', async () => {
+  // Antes daqui era `find`: duas assinaturas com critérios que se sobrepõem faziam a
+  // segunda nunca receber nada, e nada na tela explicava por quê.
+  const conexao = await comConexao({ paths: { payload: '', messageId: '', channel: 'canal', occurredAt: '' } })
+  const todas = await assinaturaAberta(conexao._id.toString(), { name: 'Tudo' })
+  const soPedidos = await assinaturaAberta(conexao._id.toString(), { name: 'Só pedidos', channel: 'pedidos' })
+  await ligar(conexao)
+  await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
+
+  servidor.enviar({ canal: 'pedidos', v: 1 })
+  await ate(async () => (await bus.listEvents(DONO, { type: 'integration.websocket.message' })).length === 2, 'os dois eventos')
+
+  const eventos = await bus.listEvents(DONO, { type: 'integration.websocket.message' })
+  const alvos = eventos.map((e) => e.payload.subscriptionId).sort()
+  assert.deepEqual(alvos, [todas._id.toString(), soPedidos._id.toString()].sort(), 'um evento por assinatura')
+
+  // E a mensagem no histórico registra as duas.
+  const [m] = await mensagens()
+  assert.equal(m.subscriptionIds.length, 2)
+})
+
+test('cada assinatura tem a sua chave: a retentativa de uma não repete a outra', async () => {
+  const conexao = await comConexao()
+  const a = await assinaturaAberta(conexao._id.toString(), { name: 'A' })
+  const b = await assinaturaAberta(conexao._id.toString(), { name: 'B' })
+  await ligar(conexao)
+  await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
+  servidor.enviar({ v: 1 })
+  await ate(async () => (await bus.listEvents(DONO, { type: 'integration.websocket.message' })).length === 2, 'os dois eventos')
+
+  const eventos = await bus.listEvents(DONO, { type: 'integration.websocket.message' })
+  const chaves = eventos.map((e) => e.dedupeKey)
+  assert.equal(new Set(chaves).size, 2, 'chaves diferentes')
+  assert.ok(chaves.some((k) => k.includes(a._id.toString())))
+  assert.ok(chaves.some((k) => k.includes(b._id.toString())))
+})
+
+test('uma assinatura que não casa não recebe o evento da outra', async () => {
+  const conexao = await comConexao({ paths: { payload: '', messageId: '', channel: 'canal', occurredAt: '' } })
+  await assinaturaAberta(conexao._id.toString(), { name: 'Só avisos', channel: 'avisos' })
+  const pedidos = await assinaturaAberta(conexao._id.toString(), { name: 'Só pedidos', channel: 'pedidos' })
+  await ligar(conexao)
+  await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
+  servidor.enviar({ canal: 'pedidos', v: 1 })
+  await ate(async () => (await bus.listEvents(DONO, { type: 'integration.websocket.message' })).length === 1, 'o evento')
+
+  const [evento] = await bus.listEvents(DONO, { type: 'integration.websocket.message' })
+  assert.equal(evento.payload.subscriptionId, pedidos._id.toString())
+})
+
+// --- o teste da assinatura usa o canal CONFIGURADO ------------------------------------------
+
+test('testar a assinatura procura o canal onde a conexão diz que ele está', async () => {
+  // Antes daqui ele procurava um campo chamado `channel` — o nome que ele tem em alguns
+  // serviços e em nenhum outro. Uma assinatura por canal era aprovada por engano: o
+  // campo não existia, a comparação era pulada, e qualquer mensagem servia.
+  const { testSubscription } = await import('../dist/integrations/websocket/subscribe.js')
+  process.env.WS_TEST_TIMEOUT_MS = '400'
+  try {
+    servidor = await startFakeWs({
+      onConnection: (socket) => {
+        socket.on('message', () => socket.send(JSON.stringify({ topico: 'avisos', v: 1 })))
+      },
+    })
+    const app = getApp('websocket')
+    const conexao = await createInstallation(DONO, app, {
+      name: 'Serviço',
+      config: { token: SEGREDO },
+      publicMetadata: writeConnectionConfig(normalizar({ endpoint: servidor.url, paths: { payload: '', messageId: '', channel: 'topico', occurredAt: '' } })),
+    })
+    novoGerente()
+    const config = { paths: { channel: 'topico' } }
+
+    // A mensagem é do canal `avisos`: uma assinatura de `pedidos` NÃO pode ser aprovada.
+    const errada = await testSubscription(DONO, assinaturaDe(conexao._id.toString(), { channel: 'pedidos' }), {
+      adapterFor: websocketAdapterFor,
+      credentialsOf: streamCredentials,
+      configOf: async () => config,
+    })
+    assert.equal(errada.ok, false)
+
+    const certa = await testSubscription(DONO, assinaturaDe(conexao._id.toString(), { channel: 'avisos' }), {
+      adapterFor: websocketAdapterFor,
+      credentialsOf: streamCredentials,
+      configOf: async () => config,
+    })
+    assert.equal(certa.ok, true)
+  } finally {
+    delete process.env.WS_TEST_TIMEOUT_MS
+  }
+})
+
+// --- o DNS, a cada tentativa ------------------------------------------------------------------
+
+test('um nome que resolve para rede interna é recusado ao RECONECTAR também', async () => {
+  // A conferência valia só para a primeira conexão: o adapter era montado uma vez. Um
+  // nome que apontava para um endereço público quando o stream subiu podia passar a
+  // apontar para a rede interna, e a reconexão ia atrás.
+  const conexao = await comConexao()
+  await ligar(conexao)
+  await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
+
+  // A conexão passa a apontar para a metadata da nuvem.
+  const { patchInstallation } = await import('../dist/apps/installations.js')
+  const app = getApp('websocket')
+  await patchInstallation(DONO, conexao._id, app, {
+    publicMetadata: writeConnectionConfig(normalizar({ endpoint: 'wss://169.254.169.254/latest' })),
+  })
+  servidor.derrubar()
+
+  // A reconexão remonta o adapter, reconfere o endereço e recusa. O gerenciador larga o
+  // stream antes de terminar de gravar o motivo — esperar a gravação é do teste.
+  await ate(async () => {
+    const [s] = await db.collection('market_streams').find({ ownerId: DONO }).toArray()
+    return Boolean(s?.lastError)
+  }, 'o motivo da recusa', 800)
+  const [stream] = await db.collection('market_streams').find({ ownerId: DONO }).toArray()
+  assert.match(stream.lastError.message, /interna/)
+  assert.equal(gerente.activeCount, 0)
+})
+
+test('o endereço conferido é o que a conexão usa', async () => {
+  // Conferir um nome e depois conectar por ele deixa uma janela: entre as duas coisas o
+  // DNS pode responder outra coisa. O adapter entrega o endereço já conferido.
+  const conexao = await comConexao()
+  const adapter = await websocketAdapterFor({ ownerId: DONO, appKey: 'websocket', installationId: conexao._id.toString(), environment: 'default' })
+  const fixado = adapter.pinnedAddress()
+  assert.ok(fixado, 'o endereço vem fixado')
+  assert.equal(fixado.address, '127.0.0.1')
+  assert.equal(fixado.family, 4)
+  // E o nome continua na URL, para o SNI e o Host continuarem certos.
+  assert.match(adapter.url('default'), /127\.0\.0\.1/)
 })
