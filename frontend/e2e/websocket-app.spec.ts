@@ -52,6 +52,22 @@ const NAV_WEBSOCKET = {
 
 let salvo: Record<string, unknown> | null = null
 let assinaturaCriada: Record<string, unknown> | null = null
+let assinaturaEditada: Record<string, unknown> | null = null
+
+const ASSINATURA = {
+  id: 'sub-1',
+  installationId: INSTALLATION_ID,
+  name: 'Tudo',
+  subscribeMessage: '{"action":"subscribe"}',
+  unsubscribeMessage: '{"action":"unsubscribe"}',
+  filters: [],
+  channel: 'pedidos',
+  active: true,
+  destination: { kind: 'history' },
+  managedAutomationId: null,
+  messageCount: 7,
+  lastMessageAt: NOW,
+}
 
 async function stub(
   page: Page,
@@ -60,12 +76,14 @@ async function stub(
     messages?: unknown[]
     subscriptions?: unknown[]
     logs?: unknown[]
+    teste?: { ok: boolean; message: string }
     navigation?: unknown[]
     access?: { ok: boolean; reason?: string }
   } = {},
 ) {
   salvo = null
   assinaturaCriada = null
+  assinaturaEditada = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
 
   await page.route('**/api/websocket/connections', (r) => r.fulfill({ json: opts.connections ?? [CONNECTION] }))
@@ -88,7 +106,25 @@ async function stub(
     }
     return r.fulfill({ json: opts.subscriptions ?? [] })
   })
-  await page.route('**/api/websocket/subscriptions/*', (r) => r.fulfill({ json: {} }))
+  await page.route('**/api/websocket/subscriptions/*/test', (r) => r.fulfill({ json: opts.teste ?? { ok: true, message: 'Chegou uma mensagem compatível com esta assinatura.' } }))
+  await page.route('**/api/websocket/subscriptions/*', (r) => {
+    if (r.request().method() === 'PATCH') {
+      assinaturaEditada = r.request().postDataJSON() as Record<string, unknown>
+      return r.fulfill({ json: { ...ASSINATURA, ...assinaturaEditada } })
+    }
+    return r.fulfill({ status: 204, body: '' })
+  })
+  // As entidades que um destino pode apontar — só as desta conta chegam aqui.
+  await page.route('**/api/websocket/targets', (r) =>
+    r.fulfill({
+      json: {
+        agents: [{ id: 'ag-1', name: 'Ana' }],
+        sectors: [{ id: 'st-1', name: 'Suporte' }],
+        floors: [{ id: 'an-1', name: 'Térreo' }],
+        routines: [{ id: 'rt-1', name: 'Registrar pedido' }],
+      },
+    }),
+  )
   await page.route('**/api/websocket/logs**', (r) => r.fulfill({ json: opts.logs ?? [] }))
 
   // O guarda da página: um App inativo nunca renderiza a tela operacional dele.
@@ -223,20 +259,7 @@ test('escolher memória avisa que não gasta token', async ({ page }) => {
 })
 
 test('uma assinatura pode ser pausada e retomada', async ({ page }) => {
-  const assinatura = {
-    id: 'sub-1',
-    installationId: INSTALLATION_ID,
-    name: 'Tudo',
-    subscribeMessage: '',
-    unsubscribeMessage: '',
-    filters: [],
-    channel: 'pedidos',
-    active: true,
-    destination: { kind: 'history' },
-    messageCount: 7,
-    lastMessageAt: NOW,
-  }
-  await stub(page, { subscriptions: [assinatura] })
+  await stub(page, { subscriptions: [ASSINATURA] })
   await page.goto('/apps/websocket/subscriptions')
   await expect(page.getByTestId('ws-sub-state')).toHaveText('Ativa')
   await expect(page.getByTestId('ws-subscription')).toContainText('7 mensagem')
@@ -310,4 +333,147 @@ test('em 320px nada estoura a largura da tela', async ({ page }) => {
   await expect(page.getByTestId('ws-messages')).toBeVisible()
   const estoura = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)
   expect(estoura).toBe(false)
+})
+
+// --- destinos que exigem escolher ---------------------------------------------------------
+
+test('escolher memória pede o escopo e a entidade — só as desta conta', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/subscriptions')
+  await page.getByTestId('ws-new-sub').click()
+  await page.getByTestId('ws-sub-destination').selectOption('memory')
+  await expect(page.getByTestId('ws-sub-scope')).toBeVisible()
+  // Escopo do agente: o seletor traz o agente da conta.
+  await expect(page.getByTestId('ws-sub-target').locator('option')).toHaveText(['Escolha…', 'Ana'])
+
+  await page.getByTestId('ws-sub-scope').selectOption('sector')
+  await expect(page.getByTestId('ws-sub-target').locator('option')).toHaveText(['Escolha…', 'Suporte'])
+  await page.getByTestId('ws-sub-scope').selectOption('floor')
+  await expect(page.getByTestId('ws-sub-target').locator('option')).toHaveText(['Escolha…', 'Térreo'])
+  // Prédio não pede escolha: a conta tem um.
+  await page.getByTestId('ws-sub-scope').selectOption('building')
+  await expect(page.getByTestId('ws-sub-target')).toHaveCount(0)
+})
+
+test('rotina, agente e setor têm cada um a sua lista', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/subscriptions')
+  await page.getByTestId('ws-new-sub').click()
+  for (const [destino, esperado] of [
+    ['routine', 'Registrar pedido'],
+    ['agent', 'Ana'],
+    ['sector', 'Suporte'],
+  ] as const) {
+    await page.getByTestId('ws-sub-destination').selectOption(destino)
+    await expect(page.getByTestId('ws-sub-target').locator('option')).toHaveText(['Escolha…', esperado])
+  }
+})
+
+test('cada destino diz o que custa antes de ser escolhido', async ({ page }) => {
+  // Ler é mais barato do que descobrir na fatura.
+  await stub(page)
+  await page.goto('/apps/websocket/subscriptions')
+  await page.getByTestId('ws-new-sub').click()
+  await expect(page.getByTestId('ws-sub-note')).toContainText('nenhuma execução')
+  await page.getByTestId('ws-sub-destination').selectOption('agent')
+  await expect(page.getByTestId('ws-sub-note')).toContainText('consome tokens')
+})
+
+test('a assinatura é criada com o destino inteiro', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/subscriptions')
+  await page.getByTestId('ws-new-sub').click()
+  await page.getByTestId('ws-sub-name').fill('Pedidos novos')
+  await page.getByTestId('ws-sub-subscribe').fill('{"action":"subscribe"}')
+  await page.getByTestId('ws-sub-destination').selectOption('agent')
+  await page.getByTestId('ws-sub-target').selectOption('ag-1')
+  await page.getByTestId('ws-sub-save').click()
+  await expect.poll(() => assinaturaCriada).toMatchObject({
+    name: 'Pedidos novos',
+    subscribeMessage: '{"action":"subscribe"}',
+    destination: { kind: 'agent', agentId: 'ag-1' },
+  })
+})
+
+// --- editar e testar --------------------------------------------------------------------------
+
+test('editar abre a assinatura preenchida e salva a alteração', async ({ page }) => {
+  await stub(page, { subscriptions: [ASSINATURA] })
+  await page.goto('/apps/websocket/subscriptions')
+  await page.getByTestId('ws-sub-edit').click()
+  // O MESMO formulário da criação, preenchido: dois formulários divergiam na primeira
+  // mudança.
+  await expect(page.getByTestId('ws-sub-name')).toHaveValue('Tudo')
+  await expect(page.getByTestId('ws-sub-channel')).toHaveValue('pedidos')
+  await expect(page.getByTestId('ws-sub-subscribe')).toHaveValue('{"action":"subscribe"}')
+  await expect(page.getByTestId('ws-sub-unsubscribe')).toHaveValue('{"action":"unsubscribe"}')
+
+  await page.getByTestId('ws-sub-channel').fill('avisos')
+  await page.getByTestId('ws-sub-save').click()
+  await expect.poll(() => assinaturaEditada).toMatchObject({ channel: 'avisos' })
+})
+
+test('testar a assinatura mostra o resultado sem exibir segredo nem payload', async ({ page }) => {
+  await stub(page, { subscriptions: [ASSINATURA] })
+  await page.goto('/apps/websocket/subscriptions')
+  await page.getByTestId('ws-sub-test').click()
+  await expect(page.getByTestId('ws-sub-test-result')).toContainText('mensagem compatível')
+})
+
+test('uma assinatura que não recebe nada diz isso, sem inventar sucesso', async ({ page }) => {
+  await stub(page, {
+    subscriptions: [ASSINATURA],
+    teste: { ok: false, message: 'A conexão abriu, mas nenhuma mensagem compatível chegou no prazo.' },
+  })
+  await page.goto('/apps/websocket/subscriptions')
+  await page.getByTestId('ws-sub-test').click()
+  await expect(page.getByTestId('ws-sub-test-result')).toContainText('nenhuma mensagem compatível')
+})
+
+test('a automação gerenciada aparece na assinatura que a criou', async ({ page }) => {
+  // Ela existe por causa desta assinatura, e some com ela — e isso fica à vista.
+  await stub(page, { subscriptions: [{ ...ASSINATURA, destination: { kind: 'agent', agentId: 'ag-1' }, managedAutomationId: 'aut-1' }] })
+  await page.goto('/apps/websocket/subscriptions')
+  await expect(page.getByTestId('ws-sub-managed')).toContainText('arquiva o gatilho')
+})
+
+// --- configuração avançada -------------------------------------------------------------------
+
+test('subprotocolos, schema e intervalos ficam na área avançada', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-configure').click()
+  await page.getByTestId('ws-advanced-toggle').click()
+  await expect(page.getByTestId('ws-protocols')).toBeVisible()
+  await expect(page.getByTestId('ws-schema')).toBeVisible()
+  await expect(page.getByTestId('ws-heartbeat-interval')).toBeVisible()
+  await expect(page.getByTestId('ws-idle-timeout')).toBeVisible()
+})
+
+test('um JSON Schema quebrado explica o que fazer e trava o salvar', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-configure').click()
+  await page.getByTestId('ws-advanced-toggle').click()
+  await page.getByTestId('ws-schema').fill('{ isto não é json')
+  await expect(page.getByTestId('ws-schema-error')).toContainText('objeto JSON')
+  await page.getByTestId('ws-save-connection').click()
+  // Salvar com o schema quebrado deixaria a conexão recusando tudo em silêncio.
+  await expect(page.getByTestId('ws-form-error')).toContainText('Corrija o JSON Schema')
+  expect(salvo).toBeNull()
+
+  await page.getByTestId('ws-schema').fill('{"type":"object"}')
+  await expect(page.getByTestId('ws-schema-error')).toHaveCount(0)
+  await page.getByTestId('ws-save-connection').click()
+  await expect.poll(() => salvo).toMatchObject({ config: { schema: { type: 'object' } } })
+})
+
+test('os subprotocolos viram lista ao salvar', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-configure').click()
+  await page.getByTestId('ws-advanced-toggle').click()
+  await page.getByTestId('ws-protocols').fill('graphql-ws, wamp')
+  await page.getByTestId('ws-save-connection').click()
+  await expect.poll(() => salvo).toMatchObject({ config: { protocols: ['graphql-ws', 'wamp'] } })
 })

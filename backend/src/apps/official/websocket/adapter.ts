@@ -30,7 +30,10 @@ export type WsIngest = (
   config: WsConnectionConfig,
 ) => Promise<{ status: string; eventId: string | null }>
 
-export function buildWebSocketAdapter(config: WsConnectionConfig, credencial: string, ingest: WsIngest): StreamAdapter {
+/** As inscrições guardadas desta conexão. Injetado para o adapter não puxar o banco. */
+export type WsFrames = (ownerId: string, installationId: string) => Promise<string[]>
+
+export function buildWebSocketAdapter(config: WsConnectionConfig, credencial: string, ingest: WsIngest, frames: WsFrames): StreamAdapter {
   return {
     appKey: 'websocket',
 
@@ -53,16 +56,32 @@ export function buildWebSocketAdapter(config: WsConnectionConfig, credencial: st
     authMessage: config.auth.kind === 'message' ? () => JSON.parse(fillToken(config.auth.messageTemplate, credencial)) : undefined,
 
     /**
-     * As assinaturas são mandadas pelo SERVIÇO, não daqui.
-     *
-     * O gerenciador chama isto com `symbols`, que este App não usa — forçar a
-     * configuração genérica naquele campo era exatamente o que não podia acontecer.
-     * Devolver `undefined` faz o gerenciador não mandar nada.
+     * `symbols` não é usado por este App — forçar configuração genérica naquele campo
+     * era exatamente o que não podia acontecer. Devolver `undefined` faz o gerenciador
+     * não mandar nada por este caminho.
      */
     subscribeMessage: () => undefined,
     unsubscribeMessage: () => undefined,
 
+    /**
+     * As inscrições guardadas, mandadas depois de conectar e autenticar.
+     *
+     * Vêm do banco, e por isso não cabem em `subscribeMessage`, que é síncrono. A cada
+     * reconexão elas vão de novo: um serviço que caiu esqueceu tudo que foi pedido.
+     */
+    framesOnConnect: (ctx) => frames(ctx.ownerId, ctx.installationId),
+
     heartbeatMessage: config.heartbeat.enabled ? () => JSON.parse(config.heartbeat.message) : undefined,
+
+    /**
+     * Os intervalos DESTA conexão.
+     *
+     * O `.env` fica como padrão e como teto; quem conectou sabe melhor do que uma
+     * variável global de quanto em quanto tempo aquele serviço espera um ping e quanto
+     * silêncio dele é normal.
+     */
+    heartbeatIntervalMs: () => config.heartbeat.intervalMs,
+    idleTimeoutMs: () => config.idleTimeoutMs,
 
     /**
      * A decisão inteira acontece no serviço, porque ela precisa de banco: teto por

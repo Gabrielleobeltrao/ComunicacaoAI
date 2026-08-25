@@ -5,19 +5,26 @@ import {
   DESTINATION_LABEL,
   listConnections,
   listSubscriptions,
+  listTargets,
+  testSubscription,
   updateSubscription,
 } from '../../lib/websocketApp'
-import type { WsConnection, WsDestinationKind, WsSubscription } from '../../lib/websocketApp'
+import type { WsConnection, WsDestination, WsSubscription, WsTargets } from '../../lib/websocketApp'
 import { Button, Card, EmptyState, Field, Input, Textarea } from '../../ui'
 import { SemConexao, WsPage, quando } from './shared'
+import { DestinationFields } from './DestinationFields'
 
 /**
  * O que ouvir, e o que fazer com isso.
  *
  * O destino é a decisão que custa: guardar é de graça, memória ocupa espaço, rotina e
  * agente custam tempo, e agente custa token. Por isso "Só guardar" é o que vem marcado —
- * quem quiser mais escolhe, sabendo.
+ * quem quiser mais escolhe, sabendo, e a tela diz o preço de cada um.
+ *
+ * Criar e editar usam o MESMO formulário: eram dois, e o de edição sempre ficava um
+ * campo atrás do de criação.
  */
+
 const selectStyle: React.CSSProperties = {
   width: '100%',
   padding: '8px 10px',
@@ -28,29 +35,55 @@ const selectStyle: React.CSSProperties = {
   fontSize: 13.5,
 }
 
-const DESTINOS: WsDestinationKind[] = ['history', 'memory', 'routine', 'agent', 'sector']
+interface Rascunho {
+  id: string | null
+  installationId: string
+  name: string
+  channel: string
+  subscribeMessage: string
+  unsubscribeMessage: string
+  active: boolean
+  destination: WsDestination
+}
 
-const vazia = (installationId: string) => ({
+const vazio = (installationId: string): Rascunho => ({
+  id: null,
   installationId,
   name: '',
   channel: '',
   subscribeMessage: '',
   unsubscribeMessage: '',
-  destination: { kind: 'history' as WsDestinationKind },
+  active: true,
+  destination: { kind: 'history' },
+})
+
+const deAssinatura = (s: WsSubscription): Rascunho => ({
+  id: s.id,
+  installationId: s.installationId,
+  name: s.name,
+  channel: s.channel,
+  subscribeMessage: s.subscribeMessage,
+  unsubscribeMessage: s.unsubscribeMessage,
+  active: s.active,
+  destination: s.destination,
 })
 
 export function WebSocketSubscriptions() {
   const [conexoes, setConexoes] = useState<WsConnection[]>([])
   const [assinaturas, setAssinaturas] = useState<WsSubscription[]>([])
-  const [nova, setNova] = useState<ReturnType<typeof vazia> | null>(null)
+  const [alvos, setAlvos] = useState<WsTargets | null>(null)
+  const [rascunho, setRascunho] = useState<Rascunho | null>(null)
   const [erro, setErro] = useState<string | null>(null)
+  const [teste, setTeste] = useState<{ id: string; ok: boolean; message: string } | null>(null)
+  const [ocupado, setOcupado] = useState<string | null>(null)
   const [carregando, setCarregando] = useState(true)
 
   const carregar = () =>
-    Promise.all([listConnections(), listSubscriptions()])
-      .then(([c, s]) => {
+    Promise.all([listConnections(), listSubscriptions(), listTargets()])
+      .then(([c, s, t]) => {
         setConexoes(c)
         setAssinaturas(s)
+        setAlvos(t)
       })
       .catch(() => setErro('Não foi possível carregar.'))
       .finally(() => setCarregando(false))
@@ -60,20 +93,49 @@ export function WebSocketSubscriptions() {
   }, [])
 
   const salvar = async () => {
-    if (!nova) return
+    if (!rascunho) return
     setErro(null)
+    setOcupado('salvar')
     try {
-      await createSubscription({ ...nova, name: nova.name || 'Assinatura' })
-      setNova(null)
+      const corpo = {
+        installationId: rascunho.installationId,
+        name: rascunho.name || 'Assinatura',
+        channel: rascunho.channel,
+        subscribeMessage: rascunho.subscribeMessage,
+        unsubscribeMessage: rascunho.unsubscribeMessage,
+        active: rascunho.active,
+        destination: rascunho.destination,
+      }
+      if (rascunho.id) await updateSubscription(rascunho.id, corpo)
+      else await createSubscription(corpo)
+      setRascunho(null)
       await carregar()
     } catch (e) {
       setErro(e instanceof Error ? e.message : 'Não foi possível salvar.')
+    } finally {
+      setOcupado(null)
     }
   }
 
   const alternar = async (s: WsSubscription) => {
+    setOcupado(s.id)
+    // Ligar manda a inscrição; desligar manda o cancelamento — os dois no servidor.
     await updateSubscription(s.id, { active: !s.active }).catch(() => undefined)
     await carregar()
+    setOcupado(null)
+  }
+
+  const provar = async (s: WsSubscription) => {
+    setOcupado(s.id)
+    setTeste(null)
+    try {
+      const r = await testSubscription(s.id)
+      setTeste({ id: s.id, ...r })
+    } catch (e) {
+      setTeste({ id: s.id, ok: false, message: e instanceof Error ? e.message : 'Não foi possível testar.' })
+    } finally {
+      setOcupado(null)
+    }
   }
 
   return (
@@ -85,10 +147,15 @@ export function WebSocketSubscriptions() {
         <SemConexao />
       ) : (
         <div style={{ display: 'grid', gap: 12 }}>
-          {nova ? (
-            <Card padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="ws-new-subscription">
+          {rascunho ? (
+            <Card padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="ws-subscription-form">
               <Field label="Conexão">
-                <select style={selectStyle} value={nova.installationId} onChange={(e) => setNova({ ...nova, installationId: e.target.value })} data-testid="ws-sub-connection">
+                <select
+                  style={selectStyle}
+                  value={rascunho.installationId}
+                  onChange={(e) => setRascunho({ ...rascunho, installationId: e.target.value })}
+                  data-testid="ws-sub-connection"
+                >
                   {conexoes.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
@@ -97,47 +164,32 @@ export function WebSocketSubscriptions() {
                 </select>
               </Field>
               <Field label="Nome">
-                <Input value={nova.name} onChange={(e) => setNova({ ...nova, name: e.target.value })} placeholder="Ex.: Pedidos novos" data-testid="ws-sub-name" />
+                <Input value={rascunho.name} onChange={(e) => setRascunho({ ...rascunho, name: e.target.value })} placeholder="Ex.: Pedidos novos" data-testid="ws-sub-name" />
               </Field>
               <Field label="Canal" hint="Vazio aceita qualquer canal.">
-                <Input value={nova.channel} onChange={(e) => setNova({ ...nova, channel: e.target.value })} data-testid="ws-sub-channel" />
+                <Input value={rascunho.channel} onChange={(e) => setRascunho({ ...rascunho, channel: e.target.value })} data-testid="ws-sub-channel" />
               </Field>
-              <Field label="Mensagem de inscrição" hint="JSON mandado ao entrar. Vazio se o serviço já envia tudo.">
-                <Textarea rows={2} value={nova.subscribeMessage} onChange={(e) => setNova({ ...nova, subscribeMessage: e.target.value })} data-testid="ws-sub-subscribe" />
+              <Field label="Mensagem de inscrição" hint="Mandada ao conectar e a cada reconexão. Vazio se o serviço já envia tudo.">
+                <Textarea rows={2} value={rascunho.subscribeMessage} onChange={(e) => setRascunho({ ...rascunho, subscribeMessage: e.target.value })} data-testid="ws-sub-subscribe" />
               </Field>
-              <Field label="O que fazer com o que chegar">
-                <select
-                  style={selectStyle}
-                  value={nova.destination.kind}
-                  onChange={(e) => setNova({ ...nova, destination: { kind: e.target.value as WsDestinationKind } })}
-                  data-testid="ws-sub-destination"
-                >
-                  {DESTINOS.map((d) => (
-                    <option key={d} value={d}>
-                      {DESTINATION_LABEL[d]}
-                    </option>
-                  ))}
-                </select>
+              <Field label="Mensagem de cancelamento" hint="Mandada ao pausar ou remover.">
+                <Textarea rows={2} value={rascunho.unsubscribeMessage} onChange={(e) => setRascunho({ ...rascunho, unsubscribeMessage: e.target.value })} data-testid="ws-sub-unsubscribe" />
               </Field>
-              {nova.destination.kind !== 'history' ? (
-                <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
-                  {nova.destination.kind === 'memory'
-                    ? 'Guardar na memória não passa por modelo nenhum: nenhum token é gasto.'
-                    : 'O agente responsável decide o que pode ser feito — um evento não ganha permissão por ter vindo de fora.'}
-                </p>
-              ) : null}
+
+              <DestinationFields destination={rascunho.destination} targets={alvos} onChange={(d) => setRascunho({ ...rascunho, destination: d })} />
+
               <div style={{ display: 'flex', gap: 8 }}>
-                <Button size="sm" onClick={() => void salvar()} data-testid="ws-sub-save">
-                  Criar assinatura
+                <Button size="sm" onClick={() => void salvar()} disabled={ocupado === 'salvar'} data-testid="ws-sub-save">
+                  {rascunho.id ? 'Salvar alterações' : 'Criar assinatura'}
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setNova(null)}>
+                <Button size="sm" variant="ghost" onClick={() => setRascunho(null)} data-testid="ws-sub-cancel">
                   Cancelar
                 </Button>
               </div>
             </Card>
           ) : (
             <div>
-              <Button variant="secondary" icon="plus" onClick={() => setNova(vazia(conexoes[0]?.id ?? ''))} data-testid="ws-new-sub">
+              <Button variant="secondary" icon="plus" onClick={() => setRascunho(vazio(conexoes[0]?.id ?? ''))} data-testid="ws-new-sub">
                 Nova assinatura
               </Button>
             </div>
@@ -160,8 +212,29 @@ export function WebSocketSubscriptions() {
                     {s.channel ? `Canal ${s.channel} · ` : ''}
                     {s.messageCount} mensagem(ns) · última {quando(s.lastMessageAt)}
                   </p>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <Button size="sm" variant="ghost" icon={s.active ? 'pause' : 'play'} onClick={() => void alternar(s)} data-testid="ws-sub-toggle">
+                  {/* A relação com a automação gerenciada fica à vista: ela existe por
+                      causa desta assinatura, e some com ela. */}
+                  {s.managedAutomationId ? (
+                    <p style={{ margin: 0, fontSize: 12, color: 'var(--text-faint)' }} data-testid="ws-sub-managed">
+                      Roda por um gatilho criado por esta assinatura. Removê-la arquiva o gatilho.
+                    </p>
+                  ) : null}
+                  {teste?.id === s.id ? (
+                    <p
+                      style={{ margin: 0, fontSize: 12.5, color: teste.ok ? 'var(--intent-brand)' : 'var(--coral-600, #d92d20)' }}
+                      data-testid="ws-sub-test-result"
+                    >
+                      {teste.message}
+                    </p>
+                  ) : null}
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <Button size="sm" variant="ghost" icon="pencil" onClick={() => setRascunho(deAssinatura(s))} data-testid="ws-sub-edit">
+                      Editar
+                    </Button>
+                    <Button size="sm" variant="ghost" icon="plug-zap" disabled={ocupado === s.id} onClick={() => void provar(s)} data-testid="ws-sub-test">
+                      {ocupado === s.id ? 'Testando…' : 'Testar assinatura'}
+                    </Button>
+                    <Button size="sm" variant="ghost" icon={s.active ? 'pause' : 'play'} disabled={ocupado === s.id} onClick={() => void alternar(s)} data-testid="ws-sub-toggle">
                       {s.active ? 'Pausar' : 'Ativar'}
                     </Button>
                     <Button

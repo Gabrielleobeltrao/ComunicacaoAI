@@ -72,8 +72,18 @@ export interface WsSubscription {
   channel: string
   active: boolean
   destination: WsDestination
+  /** A automação que esta assinatura criou para executar agente ou setor. */
+  managedAutomationId: string | null
   messageCount: number
   lastMessageAt: string | null
+}
+
+/** As entidades que um destino pode apontar. Só as desta conta chegam aqui. */
+export interface WsTargets {
+  agents: { id: string; name: string }[]
+  sectors: { id: string; name: string }[]
+  floors: { id: string; name: string }[]
+  routines: { id: string; name: string }[]
 }
 
 export interface WsMessage {
@@ -125,6 +135,8 @@ export const createSubscription = (body: Record<string, unknown>) => request<WsS
 export const updateSubscription = (id: string, body: Record<string, unknown>) =>
   request<WsSubscription>(`/subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
 export const deleteSubscription = (id: string) => request<null>(`/subscriptions/${id}`, { method: 'DELETE' })
+export const testSubscription = (id: string) => request<{ ok: boolean; message: string }>(`/subscriptions/${id}/test`, { method: 'POST' })
+export const listTargets = () => request<WsTargets>('/targets')
 
 export const listMessages = (q: { installationId?: string; channel?: string; status?: string; skip?: number; limit?: number } = {}) => {
   const p = new URLSearchParams()

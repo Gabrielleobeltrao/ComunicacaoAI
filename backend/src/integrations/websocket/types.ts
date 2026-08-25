@@ -43,6 +43,14 @@ export interface WsSubscription {
   channel: string
   active: boolean
   destination: WsDestination
+  /**
+   * A automação que ESTA assinatura criou para executar agente ou setor.
+   *
+   * A relação fica explícita no documento de propósito: ela muda quando o destino muda
+   * e é arquivada quando a assinatura some. Sem este campo, sobraria uma automação
+   * órfã que alguém encontra meses depois sem saber de onde veio.
+   */
+  managedAutomationId?: string | null
   /** Contadores para a tela, sem precisar varrer as mensagens. */
   messageCount: number
   lastMessageAt: Date | null

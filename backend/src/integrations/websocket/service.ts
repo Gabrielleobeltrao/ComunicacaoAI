@@ -17,6 +17,7 @@ import {
   writeLog,
 } from './repository.js'
 import { dedupeKeyOf, parseMessage, previewOf, subscriptionFor, withinRateLimit } from './pipeline.js'
+import { framesOnConnect } from './subscribe.js'
 import type { WsMessage, WsMessageStatus } from './types.js'
 
 /**
@@ -68,7 +69,7 @@ export async function websocketAdapterFor(record: StreamRecord): Promise<StreamA
   const { url } = await assertPublicWebSocketUrl(config.endpoint)
   // A URL conferida é a que vai ser usada — não a string que foi digitada. Assim não há
   // espaço entre o que foi verificado e o que é aberto.
-  return buildWebSocketAdapter({ ...config, endpoint: url.toString() }, cru.token ?? '', ingestWebSocketMessage)
+  return buildWebSocketAdapter({ ...config, endpoint: url.toString() }, cru.token ?? '', ingestWebSocketMessage, framesOnConnect)
 }
 
 /**

@@ -58,6 +58,13 @@ const SILENCIO_MS = Number(process.env.STREAM_IDLE_TIMEOUT_MS ?? 90_000)
 const HEARTBEAT_MS = Number(process.env.STREAM_HEARTBEAT_MS ?? 30_000)
 /** Depois disto, para de tentar e deixa o erro visível em vez de bater para sempre. */
 const MAX_TENTATIVAS = Number(process.env.STREAM_MAX_RECONNECTS ?? 10)
+/**
+ * O TETO dos intervalos configuráveis por conexão.
+ *
+ * Uma conexão pode escolher esperar menos que o padrão, e não mais: um silêncio de duas
+ * horas configurado por engano seria um stream morto que ninguém percebe por duas horas.
+ */
+const MAX_INTERVAL_MS = Number(process.env.STREAM_MAX_INTERVAL_MS ?? 300_000)
 /** Prazo do teste de conexão. Curto: alguém está olhando a tela esperando. */
 const PROBE_MS = Number(process.env.STREAM_PROBE_TIMEOUT_MS ?? 8_000)
 
@@ -112,6 +119,15 @@ function naoLoga(texto: string, segredos: readonly string[] = []): string {
   return limpo.slice(0, 300)
 }
 
+/** Quem é este stream, do ponto de vista de quem recebe uma mensagem dele. */
+const contextOf = (vivo: Vivo): StreamContext => ({
+  ownerId: vivo.record.ownerId,
+  streamId: vivo.record._id.toString(),
+  installationId: vivo.record.installationId,
+  environment: vivo.record.environment,
+  source: `${vivo.record.appKey}:${vivo.record.environment}`,
+})
+
 export class StreamManager {
   private readonly vivos = new Map<string, Vivo>()
   private readonly deps: Required<Pick<ManagerDeps, 'createSocket' | 'publish' | 'schedule' | 'cancel' | 'onError'>> & ManagerDeps
@@ -133,6 +149,29 @@ export class StreamManager {
 
   get activeCount(): number {
     return this.vivos.size
+  }
+
+  /**
+   * Mandar um quadro CRU por um stream que está de pé.
+   *
+   * É como uma assinatura criada agora entra numa conexão que já está aberta, sem
+   * derrubar o que já estava assinado. `false` quer dizer que não havia conexão — quem
+   * chama decide se isso é erro (não é: assinar com o stream desligado é legítimo, e o
+   * envio acontece no próximo `framesOnConnect`).
+   *
+   * O conteúdo NÃO é registrado: uma inscrição pode conter identificador de conta, e o
+   * log diz que assinou, não o que assinou.
+   */
+  send(id: string, quadro: string): boolean {
+    const vivo = this.vivos.get(id)
+    if (!vivo || vivo.state !== 'connected' || !vivo.socket) return false
+    this.enviar(vivo, quadro)
+    return true
+  }
+
+  /** O stream está pronto para receber um quadro agora? */
+  isConnected(id: string): boolean {
+    return this.vivos.get(id)?.state === 'connected'
   }
 
   /**
@@ -216,7 +255,21 @@ export class StreamManager {
    * socket. Um teste que deixa conexão pendurada é um teste que, repetido, vira um
    * vazamento de sockets.
    */
-  async probe(adapter: StreamAdapter, environment: string, credencial: Record<string, string>, timeoutMs = PROBE_MS): Promise<{ ok: boolean; message: string }> {
+  async probe(
+    adapter: StreamAdapter,
+    environment: string,
+    credencial: Record<string, string>,
+    timeoutMs = PROBE_MS,
+    /**
+     * Uma prova mais funda: mandar um quadro depois de autenticar e esperar uma
+     * resposta que sirva.
+     *
+     * É o "testar assinatura": abrir e autenticar responde "a credencial vale"; só
+     * mandar a inscrição e receber algo responde "esta assinatura funciona", que é a
+     * pergunta de quem a escreveu.
+     */
+    depoisDeAutenticar?: { frame: string; aceita: (bruto: unknown) => boolean; mensagemOk: string },
+  ): Promise<{ ok: boolean; message: string }> {
     const segredos = Object.values(credencial).filter((v) => typeof v === 'string' && v.length >= 8)
     let socket: StreamSocket
     try {
@@ -256,19 +309,39 @@ export class StreamManager {
       const semConfirmacao = !adapter.authOkOf
       const prazo = this.deps.schedule(
         () =>
-          semConfirmacao
-            ? encerrar(true, 'Conexão de tempo real aberta; este provedor não confirma a credencial.')
-            : encerrar(false, 'O provedor não respondeu a tempo.'),
+          depoisDeAutenticar
+            ? // Conectou e não veio nada que sirva. Não é falha da credencial: é a
+              // resposta honesta de que aquela inscrição não trouxe mensagem no prazo.
+              encerrar(false, 'A conexão abriu, mas nenhuma mensagem compatível chegou no prazo.')
+            : semConfirmacao
+              ? encerrar(true, 'Conexão de tempo real aberta; este provedor não confirma a credencial.')
+              : encerrar(false, 'O provedor não respondeu a tempo.'),
         timeoutMs,
       )
       prazo.unref?.()
 
+      /** O quadro extra sai depois da autenticação — antes dela, o serviço recusaria. */
+      const mandarExtra = () => {
+        if (!depoisDeAutenticar?.frame) return
+        try {
+          socket.send(depoisDeAutenticar.frame)
+        } catch (error) {
+          encerrar(false, naoLoga(error instanceof Error ? error.message : 'falha ao enviar a inscrição', segredos))
+        }
+      }
+
       socket.onopen = () => {
         const auth = adapter.authMessage?.(credencial)
-        // Sem autenticação por mensagem, abrir já é a resposta.
-        if (auth === undefined) return encerrar(true, 'Conexão de tempo real aberta.')
+        if (auth === undefined) {
+          // Sem autenticação por mensagem: manda a inscrição já, ou abrir é a resposta.
+          if (!depoisDeAutenticar) return encerrar(true, 'Conexão de tempo real aberta.')
+          return mandarExtra()
+        }
         try {
           socket.send(JSON.stringify(auth))
+          // Sem confirmação de autenticação, a inscrição vai logo em seguida: esperar um
+          // aviso que o serviço não manda seria esperar para sempre.
+          if (!adapter.authOkOf) mandarExtra()
         } catch (error) {
           encerrar(false, naoLoga(error instanceof Error ? error.message : 'falha ao autenticar', segredos))
         }
@@ -284,7 +357,13 @@ export class StreamManager {
         }
         const problema = adapter.errorOf?.(bruto)
         if (problema) return encerrar(false, naoLoga(problema, segredos))
-        if (adapter.authOkOf?.(bruto)) return encerrar(true, 'Credencial aceita pelo tempo real.')
+        if (adapter.authOkOf?.(bruto)) {
+          // Autenticou. Com inscrição a provar, a resposta ainda não chegou.
+          if (!depoisDeAutenticar) return encerrar(true, 'Credencial aceita pelo tempo real.')
+          return mandarExtra()
+        }
+        // Uma mensagem que serve à assinatura é a prova de que ela funciona.
+        if (depoisDeAutenticar?.aceita(bruto)) return encerrar(true, depoisDeAutenticar.mensagemOk)
       }
       socket.onerror = () => encerrar(false, 'O provedor recusou a conexão de tempo real.')
       socket.onclose = () => encerrar(false, 'O provedor fechou a conexão antes de confirmar a credencial.')
@@ -295,6 +374,7 @@ export class StreamManager {
 
   private async conectar(vivo: Vivo): Promise<void> {
     const id = vivo.record._id.toString()
+    const ctx = contextOf(vivo)
     // A partir daqui, tudo que vier de um socket anterior é passado.
     const geracao = (vivo.geracao += 1)
     this.limparTimers(vivo)
@@ -337,6 +417,20 @@ export class StreamManager {
       const auth = vivo.adapter.authMessage?.(credencial)
       if (auth !== undefined) this.enviar(vivo, auth)
       if (vivo.symbols.size) this.enviar(vivo, vivo.adapter.subscribeMessage([...vivo.symbols]))
+      /**
+       * As inscrições guardadas, mandadas DEPOIS da autenticação.
+       *
+       * Assíncrono porque elas vêm do banco — e é por isso que este bloco existe em vez
+       * de caber em `subscribeMessage`, que é síncrono e recebe símbolos. A ordem
+       * importa: um serviço que ainda não autenticou recusa a inscrição.
+       */
+      void vivo.adapter
+        .framesOnConnect?.(ctx)
+        .then((quadros) => {
+          if (vivo.geracao !== geracao) return
+          for (const q of quadros) this.enviar(vivo, q)
+        })
+        .catch((e) => this.deps.onError(`stream ${id} inscrições`, e))
       this.armarBatimento(vivo)
       this.armarSilencio(vivo)
     }
@@ -363,13 +457,7 @@ export class StreamManager {
   }
 
   private async receber(vivo: Vivo, data: unknown): Promise<void> {
-    const ctx: StreamContext = {
-      ownerId: vivo.record.ownerId,
-      streamId: vivo.record._id.toString(),
-      installationId: vivo.record.installationId,
-      environment: vivo.record.environment,
-      source: `${vivo.record.appKey}:${vivo.record.environment}`,
-    }
+    const ctx = contextOf(vivo)
     /**
      * O adapter que cuida da mensagem inteira recebe o quadro CRU.
      *
@@ -464,14 +552,16 @@ export class StreamManager {
   private armarBatimento(vivo: Vivo): void {
     if (!vivo.adapter.heartbeatMessage) return
     const geracao = vivo.geracao
+    // O intervalo da CONEXÃO, quando ela tem um — limitado pelo teto do ambiente.
+    const intervalo = Math.min(vivo.adapter.heartbeatIntervalMs?.() ?? HEARTBEAT_MS, MAX_INTERVAL_MS)
     const bater = () => {
       if (vivo.encerrado || vivo.geracao !== geracao) return
       this.enviar(vivo, vivo.adapter.heartbeatMessage?.())
-      const proximo = this.deps.schedule(bater, HEARTBEAT_MS)
+      const proximo = this.deps.schedule(bater, intervalo)
       proximo.unref?.()
       vivo.timerHeartbeat = proximo
     }
-    const primeiro = this.deps.schedule(bater, HEARTBEAT_MS)
+    const primeiro = this.deps.schedule(bater, intervalo)
     primeiro.unref?.()
     vivo.timerHeartbeat = primeiro
   }
@@ -499,7 +589,7 @@ export class StreamManager {
       } catch {
         // já era
       }
-    }, SILENCIO_MS)
+    }, Math.min(vivo.adapter.idleTimeoutMs?.() ?? SILENCIO_MS, MAX_INTERVAL_MS))
     mudo.unref?.()
     vivo.timerIdle = mudo
   }

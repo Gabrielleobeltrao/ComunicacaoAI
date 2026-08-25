@@ -44,12 +44,32 @@ export interface StreamAdapter {
   /** Subprotocolos oferecidos. Alguns serviços exigem um para aceitar a conexão. */
   protocols?(): string[]
   /**
+   * Os intervalos DESTA conexão, quando ela tem os seus.
+   *
+   * Ausentes, valem os do ambiente. Presentes, ganham — quem conectou sabe melhor do
+   * que uma variável global de quanto em quanto tempo aquele serviço espera um ping.
+   * O teto continua sendo do ambiente: a configuração escolhe abaixo dele.
+   */
+  heartbeatIntervalMs?(): number
+  idleTimeoutMs?(): number
+  /**
    * Traduzir um quadro do provider em eventos internos.
    *
    * Devolver lista vazia é resposta legítima e comum: ack de subscribe, pong e
    * mensagem de controle não são fato de mercado.
    */
   parse(raw: unknown, ctx: StreamContext): PublishInput[]
+  /**
+   * Os quadros a mandar DEPOIS de conectar e autenticar.
+   *
+   * Existe porque a inscrição de um App genérico não cabe em `subscribeMessage`: aquilo
+   * recebe símbolos, e o que precisa ser enviado aqui é o que está guardado no banco —
+   * as assinaturas ativas daquela conexão, que mudam sem o stream cair.
+   *
+   * Chamado a cada conexão E a cada reconexão: um serviço que caiu esqueceu tudo que
+   * tinha sido pedido, e voltar conectado sem reassinar é voltar mudo.
+   */
+  framesOnConnect?(ctx: StreamContext): Promise<string[]>
   /**
    * Cuida da mensagem INTEIRA, no lugar de `parse`.
    *

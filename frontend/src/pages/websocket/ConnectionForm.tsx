@@ -45,6 +45,10 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [urlOk, setUrlOk] = useState<string | null>(null)
+  // O schema é editado como TEXTO e convertido a cada tecla: guardar só o objeto faria
+  // um JSON pela metade sumir da tela no meio da digitação.
+  const [schemaTexto, setSchemaTexto] = useState(connection.config?.schema ? JSON.stringify(connection.config.schema, null, 2) : '')
+  const [schemaErro, setSchemaErro] = useState<string | null>(null)
 
   const set = (patch: Partial<WsConnectionConfig>) => setConfig((prev) => ({ ...prev, ...patch }))
 
@@ -54,6 +58,10 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
   }
 
   const salvar = async () => {
+    if (schemaErro) {
+      setErro('Corrija o JSON Schema antes de salvar.')
+      return
+    }
     setSalvando(true)
     setErro(null)
     try {
@@ -184,6 +192,72 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
               </Button>
             </div>
           </Field>
+
+          <Field label="Subprotocolos" hint="Separados por vírgula. Alguns serviços exigem um para aceitar a conexão.">
+            <Input
+              value={config.protocols.join(', ')}
+              onChange={(e) =>
+                set({
+                  protocols: e.target.value
+                    .split(',')
+                    .map((t) => t.trim())
+                    .filter(Boolean),
+                })
+              }
+              placeholder="graphql-ws"
+              data-testid="ws-protocols"
+            />
+          </Field>
+
+          <Field label="JSON Schema" hint="Opcional. O que não bater com ele é recusado em vez de virar dado errado.">
+            <Textarea
+              rows={3}
+              value={schemaTexto}
+              onChange={(e) => {
+                setSchemaTexto(e.target.value)
+                if (!e.target.value.trim()) {
+                  setSchemaErro(null)
+                  set({ schema: null })
+                  return
+                }
+                try {
+                  const lido = JSON.parse(e.target.value)
+                  if (typeof lido !== 'object' || lido === null || Array.isArray(lido)) throw new Error('objeto')
+                  setSchemaErro(null)
+                  set({ schema: lido as Record<string, unknown> })
+                } catch {
+                  // A mensagem é sobre o que fazer, e não sobre o parser.
+                  setSchemaErro('Escreva um objeto JSON, como {"type":"object","required":["id"]}.')
+                }
+              }}
+              placeholder='{"type":"object","required":["id"]}'
+              data-testid="ws-schema"
+            />
+          </Field>
+          {schemaErro ? (
+            <p style={{ margin: '-4px 0 0', fontSize: 12.5, color: 'var(--coral-600, #d92d20)' }} data-testid="ws-schema-error">
+              {schemaErro}
+            </p>
+          ) : null}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <Field label="Intervalo do ping (s)" hint="Vale para ESTA conexão.">
+              <Input
+                type="number"
+                value={String(Math.round(config.heartbeat.intervalMs / 1000))}
+                onChange={(e) => set({ heartbeat: { ...config.heartbeat, intervalMs: (Number(e.target.value) || 30) * 1000 } })}
+                data-testid="ws-heartbeat-interval"
+              />
+            </Field>
+            <Field label="Silêncio até reconectar (s)" hint="Sem nenhuma mensagem por este tempo, a conexão é tratada como caída.">
+              <Input
+                type="number"
+                value={String(Math.round(config.idleTimeoutMs / 1000))}
+                onChange={(e) => set({ idleTimeoutMs: (Number(e.target.value) || 90) * 1000 })}
+                data-testid="ws-idle-timeout"
+              />
+            </Field>
+          </div>
 
           <Field label="Deduplicação">
             <select style={selectStyle} value={config.dedupe} onChange={(e) => set({ dedupe: e.target.value as WsDedupeStrategy })} data-testid="ws-dedupe">

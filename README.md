@@ -179,9 +179,19 @@ barramento durável de eventos e os mesmos gatilhos internos.
    conteúdo, identificador, canal e data, além de schema, filtros, deduplicação e
    limites. *Conferir endereço* valida antes de salvar.
 3. **Ligar** — o botão **Ligar** abre a conexão; dá para pausar, retomar e desligar.
-4. **Assinar** — *Assinaturas*: o que ouvir (canal e filtros) e **o que fazer com o que
-   chegar**: só guardar, memória (do agente, setor, andar ou prédio), rotina, agente ou
-   setor. *Só guardar* é o padrão e não gasta token nenhum.
+4. **Assinar** — *Assinaturas*: o que ouvir (canal, filtros e a mensagem de inscrição)
+   e **o que fazer com o que chegar**: só guardar, memória (do agente, setor, andar ou
+   prédio), rotina, agente ou setor. *Só guardar* é o padrão e não gasta token nenhum;
+   cada destino diz o que custa antes de ser escolhido. A inscrição é enviada de
+   verdade — ao conectar, a cada reconexão e assim que a assinatura é criada ou
+   ativada —, e o cancelamento sai ao pausar ou remover. *Testar assinatura* abre uma
+   conexão à parte, autentica, envia a inscrição, espera uma mensagem compatível e
+   fecha tudo.
+
+   **Agente e Setor executam pelo caminho canônico**: a assinatura cria um gatilho por
+   evento — a mesma fila, idempotência, permissões, ferramentas, contabilidade de token
+   e auditoria de qualquer outro. A relação fica à vista na assinatura, muda com ela e é
+   arquivada quando ela é removida.
 5. **Acompanhar** — *Mensagens* mostra o que chegou **e o que foi recusado, com o
    motivo**; *Logs* mostra conexão, reconexão, descarte e disparo.
 
@@ -197,7 +207,13 @@ resolvido de novo a cada conexão e reconexão, que é o que fecha o rebinding.
 Conteúdo que chega por aí é marcado como **não confiável** no evento, e um evento nunca
 ganha ferramenta ou permissão além das que o agente responsável já tem.
 
-Os ajustes (`WS_*`) estão em [`backend/.env.example`](backend/.env.example).
+Intervalo de ping e de silêncio são **por conexão** e valem de verdade no gerenciador;
+o `.env` fica como padrão e como teto. Mudar endereço, autenticação, subprotocolo,
+credencial ou intervalos reabre a conexão sozinho — filtro e caminho, que são lidos a
+cada mensagem, não derrubam nada.
+
+Os ajustes (`WS_*`, `STREAM_MAX_INTERVAL_MS`) estão em
+[`backend/.env.example`](backend/.env.example).
 
 ## Scripts
 

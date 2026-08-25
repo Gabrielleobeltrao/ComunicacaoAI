@@ -22,6 +22,7 @@ const { createRealSocket } = await import('../dist/streams/socket.js')
 const { ensureStreamIndexes, upsertStream } = await import('../dist/streams/repository.js')
 const { streamCredentials } = await import('../dist/streams/service.js')
 const { websocketAdapterFor, writeConnectionConfig } = await import('../dist/integrations/websocket/service.js')
+const { getApp: _getApp } = await import('../dist/apps/registry.js')
 const repo = await import('../dist/integrations/websocket/repository.js')
 const bus = await import('../dist/events/bus.js')
 const { db, mongoClient } = await import('../dist/db.js')
@@ -155,13 +156,14 @@ test('recebe JSON e guarda o que interessa', async () => {
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
   servidor.enviar({ id: 'm-1', canal: 'pedidos', data: { total: 42 } })
 
-  await ate(async () => (await mensagens()).length === 1, 'a mensagem')
+  // Esperar o EVENTO, e não a mensagem: guardar e publicar são duas escritas, e a
+  // segunda ainda não terminou quando a primeira aparece.
+  await ate(async () => (await bus.listEvents(DONO, { type: 'integration.websocket.message' })).length === 1, 'o evento')
   const [m] = await mensagens()
   assert.equal(m.status, 'accepted')
   assert.equal(m.channel, 'pedidos')
   assert.match(m.preview, /42/)
 
-  // E virou evento no barramento durável, com o que serve para filtrar depois.
   const [evento] = await bus.listEvents(DONO, { type: 'integration.websocket.message' })
   assert.ok(evento)
   assert.equal(evento.payload.connectionId, conexao._id.toString())
@@ -481,4 +483,187 @@ test('nem log nem mensagem guardam credencial', async () => {
 
   const tudo = JSON.stringify([await mensagens(), await repo.listLogs(DONO), await bus.listEvents(DONO)])
   assert.ok(!tudo.includes(SEGREDO), 'a credencial não aparece em nada que fica guardado')
+})
+
+// --- as inscrições saem de verdade ------------------------------------------------------
+
+const assinaturaDe = (installationId, over = {}) => ({
+  _id: new ObjectId(),
+  ownerId: DONO,
+  installationId,
+  name: 'Pedidos',
+  subscribeMessage: JSON.stringify({ action: 'subscribe', canal: 'pedidos' }),
+  unsubscribeMessage: JSON.stringify({ action: 'unsubscribe', canal: 'pedidos' }),
+  filters: [],
+  channel: '',
+  active: true,
+  destination: { kind: 'history' },
+  managedAutomationId: null,
+  messageCount: 0,
+  lastMessageAt: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  ...over,
+})
+
+test('as inscrições ativas são mandadas DEPOIS de autenticar', async () => {
+  // Guardar a mensagem e nunca mandá-la é a diferença entre uma conexão que recebe e uma
+  // que fica aberta em silêncio — e o silêncio parece funcionamento.
+  const conexao = await comConexao({ auth: { kind: 'message', messageTemplate: '{"action":"auth","token":"{{token}}"}' } })
+  await repo.insertSubscription(assinaturaDe(conexao._id.toString()))
+  await ligar(conexao)
+  await ate(async () => servidor.estado.recebidas.length >= 2, 'auth + inscrição')
+  assert.deepEqual(JSON.parse(servidor.estado.recebidas[0]), { action: 'auth', token: SEGREDO }, 'a autenticação vem primeiro')
+  assert.deepEqual(JSON.parse(servidor.estado.recebidas[1]), { action: 'subscribe', canal: 'pedidos' })
+})
+
+test('uma assinatura pausada NÃO é mandada', async () => {
+  const conexao = await comConexao()
+  await repo.insertSubscription(assinaturaDe(conexao._id.toString(), { active: false }))
+  await ligar(conexao)
+  await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
+  await new Promise((r) => setTimeout(r, 120))
+  assert.equal(servidor.estado.recebidas.length, 0)
+})
+
+test('depois de reconectar, as inscrições vão de novo', async () => {
+  // Um serviço que caiu esqueceu tudo que foi pedido: voltar conectado sem reassinar é
+  // voltar mudo.
+  const conexao = await comConexao()
+  await repo.insertSubscription(assinaturaDe(conexao._id.toString()))
+  await ligar(conexao)
+  await ate(async () => servidor.estado.recebidas.length === 1, 'a primeira inscrição')
+  servidor.derrubar()
+  await ate(async () => servidor.estado.recebidas.length === 2, 'a inscrição depois da reconexão', 800)
+  assert.deepEqual(JSON.parse(servidor.estado.recebidas[1]), { action: 'subscribe', canal: 'pedidos' })
+})
+
+test('assinar com o socket de pé manda a inscrição na hora', async () => {
+  // Esperar a próxima reconexão faria a assinatura recém-criada não receber nada por
+  // tempo indefinido.
+  const { sendSubscribe, sendUnsubscribe } = await import('../dist/integrations/websocket/subscribe.js')
+  const conexao = await comConexao()
+  await ligar(conexao)
+  await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
+  const assinatura = await repo.insertSubscription(assinaturaDe(conexao._id.toString()))
+
+  assert.equal(await sendSubscribe(DONO, conexao._id.toString(), assinatura), true)
+  await ate(async () => servidor.estado.recebidas.length === 1, 'a inscrição')
+  assert.deepEqual(JSON.parse(servidor.estado.recebidas[0]), { action: 'subscribe', canal: 'pedidos' })
+
+  // E pausar manda o cancelamento: sem isso, o serviço continuaria mandando e a
+  // mensagem chegaria só para ser descartada.
+  assert.equal(await sendUnsubscribe(DONO, conexao._id.toString(), assinatura), true)
+  await ate(async () => servidor.estado.recebidas.length === 2, 'o cancelamento')
+  assert.deepEqual(JSON.parse(servidor.estado.recebidas[1]), { action: 'unsubscribe', canal: 'pedidos' })
+})
+
+test('com o stream desligado, assinar não falha — o quadro sai ao conectar', async () => {
+  const { sendSubscribe } = await import('../dist/integrations/websocket/subscribe.js')
+  const conexao = await comConexao()
+  const assinatura = await repo.insertSubscription(assinaturaDe(conexao._id.toString()))
+  assert.equal(await sendSubscribe(DONO, conexao._id.toString(), assinatura), false, 'não havia conexão')
+
+  await ligar(conexao)
+  await ate(async () => servidor.estado.recebidas.length === 1, 'a inscrição ao conectar')
+})
+
+test('o log diz que assinou, e nunca O QUE assinou', async () => {
+  // Uma inscrição pode conter identificador de conta ou chave de canal privado.
+  const conexao = await comConexao()
+  await repo.insertSubscription(assinaturaDe(conexao._id.toString(), { subscribeMessage: JSON.stringify({ action: 'subscribe', conta: 'segredo-do-cliente' }) }))
+  await ligar(conexao)
+  await ate(async () => (await repo.listLogs(DONO)).some((l) => l.kind === 'subscribed'), 'o registro')
+  const logs = JSON.stringify(await repo.listLogs(DONO))
+  assert.ok(!logs.includes('segredo-do-cliente'))
+})
+
+test('a mensagem de inscrição é conferida contra o formato da conexão', async () => {
+  const { assertFrame } = await import('../dist/integrations/websocket/subscribe.js')
+  const { ValidationError } = await import('../dist/building.js')
+  // Numa conexão JSON, texto solto é erro de configuração e precisa aparecer ao salvar.
+  assert.throws(() => assertFrame('não é json', { format: 'json' }, 'Mensagem'), ValidationError)
+  assert.equal(assertFrame('{"a":1}', { format: 'json' }, 'Mensagem'), '{"a":1}')
+  // Numa conexão de texto, texto é o formato.
+  assert.equal(assertFrame('SUBSCRIBE pedidos', { format: 'text' }, 'Mensagem'), 'SUBSCRIBE pedidos')
+  assert.equal(assertFrame('', { format: 'json' }, 'Mensagem'), '')
+})
+
+// --- os intervalos da conexão valem de verdade ---------------------------------------------
+
+test('o intervalo de silêncio da CONEXÃO é o que vale', async () => {
+  // O `.env` é padrão e teto; quem conectou sabe melhor quanto silêncio daquele serviço
+  // é normal.
+  const conexao = await comConexao({ idleTimeoutMs: 5_000, heartbeat: { enabled: true, message: '{"t":"ping"}', intervalMs: 5_000 } })
+  const adapter = await websocketAdapterFor({ ownerId: DONO, appKey: 'websocket', installationId: conexao._id.toString(), environment: 'default' })
+  assert.equal(adapter.idleTimeoutMs(), 5_000)
+  assert.equal(adapter.heartbeatIntervalMs(), 5_000)
+})
+
+// --- testar assinatura -------------------------------------------------------------------------
+
+test('testar a assinatura abre, autentica, inscreve, espera e fecha', async () => {
+  const { testSubscription } = await import('../dist/integrations/websocket/subscribe.js')
+  // O servidor responde à inscrição com uma mensagem que serve.
+  servidor = await startFakeWs({
+    onConnection: (socket) => {
+      socket.on('message', () => socket.send(JSON.stringify({ canal: 'pedidos', total: 1 })))
+    },
+  })
+  const app = getApp('websocket')
+  const conexao = await createInstallation(DONO, app, {
+    name: 'Serviço',
+    config: { token: SEGREDO },
+    publicMetadata: writeConnectionConfig(normalizar({ endpoint: servidor.url })),
+  })
+  novoGerente()
+  const assinatura = assinaturaDe(conexao._id.toString())
+
+  const antes = servidor.estado.conexoes
+  const r = await testSubscription(DONO, assinatura, { adapterFor: websocketAdapterFor, credentialsOf: streamCredentials })
+  assert.equal(r.ok, true)
+  assert.match(r.message, /compatível/)
+  assert.ok(!JSON.stringify(r).includes(SEGREDO), 'o teste não ecoa a credencial')
+  // Nada ficou de pé: um teste que deixa socket aberto, repetido, vira vazamento.
+  assert.equal(gerente.activeCount, 0)
+  assert.ok(servidor.estado.conexoes > antes)
+})
+
+test('testar uma assinatura que não recebe nada devolve isso, sem inventar sucesso', async () => {
+  const { testSubscription } = await import('../dist/integrations/websocket/subscribe.js')
+  process.env.WS_TEST_TIMEOUT_MS = '300'
+  try {
+    const conexao = await comConexao()
+    novoGerente()
+    const r = await testSubscription(DONO, assinaturaDe(conexao._id.toString()), {
+      adapterFor: websocketAdapterFor,
+      credentialsOf: streamCredentials,
+    })
+    assert.equal(r.ok, false)
+    assert.match(r.message, /nenhuma mensagem compatível/)
+  } finally {
+    delete process.env.WS_TEST_TIMEOUT_MS
+  }
+})
+
+// --- uma mensagem sem assinatura ------------------------------------------------------------
+
+test('mensagem sem assinatura vira histórico — e não dispara nada', async () => {
+  const { registerWebSocketDestinations } = await import('../dist/integrations/websocket/destinations.js')
+  registerWebSocketDestinations()
+  const conexao = await comConexao()
+  await ligar(conexao)
+  await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
+  servidor.enviar({ a: 1 })
+  await ate(async () => (await mensagens()).length === 1, 'a mensagem')
+
+  const [m] = await mensagens()
+  assert.equal(m.status, 'accepted', 'ela foi recebida')
+  assert.equal(m.subscriptionId, null, 'e nenhuma assinatura a reivindicou')
+
+  // O evento existe — o histórico é durável —, mas processá-lo não produz execução
+  // nenhuma: sem assinatura não há destino.
+  const evento = await bus.claimNextEvent('w1')
+  assert.equal(await bus.processEvent(evento), 'done')
+  assert.equal(await db.collection('automation_runs').countDocuments({}), 0)
 })
