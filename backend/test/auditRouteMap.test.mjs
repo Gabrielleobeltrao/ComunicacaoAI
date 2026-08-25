@@ -125,6 +125,7 @@ const ROUTER_PREFIX = {
   'routes/streamRoutes.ts': '/api/streams',
   'routes/policyRoutes.ts': '/api/trading-policies',
   'routes/websocketRoutes.ts': '/api/websocket',
+  'routes/architectRoutes.ts': '/api/architect',
 }
 
 function declaredRoutes() {

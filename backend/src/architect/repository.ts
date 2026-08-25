@@ -28,6 +28,14 @@ export interface ArchitectProject {
   provider: 'anthropic' | 'openai'
   model: string | null
   answers: Record<string, unknown>
+  /**
+   * A pergunta que está no ar agora.
+   *
+   * Sem ela, a próxima mensagem da pessoa é só texto solto: o modelo teria que
+   * redescobrir a cada rodada o que já foi perguntado, e a mesma pergunta voltaria.
+   * Guardando a chave, a resposta vira resposta — registrada, e não perguntada de novo.
+   */
+  pendingQuestion: { key: string; text: string } | null
   assumptions: ArchitectAssumption[]
   blueprintVersion: 1
   blueprint: OfficeBlueprintV1 | null
@@ -107,6 +115,7 @@ export async function createProject(
     provider: input.provider ?? 'anthropic',
     model: input.model ?? null,
     answers: {},
+    pendingQuestion: null,
     assumptions: [],
     blueprintVersion: 1,
     blueprint: null,

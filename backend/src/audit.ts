@@ -73,6 +73,10 @@ export type AuditEntityType =
   | 'knowledge'
   // Um registro guardado pela memória determinística.
   | 'memory'
+  // Um projeto do Arquiteto: a PROPOSTA, não os recursos que ela cria. Cada andar,
+  // agente e setor criado pela aplicação é auditado como ele mesmo, pelo caminho de
+  // sempre — senão a auditoria diria "projeto criado" sobre cinco agentes novos.
+  | 'architect_project'
   | 'settings'
 export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'memory',
@@ -87,6 +91,7 @@ export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'event_trigger',
   'automation',
   'knowledge',
+  'architect_project',
   'settings',
 ]
 

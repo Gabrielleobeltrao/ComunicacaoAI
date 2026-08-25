@@ -187,6 +187,20 @@ const RULES: Rule[] = [
   // Conferir um endereço e testar uma assinatura não mudam nada.
   R('POST', 'api/websocket/check-url', null),
   R('POST', 'api/websocket/subscriptions/:/test', null),
+  // --- Arquiteto do Escritório -------------------------------------------------------
+  // O que fica registrado é o que MUDA a conta: criar o projeto, editá-lo, aplicá-lo,
+  // retomar e arquivar. A conversa não: ela é a fala da pessoa, e o log de auditoria
+  // não é lugar de guardar conteúdo.
+  R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
+  R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/architect/projects/:/archive', { entityType: 'architect_project', action: 'archive' }, { idAt: 3 }),
+  // Conversar, gerar e validar não escrevem recurso nenhum; a prévia é leitura.
+  R('POST', 'api/architect/projects/:/messages', null, { why: 'conversation traffic' }),
+  R('POST', 'api/architect/projects/:/generate', null, { why: 'produces a proposal, changes no resource' }),
+  R('POST', 'api/architect/projects/:/validate', null, { why: 'read-only check' }),
+  // Marcar um item da checklist é anotação do dono sobre o próprio projeto.
+  R('PATCH', 'api/architect/projects/:/checklist/:', null, { why: 'owner note on the project' }),
+
   // Granting or revoking an App on an agent changes what that agent may do.
   R('PATCH', 'api/agents/:/app-grants', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/connections', { entityType: 'connection', action: 'create' }),

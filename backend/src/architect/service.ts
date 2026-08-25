@@ -1,0 +1,270 @@
+import { ObjectId } from 'mongodb'
+import { ValidationError } from '../building.js'
+import { maskSecrets, containsSecret } from './secrets.js'
+import { mergeBlueprintPatch, computeBlueprintHash } from './blueprint.js'
+import { buildArchitectPrompt } from './prompt.js'
+import { runArchitectTurn } from './turn.js'
+import { loadAppsForPrompt, loadOwnershipContext } from './context.js'
+import { buildPreview } from './preview.js'
+import { deriveChecklist, applyChecklistState, computeReadiness } from './checklist.js'
+import { validateOfficeBlueprint } from './validate.js'
+import { isEditable } from './state.js'
+import * as repo from './repository.js'
+import * as L from './limits.js'
+import type { ArchitectProject } from './repository.js'
+import type { ArchitectAssumption, OfficeBlueprintV1 } from './types.js'
+import type { TurnFailure } from './turn.js'
+
+// O que as rotas chamam. Toda função aqui recebe `ownerId` e o repassa a TODA consulta;
+// não existe atalho que leia um projeto por id sozinho.
+
+/** Quantas mensagens do fim da conversa entram no prompt. */
+const CONTEXTO = 12
+
+export class ArchitectRefusal extends Error {
+  constructor(
+    readonly code: TurnFailure['code'] | 'not_editable' | 'no_blueprint' | 'too_many_messages' | 'too_many_projects',
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
+const requireProject = async (ownerId: string, id: ObjectId): Promise<ArchitectProject> => {
+  const p = await repo.getProject(ownerId, id)
+  // O de outra conta e o inexistente são o MESMO caso para quem chama.
+  if (!p) throw new ArchitectRefusal('no_blueprint', 'projeto não encontrado')
+  return p
+}
+
+export async function createProject(ownerId: string, input: { objective: string; title?: string; provider?: 'anthropic' | 'openai'; model?: string | null }): Promise<ArchitectProject> {
+  const objetivo = String(input.objective ?? '').trim()
+  if (!objetivo) throw new ValidationError('descreva o que você quer que a operação faça')
+  if ((await repo.countProjects(ownerId)) >= L.MAX_PROJECTS_PER_OWNER) {
+    throw new ArchitectRefusal('too_many_projects', `você já tem ${L.MAX_PROJECTS_PER_OWNER} projetos; arquive um para começar outro`)
+  }
+  const titulo = String(input.title ?? '').trim() || objetivo.slice(0, 60)
+  const projeto = await repo.createProject(ownerId, { title: titulo, objective: objetivo, provider: input.provider, model: input.model ?? null })
+  // A primeira mensagem é a própria descrição: a conversa começa de onde a pessoa parou.
+  await repo.appendMessage(ownerId, projeto._id, 'user', objetivo)
+  return projeto
+}
+
+/**
+ * Uma rodada de conversa.
+ *
+ * A mensagem é gravada ANTES da chamada. Se o provedor falhar, o que a pessoa escreveu
+ * não some — e a chave de cobrança sai do id dessa mensagem, então repetir a rodada
+ * depois de um erro de rede não cobra duas vezes.
+ */
+export async function sendMessage(
+  ownerId: string,
+  projectId: ObjectId,
+  content: string,
+  opts: { forceProposal?: boolean } = {},
+): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
+
+  const texto = String(content ?? '').trim()
+  if (!texto) throw new ValidationError('escreva alguma coisa')
+  if ((await repo.countMessages(ownerId, projectId)) >= L.MAX_MESSAGES_PER_PROJECT) {
+    throw new ArchitectRefusal('too_many_messages', 'esta conversa chegou ao limite; gere a proposta ou comece um projeto novo')
+  }
+
+  const tinhaSegredo = containsSecret(texto)
+  const mensagem = await repo.appendMessage(ownerId, projectId, 'user', texto)
+  if (tinhaSegredo) {
+    await repo.appendMessage(ownerId, projectId, 'system_notice', 'Removi o que parecia uma credencial da sua mensagem. Credenciais se configuram na página do App, nunca na conversa.')
+  }
+
+  return runTurn(ownerId, projeto, `architect:${projectId.toString()}:${mensagem._id.toString()}`, {
+    forceProposal: opts.forceProposal,
+    secretMasked: tinhaSegredo,
+    // A mensagem responde à pergunta que estava no ar. É isto que faz a mesma pergunta
+    // não voltar na rodada seguinte.
+    answeringPending: mensagem.content,
+  })
+}
+
+/** Gerar/regerar a proposta sem mensagem nova. A chave de cobrança sai do relógio. */
+export async function generateBlueprint(ownerId: string, projectId: ObjectId): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
+  const marca = new ObjectId().toString()
+  return runTurn(ownerId, projeto, `architect:${projectId.toString()}:gen:${marca}`, { forceProposal: true, secretMasked: false })
+}
+
+async function runTurn(
+  ownerId: string,
+  projeto: ArchitectProject,
+  chargeKey: string,
+  opts: { forceProposal?: boolean; secretMasked: boolean; answeringPending?: string },
+): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
+  const [messages, apps] = await Promise.all([repo.recentMessages(ownerId, projeto._id, CONTEXTO), loadAppsForPrompt(ownerId)])
+
+  const respondidas = { ...projeto.answers }
+  if (projeto.pendingQuestion && opts.answeringPending?.trim()) {
+    respondidas[projeto.pendingQuestion.key] = opts.answeringPending.trim()
+  }
+
+  const resultado = await runArchitectTurn({
+    ownerId,
+    provider: projeto.provider,
+    model: projeto.model,
+    prompt: buildArchitectPrompt({ project: { ...projeto, answers: respondidas }, messages, apps, forceProposal: opts.forceProposal }),
+    chargeKey,
+  })
+
+  if (!resultado.ok) {
+    // Fica registrado NA CONVERSA: uma falha invisível vira "o sistema não respondeu".
+    await repo.appendMessage(ownerId, projeto._id, 'system_notice', resultado.failure.message)
+    throw new ArchitectRefusal(resultado.failure.code, resultado.failure.message)
+  }
+
+  const turno = resultado.result
+  await repo.appendMessage(ownerId, projeto._id, 'assistant', turno.assistantText)
+
+  // As respostas acumulam; o patch do modelo não pode apagar o que já foi respondido.
+  const answers = { ...respondidas }
+  for (const [k, v] of Object.entries(turno.answerPatch)) answers[k] = v
+
+  const blueprint = turno.blueprintPatch
+    ? mergeBlueprintPatch(projeto.blueprint, turno.blueprintPatch as Partial<OfficeBlueprintV1>, { title: projeto.title, objective: projeto.objective })
+    : projeto.blueprint
+
+  const assumptions = mesclarSuposicoes(projeto.assumptions, turno.assumptions, answers)
+  const patch: Partial<ArchitectProject> = {
+    answers,
+    pendingQuestion: turno.question ? { key: turno.question.key, text: turno.question.text } : null,
+    assumptions,
+    blueprint,
+    blueprintHash: blueprint ? computeBlueprintHash(blueprint) : null,
+    // Proposta na mesa é `draft`; a validação é que promove para `ready`.
+    status: blueprint ? 'draft' : 'discovery',
+  }
+  if (blueprint) {
+    const checklist = applyChecklistState(deriveChecklist(blueprint), new Set(), marcadosDe(projeto))
+    patch.checklist = checklist
+    patch.readiness = computeReadiness(checklist, [])
+  }
+  const atualizado = (await repo.patchProject(ownerId, projeto._id, patch)) ?? projeto
+
+  return { project: atualizado, assistantText: turno.assistantText, question: turno.question, secretMasked: opts.secretMasked }
+}
+
+/** Uma suposição some quando a pergunta que ela cobria foi respondida. */
+function mesclarSuposicoes(anteriores: ArchitectAssumption[], novas: ArchitectAssumption[], answers: Record<string, unknown>): ArchitectAssumption[] {
+  const porChave = new Map<string, ArchitectAssumption>()
+  for (const a of [...anteriores, ...novas]) {
+    if (a.questionKey && answers[a.questionKey] !== undefined) continue
+    porChave.set(a.key, a)
+  }
+  return [...porChave.values()].slice(0, L.MAX_ASSUMPTIONS)
+}
+
+const marcadosDe = (projeto: ArchitectProject): Set<string> =>
+  new Set((projeto.checklist ?? []).filter((i) => i.completionMode === 'manual' && i.status === 'done').map((i) => i.id))
+
+/** Valida sem escrever recurso nenhum. Válido promove o projeto para `ready`. */
+export async function validateProject(ownerId: string, projectId: ObjectId) {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para validar')
+  const ctx = await loadOwnershipContext(ownerId)
+  const r = validateOfficeBlueprint(projeto.blueprint, ctx)
+  if (isEditable(projeto.status)) {
+    await repo.patchProject(ownerId, projectId, { status: r.valid ? 'ready' : 'draft' })
+  }
+  return r
+}
+
+export async function previewProject(ownerId: string, projectId: ObjectId) {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para revisar')
+  const ctx = await loadOwnershipContext(ownerId)
+  return buildPreview(projeto.blueprint, ctx, marcadosDe(projeto))
+}
+
+/** Editar uma resposta anterior. Regerar a proposta é um passo separado e explícito. */
+export async function patchProjectFields(
+  ownerId: string,
+  projectId: ObjectId,
+  patch: { title?: string; provider?: 'anthropic' | 'openai'; model?: string | null; answers?: Record<string, unknown> },
+): Promise<ArchitectProject> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
+  const set: Partial<ArchitectProject> = {}
+  if (patch.title !== undefined) {
+    const t = String(patch.title).trim()
+    if (!t) throw new ValidationError('o título não pode ficar vazio')
+    set.title = t.slice(0, L.MAX_TITLE_CHARS)
+  }
+  if (patch.provider !== undefined) {
+    if (patch.provider !== 'anthropic' && patch.provider !== 'openai') throw new ValidationError('provedor desconhecido')
+    set.provider = patch.provider
+  }
+  if (patch.model !== undefined) set.model = patch.model ? String(patch.model).slice(0, 120) : null
+  if (patch.answers !== undefined) {
+    if (typeof patch.answers !== 'object' || patch.answers === null || Array.isArray(patch.answers)) throw new ValidationError('respostas inválidas')
+    const answers = { ...projeto.answers }
+    for (const [k, v] of Object.entries(patch.answers).slice(0, L.MAX_ANSWERS)) {
+      // Uma resposta também é texto do usuário: mascarar aqui, como na conversa.
+      answers[k.slice(0, L.MAX_KEY_CHARS)] = typeof v === 'string' ? maskSecrets(v).slice(0, L.MAX_ANSWER_CHARS) : v
+    }
+    set.answers = answers
+  }
+  return (await repo.patchProject(ownerId, projectId, set)) ?? projeto
+}
+
+export async function markChecklistItem(ownerId: string, projectId: ObjectId, itemId: string, done: boolean) {
+  const projeto = await requireProject(ownerId, projectId)
+  const item = (projeto.checklist ?? []).find((i) => i.id === itemId)
+  if (!item) throw new ArchitectRefusal('no_blueprint', 'item não encontrado')
+  // Só o manual. Um item calculado marcado à mão diria "pronto" sobre o que ninguém fez.
+  if (item.completionMode !== 'manual') throw new ValidationError('este item é conferido pelo sistema e não pode ser marcado à mão')
+
+  const marcados = marcadosDe(projeto)
+  if (done) marcados.add(itemId)
+  else marcados.delete(itemId)
+
+  const concluidos = new Set((projeto.checklist ?? []).filter((i) => i.completionMode !== 'manual' && i.status === 'done').map((i) => i.id))
+  const checklist = applyChecklistState(projeto.checklist ?? [], concluidos, marcados)
+  const readiness = computeReadiness(checklist, projeto.readiness?.blockers ?? [])
+  return (await repo.patchProject(ownerId, projectId, { checklist, readiness })) ?? projeto
+}
+
+export async function archiveProject(ownerId: string, projectId: ObjectId): Promise<ArchitectProject> {
+  const projeto = await requireProject(ownerId, projectId)
+  // Arquivar não apaga NADA do que já foi criado: o andar, os agentes e os setores
+  // continuam de pé, editáveis pelas telas normais.
+  const atualizado = await repo.transitionProject(ownerId, projectId, ['discovery', 'draft', 'ready', 'applied', 'failed'], 'archived')
+  if (!atualizado) throw new ArchitectRefusal('not_editable', 'não dá para arquivar um projeto que está sendo aplicado')
+  return atualizado
+}
+
+/** O DTO. A conversa, o prompt e o blueprint inteiro não saem em listagem. */
+export const projectSummary = (p: ArchitectProject) => ({
+  id: p._id.toString(),
+  title: p.title,
+  objective: p.objective,
+  status: p.status,
+  locale: p.locale,
+  readiness: p.readiness,
+  hasBlueprint: Boolean(p.blueprint),
+  createdAt: p.createdAt,
+  updatedAt: p.updatedAt,
+  appliedAt: p.appliedAt,
+})
+
+export const projectDetail = (p: ArchitectProject) => ({
+  ...projectSummary(p),
+  provider: p.provider,
+  model: p.model,
+  answers: p.answers,
+  pendingQuestion: p.pendingQuestion ?? null,
+  assumptions: p.assumptions,
+  blueprint: p.blueprint,
+  blueprintHash: p.blueprintHash,
+  checklist: p.checklist,
+  applyState: p.applyState,
+})

@@ -232,6 +232,7 @@ import { appInstallationRouter } from './routes/appInstallationRoutes.js'
 import { streamRouter } from './routes/streamRoutes.js'
 import { policyRouter } from './routes/policyRoutes.js'
 import { websocketRouter } from './routes/websocketRoutes.js'
+import { architectRouter } from './routes/architectRoutes.js'
 import { appGrantRouter } from './routes/appGrantRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
@@ -415,6 +416,7 @@ app.use('/api/app-installations', requireAuth, appInstallationRouter)
 app.use('/api/streams', requireAuth, streamRouter)
 app.use('/api/trading-policies', requireAuth, policyRouter)
 app.use('/api/websocket', requireAuth, websocketRouter)
+app.use('/api/architect', requireAuth, architectRouter)
 app.use('/api/agents/:agentId', requireAuth, appGrantRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
 app.use('/api/hooks', webhookRouter)

@@ -167,7 +167,7 @@ function architectTurn(prompt: string): string {
           state: 'missing',
         },
       ],
-      appRequirements: [{ key: 'canal-web', appKey: 'web-chat', reason: 'Receber as conversas do site.', required: true, actionKeys: [], agentKeys: ['gerente'] }],
+      appRequirements: [{ key: 'canal-web', appKey: 'web_chat', reason: 'Receber as conversas do site.', required: true, actionKeys: [], agentKeys: ['gerente'] }],
       assumptions: [{ key: 'horario', text: 'Assumi atendimento em horário comercial.', questionKey: 'horarios' }],
       warnings: [],
       checklist: [],
