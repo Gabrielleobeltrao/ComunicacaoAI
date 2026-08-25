@@ -11,6 +11,7 @@
 import { validateDefinition } from '../automations/validate.js'
 import { DEFAULT_LIMITS } from '../automations/types.js'
 import { maskSecrets } from './secrets.js'
+import { referencedKeys, withPlaceholderIds } from './routineSteps.js'
 import * as L from './limits.js'
 import type {
   BlueprintAgent,
@@ -46,6 +47,8 @@ export interface BlueprintOwnershipContext {
   floorIds: Set<string>
   agentIds: Set<string>
   sectorIds: Set<string>
+  /** Rotinas desta conta — uma rotina reutilizada aponta para uma delas. */
+  routineIds: Set<string>
   /** Apps do catálogo que existem de verdade. */
   knownAppKeys: Set<string>
   /** Apps com instalação ATIVA nesta conta — o único caso em que um grant é possível. */
@@ -58,6 +61,7 @@ export const emptyOwnershipContext = (): BlueprintOwnershipContext => ({
   floorIds: new Set(),
   agentIds: new Set(),
   sectorIds: new Set(),
+  routineIds: new Set(),
   knownAppKeys: new Set(),
   installedAppKeys: new Set(),
   appActionKeys: new Map(),
@@ -110,6 +114,23 @@ export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipC
   const agents = bp.agents ?? []
   const sectors = bp.sectors ?? []
   const routines = bp.routines ?? []
+
+  if (bp.buildingPatch !== undefined) {
+    if (!isRecord(bp.buildingPatch)) erro('buildingPatch', 'invalid', 'a mudança no prédio precisa ser um objeto')
+    else {
+      const p = bp.buildingPatch as Record<string, unknown>
+      for (const campo of Object.keys(p)) {
+        if (campo !== 'name' && campo !== 'description') erro(`buildingPatch.${campo}`, 'unsupported_field', `o prédio não tem o campo "${campo}"`)
+      }
+      if (texto(p.name).length > L.MAX_NAME_CHARS) erro('buildingPatch.name', 'too_long', 'nome de prédio longo demais')
+      if (texto(p.description).length > L.MAX_LONG_TEXT_CHARS) erro('buildingPatch.description', 'too_long', 'descrição de prédio longa demais')
+      // Não é erro: é uma mudança em algo que já existe, e por isso vai exigir
+      // aprovação individual na confirmação.
+      if (texto(p.name).trim() || p.description !== undefined) {
+        aviso('buildingPatch', 'building_change', 'esta proposta muda o nome ou a descrição do prédio', 'aprove a mudança na confirmação para ela acontecer')
+      }
+    }
+  }
 
   const total = floors.length + agents.length + sectors.length + routines.length
   if (total > L.MAX_TOTAL_RESOURCES) {
@@ -285,6 +306,9 @@ export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipC
     const fk = texto(routine?.floorKey).trim()
     if (!floorKeys.has(fk)) erro(`${at}.floorKey`, 'unknown_ref', 'a rotina aponta para um andar que não está na proposta')
     if (!agentKeys.has(texto(routine?.ownerAgentKey))) erro(`${at}.ownerAgentKey`, 'unknown_ref', 'a rotina precisa de um agente responsável que esteja na proposta')
+    // A rotina tem ação como qualquer outro item: reutilizar ou alterar exige apontar
+    // para uma rotina desta conta. Antes, ela era sempre criada.
+    conferirAcao(routine, at, ctx.routineIds, 'a rotina')
 
     const tipo = texto(routine?.triggerType)
     if (tipo !== 'manual' && tipo !== 'schedule') {
@@ -296,10 +320,13 @@ export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipC
     // A rotina passa pelo validador que a plataforma já usa. Um segundo conjunto de
     // regras aqui aceitaria uma definição que a tela de rotinas recusa depois.
     if (tipo === 'manual' || tipo === 'schedule') {
+      // As etapas falam por `key`; o validador de rotinas fala por id. Marcadores
+      // válidos deixam a conferência estrutural rodar sem inventar recurso nenhum — a
+      // existência de cada `key` é conferida logo abaixo, contra a própria proposta.
       const definicao = {
         trigger: tipo === 'schedule' ? { type: 'schedule', cron: texto(routine.cron), timezone: texto(routine.timezone) || 'America/Sao_Paulo' } : { type: 'manual' },
         inputs: [],
-        steps: routine?.steps ?? [],
+        steps: withPlaceholderIds(routine?.steps ?? []),
         resultFormat: 'markdown',
         deliveries: [],
         limits: { ...DEFAULT_LIMITS },
@@ -307,6 +334,13 @@ export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipC
       }
       const r = validateDefinition(definicao)
       for (const e of r.errors) erro(`${at}.${e.path}`, 'invalid_routine', e.message)
+
+      for (const ref of referencedKeys(routine?.steps ?? [])) {
+        const conjunto = ref.kind === 'agent' ? agentKeys : ref.kind === 'sector' ? sectorKeys : floorKeys
+        if (!conjunto.has(ref.key)) {
+          erro(`${at}.steps`, 'unknown_ref', `uma etapa aponta para "${ref.key}", que não está na proposta`)
+        }
+      }
     }
   })
 
@@ -339,12 +373,15 @@ export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipC
     const escopo = texto(req?.scope)
     if (!['agent', 'sector', 'floor', 'building'].includes(escopo)) erro(`${at}.scope`, 'invalid_scope', 'escopo de conhecimento inválido')
     const alvo = texto(req?.targetKey).trim()
-    if (escopo !== 'building') {
-      if (!alvo) erro(`${at}.targetKey`, 'required', 'diga a quem este conhecimento pertence')
-      else {
-        const conjunto = escopo === 'agent' ? agentKeys : escopo === 'sector' ? sectorKeys : floorKeys
-        if (!conjunto.has(alvo)) erro(`${at}.targetKey`, 'unknown_ref', `"${alvo}" não está na proposta`)
-      }
+    if (escopo === 'building') {
+      // O prédio é um por conta e quem o resolve é o servidor. Um alvo escrito aqui
+      // seria uma referência que ninguém consegue conferir.
+      if (alvo) erro(`${at}.targetKey`, 'unexpected_target', 'conhecimento do prédio não aponta para um alvo: ele é o prédio da conta')
+    } else if (!alvo) {
+      erro(`${at}.targetKey`, 'required', 'diga a quem este conhecimento pertence')
+    } else {
+      const conjunto = escopo === 'agent' ? agentKeys : escopo === 'sector' ? sectorKeys : floorKeys
+      if (!conjunto.has(alvo)) erro(`${at}.targetKey`, 'unknown_ref', `"${alvo}" não está na proposta`)
     }
     if (texto(req?.content).length > L.MAX_KNOWLEDGE_CONTENT_CHARS) erro(`${at}.content`, 'too_long', 'conteúdo grande demais para o documento')
     // Conteúdo prometido e ausente é pendência, nunca preenchimento.

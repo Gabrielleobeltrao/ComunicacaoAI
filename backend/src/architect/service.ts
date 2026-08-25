@@ -5,11 +5,12 @@ import { mergeBlueprintPatch, computeBlueprintHash } from './blueprint.js'
 import { buildArchitectPrompt } from './prompt.js'
 import { runArchitectTurn } from './turn.js'
 import { loadAppsForPrompt, loadOwnershipContext } from './context.js'
+import { applyBlueprintLinks, loadTargets } from './links.js'
 import { buildPreview } from './preview.js'
 import { deriveChecklist, applyChecklistState, computeReadiness } from './checklist.js'
 import { validateOfficeBlueprint } from './validate.js'
 import { isEditable, RESUME_FROM } from './state.js'
-import { applyBlueprint, resumeApply, rollbackOperation, ApplyConflict } from './apply.js'
+import { applyBlueprint, resumeApply, rollbackOperation, ApplyConflict, ApplyFailure } from './apply.js'
 import type { ApplyHooks } from './apply.js'
 import { recheckProject, appliedLinks } from './recheck.js'
 import * as repo from './repository.js'
@@ -284,7 +285,7 @@ export const projectDetail = (p: ArchitectProject) => ({
 export async function applyProject(
   ownerId: string,
   projectId: ObjectId,
-  input: { blueprintHash: string; idempotencyKey: string; confirm: boolean; approvedAppKeys?: string[] },
+  input: { blueprintHash: string; idempotencyKey: string; confirm: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[] },
   hooks: ApplyHooks = {},
 ) {
   const projeto = await requireProject(ownerId, projectId)
@@ -309,14 +310,44 @@ export async function applyProject(
     const operacao = await applyBlueprint(ownerId, travado, input, hooks)
     return finalizarAplicacao(ownerId, projectId, operacao)
   } catch (error) {
+    // O id REAL da operação, inclusive aqui: é por ele que "retomar" sabe o que
+    // retomar. Uma string vazia deixava a falha sem caminho de volta.
     await repo.patchProject(ownerId, projectId, {
       status: 'failed',
-      applyState: { operationId: '', status: 'failed', blueprintHash: input.blueprintHash, startedAt: new Date(), completedAt: new Date(), error: error instanceof Error ? error.message : 'falha' },
+      applyState: {
+        operationId: error instanceof ApplyFailure ? error.operationId : ((await repo.lastOperation(ownerId, projectId))?._id.toString() ?? ''),
+        status: 'failed',
+        blueprintHash: input.blueprintHash,
+        startedAt: new Date(),
+        completedAt: new Date(),
+        error: error instanceof Error ? error.message : 'falha',
+      },
     })
     if (error instanceof ApplyConflict) throw new ArchitectRefusal('not_editable', error.message)
     throw error
   }
 }
+
+/** Liga itens da proposta a recursos reais desta conta. O id nunca vem do modelo. */
+export async function setBlueprintLinks(ownerId: string, projectId: ObjectId, links: unknown): Promise<ArchitectProject> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
+  if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para ligar')
+  const blueprint = await applyBlueprintLinks(ownerId, projeto.blueprint, links)
+  const checklist = applyChecklistState(deriveChecklist(blueprint), new Set(), marcadosDe(projeto))
+  return (
+    (await repo.patchProject(ownerId, projectId, {
+      blueprint,
+      blueprintHash: computeBlueprintHash(blueprint),
+      checklist,
+      readiness: computeReadiness(checklist, []),
+      // Uma ligação nova precisa ser validada de novo antes de aplicar.
+      status: 'draft',
+    })) ?? projeto
+  )
+}
+
+export const architectTargets = (ownerId: string) => loadTargets(ownerId)
 
 export async function resumeProject(ownerId: string, projectId: ObjectId, hooks: ApplyHooks = {}) {
   const projeto = await requireProject(ownerId, projectId)
@@ -326,7 +357,13 @@ export async function resumeProject(ownerId: string, projectId: ObjectId, hooks:
     const operacao = await resumeApply(ownerId, projeto, hooks)
     return finalizarAplicacao(ownerId, projectId, operacao)
   } catch (error) {
-    await repo.patchProject(ownerId, projectId, { status: 'failed' })
+    const anterior = await repo.lastOperation(ownerId, projectId)
+    await repo.patchProject(ownerId, projectId, {
+      status: 'failed',
+      ...(anterior
+        ? { applyState: { operationId: anterior._id.toString(), status: 'failed' as const, blueprintHash: anterior.blueprintHash, startedAt: anterior.startedAt, completedAt: new Date(), error: error instanceof Error ? error.message : 'falha ao retomar' } }
+        : {}),
+    })
     if (error instanceof ApplyConflict) throw new ArchitectRefusal('not_editable', error.message)
     throw error
   }
@@ -364,7 +401,7 @@ export async function rollbackProject(ownerId: string, projectId: ObjectId) {
   const projeto = await requireProject(ownerId, projectId)
   const operacao = await repo.lastOperation(ownerId, projectId)
   if (!operacao) throw new ArchitectRefusal('no_blueprint', 'não há aplicação para desfazer')
-  const r = await rollbackOperation(ownerId, operacao._id)
+  const r = await rollbackOperation(ownerId, operacao._id, projeto.blueprint)
   await repo.patchProject(ownerId, projectId, { status: 'draft', appliedAt: null })
   return { ...r, project: (await repo.getProject(ownerId, projectId)) ?? projeto }
 }

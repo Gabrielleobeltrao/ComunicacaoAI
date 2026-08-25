@@ -85,6 +85,24 @@ architectRouter.patch('/projects/:id', async (req, res, next) => {
   }
 })
 
+// O que existe nesta conta, para a tela poder oferecer a escolha. Leitura pura.
+architectRouter.get('/targets', async (_req, res) => {
+  res.json(await service.architectTargets(res.locals.userId))
+})
+
+architectRouter.patch('/projects/:id/links', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const body = (req.body ?? {}) as { links?: unknown }
+    const projeto = await service.setBlueprintLinks(res.locals.userId, id, body.links)
+    auditEntity(res, { id: projeto._id.toString(), label: projeto.title })
+    res.json(service.projectDetail(projeto))
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
 architectRouter.get('/projects/:id/messages', async (req, res) => {
   const id = oid(req.params.id)
   if (!id) return notFound(res)
@@ -117,6 +135,7 @@ architectRouter.post('/projects/:id/generate', async (req, res, next) => {
   try {
     comRitmo(res.locals.userId)
     const r = await withProjectLock(id.toString(), () => service.generateBlueprint(res.locals.userId, id))
+    auditEntity(res, { id: r.project._id.toString(), label: r.project.title })
     res.json({ ...service.projectDetail(r.project), assistantText: r.assistantText, question: r.question })
   } catch (error) {
     refuse(res, error, next)
@@ -127,6 +146,7 @@ architectRouter.post('/projects/:id/validate', async (req, res, next) => {
   const id = oid(req.params.id)
   if (!id) return notFound(res)
   try {
+    auditEntity(res, { id: id.toString() })
     res.json(await service.validateProject(res.locals.userId, id))
   } catch (error) {
     refuse(res, error, next)
@@ -176,12 +196,15 @@ architectRouter.post('/projects/:id/apply', async (req, res, next) => {
   const id = oid(req.params.id)
   if (!id) return notFound(res)
   try {
-    const body = (req.body ?? {}) as { blueprintHash?: string; idempotencyKey?: string; confirm?: boolean; approvedAppKeys?: string[] }
+    const body = (req.body ?? {}) as { blueprintHash?: string; idempotencyKey?: string; confirm?: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[] }
     const r = await service.applyProject(res.locals.userId, id, {
       blueprintHash: String(body.blueprintHash ?? ''),
       idempotencyKey: String(body.idempotencyKey ?? ''),
       confirm: body.confirm === true,
       approvedAppKeys: Array.isArray(body.approvedAppKeys) ? body.approvedAppKeys.map(String).slice(0, 20) : [],
+      // O que a tela marcou. Conferido de novo na saga: o checkbox decide o que é
+      // enviado, o servidor decide o que é feito.
+      approvedUpdateKeys: Array.isArray(body.approvedUpdateKeys) ? body.approvedUpdateKeys.map(String).slice(0, 60) : [],
     })
     auditEntity(res, { id: r.project._id.toString(), label: r.project.title })
     res.json({ ...service.projectDetail(r.project), operation: r.operation, links: r.links })

@@ -11,7 +11,7 @@ import type { ArchitectChecklistItem, ArchitectReadiness, OfficeBlueprintV1 } fr
 // confirmação carrega.
 
 export interface PreviewItem {
-  kind: 'floor' | 'agent' | 'sector' | 'routine' | 'app' | 'knowledge'
+  kind: 'building' | 'floor' | 'agent' | 'sector' | 'routine' | 'app' | 'knowledge'
   key: string
   label: string
   /** `wait_user` é o item que depende de algo que só a pessoa pode fazer. */
@@ -41,6 +41,22 @@ const doIssue = (issues: BlueprintIssue[], prefixo: string): BlueprintIssue[] =>
 export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipContext, marcados: Set<string> = new Set()): ArchitectPreview {
   const { valid, issues } = validateOfficeBlueprint(bp, ctx)
   const items: PreviewItem[] = []
+
+  // O prédio, quando a proposta mexe nele. Ele não está em lista nenhuma — antes era
+  // ignorado em silêncio, e renomear o prédio não acontecia sem ninguém avisar.
+  if (bp.buildingPatch && (bp.buildingPatch.name?.trim() || bp.buildingPatch.description !== undefined)) {
+    items.push({
+      kind: 'building',
+      key: 'building',
+      label: bp.buildingPatch.name?.trim() || 'Prédio',
+      action: 'update',
+      detail: 'Muda o nome ou a descrição do prédio desta conta.',
+      dependsOn: [],
+      usesLlm: false,
+      requiresApproval: true,
+      issues: doIssue(issues, 'buildingPatch'),
+    })
+  }
 
   ;(bp.floors ?? []).forEach((f, i) => {
     items.push({

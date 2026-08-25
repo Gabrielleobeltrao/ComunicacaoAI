@@ -193,11 +193,15 @@ const RULES: Rule[] = [
   // não é lugar de guardar conteúdo.
   R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
   R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/archive', { entityType: 'architect_project', action: 'archive' }, { idAt: 3 }),
-  // Conversar, gerar e validar não escrevem recurso nenhum; a prévia é leitura.
+  // Conversar não é auditado: é a fala da pessoa, e o log não guarda conteúdo. Gerar e
+  // revisar, sim — os dois mudam a PROPOSTA, que é o que vai ser aplicado, e sem eles
+  // no log não dá para contar a história de como o projeto chegou onde chegou. O que
+  // fica registrado é a ação e o projeto; nunca o prompt, a conversa ou o blueprint.
   R('POST', 'api/architect/projects/:/messages', null, { why: 'conversation traffic' }),
-  R('POST', 'api/architect/projects/:/generate', null, { why: 'produces a proposal, changes no resource' }),
-  R('POST', 'api/architect/projects/:/validate', null, { why: 'read-only check' }),
+  R('POST', 'api/architect/projects/:/generate', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/architect/projects/:/validate', { entityType: 'architect_project', action: 'test' }, { idAt: 3 }),
   // Marcar um item da checklist é anotação do dono sobre o próprio projeto.
   R('PATCH', 'api/architect/projects/:/checklist/:', null, { why: 'owner note on the project' }),
   // Aplicar é a mudança real: é aqui que andares, agentes e setores passam a existir.

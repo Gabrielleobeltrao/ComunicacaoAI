@@ -1,6 +1,7 @@
 import { listFloors } from '../floors.js'
 import { listAgents } from '../agents.js'
 import { listSectors } from '../sectors.js'
+import { listAutomations } from '../automations/service.js'
 import { listAppsForOwner } from '../apps/privateApps.js'
 import { listInstallations } from '../apps/installations.js'
 import { isUsableApp } from '../apps/types.js'
@@ -21,16 +22,18 @@ export interface ArchitectAppInfo {
 
 export async function loadOwnershipContext(ownerId: string): Promise<BlueprintOwnershipContext> {
   const ctx = emptyOwnershipContext()
-  const [floors, agents, sectors, apps, installations] = await Promise.all([
+  const [floors, agents, sectors, routines, apps, installations] = await Promise.all([
     listFloors(ownerId, { includeArchived: true }),
     listAgents(ownerId),
     listSectors(ownerId),
+    listAutomations(ownerId, { limit: 200, skip: 0 }),
     listAppsForOwner(ownerId),
     listInstallations(ownerId),
   ])
   for (const f of floors) ctx.floorIds.add(f._id.toString())
   for (const a of agents) ctx.agentIds.add(a._id.toString())
   for (const s of sectors) ctx.sectorIds.add(s._id.toString())
+  for (const r of routines.items) ctx.routineIds.add(r._id.toString())
   for (const app of apps) {
     ctx.knownAppKeys.add(app.key)
     ctx.appActionKeys.set(app.key, new Set((app.actions ?? []).map((a) => a.key)))

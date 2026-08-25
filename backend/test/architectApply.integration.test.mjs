@@ -356,7 +356,7 @@ test('reconferir apura contra o estado real: apagar um agente derruba o item', a
   assert.notEqual(r.body.checklist.find((i) => i.id === itemEstrutura.id).status, 'done')
 })
 
-test('conectar o App depois resolve a pendência sozinho, sem ninguém marcar nada', async () => {
+test('conectar o App NÃO basta: sem permissão no agente, a pendência fica — e aponta para ele', async () => {
   const { id, hash } = await projetoPronto()
   const aplicado = await aplicar(id, hash)
   const itemApp = aplicado.body.checklist.find((i) => i.category === 'app')
@@ -364,5 +364,23 @@ test('conectar o App depois resolve a pendência sozinho, sem ninguém marcar na
 
   await createInstallation(DONO, getApp('web_chat'), { name: 'Chat do site' })
   const r = await pedir('POST', `/projects/${id}/recheck`)
+  const depois = r.body.checklist.find((i) => i.id === itemApp.id)
+  assert.notEqual(depois.status, 'done', 'conectado é diferente de concedido')
+  assert.match(depois.description, /não tem permissão/)
+  assert.match(depois.actionPath, /^\/agents\//, 'o link leva ao agente que precisa da permissão')
+})
+
+test('com instalação E permissão, a pendência se resolve sozinha', async () => {
+  await createInstallation(DONO, getApp('web_chat'), { name: 'Chat do site' })
+  const { id, hash } = await projetoPronto()
+  const aplicado = await aplicar(id, hash, 'op-1', { approvedAppKeys: ['web_chat'] })
+  const itemApp = aplicado.body.checklist.find((i) => i.category === 'app')
+
+  const r = await pedir('POST', `/projects/${id}/recheck`)
   assert.equal(r.body.checklist.find((i) => i.id === itemApp.id).status, 'done')
+
+  // E é permissão de verdade no agente, não um estado guardado no projeto.
+  const gerente = await db.collection('agents').findOne({ ownerId: DONO, name: /Gerente/ })
+  assert.equal(gerente.appGrants.length, 1)
+  assert.equal(gerente.appGrants[0].appKey, 'web_chat')
 })

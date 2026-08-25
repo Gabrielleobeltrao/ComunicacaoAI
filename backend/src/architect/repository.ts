@@ -68,6 +68,8 @@ export interface ArchitectApplyOperation {
   resourceMap: Record<string, string>
   steps: ApplyStepResult[]
   error: string | null
+  /** Até quando esta operação está tomada por um processo. Ver `claimOperation`. */
+  leaseUntil?: Date | null
   startedAt: Date
   completedAt: Date | null
 }
@@ -85,6 +87,23 @@ export async function ensureArchitectIndexes(): Promise<void> {
   // aplicação só. Único por dono+projeto+chave, e é o índice que decide — não um
   // `findOne` antes do insert, que perde a corrida.
   await operations.createIndex({ ownerId: 1, projectId: 1, idempotencyKey: 1 }, { unique: true })
+
+  // A marca de origem, nas coleções que o Arquiteto cria.
+  //
+  // ÚNICO e PARCIAL: único porque a mesma aplicação não pode produzir dois recursos
+  // para a mesma `key` — a janela entre criar e registrar o passo é onde isso
+  // aconteceria, e aqui o banco recusa em vez de duplicar. Parcial porque tudo que
+  // existia antes, e tudo criado pelas telas normais, não tem marca nenhuma: sem o
+  // filtro, o índice trataria todos esses documentos como a mesma chave nula.
+  for (const nome of ['offices', 'agents', 'sectors', 'automations']) {
+    await db
+      .collection(nome)
+      .createIndex(
+        { ownerId: 1, 'architect.operationId': 1, 'architect.blueprintKey': 1 },
+        { unique: true, partialFilterExpression: { 'architect.operationId': { $exists: true } }, name: 'architect_origin_unique' },
+      )
+      .catch(() => undefined)
+  }
 }
 
 export const emptyReadiness = (): ArchitectReadiness => ({
@@ -240,6 +259,36 @@ export async function openOperation(
 }
 
 export const getOperation = (ownerId: string, id: ObjectId): Promise<ArchitectApplyOperation | null> => operations.findOne({ _id: id, ownerId })
+
+/**
+ * Toma a operação para si — atomicamente.
+ *
+ * O estado do PROJETO não basta para segurar duas retomadas: um projeto travado em
+ * `applying` (o processo caiu antes de fechar) aceita retomar, e duas abas pedindo ao
+ * mesmo tempo passariam as duas por lá. O que decide é este `findOneAndUpdate`: quem
+ * pegar o arrendamento continua, o outro recebe `false` e para.
+ *
+ * O arrendamento EXPIRA. Sem isso, uma queda no meio da retomada deixaria a operação
+ * travada para sempre, e o dono sem nenhum caminho de volta.
+ */
+export async function claimOperation(ownerId: string, id: ObjectId, leaseMs = 5 * 60_000, agora = new Date()): Promise<boolean> {
+  const r = await operations.findOneAndUpdate(
+    {
+      _id: id,
+      ownerId,
+      status: { $in: ['running', 'failed'] },
+      $or: [{ leaseUntil: { $exists: false } }, { leaseUntil: null }, { leaseUntil: { $lt: agora } }],
+    },
+    { $set: { leaseUntil: new Date(agora.getTime() + leaseMs), status: 'running' } },
+    { returnDocument: 'after' },
+  )
+  return Boolean(r)
+}
+
+/** Devolve o arrendamento ao terminar, para uma retomada seguinte não esperar o prazo. */
+export async function releaseOperation(ownerId: string, id: ObjectId): Promise<void> {
+  await operations.updateOne({ _id: id, ownerId }, { $set: { leaseUntil: null } })
+}
 
 export const lastOperation = (ownerId: string, projectId: ObjectId): Promise<ArchitectApplyOperation | null> =>
   operations.find({ ownerId, projectId }).sort({ startedAt: -1 }).limit(1).next()

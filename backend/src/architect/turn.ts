@@ -71,6 +71,28 @@ export function extractJson(bruto: string): unknown {
 const texto = (v: unknown, teto: number): string => (typeof v === 'string' ? v.slice(0, teto) : '')
 
 /**
+ * Arranca `resourceId` de qualquer profundidade do que o modelo mandou.
+ *
+ * O modelo pode PROPOR reutilizar algo — e essa proposta é bem-vinda. O que ele não
+ * pode é dizer QUAL: um id vindo dele é um id inventado, e um id inventado que case
+ * por acaso com o de outra conta é a diferença entre uma proposta e um vazamento.
+ * Quem preenche esse campo é a tela, escolhendo de uma lista que só tem recurso do
+ * dono, e o servidor confere a posse de novo antes de gravar.
+ */
+export function semResourceId<T>(valor: T): T {
+  if (Array.isArray(valor)) return valor.map((v) => semResourceId(v)) as unknown as T
+  if (valor && typeof valor === 'object') {
+    const fora: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(valor as Record<string, unknown>)) {
+      if (k === 'resourceId') continue
+      fora[k] = semResourceId(v)
+    }
+    return fora as T
+  }
+  return valor
+}
+
+/**
  * Dá forma ao que o modelo devolveu — campo a campo, e nada mais.
  *
  * Um espalhamento (`...resposta`) deixaria qualquer campo extra entrar e seguir até o
@@ -119,7 +141,8 @@ export function normalizeTurn(bruto: unknown): ArchitectTurnResult | null {
     }
   }
 
-  const blueprintPatch = r.blueprintPatch && typeof r.blueprintPatch === 'object' && !Array.isArray(r.blueprintPatch) ? (r.blueprintPatch as Record<string, unknown>) : null
+  const blueprintPatch =
+    r.blueprintPatch && typeof r.blueprintPatch === 'object' && !Array.isArray(r.blueprintPatch) ? semResourceId(r.blueprintPatch as Record<string, unknown>) : null
 
   const lista = <T>(v: unknown, fn: (o: Record<string, unknown>) => T | null, teto: number): T[] =>
     Array.isArray(v)
@@ -181,16 +204,25 @@ export async function runArchitectTurn(input: RunTurnInput): Promise<TurnOutcome
     return { ok: false, failure: { code: 'no_provider_key', message: 'Configure a chave do provedor em Configurações para o Arquiteto poder trabalhar.' }, usage: semUso() }
   }
 
-  // O limite é conferido ANTES de gastar. Depois da chamada, o gasto já aconteceu.
-  const teto = await getMonthlyTokenCap(input.ownerId)
-  if (teto > 0 && (await getMonthlyTokens(input.ownerId)) >= teto) {
-    return { ok: false, failure: { code: 'budget_exceeded', message: 'O limite mensal de tokens desta conta foi atingido.' }, usage: semUso() }
-  }
-
   const maxTokens = input.maxTokens ?? 8000
   let usoTotal = semUso()
 
+  /** O teto, conferido antes de CADA chamada — a primeira e o reparo. */
+  const dentroDoTeto = async (): Promise<boolean> => {
+    const teto = await getMonthlyTokenCap(input.ownerId)
+    return !(teto > 0 && (await getMonthlyTokens(input.ownerId)) >= teto)
+  }
+
+  if (!(await dentroDoTeto())) {
+    return { ok: false, failure: { code: 'budget_exceeded', message: 'O limite mensal de tokens desta conta foi atingido.' }, usage: semUso() }
+  }
+
   const chamar = async (prompt: string, sufixoDaChave: string): Promise<{ text: string } | { erro: TurnFailure }> => {
+    // A primeira chamada já pode ter estourado o teto. Conferir só na entrada
+    // deixava o reparo passar por cima do limite que a conta acabou de atingir.
+    if (!(await dentroDoTeto())) {
+      return { erro: { code: 'budget_exceeded', message: 'O limite mensal de tokens desta conta foi atingido.' } }
+    }
     try {
       const { text, usage } = await askAuxWithUsage(input.provider, prompt, input.model, apiKey, maxTokens)
       usoTotal = somar(usoTotal, usage)
