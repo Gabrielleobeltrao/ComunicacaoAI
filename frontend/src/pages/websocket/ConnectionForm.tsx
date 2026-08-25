@@ -293,9 +293,139 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
             <span>Mandar um ping de tempos em tempos</span>
           </label>
           {config.heartbeat.enabled ? (
-            <Field label="Mensagem do ping" hint="JSON.">
-              <Input value={config.heartbeat.message} onChange={(e) => set({ heartbeat: { ...config.heartbeat, message: e.target.value } })} placeholder='{"type":"ping"}' data-testid="ws-heartbeat-message" />
-            </Field>
+            <>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={config.heartbeat.native}
+                  onChange={(e) => set({ heartbeat: { ...config.heartbeat, native: e.target.checked } })}
+                  data-testid="ws-heartbeat-native"
+                />
+                {/* O ping do protocolo é o padrão: ele não chega como mensagem para a
+                    aplicação do outro lado. Só quem precisa de um quadro próprio desmarca. */}
+                <span>Usar o ping do protocolo (recomendado)</span>
+              </label>
+              {!config.heartbeat.native ? (
+                <Field label="Mensagem do ping" hint="JSON.">
+                  <Input value={config.heartbeat.message} onChange={(e) => set({ heartbeat: { ...config.heartbeat, message: e.target.value } })} placeholder='{"type":"ping"}' data-testid="ws-heartbeat-message" />
+                </Field>
+              ) : null}
+              <Field label="Espera pela resposta do ping (s)" hint="Sem resposta neste tempo, a conexão é dada como morta e reconecta.">
+                <Input
+                  type="number"
+                  value={String(Math.round(config.heartbeat.timeoutMs / 1000))}
+                  onChange={(e) => set({ heartbeat: { ...config.heartbeat, timeoutMs: (Number(e.target.value) || 10) * 1000 } })}
+                  data-testid="ws-heartbeat-timeout"
+                />
+              </Field>
+            </>
+          ) : null}
+
+          <Field label="Prazo do handshake (s)" hint="Quanto esperar a conexão abrir antes de desistir.">
+            <Input
+              type="number"
+              value={String(Math.round(config.connectTimeoutMs / 1000))}
+              onChange={(e) => set({ connectTimeoutMs: (Number(e.target.value) || 15) * 1000 })}
+              data-testid="ws-connect-timeout"
+            />
+          </Field>
+
+          {/* --- cabeçalhos extras --------------------------------------------------- */}
+          <Field label="Cabeçalhos adicionais" hint="Alguns serviços exigem Origin ou um cabeçalho próprio. Use {{token}} no valor para a credencial entrar sem ficar guardada aqui.">
+            <div style={{ display: 'grid', gap: 6 }} data-testid="ws-headers">
+              {config.headers.map((h, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6 }}>
+                  <Input
+                    value={h.name}
+                    placeholder="Origin"
+                    onChange={(e) => set({ headers: config.headers.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)) })}
+                    data-testid={`ws-header-name-${i}`}
+                  />
+                  <Input
+                    value={h.value}
+                    placeholder="https://meu-site.com"
+                    onChange={(e) => set({ headers: config.headers.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)) })}
+                    data-testid={`ws-header-value-${i}`}
+                  />
+                  <Button size="sm" variant="secondary" onClick={() => set({ headers: config.headers.filter((_, j) => j !== i) })} data-testid={`ws-header-remove-${i}`}>
+                    Remover
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button size="sm" variant="secondary" onClick={() => set({ headers: [...config.headers, { name: '', value: '' }] })} data-testid="ws-header-add">
+                  Adicionar cabeçalho
+                </Button>
+              </div>
+            </div>
+          </Field>
+
+          {/* --- mensagens iniciais ---------------------------------------------------- */}
+          <Field label="Mensagens ao conectar" hint="Enviadas nesta ordem assim que a conexão abre. Autenticar primeiro, assinar depois — é o que a maioria dos serviços exige.">
+            <div style={{ display: 'grid', gap: 6 }} data-testid="ws-initial-messages">
+              {config.initialMessages.map((m, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 6 }}>
+                  <Input
+                    value={m}
+                    placeholder='{"action":"subscribe","params":{"symbols":"AAPL,TSLA"}}'
+                    onChange={(e) => set({ initialMessages: config.initialMessages.map((x, j) => (j === i ? e.target.value : x)) })}
+                    data-testid={`ws-initial-message-${i}`}
+                  />
+                  <Button size="sm" variant="secondary" onClick={() => set({ initialMessages: config.initialMessages.filter((_, j) => j !== i) })} data-testid={`ws-initial-remove-${i}`}>
+                    Remover
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button size="sm" variant="secondary" onClick={() => set({ initialMessages: [...config.initialMessages, ''] })} data-testid="ws-initial-add">
+                  Adicionar mensagem
+                </Button>
+              </div>
+            </div>
+          </Field>
+
+          {/* --- mapeamento e dado ao vivo ---------------------------------------------- */}
+          <Field label="Normalizar campos" hint="De onde ler, e como o campo passa a se chamar aqui dentro. É o que faz dois serviços diferentes virarem o mesmo objeto.">
+            <div style={{ display: 'grid', gap: 6 }} data-testid="ws-mapping">
+              {config.mapping.map((r, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6 }}>
+                  <Input
+                    value={r.from}
+                    placeholder="$.data.ticker"
+                    onChange={(e) => set({ mapping: config.mapping.map((x, j) => (j === i ? { ...x, from: e.target.value } : x)) })}
+                    data-testid={`ws-mapping-from-${i}`}
+                  />
+                  <Input
+                    value={r.to}
+                    placeholder="symbol"
+                    onChange={(e) => set({ mapping: config.mapping.map((x, j) => (j === i ? { ...x, to: e.target.value } : x)) })}
+                    data-testid={`ws-mapping-to-${i}`}
+                  />
+                  <Button size="sm" variant="secondary" onClick={() => set({ mapping: config.mapping.filter((_, j) => j !== i) })} data-testid={`ws-mapping-remove-${i}`}>
+                    Remover
+                  </Button>
+                </div>
+              ))}
+              <div>
+                <Button size="sm" variant="secondary" onClick={() => set({ mapping: [...config.mapping, { from: '', to: '' }] })} data-testid="ws-mapping-add">
+                  Adicionar campo
+                </Button>
+              </div>
+            </div>
+          </Field>
+
+          {config.mapping.length > 0 ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+              <Field label="Chave do dado ao vivo" hint="Qual campo identifica a coisa. Normalmente symbol.">
+                <Input value={config.liveKeyPath} placeholder="symbol" onChange={(e) => set({ liveKeyPath: e.target.value })} data-testid="ws-live-key" />
+              </Field>
+              <Field label="Validade (s)" hint="Depois disso o último valor deixa de valer.">
+                <Input type="number" value={String(config.liveTtlSeconds)} onChange={(e) => set({ liveTtlSeconds: Number(e.target.value) || 300 })} data-testid="ws-live-ttl" />
+              </Field>
+              <Field label="Espaço entre eventos (ms)" hint="0 publica tudo. Guardar o valor é barato; publicar é durável e pode disparar trabalho.">
+                <Input type="number" value={String(config.publishThrottleMs)} onChange={(e) => set({ publishThrottleMs: Number(e.target.value) || 0 })} data-testid="ws-throttle" />
+              </Field>
+            </div>
           ) : null}
         </div>
       ) : null}

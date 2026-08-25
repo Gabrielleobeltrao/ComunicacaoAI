@@ -8,7 +8,8 @@ import { getInstallation, listInstallations, patchInstallation } from '../apps/i
 import { resolveAppForOwner } from '../apps/privateApps.js'
 import { checkWebSocketUrl } from '../net/safeWebSocket.js'
 import { readConnectionConfig, websocketAdapterFor, writeConnectionConfig } from '../integrations/websocket/service.js'
-import { assertFrame, sendSubscribe, sendUnsubscribe, testSubscription } from '../integrations/websocket/subscribe.js'
+import { assertFrame, sendRawFrame, sendSubscribe, sendUnsubscribe, testSubscription } from '../integrations/websocket/subscribe.js'
+import { listLiveValues } from '../integrations/websocket/liveData.js'
 import { archiveManagedTrigger, assertDestinationOwned, syncManagedTrigger } from '../integrations/websocket/managedTrigger.js'
 import {
   deleteSubscription,
@@ -246,6 +247,65 @@ function normalizeDestination(bruto: unknown): WsDestination {
  *
  * Nada sensível sai daqui: id e nome, que é o que um seletor mostra.
  */
+/**
+ * Mandar um quadro por uma conexão que está de pé.
+ *
+ * É a ferramenta de quem está configurando: um serviço novo quase sempre exige um
+ * quadro que ninguém previu, e sem isto a única forma de descobrir o formato certo era
+ * salvar, reconectar e olhar. O conteúdo NÃO é registrado — ele pode carregar
+ * identificador de conta ou token de sessão.
+ */
+websocketRouter.post('/connections/:id/send', async (req, res, next) => {
+  try {
+    const id = oid(req.params.id)
+    if (!id) return notFound(res)
+    const instalacao = await getInstallation(res.locals.userId, id)
+    if (!instalacao || instalacao.appKey !== APP_KEY) return notFound(res)
+
+    const frame = String((req.body ?? {}).frame ?? '').slice(0, 8_000)
+    if (!frame.trim()) throw new ValidationError('Escreva a mensagem que você quer enviar.')
+    try {
+      JSON.parse(frame)
+    } catch {
+      throw new ValidationError('A mensagem precisa ser um JSON válido.')
+    }
+
+    const enviado = await sendRawFrame(res.locals.userId, id.toString(), frame)
+    auditEntity(res, { id: id.toString(), label: instalacao.name })
+    res.json({ sent: enviado, message: enviado ? 'Mensagem enviada.' : 'A conexão não está aberta agora.' })
+  } catch (error) {
+    fail(res, error, next)
+  }
+})
+
+/**
+ * O DADO AO VIVO desta conexão: o último valor de cada chave.
+ *
+ * Leitura pura, do dono. É a mesma coisa que os Code Agents leem por `liveData.*` — a
+ * tela mostra o que o cálculo vai ver, e não uma segunda versão da verdade.
+ */
+websocketRouter.get('/live', async (req, res) => {
+  const installationId = typeof req.query.installationId === 'string' ? req.query.installationId : ''
+  if (!installationId) return res.json({ count: 0, items: [] })
+  const id = oid(installationId)
+  if (!id) return res.json({ count: 0, items: [] })
+  const instalacao = await getInstallation(res.locals.userId, id)
+  if (!instalacao || instalacao.appKey !== APP_KEY) return notFound(res)
+
+  const registros = await listLiveValues(res.locals.userId, installationId, String(req.query.prefix ?? ''), 100)
+  const agora = Date.now()
+  res.json({
+    count: registros.length,
+    items: registros.map((r) => ({
+      key: r.key,
+      value: r.value,
+      updates: r.updates,
+      receivedAt: r.receivedAt.toISOString(),
+      ageMs: agora - r.receivedAt.getTime(),
+    })),
+  })
+})
+
 websocketRouter.get('/targets', async (req, res) => {
   const [agentes, setores, andares, rotinas] = await Promise.all([
     listAgents(res.locals.userId),

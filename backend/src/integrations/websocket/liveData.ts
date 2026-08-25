@@ -58,9 +58,46 @@ interface Pendente {
   gravando: boolean
   /** Quando a última gravação saiu — o que decide se a próxima espera ou vai agora. */
   ultimaEm: number
+  /** A ordem de chegada deste valor. Ver `sequencias`. */
+  seq: number
 }
 
 const buffer = new Map<string, Pendente>()
+
+/**
+ * A ORDEM de chegada, por chave — tomada antes de qualquer espera.
+ *
+ * O relógio não serve para isto: dois tiques da mesma chave no mesmo milissegundo têm o
+ * mesmo `receivedAt`, e aí "o mais novo ganha" não decide nada. Um contador tomado de
+ * forma síncrona, antes do primeiro `await`, dá uma ordem estrita — e é ela que impede
+ * uma cotação velha de sobrescrever a nova quando a consulta de limite demora.
+ */
+const sequencias = new Map<string, number>()
+
+/**
+ * Quantas atualizações a chave JÁ tinha antes deste processo vê-la.
+ *
+ * Sem isto, um reinício zerava o contador de atualizações — e um número que volta a
+ * zero sozinho não serve para responder "este dado está andando?", que é a única
+ * pergunta que ele existe para responder.
+ */
+const bases = new Map<string, number>()
+
+function proximaSequencia(id: string): number {
+  const seq = (sequencias.get(id) ?? 0) + 1
+  sequencias.set(id, seq)
+  // Limitado como o resto: o mapa não pode crescer com o tempo.
+  if (sequencias.size > 10_000) {
+    for (const k of [...sequencias.keys()].slice(0, 5_000)) {
+      if (buffer.has(k)) continue
+      // A base acompanha a sequência: descartar uma sem a outra faria o contador
+      // recomeçar do zero na próxima mensagem daquela chave.
+      bases.set(k, (bases.get(k) ?? 0) + (sequencias.get(k) ?? 0))
+      sequencias.delete(k)
+    }
+  }
+  return seq
+}
 
 /**
  * Guarda o valor de uma chave.
@@ -81,8 +118,25 @@ export async function putLiveValue(
   if (!chave) return false
 
   const id = idDe(ownerId, connectionId, chave)
-  const existente = buffer.get(id)
-  if (!existente && !(await cabeMaisUma(ownerId, connectionId, id))) return false
+  // A ordem é tomada AGORA, antes de qualquer espera: é o que dá uma sequência estrita
+  // mesmo entre dois tiques do mesmo milissegundo.
+  const seq = proximaSequencia(id)
+
+  if (!buffer.has(id) && !(await cabeMaisUma(ownerId, connectionId, id))) return false
+
+  /**
+   * O buffer é lido DEPOIS do await, e não antes.
+   *
+   * `cabeMaisUma` consulta o banco, e nesse intervalo outro tique da mesma chave pode
+   * ter chegado e passado na frente. Lendo antes, os dois calculavam `updates` a partir
+   * do mesmo estado e o mais LENTO gravava por último — uma cotação velha sobrescrevendo
+   * a nova, que é o pior defeito possível num dado que existe para ser o valor de agora.
+   */
+  const anterior = buffer.get(id)
+  if (anterior && anterior.seq > seq) {
+    // Já chegou algo mais novo enquanto esta chamada esperava. Não há o que fazer.
+    return true
+  }
 
   const registro: LiveDataRecord = {
     _id: id,
@@ -90,21 +144,43 @@ export async function putLiveValue(
     connectionId,
     key: chave,
     value,
-    updates: (existente?.registro.updates ?? 0) + 1,
+    /**
+     * O contador sai da SEQUÊNCIA, não do que estava no buffer.
+     *
+     * Duas chamadas concorrentes liam o mesmo estado e escreviam o mesmo número: a
+     * segunda cotação chegava com `updates: 1`, como se fosse a primeira. A sequência já
+     * é estritamente crescente por chave, então ela é o contador certo — somada ao que a
+     * chave já tinha antes deste processo.
+     */
+    updates: (bases.get(id) ?? 0) + seq,
     receivedAt: agora,
     expiresAt: new Date(agora.getTime() + Math.max(5, ttlSeconds) * 1000),
   }
-  const pendente: Pendente = { registro, gravando: existente?.gravando ?? false, ultimaEm: existente?.ultimaEm ?? 0 }
+  // O objeto do buffer é REAPROVEITADO quando existe: `gravar` guarda a referência dele
+  // e mexe nela no fim: trocar por um objeto novo deixava a gravação em andamento
+  // marcando `gravando: false` no lugar errado, e a chave nunca mais era gravada.
+  if (anterior) {
+    anterior.registro = registro
+    anterior.seq = seq
+    if (!anterior.gravando && agora.getTime() - anterior.ultimaEm >= FLUSH_MS) await gravar(id)
+    return true
+  }
+  const pendente: Pendente = { registro, gravando: false, ultimaEm: 0, seq }
   buffer.set(id, pendente)
-
-  // Vai agora se faz tempo suficiente; senão, fica no buffer e a próxima chamada leva.
-  if (!pendente.gravando && agora.getTime() - pendente.ultimaEm >= FLUSH_MS) await gravar(id)
+  await gravar(id)
   return true
 }
 
-/** Já existe? Então não é chave nova e o teto não se aplica. */
+/**
+ * Já existe? Então não é chave nova e o teto não se aplica — e o contador dela continua
+ * de onde parou, em vez de recomeçar.
+ */
 async function cabeMaisUma(ownerId: string, connectionId: string, id: string): Promise<boolean> {
-  if (await live.findOne({ _id: id }, { projection: { _id: 1 } })) return true
+  const existente = await live.findOne({ _id: id }, { projection: { updates: 1 } })
+  if (existente) {
+    if (!bases.has(id)) bases.set(id, existente.updates ?? 0)
+    return true
+  }
   const quantas = await live.countDocuments({ ownerId, connectionId })
   return quantas < WS_LIMITS.maxLiveKeysPerConnection
 }
@@ -124,7 +200,7 @@ async function gravar(id: string): Promise<void> {
     pendente.gravando = false
     // Só sai do buffer quando o que está nele é o que já foi gravado: se um tique novo
     // chegou durante a escrita, ele fica esperando a próxima janela.
-    if (buffer.get(id)?.registro === registro) buffer.delete(id)
+    if (pendente.registro === registro) buffer.delete(id)
   }
 }
 
@@ -136,6 +212,8 @@ export async function flushLiveData(): Promise<void> {
 /** Só para os testes: zera o buffer entre casos. */
 export const resetLiveBuffer = (): void => {
   buffer.clear()
+  sequencias.clear()
+  bases.clear()
 }
 
 const vivo = (r: LiveDataRecord | null, agora: Date): LiveDataRecord | null =>

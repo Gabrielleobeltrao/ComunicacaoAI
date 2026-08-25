@@ -7,6 +7,7 @@ import { WebSocketOverview } from '../pages/websocket/Overview'
 import { WebSocketMessages } from '../pages/websocket/Messages'
 import { WebSocketSubscriptions } from '../pages/websocket/Subscriptions'
 import { WebSocketLogs } from '../pages/websocket/Logs'
+import { WebSocketLive } from '../pages/websocket/Live'
 
 // The compiled allow list of App pages.
 //
@@ -85,6 +86,12 @@ export const APP_SURFACE_ROUTES: SurfaceRoute[] = [
     surfaceKey: 'subscriptions',
     path: '/apps/websocket/subscriptions',
     element: () => guarded('websocket', 'subscriptions', 'WebSocket · Assinaturas', <WebSocketSubscriptions />),
+  },
+  {
+    appKey: 'websocket',
+    surfaceKey: 'live',
+    path: '/apps/websocket/live',
+    element: () => guarded('websocket', 'live', 'WebSocket · Dado ao vivo', <WebSocketLive />),
   },
   {
     appKey: 'websocket',

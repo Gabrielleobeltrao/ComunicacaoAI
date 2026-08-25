@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { listConnections, pauseWsStream, resumeWsStream, startConnection, stopWsStream } from '../../lib/websocketApp'
 import type { WsConnection } from '../../lib/websocketApp'
 import { Button, Card } from '../../ui'
-import { SemConexao, WsPage, quando } from './shared'
+import { SemConexao, WsPage, duracao, quando } from './shared'
 import { ConnectionForm } from './ConnectionForm'
 
 /**
@@ -81,6 +81,7 @@ export function WebSocketOverview() {
               </p>
               <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="ws-counts">
                 {c.messages.total} mensagem(ns) · {c.messages.accepted} aproveitada(s) · última {quando(c.messages.lastAt)}
+                {c.stream?.state === 'connected' && c.stream.lastConnectedAt ? ` · no ar ${duracao(c.stream.lastConnectedAt)}` : ''}
               </p>
               {c.stream?.lastError ? (
                 <p style={{ margin: 0, fontSize: 12.5, color: 'var(--coral-600, #d92d20)' }} data-testid="ws-error">

@@ -184,6 +184,9 @@ const RULES: Rule[] = [
   R('POST', 'api/websocket/subscriptions', { entityType: 'connection', action: 'create' }),
   R('PATCH', 'api/websocket/subscriptions/:', { entityType: 'connection', action: 'update' }, { idAt: 3 }),
   R('DELETE', 'api/websocket/subscriptions/:', { entityType: 'connection', action: 'delete' }, { idAt: 3 }),
+  // Mandar um quadro pela conexão é ação de quem administra: fica registrado que
+  // aconteceu, e nunca o que foi mandado.
+  R('POST', 'api/websocket/connections/:/send', { entityType: 'connection', action: 'test' }, { idAt: 3 }),
   // Conferir um endereço e testar uma assinatura não mudam nada.
   R('POST', 'api/websocket/check-url', null),
   R('POST', 'api/websocket/subscriptions/:/test', null),

@@ -44,6 +44,7 @@ export const manifest: AppDefinition = {
     { key: 'overview', label: 'Visão geral', description: 'Conexões, estado, último evento e erros.', kind: 'native', scope: 'account', routeSegment: 'overview' },
     { key: 'messages', label: 'Mensagens', description: 'O que chegou, com filtro por conexão, canal e situação.', kind: 'native', scope: 'account', routeSegment: 'messages' },
     { key: 'subscriptions', label: 'Assinaturas', description: 'O que ouvir em cada conexão, e o que fazer com isso.', kind: 'native', scope: 'account', routeSegment: 'subscriptions' },
+    { key: 'live', label: 'Dado ao vivo', description: 'O último valor de cada chave — o mesmo que os agentes de código leem.', kind: 'native', scope: 'account', routeSegment: 'live' },
     { key: 'logs', label: 'Logs', description: 'Conexão, reconexão, descarte e disparo.', kind: 'native', scope: 'account', routeSegment: 'logs' },
   ],
   sidebar: { pinnable: true, defaultSurfaceKey: 'overview' },

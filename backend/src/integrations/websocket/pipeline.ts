@@ -244,8 +244,11 @@ const ultimaPublicacao = new Map<string, number>()
 export function podePublicar(installationId: string, chave: string, espacoMs: number, agora: number): boolean {
   if (espacoMs <= 0) return true
   const id = `${installationId}:${chave}`
-  const anterior = ultimaPublicacao.get(id) ?? 0
-  if (agora - anterior < espacoMs) return false
+  // NUNCA publicada é diferente de publicada agora há pouco: com um padrão de zero, a
+  // primeira mensagem de cada chave era engolida — e a primeira é justamente a que
+  // ninguém quer perder.
+  const anterior = ultimaPublicacao.get(id)
+  if (anterior !== undefined && agora - anterior < espacoMs) return false
   ultimaPublicacao.set(id, agora)
   // O mapa não pode crescer sem fim: um serviço com chave por mensagem criaria uma
   // entrada por tique. Acima do teto, a metade mais velha sai.

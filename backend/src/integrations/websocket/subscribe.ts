@@ -71,6 +71,21 @@ export const sendUnsubscribe = (ownerId: string, installationId: string, s: WsSu
   mandar(ownerId, installationId, s.unsubscribeMessage, 'dropped', s)
 
 /**
+ * Um quadro AVULSO, escrito por quem está configurando.
+ *
+ * Mesmo caminho de sempre — o gerenciador, o socket que já está de pé —, e a mesma
+ * regra: o log registra QUE foi enviado, nunca o conteúdo. Um quadro escrito à mão é
+ * justamente onde alguém cola um token de sessão para testar.
+ */
+export async function sendRawFrame(ownerId: string, installationId: string, quadro: string): Promise<boolean> {
+  const streamId = await streamDe(ownerId, installationId)
+  if (!streamId) return false
+  const foi = streamManager()?.send(streamId, quadro) ?? false
+  if (foi) await writeLog(ownerId, installationId, 'subscribed', 'mensagem avulsa enviada pela tela')
+  return foi
+}
+
+/**
  * Tudo que está assinado nesta conexão, para mandar ao conectar.
  *
  * É chamado a cada conexão e a cada reconexão: um serviço que caiu esqueceu tudo que
