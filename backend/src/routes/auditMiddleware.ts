@@ -168,6 +168,8 @@ const RULES: Rule[] = [
   R('POST', 'api/streams/:/reconnect', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
   // Testar não muda nada — e é registrado como teste, igual ao da conexão.
   R('POST', 'api/streams/test', { entityType: 'connection', action: 'test' }),
+  // Mudar uma política é mudar o que a conta pode fazer. Precisa constar.
+  R('POST', 'api/trading-policies', { entityType: 'connection', action: 'update' }),
   // Granting or revoking an App on an agent changes what that agent may do.
   R('PATCH', 'api/agents/:/app-grants', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/connections', { entityType: 'connection', action: 'create' }),

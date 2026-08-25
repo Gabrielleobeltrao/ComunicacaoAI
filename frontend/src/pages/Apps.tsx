@@ -6,6 +6,7 @@ import { PrivateAppsPanel } from '../components/PrivateAppsPanel'
 import { AppLogo } from '../components/AppLogo'
 import { AppDetailDialog } from '../components/AppDetailDialog'
 import { StreamPanel } from '../components/StreamPanel'
+import { TradingPolicyPanel } from '../components/TradingPolicyPanel'
 import { listStreams } from '../lib/streams'
 import type { MarketStream } from '../lib/streams'
 import {
@@ -417,6 +418,10 @@ function ConnectedList({
               {streams[i.id] ? (
                 <StreamPanel stream={streams[i.id]} onChange={(s) => setStreams((prev) => ({ ...prev, [s.installationId]: s }))} />
               ) : null}
+
+              {/* Segurança só aparece onde há o que limitar: um App cujas ações são
+                  todas de leitura não tem política de operação nenhuma. */}
+              {app?.actions?.some((a) => a.risk === 'high_risk') ? <TradingPolicyPanel installationId={i.id} /> : null}
 
               {message?.id === i.appKey || message?.id === i.id ? (
                 <p style={{ margin: 0, fontSize: 12.5, color: message.ok ? 'var(--intent-brand)' : 'var(--coral-600, #d92d20)' }}>{message.text}</p>

@@ -105,6 +105,7 @@ async function stub(
     navigation?: unknown[]
     access?: { ok: boolean; reason?: string; appName?: string; activationRoute?: string }
     streams?: unknown[]
+    policy?: unknown
   } = {},
 ) {
   created = null
@@ -133,6 +134,8 @@ async function stub(
   await page.route('**/api/app-installations/*/test', (r) => r.fulfill({ json: { ok: true, message: 'Configuração lida com sucesso.' } }))
   // Streaming é exceção nesta tela: quase toda conexão é REST e devolve lista vazia.
   await page.route('**/api/streams', (r) => r.fulfill({ json: opts.streams ?? [] }))
+  await page.route('**/api/trading-policies/active**', (r) => r.fulfill({ json: opts.policy ?? null }))
+  await page.route('**/api/trading-policies', (r) => r.fulfill({ status: 201, json: { id: 'p1', installationId: INSTALLATION.id, agentId: null, version: 3, active: true, rules: {}, createdAt: NOW, updatedAt: NOW } }))
   await page.route('**/api/streams/*/pause', (r) => r.fulfill({ json: { ...(opts.streams?.[0] ?? {}), state: 'paused' } }))
   await page.route('**/api/streams/*/reconnect', (r) => r.fulfill({ json: { ...(opts.streams?.[0] ?? {}), state: 'connecting', lastError: null } }))
   await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: opts.navigation ?? [], pinned: [] } }))
@@ -672,4 +675,46 @@ test('uma conexão sem stream não ganha painel nenhum', async ({ page }) => {
   await page.goto('/apps?tab=connected')
   await expect(page.getByTestId('installation-card').first()).toBeVisible()
   await expect(page.getByTestId('stream-panel')).toHaveCount(0)
+})
+
+// --- segurança da conexão ---------------------------------------------------------------
+
+const CORRETORA_CATALOGO = {
+  ...SLACK,
+  key: 'alpaca',
+  name: 'Alpaca (simulação)',
+  actions: [
+    { key: 'alpaca_conta', name: 'Consultar conta', description: 'Saldo.', risk: 'read', inputSchema: {}, resourceFields: [] },
+    { key: 'alpaca_criar_ordem', name: 'Enviar ordem', description: 'Envia ordem.', risk: 'high_risk', inputSchema: {}, resourceFields: [] },
+  ],
+}
+
+test('a conexão que opera ganha uma seção Segurança, com o resumo do que já vale', async ({ page }) => {
+  await stub(page, {
+    installations: [{ ...INSTALLATION, appKey: 'alpaca', environment: 'paper' }],
+    policy: { id: 'p1', installationId: INSTALLATION.id, agentId: null, version: 2, active: true, rules: { maxOrderValue: 1000, maxOrdersPerDay: 5 }, createdAt: NOW, updatedAt: NOW },
+  })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [{ ...CORRETORA_CATALOGO, connected: true, installationCount: 1 }] }))
+  await page.goto('/apps?tab=connected')
+
+  // Fechado, ele já conta o que vale: um limite que só aparece depois de abrir não
+  // protege ninguém de esquecer que ele existe.
+  await expect(page.getByTestId('policy-summary')).toContainText('1.000,00')
+  await expect(page.getByTestId('policy-summary')).toContainText('5 operações por dia')
+
+  await page.getByTestId('policy-toggle').click()
+  await expect(page.getByTestId('policy-max-value')).toHaveValue('1000')
+  // O raro fica recolhido: doze limites na cara é um formulário que ninguém preenche.
+  await expect(page.getByTestId('policy-advanced')).toHaveCount(0)
+  await page.getByTestId('policy-advanced-toggle').click()
+  await expect(page.getByTestId('policy-max-loss')).toBeVisible()
+  await expect(page.getByTestId('policy-allowlist')).toBeVisible()
+})
+
+test('uma conexão que só lê não tem seção Segurança', async ({ page }) => {
+  // Um App cujas ações são todas de leitura não tem política de operação nenhuma.
+  await stub(page, { installations: [INSTALLATION] })
+  await page.goto('/apps?tab=connected')
+  await expect(page.getByTestId('installation-card').first()).toBeVisible()
+  await expect(page.getByTestId('policy-panel')).toHaveCount(0)
 })

@@ -4,6 +4,35 @@ import { AppLogo } from './AppLogo'
 import { listAppCatalog, listAgentGrants, listInstallations, saveAgentGrants, RISK_LABEL } from '../lib/apps'
 import type { AppCatalogEntry, AppGrant, AppInstallation } from '../lib/apps'
 import { Button } from '../ui'
+import { activePolicy, describeRules } from '../lib/tradingPolicies'
+import type { TradingPolicy } from '../lib/tradingPolicies'
+
+/**
+ * O que já está limitado nesta conexão, mostrado ANTES de autorizar uma ação crítica.
+ *
+ * Autorizar um agente a mandar ordem sozinho é uma decisão; tomá-la sem ver o teto que
+ * vale é outra. Ler três linhas aqui é mais rápido do que abrir a configuração da
+ * conexão — e é a diferença entre autorizar sabendo e autorizar achando.
+ */
+function PolicyNote({ installationId, agentId }: { installationId: string; agentId: string | null }) {
+  const [policy, setPolicy] = useState<TradingPolicy | null>(null)
+  useEffect(() => {
+    let vivo = true
+    activePolicy(installationId, agentId)
+      .then((p) => vivo && setPolicy(p))
+      .catch(() => undefined)
+    return () => {
+      vivo = false
+    }
+  }, [installationId, agentId])
+
+  const linhas = policy ? describeRules(policy.rules) : []
+  return (
+    <p className="mt-2 text-xs text-(--text-faint)" data-testid="grant-policy">
+      {linhas.length ? `Limites em vigor: ${linhas.join(' · ')}.` : 'Nenhum limite configurado nesta conexão — em Apps, na seção Segurança.'}
+    </p>
+  )
+}
 
 // What this agent may do with the Apps the account has connected.
 //
@@ -243,6 +272,8 @@ export function AgentAppGrantsEditor({ agentId }: { agentId: string | null }) {
                         </span>
                       </span>
                     </label>
+
+                    {on && action.risk === 'high_risk' ? <PolicyNote installationId={installation.id} agentId={agentId} /> : null}
 
                     {on && action.risk !== 'read' ? (
                       <label className="mt-2 flex items-start gap-2 border-t border-(--border-subtle) pt-2">

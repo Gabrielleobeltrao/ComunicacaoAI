@@ -9,6 +9,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
+// O adapter passou a consultar a política antes de mandar ordem, e a política mora no
+// banco. Nada aqui conecta: a URL existe só para o módulo carregar.
+process.env.MONGODB_URI = process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/alpaca-unit-test'
+
 const { buildAlpacaTools } = await import('../dist/apps/official/alpaca/adapter.js')
 const { createAlpacaClient, tradingBaseFor, translateStatus, scrub, AlpacaError } = await import('../dist/apps/official/alpaca/client.js')
 const { alpacaStreamAdapter } = await import('../dist/apps/official/alpaca/stream.js')
@@ -155,7 +159,11 @@ test('a ordem é montada no formato da corretora', async () => {
   const f = fetchFalso([{ status: 200, body: { id: 'o-1', symbol: 'AAPL', side: 'buy', type: 'limit', qty: '10', status: 'accepted' } }])
   const r = JSON.parse((await acha(ferramentas(f), 'alpaca_criar_ordem').run({ symbol: 'aapl', side: 'BUY', quantity: 10, type: 'limit', limitPrice: 150.5 })).result)
   assert.equal(r.id, 'o-1')
-  assert.deepEqual(f.chamadas[0].body, { symbol: 'AAPL', side: 'buy', qty: '10', type: 'limit', time_in_force: 'day', limit_price: '150.5' })
+  const { client_order_id: chave, ...corpo } = f.chamadas[0].body
+  assert.deepEqual(corpo, { symbol: 'AAPL', side: 'buy', qty: '10', type: 'limit', time_in_force: 'day', limit_price: '150.5' })
+  // A chave de idempotência viaja com a ordem: é por ela que se pergunta "saiu?" quando
+  // a resposta não volta.
+  assert.match(chave, /^cai-/)
   assert.equal(f.chamadas[0].method, 'POST')
   assert.match(f.chamadas[0].url, /paper-api\.alpaca\.markets/)
 })
@@ -182,7 +190,8 @@ test('bracket sem uma das pernas não é bracket', async () => {
 test('o bracket leva entrada, stop e alvo numa ordem só', async () => {
   const f = fetchFalso([{ status: 200, body: { id: 'o-2', symbol: 'AAPL', status: 'accepted' } }])
   await acha(ferramentas(f), 'alpaca_ordem_bracket').run({ symbol: 'AAPL', side: 'buy', quantity: 2, takeProfitPrice: 210, stopLossPrice: 190 })
-  assert.deepEqual(f.chamadas[0].body, {
+  const { client_order_id: chave, ...corpo } = f.chamadas[0].body
+  assert.deepEqual(corpo, {
     symbol: 'AAPL',
     side: 'buy',
     qty: '2',
@@ -192,6 +201,7 @@ test('o bracket leva entrada, stop e alvo numa ordem só', async () => {
     take_profit: { limit_price: '210' },
     stop_loss: { stop_price: '190' },
   })
+  assert.match(chave, /^cai-/)
 })
 
 test('cancelar e substituir usam o método certo e exigem o id', async () => {
@@ -276,4 +286,50 @@ test('uma conexão nova da Alpaca nasce marcada como simulação', () => {
   // Sem isto ela nasceria "default", ficaria com cara de produção na tela, e o selo —
   // que é a única defesa contra confundir as duas — nunca apareceria.
   assert.equal(manifest.defaultEnvironment, 'paper')
+})
+
+// --- resultado incerto: reconciliar, nunca repetir -------------------------------------
+
+test('conexão caída depois de mandar a ordem: pergunta se ela existe em vez de mandar outra', async () => {
+  // O caso real: a ordem chegou na corretora e a resposta não voltou. Repetir mandaria
+  // a segunda; desistir deixaria a primeira aberta sem ninguém saber.
+  let tentativas = 0
+  const f = async (url, init = {}) => {
+    const u = String(url)
+    if (u.includes('by_client_order_id')) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ id: 'o-77', symbol: 'AAPL', status: 'accepted' }) }
+    }
+    if (init.method === 'POST') {
+      tentativas += 1
+      throw new Error('ECONNRESET')
+    }
+    return { ok: true, status: 200, text: async () => '{}' }
+  }
+  const r = await acha(ferramentas(f), 'alpaca_criar_ordem').run({ symbol: 'AAPL', side: 'buy', quantity: 1, type: 'limit', limitPrice: 10 })
+  assert.equal(r.ok, true)
+  assert.equal(JSON.parse(r.result).id, 'o-77', 'a ordem que já existia é a resposta')
+  assert.equal(tentativas, 1, 'uma tentativa, e só uma')
+})
+
+test('uma RECUSA não é resultado incerto: não se reconcilia nem se repete', async () => {
+  // Uma recusa é uma resposta — ela não deixou nada pendurado do outro lado.
+  const chamadas = []
+  const f = async (url, init = {}) => {
+    chamadas.push(String(url))
+    return { ok: false, status: 422, text: async () => 'insufficient buying power' }
+  }
+  const r = await acha(ferramentas(f), 'alpaca_criar_ordem').run({ symbol: 'AAPL', side: 'buy', quantity: 1, type: 'limit', limitPrice: 10 })
+  assert.equal(r.ok, false)
+  assert.equal(chamadas.filter((u) => u.includes('by_client_order_id')).length, 0)
+  assert.equal(chamadas.length, 1)
+})
+
+test('se nem a reconciliação responde, a falha sobe — não se manda outra ordem', async () => {
+  const f = async () => {
+    throw new Error('ECONNRESET')
+  }
+  const r = await acha(ferramentas(f), 'alpaca_criar_ordem').run({ symbol: 'AAPL', side: 'buy', quantity: 1, type: 'limit', limitPrice: 10 })
+  assert.equal(r.ok, false)
+  // Uma ordem duplicada é pior do que uma ordem que talvez não tenha saído.
+  assert.match(r.result, /network/)
 })

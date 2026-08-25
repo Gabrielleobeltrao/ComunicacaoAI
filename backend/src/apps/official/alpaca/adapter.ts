@@ -1,5 +1,9 @@
+import { randomUUID } from 'node:crypto'
 import type { ResolvedTool } from '../../../agentTools.js'
 import type { NativeFactory } from '../../types.js'
+import { PolicyDenied, guardOrder } from '../../../policies/guard.js'
+import type { GuardScope } from '../../../policies/guard.js'
+import type { OrderIntent } from '../../../policies/evaluate.js'
 import { AlpacaError, createAlpacaClient } from './client.js'
 import type { AlpacaClient, ClientDeps } from './client.js'
 
@@ -25,6 +29,18 @@ const responder = async (trabalho: () => Promise<unknown>): Promise<{ ok: boolea
   try {
     return { ok: true, result: JSON.stringify(await trabalho()) }
   } catch (error) {
+    // A recusa por política é diferente de uma falha da corretora: nada saiu daqui, e o
+    // que o modelo precisa saber é qual regra barrou — para não tentar de novo igual.
+    if (error instanceof PolicyDenied) {
+      return {
+        ok: false,
+        result: JSON.stringify({
+          status: 'policy_denied',
+          environment: error.environment,
+          violations: error.verdict.violations,
+        }),
+      }
+    }
     if (error instanceof AlpacaError) {
       return { ok: false, result: JSON.stringify({ status: 'provider_error', kind: error.kind, reason: error.message }) }
     }
@@ -103,7 +119,21 @@ function ordemBase(args: Record<string, unknown>): Record<string, unknown> {
   }
 }
 
-export function buildAlpacaTools(config: Record<string, string>, environment: string, deps: ClientDeps = {}): ResolvedTool[] {
+/** As ações que contam como "operação" para o teto diário. */
+export const ORDER_ACTION_KEYS = ['alpaca_criar_ordem', 'alpaca_ordem_bracket']
+
+export interface AlpacaContext {
+  ownerId: string
+  installationId: string
+  agentId?: string | null
+}
+
+export function buildAlpacaTools(
+  config: Record<string, string>,
+  environment: string,
+  deps: ClientDeps = {},
+  contexto?: AlpacaContext,
+): ResolvedTool[] {
   const keyId = config.keyId?.trim() ?? ''
   const secretKey = config.secretKey?.trim() ?? ''
   // Sem credencial não se monta ferramenta nenhuma: o grant vira "configuração
@@ -117,6 +147,95 @@ export function buildAlpacaTools(config: Record<string, string>, environment: st
     // Ambiente bloqueado: nenhuma ferramenta existe. É a tranca mais forte possível —
     // não há o que chamar.
     return []
+  }
+
+  /**
+   * A porteira, chamada no último instante — logo antes de a ordem sair.
+   *
+   * Sem contexto de conexão não há política a consultar (é o caso do playground e dos
+   * testes de contrato do adapter), e aí a ordem segue: a política é da CONEXÃO, e sem
+   * conexão não existe uma para aplicar.
+   */
+  const conferir = async (args: Record<string, unknown>) => {
+    if (!contexto) return
+    const scope: GuardScope = {
+      ownerId: contexto.ownerId,
+      installationId: contexto.installationId,
+      agentId: contexto.agentId ?? null,
+      environment,
+    }
+    await guardOrder(scope, intencao(args), {
+      estimatePrice: () => precoEstimado(args),
+      account: async () => {
+        const c = await cliente.trading<Record<string, unknown>>('/v2/account')
+        return { equity: numeroOuNulo(c.equity), lastEquity: numeroOuNulo(c.last_equity) }
+      },
+      positions: async () =>
+        (await cliente.trading<Record<string, unknown>[]>('/v2/positions')).map((p) => ({
+          symbol: texto(p.symbol),
+          quantity: numeroOuNulo(p.qty) ?? 0,
+          side: texto(p.side),
+        })),
+      orderActionKeys: ORDER_ACTION_KEYS,
+      now: () => (deps.now ? new Date(deps.now()) : new Date()),
+    })
+  }
+
+  /**
+   * O preço com que o valor da operação é estimado.
+   *
+   * Numa limitada é o próprio limite. Numa a mercado, a última cotação — e se ela não
+   * vier, o valor fica indefinido e as regras de valor BARRAM. É o certo: um limite que
+   * some justo quando o mercado está estranho não é um limite.
+   */
+  const precoEstimado = async (args: Record<string, unknown>): Promise<number | null> => {
+    const limite = numeroOuNulo(args.limitPrice)
+    if (limite !== null) return limite
+    try {
+      const r = await cliente.data<{ quote?: Record<string, unknown> }>(`/v2/stocks/${encodeURIComponent(simbolo(args.symbol))}/quotes/latest`)
+      return numeroOuNulo(r.quote?.ap) ?? numeroOuNulo(r.quote?.bp)
+    } catch {
+      return null
+    }
+  }
+
+  const intencao = (args: Record<string, unknown>): OrderIntent => ({
+    symbol: simbolo(args.symbol),
+    side: texto(args.side).toLowerCase() === 'sell' ? 'sell' : 'buy',
+    quantity: Number(args.quantity) || 0,
+    type: texto(args.type).toLowerCase() === 'limit' ? 'limit' : 'market',
+    limitPrice: numeroOuNulo(args.limitPrice),
+    stopLossPrice: numeroOuNulo(args.stopLossPrice),
+    takeProfitPrice: numeroOuNulo(args.takeProfitPrice),
+  })
+
+  /**
+   * Enviar a ordem com chave de idempotência, e RECONCILIAR em vez de repetir.
+   *
+   * O caso que isto resolve: a conexão cai depois de a ordem chegar na corretora e
+   * antes de a resposta voltar. Repetir mandaria a segunda ordem; desistir deixaria a
+   * primeira aberta sem ninguém saber. Perguntar pelo `client_order_id` é a única
+   * resposta que não inventa nem esconde.
+   */
+  const enviarOrdem = async (body: Record<string, unknown>) => {
+    const clientOrderId = `cai-${randomUUID()}`
+    try {
+      return await cliente.trading<Record<string, unknown>>('/v2/orders', { method: 'POST', body: { ...body, client_order_id: clientOrderId } })
+    } catch (error) {
+      // Só quando o resultado ficou INCERTO. Uma recusa é uma resposta: ela não deixou
+      // nada pendurado do outro lado.
+      if (!(error instanceof AlpacaError) || (error.kind !== 'network' && error.kind !== 'unavailable')) throw error
+      try {
+        const existente = await cliente.trading<Record<string, unknown>>('/v2/orders:by_client_order_id', {
+          query: { client_order_id: clientOrderId },
+        })
+        if (existente && texto(existente.id)) return existente
+      } catch {
+        // A consulta também não foi. Não repetir é a escolha certa: uma ordem duplicada
+        // é pior do que uma ordem que talvez não tenha saído.
+      }
+      throw error
+    }
   }
 
   const ferramenta = (
@@ -213,7 +332,11 @@ export function buildAlpacaTools(config: Record<string, string>, environment: st
         ['symbol', 'side', 'quantity'],
       ),
       'high_risk',
-      async (args) => ordem(await cliente.trading<Record<string, unknown>>('/v2/orders', { method: 'POST', body: ordemBase(args) })),
+      async (args) => {
+        const body = ordemBase(args)
+        await conferir(args)
+        return ordem(await enviarOrdem(body))
+      },
     ),
 
     ferramenta(
@@ -246,7 +369,8 @@ export function buildAlpacaTools(config: Record<string, string>, environment: st
           take_profit: { limit_price: String(take) },
           stop_loss: { stop_price: String(stop) },
         }
-        return ordem(await cliente.trading<Record<string, unknown>>('/v2/orders', { method: 'POST', body }))
+        await conferir(args)
+        return ordem(await enviarOrdem(body))
       },
     ),
 
@@ -306,6 +430,15 @@ export function buildAlpacaTools(config: Record<string, string>, environment: st
 
 // O ambiente vem da CONEXÃO, nunca de um campo de configuração: é ele que decide se a
 // ordem vai para a simulação ou para o mercado.
-export const alpacaTools: NativeFactory = (_ownerId, config, ctx) => buildAlpacaTools(config, ctx?.environment ?? 'paper')
+//
+// Cancelar e encerrar posição NÃO passam pela política, de propósito: uma regra que
+// impede alguém de sair de uma posição é pior do que regra nenhuma.
+export const alpacaTools: NativeFactory = (ownerId, config, ctx) =>
+  buildAlpacaTools(
+    config,
+    ctx?.environment ?? 'paper',
+    {},
+    ctx?.installationId ? { ownerId, installationId: ctx.installationId, agentId: ctx.agentId ?? null } : undefined,
+  )
 
 export const adapters: NativeFactory[] = [alpacaTools]

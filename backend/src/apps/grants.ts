@@ -21,6 +21,19 @@ import { isUsableManifest, resolveAppForOwner } from './privateApps.js'
 import { isUsableApp } from './types.js'
 import type { AppDefinition, AppActionDefinition, AppInstallation, AgentAppGrant, NativeFactory } from './types.js'
 import { decryptInstallationConfig, getInstallation, isInstallationUsable } from './installations.js'
+import { ensureAppActionIndexes, recordActionEvent } from './actionEvents.js'
+import type { AppActionEvent } from './actionEvents.js'
+
+// Reexportados: eram exportados daqui antes da separação, e quem os importa continua
+// importando do mesmo lugar.
+export { ensureAppActionIndexes, countActionsSince } from './actionEvents.js'
+export type { AppActionEvent } from './actionEvents.js'
+
+// An installed version is pinned. A manifest whose MAJOR moved changed the meaning
+// of its actions or its permissions, so it needs the owner to review, not a silent
+// upgrade (plan §10).
+export const isVersionCompatible = (installed: string, current: string): boolean =>
+  String(installed).split('.')[0] === String(current).split('.')[0]
 import { environmentOf } from './connectionProfile.js'
 
 /**
@@ -36,41 +49,6 @@ import { environmentOf } from './connectionProfile.js'
  * nenhuma, `execution.adapter` só escolhe entre o que já está compilado.
  */
 const NATIVE_FACTORIES: Record<string, NativeFactory[]> = OFFICIAL_ADAPTERS
-
-// Safe telemetry (plan §13): what ran, whether it worked and how long it took.
-// Never an argument, never a response body, never a credential.
-export interface AppActionEvent {
-  _id: ObjectId
-  ownerId: string
-  agentId: ObjectId | null
-  appKey: string
-  actionKey: string
-  installationId: ObjectId
-  ok: boolean
-  status: 'executed' | 'refused'
-  durationMs: number
-  createdAt: Date
-}
-const appActionEvents = db.collection<AppActionEvent>('app_action_events')
-
-export async function ensureAppActionIndexes(): Promise<void> {
-  await appActionEvents.createIndex({ ownerId: 1, createdAt: -1 })
-  await appActionEvents.createIndex({ ownerId: 1, appKey: 1, createdAt: -1 })
-}
-
-async function recordActionEvent(event: Omit<AppActionEvent, '_id' | 'createdAt'>): Promise<void> {
-  try {
-    await appActionEvents.insertOne({ ...event, _id: new ObjectId(), createdAt: new Date() })
-  } catch {
-    // Telemetry must never break the action the owner asked for.
-  }
-}
-
-// An installed version is pinned. A manifest whose MAJOR moved changed the meaning
-// of its actions or its permissions, so it needs the owner to review, not a silent
-// upgrade (plan §10).
-export const isVersionCompatible = (installed: string, current: string): boolean =>
-  String(installed).split('.')[0] === String(current).split('.')[0]
 
 // A tool that exists only to refuse, and to say why. The model sees the action, so
 // it can report the limitation instead of pretending the App is not there.
@@ -179,12 +157,25 @@ export async function resolveGrant(
     const built = buildAction(app, action, ownerId, auth, resource, allowedToAct, {
       environment: environmentOf(installation),
       installationId: installation._id.toString(),
+      // Quem responde pela ação. É por ele que uma política mais apertada pode valer
+      // só para um agente.
+      agentId: options.agentId?.toString() ?? null,
     })
     if (!built) continue
     // O risco declarado no manifesto viaja com a ferramenta. Ele não amplia nada — o
     // grant continua sendo a permissão — mas é o que permite decidir paralelismo.
     tools.push(
-      instrument({ ...built, risk: action.risk }, { ownerId, agentId: options.agentId ?? null, appKey: app.key, actionKey: action.key, installationId: installation._id }),
+      instrument(
+        { ...built, risk: action.risk },
+        {
+          ownerId,
+          agentId: options.agentId ?? null,
+          appKey: app.key,
+          actionKey: action.key,
+          installationId: installation._id,
+          environment: environmentOf(installation),
+        },
+      ),
     )
   }
   return tools
@@ -199,7 +190,7 @@ function buildAction(
   allowedToAct: boolean,
   // Vem da instalação, nunca de um campo digitado: é o ambiente que decide se a ordem
   // vai para a simulação ou para o mercado.
-  ctx?: { environment: string; installationId: string },
+  ctx?: { environment: string; installationId: string; agentId?: string | null },
 ): ResolvedTool | null {
   if (action.execution.kind === 'http') {
     return declarativeTool(app, action, auth, resource, allowedToAct)
@@ -228,7 +219,7 @@ function buildAction(
 // Wrap a tool so every call leaves a safe trace.
 function instrument(
   tool: ResolvedTool,
-  meta: { ownerId: string; agentId: ObjectId | null; appKey: string; actionKey: string; installationId: ObjectId },
+  meta: { ownerId: string; agentId: ObjectId | null; appKey: string; actionKey: string; installationId: ObjectId; environment?: string },
 ): ResolvedTool {
   return {
     ...tool,
@@ -246,6 +237,7 @@ function instrument(
         status: outcome.result.includes('"capability_unavailable"') ? 'refused' : 'executed',
         durationMs: Date.now() - started,
         createdAt: new Date(),
+        ...(meta.environment ? { environment: meta.environment } : {}),
       } as Omit<AppActionEvent, '_id' | 'createdAt'>)
       return outcome
     },

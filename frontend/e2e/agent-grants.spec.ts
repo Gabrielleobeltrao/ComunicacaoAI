@@ -114,6 +114,7 @@ async function stub(
     agent?: Record<string, unknown>
     patch?: (body: Record<string, unknown>) => { status: number; json: unknown } | Promise<{ status: number; json: unknown }>
     catalog?: unknown[]
+    policy?: unknown
   } = {},
 ) {
   patches = []
@@ -135,6 +136,7 @@ async function stub(
   })
   await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: opts.catalog ?? [GOOGLE] }))
   await page.route('**/api/app-installations', (r) => r.fulfill({ json: opts.installations ?? [INSTALLATION_ROW] }))
+  await page.route('**/api/trading-policies/active**', (r) => r.fulfill({ json: opts.policy ?? null }))
   await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: [], pinned: [] } }))
   await page.route('**/api/agents/*/overview', (r) =>
     r.fulfill({
@@ -1241,4 +1243,28 @@ test('alto risco não se parece com "altera dados", e continua exigindo autoriza
   await page.getByTestId('action-alpaca_criar_ordem').check()
   await expect(page.getByTestId('autonomous-alpaca_criar_ordem')).not.toBeChecked()
   await expect(page.getByTestId('autonomous-alpaca_criar_ordem').locator('..')).toContainText('crítica')
+})
+
+test('antes de autorizar uma ação crítica, a tela mostra o limite que vale', async ({ page }) => {
+  // Autorizar um agente a mandar ordem sozinho é uma decisão; tomá-la sem ver o teto é
+  // outra.
+  await stub(page, {
+    catalog: [CORRETORA],
+    installations: [CONEXAO_PAPER],
+    policy: { id: 'p1', installationId: INSTALLATION, agentId: null, version: 2, active: true, rules: { maxOrderValue: 1000, requireStopLoss: true }, createdAt: NOW, updatedAt: NOW },
+  })
+  await open(page)
+  await page.getByTestId('action-alpaca_criar_ordem').check()
+  await expect(page.getByTestId('grant-policy')).toContainText('1.000,00')
+  await expect(page.getByTestId('grant-policy')).toContainText('stop-loss')
+})
+
+test('sem política, a tela diz que não há limite — e onde configurar', async ({ page }) => {
+  await stub(page, { catalog: [CORRETORA], installations: [CONEXAO_PAPER] })
+  await open(page)
+  await page.getByTestId('action-alpaca_criar_ordem').check()
+  await expect(page.getByTestId('grant-policy')).toContainText('Nenhum limite configurado')
+  // Uma ação de leitura não fala de política: ela não abre risco nenhum.
+  await page.getByTestId('action-alpaca_conta').check()
+  await expect(page.getByTestId('grant-policy')).toHaveCount(1)
 })

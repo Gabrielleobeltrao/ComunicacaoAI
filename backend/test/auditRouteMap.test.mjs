@@ -123,6 +123,7 @@ const ROUTER_PREFIX = {
   'routes/sectorKnowledgeRoutes.ts': '/api/sectors/:sectorId',
   'routes/memoryRoutes.ts': '/api/memories',
   'routes/streamRoutes.ts': '/api/streams',
+  'routes/policyRoutes.ts': '/api/trading-policies',
 }
 
 function declaredRoutes() {
