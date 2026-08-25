@@ -197,10 +197,10 @@ export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipC
 
     // Contrato e executor precisam concordar: JSON prometido sem schema é um contrato
     // que ninguém consegue conferir, e a execução falha só na primeira rodada.
-    if (agent?.responseMode === 'json' && !isRecord(agent?.outputJsonSchema)) {
-      erro(`${at}.outputJsonSchema`, 'contract_incomplete', 'um agente que responde em JSON precisa declarar o formato da saída')
+    if ((agent?.responseMode === 'structured' || agent?.responseMode === 'structured_and_text') && !isRecord(agent?.outputJsonSchema)) {
+      erro(`${at}.outputJsonSchema`, 'contract_incomplete', 'um agente que responde em formato estruturado precisa declarar o formato da saída')
     }
-    if (agent?.executorKind && !['llm', 'code', 'tool'].includes(agent.executorKind)) {
+    if (agent?.executorKind && !['llm', 'function', 'tool'].includes(agent.executorKind)) {
       erro(`${at}.executorKind`, 'invalid_executor', 'tipo de executor inválido')
     }
     for (const campo of ['inputJsonSchema', 'outputJsonSchema'] as const) {

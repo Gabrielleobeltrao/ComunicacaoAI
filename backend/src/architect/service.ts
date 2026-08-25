@@ -8,7 +8,10 @@ import { loadAppsForPrompt, loadOwnershipContext } from './context.js'
 import { buildPreview } from './preview.js'
 import { deriveChecklist, applyChecklistState, computeReadiness } from './checklist.js'
 import { validateOfficeBlueprint } from './validate.js'
-import { isEditable } from './state.js'
+import { isEditable, RESUME_FROM } from './state.js'
+import { applyBlueprint, resumeApply, rollbackOperation, ApplyConflict } from './apply.js'
+import type { ApplyHooks } from './apply.js'
+import { recheckProject, appliedLinks } from './recheck.js'
 import * as repo from './repository.js'
 import * as L from './limits.js'
 import type { ArchitectProject } from './repository.js'
@@ -268,3 +271,100 @@ export const projectDetail = (p: ArchitectProject) => ({
   checklist: p.checklist,
   applyState: p.applyState,
 })
+
+// --- aplicação -------------------------------------------------------------------------
+
+/**
+ * Aplica — e é o ÚNICO caminho que escreve no escritório.
+ *
+ * O lock é uma troca de estado atômica no Mongo: `ready → applying` só acontece uma
+ * vez, então dois cliques simultâneos produzem uma aplicação e uma recusa, não duas
+ * aplicações. Não é um `findOne` seguido de `update`, que perderia a corrida.
+ */
+export async function applyProject(
+  ownerId: string,
+  projectId: ObjectId,
+  input: { blueprintHash: string; idempotencyKey: string; confirm: boolean; approvedAppKeys?: string[] },
+  hooks: ApplyHooks = {},
+) {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!input.confirm) throw new ValidationError('a aplicação precisa da sua confirmação')
+  if (!input.blueprintHash) throw new ValidationError('informe qual proposta você revisou')
+  if (!input.idempotencyKey) throw new ValidationError('faltou a chave da operação')
+
+  // Já aplicado com a MESMA chave: devolve o resultado anterior em vez de recusar. É o
+  // caso do clique duplicado e do "tentar de novo" depois de a resposta se perder.
+  if (projeto.status === 'applied') {
+    const anterior = await repo.lastOperation(ownerId, projectId)
+    if (anterior?.idempotencyKey === input.idempotencyKey) return finalizarAplicacao(ownerId, projectId, anterior)
+    throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado')
+  }
+
+  const travado = await repo.transitionProject(ownerId, projectId, ['ready'], 'applying')
+  if (!travado) {
+    throw new ArchitectRefusal('not_editable', projeto.status === 'applying' ? 'esta proposta já está sendo aplicada' : 'valide a proposta antes de aplicar')
+  }
+
+  try {
+    const operacao = await applyBlueprint(ownerId, travado, input, hooks)
+    return finalizarAplicacao(ownerId, projectId, operacao)
+  } catch (error) {
+    await repo.patchProject(ownerId, projectId, {
+      status: 'failed',
+      applyState: { operationId: '', status: 'failed', blueprintHash: input.blueprintHash, startedAt: new Date(), completedAt: new Date(), error: error instanceof Error ? error.message : 'falha' },
+    })
+    if (error instanceof ApplyConflict) throw new ArchitectRefusal('not_editable', error.message)
+    throw error
+  }
+}
+
+export async function resumeProject(ownerId: string, projectId: ObjectId, hooks: ApplyHooks = {}) {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!RESUME_FROM.includes(projeto.status)) throw new ArchitectRefusal('not_editable', 'não há aplicação interrompida para retomar')
+  await repo.transitionProject(ownerId, projectId, RESUME_FROM, 'applying')
+  try {
+    const operacao = await resumeApply(ownerId, projeto, hooks)
+    return finalizarAplicacao(ownerId, projectId, operacao)
+  } catch (error) {
+    await repo.patchProject(ownerId, projectId, { status: 'failed' })
+    if (error instanceof ApplyConflict) throw new ArchitectRefusal('not_editable', error.message)
+    throw error
+  }
+}
+
+/** Fecha a aplicação: estado, checklist apurada contra o real e prontidão. */
+async function finalizarAplicacao(ownerId: string, projectId: ObjectId, operacao: Awaited<ReturnType<typeof repo.lastOperation>>) {
+  const atual = (await repo.getProject(ownerId, projectId))!
+  const { checklist, readiness } = await recheckProject(ownerId, atual)
+  const aplicado = await repo.patchProject(ownerId, projectId, {
+    status: 'applied',
+    appliedAt: atual.appliedAt ?? new Date(),
+    checklist,
+    readiness,
+    applyState: operacao
+      ? { operationId: operacao._id.toString(), status: operacao.status, blueprintHash: operacao.blueprintHash, startedAt: operacao.startedAt, completedAt: operacao.completedAt, error: operacao.error }
+      : null,
+  })
+  return {
+    project: aplicado ?? atual,
+    operation: operacao ? { id: operacao._id.toString(), status: operacao.status, steps: operacao.steps, resourceMap: operacao.resourceMap, error: operacao.error } : null,
+    links: await appliedLinks(ownerId, aplicado ?? atual),
+  }
+}
+
+/** Recalcula a checklist contra o estado real. Não escreve recurso nenhum. */
+export async function recheckProjectState(ownerId: string, projectId: ObjectId) {
+  const projeto = await requireProject(ownerId, projectId)
+  const { checklist, readiness } = await recheckProject(ownerId, projeto)
+  const atualizado = (await repo.patchProject(ownerId, projectId, { checklist, readiness })) ?? projeto
+  return { project: atualizado, links: await appliedLinks(ownerId, projeto) }
+}
+
+export async function rollbackProject(ownerId: string, projectId: ObjectId) {
+  const projeto = await requireProject(ownerId, projectId)
+  const operacao = await repo.lastOperation(ownerId, projectId)
+  if (!operacao) throw new ArchitectRefusal('no_blueprint', 'não há aplicação para desfazer')
+  const r = await rollbackOperation(ownerId, operacao._id)
+  await repo.patchProject(ownerId, projectId, { status: 'draft', appliedAt: null })
+  return { ...r, project: (await repo.getProject(ownerId, projectId)) ?? projeto }
+}

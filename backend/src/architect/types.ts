@@ -118,8 +118,10 @@ export interface BlueprintAgent extends BlueprintItemBase {
   constraints?: string
   capabilities?: string[]
   routingDescription?: string
-  executorKind?: 'llm' | 'code' | 'tool'
-  responseMode?: 'text' | 'json'
+  /** O mesmo vocabulário de `executors/types.ts`: um segundo aqui viraria tradução. */
+  executorKind?: 'llm' | 'function' | 'tool'
+  /** Também o vocabulário do domínio. `structured` é o que promete JSON. */
+  responseMode?: 'structured' | 'text' | 'structured_and_text'
   inputContract?: string
   outputContract?: string
   inputJsonSchema?: Record<string, unknown> | null

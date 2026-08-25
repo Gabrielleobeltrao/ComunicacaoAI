@@ -158,9 +158,9 @@ test('um item que será criado não pode apontar para recurso existente', () => 
 
 // --- contratos ----------------------------------------------------------------------------
 
-test('prometer JSON sem declarar o formato é contrato que ninguém confere', () => {
+test('prometer saída estruturada sem declarar o formato é contrato que ninguém confere', () => {
   const bp = valido()
-  bp.agents[0].responseMode = 'json'
+  bp.agents[0].responseMode = 'structured'
   assert.ok(temCodigo(bp, 'contract_incomplete'))
   bp.agents[0].outputJsonSchema = { type: 'object' }
   assert.equal(validateOfficeBlueprint(bp).valid, true)

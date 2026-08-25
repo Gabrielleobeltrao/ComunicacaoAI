@@ -200,6 +200,13 @@ const RULES: Rule[] = [
   R('POST', 'api/architect/projects/:/validate', null, { why: 'read-only check' }),
   // Marcar um item da checklist é anotação do dono sobre o próprio projeto.
   R('PATCH', 'api/architect/projects/:/checklist/:', null, { why: 'owner note on the project' }),
+  // Aplicar é a mudança real: é aqui que andares, agentes e setores passam a existir.
+  // Cada um deles também é auditado como ele mesmo, pelo caminho de sempre.
+  R('POST', 'api/architect/projects/:/apply', { entityType: 'architect_project', action: 'publish' }, { idAt: 3 }),
+  R('POST', 'api/architect/projects/:/resume', { entityType: 'architect_project', action: 'publish' }, { idAt: 3 }),
+  R('POST', 'api/architect/projects/:/rollback', { entityType: 'architect_project', action: 'delete' }, { idAt: 3 }),
+  // Reconferir a checklist é leitura do estado real.
+  R('POST', 'api/architect/projects/:/recheck', null, { why: 'read-only check' }),
 
   // Granting or revoking an App on an agent changes what that agent may do.
   R('PATCH', 'api/agents/:/app-grants', { entityType: 'agent', action: 'update' }, { idAt: 2 }),

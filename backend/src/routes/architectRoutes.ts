@@ -167,3 +167,60 @@ architectRouter.post('/projects/:id/archive', async (req, res, next) => {
     refuse(res, error, next)
   }
 })
+
+// --- aplicação ---------------------------------------------------------------------
+// Estas quatro são as únicas rotas do Arquiteto que escrevem no escritório — e a
+// primeira delas exige hash revisado, chave de operação e confirmação explícita.
+
+architectRouter.post('/projects/:id/apply', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const body = (req.body ?? {}) as { blueprintHash?: string; idempotencyKey?: string; confirm?: boolean; approvedAppKeys?: string[] }
+    const r = await service.applyProject(res.locals.userId, id, {
+      blueprintHash: String(body.blueprintHash ?? ''),
+      idempotencyKey: String(body.idempotencyKey ?? ''),
+      confirm: body.confirm === true,
+      approvedAppKeys: Array.isArray(body.approvedAppKeys) ? body.approvedAppKeys.map(String).slice(0, 20) : [],
+    })
+    auditEntity(res, { id: r.project._id.toString(), label: r.project.title })
+    res.json({ ...service.projectDetail(r.project), operation: r.operation, links: r.links })
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
+architectRouter.post('/projects/:id/resume', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const r = await service.resumeProject(res.locals.userId, id)
+    auditEntity(res, { id: r.project._id.toString(), label: r.project.title })
+    res.json({ ...service.projectDetail(r.project), operation: r.operation, links: r.links })
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
+architectRouter.post('/projects/:id/recheck', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const r = await service.recheckProjectState(res.locals.userId, id)
+    res.json({ ...service.projectDetail(r.project), links: r.links })
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
+architectRouter.post('/projects/:id/rollback', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const r = await service.rollbackProject(res.locals.userId, id)
+    auditEntity(res, { id: r.project._id.toString(), label: r.project.title })
+    res.json({ ...service.projectDetail(r.project), removed: r.removed, kept: r.kept })
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
