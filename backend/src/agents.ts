@@ -8,6 +8,7 @@ import type { AgentContract, AgentContractInput } from './executors/contract.js'
 import type { WebSearchSettings } from './webSearch/policy.js'
 import type { RoleUIConfig } from './agentCapabilities.js'
 import { db } from './db.js'
+import type { ArchitectStamp } from './architectStamp.js'
 import { isValidToolSchema } from './jsonSchema.js'
 import type { Provider } from './llm.js'
 import type { AgentAppGrant } from './apps/types.js'
@@ -254,6 +255,8 @@ export function sanitizeToolName(bruto: string, padrao: string): string {
 
 export interface Agent {
   _id: ObjectId
+  /** A marca do Arquiteto, quando foi ele que criou. Ausente em tudo o mais. */
+  architect?: ArchitectStamp
   ownerId: string
   // The Escritório this agent belongs to (children of the office). Every agent
   // has one; a sector is optional (orphan agents are allowed).
@@ -749,6 +752,8 @@ export async function createAgent(
     toolIds?: string[]
     watchedSources?: WatchedSource[]
     metricProfile?: MetricProfile
+    /** A marca do Arquiteto, quando foi ele que criou. Ver `architectStamp.ts`. */
+    architect?: ArchitectStamp
   } = {},
 ) {
   const agent: Omit<Agent, '_id'> = {
@@ -819,6 +824,7 @@ export async function createAgent(
     delegationPolicy: options.delegationPolicy ?? (options.preset === 'manager' ? 'all' : 'none'),
     callerPolicy: options.callerPolicy ?? 'all',
     metricProfile: options.metricProfile ?? 'auto',
+    ...(options.architect ? { architect: options.architect } : {}),
     createdAt: new Date(),
   }
   const result = await agents.insertOne(agent as Agent)
