@@ -122,6 +122,9 @@ const ROUTER_PREFIX = {
   'routes/buildingRoutes.ts': '/api/building',
   'routes/sectorKnowledgeRoutes.ts': '/api/sectors/:sectorId',
   'routes/memoryRoutes.ts': '/api/memories',
+  'routes/streamRoutes.ts': '/api/streams',
+  'routes/policyRoutes.ts': '/api/trading-policies',
+  'routes/websocketRoutes.ts': '/api/websocket',
 }
 
 function declaredRoutes() {

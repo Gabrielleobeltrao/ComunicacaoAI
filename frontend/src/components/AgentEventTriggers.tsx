@@ -6,9 +6,14 @@ import {
   listEventTriggers,
   rotateEventTriggerSecret,
   updateEventTrigger,
+  emptyMarketPlan,
+  emptySignalPlan,
   type EventTrigger,
+  type MarketTriggerPlan,
   type RoutineStatus,
+  type SignalPlan,
 } from '../lib/agentRoutines'
+import { MarketTriggerFields, describeMarketTrigger } from './MarketTriggerFields'
 import type { AgentSummary } from '../lib/types'
 import { emptyAppActionPlan, emptyMemoryPlan, ExecutionModeFields, type ExecutionModeValue } from './ExecutionModeFields'
 import { Button, Card, EmptyState, Field, Input, StatusPill, Tag, Textarea } from '../ui'
@@ -96,6 +101,8 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
   const [name, setName] = useState('')
   const [objective, setObjective] = useState('')
   const [modo, setModo] = useState<ExecutionModeValue>({ executionMode: 'ai', memory: emptyMemoryPlan(), aiCondition: null, action: emptyAppActionPlan() })
+  const [market, setMarket] = useState<MarketTriggerPlan>(emptyMarketPlan())
+  const [signal, setSignal] = useState<SignalPlan>(emptySignalPlan())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -108,8 +115,8 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
       setError('Escolha onde a informação será guardada.')
       return
     }
-    if (semTrabalho(modo)) {
-      setError('Sem IA no fluxo, escolha guardar a informação, executar uma ação, ou use o modo com IA.')
+    if (semTrabalho(modo) && !signal.enabled) {
+      setError('Sem IA no fluxo, escolha guardar a informação, executar uma ação, publicar um sinal, ou use o modo com IA.')
       return
     }
     setSaving(true)
@@ -122,12 +129,17 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
         memory: modo.memory,
         aiCondition: modo.aiCondition,
         action: modo.action,
+        market,
+        signal,
       })
       setName('')
       setObjective('')
       setModo({ executionMode: 'ai', memory: emptyMemoryPlan(), aiCondition: null, action: emptyAppActionPlan() })
+      setMarket(emptyMarketPlan())
+      setSignal(emptySignalPlan())
       setOpen(false)
-      onCreated(created.secret)
+      // Um gatilho interno não tem credencial para mostrar: ele não tem porta.
+      onCreated(created.secret ?? '')
     } catch {
       setError('Não foi possível criar o gatilho.')
     } finally {
@@ -154,10 +166,25 @@ function NewTriggerForm({ agentId, onCreated }: { agentId: string; onCreated: (s
       <Field label="Nome (opcional)">
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Novo pedido no site" data-testid="trigger-name" />
       </Field>
+      <MarketTriggerFields
+        market={market}
+        signal={signal}
+        onChange={(m, sg) => {
+          setMarket(m)
+          setSignal(sg)
+        }}
+      />
       <ExecutionModeFields value={modo} onChange={setModo} agentId={agentId} />
-      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
-        A assinatura HMAC vem ativada: quem chamar o endereço precisa assiná-lo com a credencial. A credencial aparece uma única vez, logo depois de criar.
+      {/* A frase de conferência: a diferença entre "analisa e para" e "chama o modelo
+          a cada vela" é uma linha do formulário e um zero a mais na conta. */}
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="trigger-summary">
+        {describeMarketTrigger(market, signal)}
       </p>
+      {market.enabled ? null : (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
+          A assinatura HMAC vem ativada: quem chamar o endereço precisa assiná-lo com a credencial. A credencial aparece uma única vez, logo depois de criar.
+        </p>
+      )}
       {error ? <p style={{ margin: 0, fontSize: 13, color: 'var(--status-blocked)' }}>{error}</p> : null}
       <div style={{ display: 'flex', gap: 8 }}>
         <Button onClick={() => void submit()} disabled={saving} data-testid="save-event-trigger">
@@ -185,6 +212,8 @@ function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: stri
     aiCondition: trigger.aiCondition ?? null,
     action: trigger.action ?? emptyAppActionPlan(),
   })
+  const [market, setMarket] = useState<MarketTriggerPlan>(trigger.market ?? emptyMarketPlan())
+  const [signal, setSignal] = useState<SignalPlan>(trigger.signal ?? emptySignalPlan())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -197,8 +226,8 @@ function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: stri
       setError('Escolha onde a informação será guardada.')
       return
     }
-    if (semTrabalho(modo)) {
-      setError('Sem IA no fluxo, escolha guardar a informação, executar uma ação, ou use o modo com IA.')
+    if (semTrabalho(modo) && !signal.enabled) {
+      setError('Sem IA no fluxo, escolha guardar a informação, executar uma ação, publicar um sinal, ou use o modo com IA.')
       return
     }
     setSaving(true)
@@ -211,6 +240,8 @@ function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: stri
         memory: modo.memory,
         aiCondition: modo.aiCondition,
         action: modo.action,
+        market,
+        signal,
       })
       onDone()
     } catch {
@@ -230,7 +261,19 @@ function EditTriggerForm({ agentId, trigger, onDone, onCancel }: { agentId: stri
       <Field label="Nome">
         <Input value={name} onChange={(e) => setName(e.target.value)} data-testid="edit-trigger-name" />
       </Field>
+      <MarketTriggerFields
+        market={market}
+        signal={signal}
+        idPrefix="edit-"
+        onChange={(m, sg) => {
+          setMarket(m)
+          setSignal(sg)
+        }}
+      />
       <ExecutionModeFields value={modo} onChange={setModo} idPrefix="edit-" agentId={agentId} />
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="edit-trigger-summary">
+        {describeMarketTrigger(market, signal)}
+      </p>
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }}>
         O endereço, a credencial, a assinatura e o estado (ativo/pausado) não mudam ao salvar.
       </p>
@@ -327,28 +370,42 @@ function TriggerCard({ agentId, trigger, onChanged, onSecret }: { agentId: strin
         </div>
       </div>
 
-      <div>
-        <p style={label}>Endereço para chamar</p>
-        <pre style={code} data-testid="trigger-endpoint">
-          {trigger.endpoint ?? '—'}
-        </pre>
-      </div>
+      {/*
+        Um gatilho interno não tem endereço, e por isso não tem nada disto: nem URL
+        para copiar, nem credencial para girar, nem exemplo de requisição. Mostrar uma
+        porta que não existe seria pior do que não mostrar nada.
+      */}
+      {trigger.market?.enabled ? (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="trigger-internal-note">
+          {describeMarketTrigger(trigger.market, trigger.signal ?? emptySignalPlan())} Não há endereço público: ele é disparado por dentro da
+          plataforma.
+        </p>
+      ) : (
+        <>
+          <div>
+            <p style={label}>Endereço para chamar</p>
+            <pre style={code} data-testid="trigger-endpoint">
+              {trigger.endpoint ?? '—'}
+            </pre>
+          </div>
 
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {trigger.endpoint ? (
-          <CopyButton value={trigger.endpoint} testId="copy-trigger-endpoint">
-            Copiar endereço
-          </CopyButton>
-        ) : null}
-        <Button size="sm" variant="ghost" icon="code" onClick={() => setShowExample((v) => !v)} data-testid="toggle-example">
-          {showExample ? 'Ocultar exemplo' : 'Ver exemplo'}
-        </Button>
-        <Button size="sm" variant="ghost" icon="rotate-cw" onClick={() => void rotate()} disabled={busy} data-testid="rotate-secret">
-          Gerar nova credencial
-        </Button>
-      </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {trigger.endpoint ? (
+              <CopyButton value={trigger.endpoint} testId="copy-trigger-endpoint">
+                Copiar endereço
+              </CopyButton>
+            ) : null}
+            <Button size="sm" variant="ghost" icon="code" onClick={() => setShowExample((v) => !v)} data-testid="toggle-example">
+              {showExample ? 'Ocultar exemplo' : 'Ver exemplo'}
+            </Button>
+            <Button size="sm" variant="ghost" icon="rotate-cw" onClick={() => void rotate()} disabled={busy} data-testid="rotate-secret">
+              Gerar nova credencial
+            </Button>
+          </div>
+        </>
+      )}
 
-      {showExample ? (
+      {showExample && !trigger.market?.enabled ? (
         <div>
           <p style={label}>Exemplo de requisição</p>
           <pre style={code} data-testid="trigger-example">

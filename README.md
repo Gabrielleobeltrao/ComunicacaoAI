@@ -124,6 +124,106 @@ overview (KPIs + floor cards); each floor at `/floors/:floorId` owns its visual 
 map plus its agents, sectors, automations and runs, scoped by floor. Off/unset → the
 original flat app (also the rollback). See [`docs/ux-nav/redirect-map.md`](docs/ux-nav/redirect-map.md).
 
+## Dados de mercado e tempo real
+
+Uma conexão de App pode virar uma fonte de tempo real. Hoje o único provedor é a
+**Alpaca, em simulação (Paper)** — não existe endereço de produção compilado neste
+sistema, e o ambiente `live` é recusado em quatro camadas.
+
+**Como ligar, do começo ao fim:**
+
+1. **Conectar** — *Apps → catálogo → Alpaca (simulação)*, com Key ID e Secret. A
+   conexão nasce marcada como `SIMULAÇÃO`. *Testar conexão* faz uma leitura real na
+   corretora (`GET /v2/account`), com prazo, e nunca devolve saldo nem credencial.
+2. **Ligar o tempo real** — na aba *Conectados*, o botão **Ativar tempo real** pede os
+   ativos. A partir daí dá para trocar a lista, pausar, reconectar e desligar. O painel
+   mostra estado, última conexão, último dado e a última falha.
+3. **Vincular uma ferramenta a uma conexão** — *Ferramentas → nova → Origem*. Só
+   aparecem Apps que declaram perfil de conexão; a ferramenta guarda só o caminho, e
+   base, cabeçalhos e credencial vêm da conexão na hora de executar.
+4. **Conceder ao agente** — *agente → Como trabalha → Ferramentas*. A permissão é por
+   ação. Ação `high_risk` (enviar, alterar, cancelar ordem, encerrar posição) exige uma
+   autorização autônoma separada, e a tela mostra o ambiente e os limites em vigor
+   antes de você marcar.
+5. **Limitar** — *Apps → Conectados → Segurança*. As políticas são conferidas no
+   servidor, imediatamente antes de a ordem sair. Salvar cria uma versão nova; a
+   anterior fica no histórico.
+6. **Reagir** — *agente → Fluxos → Novo gatilho → Evento de mercado*. Escolha o evento,
+   os ativos e o período. Num modo sem IA a definição não contém etapa de agente: o
+   fluxo roda com zero token.
+
+**O que corre por baixo:** os negócios viram eventos internos (`market.price.updated`,
+`market.quote.updated`, `market.bar.closed`), o motor monta as velas em seis períodos
+(`1m`, `5m`, `15m`, `1h`, `4h`, `1D`) e publica `market.candle.closed` — cada vela uma
+vez só, com retomada se o worker cair no meio. A análise reusa o App *Análise de
+candles*; nenhum indicador foi reimplementado.
+
+Todos os ajustes (`EVENT_*`, `STREAM_*`, `CANDLE_*`, `MARKET_*`, `ALPACA_*`) têm padrão
+e estão documentados em [`backend/.env.example`](backend/.env.example). Nenhum deles é
+obrigatório, e nenhum contém segredo: a credencial da corretora é do dono, digitada na
+tela e guardada cifrada na conexão.
+
+## WebSocket Genérico
+
+Um App nativo para conectar **qualquer serviço que envie dados por WebSocket** — sem
+escrever código. Ele reusa o mesmo gerenciador de streams da corretora, o mesmo
+barramento durável de eventos e os mesmos gatilhos internos.
+
+**Como ligar:**
+
+1. **Conectar** — *Apps → catálogo → WebSocket Genérico*. Uma conta pode ter várias
+   conexões.
+2. **Configurar** — *WebSocket → Visão geral → Configurar*: endereço `wss://`, formato
+   (JSON ou texto) e como o serviço autentica (nenhuma, cabeçalho, parâmetro no
+   endereço ou primeira mensagem). Em *Avançado* ficam os caminhos de onde tirar
+   conteúdo, identificador, canal e data, além de schema, filtros, deduplicação e
+   limites. *Conferir endereço* valida antes de salvar.
+3. **Ligar** — o botão **Ligar** abre a conexão; dá para pausar, retomar e desligar.
+4. **Assinar** — *Assinaturas*: o que ouvir (canal, filtros e a mensagem de inscrição)
+   e **o que fazer com o que chegar**: só guardar, memória (do agente, setor, andar ou
+   prédio), rotina, agente ou setor. *Só guardar* é o padrão e não gasta token nenhum;
+   cada destino diz o que custa antes de ser escolhido. A inscrição é enviada de
+   verdade — ao conectar, a cada reconexão e assim que a assinatura é criada ou
+   ativada —, e o cancelamento sai ao pausar ou remover. *Testar assinatura* abre uma
+   conexão à parte, autentica, envia a inscrição, espera uma mensagem compatível e
+   fecha tudo.
+
+   **Agente e Setor executam pelo caminho canônico**: a assinatura cria um gatilho por
+   evento — a mesma fila, idempotência, permissões, ferramentas, contabilidade de token
+   e auditoria de qualquer outro. A relação fica à vista na assinatura, muda com ela e é
+   arquivada quando ela é removida.
+5. **Acompanhar** — *Mensagens* mostra o que chegou **e o que foi recusado, com o
+   motivo** (filtrada, sem assinatura, inválida, repetida, acima do limite, falhou na
+   entrega); *Logs* mostra conexão, reconexão, descarte e disparo.
+
+**Sem assinatura não há evento.** Uma mensagem que nenhuma assinatura ativa reivindica
+fica no histórico como *Sem assinatura* e para ali — publicar assim mesmo criaria um
+fato que ninguém pediu. Quando mais de uma reivindica, **cada uma vira o seu próprio
+evento**: assim uma falha na entrega de uma não impede a outra, e a retentativa de uma
+não repete a outra.
+
+Fixe no menu como o Chat Web: fixado, ele vira um grupo expansível com as quatro
+páginas. Desfixar tira só a navegação — conexão, assinaturas e histórico ficam.
+
+**O que ele não faz, de propósito:** não aceita expressão, JavaScript nem template
+executável. Endereço, caminho, filtro e limite são dados; o servidor lê caminho de
+objeto e compara texto, e nada além disso. Em produção só `wss://` é aceito, e
+localhost, IP privado, link-local e metadata de nuvem são recusados. **Todos** os
+endereços que o nome devolve são conferidos, e a conexão abre no endereço já conferido
+(o nome continua indo à parte, para o SNI e o `Host` continuarem certos) — com o DNS
+resolvido de novo a cada conexão e reconexão, que é o que fecha o rebinding.
+
+Conteúdo que chega por aí é marcado como **não confiável** no evento, e um evento nunca
+ganha ferramenta ou permissão além das que o agente responsável já tem.
+
+Intervalo de ping e de silêncio são **por conexão** e valem de verdade no gerenciador;
+o `.env` fica como padrão e como teto. Mudar endereço, autenticação, subprotocolo,
+credencial ou intervalos reabre a conexão sozinho — filtro e caminho, que são lidos a
+cada mensagem, não derrubam nada.
+
+Os ajustes (`WS_*`, `STREAM_MAX_INTERVAL_MS`) estão em
+[`backend/.env.example`](backend/.env.example).
+
 ## Scripts
 
 Run from the repo root:

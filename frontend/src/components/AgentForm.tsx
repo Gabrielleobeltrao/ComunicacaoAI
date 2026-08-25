@@ -681,7 +681,15 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
       outputJsonSchema: parseSchemaField(editOutputJsonSchema),
       inputJsonSchema: parseSchemaField(editInputJsonSchema),
       executorKind: executor.kind,
-      responseMode: executor.responseMode,
+      /**
+       * O modo que o tipo PERMITE, e não o que está no rascunho.
+       *
+       * A tela corrige o rascunho por um efeito, e efeito é corrida: trocar o tipo e
+       * escrever no mesmo instante gravava o modo anterior. O servidor recusaria — e o
+       * dono veria um erro sobre uma escolha que ele não fez. Aqui o valor é derivado do
+       * tipo, que é a mesma regra que o servidor aplica.
+       */
+      responseMode: executor.kind === 'function' ? 'structured' : executor.responseMode,
       // A configuração acompanha o TIPO e só ele: guardar `functionName` num agente de
       // modelo é guardar uma promessa que ninguém cumpre — o campo fica lá, alguém o lê
       // depois e conclui que o agente chama uma função.

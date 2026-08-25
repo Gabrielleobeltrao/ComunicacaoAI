@@ -40,7 +40,10 @@ import {
   getEventTriggerForAgent,
   listEventTriggers,
   updateEventTrigger,
+  normalizeMarketPlan,
+  normalizeSignalPlan,
 } from '../automations/eventTrigger.js'
+import type { MarketTriggerPlan, SignalPlan } from '../automations/eventTrigger.js'
 import { webhookEndpoint } from '../automations/executionCenter.js'
 import { cronToRecurrence, describeRecurrence, isValidRecurrence } from '../automations/schedule.js'
 import { rotateWebhookSecret, setStatus } from '../automations/service.js'
@@ -166,12 +169,16 @@ function parseTriggerExtras(body: Record<string, unknown>): {
   memory?: MemoryPlan
   aiCondition?: StepCondition | null
   action?: AppActionPlan
+  market?: MarketTriggerPlan
+  signal?: SignalPlan
 } {
   return {
     ...(isExecutionMode(body.executionMode) ? { executionMode: body.executionMode } : {}),
     ...('memory' in body ? { memory: normalizeMemoryPlan(body.memory) } : {}),
     ...('aiCondition' in body ? { aiCondition: normalizeCondition(body.aiCondition) } : {}),
     ...('action' in body ? { action: normalizeAppActionPlan(body.action) } : {}),
+    ...('market' in body ? { market: normalizeMarketPlan(body.market) } : {}),
+    ...('signal' in body ? { signal: normalizeSignalPlan(body.signal) } : {}),
   }
 }
 
@@ -674,11 +681,15 @@ function serializeTrigger(a: Automation) {
     memory: cfg.memory,
     aiCondition: cfg.aiCondition,
     action: cfg.action,
+    market: cfg.market,
+    signal: cfg.signal,
     id: a._id.toString(),
     name: a.name,
     objective: a.description,
     status: a.status,
-    endpoint: a.webhookPublicKey ? webhookEndpoint(config.publicUrl, a.webhookPublicKey) : null,
+    // Um gatilho interno NÃO tem endereço. Mostrar um seria oferecer uma porta que
+    // devolve 404 — o receptor público só aceita gatilho publicado como webhook.
+    endpoint: cfg.market.enabled || !a.webhookPublicKey ? null : webhookEndpoint(config.publicUrl, a.webhookPublicKey),
     requireSignature: trigger?.requireSignature !== false,
     hasSecret: Boolean(a.webhookSecretEncrypted),
     createdAt: a.createdAt,

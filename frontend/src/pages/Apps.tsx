@@ -5,6 +5,10 @@ import { CustomToolsPanel } from './Tools'
 import { PrivateAppsPanel } from '../components/PrivateAppsPanel'
 import { AppLogo } from '../components/AppLogo'
 import { AppDetailDialog } from '../components/AppDetailDialog'
+import { StreamCTA, StreamPanel } from '../components/StreamPanel'
+import { TradingPolicyPanel } from '../components/TradingPolicyPanel'
+import { listStreams } from '../lib/streams'
+import type { MarketStream } from '../lib/streams'
 import {
   disconnectInstallation,
   listAppCatalog,
@@ -314,6 +318,20 @@ function ConnectedList({
   }
   const [renaming, setRenaming] = useState<AppInstallation | null>(null)
   const [confirming, setConfirming] = useState<AppInstallation | null>(null)
+  /**
+   * Os streams por conexão. Uma busca só, e falha em silêncio de propósito: streaming
+   * é exceção nesta tela, e um erro dele não pode esconder a lista de conexões.
+   */
+  const [streams, setStreams] = useState<Record<string, MarketStream>>({})
+  useEffect(() => {
+    let vivo = true
+    listStreams()
+      .then((lista) => vivo && setStreams(Object.fromEntries(lista.map((s) => [s.installationId, s]))))
+      .catch(() => undefined)
+    return () => {
+      vivo = false
+    }
+  }, [])
   const [settingsFor, setSettingsFor] = useState<AppInstallation | null>(null)
   // Remover é diferente de desconectar, e por isso tem confirmação própria: desconectar
   // tira o acesso e mantém o registro; remover tira a conexão da lista.
@@ -361,6 +379,17 @@ function ConnectedList({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontFamily: 'var(--font-display)', fontSize: 15.5, fontWeight: 800, color: 'var(--text-heading)' }}>{i.name}</span>
                     <Tag>{STATUS_LABEL[i.status]}</Tag>
+                    {/*
+                      O AMBIENTE, quando ele não é o padrão.
+                      Uma conexão de simulação e uma de verdade se parecem em tudo menos na
+                      consequência — e é justamente essa que não pode depender de alguém
+                      lembrar qual das duas está olhando.
+                    */}
+                    {i.environment && i.environment !== 'default' ? (
+                      <Tag color="var(--mango-600)" data-testid="installation-environment">
+                        {i.environment === 'paper' ? 'SIMULAÇÃO' : i.environment.toUpperCase()}
+                      </Tag>
+                    ) : null}
                   </div>
                   <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>{app?.name ?? i.appKey}</p>
                 </div>
@@ -383,6 +412,34 @@ function ConnectedList({
                   testid="installation-usage"
                 />
               </dl>
+
+              {/* O stream aparece só onde existe: a maioria das conexões é REST e não
+                  tem nada de tempo real para contar. */}
+              {/*
+                Tempo real só aparece onde ele existe de verdade — e o convite aparece
+                antes de existir. Sem o convite, o recurso ficava pronto no servidor e
+                inalcançável na tela.
+              */}
+              {app?.streamable && i.status === 'connected' ? (
+                streams[i.id] ? (
+                  <StreamPanel
+                    stream={streams[i.id]}
+                    onChange={(s) => setStreams((prev) => ({ ...prev, [s.installationId]: s }))}
+                    onRemoved={() =>
+                      setStreams((prev) => {
+                        const { [i.id]: _removido, ...resto } = prev
+                        return resto
+                      })
+                    }
+                  />
+                ) : (
+                  <StreamCTA installationId={i.id} onCreated={(s) => setStreams((prev) => ({ ...prev, [s.installationId]: s }))} />
+                )
+              ) : null}
+
+              {/* Segurança só aparece onde há o que limitar: um App cujas ações são
+                  todas de leitura não tem política de operação nenhuma. */}
+              {app?.actions?.some((a) => a.risk === 'high_risk') ? <TradingPolicyPanel installationId={i.id} /> : null}
 
               {message?.id === i.appKey || message?.id === i.id ? (
                 <p style={{ margin: 0, fontSize: 12.5, color: message.ok ? 'var(--intent-brand)' : 'var(--coral-600, #d92d20)' }}>{message.text}</p>

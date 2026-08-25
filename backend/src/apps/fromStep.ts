@@ -49,6 +49,13 @@ export function resolveArgs(args: Record<string, unknown>, valor: unknown): Reco
 
 export interface AppStepContext {
   ownerId: string
+  /**
+   * A execução e a etapa, juntas. É daqui que sai a chave de idempotência de uma ordem.
+   *
+   * Passa pelo executor e não pelos argumentos: o modelo não vê, não escolhe e não pode
+   * mudar — e é justamente por isso que ela serve como chave.
+   */
+  executionRef?: string | null
 }
 
 /**
@@ -84,7 +91,7 @@ export async function executeAppStep(cfg: Record<string, unknown>, valor: unknow
 
   // Restringir o grant a UMA ação faz `resolveGrant` devolver exatamente a ferramenta
   // pedida — sem precisar adivinhar o nome dela, que depende do adapter.
-  const tools = await resolveGrant(ctx.ownerId, { ...grant, actionKeys: [actionKey] }, { agentId: agent._id })
+  const tools = await resolveGrant(ctx.ownerId, { ...grant, actionKeys: [actionKey] }, { agentId: agent._id, executionRef: ctx.executionRef ?? null })
   const tool = tools[0]
   if (!tool) throw new AppStepError(`a ação ${actionKey} não está disponível nesta instalação`)
 

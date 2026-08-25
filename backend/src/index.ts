@@ -20,6 +20,7 @@ import { normalizeRunConfig } from './runConfig.js'
 import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
 import { describeDropped, runInteractive } from './interactiveRun.js'
 import { validateAgainstSchema } from './jsonSchema.js'
+import { resolveExecutableTool } from './tools/connectedTool.js'
 import { agentContractOf } from './executors/contract.js'
 import { dispatchAgentExecution } from './executors/dispatcher.js'
 import { AgentRunError } from './agentRuntime.js'
@@ -228,6 +229,9 @@ import { connectionRouter } from './routes/connectionRoutes.js'
 import { appCatalogRouter, navigationPreferencesRouter } from './routes/appRoutes.js'
 import { privateAppRouter } from './routes/privateAppRoutes.js'
 import { appInstallationRouter } from './routes/appInstallationRoutes.js'
+import { streamRouter } from './routes/streamRoutes.js'
+import { policyRouter } from './routes/policyRoutes.js'
+import { websocketRouter } from './routes/websocketRoutes.js'
 import { appGrantRouter } from './routes/appGrantRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
@@ -408,6 +412,9 @@ app.use('/api/apps', requireAuth, appCatalogRouter)
 app.use('/api/me', requireAuth, navigationPreferencesRouter)
 app.use('/api/private-apps', requireAuth, privateAppRouter)
 app.use('/api/app-installations', requireAuth, appInstallationRouter)
+app.use('/api/streams', requireAuth, streamRouter)
+app.use('/api/trading-policies', requireAuth, policyRouter)
+app.use('/api/websocket', requireAuth, websocketRouter)
 app.use('/api/agents/:agentId', requireAuth, appGrantRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
 app.use('/api/hooks', webhookRouter)
@@ -2174,7 +2181,16 @@ app.post('/api/tools/:toolId/test', requireAuth, async (req, res) => {
     res.status(400).json({ error: `Este teste executa um ${tool.method} real no sistema de destino. Confirme para continuar.`, field: 'confirm' })
     return
   }
-  const outcome = await executeToolCall(tool, req.body?.arguments ?? {})
+  // O teste do dono percorre o MESMO caminho da execução real, conexão inclusive: um
+  // teste que resolvesse diferente aprovaria uma ferramenta que falha em produção.
+  const pronta = await resolveExecutableTool(tool, res.locals.userId)
+  if (!pronta.ok) {
+    res.status(400).json({ ok: false, error: pronta.message })
+    return
+  }
+  const outcome = await executeToolCall(pronta.executable, req.body?.arguments ?? {}, {
+    allHeadersAreSecret: pronta.allHeadersAreSecret,
+  })
   res.json({ ok: outcome.ok, result: outcome.result, detail: outcome.detail })
 })
 

@@ -9,6 +9,7 @@
 // Agora cada App é um módulo que exporta o que tem, e a incoerência é DETECTADA:
 // manifesto que declara ação nativa sem adapter, ou dois módulos disputando a mesma
 // key, param o processo no arranque em vez de virarem um bug de execução.
+import * as alpaca from './alpaca/index.js'
 import * as candleAnalyzer from './candle-analyzer/index.js'
 import * as email from './email/index.js'
 import * as google from './google/index.js'
@@ -20,6 +21,7 @@ import * as slack from './slack/index.js'
 import * as stripe from './stripe/index.js'
 import * as telegram from './telegram/index.js'
 import * as webChat from './web-chat/index.js'
+import * as websocket from './websocket/index.js'
 import * as whatsapp from './whatsapp/index.js'
 import type { AppDefinition, NativeFactory } from '../types.js'
 
@@ -29,7 +31,7 @@ interface OfficialModule {
 }
 
 // A ordem é a que o catálogo mostra, e é a mesma de antes da divisão.
-const MODULES: OfficialModule[] = [google, slack, mercadoPago, rdStation, hubspot, stripe, nuvemshop, candleAnalyzer, email, telegram, webChat, whatsapp]
+const MODULES: OfficialModule[] = [google, slack, mercadoPago, rdStation, hubspot, stripe, nuvemshop, candleAnalyzer, alpaca, websocket, email, telegram, webChat, whatsapp]
 
 export class OfficialAppsError extends Error {}
 

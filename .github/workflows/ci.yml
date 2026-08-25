@@ -29,6 +29,15 @@ jobs:
       # Nothing connects to it: the integration tests override it with their own
       # in-process mongod.
       MONGODB_URI: mongodb://127.0.0.1:27017/comunicacaoai_ci
+      # A chave que `crypto.ts` usa para cifrar credencial de conexão. Só de teste, e
+      # de propósito em texto aberto: ela cifra dados que este job mesmo cria e
+      # descarta. Um segredo de verdade aqui não protegeria nada e daria a impressão
+      # de que o CI tem acesso a alguma conta.
+      #
+      # Existe porque a suíte NÃO carrega `.env` (ver backend/scripts/run-tests.mjs):
+      # antes disso, um teste que esquecia de declarar a chave passava na máquina de
+      # quem escreveu e falhava aqui.
+      ENCRYPTION_KEY: ci-encryption-key-nao-e-segredo-0000
       CI: true
       # Um só lugar define a pilha do smoke, e os quatro passos abaixo usam o mesmo — inclusive
       # o da limpeza, que precisa apontar para exatamente os mesmos arquivos para derrubar o
@@ -113,6 +122,37 @@ jobs:
         run: npx playwright test e2e/widget-embed.spec.ts --project=chromium --workers=1
         working-directory: frontend
 
+      # O App de WebSocket é a única superfície do produto cujas telas dependem de um
+      # App ATIVADO para renderizar: o guarda de superfície recusa a página quando ele
+      # não está. Um erro aí não aparece como exceção — a página simplesmente fica
+      # vazia, que é o mesmo sintoma de "nada configurado ainda".
+      #
+      # `E2E_PREVIEW=1` serve o app COMPILADO (o passo de build acima já produziu o
+      # `dist`) em vez de subir um segundo servidor de desenvolvimento. É o que faz esta
+      # jornada exercitar o mesmo binário que vai para produção — inclusive com as flags
+      # de build no estado real, que é justamente onde a última falha se escondia: na
+      # máquina de quem desenvolve há um `frontend/.env` que liga tudo, e aqui não.
+      #
+      # Os stubs desta jornada compartilham rota interceptada, então `--workers=1` pelo
+      # mesmo motivo do widget.
+      - name: WebSocket App e2e (Chromium)
+        run: npx playwright test e2e/websocket-app.spec.ts --project=chromium --workers=1
+        working-directory: frontend
+        env:
+          E2E_PREVIEW: '1'
+
+      # O relatório vira artefato SÓ quando quebra. O log completo do job exige permissão
+      # de administrador; sem isto, um passo vermelho num repositório de outra pessoa é um
+      # passo que não dá para ler — foi exatamente o que aconteceu aqui.
+      - name: "E2E: relatório da falha"
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          retention-days: 7
+          if-no-files-found: ignore
+
       # As imagens são construídas no CI porque um Dockerfile que só é exercitado na
       # hora do deploy é um Dockerfile que falha na hora do deploy. Aqui o custo de
       # descobrir é um job vermelho; lá, é um rollback.
@@ -159,8 +199,12 @@ jobs:
       # O diagnóstico vira ANOTAÇÃO do run, e não só linha de log: quem abre o resumo do CI
       # lê o estado dos contêineres e o fim do log do backend sem precisar caçar dentro do
       # passo que falhou. Roda antes da limpeza, senão o `down -v` já teria levado os logs.
+      # `hashFiles` só enxerga o arquivo se ele existir: quando o E2E cai ANTES do passo
+      # que o cria, a pilha nunca subiu, e um diagnóstico sobre contêineres que não
+      # existem só produz anotação falsa — dizendo que falta um arquivo que ninguém
+      # deveria ter criado ainda.
       - name: "Smoke: diagnóstico da falha"
-        if: failure()
+        if: failure() && hashFiles('compose.production-test.env') != ''
         run: |
           anotar() {
             printf '::error title=%s::%s\n' "$1" "$(printf '%s' "$2" | tail -c 2500 | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')"
@@ -171,7 +215,10 @@ jobs:
           anotar "smoke: fim do log do mongo"    "$(docker compose $COMPOSE_ARGS logs --no-color --tail=15 mongo 2>&1 || true)"
 
       - name: "Smoke: logs e limpeza"
-        if: always()
+        # Mesma razão do passo acima: sem o arquivo de ambiente não há pilha para
+        # derrubar, e `docker compose` reclamaria de um arquivo ausente como se fosse
+        # problema — escondendo a falha de verdade atrás de ruído.
+        if: always() && hashFiles('compose.production-test.env') != ''
         run: |
           docker compose $COMPOSE_ARGS ps -a || true
           echo "--- logs backend ---"; docker compose $COMPOSE_ARGS logs --no-color --tail=120 backend || true

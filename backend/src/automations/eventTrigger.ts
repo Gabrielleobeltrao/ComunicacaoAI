@@ -10,7 +10,11 @@ import { getAgentById, ensureActivationMode } from '../agents.js'
 import { createAutomation, getAutomation, publishAutomation, rotateWebhookSecret, setStatus, updateDraft } from './service.js'
 import { listAutomations as repoListAutomations } from './repository.js'
 import { DEFAULT_LIMITS, isExecutionMode } from './types.js'
-import type { Automation, AutomationDefinition, ExecutionMode, OutputFormat, StepDefinition } from './types.js'
+import type { Automation, AutomationDefinition, ExecutionMode, InternalEventTrigger, OutputFormat, StepDefinition } from './types.js'
+import { isEventType } from '../events/types.js'
+import { isTimeframe } from '../marketData/types.js'
+import { MAX_TRIGGER_SERIES, MAX_TRIGGER_SYMBOLS } from './validate.js'
+import { DEFAULT_SERIES_LENGTH } from './internalEvents.js'
 import {
   aiStepPlanned,
   appStep,
@@ -30,6 +34,92 @@ import type { AppActionPlan, MemoryPlan } from './executionPlan.js'
 import { isConditionOperator } from './conditions.js'
 import type { StepCondition } from './conditions.js'
 
+/**
+ * O gatilho ouvindo o BARRAMENTO em vez da porta pública.
+ *
+ * Desligado, tudo continua como sempre foi: webhook com chave e assinatura. Ligado, o
+ * gatilho não tem endereço nenhum — ninguém de fora consegue dispará-lo, nem por
+ * engano.
+ */
+export interface MarketTriggerPlan {
+  enabled: boolean
+  eventType: string
+  /** Uma conexão específica, ou qualquer uma da conta. */
+  installationId: string | null
+  /** Uma assinatura específica, para os eventos que têm uma. */
+  subscriptionId: string | null
+  symbols: string[]
+  timeframe: string | null
+  /** Entregar a série fechada junto. É o que torna a análise possível sem outro passo. */
+  includeSeries: boolean
+  seriesLength: number
+}
+
+export const emptyMarketPlan = (): MarketTriggerPlan => ({
+  enabled: false,
+  eventType: 'market.candle.closed',
+  installationId: null,
+  subscriptionId: null,
+  symbols: [],
+  timeframe: null,
+  includeSeries: true,
+  seriesLength: DEFAULT_SERIES_LENGTH,
+})
+
+export function normalizeMarketPlan(raw: unknown): MarketTriggerPlan {
+  const p = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  if (p.enabled !== true) return emptyMarketPlan()
+  // Tipo desconhecido desliga em vez de gravar um gatilho que nunca dispara.
+  if (!isEventType(p.eventType)) return emptyMarketPlan()
+  const symbols = Array.isArray(p.symbols)
+    ? [...new Set(p.symbols.map((s) => String(s ?? '').trim().toUpperCase()).filter(Boolean))].slice(0, MAX_TRIGGER_SYMBOLS)
+    : []
+  const n = Number(p.seriesLength)
+  return {
+    enabled: true,
+    eventType: p.eventType,
+    installationId: typeof p.installationId === 'string' && p.installationId.trim() ? p.installationId.trim() : null,
+    subscriptionId: typeof p.subscriptionId === 'string' && p.subscriptionId.trim() ? p.subscriptionId.trim() : null,
+    symbols,
+    timeframe: isTimeframe(p.timeframe) ? p.timeframe : null,
+    includeSeries: p.includeSeries !== false,
+    seriesLength: Number.isFinite(n) ? Math.min(Math.max(Math.floor(n), 2), MAX_TRIGGER_SERIES) : DEFAULT_SERIES_LENGTH,
+  }
+}
+
+export const marketTriggerOf = (plan: MarketTriggerPlan): InternalEventTrigger => ({
+  type: 'internal_event',
+  eventType: plan.eventType,
+  installationId: plan.installationId,
+  subscriptionId: plan.subscriptionId,
+  symbols: plan.symbols,
+  timeframe: plan.timeframe,
+  includeSeries: plan.includeSeries,
+  seriesLength: plan.seriesLength,
+})
+
+/**
+ * Publicar um SINAL no barramento quando o resultado merecer.
+ *
+ * A condição é o ponto inteiro: sem ela, toda vela fechada viraria um sinal, e um
+ * sinal que acontece sempre não é sinal. Com ela, a etapa existe e não roda — e o
+ * trace mostra por quê.
+ */
+export interface SignalPlan {
+  enabled: boolean
+  eventType: string
+  condition: StepCondition | null
+}
+
+export const emptySignalPlan = (): SignalPlan => ({ enabled: false, eventType: 'market.signal.detected', condition: null })
+
+export function normalizeSignalPlan(raw: unknown): SignalPlan {
+  const p = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  if (p.enabled !== true) return emptySignalPlan()
+  if (!isEventType(p.eventType)) return emptySignalPlan()
+  return { enabled: true, eventType: p.eventType, condition: normalizeCondition(p.condition) }
+}
+
 export interface EventTriggerSpec {
   name: string
   // What the agent must do with each event.
@@ -46,6 +136,10 @@ export interface EventTriggerSpec {
   aiCondition?: StepCondition | null
   // Uma ação de App executada direto, sem modelo. Desligada por padrão.
   action?: AppActionPlan
+  // Ouvir o barramento em vez da porta pública. Desligado por padrão.
+  market?: MarketTriggerPlan
+  // Publicar um sinal quando a condição for verdadeira. Desligado por padrão.
+  signal?: SignalPlan
 }
 
 // A condição vinda da API, saneada. Operador desconhecido some — e sem condição, os
@@ -68,6 +162,8 @@ export function readEventTriggerConfig(def: AutomationDefinition | null | undefi
   memory: MemoryPlan
   aiCondition: StepCondition | null
   action: AppActionPlan
+  market: MarketTriggerPlan
+  signal: SignalPlan
 } {
   const mode: ExecutionMode = isExecutionMode(def?.executionMode) ? def.executionMode : 'ai'
   const passoMemoria = (def?.steps ?? []).find((s) => s.id === STEP_MEMORY)
@@ -76,11 +172,21 @@ export function readEventTriggerConfig(def: AutomationDefinition | null | undefi
     ? normalizeMemoryPlan({ ...cfg, enabled: true })
     : emptyMemoryPlan()
   const passoAgente = (def?.steps ?? []).find((s) => s.type === 'agent.execute')
-  return { executionMode: mode, memory, aiCondition: passoAgente?.runIf ?? null, action: readAppActionFromSteps(def?.steps) }
+  const passoSinal = (def?.steps ?? []).find((s) => s.id === STEP_SIGNAL && s.type === 'event.publish')
+  const signal: SignalPlan = passoSinal
+    ? normalizeSignalPlan({ ...(passoSinal.config ?? {}), enabled: true, condition: passoSinal.runIf ?? null })
+    : emptySignalPlan()
+  const trigger = def?.trigger
+  const market: MarketTriggerPlan =
+    trigger?.type === 'internal_event'
+      ? normalizeMarketPlan({ ...trigger, enabled: true })
+      : emptyMarketPlan()
+  return { executionMode: mode, memory, aiCondition: passoAgente?.runIf ?? null, action: readAppActionFromSteps(def?.steps), market, signal }
 }
 
 const STEP_EVENT = 'evento'
 const STEP_AGENT = 'run'
+const STEP_SIGNAL = 'sinal'
 
 export class EventTriggerError extends Error {}
 
@@ -155,8 +261,32 @@ export function buildEventTriggerDefinition(spec: EventTriggerSpec, agentId: Obj
     })
   }
 
+  // O SINAL vem por último: ele fala sobre o que a ação achou, então precisa da ação
+  // já executada. Sem ação, fala sobre o próprio evento.
+  const signal = normalizeSignalPlan(spec.signal)
+  if (signal.enabled) {
+    const origem = action.enabled ? STEP_APP : STEP_EVENT
+    steps.push({
+      id: STEP_SIGNAL,
+      name: 'Publicar sinal',
+      type: 'event.publish',
+      enabled: true,
+      dependsOn: [origem],
+      inputMapping: {},
+      config: { eventType: signal.eventType },
+      timeoutMs: 10_000,
+      retryPolicy: { maxAttempts: 2, backoffMs: 1_000 },
+      // Falhar em publicar o sinal não pode desfazer o que já foi analisado e guardado.
+      continueOnError: true,
+      ...(resolveConditionSource(signal.condition, origem) ? { runIf: resolveConditionSource(signal.condition, origem)! } : {}),
+    })
+  }
+
+  const market = normalizeMarketPlan(spec.market)
   return {
-    trigger: { type: 'webhook', requireSignature: true },
+    // Assinatura obrigatória no webhook: um endereço que roda um agente não pode ser
+    // chamável por quem só adivinhou a URL. O gatilho interno não tem endereço.
+    trigger: market.enabled ? marketTriggerOf(market) : { type: 'webhook', requireSignature: true },
     executionMode,
     inputs: [],
     steps,
@@ -170,7 +300,7 @@ export function buildEventTriggerDefinition(spec: EventTriggerSpec, agentId: Obj
 export const describeEventTriggerFlow = (spec: EventTriggerSpec, destinoLabel?: string | null): string =>
   describeFlow({
     mode: isExecutionMode(spec.executionMode) ? spec.executionMode : 'ai',
-    origem: 'Webhook',
+    origem: normalizeMarketPlan(spec.market).enabled ? 'Evento de mercado' : 'Webhook',
     memory: normalizeMemoryPlan(spec.memory),
     condition: spec.aiCondition ?? null,
     action: normalizeAppActionPlan(spec.action),
@@ -197,6 +327,7 @@ export async function createEventTrigger(
     memory: normalizeMemoryPlan(spec.memory),
     condition: spec.aiCondition ?? null,
     temAcao: normalizeAppActionPlan(spec.action).enabled,
+    temSinal: normalizeSignalPlan(spec.signal).enabled,
   })
   if (vazio) throw new EventTriggerError(vazio)
 
@@ -207,16 +338,17 @@ export async function createEventTrigger(
     definition: buildEventTriggerDefinition({ ...spec, objective }, agentId),
     agentId,
   })
-  // createAutomation stores an encrypted secret it cannot hand back; rotating right
-  // away is what produces the one plaintext the user ever sees.
-  const rotated = await rotateWebhookSecret(ownerId, created._id)
-  if (!rotated) throw new EventTriggerError('could not arm the trigger')
+  // O gatilho interno não tem porta: armar um endereço para ele seria publicar uma URL
+  // que o receptor recusa, e um segredo que ninguém usa.
+  const market = normalizeMarketPlan(spec.market)
+  const rotated = market.enabled ? null : await rotateWebhookSecret(ownerId, created._id)
+  if (!market.enabled && !rotated) throw new EventTriggerError('could not arm the trigger')
   await publishAutomation(ownerId, created._id, ownerId)
   const active = await setStatus(ownerId, created._id, 'active')
   // A configured trigger must also be an allowed one, or the agent page would show
   // an armed webhook while its activation reads "desligado".
   await ensureActivationMode(ownerId, agentId, 'event')
-  return { trigger: active ?? created, publicKey: rotated.publicKey, secret: rotated.secret }
+  return { trigger: active ?? created, publicKey: rotated?.publicKey ?? '', secret: rotated?.secret ?? '' }
 }
 
 // Change name/objective. The endpoint and its secret are untouched — a rename must
@@ -233,6 +365,7 @@ export async function updateEventTrigger(ownerId: string, agentId: ObjectId, tri
     memory: normalizeMemoryPlan(spec.memory),
     condition: spec.aiCondition ?? null,
     temAcao: normalizeAppActionPlan(spec.action).enabled,
+    temSinal: normalizeSignalPlan(spec.signal).enabled,
   })
   if (vazio) throw new EventTriggerError(vazio)
   await updateDraft(ownerId, triggerId, {
@@ -244,8 +377,11 @@ export async function updateEventTrigger(ownerId: string, agentId: ObjectId, tri
   return getAutomation(ownerId, triggerId)
 }
 
-const isEventTrigger = (a: Automation): boolean =>
-  (a.publishedTrigger?.type ?? a.trigger?.type) === 'webhook'
+const isEventTrigger = (a: Automation): boolean => {
+  const tipo = a.publishedTrigger?.type ?? a.trigger?.type
+  // Os dois são "gatilho por evento" para o dono: um ouve de fora, o outro de dentro.
+  return tipo === 'webhook' || tipo === 'internal_event'
+}
 
 export async function listEventTriggers(ownerId: string, agentId: ObjectId): Promise<Automation[]> {
   const { items } = await repoListAutomations(ownerId, { agentId, limit: 100, skip: 0 })

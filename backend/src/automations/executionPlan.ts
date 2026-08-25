@@ -219,9 +219,17 @@ export function aiStepPlanned(mode: ExecutionMode, condition: StepCondition | nu
  *
  * Devolve a mensagem do problema, ou `null` quando há trabalho.
  */
-export function semTrabalho(opts: { mode: ExecutionMode; memory: MemoryPlan; condition?: StepCondition | null; temFonte?: boolean; temAcao?: boolean }): string | null {
+export function semTrabalho(opts: {
+  mode: ExecutionMode
+  memory: MemoryPlan
+  condition?: StepCondition | null
+  temFonte?: boolean
+  temAcao?: boolean
+  // Publicar um sinal é trabalho: o fluxo produz um fato que outra automação consome.
+  temSinal?: boolean
+}): string | null {
   if (aiStepPlanned(opts.mode, opts.condition)) return null
-  if (opts.memory.enabled || opts.temAcao || opts.temFonte) return null
+  if (opts.memory.enabled || opts.temAcao || opts.temFonte || opts.temSinal) return null
   if (opts.mode === 'hybrid' || opts.mode === 'automatic') {
     return 'Neste modo, a IA só roda com uma condição preenchida. Preencha a condição, ou escolha guardar a informação, ou use o modo com IA.'
   }

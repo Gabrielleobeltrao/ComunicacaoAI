@@ -3,6 +3,10 @@ import { AppSurfaceGuard } from './AppSurfaceGuard'
 import { ChannelOverview } from '../pages/ChannelOverview'
 import { Chats } from '../pages/Chats'
 import { Widgets } from '../pages/Widgets'
+import { WebSocketOverview } from '../pages/websocket/Overview'
+import { WebSocketMessages } from '../pages/websocket/Messages'
+import { WebSocketSubscriptions } from '../pages/websocket/Subscriptions'
+import { WebSocketLogs } from '../pages/websocket/Logs'
 
 // The compiled allow list of App pages.
 //
@@ -63,6 +67,30 @@ export const APP_SURFACE_ROUTES: SurfaceRoute[] = [
     surfaceKey: 'conversations',
     path: '/apps/whatsapp/conversations',
     element: () => guarded('whatsapp', 'conversations', 'Conversas WhatsApp', <Chats channel="whatsapp" current="/apps/whatsapp/conversations" title="Conversas WhatsApp" />),
+  },
+  {
+    appKey: 'websocket',
+    surfaceKey: 'overview',
+    path: '/apps/websocket/overview',
+    element: () => guarded('websocket', 'overview', 'WebSocket · Visão geral', <WebSocketOverview />),
+  },
+  {
+    appKey: 'websocket',
+    surfaceKey: 'messages',
+    path: '/apps/websocket/messages',
+    element: () => guarded('websocket', 'messages', 'WebSocket · Mensagens', <WebSocketMessages />),
+  },
+  {
+    appKey: 'websocket',
+    surfaceKey: 'subscriptions',
+    path: '/apps/websocket/subscriptions',
+    element: () => guarded('websocket', 'subscriptions', 'WebSocket · Assinaturas', <WebSocketSubscriptions />),
+  },
+  {
+    appKey: 'websocket',
+    surfaceKey: 'logs',
+    path: '/apps/websocket/logs',
+    element: () => guarded('websocket', 'logs', 'WebSocket · Logs', <WebSocketLogs />),
   },
 ]
 

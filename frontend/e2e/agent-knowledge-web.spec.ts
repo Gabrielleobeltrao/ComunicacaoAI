@@ -85,6 +85,8 @@ const GOOGLE = {
   providerCostNote: null,
   requiresAuth: true,
   activation: 'oauth',
+  connectable: false,
+  streamable: false,
   activationRoute: null,
 }
 

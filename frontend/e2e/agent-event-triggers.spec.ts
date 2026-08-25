@@ -138,6 +138,7 @@ async function stubApi(page: Page, opts: { triggers?: unknown[] } = {}) {
     }
     return r.fulfill({ json: opts.triggers ?? [TRIGGER] })
   })
+  await page.route('**/api/app-installations**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents?**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents/*/overview', (r) => r.fulfill({ json: overview() }))
@@ -231,4 +232,54 @@ test('the area is usable on a phone', async ({ page }) => {
   await expect(page.getByTestId('event-trigger-card').first()).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
+})
+
+// --- gatilho por evento de mercado -------------------------------------------------------
+
+test('o gatilho pode ouvir o barramento em vez de esperar uma chamada de fora', async ({ page }) => {
+  await stubApi(page)
+  await openFluxos(page)
+  await page.getByTestId('new-event-trigger').click()
+  await page.getByTestId('trigger-origin').selectOption('market')
+  await page.getByTestId('trigger-objective').fill('Analisar a vela e avisar o time.')
+
+  await page.getByTestId('market-symbols').fill('PETR4, vale3')
+  await page.getByTestId('market-timeframe').selectOption('5m')
+  // A frase de conferência: ler é mais rápido do que descobrir depois do primeiro disparo.
+  await expect(page.getByTestId('trigger-summary')).toContainText('PETR4, VALE3')
+  await expect(page.getByTestId('trigger-summary')).toContainText('5 minutos')
+
+  // Sem porta pública: a promessa da assinatura HMAC não vale aqui e sai da tela.
+  await expect(page.getByText('A assinatura HMAC vem ativada', { exact: false })).toHaveCount(0)
+
+  await page.getByTestId('save-event-trigger').click()
+  await expect.poll(() => posted?.body).toMatchObject({
+    market: { enabled: true, eventType: 'market.candle.closed', symbols: ['PETR4', 'VALE3'], timeframe: '5m' },
+  })
+})
+
+test('o que é técnico fica recolhido em Avançado', async ({ page }) => {
+  await stubApi(page)
+  await openFluxos(page)
+  await page.getByTestId('new-event-trigger').click()
+  await page.getByTestId('trigger-origin').selectOption('market')
+  await expect(page.getByTestId('market-advanced')).toHaveCount(0)
+  await page.getByTestId('market-advanced-toggle').click()
+  await expect(page.getByTestId('market-advanced')).toBeVisible()
+  await expect(page.getByTestId('market-series-length')).toBeVisible()
+})
+
+test('um gatilho interno não mostra endereço, credencial nem exemplo', async ({ page }) => {
+  const interno = {
+    ...TRIGGER,
+    endpoint: null,
+    market: { enabled: true, eventType: 'market.candle.closed', installationId: null, symbols: ['PETR4'], timeframe: '1m', includeSeries: true, seriesLength: 100 },
+    signal: { enabled: false, eventType: 'market.signal.detected', condition: null },
+  }
+  await stubApi(page, { triggers: [interno] })
+  await openFluxos(page)
+  // Mostrar uma porta que não existe seria pior do que não mostrar nada.
+  await expect(page.getByTestId('trigger-endpoint')).toHaveCount(0)
+  await expect(page.getByTestId('rotate-secret')).toHaveCount(0)
+  await expect(page.getByTestId('trigger-internal-note')).toContainText('PETR4')
 })

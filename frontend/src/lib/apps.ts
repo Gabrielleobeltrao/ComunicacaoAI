@@ -68,6 +68,10 @@ export interface AppCatalogEntry {
   // HOW this App becomes active. `managed_channel` cannot be created by the generic
   // form: its CTA sends the owner to the real flow.
   activation: AppActivation
+  /** Este App empresta base e credencial a uma ferramenta. A maioria não empresta. */
+  connectable: boolean
+  /** Este App tem tempo real. Sem isto, "Ativar tempo real" seria uma promessa vazia. */
+  streamable: boolean
   activationRoute: string | null
   installationCount?: number
   connected?: boolean
@@ -85,6 +89,11 @@ export interface AppInstallation {
   updatedAt: string
   lastTestedAt: string | null
   agentCount?: number
+  /**
+   * O AMBIENTE da conexão. Sempre resolvido pelo servidor — uma conexão criada antes
+   * deste campo chega como `default`, e nada muda para ela.
+   */
+  environment?: 'default' | 'paper' | 'live'
 }
 
 export interface AppGrant {

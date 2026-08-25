@@ -9,7 +9,7 @@
 // E o que sai daqui nunca carrega stack nem mensagem crua de exceção: elas contam caminho
 // de arquivo e, com alguma frequência, valor de variável.
 import { describeErrors, validateAgainstSchema } from '../jsonSchema.js'
-import { findAdapterFor, findFunction } from './functionRegistry.js'
+import { ErroDeFuncao, findAdapterFor, findFunction } from './functionRegistry.js'
 import type { FunctionExecutorConfig } from './types.js'
 import type { ExecutorError, ExecutorResult } from './types.js'
 
@@ -132,6 +132,17 @@ export async function executeRegisteredFunction(
      * Stack conta caminho de arquivo, e mensagem crua costuma carregar valor de variável.
      * O log do servidor recebe o detalhe; o cliente recebe que falhou e em quê.
      */
+    /**
+     * O que o handler levantou DE PROPÓSITO sai; o que escapou dele vira categoria.
+     *
+     * "receita zero: a margem não é definida" foi escrita neste repositório para quem
+     * administra ler. Trocá-la por "falhou durante a execução" apaga a única informação
+     * que permite consertar — e uma exceção inesperada continua sem sair, porque `stack`
+     * conta caminho de arquivo e a mensagem crua costuma carregar valor de variável.
+     */
+    if (erro instanceof ErroDeFuncao) {
+      return falha('invalid_input', erro.message, comecou, metadata)
+    }
     console.error(`[function] ${config.functionName} falhou:`, erro)
     return falha('tool', `A função "${config.functionName}" falhou durante a execução.`, comecou, metadata)
   }

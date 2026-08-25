@@ -4,6 +4,35 @@ import { AppLogo } from './AppLogo'
 import { listAppCatalog, listAgentGrants, listInstallations, saveAgentGrants, RISK_LABEL } from '../lib/apps'
 import type { AppCatalogEntry, AppGrant, AppInstallation } from '../lib/apps'
 import { Button } from '../ui'
+import { activePolicy, describeRules } from '../lib/tradingPolicies'
+import type { TradingPolicy } from '../lib/tradingPolicies'
+
+/**
+ * O que já está limitado nesta conexão, mostrado ANTES de autorizar uma ação crítica.
+ *
+ * Autorizar um agente a mandar ordem sozinho é uma decisão; tomá-la sem ver o teto que
+ * vale é outra. Ler três linhas aqui é mais rápido do que abrir a configuração da
+ * conexão — e é a diferença entre autorizar sabendo e autorizar achando.
+ */
+function PolicyNote({ installationId, agentId }: { installationId: string; agentId: string | null }) {
+  const [policy, setPolicy] = useState<TradingPolicy | null>(null)
+  useEffect(() => {
+    let vivo = true
+    activePolicy(installationId, agentId)
+      .then((p) => vivo && setPolicy(p))
+      .catch(() => undefined)
+    return () => {
+      vivo = false
+    }
+  }, [installationId, agentId])
+
+  const linhas = policy ? describeRules(policy.rules) : []
+  return (
+    <p className="mt-2 text-xs text-(--text-faint)" data-testid="grant-policy">
+      {linhas.length ? `Limites em vigor: ${linhas.join(' · ')}.` : 'Nenhum limite configurado nesta conexão — em Apps, na seção Segurança.'}
+    </p>
+  )
+}
 
 // What this agent may do with the Apps the account has connected.
 //
@@ -196,7 +225,21 @@ export function AgentAppGrantsEditor({ agentId }: { agentId: string | null }) {
             <div className="flex items-center gap-3">
               <AppLogo appKey={installation.appKey} icon={app.icon} size={40} title={app.name} />
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{installation.name}</p>
+                <p className="truncate text-sm font-medium">
+                  {installation.name}
+                  {/* O ambiente aparece onde a ação é AUTORIZADA, e não só onde a
+                      conexão é criada: é aqui que alguém decide deixar um agente
+                      mandar ordem sozinho. */}
+                  {installation.environment && installation.environment !== 'default' ? (
+                    <span
+                      className="ml-2 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase"
+                      style={{ background: 'var(--mango-100, #fdf0d5)', color: 'var(--mango-600, #b25e09)' }}
+                      data-testid="grant-environment"
+                    >
+                      {installation.environment === 'paper' ? 'simulação' : installation.environment}
+                    </span>
+                  ) : null}
+                </p>
                 <p className="truncate text-xs text-(--text-faint)">{app.name}</p>
               </div>
             </div>
@@ -218,9 +261,19 @@ export function AgentAppGrantsEditor({ agentId }: { agentId: string | null }) {
                       <span className="min-w-0">
                         <span className="block text-sm">{action.name}</span>
                         <span className="block text-xs text-(--text-muted)">{action.description}</span>
-                        <span className="mt-0.5 block text-xs text-(--text-faint)">{RISK_LABEL[action.risk]}</span>
+                        {/* Alto risco não pode parecer igual a "altera dados": mandar
+                            uma ordem e criar um contato não são da mesma classe. */}
+                        <span
+                          className="mt-0.5 block text-xs"
+                          style={{ color: action.risk === 'high_risk' ? 'var(--coral-600, #d92d20)' : 'var(--text-faint)' }}
+                          data-testid={`risk-${action.key}`}
+                        >
+                          {RISK_LABEL[action.risk]}
+                        </span>
                       </span>
                     </label>
+
+                    {on && action.risk === 'high_risk' ? <PolicyNote installationId={installation.id} agentId={agentId} /> : null}
 
                     {on && action.risk !== 'read' ? (
                       <label className="mt-2 flex items-start gap-2 border-t border-(--border-subtle) pt-2">
@@ -232,8 +285,9 @@ export function AgentAppGrantsEditor({ agentId }: { agentId: string | null }) {
                           className="mt-0.5"
                         />
                         <span className="text-xs text-(--text-muted)">
-                          Permitir que o agente execute esta ação por conta própria. Sem isso, ele avisa que precisa de autorização em vez
-                          de agir.
+                          {action.risk === 'high_risk'
+                            ? 'Permitir que o agente execute esta ação crítica por conta própria, sem confirmar antes. Sem isso, ele avisa que precisa de autorização em vez de agir.'
+                            : 'Permitir que o agente execute esta ação por conta própria. Sem isso, ele avisa que precisa de autorização em vez de agir.'}
                         </span>
                       </label>
                     ) : null}

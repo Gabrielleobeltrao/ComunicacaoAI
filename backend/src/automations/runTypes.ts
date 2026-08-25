@@ -86,6 +86,8 @@ export interface StepRun {
   startedAt: Date | null
   finishedAt: Date | null
   error: SafeRunError | null
+  /** Por que não rodou. Ausente quando rodou — e em execuções anteriores a este campo. */
+  skipReason?: string
 }
 
 export interface Artifact {

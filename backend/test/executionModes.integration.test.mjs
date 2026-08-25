@@ -627,13 +627,84 @@ test('uma origem declarada de propósito é respeitada', async () => {
 
 // --- App em breve ----------------------------------------------------------------------------
 
+// Um App PRIVADO marcado como "em breve", escrito direto no banco.
+//
+// Direto no banco de propósito, duas vezes: a API já recusa criar assim, e o que este
+// bloco protege é a porteira de EXECUÇÃO — um App pausado depois de a permissão ter
+// sido concedida não pode continuar valendo. (Antes daqui o exemplo era o
+// candle_analyzer; ele saiu de "em breve" quando o fluxo de mercado ficou pronto.)
+const APP_EM_BREVE = {
+  key: 'em_breve_teste',
+  version: '1.0.0',
+  source: 'private',
+  name: 'App Em Breve',
+  description: 'Um App anunciado e ainda não liberado.',
+  categories: ['dados'],
+  auth: { kind: 'none', fields: [], scopes: [] },
+  allowedDomains: [],
+  supportsMultipleConnections: false,
+  actions: [
+    {
+      key: 'consultar',
+      name: 'Consultar',
+      description: 'Uma ação qualquer.',
+      risk: 'read',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: true },
+      execution: { kind: 'native', handler: 'candles_calculate_indicators' },
+    },
+  ],
+  status: 'active',
+  availability: 'coming_soon',
+}
+
+const comAppEmBreve = async () => {
+  await db.collection('private_apps').insertOne({
+    _id: new ObjectId(),
+    ownerId: OWNER,
+    key: APP_EM_BREVE.key,
+    version: APP_EM_BREVE.version,
+    manifest: APP_EM_BREVE,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
+  const instalacao = new ObjectId()
+  await db.collection('connections').insertOne({
+    _id: instalacao,
+    ownerId: OWNER,
+    appKey: APP_EM_BREVE.key,
+    appVersion: APP_EM_BREVE.version,
+    name: 'Em breve',
+    status: 'connected',
+    encryptedConfig: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
+  await db.collection('agents').updateOne(
+    { _id: AGENT },
+    {
+      $set: {
+        appGrants: [
+          {
+            installationId: instalacao.toString(),
+            appKey: APP_EM_BREVE.key,
+            actionKeys: ['consultar'],
+            resourceConfig: {},
+            autonomousWriteActionKeys: [],
+          },
+        ],
+      },
+    },
+  )
+}
+
 test('App marcado como "em breve" não executa, nem com grant já concedido', async () => {
-  // O grant é criado direto no banco de propósito: o caminho da API já recusa, e o que
-  // este teste protege é a porteira de EXECUÇÃO — uma permissão concedida antes de o App
-  // ser pausado não pode continuar valendo.
-  await comCandleAnalyzer()
+  await comAppEmBreve()
   const { run } = await rodar(
-    { executionMode: 'deterministic', action: acaoDeCandles, memory: memoriaNoAgente() },
+    {
+      executionMode: 'deterministic',
+      action: { enabled: true, appKey: APP_EM_BREVE.key, actionKey: 'consultar' },
+      memory: memoriaNoAgente(),
+    },
     { candles: CANDLES },
   )
   assert.equal(run.status, 'failed')
@@ -641,21 +712,11 @@ test('App marcado como "em breve" não executa, nem com grant já concedido', as
   assert.equal((await memoriasDe(CHAVE_AGENTE)).total, 0, 'nada foi guardado')
 })
 
-test('a ação de um App em breve não é oferecida para automação', async () => {
+test('a porteira olha o App, não o recurso: os liberados continuam liberados', async () => {
   const { getApp } = await import('../dist/apps/registry.js')
   const { isUsableApp } = await import('../dist/apps/types.js')
-  assert.equal(isUsableApp(getApp('candle_analyzer')), false)
-  // E os demais continuam disponíveis: a pausa é de um App, não do recurso.
+  assert.equal(isUsableApp(APP_EM_BREVE), false)
+  assert.equal(isUsableApp(getApp('candle_analyzer')), true, 'o analisador saiu de "em breve" com o fluxo de mercado pronto')
   assert.equal(isUsableApp(getApp('slack')), true)
   assert.equal(isUsableApp(getApp('google')), true)
-})
-
-test('conceder permissão para um App em breve é recusado', async () => {
-  const { ValidationError } = await import('../dist/building.js')
-  const { getApp } = await import('../dist/apps/registry.js')
-  const app = getApp('candle_analyzer')
-  // O manifesto continua inteiro — o App está pausado, não removido.
-  assert.equal(app.actions.length, 3)
-  assert.equal(app.availability, 'coming_soon')
-  assert.ok(ValidationError)
 })

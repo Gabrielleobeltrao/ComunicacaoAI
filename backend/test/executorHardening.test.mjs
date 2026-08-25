@@ -67,7 +67,10 @@ test('um plano LEGADO, sem bindings, compila e roda', () => {
 test('nenhum arquivo de executor contém eval, Function, shell ou import dinâmico', () => {
   const arquivos = readdirSync(join(FONTE, 'executors')).filter((f) => f.endsWith('.ts'))
   assert.ok(arquivos.length >= 6, 'a varredura precisa estar olhando os arquivos de verdade')
-  const proibidos = [/\beval\s*\(/, /new\s+Function\s*\(/, /child_process/, /\bexecSync\b/, /\bspawn\s*\(/, /vm\.runIn/, /\bexec\s*\(/]
+  // `exec(` sem ponto antes: `regex.exec(texto)` é casamento de expressão regular, não
+  // shell, e acusá-lo obrigaria a contorcer o código para agradar a varredura. O shell de
+  // verdade entra por `child_process` ou `execSync`, que continuam na lista.
+  const proibidos = [/\beval\s*\(/, /new\s+Function\s*\(/, /child_process/, /\bexecSync\b/, /\bspawn\s*\(/, /vm\.runIn/, /(?<!\.)\bexec\s*\(/]
   // Sem comentários: um arquivo que EXPLICA por que não faz `import(x)` estaria sendo
   // acusado justamente pela frase que documenta a proibição. O que a varredura procura é
   // código, e um comentário não executa nada.

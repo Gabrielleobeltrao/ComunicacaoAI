@@ -52,7 +52,20 @@ export interface Tool {
   // What teaches the model WHEN to reach for this tool. The most important field.
   description: string
   method: ToolMethod
+  /**
+   * O endereço.
+   *
+   * SEM `installationId`: a URL completa, como sempre foi.
+   * COM `installationId`: apenas o CAMINHO (`/v2/account`) — base, autenticação e
+   * cabeçalhos vêm da conexão, resolvidos no backend na hora de executar. Assim duas
+   * ferramentas contra a mesma API param de guardar o mesmo segredo duas vezes.
+   */
   url: string
+  /**
+   * A conexão que empresta base e credencial. Ausente = execução manual, idêntica à de
+   * sempre — é isso que mantém toda ferramenta existente funcionando sem reconfiguração.
+   */
+  installationId?: string | null
   headers: ToolHeader[]
   // JSON Schema (object at the root) describing the arguments.
   inputSchema: Record<string, unknown>
@@ -113,6 +126,8 @@ export interface ToolInput {
   description: string
   method: ToolMethod
   url: string
+  /** O caminho vira relativo quando há conexão; ausente = manual, como sempre. */
+  installationId?: string | null
   headers?: ToolHeader[]
   inputSchema: Record<string, unknown>
   bodyTemplate?: string | null
@@ -136,6 +151,24 @@ export class ToolValidationError extends Error {
 
 // Shared by create and update. Throws a field-tagged error the API turns into a
 // 400 the UI can point at.
+/**
+ * Os cabeçalhos declarados na ferramenta — nunca os que carregam credencial.
+ *
+ * Um segredo num cabeçalho simples ficaria em texto claro no banco e voltaria para a
+ * tela. Ele vai para a seção de autenticação, cifrado; a recusa é explícita porque quem
+ * escreveu precisa movê-lo, e aceitar em silêncio esconderia o problema.
+ */
+function headersDe(input: ToolInput): { key: string; value: string }[] {
+  const headers = (input.headers ?? []).filter((h) => h && String(h.key ?? '').trim()).slice(0, TOOL_LIMITS.maxHeaders)
+  for (const h of headers) {
+    const key = String(h.key).trim()
+    if (SENSITIVE_HEADER.test(key)) {
+      throw new ToolValidationError('headers', `O cabeçalho "${key}" carrega uma credencial. Use a seção Autenticação: o valor é guardado criptografado e nunca é exibido.`)
+    }
+  }
+  return headers
+}
+
 function normalize(input: ToolInput): Omit<Tool, '_id' | 'ownerId' | 'createdAt' | 'updatedAt' | 'auth'> & { authPublic: Omit<ToolAuth, 'secretEncrypted'> } {
   const name = String(input.name ?? '').trim()
   if (!TOOL_NAME_PATTERN.test(name)) {
@@ -148,6 +181,42 @@ function normalize(input: ToolInput): Omit<Tool, '_id' | 'ownerId' | 'createdAt'
     throw new ToolValidationError('description', 'Descreva em pelo menos 10 caracteres quando esta ferramenta deve ser usada.')
   }
   if (!TOOL_METHODS.includes(input.method)) throw new ToolValidationError('method', 'Método HTTP inválido.')
+
+  /**
+   * COM conexão, o endereço é um CAMINHO; sem ela, a URL completa de sempre.
+   *
+   * As duas validações são diferentes porque as duas coisas são diferentes: um caminho
+   * não tem protocolo nem host para conferir, e a base — com o domínio permitido — vem do
+   * App no momento de executar.
+   */
+  const installationId = typeof input.installationId === 'string' && input.installationId.trim() ? input.installationId.trim() : null
+  if (installationId) {
+    const caminho = String(input.url ?? '').trim()
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(caminho)) {
+      throw new ToolValidationError('url', 'Com uma conexão, informe apenas o caminho (ex.: /v2/account) — a base vem da conexão.')
+    }
+    return {
+      name,
+      description,
+      method: input.method,
+      url: caminho,
+      installationId,
+      headers: headersDe(input),
+      inputSchema: input.inputSchema,
+      bodyTemplate: typeof input.bodyTemplate === 'string' && input.bodyTemplate.trim() ? input.bodyTemplate : null,
+      timeoutMs: clamp(input.timeoutMs, TOOL_DEFAULTS.timeoutMs, TOOL_LIMITS.minTimeoutMs, TOOL_LIMITS.maxTimeoutMs),
+      maxResponseChars: clamp(input.maxResponseChars, TOOL_DEFAULTS.maxResponseChars, TOOL_LIMITS.minResponseChars, TOOL_LIMITS.maxResponseChars),
+      // A lista vem do App, no momento de executar. Guardá-la aqui criaria uma segunda
+      // verdade sobre onde a conexão pode chegar.
+      allowedDomains: [],
+      maxCallsPerRun: clamp(input.maxCallsPerRun, TOOL_DEFAULTS.maxCallsPerRun, 1, TOOL_LIMITS.maxCallsPerRun),
+      allowAutonomousExecution: input.allowAutonomousExecution === true,
+      enabled: input.enabled !== false,
+      // A credencial é da CONEXÃO. Aceitar uma aqui seria guardar um segundo segredo para
+      // a mesma chamada, e o que estivesse errado mandaria em silêncio.
+      authPublic: { kind: 'none' as ToolAuthKind },
+    }
+  }
 
   let parsed: URL
   try {
@@ -163,16 +232,7 @@ function normalize(input: ToolInput): Omit<Tool, '_id' | 'ownerId' | 'createdAt'
     throw new ToolValidationError('inputSchema', 'Os parâmetros precisam ser um objeto JSON Schema.')
   }
 
-  const headers = (input.headers ?? []).filter((h) => h && String(h.key ?? '').trim()).slice(0, TOOL_LIMITS.maxHeaders)
-  // A credential in a plain header would be stored in clear text and echoed back to
-  // the UI. It goes to the encrypted auth section instead — refused, not silently
-  // accepted, because the user has to move it somewhere safe.
-  for (const h of headers) {
-    const key = String(h.key).trim()
-    if (SENSITIVE_HEADER.test(key)) {
-      throw new ToolValidationError('headers', `O cabeçalho "${key}" carrega uma credencial. Use a seção Autenticação: o valor é guardado criptografado e nunca é exibido.`)
-    }
-  }
+  const headers = headersDe(input)
   const kind: ToolAuthKind = TOOL_AUTH_KINDS.includes(input.auth?.kind as ToolAuthKind) ? (input.auth!.kind as ToolAuthKind) : 'none'
   if (kind === 'api_key' && !String(input.auth?.headerName ?? '').trim()) {
     throw new ToolValidationError('auth.headerName', 'Informe o nome do cabeçalho da chave.')
@@ -194,6 +254,7 @@ function normalize(input: ToolInput): Omit<Tool, '_id' | 'ownerId' | 'createdAt'
     description,
     method: input.method,
     url: parsed.toString(),
+    installationId: null,
     headers,
     inputSchema: input.inputSchema,
     bodyTemplate: typeof input.bodyTemplate === 'string' && input.bodyTemplate.trim() ? input.bodyTemplate : null,

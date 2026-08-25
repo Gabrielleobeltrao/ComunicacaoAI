@@ -29,6 +29,11 @@ export interface ToolParam {
 }
 
 export interface Tool {
+  /**
+   * A conexão que empresta base e credencial. Ausente = manual, como sempre foi — e é
+   * essa ausência que mantém toda ferramenta já criada funcionando sem reconfiguração.
+   */
+  installationId?: string | null
   _id: string
   name: string
   description: string

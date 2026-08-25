@@ -23,13 +23,22 @@ export interface PublishedAutomation {
 // for legacy documents whose version rows were never written.
 const liveDefinition = (p: PublishedAutomation): AutomationDefinition | undefined => p.published ?? undefined
 
+/**
+ * Um gatilho por EVENTO que está mesmo de pé.
+ *
+ * "Evento" são dois: o webhook, que ouve de fora, e o `internal_event`, que ouve o
+ * barramento. Para o dono é a mesma coisa — algo acontece e o agente reage — e a
+ * permissão de ativação é a mesma. Contar só o webhook faria a página do agente dizer
+ * "Evento: desligado" para um gatilho de mercado que dispara a cada vela.
+ */
 export function isLiveWebhook(p: PublishedAutomation): boolean {
   const { automation } = p
   if (automation.status !== 'active' || automation.lastPublishedVersion == null) return false
   const def = liveDefinition(p)
   // No published definition on record → fall back to the automation's own trigger,
   // which is what older documents carry.
-  return (def?.trigger?.type ?? automation.trigger?.type) === 'webhook'
+  const tipo = def?.trigger?.type ?? automation.trigger?.type
+  return tipo === 'webhook' || tipo === 'internal_event'
 }
 
 // Every agent this ONE automation would run, according to its PUBLISHED definition.

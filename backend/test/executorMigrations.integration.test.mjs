@@ -13,6 +13,9 @@ import assert from 'node:assert/strict'
 import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
 process.env.MONGODB_URI = await startMongo()
+// A migração de canais cifra a configuração da instalação. Sem chave declarada aqui,
+// este teste passava só porque o `.env` de quem desenvolve tinha uma.
+process.env.ENCRYPTION_KEY ||= 'chave-de-teste-que-nao-e-segredo'
 
 const { ensureAgentEventIndexes, recordAgentEvent } = await import('../dist/agentEvents.js')
 const { ensureDelegationIndexes } = await import('../dist/delegationLog.js')

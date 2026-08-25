@@ -161,6 +161,32 @@ const RULES: Rule[] = [
   R('POST', 'api/app-installations/:/test', { entityType: 'connection', action: 'test' }, { idAt: 2 }),
   R('POST', 'api/app-installations/:/reconnect', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/app-installations/:', { entityType: 'connection', action: 'disconnect' }, { idAt: 2 }),
+  // O stream de mercado é a conexão em outro estado, e mexer nele é mexer na conexão:
+  // pausar tira o dono do ar até alguém retomar, e isso precisa constar no histórico.
+  // Ligar e desligar tempo real é mudar o que a conta faz sozinha. Precisa constar.
+  R('POST', 'api/streams', { entityType: 'connection', action: 'update' }),
+  R('DELETE', 'api/streams/:', { entityType: 'connection', action: 'disconnect' }, { idAt: 2 }),
+  R('POST', 'api/streams/:/pause', { entityType: 'connection', action: 'pause' }, { idAt: 2 }),
+  R('POST', 'api/streams/:/resume', { entityType: 'connection', action: 'activate' }, { idAt: 2 }),
+  R('POST', 'api/streams/:/reconnect', { entityType: 'connection', action: 'update' }, { idAt: 2 }),
+  // Testar não muda nada — e é registrado como teste, igual ao da conexão.
+  R('POST', 'api/streams/test', { entityType: 'connection', action: 'test' }),
+  // Mudar uma política é mudar o que a conta pode fazer. Precisa constar.
+  R('POST', 'api/trading-policies', { entityType: 'connection', action: 'update' }),
+
+  // O App de WebSocket. Ligar, pausar e mexer em assinatura muda o que a conta recebe
+  // sozinha — tudo isso precisa constar no histórico.
+  R('PATCH', 'api/websocket/connections/:', { entityType: 'connection', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/websocket/connections/:/start', { entityType: 'connection', action: 'activate' }, { idAt: 3 }),
+  R('POST', 'api/websocket/streams/:/pause', { entityType: 'connection', action: 'pause' }, { idAt: 3 }),
+  R('POST', 'api/websocket/streams/:/resume', { entityType: 'connection', action: 'activate' }, { idAt: 3 }),
+  R('DELETE', 'api/websocket/streams/:', { entityType: 'connection', action: 'disconnect' }, { idAt: 3 }),
+  R('POST', 'api/websocket/subscriptions', { entityType: 'connection', action: 'create' }),
+  R('PATCH', 'api/websocket/subscriptions/:', { entityType: 'connection', action: 'update' }, { idAt: 3 }),
+  R('DELETE', 'api/websocket/subscriptions/:', { entityType: 'connection', action: 'delete' }, { idAt: 3 }),
+  // Conferir um endereço e testar uma assinatura não mudam nada.
+  R('POST', 'api/websocket/check-url', null),
+  R('POST', 'api/websocket/subscriptions/:/test', null),
   // Granting or revoking an App on an agent changes what that agent may do.
   R('PATCH', 'api/agents/:/app-grants', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/connections', { entityType: 'connection', action: 'create' }),

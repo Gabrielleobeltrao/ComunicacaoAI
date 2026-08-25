@@ -13,6 +13,7 @@ import { db } from '../db.js'
 import type { Agent } from '../agents.js'
 import type { ResolvedTool } from '../agentTools.js'
 import { missingCapability } from '../agentTools.js'
+import { validateAgainstSchema } from '../jsonSchema.js'
 import { executeToolCall } from '../toolExecution.js'
 import type { ExecutableTool } from '../toolExecution.js'
 import { getApp } from './registry.js'
@@ -21,6 +22,20 @@ import { isUsableManifest, resolveAppForOwner } from './privateApps.js'
 import { isUsableApp } from './types.js'
 import type { AppDefinition, AppActionDefinition, AppInstallation, AgentAppGrant, NativeFactory } from './types.js'
 import { decryptInstallationConfig, getInstallation, isInstallationUsable } from './installations.js'
+import { ACTION_DETAIL_KEY, ensureAppActionIndexes, recordActionEvent, takeActionDetail } from './actionEvents.js'
+import type { AppActionEvent } from './actionEvents.js'
+
+// Reexportados: eram exportados daqui antes da separação, e quem os importa continua
+// importando do mesmo lugar.
+export { ensureAppActionIndexes, countActionsSince } from './actionEvents.js'
+export type { AppActionEvent } from './actionEvents.js'
+
+// An installed version is pinned. A manifest whose MAJOR moved changed the meaning
+// of its actions or its permissions, so it needs the owner to review, not a silent
+// upgrade (plan §10).
+export const isVersionCompatible = (installed: string, current: string): boolean =>
+  String(installed).split('.')[0] === String(current).split('.')[0]
+import { environmentOf } from './connectionProfile.js'
 
 /**
  * Os adapters que uma ação nativa pode apontar.
@@ -35,41 +50,6 @@ import { decryptInstallationConfig, getInstallation, isInstallationUsable } from
  * nenhuma, `execution.adapter` só escolhe entre o que já está compilado.
  */
 const NATIVE_FACTORIES: Record<string, NativeFactory[]> = OFFICIAL_ADAPTERS
-
-// Safe telemetry (plan §13): what ran, whether it worked and how long it took.
-// Never an argument, never a response body, never a credential.
-export interface AppActionEvent {
-  _id: ObjectId
-  ownerId: string
-  agentId: ObjectId | null
-  appKey: string
-  actionKey: string
-  installationId: ObjectId
-  ok: boolean
-  status: 'executed' | 'refused'
-  durationMs: number
-  createdAt: Date
-}
-const appActionEvents = db.collection<AppActionEvent>('app_action_events')
-
-export async function ensureAppActionIndexes(): Promise<void> {
-  await appActionEvents.createIndex({ ownerId: 1, createdAt: -1 })
-  await appActionEvents.createIndex({ ownerId: 1, appKey: 1, createdAt: -1 })
-}
-
-async function recordActionEvent(event: Omit<AppActionEvent, '_id' | 'createdAt'>): Promise<void> {
-  try {
-    await appActionEvents.insertOne({ ...event, _id: new ObjectId(), createdAt: new Date() })
-  } catch {
-    // Telemetry must never break the action the owner asked for.
-  }
-}
-
-// An installed version is pinned. A manifest whose MAJOR moved changed the meaning
-// of its actions or its permissions, so it needs the owner to review, not a silent
-// upgrade (plan §10).
-export const isVersionCompatible = (installed: string, current: string): boolean =>
-  String(installed).split('.')[0] === String(current).split('.')[0]
 
 // A tool that exists only to refuse, and to say why. The model sees the action, so
 // it can report the limitation instead of pretending the App is not there.
@@ -133,7 +113,20 @@ function declarativeTool(
 export async function resolveGrant(
   ownerId: string,
   grant: AgentAppGrant,
-  options: { agentId?: ObjectId | null } = {},
+  options: {
+    agentId?: ObjectId | null
+    /**
+     * De qual EXECUÇÃO estas ferramentas são.
+     *
+     * Viaja até o adapter e nunca até o modelo: é dele que sai a chave de idempotência
+     * de uma ordem. Com uma chave nova a cada tentativa, um retry manda a segunda ordem;
+     * com uma chave derivada da execução, o retry pergunta pela primeira.
+     *
+     * Ausente é legítimo — playground e chamada direta não têm execução — e aí a chave
+     * é aleatória, que é o comportamento de antes.
+     */
+    executionRef?: string | null
+  } = {},
 ): Promise<ResolvedTool[]> {
   // System first, then the owner's own private Apps. A manifest that no longer
   // validates resolves to nothing rather than to a weaker execution path.
@@ -175,12 +168,30 @@ export async function resolveGrant(
   const tools: ResolvedTool[] = []
   for (const action of granted) {
     const allowedToAct = action.risk === 'read' || autonomous.has(action.key)
-    const built = buildAction(app, action, ownerId, auth, resource, allowedToAct)
+    const built = buildAction(app, action, ownerId, auth, resource, allowedToAct, {
+      environment: environmentOf(installation),
+      installationId: installation._id.toString(),
+      // Quem responde pela ação. É por ele que uma política mais apertada pode valer
+      // só para um agente.
+      agentId: options.agentId?.toString() ?? null,
+      executionRef: options.executionRef ?? null,
+    })
     if (!built) continue
     // O risco declarado no manifesto viaja com a ferramenta. Ele não amplia nada — o
     // grant continua sendo a permissão — mas é o que permite decidir paralelismo.
     tools.push(
-      instrument({ ...built, risk: action.risk }, { ownerId, agentId: options.agentId ?? null, appKey: app.key, actionKey: action.key, installationId: installation._id }),
+      instrument(
+        { ...built, risk: action.risk },
+        {
+          ownerId,
+          agentId: options.agentId ?? null,
+          appKey: app.key,
+          actionKey: action.key,
+          installationId: installation._id,
+          environment: environmentOf(installation),
+          outputSchema: action.outputSchema,
+        },
+      ),
     )
   }
   return tools
@@ -193,6 +204,9 @@ function buildAction(
   auth: Record<string, string>,
   resource: Record<string, string>,
   allowedToAct: boolean,
+  // Vem da instalação, nunca de um campo digitado: é o ambiente que decide se a ordem
+  // vai para a simulação ou para o mercado.
+  ctx?: { environment: string; installationId: string; agentId?: string | null; executionRef?: string | null },
 ): ResolvedTool | null {
   if (action.execution.kind === 'http') {
     return declarativeTool(app, action, auth, resource, allowedToAct)
@@ -203,7 +217,7 @@ function buildAction(
   const factories = NATIVE_FACTORIES[app.key] ?? []
   const config = { ...auth, ...resource }
   for (const factory of factories) {
-    const tool = factory(ownerId, config).find((t) => t.name === adapter)
+    const tool = factory(ownerId, config, ctx).find((t) => t.name === adapter)
     if (!tool) continue
     if (!allowedToAct) {
       return refusalTool(
@@ -221,13 +235,34 @@ function buildAction(
 // Wrap a tool so every call leaves a safe trace.
 function instrument(
   tool: ResolvedTool,
-  meta: { ownerId: string; agentId: ObjectId | null; appKey: string; actionKey: string; installationId: ObjectId },
+  meta: {
+    ownerId: string
+    agentId: ObjectId | null
+    appKey: string
+    actionKey: string
+    installationId: ObjectId
+    environment?: string
+    outputSchema?: Record<string, unknown>
+  },
 ): ResolvedTool {
   return {
     ...tool,
     run: async (args) => {
       const started = Date.now()
-      const outcome = await tool.run(args)
+      // A chave por CHAMADA: é por ela que o adapter conta o que aconteceu sem devolver
+      // isso ao modelo nem escrever no banco por conta própria.
+      const chamada = `${meta.installationId.toString()}:${meta.actionKey}:${started}:${Math.random().toString(36).slice(2, 8)}`
+      const outcome = await tool.run({ ...args, [ACTION_DETAIL_KEY]: chamada })
+      const detalhe = takeActionDetail(chamada)
+      /**
+       * A saída é conferida contra o que a ação PROMETEU devolver.
+       *
+       * Sem isto, `outputSchema` é documentação: um planner encadeia duas ações
+       * confiando na forma da primeira, e descobre que ela mudou quando o segundo passo
+       * lê `undefined`. Falhar aqui é dizer a verdade — a ação aconteceu, e o contrato
+       * dela não bate.
+       */
+      const verificado = validarSaida(meta.outputSchema, outcome)
       await recordActionEvent({
         ownerId: meta.ownerId,
         agentId: meta.agentId,
@@ -239,9 +274,41 @@ function instrument(
         status: outcome.result.includes('"capability_unavailable"') ? 'refused' : 'executed',
         durationMs: Date.now() - started,
         createdAt: new Date(),
+        ...(meta.environment ? { environment: meta.environment } : {}),
+        // O que a ação produziu, no nível de metadado: o id da ordem e o veredito da
+        // política. Nunca argumento, nunca corpo, nunca saldo.
+        ...(detalhe?.orderId !== undefined ? { orderId: detalhe.orderId } : {}),
+        ...(detalhe?.policy !== undefined ? { policy: detalhe.policy } : {}),
       } as Omit<AppActionEvent, '_id' | 'createdAt'>)
-      return outcome
+      return verificado
     },
+  }
+}
+
+/**
+ * Confere o resultado contra o schema declarado. Sem schema, passa direto.
+ *
+ * Uma RECUSA (política, permissão, provider) não é conferida: ela tem o formato do
+ * motivo, não o da saída — e recusar a recusa esconderia justamente a explicação.
+ */
+function validarSaida(schema: Record<string, unknown> | undefined, outcome: { ok: boolean; result: string }): { ok: boolean; result: string } {
+  if (!schema || !outcome.ok) return outcome
+  let dados: unknown
+  try {
+    dados = JSON.parse(outcome.result)
+  } catch {
+    return { ok: false, result: JSON.stringify({ status: 'contract_error', reason: 'a ação devolveu algo que não é JSON' }) }
+  }
+  const r = validateAgainstSchema(schema, dados)
+  if (r.valid) return outcome
+  return {
+    ok: false,
+    result: JSON.stringify({
+      status: 'contract_error',
+      reason: 'a saída da ação não bate com o contrato declarado',
+      // O caminho do campo, e não o valor: o valor pode ser saldo.
+      fields: r.errors.slice(0, 5).map((e) => e.path || '(raiz)'),
+    }),
   }
 }
 

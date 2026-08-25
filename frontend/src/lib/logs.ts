@@ -80,7 +80,18 @@ export interface RunLogDetail {
   requestId: string | null
   usage: { inputTokens: number; outputTokens: number }
   error: { kind: string; message: string } | null
-  steps: { id: string; stepId: string; stepType: string; attempt: number; status: string; startedAt: string | null; finishedAt: string | null; error: { kind: string; message: string } | null }[]
+  steps: {
+    id: string
+    stepId: string
+    stepType: string
+    attempt: number
+    status: string
+    startedAt: string | null
+    finishedAt: string | null
+    error: { kind: string; message: string } | null
+    // Por que a etapa não rodou. É o campo que conta se a IA foi chamada ou não, e por quê.
+    skipReason?: string | null
+  }[]
   deliveries: { id: string; provider: string; destinationMasked: string; status: string; attempt: number; createdAt: string; sentAt: string | null; error: { kind: string; message: string } | null }[]
   artifacts: { id: string; name: string; kind: string; mimeType: string; sizeBytes: number; createdAt: string }[]
 }

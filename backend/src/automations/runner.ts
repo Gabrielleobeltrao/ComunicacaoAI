@@ -119,7 +119,15 @@ export interface RunnerDeps {
    * Injetado como todo o resto do IO — e, do lado de fora, é o MESMO executor que
    * monta as ferramentas do modelo. Não há caminho alternativo.
    */
-  runApp?: (cfg: Record<string, unknown>, valor: unknown) => Promise<unknown>
+  runApp?: (cfg: Record<string, unknown>, valor: unknown, stepId: string) => Promise<unknown>
+  /**
+   * Publica no barramento interno. Presente quando a definição tem `event.publish`.
+   *
+   * Determinística e sem modelo: escreve um fato e devolve se ele era novo. Chamar
+   * duas vezes a mesma etapa da mesma execução publica uma vez só — a chave de dedupe
+   * é (execução, etapa), então uma repetição por retry não vira um segundo fato.
+   */
+  publishEvent?: (cfg: Record<string, unknown>, valor: unknown, stepId: string) => Promise<{ created: boolean; eventId: string }>
   // Returns the model usage so it reaches the step record and the run total, plus an
   // optional `settle`: the accounting/telemetry that is still finishing. The runner
   // awaits it OUTSIDE the step timeout, so a slow database can never be mistaken for
@@ -139,6 +147,14 @@ export interface StepRecord {
   output?: unknown
   errorKind?: string
   errorMessage?: string
+  /**
+   * Por que a etapa NÃO rodou.
+   *
+   * Uma etapa pulada sem motivo é indistinguível de uma etapa esquecida. E o motivo
+   * mais importante é justamente o de não ter chamado o modelo: quem escolheu não
+   * gastar token precisa ver, no trace, que a decisão foi tomada e qual foi.
+   */
+  skipReason?: string
   // Real model consumption of this step, summed across its attempts.
   usage?: StepUsage
 }
@@ -333,8 +349,15 @@ async function executeStep(
       // Uma recusa da camada de Apps (conexão revogada, ação não concedida) vem como
       // exceção e falha a etapa — deixar passar faria o fluxo seguir como se a ação
       // tivesse acontecido. Não é transitória: reconectar é coisa de gente.
-      return deps.runApp(cfg, valor).catch((e) => {
+      return deps.runApp(cfg, valor, step.id).catch((e) => {
         throw new StepError('app', (e as Error).message, false)
+      })
+    }
+    case 'event.publish': {
+      if (!deps.publishEvent) throw new StepError('validation', 'publicação de evento não disponível nesta execução', false)
+      const valor = (step.dependsOn ?? []).length ? ctx[(step.dependsOn ?? [])[0]] : ctx.input
+      return deps.publishEvent(cfg, valor, step.id).catch((e) => {
+        throw new StepError('event', (e as Error).message, false)
       })
     }
     // As três etapas de memória. Determinísticas: banco, e nada além disso.
@@ -432,7 +455,7 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
   try {
     for (const step of def.steps) {
       if (!step.enabled) {
-        steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
+        steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0, skipReason: 'etapa desligada na configuração' })
         continue
       }
       /**
@@ -445,7 +468,13 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
        * explicitamente não gastar.
        */
       if (stepUsesAI(step.type) && modeNeverUsesAI(executionMode)) {
-        steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
+        steps.push({
+          stepId: step.id,
+          stepType: step.type,
+          status: 'skipped',
+          attempts: 0,
+          skipReason: `modo "${executionMode}": a IA não é chamada neste fluxo`,
+        })
         continue
       }
 
@@ -453,7 +482,13 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
       // a da IA, nenhum token é gasto. A avaliação é pura — nada de perguntar a um
       // modelo se vale a pena chamar o modelo.
       if (step.runIf && !evaluateCondition(step.runIf, ctx)) {
-        steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
+        steps.push({
+          stepId: step.id,
+          stepType: step.type,
+          status: 'skipped',
+          attempts: 0,
+          skipReason: `condição não satisfeita: ${step.runIf.source}.${step.runIf.path} ${step.runIf.operator}`,
+        })
         continue
       }
 
@@ -545,7 +580,8 @@ export async function runDefinition(def: AutomationDefinition, deps: RunnerDeps,
     if (halt) {
       const executadas = new Set(steps.map((s) => s.stepId))
       for (const step of def.steps) {
-        if (!executadas.has(step.id)) steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0 })
+        if (!executadas.has(step.id))
+          steps.push({ stepId: step.id, stepType: step.type, status: 'skipped', attempts: 0, skipReason: 'a execução terminou antes desta etapa' })
       }
     }
 

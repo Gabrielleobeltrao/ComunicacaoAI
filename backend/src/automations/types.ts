@@ -6,7 +6,13 @@ import type { StepCondition } from './conditions.js'
 // immutably and executed step-by-step by the worker in a later phase.
 
 export type AutomationStatus = 'draft' | 'active' | 'paused' | 'archived'
-export type TriggerType = 'manual' | 'schedule' | 'webhook'
+/**
+ * `internal_event` é o gatilho de DENTRO — o barramento da plataforma, não a porta
+ * pública. Fica separado de `webhook` de propósito: um não tem chave pública nem
+ * assinatura, o outro não tem dono conhecido antes de verificar a assinatura, e
+ * misturar os dois faria a autorização de um valer para o outro.
+ */
+export type TriggerType = 'manual' | 'schedule' | 'webhook' | 'internal_event'
 export type OutputFormat = 'text' | 'markdown' | 'json'
 
 export type StepType =
@@ -21,6 +27,8 @@ export type StepType =
   | 'memory.delete'
   // Executar uma ação de App diretamente, pelo MESMO caminho que o modelo usaria.
   | 'app.execute'
+  // Publicar um evento interno. Determinística: escreve no barramento, e nada além.
+  | 'event.publish'
 
 export const STEP_TYPES: readonly StepType[] = [
   'source.rss',
@@ -32,6 +40,7 @@ export const STEP_TYPES: readonly StepType[] = [
   'memory.search',
   'memory.delete',
   'app.execute',
+  'event.publish',
 ]
 
 /**
@@ -106,7 +115,42 @@ export interface WebhookTrigger {
   // The signing secret lives encrypted elsewhere; never in the definition.
   requireSignature: boolean
 }
-export type AutomationTrigger = ManualTrigger | ScheduleTrigger | WebhookTrigger
+/**
+ * Um evento do barramento interno.
+ *
+ * Os filtros são todos opcionais e todos restritivos: ausente quer dizer "qualquer",
+ * e não "nenhum". Um gatilho sem filtro nenhum recebe todo evento daquele tipo da
+ * conta — que é o que alguém quer dizer quando não filtra nada.
+ */
+export interface InternalEventTrigger {
+  type: 'internal_event'
+  /** O contrato do barramento. Ver events/types.ts. */
+  eventType: string
+  /** Uma conexão específica. Vazio = qualquer conexão da conta. */
+  installationId?: string | null
+  /**
+   * Uma ASSINATURA específica, para os eventos que têm uma.
+   *
+   * Duas assinaturas na mesma conexão têm destinos diferentes: filtrar só por conexão
+   * fazia a mensagem de uma disparar o destino da outra.
+   */
+  subscriptionId?: string | null
+  /** Vazio = todos os símbolos. */
+  symbols?: string[]
+  /** Vazio = todos os timeframes. */
+  timeframe?: string | null
+  /**
+   * Entregar junto a série fechada, para o evento poder alimentar uma análise.
+   *
+   * Um `market.candle.closed` traz UMA vela, e nenhum indicador significa nada com uma
+   * vela. Sem isto, todo fluxo de análise precisaria de um passo para buscar o que a
+   * plataforma já tem guardado.
+   */
+  includeSeries?: boolean
+  /** Quantas velas fechadas entregar. Teto no validador. */
+  seriesLength?: number
+}
+export type AutomationTrigger = ManualTrigger | ScheduleTrigger | WebhookTrigger | InternalEventTrigger
 
 export interface AutomationInput {
   name: string

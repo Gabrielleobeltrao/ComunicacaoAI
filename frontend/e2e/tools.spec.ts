@@ -36,7 +36,7 @@ let saved: Record<string, unknown> | null = null
 
 // `locale: null` skips the pin — only the switcher test wants that, since the pin
 // runs on EVERY navigation and would undo the choice being tested.
-async function stub(page: Page, opts: { tools?: unknown[]; locale?: string | null } = {}) {
+async function stub(page: Page, opts: { tools?: unknown[]; locale?: string | null; installations?: unknown[] } = {}) {
   saved = null
   // Pin the locale: the test browser reports en-US, so without this the UI would
   // render in English and every Portuguese assertion below would be about the
@@ -67,6 +67,35 @@ async function stub(page: Page, opts: { tools?: unknown[]; locale?: string | nul
     }
     return r.fulfill({ status: 204, body: '' })
   })
+  /**
+   * O catálogo, porque a lista de conexões é filtrada por ele.
+   *
+   * `erp` empresta base e credencial; `corretora` também; `crm` não — e é por isso que
+   * uma conexão de CRM não aparece como origem de ferramenta, mesmo estando conectada.
+   */
+  await page.route('**/api/apps/catalog', (r) =>
+    r.fulfill({
+      json: [
+        { key: 'erp', name: 'ERP', connectable: true, streamable: false, actions: [] },
+        { key: 'corretora', name: 'Corretora', connectable: true, streamable: true, actions: [] },
+        { key: 'crm', name: 'CRM', connectable: false, streamable: false, actions: [] },
+      ],
+    }),
+  )
+  // As conexões que a ferramenta pode pedir emprestado. A revogada está aqui de
+  // propósito: ela NÃO pode aparecer na lista de escolhas.
+  await page.route('**/api/app-installations**', (r) =>
+    r.fulfill({
+      json: opts.installations ?? [
+        { id: 'inst-1', appKey: 'erp', appVersion: '1.0.0', name: 'ERP principal', status: 'connected', publicMetadata: {}, grantedScopes: [], createdAt: NOW, updatedAt: NOW, lastTestedAt: null, environment: 'default' },
+        { id: 'inst-2', appKey: 'corretora', appVersion: '1.0.0', name: 'Corretora', status: 'connected', publicMetadata: {}, grantedScopes: [], createdAt: NOW, updatedAt: NOW, lastTestedAt: null, environment: 'paper' },
+        { id: 'inst-3', appKey: 'erp', appVersion: '1.0.0', name: 'ERP antigo', status: 'revoked', publicMetadata: {}, grantedScopes: [], createdAt: NOW, updatedAt: NOW, lastTestedAt: null, environment: 'default' },
+        // Conectada, e de um App que NÃO empresta conexão: escolhê-la daria uma recusa
+        // na primeira chamada, longe de quem escolheu.
+        { id: 'inst-4', appKey: 'crm', appVersion: '1.0.0', name: 'CRM da equipe', status: 'connected', publicMetadata: {}, grantedScopes: [], createdAt: NOW, updatedAt: NOW, lastTestedAt: null, environment: 'default' },
+      ],
+    }),
+  )
   await page.route('**/api/agents?**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/agents', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
@@ -165,4 +194,40 @@ test('the Tools page works on a phone', async ({ page }) => {
   await expect(page.getByTestId('tool-card').first()).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
+})
+
+// --- ferramenta ligada a uma conexão ------------------------------------------------------
+
+test('a ferramenta pode pegar emprestada uma conexão, e aí guarda só o caminho', async ({ page }) => {
+  await stub(page, { tools: [] })
+  await page.goto('/tools')
+  await page.getByTestId('new-tool').click()
+
+  const origem = page.getByTestId('tool-connection')
+  // Uma conexão revogada não é oferecida: escolhê-la criaria uma ferramenta que nasce falhando.
+  await expect(origem.locator('option')).toHaveText([/Configuração manual/, 'ERP principal', 'Corretora · simulação'])
+
+  await page.getByLabel('Nome').fill('consultar_conta')
+  await page.getByLabel('Quando usar').fill('Consulta a conta no ERP.')
+  await origem.selectOption('inst-1')
+
+  // A partir daqui o campo é um CAMINHO, e autenticação deixa de ser pergunta desta tela.
+  await expect(page.getByLabel('Caminho')).toBeVisible()
+  await expect(page.getByTestId('tool-connection-base')).toContainText('ERP principal')
+  await expect(page.getByTestId('tool-auth-inherited')).toBeVisible()
+  await expect(page.getByTestId('tool-secret')).toHaveCount(0)
+
+  await page.getByLabel('Caminho').fill('/v2/account')
+  await page.getByTestId('save-tool').click()
+
+  await expect.poll(() => saved).toMatchObject({ installationId: 'inst-1', url: '/v2/account', auth: { kind: 'none' } })
+})
+
+test('sem conexão, a ferramenta continua pedindo URL e credencial como sempre', async ({ page }) => {
+  await stub(page, { tools: [] })
+  await page.goto('/tools')
+  await page.getByTestId('new-tool').click()
+  await expect(page.getByTestId('tool-connection')).toHaveValue('')
+  await expect(page.getByLabel('Endereço (URL)')).toBeVisible()
+  await expect(page.getByTestId('tool-auth-inherited')).toHaveCount(0)
 })

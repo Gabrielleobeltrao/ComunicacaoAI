@@ -59,7 +59,7 @@ test('entrada fora do contrato NÃO chega ao handler', async () => {
 })
 
 test('entrada faltando campo obrigatório é recusada', async () => {
-  const r = await executeRegisteredFunction({ kind: 'function', functionName: 'text.wordCount' }, {})
+  const r = await executeRegisteredFunction({ kind: 'function', functionName: 'br.cpf' }, {})
   assert.equal(r.ok, false)
   assert.equal(r.error.kind, 'invalid_input')
 })

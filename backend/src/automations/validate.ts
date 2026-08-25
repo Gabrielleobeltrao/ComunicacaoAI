@@ -3,6 +3,14 @@ import { isExecutionMode, STEP_TYPES } from './types.js'
 import { isConditionOperator } from './conditions.js'
 import { isMemoryScope, isMemoryStrategy } from '../memory/model.js'
 import type { StepType } from './types.js'
+import { isEventType } from '../events/types.js'
+import { isTimeframe } from '../marketData/types.js'
+
+/** Tetos do gatilho interno. Uma lista sem fim é um filtro que não filtra. */
+export const MAX_TRIGGER_SYMBOLS = 50
+// O App de análise recusa acima de 500, e 200 já é mais série do que qualquer
+// indicador daqui usa.
+export const MAX_TRIGGER_SERIES = 200
 
 // Pure validation + hashing for automation definitions. No DB / provider imports,
 // so it is fully unit-testable. Unknown step types are rejected (never silently
@@ -53,6 +61,16 @@ function validateStepConfig(type: StepType, config: Record<string, unknown>, at:
       // consultar — e um App só é alcançável por grant.
       if (!isNonEmptyString(config.ownerAgentId)) errors.push({ path: `${at}.ownerAgentId`, message: 'ownerAgentId is required' })
       if (config.args !== undefined && !isRecord(config.args)) errors.push({ path: `${at}.args`, message: 'args must be an object' })
+      break
+    // Publicar no barramento interno. O tipo é conferido contra a lista de contratos:
+    // um evento com tipo inventado nunca teria consumidor, e falharia em silêncio.
+    case 'event.publish':
+      if (!isEventType(config.eventType)) {
+        errors.push({ path: `${at}.eventType`, message: `unknown eventType: ${String(config.eventType)}` })
+      }
+      if (config.payload !== undefined && !isRecord(config.payload)) {
+        errors.push({ path: `${at}.payload`, message: 'payload must be an object' })
+      }
       break
     // As etapas de memória. O que é conferido aqui é o que, faltando, faria a etapa
     // gravar em lugar nenhum ou apagar demais — e isso não pode esperar a execução.
@@ -142,11 +160,31 @@ export function validateDefinition(def: unknown): ValidationResult {
   if (!isRecord(def)) return { valid: false, errors: [{ path: '', message: 'definition must be an object' }] }
 
   const trigger = def.trigger
-  if (!isRecord(trigger) || !['manual', 'schedule', 'webhook'].includes(String(trigger.type))) {
+  if (!isRecord(trigger) || !['manual', 'schedule', 'webhook', 'internal_event'].includes(String(trigger.type))) {
     errors.push({ path: 'trigger.type', message: 'invalid trigger type' })
   } else if (trigger.type === 'schedule') {
     if (!isNonEmptyString(trigger.timezone)) errors.push({ path: 'trigger.timezone', message: 'timezone is required' })
     if (!isNonEmptyString(trigger.cron)) errors.push({ path: 'trigger.cron', message: 'cron is required' })
+  } else if (trigger.type === 'internal_event') {
+    // O tipo é obrigatório e conferido: um gatilho que espera um evento que não existe
+    // é um gatilho que nunca dispara, e ninguém descobre por quê.
+    if (!isEventType(trigger.eventType)) {
+      errors.push({ path: 'trigger.eventType', message: `unknown eventType: ${String(trigger.eventType)}` })
+    }
+    if (trigger.symbols !== undefined && !Array.isArray(trigger.symbols)) {
+      errors.push({ path: 'trigger.symbols', message: 'symbols must be a list' })
+    } else if (Array.isArray(trigger.symbols) && trigger.symbols.length > MAX_TRIGGER_SYMBOLS) {
+      errors.push({ path: 'trigger.symbols', message: `at most ${MAX_TRIGGER_SYMBOLS} symbols` })
+    }
+    if (trigger.timeframe !== undefined && trigger.timeframe !== null && !isTimeframe(trigger.timeframe)) {
+      errors.push({ path: 'trigger.timeframe', message: `unknown timeframe: ${String(trigger.timeframe)}` })
+    }
+    if (trigger.seriesLength !== undefined) {
+      const n = Number(trigger.seriesLength)
+      if (!Number.isFinite(n) || n < 2 || n > MAX_TRIGGER_SERIES) {
+        errors.push({ path: 'trigger.seriesLength', message: `seriesLength must be between 2 and ${MAX_TRIGGER_SERIES}` })
+      }
+    }
   }
 
   if (!['text', 'markdown', 'json'].includes(String(def.resultFormat))) {

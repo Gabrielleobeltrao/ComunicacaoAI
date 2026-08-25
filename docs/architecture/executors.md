@@ -199,6 +199,35 @@ Regras que o registro impõe (`assertRegistryIsSound`):
 A função aparece sozinha no catálogo (`GET /api/executors/catalog`) e no seletor
 do formulário. **O `handler` nunca sai para o cliente.**
 
+### Erro deliberado vs. exceção
+
+Exceção não vaza: `stack` conta caminho de arquivo e a mensagem crua costuma carregar
+valor de variável. Mas uma condição prevista — "receita zero: a margem não é definida" —
+foi escrita neste repositório para quem administra ler, e trocá-la por "falhou durante a
+execução" apaga a única informação que permite consertar.
+
+Levante `ErroDeFuncao` para o que o handler recusa **de propósito**; a mensagem sai. O que
+escapar dele vira categoria, como sempre foi.
+
+### O que existe hoje
+
+| função | para quê |
+|---|---|
+| `br.cpf`, `br.cnpj` | valida pelo dígito verificador — um modelo aceita `111.111.111-11` porque *parece* |
+| `br.cep`, `br.telefone` | confere formato e devolve formatado; telefone separa celular de fixo |
+| `financeiro.margem` | lucro e margem percentual, com arredondamento controlável |
+| `financeiro.percentual` | comissão, desconto, acréscimo, imposto — calcular, acrescentar e descontar são três coisas |
+| `financeiro.converter` | valor × taxa. A taxa vem de fora: cotação é rede, e rede é assunto de Ferramenta |
+| `regra.faixa` | classifica num corte configurado no agente; fora do previsto é erro, não um rótulo de conveniência |
+| `data.diferenca`, `data.somar`, `data.idade` | prazos e vencimentos, com dias úteis opcionais |
+| `math.summary` | soma, média, mínimo, máximo de uma lista |
+
+**Nenhuma lê relógio, rede ou disco.** `data.idade` exige a data de referência de
+propósito: uma função que consultasse "hoje" devolveria resposta diferente amanhã com a
+mesma entrada, e o determinismo é o motivo de tudo isto existir. Feriado não entra em
+`data.somar` pela mesma razão — o calendário muda por município e por ano, e uma lista
+desatualizada daria um vencimento errado com cara de certo.
+
 ### Parâmetros configuráveis (`configSchema`)
 
 Declare `configSchema` para a função aceitar parâmetros que o dono fixa no agente. A tela

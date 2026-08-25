@@ -88,6 +88,15 @@ export function Sidebar({ current }: { current: string }) {
                 <span className={LABEL}>{item.label}</span>
               </Link>
             ))}
+            {/*
+              Os Apps fixados aparecem NOS DOIS modos.
+              Eles são do dono, e não do andar: não dependem do contexto de prédio para
+              existir. Ficando só no ramo acima, "Fixar no menu" salvava a preferência no
+              servidor e não mostrava nada — sem erro, sem aviso, sem item. O drawer do
+              celular já os mostrava dos dois lados; só o rail do desktop tinha essa
+              metade faltando.
+            */}
+            <PinnedAppsNav apps={pinned} />
           </nav>
         )}
 

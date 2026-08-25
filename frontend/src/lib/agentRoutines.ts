@@ -224,10 +224,57 @@ export interface StepCondition {
   value?: unknown
 }
 
+/** Os contratos do barramento interno. Espelha events/types.ts no backend. */
+export const EVENT_TYPES = [
+  'market.price.updated',
+  'market.candle.closed',
+  'market.signal.detected',
+  'trade.order.created',
+  'trade.order.filled',
+  'trade.stop.triggered',
+  'trade.position.closed',
+] as const
+export type PlatformEventType = (typeof EVENT_TYPES)[number]
+
+export const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D'] as const
+export type Timeframe = (typeof TIMEFRAMES)[number]
+
+/** Ouvir o barramento em vez da porta pública. Desligado = webhook, como sempre foi. */
+export interface MarketTriggerPlan {
+  enabled: boolean
+  eventType: PlatformEventType
+  installationId: string | null
+  symbols: string[]
+  timeframe: Timeframe | null
+  includeSeries: boolean
+  seriesLength: number
+}
+
+/** Publicar um sinal quando o resultado merecer. Sem condição, todo evento vira sinal. */
+export interface SignalPlan {
+  enabled: boolean
+  eventType: PlatformEventType
+  condition: StepCondition | null
+}
+
+export const emptyMarketPlan = (): MarketTriggerPlan => ({
+  enabled: false,
+  eventType: 'market.candle.closed',
+  installationId: null,
+  symbols: [],
+  timeframe: '5m',
+  includeSeries: true,
+  seriesLength: 100,
+})
+
+export const emptySignalPlan = (): SignalPlan => ({ enabled: false, eventType: 'market.signal.detected', condition: null })
+
 export interface EventTrigger {
   id: string
   executionMode: ExecutionMode
   action: AppActionPlan
+  market: MarketTriggerPlan
+  signal: SignalPlan
   memory: MemoryPlan
   aiCondition: StepCondition | null
   name: string
@@ -248,6 +295,8 @@ export interface EventTriggerInput {
   memory?: MemoryPlan
   aiCondition?: StepCondition | null
   action?: AppActionPlan
+  market?: MarketTriggerPlan
+  signal?: SignalPlan
 }
 
 export const listAgentAppActions = (agentId: string) =>
