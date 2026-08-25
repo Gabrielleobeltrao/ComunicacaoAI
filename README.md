@@ -224,6 +224,62 @@ cada mensagem, não derrubam nada.
 Os ajustes (`WS_*`, `STREAM_MAX_INTERVAL_MS`) estão em
 [`backend/.env.example`](backend/.env.example).
 
+## Montar operação (Arquiteto do Escritório)
+
+Uma conversa que monta uma operação inteira como **rascunho**: andar, agentes, setores,
+requisitos de App e de conhecimento, rotinas e uma checklist de implantação. Escreva o
+que você quer — *"Quero automatizar o atendimento do meu restaurante"* — e ele pergunta
+o resto.
+
+Ela não substitui o Planner. O Planner decide **como executar** uma tarefa com os
+agentes que existem; o Arquiteto decide **quais recursos precisam existir**.
+
+**Como funciona:**
+
+1. **Conversar** — *Montar operação → descreva o resultado*. Uma pergunta principal por
+   vez, em linguagem comum, com opções clicáveis e *"Não sei ainda"* sempre disponível.
+   Dá para pular direto para uma primeira proposta: o que faltou responder vira uma
+   **suposição visível**, não um palpite escondido.
+2. **Revisar** — a proposta separa o que será **criado** do que **depende de você**, com
+   o motivo de cada item e um aviso quando a etapa usa IA. Erro traz o que fazer e trava
+   a aplicação; aviso fica à vista sem travar.
+3. **Confirmar** — a confirmação carrega o **hash** da proposta revisada. Se ela mudou
+   desde então, a aplicação é recusada e você revisa de novo. Mudança em recurso que já
+   existe e acesso a App vêm **desmarcados** e exigem aprovação individual.
+4. **Implantar** — a checklist leva direto ao lugar de resolver cada pendência.
+   Obrigatório e opcional são contados separados, e *"100% pronto"* só aparece quando
+   todo obrigatório está resolvido.
+
+**A LLM só produz a proposta.** Validação e aplicação são código determinístico: o
+blueprint referencia tudo por `key` — nunca por id de banco —, a posse é lida do banco
+e conferida antes de qualquer escrita, e a mesma proposta sempre produz a mesma prévia
+e o mesmo hash.
+
+**O que ele nunca faz:**
+
+- **Não inventa conhecimento.** Sem cardápio, o agente não recebe cardápio: fica a
+  pendência *"Enviar o cardápio"*, e quem depende dela não fica pronto.
+- **Não conecta App nem guarda credencial.** Credencial colada na conversa é mascarada
+  na entrada e nunca chega ao banco. Permissão só sai com instalação ativa **e**
+  aprovação explícita — sem as duas, vira item de checklist.
+- **Não cria nada antes da confirmação**, não apaga nem altera recurso existente em
+  silêncio, e **não publica rotina**: ela nasce rascunho, e só manual ou agendada —
+  webhook e gatilho por evento armam um recebedor, e isso é decisão de outra tela.
+
+**Aplicação retomável.** Cada recurso criado é registrado com a chave que o originou,
+antes do passo seguinte. Aplicar duas vezes não duplica; uma queda no meio deixa o que
+já foi feito de pé e *Retomar* continua de onde parou. O desfazer só remove o que
+aquela aplicação criou, que ainda existe e que ninguém editou depois — o resto fica e
+vira aviso.
+
+**Tokens.** Cada rodada confere o limite mensal da conta **antes** de chamar o modelo e
+registra o consumo exatamente uma vez, contra a mesma chave de cobrança — repetir a
+rodada depois de um erro de rede não cobra de novo. Uma resposta ilegível tem **uma**
+tentativa de reparo, e só uma.
+
+**Nenhuma variável de ambiente nova.** Ele usa a chave de provedor e o limite mensal
+que já existem em *Configurações*.
+
 ## Scripts
 
 Run from the repo root:
