@@ -1,5 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useT } from '../i18n'
+import { listInstallations } from '../lib/apps'
+import type { AppInstallation } from '../lib/apps'
 import { createTool, isUnsafe, paramsToSchema, schemaToParams, testTool, TOOL_AUTH_KINDS, TOOL_METHODS, ToolApiError, updateTool } from '../lib/tools'
 import type { Tool, ToolAuthKind, ToolMethod, ToolParam, ToolTestResult } from '../lib/tools'
 import { Button, Card } from '../ui'
@@ -21,6 +23,30 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
   const [description, setDescription] = useState(tool?.description ?? '')
   const [method, setMethod] = useState<ToolMethod>(tool?.method ?? 'GET')
   const [url, setUrl] = useState(tool?.url ?? '')
+  /**
+   * MANUAL ou CONECTADA — a escolha que decide o resto do formulário.
+   *
+   * Conectada, a ferramenta guarda só o caminho: base, autenticação e cabeçalhos vêm da
+   * conexão, resolvidos no servidor na hora de executar. Duas ferramentas contra a mesma
+   * API param de guardar o mesmo segredo duas vezes, e trocar a chave passa a ser um
+   * lugar só.
+   */
+  const [installationId, setInstallationId] = useState(tool?.installationId ?? '')
+  const [conexoes, setConexoes] = useState<AppInstallation[]>([])
+  const conectada = Boolean(installationId)
+  const conexao = conexoes.find((c) => c.id === installationId) ?? null
+
+  useEffect(() => {
+    let vivo = true
+    // Só as CONECTADAS: oferecer uma conexão revogada seria oferecer uma ferramenta que
+    // nasce falhando.
+    listInstallations()
+      .then((lista) => vivo && setConexoes(lista.filter((c) => c.status === 'connected')))
+      .catch(() => vivo && setConexoes([]))
+    return () => {
+      vivo = false
+    }
+  }, [])
   const [params, setParams] = useState<ToolParam[]>(schemaToParams(tool?.inputSchema))
   const [authKind, setAuthKind] = useState<ToolAuthKind>(tool?.auth.kind ?? 'none')
   const [headerName, setHeaderName] = useState(tool?.auth.headerName ?? '')
@@ -47,13 +73,17 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
     description: description.trim(),
     method,
     url: url.trim(),
+    // Ausente = manual, que é o comportamento de sempre.
+    ...(installationId ? { installationId } : { installationId: null }),
     inputSchema: paramsToSchema(params),
     enabled,
     // Only meaningful for a state-changing method; never carried over from a GET.
     allowAutonomousExecution: mutates && allowAutonomousExecution,
     timeoutMs: Math.round(timeoutSeconds * 1000),
     auth: {
-      kind: authKind,
+      // Conectada, a credencial é da conexão: mandar outra coisa seria a tela pedindo
+      // ao servidor algo que ele ignora.
+      kind: conectada ? ('none' as ToolAuthKind) : authKind,
       ...(authKind === 'api_key' ? { headerName: headerName.trim() } : {}),
       ...(authKind === 'basic' ? { username: username.trim() } : {}),
       // Omitted entirely when untouched, so the backend keeps the stored value.
@@ -114,6 +144,31 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
         <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-faint)' }}>{t('tools.descriptionHelp')}</p>
       </div>
 
+      {/*
+        A ORIGEM vem antes do endereço: ela decide se o campo abaixo é uma URL ou um
+        caminho, e se autenticação ainda é pergunta deste formulário.
+      */}
+      <div>
+        <label className={label} htmlFor="tool-connection">
+          Origem
+        </label>
+        <select
+          id="tool-connection"
+          className={input}
+          value={installationId}
+          onChange={(e) => setInstallationId(e.target.value)}
+          data-testid="tool-connection"
+        >
+          <option value="">Configuração manual (endereço e credencial aqui)</option>
+          {conexoes.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+              {c.environment && c.environment !== 'default' ? ` · ${c.environment === 'paper' ? 'simulação' : c.environment}` : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 10 }}>
         <div>
           <label className={label} htmlFor="tool-method">
@@ -129,9 +184,20 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
         </div>
         <div>
           <label className={label} htmlFor="tool-url">
-            {t('tools.url')}
+            {conectada ? 'Caminho' : t('tools.url')}
           </label>
-          <input id="tool-url" className={input} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.exemplo.com/pedidos/{{numero}}" />
+          <input
+            id="tool-url"
+            className={input}
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder={conectada ? '/v2/pedidos/{{numero}}' : 'https://api.exemplo.com/pedidos/{{numero}}'}
+          />
+          {conectada && conexao ? (
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-faint)' }} data-testid="tool-connection-base">
+              O endereço e a credencial vêm de <strong>{conexao.name}</strong>. Informe só o caminho.
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -161,7 +227,20 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
         </Button>
       </Card>
 
-      {/* Authentication — the value is write-only */}
+      {/*
+        Autenticação SÓ aparece na configuração manual. Conectada, a credencial é da
+        conexão — deixar o campo aqui convidaria a digitar um segredo que o servidor
+        ignora, e um segredo digitado em vão é um segredo guardado em dois lugares.
+      */}
+      {conectada ? (
+        <Card padding="12px 14px" style={{ display: 'grid', gap: 4 }} data-testid="tool-auth-inherited">
+          <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text-heading)' }}>{t('tools.auth')}</span>
+          <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
+            Herdada da conexão{conexao ? ` ${conexao.name}` : ''}. Para trocar a credencial, edite a conexão em Apps — vale para todas as
+            ferramentas de uma vez.
+          </p>
+        </Card>
+      ) : (
       <Card padding="12px 14px" style={{ display: 'grid', gap: 10 }}>
         <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text-heading)' }}>{t('tools.auth')}</span>
         <select className={input} value={authKind} onChange={(e) => setAuthKind(e.target.value as ToolAuthKind)} aria-label={t('tools.auth')}>
@@ -190,6 +269,7 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
           </div>
         )}
       </Card>
+      )}
 
       {/* Autonomous execution — only for a method that changes something */}
       {mutates && (

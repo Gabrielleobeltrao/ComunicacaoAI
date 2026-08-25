@@ -361,6 +361,17 @@ function ConnectedList({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontFamily: 'var(--font-display)', fontSize: 15.5, fontWeight: 800, color: 'var(--text-heading)' }}>{i.name}</span>
                     <Tag>{STATUS_LABEL[i.status]}</Tag>
+                    {/*
+                      O AMBIENTE, quando ele não é o padrão.
+                      Uma conexão de simulação e uma de verdade se parecem em tudo menos na
+                      consequência — e é justamente essa que não pode depender de alguém
+                      lembrar qual das duas está olhando.
+                    */}
+                    {i.environment && i.environment !== 'default' ? (
+                      <Tag color="var(--mango-600)" data-testid="installation-environment">
+                        {i.environment === 'paper' ? 'SIMULAÇÃO' : i.environment.toUpperCase()}
+                      </Tag>
+                    ) : null}
                   </div>
                   <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>{app?.name ?? i.appKey}</p>
                 </div>

@@ -85,6 +85,11 @@ export interface AppInstallation {
   updatedAt: string
   lastTestedAt: string | null
   agentCount?: number
+  /**
+   * O AMBIENTE da conexão. Sempre resolvido pelo servidor — uma conexão criada antes
+   * deste campo chega como `default`, e nada muda para ela.
+   */
+  environment?: 'default' | 'paper' | 'live'
 }
 
 export interface AppGrant {
