@@ -34,6 +34,7 @@ test('as keys dos Apps oficiais são exatamente as que já estavam gravadas', ()
     'nuvemshop',
     'candle_analyzer',
     'alpaca',
+    'websocket',
     'email',
     'telegram',
     'web_chat',

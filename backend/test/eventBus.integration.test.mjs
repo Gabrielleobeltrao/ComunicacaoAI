@@ -44,7 +44,9 @@ const publicar = (over = {}) =>
 
 // --- contratos ---------------------------------------------------------------------
 
-test('os sete contratos iniciais existem e são os que o resto do sistema espera', () => {
+test('os contratos do barramento são os que o resto do sistema espera', () => {
+  // A lista é fechada de propósito: um consumidor que espera um tipo que não existe é
+  // um gatilho que nunca dispara, e ninguém descobre por quê.
   assert.deepEqual(
     [...EVENT_TYPES],
     [
@@ -57,6 +59,7 @@ test('os sete contratos iniciais existem e são os que o resto do sistema espera
       'trade.order.filled',
       'trade.stop.triggered',
       'trade.position.closed',
+      'integration.websocket.message',
     ],
   )
 })

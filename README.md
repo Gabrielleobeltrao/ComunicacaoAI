@@ -163,6 +163,42 @@ e estão documentados em [`backend/.env.example`](backend/.env.example). Nenhum 
 obrigatório, e nenhum contém segredo: a credencial da corretora é do dono, digitada na
 tela e guardada cifrada na conexão.
 
+## WebSocket Genérico
+
+Um App nativo para conectar **qualquer serviço que envie dados por WebSocket** — sem
+escrever código. Ele reusa o mesmo gerenciador de streams da corretora, o mesmo
+barramento durável de eventos e os mesmos gatilhos internos.
+
+**Como ligar:**
+
+1. **Conectar** — *Apps → catálogo → WebSocket Genérico*. Uma conta pode ter várias
+   conexões.
+2. **Configurar** — *WebSocket → Visão geral → Configurar*: endereço `wss://`, formato
+   (JSON ou texto) e como o serviço autentica (nenhuma, cabeçalho, parâmetro no
+   endereço ou primeira mensagem). Em *Avançado* ficam os caminhos de onde tirar
+   conteúdo, identificador, canal e data, além de schema, filtros, deduplicação e
+   limites. *Conferir endereço* valida antes de salvar.
+3. **Ligar** — o botão **Ligar** abre a conexão; dá para pausar, retomar e desligar.
+4. **Assinar** — *Assinaturas*: o que ouvir (canal e filtros) e **o que fazer com o que
+   chegar**: só guardar, memória (do agente, setor, andar ou prédio), rotina, agente ou
+   setor. *Só guardar* é o padrão e não gasta token nenhum.
+5. **Acompanhar** — *Mensagens* mostra o que chegou **e o que foi recusado, com o
+   motivo**; *Logs* mostra conexão, reconexão, descarte e disparo.
+
+Fixe no menu como o Chat Web: fixado, ele vira um grupo expansível com as quatro
+páginas. Desfixar tira só a navegação — conexão, assinaturas e histórico ficam.
+
+**O que ele não faz, de propósito:** não aceita expressão, JavaScript nem template
+executável. Endereço, caminho, filtro e limite são dados; o servidor lê caminho de
+objeto e compara texto, e nada além disso. Em produção só `wss://` é aceito, e
+localhost, IP privado, link-local e metadata de nuvem são recusados — com o DNS
+resolvido de novo a cada conexão e reconexão, que é o que fecha o rebinding.
+
+Conteúdo que chega por aí é marcado como **não confiável** no evento, e um evento nunca
+ganha ferramenta ou permissão além das que o agente responsável já tem.
+
+Os ajustes (`WS_*`) estão em [`backend/.env.example`](backend/.env.example).
+
 ## Scripts
 
 Run from the repo root:

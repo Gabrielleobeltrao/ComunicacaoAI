@@ -23,6 +23,7 @@ import { ensureCandleIndexes } from './marketData/candleStore.js'
 import { ensureMarketStateIndexes } from './marketData/state.js'
 import { ensureTickCollection } from './marketData/ticks.js'
 import { ensurePolicyIndexes } from './policies/repository.js'
+import { ensureWebSocketIndexes } from './integrations/websocket/repository.js'
 import { migrateAppsAndInstallations } from './apps/migration.js'
 
 async function renameCollectionIfNeeded(from: string, to: string): Promise<void> {
@@ -136,6 +137,7 @@ export async function runMigrations(): Promise<void> {
   await ensureMarketStateIndexes()
   await ensureTickCollection()
   await ensurePolicyIndexes()
+  await ensureWebSocketIndexes()
 
   // Apps: connections learn their appKey, Google gains an installation, and every
   // credential still sitting in an agent document moves into an encrypted one.

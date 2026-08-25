@@ -35,12 +35,34 @@ export interface StreamAdapter {
   /** O que mandar de tempos em tempos para o outro lado saber que ainda estamos aqui. */
   heartbeatMessage?(): unknown
   /**
+   * Cabeçalhos do handshake, quando o serviço autentica assim.
+   *
+   * Recebem a credencial e por isso NUNCA são registrados — nem em log, nem no
+   * documento do stream, nem em trace.
+   */
+  handshakeHeaders?(credencial: Record<string, string>): Record<string, string>
+  /** Subprotocolos oferecidos. Alguns serviços exigem um para aceitar a conexão. */
+  protocols?(): string[]
+  /**
    * Traduzir um quadro do provider em eventos internos.
    *
    * Devolver lista vazia é resposta legítima e comum: ack de subscribe, pong e
    * mensagem de controle não são fato de mercado.
    */
   parse(raw: unknown, ctx: StreamContext): PublishInput[]
+  /**
+   * Cuida da mensagem INTEIRA, no lugar de `parse`.
+   *
+   * Existe porque nem todo provedor traduz uma mensagem em um fato. Um stream de
+   * mercado traduz: cada negócio é um evento, e a decisão é pura. Um serviço genérico
+   * não: o que fazer com a mensagem depende de limite por minuto, deduplicação e
+   * assinatura ativa — tudo estado no banco, e nada disso cabe numa função pura.
+   *
+   * Recebe o quadro CRU, antes de qualquer interpretação: o formato é configuração de
+   * quem conectou, não do gerenciador. Devolve quantas viraram evento, que é o que a
+   * contagem do stream precisa saber.
+   */
+  ingest?(raw: string, ctx: StreamContext): Promise<number>
   /** Um quadro que o provider chama de erro. Sem isto, um erro de auth vira silêncio. */
   errorOf?(raw: unknown): string | null
   /**

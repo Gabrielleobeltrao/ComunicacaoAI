@@ -124,6 +124,7 @@ const ROUTER_PREFIX = {
   'routes/memoryRoutes.ts': '/api/memories',
   'routes/streamRoutes.ts': '/api/streams',
   'routes/policyRoutes.ts': '/api/trading-policies',
+  'routes/websocketRoutes.ts': '/api/websocket',
 }
 
 function declaredRoutes() {

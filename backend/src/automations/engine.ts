@@ -21,6 +21,9 @@ import { closeDueCandles, registerMarketDataHandlers } from '../marketData/engin
 import { ensureCandleIndexes } from '../marketData/candleStore.js'
 import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
+import { registerWebSocketDestinations } from '../integrations/websocket/destinations.js'
+import { websocketAdapterFor } from '../integrations/websocket/service.js'
+import { ensureWebSocketIndexes } from '../integrations/websocket/repository.js'
 
 // How often to look for work. Polling replaces Redis's push delivery: a routine
 // fires within one tick of its instant, which for daily/weekly schedules is
@@ -63,11 +66,15 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   await ensureStreamIndexes()
   await ensureCandleIndexes()
   await ensureMarketStateIndexes()
+  await ensureWebSocketIndexes()
   // O motor de mercado escuta o barramento. Registrar aqui, e não na importação, deixa
   // o teste montar o mesmo motor sem herdar handlers de outro teste.
   registerMarketDataHandlers()
   // E o gatilho interno: é ele que transforma um evento do barramento em execução.
   registerInternalEventTriggers(onError)
+  // E os destinos do App de WebSocket: memória e rotina, pelos mesmos caminhos de
+  // sempre. Agente e setor já são atendidos pelo gatilho interno acima.
+  registerWebSocketDestinations()
 
   let stopping = false
   // In-flight runs, so shutdown can wait for them instead of cutting them off.
@@ -171,7 +178,9 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   // Os adapters de stream disponíveis neste processo. Um App novo entra aqui e em
   // lugar nenhum mais.
   registerStreamAdapter(alpacaStreamAdapter)
-  createStreamManager(onError)
+  // O adapter do App genérico é MONTADO a partir da conexão — endereço, assinatura e
+  // formato são configuração de cada uma, e não do App.
+  createStreamManager(onError, websocketAdapterFor)
   await restoreStreams(onError)
     .then((quantos) => quantos && console.log(`Streams: ${quantos} restaurado(s)`))
     .catch((error) => onError('streams', error))

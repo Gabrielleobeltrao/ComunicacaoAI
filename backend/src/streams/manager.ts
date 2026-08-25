@@ -1,5 +1,6 @@
 import { backoffMs, publishEvent } from '../events/bus.js'
 import { markStreamEvent, setStreamError, setStreamState } from './repository.js'
+import type { SocketOptions } from './socket.js'
 import type { StreamAdapter, StreamContext, StreamRecord, StreamState } from './types.js'
 
 /**
@@ -23,12 +24,23 @@ export interface StreamSocket {
   onerror: ((ev: unknown) => void) | null
 }
 
-export type SocketFactory = (url: string) => StreamSocket
+export type SocketFactory = (url: string, opts?: SocketOptions) => StreamSocket
 
 export interface ManagerDeps {
   createSocket?: SocketFactory
-  /** Onde os adapters vivem. A Fase 5 registra o da Alpaca aqui. */
+  /** Onde os adapters ESTÁTICOS vivem — um por App, o mesmo para toda conexão. */
   adapters: Map<string, StreamAdapter>
+  /**
+   * O adapter DESTE stream, quando ele não pode ser estático.
+   *
+   * Um App de mercado tem um endereço e um formato só: o adapter é o mesmo para todas
+   * as conexões, e o mapa acima resolve. Um App genérico de WebSocket não tem isso —
+   * endereço, assinatura e formato são configuração de cada conexão, então o adapter
+   * precisa ser MONTADO a partir dela.
+   *
+   * Devolver `null` cai no mapa estático, que é o caminho de sempre.
+   */
+  adapterFor?: (record: StreamRecord) => Promise<StreamAdapter | null>
   /**
    * A credencial, buscada na hora de conectar e nunca guardada no gerenciador.
    *
@@ -135,7 +147,8 @@ export class StreamManager {
       await this.subscribe(id, record.symbols)
       return
     }
-    const adapter = this.deps.adapters.get(record.appKey)
+    // Primeiro o adapter montado a partir da conexão; depois o estático do App.
+    const adapter = (await this.deps.adapterFor?.(record)) ?? this.deps.adapters.get(record.appKey) ?? null
     if (!adapter) {
       await setStreamError(record._id, `nenhum adapter registrado para "${record.appKey}"`)
       return
@@ -302,7 +315,12 @@ export class StreamManager {
 
     let socket: StreamSocket
     try {
-      socket = this.deps.createSocket(vivo.adapter.url(vivo.record.environment))
+      // Cabeçalho e subprotocolo são do adapter: só ele sabe como o serviço dele
+      // autentica. Eles podem carregar credencial, e por isso não passam por log.
+      socket = this.deps.createSocket(vivo.adapter.url(vivo.record.environment), {
+        headers: vivo.adapter.handshakeHeaders?.(credencial),
+        protocols: vivo.adapter.protocols?.(),
+      })
     } catch (error) {
       await this.quebrou(vivo, error instanceof Error ? error.message : 'falha ao abrir o socket', geracao)
       return
@@ -352,6 +370,18 @@ export class StreamManager {
       environment: vivo.record.environment,
       source: `${vivo.record.appKey}:${vivo.record.environment}`,
     }
+    /**
+     * O adapter que cuida da mensagem inteira recebe o quadro CRU.
+     *
+     * Antes de qualquer interpretação, de propósito: o formato (JSON ou texto) é
+     * configuração de quem conectou, e adivinhar aqui obrigaria a desfazer o palpite lá.
+     */
+    if (vivo.adapter.ingest) {
+      const texto = typeof data === 'string' ? data : String(data)
+      await markStreamEvent(vivo.record._id, await vivo.adapter.ingest(texto, ctx))
+      return
+    }
+
     let bruto: unknown = data
     if (typeof data === 'string') {
       try {

@@ -21,6 +21,7 @@ import * as slack from './slack/index.js'
 import * as stripe from './stripe/index.js'
 import * as telegram from './telegram/index.js'
 import * as webChat from './web-chat/index.js'
+import * as websocket from './websocket/index.js'
 import * as whatsapp from './whatsapp/index.js'
 import type { AppDefinition, NativeFactory } from '../types.js'
 
@@ -30,7 +31,7 @@ interface OfficialModule {
 }
 
 // A ordem é a que o catálogo mostra, e é a mesma de antes da divisão.
-const MODULES: OfficialModule[] = [google, slack, mercadoPago, rdStation, hubspot, stripe, nuvemshop, candleAnalyzer, alpaca, email, telegram, webChat, whatsapp]
+const MODULES: OfficialModule[] = [google, slack, mercadoPago, rdStation, hubspot, stripe, nuvemshop, candleAnalyzer, alpaca, websocket, email, telegram, webChat, whatsapp]
 
 export class OfficialAppsError extends Error {}
 

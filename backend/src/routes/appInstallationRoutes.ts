@@ -19,6 +19,7 @@ import { dropPinsForApp } from '../apps/navigation.js'
 import { connectionProbeFor, runProbe } from '../apps/connectionTests.js'
 import { environmentOf } from '../apps/connectionProfile.js'
 import { deleteStreamsForInstallation, disableStreamsForInstallation, reconnectStreamsForInstallation } from '../streams/service.js'
+import { deactivateForInstallation, deleteForInstallation } from '../integrations/websocket/repository.js'
 import { getGoogleStatus, googleConfigured } from '../googleCalendar.js'
 import { auditEntity } from './auditMiddleware.js'
 import { fail, notFound, oid } from './http.js'
@@ -210,12 +211,17 @@ appInstallationRouter.delete('/:id', async (req, res) => {
   // O stream cai ANTES de qualquer outra coisa: ele é o único que continua usando a
   // credencial depois de a conexão sair do ar.
   await disableStreamsForInstallation(res.locals.userId, id.toString()).catch(() => undefined)
+  // As assinaturas param junto, sem sumir: a conexão saiu do ar, e o que elas ouviam
+  // deixou de existir. Reativar é decisão de quem reconectar.
+  await deactivateForInstallation(res.locals.userId, id.toString()).catch(() => undefined)
 
   if (String(req.query.purge) === 'true') {
     // An explicit, separate action: remove the row entirely.
     const removed = await deleteInstallation(res.locals.userId, id)
     if (!removed) return notFound(res)
     await deleteStreamsForInstallation(res.locals.userId, id.toString()).catch(() => undefined)
+    // Remover é remover: assinatura, histórico e log da conexão vão junto.
+    await deleteForInstallation(res.locals.userId, id.toString()).catch(() => undefined)
     await cleanUpPins(res.locals.userId, installation.appKey)
     return res.json({ deleted: true })
   }

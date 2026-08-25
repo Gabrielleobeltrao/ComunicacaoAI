@@ -14,7 +14,8 @@ import {
 } from './repository.js'
 import { StreamManager, setStreamManager, streamManager } from './manager.js'
 import { streamAdapters } from './registry.js'
-import type { StreamRecord } from './types.js'
+import { createRealSocket } from './socket.js'
+import type { StreamAdapter, StreamRecord } from './types.js'
 import { MAX_STREAMS_PER_OWNER, MAX_SYMBOLS_PER_STREAM } from './types.js'
 
 /**
@@ -216,8 +217,17 @@ export async function restoreStreams(onError: (where: string, e: unknown) => voi
 }
 
 /** Criar o gerenciador deste processo. Chamado uma vez, quando o motor sobe. */
-export function createStreamManager(onError?: (where: string, e: unknown) => void): StreamManager {
-  const m = new StreamManager({ adapters, credentialsOf: streamCredentials, onError })
+export function createStreamManager(
+  onError?: (where: string, e: unknown) => void,
+  adapterFor?: (record: StreamRecord) => Promise<StreamAdapter | null>,
+): StreamManager {
+  const m = new StreamManager({
+    adapters,
+    credentialsOf: streamCredentials,
+    onError,
+    createSocket: createRealSocket,
+    ...(adapterFor ? { adapterFor } : {}),
+  })
   setStreamManager(m)
   return m
 }

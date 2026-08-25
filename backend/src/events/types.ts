@@ -30,6 +30,14 @@ export const EVENT_TYPES = [
   'trade.order.filled',
   'trade.stop.triggered',
   'trade.position.closed',
+  /**
+   * Uma mensagem recebida de um serviço externo por WebSocket.
+   *
+   * Fica no mesmo barramento dos eventos de mercado porque as garantias que ela precisa
+   * são as mesmas: sobreviver a um restart, ser entregue uma vez só, e falhar para um
+   * canto visível. O que muda é a origem — e o conteúdo dela NÃO é confiável.
+   */
+  'integration.websocket.message',
 ] as const
 
 export type EventType = (typeof EVENT_TYPES)[number]
