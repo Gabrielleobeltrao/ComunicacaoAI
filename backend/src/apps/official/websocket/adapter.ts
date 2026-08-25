@@ -53,8 +53,14 @@ export function buildWebSocketAdapter(
       return url.toString()
     },
 
-    handshakeHeaders: () =>
-      config.auth.kind === 'header' && credencial ? { [config.auth.name]: `${config.auth.prefix}${credencial}` } : {},
+    handshakeHeaders: () => {
+      const fora: Record<string, string> = {}
+      // Os extras primeiro: assim o de autenticação nunca é sobrescrito por um extra
+      // com o mesmo nome — o que seria uma forma silenciosa de derrubar a autenticação.
+      for (const h of config.headers) fora[h.name] = fillToken(h.value, credencial)
+      if (config.auth.kind === 'header' && credencial) fora[config.auth.name] = `${config.auth.prefix}${credencial}`
+      return fora
+    },
 
     protocols: () => config.protocols,
 
@@ -73,14 +79,26 @@ export function buildWebSocketAdapter(
     unsubscribeMessage: () => undefined,
 
     /**
-     * As inscrições guardadas, mandadas depois de conectar e autenticar.
+     * O que sai depois de conectar, NA ORDEM: primeiro as mensagens iniciais que a
+     * conexão declara, depois as inscrições guardadas.
      *
-     * Vêm do banco, e por isso não cabem em `subscribeMessage`, que é síncrono. A cada
-     * reconexão elas vão de novo: um serviço que caiu esqueceu tudo que foi pedido.
+     * A ordem é a regra dos serviços, não uma preferência: quem exige autenticar antes
+     * de assinar recusa a inscrição que chega primeiro — e recusa calado, com a conexão
+     * de pé e nenhum dado chegando.
+     *
+     * As inscrições vêm do banco, e por isso isto é assíncrono. A cada reconexão tudo
+     * vai de novo: um serviço que caiu esqueceu tudo que foi pedido.
      */
-    framesOnConnect: (ctx) => frames(ctx.ownerId, ctx.installationId),
+    framesOnConnect: async (ctx) => [
+      ...config.initialMessages.map((m) => fillToken(m, credencial)),
+      ...(await frames(ctx.ownerId, ctx.installationId)),
+    ],
 
-    heartbeatMessage: config.heartbeat.enabled ? () => JSON.parse(config.heartbeat.message) : undefined,
+    // Ping do protocolo quando dá: ele não vira mensagem para a aplicação do outro lado.
+    heartbeatNative: () => config.heartbeat.enabled && config.heartbeat.native,
+    heartbeatMessage: config.heartbeat.enabled && !config.heartbeat.native ? () => JSON.parse(config.heartbeat.message) : undefined,
+    heartbeatTimeoutMs: () => config.heartbeat.timeoutMs,
+    connectTimeoutMs: () => config.connectTimeoutMs,
 
     /**
      * Os intervalos DESTA conexão.

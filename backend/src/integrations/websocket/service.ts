@@ -15,7 +15,9 @@ import {
   MESSAGE_RETENTION_DAYS,
   writeLog,
 } from './repository.js'
-import { dedupeKeyOf, parseMessage, previewOf, registerOverflow, subscriptionsFor } from './pipeline.js'
+import { dedupeKeyOf, parseMessage, podePublicar, previewOf, registerOverflow, subscriptionsFor } from './pipeline.js'
+import { applyMapping } from './mapping.js'
+import { putLiveValue } from './liveData.js'
 import { framesOnConnect } from './subscribe.js'
 import type { WsMessage, WsMessageStatus } from './types.js'
 
@@ -157,6 +159,25 @@ export async function ingestWebSocketMessage(
   const brutaJson = config.format === 'json' ? JSON.parse(bruto) : bruto
 
   /**
+   * O objeto NORMALIZADO, e o último valor da chave.
+   *
+   * Acontece antes das assinaturas de propósito: o dado ao vivo é da CONEXÃO, não de
+   * quem a está ouvindo. Uma cotação que nenhuma assinatura reivindicou continua sendo
+   * a cotação — e é ela que um cálculo vai querer daqui a um segundo.
+   *
+   * E é aqui que a promessa "sem LLM por tique" se cumpre: guardar o valor não publica
+   * evento, não dispara rotina e não chama modelo nenhum.
+   */
+  const mapeado = applyMapping(lida.payload, config.mapping)
+  if (mapeado && config.liveKeyPath) {
+    const chaveViva = mapeado[config.liveKeyPath]
+    if (typeof chaveViva === 'string' || typeof chaveViva === 'number') {
+      const coube = await putLiveValue(ownerId, installationId, String(chaveViva), mapeado, config.liveTtlSeconds, now)
+      if (!coube) await writeLog(ownerId, installationId, 'dropped', 'limite de chaves de dado ao vivo atingido nesta conexão', null, now)
+    }
+  }
+
+  /**
    * TODAS as assinaturas que a reivindicam — não a primeira.
    *
    * Duas assinaturas com canais que se sobrepõem faziam a segunda nunca receber nada, e
@@ -192,6 +213,21 @@ export async function ingestWebSocketMessage(
    */
   const eventIds: string[] = []
   for (const assinatura of reivindicaram) {
+    /**
+     * O ESPAÇO mínimo entre dois eventos da mesma chave.
+     *
+     * O Live Data Store aceita todo tique porque guardar é barato e o valor substitui o
+     * anterior. O barramento é o contrário: cada evento é durável, entregue e pode
+     * disparar trabalho. Sem este freio, uma cotação ativa vira seiscentos eventos por
+     * minuto — e o dono só descobre na fatura.
+     *
+     * O que é engolido aqui não se perde: o valor está no Live Data Store, com o
+     * horário, e quem precisa dele o lê quando precisar.
+     */
+    if (config.publishThrottleMs > 0) {
+      const chaveThrottle = `${assinatura._id.toString()}:${mapeado && config.liveKeyPath ? String(mapeado[config.liveKeyPath] ?? '') : ''}`
+      if (!podePublicar(installationId, chaveThrottle, config.publishThrottleMs, now.getTime())) continue
+    }
     try {
       const { event } = await publishEvent(
         {
@@ -211,7 +247,11 @@ export async function ingestWebSocketMessage(
              * receba isto trata como texto de terceiro, não como instrução.
              */
             untrusted: true,
+            /** O quadro cru, já recortado pelo caminho configurado. */
             payload: lida.payload,
+            /** O mesmo fato com os nomes normalizados, quando há mapeamento. */
+            ...(mapeado ? { mappedData: mapeado } : {}),
+            receivedAt: now.toISOString(),
           },
           occurredAt: lida.occurredAt ?? now,
           dedupeKey: `ws:${installationId}:${assinatura._id.toString()}:${chave ?? gravada._id.toString()}`,

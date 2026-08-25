@@ -49,7 +49,21 @@ export class ErroDeFuncao extends Error {
 export type FunctionHandler = (
   input: Record<string, unknown>,
   config?: Record<string, unknown>,
+  /**
+   * De QUEM é a execução.
+   *
+   * A maioria das funções é pura e ignora isto. As que leem estado da conta — o dado ao
+   * vivo de uma conexão, por exemplo — precisam do dono no filtro, e recebê-lo por
+   * parâmetro é o que torna impossível esquecer: sem ele não há consulta.
+   *
+   * Ausente só no caminho de teste; o despachante sempre passa.
+   */
+  ctx?: FunctionContext,
 ) => Promise<unknown> | unknown
+
+export interface FunctionContext {
+  ownerId: string
+}
 
 export interface RegisteredFunction {
   /** A chave que o agente guarda. Estável: mudá-la quebra os agentes que a usam. */
@@ -632,3 +646,4 @@ export function assertRegistryIsSound(): void {
     }
   }
 }
+

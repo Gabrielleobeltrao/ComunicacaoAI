@@ -22,6 +22,16 @@ export interface StreamSocket {
   onmessage: ((ev: { data: unknown }) => void) | null
   onclose: ((ev: unknown) => void) | null
   onerror: ((ev: unknown) => void) | null
+  /**
+   * O ping do PROTOCOLO, quando o socket sabe mandar.
+   *
+   * Opcional porque o `WebSocket` do navegador não expõe: só o `ws` do Node manda ping
+   * de verdade. Ausente, o batimento cai na mensagem configurada, que é o caminho de
+   * sempre.
+   */
+  ping?(): void
+  /** Chamado quando o pong volta. É o que prova que o outro lado ainda responde. */
+  onpong?: (() => void) | null
 }
 
 export type SocketFactory = (url: string, opts?: SocketOptions) => StreamSocket
@@ -99,6 +109,8 @@ interface Vivo {
   timerHeartbeat: unknown
   timerIdle: unknown
   timerReconnect: unknown
+  /** Armado ao mandar o batimento, desarmado quando a resposta chega. */
+  timerPong: unknown
   /** Marcado no stop: um close que chega depois disso não deve reconectar. */
   encerrado: boolean
   /**
@@ -204,6 +216,7 @@ export class StreamManager {
       timerHeartbeat: null,
       timerIdle: null,
       timerReconnect: null,
+      timerPong: null,
       encerrado: false,
       segredos: [],
     }
@@ -423,6 +436,7 @@ export class StreamManager {
         headers: vivo.adapter.handshakeHeaders?.(credencial),
         protocols: vivo.adapter.protocols?.(),
         pinnedAddress: vivo.adapter.pinnedAddress?.(),
+        handshakeTimeoutMs: vivo.adapter.connectTimeoutMs?.(),
       })
     } catch (error) {
       await this.quebrou(vivo, error instanceof Error ? error.message : 'falha ao abrir o socket', geracao)
@@ -462,6 +476,12 @@ export class StreamManager {
       if (vivo.geracao !== geracao) return
       // Só o detector de silêncio é rearmado: o batimento corre no ritmo dele.
       this.armarSilencio(vivo)
+      // Mensagem é sinal de vida tanto quanto o pong: um serviço que respondeu alguma
+      // coisa está vivo, e exigir o pong exato derrubaria quem responde de outro jeito.
+      if (vivo.timerPong) {
+        this.deps.cancel(vivo.timerPong)
+        vivo.timerPong = null
+      }
       void this.receber(vivo, ev.data).catch((e) => this.deps.onError(`stream ${id} mensagem`, e))
     }
 
@@ -573,13 +593,60 @@ export class StreamManager {
    * disparava uma vez só. Um batimento que bate uma vez não mantém nada vivo.
    */
   private armarBatimento(vivo: Vivo): void {
-    if (!vivo.adapter.heartbeatMessage) return
+    const nativo = vivo.adapter.heartbeatNative?.() === true && typeof vivo.socket?.ping === 'function'
+    if (!nativo && !vivo.adapter.heartbeatMessage) return
     const geracao = vivo.geracao
     // O intervalo da CONEXÃO, quando ela tem um — limitado pelo teto do ambiente.
     const intervalo = Math.min(vivo.adapter.heartbeatIntervalMs?.() ?? HEARTBEAT_MS, MAX_INTERVAL_MS)
+    const prazoResposta = vivo.adapter.heartbeatTimeoutMs?.() ?? 0
+
+    /**
+     * A resposta ao batimento chegou. Vale o pong do protocolo E qualquer mensagem: um
+     * serviço que respondeu alguma coisa está vivo, e exigir o pong exato derrubaria
+     * conexões saudáveis de quem responde o ping com uma mensagem comum.
+     */
+    const respondeu = () => {
+      if (vivo.timerPong) this.deps.cancel(vivo.timerPong)
+      vivo.timerPong = null
+    }
+    if (nativo && vivo.socket) vivo.socket.onpong = respondeu
+
     const bater = () => {
       if (vivo.encerrado || vivo.geracao !== geracao) return
-      this.enviar(vivo, vivo.adapter.heartbeatMessage?.())
+      if (nativo) {
+        try {
+          vivo.socket?.ping?.()
+        } catch (error) {
+          this.deps.onError(`stream ${vivo.record._id.toString()} ping`, error)
+        }
+      } else {
+        this.enviar(vivo, vivo.adapter.heartbeatMessage?.())
+      }
+
+      /**
+       * O PRAZO da resposta.
+       *
+       * Sem ele, um serviço que aceita o ping e nunca responde ficava "conectado" até o
+       * detector de silêncio — que é muito mais longo de propósito, porque silêncio de
+       * dados é normal fora do pregão. Falta de resposta ao ping não é: é conexão morta
+       * que ainda não fechou.
+       */
+      if (prazoResposta > 0) {
+        if (vivo.timerPong) this.deps.cancel(vivo.timerPong)
+        const semResposta = this.deps.schedule(() => {
+          if (vivo.encerrado || vivo.geracao !== geracao) return
+          const morto = vivo.socket
+          void this.quebrou(vivo, 'o serviço não respondeu ao batimento', geracao).catch(() => undefined)
+          try {
+            morto?.close()
+          } catch {
+            // já era
+          }
+        }, prazoResposta)
+        semResposta.unref?.()
+        vivo.timerPong = semResposta
+      }
+
       const proximo = this.deps.schedule(bater, intervalo)
       proximo.unref?.()
       vivo.timerHeartbeat = proximo
@@ -618,10 +685,11 @@ export class StreamManager {
   }
 
   private limparTimers(vivo: Vivo): void {
-    for (const t of [vivo.timerHeartbeat, vivo.timerIdle, vivo.timerReconnect]) if (t) this.deps.cancel(t)
+    for (const t of [vivo.timerHeartbeat, vivo.timerIdle, vivo.timerReconnect, vivo.timerPong]) if (t) this.deps.cancel(t)
     vivo.timerHeartbeat = null
     vivo.timerIdle = null
     vivo.timerReconnect = null
+    vivo.timerPong = null
   }
 }
 

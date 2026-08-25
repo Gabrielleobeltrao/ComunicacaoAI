@@ -52,5 +52,16 @@ export const createRealSocket = (url: string, opts: SocketOptions = {}): StreamS
     maxPayload: Number(process.env.WS_MAX_FRAME_BYTES ?? 1_048_576),
     followRedirects: false,
   })
-  return socket as unknown as StreamSocket
+
+  /**
+   * O pong, ligado por evento e exposto como propriedade.
+   *
+   * O `ws` entrega `pong` por `on(...)`, e o gerenciador atribui handlers por
+   * propriedade — como faz com todos os outros. Um ouvinte registrado aqui, uma vez,
+   * traduz uma coisa na outra sem espalhar `on(...)` pelo gerenciador, que precisa
+   * continuar funcionando com o socket falso dos testes.
+   */
+  const fora = socket as unknown as StreamSocket
+  socket.on('pong', () => fora.onpong?.())
+  return fora
 }

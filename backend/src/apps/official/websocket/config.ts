@@ -1,5 +1,7 @@
 import { ValidationError } from '../../../building.js'
 import { readPath } from '../../../automations/conditions.js'
+import { normalizeMapping, normalizeMappingTarget } from '../../../integrations/websocket/mapping.js'
+import type { PayloadMappingRule } from '../../../integrations/websocket/mapping.js'
 
 /**
  * A CONFIGURAÇÃO de uma conexão WebSocket genérica, saneada.
@@ -37,9 +39,35 @@ export interface WsConnectionConfig {
     /** A primeira mensagem, com `{{token}}` substituído pelo segredo na hora de enviar. */
     messageTemplate: string
   }
+  /**
+   * Cabeçalhos ADICIONAIS do handshake, além do de autenticação.
+   *
+   * Alguns serviços exigem `Origin`, `User-Agent` ou um cabeçalho próprio de conta.
+   * O VALOR pode ser `{{token}}`, e aí a credencial entra na hora de conectar — em
+   * texto, aqui, ele nunca fica.
+   */
+  headers: { name: string; value: string }[]
+  /**
+   * As mensagens mandadas ao abrir, NA ORDEM.
+   *
+   * Um serviço costuma querer autenticar primeiro e assinar depois; alguns querem três
+   * quadros. Uma mensagem só não cobria isso, e mandar tudo junto num quadro é o que os
+   * serviços recusam. `{{token}}` vale aqui como vale na de autenticação.
+   */
+  initialMessages: string[]
   protocols: string[]
-  heartbeat: { enabled: boolean; message: string; intervalMs: number }
+  /**
+   * O batimento. `timeoutMs` é quanto se espera pela resposta antes de dar o socket
+   * por morto: sem ele, um serviço que aceita o ping e não responde mantinha a conexão
+   * "viva" até o detector de silêncio, que é muito mais longo.
+   *
+   * `native` usa o ping/pong do protocolo, que é o certo quando o serviço o suporta:
+   * ele não passa pela aplicação do outro lado e não vira mensagem para ninguém.
+   */
+  heartbeat: { enabled: boolean; native: boolean; message: string; intervalMs: number; timeoutMs: number }
   idleTimeoutMs: number
+  /** Prazo para o handshake completar. Um serviço fora do ar não deixa a tela pendurada. */
+  connectTimeoutMs: number
   /** Onde estão as coisas dentro da mensagem. Vazio = a mensagem inteira. */
   paths: { payload: string; messageId: string; channel: string; occurredAt: string }
   /** Schema opcional para RECUSAR o que não bate, em vez de guardar lixo. */
@@ -48,6 +76,26 @@ export interface WsConnectionConfig {
   dedupe: WsDedupeStrategy
   maxMessagesPerMinute: number
   maxMessageBytes: number
+  /** `$.data.ticker → symbol`: dois provedores viram o mesmo objeto aqui dentro. */
+  mapping: PayloadMappingRule[]
+  /**
+   * Onde está a CHAVE do dado ao vivo, dentro do objeto já mapeado.
+   *
+   * Vazio desliga o Live Data Store para esta conexão. Preenchido — normalmente
+   * `symbol` — faz cada mensagem atualizar o último valor daquela chave, em vez de
+   * virar mais uma linha de histórico.
+   */
+  liveKeyPath: string
+  /** Por quanto tempo o último valor continua valendo. */
+  liveTtlSeconds: number
+  /**
+   * Espaço mínimo entre duas PUBLICAÇÕES da mesma chave no barramento.
+   *
+   * O Live Data Store aceita todo tique; o barramento, não. Sem isto, uma cotação
+   * ativa vira um evento por tique — e um evento é durável, é entregue e pode disparar
+   * coisas. Zero mantém o comportamento de sempre.
+   */
+  publishThrottleMs: number
 }
 
 /** Tetos que não são configuráveis para baixo por acidente nem para cima por engano. */
@@ -58,6 +106,11 @@ export const WS_LIMITS = {
   maxIntervalMs: 300_000,
   maxFilters: 10,
   maxProtocols: 5,
+  maxHeaders: 10,
+  maxInitialMessages: 10,
+  /** Teto do dado ao vivo: por conexão e por dono. Ver `liveData.ts`. */
+  maxLiveKeysPerConnection: Number(process.env.WS_MAX_LIVE_KEYS ?? 500),
+  maxLiveTtlSeconds: 24 * 60 * 60,
 }
 
 const texto = (v: unknown, max = 500): string => String(v ?? '').trim().slice(0, max)
@@ -98,6 +151,32 @@ function mensagem(bruto: unknown, campo: string): string {
   return t
 }
 
+/**
+ * Cabeçalhos extras. O NOME é validado como nome de cabeçalho; o valor pode ser
+ * `{{token}}`, e nesse caso o segredo entra só na hora de conectar.
+ */
+function cabecalhos(bruto: unknown): { name: string; value: string }[] {
+  const lista = Array.isArray(bruto) ? bruto : []
+  if (lista.length > WS_LIMITS.maxHeaders) throw new ValidationError(`No máximo ${WS_LIMITS.maxHeaders} cabeçalhos.`)
+  return lista.map((h, i) => {
+    const raw = (typeof h === 'object' && h !== null ? h : {}) as Record<string, unknown>
+    const name = texto(raw.name, 100)
+    if (!name) throw new ValidationError(`Cabeçalho ${i + 1}: informe o nome.`)
+    // Sem dois-pontos, sem quebra de linha: os dois separam cabeçalhos no protocolo, e
+    // um nome com eles é injeção de cabeçalho, não configuração.
+    if (!/^[A-Za-z0-9-]+$/.test(name)) throw new ValidationError(`Cabeçalho ${i + 1}: use letras, números e hífen no nome.`)
+    const value = String(raw.value ?? '').replace(/[\r\n]/g, '').slice(0, 500)
+    return { name, value }
+  })
+}
+
+/** As mensagens iniciais, na ordem em que foram escritas. Cada uma precisa ser JSON. */
+function mensagensIniciais(bruto: unknown): string[] {
+  const lista = Array.isArray(bruto) ? bruto : []
+  if (lista.length > WS_LIMITS.maxInitialMessages) throw new ValidationError(`No máximo ${WS_LIMITS.maxInitialMessages} mensagens iniciais.`)
+  return lista.map((m, i) => mensagem(m, `Mensagem inicial ${i + 1}`)).filter(Boolean)
+}
+
 export function normalizeConnectionConfig(bruto: unknown): WsConnectionConfig {
   const c = (typeof bruto === 'object' && bruto !== null ? bruto : {}) as Record<string, unknown>
   const auth = (typeof c.auth === 'object' && c.auth !== null ? c.auth : {}) as Record<string, unknown>
@@ -125,6 +204,7 @@ export function normalizeConnectionConfig(bruto: unknown): WsConnectionConfig {
   })
 
   const schema = typeof c.schema === 'object' && c.schema !== null && !Array.isArray(c.schema) ? (c.schema as Record<string, unknown>) : null
+  const mapping = normalizeMapping(c.mapping)
 
   return {
     endpoint,
@@ -133,13 +213,20 @@ export function normalizeConnectionConfig(bruto: unknown): WsConnectionConfig {
     // comum de todos. Aparar transformava o cabeçalho em `Bearerabc`, que o serviço
     // recusa por um motivo que a tela não teria como explicar.
     auth: { kind, name: texto(auth.name, 100), prefix: String(auth.prefix ?? '').slice(0, 50), messageTemplate },
+    headers: cabecalhos(c.headers),
+    initialMessages: mensagensIniciais(c.initialMessages),
     protocols: (Array.isArray(c.protocols) ? c.protocols : []).map((p) => texto(p, 60)).filter(Boolean).slice(0, WS_LIMITS.maxProtocols),
     heartbeat: {
       enabled: heartbeat.enabled === true,
-      message: heartbeat.enabled === true ? mensagem(heartbeat.message, 'Mensagem de heartbeat') : '',
+      // O ping do protocolo não carrega mensagem: quando ele está ligado, o campo de
+      // texto some da tela e daqui, em vez de ficar guardado sem efeito.
+      native: heartbeat.enabled === true && heartbeat.native !== false,
+      message: heartbeat.enabled === true && heartbeat.native === false ? mensagem(heartbeat.message, 'Mensagem de heartbeat') : '',
       intervalMs: numeroEntre(heartbeat.intervalMs, 30_000, WS_LIMITS.minIntervalMs, WS_LIMITS.maxIntervalMs),
+      timeoutMs: numeroEntre(heartbeat.timeoutMs, 10_000, 1_000, WS_LIMITS.maxIntervalMs),
     },
     idleTimeoutMs: numeroEntre(c.idleTimeoutMs, 90_000, WS_LIMITS.minIntervalMs, WS_LIMITS.maxIntervalMs),
+    connectTimeoutMs: numeroEntre(c.connectTimeoutMs, 15_000, 1_000, 60_000),
     paths: {
       payload: normalizePath(paths.payload, 'Caminho do conteúdo'),
       messageId: normalizePath(paths.messageId, 'Caminho do identificador'),
@@ -151,6 +238,13 @@ export function normalizeConnectionConfig(bruto: unknown): WsConnectionConfig {
     dedupe: (['none', 'message_id', 'payload_hash'] as const).find((d) => d === c.dedupe) ?? 'none',
     maxMessagesPerMinute: numeroEntre(c.maxMessagesPerMinute, 120, 1, WS_LIMITS.maxMessagesPerMinute),
     maxMessageBytes: numeroEntre(c.maxMessageBytes, 16_000, 200, WS_LIMITS.maxMessageBytes),
+    mapping,
+    // Sem mapeamento não há objeto normalizado de onde tirar a chave — e uma chave lida
+    // do payload cru dependeria do formato de cada provedor, que é o que o mapeamento
+    // existe para esconder.
+    liveKeyPath: mapping.length ? normalizeMappingTarget(texto(c.liveKeyPath) || 'symbol', 'Chave do dado ao vivo') : '',
+    liveTtlSeconds: numeroEntre(c.liveTtlSeconds, 300, 5, WS_LIMITS.maxLiveTtlSeconds),
+    publishThrottleMs: numeroEntre(c.publishThrottleMs, 0, 0, 60_000),
   }
 }
 
