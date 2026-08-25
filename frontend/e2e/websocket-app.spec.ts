@@ -535,3 +535,22 @@ test('editar traz os filtros da assinatura preenchidos', async ({ page }) => {
   await page.getByTestId('ws-sub-save').click()
   await expect.poll(() => assinaturaEditada).toMatchObject({ filters: [{ path: 'tipo', operator: 'contains', value: 'aviso' }] })
 })
+
+test('o App fixado aparece no menu TAMBÉM com a navegação antiga', async ({ page }) => {
+  /**
+   * O rail do desktop tem dois modos, e os Apps fixados só apareciam num deles.
+   *
+   * Eles são do dono, e não do andar — não dependem do contexto de prédio para existir.
+   * Faltando no modo antigo, "Fixar no menu" salvava a preferência no servidor e não
+   * mostrava nada: sem erro, sem aviso, sem item. Era invisível para quem não usasse
+   * exatamente a configuração de quem escreveu o teste.
+   *
+   * Esta jornada roda contra o app COMPILADO no CI, que é onde as flags de build ficam
+   * desligadas — e é por isso que ela pega o que a máquina de desenvolvimento esconde.
+   */
+  await stub(page, { navigation: [NAV_WEBSOCKET] })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/apps/websocket/overview')
+  await expect(page.getByTestId('pinned-apps')).toBeVisible()
+  await expect(page.getByTestId('pinned-app-websocket')).toBeVisible()
+})

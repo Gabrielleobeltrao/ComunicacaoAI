@@ -224,7 +224,9 @@ test('schema inválido é recusado e fica registrado com o motivo', async () => 
   await ligar(conexao)
   await ate(async () => servidor.estado.conexoes > 0, 'a conexão')
   servidor.enviar({ semTotal: true })
-  await ate(async () => (await mensagens()).length === 1, 'a mensagem')
+  // Esperar o LOG, que é a última das duas escritas: esperar a mensagem e ler o log
+  // logo em seguida deixa a segunda gravação a meio caminho.
+  await ate(async () => (await repo.listLogs(DONO)).some((l) => l.kind === 'invalid'), 'o registro da recusa')
   assert.equal((await mensagens())[0].status, 'invalid')
   const logs = await repo.listLogs(DONO)
   assert.ok(logs.some((l) => l.kind === 'invalid' && /schema/.test(l.message)))
