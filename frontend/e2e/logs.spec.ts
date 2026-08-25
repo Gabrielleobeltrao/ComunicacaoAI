@@ -47,6 +47,17 @@ const RUN_DETAIL = {
   steps: [
     { id: 's1', stepId: 'run', stepType: 'agent.execute', attempt: 1, status: 'succeeded', startedAt: RUN.startedAt, finishedAt: RUN.finishedAt, error: null },
     { id: 's2', stepId: 'deliver', stepType: 'delivery.send', attempt: 1, status: 'succeeded', startedAt: RUN.startedAt, finishedAt: RUN.finishedAt, error: null },
+    {
+      id: 's3',
+      stepId: 'sinal',
+      stepType: 'event.publish',
+      attempt: 0,
+      status: 'skipped',
+      startedAt: null,
+      finishedAt: null,
+      error: null,
+      skipReason: 'condição não satisfeita: acao.opportunityFound equals',
+    },
   ],
   deliveries: [{ id: 'd1', provider: 'email', destinationMasked: 'jo***@exemplo.com', status: 'sent', attempt: 1, createdAt: RUN.finishedAt, sentAt: RUN.finishedAt, error: null }],
   artifacts: [{ id: 'a1', name: 'resultado', kind: 'markdown', mimeType: 'text/markdown', sizeBytes: 4210, createdAt: RUN.finishedAt }],
@@ -119,8 +130,10 @@ test('a run opens a detail that explains it without revealing it', async ({ page
 
   const detail = page.getByTestId('run-detail')
   await expect(detail).toBeVisible()
-  await expect(detail).toContainText('agent.execute')
-  await expect(detail).toContainText('delivery.send')
+  // O tipo técnico vira português: o trace é lido por quem configurou o fluxo, não
+  // por quem escreveu o runner.
+  await expect(detail).toContainText('IA')
+  await expect(detail).toContainText('Entrega')
   await expect(detail).toContainText('jo***@exemplo.com')
   await expect(detail).toContainText('4210 bytes')
   await expect(detail).toContainText('versão 3')
@@ -247,4 +260,13 @@ test('clearing the filters drops the new ones too', async ({ page }) => {
   await expect.poll(() => lastRunsUrl).toContain('sectorId=s1')
   await page.getByTestId('clear-log-filters').click()
   await expect.poll(() => lastRunsUrl).not.toContain('sectorId')
+})
+
+test('uma etapa pulada diz por que não rodou', async ({ page }) => {
+  // Sem o motivo, uma etapa pulada é indistinguível de uma etapa esquecida — e o
+  // motivo que mais importa é o de não ter chamado o modelo.
+  await stub(page)
+  await page.goto('/settings/logs')
+  await page.getByTestId('open-run-detail').first().click()
+  await expect(page.getByTestId('run-step-skip')).toContainText('condição não satisfeita')
 })

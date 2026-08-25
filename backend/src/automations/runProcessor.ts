@@ -11,6 +11,8 @@ import { acquireSourceLease, advanceCheckpoint, beginCheck, releaseSourceLease }
 import { publishedSourceFingerprint } from './routine.js'
 import { deleteFromStep, searchFromStep, writeFromStep } from '../memory/fromStep.js'
 import { executeAppStep } from '../apps/fromStep.js'
+import { publishFromStep } from '../events/fromStep.js'
+import { chainOf } from './internalEvents.js'
 import { findAutomation, findVersion } from './repository.js'
 import type { RunnerDeps } from './runner.js'
 import { preview } from './runTypes.js'
@@ -54,6 +56,7 @@ function buildDeps(run: AutomationRun): RunnerDeps {
   const temFonte = (run.definitionSnapshot.steps ?? []).some((p) => p.type === 'source.rss' || p.type === 'source.http')
   const temMemoria = (run.definitionSnapshot.steps ?? []).some((p) => p.type.startsWith('memory.'))
   const temApp = (run.definitionSnapshot.steps ?? []).some((p) => p.type === 'app.execute')
+  const temEvento = (run.definitionSnapshot.steps ?? []).some((p) => p.type === 'event.publish')
 
   // O agente dono da automação é quem responde pela gravação: a permissão é conferida
   // contra ELE, não contra o dono da conta. Sem isso, um gatilho gravaria em qualquer
@@ -71,6 +74,18 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       return { body: res.body, contentType: res.contentType }
     },
     ...(temApp ? { runApp: (cfg, valor) => executeAppStep(cfg, valor, { ownerId: run.ownerId }) } : {}),
+    ...(temEvento
+      ? {
+          publishEvent: (cfg: Record<string, unknown>, valor: unknown, stepId: string) =>
+            publishFromStep(cfg, valor, {
+              ownerId: run.ownerId,
+              runId: run._id.toString(),
+              stepId,
+              // A corrente vem do que disparou ESTA execução.
+              chain: chainOf(run.triggerPayload),
+            }),
+        }
+      : {}),
     ...(temMemoria
       ? {
           memory: {
@@ -257,6 +272,7 @@ export async function processRun(runId: string): Promise<void> {
       attempt: s.attempts,
       status: s.status,
       outputPreview: preview(s.output),
+      ...(s.skipReason ? { skipReason: s.skipReason } : {}),
       artifactIds: [],
       startedAt: now,
       finishedAt: now,

@@ -37,6 +37,7 @@ const stepPublic = (s: StepRun) => ({
   status: s.status,
   outputPreview: s.outputPreview,
   error: publicError(s.error),
+  skipReason: s.skipReason ?? null,
 })
 const artifactPublic = (a: Artifact) => ({
   id: a._id,

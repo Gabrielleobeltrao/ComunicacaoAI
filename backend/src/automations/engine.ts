@@ -19,6 +19,7 @@ import { createStreamManager, restoreStreams, shutdownStreams } from '../streams
 import { closeDueCandles, registerMarketDataHandlers } from '../marketData/engine.js'
 import { ensureCandleIndexes } from '../marketData/candleStore.js'
 import { ensureMarketStateIndexes } from '../marketData/state.js'
+import { registerInternalEventTriggers } from './internalEvents.js'
 
 // How often to look for work. Polling replaces Redis's push delivery: a routine
 // fires within one tick of its instant, which for daily/weekly schedules is
@@ -64,6 +65,8 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   // O motor de mercado escuta o barramento. Registrar aqui, e não na importação, deixa
   // o teste montar o mesmo motor sem herdar handlers de outro teste.
   registerMarketDataHandlers()
+  // E o gatilho interno: é ele que transforma um evento do barramento em execução.
+  registerInternalEventTriggers(onError)
 
   let stopping = false
   // In-flight runs, so shutdown can wait for them instead of cutting them off.

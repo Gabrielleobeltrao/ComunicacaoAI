@@ -94,6 +94,9 @@ logRouter.get('/runs/:id', async (req, res) => {
       startedAt: s.startedAt,
       finishedAt: s.finishedAt,
       error: publicError(s.error),
+      // O motivo de não ter rodado é escrito por nós, sobre a configuração — nunca
+      // sobre o conteúdo que chegou. Pode sair.
+      skipReason: s.skipReason ?? null,
     })),
     deliveries: deliveries.map((d) => ({
       id: d._id.toString(),

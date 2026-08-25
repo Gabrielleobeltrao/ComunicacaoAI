@@ -21,6 +21,21 @@ import {
 } from '../lib/logs'
 import { Button, Card, Dialog, EmptyState, Field, Input, Select, StatusPill, Tag } from '../ui'
 
+// O tipo técnico da etapa em português. O trace é lido por quem configurou o fluxo,
+// não por quem escreveu o runner.
+const STEP_LABEL: Record<string, string> = {
+  'source.rss': 'Fonte RSS',
+  'source.http': 'Fonte web',
+  'agent.execute': 'IA',
+  'transform.template': 'Preparar dado',
+  'delivery.send': 'Entrega',
+  'memory.write': 'Guardar na memória',
+  'memory.search': 'Consultar memória',
+  'memory.delete': 'Apagar da memória',
+  'app.execute': 'Ação de App',
+  'event.publish': 'Publicar evento',
+}
+
 // LOGS E AUDITORIA — the account's timeline, in two halves:
 //   Execuções: what the agents ran, read from the runs themselves;
 //   Alterações: what people changed, read from the append-only audit trail.
@@ -101,11 +116,19 @@ function RunDetail({ runId, onClose }: { runId: string; onClose: () => void }) {
                 {detail.steps.map((s) => (
                   <Card key={s.id} padding="10px 12px" style={{ display: 'grid', gap: 2 }} data-testid="run-step">
                     <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-heading)' }}>
-                      {s.stepId} · {s.stepType}
+                      {s.stepId} · {STEP_LABEL[s.stepType] ?? s.stepType}
                     </span>
                     <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
                       {s.status} · tentativa {s.attempt} · {absoluteWhen(s.finishedAt ?? s.startedAt)}
                     </span>
+                    {/* Uma etapa pulada sem motivo é indistinguível de uma etapa
+                        esquecida — e o motivo que mais importa é o de não ter chamado
+                        o modelo. */}
+                    {s.skipReason ? (
+                      <span style={{ fontSize: 12, color: 'var(--text-faint)' }} data-testid="run-step-skip">
+                        Não rodou: {s.skipReason}
+                      </span>
+                    ) : null}
                     {s.error ? <span style={{ fontSize: 12, color: 'var(--status-blocked)' }}>{s.error.kind}: {s.error.message}</span> : null}
                   </Card>
                 ))}

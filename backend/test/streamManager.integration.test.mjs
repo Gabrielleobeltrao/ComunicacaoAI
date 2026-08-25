@@ -79,7 +79,9 @@ SocketFalso.abertos = []
 // `setImmediate`. Esperar a CONDIÇÃO em vez de um tique evita um teste que passa na
 // máquina rápida e falha na lenta.
 async function ate(condicao, oque = 'condição') {
-  for (let i = 0; i < 200; i += 1) {
+  // Folgado de propósito: a suíte inteira roda em paralelo, e um segundo de orçamento
+  // vira um teste que passa sozinho e falha em conjunto.
+  for (let i = 0; i < 1_000; i += 1) {
     if (await condicao()) return
     await new Promise((r) => setTimeout(r, 5))
   }
