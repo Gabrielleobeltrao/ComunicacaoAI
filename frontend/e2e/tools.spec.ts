@@ -67,6 +67,21 @@ async function stub(page: Page, opts: { tools?: unknown[]; locale?: string | nul
     }
     return r.fulfill({ status: 204, body: '' })
   })
+  /**
+   * O catálogo, porque a lista de conexões é filtrada por ele.
+   *
+   * `erp` empresta base e credencial; `corretora` também; `crm` não — e é por isso que
+   * uma conexão de CRM não aparece como origem de ferramenta, mesmo estando conectada.
+   */
+  await page.route('**/api/apps/catalog', (r) =>
+    r.fulfill({
+      json: [
+        { key: 'erp', name: 'ERP', connectable: true, streamable: false, actions: [] },
+        { key: 'corretora', name: 'Corretora', connectable: true, streamable: true, actions: [] },
+        { key: 'crm', name: 'CRM', connectable: false, streamable: false, actions: [] },
+      ],
+    }),
+  )
   // As conexões que a ferramenta pode pedir emprestado. A revogada está aqui de
   // propósito: ela NÃO pode aparecer na lista de escolhas.
   await page.route('**/api/app-installations**', (r) =>
@@ -75,6 +90,9 @@ async function stub(page: Page, opts: { tools?: unknown[]; locale?: string | nul
         { id: 'inst-1', appKey: 'erp', appVersion: '1.0.0', name: 'ERP principal', status: 'connected', publicMetadata: {}, grantedScopes: [], createdAt: NOW, updatedAt: NOW, lastTestedAt: null, environment: 'default' },
         { id: 'inst-2', appKey: 'corretora', appVersion: '1.0.0', name: 'Corretora', status: 'connected', publicMetadata: {}, grantedScopes: [], createdAt: NOW, updatedAt: NOW, lastTestedAt: null, environment: 'paper' },
         { id: 'inst-3', appKey: 'erp', appVersion: '1.0.0', name: 'ERP antigo', status: 'revoked', publicMetadata: {}, grantedScopes: [], createdAt: NOW, updatedAt: NOW, lastTestedAt: null, environment: 'default' },
+        // Conectada, e de um App que NÃO empresta conexão: escolhê-la daria uma recusa
+        // na primeira chamada, longe de quem escolheu.
+        { id: 'inst-4', appKey: 'crm', appVersion: '1.0.0', name: 'CRM da equipe', status: 'connected', publicMetadata: {}, grantedScopes: [], createdAt: NOW, updatedAt: NOW, lastTestedAt: null, environment: 'default' },
       ],
     }),
   )

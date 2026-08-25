@@ -28,6 +28,7 @@ before(async () => {
 
 beforeEach(async () => {
   await db.collection('platform_events').deleteMany({})
+  await db.collection('event_handler_runs').deleteMany({})
   bus.resetHandlers()
 })
 
@@ -48,6 +49,8 @@ test('os sete contratos iniciais existem e são os que o resto do sistema espera
     [...EVENT_TYPES],
     [
       'market.price.updated',
+      'market.quote.updated',
+      'market.bar.closed',
       'market.candle.closed',
       'market.signal.detected',
       'trade.order.created',
@@ -122,7 +125,7 @@ test('a leitura é escopada por dono', async () => {
 
 test('o handler roda uma vez e o evento é concluído com prazo de validade', async () => {
   let vezes = 0
-  bus.onEvent('market.price.updated', async () => {
+  bus.onEvent('market.price.updated', 'teste', async () => {
     vezes += 1
   })
   await publicar()
@@ -144,7 +147,7 @@ test('sem handler o evento é concluído, não recusado', async () => {
 })
 
 test('handler que estoura devolve o evento para a fila com espera crescente', async () => {
-  bus.onEvent('market.price.updated', async () => {
+  bus.onEvent('market.price.updated', 'teste', async () => {
     throw new Error('provider fora do ar')
   })
   await publicar()
@@ -168,7 +171,7 @@ test('a espera cresce e nunca é a mesma para todo mundo', () => {
 })
 
 test('falha permanente vai para dead-letter e não gira mais', async () => {
-  bus.onEvent('market.price.updated', async () => {
+  bus.onEvent('market.price.updated', 'teste', async () => {
     throw new Error('payload inválido')
   })
   await publicar()
@@ -191,7 +194,7 @@ test('falha permanente vai para dead-letter e não gira mais', async () => {
 
 test('um handler idempotente não processa duas vezes o mesmo fato', async () => {
   const vistos = []
-  bus.onEvent('trade.order.filled', async (e) => {
+  bus.onEvent('trade.order.filled', 'teste', async (e) => {
     vistos.push(e.eventId)
   })
   // O mesmo preenchimento chega duas vezes — reconexão do provider.
@@ -203,4 +206,55 @@ test('um handler idempotente não processa duas vezes o mesmo fato', async () =>
     await bus.processEvent(e)
   }
   assert.equal(vistos.length, 1, 'duas publicações, um processamento')
+})
+
+// --- a inbox: cada consumidor roda uma vez por evento ---------------------------------
+
+test('a retentativa não repete o handler que já tinha dado certo', async () => {
+  // O caso que isto resolve: dois consumidores do mesmo evento, o segundo falha, o
+  // evento volta para a fila — e o primeiro, que soma volume numa vela, somaria de novo.
+  const somou = []
+  bus.onEvent('market.price.updated', 'soma-volume', async () => {
+    somou.push(1)
+  })
+  let falhar = true
+  bus.onEvent('market.price.updated', 'o-que-falha', async () => {
+    if (falhar) throw new Error('provider fora do ar')
+  })
+
+  await publicar()
+  let agora = new Date()
+  const primeiro = await bus.claimNextEvent('w1', agora)
+  assert.equal(await bus.processEvent(primeiro, agora), 'pending')
+  assert.equal(somou.length, 1)
+
+  falhar = false
+  agora = new Date(agora.getTime() + 120_000)
+  const segundo = await bus.claimNextEvent('w1', agora)
+  assert.equal(await bus.processEvent(segundo, agora), 'done')
+  assert.equal(somou.length, 1, 'o que já tinha dado certo não roda de novo')
+})
+
+test('cada consumidor tem a sua vez — um não bloqueia o outro', async () => {
+  const vistos = []
+  bus.onEvent('market.price.updated', 'consumidor-a', async () => vistos.push('a'))
+  bus.onEvent('market.price.updated', 'consumidor-b', async () => vistos.push('b'))
+  await publicar()
+  const e = await bus.claimNextEvent('w1')
+  assert.equal(await bus.processEvent(e), 'done')
+  assert.deepEqual(vistos, ['a', 'b'])
+})
+
+test('registrar o mesmo nome duas vezes não cria dois consumidores', async () => {
+  // Recarregar o módulo é comum; querer dois handlers idênticos não é.
+  let vezes = 0
+  bus.onEvent('market.price.updated', 'mesmo-nome', async () => {
+    vezes += 1
+  })
+  bus.onEvent('market.price.updated', 'mesmo-nome', async () => {
+    vezes += 1
+  })
+  await publicar()
+  await bus.processEvent(await bus.claimNextEvent('w1'))
+  assert.equal(vezes, 1)
 })

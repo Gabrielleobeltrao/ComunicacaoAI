@@ -13,36 +13,71 @@ export async function ensurePolicyIndexes(): Promise<void> {
   await policies.createIndex({ ownerId: 1, createdAt: -1 })
 }
 
-const numeroOuNulo = (v: unknown): number | null => {
-  if (v === null || v === undefined || v === '') return null
-  const n = Number(v)
-  return Number.isFinite(n) && n > 0 ? n : null
+/**
+ * Um erro que sabe DE QUAL CAMPO ele é.
+ *
+ * A `ValidationError` genérica vira uma frase na tela sem dizer onde corrigir. Aqui o
+ * formulário tem doze campos, e "valor inválido" sem o nome do campo obriga a caçar.
+ */
+export class PolicyFieldError extends ValidationError {
+  constructor(
+    readonly field: string,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
+const LIMITES: Record<string, { max: number; rotulo: string }> = {
+  maxOrderValue: { max: 1_000_000_000, rotulo: 'valor máximo por operação' },
+  maxQuantity: { max: 1_000_000, rotulo: 'quantidade máxima' },
+  maxPortfolioPercent: { max: 100, rotulo: 'percentual da carteira' },
+  maxDailyLoss: { max: 1_000_000_000, rotulo: 'perda máxima no dia' },
+  maxOrdersPerDay: { max: 10_000, rotulo: 'operações por dia' },
+}
+
+/**
+ * Um número de limite: ausente, ou um número válido.
+ *
+ * O que ele NUNCA faz é virar "sem limite" em silêncio. Era o comportamento antigo, e é
+ * o pior possível para uma trava: quem digita `-5` ou `abc` acha que apertou a regra e
+ * na verdade desligou.
+ */
+function limite(campo: keyof typeof LIMITES, valor: unknown): number | null {
+  if (valor === null || valor === undefined || valor === '') return null
+  const n = typeof valor === 'number' ? valor : Number(String(valor).replace(',', '.'))
+  const { max, rotulo } = LIMITES[campo]
+  if (!Number.isFinite(n)) throw new PolicyFieldError(campo, `O ${rotulo} precisa ser um número.`)
+  if (n <= 0) throw new PolicyFieldError(campo, `O ${rotulo} precisa ser maior que zero — para desligar a regra, deixe em branco.`)
+  if (n > max) throw new PolicyFieldError(campo, `O ${rotulo} não pode passar de ${max.toLocaleString('pt-BR')}.`)
+  return n
 }
 
 const HORA = /^\d{1,2}:\d{2}$/
 
 /**
- * Regras vindas da API, saneadas.
+ * Regras vindas da API, validadas.
  *
- * Um valor inválido vira ausência — e ausência quer dizer "sem esse limite". Guardar
- * um limite que ninguém consegue interpretar seria pior: ele barraria tudo, ou nada,
- * dependendo de onde o defeito caísse.
+ * Nada é saneado em silêncio: o que não dá para interpretar vira erro com o nome do
+ * campo. Guardar um limite ilegível seria pior — ele barraria tudo, ou nada, dependendo
+ * de onde o defeito caísse.
  */
 export function normalizeRules(bruto: unknown): PolicyRules {
   const r = (typeof bruto === 'object' && bruto !== null ? bruto : {}) as Record<string, unknown>
   const regras: PolicyRules = {}
   for (const campo of ['maxOrderValue', 'maxQuantity', 'maxPortfolioPercent', 'maxDailyLoss', 'maxOrdersPerDay'] as const) {
-    const n = numeroOuNulo(r[campo])
+    const n = limite(campo, r[campo])
     if (n !== null) regras[campo] = n
   }
-  if (regras.maxPortfolioPercent !== undefined && regras.maxPortfolioPercent !== null && regras.maxPortfolioPercent > 100) {
-    throw new ValidationError('o percentual máximo da carteira não pode passar de 100')
-  }
   for (const campo of ['requireStopLoss', 'requireTakeProfit', 'blockDuplicatePosition', 'blockShort', 'blockOptions'] as const) {
+    if (r[campo] === undefined || r[campo] === null) continue
+    if (typeof r[campo] !== 'boolean') throw new PolicyFieldError(campo, 'Esta trava só aceita ligado ou desligado.')
     if (r[campo] === true) regras[campo] = true
   }
-  if (Array.isArray(r.symbolAllowlist)) {
-    const lista = [...new Set(r.symbolAllowlist.map((s) => String(s ?? '').trim().toUpperCase()).filter(Boolean))].slice(0, 200)
+  if (r.symbolAllowlist !== undefined && r.symbolAllowlist !== null) {
+    if (!Array.isArray(r.symbolAllowlist)) throw new PolicyFieldError('symbolAllowlist', 'A lista de ativos precisa ser uma lista.')
+    const lista = [...new Set(r.symbolAllowlist.map((s) => String(s ?? '').trim().toUpperCase()).filter(Boolean))]
+    if (lista.length > 200) throw new PolicyFieldError('symbolAllowlist', 'No máximo 200 ativos na lista.')
     if (lista.length) regras.symbolAllowlist = lista
   }
   const janela = (typeof r.tradingHours === 'object' && r.tradingHours !== null ? r.tradingHours : null) as Record<string, unknown> | null
@@ -50,20 +85,29 @@ export function normalizeRules(bruto: unknown): PolicyRules {
     const start = String(janela.start ?? '')
     const end = String(janela.end ?? '')
     const timezone = String(janela.timezone ?? '').trim()
-    if (!HORA.test(start) || !HORA.test(end)) throw new ValidationError('a janela de horário precisa de início e fim no formato HH:MM')
+    if (!HORA.test(start)) throw new PolicyFieldError('tradingHours.start', 'O início da janela precisa estar no formato HH:MM.')
+    if (!HORA.test(end)) throw new PolicyFieldError('tradingHours.end', 'O fim da janela precisa estar no formato HH:MM.')
     // Sem fuso, "das 10 às 17" não quer dizer nada — e um padrão silencioso escolheria
     // por alguém que não pediu.
-    if (!timezone) throw new ValidationError('a janela de horário precisa do fuso')
+    if (!timezone) throw new PolicyFieldError('tradingHours.timezone', 'A janela de horário precisa do fuso.')
     try {
       new Intl.DateTimeFormat('en-US', { timeZone: timezone })
     } catch {
-      throw new ValidationError(`fuso desconhecido: ${timezone}`)
+      throw new PolicyFieldError('tradingHours.timezone', `Fuso desconhecido: ${timezone}.`)
     }
-    const days = Array.isArray(janela.days) ? janela.days.map((d) => Number(d)).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6) : []
+    let days: number[] = []
+    if (janela.days !== undefined && janela.days !== null) {
+      if (!Array.isArray(janela.days)) throw new PolicyFieldError('tradingHours.days', 'Os dias precisam ser uma lista.')
+      days = janela.days.map((d) => Number(d))
+      if (days.some((d) => !Number.isInteger(d) || d < 0 || d > 6)) {
+        throw new PolicyFieldError('tradingHours.days', 'Cada dia precisa ser um número de 0 (domingo) a 6 (sábado).')
+      }
+    }
     regras.tradingHours = { timezone, start, end, ...(days.length ? { days } : {}) }
   }
   return regras
 }
+
 
 export interface PolicyScope {
   ownerId: string

@@ -1,9 +1,12 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { ResolvedTool } from '../../../agentTools.js'
 import type { NativeFactory } from '../../types.js'
 import { PolicyDenied, guardOrder } from '../../../policies/guard.js'
 import type { GuardScope } from '../../../policies/guard.js'
 import type { OrderIntent } from '../../../policies/evaluate.js'
+import { PROBE_TIMEOUT_MS, registerConnectionProbe } from '../../connectionTests.js'
+import { ACTION_DETAIL_KEY, reportActionDetail } from '../../actionEvents.js'
+import type { ActionOutcomeDetail } from '../../actionEvents.js'
 import { AlpacaError, createAlpacaClient } from './client.js'
 import type { AlpacaClient, ClientDeps } from './client.js'
 
@@ -24,14 +27,21 @@ const schema = (properties: Record<string, unknown>, required: string[] = []) =>
   additionalProperties: false,
 })
 
+/** Como o adapter conta o que aconteceu para a auditoria, sem devolver isso ao modelo. */
+type Contador = (detalhe: ActionOutcomeDetail) => void
+
 /** Toda ferramenta responde igual: ou o dado, ou o motivo — nunca uma exceção crua. */
-const responder = async (trabalho: () => Promise<unknown>): Promise<{ ok: boolean; result: string }> => {
+const responder = async (trabalho: () => Promise<unknown>, contar: Contador): Promise<{ ok: boolean; result: string }> => {
   try {
     return { ok: true, result: JSON.stringify(await trabalho()) }
   } catch (error) {
     // A recusa por política é diferente de uma falha da corretora: nada saiu daqui, e o
     // que o modelo precisa saber é qual regra barrou — para não tentar de novo igual.
     if (error instanceof PolicyDenied) {
+      // O veredito vai para a auditoria: quais regras foram conferidas e quais barraram.
+      contar({
+        policy: { allowed: false, evaluated: error.verdict.evaluated, violations: error.verdict.violations.map((v) => v.code) },
+      })
       return {
         ok: false,
         result: JSON.stringify({
@@ -126,6 +136,25 @@ export interface AlpacaContext {
   ownerId: string
   installationId: string
   agentId?: string | null
+  /** A execução e a etapa. Ver `resolveGrant`: é daqui que sai a chave da ordem. */
+  executionRef?: string | null
+}
+
+/**
+ * A chave de idempotência da ordem, DERIVADA — nunca sorteada.
+ *
+ * Com um id novo a cada tentativa, uma repetição manda a segunda ordem: a corretora não
+ * tem como saber que é a mesma. Derivando de (execução, etapa, corpo da ordem), a
+ * mesma etapa tentando de novo produz a MESMA chave, e a pergunta "essa ordem já
+ * existe?" passa a ter resposta.
+ *
+ * O corpo entra na chave porque duas ordens diferentes na mesma etapa são duas ordens
+ * — e duas ordens iguais na mesma etapa são, por construção, uma repetição.
+ */
+export function clientOrderId(executionRef: string | null | undefined, body: Record<string, unknown>): string {
+  if (!executionRef) return `cai-${randomUUID()}`
+  const canonico = JSON.stringify(Object.keys(body).sort().map((k) => [k, body[k]]))
+  return `cai-${createHash('sha256').update(`${executionRef}|${canonico}`).digest('hex').slice(0, 24)}`
 }
 
 export function buildAlpacaTools(
@@ -156,7 +185,7 @@ export function buildAlpacaTools(
    * testes de contrato do adapter), e aí a ordem segue: a política é da CONEXÃO, e sem
    * conexão não existe uma para aplicar.
    */
-  const conferir = async (args: Record<string, unknown>) => {
+  const conferir = async (args: Record<string, unknown>, contar?: Contador) => {
     if (!contexto) return
     const scope: GuardScope = {
       ownerId: contexto.ownerId,
@@ -164,7 +193,7 @@ export function buildAlpacaTools(
       agentId: contexto.agentId ?? null,
       environment,
     }
-    await guardOrder(scope, intencao(args), {
+    const veredito = await guardOrder(scope, intencao(args), {
       estimatePrice: () => precoEstimado(args),
       account: async () => {
         const c = await cliente.trading<Record<string, unknown>>('/v2/account')
@@ -179,6 +208,9 @@ export function buildAlpacaTools(
       orderActionKeys: ORDER_ACTION_KEYS,
       now: () => (deps.now ? new Date(deps.now()) : new Date()),
     })
+    // Passou: o registro guarda O QUE FOI CONFERIDO, e não só "deu certo". Sem isso,
+    // "por que essa ordem passou" não tem resposta.
+    contar?.({ policy: { allowed: true, evaluated: veredito.evaluated, violations: [] } })
   }
 
   /**
@@ -218,16 +250,30 @@ export function buildAlpacaTools(
    * resposta que não inventa nem esconde.
    */
   const enviarOrdem = async (body: Record<string, unknown>) => {
-    const clientOrderId = `cai-${randomUUID()}`
+    const chave = clientOrderId(contexto?.executionRef, body)
+    /**
+     * ANTES de escrever: esta ordem já existe?
+     *
+     * Uma tentativa anterior pode ter chegado e a resposta ter se perdido. Perguntar
+     * primeiro custa uma leitura e evita a única falha que não dá para desfazer — a
+     * ordem duplicada. Só faz sentido com chave derivada; com chave sorteada não há o
+     * que perguntar.
+     */
+    if (contexto?.executionRef) {
+      const jaExiste = await cliente
+        .trading<Record<string, unknown>>('/v2/orders:by_client_order_id', { query: { client_order_id: chave } })
+        .catch(() => null)
+      if (jaExiste && texto(jaExiste.id)) return jaExiste
+    }
     try {
-      return await cliente.trading<Record<string, unknown>>('/v2/orders', { method: 'POST', body: { ...body, client_order_id: clientOrderId } })
+      return await cliente.trading<Record<string, unknown>>('/v2/orders', { method: 'POST', body: { ...body, client_order_id: chave } })
     } catch (error) {
       // Só quando o resultado ficou INCERTO. Uma recusa é uma resposta: ela não deixou
       // nada pendurado do outro lado.
       if (!(error instanceof AlpacaError) || (error.kind !== 'network' && error.kind !== 'unavailable')) throw error
       try {
         const existente = await cliente.trading<Record<string, unknown>>('/v2/orders:by_client_order_id', {
-          query: { client_order_id: clientOrderId },
+          query: { client_order_id: chave },
         })
         if (existente && texto(existente.id)) return existente
       } catch {
@@ -243,8 +289,22 @@ export function buildAlpacaTools(
     description: string,
     inputSchema: Record<string, unknown>,
     risk: ResolvedTool['risk'],
-    run: (args: Record<string, unknown>) => Promise<unknown>,
-  ): ResolvedTool => ({ name, description, inputSchema, risk, run: (args) => responder(() => run(args)) })
+    run: (args: Record<string, unknown>, contar: Contador) => Promise<unknown>,
+  ): ResolvedTool => ({
+    name,
+    description,
+    inputSchema,
+    risk,
+    run: (args) => {
+      // A chave da chamada chega pelos argumentos e SAI deles antes de qualquer coisa:
+      // ela não é argumento da ação e não pode ir para a corretora nem para a validação.
+      const { [ACTION_DETAIL_KEY]: chamada, ...limpos } = args as Record<string, unknown>
+      const contar: Contador = (detalhe) => {
+        if (typeof chamada === 'string') reportActionDetail(chamada, detalhe)
+      }
+      return responder(() => run(limpos, contar), contar)
+    },
+  })
 
   return [
     ferramenta(
@@ -332,10 +392,12 @@ export function buildAlpacaTools(
         ['symbol', 'side', 'quantity'],
       ),
       'high_risk',
-      async (args) => {
+      async (args, contar) => {
         const body = ordemBase(args)
-        await conferir(args)
-        return ordem(await enviarOrdem(body))
+        await conferir(args, contar)
+        const bruta = await enviarOrdem(body)
+        contar({ orderId: texto(bruta.id) || null })
+        return ordem(bruta)
       },
     ),
 
@@ -356,7 +418,7 @@ export function buildAlpacaTools(
         ['symbol', 'side', 'quantity', 'takeProfitPrice', 'stopLossPrice'],
       ),
       'high_risk',
-      async (args) => {
+      async (args, contar) => {
         const take = numeroOuNulo(args.takeProfitPrice)
         const stop = numeroOuNulo(args.stopLossPrice)
         // Um bracket sem uma das pernas não é um bracket: é uma ordem solta com a falsa
@@ -369,8 +431,10 @@ export function buildAlpacaTools(
           take_profit: { limit_price: String(take) },
           stop_loss: { stop_price: String(stop) },
         }
-        await conferir(args)
-        return ordem(await enviarOrdem(body))
+        await conferir(args, contar)
+        const bruta = await enviarOrdem(body)
+        contar({ orderId: texto(bruta.id) || null })
+        return ordem(bruta)
       },
     ),
 
@@ -379,10 +443,11 @@ export function buildAlpacaTools(
       'Cancela uma ordem ainda aberta. Ação crítica.',
       schema({ orderId: str('o id da ordem') }, ['orderId']),
       'high_risk',
-      async (args) => {
+      async (args, contar) => {
         const id = texto(args.orderId).trim()
         if (!id) throw new AlpacaError('informe o id da ordem', 'refused')
         await cliente.trading(`/v2/orders/${encodeURIComponent(id)}`, { method: 'DELETE' })
+        contar({ orderId: id })
         return { canceled: true, orderId: id }
       },
     ),
@@ -392,19 +457,44 @@ export function buildAlpacaTools(
       'Altera quantidade ou preço de uma ordem aberta. Ação crítica.',
       schema({ orderId: str('o id da ordem'), quantity: num('nova quantidade'), limitPrice: num('novo preço limite'), stopPrice: num('novo preço de stop') }, ['orderId']),
       'high_risk',
-      async (args) => {
+      async (args, contar) => {
         const id = texto(args.orderId).trim()
         if (!id) throw new AlpacaError('informe o id da ordem', 'refused')
         const qty = numeroOuNulo(args.quantity)
         const limit = numeroOuNulo(args.limitPrice)
         const stop = numeroOuNulo(args.stopPrice)
         if (qty === null && limit === null && stop === null) throw new AlpacaError('informe o que deve mudar na ordem', 'refused')
+
+        /**
+         * Alterar uma ordem pode AUMENTAR a exposição — e aí é uma ordem nova para a
+         * política, ainda que a corretora chame de PATCH. Sem isto, o teto de valor era
+         * contornável em dois passos: mandar o mínimo e depois alterar para o dobro.
+         *
+         * Reduzir continua livre: uma regra que impede diminuir posição é uma regra que
+         * prende alguém dentro dela.
+         */
+        const atual = await cliente.trading<Record<string, unknown>>(`/v2/orders/${encodeURIComponent(id)}`)
+        const qtdAtual = numeroOuNulo(atual.qty) ?? 0
+        const precoAtual = numeroOuNulo(atual.limit_price)
+        const aumenta = (qty !== null && qty > qtdAtual) || (limit !== null && precoAtual !== null && limit > precoAtual)
+        if (aumenta) {
+          await conferir({
+            symbol: texto(atual.symbol),
+            side: texto(atual.side),
+            quantity: qty ?? qtdAtual,
+            type: limit !== null ? 'limit' : texto(atual.type),
+            limitPrice: limit ?? precoAtual,
+          }, contar)
+        }
+
         const body = {
           ...(qty !== null ? { qty: String(qty) } : {}),
           ...(limit !== null ? { limit_price: String(limit) } : {}),
           ...(stop !== null ? { stop_price: String(stop) } : {}),
         }
-        return ordem(await cliente.trading<Record<string, unknown>>(`/v2/orders/${encodeURIComponent(id)}`, { method: 'PATCH', body }))
+        const trocada = await cliente.trading<Record<string, unknown>>(`/v2/orders/${encodeURIComponent(id)}`, { method: 'PATCH', body })
+        contar({ orderId: texto(trocada.id) || id })
+        return ordem(trocada)
       },
     ),
 
@@ -438,7 +528,40 @@ export const alpacaTools: NativeFactory = (ownerId, config, ctx) =>
     config,
     ctx?.environment ?? 'paper',
     {},
-    ctx?.installationId ? { ownerId, installationId: ctx.installationId, agentId: ctx.agentId ?? null } : undefined,
+    ctx?.installationId
+      ? { ownerId, installationId: ctx.installationId, agentId: ctx.agentId ?? null, executionRef: ctx.executionRef ?? null }
+      : undefined,
   )
 
 export const adapters: NativeFactory[] = [alpacaTools]
+
+/**
+ * A sonda de conexão: uma leitura de verdade, com prazo, que não devolve nada da conta.
+ *
+ * `GET /v2/account` é a chamada mais barata que só funciona com credencial válida. O
+ * que sai daqui é "deu" ou "não deu" e o motivo — nunca saldo, nunca número de conta,
+ * nunca o corpo da resposta.
+ */
+export const alpacaProbe = async (
+  config: Record<string, string>,
+  environment: string,
+  deps: ClientDeps = {},
+): Promise<{ ok: boolean; message: string }> => {
+  const keyId = config.keyId?.trim() ?? ''
+  const secretKey = config.secretKey?.trim() ?? ''
+  if (!keyId || !secretKey) return { ok: false, message: 'Faltam as duas chaves da corretora.' }
+  try {
+    const cliente = createAlpacaClient({ keyId, secretKey }, environment, { timeoutMs: PROBE_TIMEOUT_MS, ...deps })
+    const conta = await cliente.trading<Record<string, unknown>>('/v2/account')
+    const status = typeof conta.status === 'string' ? conta.status : ''
+    // O status da conta é informação de configuração, não de dinheiro: ele diz se a
+    // conta consegue operar. Saldo não sai daqui.
+    if (status && status !== 'ACTIVE') return { ok: false, message: `A conta existe, mas está "${status}" na corretora.` }
+    return { ok: true, message: `Conexão de simulação respondendo (${environment}).` }
+  } catch (error) {
+    if (error instanceof AlpacaError) return { ok: false, message: error.message }
+    return { ok: false, message: 'Não foi possível falar com a corretora.' }
+  }
+}
+
+registerConnectionProbe('alpaca', (config, environment) => alpacaProbe(config, environment))

@@ -85,6 +85,8 @@ const GOOGLE = {
   providerCostNote: null,
   requiresAuth: true,
   activation: 'oauth',
+  connectable: false,
+  streamable: false,
   activationRoute: null,
 }
 
@@ -1216,6 +1218,8 @@ const CORRETORA = {
   name: 'Alpaca (simulação)',
   auth: { kind: 'api_key', fields: [], scopes: [], documentationUrl: null },
   activation: 'credentials',
+  connectable: false,
+  streamable: false,
   actions: [
     { key: 'alpaca_conta', name: 'Consultar conta', description: 'Saldo e poder de compra.', risk: 'read', inputSchema: {}, resourceFields: [] },
     { key: 'alpaca_criar_ordem', name: 'Enviar ordem', description: 'Envia uma ordem.', risk: 'high_risk', inputSchema: {}, resourceFields: [] },

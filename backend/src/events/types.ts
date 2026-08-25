@@ -15,6 +15,15 @@ import type { ObjectId } from 'mongodb'
  */
 export const EVENT_TYPES = [
   'market.price.updated',
+  /**
+   * A melhor compra e a melhor venda. Não é negócio: ninguém pagou esse preço ainda.
+   *
+   * Fica separado de `price.updated` porque a diferença importa — uma cotação não entra
+   * em vela, e somá-la ao volume seria inventar negócio que não houve.
+   */
+  'market.quote.updated',
+  /** Uma vela pronta, vinda do próprio provider. Ver `market.candle.closed`, que é a nossa. */
+  'market.bar.closed',
   'market.candle.closed',
   'market.signal.detected',
   'trade.order.created',

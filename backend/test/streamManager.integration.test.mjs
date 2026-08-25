@@ -8,7 +8,10 @@ import assert from 'node:assert/strict'
 import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
 process.env.MONGODB_URI = await startMongo()
-process.env.APP_ENCRYPTION_KEY ||= 'chave-de-teste-com-32-caracteres!'
+// A chave que o `crypto.ts` lê de verdade. Antes daqui estes testes definiam
+// `APP_ENCRYPTION_KEY`, que não existe em lugar nenhum: eles passavam porque o `.env`
+// de quem desenvolve tem a chave real, e falhavam no CI, que não tem `.env`.
+process.env.ENCRYPTION_KEY ||= 'chave-de-teste-que-nao-e-segredo'
 // Marcados para o relógio falso saber qual timer é qual. O de reconexão é o único que
 // não tem duração fixa (é o backoff), e é assim que ele é reconhecido abaixo.
 process.env.STREAM_HEARTBEAT_MS = '11111'
@@ -22,6 +25,7 @@ const { ensureStream, registerStreamAdapter, clearStreamAdapters, streamAdapters
 const { MAX_STREAMS_PER_OWNER } = await import('../dist/streams/types.js')
 const { createPrivateApp, resolveAppForOwner } = await import('../dist/apps/privateApps.js')
 const { createInstallation, patchInstallation } = await import('../dist/apps/installations.js')
+const { streamCredentials } = await import('../dist/streams/service.js')
 const { db, mongoClient } = await import('../dist/db.js')
 
 after(async () => {
@@ -122,6 +126,17 @@ function relogioFalso() {
         }
       }
     },
+    dispararBatimento() {
+      for (const [id, t] of [...pendentes]) {
+        if (t.ms === 11111) {
+          pendentes.delete(id)
+          t.fn()
+        }
+      }
+    },
+    quantos(ms) {
+      return [...pendentes.values()].filter((t) => t.ms === ms).length
+    },
   }
 }
 
@@ -133,6 +148,7 @@ const ADAPTER = {
   unsubscribeMessage: (symbols) => ({ action: 'unsubscribe', trades: symbols }),
   heartbeatMessage: () => ({ action: 'ping' }),
   errorOf: (raw) => (raw?.T === 'error' ? String(raw.msg) : null),
+  authOkOf: (raw) => raw?.T === 'success' && raw?.msg === 'authenticated',
   parse: (raw, ctx) => {
     if (raw?.T !== 't') return []
     return [
@@ -496,17 +512,63 @@ test('símbolos são saneados e limitados', () => {
   assert.throws(() => normalizeSymbols(Array.from({ length: 500 }, (_, i) => `S${i}`)), /símbolos/)
 })
 
-test('o teste de conexão confere credencial e adapter sem abrir socket', async () => {
+test('o teste de conexão abre, autentica e FECHA — sem deixar nada de pé', async () => {
+  // Conferir se há credencial guardada responde "está configurado", não "funciona".
+  // Uma chave errada passava naquele teste e só falhava quando o stream fosse ligado de
+  // verdade, longe de quem clicou em testar.
+  const { m } = gerente()
+  setStreamManager(m)
   const c = await conectar()
-  const ok = await testStreamConnection(DONO, c._id.toString())
+  const promessa = testStreamConnection(DONO, c._id.toString())
+  await ate(async () => SocketFalso.abertos.length === 1, 'o socket do teste')
+  const s = SocketFalso.abertos[0]
+  s.abrir()
+  assert.deepEqual(JSON.parse(s.enviadas[0]), { action: 'auth', key: SEGREDO }, 'autentica de verdade')
+  s.receber({ T: 'success', msg: 'authenticated' })
+
+  const ok = await promessa
   assert.equal(ok.ok, true)
   assert.ok(!JSON.stringify(ok).includes(SEGREDO), 'um teste que ecoa a credencial é um teste que vaza')
-  assert.equal(SocketFalso.abertos.length, 0)
+  // Nada pendurado: um teste que deixa socket aberto, repetido, vira vazamento.
+  assert.equal(s.fechado, true)
+  assert.equal(m.activeCount, 0, 'e nenhum stream passou a ser gerenciado por causa de um teste')
+})
 
+test('credencial recusada no tempo real é recusa, não sucesso', async () => {
+  const { m } = gerente()
+  setStreamManager(m)
+  const c = await conectar()
+  const promessa = testStreamConnection(DONO, c._id.toString())
+  await ate(async () => SocketFalso.abertos.length === 1, 'o socket do teste')
+  const s = SocketFalso.abertos[0]
+  s.abrir()
+  s.receber({ T: 'error', code: 402, msg: `auth failed for ${SEGREDO}` })
+  const r = await promessa
+  assert.equal(r.ok, false)
+  assert.match(r.message, /auth failed/)
+  assert.ok(!r.message.includes(SEGREDO), 'a credencial é riscada até na recusa')
+  assert.equal(s.fechado, true)
+})
+
+test('o provedor que fecha antes de confirmar não vira sucesso', async () => {
+  const { m } = gerente()
+  setStreamManager(m)
+  const c = await conectar()
+  const promessa = testStreamConnection(DONO, c._id.toString())
+  await ate(async () => SocketFalso.abertos.length === 1, 'o socket do teste')
+  SocketFalso.abertos[0].cair()
+  const r = await promessa
+  assert.equal(r.ok, false)
+  assert.match(r.message, /antes de confirmar/)
+})
+
+test('sem adapter de stream, o teste diz isso e não abre nada', async () => {
+  const c = await conectar()
   clearStreamAdapters()
   const semAdapter = await testStreamConnection(DONO, c._id.toString())
   assert.equal(semAdapter.ok, false)
   assert.match(semAdapter.message, /streaming/)
+  assert.equal(SocketFalso.abertos.length, 0)
 })
 
 test('um erro logo depois do handshake não é apagado pela gravação do "conectado"', async () => {
@@ -523,4 +585,195 @@ test('um erro logo depois do handshake não é apagado pela gravação do "conec
   await new Promise((r) => setTimeout(r, 40))
   const doc = await findStream(DONO, record._id)
   assert.match(doc.lastError.message, /auth failed/, 'a explicação sobrevive')
+})
+
+// --- batimento e silêncio: os dois relógios, cada um no seu ritmo -----------------------
+
+test('o batimento é periódico, e não uma vez só', async () => {
+  // Antes daqui ele era rearmado junto com o detector de silêncio, a cada mensagem: num
+  // stream ATIVO nunca disparava (toda mensagem cancelava o timer pendente) e num stream
+  // parado disparava uma vez e nunca mais. Um batimento que bate uma vez não mantém
+  // conexão nenhuma viva.
+  const { m, relogio } = gerente()
+  const record = await streamDe()
+  await m.start(record)
+  const s = SocketFalso.abertos[0]
+  s.abrir()
+  const antes = s.enviadas.length
+
+  relogio.dispararBatimento()
+  assert.deepEqual(JSON.parse(s.enviadas[antes]), { action: 'ping' })
+  // E se reagenda sozinho: o segundo batimento não depende de mais nada acontecer.
+  assert.equal(relogio.quantos(11111), 1, 'o próximo já está marcado')
+  relogio.dispararBatimento()
+  assert.deepEqual(JSON.parse(s.enviadas[antes + 1]), { action: 'ping' })
+  assert.equal(relogio.quantos(11111), 1)
+})
+
+test('uma mensagem rearma o silêncio sem cancelar o batimento', async () => {
+  const { m, relogio } = gerente()
+  const record = await streamDe()
+  await m.start(record)
+  const s = SocketFalso.abertos[0]
+  s.abrir()
+  assert.equal(relogio.quantos(11111), 1)
+  s.receber({ T: 't', S: 'PETR4', p: 10, i: 1, t: '2026-01-05T12:00:00Z' })
+  await new Promise((r) => setTimeout(r, 20))
+  // O batimento continua marcado; num stream movimentado ele era exatamente o que sumia.
+  assert.equal(relogio.quantos(11111), 1)
+  assert.equal(relogio.quantos(22222), 1)
+})
+
+test('fechar por silêncio conta UMA queda, e não duas', async () => {
+  // O detector fecha o socket, e fechar dispara o `onclose` — que também reporta queda.
+  // Duas quedas são duas reconexões agendadas, e duas reconexões são dois sockets.
+  const { m, relogio } = gerente()
+  const record = await streamDe()
+  await m.start(record)
+  const s = SocketFalso.abertos[0]
+  s.abrir()
+
+  relogio.dispararSilencio()
+  await ate(async () => relogio.temReconexao(), 'a reconexão ser agendada')
+  s.cair() // o onclose que o próprio fechamento provoca
+  await new Promise((r) => setTimeout(r, 30))
+
+  relogio.dispararReconexao()
+  await ate(async () => SocketFalso.abertos.length === 2, 'a reconexão')
+  await new Promise((r) => setTimeout(r, 30))
+  assert.equal(SocketFalso.abertos.length, 2, 'uma conexão nova, não duas')
+  assert.equal(m.activeCount, 1)
+})
+
+test('o socket mudo é fechado de verdade, e não fica pendurado', async () => {
+  const { m, relogio } = gerente()
+  const record = await streamDe()
+  await m.start(record)
+  const s = SocketFalso.abertos[0]
+  s.abrir()
+  relogio.dispararSilencio()
+  assert.equal(s.fechado, true, 'aberto e calado é o pior estado possível')
+})
+
+test('o que chega por um socket velho não mexe no novo', async () => {
+  const { m, relogio } = gerente()
+  const record = await streamDe()
+  await m.start(record)
+  const velho = SocketFalso.abertos[0]
+  velho.abrir()
+  velho.cair()
+  await ate(async () => relogio.temReconexao(), 'a reconexão ser agendada')
+  relogio.dispararReconexao()
+  await ate(async () => SocketFalso.abertos.length === 2, 'a segunda conexão')
+  const novo = SocketFalso.abertos[1]
+  novo.abrir()
+
+  // O provider atrasado ainda manda pelo socket antigo.
+  velho.receber({ T: 't', S: 'PETR4', p: 99, i: 500, t: '2026-01-05T12:00:00Z' })
+  velho.cair()
+  await new Promise((r) => setTimeout(r, 30))
+
+  assert.equal(m.stateOf(record._id.toString()), 'connected', 'a queda do socket velho não derruba o novo')
+  assert.equal(SocketFalso.abertos.length, 2)
+})
+
+// --- o stream segue o ciclo de vida da conexão ---------------------------------------
+
+test('revogar a conexão derruba o stream na hora e não o deixa voltar', async () => {
+  // Duas coisas precisam acontecer, e nenhuma sozinha basta: parar a conexão viva (senão
+  // ela continua recebendo com a credencial revogada) e marcar como pausado (senão o
+  // próximo restart do worker ressuscita o stream a partir do documento).
+  const { disableStreamsForInstallation, restoreStreams } = await import('../dist/streams/service.js')
+  const { m } = gerente()
+  setStreamManager(m)
+  const conexao = await conectar()
+  const record = await upsertStream({
+    ownerId: DONO,
+    installationId: conexao._id.toString(),
+    appKey: MANIFESTO.key,
+    environment: 'default',
+    symbols: ['PETR4'],
+  })
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  const quantos = await disableStreamsForInstallation(DONO, conexao._id.toString())
+  assert.equal(quantos, 1)
+  assert.equal(m.activeCount, 0, 'a conexão viva caiu')
+  assert.equal(SocketFalso.abertos[0].fechado, true)
+
+  SocketFalso.abertos = []
+  assert.equal(await restoreStreams(), 0, 'e não volta no restart')
+  assert.equal(SocketFalso.abertos.length, 0)
+})
+
+test('remover a conexão apaga o stream, para ele não ficar órfão', async () => {
+  const { deleteStreamsForInstallation } = await import('../dist/streams/service.js')
+  const { m } = gerente()
+  setStreamManager(m)
+  const conexao = await conectar()
+  const record = await upsertStream({
+    ownerId: DONO,
+    installationId: conexao._id.toString(),
+    appKey: MANIFESTO.key,
+    environment: 'default',
+    symbols: ['PETR4'],
+  })
+  await m.start(record)
+  await deleteStreamsForInstallation(DONO, conexao._id.toString())
+  assert.equal(await db.collection('market_streams').countDocuments({}), 0)
+  assert.equal(m.activeCount, 0)
+})
+
+test('trocar a credencial reabre o stream com a chave nova', async () => {
+  // Sem isto, o stream continuaria de pé com a chave antiga até ela ser recusada — e
+  // trocar a credencial pareceria não ter efeito nenhum.
+  const { reconnectStreamsForInstallation } = await import('../dist/streams/service.js')
+  const app = await resolveAppForOwner(DONO, MANIFESTO.key)
+  const conexao = await conectar()
+  const record = await upsertStream({
+    ownerId: DONO,
+    installationId: conexao._id.toString(),
+    appKey: MANIFESTO.key,
+    environment: 'default',
+    symbols: ['PETR4'],
+  })
+  // O gerenciador lê a credencial de verdade, para provar que a nova chega ao socket.
+  const { m } = gerente({ credentialsOf: undefined })
+  const real = new StreamManager({
+    adapters: streamAdapters(),
+    createSocket: (url) => new SocketFalso(url),
+    credentialsOf: (await import('../dist/streams/service.js')).streamCredentials,
+    publish: publicarFalso,
+    schedule: (fn, ms) => ({ id: 0, unref() {} }),
+    cancel: () => undefined,
+  })
+  setStreamManager(real)
+  await real.start(record)
+  SocketFalso.abertos[0].abrir()
+  assert.deepEqual(JSON.parse(SocketFalso.abertos[0].enviadas[0]), { action: 'auth', key: SEGREDO })
+
+  await patchInstallation(DONO, conexao._id, app, { config: { apiKey: 'chave-novinha-em-folha' } })
+  await reconnectStreamsForInstallation(DONO, conexao._id.toString())
+  await ate(async () => SocketFalso.abertos.length === 2, 'a reconexão com a chave nova')
+  SocketFalso.abertos[1].abrir()
+  assert.deepEqual(JSON.parse(SocketFalso.abertos[1].enviadas[0]), { action: 'auth', key: 'chave-novinha-em-folha' })
+  assert.ok(m)
+})
+
+test('um stream pausado não é reaberto por uma troca de credencial', async () => {
+  const { reconnectStreamsForInstallation } = await import('../dist/streams/service.js')
+  const { m } = gerente()
+  setStreamManager(m)
+  const conexao = await conectar()
+  const record = await upsertStream({
+    ownerId: DONO,
+    installationId: conexao._id.toString(),
+    appKey: MANIFESTO.key,
+    environment: 'default',
+    symbols: ['PETR4'],
+  })
+  await setStreamPaused(DONO, record._id, true)
+  assert.equal(await reconnectStreamsForInstallation(DONO, conexao._id.toString()), 0)
+  assert.equal(SocketFalso.abertos.length, 0)
 })

@@ -119,7 +119,7 @@ export interface RunnerDeps {
    * Injetado como todo o resto do IO — e, do lado de fora, é o MESMO executor que
    * monta as ferramentas do modelo. Não há caminho alternativo.
    */
-  runApp?: (cfg: Record<string, unknown>, valor: unknown) => Promise<unknown>
+  runApp?: (cfg: Record<string, unknown>, valor: unknown, stepId: string) => Promise<unknown>
   /**
    * Publica no barramento interno. Presente quando a definição tem `event.publish`.
    *
@@ -349,7 +349,7 @@ async function executeStep(
       // Uma recusa da camada de Apps (conexão revogada, ação não concedida) vem como
       // exceção e falha a etapa — deixar passar faria o fluxo seguir como se a ação
       // tivesse acontecido. Não é transitória: reconectar é coisa de gente.
-      return deps.runApp(cfg, valor).catch((e) => {
+      return deps.runApp(cfg, valor, step.id).catch((e) => {
         throw new StepError('app', (e as Error).message, false)
       })
     }

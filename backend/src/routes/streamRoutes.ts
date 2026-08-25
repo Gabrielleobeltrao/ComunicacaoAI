@@ -1,9 +1,10 @@
 import { Router } from 'express'
 import { isEventType } from '../events/types.js'
 import { listEvents } from '../events/bus.js'
-import { listOwnerStreams, pauseStream, reconnectStream, resumeStream, testStreamConnection } from '../streams/service.js'
+import { ensureStream, listOwnerStreams, pauseStream, reconnectStream, removeStream, resumeStream, testStreamConnection } from '../streams/service.js'
 import { streamManager } from '../streams/manager.js'
 import { streamPublic } from '../streams/types.js'
+import { auditEntity } from './auditMiddleware.js'
 import { fail, notFound, oid } from './http.js'
 
 // O estado dos streams para a tela: onde cada conexão está, quando falou pela última
@@ -22,6 +23,35 @@ streamRouter.get('/', async (req, res) => {
       return s.paused ? publico : { ...publico, state: gerente?.stateOf(publico.id) ?? publico.state }
     }),
   )
+})
+
+/**
+ * Criar ou atualizar o stream de uma conexão.
+ *
+ * Idempotente: pedir de novo com os mesmos símbolos não abre uma segunda conexão. É a
+ * MESMA rota para ligar e para trocar a lista — separar as duas obrigaria a tela a
+ * saber se já existe, e a resposta certa é a mesma nos dois casos.
+ */
+streamRouter.post('/', async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as { installationId?: unknown; symbols?: unknown }
+    const record = await ensureStream(res.locals.userId, String(body.installationId ?? ''), body.symbols)
+    auditEntity(res, { id: record._id.toString(), label: record.appKey })
+    res.status(201).json(streamPublic(record))
+  } catch (error) {
+    fail(res, error, next)
+  }
+})
+
+/** Desligar de vez: para a conexão viva e apaga o registro. Pausar é outra coisa. */
+streamRouter.delete('/:id', async (req, res, next) => {
+  try {
+    const id = oid(req.params.id)
+    if (!id || !(await removeStream(res.locals.userId, id))) return notFound(res)
+    res.status(204).end()
+  } catch (error) {
+    fail(res, error, next)
+  }
 })
 
 streamRouter.post('/:id/pause', async (req, res, next) => {

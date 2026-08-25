@@ -317,5 +317,5 @@ export type NativeFactory = (
    * precisa é quem tem simulação e produção — e aí o ambiente não pode vir por um campo
    * de configuração que alguém digita, ele vem da conexão.
    */
-  ctx?: { environment: string; installationId: string; agentId?: string | null },
+  ctx?: { environment: string; installationId: string; agentId?: string | null; executionRef?: string | null },
 ) => import('../agentTools.js').ResolvedTool[]

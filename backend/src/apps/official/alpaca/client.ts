@@ -33,6 +33,9 @@ export const TRADING_BASE: Record<string, string> = {
 /** Dado de mercado é o mesmo endereço nos dois ambientes: cotação não é conta. */
 export const DATA_BASE = 'https://data.alpaca.markets'
 
+/** Prazo padrão por chamada. Curto: quem chama é uma etapa que alguém está esperando. */
+export const DEFAULT_TIMEOUT_MS = Number(process.env.ALPACA_TIMEOUT_MS ?? 10_000)
+
 export const ALPACA_DOMAINS = ['paper-api.alpaca.markets', 'data.alpaca.markets', 'stream.data.alpaca.markets']
 
 export function tradingBaseFor(environment: string): string {
@@ -55,6 +58,12 @@ export interface ClientDeps {
   /** Injetável para os testes. Nenhum teste fala com a corretora. */
   fetch?: typeof fetch
   now?: () => number
+  /**
+   * Prazo por chamada. Sem ele, uma corretora que aceita a conexão e não responde
+   * pendura a execução até o timeout da etapa — e o dono vê "rodando" por dois minutos
+   * sem nada acontecendo.
+   */
+  timeoutMs?: number
 }
 
 /**
@@ -117,14 +126,26 @@ export function createAlpacaClient(cred: AlpacaCredentials, environment: AppEnvi
 
   const chamar = async <T>(url: string, init?: { method?: string; body?: unknown }): Promise<T> => {
     let res: Response
+    // Cancela de verdade, e não só desiste de esperar: uma requisição abandonada
+    // continua ocupando socket e pode chegar DEPOIS, do outro lado, como uma ordem que
+    // ninguém mais está esperando.
+    const abort = new AbortController()
+    const prazo = setTimeout(() => abort.abort(), deps.timeoutMs ?? DEFAULT_TIMEOUT_MS)
     try {
       res = await doFetch(url, {
         method: init?.method ?? 'GET',
         headers,
+        signal: abort.signal,
         ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
       })
     } catch (error) {
-      throw new AlpacaError(`não foi possível falar com a corretora: ${scrub((error as Error).message, cred)}`, 'network')
+      const abortou = (error as { name?: string }).name === 'AbortError'
+      throw new AlpacaError(
+        abortou ? 'a corretora não respondeu a tempo' : `não foi possível falar com a corretora: ${scrub((error as Error).message, cred)}`,
+        'network',
+      )
+    } finally {
+      clearTimeout(prazo)
     }
     const texto = scrub(await res.text(), cred)
     if (!res.ok) throw translateStatus(res.status, texto)

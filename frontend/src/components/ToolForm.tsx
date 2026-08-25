@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useT } from '../i18n'
-import { listInstallations } from '../lib/apps'
+import { listAppCatalog, listInstallations } from '../lib/apps'
 import type { AppInstallation } from '../lib/apps'
 import { createTool, isUnsafe, paramsToSchema, schemaToParams, testTool, TOOL_AUTH_KINDS, TOOL_METHODS, ToolApiError, updateTool } from '../lib/tools'
 import type { Tool, ToolAuthKind, ToolMethod, ToolParam, ToolTestResult } from '../lib/tools'
@@ -38,10 +38,20 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
 
   useEffect(() => {
     let vivo = true
-    // Só as CONECTADAS: oferecer uma conexão revogada seria oferecer uma ferramenta que
-    // nasce falhando.
-    listInstallations()
-      .then((lista) => vivo && setConexoes(lista.filter((c) => c.status === 'connected')))
+    /**
+     * Só as conexões que dá para EMPRESTAR.
+     *
+     * Duas conferências, e as duas são necessárias: conectadas (uma revogada nasceria
+     * falhando) e de um App que declara perfil de conexão (a maioria não declara — ela
+     * só executa as próprias ações, e escolhê-la aqui daria uma recusa na primeira
+     * chamada, longe de quem escolheu).
+     */
+    Promise.all([listInstallations(), listAppCatalog()])
+      .then(([lista, catalogo]) => {
+        if (!vivo) return
+        const emprestaveis = new Set(catalogo.filter((a) => a.connectable).map((a) => a.key))
+        setConexoes(lista.filter((c) => c.status === 'connected' && emprestaveis.has(c.appKey)))
+      })
       .catch(() => vivo && setConexoes([]))
     return () => {
       vivo = false

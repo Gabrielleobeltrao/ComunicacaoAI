@@ -86,6 +86,24 @@ export interface StoredCandle {
   lastChildAt?: number
   closed: boolean
   closedAt: Date | null
+  /**
+   * Quando o `market.candle.closed` desta vela foi publicado.
+   *
+   * É um outbox recuperável, e existe por causa de uma janela real: fechar a vela e
+   * publicar o evento eram duas escritas, e uma queda entre elas deixava a vela fechada
+   * sem evento — para sempre, porque a varredura só procurava vela ABERTA. Agora ela
+   * também procura vela fechada e não publicada.
+   */
+  publishedAt?: Date | null
+  /** Quando esta vela já foi dobrada na maior. Mesmo motivo: a queda no meio. */
+  foldedAt?: Date | null
+  /**
+   * Quais filhas já entraram nesta vela, pelo início do balde delas.
+   *
+   * Sem isto, dobrar duas vezes somaria o volume duas vezes — e uma retomada depois de
+   * uma queda dobra de novo por definição.
+   */
+  foldedChildren?: number[]
   /** Retenção: candle fechado some sozinho depois do prazo. */
   expiresAt: Date | null
   createdAt: Date

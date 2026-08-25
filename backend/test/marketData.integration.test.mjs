@@ -52,6 +52,7 @@ beforeEach(async () => {
   await db.collection('market_candles').deleteMany({})
   await db.collection('market_state').deleteMany({})
   await db.collection('platform_events').deleteMany({})
+  await db.collection('event_handler_runs').deleteMany({})
   bus.resetHandlers()
 })
 
@@ -339,4 +340,107 @@ test('a série fechada é aceita pelo App de análise sem nenhuma conversão', a
   const parsed = parseSeries(serie)
   assert.equal(parsed.candles.length, serie.length)
   assert.ok(parsed.candles.every((c) => c.closed))
+})
+
+// --- retomada: uma queda entre duas escritas não perde nem duplica --------------------------
+
+test('queda entre fechar e publicar: a varredura seguinte publica', async () => {
+  // A janela real: fechar a vela e publicar o evento são duas escritas. Antes daqui, uma
+  // queda no meio deixava a vela fechada e MUDA para sempre — a varredura só procurava
+  // vela aberta.
+  await engine.ingestTrade(K, negocio(0, 10))
+  const agora = new Date(T0 + 61_000)
+
+  // Fecha, e o processo morre antes de publicar.
+  const vela = await velaDe('1m', T0)
+  await store.closeCandle(vela._id, agora)
+  assert.equal((await bus.listEvents(K.ownerId, { type: 'market.candle.closed' })).length, 0)
+
+  // O worker volta.
+  const r = await engine.closeDueCandles(agora)
+  assert.equal(r.published, 1)
+  const doc = await velaDe('1m', T0)
+  assert.ok(doc.publishedAt, 'e fica marcada, para não publicar de novo')
+})
+
+test('a varredura repetida não publica a mesma vela duas vezes', async () => {
+  await engine.ingestTrade(K, negocio(0, 10))
+  const agora = new Date(T0 + 61_000)
+  await engine.closeDueCandles(agora)
+  await engine.closeDueCandles(agora)
+  await engine.closeDueCandles(agora)
+  assert.equal((await bus.listEvents(K.ownerId, { type: 'market.candle.closed' })).length, 1)
+})
+
+test('queda entre publicar e dobrar: a agregação é retomada sem somar duas vezes', async () => {
+  // Dobrar é `$inc` no volume, e uma retomada dobra de novo por definição. Sem guarda,
+  // era assim que o volume da vela maior dobrava sozinho depois de um restart.
+  for (let minuto = 0; minuto < 5; minuto += 1) {
+    const base = minuto * 60_000
+    await engine.ingestTrade(K, negocio(base, 10 + minuto, 10))
+    await engine.closeDueCandles(new Date(T0 + base + 61_000))
+  }
+  const cinco = await velaDe('5m', T0)
+  assert.equal(cinco.volume, 50)
+
+  // O processo morre depois de dobrar e antes de marcar: a marca some, o trabalho fica.
+  await db.collection('market_candles').updateMany({ timeframe: '1m' }, { $set: { foldedAt: null } })
+  await engine.closeDueCandles(new Date(T0 + 5 * 60_000 + 1))
+
+  const depois = await velaDe('5m', T0)
+  assert.equal(depois.volume, 50, 'o volume não dobra na retomada')
+  assert.equal(depois.open, 10)
+  assert.equal(depois.close, 14)
+})
+
+test('dobrar a mesma filha duas vezes é dobrar uma vez', async () => {
+  const filha = {
+    ownerId: K.ownerId,
+    provider: K.provider,
+    installationId: K.installationId,
+    environment: K.environment,
+    symbol: K.symbol,
+    timeframe: '1m',
+    bucketStart: T0,
+    open: 10,
+    high: 12,
+    low: 9,
+    close: 11,
+    volume: 100,
+    trades: 4,
+    closed: true,
+  }
+  await store.foldChild(K, filha)
+  await store.foldChild(K, filha)
+  await store.foldChild(K, filha)
+  const cinco = await velaDe('5m', T0)
+  assert.equal(cinco.volume, 100)
+  assert.deepEqual(cinco.foldedChildren, [T0])
+})
+
+test('a cotação atualiza o estado e NÃO entra em vela', async () => {
+  // Ninguém pagou aquele preço. Somá-la ao volume seria inventar negócio.
+  engine.registerMarketDataHandlers()
+  await bus.publishEvent({
+    ownerId: K.ownerId,
+    type: 'market.quote.updated',
+    source: 'teste',
+    schemaVersion: MARKET_SCHEMA_VERSION,
+    payload: { ...K, bid: 38.3, ask: 38.5, bidSize: 100, askSize: 200, at: new Date(T0).toISOString() },
+    dedupeKey: 'cotacao-1',
+  })
+  const evento = await bus.claimNextEvent('w1')
+  assert.equal(await bus.processEvent(evento), 'done')
+
+  const estado = await readState(K)
+  assert.equal(estado.bid, 38.3)
+  assert.equal(estado.ask, 38.5)
+  assert.equal(await db.collection('market_candles').countDocuments({}), 0, 'nenhuma vela nasceu de uma cotação')
+})
+
+test('uma cotação com um lado só é recusada', async () => {
+  assert.throws(
+    () => engine.parseQuoteEvent({ payload: { ...K, bid: 10, at: new Date().toISOString() }, schemaVersion: MARKET_SCHEMA_VERSION }),
+    /dois lados/,
+  )
 })

@@ -5,7 +5,7 @@ import { CustomToolsPanel } from './Tools'
 import { PrivateAppsPanel } from '../components/PrivateAppsPanel'
 import { AppLogo } from '../components/AppLogo'
 import { AppDetailDialog } from '../components/AppDetailDialog'
-import { StreamPanel } from '../components/StreamPanel'
+import { StreamCTA, StreamPanel } from '../components/StreamPanel'
 import { TradingPolicyPanel } from '../components/TradingPolicyPanel'
 import { listStreams } from '../lib/streams'
 import type { MarketStream } from '../lib/streams'
@@ -415,8 +415,26 @@ function ConnectedList({
 
               {/* O stream aparece só onde existe: a maioria das conexões é REST e não
                   tem nada de tempo real para contar. */}
-              {streams[i.id] ? (
-                <StreamPanel stream={streams[i.id]} onChange={(s) => setStreams((prev) => ({ ...prev, [s.installationId]: s }))} />
+              {/*
+                Tempo real só aparece onde ele existe de verdade — e o convite aparece
+                antes de existir. Sem o convite, o recurso ficava pronto no servidor e
+                inalcançável na tela.
+              */}
+              {app?.streamable && i.status === 'connected' ? (
+                streams[i.id] ? (
+                  <StreamPanel
+                    stream={streams[i.id]}
+                    onChange={(s) => setStreams((prev) => ({ ...prev, [s.installationId]: s }))}
+                    onRemoved={() =>
+                      setStreams((prev) => {
+                        const { [i.id]: _removido, ...resto } = prev
+                        return resto
+                      })
+                    }
+                  />
+                ) : (
+                  <StreamCTA installationId={i.id} onCreated={(s) => setStreams((prev) => ({ ...prev, [s.installationId]: s }))} />
+                )
               ) : null}
 
               {/* Segurança só aparece onde há o que limitar: um App cujas ações são

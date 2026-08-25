@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { EVENT_TYPES, TIMEFRAMES, emptyMarketPlan, emptySignalPlan } from '../lib/agentRoutines'
 import type { MarketTriggerPlan, PlatformEventType, SignalPlan, Timeframe } from '../lib/agentRoutines'
-import { listInstallations } from '../lib/apps'
+import { listAppCatalog, listInstallations } from '../lib/apps'
 import type { AppInstallation } from '../lib/apps'
 import { Field, Icon, Input } from '../ui'
 
@@ -76,8 +76,14 @@ export function MarketTriggerFields({
 
   useEffect(() => {
     let vivo = true
-    listInstallations()
-      .then((lista) => vivo && setConexoes(lista.filter((c) => c.status === 'connected')))
+    // Só quem tem dado de mercado. Uma conexão de CRM na lista de "evento de mercado"
+    // é uma escolha que nunca vai disparar — e nada na tela explicaria por quê.
+    Promise.all([listInstallations(), listAppCatalog()])
+      .then(([lista, catalogo]) => {
+        if (!vivo) return
+        const comMercado = new Set(catalogo.filter((a) => a.streamable).map((a) => a.key))
+        setConexoes(lista.filter((c) => c.status === 'connected' && comMercado.has(c.appKey)))
+      })
       .catch(() => undefined)
     return () => {
       vivo = false

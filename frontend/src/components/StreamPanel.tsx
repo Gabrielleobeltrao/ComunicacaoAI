@@ -1,7 +1,66 @@
 import { useState } from 'react'
-import { pauseStream, reconnectStream, resumeStream, STREAM_STATE_COLOR, STREAM_STATE_LABEL } from '../lib/streams'
+import { deleteStream, pauseStream, reconnectStream, resumeStream, saveStream, STREAM_STATE_COLOR, STREAM_STATE_LABEL } from '../lib/streams'
 import type { MarketStream } from '../lib/streams'
-import { Button, Icon } from '../ui'
+import { Button, Card, Field, Icon, Input } from '../ui'
+
+/**
+ * Antes de existir stream, o que existe é um CONVITE.
+ *
+ * A conexão pode receber tempo real e não recebe até alguém dizer quais ativos. Sem
+ * este passo, `ensureStream` existia no backend e nenhuma tela chamava — o recurso
+ * estava pronto e inalcançável.
+ */
+export function StreamCTA({ installationId, onCreated }: { installationId: string; onCreated: (s: MarketStream) => void }) {
+  const [aberto, setAberto] = useState(false)
+  const [simbolos, setSimbolos] = useState('')
+  const [salvando, setSalvando] = useState(false)
+  const [erro, setErro] = useState<string | null>(null)
+
+  const ligar = async () => {
+    const lista = simbolos
+      .split(',')
+      .map((t) => t.trim().toUpperCase())
+      .filter(Boolean)
+    if (!lista.length) {
+      setErro('Informe pelo menos um ativo.')
+      return
+    }
+    setSalvando(true)
+    setErro(null)
+    try {
+      onCreated(await saveStream(installationId, lista))
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : 'Não foi possível ligar o tempo real.')
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  if (!aberto) {
+    return (
+      <Button size="sm" variant="secondary" icon="activity" onClick={() => setAberto(true)} data-testid="stream-cta">
+        Ativar tempo real
+      </Button>
+    )
+  }
+
+  return (
+    <Card padding="12px 14px" style={{ display: 'grid', gap: 8 }} data-testid="stream-setup">
+      <Field label="Ativos" hint="Separados por vírgula. Só os que você escolher são recebidos.">
+        <Input value={simbolos} onChange={(e) => setSimbolos(e.target.value)} placeholder="AAPL, MSFT" data-testid="stream-symbols" />
+      </Field>
+      {erro ? <p style={{ margin: 0, fontSize: 12.5, color: 'var(--coral-600, #d92d20)' }} data-testid="stream-setup-error">{erro}</p> : null}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button size="sm" onClick={() => void ligar()} disabled={salvando} data-testid="stream-start">
+          {salvando ? 'Ligando…' : 'Ligar'}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setAberto(false)} disabled={salvando}>
+          Cancelar
+        </Button>
+      </div>
+    </Card>
+  )
+}
 
 /**
  * O stream de uma conexão, em uma tira.
@@ -22,10 +81,11 @@ const quando = (iso: string | null): string => {
   return new Date(iso).toLocaleDateString('pt-BR')
 }
 
-export function StreamPanel({ stream, onChange }: { stream: MarketStream; onChange: (s: MarketStream) => void }) {
+export function StreamPanel({ stream, onChange, onRemoved }: { stream: MarketStream; onChange: (s: MarketStream) => void; onRemoved: () => void }) {
   const [busy, setBusy] = useState(false)
   const [aberto, setAberto] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
+  const [simbolos, setSimbolos] = useState(stream.symbols.join(', '))
 
   const agir = async (acao: () => Promise<MarketStream>) => {
     setBusy(true)
@@ -98,11 +158,54 @@ export function StreamPanel({ stream, onChange }: { stream: MarketStream; onChan
       </div>
 
       {aberto ? (
-        <dl style={{ margin: 0, display: 'grid', gap: 3, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="stream-details">
-          <div>Ambiente: {stream.environment === 'paper' ? 'simulação' : stream.environment}</div>
-          <div>Símbolos: {stream.symbols.length ? stream.symbols.join(', ') : 'nenhum'}</div>
-          <div>Eventos recebidos: {stream.eventCount}</div>
-        </dl>
+        <div style={{ display: 'grid', gap: 8 }} data-testid="stream-details">
+          {/* Trocar os ativos é a operação mais comum depois de ligar, e é a mesma rota
+              do "ligar": pedir de novo com outra lista atualiza, não cria um segundo. */}
+          <Field label="Ativos">
+            <Input value={simbolos} onChange={(e) => setSimbolos(e.target.value)} data-testid="stream-edit-symbols" />
+          </Field>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy}
+              onClick={() =>
+                void agir(() =>
+                  saveStream(
+                    stream.installationId,
+                    simbolos
+                      .split(',')
+                      .map((t) => t.trim().toUpperCase())
+                      .filter(Boolean),
+                  ),
+                )
+              }
+              data-testid="stream-update"
+            >
+              Atualizar ativos
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="trash-2"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true)
+                void deleteStream(stream.id)
+                  .then(onRemoved)
+                  .catch((e) => setErro(e instanceof Error ? e.message : 'Não foi possível desligar.'))
+                  .finally(() => setBusy(false))
+              }}
+              data-testid="stream-delete"
+            >
+              Desligar tempo real
+            </Button>
+          </div>
+          <dl style={{ margin: 0, display: 'grid', gap: 3, fontSize: 12.5, color: 'var(--text-muted)' }}>
+            <div>Ambiente: {stream.environment === 'paper' ? 'simulação' : stream.environment}</div>
+            <div>Eventos recebidos: {stream.eventCount}</div>
+          </dl>
+        </div>
       ) : null}
     </div>
   )

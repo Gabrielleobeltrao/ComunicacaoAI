@@ -24,6 +24,11 @@ export async function ensureEventIndexes(): Promise<void> {
   await events.createIndex({ ownerId: 1, type: 1, occurredAt: -1 })
   // Só apaga quem tem `expiresAt`, e só o sucesso ganha esse campo.
   await events.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+  // A entrega única POR CONSUMIDOR. É o índice que faz a inbox ser do banco.
+  await handlerRuns.createIndex({ eventId: 1, handler: 1 }, { unique: true })
+  // A reserva morre com o evento: guardá-la para sempre encheria a coleção de registros
+  // de eventos que já expiraram.
+  await handlerRuns.createIndex({ startedAt: 1 }, { expireAfterSeconds: Math.ceil(EVENT_TTL_MS / 1000) })
 }
 
 /**
@@ -163,22 +168,68 @@ export async function renewEventLease(id: ObjectId, workerId: string, now = new 
 
 export type EventHandler = (event: PlatformEvent) => Promise<void>
 
-const handlers = new Map<EventType, EventHandler[]>()
-
-/**
- * Quem reage a quê. O registro é aditivo e vive no processo: as Fases seguintes
- * penduram o gatilho interno e o analisador de candles aqui, sem tocar no laço.
- */
-export function onEvent(type: EventType, handler: EventHandler): void {
-  handlers.set(type, [...(handlers.get(type) ?? []), handler])
+export interface RegisteredHandler {
+  /** Identidade do CONSUMIDOR. É a chave da entrega única por handler. */
+  name: string
+  handler: EventHandler
 }
 
-export const handlersFor = (type: EventType): EventHandler[] => handlers.get(type) ?? []
+const handlers = new Map<EventType, RegisteredHandler[]>()
+
+/**
+ * Quem reage a quê.
+ *
+ * O nome não é enfeite: ele é a metade da chave que impede um handler de rodar duas
+ * vezes para o mesmo evento. Sem ele, uma retentativa (porque OUTRO handler falhou, ou
+ * porque o lease venceu) rodava tudo de novo — e "de novo" para quem soma volume numa
+ * vela significa volume errado.
+ */
+export function onEvent(type: EventType, name: string, handler: EventHandler): void {
+  const atuais = handlers.get(type) ?? []
+  // Registrar o mesmo nome duas vezes é recarregar o módulo, não querer dois consumidores.
+  handlers.set(type, [...atuais.filter((h) => h.name !== name), { name, handler }])
+}
+
+export const handlersFor = (type: EventType): RegisteredHandler[] => handlers.get(type) ?? []
+
+// --- a inbox: cada handler roda uma vez por evento ---------------------------------------
+
+interface HandlerRun {
+  eventId: string
+  handler: string
+  startedAt: Date
+}
+const handlerRuns = db.collection<HandlerRun>('event_handler_runs')
+
+/**
+ * Reservar a execução deste handler para este evento.
+ *
+ * `false` quer dizer "outro já pegou, ou já rodou". A reserva é feita ANTES de rodar,
+ * de propósito: entre repetir e pular, para quem acumula número, pular é o erro menos
+ * grave. Uma queda no meio do handler deixa a reserva — e o efeito é perder aquele
+ * evento para aquele consumidor, e não contá-lo duas vezes.
+ */
+async function reservarHandler(eventId: string, handler: string, now: Date): Promise<boolean> {
+  try {
+    await handlerRuns.insertOne({ eventId, handler, startedAt: now })
+    return true
+  } catch (error) {
+    if ((error as { code?: number }).code === 11000) return false
+    throw error
+  }
+}
+
+/** O handler falhou: devolve a vez, senão a retentativa o pularia. */
+async function devolverHandler(eventId: string, handler: string): Promise<void> {
+  await handlerRuns.deleteOne({ eventId, handler }).catch(() => undefined)
+}
 
 /** Só para os testes: o registro é global por processo. */
 export function resetHandlers(): void {
   handlers.clear()
 }
+
+export const handlerRunsCollection = handlerRuns
 
 /**
  * Processar um evento reivindicado.
@@ -193,13 +244,19 @@ export function resetHandlers(): void {
  */
 export async function processEvent(event: PlatformEvent, now = new Date()): Promise<'done' | 'pending' | 'dead_letter'> {
   const lista = handlersFor(event.type)
-  try {
-    for (const h of lista) await h(event)
-    await completeEvent(event._id, now)
-    return 'done'
-  } catch (error) {
-    return failEvent(event._id, error instanceof Error ? error.message : 'erro inesperado', now)
+  for (const { name, handler } of lista) {
+    // Já rodou (ou está rodando) para este evento. Um handler que soma volume não pode
+    // ser repetido só porque o vizinho falhou.
+    if (!(await reservarHandler(event.eventId, name, now))) continue
+    try {
+      await handler(event)
+    } catch (error) {
+      await devolverHandler(event.eventId, name)
+      return failEvent(event._id, error instanceof Error ? error.message : 'erro inesperado', now)
+    }
   }
+  await completeEvent(event._id, now)
+  return 'done'
 }
 
 // Leitura para a tela e para os testes. Escopada por dono, sempre.

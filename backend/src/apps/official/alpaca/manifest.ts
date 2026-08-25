@@ -24,6 +24,58 @@ const schema = (properties: Record<string, unknown>, required: string[] = []) =>
   additionalProperties: false,
 })
 
+/**
+ * A SAÍDA declarada, ação por ação.
+ *
+ * Sem isto, o resultado de uma ação é um JSON qualquer e um planner que quer encadear
+ * duas ações precisa adivinhar a forma da primeira. Com isto declarado, a saída é
+ * contrato — e é conferida contra ele antes de sair do adapter, para o contrato não
+ * virar promessa.
+ *
+ * `additionalProperties: true` de propósito: a corretora pode acrescentar campo, e uma
+ * saída a mais não é motivo para falhar uma ordem que já foi enviada. O que a validação
+ * protege é o que foi PROMETIDO estar lá.
+ */
+const saida = (properties: Record<string, unknown>, required: string[] = []) => ({
+  type: 'object' as const,
+  properties,
+  required,
+  additionalProperties: true,
+})
+
+const numeroOuNulo = { type: ['number', 'null'] }
+const ORDEM_SCHEMA = saida(
+  {
+    id: { type: 'string' },
+    symbol: { type: 'string' },
+    side: { type: 'string' },
+    type: { type: 'string' },
+    quantity: numeroOuNulo,
+    filledQuantity: numeroOuNulo,
+    limitPrice: numeroOuNulo,
+    stopPrice: numeroOuNulo,
+    status: { type: 'string' },
+    submittedAt: { type: 'string' },
+    filledAt: { type: 'string' },
+  },
+  ['id', 'symbol', 'status'],
+)
+const VELA_SCHEMA = {
+  type: 'array' as const,
+  items: saida(
+    {
+      timestamp: { type: 'number' },
+      open: { type: 'number' },
+      high: { type: 'number' },
+      low: { type: 'number' },
+      close: { type: 'number' },
+      volume: { type: 'number' },
+      closed: { type: 'boolean' },
+    },
+    ['timestamp', 'open', 'high', 'low', 'close'],
+  ),
+}
+
 export const manifest: AppDefinition = {
   key: 'alpaca',
   version: '1.0.0',
@@ -50,6 +102,18 @@ export const manifest: AppDefinition = {
       description: 'Saldo, patrimônio e poder de compra da conta de simulação.',
       risk: 'read',
       inputSchema: schema({}),
+      outputSchema: saida(
+        {
+          accountNumber: { type: 'string' },
+          status: { type: 'string' },
+          currency: { type: 'string' },
+          equity: numeroOuNulo,
+          cash: numeroOuNulo,
+          buyingPower: numeroOuNulo,
+          tradingBlocked: { type: 'boolean' },
+        },
+        ['status', 'tradingBlocked'],
+      ),
       execution: native('alpaca_conta'),
     },
     {
@@ -58,6 +122,20 @@ export const manifest: AppDefinition = {
       description: 'As posições abertas, com preço médio e resultado não realizado.',
       risk: 'read',
       inputSchema: schema({}),
+      outputSchema: {
+        type: 'array' as const,
+        items: saida(
+          {
+            symbol: { type: 'string' },
+            quantity: numeroOuNulo,
+            side: { type: 'string' },
+            averagePrice: numeroOuNulo,
+            marketValue: numeroOuNulo,
+            unrealizedPl: numeroOuNulo,
+          },
+          ['symbol'],
+        ),
+      },
       execution: native('alpaca_posicoes'),
     },
     {
@@ -66,6 +144,7 @@ export const manifest: AppDefinition = {
       description: 'As ordens da conta — abertas por padrão.',
       risk: 'read',
       inputSchema: schema({ status: str('open, closed ou all'), limit: num('quantas listar') }),
+      outputSchema: { type: 'array' as const, items: ORDEM_SCHEMA },
       execution: native('alpaca_ordens'),
     },
     {
@@ -74,6 +153,10 @@ export const manifest: AppDefinition = {
       description: 'A última melhor compra e melhor venda de um ativo.',
       risk: 'read',
       inputSchema: schema({ symbol: str('o ativo, ex.: AAPL') }, ['symbol']),
+      outputSchema: saida(
+        { symbol: { type: 'string' }, bid: numeroOuNulo, ask: numeroOuNulo, bidSize: numeroOuNulo, askSize: numeroOuNulo, at: { type: 'string' } },
+        ['symbol'],
+      ),
       execution: native('alpaca_cotacao'),
     },
     {
@@ -82,6 +165,7 @@ export const manifest: AppDefinition = {
       description: 'As velas OHLCV fechadas de um ativo, prontas para análise.',
       risk: 'read',
       inputSchema: schema({ symbol: str('o ativo'), timeframe: str('1Min, 5Min, 15Min, 1Hour ou 1Day'), limit: num('quantas velas') }, ['symbol']),
+      outputSchema: VELA_SCHEMA,
       execution: native('alpaca_barras'),
     },
     {
@@ -102,6 +186,7 @@ export const manifest: AppDefinition = {
         },
         ['symbol', 'side', 'quantity'],
       ),
+      outputSchema: ORDEM_SCHEMA,
       execution: native('alpaca_criar_ordem'),
     },
     {
@@ -122,6 +207,7 @@ export const manifest: AppDefinition = {
         },
         ['symbol', 'side', 'quantity', 'takeProfitPrice', 'stopLossPrice'],
       ),
+      outputSchema: ORDEM_SCHEMA,
       execution: native('alpaca_ordem_bracket'),
     },
     {
@@ -130,6 +216,7 @@ export const manifest: AppDefinition = {
       description: 'Cancela uma ordem ainda aberta.',
       risk: 'high_risk',
       inputSchema: schema({ orderId: str('o id da ordem') }, ['orderId']),
+      outputSchema: saida({ canceled: { type: 'boolean' }, orderId: { type: 'string' } }, ['canceled', 'orderId']),
       execution: native('alpaca_cancelar_ordem'),
     },
     {
@@ -138,6 +225,7 @@ export const manifest: AppDefinition = {
       description: 'Muda quantidade ou preço de uma ordem aberta.',
       risk: 'high_risk',
       inputSchema: schema({ orderId: str('o id da ordem'), quantity: num('nova quantidade'), limitPrice: num('novo limite'), stopPrice: num('novo stop') }, ['orderId']),
+      outputSchema: ORDEM_SCHEMA,
       execution: native('alpaca_substituir_ordem'),
     },
     {
@@ -146,6 +234,7 @@ export const manifest: AppDefinition = {
       description: 'Encerra uma posição aberta, no todo ou em parte.',
       risk: 'high_risk',
       inputSchema: schema({ symbol: str('o ativo'), quantity: num('quantidade a encerrar') }, ['symbol']),
+      outputSchema: ORDEM_SCHEMA,
       execution: native('alpaca_fechar_posicao'),
     },
   ],

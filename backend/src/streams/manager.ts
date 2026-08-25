@@ -46,6 +46,8 @@ const SILENCIO_MS = Number(process.env.STREAM_IDLE_TIMEOUT_MS ?? 90_000)
 const HEARTBEAT_MS = Number(process.env.STREAM_HEARTBEAT_MS ?? 30_000)
 /** Depois disto, para de tentar e deixa o erro visível em vez de bater para sempre. */
 const MAX_TENTATIVAS = Number(process.env.STREAM_MAX_RECONNECTS ?? 10)
+/** Prazo do teste de conexão. Curto: alguém está olhando a tela esperando. */
+const PROBE_MS = Number(process.env.STREAM_PROBE_TIMEOUT_MS ?? 8_000)
 
 interface Vivo {
   record: StreamRecord
@@ -54,7 +56,29 @@ interface Vivo {
   state: StreamState
   tentativas: number
   symbols: Set<string>
-  timers: unknown[]
+  /**
+   * Qual TENTATIVA de conexão está valendo.
+   *
+   * Cada `conectar` incrementa, e os handlers do socket guardam a geração em que
+   * nasceram. Um `onclose` de um socket antigo — o que o detector de silêncio acabou
+   * de fechar, por exemplo — chega depois e é ignorado.
+   *
+   * Sem isto, fechar por silêncio disparava DUAS quedas para o mesmo evento: a que o
+   * detector reporta e a que o `onclose` do fechamento dispara em seguida. Duas quedas
+   * são duas reconexões agendadas, e duas reconexões são dois sockets.
+   */
+  geracao: number
+  /**
+   * Os relógios, em campos separados em vez de uma lista.
+   *
+   * Eles têm vidas diferentes: o de silêncio é rearmado a cada mensagem, o batimento
+   * corre sozinho de tempos em tempos, e o de reconexão existe só entre uma queda e a
+   * próxima tentativa. Guardados juntos numa lista, rearmar um cancelava os outros — e
+   * era assim que o batimento acontecia uma vez só e nunca mais.
+   */
+  timerHeartbeat: unknown
+  timerIdle: unknown
+  timerReconnect: unknown
   /** Marcado no stop: um close que chega depois disso não deve reconectar. */
   encerrado: boolean
   /**
@@ -123,7 +147,10 @@ export class StreamManager {
       state: 'disconnected',
       tentativas: 0,
       symbols: new Set(record.symbols),
-      timers: [],
+      geracao: 0,
+      timerHeartbeat: null,
+      timerIdle: null,
+      timerReconnect: null,
       encerrado: false,
       segredos: [],
     }
@@ -168,10 +195,96 @@ export class StreamManager {
     await Promise.allSettled([...this.vivos.keys()].map((id) => this.stop(id)))
   }
 
+  /**
+   * Abrir, autenticar, fechar. Nada mais.
+   *
+   * É o teste que responde a pergunta que interessa — "esta credencial entra no
+   * stream?" — sem deixar nada de pé: sem reconexão, sem batimento, sem documento e sem
+   * socket. Um teste que deixa conexão pendurada é um teste que, repetido, vira um
+   * vazamento de sockets.
+   */
+  async probe(adapter: StreamAdapter, environment: string, credencial: Record<string, string>, timeoutMs = PROBE_MS): Promise<{ ok: boolean; message: string }> {
+    const segredos = Object.values(credencial).filter((v) => typeof v === 'string' && v.length >= 8)
+    let socket: StreamSocket
+    try {
+      socket = this.deps.createSocket(adapter.url(environment))
+    } catch (error) {
+      return { ok: false, message: naoLoga(error instanceof Error ? error.message : 'não foi possível abrir o socket', segredos) }
+    }
+
+    return new Promise((resolve) => {
+      let terminou = false
+      const encerrar = (ok: boolean, message: string) => {
+        if (terminou) return
+        terminou = true
+        if (prazo) this.deps.cancel(prazo)
+        // Os handlers saem antes do close: um `onclose` chegando depois da resposta não
+        // pode resolver a promessa uma segunda vez nem mexer em nada.
+        socket.onopen = null
+        socket.onmessage = null
+        socket.onerror = null
+        socket.onclose = null
+        try {
+          socket.close()
+        } catch {
+          // já era
+        }
+        resolve({ ok, message })
+      }
+
+      /**
+       * Sem `authOkOf`, o provedor não avisa que aceitou — e aí o prazo É a resposta.
+       *
+       * "Abriu, mandei a credencial e ninguém reclamou" é o melhor que dá para afirmar
+       * nesse caso, e a mensagem diz isso em vez de prometer que a credencial vale.
+       * Ficar esperando para sempre por uma confirmação que não existe seria pior: o
+       * teste nunca terminaria.
+       */
+      const semConfirmacao = !adapter.authOkOf
+      const prazo = this.deps.schedule(
+        () =>
+          semConfirmacao
+            ? encerrar(true, 'Conexão de tempo real aberta; este provedor não confirma a credencial.')
+            : encerrar(false, 'O provedor não respondeu a tempo.'),
+        timeoutMs,
+      )
+      prazo.unref?.()
+
+      socket.onopen = () => {
+        const auth = adapter.authMessage?.(credencial)
+        // Sem autenticação por mensagem, abrir já é a resposta.
+        if (auth === undefined) return encerrar(true, 'Conexão de tempo real aberta.')
+        try {
+          socket.send(JSON.stringify(auth))
+        } catch (error) {
+          encerrar(false, naoLoga(error instanceof Error ? error.message : 'falha ao autenticar', segredos))
+        }
+      }
+      socket.onmessage = (ev) => {
+        let bruto: unknown = ev.data
+        if (typeof ev.data === 'string') {
+          try {
+            bruto = JSON.parse(ev.data)
+          } catch {
+            return
+          }
+        }
+        const problema = adapter.errorOf?.(bruto)
+        if (problema) return encerrar(false, naoLoga(problema, segredos))
+        if (adapter.authOkOf?.(bruto)) return encerrar(true, 'Credencial aceita pelo tempo real.')
+      }
+      socket.onerror = () => encerrar(false, 'O provedor recusou a conexão de tempo real.')
+      socket.onclose = () => encerrar(false, 'O provedor fechou a conexão antes de confirmar a credencial.')
+    })
+  }
+
   // --- conexão -------------------------------------------------------------------
 
   private async conectar(vivo: Vivo): Promise<void> {
     const id = vivo.record._id.toString()
+    // A partir daqui, tudo que vier de um socket anterior é passado.
+    const geracao = (vivo.geracao += 1)
+    this.limparTimers(vivo)
     vivo.state = vivo.tentativas === 0 ? 'connecting' : 'reconnecting'
     await setStreamState(vivo.record._id, vivo.state)
 
@@ -191,12 +304,13 @@ export class StreamManager {
     try {
       socket = this.deps.createSocket(vivo.adapter.url(vivo.record.environment))
     } catch (error) {
-      await this.quebrou(vivo, error instanceof Error ? error.message : 'falha ao abrir o socket')
+      await this.quebrou(vivo, error instanceof Error ? error.message : 'falha ao abrir o socket', geracao)
       return
     }
     vivo.socket = socket
 
     socket.onopen = () => {
+      if (vivo.geracao !== geracao) return
       vivo.tentativas = 0
       vivo.state = 'connected'
       void setStreamState(vivo.record._id, 'connected').catch((e) => this.deps.onError(`stream ${id} estado`, e))
@@ -205,15 +319,19 @@ export class StreamManager {
       const auth = vivo.adapter.authMessage?.(credencial)
       if (auth !== undefined) this.enviar(vivo, auth)
       if (vivo.symbols.size) this.enviar(vivo, vivo.adapter.subscribeMessage([...vivo.symbols]))
-      this.armarRelogios(vivo)
+      this.armarBatimento(vivo)
+      this.armarSilencio(vivo)
     }
 
     socket.onmessage = (ev) => {
-      this.armarRelogios(vivo)
+      if (vivo.geracao !== geracao) return
+      // Só o detector de silêncio é rearmado: o batimento corre no ritmo dele.
+      this.armarSilencio(vivo)
       void this.receber(vivo, ev.data).catch((e) => this.deps.onError(`stream ${id} mensagem`, e))
     }
 
     socket.onerror = (ev) => {
+      if (vivo.geracao !== geracao) return
       // O quadro cru NÃO entra: um erro de autenticação costuma vir com a mensagem
       // que continha a credencial.
       const msg = typeof ev === 'object' && ev !== null && typeof (ev as { message?: unknown }).message === 'string' ? (ev as { message: string }).message : 'erro no socket'
@@ -222,7 +340,7 @@ export class StreamManager {
 
     socket.onclose = () => {
       if (vivo.encerrado) return
-      void this.quebrou(vivo, 'conexão encerrada pelo outro lado').catch((e) => this.deps.onError(`stream ${id} fechamento`, e))
+      void this.quebrou(vivo, 'conexão encerrada pelo outro lado', geracao).catch((e) => this.deps.onError(`stream ${id} fechamento`, e))
     }
   }
 
@@ -261,7 +379,16 @@ export class StreamManager {
     await markStreamEvent(vivo.record._id, publicados)
   }
 
-  private async quebrou(vivo: Vivo, motivo: string): Promise<void> {
+  /**
+   * Uma queda, contada UMA vez.
+   *
+   * `geracao` é o que garante isso: quem reporta a queda diz de qual tentativa está
+   * falando, e um aviso de uma tentativa que já foi substituída é descartado. Sem ela,
+   * fechar por silêncio contava duas quedas (a nossa e o `onclose` que ela provoca),
+   * dobrando as tentativas e agendando duas reconexões — dois sockets.
+   */
+  private async quebrou(vivo: Vivo, motivo: string, geracao?: number): Promise<void> {
+    if (geracao !== undefined && vivo.geracao !== geracao) return
     const id = vivo.record._id.toString()
     this.limparTimers(vivo)
     vivo.socket = null
@@ -276,12 +403,14 @@ export class StreamManager {
     await setStreamState(vivo.record._id, 'reconnecting')
     // Espera crescente com jitter — a mesma do barramento. Sem o jitter, cem streams
     // que caíram junto voltam junto e derrubam de novo o que acabou de subir.
+    const daQueda = vivo.geracao
     const timer = this.deps.schedule(() => {
-      if (vivo.encerrado) return
+      // Outra reconexão pode ter começado no meio do caminho — a desta queda perdeu a vez.
+      if (vivo.encerrado || vivo.geracao !== daQueda) return
       void this.conectar(vivo).catch((e) => this.deps.onError(`stream ${id} reconexão`, e))
     }, backoffMs(vivo.tentativas))
     timer.unref?.()
-    vivo.timers.push(timer)
+    vivo.timerReconnect = timer
   }
 
   private enviar(vivo: Vivo, mensagem: unknown): void {
@@ -294,31 +423,62 @@ export class StreamManager {
     }
   }
 
-  /** Heartbeat e detector de silêncio, rearmados a cada mensagem. */
-  private armarRelogios(vivo: Vivo): void {
-    this.limparTimers(vivo)
-    if (vivo.adapter.heartbeatMessage) {
-      const bater = this.deps.schedule(() => this.enviar(vivo, vivo.adapter.heartbeatMessage?.()), HEARTBEAT_MS)
-      bater.unref?.()
-      vivo.timers.push(bater)
+  /**
+   * O BATIMENTO: de tempos em tempos, para sempre, enquanto a conexão viver.
+   *
+   * Ele se reagenda sozinho. Antes daqui era um `setTimeout` rearmado junto com o
+   * detector de silêncio, a cada mensagem — o que significava que num stream ATIVO ele
+   * nunca disparava (toda mensagem cancelava o timer pendente) e num stream parado
+   * disparava uma vez só. Um batimento que bate uma vez não mantém nada vivo.
+   */
+  private armarBatimento(vivo: Vivo): void {
+    if (!vivo.adapter.heartbeatMessage) return
+    const geracao = vivo.geracao
+    const bater = () => {
+      if (vivo.encerrado || vivo.geracao !== geracao) return
+      this.enviar(vivo, vivo.adapter.heartbeatMessage?.())
+      const proximo = this.deps.schedule(bater, HEARTBEAT_MS)
+      proximo.unref?.()
+      vivo.timerHeartbeat = proximo
     }
+    const primeiro = this.deps.schedule(bater, HEARTBEAT_MS)
+    primeiro.unref?.()
+    vivo.timerHeartbeat = primeiro
+  }
+
+  /**
+   * O detector de SILÊNCIO, rearmado a cada mensagem.
+   *
+   * Um socket que não fecha mas também não fala é o pior caso: sem isto o stream fica
+   * "connected" para sempre sem entregar nada.
+   */
+  private armarSilencio(vivo: Vivo): void {
+    if (vivo.timerIdle) this.deps.cancel(vivo.timerIdle)
+    const geracao = vivo.geracao
     const mudo = this.deps.schedule(() => {
-      // Um socket que não fecha mas também não fala é o pior caso: sem isto o stream
-      // fica "connected" para sempre sem entregar nada.
+      if (vivo.encerrado || vivo.geracao !== geracao) return
+      // A referência é guardada ANTES: `quebrou` limpa `vivo.socket` de imediato, e sem
+      // isto o socket mudo nunca seria fechado — ficaria pendurado, aberto e calado,
+      // enquanto uma conexão nova subia ao lado.
+      const morto = vivo.socket
+      // A queda é reportada UMA vez. Fechar vai disparar o `onclose` logo em seguida, e
+      // é a geração que faz aquele segundo aviso ser ignorado.
+      void this.quebrou(vivo, 'sem mensagens do provider', geracao).catch(() => undefined)
       try {
-        vivo.socket?.close()
+        morto?.close()
       } catch {
         // já era
       }
-      void this.quebrou(vivo, 'sem mensagens do provider').catch(() => undefined)
     }, SILENCIO_MS)
     mudo.unref?.()
-    vivo.timers.push(mudo)
+    vivo.timerIdle = mudo
   }
 
   private limparTimers(vivo: Vivo): void {
-    for (const t of vivo.timers) this.deps.cancel(t)
-    vivo.timers = []
+    for (const t of [vivo.timerHeartbeat, vivo.timerIdle, vivo.timerReconnect]) if (t) this.deps.cancel(t)
+    vivo.timerHeartbeat = null
+    vivo.timerIdle = null
+    vivo.timerReconnect = null
   }
 }
 

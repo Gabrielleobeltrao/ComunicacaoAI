@@ -13,6 +13,7 @@ import { db } from '../db.js'
 import type { Agent } from '../agents.js'
 import type { ResolvedTool } from '../agentTools.js'
 import { missingCapability } from '../agentTools.js'
+import { validateAgainstSchema } from '../jsonSchema.js'
 import { executeToolCall } from '../toolExecution.js'
 import type { ExecutableTool } from '../toolExecution.js'
 import { getApp } from './registry.js'
@@ -21,7 +22,7 @@ import { isUsableManifest, resolveAppForOwner } from './privateApps.js'
 import { isUsableApp } from './types.js'
 import type { AppDefinition, AppActionDefinition, AppInstallation, AgentAppGrant, NativeFactory } from './types.js'
 import { decryptInstallationConfig, getInstallation, isInstallationUsable } from './installations.js'
-import { ensureAppActionIndexes, recordActionEvent } from './actionEvents.js'
+import { ACTION_DETAIL_KEY, ensureAppActionIndexes, recordActionEvent, takeActionDetail } from './actionEvents.js'
 import type { AppActionEvent } from './actionEvents.js'
 
 // Reexportados: eram exportados daqui antes da separação, e quem os importa continua
@@ -112,7 +113,20 @@ function declarativeTool(
 export async function resolveGrant(
   ownerId: string,
   grant: AgentAppGrant,
-  options: { agentId?: ObjectId | null } = {},
+  options: {
+    agentId?: ObjectId | null
+    /**
+     * De qual EXECUÇÃO estas ferramentas são.
+     *
+     * Viaja até o adapter e nunca até o modelo: é dele que sai a chave de idempotência
+     * de uma ordem. Com uma chave nova a cada tentativa, um retry manda a segunda ordem;
+     * com uma chave derivada da execução, o retry pergunta pela primeira.
+     *
+     * Ausente é legítimo — playground e chamada direta não têm execução — e aí a chave
+     * é aleatória, que é o comportamento de antes.
+     */
+    executionRef?: string | null
+  } = {},
 ): Promise<ResolvedTool[]> {
   // System first, then the owner's own private Apps. A manifest that no longer
   // validates resolves to nothing rather than to a weaker execution path.
@@ -160,6 +174,7 @@ export async function resolveGrant(
       // Quem responde pela ação. É por ele que uma política mais apertada pode valer
       // só para um agente.
       agentId: options.agentId?.toString() ?? null,
+      executionRef: options.executionRef ?? null,
     })
     if (!built) continue
     // O risco declarado no manifesto viaja com a ferramenta. Ele não amplia nada — o
@@ -174,6 +189,7 @@ export async function resolveGrant(
           actionKey: action.key,
           installationId: installation._id,
           environment: environmentOf(installation),
+          outputSchema: action.outputSchema,
         },
       ),
     )
@@ -190,7 +206,7 @@ function buildAction(
   allowedToAct: boolean,
   // Vem da instalação, nunca de um campo digitado: é o ambiente que decide se a ordem
   // vai para a simulação ou para o mercado.
-  ctx?: { environment: string; installationId: string; agentId?: string | null },
+  ctx?: { environment: string; installationId: string; agentId?: string | null; executionRef?: string | null },
 ): ResolvedTool | null {
   if (action.execution.kind === 'http') {
     return declarativeTool(app, action, auth, resource, allowedToAct)
@@ -219,13 +235,34 @@ function buildAction(
 // Wrap a tool so every call leaves a safe trace.
 function instrument(
   tool: ResolvedTool,
-  meta: { ownerId: string; agentId: ObjectId | null; appKey: string; actionKey: string; installationId: ObjectId; environment?: string },
+  meta: {
+    ownerId: string
+    agentId: ObjectId | null
+    appKey: string
+    actionKey: string
+    installationId: ObjectId
+    environment?: string
+    outputSchema?: Record<string, unknown>
+  },
 ): ResolvedTool {
   return {
     ...tool,
     run: async (args) => {
       const started = Date.now()
-      const outcome = await tool.run(args)
+      // A chave por CHAMADA: é por ela que o adapter conta o que aconteceu sem devolver
+      // isso ao modelo nem escrever no banco por conta própria.
+      const chamada = `${meta.installationId.toString()}:${meta.actionKey}:${started}:${Math.random().toString(36).slice(2, 8)}`
+      const outcome = await tool.run({ ...args, [ACTION_DETAIL_KEY]: chamada })
+      const detalhe = takeActionDetail(chamada)
+      /**
+       * A saída é conferida contra o que a ação PROMETEU devolver.
+       *
+       * Sem isto, `outputSchema` é documentação: um planner encadeia duas ações
+       * confiando na forma da primeira, e descobre que ela mudou quando o segundo passo
+       * lê `undefined`. Falhar aqui é dizer a verdade — a ação aconteceu, e o contrato
+       * dela não bate.
+       */
+      const verificado = validarSaida(meta.outputSchema, outcome)
       await recordActionEvent({
         ownerId: meta.ownerId,
         agentId: meta.agentId,
@@ -238,9 +275,40 @@ function instrument(
         durationMs: Date.now() - started,
         createdAt: new Date(),
         ...(meta.environment ? { environment: meta.environment } : {}),
+        // O que a ação produziu, no nível de metadado: o id da ordem e o veredito da
+        // política. Nunca argumento, nunca corpo, nunca saldo.
+        ...(detalhe?.orderId !== undefined ? { orderId: detalhe.orderId } : {}),
+        ...(detalhe?.policy !== undefined ? { policy: detalhe.policy } : {}),
       } as Omit<AppActionEvent, '_id' | 'createdAt'>)
-      return outcome
+      return verificado
     },
+  }
+}
+
+/**
+ * Confere o resultado contra o schema declarado. Sem schema, passa direto.
+ *
+ * Uma RECUSA (política, permissão, provider) não é conferida: ela tem o formato do
+ * motivo, não o da saída — e recusar a recusa esconderia justamente a explicação.
+ */
+function validarSaida(schema: Record<string, unknown> | undefined, outcome: { ok: boolean; result: string }): { ok: boolean; result: string } {
+  if (!schema || !outcome.ok) return outcome
+  let dados: unknown
+  try {
+    dados = JSON.parse(outcome.result)
+  } catch {
+    return { ok: false, result: JSON.stringify({ status: 'contract_error', reason: 'a ação devolveu algo que não é JSON' }) }
+  }
+  const r = validateAgainstSchema(schema, dados)
+  if (r.valid) return outcome
+  return {
+    ok: false,
+    result: JSON.stringify({
+      status: 'contract_error',
+      reason: 'a saída da ação não bate com o contrato declarado',
+      // O caminho do campo, e não o valor: o valor pode ser saldo.
+      fields: r.errors.slice(0, 5).map((e) => e.path || '(raiz)'),
+    }),
   }
 }
 

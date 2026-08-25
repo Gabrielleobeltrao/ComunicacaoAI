@@ -163,6 +163,9 @@ const RULES: Rule[] = [
   R('DELETE', 'api/app-installations/:', { entityType: 'connection', action: 'disconnect' }, { idAt: 2 }),
   // O stream de mercado é a conexão em outro estado, e mexer nele é mexer na conexão:
   // pausar tira o dono do ar até alguém retomar, e isso precisa constar no histórico.
+  // Ligar e desligar tempo real é mudar o que a conta faz sozinha. Precisa constar.
+  R('POST', 'api/streams', { entityType: 'connection', action: 'update' }),
+  R('DELETE', 'api/streams/:', { entityType: 'connection', action: 'disconnect' }, { idAt: 2 }),
   R('POST', 'api/streams/:/pause', { entityType: 'connection', action: 'pause' }, { idAt: 2 }),
   R('POST', 'api/streams/:/resume', { entityType: 'connection', action: 'activate' }, { idAt: 2 }),
   R('POST', 'api/streams/:/reconnect', { entityType: 'connection', action: 'update' }, { idAt: 2 }),

@@ -39,6 +39,8 @@ const SLACK = {
   providerCostNote: null,
   requiresAuth: true,
   activation: 'credentials',
+  connectable: false,
+  streamable: false,
   activationRoute: null,
   installationCount: 0,
   connected: false,
@@ -74,6 +76,8 @@ const GOOGLE = {
   categories: ['produtividade'],
   auth: { kind: 'oauth2', fields: [], scopes: ['https://www.googleapis.com/auth/calendar'], documentationUrl: null },
   activation: 'oauth',
+  connectable: false,
+  streamable: false,
   allowedDomains: ['googleapis.com'],
   actions: [{ key: 'google_agenda_listar_eventos', name: 'Listar eventos', description: 'Lista os eventos da agenda.', risk: 'read', inputSchema: {}, resourceFields: [] }],
   dataAccess: ['Eventos das agendas que você autorizar'],
@@ -95,6 +99,19 @@ const INSTALLATION = {
 }
 
 let created: Record<string, unknown> | null = null
+let streamCriado: Record<string, unknown> | null = null
+const STREAM_BASE = {
+  id: 'stream-1',
+  installationId: 'inst-1',
+  appKey: 'alpaca',
+  environment: 'paper',
+  symbols: [],
+  state: 'connected',
+  lastConnectedAt: null,
+  lastEventAt: null,
+  lastError: null,
+  eventCount: 0,
+}
 let disconnected: { method: string; url: string } | null = null
 let pinnedSent: string[] | null = null
 
@@ -109,6 +126,7 @@ async function stub(
   } = {},
 ) {
   created = null
+  streamCriado = null
   disconnected = null
   pinnedSent = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
@@ -133,7 +151,14 @@ async function stub(
   })
   await page.route('**/api/app-installations/*/test', (r) => r.fulfill({ json: { ok: true, message: 'Configuração lida com sucesso.' } }))
   // Streaming é exceção nesta tela: quase toda conexão é REST e devolve lista vazia.
-  await page.route('**/api/streams', (r) => r.fulfill({ json: opts.streams ?? [] }))
+  await page.route('**/api/streams', (r) => {
+    if (r.request().method() === 'POST') {
+      streamCriado = JSON.parse(r.request().postData() ?? '{}')
+      return r.fulfill({ status: 201, json: { ...STREAM_BASE, ...streamCriado, id: 'stream-novo' } })
+    }
+    return r.fulfill({ json: opts.streams ?? [] })
+  })
+  await page.route('**/api/streams/*', (r) => r.fulfill({ status: 204, body: '' }))
   await page.route('**/api/trading-policies/active**', (r) => r.fulfill({ json: opts.policy ?? null }))
   await page.route('**/api/trading-policies', (r) => r.fulfill({ status: 201, json: { id: 'p1', installationId: INSTALLATION.id, agentId: null, version: 3, active: true, rules: {}, createdAt: NOW, updatedAt: NOW } }))
   await page.route('**/api/streams/*/pause', (r) => r.fulfill({ json: { ...(opts.streams?.[0] ?? {}), state: 'paused' } }))
@@ -290,6 +315,8 @@ const WEB_CHAT_APP = {
   pinnable: true,
   defaultSurfaceKey: 'widgets',
   activation: 'instant',
+  connectable: false,
+  streamable: false,
   activationRoute: null,
   requiresAuth: false,
   connected: true,
@@ -644,7 +671,8 @@ const STREAM = {
 }
 
 test('uma conexão com stream mostra estado, último dado e as ações', async ({ page }) => {
-  await stub(page, { installations: [INSTALLATION], streams: [STREAM] })
+  await stub(page, { installations: [{ ...INSTALLATION, appKey: 'alpaca' }], streams: [STREAM] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [{ ...CORRETORA_STREAM, connected: true, installationCount: 1 }] }))
   await page.goto('/apps?tab=connected')
   const painel = page.getByTestId('stream-panel')
   await expect(painel.getByTestId('stream-state')).toHaveText('Recebendo')
@@ -652,7 +680,8 @@ test('uma conexão com stream mostra estado, último dado e as ações', async (
   await expect(painel).toContainText('último dado')
 
   await painel.getByTestId('stream-details-toggle').click()
-  await expect(painel.getByTestId('stream-details')).toContainText('PETR4, VALE3')
+  // Os ativos viraram um campo editável: trocar é a operação mais comum depois de ligar.
+  await expect(painel.getByTestId('stream-edit-symbols')).toHaveValue('PETR4, VALE3')
   await expect(painel.getByTestId('stream-details')).toContainText('simulação')
 
   await painel.getByTestId('stream-pause').click()
@@ -663,7 +692,8 @@ test('uma conexão com stream mostra estado, último dado e as ações', async (
 
 test('a falha do stream aparece na conexão, e reconectar a limpa', async ({ page }) => {
   const comErro = { ...STREAM, state: 'error', lastError: { message: 'conexão encerrada pelo outro lado', at: new Date().toISOString() } }
-  await stub(page, { installations: [INSTALLATION], streams: [comErro] })
+  await stub(page, { installations: [{ ...INSTALLATION, appKey: 'alpaca' }], streams: [comErro] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [{ ...CORRETORA_STREAM, connected: true, installationCount: 1 }] }))
   await page.goto('/apps?tab=connected')
   await expect(page.getByTestId('stream-error')).toContainText('encerrada pelo outro lado')
   await page.getByTestId('stream-reconnect').click()
@@ -717,4 +747,58 @@ test('uma conexão que só lê não tem seção Segurança', async ({ page }) =>
   await page.goto('/apps?tab=connected')
   await expect(page.getByTestId('installation-card').first()).toBeVisible()
   await expect(page.getByTestId('policy-panel')).toHaveCount(0)
+})
+
+// --- tempo real: do convite ao stream de pé -------------------------------------------
+
+const CORRETORA_STREAM = { ...CORRETORA_CATALOGO, streamable: true }
+
+test('uma conexão que recebe tempo real convida a ligar, e pergunta os ativos', async ({ page }) => {
+  // Sem este convite, `ensureStream` existia no servidor e nenhuma tela chamava: o
+  // recurso estava pronto e inalcançável.
+  await stub(page, { installations: [{ ...INSTALLATION, appKey: 'alpaca', environment: 'paper' }] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [{ ...CORRETORA_STREAM, connected: true, installationCount: 1 }] }))
+  await page.goto('/apps?tab=connected')
+
+  await expect(page.getByTestId('stream-panel')).toHaveCount(0)
+  await page.getByTestId('stream-cta').click()
+  // Ligar sem dizer os ativos não faz sentido: um stream sem símbolo não recebe nada.
+  await page.getByTestId('stream-start').click()
+  await expect(page.getByTestId('stream-setup-error')).toBeVisible()
+
+  await page.getByTestId('stream-symbols').fill('aapl, msft')
+  await page.getByTestId('stream-start').click()
+  await expect.poll(() => streamCriado).toMatchObject({ installationId: INSTALLATION.id, symbols: ['AAPL', 'MSFT'] })
+  await expect(page.getByTestId('stream-panel')).toBeVisible()
+})
+
+test('com stream de pé dá para trocar os ativos, pausar, reconectar e desligar', async ({ page }) => {
+  const stream = { ...STREAM_BASE, installationId: INSTALLATION.id, symbols: ['AAPL'], eventCount: 12 }
+  await stub(page, { installations: [{ ...INSTALLATION, appKey: 'alpaca', environment: 'paper' }], streams: [stream] })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [{ ...CORRETORA_STREAM, connected: true, installationCount: 1 }] }))
+  await page.goto('/apps?tab=connected')
+
+  await expect(page.getByTestId('stream-cta')).toHaveCount(0)
+  await page.getByTestId('stream-details-toggle').click()
+  await page.getByTestId('stream-edit-symbols').fill('AAPL, VALE3')
+  await page.getByTestId('stream-update').click()
+  await expect.poll(() => streamCriado).toMatchObject({ symbols: ['AAPL', 'VALE3'] })
+
+  await page.getByTestId('stream-pause').click()
+  await expect(page.getByTestId('stream-state')).toHaveText('Pausado')
+
+  // Os detalhes continuam abertos: o botão de desligar mora neles.
+  await page.getByTestId('stream-delete').click()
+  // Desligar tira o painel e devolve o convite: é o estado de quem não tem tempo real.
+  await expect(page.getByTestId('stream-panel')).toHaveCount(0)
+  await expect(page.getByTestId('stream-cta')).toBeVisible()
+})
+
+test('uma conexão sem tempo real não recebe nem o convite', async ({ page }) => {
+  // Oferecer "Ativar tempo real" para um App que não tem seria uma promessa vazia.
+  await stub(page, { installations: [INSTALLATION] })
+  await page.goto('/apps?tab=connected')
+  await expect(page.getByTestId('installation-card').first()).toBeVisible()
+  await expect(page.getByTestId('stream-cta')).toHaveCount(0)
+  await expect(page.getByTestId('stream-panel')).toHaveCount(0)
 })

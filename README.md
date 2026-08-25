@@ -124,6 +124,45 @@ overview (KPIs + floor cards); each floor at `/floors/:floorId` owns its visual 
 map plus its agents, sectors, automations and runs, scoped by floor. Off/unset → the
 original flat app (also the rollback). See [`docs/ux-nav/redirect-map.md`](docs/ux-nav/redirect-map.md).
 
+## Dados de mercado e tempo real
+
+Uma conexão de App pode virar uma fonte de tempo real. Hoje o único provedor é a
+**Alpaca, em simulação (Paper)** — não existe endereço de produção compilado neste
+sistema, e o ambiente `live` é recusado em quatro camadas.
+
+**Como ligar, do começo ao fim:**
+
+1. **Conectar** — *Apps → catálogo → Alpaca (simulação)*, com Key ID e Secret. A
+   conexão nasce marcada como `SIMULAÇÃO`. *Testar conexão* faz uma leitura real na
+   corretora (`GET /v2/account`), com prazo, e nunca devolve saldo nem credencial.
+2. **Ligar o tempo real** — na aba *Conectados*, o botão **Ativar tempo real** pede os
+   ativos. A partir daí dá para trocar a lista, pausar, reconectar e desligar. O painel
+   mostra estado, última conexão, último dado e a última falha.
+3. **Vincular uma ferramenta a uma conexão** — *Ferramentas → nova → Origem*. Só
+   aparecem Apps que declaram perfil de conexão; a ferramenta guarda só o caminho, e
+   base, cabeçalhos e credencial vêm da conexão na hora de executar.
+4. **Conceder ao agente** — *agente → Como trabalha → Ferramentas*. A permissão é por
+   ação. Ação `high_risk` (enviar, alterar, cancelar ordem, encerrar posição) exige uma
+   autorização autônoma separada, e a tela mostra o ambiente e os limites em vigor
+   antes de você marcar.
+5. **Limitar** — *Apps → Conectados → Segurança*. As políticas são conferidas no
+   servidor, imediatamente antes de a ordem sair. Salvar cria uma versão nova; a
+   anterior fica no histórico.
+6. **Reagir** — *agente → Fluxos → Novo gatilho → Evento de mercado*. Escolha o evento,
+   os ativos e o período. Num modo sem IA a definição não contém etapa de agente: o
+   fluxo roda com zero token.
+
+**O que corre por baixo:** os negócios viram eventos internos (`market.price.updated`,
+`market.quote.updated`, `market.bar.closed`), o motor monta as velas em seis períodos
+(`1m`, `5m`, `15m`, `1h`, `4h`, `1D`) e publica `market.candle.closed` — cada vela uma
+vez só, com retomada se o worker cair no meio. A análise reusa o App *Análise de
+candles*; nenhum indicador foi reimplementado.
+
+Todos os ajustes (`EVENT_*`, `STREAM_*`, `CANDLE_*`, `MARKET_*`, `ALPACA_*`) têm padrão
+e estão documentados em [`backend/.env.example`](backend/.env.example). Nenhum deles é
+obrigatório, e nenhum contém segredo: a credencial da corretora é do dono, digitada na
+tela e guardada cifrada na conexão.
+
 ## Scripts
 
 Run from the repo root:

@@ -9,7 +9,10 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
 process.env.MONGODB_URI = await startMongo()
-process.env.APP_ENCRYPTION_KEY ||= 'chave-de-teste-com-32-caracteres!'
+// A chave que o `crypto.ts` lê de verdade. Antes daqui estes testes definiam
+// `APP_ENCRYPTION_KEY`, que não existe em lugar nenhum: eles passavam porque o `.env`
+// de quem desenvolve tem a chave real, e falhavam no CI, que não tem `.env`.
+process.env.ENCRYPTION_KEY ||= 'chave-de-teste-que-nao-e-segredo'
 
 const { buildAlpacaTools } = await import('../dist/apps/official/alpaca/adapter.js')
 const { createAlpacaClient, tradingBaseFor } = await import('../dist/apps/official/alpaca/client.js')

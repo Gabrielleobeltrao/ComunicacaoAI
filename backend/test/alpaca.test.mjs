@@ -36,7 +36,8 @@ function fetchFalso(respostas) {
   return impl
 }
 
-const ferramentas = (fetchImpl, environment = 'paper') => buildAlpacaTools(CRED, environment, { fetch: fetchImpl })
+// `timeoutMs` curto: o teste do prazo precisa de um prazo que acabe dentro do teste.
+const ferramentas = (fetchImpl, environment = 'paper') => buildAlpacaTools(CRED, environment, { fetch: fetchImpl, timeoutMs: 150 })
 const acha = (lista, nome) => lista.find((t) => t.name === nome)
 
 // --- produção não existe -------------------------------------------------------------
@@ -205,14 +206,20 @@ test('o bracket leva entrada, stop e alvo numa ordem só', async () => {
 })
 
 test('cancelar e substituir usam o método certo e exigem o id', async () => {
-  const f = fetchFalso([{ status: 200, body: {} }, { status: 200, body: { id: 'o-3', status: 'replaced' } }])
+  const f = fetchFalso([
+    { status: 200, body: {} },
+    // Substituir LÊ a ordem antes de alterar: é como se sabe se a mudança aumenta a
+    // exposição, e portanto se ela precisa passar pela política.
+    { status: 200, body: { id: 'o-3', symbol: 'AAPL', side: 'buy', type: 'limit', qty: '10', limit_price: '100' } },
+    { status: 200, body: { id: 'o-3', status: 'replaced' } },
+  ])
   const lista = ferramentas(f)
   assert.equal((await acha(lista, 'alpaca_cancelar_ordem').run({})).ok, false)
   await acha(lista, 'alpaca_cancelar_ordem').run({ orderId: 'o-3' })
   assert.equal(f.chamadas[0].method, 'DELETE')
   await acha(lista, 'alpaca_substituir_ordem').run({ orderId: 'o-3', quantity: 5 })
-  assert.equal(f.chamadas[1].method, 'PATCH')
-  assert.deepEqual(f.chamadas[1].body, { qty: '5' })
+  const patch = f.chamadas.find((c) => c.method === 'PATCH')
+  assert.deepEqual(patch.body, { qty: '5' })
 })
 
 test('substituir sem dizer o que muda é recusado', async () => {
@@ -239,7 +246,7 @@ test('o quadro de negócio vira evento de preço; o de controle não vira nada',
   assert.equal(eventos[0].type, 'market.price.updated')
   assert.equal(eventos[0].payload.price, 190.25)
   assert.equal(eventos[0].payload.provider, 'alpaca')
-  assert.equal(eventos[0].dedupeKey, 'alpaca:i1:AAPL:77')
+  assert.equal(eventos[0].dedupeKey, 'alpaca:i1:t:AAPL:77')
 
   for (const controle of [[{ T: 'success', msg: 'authenticated' }], [{ T: 'subscription', trades: ['AAPL'] }], 'texto', null]) {
     assert.deepEqual(alpacaStreamAdapter.parse(controle, ctx), [])
@@ -259,7 +266,14 @@ test('o erro do stream é reconhecido, em vez de virar silêncio', () => {
 test('a autenticação do stream é uma mensagem, e o subscribe pede os negócios', () => {
   const auth = alpacaStreamAdapter.authMessage(CRED)
   assert.deepEqual(auth, { action: 'auth', key: CRED.keyId, secret: CRED.secretKey })
-  assert.deepEqual(alpacaStreamAdapter.subscribeMessage(['AAPL', 'MSFT']), { action: 'subscribe', trades: ['AAPL', 'MSFT'] })
+  // Negócios, cotações e barras na mesma assinatura: são três fatos diferentes do mesmo
+  // ativo, e pedir em três conexões seria três conexões.
+  assert.deepEqual(alpacaStreamAdapter.subscribeMessage(['AAPL', 'MSFT']), {
+    action: 'subscribe',
+    trades: ['AAPL', 'MSFT'],
+    quotes: ['AAPL', 'MSFT'],
+    bars: ['AAPL', 'MSFT'],
+  })
   assert.match(alpacaStreamAdapter.url('paper'), /^wss:\/\/stream\.data\.alpaca\.markets/)
 })
 
@@ -332,4 +346,107 @@ test('se nem a reconciliação responde, a falha sobe — não se manda outra or
   assert.equal(r.ok, false)
   // Uma ordem duplicada é pior do que uma ordem que talvez não tenha saído.
   assert.match(r.result, /network/)
+})
+
+// --- cotação e barra ------------------------------------------------------------------
+
+test('a cotação vira evento próprio, e não preço negociado', () => {
+  // Ninguém pagou o preço de uma cotação. Tratá-la como negócio inventaria volume.
+  const eventos = alpacaStreamAdapter.parse([{ T: 'q', S: 'AAPL', bp: 190.1, ap: 190.3, bs: 100, as: 200, t: '2026-04-06T13:00:00Z' }], ctx)
+  assert.equal(eventos.length, 1)
+  assert.equal(eventos[0].type, 'market.quote.updated')
+  assert.equal(eventos[0].payload.bid, 190.1)
+  assert.equal(eventos[0].payload.ask, 190.3)
+  assert.match(eventos[0].dedupeKey, /:q:AAPL:/)
+})
+
+test('uma cotação com um lado só é descartada', () => {
+  assert.deepEqual(alpacaStreamAdapter.parse([{ T: 'q', S: 'AAPL', bp: 190.1, t: '2026-04-06T13:00:00Z' }], ctx), [])
+})
+
+test('a barra do provider é um fato à parte da nossa vela', () => {
+  // Dois candles para o mesmo minuto seriam duas verdades. A do provider vira um
+  // contrato diferente, para quem quiser conferir.
+  const eventos = alpacaStreamAdapter.parse([{ T: 'b', S: 'AAPL', o: 10, h: 12, l: 9, c: 11, v: 500, t: '2026-04-06T13:00:00Z' }], ctx)
+  assert.equal(eventos.length, 1)
+  assert.equal(eventos[0].type, 'market.bar.closed')
+  assert.equal(eventos[0].payload.timeframe, '1m')
+  assert.equal(eventos[0].payload.close, 11)
+  assert.equal(eventos[0].payload.volume, 500)
+})
+
+test('um quadro com os três tipos juntos vira três eventos', () => {
+  const eventos = alpacaStreamAdapter.parse(
+    [
+      { T: 't', S: 'AAPL', p: 190, s: 10, i: 1, t: '2026-04-06T13:00:00Z' },
+      { T: 'q', S: 'AAPL', bp: 189.9, ap: 190.1, t: '2026-04-06T13:00:01Z' },
+      { T: 'b', S: 'AAPL', o: 189, h: 191, l: 188, c: 190, v: 900, t: '2026-04-06T13:01:00Z' },
+      { T: 'subscription', trades: ['AAPL'] },
+    ],
+    ctx,
+  )
+  assert.deepEqual(eventos.map((e) => e.type), ['market.price.updated', 'market.quote.updated', 'market.bar.closed'])
+})
+
+test('IEX continua o padrão gratuito', () => {
+  // `sip` exige assinatura na corretora; escolher por conta própria daria um erro de
+  // permissão que ninguém entenderia.
+  assert.match(alpacaStreamAdapter.url('paper'), /\/v2\/iex$/)
+})
+
+// --- a sonda de conexão: leitura de verdade, com prazo -------------------------------
+
+test('testar a conexão faz uma LEITURA real, e não confere campo preenchido', async () => {
+  // Conferir campos responde "está configurado", que não é a pergunta: uma chave
+  // completa e errada passa nisso e falha na primeira ordem.
+  const { alpacaProbe } = await import('../dist/apps/official/alpaca/adapter.js')
+  const f = fetchFalso([{ status: 200, body: { status: 'ACTIVE', equity: '10000', cash: '5000', account_number: 'PA123' } }])
+  const r = await alpacaProbe(CRED, 'paper', { fetch: f })
+  assert.equal(r.ok, true)
+  assert.match(f.chamadas[0].url, /\/v2\/account$/)
+  assert.equal(f.chamadas[0].method, 'GET', 'a sonda nunca escreve')
+  // O que sai é "deu" e o ambiente. Saldo, número da conta e credencial não saem.
+  for (const proibido of ['10000', '5000', 'PA123', CRED.secretKey, CRED.keyId]) {
+    assert.ok(!JSON.stringify(r).includes(proibido), `vazou ${proibido}`)
+  }
+})
+
+test('credencial recusada vira recusa com o motivo, não sucesso', async () => {
+  const { alpacaProbe } = await import('../dist/apps/official/alpaca/adapter.js')
+  const f = fetchFalso([{ status: 401, body: `forbidden for ${CRED.keyId}` }])
+  const r = await alpacaProbe(CRED, 'paper', { fetch: f })
+  assert.equal(r.ok, false)
+  assert.match(r.message, /credencial/)
+  assert.ok(!r.message.includes(CRED.keyId))
+})
+
+test('uma conta que não está ativa é recusa, e diz o estado', async () => {
+  const { alpacaProbe } = await import('../dist/apps/official/alpaca/adapter.js')
+  const f = fetchFalso([{ status: 200, body: { status: 'ACCOUNT_CLOSED' } }])
+  const r = await alpacaProbe(CRED, 'paper', { fetch: f })
+  assert.equal(r.ok, false)
+  assert.match(r.message, /ACCOUNT_CLOSED/)
+})
+
+test('sem as duas chaves, a sonda nem sai', async () => {
+  const { alpacaProbe } = await import('../dist/apps/official/alpaca/adapter.js')
+  const f = fetchFalso([])
+  assert.equal((await alpacaProbe({ keyId: 'x' }, 'paper', { fetch: f })).ok, false)
+  assert.equal(f.chamadas.length, 0)
+})
+
+test('a chamada tem prazo: uma corretora que não responde não pendura a execução', async () => {
+  // Cancelar de verdade, e não só desistir de esperar: uma requisição abandonada segue
+  // ocupando socket e pode chegar depois, do outro lado.
+  const nuncaResponde = (url, init = {}) =>
+    new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => {
+        const e = new Error('aborted')
+        e.name = 'AbortError'
+        reject(e)
+      })
+    })
+  const r = await acha(ferramentas(nuncaResponde), 'alpaca_conta').run({})
+  assert.equal(r.ok, false)
+  assert.match(r.result, /a tempo/)
 })

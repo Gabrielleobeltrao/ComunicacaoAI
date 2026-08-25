@@ -13,7 +13,10 @@ import { ObjectId } from 'mongodb'
 import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
 process.env.MONGODB_URI = await startMongo()
-process.env.APP_ENCRYPTION_KEY ||= 'chave-de-teste-com-32-caracteres!'
+// A chave que o `crypto.ts` lê de verdade. Antes daqui estes testes definiam
+// `APP_ENCRYPTION_KEY`, que não existe em lugar nenhum: eles passavam porque o `.env`
+// de quem desenvolve tem a chave real, e falhavam no CI, que não tem `.env`.
+process.env.ENCRYPTION_KEY ||= 'chave-de-teste-que-nao-e-segredo'
 
 const { createPrivateApp, resolveAppForOwner } = await import('../dist/apps/privateApps.js')
 const { createInstallation, patchInstallation, getInstallation, installationPublic, normalizeEnvironment } = await import(
@@ -244,4 +247,26 @@ test('um App que nasce em simulação cria a conexão já marcada', async () => 
   const conexao = await createInstallation(DONO, alpaca, { name: 'Corretora', config: { keyId: 'PK00000000', secretKey: 'segredo-que-nao-existe' } })
   assert.equal(conexao.environment, 'paper')
   assert.equal(installationPublic(conexao).environment, 'paper')
+})
+
+test('com conexão, o inputSchema da ferramenta continua sendo validado', async () => {
+  // `resolveExecutableTool` MONTA um objeto novo. Uma refatoração que esquecesse de
+  // levar o schema junto deixaria a ferramenta conectada aceitando qualquer argumento —
+  // e o defeito só apareceria como uma chamada estranha ao sistema de destino.
+  const { executeToolCall } = await import('../dist/toolExecution.js')
+  const conexao = await conectar()
+  const t = await ferramenta({
+    installationId: conexao._id.toString(),
+    inputSchema: { type: 'object', properties: { numero: { type: 'string' } }, required: ['numero'], additionalProperties: false },
+  })
+  const pronta = await resolveExecutableTool(t, DONO)
+  assert.deepEqual(pronta.executable.inputSchema.required, ['numero'], 'o schema atravessa a montagem')
+
+  const semObrigatorio = await executeToolCall(pronta.executable, {}, { allHeadersAreSecret: true })
+  assert.equal(semObrigatorio.ok, false)
+  assert.match(semObrigatorio.result, /obrigat/)
+
+  const comExtra = await executeToolCall(pronta.executable, { numero: 'A-1', inventado: 1 }, { allHeadersAreSecret: true })
+  assert.equal(comExtra.ok, false)
+  assert.match(comExtra.result, /não previsto/)
 })

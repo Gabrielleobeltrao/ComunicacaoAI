@@ -144,7 +144,7 @@ export async function buildTriggerInput(
 /** Todo contrato do barramento pode disparar automação. Registrado uma vez, no motor. */
 export function registerInternalEventTriggers(onError: (where: string, e: unknown) => void = () => undefined): void {
   for (const tipo of EVENT_TYPES) {
-    onEvent(tipo, async (event) => {
+    onEvent(tipo, 'automations.internalEventTrigger', async (event) => {
       const { skipped } = await dispatchInternalEvent(event)
       for (const motivo of skipped) onError(`evento ${event.eventId}`, new Error(motivo))
     })

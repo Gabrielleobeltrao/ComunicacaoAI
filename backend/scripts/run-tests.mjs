@@ -77,7 +77,23 @@ function rodar(lista, concorrencia, rotulo) {
        * ambiente, então isto vence o `.env` sem depender da ordem dos imports. E vazia é
        * falsa, que é exatamente como o código trata "não configurado".
        */
-      env: { ...process.env, VOYAGE_API_KEY: '' },
+      env: {
+        ...process.env,
+        VOYAGE_API_KEY: '',
+        /**
+         * O `.env` de quem desenvolve NÃO entra na suíte.
+         *
+         * Mesma família do `VOYAGE_API_KEY` acima, e a que custou mais caro: um teste
+         * que esquece de definir `ENCRYPTION_KEY` passa na máquina de quem escreveu
+         * (o `.env` tem a chave real) e falha no CI, que não tem `.env`. A falha
+         * aparece longe de quem a causou, num job vermelho de outra pessoa.
+         *
+         * Apontar o dotenv para um arquivo que não existe faz ele não carregar nada —
+         * e aí local e CI são o mesmo ambiente. Cada teste passa a declarar o que
+         * precisa, que é o que já se espera de um teste.
+         */
+        DOTENV_CONFIG_PATH: join(raiz, 'test', '.env.que-nao-existe'),
+      },
     })
     p.on('exit', (codigo) => resolver(codigo ?? 1))
   })

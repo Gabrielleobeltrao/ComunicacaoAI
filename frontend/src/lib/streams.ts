@@ -43,6 +43,11 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
 }
 
 export const listStreams = () => request<MarketStream[]>('/api/streams')
+/** Ligar ou atualizar. A MESMA rota para os dois: a resposta é a mesma nos dois casos. */
+export const saveStream = (installationId: string, symbols: string[]) =>
+  request<MarketStream>('/api/streams', { method: 'POST', body: JSON.stringify({ installationId, symbols }) })
+/** Desligar de vez. Pausar é outra coisa — guarda a intenção de voltar. */
+export const deleteStream = (id: string) => request<null>(`/api/streams/${id}`, { method: 'DELETE' })
 export const pauseStream = (id: string) => request<MarketStream>(`/api/streams/${id}/pause`, { method: 'POST' })
 export const resumeStream = (id: string) => request<MarketStream>(`/api/streams/${id}/resume`, { method: 'POST' })
 export const reconnectStream = (id: string) => request<MarketStream>(`/api/streams/${id}/reconnect`, { method: 'POST' })

@@ -1,6 +1,6 @@
 import { publishEvent, onEvent } from '../events/bus.js'
 import type { PlatformEvent } from '../events/types.js'
-import { closeCandle, closedSeries, dueCandles, foldChild, foldTrade, isDue } from './candleStore.js'
+import { closeCandle, closedSeries, dueCandles, foldChild, foldTrade, isDue, markFolded, markPublished, pendingCandles } from './candleStore.js'
 import type { SeriesKey } from './candleStore.js'
 import { rememberQuote, rememberTrade } from './state.js'
 import { recordTick } from './ticks.js'
@@ -92,42 +92,72 @@ const chaveDa = (c: StoredCandle): SeriesKey => ({
  * A chave de dedupe do evento é a segunda rede — a que sobrevive a um restart no meio
  * da publicação.
  */
-export async function closeDueCandles(now = new Date(), limite = 200): Promise<{ closed: number; published: number }> {
-  const candidatas = await dueCandles(now, limite)
-  let closed = 0
-  let published = 0
-  for (const aberta of candidatas) {
-    if (!isDue(aberta, now)) continue
-    const fechada = await closeCandle(aberta._id, now)
-    if (!fechada) continue
-    closed += 1
-    const { created } = await publishEvent(
-      {
-        ownerId: fechada.ownerId,
-        type: 'market.candle.closed',
-        source: `${fechada.provider}:${fechada.environment}`,
-        schemaVersion: MARKET_SCHEMA_VERSION,
-        payload: {
-          ownerId: fechada.ownerId,
-          provider: fechada.provider,
-          installationId: fechada.installationId,
-          environment: fechada.environment,
-          symbol: fechada.symbol,
-          timeframe: fechada.timeframe,
-          candle: toCandle(fechada),
-        },
-        occurredAt: new Date(fechada.bucketStart),
-        // A identidade da VELA, não do momento em que fechou: reiniciar no meio da
-        // varredura não pode produzir um segundo evento da mesma vela.
-        dedupeKey: `candle:${fechada.provider}:${fechada.installationId}:${fechada.symbol}:${fechada.timeframe}:${fechada.bucketStart}`,
+/**
+ * Publicar o evento de uma vela fechada, e marcar que ele saiu.
+ *
+ * Duas escritas, e a ordem importa: publicar PRIMEIRO e marcar depois. Invertido, uma
+ * queda no meio deixaria a vela marcada como publicada sem evento nenhum — e ninguém
+ * mais olharia para ela. Nesta ordem, a queda no meio produz no máximo uma tentativa
+ * repetida de publicar, que a chave de dedupe absorve.
+ */
+async function publicarVela(vela: StoredCandle, now: Date): Promise<boolean> {
+  const { created } = await publishEvent(
+    {
+      ownerId: vela.ownerId,
+      type: 'market.candle.closed',
+      source: `${vela.provider}:${vela.environment}`,
+      schemaVersion: MARKET_SCHEMA_VERSION,
+      payload: {
+        ownerId: vela.ownerId,
+        provider: vela.provider,
+        installationId: vela.installationId,
+        environment: vela.environment,
+        symbol: vela.symbol,
+        timeframe: vela.timeframe,
+        candle: toCandle(vela),
       },
-      now,
-    )
-    if (created) published += 1
-    // E sobe: a vela fechada é a matéria-prima da vela maior.
-    await foldChild(chaveDa(fechada), fechada, now)
+      occurredAt: new Date(vela.bucketStart),
+      // A identidade da VELA, não do momento em que fechou: reiniciar no meio da
+      // varredura não pode produzir um segundo evento da mesma vela.
+      dedupeKey: `candle:${vela.provider}:${vela.installationId}:${vela.symbol}:${vela.timeframe}:${vela.bucketStart}`,
+    },
+    now,
+  )
+  await markPublished(vela._id, now)
+  return created
+}
+
+/**
+ * Fechar o que venceu, publicar o que ainda não foi publicado, dobrar o que ainda não
+ * subiu — nesta ordem, e cada parte retomável sozinha.
+ *
+ * A varredura não assume que a passada anterior terminou. Ela olha para MARCAS no
+ * documento, não para o que aconteceu na memória de um processo que pode ter morrido.
+ */
+export async function closeDueCandles(now = new Date(), limite = 200): Promise<{ closed: number; published: number; folded: number }> {
+  let closed = 0
+  for (const aberta of await dueCandles(now, limite)) {
+    if (!isDue(aberta, now)) continue
+    if (await closeCandle(aberta._id, now)) closed += 1
   }
-  return { closed, published }
+
+  // A retomada: tudo que está fechado e ficou pela metade — inclusive o que acabou de
+  // fechar acima, e o que ficou de uma execução que morreu no meio.
+  let published = 0
+  let folded = 0
+  for (const vela of await pendingCandles(limite)) {
+    if (!vela.publishedAt) {
+      if (await publicarVela(vela, now)) published += 1
+    }
+    if (!vela.foldedAt) {
+      // A vela fechada é a matéria-prima da vela maior. Dobrar de novo não soma de
+      // novo: o filtro do update exclui a filha que já entrou.
+      await foldChild(chaveDa(vela), vela, now)
+      await markFolded(vela._id, now)
+      folded += 1
+    }
+  }
+  return { closed, published, folded }
 }
 
 /**
@@ -138,12 +168,50 @@ export async function closeDueCandles(now = new Date(), limite = 200): Promise<{
  * duas vezes é impedido pela entrega única do barramento.
  */
 export function registerMarketDataHandlers(): void {
-  onEvent('market.price.updated', async (event) => {
+  // O nome identifica o CONSUMIDOR. É por ele que uma retentativa sabe que este handler
+  // já rodou para este evento — sem isso, o retry somaria o mesmo negócio de novo.
+  onEvent('market.price.updated', 'marketData.ingestTrade', async (event) => {
     const { key, trade } = parseTradeEvent(event)
     // Um evento de outra conta que a do payload seria dado cruzando de dono.
     if (key.ownerId !== event.ownerId) throw new MarketContractError('o evento e o payload discordam sobre o dono')
     await ingestTrade(key, trade)
   })
+
+  // A cotação não entra em vela: ninguém pagou aquele preço. Ela atualiza o estado
+  // atual, e só.
+  onEvent('market.quote.updated', 'marketData.ingestQuote', async (event) => {
+    const { key, quote } = parseQuoteEvent(event)
+    if (key.ownerId !== event.ownerId) throw new MarketContractError('o evento e o payload discordam sobre o dono')
+    await ingestQuote(key, quote)
+  })
+}
+
+/** O mesmo contrato do negócio, para a cotação — que tem dois lados e nenhum volume. */
+export function parseQuoteEvent(event: Pick<PlatformEvent, 'payload' | 'schemaVersion'>): { key: SeriesKey; quote: Quote } {
+  if (event.schemaVersion !== MARKET_SCHEMA_VERSION) {
+    throw new MarketContractError(`versão de contrato desconhecida: ${event.schemaVersion}`)
+  }
+  const p = event.payload as Record<string, unknown>
+  const symbol = typeof p.symbol === 'string' ? p.symbol.trim().toUpperCase() : ''
+  const bid = num(p.bid)
+  const ask = num(p.ask)
+  if (!symbol) throw new MarketContractError('symbol ausente')
+  if (bid === null || ask === null) throw new MarketContractError('uma cotação precisa dos dois lados')
+  const at = p.at ? new Date(String(p.at)) : null
+  if (!at || Number.isNaN(at.getTime())) throw new MarketContractError('at precisa ser uma data válida')
+  for (const campo of ['ownerId', 'provider', 'installationId', 'environment'] as const) {
+    if (typeof p[campo] !== 'string' || !p[campo]) throw new MarketContractError(`${campo} ausente`)
+  }
+  return {
+    key: {
+      ownerId: String(p.ownerId),
+      provider: String(p.provider),
+      installationId: String(p.installationId),
+      environment: String(p.environment),
+      symbol,
+    },
+    quote: { symbol, bid, ask, bidSize: num(p.bidSize) ?? 0, askSize: num(p.askSize) ?? 0, at },
+  }
 }
 
 /**

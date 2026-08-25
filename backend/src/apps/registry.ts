@@ -12,6 +12,7 @@
 // todo prompt, rotina e teste escrito contra elas, então elas ficam.
 import { OFFICIAL_APPS } from './official/index.js'
 import type { AppActivation, AppDefinition, AppActionDefinition } from './types.js'
+import { hasStreamAdapter } from '../streams/adapters.js'
 
 // A lista de sempre, agora montada a partir dos módulos.
 export const SYSTEM_APPS: AppDefinition[] = OFFICIAL_APPS

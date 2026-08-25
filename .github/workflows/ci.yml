@@ -29,6 +29,15 @@ jobs:
       # Nothing connects to it: the integration tests override it with their own
       # in-process mongod.
       MONGODB_URI: mongodb://127.0.0.1:27017/comunicacaoai_ci
+      # A chave que `crypto.ts` usa para cifrar credencial de conexão. Só de teste, e
+      # de propósito em texto aberto: ela cifra dados que este job mesmo cria e
+      # descarta. Um segredo de verdade aqui não protegeria nada e daria a impressão
+      # de que o CI tem acesso a alguma conta.
+      #
+      # Existe porque a suíte NÃO carrega `.env` (ver backend/scripts/run-tests.mjs):
+      # antes disso, um teste que esquecia de declarar a chave passava na máquina de
+      # quem escreveu e falhava aqui.
+      ENCRYPTION_KEY: ci-encryption-key-nao-e-segredo-0000
       CI: true
       # Um só lugar define a pilha do smoke, e os quatro passos abaixo usam o mesmo — inclusive
       # o da limpeza, que precisa apontar para exatamente os mesmos arquivos para derrubar o

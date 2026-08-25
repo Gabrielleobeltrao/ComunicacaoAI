@@ -4,6 +4,7 @@ import { resolveConnection } from '../apps/connectionProfile.js'
 import { decryptInstallationConfig, getInstallation } from '../apps/installations.js'
 import {
   countStreams,
+  deleteStream,
   findStream,
   listResumableStreams,
   listStreams,
@@ -12,7 +13,8 @@ import {
   upsertStream,
 } from './repository.js'
 import { StreamManager, setStreamManager, streamManager } from './manager.js'
-import type { StreamAdapter, StreamRecord } from './types.js'
+import { streamAdapters } from './registry.js'
+import type { StreamRecord } from './types.js'
 import { MAX_STREAMS_PER_OWNER, MAX_SYMBOLS_PER_STREAM } from './types.js'
 
 /**
@@ -20,15 +22,10 @@ import { MAX_STREAMS_PER_OWNER, MAX_SYMBOLS_PER_STREAM } from './types.js'
  * dono, permissão e limite são conferidos — antes de qualquer conexão sair.
  */
 
-// Os adapters registrados neste processo. A Fase 5 pendura o da Alpaca aqui; nada mais
-// no sistema precisa saber que ele existe.
-const adapters = new Map<string, StreamAdapter>()
-
-export function registerStreamAdapter(adapter: StreamAdapter): void {
-  adapters.set(adapter.appKey, adapter)
-}
-export const streamAdapters = (): Map<string, StreamAdapter> => adapters
-export const clearStreamAdapters = (): void => adapters.clear()
+// O mapa vive em `registry.ts`, sem dependência nenhuma. Reexportado daqui porque é
+// deste módulo que o resto do sistema já importava.
+export { registerStreamAdapter, streamAdapters, clearStreamAdapters, hasStreamAdapter } from './registry.js'
+const adapters = streamAdapters()
 
 /**
  * A credencial para abrir o stream — só depois de a conexão passar em todas as
@@ -82,6 +79,68 @@ export async function ensureStream(ownerId: string, installationId: string, symb
   return record
 }
 
+/**
+ * Desligar de vez: para a conexão viva e apaga o registro.
+ *
+ * Diferente de pausar, que guarda a intenção de voltar. Aqui o dono está dizendo que
+ * não quer mais aquele stream, e deixar o documento para trás faria ele ressuscitar no
+ * próximo restart.
+ */
+export async function removeStream(ownerId: string, id: ObjectId): Promise<boolean> {
+  const existia = await findStream(ownerId, id)
+  if (!existia) return false
+  await streamManager()?.stop(id.toString())
+  return deleteStream(ownerId, id)
+}
+
+/**
+ * A conexão saiu do ar — o stream dela sai junto, AGORA.
+ *
+ * Chamado ao revogar e ao remover uma instalação. Duas coisas precisam acontecer, e
+ * nenhuma sozinha basta: parar a conexão viva (senão ela continua recebendo com a
+ * credencial que acabou de ser revogada, até o próximo erro) e marcar como pausado
+ * (senão o próximo restart do worker ressuscita o stream a partir do documento).
+ */
+export async function disableStreamsForInstallation(ownerId: string, installationId: string): Promise<number> {
+  const streams = await listStreamsForInstallation(ownerId, installationId)
+  const gerente = streamManager()
+  for (const s of streams) {
+    await gerente?.stop(s._id.toString())
+    await setStreamPaused(ownerId, s._id, true)
+  }
+  return streams.length
+}
+
+/**
+ * A credencial mudou — reabre com a nova.
+ *
+ * Sem isto, o stream continuaria de pé com a chave antiga até ela ser recusada pelo
+ * provider; trocar a credencial pareceria não ter efeito, que é o pior desfecho de
+ * uma troca de credencial.
+ */
+export async function reconnectStreamsForInstallation(ownerId: string, installationId: string): Promise<number> {
+  const streams = await listStreamsForInstallation(ownerId, installationId)
+  const gerente = streamManager()
+  let religados = 0
+  for (const s of streams) {
+    if (s.paused) continue
+    await gerente?.stop(s._id.toString())
+    await gerente?.start({ ...s, state: 'disconnected' })
+    religados += 1
+  }
+  return religados
+}
+
+/** A instalação foi removida: o registro do stream vai junto, senão fica órfão. */
+export async function deleteStreamsForInstallation(ownerId: string, installationId: string): Promise<number> {
+  const streams = await listStreamsForInstallation(ownerId, installationId)
+  for (const s of streams) {
+    await streamManager()?.stop(s._id.toString())
+    await deleteStream(ownerId, s._id)
+  }
+  return streams.length
+}
+
 export async function pauseStream(ownerId: string, id: ObjectId): Promise<StreamRecord | null> {
   const record = await setStreamPaused(ownerId, id, true)
   if (record) await streamManager()?.stop(id.toString())
@@ -118,7 +177,18 @@ export async function testStreamConnection(ownerId: string, installationId: stri
   }
   const adapter = adapters.get(conexao.appKey)
   if (!adapter) return { ok: false, message: `O App "${conexao.appName}" não oferece streaming neste sistema.` }
-  return { ok: true, message: `Conexão "${conexao.installationName}" pronta (${conexao.environment}).` }
+
+  /**
+   * O teste ABRE mesmo o socket, autentica e fecha.
+   *
+   * Antes daqui ele conferia se havia credencial guardada e adapter registrado — o que
+   * responde "está configurado", não "funciona". Uma chave errada passava no teste e
+   * falhava quando o stream fosse ligado de verdade, longe de quem clicou em testar.
+   */
+  const gerente = streamManager()
+  if (!gerente) return { ok: false, message: 'O motor de streams não está no ar neste processo.' }
+  const resultado = await gerente.probe(adapter, conexao.environment, credencial)
+  return { ok: resultado.ok, message: `${resultado.message} (${conexao.environment})` }
 }
 
 export const listOwnerStreams = listStreams

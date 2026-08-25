@@ -43,6 +43,14 @@ export interface StreamAdapter {
   parse(raw: unknown, ctx: StreamContext): PublishInput[]
   /** Um quadro que o provider chama de erro. Sem isto, um erro de auth vira silêncio. */
   errorOf?(raw: unknown): string | null
+  /**
+   * O provider confirmou a autenticação?
+   *
+   * Existe para o TESTE de conexão poder responder a pergunta certa. Sem isto, o teste
+   * só saberia dizer que o socket abriu — e um socket abre com credencial errada
+   * também; a recusa vem depois, na mensagem.
+   */
+  authOkOf?(raw: unknown): boolean
 }
 
 export interface StreamContext {

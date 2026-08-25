@@ -10,8 +10,10 @@ import { ObjectId } from 'mongodb'
 import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
 process.env.MONGODB_URI = await startMongo()
-process.env.ENCRYPTION_KEY = 'test-encryption-key'
-process.env.APP_ENCRYPTION_KEY ||= 'chave-de-teste-com-32-caracteres!'
+// A chave que o `crypto.ts` lê de verdade. Antes daqui estes testes definiam
+// `APP_ENCRYPTION_KEY`, que não existe em lugar nenhum: eles passavam porque o `.env`
+// de quem desenvolve tem a chave real, e falhavam no CI, que não tem `.env`.
+process.env.ENCRYPTION_KEY ||= 'chave-de-teste-que-nao-e-segredo'
 
 const { mongoClient, db } = await import('../dist/db.js')
 const { buildEventTriggerDefinition, createEventTrigger, normalizeMarketPlan } = await import('../dist/automations/eventTrigger.js')
@@ -288,4 +290,45 @@ test('a corrente de eventos é cortada antes de virar laço', async () => {
   // E não em silêncio: parar calado pareceria "nada aconteceu".
   assert.equal(r.skipped.length, 1)
   assert.match(r.skipped[0], /corrente/)
+})
+
+// --- o sinal carrega o que serve para filtrar ---------------------------------------------
+
+test('market.signal.detected preserva ativo, período, conexão e origem', async () => {
+  // Sem isto o sinal chegava dizendo só "achei alguma coisa": quem consome não tinha por
+  // onde filtrar, e a informação existia na execução — só não atravessava o salto.
+  await createEventTrigger(OWNER, AGENT, specComSinal(null))
+  await serieFechada(20)
+  const [evento] = await eventoDeVela()
+  await dispatchInternalEvent(evento)
+  const run = await db.collection('automation_runs').findOne({ ownerId: OWNER })
+  await processRun(run._id.toString())
+
+  const [sinal] = await bus.listEvents(OWNER, { type: 'market.signal.detected' })
+  assert.ok(sinal, 'o sinal foi publicado')
+  assert.equal(sinal.payload.symbol, SIMBOLO)
+  assert.equal(sinal.payload.timeframe, '1m')
+  assert.equal(sinal.payload.installationId, INSTALACAO.toString())
+  assert.equal(sinal.payload.provider, K.provider)
+  assert.equal(sinal.payload.environment, 'paper')
+  // O fio de volta: qual evento levou a este.
+  assert.equal(sinal.payload.causedByEventId, evento.eventId)
+  // E o resultado da análise continua lá, inteiro.
+  assert.equal(typeof sinal.payload.result, 'object')
+})
+
+test('um gatilho pode filtrar o sinal por ativo, como filtra qualquer evento', async () => {
+  // É a prova de que os campos servem para o que foram postos: alimentar o próximo filtro.
+  const { matchesInternalTrigger } = await import('../dist/automations/internalEvents.js')
+  await createEventTrigger(OWNER, AGENT, specComSinal(null))
+  await serieFechada(20)
+  const [evento] = await eventoDeVela()
+  await dispatchInternalEvent(evento)
+  const run = await db.collection('automation_runs').findOne({ ownerId: OWNER })
+  await processRun(run._id.toString())
+  const [sinal] = await bus.listEvents(OWNER, { type: 'market.signal.detected' })
+
+  const gatilho = { type: 'internal_event', eventType: 'market.signal.detected', symbols: [SIMBOLO], timeframe: '1m' }
+  assert.equal(matchesInternalTrigger(gatilho, sinal), true)
+  assert.equal(matchesInternalTrigger({ ...gatilho, symbols: ['VALE3'] }, sinal), false)
 })

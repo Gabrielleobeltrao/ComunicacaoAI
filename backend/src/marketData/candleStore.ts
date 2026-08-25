@@ -98,10 +98,44 @@ export async function foldTrade(k: SeriesKey, trade: Trade, now = new Date()): P
 export async function closeCandle(id: ObjectId, now = new Date()): Promise<StoredCandle | null> {
   const r = await candles.findOneAndUpdate(
     { _id: id, closed: false },
-    { $set: { closed: true, closedAt: now, expiresAt: new Date(now.getTime() + CANDLE_RETENTION_DAYS * 86_400_000), updatedAt: now } },
+    {
+      $set: {
+        closed: true,
+        closedAt: now,
+        // Fechada e AINDA NÃO publicada. É esta marca que a varredura procura depois —
+        // sem ela, uma queda entre fechar e publicar deixava a vela muda para sempre.
+        publishedAt: null,
+        foldedAt: null,
+        expiresAt: new Date(now.getTime() + CANDLE_RETENTION_DAYS * 86_400_000),
+        updatedAt: now,
+      },
+    },
     { returnDocument: 'after' },
   )
   return (r as StoredCandle) ?? null
+}
+
+/** O evento desta vela saiu. Idempotente: marcar duas vezes é marcar uma. */
+export async function markPublished(id: ObjectId, now = new Date()): Promise<void> {
+  await candles.updateOne({ _id: id }, { $set: { publishedAt: now, updatedAt: now } })
+}
+
+export async function markFolded(id: ObjectId, now = new Date()): Promise<void> {
+  await candles.updateOne({ _id: id }, { $set: { foldedAt: now, updatedAt: now } })
+}
+
+/**
+ * O que ficou pela metade: vela fechada sem evento, ou fechada sem ter subido.
+ *
+ * É a retomada. Uma execução que morre no meio não perde o trabalho — ela deixa uma
+ * marca que a próxima varredura encontra.
+ */
+export function pendingCandles(limit = 200): Promise<StoredCandle[]> {
+  return candles
+    .find({ closed: true, $or: [{ publishedAt: null }, { foldedAt: null }] })
+    .sort({ bucketStart: 1 })
+    .limit(limit)
+    .toArray()
 }
 
 /** As velas abertas cujo balde já acabou. É a varredura que fecha a última do dia. */
@@ -128,33 +162,87 @@ export const isDue = (c: StoredCandle, now = new Date()): boolean => bucketIsOve
 export async function foldChild(k: SeriesKey, child: StoredCandle, now = new Date()): Promise<StoredCandle[]> {
   const resultado: StoredCandle[] = []
   for (const alvo of AGGREGATES_TO[child.timeframe]) {
-    const bucket = bucketStart(child.bucketStart, alvo)
-    const filtro = chave(k, alvo, bucket)
-    const r = await candles.findOneAndUpdate(
-      filtro,
-      {
-        $setOnInsert: { ...filtro, createdAt: now, closedAt: null, expiresAt: null, trades: 0 },
-        $max: { high: child.high, lastChildAt: child.bucketStart },
-        $min: { low: child.low, openedFrom: child.bucketStart },
-        $set: { closed: false, updatedAt: now },
-        $inc: { volume: child.volume },
-      },
-      { upsert: true, returnDocument: 'after' },
-    )
-    const mae = r as StoredCandle
-    // Abertura e fechamento dependem de QUAL filha é, não de acumular: a abertura é a
-    // da filha mais antiga vista, o fechamento é o da mais recente.
-    const set: Record<string, unknown> = {}
-    if (mae.openedFrom === child.bucketStart) set.open = child.open
-    if ((mae.lastChildAt ?? -1) === child.bucketStart) set.close = child.close
-    if (Object.keys(set).length) {
-      const ajustado = await candles.findOneAndUpdate({ _id: mae._id }, { $set: set }, { returnDocument: 'after' })
-      resultado.push(ajustado as StoredCandle)
-    } else {
-      resultado.push(mae)
-    }
+    const mae = await dobrarUma(k, alvo, child, now)
+    if (mae) resultado.push(mae)
   }
   return resultado
+}
+
+/**
+ * Dobrar UMA filha na vela maior, no máximo uma vez.
+ *
+ * O `$inc` do volume não é idempotente, e uma retomada depois de uma queda dobra de
+ * novo por definição — era assim que o volume dobrava sozinho. A guarda é
+ * `foldedChildren` no FILTRO: a filha que já entrou não casa, e nada é somado.
+ *
+ * Não dá para fazer isso com `upsert` no mesmo update: quando a mãe existe E já tem a
+ * filha, o filtro não casa e o Mongo tenta INSERIR — batendo no índice único. O erro
+ * que saía dali era de chave duplicada, que não tem nada a ver com o que aconteceu
+ * (a filha já estava dobrada).
+ */
+async function dobrarUma(k: SeriesKey, alvo: Timeframe, child: StoredCandle, now: Date): Promise<StoredCandle | null> {
+  const bucket = bucketStart(child.bucketStart, alvo)
+  const filtro = chave(k, alvo, bucket)
+  const atualizacao = {
+    $max: { high: child.high, lastChildAt: child.bucketStart },
+    $min: { low: child.low, openedFrom: child.bucketStart },
+    $set: { closed: false, updatedAt: now },
+    $inc: { volume: child.volume },
+    $addToSet: { foldedChildren: child.bucketStart },
+  }
+
+  for (let tentativa = 0; tentativa < 2; tentativa += 1) {
+    const r = await candles.findOneAndUpdate({ ...filtro, foldedChildren: { $ne: child.bucketStart } }, atualizacao, { returnDocument: 'after' })
+    if (r) return ajustarPontas(r as StoredCandle, child)
+
+    const existente = await candles.findOne(filtro)
+    // A mãe existe e já tem esta filha: nada a fazer, e nada a somar.
+    if (existente) return existente as StoredCandle
+
+    try {
+      await candles.insertOne({
+        ...filtro,
+        open: child.open,
+        high: child.high,
+        low: child.low,
+        close: child.close,
+        volume: child.volume,
+        trades: 0,
+        closed: false,
+        closedAt: null,
+        expiresAt: null,
+        publishedAt: null,
+        foldedAt: null,
+        foldedChildren: [child.bucketStart],
+        openedFrom: child.bucketStart,
+        lastChildAt: child.bucketStart,
+        createdAt: now,
+        updatedAt: now,
+      } as StoredCandle)
+      return candles.findOne(filtro) as Promise<StoredCandle>
+    } catch (error) {
+      // Outra dobra inseriu entre a nossa leitura e a nossa escrita. Volta e tenta o
+      // update guardado, que agora vai encontrar documento.
+      if ((error as { code?: number }).code !== 11000) throw error
+    }
+  }
+  return candles.findOne(filtro) as Promise<StoredCandle | null>
+}
+
+/**
+ * Abertura e fechamento não acumulam: eles são de UMA filha cada.
+ *
+ * A abertura é da mais antiga já vista, o fechamento é da mais recente — por isso os
+ * dois são conferidos contra as marcas, e não sobrescritos às cegas: depois de um
+ * restart as filhas podem ser dobradas em qualquer ordem.
+ */
+async function ajustarPontas(mae: StoredCandle, child: StoredCandle): Promise<StoredCandle> {
+  const set: Record<string, unknown> = {}
+  if (mae.openedFrom === child.bucketStart) set.open = child.open
+  if ((mae.lastChildAt ?? -1) === child.bucketStart) set.close = child.close
+  if (!Object.keys(set).length) return mae
+  const r = await candles.findOneAndUpdate({ _id: mae._id }, { $set: set }, { returnDocument: 'after' })
+  return (r as StoredCandle) ?? mae
 }
 
 /** A série fechada, do mais antigo para o mais novo — a ordem que o analisador espera. */
