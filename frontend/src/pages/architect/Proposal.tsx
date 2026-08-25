@@ -123,14 +123,7 @@ export function Proposal({
         </Button>
       </div>
 
-      <details data-testid="architect-advanced">
-        <summary style={{ fontSize: 12.5, color: 'var(--text-muted)', cursor: 'pointer', minHeight: 32, display: 'flex', alignItems: 'center' }}>Avançado</summary>
-        <pre
-          style={{ fontSize: 11, background: 'var(--surface-sunken)', padding: 10, borderRadius: 8, overflowX: 'auto', maxHeight: 320 }}
-        >
-          {JSON.stringify(project.blueprint, null, 2)}
-        </pre>
-      </details>
+
     </div>
   )
 }

@@ -47,6 +47,35 @@ export interface BlueprintIssue {
   suggestedAction?: string
 }
 
+export interface ArchitectLink {
+  kind: string
+  key: string
+  id: string
+  path: string
+}
+
+export interface ArchitectTargets {
+  floors: { id: string; name: string }[]
+  agents: { id: string; name: string; floorId: string }[]
+  sectors: { id: string; name: string; floorId: string }[]
+  routines: { id: string; name: string; status: string }[]
+}
+
+export interface BlueprintLink {
+  kind: 'floor' | 'agent' | 'sector' | 'routine'
+  key: string
+  action: 'create' | 'reuse' | 'update'
+  resourceId?: string | null
+}
+
+export interface ApplyStep {
+  kind: string
+  key: string
+  status: string
+  message?: string
+  resourceId?: string | null
+}
+
 export interface ArchitectProject {
   id: string
   title: string
@@ -67,6 +96,8 @@ export interface ArchitectProject {
   blueprintHash?: string | null
   checklist?: ChecklistItem[]
   applyState?: { operationId: string; status: string; error: string | null } | null
+  /** Vem junto no GET: um reload de projeto aplicado precisa reconstruí-los. */
+  links?: ArchitectLink[]
 }
 
 export interface Blueprint {
@@ -118,8 +149,8 @@ export interface TurnResponse extends ArchitectProject {
 }
 
 export interface ApplyResponse extends ArchitectProject {
-  operation: { id: string; status: string; steps: { kind: string; key: string; status: string; message?: string }[]; error: string | null } | null
-  links: { kind: string; key: string; id: string; path: string }[]
+  operation: { id: string; status: string; steps: ApplyStep[]; error: string | null } | null
+  links: ArchitectLink[]
 }
 
 /** O erro carrega o código do servidor: a tela reage a cada recusa de um jeito. */
@@ -151,9 +182,21 @@ export const listMessages = (id: string) => request<ArchitectMessage[]>(`/projec
 export const sendMessage = (id: string, content: string, forceProposal = false) =>
   request<TurnResponse>(`/projects/${id}/messages`, { method: 'POST', body: JSON.stringify({ content, forceProposal }) })
 export const generateProposal = (id: string) => request<TurnResponse>(`/projects/${id}/generate`, { method: 'POST' })
+/** Uma rodada sem mensagem nova — é o que responde à descrição inicial. */
+export const advanceTurn = (id: string) => request<TurnResponse>(`/projects/${id}/turn`, { method: 'POST', body: JSON.stringify({}) })
 export const validateProject = (id: string) => request<{ valid: boolean; issues: BlueprintIssue[] }>(`/projects/${id}/validate`, { method: 'POST' })
 export const previewProject = (id: string) => request<ArchitectPreview>(`/projects/${id}/preview`)
-export const applyProject = (id: string, body: { blueprintHash: string; idempotencyKey: string; approvedAppKeys: string[] }) =>
+export const listTargets = () => request<ArchitectTargets>('/targets')
+export const setLinks = (id: string, links: BlueprintLink[]) => request<ArchitectProject>(`/projects/${id}/links`, { method: 'PATCH', body: JSON.stringify({ links }) })
+export const rollbackProject = (id: string) => request<ArchitectProject & { removed: string[]; kept: { key: string; reason: string }[] }>(`/projects/${id}/rollback`, { method: 'POST' })
+export const listProviders = () =>
+  fetch(`${API_URL}/api/providers`, { credentials: 'include' })
+    .then((r) => (r.ok ? r.json() : []))
+    .then((v) => v as { id: 'anthropic' | 'openai'; label: string; models: string[]; defaultModel: string; configured: boolean }[])
+export const patchProject = (id: string, patch: { provider?: 'anthropic' | 'openai'; model?: string | null; title?: string }) =>
+  request<ArchitectProject>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+
+export const applyProject = (id: string, body: { blueprintHash: string; idempotencyKey: string; approvedAppKeys: string[]; approvedUpdateKeys: string[] }) =>
   request<ApplyResponse>(`/projects/${id}/apply`, { method: 'POST', body: JSON.stringify({ ...body, confirm: true }) })
 export const resumeProject = (id: string) => request<ApplyResponse>(`/projects/${id}/resume`, { method: 'POST' })
 export const recheckProject = (id: string) => request<ApplyResponse>(`/projects/${id}/recheck`, { method: 'POST' })

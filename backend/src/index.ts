@@ -434,6 +434,9 @@ app.get('/api/providers', requireAuth, async (_req, res) => {
         models,
         defaultModel: defaultModel(provider.id),
         auxiliaryModel: auxiliaryModel(provider.id),
+        // Se a conta tem chave para ele. Nunca a chave: só o fato de existir. Sem
+        // isto, a tela oferece um provedor que vai recusar na primeira chamada.
+        configured: Boolean(apiKey),
       }
     }),
   )

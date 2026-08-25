@@ -200,6 +200,7 @@ const RULES: Rule[] = [
   // no log não dá para contar a história de como o projeto chegou onde chegou. O que
   // fica registrado é a ação e o projeto; nunca o prompt, a conversa ou o blueprint.
   R('POST', 'api/architect/projects/:/messages', null, { why: 'conversation traffic' }),
+  R('POST', 'api/architect/projects/:/turn', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/generate', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/validate', { entityType: 'architect_project', action: 'test' }, { idAt: 3 }),
   // Marcar um item da checklist é anotação do dono sobre o próprio projeto.

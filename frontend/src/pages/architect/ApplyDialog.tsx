@@ -24,7 +24,7 @@ export function ApplyDialog({
   aplicando: boolean
   erro: string | null
   onFechar: () => void
-  onConfirmar: (approvedAppKeys: string[]) => void
+  onConfirmar: (aprovado: { approvedAppKeys: string[]; approvedUpdateKeys: string[] }) => void
 }) {
   const alteracoes = preview.items.filter((i) => i.requiresApproval)
   const apps = preview.items.filter((i) => i.kind === 'app' && i.action !== 'wait_user')
@@ -93,7 +93,9 @@ export function ApplyDialog({
           <Button variant="secondary" onClick={onFechar} disabled={aplicando}>
             Cancelar
           </Button>
-          <Button onClick={() => onConfirmar(aprovados)} disabled={!podeAplicar} data-testid="architect-apply-confirm">
+          {/* O que foi marcado VAI no pedido, e o servidor confere de novo. Sem isto,
+              o checkbox seria só um pedágio visual antes de aplicar tudo. */}
+          <Button onClick={() => onConfirmar({ approvedAppKeys: aprovados, approvedUpdateKeys: alteracoesOk })} disabled={!podeAplicar} data-testid="architect-apply-confirm">
             {aplicando ? 'Aplicando…' : 'Confirmar e criar'}
           </Button>
         </div>

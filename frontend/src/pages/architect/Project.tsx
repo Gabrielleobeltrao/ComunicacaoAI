@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
 import { Badge, Button, Card, Icon } from '../../ui'
 import * as api from '../../lib/architect'
-import type { ApplyResponse, ArchitectMessage, ArchitectPreview, ArchitectProject, ArchitectQuestion } from '../../lib/architect'
+import type { ApplyResponse, ApplyStep, ArchitectMessage, ArchitectPreview, ArchitectProject, ArchitectQuestion, BlueprintLink } from '../../lib/architect'
 import { Conversation } from './Conversation'
 import { Proposal } from './Proposal'
 import { Checklist } from './Checklist'
 import { ApplyDialog } from './ApplyDialog'
+import { Advanced } from './Advanced'
+import { ResourceLinks } from './ResourceLinks'
 import { STATUS_LABEL, statusTone } from './shared'
 
 type Aba = 'conversa' | 'proposta' | 'checklist'
@@ -29,6 +31,11 @@ export function ArchitectProject() {
   const [dialogo, setDialogo] = useState(false)
   const [aplicando, setAplicando] = useState(false)
   const [aba, setAba] = useState<Aba>('conversa')
+  // A rodada automática vale UMA vez por projeto. O efeito pode ser remontado, e cada
+  // remontagem seria outra chamada ao modelo — cobrada.
+  const jaIniciou = useRef<string | null>(null)
+  const [passos, setPassos] = useState<ApplyStep[]>([])
+  const [resultadoDesfazer, setResultadoDesfazer] = useState<{ removed: string[]; kept: { key: string; reason: string }[] } | null>(null)
 
   const recarregarPrevia = useCallback(
     async (p: ArchitectProject) => {
@@ -48,10 +55,22 @@ export function ArchitectProject() {
       .then(async ([p, m]) => {
         setProjeto(p)
         setMensagens(m)
+        // Os links vêm do servidor, e não da memória desta aba: recarregar a página de
+        // um projeto aplicado precisa reconstruir os caminhos para o que foi criado.
+        setLinks(p.links ?? [])
         if (p.pendingQuestion) setPergunta({ ...p.pendingQuestion, why: '', allowUnknown: true })
         await recarregarPrevia(p)
+
+        // A descrição já é a primeira mensagem. Sem esta rodada, a tela abria com o que
+        // a pessoa escreveu e um silêncio — ela teria que reenviar para começar.
+        if (p.status === 'discovery' && !p.hasBlueprint && !p.pendingQuestion && m.length === 1 && jaIniciou.current !== projectId) {
+          jaIniciou.current = projectId
+          await registrar(() => api.advanceTurn(projectId))
+        }
       })
       .catch((e: Error) => setErro({ code: 'load', message: e.message }))
+    // `registrar` depende do estado da conversa e não deve reagendar esta carga.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, recarregarPrevia])
 
   const registrar = async (fn: () => Promise<api.TurnResponse>) => {
@@ -96,7 +115,7 @@ export function ArchitectProject() {
     setDialogo(true)
   }
 
-  async function aplicar(approvedAppKeys: string[]) {
+  async function aplicar(aprovado: { approvedAppKeys: string[]; approvedUpdateKeys: string[] }) {
     if (!previa) return
     setAplicando(true)
     setErro(null)
@@ -104,10 +123,11 @@ export function ArchitectProject() {
       const r = await api.applyProject(projectId, {
         blueprintHash: previa.blueprintHash,
         idempotencyKey: api.idempotencyKeyFor(projectId, previa.blueprintHash),
-        approvedAppKeys,
+        ...aprovado,
       })
       setProjeto(r)
       setLinks(r.links)
+      setPassos(r.operation?.steps ?? [])
       setDialogo(false)
       setAba('checklist')
     } catch (e) {
@@ -124,8 +144,54 @@ export function ArchitectProject() {
       const r = await fn()
       setProjeto(r)
       setLinks(r.links ?? [])
+      if (r.operation?.steps) setPassos(r.operation.steps)
     } catch (e) {
       setErro({ code: (e as api.ArchitectError).code ?? 'error', message: (e as Error).message })
+    } finally {
+      setPendente(false)
+    }
+  }
+
+  async function salvarLigacoes(links: BlueprintLink[]) {
+    setPendente(true)
+    setErro(null)
+    try {
+      const p = await api.setLinks(projectId, links)
+      setProjeto(p)
+      await recarregarPrevia(p)
+    } catch (e) {
+      setErro({ code: 'links', message: (e as Error).message })
+    } finally {
+      setPendente(false)
+    }
+  }
+
+  async function trocarProvedor(patch: { provider?: 'anthropic' | 'openai'; model?: string | null }) {
+    try {
+      setProjeto(await api.patchProject(projectId, patch))
+    } catch (e) {
+      setErro({ code: 'provider', message: (e as Error).message })
+    }
+  }
+
+  async function arquivar() {
+    try {
+      setProjeto(await api.archiveProject(projectId))
+    } catch (e) {
+      setErro({ code: 'archive', message: (e as Error).message })
+    }
+  }
+
+  async function desfazer() {
+    setPendente(true)
+    setErro(null)
+    try {
+      const r = await api.rollbackProject(projectId)
+      setProjeto(r)
+      setLinks([])
+      setResultadoDesfazer({ removed: r.removed, kept: r.kept })
+    } catch (e) {
+      setErro({ code: 'rollback', message: (e as Error).message })
     } finally {
       setPendente(false)
     }
@@ -158,7 +224,13 @@ export function ArchitectProject() {
       onGenerate={() => registrar(() => api.generateProposal(projectId))}
     />
   )
-  const proposta = <Proposal project={projeto} preview={previa} carregando={pendente} onRevisar={revisar} onAplicar={abrirAplicacao} />
+  const proposta = (
+    <div className="flex flex-col gap-3">
+      {!aplicado && projeto.hasBlueprint && <ResourceLinks project={projeto} onSalvar={salvarLigacoes} carregando={pendente} />}
+      <Proposal project={projeto} preview={previa} carregando={pendente} onRevisar={revisar} onAplicar={abrirAplicacao} />
+      <Advanced project={projeto} steps={passos} onTrocarProvedor={trocarProvedor} onArquivar={arquivar} onDesfazer={desfazer} carregando={pendente} />
+    </div>
+  )
   const checklist = <Checklist project={projeto} links={links} onMarcar={marcar} onReconferir={() => comResultado(() => api.recheckProject(projectId))} carregando={pendente} />
 
   return (
@@ -193,10 +265,44 @@ export function ArchitectProject() {
           </Card>
         )}
 
+        {projeto.status === 'applying' && (
+          <Card>
+            <div className="flex flex-col gap-2" data-testid="architect-applying">
+              <p style={{ fontSize: 13 }}>Esta aplicação está em andamento. Se ela tiver parado, dá para retomar de onde parou.</p>
+              <div>
+                <Button onClick={() => comResultado(() => api.resumeProject(projectId))} disabled={pendente} data-testid="architect-resume">
+                  Retomar de onde parou
+                </Button>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {resultadoDesfazer && (
+          <Card>
+            <div className="flex flex-col gap-1" data-testid="architect-rollback-result">
+              <strong style={{ fontSize: 13 }}>Desfeito</strong>
+              <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{resultadoDesfazer.removed.length} removidos.</p>
+              {resultadoDesfazer.kept.map((k) => (
+                <p key={k.key} style={{ fontSize: 12.5 }}>
+                  {k.key} ficou: {k.reason}
+                </p>
+              ))}
+            </div>
+          </Card>
+        )}
+
         {projeto.status === 'failed' && !erro && (
           <Card>
             <div className="flex flex-col gap-2" data-testid="architect-failed">
-              <p style={{ fontSize: 13 }}>A aplicação parou no meio. O que já foi criado continua de pé.</p>
+              <p style={{ fontSize: 13 }}>
+                A aplicação parou no meio. O que já foi criado continua de pé{passos.length > 0 ? `: ${passos.filter((s) => s.status === 'created').length} recursos.` : '.'}
+              </p>
+              {projeto.applyState?.error && (
+                <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="architect-failure-reason">
+                  {projeto.applyState.error}
+                </p>
+              )}
               <div>
                 <Button onClick={() => comResultado(() => api.resumeProject(projectId))} data-testid="architect-resume">
                   Retomar de onde parou

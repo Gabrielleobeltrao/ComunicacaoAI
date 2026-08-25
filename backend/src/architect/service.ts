@@ -10,6 +10,7 @@ import { buildPreview } from './preview.js'
 import { deriveChecklist, applyChecklistState, computeReadiness } from './checklist.js'
 import { validateOfficeBlueprint } from './validate.js'
 import { isEditable, RESUME_FROM } from './state.js'
+import { getProviderKeyStatus } from '../userSettings.js'
 import { applyBlueprint, resumeApply, rollbackOperation, ApplyConflict, ApplyFailure } from './apply.js'
 import type { ApplyHooks } from './apply.js'
 import { recheckProject, appliedLinks } from './recheck.js'
@@ -41,6 +42,14 @@ const requireProject = async (ownerId: string, id: ObjectId): Promise<ArchitectP
   return p
 }
 
+/** O primeiro provedor com chave nesta conta; Anthropic quando nenhum tem. */
+async function primeiroProvedorConfigurado(ownerId: string): Promise<'anthropic' | 'openai'> {
+  const status = await getProviderKeyStatus(ownerId)
+  if (status.anthropic) return 'anthropic'
+  if (status.openai) return 'openai'
+  return 'anthropic'
+}
+
 export async function createProject(ownerId: string, input: { objective: string; title?: string; provider?: 'anthropic' | 'openai'; model?: string | null }): Promise<ArchitectProject> {
   const objetivo = String(input.objective ?? '').trim()
   if (!objetivo) throw new ValidationError('descreva o que você quer que a operação faça')
@@ -48,7 +57,11 @@ export async function createProject(ownerId: string, input: { objective: string;
     throw new ArchitectRefusal('too_many_projects', `você já tem ${L.MAX_PROJECTS_PER_OWNER} projetos; arquive um para começar outro`)
   }
   const titulo = String(input.title ?? '').trim() || objetivo.slice(0, 60)
-  const projeto = await repo.createProject(ownerId, { title: titulo, objective: objetivo, provider: input.provider, model: input.model ?? null })
+  // Sem escolha explícita, vale o que a conta TEM. Fixar Anthropic fazia o projeto
+  // nascer apontando para um provedor sem chave numa conta que só configurou OpenAI —
+  // e a primeira mensagem falhava pedindo para configurar o que já estava configurado.
+  const provider = input.provider ?? (await primeiroProvedorConfigurado(ownerId))
+  const projeto = await repo.createProject(ownerId, { title: titulo, objective: objetivo, provider, model: input.model ?? null })
   // A primeira mensagem é a própria descrição: a conversa começa de onde a pessoa parou.
   await repo.appendMessage(ownerId, projeto._id, 'user', objetivo)
   return projeto
@@ -91,13 +104,32 @@ export async function sendMessage(
   })
 }
 
-/** Gerar/regerar a proposta sem mensagem nova. A chave de cobrança sai do relógio. */
-export async function generateBlueprint(ownerId: string, projectId: ObjectId): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
+/**
+ * Roda uma rodada SEM mensagem nova.
+ *
+ * Dois usos: gerar a proposta agora (`forceProposal`) e — o que faltava — dar o
+ * primeiro passo da conversa. A descrição já entrou como primeira mensagem quando o
+ * projeto foi criado; sem esta chamada, ninguém respondia a ela, e a tela abria com o
+ * que a pessoa escreveu e um silêncio.
+ */
+export async function advanceTurn(
+  ownerId: string,
+  projectId: ObjectId,
+  opts: { forceProposal?: boolean } = {},
+): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
   const projeto = await requireProject(ownerId, projectId)
   if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
-  const marca = new ObjectId().toString()
-  return runTurn(ownerId, projeto, `architect:${projectId.toString()}:gen:${marca}`, { forceProposal: true, secretMasked: false })
+  // A chave de cobrança sai da última mensagem: a mesma rodada, repetida por um erro
+  // de rede, não cobra duas vezes.
+  const ultima = (await repo.recentMessages(ownerId, projectId, 1))[0]
+  const marca = ultima ? ultima._id.toString() : new ObjectId().toString()
+  return runTurn(ownerId, projeto, `architect:${projectId.toString()}:turn:${opts.forceProposal ? 'gen:' : ''}${marca}`, {
+    forceProposal: opts.forceProposal === true,
+    secretMasked: false,
+  })
 }
+
+export const generateBlueprint = (ownerId: string, projectId: ObjectId) => advanceTurn(ownerId, projectId, { forceProposal: true })
 
 async function runTurn(
   ownerId: string,
@@ -348,6 +380,9 @@ export async function setBlueprintLinks(ownerId: string, projectId: ObjectId, li
 }
 
 export const architectTargets = (ownerId: string) => loadTargets(ownerId)
+
+/** Para onde ir depois de aplicar — recalculado do banco, não guardado na tela. */
+export const projectLinks = (ownerId: string, projeto: ArchitectProject) => appliedLinks(ownerId, projeto)
 
 export async function resumeProject(ownerId: string, projectId: ObjectId, hooks: ApplyHooks = {}) {
   const projeto = await requireProject(ownerId, projectId)

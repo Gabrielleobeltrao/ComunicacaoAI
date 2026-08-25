@@ -69,7 +69,10 @@ architectRouter.get('/projects/:id', async (req, res) => {
   if (!id) return notFound(res)
   const projeto = await repo.getProject(res.locals.userId, id)
   if (!projeto) return notFound(res)
-  res.json(service.projectDetail(projeto))
+  // Os links vêm JUNTO. Eles nasciam só na resposta de aplicar, e viviam na memória da
+  // aba: recarregar a página de um projeto já aplicado deixava a pessoa sem nenhum
+  // caminho para o que ela mesma acabou de criar.
+  res.json({ ...service.projectDetail(projeto), links: await service.projectLinks(res.locals.userId, projeto) })
 })
 
 architectRouter.patch('/projects/:id', async (req, res, next) => {
@@ -124,6 +127,21 @@ architectRouter.post('/projects/:id/messages', async (req, res, next) => {
       service.sendMessage(res.locals.userId, id, String(body.content ?? ''), { forceProposal: body.forceProposal === true }),
     )
     res.json({ ...service.projectDetail(r.project), assistantText: r.assistantText, question: r.question, secretMasked: r.secretMasked })
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
+// A primeira rodada, sem mensagem nova: a descrição já está lá e precisa de resposta.
+architectRouter.post('/projects/:id/turn', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    comRitmo(res.locals.userId)
+    const body = (req.body ?? {}) as { forceProposal?: boolean }
+    const r = await withProjectLock(id.toString(), () => service.advanceTurn(res.locals.userId, id, { forceProposal: body.forceProposal === true }))
+    auditEntity(res, { id: r.project._id.toString(), label: r.project.title })
+    res.json({ ...service.projectDetail(r.project), assistantText: r.assistantText, question: r.question })
   } catch (error) {
     refuse(res, error, next)
   }

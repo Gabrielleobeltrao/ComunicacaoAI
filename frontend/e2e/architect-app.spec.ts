@@ -92,6 +92,13 @@ const COM_PROPOSTA = projeto({ status: 'draft', hasBlueprint: true, blueprint: B
 
 let aplicado: Record<string, unknown> | null = null
 let mensagensEnviadas: string[] = []
+let ligacoes: Record<string, unknown> | null = null
+let rodadasAutomaticas = 0
+
+const PROVEDORES = [
+  { id: 'anthropic', label: 'Anthropic (Claude)', models: ['claude-um', 'claude-dois'], defaultModel: 'claude-um', configured: true },
+  { id: 'openai', label: 'OpenAI (GPT)', models: ['gpt-um'], defaultModel: 'gpt-um', configured: false },
+]
 
 async function stub(
   page: Page,
@@ -103,10 +110,14 @@ async function stub(
     preview?: unknown
     apply?: { status?: number; json: unknown }
     resume?: { status?: number; json: unknown }
+    targets?: unknown
+    providers?: unknown
   } = {},
 ) {
   aplicado = null
   mensagensEnviadas = []
+  ligacoes = null
+  rodadasAutomaticas = 0
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
 
   const proj = opts.project ?? projeto()
@@ -122,6 +133,21 @@ async function stub(
     }
     return r.fulfill({ json: opts.messages ?? [] })
   })
+  await page.route('**/api/architect/targets', (r) => r.fulfill({ json: opts.targets ?? { floors: [], agents: [], sectors: [], routines: [] } }))
+  await page.route('**/api/architect/projects/*/links', (r) => {
+    ligacoes = r.request().postDataJSON() as Record<string, unknown>
+    return r.fulfill({ json: { ...COM_PROPOSTA, status: 'draft' } })
+  })
+  await page.route('**/api/architect/projects/*/turn', (r) => {
+    rodadasAutomaticas += 1
+    const t = opts.turn ?? { json: { ...proj, assistantText: 'Por onde as pessoas falam com você hoje?', question: PERGUNTA } }
+    return r.fulfill({ status: t.status ?? 200, json: t.json })
+  })
+  await page.route('**/api/architect/projects/*/rollback', (r) =>
+    r.fulfill({ json: { ...COM_PROPOSTA, status: 'draft', removed: ['agent:gerente', 'agent:duvidas'], kept: [{ key: 'atendimento', reason: 'é o único andar do prédio' }] } }),
+  )
+  await page.route('**/api/architect/projects/*/archive', (r) => r.fulfill({ json: { ...COM_PROPOSTA, status: 'archived' } }))
+  await page.route('**/api/providers', (r) => r.fulfill({ json: opts.providers ?? PROVEDORES }))
   await page.route('**/api/architect/projects/*/generate', (r) =>
     r.fulfill({ json: { ...COM_PROPOSTA, assistantText: 'Montei uma primeira proposta.', question: null } }),
   )
@@ -295,6 +321,173 @@ test('o JSON existe, mas fica em “Avançado”', async ({ page }) => {
   await expect(page.getByTestId('architect-proposal')).not.toContainText('blueprintPatch')
   await page.getByTestId('architect-advanced').getByText('Avançado').click()
   await expect(page.getByTestId('architect-advanced')).toContainText('knowledgeRequirements')
+})
+
+// --- a rodada corretiva -----------------------------------------------------------------------------
+
+test('a conversa começa sozinha: a descrição já recebe a primeira pergunta', async ({ page }) => {
+  await stub(page, { messages: [{ id: 'm1', role: 'user', content: 'quero automatizar o atendimento', createdAt: NOW }] })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  // Ninguém digitou nada, e a pergunta já está na tela.
+  await expect(page.getByTestId('architect-question')).toBeVisible()
+  await expect.poll(() => rodadasAutomaticas).toBe(1)
+  await expect(page.getByTestId('architect-choice-web')).toBeVisible()
+})
+
+test('a rodada automática não repete quando a conversa já andou', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    messages: [
+      { id: 'm1', role: 'user', content: 'quero automatizar', createdAt: NOW },
+      { id: 'm2', role: 'assistant', content: 'Por onde falam?', createdAt: NOW },
+    ],
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-proposal')).toBeVisible()
+  expect(rodadasAutomaticas).toBe(0)
+})
+
+test('só provedor configurado é oferecido', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-advanced').getByText('Avançado').click()
+  const seletor = page.getByTestId('architect-provider-select')
+  await expect(seletor).toBeVisible()
+  await expect(seletor.locator('option')).toHaveCount(1)
+  await expect(seletor.locator('option')).toHaveText(['Anthropic (Claude)'])
+})
+
+test('sem provedor nenhum configurado, a tela manda para Configurações', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA, providers: PROVEDORES.map((p) => ({ ...p, configured: false })) })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-advanced').getByText('Avançado').click()
+  await expect(page.getByTestId('architect-provider')).toContainText('Nenhum provedor configurado')
+  await expect(page.getByTestId('architect-provider-select')).toHaveCount(0)
+})
+
+test('a escolha de recurso só oferece o que é desta conta, e manda ação e id', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    targets: { floors: [{ id: 'f-real', name: 'Andar existente' }], agents: [], sectors: [], routines: [] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  const seletor = page.getByTestId('architect-link-floor-atendimento')
+  await expect(seletor).toBeVisible()
+  await seletor.selectOption('reuse|f-real')
+  await page.getByTestId('architect-links-save').click()
+
+  await expect.poll(() => ligacoes?.links).toEqual([{ kind: 'floor', key: 'atendimento', action: 'reuse', resourceId: 'f-real' }])
+})
+
+test('sem nada para reaproveitar, a tela diz isso em vez de um seletor vazio', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-no-targets')).toBeVisible()
+})
+
+test('o que foi marcado na confirmação é o que vai no pedido', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    preview: {
+      ...PREVIA,
+      items: [
+        ...PREVIA.items.map((i) => (i.kind === 'app' ? { ...i, action: 'reuse' } : i)),
+        { kind: 'agent', key: 'antigo', label: 'Agente que já existia', action: 'update', detail: 'Ganha uma competência.', dependsOn: [], usesLlm: false, requiresApproval: true, issues: [] },
+      ],
+    },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await page.getByText('Alterar Agente: Agente que já existia').click()
+  await page.getByTestId('architect-approve-apps').getByText('web_chat').click()
+  await page.getByTestId('architect-apply-confirm').click()
+
+  await expect.poll(() => aplicado?.approvedUpdateKeys).toEqual(['antigo'])
+  expect(aplicado?.approvedAppKeys).toEqual(['web_chat'])
+})
+
+test('um projeto travado em “aplicando” oferece retomar', async ({ page }) => {
+  await stub(page, { project: { ...COM_PROPOSTA, status: 'applying' } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-applying')).toBeVisible()
+  await page.getByTestId('architect-resume').click()
+  await expect(page.getByTestId('architect-status').first()).toContainText('Aplicada')
+})
+
+test('a falha mostra o motivo e quantos recursos ficaram de pé', async ({ page }) => {
+  await stub(page, { project: { ...COM_PROPOSTA, status: 'failed', applyState: { operationId: 'op-1', status: 'failed', error: 'o andar do agente não foi criado' } } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-failed')).toContainText('continua de pé')
+  await expect(page.getByTestId('architect-failure-reason')).toContainText('o andar do agente não foi criado')
+})
+
+test('depois de aplicar, os passos ficam visíveis em “Avançado”', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    apply: {
+      json: {
+        ...COM_PROPOSTA,
+        status: 'applied',
+        operation: {
+          id: 'op-1',
+          status: 'completed',
+          error: null,
+          steps: [
+            { kind: 'floor', key: 'atendimento', status: 'created' },
+            { kind: 'grant', key: 'canal', status: 'skipped', message: 'web_chat não está conectado: fica na checklist' },
+          ],
+        },
+        links: [],
+      },
+    },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await page.getByTestId('architect-apply-confirm').click()
+  await page.getByTestId('architect-advanced').getByText('Avançado').click()
+  await expect(page.getByTestId('architect-steps')).toContainText('floor: atendimento')
+  await expect(page.getByTestId('architect-steps')).toContainText('não está conectado')
+})
+
+test('recarregar um projeto aplicado reconstrói os links', async ({ page }) => {
+  await stub(page, {
+    project: {
+      ...COM_PROPOSTA,
+      status: 'applied',
+      links: [
+        { kind: 'floor', key: 'atendimento', id: 'f1', path: '/floors/f1' },
+        { kind: 'agent', key: 'gerente', id: 'a1', path: '/agents/a1' },
+      ],
+    },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-links')).toBeVisible()
+  await expect(page.getByTestId('architect-link-agent')).toHaveAttribute('href', '/agents/a1')
+})
+
+test('arquivar avisa que nada é removido, e exige confirmar', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-advanced').getByText('Avançado').click()
+  await page.getByTestId('architect-archive').click()
+  await expect(page.getByTestId('architect-confirm-archive')).toContainText('Nada do que ele criou é removido')
+  await page.getByTestId('architect-archive-confirm').click()
+  await expect(page.getByTestId('architect-status').first()).toContainText('Arquivada')
+})
+
+test('desfazer diz o impacto antes, e o que sobrou depois', async ({ page }) => {
+  await stub(page, {
+    project: { ...COM_PROPOSTA, status: 'applied' },
+    apply: { json: { ...COM_PROPOSTA, status: 'applied', operation: { id: 'op-1', status: 'completed', error: null, steps: [{ kind: 'agent', key: 'gerente', status: 'created' }] }, links: [] } },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-advanced').getByText('Avançado').click()
+  await page.getByTestId('architect-rollback').click()
+  await expect(page.getByTestId('architect-confirm-rollback')).toContainText('o que já existia e o que foi criado por outra')
+
+  await page.getByTestId('architect-rollback-confirm').click()
+  await expect(page.getByTestId('architect-rollback-result')).toContainText('2 removidos')
+  await expect(page.getByTestId('architect-rollback-result')).toContainText('único andar do prédio')
 })
 
 // --- confirmação e aplicação -----------------------------------------------------------------------------
