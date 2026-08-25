@@ -90,10 +90,10 @@ test('editar troca o tipo e a referência de verdade', async () => {
   const criado = await criarFuncao('Trocado')
   const editado = await updateAgent(OWNER, criado._id, {
     executorKind: 'function',
-    executorConfig: { kind: 'function', functionName: 'text.wordCount', version: '1.0.0' },
+    executorConfig: { kind: 'function', functionName: 'br.cpf', version: '1.0.0' },
   })
-  assert.equal(editado.executorConfig.functionName, 'text.wordCount')
-  assert.equal((await getAgentById(OWNER, criado._id)).executorConfig.functionName, 'text.wordCount')
+  assert.equal(editado.executorConfig.functionName, 'br.cpf')
+  assert.equal((await getAgentById(OWNER, criado._id)).executorConfig.functionName, 'br.cpf')
 })
 
 test('um agente criado SEM nenhum campo novo continua llm/text', async () => {
@@ -407,7 +407,7 @@ test('os parâmetros são conferidos contra o schema da função na GRAVAÇÃO',
   assert.match(
     parseAgentModelFields({
       executorKind: 'function',
-      executorConfig: { kind: 'function', functionName: 'text.wordCount', config: { x: 1 } },
+      executorConfig: { kind: 'function', functionName: 'br.cpf', config: { x: 1 } },
     }).error,
     /não aceita parâmetros/,
   )

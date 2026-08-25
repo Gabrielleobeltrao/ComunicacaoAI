@@ -33,12 +33,12 @@ const CATALOGO = {
       timeoutMs: 5000,
     },
     {
-      functionName: 'text.wordCount',
+      functionName: 'br.cpf',
       version: '1.0.0',
-      description: 'Conta palavras de um texto',
-      capabilities: ['texto'],
-      inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-      outputSchema: { type: 'object', properties: { words: { type: 'number' } }, required: ['words'] },
+      description: 'Valida um CPF pelo dígito verificador',
+      capabilities: ['documento'],
+      inputSchema: { type: 'object', properties: { cpf: { type: 'string' } }, required: ['cpf'] },
+      outputSchema: { type: 'object', properties: { valido: { type: 'boolean' } }, required: ['valido'] },
       timeoutMs: 5000,
     },
   ],
@@ -240,8 +240,8 @@ test('a função vem de uma LISTA — não há onde colar código', async ({ pag
   await expect(picker.locator('textarea')).toHaveCount(0)
   await expect(picker.getByTestId('function-search')).toBeVisible()
 
-  await picker.getByTestId('function-search').fill('palavras')
-  await expect(picker.getByTestId('function-option-text.wordCount')).toBeVisible()
+  await picker.getByTestId('function-search').fill('dígito')
+  await expect(picker.getByTestId('function-option-br.cpf')).toBeVisible()
   await expect(picker.getByTestId('function-option-math.summary')).toHaveCount(0)
 })
 
