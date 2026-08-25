@@ -33,6 +33,7 @@ test('as keys dos Apps oficiais são exatamente as que já estavam gravadas', ()
     'stripe',
     'nuvemshop',
     'candle_analyzer',
+    'alpaca',
     'email',
     'telegram',
     'web_chat',
@@ -156,7 +157,10 @@ test('toda ação de escrita declara risco, para exigir autorização', () => {
   // como leitura rodaria sem ninguém autorizar.
   for (const app of OFFICIAL_APPS) {
     for (const acao of app.actions) {
-      assert.ok(['read', 'write'].includes(acao.risk), `${app.key}/${acao.key}: risco inválido`)
+      // `high_risk` entrou com a corretora: mandar uma ordem não é da mesma classe que
+      // criar um contato. O que a prova protege continua o mesmo — uma escrita marcada
+      // como leitura rodaria sem ninguém autorizar.
+      assert.ok(['read', 'write', 'high_risk'].includes(acao.risk), `${app.key}/${acao.key}: risco inválido`)
     }
   }
 })

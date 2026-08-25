@@ -113,6 +113,7 @@ async function stub(
     /** O agente do teste — usado para variar o TIPO, que decide quais blocos aparecem. */
     agent?: Record<string, unknown>
     patch?: (body: Record<string, unknown>) => { status: number; json: unknown } | Promise<{ status: number; json: unknown }>
+    catalog?: unknown[]
   } = {},
 ) {
   patches = []
@@ -132,7 +133,7 @@ async function stub(
     }
     return r.fulfill({ json: stored })
   })
-  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [GOOGLE] }))
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: opts.catalog ?? [GOOGLE] }))
   await page.route('**/api/app-installations', (r) => r.fulfill({ json: opts.installations ?? [INSTALLATION_ROW] }))
   await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: [], pinned: [] } }))
   await page.route('**/api/agents/*/overview', (r) =>
@@ -1203,4 +1204,41 @@ test('o prazo de validade fica nos avançados, e aceita zero', async ({ page }) 
   await expect(campo).toHaveAttribute('placeholder', '7')
   // Zero é uma escolha legítima: "não guarde nada".
   await expect(campo).toHaveAttribute('min', '0')
+})
+
+// --- corretora: alto risco e simulação ------------------------------------------------
+
+const CORRETORA = {
+  ...GOOGLE,
+  key: 'alpaca',
+  name: 'Alpaca (simulação)',
+  auth: { kind: 'api_key', fields: [], scopes: [], documentationUrl: null },
+  activation: 'credentials',
+  actions: [
+    { key: 'alpaca_conta', name: 'Consultar conta', description: 'Saldo e poder de compra.', risk: 'read', inputSchema: {}, resourceFields: [] },
+    { key: 'alpaca_criar_ordem', name: 'Enviar ordem', description: 'Envia uma ordem.', risk: 'high_risk', inputSchema: {}, resourceFields: [] },
+  ],
+}
+
+const CONEXAO_PAPER = { ...INSTALLATION_ROW, appKey: 'alpaca', name: 'Alpaca principal', environment: 'paper' }
+
+test('a conexão de simulação diz que é simulação onde a ação é autorizada', async ({ page }) => {
+  // Não basta dizer isso onde a conexão é criada: é aqui que alguém decide deixar um
+  // agente mandar ordem sozinho.
+  await stub(page, { catalog: [CORRETORA], installations: [CONEXAO_PAPER] })
+  await open(page)
+  await expect(page.getByTestId('grant-environment')).toContainText('simulação')
+})
+
+test('alto risco não se parece com "altera dados", e continua exigindo autorização', async ({ page }) => {
+  await stub(page, { catalog: [CORRETORA], installations: [CONEXAO_PAPER] })
+  await open(page)
+  await expect(page.getByTestId('risk-alpaca_criar_ordem')).toHaveText('Alto risco')
+
+  // Consulta roda sozinha; ordem não. A autorização é por AÇÃO, não em bloco.
+  await page.getByTestId('action-alpaca_conta').check()
+  await expect(page.getByTestId('autonomous-alpaca_conta')).toHaveCount(0)
+  await page.getByTestId('action-alpaca_criar_ordem').check()
+  await expect(page.getByTestId('autonomous-alpaca_criar_ordem')).not.toBeChecked()
+  await expect(page.getByTestId('autonomous-alpaca_criar_ordem').locator('..')).toContainText('crítica')
 })

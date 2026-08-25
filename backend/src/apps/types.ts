@@ -161,6 +161,15 @@ export interface AppDefinition {
   // Absent = derived from `auth.kind` (oauth2 → oauth, no field → instant, else
   // credentials), so a manifest written before this existed keeps behaving the same.
   activation?: AppActivation
+  /**
+   * O ambiente que uma conexão nova assume quando ninguém escolhe.
+   *
+   * Existe por causa de um App cujo ambiente padrão NÃO é o comum: uma corretora que só
+   * opera em simulação precisa nascer marcada como simulação, senão a conexão fica com
+   * cara de produção na tela e o selo — que é a única defesa contra confundir as duas —
+   * nunca aparece.
+   */
+  defaultEnvironment?: AppEnvironment
   // `managed_channel` only: where the real flow lives, so the CTA can send the owner
   // to it instead of opening a form that cannot produce a valid connection.
   activationRoute?: string
@@ -298,4 +307,15 @@ export const actionToolName = (appKey: string, actionKey: string): string =>
  * seu — e um módulo de App não deve precisar importar o resolvedor de grants para
  * declarar o que ele oferece.
  */
-export type NativeFactory = (ownerId: string, config: Record<string, string>) => import('../agentTools.js').ResolvedTool[]
+export type NativeFactory = (
+  ownerId: string,
+  config: Record<string, string>,
+  /**
+   * O contexto da CONEXÃO, para o adapter que precisa dele.
+   *
+   * Opcional porque quase nenhum precisa: um App de pagamento tem um endereço só. Quem
+   * precisa é quem tem simulação e produção — e aí o ambiente não pode vir por um campo
+   * de configuração que alguém digita, ele vem da conexão.
+   */
+  ctx?: { environment: string; installationId: string },
+) => import('../agentTools.js').ResolvedTool[]

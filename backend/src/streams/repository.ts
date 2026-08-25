@@ -55,10 +55,18 @@ export async function upsertStream(input: {
 }
 
 export async function setStreamState(id: ObjectId, state: StreamState, now = new Date()): Promise<void> {
-  await streams.updateOne(
-    { _id: id },
-    { $set: { state, updatedAt: now, ...(state === 'connected' ? { lastConnectedAt: now, lastError: null } : {}) } },
-  )
+  await streams.updateOne({ _id: id }, { $set: { state, updatedAt: now, ...(state === 'connected' ? { lastConnectedAt: now } : {}) } })
+  /**
+   * Conectar limpa a falha ANTERIOR — só ela.
+   *
+   * A gravação do "conectado" é disparada sem espera, e um erro que chega logo depois
+   * do handshake (uma autenticação recusada, por exemplo) grava enquanto ela ainda
+   * está no ar. Limpando às cegas, a mensagem que explica a queda sumiria e o stream
+   * ficaria "conectado, sem erro" — e mudo.
+   */
+  if (state === 'connected') {
+    await streams.updateOne({ _id: id, 'lastError.at': { $lt: now } }, { $set: { lastError: null } })
+  }
 }
 
 /** A falha guardada é uma frase curta. O quadro cru pode conter credencial e não entra. */

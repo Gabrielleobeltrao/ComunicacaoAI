@@ -15,7 +15,8 @@ import { refreshScheduledWebSources } from '../webKnowledge.js'
 import { processRun } from './runProcessor.js'
 import { claimNextEvent, ensureEventIndexes, processEvent } from '../events/bus.js'
 import { ensureStreamIndexes } from '../streams/repository.js'
-import { createStreamManager, restoreStreams, shutdownStreams } from '../streams/service.js'
+import { createStreamManager, registerStreamAdapter, restoreStreams, shutdownStreams } from '../streams/service.js'
+import { alpacaStreamAdapter } from '../apps/official/alpaca/index.js'
 import { closeDueCandles, registerMarketDataHandlers } from '../marketData/engine.js'
 import { ensureCandleIndexes } from '../marketData/candleStore.js'
 import { ensureMarketStateIndexes } from '../marketData/state.js'
@@ -167,6 +168,9 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
 
   // Os streams que estavam de pé antes do restart voltam a ficar. Sem isto, reiniciar
   // o worker significaria silenciar todo mundo até alguém reparar.
+  // Os adapters de stream disponíveis neste processo. Um App novo entra aqui e em
+  // lugar nenhum mais.
+  registerStreamAdapter(alpacaStreamAdapter)
   createStreamManager(onError)
   await restoreStreams(onError)
     .then((quantos) => quantos && console.log(`Streams: ${quantos} restaurado(s)`))

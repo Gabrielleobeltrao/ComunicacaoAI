@@ -196,7 +196,21 @@ export function AgentAppGrantsEditor({ agentId }: { agentId: string | null }) {
             <div className="flex items-center gap-3">
               <AppLogo appKey={installation.appKey} icon={app.icon} size={40} title={app.name} />
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{installation.name}</p>
+                <p className="truncate text-sm font-medium">
+                  {installation.name}
+                  {/* O ambiente aparece onde a ação é AUTORIZADA, e não só onde a
+                      conexão é criada: é aqui que alguém decide deixar um agente
+                      mandar ordem sozinho. */}
+                  {installation.environment && installation.environment !== 'default' ? (
+                    <span
+                      className="ml-2 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase"
+                      style={{ background: 'var(--mango-100, #fdf0d5)', color: 'var(--mango-600, #b25e09)' }}
+                      data-testid="grant-environment"
+                    >
+                      {installation.environment === 'paper' ? 'simulação' : installation.environment}
+                    </span>
+                  ) : null}
+                </p>
                 <p className="truncate text-xs text-(--text-faint)">{app.name}</p>
               </div>
             </div>
@@ -218,7 +232,15 @@ export function AgentAppGrantsEditor({ agentId }: { agentId: string | null }) {
                       <span className="min-w-0">
                         <span className="block text-sm">{action.name}</span>
                         <span className="block text-xs text-(--text-muted)">{action.description}</span>
-                        <span className="mt-0.5 block text-xs text-(--text-faint)">{RISK_LABEL[action.risk]}</span>
+                        {/* Alto risco não pode parecer igual a "altera dados": mandar
+                            uma ordem e criar um contato não são da mesma classe. */}
+                        <span
+                          className="mt-0.5 block text-xs"
+                          style={{ color: action.risk === 'high_risk' ? 'var(--coral-600, #d92d20)' : 'var(--text-faint)' }}
+                          data-testid={`risk-${action.key}`}
+                        >
+                          {RISK_LABEL[action.risk]}
+                        </span>
                       </span>
                     </label>
 
@@ -232,8 +254,9 @@ export function AgentAppGrantsEditor({ agentId }: { agentId: string | null }) {
                           className="mt-0.5"
                         />
                         <span className="text-xs text-(--text-muted)">
-                          Permitir que o agente execute esta ação por conta própria. Sem isso, ele avisa que precisa de autorização em vez
-                          de agir.
+                          {action.risk === 'high_risk'
+                            ? 'Permitir que o agente execute esta ação crítica por conta própria, sem confirmar antes. Sem isso, ele avisa que precisa de autorização em vez de agir.'
+                            : 'Permitir que o agente execute esta ação por conta própria. Sem isso, ele avisa que precisa de autorização em vez de agir.'}
                         </span>
                       </label>
                     ) : null}

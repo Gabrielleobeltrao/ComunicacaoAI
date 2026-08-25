@@ -234,3 +234,14 @@ test('a junção de base e caminho não duplica nem come a barra', () => {
   assert.equal(joinPath('https://a.com/', ''), 'https://a.com')
   assert.equal(joinPath('https://a.com', 'https://b.com/x'), null, 'URL completa não é caminho')
 })
+
+test('um App que nasce em simulação cria a conexão já marcada', async () => {
+  // O manifesto decide o padrão quando o pedido não diz. É o caso da corretora: ela só
+  // executa em simulação, e a conexão precisa dizer isso desde o primeiro instante.
+  const { getApp } = await import('../dist/apps/registry.js')
+  const alpaca = getApp('alpaca')
+  assert.equal(alpaca.defaultEnvironment, 'paper')
+  const conexao = await createInstallation(DONO, alpaca, { name: 'Corretora', config: { keyId: 'PK00000000', secretKey: 'segredo-que-nao-existe' } })
+  assert.equal(conexao.environment, 'paper')
+  assert.equal(installationPublic(conexao).environment, 'paper')
+})

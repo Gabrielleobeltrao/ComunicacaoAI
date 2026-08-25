@@ -176,7 +176,8 @@ export async function createInstallation(ownerId: string, app: AppDefinition, in
     createdAt: now,
     updatedAt: now,
     lastTestedAt: null,
-    environment: normalizeEnvironment(input.environment),
+    // O App decide o padrão quando o pedido não diz — ver `defaultEnvironment`.
+    environment: normalizeEnvironment(input.environment ?? app.defaultEnvironment),
   }
   await installations.insertOne(doc)
   return doc

@@ -21,6 +21,7 @@ import { isUsableManifest, resolveAppForOwner } from './privateApps.js'
 import { isUsableApp } from './types.js'
 import type { AppDefinition, AppActionDefinition, AppInstallation, AgentAppGrant, NativeFactory } from './types.js'
 import { decryptInstallationConfig, getInstallation, isInstallationUsable } from './installations.js'
+import { environmentOf } from './connectionProfile.js'
 
 /**
  * Os adapters que uma ação nativa pode apontar.
@@ -175,7 +176,10 @@ export async function resolveGrant(
   const tools: ResolvedTool[] = []
   for (const action of granted) {
     const allowedToAct = action.risk === 'read' || autonomous.has(action.key)
-    const built = buildAction(app, action, ownerId, auth, resource, allowedToAct)
+    const built = buildAction(app, action, ownerId, auth, resource, allowedToAct, {
+      environment: environmentOf(installation),
+      installationId: installation._id.toString(),
+    })
     if (!built) continue
     // O risco declarado no manifesto viaja com a ferramenta. Ele não amplia nada — o
     // grant continua sendo a permissão — mas é o que permite decidir paralelismo.
@@ -193,6 +197,9 @@ function buildAction(
   auth: Record<string, string>,
   resource: Record<string, string>,
   allowedToAct: boolean,
+  // Vem da instalação, nunca de um campo digitado: é o ambiente que decide se a ordem
+  // vai para a simulação ou para o mercado.
+  ctx?: { environment: string; installationId: string },
 ): ResolvedTool | null {
   if (action.execution.kind === 'http') {
     return declarativeTool(app, action, auth, resource, allowedToAct)
@@ -203,7 +210,7 @@ function buildAction(
   const factories = NATIVE_FACTORIES[app.key] ?? []
   const config = { ...auth, ...resource }
   for (const factory of factories) {
-    const tool = factory(ownerId, config).find((t) => t.name === adapter)
+    const tool = factory(ownerId, config, ctx).find((t) => t.name === adapter)
     if (!tool) continue
     if (!allowedToAct) {
       return refusalTool(

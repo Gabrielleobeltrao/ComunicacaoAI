@@ -508,3 +508,19 @@ test('o teste de conexão confere credencial e adapter sem abrir socket', async 
   assert.equal(semAdapter.ok, false)
   assert.match(semAdapter.message, /streaming/)
 })
+
+test('um erro logo depois do handshake não é apagado pela gravação do "conectado"', async () => {
+  // A corrida real: a gravação do estado "conectado" sai sem espera, e a recusa de
+  // autenticação chega enquanto ela ainda está no ar. Limpando às cegas, a mensagem que
+  // explica a queda sumia e o stream ficava "conectado, sem erro" — e mudo.
+  const { m } = gerente()
+  const record = await streamDe()
+  await m.start(record)
+  const s = SocketFalso.abertos[0]
+  s.abrir()
+  s.receber({ T: 'error', msg: 'auth failed' })
+  await ate(async () => (await findStream(DONO, record._id))?.lastError, 'o erro ser gravado')
+  await new Promise((r) => setTimeout(r, 40))
+  const doc = await findStream(DONO, record._id)
+  assert.match(doc.lastError.message, /auth failed/, 'a explicação sobrevive')
+})
