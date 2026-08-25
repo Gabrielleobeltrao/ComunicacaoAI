@@ -377,6 +377,22 @@ export async function planSectorResponse(
  * Sem ferramentas, sem histórico e sem estado: o que se manda é o que se recebe.
  */
 export async function askAux(prompt: string, model?: string | null, apiKey?: string | null, maxTokens = 600): Promise<string> {
+  return (await askAuxWithUsage(prompt, model, apiKey, maxTokens)).text
+}
+
+/**
+ * O mesmo pedido, com o consumo junto.
+ *
+ * `askAux` sempre gastou tokens e nunca disse quanto — quem chamava não tinha como
+ * contabilizar. Esta variante devolve o uso; `askAux` continua existindo e agora sai
+ * daqui, para não haver duas chamadas com comportamentos diferentes.
+ */
+export async function askAuxWithUsage(
+  prompt: string,
+  model?: string | null,
+  apiKey?: string | null,
+  maxTokens = 600,
+): Promise<{ text: string; usage: TokenUsage }> {
   const response = await buildClient(apiKey).messages.create({
     model: model || DEFAULT_MODEL,
     max_tokens: maxTokens,
@@ -385,7 +401,7 @@ export async function askAux(prompt: string, model?: string | null, apiKey?: str
     messages: [{ role: 'user', content: prompt }],
   })
   const textBlock = response.content.find((block) => block.type === 'text')
-  return textBlock && textBlock.type === 'text' ? textBlock.text : ''
+  return { text: textBlock && textBlock.type === 'text' ? textBlock.text : '', usage: anthropicUsage(response.usage) }
 }
 
 export async function planStageTransition(
