@@ -19,6 +19,9 @@ import { backfillManagedChannelInstallations } from './apps/channelApps.js'
 import { ensureAppActionIndexes } from './apps/grants.js'
 import { ensureEventIndexes } from './events/bus.js'
 import { ensureStreamIndexes } from './streams/repository.js'
+import { ensureCandleIndexes } from './marketData/candleStore.js'
+import { ensureMarketStateIndexes } from './marketData/state.js'
+import { ensureTickCollection } from './marketData/ticks.js'
 import { migrateAppsAndInstallations } from './apps/migration.js'
 
 async function renameCollectionIfNeeded(from: string, to: string): Promise<void> {
@@ -128,6 +131,9 @@ export async function runMigrations(): Promise<void> {
   await ensureAppActionIndexes()
   await ensureEventIndexes()
   await ensureStreamIndexes()
+  await ensureCandleIndexes()
+  await ensureMarketStateIndexes()
+  await ensureTickCollection()
 
   // Apps: connections learn their appKey, Google gains an installation, and every
   // credential still sitting in an agent document moves into an encrypted one.

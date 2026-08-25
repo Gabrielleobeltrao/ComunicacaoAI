@@ -16,6 +16,9 @@ import { processRun } from './runProcessor.js'
 import { claimNextEvent, ensureEventIndexes, processEvent } from '../events/bus.js'
 import { ensureStreamIndexes } from '../streams/repository.js'
 import { createStreamManager, restoreStreams, shutdownStreams } from '../streams/service.js'
+import { closeDueCandles, registerMarketDataHandlers } from '../marketData/engine.js'
+import { ensureCandleIndexes } from '../marketData/candleStore.js'
+import { ensureMarketStateIndexes } from '../marketData/state.js'
 
 // How often to look for work. Polling replaces Redis's push delivery: a routine
 // fires within one tick of its instant, which for daily/weekly schedules is
@@ -31,6 +34,9 @@ const EVENT_POLL_MS = Number(process.env.EVENT_POLL_MS ?? 1_000)
 // Quantos eventos drenar por passada. Sem teto, uma rajada de preços monopoliza a
 // passada e as rotinas ficam esperando.
 const EVENT_BATCH = Number(process.env.EVENT_BATCH ?? 20)
+// De quanto em quanto tempo procurar vela vencida. O menor balde é de um minuto, então
+// dez segundos fecham qualquer uma com atraso desprezível.
+const CANDLE_SWEEP_MS = Number(process.env.CANDLE_SWEEP_MS ?? 10_000)
 
 export interface EngineHandle {
   // Identifies this instance in `claimedBy`, so an abandoned run is traceable.
@@ -53,6 +59,11 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   await ensureSchedulerIndexes()
   await ensureEventIndexes()
   await ensureStreamIndexes()
+  await ensureCandleIndexes()
+  await ensureMarketStateIndexes()
+  // O motor de mercado escuta o barramento. Registrar aqui, e não na importação, deixa
+  // o teste montar o mesmo motor sem herdar handlers de outro teste.
+  registerMarketDataHandlers()
 
   let stopping = false
   // In-flight runs, so shutdown can wait for them instead of cutting them off.
@@ -116,6 +127,13 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   const eventTimer = setInterval(() => {
     void pumpEvents().catch((error) => onError('event poll', error))
   }, EVENT_POLL_MS)
+  // A varredura que fecha vela. É ela — e não a chegada do próximo negócio — que fecha
+  // a última vela do dia, quando o mercado para de mandar dado.
+  const candleTimer = setInterval(() => {
+    void closeDueCandles()
+      .then(({ closed }) => closed && console.log(`Candles: ${closed} fechado(s)`))
+      .catch((error) => onError('candles', error))
+  }, CANDLE_SWEEP_MS)
   // As fontes web por horário entram na mesma varredura do agendador — não há relógio
   // novo. O intervalo mínimo de uma fonte é 5 min, então uma passada por minuto do
   // agendador é mais que suficiente para nenhuma atrasar.
@@ -138,6 +156,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   schedulerTimer.unref()
   fontesTimer.unref()
   eventTimer.unref()
+  candleTimer.unref()
 
   // Do one pass immediately: a restart should pick up pending work at once.
   await tickScheduler().catch((error) => onError('scheduler', error))
@@ -161,6 +180,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
       clearInterval(runTimer)
       clearInterval(schedulerTimer)
       clearInterval(eventTimer)
+      clearInterval(candleTimer)
       await shutdownStreams().catch((error) => onError('streams', error))
       // Let in-flight runs finish; their leases keep them ours meanwhile.
       await Promise.allSettled([...active])
