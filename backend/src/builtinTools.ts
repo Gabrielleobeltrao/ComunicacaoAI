@@ -1,4 +1,5 @@
 import type { Agent } from './agents.js'
+import { connectionRefusalResult, resolveExecutableTool } from './tools/connectedTool.js'
 import { capabilitiesOf } from './agentCapabilities.js'
 import { memorySearchTool } from './memory/tool.js'
 import { sourceCheckTool } from './automations/sourceTool.js'
@@ -284,8 +285,21 @@ export async function resolveAgentTools(
         description: tool.description,
         inputSchema: tool.inputSchema,
         run: async (args) => {
+          /**
+           * A conexão é resolvida AGORA, e não na listagem.
+           *
+           * Uma conexão revogada entre montar a lista e o modelo decidir chamar precisa
+           * barrar a chamada — e só barra se for conferida no momento em que ela sai.
+           * Sem `installationId` isto devolve a própria ferramenta, sem ida ao banco.
+           */
+          const pronta = await resolveExecutableTool(tool, ownerId)
+          if (!pronta.ok) return connectionRefusalResult(tool.name, pronta.message)
           // autonomous: this is the model deciding to call, not the owner testing.
-          const outcome = await executeToolCall(tool, args, { callsSoFar, autonomous: true })
+          const outcome = await executeToolCall(pronta.executable, args, {
+            callsSoFar,
+            autonomous: true,
+            allHeadersAreSecret: pronta.allHeadersAreSecret,
+          })
           callsSoFar++
           return { ok: outcome.ok, result: outcome.result }
         },

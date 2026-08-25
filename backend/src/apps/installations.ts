@@ -11,7 +11,7 @@ import { decrypt, encrypt } from '../crypto.js'
 import { ValidationError } from '../building.js'
 import type { AppDefinition } from './types.js'
 import { isUsableApp } from './types.js'
-import type { AppInstallation, AppInstallationPublic, InstallationStatus } from './types.js'
+import type { AppEnvironment, AppInstallation, AppInstallationPublic, InstallationStatus } from './types.js'
 import { INSTALLATION_STATUSES } from './types.js'
 
 // The same collection the delivery flow already reads.
@@ -44,6 +44,14 @@ export function toInstallation(doc: Partial<AppInstallation> & { _id: ObjectId; 
     createdAt: doc.createdAt ?? new Date(0),
     updatedAt: doc.updatedAt ?? doc.createdAt ?? new Date(0),
     lastTestedAt: doc.lastTestedAt ?? null,
+    /**
+     * Ausente no documento fica ausente AQUI também.
+     *
+     * Resolver para `default` neste ponto pareceria inofensivo e apagaria a diferença
+     * entre "a conexão é padrão" e "este documento é anterior ao campo" — e é o segundo
+     * caso que a migração precisa enxergar. Quem quer o valor pronto usa `environmentOf`.
+     */
+    environment: doc.environment,
     provider: doc.provider,
     scopes: doc.scopes,
   }
@@ -60,6 +68,9 @@ export const installationPublic = (i: AppInstallation): AppInstallationPublic =>
   createdAt: i.createdAt.toISOString(),
   updatedAt: i.updatedAt.toISOString(),
   lastTestedAt: i.lastTestedAt ? i.lastTestedAt.toISOString() : null,
+  // Ausente no documento = `default`, que é o que toda conexão existente é. A tela
+  // recebe sempre o valor resolvido, e não precisa saber que o campo pode faltar.
+  environment: i.environment ?? 'default',
 })
 
 // What the owner recognises without exposing the account itself.
@@ -121,6 +132,21 @@ export interface CreateInstallationInput {
   publicMetadata?: Record<string, string>
   buildingId?: ObjectId | null
   grantedScopes?: string[]
+  /** Ausente = `default`. `live` é recusado neste ciclo — ver `normalizeEnvironment`. */
+  environment?: string
+}
+
+/**
+ * O ambiente que a conexão PODE ter.
+ *
+ * `live` existe no tipo e é recusado aqui: um ambiente que envia ordem de verdade não
+ * passa a existir por uma linha de configuração. Ligá-lo é decisão de produto, e ela não
+ * foi tomada — então a API diz isso em voz alta em vez de aceitar e falhar depois.
+ */
+export function normalizeEnvironment(bruto: unknown): AppEnvironment {
+  const v = String(bruto ?? '').trim().toLowerCase()
+  if (v === 'live') throw new ValidationError('o ambiente "live" não está liberado neste sistema; use "paper"')
+  return v === 'paper' ? 'paper' : 'default'
 }
 
 export async function createInstallation(ownerId: string, app: AppDefinition, input: CreateInstallationInput): Promise<AppInstallation> {
@@ -150,6 +176,7 @@ export async function createInstallation(ownerId: string, app: AppDefinition, in
     createdAt: now,
     updatedAt: now,
     lastTestedAt: null,
+    environment: normalizeEnvironment(input.environment),
   }
   await installations.insertOne(doc)
   return doc

@@ -20,6 +20,7 @@ import { normalizeRunConfig } from './runConfig.js'
 import { composeAgentPrompt, resolveAgentRun } from './agentDefinition.js'
 import { describeDropped, runInteractive } from './interactiveRun.js'
 import { validateAgainstSchema } from './jsonSchema.js'
+import { resolveExecutableTool } from './tools/connectedTool.js'
 import { agentContractOf } from './executors/contract.js'
 import { dispatchAgentExecution } from './executors/dispatcher.js'
 import { AgentRunError } from './agentRuntime.js'
@@ -2174,7 +2175,16 @@ app.post('/api/tools/:toolId/test', requireAuth, async (req, res) => {
     res.status(400).json({ error: `Este teste executa um ${tool.method} real no sistema de destino. Confirme para continuar.`, field: 'confirm' })
     return
   }
-  const outcome = await executeToolCall(tool, req.body?.arguments ?? {})
+  // O teste do dono percorre o MESMO caminho da execução real, conexão inclusive: um
+  // teste que resolvesse diferente aprovaria uma ferramenta que falha em produção.
+  const pronta = await resolveExecutableTool(tool, res.locals.userId)
+  if (!pronta.ok) {
+    res.status(400).json({ ok: false, error: pronta.message })
+    return
+  }
+  const outcome = await executeToolCall(pronta.executable, req.body?.arguments ?? {}, {
+    allHeadersAreSecret: pronta.allHeadersAreSecret,
+  })
   res.json({ ok: outcome.ok, result: outcome.result, detail: outcome.detail })
 })
 

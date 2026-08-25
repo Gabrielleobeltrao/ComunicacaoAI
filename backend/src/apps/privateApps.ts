@@ -37,7 +37,7 @@ function normalize(input: unknown, ownerId: string): AppDefinition {
   // Drop the keys the sanitizer nulled out: the driver stores an explicit
   // `undefined` as null, and a stored null is not the same as absent.
   const record = manifest as unknown as Record<string, unknown>
-  for (const key of ['surfaces', 'sidebar', 'icon', 'documentationUrl']) {
+  for (const key of ['surfaces', 'sidebar', 'icon', 'documentationUrl', 'connection']) {
     if (record[key] === undefined || record[key] === null) delete record[key]
   }
   // A private App may not shadow a system one: the same key would make "which App is

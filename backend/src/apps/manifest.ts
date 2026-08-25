@@ -207,6 +207,56 @@ export function validateAppManifest(input: unknown): ManifestValidation {
     }
   }
 
+  /**
+   * --- conexão -------------------------------------------------------------------
+   *
+   * Presente = este App pode ser emprestado como conexão a uma ferramenta do dono. O
+   * endereço base passa pela MESMA lista de domínios das ações: sem isso, um manifesto
+   * declararia base num host que ele não tem permissão de alcançar, e a ferramenta
+   * conectada herdaria essa permissão que ninguém revisou.
+   */
+  if (app.connection !== undefined && app.connection !== null) {
+    if (!isRecord(app.connection)) {
+      errors.push({ path: 'connection', message: 'connection deve ser um objeto' })
+    } else {
+      const perfil = app.connection
+      const bases: [string, unknown][] = [['connection.baseUrl', perfil.baseUrl]]
+      if (isRecord(perfil.baseUrlByEnvironment)) {
+        for (const [env, url] of Object.entries(perfil.baseUrlByEnvironment)) {
+          if (!['default', 'paper', 'live'].includes(env)) {
+            errors.push({ path: `connection.baseUrlByEnvironment.${env}`, message: 'ambiente desconhecido' })
+          }
+          bases.push([`connection.baseUrlByEnvironment.${env}`, url])
+        }
+      } else if (perfil.baseUrlByEnvironment !== undefined && perfil.baseUrlByEnvironment !== null) {
+        errors.push({ path: 'connection.baseUrlByEnvironment', message: 'deve ser um objeto por ambiente' })
+      }
+      for (const [caminho, valor] of bases) {
+        const bruto = String(valor ?? '')
+        if (!bruto) {
+          errors.push({ path: caminho, message: 'informe o endereço base' })
+          continue
+        }
+        // `{{auth.x}}` é resolvido só na execução; para conferir o host, ele vira um
+        // marcador que não muda o domínio.
+        let host = ''
+        try {
+          host = new URL(bruto.replace(/\{\{[^}]*\}\}/g, 'x')).hostname.toLowerCase()
+        } catch {
+          errors.push({ path: caminho, message: 'endereço base inválido' })
+          continue
+        }
+        const domains = Array.isArray(app.allowedDomains) ? app.allowedDomains.map((d) => String(d).toLowerCase()) : []
+        if (!domains.some((d) => host === d || host.endsWith(`.${d}`))) {
+          errors.push({ path: caminho, message: `host ${host} não está em allowedDomains` })
+        }
+      }
+      if (perfil.headers !== undefined && perfil.headers !== null && !Array.isArray(perfil.headers)) {
+        errors.push({ path: 'connection.headers', message: 'headers deve ser uma lista' })
+      }
+    }
+  }
+
   // --- actions ----------------------------------------------------------------
   const actions = Array.isArray(app.actions) ? app.actions : []
   if (!Array.isArray(app.actions)) {
@@ -366,6 +416,22 @@ export function sanitizeImportedManifest(input: unknown): { manifest: AppDefinit
           maxCallsPerRun: typeof a.maxCallsPerRun === 'number' ? a.maxCallsPerRun : undefined,
         }))
       : [],
+    // O perfil de conexão atravessa a importação: sem ele, um App importado deixaria de
+    // poder ser emprestado a uma ferramenta, e a validação acima já conferiu o host.
+    connection: isRecord(input.connection)
+      ? {
+          baseUrl: String(input.connection.baseUrl ?? ''),
+          baseUrlByEnvironment: isRecord(input.connection.baseUrlByEnvironment)
+            ? Object.fromEntries(Object.entries(input.connection.baseUrlByEnvironment).map(([k, v]) => [k, String(v ?? '')]))
+            : undefined,
+          headers: Array.isArray(input.connection.headers)
+            ? input.connection.headers
+                .filter(isRecord)
+                .map((h) => ({ key: String(h.key ?? ''), value: String(h.value ?? '') }))
+                .filter((h) => h.key)
+            : undefined,
+        }
+      : undefined,
     // A page cannot come in through an import until a safe renderer exists.
     surfaces: undefined,
     sidebar: undefined,

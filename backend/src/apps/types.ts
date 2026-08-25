@@ -165,6 +165,13 @@ export interface AppDefinition {
   // to it instead of opening a form that cannot produce a valid connection.
   activationRoute?: string
   actions: AppActionDefinition[]
+  /**
+   * Presente = este App pode ser usado como CONEXÃO por uma ferramenta do dono.
+   *
+   * Ausente = ele só executa as próprias ações, como sempre. Nenhum App existente muda
+   * de comportamento por causa deste campo.
+   */
+  connection?: AppConnectionProfile
   surfaces?: AppSurfaceDefinition[]
   sidebar?: {
     pinnable: boolean
@@ -190,6 +197,39 @@ export interface AppDefinition {
 export type InstallationStatus = 'connected' | 'error' | 'revoked' | 'needs_reauth'
 export const INSTALLATION_STATUSES: InstallationStatus[] = ['connected', 'error', 'revoked', 'needs_reauth']
 
+/**
+ * O AMBIENTE de uma conexão.
+ *
+ * `default` é o que toda instalação existente é, e é o que ela continua sendo sem nada
+ * gravado. `paper` e `live` existem porque um provedor de mercado tem dois mundos com
+ * credenciais e consequências diferentes — e misturá-los é enviar ordem de verdade
+ * achando que era simulada.
+ *
+ * Duas conexões do MESMO App em ambientes diferentes nunca compartilham credencial: cada
+ * uma é uma instalação, com o próprio `encryptedConfig`.
+ */
+export type AppEnvironment = 'default' | 'paper' | 'live'
+export const APP_ENVIRONMENTS: readonly AppEnvironment[] = ['default', 'paper', 'live']
+
+/**
+ * O PERFIL DE CONEXÃO de um App: o endereço base e os cabeçalhos comuns.
+ *
+ * Ele existe para uma ferramenta do dono poder guardar só o caminho — `/v2/account` — e
+ * receber base e autenticação na hora de executar. Sem isso, cada ferramenta repetiria a
+ * URL inteira e a credencial, e trocar a chave significaria editar todas.
+ *
+ * Os valores aceitam `{{campo}}` da configuração cifrada e dos metadados públicos, pelo
+ * mesmo interpolador que as ações declarativas já usam.
+ */
+export interface AppConnectionProfile {
+  /** O endereço base padrão. */
+  baseUrl: string
+  /** Sobrescreve por ambiente. Ausente = o mesmo `baseUrl` para todos. */
+  baseUrlByEnvironment?: Partial<Record<AppEnvironment, string>>
+  /** Cabeçalhos comuns a toda chamada — é aqui que a credencial entra. */
+  headers?: { key: string; value: string }[]
+}
+
 export interface AppInstallation {
   _id: ObjectId
   ownerId: string
@@ -204,6 +244,11 @@ export interface AppInstallation {
   createdAt: Date
   updatedAt: Date
   lastTestedAt?: Date | null
+  /**
+   * Ausente = `default`, que é o que toda instalação criada antes disto é. Nada muda
+   * para ela, e é isso que permite acrescentar o campo sem migrar documento nenhum.
+   */
+  environment?: AppEnvironment
   // Legacy compatibility: the delivery flow still resolves connections by provider.
   provider?: string
   scopes?: string[]
@@ -221,6 +266,8 @@ export interface AppInstallationPublic {
   createdAt: string
   updatedAt: string
   lastTestedAt: string | null
+  /** Sempre resolvido: uma conexão antiga chega como `default`. */
+  environment: AppEnvironment
 }
 
 // --- agent grant ---------------------------------------------------------------

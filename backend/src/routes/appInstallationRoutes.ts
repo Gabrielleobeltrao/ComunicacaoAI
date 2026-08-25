@@ -53,7 +53,7 @@ appInstallationRouter.get('/', async (req, res) => {
 
 appInstallationRouter.post('/', async (req, res, next) => {
   try {
-    const body = (req.body ?? {}) as { appKey?: string; name?: string; config?: unknown; publicMetadata?: Record<string, string> }
+    const body = (req.body ?? {}) as { appKey?: string; name?: string; config?: unknown; publicMetadata?: Record<string, string>; environment?: string }
     const app = await resolveAppForOwner(res.locals.userId, String(body.appKey ?? ''))
     if (!app) throw new ValidationError('App desconhecido')
     if (app.auth.kind === 'oauth2') throw new ValidationError('Este App é conectado pelo login do provedor, não por credencial.')
@@ -66,6 +66,9 @@ appInstallationRouter.post('/', async (req, res, next) => {
       name: body.name,
       config: body.config,
       publicMetadata: body.publicMetadata,
+      // Ausente = `default`, que é toda conexão criada até aqui. "live" é recusado com a
+      // mensagem, e não aceito para falhar na primeira ordem.
+      environment: body.environment,
     })
     auditEntity(res, { id: created._id.toString(), label: created.name })
     res.status(201).json(installationPublic(created))
