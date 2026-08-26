@@ -1,5 +1,5 @@
 import { backoffMs, publishEvent } from '../events/bus.js'
-import { markStreamEvent, setStreamError, setStreamState } from './repository.js'
+import { claimStream, markStreamEvent, releaseStreamLease, renewStreamLease, setStreamError, setStreamState, STREAM_LEASE_MS } from './repository.js'
 import type { SocketOptions } from './socket.js'
 import type { StreamAdapter, StreamContext, StreamRecord, StreamState } from './types.js'
 
@@ -37,6 +37,13 @@ export interface StreamSocket {
 export type SocketFactory = (url: string, opts?: SocketOptions) => StreamSocket
 
 export interface ManagerDeps {
+  /**
+   * Quem é ESTA instância, para a posse do stream.
+   *
+   * Um valor por processo. Ausente cai num aleatório — o que basta para o caso de uma
+   * instância só, que é o deploy de hoje.
+   */
+  instanceId?: string
   createSocket?: SocketFactory
   /** Onde os adapters ESTÁTICOS vivem — um por App, o mesmo para toda conexão. */
   adapters: Map<string, StreamAdapter>
@@ -111,6 +118,8 @@ interface Vivo {
   timerReconnect: unknown
   /** Armado ao mandar o batimento, desarmado quando a resposta chega. */
   timerPong: unknown
+  /** Renovação periódica da posse. Perder a posse solta o socket. */
+  timerLease: unknown
   /** Marcado no stop: um close que chega depois disso não deve reconectar. */
   encerrado: boolean
   /**
@@ -153,9 +162,12 @@ const contextOf = (vivo: Vivo): StreamContext => ({
 
 export class StreamManager {
   private readonly vivos = new Map<string, Vivo>()
+  /** A identidade desta instância, usada na posse dos streams. */
+  readonly instanceId: string
   private readonly deps: Required<Pick<ManagerDeps, 'createSocket' | 'publish' | 'schedule' | 'cancel' | 'onError'>> & ManagerDeps
 
   constructor(deps: ManagerDeps) {
+    this.instanceId = deps.instanceId ?? `${process.pid}-${Math.random().toString(36).slice(2, 10)}`
     this.deps = {
       ...deps,
       createSocket: deps.createSocket ?? ((url) => new WebSocket(url) as unknown as StreamSocket),
@@ -200,20 +212,35 @@ export class StreamManager {
   /**
    * Subir um stream. Chamar de novo para o mesmo id não abre uma segunda conexão —
    * atualiza os símbolos e pronto.
+   *
+   * Devolve se o stream está sob a responsabilidade DESTE processo. `false` não é erro:
+   * é outra instância sendo a dona, e quem chamou precisa saber para não contar como
+   * restaurado o que não subiu.
    */
-  async start(record: StreamRecord): Promise<void> {
+  async start(record: StreamRecord): Promise<boolean> {
     const id = record._id.toString()
-    if (record.paused) return
+    if (record.paused) return false
     const existente = this.vivos.get(id)
     if (existente) {
       await this.subscribe(id, record.symbols)
-      return
+      return true
     }
+    /**
+     * A POSSE, antes de qualquer coisa.
+     *
+     * Duas instâncias restaurando os mesmos streams abririam dois sockets no mesmo
+     * serviço — mensagem dobrada, evento dobrado e, num provedor que limita conexões por
+     * conta, as duas derrubadas. Quem não pega a posse simplesmente não sobe; quando o
+     * arrendamento do outro vencer, a próxima tentativa pega.
+     */
+    if (!(await claimStream(record._id, this.instanceId))) return false
+
     // Primeiro o adapter montado a partir da conexão; depois o estático do App.
     const adapter = (await this.deps.adapterFor?.(record)) ?? this.deps.adapters.get(record.appKey) ?? null
     if (!adapter) {
       await setStreamError(record._id, `nenhum adapter registrado para "${record.appKey}"`)
-      return
+      await releaseStreamLease(record._id, this.instanceId).catch(() => undefined)
+      return false
     }
     const vivo: Vivo = {
       record,
@@ -227,11 +254,14 @@ export class StreamManager {
       timerIdle: null,
       timerReconnect: null,
       timerPong: null,
+      timerLease: null,
       encerrado: false,
       segredos: [],
     }
     this.vivos.set(id, vivo)
+    this.armarRenovacao(vivo)
     await this.conectar(vivo)
+    return true
   }
 
   /** Descer. Idempotente: parar o que já está parado é um no-op, não um erro. */
@@ -246,6 +276,9 @@ export class StreamManager {
       // Fechar um socket já morto não é notícia.
     }
     this.vivos.delete(id)
+    // A posse é devolvida no stop: sem isso, um deploy deixaria os streams travados
+    // pelo tempo do arrendamento, e a instância nova ficaria um minuto sem poder abrir.
+    await releaseStreamLease(vivo.record._id, this.instanceId).catch(() => undefined)
     await setStreamState(vivo.record._id, 'disconnected')
   }
 
@@ -617,6 +650,31 @@ export class StreamManager {
    * nunca disparava (toda mensagem cancelava o timer pendente) e num stream parado
    * disparava uma vez só. Um batimento que bate uma vez não mantém nada vivo.
    */
+  /**
+   * Renova a posse enquanto o stream vive — e SOLTA o socket se ela for perdida.
+   *
+   * Perder a posse quer dizer que outra instância já assumiu (o arrendamento venceu por
+   * uma pausa longa deste processo). Continuar com o socket aberto seria exatamente o
+   * caso que a posse existe para impedir.
+   */
+  private armarRenovacao(vivo: Vivo): void {
+    const renovar = async () => {
+      if (vivo.encerrado) return
+      const minha = await renewStreamLease(vivo.record._id, this.instanceId).catch(() => true)
+      if (!minha) {
+        this.deps.onError(`stream ${vivo.record._id.toString()} posse`, new Error('outra instância assumiu este stream'))
+        await this.stop(vivo.record._id.toString()).catch(() => undefined)
+        return
+      }
+      const proximo = this.deps.schedule(() => void renovar(), Math.max(5_000, Math.floor(STREAM_LEASE_MS / 3)))
+      proximo.unref?.()
+      vivo.timerLease = proximo
+    }
+    const primeiro = this.deps.schedule(() => void renovar(), Math.max(5_000, Math.floor(STREAM_LEASE_MS / 3)))
+    primeiro.unref?.()
+    vivo.timerLease = primeiro
+  }
+
   private armarBatimento(vivo: Vivo): void {
     const nativo = vivo.adapter.heartbeatNative?.() === true && typeof vivo.socket?.ping === 'function'
     if (!nativo && !vivo.adapter.heartbeatMessage) return
@@ -710,11 +768,12 @@ export class StreamManager {
   }
 
   private limparTimers(vivo: Vivo): void {
-    for (const t of [vivo.timerHeartbeat, vivo.timerIdle, vivo.timerReconnect, vivo.timerPong]) if (t) this.deps.cancel(t)
+    for (const t of [vivo.timerHeartbeat, vivo.timerIdle, vivo.timerReconnect, vivo.timerPong, vivo.timerLease]) if (t) this.deps.cancel(t)
     vivo.timerHeartbeat = null
     vivo.timerIdle = null
     vivo.timerReconnect = null
     vivo.timerPong = null
+    vivo.timerLease = null
   }
 }
 

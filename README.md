@@ -226,6 +226,12 @@ uma vez — salvar sem mudar nada não faz nada. A regra é essa e não uma list
 a conexão guarda uma cópia da configuração no momento em que sobe, então "mudar sem
 reconectar" seria não mudar. O que está na tela é o que está no ar.
 
+**Uma instância por stream.** Cada conexão viva é tomada por um processo, com posse
+gravada no banco: duas instâncias que subam juntas não abrem dois sockets no mesmo
+serviço. Um encerramento limpo devolve a posse na hora; uma queda deixa a próxima
+assumir quando o prazo vence (`STREAM_LEASE_MS`). Num deploy de uma instância só, nada
+muda.
+
 **A credencial não entra no endereço.** `?apikey=...` em texto claro é recusado, com o
 caminho certo na mensagem: autenticação **parâmetro no endereço** com o valor no campo
 de credencial produz exatamente a mesma URL na hora de conectar, e o segredo continua

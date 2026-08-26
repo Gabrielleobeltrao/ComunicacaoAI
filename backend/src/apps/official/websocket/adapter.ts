@@ -47,13 +47,39 @@ export function buildWebSocketAdapter(
   return {
     appKey: 'websocket',
 
+    /**
+     * O endereço COM a credencial, montado na hora de conectar.
+     *
+     * Duas coisas acontecem aqui, e as duas só nos VALORES da query:
+     *
+     * `{{token}}` escrito num parâmetro é substituído. A configuração aceita isso — é
+     * como se guarda um endereço com chave sem guardar a chave —, e sem esta linha o
+     * socket abria com o marcador literal e o serviço recusava por uma razão que a tela
+     * não tinha como explicar.
+     *
+     * `auth.kind: "query"` acrescenta o parâmetro dele. Quando os dois estão
+     * configurados para o MESMO nome, o de autenticação ganha: ele é a configuração
+     * explícita de autenticação, e ter dois valores para o mesmo parâmetro seria
+     * ambíguo — o servidor escolheria um deles e ninguém saberia qual.
+     *
+     * Host e caminho não passam por substituição nenhuma: um `{{token}}` ali mudaria
+     * PARA ONDE a conexão vai, e o endereço já foi conferido contra destino interno.
+     * `URLSearchParams` cuida da codificação; concatenar texto não cuidaria.
+     */
     url: () => {
-      // Autenticação por query: o valor entra no endereço na hora de conectar. Ele não
-      // é registrado em lugar nenhum — nem no log, nem no documento do stream.
-      if (config.auth.kind !== 'query' || !credencial) return config.endpoint
+      if (!credencial) return config.endpoint
       const url = new URL(config.endpoint)
-      url.searchParams.set(config.auth.name, `${config.auth.prefix}${credencial}`)
-      return url.toString()
+      let mudou = false
+      for (const [nome, valor] of [...url.searchParams]) {
+        if (!valor.includes('{{token}}')) continue
+        url.searchParams.set(nome, fillToken(valor, credencial))
+        mudou = true
+      }
+      if (config.auth.kind === 'query' && config.auth.name) {
+        url.searchParams.set(config.auth.name, `${config.auth.prefix}${credencial}`)
+        mudou = true
+      }
+      return mudou ? url.toString() : config.endpoint
     },
 
     handshakeHeaders: () => {

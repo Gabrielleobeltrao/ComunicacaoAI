@@ -186,8 +186,24 @@ websocketRouter.patch('/connections/:id', async (req, res, next) => {
 })
 
 /** Conferir um endereço sem gravar nada. É o que a tela chama enquanto se digita. */
+/**
+ * Conferir o endereço ANTES de salvar — com as mesmas regras do salvamento.
+ *
+ * Antes daqui ele só rodava a guarda de destino: um endereço com `?apikey=` em texto
+ * claro aparecia como "aceito" e era recusado no salvar, segundos depois, por uma regra
+ * que o teste não tinha aplicado. Um teste que aprova o que o salvamento recusa é pior
+ * do que não ter teste.
+ */
 websocketRouter.post('/check-url', async (req, res) => {
-  res.json(await checkWebSocketUrl(String((req.body ?? {}).endpoint ?? '')))
+  const endpoint = String((req.body ?? {}).endpoint ?? '')
+  try {
+    // A mesma normalização do salvamento, só para o endereço: ela é quem recusa
+    // parâmetro de segredo em texto claro.
+    normalizeConnectionConfig({ endpoint })
+  } catch (error) {
+    return res.json({ ok: false, message: error instanceof ValidationError ? error.message : 'Endereço inválido.' })
+  }
+  res.json(await checkWebSocketUrl(endpoint))
 })
 
 // --- o stream da conexão ------------------------------------------------------------

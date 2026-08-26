@@ -150,6 +150,14 @@ export interface StreamRecord {
   /** Só a mensagem, e curta. Nunca o quadro cru, que pode conter credencial. */
   lastError: { message: string; at: Date } | null
   eventCount: number
+  /**
+   * Qual INSTÂNCIA está com este stream, e até quando.
+   *
+   * Ausente em tudo que existia antes — e o filtro de posse trata ausente como livre,
+   * então nada precisa ser migrado. Ver `claimStream`.
+   */
+  leaseOwner?: string | null
+  leaseUntil?: Date | null
   createdAt: Date
   updatedAt: Date
 }

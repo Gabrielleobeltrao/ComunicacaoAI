@@ -9,6 +9,7 @@ import {
   listResumableStreams,
   listStreams,
   listStreamsForInstallation,
+  releaseAllLeases,
   setStreamPaused,
   upsertStream,
 } from './repository.js'
@@ -207,8 +208,9 @@ export async function restoreStreams(onError: (where: string, e: unknown) => voi
   let subiram = 0
   for (const record of pendentes) {
     try {
-      await gerente.start(record)
-      subiram += 1
+      // Só conta o que ESTE processo assumiu: um stream cuja posse é de outra instância
+      // não subiu aqui, e contá-lo faria o log dizer que restaurou o que não restaurou.
+      if (await gerente.start(record)) subiram += 1
     } catch (error) {
       onError(`stream ${record._id.toString()} restauração`, error)
     }
@@ -233,7 +235,11 @@ export function createStreamManager(
 }
 
 export async function shutdownStreams(): Promise<void> {
-  await streamManager()?.stopAll()
+  const gerente = streamManager()
+  await gerente?.stopAll()
+  // Rede de segurança: `stopAll` já solta a posse de cada stream, mas um que tenha
+  // falhado no caminho não pode deixar o arrendamento pendurado até vencer.
+  if (gerente) await releaseAllLeases(gerente.instanceId).catch(() => undefined)
   setStreamManager(null)
   /**
    * O que estava dentro da janela de gravação vai ao banco ANTES de o processo sair.

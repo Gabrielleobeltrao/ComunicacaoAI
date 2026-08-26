@@ -449,13 +449,14 @@ test('desinscrever o que não estava inscrito não manda mensagem', async () => 
 
 // --- restart e limites ----------------------------------------------------------------
 
-test('o que estava de pé volta depois do restart do worker', async () => {
+test('o que estava de pé volta depois do restart LIMPO do worker', async () => {
   const { m } = gerente()
   const record = await streamDe(['PETR4'])
   await m.start(record)
   SocketFalso.abertos[0].abrir()
 
-  // O worker morre: a memória some, o documento fica.
+  // Encerramento limpo: a posse é devolvida, e a instância nova sobe sem esperar nada.
+  await m.stopAll()
   SocketFalso.abertos = []
   const { m: novo } = gerente()
   setStreamManager(novo)
@@ -463,6 +464,62 @@ test('o que estava de pé volta depois do restart do worker', async () => {
   assert.equal(quantos, 1)
   assert.equal(SocketFalso.abertos.length, 1)
   assert.equal(SocketFalso.abertos[0].url, 'wss://stream.corretora-teste.com/default')
+})
+
+test('depois de uma QUEDA, a instância nova espera a posse vencer — e aí assume', async () => {
+  const { m } = gerente()
+  const record = await streamDe(['PETR4'])
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  // A instância morre sem devolver nada: a memória some, o documento e a posse ficam.
+  SocketFalso.abertos = []
+  const { m: novo } = gerente()
+  setStreamManager(novo)
+
+  // Enquanto a posse do morto vale, a nova NÃO abre um segundo socket no mesmo serviço.
+  assert.equal(await restoreStreams(), 0)
+  assert.equal(SocketFalso.abertos.length, 0)
+
+  // Passado o prazo, ela assume — que é o que impede um stream ficar órfão para sempre.
+  await db.collection('market_streams').updateOne({ _id: record._id }, { $set: { leaseUntil: new Date(Date.now() - 1000) } })
+  assert.equal(await restoreStreams(), 1)
+  assert.equal(SocketFalso.abertos.length, 1)
+})
+
+test('devolver a posse não segura o encerramento quando o banco não responde', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  await m.start(record)
+
+  // O banco some ANTES do encerramento — é a ordem do smoke, e o caso em que o processo
+  // mais precisa morrer. A devolução da posse tem prazo próprio e não pode atrasar isso.
+  const { releaseStreamLease } = await import('../dist/streams/repository.js')
+  const colecao = db.collection('market_streams')
+  const original = colecao.updateOne.bind(colecao)
+  colecao.updateOne = () => new Promise(() => undefined) // nunca resolve
+  try {
+    const comecou = Date.now()
+    await releaseStreamLease(record._id, m.instanceId)
+    const levou = Date.now() - comecou
+    assert.ok(levou < 5_000, `a devolução segurou o encerramento por ${levou}ms`)
+  } finally {
+    colecao.updateOne = original
+  }
+})
+
+test('duas instâncias não abrem o mesmo stream', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m: primeira } = gerente()
+  const { m: segunda } = gerente()
+
+  await primeira.start(record)
+  await segunda.start(record)
+
+  // Um socket, e só. Sem a posse, os dois abririam — mensagem dobrada, evento dobrado, e
+  // num provedor que limita conexões por conta, as duas derrubadas.
+  assert.equal(SocketFalso.abertos.length, 1)
+  assert.equal(segunda.stateOf(record._id.toString()), 'disconnected')
 })
 
 test('um stream pausado não volta no restart', async () => {

@@ -704,3 +704,105 @@ test('autenticação de TEXTO sai sem aspas — nem no teste, nem na conexão', 
   assert.equal(servidor.estado.recebidas[0], `AUTH ${SEGREDO}`, 'sem aspas')
   assert.ok(!servidor.estado.recebidas[0].startsWith('"'), 'nada de JSON.stringify num texto')
 })
+
+
+// ============================================================================
+// A última rodada
+// ============================================================================
+
+test('a vaga de uma chave VENCIDA é liberada no mesmo processo, sem reiniciar nada', async () => {
+  const { WS_LIMITS } = await import('../dist/apps/official/websocket/config.js')
+  const teto = WS_LIMITS.maxLiveKeysPerConnection
+
+  // Enche a conexão com chaves de vida curta.
+  for (let i = 0; i < teto; i++) assert.equal(await liveData.putLiveValue(DONO, 'ttl-vaga', `k${i}`, i, 5), true)
+  assert.equal(await liveData.putLiveValue(DONO, 'ttl-vaga', 'excedente', 1, 60), false, 'o teto está cheio')
+
+  // O tempo passa: as chaves vencem. Nada é reiniciado, nada é limpo à mão.
+  const futuro = new Date(Date.now() + 10_000)
+  assert.equal(await liveData.putLiveValue(DONO, 'ttl-vaga', 'depois-do-vencimento', 1, 60, futuro), true, 'a vaga vencida foi devolvida')
+})
+
+test('renovar uma chave que já existe continua funcionando com o teto cheio', async () => {
+  const { WS_LIMITS } = await import('../dist/apps/official/websocket/config.js')
+  for (let i = 0; i < WS_LIMITS.maxLiveKeysPerConnection; i++) await liveData.putLiveValue(DONO, 'renova', `k${i}`, i, 600)
+  // Cheia — e mesmo assim a chave que já é dela continua sendo atualizada.
+  assert.equal(await liveData.putLiveValue(DONO, 'renova', 'k0', 999, 600), true)
+  await liveData.flushLiveData()
+  assert.equal((await liveData.getLiveValue(DONO, 'renova', 'k0')).value, 999)
+})
+
+test('uma rajada simultânea não ultrapassa o teto — a hidratação é UMA só', async () => {
+  const { WS_LIMITS } = await import('../dist/apps/official/websocket/config.js')
+  const teto = WS_LIMITS.maxLiveKeysPerConnection
+  // Todas as chamadas partem juntas, antes de qualquer hidratação terminar: é a corrida
+  // que existia quando o dono era marcado como hidratado ANTES da consulta voltar.
+  const r = await Promise.all(Array.from({ length: teto + 50 }, (_, i) => liveData.putLiveValue(DONO, 'rajada', `k${i}`, i, 600)))
+  assert.equal(r.filter(Boolean).length, teto, `esperava ${teto} aceitas, veio ${r.filter(Boolean).length}`)
+})
+
+test('uma hidratação que FALHA pode ser tentada de novo', async () => {
+  // Uma conexão já persistida, para a hidratação ter o que ler.
+  await liveData.putLiveValue('dono-retry', 'c', 'AAPL', 1, 600)
+  await liveData.flushLiveData()
+  liveData.resetLiveBuffer()
+
+  let falhar = true
+  const original = liveData.setLiveHydrator(async (ownerId, agora) => {
+    if (falhar) {
+      falhar = false
+      throw new Error('banco indisponível')
+    }
+    return original(ownerId, agora)
+  })
+  try {
+    await assert.rejects(() => liveData.putLiveValue('dono-retry', 'c', 'TSLA', 2, 600), /indisponível/)
+    // A segunda tentativa não herda o estado quebrado da primeira — e o limite volta a
+    // ser conferido contra o que está no banco, não contra uma memória pela metade.
+    assert.equal(await liveData.putLiveValue('dono-retry', 'c', 'TSLA', 2, 600), true)
+    assert.equal((await liveData.getLiveValue('dono-retry', 'c', 'AAPL')).value, 1, 'a hidratação da segunda vez leu o que já existia')
+  } finally {
+    liveData.setLiveHydrator(original)
+  }
+})
+
+test('{{token}} na query é substituído e codificado — e nunca no host nem no caminho', async () => {
+  const comSinais = 'chave com/sinais+e=iguais'
+  servidor = await startFakeWs()
+  novoGerente()
+  // O endereço carrega o marcador e uma query comum ao lado dele.
+  const url = new URL(servidor.url)
+  url.searchParams.set('apikey', '{{token}}')
+  url.searchParams.set('feed', 'iex')
+  const instalacao = await createInstallation(DONO, getApp('websocket'), {
+    name: 'Com marcador',
+    config: { token: comSinais },
+    publicMetadata: writeConnectionConfig(normalizeConnectionConfig({ endpoint: url.toString() })),
+  })
+
+  const adapter = await websocketAdapterFor({ ownerId: DONO, appKey: 'websocket', installationId: instalacao._id.toString(), environment: 'default' })
+  const montada = new URL(adapter.url('default'))
+  assert.equal(montada.searchParams.get('apikey'), comSinais, 'o valor chega decodificado do outro lado')
+  assert.equal(montada.searchParams.get('feed'), 'iex', 'o resto da query fica intacto')
+  assert.ok(!montada.toString().includes('{{token}}'), 'nada de marcador literal no fio')
+  assert.ok(montada.toString().includes(encodeURIComponent('/')) || !montada.toString().includes('chave com/'), 'o valor vai codificado')
+  assert.equal(montada.host, new URL(servidor.url).host, 'o host não é tocado')
+  assert.equal(montada.pathname, new URL(servidor.url).pathname, 'o caminho não é tocado')
+})
+
+test('o marcador na query não deixa a credencial no metadata público', async () => {
+  const config = normalizeConnectionConfig({ endpoint: 'wss://exemplo.com/s?apikey={{token}}' }, SEGREDO)
+  const guardado = JSON.stringify(writeConnectionConfig(config))
+  assert.ok(guardado.includes('{{token}}'))
+  assert.ok(!guardado.includes(SEGREDO))
+})
+
+test('check-url e o salvamento concordam: o que será recusado não aparece como válido', async () => {
+  const { checkWebSocketUrl } = await import('../dist/net/safeWebSocket.js')
+  const comSegredo = 'wss://exemplo.com/s?apikey=valor-em-texto-claro'
+
+  // A guarda de destino sozinha aprovaria — o host é público.
+  assert.equal((await checkWebSocketUrl(comSegredo)).ok, true, 'a guarda de SSRF não tem nada contra ele')
+  // E o salvamento recusa. É essa a incoerência que a rota precisa não ter.
+  assert.throws(() => normalizeConnectionConfig({ endpoint: comSegredo }), /parâmetro no endereço/i)
+})

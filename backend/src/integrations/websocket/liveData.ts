@@ -53,6 +53,30 @@ let escrever: Escritor = async (id, registro) => {
 }
 
 /** Troca o escritor. Só os testes chamam; devolve o anterior para restaurar. */
+/**
+ * A LEITURA da hidratação, atrás de um ponto injetável.
+ *
+ * Mesmo motivo do escritor: sem ela não há como provar que uma falha de banco na
+ * hidratação permite tentar de novo — e "permite tentar de novo" é justamente o que
+ * separa um erro momentâneo de um processo que nunca mais confere limite nenhum.
+ */
+type Leitor = (ownerId: string, agora: Date) => Promise<{ key: string; connectionId: string; updates?: number; expiresAt: Date }[]>
+let carregarChaves: Leitor = async (ownerId, agora) =>
+  live
+    .find({ ownerId, expiresAt: { $gt: agora } }, { projection: { key: 1, connectionId: 1, updates: 1, expiresAt: 1 } })
+    .limit(WS_LIMITS.maxLiveKeysPerOwner + 1)
+    .toArray()
+
+export function setLiveHydrator(fn: Leitor | null): Leitor {
+  const anterior = carregarChaves
+  carregarChaves = fn ?? (async (ownerId, agora) =>
+    live
+      .find({ ownerId, expiresAt: { $gt: agora } }, { projection: { key: 1, connectionId: 1, updates: 1, expiresAt: 1 } })
+      .limit(WS_LIMITS.maxLiveKeysPerOwner + 1)
+      .toArray())
+  return anterior
+}
+
 export function setLiveWriter(fn: Escritor | null): Escritor {
   const anterior = escrever
   escrever = fn ?? (async (id, registro) => {
@@ -163,7 +187,8 @@ export async function putLiveValue(
   // mesmo entre dois tiques do mesmo milissegundo.
   const seq = proximaSequencia(id)
 
-  if (!buffer.has(id) && !(await cabeMaisUma(ownerId, connectionId, id, chave))) return false
+  const expiraEm = agora.getTime() + Math.max(5, ttlSeconds) * 1000
+  if (!buffer.has(id) && !(await cabeMaisUma(ownerId, connectionId, id, chave, expiraEm, agora.getTime()))) return false
 
   /**
    * O buffer é lido DEPOIS do await, e não antes.
@@ -196,7 +221,7 @@ export async function putLiveValue(
      */
     updates: (bases.get(id) ?? 0) + seq,
     receivedAt: agora,
-    expiresAt: new Date(agora.getTime() + Math.max(5, ttlSeconds) * 1000),
+    expiresAt: new Date(expiraEm),
   }
   // O objeto do buffer é REAPROVEITADO quando existe: `gravar` guarda a referência dele
   // e mexe nela no fim: trocar por um objeto novo deixava a gravação em andamento
@@ -247,19 +272,45 @@ function agendarGravacao(id: string, pendente: Pendente, agora: number): void {
  * passam. Reservar a vaga na memória, de forma síncrona, é o que fecha essa janela —
  * o banco continua sendo a verdade, e isto é o freio de quem está produzindo.
  */
-const conhecidas = new Map<string, Set<string>>()
-const doDono = new Map<string, Set<string>>()
+/**
+ * A reserva guarda ATÉ QUANDO ela vale.
+ *
+ * Antes era um `Set` de chaves, e uma vaga ficava ocupada até o processo reiniciar: a
+ * chave vencia, o Mongo a removia por TTL — e a memória continuava contando com ela. Uma
+ * conexão que gira símbolos ao longo do dia batia no teto sem ter nada vivo dentro dele.
+ *
+ * Guardando a validade, a limpeza é trivial e acontece na hora de conferir o limite:
+ * quem venceu sai antes da conta.
+ */
+const conhecidas = new Map<string, Map<string, number>>()
+const doDono = new Map<string, Map<string, number>>()
 
-const conjunto = (mapa: Map<string, Set<string>>, chave: string): Set<string> => {
+const mapaDe = (mapa: Map<string, Map<string, number>>, chave: string): Map<string, number> => {
   const atual = mapa.get(chave)
   if (atual) return atual
-  const novo = new Set<string>()
+  const novo = new Map<string, number>()
   mapa.set(chave, novo)
   return novo
 }
 
-/** Donos cujas chaves já foram lidas do banco neste processo. */
-const hidratados = new Set<string>()
+/** Tira o que já venceu e devolve quantas reservas VIVAS restaram. */
+function vivasEm(reservas: Map<string, number>, agora: number): number {
+  for (const [chave, ate] of reservas) if (ate <= agora) reservas.delete(chave)
+  return reservas.size
+}
+
+/**
+ * A hidratação EM ANDAMENTO de cada dono.
+ *
+ * Guardar a promessa, e não um booleano: marcar "hidratado" antes de a consulta voltar
+ * fazia as chamadas concorrentes pularem a espera e conferirem o limite contra uma
+ * memória ainda vazia — exatamente na rajada em que o limite importa. Agora todas
+ * aguardam a MESMA consulta.
+ *
+ * A promessa sai do mapa quando FALHA, para a próxima tentar de novo em vez de herdar
+ * um estado pela metade para sempre.
+ */
+const hidratacoes = new Map<string, Promise<void>>()
 
 /**
  * Traz do banco o que este processo ainda não sabe sobre as chaves do dono.
@@ -270,22 +321,35 @@ const hidratados = new Set<string>()
  * Só as NÃO VENCIDAS entram: o TTL do Mongo remove em até um minuto, e uma chave morta
  * ocupando vaga faria o teto apertar sozinho com o tempo.
  */
-async function hidratar(ownerId: string): Promise<void> {
-  if (hidratados.has(ownerId)) return
-  hidratados.add(ownerId)
+function hidratar(ownerId: string): Promise<void> {
+  const emAndamento = hidratacoes.get(ownerId)
+  if (emAndamento) return emAndamento
+  const promessa = hidratarAgora(ownerId).catch((erro) => {
+    // Falhou: nada de estado pela metade e nada de "hidratado" mentiroso. A próxima
+    // chamada tenta de novo.
+    hidratacoes.delete(ownerId)
+    conhecidas.forEach((_, k) => {
+      if (k.startsWith(`${ownerId}:`)) conhecidas.delete(k)
+    })
+    doDono.delete(ownerId)
+    throw erro
+  })
+  hidratacoes.set(ownerId, promessa)
+  return promessa
+}
+
+async function hidratarAgora(ownerId: string): Promise<void> {
   const agora = new Date()
-  const docs = await live
-    // `updates` vem junto: a hidratação passa na frente da leitura por chave, e sem ele
-    // o contador recomeçava do 1 depois de um restart — que é justamente o caso que
-    // "continua de onde parou" existe para cobrir.
-    .find({ ownerId, expiresAt: { $gt: agora } }, { projection: { key: 1, connectionId: 1, updates: 1 } })
-    .limit(WS_LIMITS.maxLiveKeysPerOwner + 1)
-    .toArray()
-  const doOwner = conjunto(doDono, ownerId)
+  // `updates` vem junto: a hidratação passa na frente da leitura por chave, e sem ele o
+  // contador recomeçava do 1 depois de um restart — que é justamente o caso que
+  // "continua de onde parou" existe para cobrir.
+  const docs = await carregarChaves(ownerId, agora)
+  const doOwner = mapaDe(doDono, ownerId)
   for (const doc of docs) {
     const id = idDe(ownerId, doc.connectionId, doc.key)
-    conjunto(conhecidas, `${ownerId}:${doc.connectionId}`).add(doc.key)
-    doOwner.add(id)
+    const ate = doc.expiresAt.getTime()
+    mapaDe(conhecidas, `${ownerId}:${doc.connectionId}`).set(doc.key, ate)
+    doOwner.set(id, ate)
     if (!bases.has(id)) bases.set(id, doc.updates ?? 0)
   }
 }
@@ -305,27 +369,36 @@ async function hidratar(ownerId: string): Promise<void> {
  * houver dois produtores para a mesma conexão, esta reserva vira um `findOneAndUpdate`
  * num documento de contagem.
  */
-async function cabeMaisUma(ownerId: string, connectionId: string, id: string, chave: string): Promise<boolean> {
+async function cabeMaisUma(ownerId: string, connectionId: string, id: string, chave: string, ate: number, agora: number): Promise<boolean> {
   await hidratar(ownerId)
-  const daConexao = conjunto(conhecidas, `${ownerId}:${connectionId}`)
-  const doOwner = conjunto(doDono, ownerId)
-  if (daConexao.has(chave)) return true
+  const daConexao = mapaDe(conhecidas, `${ownerId}:${connectionId}`)
+  const doOwner = mapaDe(doDono, ownerId)
 
-  const existente = await live.findOne({ _id: id }, { projection: { updates: 1, expiresAt: 1 } })
-  if (existente && existente.expiresAt.getTime() > Date.now()) {
-    if (!bases.has(id)) bases.set(id, existente.updates ?? 0)
-    daConexao.add(chave)
-    doOwner.add(id)
+  // Renovar uma chave que já é minha sempre passa — e estende a validade da reserva.
+  const reservaAtual = daConexao.get(chave)
+  if (reservaAtual !== undefined && reservaAtual > agora) {
+    daConexao.set(chave, ate)
+    doOwner.set(id, ate)
     return true
   }
 
-  if (daConexao.size >= WS_LIMITS.maxLiveKeysPerConnection) return false
-  if (doOwner.size >= WS_LIMITS.maxLiveKeysPerOwner) return false
+  const existente = await live.findOne({ _id: id }, { projection: { updates: 1, expiresAt: 1 } })
+  if (existente && existente.expiresAt.getTime() > agora) {
+    if (!bases.has(id)) bases.set(id, existente.updates ?? 0)
+    daConexao.set(chave, ate)
+    doOwner.set(id, ate)
+    return true
+  }
+
+  // O VENCIDO SAI ANTES DA CONTA. Sem isto, a vaga de uma chave que já morreu contava
+  // contra o teto até o processo reiniciar.
+  if (vivasEm(daConexao, agora) >= WS_LIMITS.maxLiveKeysPerConnection) return false
+  if (vivasEm(doOwner, agora) >= WS_LIMITS.maxLiveKeysPerOwner) return false
 
   // A vaga é reservada AGORA, antes de qualquer espera: é o que impede a rajada de
   // chaves novas passar toda pela mesma leitura.
-  daConexao.add(chave)
-  doOwner.add(id)
+  daConexao.set(chave, ate)
+  doOwner.set(id, ate)
   return true
 }
 
@@ -400,7 +473,7 @@ export const resetLiveBuffer = (): void => {
   aplicados.clear()
   conhecidas.clear()
   doDono.clear()
-  hidratados.clear()
+  hidratacoes.clear()
 }
 
 const vivo = (r: LiveDataRecord | null, agora: Date): LiveDataRecord | null =>
@@ -463,7 +536,7 @@ export async function deleteLiveDataFor(ownerId: string, connectionId: string): 
   }
   const daConexao = conhecidas.get(`${ownerId}:${connectionId}`)
   const doOwner = doDono.get(ownerId)
-  for (const chave of daConexao ?? []) {
+  for (const chave of daConexao?.keys() ?? []) {
     const id = idDe(ownerId, connectionId, chave)
     doOwner?.delete(id)
     sequencias.delete(id)
