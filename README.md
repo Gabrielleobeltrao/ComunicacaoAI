@@ -221,6 +221,46 @@ o `.env` fica como padrão e como teto. Mudar endereço, autenticação, subprot
 credencial ou intervalos reabre a conexão sozinho — filtro e caminho, que são lidos a
 cada mensagem, não derrubam nada.
 
+### Dado ao vivo, sem um modelo por mensagem
+
+Um WebSocket de mercado manda três cotações por segundo, e ninguém pode pagar um agente
+por cotação. Por isso o App tem duas saídas separadas:
+
+**Normalizar** — *Avançado → Normalizar campos*: `$.data.ticker → symbol`,
+`$.data.last → price`. Dois serviços com formatos diferentes viram o mesmo objeto aqui
+dentro, e o código de um agente escreve `preco.symbol` sem saber de onde o dado veio.
+Não é linguagem: cada regra é um par (de onde ler, como o campo passa a se chamar).
+
+**Guardar o último valor** — com a *chave do dado ao vivo* preenchida (normalmente
+`symbol`), cada mensagem atualiza o valor daquela chave em vez de virar mais uma linha
+de histórico. A página **Dado ao vivo** mostra o que está guardado, e é exatamente o que
+os agentes leem.
+
+Nos agentes de código e nas ferramentas: `liveData.get`, `liveData.latest`,
+`liveData.list` e `liveData.waitFor`. É com elas que RSI, EMA, MACD, ATR, OHLC e regras
+de risco são calculados — por código, sobre o valor de agora, sem um modelo no caminho.
+O modelo entra quando alguém quer uma frase.
+
+**Espaço entre eventos** controla o barramento à parte: guardar é barato e substitui o
+valor anterior; publicar é durável, é entregue e pode disparar trabalho. Com `0`, tudo
+vira evento como antes.
+
+### Exemplo sem credencial nenhuma
+
+Para experimentar o caminho inteiro sem conta em provedor:
+
+| Campo | Valor |
+|---|---|
+| WebSocket URL | `wss://ws.postman-echo.com/raw` |
+| Autenticação | Nenhuma |
+| Mensagens ao conectar | `{"data":{"ticker":"AAPL","last":227.12}}` |
+| Normalizar campos | `$.data.ticker → symbol` e `$.data.last → price` |
+| Chave do dado ao vivo | `symbol` |
+
+O serviço devolve o que recebe, então a mensagem inicial volta como mensagem recebida,
+passa pelo mapeamento e aparece em *Dado ao vivo* como `AAPL` valendo `227.12`. Um agente
+de código lê o mesmo valor com `liveData.get`. Nenhuma credencial envolvida.
+
 Os ajustes (`WS_*`, `STREAM_MAX_INTERVAL_MS`) estão em
 [`backend/.env.example`](backend/.env.example).
 
