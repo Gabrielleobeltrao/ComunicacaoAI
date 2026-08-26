@@ -179,7 +179,7 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
         </select>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 10 }}>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-[120px_1fr]">
         <div>
           <label className={label} htmlFor="tool-method">
             {t('tools.method')}
@@ -216,7 +216,10 @@ export function ToolForm({ tool, onSaved, onCancel }: { tool: Tool | null; onSav
         <span style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text-heading)' }}>{t('tools.parameters')}</span>
         {params.length === 0 ? <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>{t('tools.noParameters')}</p> : null}
         {params.map((p, i) => (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 1fr auto', gap: 8, alignItems: 'center' }} data-testid="tool-param">
+          // Quatro colunas só quando há largura para quatro. Num celular de 320px as
+          // duas colunas de texto ficavam com 26px cada — cabe menos de uma palavra,
+          // e a rolagem da página não denunciava nada porque não estourava nada.
+          <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_110px_1fr_auto] sm:items-center" data-testid="tool-param">
             <input className={input} value={p.name} onChange={(e) => patchParam(i, { name: e.target.value })} placeholder="numero" aria-label={t('tools.name')} />
             <select className={input} value={p.type} onChange={(e) => patchParam(i, { type: e.target.value as ToolParam['type'] })}>
               {(['string', 'number', 'integer', 'boolean'] as const).map((ty) => (

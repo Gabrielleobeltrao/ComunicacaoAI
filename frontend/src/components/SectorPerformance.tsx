@@ -55,7 +55,7 @@ export function SectorPerformance({ sector, agents }: { sector: SectorSummary; a
               onClick={() => setPeriod(p)}
               data-testid={`period-${p}`}
               style={{
-                height: 28,
+                height: 32,
                 padding: '0 12px',
                 borderRadius: 'var(--radius-xs)',
                 border: 0,

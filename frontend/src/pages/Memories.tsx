@@ -125,7 +125,9 @@ export default function Memories() {
 
       {/* --- onde procurar ---------------------------------------------------- */}
       <Card padding="14px 16px" style={{ display: 'grid', gap: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr', gap: 12 }}>
+        {/* Três colunas quando cabem três. Num celular de 320px os dois seletores
+            ficavam com 77px, estreitos demais para ler a opção escolhida. */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1.4fr_1fr_1fr]">
           <Field label="Buscar" hint="Procura na chave e no conteúdo. Busca textual, sem IA.">
             <Input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Ex.: nome do cliente" data-testid="memory-search" />
           </Field>

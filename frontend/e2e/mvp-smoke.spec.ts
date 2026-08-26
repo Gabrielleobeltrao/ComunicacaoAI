@@ -325,7 +325,7 @@ const LARGURAS = [
 ]
 
 test('as telas do MVP cabem em 320, 390, 768 e 1440', async ({ page }) => {
-  test.setTimeout(180_000)
+  test.setTimeout(600_000)
 
   await irPara(page, '/login')
   await page.locator('input[type="email"]').fill(CONTA.email)
@@ -339,15 +339,52 @@ test('as telas do MVP cabem em 320, 390, 768 e 1440', async ({ page }) => {
   const setores = await (await page.request.get(`/api/sectors?floorId=${andar.id}`)).json()
   const agentes = await (await page.request.get(`/api/agents?floorId=${andar.id}`)).json()
 
+  /**
+   * Nomes COMPRIDOS antes de medir.
+   *
+   * Uma conta recém-criada é o caso fácil: tudo cabe porque não há nada dentro. O
+   * estouro de largura aparece com o que a pessoa realmente digita — um nome longo e,
+   * pior, um pedaço sem espaço nenhum (um e-mail, uma URL), que não tem onde quebrar e
+   * empurra o contêiner inteiro.
+   */
+  const NOME_COMPRIDO = 'Atendimento ao Cliente Premium — suporte@empresa-de-atendimento-com-nome-bem-comprido.com.br'
+  await page.request.patch(`/api/agents/${agentes[0]._id}`, {
+    data: { name: NOME_COMPRIDO, objective: `${NOME_COMPRIDO} responde dúvidas, registra pedidos e encaminha o que não resolve.` },
+  })
+  await page.request.patch(`/api/sectors/${setores[0]._id}`, { data: { name: NOME_COMPRIDO } })
+
+  // O nome comprido tem que estar MESMO na tela. Sem isto, um PATCH recusado deixaria
+  // a varredura medindo a conta vazia de novo — passando pelo motivo errado.
+  await irPara(page, `/floors/${andar.id}/agents`)
+  await expect(page.getByText(NOME_COMPRIDO).first()).toBeVisible({ timeout: 20_000 })
+  await irPara(page, `/floors/${andar.id}/sectors`)
+  await expect(page.getByText(NOME_COMPRIDO).first()).toBeVisible({ timeout: 20_000 })
+
+  // Toda tela que alguém abre pelo menu, e as ABAS de agente e setor — que são
+  // telas inteiras diferentes, não um trecho da mesma. Medir só a primeira aba
+  // deixava as outras quatro sem ninguém olhando.
   const telas = [
     ['prédio', '/building'],
+    ['início', '/dashboard'],
     ['andar (com o mapa)', `/floors/${andar.id}`],
     ['agentes', `/floors/${andar.id}/agents`],
     ['agente', `/floors/${andar.id}/agents/${agentes[0]._id}`],
+    ['agente · como trabalha', `/floors/${andar.id}/agents/${agentes[0]._id}/como-trabalha`],
+    ['agente · fluxos', `/floors/${andar.id}/agents/${agentes[0]._id}/fluxos`],
+    ['agente · atividade', `/floors/${andar.id}/agents/${agentes[0]._id}/atividade`],
+    ['agente · avançado', `/floors/${andar.id}/agents/${agentes[0]._id}/avancado`],
     ['setores', `/floors/${andar.id}/sectors`],
     ['setor', `/floors/${andar.id}/sectors/${setores[0]._id}`],
+    ['setor · equipe', `/floors/${andar.id}/sectors/${setores[0]._id}/equipe`],
+    ['setor · conhecimento', `/floors/${andar.id}/sectors/${setores[0]._id}/conhecimento`],
+    ['setor · execuções', `/floors/${andar.id}/sectors/${setores[0]._id}/execucoes`],
+    ['setor · avançado', `/floors/${andar.id}/sectors/${setores[0]._id}/avancado`],
     ['execuções', '/executions'],
     ['apps', '/apps'],
+    ['memórias', '/memories'],
+    ['montar operação', '/architect'],
+    ['ajustes', '/settings'],
+    ['registros', '/settings/logs'],
   ] as const
 
   for (const { rotulo, w, h } of LARGURAS) {
@@ -372,6 +409,33 @@ test('as telas do MVP cabem em 320, 390, 768 e 1440', async ({ page }) => {
         return null
       })
       expect(cortado, `${nome} @ ${rotulo}: elemento cortado à esquerda`).toBeNull()
+
+      /**
+       * E os campos de digitar têm largura de digitar.
+       *
+       * Uma tela pode caber inteira e mesmo assim estar quebrada: basta uma grade de
+       * colunas fixas espremer os campos de texto até não caber uma palavra. Nada
+       * disso aparece na rolagem da página — foi assim que a linha de parâmetro da
+       * ferramenta ficou com 26px de largura sem ninguém notar. Só na tela estreita:
+       * acima dela sobra espaço e a conta não é a mesma.
+       */
+      if (w === 320) {
+        const espremidos = await page.evaluate(() => {
+          const ruins: string[] = []
+          for (const el of document.querySelectorAll('input, select, textarea')) {
+            const campo = el as HTMLInputElement
+            const tipo = (campo.getAttribute('type') ?? 'text').toLowerCase()
+            // Só o que se DIGITA. Caixa de marcar, botão de opção e seletor de cor
+            // são pequenos por natureza, e número curto (um limite, um prazo) também.
+            if (['checkbox', 'radio', 'color', 'range', 'hidden', 'submit', 'button', 'number'].includes(tipo)) continue
+            const r = campo.getBoundingClientRect()
+            if (r.width === 0 || r.height === 0) continue
+            if (r.width < 90) ruins.push(`${campo.tagName}[${campo.getAttribute('aria-label') ?? campo.getAttribute('placeholder') ?? campo.id ?? tipo}] ${Math.round(r.width)}px`)
+          }
+          return ruins
+        })
+        expect(espremidos, `${nome}: campo estreito demais para digitar`).toEqual([])
+      }
     }
   }
 })
@@ -391,8 +455,27 @@ test('nos toques, os controles têm alvo mínimo de 44px', async ({ browser }) =
   await page.waitForURL(/\/(building|dashboard|floors)/, { timeout: 30_000 })
 
   const andares = await (await page.request.get('/api/floors')).json()
+  const setores = await (await page.request.get(`/api/sectors?floorId=${andares[0].id}`)).json()
+  const agentes = await (await page.request.get(`/api/agents?floorId=${andares[0].id}`)).json()
 
-  for (const rota of ['/building', `/floors/${andares[0].id}`, '/executions', '/apps']) {
+  // As mesmas telas que a varredura de largura mede. Caber na tela e ser tocável são
+  // metades da mesma pergunta, e antes daqui a segunda metade olhava só quatro delas.
+  const rotas = [
+    '/building',
+    `/floors/${andares[0].id}`,
+    `/floors/${andares[0].id}/agents`,
+    `/floors/${andares[0].id}/agents/${agentes[0]._id}`,
+    `/floors/${andares[0].id}/sectors`,
+    `/floors/${andares[0].id}/sectors/${setores[0]._id}`,
+    '/executions',
+    '/apps',
+    '/memories',
+    '/architect',
+    '/settings',
+    '/settings/logs',
+  ]
+
+  for (const rota of rotas) {
     await irPara(page, rota)
     await page.waitForLoadState('networkidle').catch(() => undefined)
     await page.waitForTimeout(500)
@@ -424,6 +507,38 @@ test('nos toques, os controles têm alvo mínimo de 44px', async ({ browser }) =
     })
     expect(pequenos, `${rota}: controles com alvo pequeno demais`).toEqual([])
   }
+
+  await ctx.close()
+})
+
+test('no celular, o menu abre, navega e fecha', async ({ browser }) => {
+  test.setTimeout(120_000)
+  // No celular a navegação inteira mora na gaveta atrás do botão da barra de cima —
+  // não há barra inferior. Se ela não abrir, não há como sair da tela em que se está.
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  const page = await ctx.newPage()
+
+  await irPara(page, '/login')
+  await page.locator('input[type="email"]').fill(CONTA.email)
+  await page.locator('input[type="password"]').fill(CONTA.senha)
+  await page.getByRole('button', { name: /Entrar/i }).click()
+  await page.waitForURL(/\/(building|dashboard|floors)/, { timeout: 30_000 })
+
+  const abrir = page.getByRole('button', { name: 'Abrir menu' })
+  await expect(abrir).toBeVisible({ timeout: 20_000 })
+  await abrir.click()
+  const gaveta = page.getByRole('dialog', { name: 'Menu' })
+  await expect(gaveta).toBeVisible()
+
+  // Navegar por ela leva a outra tela E fecha a gaveta — ficar aberta por cima do
+  // destino é o defeito clássico deste padrão.
+  await gaveta.getByRole('link', { name: 'Apps' }).first().click()
+  await page.waitForURL(/\/apps/, { timeout: 20_000 })
+  await expect(gaveta).toBeHidden()
+
+  // E reabrindo, ela diz onde a pessoa está.
+  await abrir.click()
+  await expect(page.getByRole('dialog', { name: 'Menu' }).getByRole('link', { name: 'Apps' }).first()).toHaveAttribute('aria-current', 'page')
 
   await ctx.close()
 })

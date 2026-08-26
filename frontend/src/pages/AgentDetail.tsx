@@ -465,7 +465,7 @@ export function AgentDetail() {
                   <button
                     key={p}
                     onClick={() => setPeriod(p)}
-                    style={{ height: 28, padding: '0 12px', borderRadius: 'var(--radius-xs)', border: 0, background: p === period ? 'var(--surface-card)' : 'transparent', boxShadow: p === period ? 'var(--shadow-flat)' : 'none', color: p === period ? 'var(--text-heading)' : 'var(--text-muted)', fontFamily: 'var(--font-ui)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}
+                    style={{ height: 32, padding: '0 12px', borderRadius: 'var(--radius-xs)', border: 0, background: p === period ? 'var(--surface-card)' : 'transparent', boxShadow: p === period ? 'var(--shadow-flat)' : 'none', color: p === period ? 'var(--text-heading)' : 'var(--text-muted)', fontFamily: 'var(--font-ui)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}
                   >
                     {PERIOD_LABEL[p]}
                   </button>

@@ -162,7 +162,7 @@ export function FloorSettingsDialog({
                 aria-label={c.name}
                 aria-pressed={color === c.value}
                 onClick={() => setColor(c.value)}
-                style={{ width: 28, height: 28, borderRadius: 8, background: c.value, cursor: 'pointer', border: color === c.value ? '2px solid var(--text-heading)' : '2px solid transparent', outline: color === c.value ? '2px solid var(--surface-card)' : 'none', outlineOffset: -4 }}
+                style={{ width: 32, height: 32, borderRadius: 8, background: c.value, cursor: 'pointer', border: color === c.value ? '2px solid var(--text-heading)' : '2px solid transparent', outline: color === c.value ? '2px solid var(--surface-card)' : 'none', outlineOffset: -4 }}
               />
             ))}
             <button
@@ -170,7 +170,7 @@ export function FloorSettingsDialog({
               aria-label="Sem cor"
               aria-pressed={!color}
               onClick={() => setColor(null)}
-              style={{ minWidth: 28, height: 28, padding: '0 10px', borderRadius: 8, fontSize: 12, background: 'var(--surface-card)', cursor: 'pointer', border: !color ? '2px solid var(--text-heading)' : '1px solid var(--border-strong,#d0d5dd)', color: 'var(--text-muted)' }}
+              style={{ minWidth: 32, height: 32, padding: '0 10px', borderRadius: 8, fontSize: 12, background: 'var(--surface-card)', cursor: 'pointer', border: !color ? '2px solid var(--text-heading)' : '1px solid var(--border-strong,#d0d5dd)', color: 'var(--text-muted)' }}
             >
               Nenhuma
             </button>
