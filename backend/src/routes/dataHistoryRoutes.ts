@@ -1,10 +1,11 @@
 import { Router } from 'express'
 import { ValidationError } from '../building.js'
-import { aplicarRecorder, limparCacheDeRecorders } from '../dataHistory/engine.js'
-import { agregarRegistros, chavesDoRecorder, listarRegistros } from '../dataHistory/store.js'
+import { explicarRecorder, limparCacheDeRecorders } from '../dataHistory/engine.js'
+import { catalogoDeFontes } from '../dataHistory/sources.js'
+import { agregarRegistros, chavesDoRecorder, contarDaConsulta, listarRegistros } from '../dataHistory/store.js'
 import { apagarRecorder, atualizarRecorder, criarRecorder, listarRecorders, normalizarRecorder, obterRecorder, usoDoRecorder } from '../dataHistory/recorders.js'
-import { historyPublic, recorderPublic } from '../dataHistory/types.js'
-import type { DataRecorderDefinition } from '../dataHistory/types.js'
+import { RECORD_KINDS, historyPublic, recorderPublic } from '../dataHistory/types.js'
+import type { DataRecorderDefinition, RecordKind } from '../dataHistory/types.js'
 import { auditEntity } from './auditMiddleware.js'
 import { notFound, oid } from './http.js'
 import { ObjectId } from 'mongodb'
@@ -25,6 +26,16 @@ const recusar = (res: Parameters<typeof notFound>[0], error: unknown, next: (e?:
   }
   next(error)
 }
+
+/**
+ * O catálogo de fontes desta conta.
+ *
+ * Existe para a tela não pedir que alguém copie um id de banco. As conexões são as
+ * desta conta; os tipos de evento são do sistema e iguais para todo mundo.
+ */
+dataHistoryRouter.get('/sources', async (req, res) => {
+  res.json(await catalogoDeFontes(res.locals.userId))
+})
 
 dataHistoryRouter.get('/recorders', async (req, res) => {
   const lista = await listarRecorders(res.locals.userId)
@@ -92,48 +103,76 @@ dataHistoryRouter.post('/preview', async (req, res, next) => {
       return
     }
 
+    /**
+     * A prévia usa um recorder DE VERDADE, e desligado.
+     *
+     * De verdade porque o motor conta cota no próprio documento: um id que não existe
+     * no banco faria toda amostra responder "limite atingido", que é uma resposta
+     * falsa. Desligado (`enabled: false`) porque o motor só considera regras ligadas —
+     * então, mesmo que esta requisição morra no meio e o documento sobre, ele não grava
+     * nada de ninguém. O `finally` abaixo o remove junto com o que ele produziu.
+     */
     const falso: DataRecorderDefinition = {
       _id: new ObjectId(),
       ownerId: res.locals.userId,
       ...def,
+      enabled: false,
       recordCount: 0,
       lastRecordAt: null,
       lastError: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     }
-    // Um id que não existe no banco: nada é gravado, e as janelas de teste vivem e
-    // morrem dentro desta requisição.
-    const decisoes: { index: number; resultado: string }[] = []
+    const { recordersCollection } = await import('../dataHistory/store.js')
+    await recordersCollection.insertOne(falso)
+    const limpar = async (): Promise<void> => {
+      const { recordsCollection, windowsCollection, recordersCollection: regras } = await import('../dataHistory/store.js')
+      await recordsCollection.deleteMany({ recorderId: falso._id }).catch(() => undefined)
+      await windowsCollection.deleteMany({ recorderId: falso._id }).catch(() => undefined)
+      await regras.deleteOne({ _id: falso._id }).catch(() => undefined)
+    }
+    try {
+    const decisoes: Record<string, unknown>[] = []
     const agora = new Date()
     for (const [index, amostra] of amostras.entries()) {
       const valor = (amostra ?? {}) as Record<string, unknown>
-      const resultado = await aplicarRecorder(falso, {
+      const d = await explicarRecorder(falso, {
         ownerId: res.locals.userId,
         sourceKey: `${def.source.kind}:${def.source.ref}`,
         entityKey: null,
         occurredAt: agora,
         value: valor,
-      }, agora).catch(() => 'erro')
-      decisoes.push({ index, resultado })
+      }, agora).catch((error) => ({
+        resultado: 'erro',
+        motivo: String((error as Error).message ?? error).slice(0, 200),
+        entityKey: null,
+        occurredAt: agora.toISOString(),
+        valor: null,
+      }))
+      decisoes.push({ index, ...d })
     }
 
-    // As janelas e registros de mentira saem junto: a prévia não deixa rastro.
-    const { recordsCollection, windowsCollection } = await import('../dataHistory/store.js')
-    const gravados = await recordsCollection.find({ recorderId: falso._id }).sort({ occurredAt: 1 }).toArray()
-    const abertas = await windowsCollection.find({ recorderId: falso._id }).toArray()
-    const { valorDaJanela } = await import('../dataHistory/windows.js')
-    const janelas = abertas.map((j) => ({
-      entityKey: j.entityKey,
-      windowStart: j.windowStart.toISOString(),
-      windowEnd: j.windowEnd.toISOString(),
-      count: j.count,
-      value: valorDaJanela(j, def.aggregations),
-    }))
-    await recordsCollection.deleteMany({ recorderId: falso._id })
-    await windowsCollection.deleteMany({ recorderId: falso._id })
-
-    res.json({ decisions: decisoes, records: gravados.map(historyPublic), windows: janelas })
+      const { recordsCollection, windowsCollection } = await import('../dataHistory/store.js')
+      const gravados = await recordsCollection.find({ recorderId: falso._id }).sort({ occurredAt: 1 }).toArray()
+      const abertas = await windowsCollection.find({ recorderId: falso._id }).toArray()
+      const { valorDaJanela } = await import('../dataHistory/windows.js')
+      const janelas = abertas.map((j) => ({
+        entityKey: j.entityKey,
+        windowStart: j.windowStart.toISOString(),
+        windowEnd: j.windowEnd.toISOString(),
+        count: j.count,
+        value: valorDaJanela(j, def.aggregations),
+      }))
+      // A limpeza vem ANTES da resposta, e não depois: quem chamou continua assim que
+      // ela sai, e um teste — ou uma tela — que consultasse em seguida ainda veria a
+      // regra de mentira no banco. "Não deixa rastro" só é verdade se já não houver
+      // rastro quando a resposta chega.
+      await limpar()
+      res.json({ decisions: decisoes, records: gravados.map(historyPublic), windows: janelas })
+    } finally {
+      // E de novo no caminho de erro. Apagar duas vezes é apagar uma.
+      await limpar()
+    }
   } catch (error) {
     recusar(res, error, next)
   }
@@ -162,14 +201,20 @@ dataHistoryRouter.get('/recorders/:id/records', async (req, res) => {
   if (!id) return notFound(res)
   if (!(await obterRecorder(res.locals.userId, id))) return notFound(res)
   const q = req.query as Record<string, unknown>
-  const rs = await listarRegistros(res.locals.userId, {
+  const kind = RECORD_KINDS.includes(String(q.recordKind ?? '') as RecordKind) ? (String(q.recordKind) as RecordKind) : null
+  const consulta = {
     recorderId: id,
     entityKey: q.entityKey ? String(q.entityKey) : null,
     ...periodo(q),
+    recordKind: kind,
     limit: Number(q.limit ?? 100),
-    order: q.order === 'asc' ? 'asc' : 'desc',
-  })
-  res.json({ count: rs.length, items: rs.map(historyPublic) })
+    skip: Number(q.skip ?? 0),
+    order: q.order === 'asc' ? ('asc' as const) : ('desc' as const),
+  }
+  const [rs, total] = await Promise.all([listarRegistros(res.locals.userId, consulta), contarDaConsulta(res.locals.userId, consulta)])
+  // `count` é o que veio nesta página; `total` é quanto existe. Sem os dois, a tela
+  // não tem como dizer "mostrando 100 de 4.312".
+  res.json({ count: rs.length, total, skip: consulta.skip, items: rs.map(historyPublic) })
 })
 
 dataHistoryRouter.get('/recorders/:id/aggregate', async (req, res, next) => {
@@ -182,7 +227,12 @@ dataHistoryRouter.get('/recorders/:id/aggregate', async (req, res, next) => {
     // Sem regras na consulta, valem as do próprio recorder — é o que a tela quer
     // mostrar quando alguém abre um histórico agregado.
     const regras = rec.aggregations.length ? rec.aggregations : [{ from: '', op: 'count' as const, to: 'total' }]
-    const r = await agregarRegistros(res.locals.userId, { recorderId: id, entityKey: q.entityKey ? String(q.entityKey) : null, ...periodo(q) }, regras)
+    const kind = RECORD_KINDS.includes(String(q.recordKind ?? '') as RecordKind) ? (String(q.recordKind) as RecordKind) : null
+    const r = await agregarRegistros(
+      res.locals.userId,
+      { recorderId: id, entityKey: q.entityKey ? String(q.entityKey) : null, ...periodo(q), recordKind: kind },
+      regras,
+    )
     res.json({ result: r })
   } catch (error) {
     recusar(res, error, next)

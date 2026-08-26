@@ -1,6 +1,8 @@
 import { ObjectId } from 'mongodb'
 import { createHash } from 'node:crypto'
 import { readPath } from '../automations/conditions.js'
+import { lastFireAt } from '../automations/scheduleClock.js'
+import { agendaDoRecorder } from './schedule.js'
 import { onEvent } from '../events/bus.js'
 import { EVENT_TYPES } from '../events/types.js'
 import type { PlatformEvent } from '../events/types.js'
@@ -28,6 +30,9 @@ const SCHEMA_VERSION = 1
  * histórico passa a valer em segundos, não no próximo deploy.
  */
 const CACHE_MS = Number(process.env.DATA_HISTORY_CACHE_MS ?? 5_000)
+
+/** Quanto atraso ainda conta como "o retrato de agora". Depois disso, foi perdido. */
+const TOLERANCIA_DE_RETRATO_MS = Number(process.env.DATA_HISTORY_SNAPSHOT_GRACE_MS ?? 3_600_000)
 const cache = new Map<string, { em: number; lista: DataRecorderDefinition[] }>()
 
 export const limparCacheDeRecorders = (): void => cache.clear()
@@ -120,11 +125,37 @@ export const chaveDeDedupe = (partes: (string | number | null)[]): string =>
 const expiraEm = (recorder: DataRecorderDefinition, agora: Date): Date | null =>
   recorder.retentionDays ? new Date(agora.getTime() + recorder.retentionDays * 86_400_000) : null
 
-async function contabilizar(recorder: DataRecorderDefinition, agora: Date): Promise<void> {
-  await recorders.updateOne({ _id: recorder._id }, { $inc: { recordCount: 1 }, $set: { lastRecordAt: agora, updatedAt: agora } })
+export type ResultadoDoFato = 'gravado' | 'repetido' | 'filtrado' | 'sem_mudanca' | 'acumulado' | 'tarde' | 'grande' | 'cota' | 'ignorado'
+
+/** Por que a decisão foi essa, em uma frase que quem configurou entende. */
+export const MOTIVO: Record<ResultadoDoFato, string> = {
+  gravado: 'seria gravado',
+  repetido: 'já existe um registro igual — não gravaria de novo',
+  filtrado: 'não passou pelos filtros',
+  sem_mudanca: 'o valor observado não mudou',
+  acumulado: 'entra no resumo do período',
+  tarde: 'chegou depois de o período fechar',
+  grande: 'o valor é grande demais para ser guardado',
+  cota: 'o limite de registros deste histórico foi atingido',
+  ignorado: 'nada a fazer com este fato neste modo',
 }
 
-export type ResultadoDoFato = 'gravado' | 'repetido' | 'filtrado' | 'sem_mudanca' | 'acumulado' | 'tarde' | 'grande' | 'cota' | 'ignorado'
+/**
+ * O que o motor RESOLVEU a partir do fato, antes de decidir.
+ *
+ * A prévia mostra isto porque é onde os enganos moram: um caminho de chave errado
+ * devolve `null` e junta tudo numa série só; um caminho de data errado faz todo fato
+ * cair no instante da chegada. Ver os dois resolvidos, antes de ativar, é o que
+ * transforma "não funcionou" em "ah, o campo é `at`, não `time`".
+ */
+export interface DecisaoDetalhada {
+  resultado: ResultadoDoFato
+  motivo: string
+  entityKey: string | null
+  occurredAt: string
+  /** O valor depois do recorte por campos escolhidos — o que iria para o banco. */
+  valor: Record<string, unknown> | null
+}
 
 /**
  * Aplica UMA regra a UM fato.
@@ -133,6 +164,17 @@ export type ResultadoDoFato = 'gravado' | 'repetido' | 'filtrado' | 'sem_mudanca
  * os mesmos filtros, antes de o histórico existir. Uma prévia que usasse outro caminho
  * prometeria um resultado que o motor não daria.
  */
+export async function explicarRecorder(recorder: DataRecorderDefinition, fato: Fact, agora = new Date()): Promise<DecisaoDetalhada> {
+  const bruto = (sanearValor(fato.value) ?? {}) as Record<string, unknown>
+  const entityKey = chaveDaEntidade(bruto, recorder.entityKeyPath) ?? fato.entityKey
+  const occurredAt = instanteDoFato(bruto, recorder.occurredAtPath, fato.occurredAt)
+  const valor = recortar(bruto, recorder.selectedFields)
+  // A decisão vem do motor de VERDADE, e não de uma cópia dele: uma prévia que
+  // reimplementasse a regra prometeria o que o servidor não faria.
+  const resultado = await aplicarRecorder(recorder, fato, agora)
+  return { resultado, motivo: MOTIVO[resultado], entityKey, occurredAt: occurredAt.toISOString(), valor }
+}
+
 export async function aplicarRecorder(recorder: DataRecorderDefinition, fato: Fact, agora = new Date()): Promise<ResultadoDoFato> {
   const bruto = sanearValor(fato.value) as Record<string, unknown>
   if (!bruto || typeof bruto !== 'object') return 'ignorado'
@@ -142,9 +184,21 @@ export async function aplicarRecorder(recorder: DataRecorderDefinition, fato: Fa
   const occurredAt = instanteDoFato(bruto, recorder.occurredAtPath, fato.occurredAt)
 
   if (recorder.mode === 'window_aggregate') {
-    const r = await dobrarNaJanela(recorder, entityKey, occurredAt, bruto, agora)
-    if (!r) return 'ignorado'
-    return r.tardeDemais ? 'tarde' : 'acumulado'
+    const politica = recorder.persistPolicy ?? 'aggregate_only'
+    // `raw_only` não abre janela: quem só quer o tique não precisa de acumulador, e
+    // manter um custaria escrita a cada fato sem nada a produzir no fim.
+    if (politica !== 'raw_only') {
+      const r = await dobrarNaJanela(recorder, entityKey, occurredAt, bruto, agora)
+      if (!r) return 'ignorado'
+      if (r.tardeDemais && politica === 'aggregate_only') return 'tarde'
+      if (politica === 'aggregate_only') return 'acumulado'
+    }
+    const valorBruto = recortar(bruto, recorder.selectedFields)
+    if (!cabeNoLimite(valorBruto)) return 'grande'
+    const gravado = await gravarBruto(recorder, fato, entityKey, occurredAt, valorBruto, agora)
+    // Em `raw_and_aggregate` o fato entrou nos dois lugares: quem chamou precisa saber
+    // do bruto, que é o que pode esbarrar em cota ou tamanho.
+    return politica === 'raw_and_aggregate' && gravado === 'gravado' ? 'acumulado' : gravado
   }
 
   // Os snapshots não gravam na chegada do fato — quem grava é a varredura. O que o
@@ -159,25 +213,45 @@ export async function aplicarRecorder(recorder: DataRecorderDefinition, fato: Fa
 
   if (recorder.mode === 'on_change' && !(await mudouDeVerdade(recorder, entityKey, occurredAt, valor))) return 'sem_mudanca'
 
-  if (recorder.recordCount >= MAX_RECORDS_PER_RECORDER) return 'cota'
+  return gravarBruto(recorder, fato, entityKey, occurredAt, valor, agora)
+}
 
-  const dedupeKey = chaveDeDedupe([recorder._id.toString(), entityKey, occurredAt.getTime(), fato.factId ?? JSON.stringify(valor)])
-  const r = await inserirRegistro({
-    ownerId: recorder.ownerId,
-    recorderId: recorder._id,
-    sourceKey: fato.sourceKey,
-    entityKey,
-    occurredAt,
-    recordedAt: agora,
-    windowStart: null,
-    windowEnd: null,
-    value: valor,
-    schemaVersion: SCHEMA_VERSION,
-    dedupeKey,
-    expiresAt: expiraEm(recorder, agora),
-  })
-  if (r === 'gravado') await contabilizar(recorder, agora)
-  return r === 'gravado' ? 'gravado' : 'repetido'
+/**
+ * Grava o fato COMO ELE VEIO.
+ *
+ * A chave de dedupe leva `raw` no fim de propósito: numa janela com política
+ * `raw_and_aggregate`, o bruto e o resumo da mesma entidade no mesmo instante são dois
+ * registros diferentes, e precisam de identidades diferentes — senão o segundo a chegar
+ * seria descartado como repetição do primeiro.
+ */
+async function gravarBruto(
+  recorder: DataRecorderDefinition,
+  fato: Fact,
+  entityKey: string | null,
+  occurredAt: Date,
+  valor: Record<string, unknown>,
+  agora: Date,
+): Promise<ResultadoDoFato> {
+  const dedupeKey = chaveDeDedupe([recorder._id.toString(), entityKey, occurredAt.getTime(), 'raw', fato.factId ?? JSON.stringify(valor)])
+  const r = await inserirRegistro(
+    {
+      ownerId: recorder.ownerId,
+      recorderId: recorder._id,
+      sourceKey: fato.sourceKey,
+      entityKey,
+      occurredAt,
+      recordedAt: agora,
+      windowStart: null,
+      windowEnd: null,
+      recordKind: 'raw',
+      value: valor,
+      schemaVersion: SCHEMA_VERSION,
+      dedupeKey,
+      expiresAt: expiraEm(recorder, agora),
+    },
+    MAX_RECORDS_PER_RECORDER,
+  )
+  return r
 }
 
 /** A assinatura do que está sendo observado: o campo escolhido, ou o valor inteiro. */
@@ -318,16 +392,14 @@ export async function closeDueWindows(agora = new Date(), limite = 200): Promise
       recordedAt: agora,
       windowStart: janela.windowStart,
       windowEnd: janela.windowEnd,
+      recordKind: 'aggregate',
       value: valor,
       schemaVersion: SCHEMA_VERSION,
       dedupeKey: chaveDeDedupe([janela.recorderId.toString(), janela.entityKey, janela.windowStart.getTime(), 'janela']),
       expiresAt: expiraEm(recorder, agora),
-    })
+    }, MAX_RECORDS_PER_RECORDER)
     await marcarPersistida(janela._id, agora)
-    if (r === 'gravado') {
-      gravadas += 1
-      await contabilizar(recorder, agora)
-    }
+    if (r === 'gravado') gravadas += 1
   }
   return { fechadas, gravadas }
 }
@@ -356,7 +428,6 @@ export async function runDueSnapshots(agora = new Date(), limite = 100): Promise
       const entityKey = chave === '_' ? null : chave
       const valor = recortar(guardado.valor, recorder.selectedFields)
       if (!cabeNoLimite(valor)) continue
-      if (recorder.recordCount >= MAX_RECORDS_PER_RECORDER) break
       const r = await inserirRegistro({
         ownerId: recorder.ownerId,
         recorderId: recorder._id,
@@ -366,15 +437,13 @@ export async function runDueSnapshots(agora = new Date(), limite = 100): Promise
         recordedAt: agora,
         windowStart: null,
         windowEnd: null,
+        recordKind: 'snapshot',
         value: valor,
         schemaVersion: SCHEMA_VERSION,
         dedupeKey: chaveDeDedupe([recorder._id.toString(), entityKey, alvo, 'snapshot']),
         expiresAt: expiraEm(recorder, agora),
-      })
-      if (r === 'gravado') {
-        gravados += 1
-        await contabilizar(recorder, agora)
-      }
+      }, MAX_RECORDS_PER_RECORDER)
+      if (r === 'gravado') gravados += 1
     }
   }
   return { gravados }
@@ -391,11 +460,23 @@ export function instanteAlinhado(recorder: DataRecorderDefinition, agora: Date):
   if (recorder.mode === 'snapshot_interval' && recorder.intervalMs) {
     return Math.floor(agora.getTime() / recorder.intervalMs) * recorder.intervalMs
   }
-  if (recorder.mode === 'schedule_snapshot' && recorder.schedule) {
-    const alvo = new Date(agora)
-    alvo.setUTCHours(recorder.schedule.hour, recorder.schedule.minute, 0, 0)
-    // Antes da hora de hoje: o snapshot de hoje ainda não venceu.
-    return alvo.getTime() <= agora.getTime() ? alvo.getTime() : null
+  if (recorder.mode === 'schedule_snapshot') {
+    const agenda = agendaDoRecorder(recorder)
+    if (!agenda) return null
+    // O disparo mais recente que JÁ passou, no fuso do dono. Alinhar assim é o que
+    // torna a gravação idempotente sem guardar "quando gravei da última vez": duas
+    // passadas entre dois disparos produzem a mesma chave, e a segunda não grava.
+    const ultimo = lastFireAt(agenda.cron, agenda.timezone, agora)
+    if (!ultimo) return null
+    /**
+     * Um retrato PERDIDO não é tirado depois.
+     *
+     * É a mesma regra que as rotinas já seguem (ver `catchUp`): três dias parados não
+     * viram três execuções de uma vez. Sem isto, um histórico criado hoje às duas da
+     * manhã gravaria imediatamente um retrato datado das três e meia de ONTEM — um
+     * ponto na série dizendo que aquele era o valor num momento em que não era.
+     */
+    return agora.getTime() - ultimo.getTime() <= TOLERANCIA_DE_RETRATO_MS ? ultimo.getTime() : null
   }
   return null
 }

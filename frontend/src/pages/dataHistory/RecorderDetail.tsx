@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
 import { Badge, Button, Card, EmptyState, Field, Input, Select, Switch } from '../../ui'
-import { MODE_LABEL, OP_LABEL, SOURCE_LABEL, aggregateRecords, getRecorder, listKeys, listRecords, updateRecorder } from '../../lib/dataHistory'
-import type { DataRecorder, HistoryRecord } from '../../lib/dataHistory'
+import { KIND_LABEL, MODE_LABEL, OP_LABEL, SOURCE_LABEL, aggregateRecords, getRecorder, listKeys, listRecords, updateRecorder } from '../../lib/dataHistory'
+import type { DataRecorder, HistoryRecord, RecordKind } from '../../lib/dataHistory'
 
 /**
  * Um histórico: o que ele guarda, e o que já guardou.
@@ -21,19 +21,35 @@ export function RecorderDetail() {
   const [chave, setChave] = useState('')
   const [de, setDe] = useState('')
   const [ate, setAte] = useState('')
+  const [tipo, setTipo] = useState<RecordKind | ''>('')
+  const [ordem, setOrdem] = useState<'asc' | 'desc'>('desc')
+  const [pagina, setPagina] = useState(0)
+  const [total, setTotal] = useState(0)
+  /** Qual linha está aberta em JSON. Uma de cada vez: a tabela é para varrer. */
+  const [aberto, setAberto] = useState<string | null>(null)
   const [erro, setErro] = useState<string | null>(null)
 
-  const consultar = useCallback(async () => {
-    setErro(null)
-    try {
-      const q = { entityKey: chave || undefined, from: de || undefined, to: ate || undefined, limit: 200 }
-      const [r, a] = await Promise.all([listRecords(recorderId, q), aggregateRecords(recorderId, q)])
-      setRegistros(r.items)
-      setResumo(a.result)
-    } catch (e) {
-      setErro((e as Error).message)
-    }
-  }, [recorderId, chave, de, ate])
+  const POR_PAGINA = 100
+
+  const consultar = useCallback(
+    async (salto = 0) => {
+      setErro(null)
+      try {
+        const q = { entityKey: chave || undefined, from: de || undefined, to: ate || undefined, recordKind: tipo || undefined }
+        const [r, a] = await Promise.all([
+          listRecords(recorderId, { ...q, limit: POR_PAGINA, skip: salto, order: ordem }),
+          aggregateRecords(recorderId, q),
+        ])
+        setRegistros(r.items)
+        setTotal(r.total)
+        setPagina(salto)
+        setResumo(a.result)
+      } catch (e) {
+        setErro((e as Error).message)
+      }
+    },
+    [recorderId, chave, de, ate, tipo, ordem],
+  )
 
   useEffect(() => {
     getRecorder(recorderId).then(setRec).catch((e) => setErro((e as Error).message))
@@ -81,7 +97,7 @@ export function RecorderDetail() {
         )}
 
         <Card>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Field label="Chave">
               <Select
                 value={chave}
@@ -96,9 +112,37 @@ export function RecorderDetail() {
             <Field label="Até">
               <Input type="datetime-local" value={ate} onChange={(e) => setAte(e.target.value)} data-testid="filter-to" />
             </Field>
-            <Button onClick={() => void consultar()} data-testid="filter-apply">
-              Consultar
-            </Button>
+            {/* Separar por tipo importa: somar um tique e o resumo da hora conta o
+                mesmo dado duas vezes. */}
+            <Field label="Tipo de registro">
+              <Select
+                value={tipo}
+                onChange={(e) => setTipo(e.target.value as RecordKind | '')}
+                data-testid="filter-kind"
+                options={[
+                  { value: '', label: 'Todos' },
+                  { value: 'raw', label: KIND_LABEL.raw },
+                  { value: 'aggregate', label: KIND_LABEL.aggregate },
+                  { value: 'snapshot', label: KIND_LABEL.snapshot },
+                ]}
+              />
+            </Field>
+            <Field label="Ordem">
+              <Select
+                value={ordem}
+                onChange={(e) => setOrdem(e.target.value as 'asc' | 'desc')}
+                data-testid="filter-order"
+                options={[
+                  { value: 'desc', label: 'Mais recente primeiro' },
+                  { value: 'asc', label: 'Mais antigo primeiro' },
+                ]}
+              />
+            </Field>
+            <div className="flex items-end">
+              <Button onClick={() => void consultar(0)} data-testid="filter-apply" style={{ width: '100%' }}>
+                Consultar
+              </Button>
+            </div>
           </div>
         </Card>
 
@@ -127,7 +171,9 @@ export function RecorderDetail() {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead>
                   <tr style={{ textAlign: 'left', color: 'var(--text-muted)' }}>
-                    <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Quando</th>
+                    <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Aconteceu</th>
+                    <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Gravado</th>
+                    <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Tipo</th>
                     <th style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>Chave</th>
                     <th style={{ padding: '6px 8px' }}>Valor</th>
                   </tr>
@@ -135,18 +181,64 @@ export function RecorderDetail() {
                 <tbody>
                   {registros.map((r) => (
                     <tr key={r.id} style={{ borderTop: '1px solid var(--border-subtle)' }} data-testid="record-row">
+                      {/* Os dois instantes lado a lado: um evento atrasado meia hora não
+                          é um evento de agora, e a diferença fica à vista. */}
                       <td style={{ padding: '6px 8px', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
                         {new Date(r.occurredAt).toLocaleString('pt-BR')}
                       </td>
+                      <td style={{ padding: '6px 8px', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>
+                        {new Date(r.recordedAt).toLocaleString('pt-BR')}
+                      </td>
+                      <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
+                        <Badge tone={r.recordKind === 'aggregate' ? 'brand' : r.recordKind === 'snapshot' ? 'warning' : 'neutral'}>
+                          {KIND_LABEL[r.recordKind]}
+                        </Badge>
+                      </td>
                       <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>{r.entityKey ?? '—'}</td>
                       <td style={{ padding: '6px 8px' }}>
-                        <code style={{ fontSize: 12 }}>{JSON.stringify(r.value)}</code>
+                        <button
+                          type="button"
+                          onClick={() => setAberto(aberto === r.id ? null : r.id)}
+                          style={{ border: 0, background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left', font: 'inherit' }}
+                          data-testid="record-toggle"
+                        >
+                          <code style={{ fontSize: 12 }}>{aberto === r.id ? '▾' : '▸'} {JSON.stringify(r.value).slice(0, 80)}</code>
+                        </button>
+                        {aberto === r.id && (
+                          <pre
+                            style={{ margin: '6px 0 0', fontSize: 11.5, background: 'var(--surface-sunken)', padding: 8, borderRadius: 6, overflowX: 'auto' }}
+                            data-testid="record-json"
+                          >
+                            {JSON.stringify(r.value, null, 2)}
+                          </pre>
+                        )}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            {total > registros.length && (
+              <div className="flex flex-wrap items-center justify-between gap-2" style={{ marginTop: 10 }} data-testid="pagination">
+                <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                  {pagina + 1}–{pagina + registros.length} de {total.toLocaleString('pt-BR')}
+                </span>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="secondary" disabled={pagina === 0} onClick={() => void consultar(Math.max(0, pagina - POR_PAGINA))} data-testid="page-prev">
+                    Anteriores
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={pagina + registros.length >= total}
+                    onClick={() => void consultar(pagina + POR_PAGINA)}
+                    data-testid="page-next"
+                  >
+                    Próximos
+                  </Button>
+                </div>
+              </div>
+            )}
           </Card>
         )}
       </div>

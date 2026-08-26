@@ -31,6 +31,8 @@ const REGISTRO_SCHEMA = {
   properties: {
     entityKey: {},
     occurredAt: { type: 'string' },
+    recordedAt: { type: 'string' },
+    recordKind: { type: 'string' },
     windowStart: {},
     windowEnd: {},
     value: { type: 'object', additionalProperties: true },
@@ -41,7 +43,17 @@ const REGISTRO_SCHEMA = {
 const BASE = {
   recorderId: { type: 'string', minLength: 1, description: 'Qual histórico' },
   entityKey: { type: 'string', description: 'A chave, ex.: BTCUSDT ou SKU-1' },
+  /**
+   * Bruto, resumo de janela ou retrato periódico.
+   *
+   * Importa para quem calcula: um histórico que guarda o tique E o resumo tem os dois
+   * na mesma série, e somar os dois conta o mesmo dado duas vezes. Ausente = todos.
+   */
+  recordKind: { type: 'string', enum: ['raw', 'aggregate', 'snapshot'], description: 'raw, aggregate ou snapshot' },
 } as const
+
+const tipoDeRegistro = (v: unknown): 'raw' | 'aggregate' | 'snapshot' | null =>
+  v === 'raw' || v === 'aggregate' || v === 'snapshot' ? v : null
 
 const PERIODO = {
   from: { type: 'string', description: 'Início do período, ISO 8601' },
@@ -66,12 +78,19 @@ const idDoRecorder = async (bruto: unknown) => {
 const comoSaida = (r: {
   entityKey: string | null
   occurredAt: Date
+  recordedAt: Date
+  recordKind?: 'raw' | 'aggregate' | 'snapshot'
   windowStart: Date | null
   windowEnd: Date | null
   value: Record<string, unknown>
 }) => ({
   entityKey: r.entityKey,
+  // Os dois instantes, separados: quem calcula precisa saber que o fato é de meia hora
+  // atrás, mesmo tendo sido gravado agora.
   occurredAt: r.occurredAt.toISOString(),
+  recordedAt: r.recordedAt.toISOString(),
+  // Ausente é bruto — os registros anteriores a este campo eram todos brutos.
+  recordKind: r.recordKind ?? 'raw',
   windowStart: r.windowStart ? r.windowStart.toISOString() : null,
   windowEnd: r.windowEnd ? r.windowEnd.toISOString() : null,
   value: r.value,
@@ -87,7 +106,12 @@ registerFunction({
   timeoutMs: 5_000,
   handler: async (input, _config, ctx) => {
     const { ultimoRegistro } = await import('../dataHistory/store.js')
-    const r = await ultimoRegistro(exigirDono(ctx), await idDoRecorder(input.recorderId), input.entityKey ? String(input.entityKey) : null)
+    const r = await ultimoRegistro(
+      exigirDono(ctx),
+      await idDoRecorder(input.recorderId),
+      input.entityKey ? String(input.entityKey) : null,
+      tipoDeRegistro(input.recordKind),
+    )
     return { found: Boolean(r), record: r ? comoSaida(r) : null }
   },
 })
@@ -103,6 +127,7 @@ registerFunction({
       ...BASE,
       ...PERIODO,
       limit: { type: 'integer', minimum: 1, maximum: 1000 },
+      skip: { type: 'integer', minimum: 0, description: 'Pular N registros — para paginar' },
       order: { type: 'string', enum: ['asc', 'desc'] },
     },
     required: ['recorderId'],
@@ -116,7 +141,9 @@ registerFunction({
       entityKey: input.entityKey ? String(input.entityKey) : null,
       from: data(input.from),
       to: data(input.to),
+      recordKind: tipoDeRegistro(input.recordKind),
       limit: Number(input.limit ?? 100),
+      skip: Number(input.skip ?? 0),
       order: input.order === 'asc' ? 'asc' : 'desc',
     })
     return { count: rs.length, records: rs.map(comoSaida) }
@@ -173,6 +200,7 @@ registerFunction({
         entityKey: input.entityKey ? String(input.entityKey) : null,
         from: data(input.from),
         to: data(input.to),
+        recordKind: tipoDeRegistro(input.recordKind),
       },
       regras,
     )
@@ -215,6 +243,7 @@ registerFunction({
       entityKey: input.entityKey ? String(input.entityKey) : null,
       from: data(input.from),
       to: data(input.to),
+      recordKind: tipoDeRegistro(input.recordKind),
       limit: Number(input.limit ?? 500),
       order: 'asc',
     })

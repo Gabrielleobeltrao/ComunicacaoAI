@@ -334,8 +334,34 @@ amostras coladas por você e não grava nada.
 | Dado ao vivo | o id de uma conexão do WebSocket Genérico |
 | Agente, rotina, tool ou webhook | um nome livre; o código chama `recordFact(dono, nome, chave, valor)` |
 
-**Quando guardar:** toda ocorrência, quando mudar, de tempos em tempos, uma vez por dia,
+**Quando guardar:** toda ocorrência, quando mudar, de tempos em tempos, por agenda,
 resumo por período, ou só quando os filtros baterem.
+
+**Só considerar quando** — filtros com `existe`, `é igual a`, `é diferente de`, `maior
+que`, `maior ou igual`, `menor que`, `menor ou igual` e `contém`. Valem em todo modo; no
+modo *só quando a condição bater* são obrigatórios, porque sem nenhum tudo seria gravado.
+
+**O que guardar de cada dado** — o dado inteiro, ou só os campos escolhidos
+(`symbol`, `price`, `data.total`).
+
+**Por agenda** — recorrência e **fuso do dono**: a cada hora, todo dia às 8h, dias úteis,
+toda segunda, ou cron para o resto. `America/New_York` dispara às 8h de Nova York, não às
+8h do servidor. É o mesmo relógio das rotinas. Um retrato perdido não é tirado depois —
+a mesma regra que as rotinas já seguem.
+
+**No resumo por período, o que guardar:**
+
+| Política | O que grava |
+|---|---|
+| Só o resumo *(padrão)* | uma linha por período |
+| Só os dados brutos | uma linha por dado recebido |
+| Os dois | o dado recebido **e** o resumo, com identidades independentes |
+
+O padrão não guarda cada dado por um motivo de conta: um feed de três por segundo produz
+259 mil linhas por dia em bruto contra 288 em janelas de cinco minutos.
+
+Cada registro sabe o que é — **bruto**, **resumo** ou **retrato** — e a consulta filtra
+por isso. Importa: somar o bruto e o resumo juntos conta o mesmo dado duas vezes.
 
 **O que calcular no resumo:** `first`, `last`, `min`, `max`, `avg`, `sum` e `count` — por
 campo, com o nome de saída que você escolher. Nenhum modelo participa: a mesma janela,
@@ -365,26 +391,27 @@ O motor não sabe que isso é uma vela — é uma agregação temporal configura
 semântica real de trade, cotação e vela fechada, o `marketData` continua sendo o motor
 especializado, e este aqui pode consumir os eventos dele.
 
-### Exemplo 2 — pedidos por hora, por loja
+### Exemplo 2 — estoque baixo, com condição
 
-O mesmo mecanismo, sem nada de mercado:
+O mesmo mecanismo, sem nada de mercado, e mostrando os filtros:
 
 ```text
 Fonte:      Agente, rotina, tool ou webhook → "erp"
-Chave:      loja
-Quando:     Resumo por período · 1 hora
-Calcular:   total → soma       → faturamento
-            —     → contagem   → pedidos
-            total → média      → ticketMedio
-            total → maior      → maiorPedido
+Chave:      sku
+Quando:     Só quando a condição bater
+Condições:  qty    menor que  10
+            ativo  existe
+Guardar:    só os campos sku, qty e deposito
+Guardar por: 180 dias
 ```
 
-```json
-{ "loja": "centro", "windowStart": "…", "windowEnd": "…",
-  "faturamento": 200, "pedidos": 2, "ticketMedio": 100, "maiorPedido": 120 }
-```
+Passa `{ "sku": "A", "qty": 3, "ativo": true }` → gravado. Passa
+`{ "sku": "B", "qty": 50, "ativo": true }` → **não passou pelos filtros**, e a prévia diz
+isso antes de você ativar. O histórico fica só com o que interessa: quando cada item
+esteve abaixo do mínimo.
 
-Estoque por SKU uma vez por dia é a mesma tela com *Uma vez por dia* no lugar do resumo.
+Pedidos por hora é a mesma tela com *Resumo por período · 1 hora*, chave `loja` e
+`total → soma → faturamento`, `— → contagem → pedidos`.
 
 ### Para agentes e código
 
@@ -396,6 +423,9 @@ Quatro funções determinísticas, com o dono no filtro:
 | `data_history.range` | os registros de um período |
 | `data_history.aggregate` | first/last/min/max/avg/sum/count sobre o período, calculados pelo banco |
 | `data_history.series` | pares `{ at, value }` de um campo, em ordem de tempo |
+
+Todas aceitam `recordKind` (`raw`, `aggregate`, `snapshot`), período, `limit` e `skip`, e
+devolvem `occurredAt` e `recordedAt` separados.
 
 ### O que ele NÃO é
 

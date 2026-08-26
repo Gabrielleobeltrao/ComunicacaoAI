@@ -2,8 +2,11 @@ import { ObjectId } from 'mongodb'
 import { ValidationError } from '../building.js'
 import { normalizeMappingPath, normalizeMappingTarget } from '../integrations/websocket/mapping.js'
 import { recordersCollection as recorders, apagarHistoricoDe, contarRegistros } from './store.js'
+import { normalizarAgenda } from './schedule.js'
+import { conferirFonte } from './sources.js'
 import {
   AGGREGATIONS,
+  PERSIST_POLICIES,
   DEFAULT_RETENTION_DAYS,
   MAX_INTERVAL_MS,
   MAX_RECORDERS_PER_OWNER,
@@ -12,7 +15,7 @@ import {
   RECORDER_MODES,
   SOURCE_KINDS,
 } from './types.js'
-import type { AggregationRule, DataRecorderDefinition, RecorderFilter, RecorderMode, SourceKind } from './types.js'
+import type { AggregationRule, DataRecorderDefinition, PersistPolicy, RecorderFilter, RecorderMode, SourceKind } from './types.js'
 
 /**
  * A DEFINIÇÃO de um histórico: o que gravar, de onde, quando e por quanto tempo.
@@ -75,6 +78,7 @@ export interface RecorderInput {
   intervalMs?: unknown
   schedule?: unknown
   filters?: unknown
+  persistPolicy?: unknown
   selectedFields?: unknown
   aggregations?: unknown
   changePath?: unknown
@@ -100,8 +104,33 @@ export function normalizarRecorder(bruto: RecorderInput): Omit<DataRecorderDefin
   if (!RECORDER_MODES.includes(mode)) throw new ValidationError('modo: escolha quando gravar.')
 
   const aggregations = normalizarAgregacoes(bruto.aggregations)
-  if (mode === 'window_aggregate' && aggregations.length === 0) {
-    throw new ValidationError('agregação por janela precisa de pelo menos uma regra — por exemplo, "price" com "last".')
+  const filters = normalizarFiltros(bruto.filters)
+
+  /**
+   * A política decide o que a janela GRAVA — e o padrão é só o resumo.
+   *
+   * Guardar cada tique é legítimo, mas precisa ser escolha: um feed de três por segundo
+   * produz 259 mil linhas por dia em bruto contra 288 em janelas de cinco minutos.
+   */
+  const persistPolicy = PERSIST_POLICIES.includes(String(bruto.persistPolicy ?? '') as PersistPolicy)
+    ? (String(bruto.persistPolicy) as PersistPolicy)
+    : 'aggregate_only'
+
+  // `raw_only` não tem resumo a produzir; as outras duas precisam de pelo menos uma
+  // regra, senão a janela fecharia num objeto vazio.
+  if (mode === 'window_aggregate' && persistPolicy !== 'raw_only' && aggregations.length === 0) {
+    throw new ValidationError('agregação por janela precisa de pelo menos uma regra — por exemplo, "price" com "último".')
+  }
+
+  /**
+   * `condition` sem filtro é `every_event` com outro nome — e um nome que engana.
+   *
+   * Quem escolhe "só quando a condição bater" está dizendo que NEM TUDO deve ser
+   * gravado. Aceitar a configuração sem condição nenhuma gravaria tudo, calado, e a
+   * pessoa descobriria pelo tamanho do histórico.
+   */
+  if (mode === 'condition' && filters.length === 0) {
+    throw new ValidationError('“só quando a condição bater” precisa de pelo menos um filtro. Sem nenhum, tudo seria gravado.')
   }
 
   let intervalMs: number | null = null
@@ -113,15 +142,7 @@ export function normalizarRecorder(bruto: RecorderInput): Omit<DataRecorderDefin
     intervalMs = Math.round(n)
   }
 
-  let schedule: { hour: number; minute: number } | null = null
-  if (mode === 'schedule_snapshot') {
-    const s = (bruto.schedule ?? {}) as Record<string, unknown>
-    const hour = Number(s.hour ?? -1)
-    const minute = Number(s.minute ?? -1)
-    if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw new ValidationError('agenda: hora entre 0 e 23.')
-    if (!Number.isInteger(minute) || minute < 0 || minute > 59) throw new ValidationError('agenda: minuto entre 0 e 59.')
-    schedule = { hour, minute }
-  }
+  const schedule = mode === 'schedule_snapshot' ? normalizarAgenda(bruto.schedule) : null
 
   const campos = Array.isArray(bruto.selectedFields) ? bruto.selectedFields : null
   if (campos && campos.length > MAX_CAMPOS) throw new ValidationError(`no máximo ${MAX_CAMPOS} campos.`)
@@ -139,7 +160,8 @@ export function normalizarRecorder(bruto: RecorderInput): Omit<DataRecorderDefin
     mode,
     intervalMs,
     schedule,
-    filters: normalizarFiltros(bruto.filters),
+    persistPolicy,
+    filters,
     selectedFields,
     aggregations,
     changePath: caminhoOpcional(bruto.changePath, 'campo observado'),
@@ -155,6 +177,10 @@ export async function criarRecorder(ownerId: string, bruto: RecorderInput, agora
   const quantos = await recorders.countDocuments({ ownerId })
   if (quantos >= MAX_RECORDERS_PER_OWNER) throw new ValidationError(`limite de ${MAX_RECORDERS_PER_OWNER} históricos por conta.`)
   const def = normalizarRecorder(bruto)
+  // A validação acima é pura e não toca no banco; a posse da fonte só dá para conferir
+  // consultando. As duas juntas são a resposta completa: a configuração faz sentido E
+  // aponta para algo desta conta.
+  await conferirFonte(ownerId, def.source)
   const doc: DataRecorderDefinition = {
     _id: new ObjectId(),
     ownerId,
@@ -185,6 +211,7 @@ export async function atualizarRecorder(ownerId: string, id: ObjectId, bruto: Re
     entityKeyPath: bruto.entityKeyPath === undefined ? atual.entityKeyPath : bruto.entityKeyPath,
     occurredAtPath: bruto.occurredAtPath === undefined ? atual.occurredAtPath : bruto.occurredAtPath,
     mode: bruto.mode ?? atual.mode,
+    persistPolicy: bruto.persistPolicy ?? atual.persistPolicy,
     intervalMs: bruto.intervalMs === undefined ? atual.intervalMs : bruto.intervalMs,
     schedule: bruto.schedule === undefined ? atual.schedule : bruto.schedule,
     filters: bruto.filters ?? atual.filters,
@@ -194,6 +221,7 @@ export async function atualizarRecorder(ownerId: string, id: ObjectId, bruto: Re
     retentionDays: bruto.retentionDays === undefined ? atual.retentionDays : bruto.retentionDays,
     buildingId: bruto.buildingId === undefined ? atual.buildingId : bruto.buildingId,
   })
+  await conferirFonte(ownerId, def.source)
   const r = await recorders.findOneAndUpdate({ _id: id, ownerId }, { $set: { ...def, updatedAt: agora } }, { returnDocument: 'after' })
   return (r as DataRecorderDefinition) ?? null
 }

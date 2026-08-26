@@ -148,3 +148,119 @@ test('consultar registros por chave e período', async () => {
   const resumo = await pedir('GET', `/recorders/${rec.id}/aggregate`)
   assert.equal(resumo.body.result.total, 3, 'sem regras próprias, o resumo é a contagem')
 })
+
+// --- a rodada de acabamento -------------------------------------------------------
+
+test('o catálogo de fontes é do dono, e os eventos são do sistema', async () => {
+  const r = await pedir('GET', '/sources')
+  assert.equal(r.status, 200)
+  assert.ok(Array.isArray(r.body.live_data))
+  assert.ok(r.body.event.some((e) => e.ref === 'market.candle.closed'))
+  // Cada opção traz o que a tela mostra e o que o servidor guarda.
+  assert.ok(r.body.event.every((e) => typeof e.ref === 'string' && typeof e.label === 'string'))
+})
+
+test('a prévia diz o que resolveu, e não só o veredito', async () => {
+  const r = await pedir('POST', '/preview', {
+    recorder: {
+      name: 'prévia detalhada',
+      source: { kind: 'manual', ref: 'erp' },
+      mode: 'condition',
+      entityKeyPath: 'sku',
+      occurredAtPath: 'quando',
+      selectedFields: ['sku', 'qty'],
+      filters: [{ path: 'qty', operator: 'lt', value: 10 }],
+    },
+    samples: [
+      { sku: 'A', qty: 3, quando: '2026-02-02T10:00:00.000Z', ruido: 'fora' },
+      { sku: 'B', qty: 50, quando: '2026-02-02T11:00:00.000Z' },
+    ],
+  })
+  assert.equal(r.status, 200)
+  const [aceito, recusado] = r.body.decisions
+
+  assert.equal(aceito.resultado, 'gravado')
+  assert.equal(aceito.entityKey, 'A', 'a chave resolvida aparece')
+  assert.equal(aceito.occurredAt, '2026-02-02T10:00:00.000Z', 'e o instante do fato também')
+  assert.deepEqual(aceito.valor, { sku: 'A', qty: 3 }, 'o valor já recortado')
+
+  assert.equal(recusado.resultado, 'filtrado')
+  assert.match(recusado.motivo, /filtros/, 'o motivo é uma frase, não um código')
+
+  // E nada ficou para trás.
+  assert.equal(await db.collection('data_history_records').countDocuments({}), 0)
+  assert.equal(await db.collection('data_recorders').countDocuments({}), 0)
+})
+
+test('a consulta pagina, conta o total e separa por tipo', async () => {
+  const rec = (await pedir('POST', '/recorders', DEF)).body
+  const engine = await import('../dist/dataHistory/engine.js')
+  engine.limparCacheDeRecorders()
+  const t0 = Date.parse('2026-08-01T00:00:00.000Z')
+  for (let i = 0; i < 5; i += 1) {
+    await engine.ingestFact({ ownerId: DONO, sourceKey: 'manual:erp', entityKey: null, occurredAt: new Date(t0 + i * 1000), value: { sku: 'A', qty: i } })
+  }
+
+  const p1 = await pedir('GET', `/recorders/${rec.id}/records?limit=2&order=asc`)
+  assert.equal(p1.body.count, 2)
+  assert.equal(p1.body.total, 5, 'o total é quanto existe, não quanto veio')
+  assert.equal(p1.body.skip, 0)
+
+  const p2 = await pedir('GET', `/recorders/${rec.id}/records?limit=2&skip=2&order=asc`)
+  assert.equal(p2.body.count, 2)
+  assert.notEqual(p1.body.items[0].id, p2.body.items[0].id)
+
+  // Tudo é bruto neste histórico: filtrar por resumo devolve vazio.
+  assert.equal((await pedir('GET', `/recorders/${rec.id}/records?recordKind=raw`)).body.total, 5)
+  assert.equal((await pedir('GET', `/recorders/${rec.id}/records?recordKind=aggregate`)).body.total, 0)
+  // E cada registro diz o que é.
+  assert.equal(p1.body.items[0].recordKind, 'raw')
+})
+
+test('condition sem filtro é recusado pela API, com a frase certa', async () => {
+  const r = await pedir('POST', '/recorders', { ...DEF, mode: 'condition' })
+  assert.equal(r.status, 400)
+  assert.match(r.body.message, /pelo menos um filtro/)
+})
+
+test('uma fonte de outra conta é recusada na criação e na edição', async () => {
+  const { createInstallation } = await import('../dist/apps/installations.js')
+  const { getApp } = await import('../dist/apps/registry.js')
+  const doVizinho = await createInstallation(VIZINHO, getApp('websocket'), { name: 'Do vizinho', config: { token: 'x'.repeat(12) }, publicMetadata: {} })
+
+  const criado = await pedir('POST', '/recorders', { ...DEF, source: { kind: 'live_data', ref: doVizinho._id.toString() } })
+  assert.equal(criado.status, 400)
+  assert.match(criado.body.message, /não existe nesta conta/)
+
+  const meu = (await pedir('POST', '/recorders', DEF)).body
+  const editado = await pedir('PATCH', `/recorders/${meu.id}`, { source: { kind: 'live_data', ref: doVizinho._id.toString() } })
+  assert.equal(editado.status, 400, 'a edição confere igual à criação')
+})
+
+test('a agenda com fuso vai e volta pela API', async () => {
+  const r = await pedir('POST', '/recorders', {
+    ...DEF,
+    mode: 'schedule_snapshot',
+    schedule: { cron: '0 8 * * 1-5', timezone: 'America/New_York' },
+  })
+  assert.equal(r.status, 201)
+  assert.deepEqual(r.body.schedule, { cron: '0 8 * * 1-5', timezone: 'America/New_York' })
+
+  const ruim = await pedir('POST', '/recorders', { ...DEF, name: 'outro', mode: 'schedule_snapshot', schedule: { cron: 'toda manhã', timezone: 'UTC' } })
+  assert.equal(ruim.status, 400)
+})
+
+test('a política de persistência vai e volta, com o padrão seguro', async () => {
+  const janela = {
+    ...DEF,
+    name: 'com janela',
+    mode: 'window_aggregate',
+    intervalMs: 60_000,
+    aggregations: [{ from: 'qty', op: 'sum', to: 'total' }],
+  }
+  const padrao = await pedir('POST', '/recorders', janela)
+  assert.equal(padrao.body.persistPolicy, 'aggregate_only', 'o padrão não guarda cada dado')
+
+  const ambos = await pedir('PATCH', `/recorders/${padrao.body.id}`, { persistPolicy: 'raw_and_aggregate' })
+  assert.equal(ambos.body.persistPolicy, 'raw_and_aggregate')
+})

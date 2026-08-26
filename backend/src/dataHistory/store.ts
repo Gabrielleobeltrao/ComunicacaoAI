@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { db } from '../db.js'
 import { MAX_QUERY_LIMIT, MAX_VALUE_BYTES, MAX_VALUE_DEPTH } from './types.js'
-import type { AggregationOp, DataHistoryRecord, DataRecorderDefinition, OpenWindow } from './types.js'
+import type { AggregationOp, DataHistoryRecord, DataRecorderDefinition, OpenWindow, RecordKind } from './types.js'
 
 /**
  * Onde o histórico mora.
@@ -26,6 +26,8 @@ export async function ensureDataHistoryIndexes(): Promise<void> {
 
   // A consulta que todo mundo faz: a série de uma entidade num período.
   await records.createIndex({ ownerId: 1, recorderId: 1, entityKey: 1, occurredAt: -1 })
+  // A consulta que separa bruto de resumo — sem ela, filtrar por tipo varreria a série.
+  await records.createIndex({ ownerId: 1, recorderId: 1, recordKind: 1, occurredAt: -1 })
   // A identidade do registro. É ela que faz gravar duas vezes gravar uma — um evento
   // reentregue depois de um restart, uma janela fechada por dois workers.
   await records.createIndex({ dedupeKey: 1 }, { unique: true })
@@ -75,17 +77,35 @@ export const cabeNoLimite = (valor: unknown): boolean => {
 }
 
 /**
- * Grava um registro — no máximo uma vez.
+ * Grava um registro — no máximo uma vez, e nunca acima da cota.
  *
- * `insertOne` com índice único em `dedupeKey`: o segundo insert com a mesma chave falha
- * com E11000, e isso é resposta, não erro. É o que faz um evento reentregue, uma janela
- * fechada por dois workers e um restart no meio da gravação não criarem duplicata.
+ * A cota é tomada ANTES do insert, e no banco: um `updateOne` com `recordCount` abaixo
+ * do teto no próprio filtro. Dois workers pedindo a última vaga ao mesmo tempo, só um
+ * recebe `modifiedCount: 1` — o outro descobre pelo resultado, não por uma leitura que
+ * já estava velha quando chegou. Confiar no `recordCount` que veio junto com a
+ * definição seria confiar num número lido segundos atrás por outro processo.
+ *
+ * Se o insert falhar, a vaga VOLTA. As duas falhas possíveis têm tratamentos
+ * diferentes e nenhuma delas pode deixar a conta errada: `E11000` é o mesmo registro
+ * chegando de novo — resposta legítima, e a vaga volta porque nada foi gravado; um
+ * erro de verdade também devolve a vaga, e sobe.
  */
-export async function inserirRegistro(doc: Omit<DataHistoryRecord, '_id'>): Promise<'gravado' | 'repetido'> {
+export async function inserirRegistro(doc: Omit<DataHistoryRecord, '_id'>, teto?: number): Promise<'gravado' | 'repetido' | 'cota'> {
+  const comCota = typeof teto === 'number' && Number.isFinite(teto)
+  if (comCota) {
+    const vaga = await recorders.updateOne(
+      { _id: doc.recorderId, ownerId: doc.ownerId, recordCount: { $lt: teto } },
+      { $inc: { recordCount: 1 }, $set: { lastRecordAt: doc.recordedAt, updatedAt: doc.recordedAt } },
+    )
+    if (vaga.modifiedCount !== 1) return 'cota'
+  }
   try {
     await records.insertOne({ _id: new ObjectId(), ...doc } as DataHistoryRecord)
     return 'gravado'
   } catch (error) {
+    if (comCota) await recorders.updateOne({ _id: doc.recorderId }, { $inc: { recordCount: -1 } }).catch(() => undefined)
+    // Repetido não é erro: é a dedupe funcionando. E não consome cota, porque a vaga
+    // acabou de ser devolvida acima.
     if ((error as { code?: number }).code === 11000) return 'repetido'
     throw error
   }
@@ -102,7 +122,10 @@ export interface RangeQuery {
   from?: Date
   to?: Date
   limit?: number
+  skip?: number
   order?: 'asc' | 'desc'
+  /** Bruto, resumo ou retrato. Ausente = todos, que é o que "sem filtro" quer dizer. */
+  recordKind?: RecordKind | null
 }
 
 const filtroDe = (ownerId: string, q: RangeQuery): Record<string, unknown> => {
@@ -114,6 +137,9 @@ const filtroDe = (ownerId: string, q: RangeQuery): Record<string, unknown> => {
     if (q.to) janela.$lte = q.to
     f.occurredAt = janela
   }
+  // `raw` também alcança o que foi gravado ANTES deste campo existir: aqueles registros
+  // eram todos brutos, e um filtro que os escondesse mentiria sobre o histórico.
+  if (q.recordKind) f.recordKind = q.recordKind === 'raw' ? { $in: ['raw', null] } : q.recordKind
   return f
 }
 
@@ -121,13 +147,33 @@ export function listarRegistros(ownerId: string, q: RangeQuery): Promise<DataHis
   const limite = Math.min(Math.max(1, q.limit ?? 100), MAX_QUERY_LIMIT)
   return records
     .find(filtroDe(ownerId, q))
-    .sort({ occurredAt: q.order === 'asc' ? 1 : -1 })
+    // O desempate por `_id` é o que torna a paginação estável: com dois registros no
+    // mesmo instante, uma ordenação só por tempo pode devolver o mesmo na página 1 e na
+    // 2, ou pular um. Não é teoria — janela fechada e retrato caem no mesmo segundo.
+    .sort({ occurredAt: q.order === 'asc' ? 1 : -1, _id: q.order === 'asc' ? 1 : -1 })
+    .skip(Math.max(0, q.skip ?? 0))
     .limit(limite)
     .toArray()
 }
 
-export const ultimoRegistro = (ownerId: string, recorderId: ObjectId, entityKey: string | null): Promise<DataHistoryRecord | null> =>
-  records.findOne({ ownerId, recorderId, ...(entityKey === null ? {} : { entityKey }) }, { sort: { occurredAt: -1 } })
+export const contarDaConsulta = (ownerId: string, q: RangeQuery): Promise<number> => records.countDocuments(filtroDe(ownerId, q))
+
+export const ultimoRegistro = (
+  ownerId: string,
+  recorderId: ObjectId,
+  entityKey: string | null,
+  recordKind: RecordKind | null = null,
+): Promise<DataHistoryRecord | null> =>
+  records.findOne(
+    {
+      ownerId,
+      recorderId,
+      ...(entityKey === null ? {} : { entityKey }),
+      // `raw` alcança o que foi gravado antes deste campo existir — ver `filtroDe`.
+      ...(recordKind ? { recordKind: recordKind === 'raw' ? { $in: ['raw', null] } : recordKind } : {}),
+    } as Record<string, unknown>,
+    { sort: { occurredAt: -1, _id: -1 } },
+  )
 
 /**
  * A agregação sobre o histórico JÁ GRAVADO — pelo próprio Mongo.

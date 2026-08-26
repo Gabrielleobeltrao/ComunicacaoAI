@@ -1,9 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
 import { Button, Card, Field, Input, Select, Textarea } from '../../ui'
-import { MODE_HINT, MODE_LABEL, OP_LABEL, SOURCE_LABEL, createRecorder, emptyRecorder, previewRecorder } from '../../lib/dataHistory'
-import type { AggregationOp, PreviewResult, RecorderMode, SourceKind } from '../../lib/dataHistory'
+import {
+  MODE_HINT,
+  MODE_LABEL,
+  OPERATOR_LABEL,
+  OP_LABEL,
+  POLICY_HINT,
+  POLICY_LABEL,
+  RECURRENCES,
+  SOURCE_LABEL,
+  TIMEZONES,
+  createRecorder,
+  emptyRecorder,
+  listSources,
+  previewRecorder,
+} from '../../lib/dataHistory'
+import type { AggregationOp, FilterOperator, PersistPolicy, PreviewResult, RecorderMode, SourceCatalog, SourceKind } from '../../lib/dataHistory'
 
 /**
  * Criar um histórico, na ordem em que a pergunta aparece na cabeça de quem cria:
@@ -31,6 +45,16 @@ const AMOSTRA_EXEMPLO = `[
 
 export function RecorderForm() {
   const [form, setForm] = useState(emptyRecorder())
+  /** As fontes desta conta. Ninguém deveria precisar copiar um id de banco. */
+  const [fontes, setFontes] = useState<SourceCatalog | null>(null)
+  const [buscaEvento, setBuscaEvento] = useState('')
+  /**
+   * "Outra (avançado)" precisa de estado PRÓPRIO.
+   *
+   * Deduzir isso do cron não funciona: quem escolhe avançado começa com a expressão que
+   * já estava lá, que é uma das da lista — e o campo de texto nunca apareceria.
+   */
+  const [cronLivre, setCronLivre] = useState(false)
   const [amostras, setAmostras] = useState(AMOSTRA_EXEMPLO)
   const [previa, setPrevia] = useState<PreviewResult | null>(null)
   const [erro, setErro] = useState<string | null>(null)
@@ -39,13 +63,27 @@ export function RecorderForm() {
 
   const set = <K extends keyof typeof form>(campo: K, valor: (typeof form)[K]) => setForm((f) => ({ ...f, [campo]: valor }))
 
+  useEffect(() => {
+    listSources()
+      .then(setFontes)
+      // Sem catálogo a tela ainda funciona: o campo vira texto livre. Melhor do que
+      // travar a criação porque uma listagem falhou.
+      .catch(() => setFontes({ live_data: [], event: [] }))
+  }, [])
+
+  const opcoes = form.source.kind === 'live_data' ? (fontes?.live_data ?? []) : form.source.kind === 'event' ? (fontes?.event ?? []) : []
+  const eventosFiltrados = opcoes.filter((o) => !buscaEvento.trim() || o.label.toLowerCase().includes(buscaEvento.trim().toLowerCase()))
+
   /** O corpo que vai para o servidor — o mesmo na prévia e na criação. */
   const corpo = () => ({
     ...form,
     entityKeyPath: form.entityKeyPath || null,
     occurredAtPath: form.occurredAtPath || null,
     changePath: form.changePath || null,
-    selectedFields: form.selectedFields.length ? form.selectedFields : null,
+    // Linhas em branco no editor não são configuração: elas são o cursor de quem ainda
+    // está digitando, e mandá-las viraria erro de validação sem motivo.
+    selectedFields: form.selectedFields.filter((c) => c.trim()).length ? form.selectedFields.filter((c) => c.trim()) : null,
+    filters: form.filters.filter((f) => f.path.trim()),
   })
 
   async function testar() {
@@ -107,10 +145,33 @@ export function RecorderForm() {
             </Field>
             <Field
               label={form.source.kind === 'live_data' ? 'Qual conexão' : form.source.kind === 'event' ? 'Qual evento' : 'Nome da origem'}
-              hint={form.source.kind === 'event' ? 'Ex.: market.candle.closed' : undefined}
+              hint={
+                form.source.kind === 'manual'
+                  ? 'O nome que o seu código usa ao registrar o dado.'
+                  : form.source.kind === 'live_data' && opcoes.length === 0
+                    ? 'Nenhuma conexão de WebSocket nesta conta ainda.'
+                    : undefined
+              }
             >
-              <Input value={form.source.ref} onChange={(e) => set('source', { ...form.source, ref: e.target.value })} data-testid="recorder-source-ref" />
+              {form.source.kind === 'manual' || opcoes.length === 0 ? (
+                <Input value={form.source.ref} onChange={(e) => set('source', { ...form.source, ref: e.target.value })} data-testid="recorder-source-ref" />
+              ) : (
+                <Select
+                  value={form.source.ref}
+                  onChange={(e) => set('source', { ...form.source, ref: e.target.value })}
+                  data-testid="recorder-source-ref"
+                  options={[
+                    { value: '', label: 'Escolha…' },
+                    ...eventosFiltrados.map((o) => ({ value: o.ref, label: o.hint ? `${o.label} — ${o.hint}` : o.label })),
+                  ]}
+                />
+              )}
             </Field>
+            {form.source.kind === 'event' && opcoes.length > 8 && (
+              <Field label="Buscar evento">
+                <Input value={buscaEvento} onChange={(e) => setBuscaEvento(e.target.value)} placeholder="market" data-testid="event-search" />
+              </Field>
+            )}
             <Field label="O que identifica cada série" hint="Ex.: symbol, sku, sensorId. Em branco, tudo vira uma série só.">
               <Input value={form.entityKeyPath} onChange={(e) => set('entityKeyPath', e.target.value)} placeholder="symbol" data-testid="recorder-entity" />
             </Field>
@@ -144,26 +205,36 @@ export function RecorderForm() {
 
             {form.mode === 'schedule_snapshot' && (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Field label="Hora (UTC)">
-                  <Input
-                    type="number"
-                    min={0}
-                    max={23}
-                    value={String(form.schedule.hour)}
-                    onChange={(e) => set('schedule', { ...form.schedule, hour: Number(e.target.value) })}
-                    data-testid="recorder-hour"
+                <Field label="Quando">
+                  <Select
+                    value={cronLivre || !RECURRENCES.some((r) => r.cron === form.schedule.cron) ? 'custom' : form.schedule.cron}
+                    onChange={(e) => {
+                      const avancado = e.target.value === 'custom'
+                      setCronLivre(avancado)
+                      if (!avancado) set('schedule', { ...form.schedule, cron: e.target.value })
+                    }}
+                    data-testid="recorder-recurrence"
+                    options={[...RECURRENCES.map((r) => ({ value: r.cron, label: r.label })), { value: 'custom', label: 'Outra (avançado)' }]}
                   />
                 </Field>
-                <Field label="Minuto">
-                  <Input
-                    type="number"
-                    min={0}
-                    max={59}
-                    value={String(form.schedule.minute)}
-                    onChange={(e) => set('schedule', { ...form.schedule, minute: Number(e.target.value) })}
-                    data-testid="recorder-minute"
+                <Field label="Fuso horário" hint="O horário é o SEU, não o do servidor.">
+                  <Select
+                    value={form.schedule.timezone}
+                    onChange={(e) => set('schedule', { ...form.schedule, timezone: e.target.value })}
+                    data-testid="recorder-timezone"
+                    options={TIMEZONES.map((t) => ({ value: t, label: t }))}
                   />
                 </Field>
+                {(cronLivre || !RECURRENCES.some((r) => r.cron === form.schedule.cron)) && (
+                  <Field label="Recorrência (cron)" hint="Cinco campos: minuto, hora, dia, mês, dia da semana.">
+                    <Input
+                      value={form.schedule.cron}
+                      onChange={(e) => set('schedule', { ...form.schedule, cron: e.target.value })}
+                      placeholder="0 8 * * 1-5"
+                      data-testid="recorder-cron"
+                    />
+                  </Field>
+                )}
               </div>
             )}
 
@@ -221,6 +292,116 @@ export function RecorderForm() {
           </Card>
         )}
 
+        {form.mode === 'window_aggregate' && (
+          <Card>
+            <Field label="O que guardar" hint={POLICY_HINT[form.persistPolicy]}>
+              <Select
+                value={form.persistPolicy}
+                onChange={(e) => set('persistPolicy', e.target.value as PersistPolicy)}
+                data-testid="recorder-policy"
+                options={(['aggregate_only', 'raw_only', 'raw_and_aggregate'] as PersistPolicy[]).map((p) => ({ value: p, label: POLICY_LABEL[p] }))}
+              />
+            </Field>
+          </Card>
+        )}
+
+        <Card>
+          <div className="flex flex-col gap-3">
+            {/* Os filtros valem para TODO modo — eles decidem o que sequer é considerado.
+                No modo "só quando a condição bater" eles são obrigatórios, e a tela diz. */}
+            <Field
+              label="Só considerar quando"
+              hint={
+                form.mode === 'condition'
+                  ? 'Obrigatório neste modo: sem nenhuma condição, tudo seria gravado.'
+                  : 'Opcional. Sem nenhuma condição, tudo que chega é considerado.'
+              }
+            >
+              <div className="flex flex-col gap-2" data-testid="filter-list">
+                {form.filters.map((f, i) => (
+                  <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_160px_1fr_auto]" data-testid="filter-row">
+                    <Input
+                      value={f.path}
+                      placeholder="qty"
+                      aria-label="Campo"
+                      onChange={(e) => set('filters', form.filters.map((x, j) => (i === j ? { ...x, path: e.target.value } : x)))}
+                    />
+                    <Select
+                      value={f.operator}
+                      aria-label="Comparação"
+                      onChange={(e) => set('filters', form.filters.map((x, j) => (i === j ? { ...x, operator: e.target.value as FilterOperator } : x)))}
+                      options={(Object.keys(OPERATOR_LABEL) as FilterOperator[]).map((o) => ({ value: o, label: OPERATOR_LABEL[o] }))}
+                    />
+                    {/* `existe` não compara com nada: pedir um valor ali seria pedir algo
+                        que não é usado, e quem preenchesse acharia que estava filtrando. */}
+                    {f.operator === 'exists' ? (
+                      <span style={{ fontSize: 13, color: 'var(--text-muted)', alignSelf: 'center' }}>—</span>
+                    ) : (
+                      <Input
+                        value={String(f.value ?? '')}
+                        placeholder="10"
+                        aria-label="Valor"
+                        onChange={(e) => set('filters', form.filters.map((x, j) => (i === j ? { ...x, value: e.target.value } : x)))}
+                      />
+                    )}
+                    <Button variant="ghost" size="sm" onClick={() => set('filters', form.filters.filter((_, j) => j !== i))}>
+                      Remover
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </Field>
+            <div>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => set('filters', [...form.filters, { path: '', operator: 'equals' as FilterOperator, value: '' }])}
+                data-testid="add-filter"
+              >
+                Adicionar condição
+              </Button>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div className="flex flex-col gap-3">
+            <Field label="O que guardar de cada dado">
+              <Select
+                value={form.selectedFields.length ? 'alguns' : 'tudo'}
+                onChange={(e) => set('selectedFields', e.target.value === 'tudo' ? [] : [''])}
+                data-testid="fields-mode"
+                options={[
+                  { value: 'tudo', label: 'O dado inteiro' },
+                  { value: 'alguns', label: 'Só os campos que eu escolher' },
+                ]}
+              />
+            </Field>
+            {form.selectedFields.length > 0 && (
+              <div className="flex flex-col gap-2" data-testid="field-list">
+                {form.selectedFields.map((c, i) => (
+                  <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]" data-testid="field-row">
+                    <Input
+                      value={c}
+                      placeholder="data.total"
+                      aria-label={`Campo ${i + 1}`}
+                      onChange={(e) => set('selectedFields', form.selectedFields.map((x, j) => (i === j ? e.target.value : x)))}
+                    />
+                    <Button variant="ghost" size="sm" onClick={() => set('selectedFields', form.selectedFields.filter((_, j) => j !== i))}>
+                      Remover
+                    </Button>
+                  </div>
+                ))}
+                <div>
+                  <Button size="sm" variant="secondary" onClick={() => set('selectedFields', [...form.selectedFields, ''])} data-testid="add-field">
+                    Adicionar campo
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </Card>
+
         <Card>
           <div className="flex flex-col gap-3">
             <Field label="Testar com dados de exemplo" hint="Cole algumas mensagens como elas chegam. Nada é gravado.">
@@ -243,13 +424,34 @@ export function RecorderForm() {
             {previa && (
               <div className="flex flex-col gap-2" data-testid="recorder-preview-result">
                 <p style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>O que aconteceria com estas amostras</p>
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text-muted)' }}>
-                  {previa.decisions.map((d) => (
-                    <li key={d.index}>
-                      amostra {d.index + 1}: <strong>{d.resultado}</strong>
-                    </li>
-                  ))}
-                </ul>
+                {/* O que o motor RESOLVEU, e não só o veredito: um caminho de chave
+                    errado aparece aqui como "chave: —", que é a explicação inteira. */}
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }} data-testid="preview-decisions">
+                    <thead>
+                      <tr style={{ textAlign: 'left', color: 'var(--text-muted)' }}>
+                        <th style={{ padding: '4px 6px' }}>#</th>
+                        <th style={{ padding: '4px 6px' }}>Decisão</th>
+                        <th style={{ padding: '4px 6px' }}>Chave</th>
+                        <th style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>Quando</th>
+                        <th style={{ padding: '4px 6px' }}>Valor gravado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {previa.decisions.map((d) => (
+                        <tr key={d.index} style={{ borderTop: '1px solid var(--border-subtle)' }} data-testid="preview-decision">
+                          <td style={{ padding: '4px 6px' }}>{d.index + 1}</td>
+                          <td style={{ padding: '4px 6px' }}>{d.motivo}</td>
+                          <td style={{ padding: '4px 6px' }}>{d.entityKey ?? '—'}</td>
+                          <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{new Date(d.occurredAt).toLocaleString('pt-BR')}</td>
+                          <td style={{ padding: '4px 6px' }}>
+                            <code style={{ fontSize: 11.5 }}>{d.valor ? JSON.stringify(d.valor) : '—'}</code>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
                 {previa.records.length > 0 && (
                   <pre
                     style={{ margin: 0, overflowX: 'auto', fontSize: 12, background: 'var(--surface-sunken)', padding: 10, borderRadius: 8 }}

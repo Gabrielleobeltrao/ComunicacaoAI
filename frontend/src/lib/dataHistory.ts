@@ -11,6 +11,27 @@ import { API_URL } from './api'
 export type SourceKind = 'event' | 'live_data' | 'manual'
 export type RecorderMode = 'every_event' | 'on_change' | 'snapshot_interval' | 'schedule_snapshot' | 'window_aggregate' | 'condition'
 export type AggregationOp = 'first' | 'last' | 'min' | 'max' | 'avg' | 'sum' | 'count'
+export type PersistPolicy = 'aggregate_only' | 'raw_only' | 'raw_and_aggregate'
+export type RecordKind = 'raw' | 'aggregate' | 'snapshot'
+export type FilterOperator = 'exists' | 'equals' | 'not_equals' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains'
+
+/** Uma agenda: recorrência em cron e o fuso de quem configurou. */
+export interface RecorderSchedule {
+  cron: string
+  timezone: string
+}
+
+/** O que a tela oferece para escolher, com o id guardado por baixo. */
+export interface SourceOption {
+  ref: string
+  label: string
+  hint?: string
+}
+
+export interface SourceCatalog {
+  live_data: SourceOption[]
+  event: SourceOption[]
+}
 
 export interface AggregationRule {
   from: string
@@ -20,7 +41,7 @@ export interface AggregationRule {
 
 export interface RecorderFilter {
   path: string
-  operator: 'exists' | 'equals' | 'not_equals' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains'
+  operator: FilterOperator
   value?: unknown
 }
 
@@ -33,7 +54,8 @@ export interface DataRecorder {
   entityKeyPath: string | null
   occurredAtPath: string | null
   intervalMs: number | null
-  schedule: { hour: number; minute: number } | null
+  schedule: RecorderSchedule | null
+  persistPolicy: PersistPolicy
   filters: RecorderFilter[]
   selectedFields: string[] | null
   aggregations: AggregationRule[]
@@ -56,11 +78,22 @@ export interface HistoryRecord {
   recordedAt: string
   windowStart: string | null
   windowEnd: string | null
+  recordKind: RecordKind
   value: Record<string, unknown>
 }
 
+export interface PreviewDecision {
+  index: number
+  resultado: string
+  /** A frase que explica a decisão — é ela que a tela mostra. */
+  motivo: string
+  entityKey: string | null
+  occurredAt: string
+  valor: Record<string, unknown> | null
+}
+
 export interface PreviewResult {
-  decisions: { index: number; resultado: string }[]
+  decisions: PreviewDecision[]
   records: HistoryRecord[]
   windows: { entityKey: string | null; windowStart: string; windowEnd: string; count: number; value: Record<string, unknown> }[]
 }
@@ -88,10 +121,14 @@ export const deleteRecorder = (id: string) => request<null>(`/recorders/${id}`, 
 export const previewRecorder = (recorder: Record<string, unknown>, samples: unknown[]) =>
   request<PreviewResult>('/preview', { method: 'POST', body: JSON.stringify({ recorder, samples }) })
 export const listKeys = (id: string) => request<(string | null)[]>(`/recorders/${id}/keys`)
-export const listRecords = (id: string, q: { entityKey?: string; from?: string; to?: string; limit?: number; order?: 'asc' | 'desc' } = {}) => {
+export const listSources = () => request<SourceCatalog>('/sources')
+export const listRecords = (
+  id: string,
+  q: { entityKey?: string; from?: string; to?: string; recordKind?: RecordKind | ''; limit?: number; skip?: number; order?: 'asc' | 'desc' } = {},
+) => {
   const p = new URLSearchParams()
   for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') p.set(k, String(v))
-  return request<{ count: number; items: HistoryRecord[] }>(`/recorders/${id}/records${p.toString() ? `?${p}` : ''}`)
+  return request<{ count: number; total: number; skip: number; items: HistoryRecord[] }>(`/recorders/${id}/records${p.toString() ? `?${p}` : ''}`)
 }
 export const aggregateRecords = (id: string, q: { entityKey?: string; from?: string; to?: string } = {}) => {
   const p = new URLSearchParams()
@@ -133,6 +170,48 @@ export const SOURCE_LABEL: Record<SourceKind, string> = {
   manual: 'Agente, rotina, tool ou webhook',
 }
 
+export const OPERATOR_LABEL: Record<FilterOperator, string> = {
+  exists: 'existe',
+  equals: 'é igual a',
+  not_equals: 'é diferente de',
+  gt: 'maior que',
+  gte: 'maior ou igual a',
+  lt: 'menor que',
+  lte: 'menor ou igual a',
+  contains: 'contém',
+}
+
+export const POLICY_LABEL: Record<PersistPolicy, string> = {
+  aggregate_only: 'Só o resumo do período',
+  raw_only: 'Só os dados brutos',
+  raw_and_aggregate: 'Os dois: bruto e resumo',
+}
+
+export const POLICY_HINT: Record<PersistPolicy, string> = {
+  aggregate_only: 'Uma linha por período. É o que quase todo mundo quer — e o que cabe no banco.',
+  raw_only: 'Uma linha por dado recebido. Cresce rápido: um dado por segundo são 86 mil linhas por dia.',
+  raw_and_aggregate: 'Guarda o dado recebido E o resumo. Útil para auditar ou recalcular depois; ocupa muito mais.',
+}
+
+export const KIND_LABEL: Record<RecordKind, string> = {
+  raw: 'Bruto',
+  aggregate: 'Resumo',
+  snapshot: 'Retrato',
+}
+
+/** As recorrências que a tela oferece. Tudo vira cron, que é o que o servidor entende. */
+export const RECURRENCES = [
+  { cron: '0 * * * *', label: 'A cada hora' },
+  { cron: '0 8 * * *', label: 'Todo dia de manhã (8h)' },
+  { cron: '0 18 * * *', label: 'Todo dia à tarde (18h)' },
+  { cron: '0 8 * * 1-5', label: 'Dias úteis, de manhã (8h)' },
+  { cron: '0 8 * * 1', label: 'Toda segunda-feira (8h)' },
+  { cron: '0 8 1 * *', label: 'Todo dia 1º do mês (8h)' },
+]
+
+/** Fusos comuns por aqui. Qualquer IANA válido é aceito pelo servidor. */
+export const TIMEZONES = ['America/Sao_Paulo', 'America/New_York', 'America/Chicago', 'Europe/Lisbon', 'Europe/London', 'UTC']
+
 export const emptyRecorder = () => ({
   name: '',
   source: { kind: 'live_data' as SourceKind, ref: '' },
@@ -140,7 +219,8 @@ export const emptyRecorder = () => ({
   entityKeyPath: '',
   occurredAtPath: '',
   intervalMs: 300_000,
-  schedule: { hour: 3, minute: 0 },
+  schedule: { cron: '0 8 * * *', timezone: 'America/Sao_Paulo' } as RecorderSchedule,
+  persistPolicy: 'aggregate_only' as PersistPolicy,
   filters: [] as RecorderFilter[],
   selectedFields: [] as string[],
   aggregations: [] as AggregationRule[],

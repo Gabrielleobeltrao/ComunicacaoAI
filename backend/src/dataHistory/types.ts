@@ -34,6 +34,40 @@ export interface DataSourceDefinition {
 export const RECORDER_MODES = ['every_event', 'on_change', 'snapshot_interval', 'schedule_snapshot', 'window_aggregate', 'condition'] as const
 export type RecorderMode = (typeof RECORDER_MODES)[number]
 
+/**
+ * O que uma agregação por janela GRAVA.
+ *
+ * O padrão é só o resumo, e isso é uma decisão de custo: um feed de três tiques por
+ * segundo produz 259 mil linhas por dia em bruto e 288 em janelas de cinco minutos.
+ * Guardar o tique também é legítimo — para auditar ou recalcular —, mas precisa ser
+ * escolha explícita de quem configura, nunca o que acontece por omissão.
+ */
+export const PERSIST_POLICIES = ['aggregate_only', 'raw_only', 'raw_and_aggregate'] as const
+export type PersistPolicy = (typeof PERSIST_POLICIES)[number]
+
+/**
+ * De que TIPO é um registro.
+ *
+ * Bruto, resumo de janela e retrato periódico respondem perguntas diferentes e não
+ * podem ser lidos como a mesma coisa: misturar um tique e a média da hora na mesma
+ * série produz um número que não existe. A consulta filtra por isto.
+ */
+export const RECORD_KINDS = ['raw', 'aggregate', 'snapshot'] as const
+export type RecordKind = (typeof RECORD_KINDS)[number]
+
+/**
+ * A agenda de um retrato periódico — a MESMA do resto do produto.
+ *
+ * `cron` e `timezone` são exatamente o que as rotinas usam, e são lidos pelo mesmo
+ * `scheduleClock`. Não há relógio novo aqui: um segundo jeito de dizer "toda terça às
+ * 7h" seria um segundo lugar para o horário de verão estar errado.
+ */
+export interface RecorderSchedule {
+  cron: string
+  /** IANA, ex.: `America/Sao_Paulo`. O fuso é do DONO, nunca o do servidor. */
+  timezone: string
+}
+
 /** As sete operações. Determinísticas, sem modelo no caminho. */
 export const AGGREGATIONS = ['first', 'last', 'min', 'max', 'avg', 'sum', 'count'] as const
 export type AggregationOp = (typeof AGGREGATIONS)[number]
@@ -67,8 +101,10 @@ export interface DataRecorderDefinition {
   mode: RecorderMode
   /** `snapshot_interval` e `window_aggregate`: o tamanho da janela/intervalo. */
   intervalMs: number | null
-  /** `schedule_snapshot`: minuto e hora em UTC. Um dia, um snapshot. */
-  schedule: { hour: number; minute: number } | null
+  /** `schedule_snapshot`: quando tirar o retrato. Ver `RecorderSchedule`. */
+  schedule: RecorderSchedule | null
+  /** `window_aggregate`: guardar o resumo, o bruto, ou os dois. */
+  persistPolicy: PersistPolicy
   filters: RecorderFilter[]
   /** Quais campos guardar. Vazio = o valor inteiro (já saneado e limitado). */
   selectedFields: string[] | null
@@ -83,6 +119,15 @@ export interface DataRecorderDefinition {
   createdAt: Date
   updatedAt: Date
 }
+
+/**
+ * Quantos registros esta regra JÁ GRAVOU — o total histórico, e não o que está guardado.
+ *
+ * A diferença importa: a retenção apaga sozinha, então `recordCount` sobe e o número de
+ * documentos desce. É de propósito — a cota existe para impedir que uma configuração
+ * errada produza milhões de linhas, e apagá-las não desfaz o que ela produziu. Quem
+ * quer saber quanto está guardado AGORA pede `storedRecords`, que conta no banco.
+ */
 
 /**
  * Um registro histórico. IMUTÁVEL: nada aqui é editado depois de gravado.
@@ -101,6 +146,8 @@ export interface DataHistoryRecord {
   recordedAt: Date
   windowStart: Date | null
   windowEnd: Date | null
+  /** Bruto, resumo de janela ou retrato. Ausente nos registros anteriores a este campo. */
+  recordKind: RecordKind
   value: Record<string, unknown>
   schemaVersion: number
   /** A identidade do registro. Gravar duas vezes com a mesma chave grava uma vez. */
@@ -175,6 +222,7 @@ export interface DataHistoryPublic {
   recordedAt: string
   windowStart: string | null
   windowEnd: string | null
+  recordKind: RecordKind
   value: Record<string, unknown>
 }
 
@@ -187,6 +235,9 @@ export const historyPublic = (r: DataHistoryRecord): DataHistoryPublic => ({
   recordedAt: r.recordedAt.toISOString(),
   windowStart: r.windowStart ? r.windowStart.toISOString() : null,
   windowEnd: r.windowEnd ? r.windowEnd.toISOString() : null,
+  // Ausente é `raw`: os registros gravados antes deste campo existirem eram todos
+  // brutos, e ler "sem tipo" como bruto é a leitura verdadeira deles.
+  recordKind: r.recordKind ?? 'raw',
   value: r.value,
 })
 
@@ -199,7 +250,8 @@ export interface RecorderPublic {
   entityKeyPath: string | null
   occurredAtPath: string | null
   intervalMs: number | null
-  schedule: { hour: number; minute: number } | null
+  schedule: RecorderSchedule | null
+  persistPolicy: PersistPolicy
   filters: RecorderFilter[]
   selectedFields: string[] | null
   aggregations: AggregationRule[]
@@ -222,6 +274,7 @@ export const recorderPublic = (r: DataRecorderDefinition): RecorderPublic => ({
   occurredAtPath: r.occurredAtPath,
   intervalMs: r.intervalMs,
   schedule: r.schedule,
+  persistPolicy: r.persistPolicy ?? 'aggregate_only',
   filters: r.filters,
   selectedFields: r.selectedFields,
   aggregations: r.aggregations,

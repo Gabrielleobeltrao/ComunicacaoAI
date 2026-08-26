@@ -31,6 +31,7 @@ const RECORDER = {
     { from: 'volume', op: 'sum', to: 'volume' },
   ],
   changePath: null,
+  persistPolicy: 'aggregate_only',
   retentionDays: 90,
   recordCount: 42,
   lastRecordAt: NOW,
@@ -47,7 +48,7 @@ const ESTOQUE = {
   source: { kind: 'manual', ref: 'erp' },
   aggregations: [],
   intervalMs: null,
-  schedule: { hour: 3, minute: 0 },
+  schedule: { cron: '0 8 * * *', timezone: 'America/Sao_Paulo' },
   recordCount: 7,
 }
 
@@ -68,6 +69,20 @@ async function stub(page: Page, opts: { recorders?: unknown[] } = {}) {
   await page.route('**/api/agents**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
 
+  await page.route('**/api/data-history/sources', (r) =>
+    r.fulfill({
+      json: {
+        live_data: [
+          { ref: '68b0000000000000000000a1', label: 'Corretora do Gabriel', hint: 'Conexão de WebSocket' },
+          { ref: '68b0000000000000000000a2', label: 'Feed do ERP', hint: 'Conexão de WebSocket' },
+        ],
+        event: [
+          { ref: 'market.candle.closed', label: 'market.candle.closed', hint: 'Mercado' },
+          { ref: 'integration.websocket.message', label: 'integration.websocket.message', hint: 'Integrações' },
+        ],
+      },
+    }),
+  )
   await page.route('**/api/data-history/recorders', (r) => {
     if (r.request().method() === 'POST') {
       criado = r.request().postDataJSON() as Record<string, unknown>
@@ -80,8 +95,8 @@ async function stub(page: Page, opts: { recorders?: unknown[] } = {}) {
     return r.fulfill({
       json: {
         decisions: [
-          { index: 0, resultado: 'acumulado' },
-          { index: 1, resultado: 'acumulado' },
+          { index: 0, resultado: 'acumulado', motivo: 'entra no resumo do período', entityKey: 'BTCUSDT', occurredAt: NOW, valor: { symbol: 'BTCUSDT', price: 100 } },
+          { index: 1, resultado: 'filtrado', motivo: 'não passou pelos filtros', entityKey: 'BTCUSDT', occurredAt: NOW, valor: { symbol: 'BTCUSDT', price: 110 } },
         ],
         records: [],
         windows: [{ entityKey: 'BTCUSDT', windowStart: NOW, windowEnd: NOW, count: 2, value: { open: 100, high: 110, low: 100, close: 110, volume: 5 } }],
@@ -93,9 +108,11 @@ async function stub(page: Page, opts: { recorders?: unknown[] } = {}) {
     r.fulfill({
       json: {
         count: 2,
+        total: 2,
+        skip: 0,
         items: [
-          { id: 'h1', recorderId: 'rec-1', sourceKey: 'live_data:conexao-1', entityKey: 'BTCUSDT', occurredAt: NOW, recordedAt: NOW, windowStart: NOW, windowEnd: NOW, value: { open: 100, close: 110 } },
-          { id: 'h2', recorderId: 'rec-1', sourceKey: 'live_data:conexao-1', entityKey: 'BTCUSDT', occurredAt: NOW, recordedAt: NOW, windowStart: NOW, windowEnd: NOW, value: { open: 110, close: 108 } },
+          { id: 'h1', recorderId: 'rec-1', sourceKey: 'live_data:c1', entityKey: 'BTCUSDT', occurredAt: NOW, recordedAt: NOW, windowStart: NOW, windowEnd: NOW, recordKind: 'aggregate', value: { open: 100, close: 110 } },
+          { id: 'h2', recorderId: 'rec-1', sourceKey: 'live_data:c1', entityKey: 'BTCUSDT', occurredAt: NOW, recordedAt: NOW, windowStart: null, windowEnd: null, recordKind: 'raw', value: { price: 110 } },
         ],
       },
     }),
@@ -192,4 +209,140 @@ test('em 320px a tela do histórico não estoura a largura', async ({ page }) =>
     const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
     expect(folga, `${rota} estourou ${folga}px`).toBeLessThanOrEqual(1)
   }
+})
+
+
+// --- a rodada de acabamento -------------------------------------------------------
+
+test('a fonte é escolhida numa lista — ninguém copia id de banco', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-source-kind').selectOption('live_data')
+
+  // As conexões da conta aparecem pelo NOME; o id vai por baixo.
+  const seletor = page.getByTestId('recorder-source-ref')
+  await expect(seletor).toContainText('Corretora do Gabriel')
+  await seletor.selectOption({ label: 'Feed do ERP — Conexão de WebSocket' })
+
+  await page.getByTestId('recorder-name').fill('Do ERP')
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => (criado?.source as Record<string, unknown>)?.ref).toBe('68b0000000000000000000a2')
+})
+
+test('os eventos do sistema também vêm de lista', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-source-kind').selectOption('event')
+  await expect(page.getByTestId('recorder-source-ref')).toContainText('market.candle.closed')
+})
+
+test('o editor de filtros monta a condição, campo a campo', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-name').fill('Estoque baixo')
+  await page.getByTestId('recorder-mode').selectOption('condition')
+
+  await page.getByTestId('add-filter').click()
+  const linha = page.getByTestId('filter-row').first()
+  await linha.getByLabel('Campo').fill('qty')
+  await linha.getByLabel('Comparação').selectOption('lt')
+  await linha.getByLabel('Valor').fill('10')
+
+  // `existe` não compara com nada, e a tela para de pedir um valor.
+  await page.getByTestId('add-filter').click()
+  const segunda = page.getByTestId('filter-row').nth(1)
+  await segunda.getByLabel('Campo').fill('ativo')
+  await segunda.getByLabel('Comparação').selectOption('exists')
+  await expect(segunda.getByLabel('Valor')).toHaveCount(0)
+
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => criado?.filters).toEqual([
+    { path: 'qty', operator: 'lt', value: '10' },
+    { path: 'ativo', operator: 'exists', value: '' },
+  ])
+})
+
+test('dá para escolher só alguns campos — ou o dado inteiro', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-name').fill('Com recorte')
+
+  // O padrão é o dado inteiro: nenhum campo listado.
+  await expect(page.getByTestId('field-list')).toHaveCount(0)
+
+  await page.getByTestId('fields-mode').selectOption('alguns')
+  await page.getByTestId('field-row').first().getByLabel('Campo 1').fill('symbol')
+  await page.getByTestId('add-field').click()
+  await page.getByTestId('field-row').nth(1).getByLabel('Campo 2').fill('data.total')
+
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => criado?.selectedFields).toEqual(['symbol', 'data.total'])
+})
+
+test('a agenda tem recorrência e fuso — não hora em UTC', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-name').fill('Retrato diário')
+  await page.getByTestId('recorder-mode').selectOption('schedule_snapshot')
+
+  await page.getByTestId('recorder-recurrence').selectOption('0 8 * * 1-5')
+  await page.getByTestId('recorder-timezone').selectOption('America/New_York')
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => criado?.schedule).toEqual({ cron: '0 8 * * 1-5', timezone: 'America/New_York' })
+})
+
+test('a recorrência avançada aceita cron direto', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-name').fill('Avançado')
+  await page.getByTestId('recorder-mode').selectOption('schedule_snapshot')
+  await page.getByTestId('recorder-recurrence').selectOption('custom')
+  await expect(page.getByTestId('recorder-cron')).toBeVisible()
+  await page.getByTestId('recorder-cron').fill('30 6 1,15 * *')
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => (criado?.schedule as Record<string, unknown>)?.cron).toBe('30 6 1,15 * *')
+})
+
+test('a política de persistência aparece — e o padrão não guarda cada dado', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-name').fill('Com janela')
+  await page.getByTestId('recorder-mode').selectOption('window_aggregate')
+  await expect(page.getByTestId('recorder-policy')).toHaveValue('aggregate_only')
+  await page.getByTestId('recorder-policy').selectOption('raw_and_aggregate')
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => criado?.persistPolicy).toBe('raw_and_aggregate')
+})
+
+test('a prévia mostra chave, instante, valor e o motivo da recusa', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-name').fill('Prévia')
+  await page.getByTestId('recorder-preview').click()
+
+  const linhas = page.getByTestId('preview-decision')
+  await expect(linhas).toHaveCount(2)
+  await expect(linhas.first()).toContainText('entra no resumo do período')
+  await expect(linhas.first()).toContainText('BTCUSDT')
+  await expect(linhas.nth(1)).toContainText('não passou pelos filtros')
+  // Nada foi criado: testar não é ativar.
+  expect(criado).toBeNull()
+})
+
+test('a consulta distingue bruto de resumo e mostra os dois instantes', async ({ page }) => {
+  await stub(page)
+  await page.goto('/historicos/rec-1')
+  const linhas = page.getByTestId('record-row')
+  await expect(linhas).toHaveCount(2)
+  await expect(linhas.first()).toContainText('Resumo')
+  await expect(linhas.nth(1)).toContainText('Bruto')
+
+  // O JSON completo abre por linha.
+  await linhas.first().getByTestId('record-toggle').click()
+  await expect(page.getByTestId('record-json')).toContainText('"open": 100')
+
+  // E dá para filtrar por tipo.
+  await page.getByTestId('filter-kind').selectOption('aggregate')
+  await page.getByTestId('filter-apply').click()
+  await expect(page.getByTestId('record-row')).toHaveCount(2)
 })

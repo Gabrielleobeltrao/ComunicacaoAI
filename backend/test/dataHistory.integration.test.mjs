@@ -32,7 +32,9 @@ after(async () => {
   await stopMongo()
 })
 beforeEach(async () => {
-  for (const c of ['data_recorders', 'data_history_records', 'data_history_windows']) await db.collection(c).deleteMany({})
+  // As conexões entram aqui porque a fonte `live_data` aponta para uma delas: deixar
+  // as do teste anterior faria o catálogo contar o que não é deste teste.
+  for (const c of ['data_recorders', 'data_history_records', 'data_history_windows', 'connections']) await db.collection(c).deleteMany({})
   engine.limparCacheDeRecorders()
 })
 
@@ -54,6 +56,14 @@ const fato = (valor, quando, extra = {}) => ({
 })
 
 const registros = (filtro = {}) => db.collection('data_history_records').find(filtro).sort({ occurredAt: 1 }).toArray()
+
+/** Uma conexão de WebSocket de verdade, para as fontes `live_data` terem o que apontar. */
+async function instalarConexao(nome = 'Conexão de teste', dono = DONO) {
+  const { createInstallation } = await import('../dist/apps/installations.js')
+  const { getApp } = await import('../dist/apps/registry.js')
+  const i = await createInstallation(dono, getApp('websocket'), { name: nome, config: { token: 'segredo-de-teste-123' }, publicMetadata: {} })
+  return i._id.toString()
+}
 
 // --- os modos ----------------------------------------------------------------------
 
@@ -469,9 +479,12 @@ test('o Live Data alimenta o histórico sem virar histórico', async () => {
   await liveData.ensureLiveDataIndexes()
   liveData.resetLiveBuffer()
 
+  // Uma conexão de VERDADE: a fonte é conferida com o dono no filtro, então um id
+  // inventado é recusado — que é justamente o ponto.
+  const conexao = await instalarConexao()
   await criarRecorder(DONO, {
     name: 'preço quando muda',
-    source: { kind: 'live_data', ref: 'conexao-1' },
+    source: { kind: 'live_data', ref: conexao },
     mode: 'on_change',
     changePath: 'price',
   })
@@ -481,9 +494,9 @@ test('o Live Data alimenta o histórico sem virar histórico', async () => {
   // aí qual deles é "o primeiro" não tem resposta — nem deveria ter.
   // Perto de agora: o Live Data tem TTL, e um instante do mês passado nasceria vencido.
   const t0 = new Date(Date.now() - 2_000)
-  await liveData.putLiveValue(DONO, 'conexao-1', 'BTCUSDT', { price: 100 }, 60, t0)
-  await liveData.putLiveValue(DONO, 'conexao-1', 'BTCUSDT', { price: 100 }, 60, new Date(t0.getTime() + 1_000))
-  await liveData.putLiveValue(DONO, 'conexao-1', 'BTCUSDT', { price: 101 }, 60, new Date(t0.getTime() + 2_000))
+  await liveData.putLiveValue(DONO, conexao, 'BTCUSDT', { price: 100 }, 60, t0)
+  await liveData.putLiveValue(DONO, conexao, 'BTCUSDT', { price: 100 }, 60, new Date(t0.getTime() + 1_000))
+  await liveData.putLiveValue(DONO, conexao, 'BTCUSDT', { price: 101 }, 60, new Date(t0.getTime() + 2_000))
   // O aviso é disparado SEM espera — o caminho quente do dado ao vivo não pode ficar
   // atrás de uma regra de histórico. Então os três correm juntos, e o que se garante
   // aqui é o que o motor promete nessa condição: nada duplicado, nada mais velho
@@ -501,7 +514,7 @@ test('o Live Data alimenta o histórico sem virar histórico', async () => {
 
   // E o Live Data continua sendo só o valor de agora: uma chave, um valor, com TTL.
   await liveData.flushLiveData()
-  const vivo = await liveData.getLiveValue(DONO, 'conexao-1', 'BTCUSDT')
+  const vivo = await liveData.getLiveValue(DONO, conexao, 'BTCUSDT')
   assert.equal(vivo.value.price, 101)
   assert.equal(await db.collection('live_data').countDocuments({}), 1, 'o Live Data não virou série')
 })
@@ -591,4 +604,368 @@ test('quotas: o recorder para de gravar ao bater o teto', async () => {
   engine.limparCacheDeRecorders()
   await engine.ingestFact(fato({ a: 1 }, Date.now()))
   assert.equal((await registros()).length, 0, 'o teto vale, e não grava calado')
+})
+
+// ============================================================================
+// A rodada de acabamento
+// ============================================================================
+
+// --- filtros e condição ---------------------------------------------------------------
+
+test('os oito operadores de filtro decidem o que sequer é considerado', async () => {
+  const casos = [
+    [{ path: 'qty', operator: 'exists' }, { qty: 0 }, true],
+    [{ path: 'qty', operator: 'exists' }, { outro: 1 }, false],
+    [{ path: 'st', operator: 'equals', value: 'ok' }, { st: 'ok' }, true],
+    [{ path: 'st', operator: 'equals', value: 'ok' }, { st: 'nao' }, false],
+    [{ path: 'st', operator: 'not_equals', value: 'ok' }, { st: 'nao' }, true],
+    [{ path: 'qty', operator: 'gt', value: 10 }, { qty: 11 }, true],
+    [{ path: 'qty', operator: 'gt', value: 10 }, { qty: 10 }, false],
+    [{ path: 'qty', operator: 'gte', value: 10 }, { qty: 10 }, true],
+    [{ path: 'qty', operator: 'lt', value: 10 }, { qty: 9 }, true],
+    [{ path: 'qty', operator: 'lte', value: 10 }, { qty: 10 }, true],
+    [{ path: 'nome', operator: 'contains', value: 'ana' }, { nome: 'joana' }, true],
+    [{ path: 'nome', operator: 'contains', value: 'ana' }, { nome: 'pedro' }, false],
+  ]
+  for (const [filtro, valor, esperado] of casos) {
+    assert.equal(engine.passaNosFiltros(valor, [filtro]), esperado, `${filtro.operator} com ${JSON.stringify(valor)}`)
+  }
+  // Vários filtros são um E: o que não passar em todos não passa.
+  assert.equal(engine.passaNosFiltros({ qty: 5, st: 'ok' }, [{ path: 'qty', operator: 'lt', value: 10 }, { path: 'st', operator: 'equals', value: 'ok' }]), true)
+  assert.equal(engine.passaNosFiltros({ qty: 50, st: 'ok' }, [{ path: 'qty', operator: 'lt', value: 10 }, { path: 'st', operator: 'equals', value: 'ok' }]), false)
+})
+
+test('“só quando a condição bater” sem nenhum filtro é recusado', async () => {
+  // Sem condição, ele gravaria tudo — e o nome do modo diria o contrário.
+  await assert.rejects(() => criar({ mode: 'condition', filters: [] }), /pelo menos um filtro/)
+  await assert.rejects(() => criar({ mode: 'condition' }), /pelo menos um filtro/)
+  // Com um filtro, passa.
+  const ok = await criar({ mode: 'condition', filters: [{ path: 'qty', operator: 'gt', value: 5 }] })
+  assert.equal(ok.filters.length, 1)
+})
+
+test('condition de ponta a ponta, num caso que não é de mercado', async () => {
+  // Estoque baixo: só o que estiver abaixo do mínimo vira histórico.
+  await criar({
+    mode: 'condition',
+    entityKeyPath: 'sku',
+    filters: [
+      { path: 'qty', operator: 'lt', value: 10 },
+      { path: 'ativo', operator: 'equals', value: 'true' },
+    ],
+  })
+  const t0 = Date.now()
+  await engine.ingestFact(fato({ sku: 'A', qty: 3, ativo: true }, t0))
+  await engine.ingestFact(fato({ sku: 'B', qty: 50, ativo: true }, t0 + 1))
+  await engine.ingestFact(fato({ sku: 'C', qty: 2, ativo: false }, t0 + 2))
+  const rs = await registros()
+  assert.deepEqual(rs.map((r) => r.entityKey), ['A'])
+})
+
+// --- campos escolhidos ------------------------------------------------------------------
+
+test('selectedFields aceita caminho aninhado e ignora o que não existe', async () => {
+  await criar({ selectedFields: ['symbol', 'data.total'] })
+  await engine.ingestFact(fato({ symbol: 'X', data: { total: 42, interno: 'nao' }, ruido: true }, Date.now()))
+  const [r] = await registros()
+  assert.deepEqual(r.value, { symbol: 'X', data_total: 42 })
+})
+
+// --- fonte owner-scoped -----------------------------------------------------------------
+
+test('a fonte é conferida: conexão de outro dono não serve', async () => {
+  const doVizinho = await instalarConexao('Conexão do vizinho', OUTRO)
+  await assert.rejects(() => criar({ source: { kind: 'live_data', ref: doVizinho } }), /não existe nesta conta/)
+  await assert.rejects(() => criar({ source: { kind: 'live_data', ref: 'nao-e-id' } }), /escolha uma conexão/)
+
+  // E a minha serve.
+  const minha = await instalarConexao()
+  const ok = await criar({ source: { kind: 'live_data', ref: minha } })
+  assert.equal(ok.source.ref, minha)
+})
+
+test('a fonte de evento precisa ser um tipo que existe', async () => {
+  await assert.rejects(() => criar({ source: { kind: 'event', ref: 'evento.que.nao.existe' } }), /não é um evento conhecido/)
+  const ok = await criar({ source: { kind: 'event', ref: 'market.candle.closed' } })
+  assert.equal(ok.source.ref, 'market.candle.closed')
+})
+
+test('o catálogo de fontes traz as conexões DESTA conta e os eventos do sistema', async () => {
+  const { catalogoDeFontes } = await import('../dist/dataHistory/sources.js')
+  const minha = await instalarConexao('Minha corretora')
+  await instalarConexao('Do vizinho', OUTRO)
+
+  const c = await catalogoDeFontes(DONO)
+  assert.equal(c.live_data.length, 1)
+  assert.equal(c.live_data[0].ref, minha)
+  assert.equal(c.live_data[0].label, 'Minha corretora')
+  assert.ok(c.event.some((e) => e.ref === 'market.candle.closed'))
+  assert.ok(c.event.length > 5, 'os tipos do barramento estão lá')
+})
+
+// --- agenda, fuso e recorrência ----------------------------------------------------------
+
+test('a agenda usa cron e fuso do dono, e recusa o que o relógio não entende', async () => {
+  const { normalizarAgenda, agendaDoRecorder } = await import('../dist/dataHistory/schedule.js')
+  const a = normalizarAgenda({ cron: '0 8 * * 1-5', timezone: 'America/Sao_Paulo' })
+  assert.deepEqual(a, { cron: '0 8 * * 1-5', timezone: 'America/Sao_Paulo' })
+
+  assert.throws(() => normalizarAgenda({ cron: 'todo dia às 8', timezone: 'UTC' }), /recorrência/)
+  assert.throws(() => normalizarAgenda({ cron: '0 8 * * *', timezone: 'Marte/Olympus' }), /fuso/)
+  // Um retrato por minuto é quase sempre engano — e vira meio milhão de linhas por ano.
+  assert.throws(() => normalizarAgenda({ cron: '* * * * *', timezone: 'UTC' }), /5 minutos/)
+
+  // O formato ANTIGO continua valendo, na leitura e na escrita.
+  assert.deepEqual(normalizarAgenda({ hour: 3, minute: 30 }), { cron: '30 3 * * *', timezone: 'UTC' })
+  assert.deepEqual(agendaDoRecorder({ schedule: { hour: 7, minute: 0 } }), { cron: '0 7 * * *', timezone: 'UTC' })
+  assert.deepEqual(agendaDoRecorder({ schedule: { cron: '0 9 * * *', timezone: 'Europe/Lisbon' } }), { cron: '0 9 * * *', timezone: 'Europe/Lisbon' })
+  assert.equal(agendaDoRecorder({ schedule: null }), null)
+})
+
+test('o fuso do dono é respeitado: 8h em São Paulo não é 8h em UTC', async () => {
+  await criar({ mode: 'schedule_snapshot', schedule: { cron: '0 8 * * *', timezone: 'America/Sao_Paulo' }, entityKeyPath: 'sku' })
+  const dia = Date.parse('2026-03-10T00:00:00.000Z')
+  await engine.ingestFact(fato({ sku: 'A', estoque: 5 }, dia))
+
+  // 8h em São Paulo é 11h UTC (UTC-3). Às 9h UTC ainda não disparou.
+  assert.equal((await engine.runDueSnapshots(new Date(Date.parse('2026-03-10T09:00:00.000Z')))).gravados, 0)
+  assert.equal((await engine.runDueSnapshots(new Date(Date.parse('2026-03-10T11:30:00.000Z')))).gravados, 1)
+  const [r] = await registros()
+  assert.equal(r.occurredAt.toISOString(), '2026-03-10T11:00:00.000Z')
+  assert.equal(r.recordKind, 'snapshot')
+})
+
+test('um retrato PERDIDO não é tirado depois — a mesma regra das rotinas', async () => {
+  await criar({ mode: 'schedule_snapshot', schedule: { cron: '0 8 * * *', timezone: 'UTC' }, entityKeyPath: 'sku' })
+  const dia = Date.parse('2026-03-10T00:00:00.000Z')
+  await engine.ingestFact(fato({ sku: 'A', estoque: 5 }, dia))
+  // Dez horas depois do disparo: aquele retrato foi perdido, e não se recupera —
+  // gravá-lo agora criaria um ponto dizendo que aquele era o valor às 8h.
+  assert.equal((await engine.runDueSnapshots(new Date(Date.parse('2026-03-10T18:00:00.000Z')))).gravados, 0)
+})
+
+test('a agenda legada no banco continua disparando sem ser reescrita', async () => {
+  const rec = await criar({ mode: 'schedule_snapshot', schedule: { cron: '0 8 * * *', timezone: 'UTC' }, entityKeyPath: 'sku' })
+  // Volta o documento ao formato ANTIGO, como está no banco de quem já configurou.
+  await db.collection('data_recorders').updateOne({ _id: rec._id }, { $set: { schedule: { hour: 8, minute: 0 } } })
+  const dia = Date.parse('2026-03-11T00:00:00.000Z')
+  await engine.ingestFact(fato({ sku: 'A', estoque: 9 }, dia))
+  assert.equal((await engine.runDueSnapshots(new Date(Date.parse('2026-03-11T08:30:00.000Z')))).gravados, 1)
+})
+
+// --- bruto, agregado ou ambos -------------------------------------------------------------
+
+const comPolitica = (politica) =>
+  criar({
+    mode: 'window_aggregate',
+    intervalMs: 60_000,
+    entityKeyPath: 'symbol',
+    occurredAtPath: 'at',
+    persistPolicy: politica,
+    aggregations: [
+      { from: 'price', op: 'first', to: 'open' },
+      { from: 'price', op: 'last', to: 'close' },
+    ],
+  })
+
+const tresTiques = async (t0) => {
+  for (const [i, p] of [100, 110, 105].entries()) {
+    const at = t0 + i * 10_000
+    await engine.ingestFact(fato({ symbol: 'X', price: p, at: new Date(at).toISOString() }, at))
+  }
+}
+
+test('aggregate_only é o padrão: uma linha por período, e nenhum tique guardado', async () => {
+  const rec = await criar({
+    mode: 'window_aggregate',
+    intervalMs: 60_000,
+    entityKeyPath: 'symbol',
+    occurredAtPath: 'at',
+    aggregations: [{ from: 'price', op: 'last', to: 'close' }],
+  })
+  assert.equal(rec.persistPolicy, 'aggregate_only', 'o padrão não guarda cada tique')
+  const t0 = Date.parse('2026-09-01T10:00:00.000Z')
+  await tresTiques(t0)
+  await engine.closeDueWindows(new Date(t0 + 120_000))
+  const rs = await registros()
+  assert.equal(rs.length, 1)
+  assert.equal(rs[0].recordKind, 'aggregate')
+})
+
+test('raw_only guarda cada dado e não produz resumo', async () => {
+  await comPolitica('raw_only')
+  const t0 = Date.parse('2026-09-01T10:00:00.000Z')
+  await tresTiques(t0)
+  await engine.closeDueWindows(new Date(t0 + 120_000))
+  const rs = await registros()
+  assert.equal(rs.length, 3)
+  assert.ok(rs.every((r) => r.recordKind === 'raw'))
+  assert.equal(await db.collection('data_history_windows').countDocuments({}), 0, 'nem abre janela')
+})
+
+test('raw_and_aggregate guarda os dois, com dedupe independente', async () => {
+  await comPolitica('raw_and_aggregate')
+  const t0 = Date.parse('2026-09-01T10:00:00.000Z')
+  await tresTiques(t0)
+  await engine.closeDueWindows(new Date(t0 + 120_000))
+
+  const rs = await registros()
+  const brutos = rs.filter((r) => r.recordKind === 'raw')
+  const resumos = rs.filter((r) => r.recordKind === 'aggregate')
+  assert.equal(brutos.length, 3)
+  assert.equal(resumos.length, 1)
+  assert.equal(resumos[0].value.open, 100)
+  assert.equal(resumos[0].value.close, 105)
+
+  // As identidades são diferentes: o bruto e o resumo da mesma entidade no mesmo
+  // instante não podem ser lidos como repetição um do outro.
+  assert.equal(new Set(rs.map((r) => r.dedupeKey)).size, 4)
+})
+
+test('a consulta separa bruto de resumo', async () => {
+  const rec = await comPolitica('raw_and_aggregate')
+  const t0 = Date.parse('2026-09-01T10:00:00.000Z')
+  await tresTiques(t0)
+  await engine.closeDueWindows(new Date(t0 + 120_000))
+
+  const so = async (kind) => (await store.listarRegistros(DONO, { recorderId: rec._id, recordKind: kind })).length
+  assert.equal(await so('raw'), 3)
+  assert.equal(await so('aggregate'), 1)
+  assert.equal(await so('snapshot'), 0)
+  assert.equal((await store.listarRegistros(DONO, { recorderId: rec._id })).length, 4, 'sem filtro, todos')
+})
+
+test('um registro antigo, sem tipo, é lido como bruto', async () => {
+  const rec = await criar()
+  await engine.ingestFact(fato({ a: 1 }, Date.now()))
+  // Como estava no banco antes de o campo existir.
+  await db.collection('data_history_records').updateMany({}, { $unset: { recordKind: '' } })
+  assert.equal((await store.listarRegistros(DONO, { recorderId: rec._id, recordKind: 'raw' })).length, 1)
+  assert.equal((await store.listarRegistros(DONO, { recorderId: rec._id, recordKind: 'aggregate' })).length, 0)
+})
+
+// --- cota atômica ---------------------------------------------------------------------------
+
+test('a cota é imposta no banco: dois workers concorrentes não passam do teto', async () => {
+  const rec = await criar()
+  const teto = 500_000
+  // Uma vaga só sobrando.
+  await db.collection('data_recorders').updateOne({ _id: rec._id }, { $set: { recordCount: teto - 1 } })
+  engine.limparCacheDeRecorders()
+
+  // Dez fatos DIFERENTES ao mesmo tempo: só um cabe.
+  const agora = Date.now()
+  await Promise.all(Array.from({ length: 10 }, (_, i) => engine.ingestFact(fato({ n: i }, agora + i))))
+
+  const gravados = await registros()
+  assert.equal(gravados.length, 1, `gravou ${gravados.length}`)
+  const depois = await db.collection('data_recorders').findOne({ _id: rec._id })
+  assert.equal(depois.recordCount, teto, `contador ficou em ${depois.recordCount}`)
+})
+
+test('dedupe não consome cota duas vezes', async () => {
+  const rec = await criar()
+  const f = fato({ a: 1 }, Date.now(), { factId: 'mesmo-evento' })
+  await engine.ingestFact(f)
+  const primeiro = await db.collection('data_recorders').findOne({ _id: rec._id })
+  assert.equal(primeiro.recordCount, 1)
+
+  // A mesma entrega de novo: nada gravado, e a cota não anda.
+  await engine.ingestFact(f)
+  await engine.ingestFact(f)
+  const depois = await db.collection('data_recorders').findOne({ _id: rec._id })
+  assert.equal(depois.recordCount, 1, `a repetição consumiu cota: ${depois.recordCount}`)
+  assert.equal((await registros()).length, 1)
+})
+
+test('insert que falha devolve a vaga', async () => {
+  const rec = await criar()
+  const { inserirRegistro } = await import('../dist/dataHistory/store.js')
+  const doc = {
+    ownerId: DONO,
+    recorderId: rec._id,
+    sourceKey: 'manual:teste',
+    entityKey: null,
+    occurredAt: new Date(),
+    recordedAt: new Date(),
+    windowStart: null,
+    windowEnd: null,
+    recordKind: 'raw',
+    value: { a: 1 },
+    schemaVersion: 1,
+    dedupeKey: 'chave-repetida',
+    expiresAt: null,
+  }
+  assert.equal(await inserirRegistro(doc, 10), 'gravado')
+  assert.equal(await inserirRegistro(doc, 10), 'repetido')
+  const r = await db.collection('data_recorders').findOne({ _id: rec._id })
+  assert.equal(r.recordCount, 1, 'a segunda tentativa devolveu a vaga')
+})
+
+test('recordCount é o total JÁ GRAVADO — não o que está guardado agora', async () => {
+  const rec = await criar()
+  for (const i of [1, 2, 3]) await engine.ingestFact(fato({ n: i }, Date.now() + i))
+  assert.equal((await db.collection('data_recorders').findOne({ _id: rec._id })).recordCount, 3)
+
+  // A retenção apagou tudo — o contador NÃO desce, e é de propósito: a cota existe
+  // para impedir que uma configuração errada produza milhões de linhas.
+  await db.collection('data_history_records').deleteMany({})
+  assert.equal((await db.collection('data_recorders').findOne({ _id: rec._id })).recordCount, 3)
+  assert.equal(await store.contarRegistros(DONO, rec._id), 0, 'e o que está guardado é outra pergunta')
+})
+
+// --- paginação e tools ------------------------------------------------------------------------
+
+test('a paginação é estável mesmo com registros no mesmo instante', async () => {
+  const rec = await criar()
+  const mesmo = Date.now()
+  // Cinco registros no MESMO milissegundo: uma ordenação só por tempo repetiria ou
+  // pularia linhas entre uma página e outra.
+  for (let i = 0; i < 5; i += 1) await engine.ingestFact(fato({ n: i }, mesmo, { factId: `f${i}` }))
+
+  const p1 = await store.listarRegistros(DONO, { recorderId: rec._id, limit: 2, skip: 0, order: 'asc' })
+  const p2 = await store.listarRegistros(DONO, { recorderId: rec._id, limit: 2, skip: 2, order: 'asc' })
+  const p3 = await store.listarRegistros(DONO, { recorderId: rec._id, limit: 2, skip: 4, order: 'asc' })
+  const ids = [...p1, ...p2, ...p3].map((r) => r._id.toString())
+  assert.equal(new Set(ids).size, 5, 'nenhuma linha repetida entre páginas')
+  assert.equal(await store.contarDaConsulta(DONO, { recorderId: rec._id }), 5)
+})
+
+test('as tools filtram por tipo de registro', async () => {
+  const { executeRegisteredFunction } = await import('../dist/executors/functionExecutor.js')
+  const rec = await comPolitica('raw_and_aggregate')
+  const t0 = Date.parse('2026-09-01T10:00:00.000Z')
+  await tresTiques(t0)
+  await engine.closeDueWindows(new Date(t0 + 120_000))
+  const ctx = { ownerId: DONO }
+
+  const chamar = async (nome, input) => {
+    const r = await executeRegisteredFunction({ kind: 'function', functionName: nome }, input, ctx)
+    assert.equal(r.ok, true, JSON.stringify(r.error))
+    return r.structured.data
+  }
+
+  assert.equal((await chamar('data_history.range', { recorderId: rec._id.toString(), recordKind: 'raw' })).count, 3)
+  assert.equal((await chamar('data_history.range', { recorderId: rec._id.toString(), recordKind: 'aggregate' })).count, 1)
+  assert.equal((await chamar('data_history.range', { recorderId: rec._id.toString() })).count, 4)
+
+  const ultimo = await chamar('data_history.latest', { recorderId: rec._id.toString(), recordKind: 'aggregate' })
+  assert.equal(ultimo.record.recordKind, 'aggregate')
+  assert.equal(ultimo.record.value.close, 105)
+
+  // Somar o bruto e o resumo juntos contaria o mesmo dado duas vezes — por isso o
+  // filtro existe também na agregação.
+  const soBruto = await chamar('data_history.aggregate', {
+    recorderId: rec._id.toString(),
+    recordKind: 'raw',
+    aggregations: [{ from: 'price', op: 'count', to: 'quantos' }],
+  })
+  assert.equal(soBruto.result.quantos, 3)
+
+  const serie = await chamar('data_history.series', { recorderId: rec._id.toString(), recordKind: 'raw', field: 'price' })
+  assert.deepEqual(serie.points.map((p) => p.value), [100, 110, 105])
+
+  // E a paginação da tool.
+  const pagina = await chamar('data_history.range', { recorderId: rec._id.toString(), recordKind: 'raw', limit: 2, skip: 2, order: 'asc' })
+  assert.equal(pagina.count, 1)
 })
