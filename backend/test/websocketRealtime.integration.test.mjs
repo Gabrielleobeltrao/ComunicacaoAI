@@ -478,3 +478,39 @@ test('duas conexões do mesmo dono vivem ao mesmo tempo, cada uma com o seu dado
     await segundoServidor.close()
   }
 })
+
+
+test('com endereço fixado, a conexão REAL abre — é o caminho que dava "Invalid IP address: undefined"', async () => {
+  /**
+   * Aqui não há socket falso: é o `ws` de verdade em cima do `net.connect` de verdade,
+   * com o `lookup` que devolve o endereço já conferido. Era exatamente esta combinação
+   * que morria antes — o Node pede `all: true` e a nossa função respondia no formato
+   * antigo, então NENHUMA conexão do App chegava a abrir.
+   */
+  const { createRealSocket } = await import('../dist/streams/socket.js')
+  const servidor = await startFakeWs()
+  try {
+    /**
+     * A URL precisa ter um NOME, e não um IP.
+     *
+     * Com IP literal o Node nem chama o `lookup` — a primeira versão deste teste
+     * passava com o formato errado e não provava nada. É com nome que o caminho do
+     * endereço fixado é exercitado, que é como toda conexão do App funciona.
+     */
+    const porta = new URL(servidor.url).port
+    const socket = createRealSocket(`ws://localhost:${porta}/stream`, {
+      pinnedAddress: { address: '127.0.0.1', family: 4 },
+      handshakeTimeoutMs: 5_000,
+    })
+    const resultado = await new Promise((resolve) => {
+      socket.onopen = () => resolve('abriu')
+      socket.onerror = (ev) => resolve(`erro: ${ev?.message ?? ev?.error?.message ?? 'sem mensagem'}`)
+      setTimeout(() => resolve('tempo esgotado'), 8_000)
+    })
+    assert.equal(resultado, 'abriu', `a conexão com endereço fixado não abriu — ${resultado}`)
+    assert.equal(servidor.estado.conexoes, 1, 'o servidor viu a conexão')
+    socket.close()
+  } finally {
+    await servidor.close()
+  }
+})

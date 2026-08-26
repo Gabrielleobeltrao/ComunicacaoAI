@@ -18,6 +18,23 @@ import { isPrivateIp } from './safeHttp.js'
 export class WebSocketTargetError extends Error {}
 
 /**
+ * Como um nome vira endereços.
+ *
+ * Injetável pela mesma razão que o socket e a posse: sem isto, provar "nome público
+ * resolve para IP público e é aceito" ou "o DNS devolveu lixo" exigiria rede de
+ * verdade — e um teste que depende de rede não é um teste, é um palpite.
+ */
+export type ResolvedAddress = { address: string; family: number }
+export type WebSocketResolver = (hostname: string) => Promise<ResolvedAddress[]>
+
+const resolverPadrao: WebSocketResolver = (hostname) => lookup(hostname, { all: true })
+let resolverAtual: WebSocketResolver = resolverPadrao
+
+export const setWebSocketResolver = (r: WebSocketResolver | null): void => {
+  resolverAtual = r ?? resolverPadrao
+}
+
+/**
  * `ws://` só fora de produção.
  *
  * Em produção o tráfego sai da nossa rede com a credencial do dono dentro: texto claro
@@ -32,6 +49,9 @@ const emProducao = (): boolean => process.env.NODE_ENV === 'production'
  */
 const loopbackLiberado = (): boolean => process.env.ALLOW_LOOPBACK_HTTP_TARGETS === '1'
 const ehLoopback = (ip: string): boolean => ip === '127.0.0.1' || ip.startsWith('127.') || ip === '::1'
+
+/** Uma frase só para "o nome não resolveu", venha a falha de onde vier. */
+const ERRO_DNS = 'Não foi possível resolver o hostname do serviço.'
 
 /** Nomes que nunca saem da máquina ou da rede de dentro, por convenção. */
 const HOSTS_PROIBIDOS = [/^localhost$/i, /\.local$/i, /\.internal$/i, /^metadata(\.google)?\.internal$/i]
@@ -72,11 +92,20 @@ export async function assertPublicWebSocketUrl(bruto: string): Promise<CheckedTa
   if (!host) throw new WebSocketTargetError('O endereço precisa de um domínio.')
   if (HOSTS_PROIBIDOS.some((r) => r.test(host))) throw new WebSocketTargetError('Este host não é permitido.')
 
-  if (net.isIP(host)) {
+  /**
+   * Um IPv6 literal chega COM colchetes — `[::1]` —, e `net.isIP` não os reconhece.
+   *
+   * Sem tirá-los, `wss://[::1]/x` não caía no ramo de IP: ia para o DNS, que falhava, e
+   * a recusa acontecia pelo motivo errado. Bastaria um resolvedor devolver algo para
+   * um endereço interno literal atravessar a conferência de IP inteira.
+   */
+  const literal = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+
+  if (net.isIP(literal)) {
     // Um IP escrito à mão pula o DNS — e é justamente por isso que ele precisa da
     // mesma conferência.
-    if (bloqueado(host)) throw new WebSocketTargetError('Endereço de rede interna não é permitido.')
-    return { url, address: host, hostname: host, family: net.isIPv6(host) ? 6 : 4, addresses: [host] }
+    if (bloqueado(literal)) throw new WebSocketTargetError('Endereço de rede interna não é permitido.')
+    return { url, address: literal, hostname: literal, family: net.isIPv6(literal) ? 6 : 4, addresses: [literal] }
   }
 
   /**
@@ -86,15 +115,27 @@ export async function assertPublicWebSocketUrl(bruto: string): Promise<CheckedTa
    * interno, passava pelo público e conectava no que o sistema operacional escolhesse
    * na hora. Conferir um e conectar em outro é não conferir nada.
    */
-  let enderecos: { address: string; family: number }[]
+  let enderecos: ResolvedAddress[]
   try {
-    enderecos = await lookup(host, { all: true })
+    enderecos = (await resolverAtual(host)) ?? []
   } catch {
-    throw new WebSocketTargetError('Não foi possível resolver o domínio.')
+    throw new WebSocketTargetError(ERRO_DNS)
   }
-  if (enderecos.length === 0) throw new WebSocketTargetError('O domínio não resolveu para endereço nenhum.')
+  if (!Array.isArray(enderecos) || enderecos.length === 0) throw new WebSocketTargetError(ERRO_DNS)
 
-  const proibido = enderecos.find((e) => bloqueado(e.address))
+  /**
+   * Só o que é IP DE VERDADE segue adiante.
+   *
+   * O validador de rede interna recebe uma string e confia nela. Uma entrada sem
+   * `address` — resolvedor de terceiro, resposta truncada, formato inesperado — chegava
+   * nele como `undefined` e explodia com um erro que não dizia nada a ninguém. Aqui a
+   * regra é a segura: o que não dá para conferir não passa.
+   */
+  const validos = enderecos.filter((e) => typeof e?.address === 'string' && net.isIP(e.address) !== 0)
+  if (validos.length === 0) throw new WebSocketTargetError(ERRO_DNS)
+  if (validos.length !== enderecos.length) throw new WebSocketTargetError('A resolução do domínio devolveu um endereço que não dá para conferir.')
+
+  const proibido = validos.find((e) => bloqueado(e.address))
   if (proibido) throw new WebSocketTargetError('O domínio aponta para uma rede interna.')
 
   /**
@@ -105,13 +146,15 @@ export async function assertPublicWebSocketUrl(bruto: string): Promise<CheckedTa
    * que a resposta do DNS possa mudar o destino. O nome continua viajando à parte, para
    * o SNI e o `Host` continuarem certos.
    */
-  const escolhido = enderecos[0]
+  const escolhido = validos[0]
   return {
     url,
     address: escolhido.address,
     hostname: host,
-    family: escolhido.family === 6 ? 6 : 4,
-    addresses: enderecos.map((e) => e.address),
+    // A família vem do que o endereço É, e não do que o resolvedor disse que ele era:
+    // um `family: 4` acompanhando um IPv6 abriria o socket na pilha errada.
+    family: net.isIPv6(escolhido.address) ? 6 : 4,
+    addresses: validos.map((e) => e.address),
   }
 }
 
