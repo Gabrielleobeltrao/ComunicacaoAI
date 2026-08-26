@@ -802,3 +802,82 @@ test('uma conexão sem tempo real não recebe nem o convite', async ({ page }) =
   await expect(page.getByTestId('stream-cta')).toHaveCount(0)
   await expect(page.getByTestId('stream-panel')).toHaveCount(0)
 })
+
+test('a barra lateral cheia rola só no miolo — marca e conta não saem da tela', async ({ page }) => {
+  // Dois Apps fixados COM páginas: é o que enche a barra de verdade, e foi assim que a
+  // marca saiu pela cima e o cartão da conta pela baixo, os dois cortados.
+  await stub(page, { navigation: [{ ...SLACK, surfaces: [] }], installations: [INSTALLATION] })
+  await page.route('**/api/apps/navigation', (r) =>
+    r.fulfill({
+      json: {
+        apps: [
+          {
+            appKey: 'websocket',
+            name: 'WebSocket Genérico',
+            icon: 'radio',
+            pinned: true,
+            order: 0,
+            status: 'ready',
+            defaultSurfaceKey: 'overview',
+            surfaces: [
+              { key: 'overview', label: 'Visão geral', description: '', icon: null, path: '/apps/websocket/overview' },
+              { key: 'messages', label: 'Mensagens', description: '', icon: null, path: '/apps/websocket/messages' },
+              { key: 'subscriptions', label: 'Assinaturas', description: '', icon: null, path: '/apps/websocket/subscriptions' },
+              { key: 'live', label: 'Dado ao vivo', description: '', icon: null, path: '/apps/websocket/live' },
+              { key: 'logs', label: 'Logs', description: '', icon: null, path: '/apps/websocket/logs' },
+            ],
+          },
+          {
+            appKey: 'web_chat',
+            name: 'Chat Web',
+            icon: 'message-circle',
+            pinned: true,
+            order: 1,
+            status: 'ready',
+            defaultSurfaceKey: 'overview',
+            surfaces: [
+              { key: 'overview', label: 'Visão geral', description: '', icon: null, path: '/apps/web-chat/overview' },
+              { key: 'widgets', label: 'Widgets', description: '', icon: null, path: '/apps/web-chat/widgets' },
+              { key: 'conversations', label: 'Conversas', description: '', icon: null, path: '/apps/web-chat/conversations' },
+            ],
+          },
+        ],
+      },
+    }),
+  )
+
+  // Tela BAIXA: é onde a conta não fecha. Numa tela alta sobra espaço e nada prova nada.
+  await page.setViewportSize({ width: 1440, height: 560 })
+  await page.goto('/apps')
+
+  const rail = page.locator('[data-rail]')
+  await rail.hover()
+  const aside = rail.locator('aside')
+  await expect(aside).toBeVisible()
+
+  // Abrir as páginas de um App fixado é o que estoura a altura.
+  const abrir = page.getByTestId('toggle-websocket')
+  if (await abrir.count()) await abrir.first().click()
+
+  const medida = await page.evaluate(() => {
+    const aside = document.querySelector('[data-rail] aside') as HTMLElement
+    const marca = aside.firstElementChild as HTMLElement
+    const conta = aside.querySelector('a[href="/settings"]') as HTMLElement
+    const miolo = aside.querySelector('nav') as HTMLElement
+    const a = aside.getBoundingClientRect()
+    return {
+      marcaDentro: marca.getBoundingClientRect().top >= a.top - 1,
+      contaDentro: conta.getBoundingClientRect().bottom <= a.bottom + 1,
+      // "A conta não fecha" — medido de um jeito que vale nos dois layouts: com o
+      // miolo rolável é ele que estoura; sem ele, quem estoura é a barra inteira.
+      apertado: miolo.scrollHeight > miolo.clientHeight || aside.scrollHeight > aside.clientHeight + 1,
+      asideRola: aside.scrollHeight > aside.clientHeight + 1,
+    }
+  })
+
+  // Sem isto o teste não prova nada: numa tela onde tudo cabe, qualquer layout passa.
+  expect(medida.apertado, 'a lista não chegou a estourar a altura — o teste não provaria nada').toBe(true)
+  expect(medida.marcaDentro, 'a marca saiu pela parte de cima da barra').toBe(true)
+  expect(medida.contaDentro, 'o cartão da conta saiu pela parte de baixo da barra').toBe(true)
+  expect(medida.asideRola, 'a barra inteira rola em vez de rolar só o miolo').toBe(false)
+})
