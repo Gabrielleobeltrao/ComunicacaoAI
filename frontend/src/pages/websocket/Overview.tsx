@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { listConnections, pauseWsStream, resumeWsStream, startConnection, stopWsStream, testConnection } from '../../lib/websocketApp'
 import type { WsConnection } from '../../lib/websocketApp'
 import { Button, Card } from '../../ui'
-import { SemConexao, WsPage, duracao, quando } from './shared'
+import {SemConexao, duracao, quando} from './shared'
 import { ConnectionForm } from './ConnectionForm'
 
 /**
@@ -123,7 +123,7 @@ export function WebSocketOverview() {
   }
 
   return (
-    <WsPage current="/apps/websocket/overview" title="WebSocket · Visão geral" subtitle="Conexões, estado e o que chegou.">
+    <>
       {erro ? <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--coral-600, #d92d20)' }}>{erro}</p> : null}
       {carregando ? (
         <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>Carregando…</p>
@@ -229,6 +229,6 @@ export function WebSocketOverview() {
           ))}
         </div>
       )}
-    </WsPage>
+    </>
   )
 }

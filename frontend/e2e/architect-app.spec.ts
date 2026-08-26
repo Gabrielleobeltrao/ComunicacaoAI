@@ -652,19 +652,31 @@ test('reconferir apura de novo contra o estado real', async ({ page }) => {
 
 // --- navegação -------------------------------------------------------------------------------------------------------
 
-test('“Montar operação” está no menu do desktop', async ({ page }) => {
+/**
+ * Onde fica a porta de entrada — e ela depende do modo de navegação.
+ *
+ * Com o prédio ligado, "Montar operação" mora no menu de ANDARES, logo abaixo de criar
+ * um à mão: é lá que ela pertence, porque é isso que ela faz. Sem o prédio não existe
+ * menu de andares, e ela continua sendo uma linha da barra lateral — tirá-la ali
+ * deixaria a tela sem caminho nenhum.
+ *
+ * O teste confere o modo do build em que está rodando em vez de presumir um: o `dist`
+ * do CI não tem `.env` e sobe em V1, e o de quem desenvolve sobe em V2.
+ */
+test('“Montar operação” tem entrada no menu, no modo que o build usa', async ({ page }) => {
   await stub(page)
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/architect')
-  await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toBeVisible()
-})
 
-test('“Montar operação” está no menu do celular', async ({ page }) => {
-  await stub(page)
-  await page.setViewportSize({ width: 390, height: 780 })
-  await page.goto('/architect')
-  await page.getByRole('button', { name: /menu/i }).click()
-  await expect(page.getByRole('link', { name: 'Montar operação' })).toBeVisible()
+  const menuDeAndares = page.getByTestId('building-switcher')
+  if (await menuDeAndares.count()) {
+    await menuDeAndares.first().click()
+    await expect(page.getByTestId('open-architect')).toBeVisible()
+    // E não está mais duplicada na barra lateral.
+    await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toHaveCount(0)
+  } else {
+    await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toBeVisible()
+  }
 })
 
 // --- celular -----------------------------------------------------------------------------------------------------------

@@ -128,6 +128,12 @@ export function BuildingSwitcher({ expanded = false }: { expanded?: boolean }) {
               Criar andar
             </Button>
           </div>
+          {/* "Montar operação" mora AQUI, e não na barra lateral: ela cria ou reutiliza
+              andares, então pertence ao menu onde os andares são escolhidos — ao lado
+              de criar um à mão, que é a outra forma de fazer a mesma coisa. */}
+          <button role="menuitem" style={menuItem} onClick={go(() => navigate('/architect'))} data-testid="open-architect">
+            <Icon name="sparkles" size={15} color="var(--text-muted)" /> Montar operação
+          </button>
           <button role="menuitem" style={menuItem} onClick={go(() => setSettingsOpen(true))} data-testid="open-building-settings">
             Configurações do prédio
           </button>

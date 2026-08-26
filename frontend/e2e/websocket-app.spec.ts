@@ -370,6 +370,47 @@ test('no celular as quatro páginas continuam alcançáveis', async ({ page }) =
   await expect(page).toHaveURL(/\/apps\/websocket\/subscriptions/)
 })
 
+test('trocar de aba não recarrega o site nem remonta a casca', async ({ page }) => {
+  // Cada painel com conteúdo: um painel vazio mostra o estado vazio, e a marca dele
+  // não apareceria — o teste falharia sem ter nada a ver com piscar.
+  await stub(page, {
+    navigation: [NAV_WEBSOCKET],
+    subscriptions: [ASSINATURA],
+    messages: MENSAGENS,
+    logs: [{ id: 'l1', installationId: INSTALLATION_ID, kind: 'connected', message: 'conexão aberta', subscriptionId: null, createdAt: NOW }],
+    live: [{ key: 'PETR4', value: { symbol: 'PETR4', price: 38.42 }, updates: 7, receivedAt: NOW, ageMs: 500 }],
+  })
+  await page.goto('/apps/websocket/overview')
+  await expect(page.getByTestId('ws-tabs')).toBeVisible()
+
+  // Duas marcas. A do `window` some se o navegador recarregar a página; a do NÓ das
+  // abas some se o React remontar a casca — que era o que fazia a tela piscar, uma vez
+  // pelo `<a href>` e outra pelo "Carregando…" do guarda entre um painel e o próximo.
+  await page.evaluate(() => {
+    ;(window as unknown as Record<string, unknown>).__marca = 'vivo'
+    ;(window as unknown as Record<string, unknown>).__abas = document.querySelector('[data-testid="ws-tabs"]')
+  })
+
+  for (const [aba, marca] of [
+    ['messages', 'ws-messages'],
+    ['subscriptions', 'ws-subscriptions'],
+    ['live', 'ws-live'],
+    ['logs', 'ws-logs'],
+    ['overview', 'ws-connections'],
+  ] as const) {
+    await page.getByTestId(`ws-tab-${aba}`).click()
+    await expect(page).toHaveURL(new RegExp(`/apps/websocket/${aba}$`))
+    await expect(page.getByTestId(marca), `o painel de ${aba} não apareceu`).toBeVisible()
+
+    const estado = await page.evaluate(() => ({
+      marca: (window as unknown as Record<string, unknown>).__marca,
+      mesmoNo: (window as unknown as Record<string, unknown>).__abas === document.querySelector('[data-testid="ws-tabs"]'),
+    }))
+    expect(estado.marca, `o site recarregou ao abrir ${aba}`).toBe('vivo')
+    expect(estado.mesmoNo, `a casca foi remontada ao abrir ${aba}`).toBe(true)
+  }
+})
+
 test('em 320px nenhuma das cinco páginas estoura a largura', async ({ page }) => {
   // As cinco, e com conteúdo dentro: uma página vazia cabe em qualquer largura, e
   // medir só as mensagens deixava visão geral, assinaturas, ao vivo e registros sem

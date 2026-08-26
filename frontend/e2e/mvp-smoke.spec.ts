@@ -542,3 +542,44 @@ test('no celular, o menu abre, navega e fecha', async ({ browser }) => {
 
   await ctx.close()
 })
+
+test('“Montar operação” mora no menu de andares, não na barra lateral', async ({ page }) => {
+  test.setTimeout(120_000)
+  await irPara(page, '/login')
+  await page.locator('input[type="email"]').fill(CONTA.email)
+  await page.locator('input[type="password"]').fill(CONTA.senha)
+  await page.getByRole('button', { name: /Entrar/i }).click()
+  await page.waitForURL(/\/(building|dashboard|floors)/, { timeout: 30_000 })
+
+  // Ela cria e reutiliza ANDARES: o lugar dela é o menu onde se escolhe andar, logo
+  // abaixo de criar um à mão — e não mais uma linha na barra lateral.
+  await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toHaveCount(0)
+
+  await page.getByTestId('building-switcher').first().click()
+  const criar = page.getByTestId('create-floor')
+  const montar = page.getByTestId('open-architect')
+  await expect(criar).toBeVisible()
+  await expect(montar).toBeVisible()
+
+  // Abaixo de "Criar andar", que é o que foi pedido — e a ordem no DOM é a ordem na tela.
+  const posicao = await page.evaluate(() => {
+    const a = document.querySelector('[data-testid="create-floor"]')!
+    const b = document.querySelector('[data-testid="open-architect"]')!
+    return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 'depois' : 'antes'
+  })
+  expect(posicao, '“Montar operação” tem que vir depois de “Criar andar”').toBe('depois')
+
+  await montar.click()
+  await page.waitForURL(/\/architect/, { timeout: 20_000 })
+
+  // E no celular, onde não há barra lateral, a mesma saída está na folha de andares —
+  // senão tirar o item da barra deixaria o telefone sem caminho para a tela.
+  const andares = await (await page.request.get('/api/floors')).json()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await irPara(page, `/floors/${andares[0].id}`)
+  await page.getByRole('button', { name: /Trocar andar\. Andar atual:/ }).click()
+  const noCelular = page.getByTestId('floor-picker-architect')
+  await expect(noCelular).toBeVisible({ timeout: 20_000 })
+  await noCelular.click()
+  await page.waitForURL(/\/architect/, { timeout: 20_000 })
+})
