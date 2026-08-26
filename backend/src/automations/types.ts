@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { ArchitectStamp } from '../architectStamp.js'
 import type { StepCondition } from './conditions.js'
 
 // Automation domain types (AI-building pivot, Phase 3). A definition is
@@ -199,6 +200,8 @@ export interface AutomationDefinition {
 
 export interface Automation {
   _id: ObjectId
+  /** A marca do Arquiteto, quando foi ele que criou. Ausente em tudo o mais. */
+  architect?: ArchitectStamp
   ownerId: string
   buildingId: ObjectId
   floorId: ObjectId

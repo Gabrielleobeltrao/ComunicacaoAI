@@ -184,9 +184,39 @@ const RULES: Rule[] = [
   R('POST', 'api/websocket/subscriptions', { entityType: 'connection', action: 'create' }),
   R('PATCH', 'api/websocket/subscriptions/:', { entityType: 'connection', action: 'update' }, { idAt: 3 }),
   R('DELETE', 'api/websocket/subscriptions/:', { entityType: 'connection', action: 'delete' }, { idAt: 3 }),
+  // Mandar um quadro pela conexão é ação de quem administra: fica registrado que
+  // aconteceu, e nunca o que foi mandado.
+  R('POST', 'api/websocket/connections/:/send', { entityType: 'connection', action: 'test' }, { idAt: 3 }),
+  R('POST', 'api/websocket/connections/:/test', { entityType: 'connection', action: 'test' }, { idAt: 3 }),
   // Conferir um endereço e testar uma assinatura não mudam nada.
   R('POST', 'api/websocket/check-url', null),
   R('POST', 'api/websocket/subscriptions/:/test', null),
+  // --- Arquiteto do Escritório -------------------------------------------------------
+  // O que fica registrado é o que MUDA a conta: criar o projeto, editá-lo, aplicá-lo,
+  // retomar e arquivar. A conversa não: ela é a fala da pessoa, e o log de auditoria
+  // não é lugar de guardar conteúdo.
+  R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
+  R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/architect/projects/:/archive', { entityType: 'architect_project', action: 'archive' }, { idAt: 3 }),
+  // Conversar não é auditado: é a fala da pessoa, e o log não guarda conteúdo. Gerar e
+  // revisar, sim — os dois mudam a PROPOSTA, que é o que vai ser aplicado, e sem eles
+  // no log não dá para contar a história de como o projeto chegou onde chegou. O que
+  // fica registrado é a ação e o projeto; nunca o prompt, a conversa ou o blueprint.
+  R('POST', 'api/architect/projects/:/messages', null, { why: 'conversation traffic' }),
+  R('POST', 'api/architect/projects/:/turn', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/architect/projects/:/generate', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/architect/projects/:/validate', { entityType: 'architect_project', action: 'test' }, { idAt: 3 }),
+  // Marcar um item da checklist é anotação do dono sobre o próprio projeto.
+  R('PATCH', 'api/architect/projects/:/checklist/:', null, { why: 'owner note on the project' }),
+  // Aplicar é a mudança real: é aqui que andares, agentes e setores passam a existir.
+  // Cada um deles também é auditado como ele mesmo, pelo caminho de sempre.
+  R('POST', 'api/architect/projects/:/apply', { entityType: 'architect_project', action: 'publish' }, { idAt: 3 }),
+  R('POST', 'api/architect/projects/:/resume', { entityType: 'architect_project', action: 'publish' }, { idAt: 3 }),
+  R('POST', 'api/architect/projects/:/rollback', { entityType: 'architect_project', action: 'delete' }, { idAt: 3 }),
+  // Reconferir a checklist é leitura do estado real.
+  R('POST', 'api/architect/projects/:/recheck', null, { why: 'read-only check' }),
+
   // Granting or revoking an App on an agent changes what that agent may do.
   R('PATCH', 'api/agents/:/app-grants', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/connections', { entityType: 'connection', action: 'create' }),

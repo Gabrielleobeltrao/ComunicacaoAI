@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
+import type { ArchitectStamp } from './architectStamp.js'
 import { ensureDefaultBuilding, isValidTimezone, LANGUAGES, ValidationError, DEFAULT_TIMEZONE } from './building.js'
 import type { BuildingLanguage } from './building.js'
 
@@ -48,6 +49,8 @@ interface FloorDoc {
   ownerId: string
   name: string
   createdAt: Date
+  /** A marca do Arquiteto, quando foi ele que criou. Ausente em tudo o mais. */
+  architect?: ArchitectStamp
   buildingId?: ObjectId
   mission?: string
   description?: string
@@ -109,6 +112,8 @@ export async function getFloor(ownerId: string, floorId: ObjectId): Promise<Floo
 }
 
 export interface FloorInput {
+  /** A marca do Arquiteto, quando foi ele que criou. Ver `architectStamp.ts`. */
+  architect?: ArchitectStamp
   name: string
   mission?: string
   description?: string
@@ -149,6 +154,7 @@ export async function createFloor(ownerId: string, input: FloorInput): Promise<F
     workMode: 'organization',
     coordinatorAgentId: null,
     instruction: '',
+    ...(input.architect ? { architect: input.architect } : {}),
     createdAt: now,
     updatedAt: now,
   }

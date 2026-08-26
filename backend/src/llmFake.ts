@@ -63,6 +63,120 @@ export async function askAux(): Promise<string> {
   return ''
 }
 
+/**
+ * O dublê da chamada estruturada.
+ *
+ * Devolve uma resposta DETERMINÍSTICA e válida para o Arquiteto quando o prompt é
+ * dele, e vazio para o resto — o mesmo contrato de `askAux`. É isto que permite a
+ * jornada inteira (perguntar, propor, aplicar) rodar no teste sem chave, sem rede e
+ * sem depender do que um modelo resolveu responder naquele dia.
+ *
+ * O portão que impede este arquivo de existir em produção está no `llm.ts`.
+ */
+export async function askAuxWithUsage(prompt: string): Promise<{ text: string; usage: { inputTokens: number; outputTokens: number } }> {
+  const text = respostaDoDuble(prompt)
+  return { text, usage: { inputTokens: countTokens(prompt), outputTokens: countTokens(text) } }
+}
+
+function respostaDoDuble(prompt: string): string {
+  // O REPARO é conferido antes da rodada: os dois prompts carregam a mesma marca, e
+  // tratar um pedido de reparo como rodada nova faria o dublê "consertar" respondendo
+  // outra coisa — e o caminho da resposta ilegível deixaria de existir.
+  const reparo = /<resposta-anterior>([\s\S]*)<\/resposta-anterior>/.exec(prompt)
+  if (reparo) {
+    // Um modelo de verdade consegue reemitir o que já era objeto; do que veio vazio ou
+    // truncado ele não tira JSON nenhum — e é assim aqui também.
+    const inicio = reparo[1].indexOf('{')
+    const fim = reparo[1].lastIndexOf('}')
+    if (inicio < 0 || fim <= inicio) return ''
+    try {
+      return JSON.stringify(JSON.parse(reparo[1].slice(inicio, fim + 1)))
+    } catch {
+      return ''
+    }
+  }
+  return prompt.includes(ARCHITECT_MARKER) ? architectTurn(prompt) : ''
+}
+
+/** A marca que o prompt do Arquiteto carrega. Ver `architect/prompt.ts`. */
+export const ARCHITECT_MARKER = '[[ARQUITETO_V1]]'
+
+/**
+ * Duas rodadas, e nada mais: a primeira pergunta, a segunda propõe.
+ *
+ * A escolha é feita pelo que já está na conversa — se a pergunta dos canais já foi
+ * feita, é hora de propor. Nada de contador escondido: o teste consegue reproduzir a
+ * jornada mandando as mensagens na ordem.
+ */
+function architectTurn(prompt: string): string {
+  const jaPerguntou = prompt.includes('canais-de-atendimento')
+  if (!jaPerguntou) {
+    return JSON.stringify({
+      assistantText: 'Para montar o atendimento, primeiro: por onde as pessoas falam com você hoje?',
+      phase: 'discovery',
+      question: {
+        key: 'canais-de-atendimento',
+        text: 'Por onde as pessoas falam com você hoje?',
+        why: 'O canal decide quem recebe a conversa.',
+        choices: [
+          { value: 'web', label: 'Site' },
+          { value: 'whatsapp', label: 'WhatsApp' },
+        ],
+        allowUnknown: true,
+      },
+      answerPatch: {},
+      blueprintPatch: null,
+      assumptions: [],
+      warnings: [],
+    })
+  }
+  return JSON.stringify({
+    assistantText: 'Montei uma primeira proposta. Confira antes de aplicar.',
+    phase: 'proposal',
+    question: null,
+    answerPatch: {},
+    blueprintPatch: {
+      title: 'Atendimento do Restaurante',
+      objective: 'atender dúvidas e registrar pedidos',
+      floors: [{ key: 'atendimento', action: 'create', name: 'Atendimento do Restaurante', workMode: 'organization', rationale: 'Onde a operação de atendimento mora.' }],
+      agents: [
+        { key: 'gerente', action: 'create', floorKey: 'atendimento', name: 'Gerente de atendimento', preset: 'manager', objective: 'Distribuir a conversa para quem sabe responder.', rationale: 'Recebe a conversa e decide quem responde.' },
+        { key: 'duvidas', action: 'create', floorKey: 'atendimento', name: 'Atendente de dúvidas', preset: 'communicator', objective: 'Responder horários, endereço e cardápio.', rationale: 'Responde o que mais perguntam.' },
+      ],
+      sectors: [
+        {
+          key: 'setor-atendimento',
+          action: 'create',
+          floorKey: 'atendimento',
+          name: 'Atendimento',
+          mode: 'orchestrated',
+          memberAgentKeys: ['gerente', 'duvidas'],
+          coordinatorAgentKey: 'gerente',
+          rationale: 'Uma porta de entrada só, com o gerente distribuindo.',
+        },
+      ],
+      knowledgeRequirements: [
+        {
+          key: 'cardapio',
+          scope: 'agent',
+          targetKey: 'duvidas',
+          title: 'Enviar o cardápio com preços',
+          description: 'Sem ele, o agente não responde preço nenhum.',
+          required: true,
+          expectedSource: 'upload',
+          state: 'missing',
+        },
+      ],
+      appRequirements: [{ key: 'canal-web', appKey: 'web_chat', reason: 'Receber as conversas do site.', required: true, actionKeys: [], agentKeys: ['gerente'] }],
+      assumptions: [{ key: 'horario', text: 'Assumi atendimento em horário comercial.', questionKey: 'horarios' }],
+      warnings: [],
+      checklist: [],
+    },
+    assumptions: [{ key: 'horario', text: 'Assumi atendimento em horário comercial.', questionKey: 'horarios' }],
+    warnings: [],
+  })
+}
+
 export async function planSectorResponse(
   options: RouterOption[],
   _currentIndices: number[],

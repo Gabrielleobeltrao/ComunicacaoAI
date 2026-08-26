@@ -14,15 +14,22 @@ const CONFIG = {
   endpoint: 'wss://exemplo.com/stream',
   format: 'json',
   auth: { kind: 'none', name: '', prefix: '', messageTemplate: '' },
+  headers: [],
+  initialMessages: [],
   protocols: [],
-  heartbeat: { enabled: false, message: '', intervalMs: 30000 },
+  heartbeat: { enabled: false, native: true, message: '', intervalMs: 30000, timeoutMs: 10000 },
   idleTimeoutMs: 90000,
+  connectTimeoutMs: 15000,
   paths: { payload: '', messageId: '', channel: '', occurredAt: '' },
   schema: null,
   filters: [],
   dedupe: 'none',
   maxMessagesPerMinute: 120,
   maxMessageBytes: 16000,
+  mapping: [],
+  liveKeyPath: '',
+  liveTtlSeconds: 300,
+  publishThrottleMs: 0,
 }
 
 const CONNECTION = {
@@ -46,11 +53,13 @@ const NAV_WEBSOCKET = {
     { key: 'overview', label: 'Visão geral', description: 'Conexões e estado.', icon: null, path: '/apps/websocket/overview' },
     { key: 'messages', label: 'Mensagens', description: 'O que chegou.', icon: null, path: '/apps/websocket/messages' },
     { key: 'subscriptions', label: 'Assinaturas', description: 'O que ouvir.', icon: null, path: '/apps/websocket/subscriptions' },
+    { key: 'live', label: 'Dado ao vivo', description: 'O último valor de cada chave.', icon: null, path: '/apps/websocket/live' },
     { key: 'logs', label: 'Logs', description: 'Conexão e descarte.', icon: null, path: '/apps/websocket/logs' },
   ],
 }
 
 let salvo: Record<string, unknown> | null = null
+let quadroEnviado: string | null = null
 let assinaturaCriada: Record<string, unknown> | null = null
 let assinaturaEditada: Record<string, unknown> | null = null
 
@@ -79,9 +88,11 @@ async function stub(
     teste?: { ok: boolean; message: string }
     navigation?: unknown[]
     access?: { ok: boolean; reason?: string }
+    live?: unknown[]
   } = {},
 ) {
   salvo = null
+  quadroEnviado = null
   assinaturaCriada = null
   assinaturaEditada = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
@@ -126,6 +137,15 @@ async function stub(
     }),
   )
   await page.route('**/api/websocket/logs**', (r) => r.fulfill({ json: opts.logs ?? [] }))
+  await page.route('**/api/websocket/live**', (r) => r.fulfill({ json: { count: (opts.live ?? []).length, items: opts.live ?? [] } }))
+  await page.route('**/api/websocket/connections/*/test', (r) => {
+    const t = opts.teste ?? { ok: true, message: 'Conexão de tempo real aberta; este provedor não confirma a credencial.' }
+    return r.fulfill({ status: t.ok ? 200 : 400, json: t })
+  })
+  await page.route('**/api/websocket/connections/*/send', (r) => {
+    quadroEnviado = (r.request().postDataJSON() as { frame: string }).frame
+    return r.fulfill({ json: { sent: true, message: 'Mensagem enviada.' } })
+  })
 
   // O guarda da página: um App inativo nunca renderiza a tela operacional dele.
   await page.route('**/api/apps/*/surfaces/*/access', (r) => {
@@ -553,4 +573,232 @@ test('o App fixado aparece no menu TAMBÉM com a navegação antiga', async ({ p
   await page.goto('/apps/websocket/overview')
   await expect(page.getByTestId('pinned-apps')).toBeVisible()
   await expect(page.getByTestId('pinned-app-websocket')).toBeVisible()
+})
+
+
+// --- tempo real: o que o App ganhou -----------------------------------------------------
+
+test('a configuração aceita cabeçalho extra e mensagens ao conectar', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-configure').click()
+  await page.getByTestId('ws-advanced-toggle').click()
+
+  await page.getByTestId('ws-header-add').click()
+  await page.getByTestId('ws-header-name-0').fill('Origin')
+  await page.getByTestId('ws-header-value-0').fill('https://meu-site.com')
+
+  await page.getByTestId('ws-initial-add').click()
+  await page.getByTestId('ws-initial-message-0').fill('{"action":"subscribe","params":{"symbols":"AAPL"}}')
+
+  await page.getByTestId('ws-save-connection').click()
+  await expect.poll(() => (salvo?.config as Record<string, unknown>)?.headers).toEqual([{ name: 'Origin', value: 'https://meu-site.com' }])
+  expect((salvo?.config as Record<string, unknown>)?.initialMessages).toEqual(['{"action":"subscribe","params":{"symbols":"AAPL"}}'])
+})
+
+test('o mapeamento aparece, e com ele a chave do dado ao vivo', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-configure').click()
+  await page.getByTestId('ws-advanced-toggle').click()
+
+  // Sem mapeamento, os campos do dado ao vivo não fazem sentido e não aparecem.
+  await expect(page.getByTestId('ws-live-key')).toHaveCount(0)
+
+  await page.getByTestId('ws-mapping-add').click()
+  await page.getByTestId('ws-mapping-from-0').fill('$.data.ticker')
+  await page.getByTestId('ws-mapping-to-0').fill('symbol')
+  await expect(page.getByTestId('ws-live-key')).toBeVisible()
+
+  await page.getByTestId('ws-live-key').fill('symbol')
+  await page.getByTestId('ws-throttle').fill('1000')
+  await page.getByTestId('ws-save-connection').click()
+
+  await expect.poll(() => (salvo?.config as Record<string, unknown>)?.mapping).toEqual([{ from: '$.data.ticker', to: 'symbol' }])
+  expect((salvo?.config as Record<string, unknown>)?.liveKeyPath).toBe('symbol')
+  expect((salvo?.config as Record<string, unknown>)?.publishThrottleMs).toBe(1000)
+})
+
+test('o ping do protocolo é o padrão, e a mensagem só aparece quando ele é desligado', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-configure').click()
+  await page.getByTestId('ws-advanced-toggle').click()
+  await page.getByTestId('ws-heartbeat-enabled').check()
+
+  await expect(page.getByTestId('ws-heartbeat-native')).toBeChecked()
+  await expect(page.getByTestId('ws-heartbeat-message')).toHaveCount(0)
+  await expect(page.getByTestId('ws-heartbeat-timeout')).toBeVisible()
+
+  await page.getByTestId('ws-heartbeat-native').uncheck()
+  await expect(page.getByTestId('ws-heartbeat-message')).toBeVisible()
+})
+
+test('o dado ao vivo mostra o último valor de cada chave', async ({ page }) => {
+  await stub(page, {
+    live: [
+      { key: 'AAPL', value: { symbol: 'AAPL', price: 227.11 }, updates: 42, receivedAt: NOW, ageMs: 1200 },
+      { key: 'TSLA', value: { symbol: 'TSLA', price: 410.5 }, updates: 7, receivedAt: NOW, ageMs: 3000 },
+    ],
+  })
+  await page.goto('/apps/websocket/live')
+  await expect(page.getByTestId('ws-live-row-AAPL')).toContainText('227.11')
+  await expect(page.getByTestId('ws-live-row-AAPL')).toContainText('42')
+  await expect(page.getByTestId('ws-live-row-TSLA')).toContainText('410.5')
+})
+
+test('sem dado ao vivo, a tela explica o que falta configurar', async ({ page }) => {
+  await stub(page, { live: [] })
+  await page.goto('/apps/websocket/live')
+  await expect(page.getByText(/mapeamento com a chave/i)).toBeVisible()
+})
+
+test('dá para mandar um quadro avulso pela conexão aberta', async ({ page }) => {
+  await stub(page, { live: [] })
+  await page.goto('/apps/websocket/live')
+  await page.getByTestId('ws-send-frame').fill('{"action":"subscribe","params":{"symbols":"AAPL"}}')
+  await page.getByTestId('ws-send').click()
+  await expect.poll(() => quadroEnviado).toBe('{"action":"subscribe","params":{"symbols":"AAPL"}}')
+  await expect(page.getByTestId('ws-send-result')).toContainText('Mensagem enviada')
+})
+
+test('o Dado ao vivo é mais uma página do App, e o menu leva a ela', async ({ page }) => {
+  await stub(page, { navigation: [NAV_WEBSOCKET], live: [] })
+  await page.goto('/apps/websocket/overview')
+  await expect(page.getByTestId('ws-tab-live')).toBeVisible()
+  await page.getByTestId('ws-tab-live').click()
+  await expect(page.getByTestId('ws-live')).toBeVisible()
+})
+
+test('em 320 px o dado ao vivo não estoura para os lados', async ({ page }) => {
+  await stub(page, {
+    live: [{ key: 'AAPL', value: { symbol: 'AAPL', price: 227.11, extra: 'um texto razoavelmente longo para forçar a largura' }, updates: 3, receivedAt: NOW, ageMs: 900 }],
+  })
+  await page.setViewportSize({ width: 320, height: 720 })
+  await page.goto('/apps/websocket/live')
+  await expect(page.getByTestId('ws-live')).toBeVisible()
+  const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(folga, `estourou ${folga}px`).toBeLessThanOrEqual(0)
+})
+
+
+// --- a rodada corretiva -----------------------------------------------------------------
+
+test('“Testar conexão” fica ao lado de Ligar, e mostra o resultado de verdade', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+  const botao = page.getByTestId('ws-test-connection')
+  await expect(botao).toBeVisible()
+  await botao.click()
+  await expect(page.getByTestId('ws-test-result')).toContainText('Conexão de tempo real aberta')
+})
+
+test('uma recusa aparece como recusa, e sem detalhe sensível', async ({ page }) => {
+  await stub(page, { teste: { ok: false, message: 'O provedor recusou a credencial.' } })
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-test-connection').click()
+  const r = page.getByTestId('ws-test-result')
+  await expect(r).toContainText('O provedor recusou a credencial')
+  // O resultado é anunciado para leitor de tela: ele chega depois de segundos de espera.
+  await expect(r).toHaveAttribute('role', 'status')
+  await expect(r).not.toContainText(/authorization|apikey|token=/i)
+})
+
+test('sem configuração, não dá para testar', async ({ page }) => {
+  await stub(page, { connections: [{ ...CONNECTION, config: null }] })
+  await page.goto('/apps/websocket/overview')
+  await expect(page.getByTestId('ws-test-connection')).toBeDisabled()
+})
+
+test('em 320 px o formulário inteiro cabe, sem estourar para os lados', async ({ page }) => {
+  await stub(page)
+  await page.setViewportSize({ width: 320, height: 900 })
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-configure').click()
+  await page.getByTestId('ws-advanced-toggle').click()
+
+  // As listas que mais apertam: filtro, cabeçalho, mensagem inicial e mapeamento.
+  await page.getByTestId('ws-header-add').click()
+  await page.getByTestId('ws-initial-add').click()
+  await page.getByTestId('ws-mapping-add').click()
+  await page.getByTestId('ws-add-filter').click()
+
+  const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(folga, `o formulário estourou ${folga}px`).toBeLessThanOrEqual(0)
+
+  // E os campos de DIGITAR continuam utilizáveis. Caixa de marcar fica de fora: ela tem
+  // 13 px por natureza, e medir a largura dela não diz nada sobre caber ou não caber.
+  const estreito = await page.evaluate(() => {
+    const campos = [...document.querySelectorAll('input:not([type="checkbox"]), select, textarea')] as HTMLElement[]
+    return campos
+      .map((c) => ({ id: c.dataset.testid ?? c.tagName, w: Math.round(c.getBoundingClientRect().width) }))
+      .filter((c) => c.w > 0 && c.w < 120)
+  })
+  expect(estreito, `campos espremidos demais para digitar: ${JSON.stringify(estreito)}`).toEqual([])
+})
+
+test('em 320 px o dado ao vivo não corta a tabela', async ({ page }) => {
+  await stub(page, {
+    live: [{ key: 'AAPL', value: { symbol: 'AAPL', price: 227.11, origem: 'um valor bem longo para forçar a largura da coluna' }, updates: 12, receivedAt: NOW, ageMs: 800 }],
+  })
+  await page.setViewportSize({ width: 320, height: 720 })
+  await page.goto('/apps/websocket/live')
+  await expect(page.getByTestId('ws-live-table')).toBeVisible()
+  const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(folga, `estourou ${folga}px`).toBeLessThanOrEqual(0)
+})
+
+
+// --- a rodada final -----------------------------------------------------------------------
+
+test('a Visão geral se atualiza sozinha: o estado muda sem ninguém recarregar', async ({ page }) => {
+  await stub(page)
+  let chamadas = 0
+  const comecou = Date.now()
+  // Registrada DEPOIS do stub: a rota mais recente ganha, e é esta que responde.
+  //
+  // A virada é por TEMPO, e não por contagem de chamadas: em desenvolvimento o efeito
+  // monta duas vezes, e um stub que conta chamadas já responderia "reconectando" na
+  // primeira pintura — o teste passaria sem provar que a tela se atualiza sozinha.
+  await page.route('**/api/websocket/connections', (r) => {
+    chamadas += 1
+    const caiu = Date.now() - comecou > 2_000
+    const stream = {
+      id: 'stream-1',
+      state: caiu ? 'reconnecting' : 'connected',
+      lastConnectedAt: NOW,
+      lastEventAt: NOW,
+      lastError: caiu ? { message: 'conexão encerrada pelo outro lado', at: NOW } : null,
+      eventCount: chamadas,
+    }
+    return r.fulfill({ json: [{ ...CONNECTION, stream, messages: { total: chamadas * 3, accepted: chamadas * 2, lastAt: NOW } }] })
+  })
+
+  await page.goto('/apps/websocket/overview')
+  await expect(page.getByTestId('ws-state')).toContainText('Recebendo')
+  // Sem recarregar nada: a tela busca de novo sozinha.
+  await expect(page.getByTestId('ws-state')).toContainText('Reconectando', { timeout: 15_000 })
+  await expect(page.getByTestId('ws-error')).toContainText('encerrada pelo outro lado')
+})
+
+test('a atualização não fecha o formulário nem apaga o resultado do teste', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+
+  await page.getByTestId('ws-test-connection').click()
+  await expect(page.getByTestId('ws-test-result')).toBeVisible()
+  await page.getByTestId('ws-configure').click()
+  await expect(page.getByTestId('ws-advanced-toggle')).toBeVisible()
+
+  // Passa uma volta do polling.
+  await page.waitForTimeout(6_000)
+  await expect(page.getByTestId('ws-test-result')).toBeVisible()
+  await expect(page.getByTestId('ws-advanced-toggle')).toBeVisible()
+})
+
+test('uma conexão com a credencial no endereço não mostra o endereço, e diz o que fazer', async ({ page }) => {
+  await stub(page, { connections: [{ ...CONNECTION, config: null, needsFix: true }] })
+  await page.goto('/apps/websocket/overview')
+  await expect(page.getByTestId('ws-needs-fix')).toContainText('tire o parâmetro do endereço')
+  await expect(page.getByTestId('ws-endpoint')).toContainText('endereço não exibido')
 })

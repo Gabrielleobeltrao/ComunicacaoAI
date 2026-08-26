@@ -23,6 +23,8 @@ export async function startFakeWs(opts = {}) {
     urls: [],
     protocolos: [],
     sockets: [],
+    /** Quantos pings de protocolo chegaram. */
+    pings: 0,
   }
 
   wss.on('connection', (socket, req) => {
@@ -32,6 +34,12 @@ export async function startFakeWs(opts = {}) {
     estado.protocolos.push(socket.protocol)
     estado.sockets.push(socket)
     socket.on('message', (data) => estado.recebidas.push(String(data)))
+    // O ping do protocolo: o `ws` responde o pong sozinho, e o que o teste precisa
+    // saber é que ele CHEGOU — é a única prova de que o batimento nativo saiu.
+    socket.on('ping', () => {
+      estado.pings += 1
+      if (opts.mudoNoPing) return // não responde: é assim que se prova o prazo do batimento
+    })
     if (opts.onConnection) opts.onConnection(socket, req)
   })
 
@@ -42,6 +50,11 @@ export async function startFakeWs(opts = {}) {
     enviar(payload) {
       const texto = typeof payload === 'string' ? payload : JSON.stringify(payload)
       for (const s of estado.sockets) if (s.readyState === 1) s.send(texto)
+    },
+    /** Fecha o socket sem avisar — é a queda inesperada que deve reconectar. */
+    derrubarComForca() {
+      for (const s of estado.sockets) s.terminate()
+      estado.sockets = []
     },
     derrubar() {
       for (const s of estado.sockets) s.close()

@@ -16,7 +16,7 @@ import {
   revokeInstallation,
 } from '../apps/installations.js'
 import { dropPinsForApp } from '../apps/navigation.js'
-import { connectionProbeFor, runProbe } from '../apps/connectionTests.js'
+import { connectionProbeFor, installationProbeFor, runProbe } from '../apps/connectionTests.js'
 import { environmentOf } from '../apps/connectionProfile.js'
 import { deleteStreamsForInstallation, disableStreamsForInstallation, reconnectStreamsForInstallation } from '../streams/service.js'
 import { deactivateForInstallation, deleteForInstallation } from '../integrations/websocket/repository.js'
@@ -150,6 +150,20 @@ appInstallationRouter.post('/:id/test', async (req, res) => {
     // Keep the installation's status honest about what the test just found.
     await syncManagedChannelInstallations(res.locals.userId, app.key)
     return res.status(result.ok ? 200 : 400).json(result)
+  }
+
+  /**
+   * A sonda que abre a conexão de verdade, quando o App tem uma.
+   *
+   * Vem ANTES da conferência de campos: um App cujo teste é abrir o socket não deveria
+   * ser reprovado por não ter credencial — serviço público não tem — nem aprovado por
+   * ter os campos preenchidos.
+   */
+  const daInstalacao = installationProbeFor(app.key)
+  if (daInstalacao) {
+    const resultado = await daInstalacao(res.locals.userId, id.toString())
+    await markInstallationTested(res.locals.userId, id, resultado.ok)
+    return res.status(resultado.ok ? 200 : 400).json(resultado)
   }
 
   const config = decryptInstallationConfig(installation)

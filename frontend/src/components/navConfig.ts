@@ -43,6 +43,9 @@ export const NAV_V2: NavItemDef[] = [
   // Building-wide observability over the agents' automatic work. It is a control
   // surface, not an editor: every row links back to the agent that owns the work.
   // What the account can reach: connected once here, granted per agent.
+  // Montar operação: global, e a porta de entrada de quem ainda não tem nada montado.
+  // Fica no grupo de operação porque é ali que se constrói, e não onde se observa.
+  { key: 'architect', label: 'Montar operação', shortLabel: 'Montar', icon: 'sparkles', scope: 'general', group: 'operation', path: () => '/architect', activePrefixes: () => ['/architect'] },
   { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'control', path: () => '/apps', activePrefixes: () => ['/apps'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
 ]

@@ -8,6 +8,8 @@ import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
 import { DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
 import { Building } from './pages/Building'
+import { ArchitectProjects } from './pages/architect/Projects'
+import { ArchitectProject } from './pages/architect/Project'
 import { FloorView } from './pages/FloorView'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
@@ -118,6 +120,13 @@ function App() {
           <Route path="/setores/:sectorId/:section" element={<P><SectorDetail /></P>} />
         </>
       )}
+
+      {/* Montar operação é do PRÉDIO, não de um andar: ela pode criar ou reutilizar
+          vários. Por isso mora aqui, ao lado das outras áreas globais, e existe nos
+          dois modos de navegação. */}
+      <Route path="/architect" element={<P><ArchitectProjects /></P>} />
+      <Route path="/architect/new" element={<Navigate to="/architect" replace />} />
+      <Route path="/architect/:projectId" element={<P><ArchitectProject /></P>} />
 
       {/* Global areas (both modes). /widgets and /chats predate the App pages and
           keep working: they land on the canonical App route with the query intact. */}

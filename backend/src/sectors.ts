@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
+import type { ArchitectStamp } from './architectStamp.js'
 
 // A sector is a TEAM (never a schedule). Its mode says how the team works:
 //   'organization' — only groups agents on the map; not executable as a unit.
@@ -66,6 +67,8 @@ export interface SectorMember {
 
 export interface Sector {
   _id: ObjectId
+  /** A marca do Arquiteto, quando foi ele que criou. Ausente em tudo o mais. */
+  architect?: ArchitectStamp
   ownerId: string
   // The Escritório this sector belongs to. Required — a sector is never an
   // orphan (unlike agents, which may have no sector).
@@ -233,6 +236,8 @@ export interface SectorTeamFields {
   stages?: SectorStage[]
   entryPolicy?: string
   exposedAgentIds?: ObjectId[]
+  /** A marca do Arquiteto, quando foi ele que criou. Ver `architectStamp.ts`. */
+  architect?: ArchitectStamp
 }
 
 export async function createSector(
@@ -266,6 +271,7 @@ export async function createSector(
     // instead of imported from sectorAccess.ts, which imports this module.)
     entryPolicy: extra.entryPolicy ?? (normalizeSectorMode(mode) === 'organization' ? 'open_members' : 'sector_only'),
     exposedAgentIds: extra.exposedAgentIds ?? [],
+    ...(extra.architect ? { architect: extra.architect } : {}),
     createdAt: now,
     updatedAt: now,
   }

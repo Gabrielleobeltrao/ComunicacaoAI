@@ -178,7 +178,11 @@ barramento durável de eventos e os mesmos gatilhos internos.
    endereço ou primeira mensagem). Em *Avançado* ficam os caminhos de onde tirar
    conteúdo, identificador, canal e data, além de schema, filtros, deduplicação e
    limites. *Conferir endereço* valida antes de salvar.
-3. **Ligar** — o botão **Ligar** abre a conexão; dá para pausar, retomar e desligar.
+3. **Testar e ligar** — **Testar conexão** abre o socket de verdade, com a configuração
+   de verdade (cabeçalhos, subprotocolo, autenticação, endereço já conferido) e fecha em
+   seguida; o que ele responde é o que aconteceu — abriu, o serviço recusou, o prazo
+   estourou ou a configuração está incompleta. **Ligar** deixa a conexão de pé; dá para
+   pausar, retomar e desligar.
 4. **Assinar** — *Assinaturas*: o que ouvir (canal, filtros e a mensagem de inscrição)
    e **o que fazer com o que chegar**: só guardar, memória (do agente, setor, andar ou
    prédio), rotina, agente ou setor. *Só guardar* é o padrão e não gasta token nenhum;
@@ -205,6 +209,38 @@ não repete a outra.
 Fixe no menu como o Chat Web: fixado, ele vira um grupo expansível com as quatro
 páginas. Desfixar tira só a navegação — conexão, assinaturas e histórico ficam.
 
+**Texto ou JSON.** Numa conexão `text`, autenticação por mensagem, mensagens iniciais,
+inscrição, batimento e envio manual saem como texto puro — há serviço que assina com
+`SUBSCRIBE canal` e recusa qualquer coisa entre chaves. Numa conexão `json`, todos eles
+são conferidos como JSON antes de salvar.
+
+**A credencial não entra em campo público.** Cabeçalho, mensagem inicial, mensagem de
+autenticação e batimento ficam no metadata público da instalação: colar a chave neles a
+tiraria de dentro do campo cifrado sem ninguém perceber, porque a conexão funcionaria
+igual. Escreva `{{token}}` — o segredo continua cifrado e entra só na hora de conectar.
+E se o serviço ecoar o token de volta numa mensagem, ele é riscado do histórico, do
+evento e do dado ao vivo.
+
+**Salvar reabre a conexão.** Qualquer mudança na configuração reconecta o stream ativo,
+uma vez — salvar sem mudar nada não faz nada. A regra é essa e não uma lista de campos:
+a conexão guarda uma cópia da configuração no momento em que sobe, então "mudar sem
+reconectar" seria não mudar. O que está na tela é o que está no ar.
+
+**Uma instância por stream.** Cada conexão viva é tomada por um processo, com posse
+gravada no banco: duas instâncias que subam juntas não abrem dois sockets no mesmo
+serviço. A posse é renovada enquanto o stream vive — reconectar não interrompe isso — e
+só o dono do momento pode gravar estado, erro ou contador, então uma instância que
+travou não escreve por cima de quem assumiu. Se a renovação não puder ser confirmada
+antes do vencimento, o processo fecha o próprio socket em vez de seguir sem prova de
+posse. Um encerramento limpo devolve a posse na hora; depois de uma queda, outra
+instância assume sozinha quando o prazo vence (`STREAM_LEASE_MS`), sem restart e sem
+ninguém chamar nada. Num deploy de uma instância só, nada muda.
+
+**A credencial não entra no endereço.** `?apikey=...` em texto claro é recusado, com o
+caminho certo na mensagem: autenticação **parâmetro no endereço** com o valor no campo
+de credencial produz exatamente a mesma URL na hora de conectar, e o segredo continua
+cifrado. Query comum (`?feed=iex`) passa normalmente.
+
 **O que ele não faz, de propósito:** não aceita expressão, JavaScript nem template
 executável. Endereço, caminho, filtro e limite são dados; o servidor lê caminho de
 objeto e compara texto, e nada além disso. Em produção só `wss://` é aceito, e
@@ -221,8 +257,130 @@ o `.env` fica como padrão e como teto. Mudar endereço, autenticação, subprot
 credencial ou intervalos reabre a conexão sozinho — filtro e caminho, que são lidos a
 cada mensagem, não derrubam nada.
 
+### Dado ao vivo, sem um modelo por mensagem
+
+Um WebSocket de mercado manda três cotações por segundo, e ninguém pode pagar um agente
+por cotação. Por isso o App tem duas saídas separadas:
+
+**Normalizar** — *Avançado → Normalizar campos*: `$.data.ticker → symbol`,
+`$.data.last → price`. Dois serviços com formatos diferentes viram o mesmo objeto aqui
+dentro, e o código de um agente escreve `preco.symbol` sem saber de onde o dado veio.
+Não é linguagem: cada regra é um par (de onde ler, como o campo passa a se chamar).
+
+**Guardar o último valor** — com a *chave do dado ao vivo* preenchida (normalmente
+`symbol`), cada mensagem atualiza o valor daquela chave em vez de virar mais uma linha
+de histórico. A página **Dado ao vivo** mostra o que está guardado, e é exatamente o que
+os agentes leem.
+
+Nos agentes de código e nas ferramentas: `liveData.get`, `liveData.latest`,
+`liveData.list` e `liveData.waitFor`. É com elas que RSI, EMA, MACD, ATR, OHLC e regras
+de risco são calculados — por código, sobre o valor de agora, sem um modelo no caminho.
+O modelo entra quando alguém quer uma frase.
+
+**Espaço entre eventos** controla o barramento à parte: guardar é barato e substitui o
+valor anterior; publicar é durável, é entregue e pode disparar trabalho. Com `0`, tudo
+vira evento como antes.
+
+### Conferindo na mão
+
+**Sem credencial:** *Apps → WebSocket Genérico → conectar*, endereço
+`wss://ws.postman-echo.com/raw`, autenticação **Nenhuma**. Clique em **Testar conexão**:
+ele abre de verdade e responde. Depois **Ligar**, e use *Dado ao vivo → Enviar uma
+mensagem* — o serviço devolve o que recebe, e a mensagem aparece em *Mensagens*.
+
+**Com autenticação:** no mesmo endereço, escolha *Cabeçalho* com nome `Authorization` e
+prefixo `Bearer `, e informe uma credencial qualquer no campo de credencial (ela vai
+cifrada). **Testar conexão** manda o cabeçalho no handshake. Para conferir que o segredo
+não vazou, procure por ele em *Logs*, *Mensagens* e *Dado ao vivo*: ele não está em
+nenhum. E tente escrever a mesma credencial num cabeçalho adicional — a tela recusa e
+pede `{{token}}`.
+
+### Exemplo sem credencial nenhuma
+
+Para experimentar o caminho inteiro sem conta em provedor:
+
+| Campo | Valor |
+|---|---|
+| WebSocket URL | `wss://ws.postman-echo.com/raw` |
+| Autenticação | Nenhuma |
+| Mensagens ao conectar | `{"data":{"ticker":"AAPL","last":227.12}}` |
+| Normalizar campos | `$.data.ticker → symbol` e `$.data.last → price` |
+| Chave do dado ao vivo | `symbol` |
+
+O serviço devolve o que recebe, então a mensagem inicial volta como mensagem recebida,
+passa pelo mapeamento e aparece em *Dado ao vivo* como `AAPL` valendo `227.12`. Um agente
+de código lê o mesmo valor com `liveData.get`. Nenhuma credencial envolvida.
+
 Os ajustes (`WS_*`, `STREAM_MAX_INTERVAL_MS`) estão em
 [`backend/.env.example`](backend/.env.example).
+
+## Montar operação (Arquiteto do Escritório)
+
+Uma conversa que monta uma operação inteira como **rascunho**: andar, agentes, setores,
+requisitos de App e de conhecimento, rotinas e uma checklist de implantação. Escreva o
+que você quer — *"Quero automatizar o atendimento do meu restaurante"* — e ele pergunta
+o resto.
+
+Ela não substitui o Planner. O Planner decide **como executar** uma tarefa com os
+agentes que existem; o Arquiteto decide **quais recursos precisam existir**.
+
+**Como funciona:**
+
+1. **Conversar** — *Montar operação → descreva o resultado*. Uma pergunta principal por
+   vez, em linguagem comum, com opções clicáveis e *"Não sei ainda"* sempre disponível.
+   Dá para pular direto para uma primeira proposta: o que faltou responder vira uma
+   **suposição visível**, não um palpite escondido.
+2. **Revisar** — a proposta separa o que será **criado** do que **depende de você**, com
+   o motivo de cada item e um aviso quando a etapa usa IA. Erro traz o que fazer e trava
+   a aplicação; aviso fica à vista sem travar.
+3. **Confirmar** — a confirmação carrega o **hash** da proposta revisada. Se ela mudou
+   desde então, a aplicação é recusada e você revisa de novo. Mudança em recurso que já
+   existe e acesso a App vêm **desmarcados** e exigem aprovação individual.
+4. **Implantar** — a checklist leva direto ao lugar de resolver cada pendência.
+   Obrigatório e opcional são contados separados, e *"100% pronto"* só aparece quando
+   todo obrigatório está resolvido.
+
+**A LLM só produz a proposta.** Validação e aplicação são código determinístico: o
+blueprint referencia tudo por `key` — nunca por id de banco —, a posse é lida do banco
+e conferida antes de qualquer escrita, e a mesma proposta sempre produz a mesma prévia
+e o mesmo hash. Quando um item vai **reaproveitar** algo que já existe, quem escolhe é
+você, de uma lista que só tem recurso da sua conta.
+
+**Cada conhecimento no lugar dele.** Agente e setor ganham base de conhecimento
+indexada; andar e prédio, memória. Sem conteúdo, nenhum dos dois grava nada — fica a
+pendência.
+
+**O que ele nunca faz:**
+
+- **Não inventa conhecimento.** Sem cardápio, o agente não recebe cardápio: fica a
+  pendência *"Enviar o cardápio"*, e quem depende dela não fica pronto.
+- **Não conecta App nem guarda credencial.** Credencial colada na conversa é mascarada
+  na entrada e nunca chega ao banco. Permissão só sai com instalação ativa **e**
+  aprovação explícita — sem as duas, vira item de checklist. E *conectado* não é
+  *concedido*: o App conectado é da conta, a permissão é de cada agente, e a pendência
+  só se resolve quando as duas existem.
+- **Não altera nada sem aprovação individual.** Mudança em recurso que já existe — e no
+  nome do prédio — vem desmarcada na confirmação, e o que não foi marcado não acontece.
+- **Não cria nada antes da confirmação**, não apaga nem altera recurso existente em
+  silêncio, e **não publica rotina**: ela nasce rascunho, e só manual ou agendada —
+  webhook e gatilho por evento armam um recebedor, e isso é decisão de outra tela.
+
+**Aplicação retomável.** Cada recurso criado leva uma marca de origem — projeto,
+aplicação e o item que o gerou — gravada junto com ele. Aplicar duas vezes não duplica;
+uma queda no meio deixa o que já foi feito de pé e *Retomar* continua de onde parou,
+encontrando pela marca até o que foi criado no instante anterior à queda. Duas retomadas
+simultâneas viram uma. O desfazer só remove o que aquela aplicação criou, que ainda
+existe e que ninguém editou depois, e sempre pelo caminho canônico — um documento sai
+levando seus trechos, uma rotina leva versões e execuções. O resto fica e vira aviso.
+
+**Tokens.** Cada rodada confere o limite mensal da conta **antes de cada chamada** —
+inclusive a tentativa de reparo — e
+registra o consumo exatamente uma vez, contra a mesma chave de cobrança — repetir a
+rodada depois de um erro de rede não cobra de novo. Uma resposta ilegível tem **uma**
+tentativa de reparo, e só uma.
+
+**Nenhuma variável de ambiente nova.** Ele usa a chave de provedor e o limite mensal
+que já existem em *Configurações*.
 
 ## Scripts
 

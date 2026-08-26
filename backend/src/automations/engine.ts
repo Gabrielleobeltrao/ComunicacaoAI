@@ -15,7 +15,7 @@ import { refreshScheduledWebSources } from '../webKnowledge.js'
 import { processRun } from './runProcessor.js'
 import { claimNextEvent, ensureEventIndexes, processEvent } from '../events/bus.js'
 import { ensureStreamIndexes } from '../streams/repository.js'
-import { createStreamManager, registerStreamAdapter, restoreStreams, shutdownStreams } from '../streams/service.js'
+import { createStreamManager, registerStreamAdapter, restoreStreams, shutdownStreams, startStreamReconciler } from '../streams/service.js'
 import { alpacaStreamAdapter } from '../apps/official/alpaca/index.js'
 import { closeDueCandles, registerMarketDataHandlers } from '../marketData/engine.js'
 import { ensureCandleIndexes } from '../marketData/candleStore.js'
@@ -181,9 +181,12 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   // O adapter do App genérico é MONTADO a partir da conexão — endereço, assinatura e
   // formato são configuração de cada uma, e não do App.
   createStreamManager(onError, websocketAdapterFor)
-  await restoreStreams(onError)
+  restoreStreams(onError)
     .then((quantos) => quantos && console.log(`Streams: ${quantos} restaurado(s)`))
     .catch((error) => onError('streams', error))
+  // E daqui em diante ele mesmo assume o que ficar órfão: sem isto, um stream cuja
+  // instância dona caiu ficaria parado até o próximo deploy.
+  startStreamReconciler(onError)
 
   console.log(`Automation engine up (${id}, concurrency ${concurrency}) — runs a cada ${RUN_POLL_MS}ms, agendador a cada ${SCHEDULER_POLL_MS}ms`)
 

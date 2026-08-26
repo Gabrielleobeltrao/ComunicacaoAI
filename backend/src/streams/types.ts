@@ -60,6 +60,22 @@ export interface StreamAdapter {
    * O teto continua sendo do ambiente: a configuração escolhe abaixo dele.
    */
   heartbeatIntervalMs?(): number
+  /**
+   * Usar o ping/pong do PROTOCOLO em vez de uma mensagem.
+   *
+   * É o certo quando o serviço o suporta: o quadro é do transporte, não vira mensagem
+   * para a aplicação do outro lado e não polui o histórico de ninguém.
+   */
+  heartbeatNative?(): boolean
+  /**
+   * Quanto esperar pela resposta ao batimento antes de dar o socket por morto.
+   *
+   * Sem isto, um serviço que aceita o ping e nunca responde mantinha a conexão marcada
+   * como viva até o detector de silêncio — que é muito mais longo, de propósito.
+   */
+  heartbeatTimeoutMs?(): number
+  /** Prazo do handshake. Um serviço fora do ar não deixa a conexão pendurada. */
+  connectTimeoutMs?(): number
   idleTimeoutMs?(): number
   /**
    * Traduzir um quadro do provider em eventos internos.
@@ -134,6 +150,14 @@ export interface StreamRecord {
   /** Só a mensagem, e curta. Nunca o quadro cru, que pode conter credencial. */
   lastError: { message: string; at: Date } | null
   eventCount: number
+  /**
+   * Qual INSTÂNCIA está com este stream, e até quando.
+   *
+   * Ausente em tudo que existia antes — e o filtro de posse trata ausente como livre,
+   * então nada precisa ser migrado. Ver `claimStream`.
+   */
+  leaseOwner?: string | null
+  leaseUntil?: Date | null
   createdAt: Date
   updatedAt: Date
 }

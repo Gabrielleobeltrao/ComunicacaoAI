@@ -228,3 +228,38 @@ export function subscriptionsFor(bruta: unknown, canal: string, assinaturas: rea
 /** A primeira delas. Existe para quem só precisa saber se ALGUMA reivindicou. */
 export const subscriptionFor = (bruta: unknown, canal: string, assinaturas: readonly WsSubscription[]): WsSubscription | null =>
   subscriptionsFor(bruta, canal, assinaturas)[0] ?? null
+
+/**
+ * O ESPAÇO mínimo entre duas publicações da mesma chave.
+ *
+ * Em memória, no processo que tem o socket — o mesmo lugar e o mesmo motivo do contador
+ * por minuto: a decisão precisa ser síncrona, e uma leitura no banco antes de publicar
+ * deixaria a rajada passar pela janela entre a leitura e a escrita.
+ *
+ * ponytail: por instância. Com dois processos segurando a mesma conexão o espaço real
+ * seria a metade — mas só um processo segura um socket, então na prática não acontece.
+ */
+const ultimaPublicacao = new Map<string, number>()
+
+export function podePublicar(installationId: string, chave: string, espacoMs: number, agora: number): boolean {
+  if (espacoMs <= 0) return true
+  const id = `${installationId}:${chave}`
+  // NUNCA publicada é diferente de publicada agora há pouco: com um padrão de zero, a
+  // primeira mensagem de cada chave era engolida — e a primeira é justamente a que
+  // ninguém quer perder.
+  const anterior = ultimaPublicacao.get(id)
+  if (anterior !== undefined && agora - anterior < espacoMs) return false
+  ultimaPublicacao.set(id, agora)
+  // O mapa não pode crescer sem fim: um serviço com chave por mensagem criaria uma
+  // entrada por tique. Acima do teto, a metade mais velha sai.
+  if (ultimaPublicacao.size > 5_000) {
+    const antigas = [...ultimaPublicacao.entries()].sort((a, b) => a[1] - b[1]).slice(0, 2_500)
+    for (const [k] of antigas) ultimaPublicacao.delete(k)
+  }
+  return true
+}
+
+/** Só para os testes: zera o espaçamento entre casos. */
+export const resetThrottle = (): void => {
+  ultimaPublicacao.clear()
+}

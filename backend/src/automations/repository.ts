@@ -92,3 +92,24 @@ export function findVersion(ownerId: string, automationId: ObjectId, version: nu
 export function listVersions(ownerId: string, automationId: ObjectId): Promise<AutomationVersion[]> {
   return versions.find({ ownerId, automationId }).sort({ version: -1 }).toArray()
 }
+
+/**
+ * Remove a automação E o que depende dela.
+ *
+ * Existe porque o produto até agora só ARQUIVAVA: arquivar é o certo para uma rotina
+ * que já rodou — o histórico dela continua fazendo sentido. Remover de verdade só faz
+ * sentido para uma que nunca deveria ter existido (o desfazer de uma aplicação), e aí
+ * o histórico precisa ir junto: versão, execução, etapa, artefato e marca de fonte
+ * apontam para um `automationId` que deixaria de existir, e cada um deles é um
+ * registro órfão que continua sendo listado e contado.
+ */
+export async function deleteAutomationCascade(ownerId: string, id: ObjectId): Promise<boolean> {
+  const alvo = await automations.findOne({ _id: id, ownerId }, { projection: { _id: 1 } })
+  if (!alvo) return false
+  await versions.deleteMany({ ownerId, automationId: id })
+  for (const nome of ['automation_runs', 'step_runs', 'artifacts', 'source_checkpoints', 'source_leases']) {
+    await db.collection(nome).deleteMany({ automationId: id }).catch(() => undefined)
+  }
+  const r = await automations.deleteOne({ _id: id, ownerId })
+  return r.deletedCount > 0
+}

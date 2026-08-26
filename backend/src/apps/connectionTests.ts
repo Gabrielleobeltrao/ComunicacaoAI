@@ -44,3 +44,27 @@ export async function runProbe(probe: ConnectionProbe, config: Record<string, st
     if (timer) clearTimeout(timer)
   }
 }
+
+
+/**
+ * A sonda que precisa da INSTALAÇÃO inteira, e não só da credencial.
+ *
+ * A sonda acima recebe o `config` decifrado, que é tudo o que um App de chave e segredo
+ * precisa. O App de WebSocket não: o endereço, os cabeçalhos e os subprotocolos moram
+ * na configuração PÚBLICA da instalação, e sem eles o teste não tem o que abrir.
+ *
+ * Registrar aqui é o que faz o botão de testar valer em TODO caminho — a página de
+ * Apps, a tela do App e a API —, em vez de um deles chamar o teste de verdade e os
+ * outros continuarem respondendo "os campos estão preenchidos".
+ */
+export interface InstallationProbe {
+  (ownerId: string, installationId: string): Promise<{ ok: boolean; message: string }>
+}
+
+const installationProbes = new Map<string, InstallationProbe>()
+
+export const registerInstallationProbe = (appKey: string, probe: InstallationProbe): void => {
+  installationProbes.set(appKey, probe)
+}
+
+export const installationProbeFor = (appKey: string): InstallationProbe | null => installationProbes.get(appKey) ?? null

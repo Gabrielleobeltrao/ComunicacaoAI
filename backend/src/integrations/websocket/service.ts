@@ -7,6 +7,8 @@ import { normalizeConnectionConfig } from '../../apps/official/websocket/config.
 import type { WsConnectionConfig } from '../../apps/official/websocket/config.js'
 import { buildWebSocketAdapter } from '../../apps/official/websocket/adapter.js'
 import { assertPublicWebSocketUrl } from '../../net/safeWebSocket.js'
+import { registerInstallationProbe } from '../../apps/connectionTests.js'
+import { contemSegredo, variacoesDe } from './redact.js'
 import type { StreamAdapter, StreamRecord } from '../../streams/types.js'
 import {
   activeSubscriptions,
@@ -15,7 +17,10 @@ import {
   MESSAGE_RETENTION_DAYS,
   writeLog,
 } from './repository.js'
-import { dedupeKeyOf, parseMessage, previewOf, registerOverflow, subscriptionsFor } from './pipeline.js'
+import { dedupeKeyOf, parseMessage, podePublicar, previewOf, registerOverflow, subscriptionsFor } from './pipeline.js'
+import { applyMapping } from './mapping.js'
+import { mascararProfundo } from './redact.js'
+import { putLiveValue } from './liveData.js'
 import { framesOnConnect } from './subscribe.js'
 import type { WsMessage, WsMessageStatus } from './types.js'
 
@@ -100,7 +105,19 @@ export async function ingestWebSocketMessage(
   bruto: string,
   config: WsConnectionConfig,
   now = new Date(),
+  /**
+   * A credencial em uso, para RISCAR do que vai ser guardado.
+   *
+   * Não é paranoia: há serviço que ecoa a mensagem de autenticação de volta, e há
+   * serviço que devolve o token no erro. Sem isto, a chave ia parar no trecho que a
+   * tela de Mensagens mostra e no payload do evento — os dois lugares mais fáceis de
+   * vazar justamente o que o resto do sistema protege.
+   */
+  segredos: readonly string[] = [],
 ): Promise<{ status: WsMessageStatus; eventIds: string[] }> {
+  // Recursivo e preservando tipos — ver `redact.ts`. O caminho por texto quebrava
+  // quando o segredo continha aspas, e uma exceção ali derrubava a mensagem inteira.
+  const riscar = <T>(valor: T): T => mascararProfundo(valor, segredos)
   const guardar = async (status: WsMessageStatus, dados: Partial<WsMessage> = {}) => {
     const doc: WsMessage = {
       _id: new ObjectId(),
@@ -137,7 +154,7 @@ export async function ingestWebSocketMessage(
   const excesso = registerOverflow(ownerId, installationId, config.maxMessagesPerMinute, now.getTime())
   if (excesso.limited) {
     if (excesso.first) {
-      await guardar('rate_limited', { preview: previewOf(bruto), reason: `acima de ${config.maxMessagesPerMinute} mensagens por minuto` })
+      await guardar('rate_limited', { preview: riscar(previewOf(bruto)), reason: `acima de ${config.maxMessagesPerMinute} mensagens por minuto` })
       await writeLog(ownerId, installationId, 'dropped', `limite de ${config.maxMessagesPerMinute} mensagens por minuto atingido`, null, now)
     } else if (excesso.summarize) {
       // Um resumo por janela, e não uma linha por mensagem.
@@ -148,13 +165,32 @@ export async function ingestWebSocketMessage(
 
   const lida = parseMessage(bruto, config)
   if (lida.status !== 'accepted') {
-    await guardar(lida.status, { preview: lida.preview, reason: lida.reason })
+    await guardar(lida.status, { preview: riscar(lida.preview), reason: lida.reason })
     await writeLog(ownerId, installationId, lida.status === 'filtered' ? 'dropped' : 'invalid', lida.reason, null, now)
     return { status: lida.status, eventIds: [] }
   }
 
   const chave = dedupeKeyOf(config, lida.messageId, lida.payload)
   const brutaJson = config.format === 'json' ? JSON.parse(bruto) : bruto
+
+  /**
+   * O objeto NORMALIZADO, e o último valor da chave.
+   *
+   * Acontece antes das assinaturas de propósito: o dado ao vivo é da CONEXÃO, não de
+   * quem a está ouvindo. Uma cotação que nenhuma assinatura reivindicou continua sendo
+   * a cotação — e é ela que um cálculo vai querer daqui a um segundo.
+   *
+   * E é aqui que a promessa "sem LLM por tique" se cumpre: guardar o valor não publica
+   * evento, não dispara rotina e não chama modelo nenhum.
+   */
+  const mapeado = applyMapping(lida.payload, config.mapping)
+  if (mapeado && config.liveKeyPath) {
+    const chaveViva = mapeado[config.liveKeyPath]
+    if (typeof chaveViva === 'string' || typeof chaveViva === 'number') {
+      const coube = await putLiveValue(ownerId, installationId, String(chaveViva), riscar(mapeado), config.liveTtlSeconds, now)
+      if (!coube) await writeLog(ownerId, installationId, 'dropped', 'limite de chaves de dado ao vivo atingido nesta conexão', null, now)
+    }
+  }
 
   /**
    * TODAS as assinaturas que a reivindicam — não a primeira.
@@ -166,7 +202,7 @@ export async function ingestWebSocketMessage(
   const reivindicaram = subscriptionsFor(brutaJson, lida.channel, ativas)
 
   const comum = {
-    preview: lida.preview,
+    preview: riscar(lida.preview),
     channel: lida.channel,
     messageId: chave,
     occurredAt: lida.occurredAt ?? now,
@@ -192,6 +228,21 @@ export async function ingestWebSocketMessage(
    */
   const eventIds: string[] = []
   for (const assinatura of reivindicaram) {
+    /**
+     * O ESPAÇO mínimo entre dois eventos da mesma chave.
+     *
+     * O Live Data Store aceita todo tique porque guardar é barato e o valor substitui o
+     * anterior. O barramento é o contrário: cada evento é durável, entregue e pode
+     * disparar trabalho. Sem este freio, uma cotação ativa vira seiscentos eventos por
+     * minuto — e o dono só descobre na fatura.
+     *
+     * O que é engolido aqui não se perde: o valor está no Live Data Store, com o
+     * horário, e quem precisa dele o lê quando precisar.
+     */
+    if (config.publishThrottleMs > 0) {
+      const chaveThrottle = `${assinatura._id.toString()}:${mapeado && config.liveKeyPath ? String(mapeado[config.liveKeyPath] ?? '') : ''}`
+      if (!podePublicar(installationId, chaveThrottle, config.publishThrottleMs, now.getTime())) continue
+    }
     try {
       const { event } = await publishEvent(
         {
@@ -211,7 +262,11 @@ export async function ingestWebSocketMessage(
              * receba isto trata como texto de terceiro, não como instrução.
              */
             untrusted: true,
-            payload: lida.payload,
+            /** O quadro cru, já recortado pelo caminho configurado — sem a credencial. */
+            payload: riscar(lida.payload),
+            /** O mesmo fato com os nomes normalizados, quando há mapeamento. */
+            ...(mapeado ? { mappedData: riscar(mapeado) } : {}),
+            receivedAt: now.toISOString(),
           },
           occurredAt: lida.occurredAt ?? now,
           dedupeKey: `ws:${installationId}:${assinatura._id.toString()}:${chave ?? gravada._id.toString()}`,
@@ -305,3 +360,85 @@ export async function assertUsableConnection(ownerId: string, installationId: st
   const r = await resolveConnection(ownerId, installationId, { requireConnectable: false })
   if (!r.ok) throw new ValidationError(r.message)
 }
+
+
+/**
+ * O teste desta conexão, disponível para QUALQUER caminho que teste uma instalação.
+ *
+ * Sem este registro, a página de Apps chamava o teste genérico — que só confere campos
+ * preenchidos — e a tela do App chamava o de verdade. Dois botões com o mesmo nome e
+ * respostas diferentes sobre a mesma conexão.
+ */
+/**
+ * A configuração ANTIGA, salva antes de a credencial ser recusada em campo público.
+ *
+ * Ela existe: quem configurou colando a chave no cabeçalho tem hoje o segredo em texto
+ * claro no metadata público. Duas situações, e elas exigem respostas diferentes.
+ *
+ * MIGRÁVEL. Em cabeçalho, mensagem inicial, autenticação e batimento, trocar o valor
+ * literal por `{{token}}` produz exatamente o mesmo quadro na hora de enviar — a
+ * substituição já acontece lá. É uma troca sem ambiguidade, e ela é feita.
+ *
+ * NÃO MIGRÁVEL. No ENDEREÇO não dá: `{{token}}` não é substituído na URL, e trocar
+ * mudaria para onde a conexão vai. Aí a configuração não é devolvida e a conexão é
+ * marcada como "precisa corrigir" — melhor uma tela que diz o que fazer do que uma tela
+ * que mostra a chave de novo.
+ *
+ * O valor encontrado nunca é registrado: nem no log, nem no retorno, nem no erro.
+ */
+export function sanearConfiguracaoLegada(
+  config: WsConnectionConfig,
+  credencial: string,
+): { config: WsConnectionConfig; migrada: boolean; precisaCorrigir: boolean } {
+  if (!credencial || credencial.length < 8) return { config, migrada: false, precisaCorrigir: false }
+
+  if (contemSegredo(config.endpoint, [credencial])) {
+    return { config, migrada: false, precisaCorrigir: true }
+  }
+
+  const trocar = (valor: string): string => (contemSegredo(valor, [credencial]) ? substituirPorPlaceholder(valor, credencial) : valor)
+  const headers = config.headers.map((h) => ({ ...h, value: trocar(h.value) }))
+  const initialMessages = config.initialMessages.map(trocar)
+  const messageTemplate = trocar(config.auth.messageTemplate)
+  const heartbeatMessage = trocar(config.heartbeat.message)
+
+  const migrada =
+    headers.some((h, i) => h.value !== config.headers[i].value) ||
+    initialMessages.some((m, i) => m !== config.initialMessages[i]) ||
+    messageTemplate !== config.auth.messageTemplate ||
+    heartbeatMessage !== config.heartbeat.message
+
+  if (!migrada) return { config, migrada: false, precisaCorrigir: false }
+  return {
+    config: {
+      ...config,
+      headers,
+      initialMessages,
+      auth: { ...config.auth, messageTemplate },
+      heartbeat: { ...config.heartbeat, message: heartbeatMessage },
+    },
+    migrada: true,
+    precisaCorrigir: false,
+  }
+}
+
+/** Troca todas as formas do segredo pelo marcador. Nunca devolve o valor encontrado. */
+function substituirPorPlaceholder(valor: string, credencial: string): string {
+  let fora = valor
+  for (const forma of variacoesDe(credencial)) fora = fora.split(forma).join('{{token}}')
+  return fora
+}
+
+registerInstallationProbe('websocket', async (ownerId, installationId) => {
+  const { testConnection } = await import('./subscribe.js')
+  const { StreamManager, streamManager } = await import('../../streams/manager.js')
+  const { createRealSocket } = await import('../../streams/socket.js')
+  const { streamCredentials } = await import('../../streams/service.js')
+  return testConnection(ownerId, installationId, {
+    adapterFor: websocketAdapterFor,
+    credentialsOf: streamCredentials,
+    // O gerenciador do processo quando existe; um descartável quando não — a sonda não
+    // usa o estado dele, e a API pode rodar sem worker embutido.
+    manager: () => streamManager() ?? new StreamManager({ adapters: new Map(), createSocket: createRealSocket, credentialsOf: streamCredentials }),
+  })
+})

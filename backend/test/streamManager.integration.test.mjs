@@ -98,21 +98,32 @@ function relogioFalso() {
   let seq = 0
   return {
     pendentes,
-    schedule: (fn, ms) => {
+    schedule: (fn, ms, tipo) => {
       const id = (seq += 1)
-      pendentes.set(id, { fn, ms })
+      pendentes.set(id, { fn, ms, tipo })
       return { id, unref() {} }
     },
     cancel: (t) => pendentes.delete(t?.id),
-    // O timer de reconexão é o único com duração variável (o backoff) — é assim que
-    // ele é reconhecido, sem o teste precisar saber o número.
-    ehReconexao: (t) => t.ms !== 11111 && t.ms !== 22222,
+    // Cada relógio DIZ para que serve. Antes ele era adivinhado pela duração — e bastou
+    // aparecer um quarto tipo para a adivinhação apontar para o errado.
+    ehReconexao: (t) => t.tipo === 'reconnect',
     temReconexao() {
-      return [...pendentes.values()].some((t) => t.ms !== 11111 && t.ms !== 22222)
+      return [...pendentes.values()].some((t) => t.tipo === 'reconnect')
+    },
+    /** Os relógios de posse pendentes, para o teste poder correr o arrendamento. */
+    temLease() {
+      return [...pendentes.values()].some((t) => t.tipo === 'lease')
+    },
+    async dispararLease() {
+      for (const [id, t] of [...pendentes]) {
+        if (t.tipo !== 'lease') continue
+        pendentes.delete(id)
+        await t.fn()
+      }
     },
     dispararReconexao() {
       for (const [id, t] of [...pendentes]) {
-        if (t.ms !== 11111 && t.ms !== 22222) {
+        if (t.tipo === 'reconnect') {
           pendentes.delete(id)
           t.fn()
         }
@@ -449,13 +460,14 @@ test('desinscrever o que não estava inscrito não manda mensagem', async () => 
 
 // --- restart e limites ----------------------------------------------------------------
 
-test('o que estava de pé volta depois do restart do worker', async () => {
+test('o que estava de pé volta depois do restart LIMPO do worker', async () => {
   const { m } = gerente()
   const record = await streamDe(['PETR4'])
   await m.start(record)
   SocketFalso.abertos[0].abrir()
 
-  // O worker morre: a memória some, o documento fica.
+  // Encerramento limpo: a posse é devolvida, e a instância nova sobe sem esperar nada.
+  await m.stopAll()
   SocketFalso.abertos = []
   const { m: novo } = gerente()
   setStreamManager(novo)
@@ -463,6 +475,62 @@ test('o que estava de pé volta depois do restart do worker', async () => {
   assert.equal(quantos, 1)
   assert.equal(SocketFalso.abertos.length, 1)
   assert.equal(SocketFalso.abertos[0].url, 'wss://stream.corretora-teste.com/default')
+})
+
+test('depois de uma QUEDA, a instância nova espera a posse vencer — e aí assume', async () => {
+  const { m } = gerente()
+  const record = await streamDe(['PETR4'])
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  // A instância morre sem devolver nada: a memória some, o documento e a posse ficam.
+  SocketFalso.abertos = []
+  const { m: novo } = gerente()
+  setStreamManager(novo)
+
+  // Enquanto a posse do morto vale, a nova NÃO abre um segundo socket no mesmo serviço.
+  assert.equal(await restoreStreams(), 0)
+  assert.equal(SocketFalso.abertos.length, 0)
+
+  // Passado o prazo, ela assume — que é o que impede um stream ficar órfão para sempre.
+  await db.collection('market_streams').updateOne({ _id: record._id }, { $set: { leaseUntil: new Date(Date.now() - 1000) } })
+  assert.equal(await restoreStreams(), 1)
+  assert.equal(SocketFalso.abertos.length, 1)
+})
+
+test('devolver a posse não segura o encerramento quando o banco não responde', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  await m.start(record)
+
+  // O banco some ANTES do encerramento — é a ordem do smoke, e o caso em que o processo
+  // mais precisa morrer. A devolução da posse tem prazo próprio e não pode atrasar isso.
+  const { releaseStreamLease } = await import('../dist/streams/repository.js')
+  const colecao = db.collection('market_streams')
+  const original = colecao.updateOne.bind(colecao)
+  colecao.updateOne = () => new Promise(() => undefined) // nunca resolve
+  try {
+    const comecou = Date.now()
+    await releaseStreamLease(record._id, m.instanceId)
+    const levou = Date.now() - comecou
+    assert.ok(levou < 5_000, `a devolução segurou o encerramento por ${levou}ms`)
+  } finally {
+    colecao.updateOne = original
+  }
+})
+
+test('duas instâncias não abrem o mesmo stream', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m: primeira } = gerente()
+  const { m: segunda } = gerente()
+
+  await primeira.start(record)
+  await segunda.start(record)
+
+  // Um socket, e só. Sem a posse, os dois abririam — mensagem dobrada, evento dobrado, e
+  // num provedor que limita conexões por conta, as duas derrubadas.
+  assert.equal(SocketFalso.abertos.length, 1)
+  assert.equal(segunda.stateOf(record._id.toString()), 'disconnected')
 })
 
 test('um stream pausado não volta no restart', async () => {
@@ -776,4 +844,391 @@ test('um stream pausado não é reaberto por uma troca de credencial', async () 
   await setStreamPaused(DONO, record._id, true)
   assert.equal(await reconnectStreamsForInstallation(DONO, conexao._id.toString()), 0)
   assert.equal(SocketFalso.abertos.length, 0)
+})
+
+
+// ============================================================================
+// A POSSE, entre instâncias — com relógio controlado
+// ============================================================================
+//
+// O relógio é falso de propósito: um arrendamento de sessenta segundos não cabe num
+// teste, e esperar por ele provaria menos, não mais. O que interessa é a ORDEM dos
+// acontecimentos, e ela é determinística aqui.
+
+const { setStreamState, markStreamEvent, renewStreamLease, claimStream } = await import('../dist/streams/repository.js')
+
+test('a renovação continua correndo por mais de dois períodos', async () => {
+  const { m, relogio } = gerente()
+  const record = await streamDe(['PETR4'])
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  for (let volta = 1; volta <= 3; volta++) {
+    assert.equal(relogio.temLease(), true, `volta ${volta}: a renovação some depois de ${volta - 1} períodos`)
+    await relogio.dispararLease()
+  }
+  // E o stream continua de pé, com a posse deste processo.
+  assert.equal(m.stateOf(record._id.toString()), 'connected')
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.leaseOwner, m.instanceId)
+})
+
+test('reconectar NÃO cancela a renovação', async () => {
+  const { m, relogio } = gerente()
+  const record = await streamDe(['PETR4'])
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  // A queda e a volta: é aqui que o relógio da posse era cancelado junto com os outros.
+  SocketFalso.abertos[0].cair()
+  await ate(() => relogio.temReconexao(), 'a reconexão agendada')
+  await relogio.dispararReconexao()
+  await ate(() => SocketFalso.abertos.length === 2, 'a segunda conexão')
+  SocketFalso.abertos[1].abrir()
+
+  assert.equal(relogio.temLease(), true, 'a renovação sobreviveu à reconexão')
+  await relogio.dispararLease()
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.leaseOwner, m.instanceId, 'e a posse continua sendo confirmada')
+})
+
+test('perder a posse fecha o socket local — e NÃO devolve o arrendamento da nova dona', async () => {
+  const { m, relogio } = gerente()
+  const record = await streamDe(['PETR4'])
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  // Outra instância assume: o arrendamento vence e ela reivindica.
+  await db.collection('market_streams').updateOne({ _id: record._id }, { $set: { leaseUntil: new Date(Date.now() - 1000) } })
+  assert.equal(await claimStream(record._id, 'outra-instancia'), true)
+
+  await relogio.dispararLease()
+  assert.equal(m.stateOf(record._id.toString()), 'disconnected', 'a antiga largou o stream')
+  assert.equal(SocketFalso.abertos[0].fechado, true, 'e fechou o socket local')
+
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.leaseOwner, 'outra-instancia', 'o arrendamento da nova dona ficou intacto')
+})
+
+/** Ligado por um teste para o banco "falhar" na renovação — ver `renewLease` nas deps. */
+let falharRenovacao = false
+
+test('erro de banco na renovação NÃO conta como renovação — e fecha antes de operar sem posse', async () => {
+  const { m, relogio } = gerente({
+    renewLease: async (id, instanceId) => {
+      if (falharRenovacao) throw new Error('banco indisponível')
+      return renewStreamLease(id, instanceId)
+    },
+  })
+  const record = await streamDe(['PETR4'])
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  falharRenovacao = true
+  try {
+    // Enquanto há margem no prazo confirmado, ele insiste em vez de largar.
+    await relogio.dispararLease()
+    assert.equal(m.stateOf(record._id.toString()), 'connected', 'uma falha momentânea não derruba o stream')
+    assert.equal(relogio.temLease(), true, 'e a próxima tentativa está agendada')
+
+    // Sem margem: fecha, em vez de seguir sem prova de posse.
+    m.forcarVencimentoDoLease(record._id.toString())
+    await relogio.dispararLease()
+    assert.equal(m.stateOf(record._id.toString()), 'disconnected')
+    assert.equal(SocketFalso.abertos[0].fechado, true)
+  } finally {
+    falharRenovacao = false
+  }
+})
+
+test('a instância antiga não altera estado nem contadores depois do takeover', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m: antiga } = gerente()
+  await antiga.start(record)
+
+  // A nova assume.
+  await db.collection('market_streams').updateOne({ _id: record._id }, { $set: { leaseUntil: new Date(Date.now() - 1000) } })
+  assert.equal(await claimStream(record._id, 'nova'), true)
+  await setStreamState(record._id, 'connected', new Date(), 'nova')
+  await markStreamEvent(record._id, 5, new Date(), 'nova')
+
+  // A antiga tenta gravar, como faria um socket que ainda não sabe que perdeu.
+  await setStreamState(record._id, 'error', new Date(), antiga.instanceId)
+  await markStreamEvent(record._id, 99, new Date(), antiga.instanceId)
+
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.state, 'connected', 'o estado é o que a DONA gravou')
+  assert.equal(doc.eventCount, 5, 'e o contador não foi somado pela antiga')
+})
+
+test('uma ação administrativa continua funcionando com o stream de outra instância', async () => {
+  const record = await streamDe(['PETR4'])
+  await claimStream(record._id, 'outra-instancia')
+  // Pausar vem pelo serviço, sem posse — é decisão do dono da conta, não da instância.
+  const r = await setStreamPaused(DONO, record._id, true)
+  assert.equal(r.paused, true)
+})
+
+test('a segunda instância assume sozinha depois da queda, sem ninguém chamar nada', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m: primeira } = gerente()
+  await primeira.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  // A primeira morre sem devolver nada. A segunda sobe e liga o reconciliador.
+  SocketFalso.abertos = []
+  const { m: segunda } = gerente()
+  setStreamManager(segunda)
+
+  const { startStreamReconciler, stopStreamReconciler } = await import('../dist/streams/service.js')
+  process.env.STREAM_RECONCILE_MS = '50'
+  try {
+    startStreamReconciler()
+    // Com o arrendamento da morta ainda válido, ninguém abre nada.
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal(SocketFalso.abertos.length, 0, 'não abre um segundo socket enquanto a posse vale')
+
+    // Vencido o prazo, a reconciliação assume sozinha.
+    await db.collection('market_streams').updateOne({ _id: record._id }, { $set: { leaseUntil: new Date(Date.now() - 1000) } })
+    await ate(() => SocketFalso.abertos.length === 1, 'a segunda instância assumir')
+    const doc = await db.collection('market_streams').findOne({ _id: record._id })
+    assert.equal(doc.leaseOwner, segunda.instanceId)
+  } finally {
+    await stopStreamReconciler()
+    delete process.env.STREAM_RECONCILE_MS
+  }
+})
+
+test('um stream pausado não é assumido pela reconciliação', async () => {
+  const record = await streamDe(['PETR4'])
+  await setStreamPaused(DONO, record._id, true)
+  const { m } = gerente()
+  setStreamManager(m)
+
+  const { startStreamReconciler, stopStreamReconciler } = await import('../dist/streams/service.js')
+  process.env.STREAM_RECONCILE_MS = '50'
+  try {
+    startStreamReconciler()
+    await new Promise((r) => setTimeout(r, 250))
+    assert.equal(SocketFalso.abertos.length, 0)
+  } finally {
+    await stopStreamReconciler()
+    delete process.env.STREAM_RECONCILE_MS
+  }
+})
+
+test('o encerramento para a renovação e o reconciliador', async () => {
+  const { m, relogio } = gerente()
+  setStreamManager(m)
+  const record = await streamDe(['PETR4'])
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+  assert.equal(relogio.temLease(), true)
+
+  const { shutdownStreams } = await import('../dist/streams/service.js')
+  await shutdownStreams()
+
+  assert.equal(relogio.temLease(), false, 'a renovação parou')
+  assert.equal(relogio.temReconexao(), false, 'e nada ficou agendado')
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.leaseOwner, null, 'o encerramento limpo devolve a posse')
+})
+
+
+// ============================================================================
+// Encerramento completo: nada continua correndo depois da saída
+// ============================================================================
+
+/** O relógio da posse é o que sobrava; conferir isso é o ponto de metade destes casos. */
+// Nenhum relógio de tipo NENHUM — não só posse e reconexão. Um batimento ou um detector
+// de silêncio esquecido segura o processo de pé e volta a mexer num stream já largado.
+const semRelogios = (relogio) => relogio.pendentes.size === 0
+
+test('credencial indisponível encerra por completo: sem relógio e sem posse', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m, relogio } = gerente({ credentialsOf: async () => null })
+  assert.equal(await m.start(record), true, 'a posse foi tomada antes de descobrir o problema')
+
+  assert.equal(m.stateOf(record._id.toString()), 'disconnected', 'saiu do mapa')
+  assert.equal(semRelogios(relogio), true, 'nenhum relógio ficou correndo')
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.state, 'error', 'o motivo ficou gravado, com a cerca de pé')
+  assert.equal(doc.leaseOwner, null, 'e a posse voltou a ficar livre')
+})
+
+test('adapter ausente encerra por completo, mesmo antes de existir um Vivo', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m, relogio } = gerente({ adapters: new Map(), adapterFor: async () => null })
+  assert.equal(await m.start(record), false)
+
+  assert.equal(semRelogios(relogio), true)
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.state, 'error')
+  assert.equal(doc.leaseOwner, null, 'a posse tomada no claim foi devolvida')
+})
+
+test('desistir depois do limite de tentativas cancela o relógio da posse e libera', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m, relogio } = gerente()
+  await m.start(record)
+
+  /**
+   * Cada queda é ASSÍNCRONA: `onclose` dispara `quebrou`, que agenda a reconexão sem
+   * ninguém esperar por ela. Conferir logo depois de `cair()` lê o estado de antes — foi
+   * assim que a primeira versão deste teste ficou instável no CI.
+   */
+  for (let i = 0; i < 12 && m.activeCount > 0; i += 1) {
+    const antes = SocketFalso.abertos.length
+    SocketFalso.abertos[antes - 1].cair()
+    await ate(async () => relogio.temReconexao() || m.activeCount === 0, 'a próxima decisão')
+    if (m.activeCount === 0) break
+    relogio.dispararReconexao()
+    await ate(async () => SocketFalso.abertos.length > antes || m.activeCount === 0, 'reconectar ou desistir')
+  }
+
+  assert.equal(m.stateOf(record._id.toString()), 'disconnected', 'desistiu')
+  assert.equal(semRelogios(relogio), true, 'e não ficou relógio nenhum — nem o da posse')
+  // O gerenciador larga o stream ANTES de terminar de gravar: esperar a gravação é do
+  // teste, não sintoma de defeito.
+  await ate(async () => (await findStream(DONO, record._id))?.state === 'error', 'o motivo ser gravado')
+  const doc = await findStream(DONO, record._id)
+  assert.match(doc.lastError.message, /desistindo/)
+  await ate(async () => (await findStream(DONO, record._id))?.leaseOwner === null, 'a posse ser devolvida')
+  assert.equal((await findStream(DONO, record._id)).leaseUntil, null, 'e o prazo dela junto')
+})
+
+test('o stop grava disconnected ANTES de liberar a posse', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  await m.stop(record._id.toString())
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  // Com a ordem invertida, a escrita cercada não acharia o dono e o estado ficaria
+  // "connected" para sempre — que é o que acontecia antes desta correção.
+  assert.equal(doc.state, 'disconnected')
+  assert.equal(doc.leaseOwner, null)
+})
+
+test('pausar não é sobrescrito por um stop posterior', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  await m.start(record)
+  await setStreamPaused(DONO, record._id, true)
+
+  await m.stop(record._id.toString())
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.paused, true, 'a decisão do dono da conta continua valendo')
+})
+
+// ============================================================================
+// start() concorrente
+// ============================================================================
+
+test('dois start ao mesmo tempo abrem exatamente UM socket', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  const [a, b] = await Promise.all([m.start(record), m.start(record)])
+  assert.equal(a, true)
+  assert.equal(b, true, 'a segunda chamada compartilha a mesma subida')
+  assert.equal(SocketFalso.abertos.length, 1, `abriu ${SocketFalso.abertos.length} sockets`)
+})
+
+test('adapterFor que LANÇA devolve a posse, e não deixa nada para trás', async () => {
+  const record = await streamDe(['PETR4'])
+  const SEGREDO_NA_MENSAGEM = 'endereço interno recusado'
+  let falhar = true
+  const { m, relogio } = gerente({
+    adapterFor: async (r) => {
+      if (falhar) throw new Error(SEGREDO_NA_MENSAGEM)
+      return streamAdapters().get(r.appKey) ?? null
+    },
+  })
+
+  // O erro é tratado por dentro: quem chamou recebe `false`, não uma exceção.
+  assert.equal(await m.start(record), false, 'não sobe com configuração recusada')
+
+  const depoisDaFalha = await findStream(DONO, record._id)
+  assert.equal(depoisDaFalha.state, 'error')
+  assert.match(depoisDaFalha.lastError.message, /interno/, 'o motivo ficou legível')
+  // Sem devolver a posse, o arrendamento ficaria preso até vencer por causa de uma
+  // configuração que nunca vai funcionar — e nenhuma instância poderia sequer tentar.
+  assert.equal(depoisDaFalha.leaseOwner, null, 'a posse foi devolvida')
+  assert.equal(depoisDaFalha.leaseUntil, null, 'e o prazo dela também')
+
+  // Nada ficou pendurado: nem socket, nem stream gerenciado, nem relógio.
+  assert.equal(SocketFalso.abertos.length, 0, 'nenhum socket foi aberto')
+  assert.equal(m.activeCount, 0, 'nenhum stream ficou no mapa')
+  assert.equal(m.isTracked(record._id.toString()), false, 'nem em subida')
+  assert.equal(semRelogios(relogio), true, 'nenhum relógio ficou agendado')
+
+  // E a subida seguinte corre de novo, em vez de receber a promessa antiga.
+  falhar = false
+  assert.equal(await m.start(record), true, 'a segunda tentativa sobe')
+  assert.equal(SocketFalso.abertos.length, 1)
+})
+
+test('a mensagem do erro de configuração passa pelo saneador antes de ser gravada', async () => {
+  const record = await streamDe(['PETR4'])
+  // Um provedor que despeja o corpo inteiro da resposta no erro é comum — e `lastError`
+  // vai para a tela. Sem sanear, o documento do stream vira o depósito daquele despejo.
+  const { m } = gerente({
+    adapterFor: async () => {
+      throw new Error(`recusado: ${'x'.repeat(5_000)}`)
+    },
+  })
+  assert.equal(await m.start(record), false)
+
+  const doc = await findStream(DONO, record._id)
+  assert.ok(doc.lastError.message.length <= 300, `mensagem gravada crua: ${doc.lastError.message.length} caracteres`)
+  assert.match(doc.lastError.message, /^recusado/, 'e o motivo continua legível')
+})
+
+// ============================================================================
+// Reconciliador
+// ============================================================================
+
+test('parar o reconciliador espera a volta em andamento e não reabre nada', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  setStreamManager(m)
+
+  const { startStreamReconciler, stopStreamReconciler } = await import('../dist/streams/service.js')
+  process.env.STREAM_RECONCILE_MS = '30'
+  try {
+    startStreamReconciler()
+    // Encerra logo no começo de uma volta: uma consulta que voltasse depois disto
+    // chamaria start e abriria um socket que ninguém fecharia.
+    await new Promise((r) => setTimeout(r, 40))
+    await stopStreamReconciler()
+    const quantos = SocketFalso.abertos.length
+
+    await new Promise((r) => setTimeout(r, 150))
+    assert.equal(SocketFalso.abertos.length, quantos, 'nenhuma volta rodou depois de parar')
+  } finally {
+    await stopStreamReconciler()
+    delete process.env.STREAM_RECONCILE_MS
+    await m.stopAll()
+  }
+})
+
+test('o reconciliador não reabre o que já está de pé nesta instância', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  setStreamManager(m)
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  const { startStreamReconciler, stopStreamReconciler } = await import('../dist/streams/service.js')
+  process.env.STREAM_RECONCILE_MS = '30'
+  try {
+    startStreamReconciler()
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal(SocketFalso.abertos.length, 1, 'continua um socket só')
+  } finally {
+    await stopStreamReconciler()
+    delete process.env.STREAM_RECONCILE_MS
+    await m.stopAll()
+  }
 })

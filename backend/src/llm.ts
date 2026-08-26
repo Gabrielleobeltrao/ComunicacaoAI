@@ -146,6 +146,24 @@ export function askAux(
   return providerFor(provider).askAux(prompt, model, apiKey, maxTokens)
 }
 
+/**
+ * O mesmo, com o consumo junto — retrocompatível: `askAux` continua com a assinatura
+ * de sempre e sai desta chamada.
+ *
+ * Quem contabiliza é o CHAMADOR, e de propósito: só ele sabe de quem é a conta e qual
+ * é a chave da cobrança. Registrar aqui dentro obrigaria a passar o dono para uma
+ * função que hoje não sabe de conta nenhuma.
+ */
+export function askAuxWithUsage(
+  provider: string | null | undefined,
+  prompt: string,
+  model?: string | null,
+  apiKey?: string | null,
+  maxTokens?: number,
+): Promise<{ text: string; usage: TokenUsage }> {
+  return providerFor(provider).askAuxWithUsage(prompt, model, apiKey, maxTokens)
+}
+
 export function planSectorResponse(
   options: RouterOption[],
   currentIndices: number[],

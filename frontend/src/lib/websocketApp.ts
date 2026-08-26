@@ -19,19 +19,46 @@ export interface WsFilter {
   value: string
 }
 
+export interface WsHeader {
+  name: string
+  value: string
+}
+
+export interface WsMappingRule {
+  /** `$.data.ticker` — de onde ler. */
+  from: string
+  /** `symbol` — como o campo passa a se chamar aqui dentro. */
+  to: string
+}
+
 export interface WsConnectionConfig {
   endpoint: string
   format: WsFormat
   auth: { kind: WsAuthKind; name: string; prefix: string; messageTemplate: string }
+  headers: WsHeader[]
+  initialMessages: string[]
   protocols: string[]
-  heartbeat: { enabled: boolean; message: string; intervalMs: number }
+  heartbeat: { enabled: boolean; native: boolean; message: string; intervalMs: number; timeoutMs: number }
   idleTimeoutMs: number
+  connectTimeoutMs: number
   paths: { payload: string; messageId: string; channel: string; occurredAt: string }
   schema: Record<string, unknown> | null
   filters: WsFilter[]
   dedupe: WsDedupeStrategy
   maxMessagesPerMinute: number
   maxMessageBytes: number
+  mapping: WsMappingRule[]
+  liveKeyPath: string
+  liveTtlSeconds: number
+  publishThrottleMs: number
+}
+
+export interface WsLiveValue {
+  key: string
+  value: unknown
+  updates: number
+  receivedAt: string
+  ageMs: number
 }
 
 export interface WsStream {
@@ -48,6 +75,11 @@ export interface WsConnection {
   name: string
   status: string
   config: WsConnectionConfig | null
+  /**
+   * A configuração existe, mas guarda a credencial em texto claro num campo que não dá
+   * para migrar sozinho — o endereço. Ela não é devolvida, e a tela pede a correção.
+   */
+  needsFix?: boolean
   stream: WsStream | null
   messages: { total: number; accepted: number; lastAt: string | null }
 }
@@ -126,6 +158,13 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
 export const listConnections = () => request<WsConnection[]>('/connections')
 export const saveConnection = (id: string, body: { name?: string; config: WsConnectionConfig; token?: string }) =>
   request<{ id: string; name: string; config: WsConnectionConfig }>(`/connections/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+export const listLive = (installationId: string, prefix = '') =>
+  request<{ count: number; items: WsLiveValue[] }>(`/live?installationId=${encodeURIComponent(installationId)}&prefix=${encodeURIComponent(prefix)}`)
+export const sendFrame = (installationId: string, frame: string) =>
+  request<{ sent: boolean; message: string }>(`/connections/${installationId}/send`, { method: 'POST', body: JSON.stringify({ frame }) })
+/** Abre a conexão de verdade com a configuração real, e fecha. */
+export const testConnection = (installationId: string) =>
+  request<{ ok: boolean; message: string }>(`/connections/${installationId}/test`, { method: 'POST' })
 export const checkUrl = (endpoint: string) => request<{ ok: boolean; message: string }>('/check-url', { method: 'POST', body: JSON.stringify({ endpoint }) })
 export const startConnection = (id: string) => request<WsStream>(`/connections/${id}/start`, { method: 'POST' })
 export const pauseWsStream = (id: string) => request<WsStream>(`/streams/${id}/pause`, { method: 'POST' })
@@ -154,15 +193,24 @@ export const emptyConfig = (): WsConnectionConfig => ({
   endpoint: '',
   format: 'json',
   auth: { kind: 'none', name: '', prefix: '', messageTemplate: '' },
+  headers: [],
+  initialMessages: [],
   protocols: [],
-  heartbeat: { enabled: false, message: '', intervalMs: 30_000 },
+  // `native: true` é o padrão certo: o ping do protocolo não vira mensagem para a
+  // aplicação do outro lado. Quem precisar de um quadro próprio desmarca.
+  heartbeat: { enabled: false, native: true, message: '', intervalMs: 30_000, timeoutMs: 10_000 },
   idleTimeoutMs: 90_000,
+  connectTimeoutMs: 15_000,
   paths: { payload: '', messageId: '', channel: '', occurredAt: '' },
   schema: null,
   filters: [],
   dedupe: 'none',
   maxMessagesPerMinute: 120,
   maxMessageBytes: 16_000,
+  mapping: [],
+  liveKeyPath: '',
+  liveTtlSeconds: 300,
+  publishThrottleMs: 0,
 })
 
 export const STATUS_LABEL: Record<WsMessageStatus, string> = {

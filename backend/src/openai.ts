@@ -331,13 +331,26 @@ export async function checkGuardrail(
 
 /** Uma pergunta de bastidor: prompt entra, texto sai. Ver `claude.ts` para o porquê. */
 export async function askAux(prompt: string, model?: string | null, apiKey?: string | null, maxTokens = 600): Promise<string> {
+  return (await askAuxWithUsage(prompt, model, apiKey, maxTokens)).text
+}
+
+/** O mesmo pedido, com o consumo junto — ver a nota em `claude.ts`. */
+export async function askAuxWithUsage(
+  prompt: string,
+  model?: string | null,
+  apiKey?: string | null,
+  maxTokens = 600,
+): Promise<{ text: string; usage: TokenUsage }> {
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: maxTokens,
     reasoning_effort: 'minimal',
     messages: [{ role: 'user', content: prompt }],
   })
-  return response.choices[0]?.message?.content ?? ''
+  return {
+    text: response.choices[0]?.message?.content ?? '',
+    usage: { inputTokens: response.usage?.prompt_tokens ?? 0, outputTokens: response.usage?.completion_tokens ?? 0 },
+  }
 }
 
 export async function planSectorResponse(

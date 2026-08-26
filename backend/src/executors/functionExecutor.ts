@@ -10,6 +10,10 @@
 // de arquivo e, com alguma frequência, valor de variável.
 import { describeErrors, validateAgainstSchema } from '../jsonSchema.js'
 import { ErroDeFuncao, findAdapterFor, findFunction } from './functionRegistry.js'
+import type { FunctionContext } from './functionRegistry.js'
+// Só pelo efeito: é o que põe `liveData.*` no registry. Fica aqui, e não no registry,
+// para o arquivo do registry continuar sendo o arquivo das funções puras.
+import './liveDataFunctions.js'
 import type { FunctionExecutorConfig } from './types.js'
 import type { ExecutorError, ExecutorResult } from './types.js'
 
@@ -47,6 +51,8 @@ function comLimite<T>(promessa: Promise<T>, ms: number): Promise<T> {
 export async function executeRegisteredFunction(
   config: FunctionExecutorConfig,
   input: unknown,
+  /** De quem é a execução — o que permite uma função ler estado da conta com filtro. */
+  ctx?: FunctionContext,
 ): Promise<ExecutorResult> {
   const comecou = Date.now()
   const registrada = findFunction(config.functionName)
@@ -118,7 +124,7 @@ export async function executeRegisteredFunction(
   let saida: unknown
   try {
     saida = await comLimite(
-      Promise.resolve(registrada ? registrada.handler(entrada, parametros) : adaptador!.invoke(config.functionName, entrada, { timeoutMs })),
+      Promise.resolve(registrada ? registrada.handler(entrada, parametros, ctx) : adaptador!.invoke(config.functionName, entrada, { timeoutMs })),
       timeoutMs,
     )
   } catch (erro) {

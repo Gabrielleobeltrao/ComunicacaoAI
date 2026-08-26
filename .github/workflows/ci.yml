@@ -141,6 +141,19 @@ jobs:
         env:
           E2E_PREVIEW: '1'
 
+      # "Montar operação" é a única tela do produto que CRIA estrutura — andar, agentes
+      # e setores de uma vez. O que esta jornada segura é a promessa que a tela faz:
+      # nada existe antes da confirmação, e a confirmação carrega o hash da proposta
+      # que a pessoa de fato revisou.
+      #
+      # Contra o app compilado, pelo mesmo motivo do passo acima: é onde as flags de
+      # build ficam no estado real.
+      - name: Arquiteto e2e (Chromium)
+        run: npx playwright test e2e/architect-app.spec.ts --project=chromium --workers=1
+        working-directory: frontend
+        env:
+          E2E_PREVIEW: '1'
+
       # O relatório vira artefato SÓ quando quebra. O log completo do job exige permissão
       # de administrador; sem isto, um passo vermelho num repositório de outra pessoa é um
       # passo que não dá para ler — foi exatamente o que aconteceu aqui.

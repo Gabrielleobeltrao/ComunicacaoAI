@@ -18,7 +18,122 @@ export const listStreamsForInstallation = (ownerId: string, installationId: stri
   streams.find({ ownerId, installationId }).toArray()
 /** O que o worker precisa subir quando acorda: tudo que não está pausado. */
 export const listResumableStreams = (): Promise<StreamRecord[]> => streams.find({ paused: { $ne: true } }).toArray()
+
+/**
+ * O que está ÓRFÃO: não pausado, e sem dono vivo.
+ *
+ * É a lista que o reconciliador tenta assumir. Filtrar aqui, e não depois de ler tudo,
+ * é o que evita cada instância buscar todos os streams do sistema a cada volta só para
+ * descartar os que já têm dono.
+ */
+export const listOrphanStreams = (instanceId: string, now = new Date(), esperaAposErroMs = 0): Promise<StreamRecord[]> =>
+  streams
+    .find({
+      paused: { $ne: true },
+      /**
+       * Sem dono, dono vencido — ou desta instância.
+       *
+       * O último caso parece estranho e é necessário: um stream que ESTA instância
+       * possui mas que saiu da memória (um erro definitivo devolveu o arrendamento) não
+       * voltaria por nenhum outro caminho. Quem já está de pé é descartado no
+       * reconciliador, em memória, sem ida ao banco.
+       */
+      $or: [{ leaseOwner: { $exists: false } }, { leaseOwner: null }, { leaseOwner: instanceId }, { leaseUntil: { $lt: now } }],
+      /**
+       * E o que acabou de falhar fica de fora por um tempo.
+       *
+       * Uma configuração permanentemente inválida — endereço recusado, App sem adapter —
+       * falha na hora, devolve a posse e volta a ser órfã: sem esta espera, cada volta do
+       * reconciliador tentaria de novo, para sempre, gastando banco e log com um erro que
+       * não vai mudar sozinho.
+       */
+      ...(esperaAposErroMs > 0
+        ? { $nor: [{ state: 'error', updatedAt: { $gt: new Date(now.getTime() - esperaAposErroMs) } }] }
+        : {}),
+    })
+    .toArray()
 export const countStreams = (ownerId: string): Promise<number> => streams.countDocuments({ ownerId })
+
+// --- posse do stream, entre instâncias -------------------------------------------------
+//
+// O gerenciador impede um segundo socket DENTRO do processo. Entre processos ele não
+// impede nada: duas instâncias que subissem juntas restaurariam os mesmos streams e
+// abririam dois sockets no mesmo serviço — dobrando mensagem, dobrando evento e, num
+// provedor que limita conexões por conta, derrubando as duas.
+//
+// A posse é um arrendamento no próprio documento do stream: quem consegue gravá-lo é
+// dono até ele vencer. Não é eleição, não é serviço à parte, e não muda nada num deploy
+// de uma instância só — ela pega o arrendamento de todos e renova.
+
+/** Quanto tempo a posse vale sem renovação. Curto o bastante para uma queda não travar. */
+export const STREAM_LEASE_MS = Number(process.env.STREAM_LEASE_MS ?? 60_000)
+
+/**
+ * Toma a posse — ou renova a que já é minha.
+ *
+ * `findOneAndUpdate` com o filtro decidindo: sem dono, dono sou eu, ou o prazo venceu.
+ * É atômico no servidor do banco, então duas instâncias pedindo ao mesmo tempo produzem
+ * um dono e uma recusa — nunca dois donos.
+ */
+export async function claimStream(id: ObjectId, instanceId: string, now = new Date()): Promise<boolean> {
+  const r = await streams.findOneAndUpdate(
+    {
+      _id: id,
+      $or: [{ leaseOwner: { $exists: false } }, { leaseOwner: null }, { leaseOwner: instanceId }, { leaseUntil: { $lt: now } }],
+    },
+    { $set: { leaseOwner: instanceId, leaseUntil: new Date(now.getTime() + STREAM_LEASE_MS) } },
+    { returnDocument: 'after' },
+  )
+  return Boolean(r)
+}
+
+/** Renova só o que ainda é meu. Perder a posse no meio é sinal para soltar o socket. */
+export async function renewStreamLease(id: ObjectId, instanceId: string, now = new Date()): Promise<boolean> {
+  const r = await streams.updateOne(
+    { _id: id, leaseOwner: instanceId },
+    { $set: { leaseUntil: new Date(now.getTime() + STREAM_LEASE_MS) } },
+  )
+  return r.matchedCount > 0
+}
+
+/**
+ * Solta a posse. Chamado ao parar e no encerramento.
+ *
+ * Sem isto, um deploy deixaria os streams travados pelo tempo do arrendamento — a
+ * instância nova subiria e ficaria um minuto sem poder abrir nada.
+ *
+ * COM PRAZO CURTO, e é o detalhe que importa: devolver a posse é uma gentileza — ela
+ * vence sozinha —, e o encerramento não pode depender dela. Com o banco fora do ar (o
+ * caso em que o processo MAIS precisa morrer), a chamada fica pendurada até o tempo de
+ * seleção de servidor do driver, e o orquestrador mata o processo à força.
+ */
+const PRAZO_DA_DEVOLUCAO_MS = Number(process.env.STREAM_LEASE_RELEASE_TIMEOUT_MS ?? 2_000)
+
+async function comPrazo(promessa: Promise<unknown>): Promise<void> {
+  let relogio: NodeJS.Timeout | undefined
+  try {
+    await Promise.race([
+      promessa,
+      new Promise<void>((resolve) => {
+        relogio = setTimeout(resolve, PRAZO_DA_DEVOLUCAO_MS)
+        relogio.unref?.()
+      }),
+    ])
+  } catch {
+    // A posse vence sozinha: falhar em devolvê-la nunca é motivo para atrapalhar o
+    // encerramento nem para virar erro na tela.
+  } finally {
+    if (relogio) clearTimeout(relogio)
+  }
+}
+
+export async function releaseStreamLease(id: ObjectId, instanceId: string): Promise<void> {
+  await comPrazo(streams.updateOne({ _id: id, leaseOwner: instanceId }, { $set: { leaseOwner: null, leaseUntil: null } }))
+}
+
+export const releaseAllLeases = async (instanceId: string): Promise<void> => {
+  await comPrazo(streams.updateMany({ leaseOwner: instanceId }, { $set: { leaseOwner: null, leaseUntil: null } }))
+}
 
 /**
  * Criar ou reaproveitar. Chamar duas vezes com os mesmos símbolos não cria um segundo
@@ -54,8 +169,24 @@ export async function upsertStream(input: {
   return r as StreamRecord
 }
 
-export async function setStreamState(id: ObjectId, state: StreamState, now = new Date()): Promise<void> {
-  await streams.updateOne({ _id: id }, { $set: { state, updatedAt: now, ...(state === 'connected' ? { lastConnectedAt: now } : {}) } })
+/**
+ * A CERCA: uma escrita do gerenciador só vale se a posse ainda for de quem escreve.
+ *
+ * Sem ela, uma instância que perdeu o stream — porque travou, o arrendamento venceu e
+ * outra assumiu — continuava gravando estado, erro e contadores por cima da dona nova.
+ * O sintoma seria o pior possível de investigar: um stream que oscila entre "conectado"
+ * e "com erro" sem que nenhuma das duas instâncias esteja errada sobre si mesma.
+ *
+ * `instanceId` ausente = escrita administrativa (pausar, remover), que passa pelo
+ * serviço e não disputa posse com ninguém.
+ */
+const comPosse = (id: ObjectId, instanceId?: string): Record<string, unknown> =>
+  instanceId ? { _id: id, leaseOwner: instanceId } : { _id: id }
+
+export async function setStreamState(id: ObjectId, state: StreamState, now = new Date(), instanceId?: string): Promise<void> {
+  const r = await streams.updateOne(comPosse(id, instanceId), { $set: { state, updatedAt: now, ...(state === 'connected' ? { lastConnectedAt: now } : {}) } })
+  // Perdeu a posse no meio: não há o que limpar, e insistir sobrescreveria a dona nova.
+  if (instanceId && r.matchedCount === 0) return
   /**
    * Conectar limpa a falha ANTERIOR — só ela.
    *
@@ -65,18 +196,18 @@ export async function setStreamState(id: ObjectId, state: StreamState, now = new
    * ficaria "conectado, sem erro" — e mudo.
    */
   if (state === 'connected') {
-    await streams.updateOne({ _id: id, 'lastError.at': { $lt: now } }, { $set: { lastError: null } })
+    await streams.updateOne({ ...comPosse(id, instanceId), 'lastError.at': { $lt: now } }, { $set: { lastError: null } })
   }
 }
 
 /** A falha guardada é uma frase curta. O quadro cru pode conter credencial e não entra. */
-export async function setStreamError(id: ObjectId, message: string, now = new Date()): Promise<void> {
-  await streams.updateOne({ _id: id }, { $set: { state: 'error' as StreamState, lastError: { message: message.slice(0, 300), at: now }, updatedAt: now } })
+export async function setStreamError(id: ObjectId, message: string, now = new Date(), instanceId?: string): Promise<void> {
+  await streams.updateOne(comPosse(id, instanceId), { $set: { state: 'error' as StreamState, lastError: { message: message.slice(0, 300), at: now }, updatedAt: now } })
 }
 
-export async function markStreamEvent(id: ObjectId, quantos: number, now = new Date()): Promise<void> {
+export async function markStreamEvent(id: ObjectId, quantos: number, now = new Date(), instanceId?: string): Promise<void> {
   if (quantos <= 0) return
-  await streams.updateOne({ _id: id }, { $set: { lastEventAt: now, updatedAt: now }, $inc: { eventCount: quantos } })
+  await streams.updateOne(comPosse(id, instanceId), { $set: { lastEventAt: now, updatedAt: now }, $inc: { eventCount: quantos } })
 }
 
 export async function setStreamPaused(ownerId: string, id: ObjectId, paused: boolean, now = new Date()): Promise<StreamRecord | null> {

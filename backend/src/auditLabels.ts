@@ -27,6 +27,7 @@ const SOURCES: Partial<Record<AuditEntityType, { collection: string; field: stri
   routine: { collection: 'automations', field: 'name' },
   event_trigger: { collection: 'automations', field: 'name' },
   automation: { collection: 'automations', field: 'name' },
+  architect_project: { collection: 'architect_projects', field: 'title' },
 }
 
 // A label is short and plain by construction: no newlines, bounded length.

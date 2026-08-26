@@ -28,6 +28,9 @@ export type WsIngest = (
   installationId: string,
   raw: string,
   config: WsConnectionConfig,
+  now?: Date,
+  /** A credencial em uso, para ser riscada do que for guardado. */
+  segredos?: readonly string[],
 ) => Promise<{ status: string; eventIds: string[] }>
 
 /** As inscrições guardadas desta conexão. Injetado para o adapter não puxar o banco. */
@@ -44,25 +47,71 @@ export function buildWebSocketAdapter(
   return {
     appKey: 'websocket',
 
+    /**
+     * O endereço COM a credencial, montado na hora de conectar.
+     *
+     * Duas coisas acontecem aqui, e as duas só nos VALORES da query:
+     *
+     * `{{token}}` escrito num parâmetro é substituído. A configuração aceita isso — é
+     * como se guarda um endereço com chave sem guardar a chave —, e sem esta linha o
+     * socket abria com o marcador literal e o serviço recusava por uma razão que a tela
+     * não tinha como explicar.
+     *
+     * `auth.kind: "query"` acrescenta o parâmetro dele. Quando os dois estão
+     * configurados para o MESMO nome, o de autenticação ganha: ele é a configuração
+     * explícita de autenticação, e ter dois valores para o mesmo parâmetro seria
+     * ambíguo — o servidor escolheria um deles e ninguém saberia qual.
+     *
+     * Host e caminho não passam por substituição nenhuma: um `{{token}}` ali mudaria
+     * PARA ONDE a conexão vai, e o endereço já foi conferido contra destino interno.
+     * `URLSearchParams` cuida da codificação; concatenar texto não cuidaria.
+     */
     url: () => {
-      // Autenticação por query: o valor entra no endereço na hora de conectar. Ele não
-      // é registrado em lugar nenhum — nem no log, nem no documento do stream.
-      if (config.auth.kind !== 'query' || !credencial) return config.endpoint
+      if (!credencial) return config.endpoint
       const url = new URL(config.endpoint)
-      url.searchParams.set(config.auth.name, `${config.auth.prefix}${credencial}`)
-      return url.toString()
+      let mudou = false
+      for (const [nome, valor] of [...url.searchParams]) {
+        if (!valor.includes('{{token}}')) continue
+        url.searchParams.set(nome, fillToken(valor, credencial))
+        mudou = true
+      }
+      if (config.auth.kind === 'query' && config.auth.name) {
+        url.searchParams.set(config.auth.name, `${config.auth.prefix}${credencial}`)
+        mudou = true
+      }
+      return mudou ? url.toString() : config.endpoint
     },
 
-    handshakeHeaders: () =>
-      config.auth.kind === 'header' && credencial ? { [config.auth.name]: `${config.auth.prefix}${credencial}` } : {},
+    handshakeHeaders: () => {
+      const fora: Record<string, string> = {}
+      // Os extras primeiro: assim o de autenticação nunca é sobrescrito por um extra
+      // com o mesmo nome — o que seria uma forma silenciosa de derrubar a autenticação.
+      for (const h of config.headers) fora[h.name] = fillToken(h.value, credencial)
+      if (config.auth.kind === 'header' && credencial) fora[config.auth.name] = `${config.auth.prefix}${credencial}`
+      return fora
+    },
 
     protocols: () => config.protocols,
 
     pinnedAddress: () => pinned ?? null,
 
-    // A primeira mensagem, quando é assim que o serviço autentica. `{{token}}` é o único
-    // template que existe: uma substituição, de um nome conhecido, por um valor conhecido.
-    authMessage: config.auth.kind === 'message' ? () => JSON.parse(fillToken(config.auth.messageTemplate, credencial)) : undefined,
+    /**
+     * A primeira mensagem, quando é assim que o serviço autentica.
+     *
+     * O formato manda: numa conexão de texto o quadro sai como texto. Antes daqui ele
+     * era sempre `JSON.parse`ado, então uma conexão de texto que autenticasse por
+     * mensagem quebrava na abertura — num App que se diz genérico.
+     *
+     * `{{token}}` é o único template que existe: uma substituição, de um nome conhecido,
+     * por um valor conhecido.
+     */
+    authMessage:
+      config.auth.kind === 'message'
+        ? () => {
+            const quadro = fillToken(config.auth.messageTemplate, credencial)
+            return config.format === 'text' ? quadro : JSON.parse(quadro)
+          }
+        : undefined,
 
     /**
      * `symbols` não é usado por este App — forçar configuração genérica naquele campo
@@ -73,14 +122,27 @@ export function buildWebSocketAdapter(
     unsubscribeMessage: () => undefined,
 
     /**
-     * As inscrições guardadas, mandadas depois de conectar e autenticar.
+     * O que sai depois de conectar, NA ORDEM: primeiro as mensagens iniciais que a
+     * conexão declara, depois as inscrições guardadas.
      *
-     * Vêm do banco, e por isso não cabem em `subscribeMessage`, que é síncrono. A cada
-     * reconexão elas vão de novo: um serviço que caiu esqueceu tudo que foi pedido.
+     * A ordem é a regra dos serviços, não uma preferência: quem exige autenticar antes
+     * de assinar recusa a inscrição que chega primeiro — e recusa calado, com a conexão
+     * de pé e nenhum dado chegando.
+     *
+     * As inscrições vêm do banco, e por isso isto é assíncrono. A cada reconexão tudo
+     * vai de novo: um serviço que caiu esqueceu tudo que foi pedido.
      */
-    framesOnConnect: (ctx) => frames(ctx.ownerId, ctx.installationId),
+    framesOnConnect: async (ctx) => [
+      ...config.initialMessages.map((m) => fillToken(m, credencial)),
+      ...(await frames(ctx.ownerId, ctx.installationId)),
+    ],
 
-    heartbeatMessage: config.heartbeat.enabled ? () => JSON.parse(config.heartbeat.message) : undefined,
+    // Ping do protocolo quando dá: ele não vira mensagem para a aplicação do outro lado.
+    heartbeatNative: () => config.heartbeat.enabled && config.heartbeat.native,
+    heartbeatMessage:
+      config.heartbeat.enabled && !config.heartbeat.native ? () => (config.format === 'text' ? config.heartbeat.message : JSON.parse(config.heartbeat.message)) : undefined,
+    heartbeatTimeoutMs: () => config.heartbeat.timeoutMs,
+    connectTimeoutMs: () => config.connectTimeoutMs,
 
     /**
      * Os intervalos DESTA conexão.
@@ -104,7 +166,9 @@ export function buildWebSocketAdapter(
     ingest: async (raw, ctx) => {
       // A contagem do stream é de EVENTOS publicados: uma mensagem que serviu a duas
       // assinaturas produziu dois fatos, e uma que não serviu a nenhuma produziu zero.
-      const { eventIds } = await ingest(ctx.ownerId, ctx.installationId, raw, config)
+      // A credencial vai junto para ser RISCADA: um serviço que ecoa a autenticação de
+      // volta manda a chave de volta como conteúdo.
+      const { eventIds } = await ingest(ctx.ownerId, ctx.installationId, raw, config, undefined, credencial ? [credencial] : [])
       return eventIds.length
     },
   }

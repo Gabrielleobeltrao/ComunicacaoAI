@@ -13,8 +13,21 @@ const ABAS = [
   { key: 'overview', label: 'Visão geral', path: '/apps/websocket/overview' },
   { key: 'messages', label: 'Mensagens', path: '/apps/websocket/messages' },
   { key: 'subscriptions', label: 'Assinaturas', path: '/apps/websocket/subscriptions' },
+  { key: 'live', label: 'Dado ao vivo', path: '/apps/websocket/live' },
   { key: 'logs', label: 'Logs', path: '/apps/websocket/logs' },
 ]
+
+/**
+ * Grade que vira UMA coluna no celular.
+ *
+ * As grades desta tela eram `1fr 1fr` fixo: em 320 px, dois campos de endereço lado a
+ * lado ficam com 140 px cada, e o conteúdo é cortado. `auto-fit` com largura mínima
+ * resolve sem media query e sem JavaScript — a coluna quebra quando não cabe.
+ */
+export const GRADE: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }
+
+/** A mesma ideia para as linhas com botão no fim (filtro, cabeçalho, mapeamento). */
+export const LINHA: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'flex-end' }
 
 export function WsPage({ current, title, subtitle, children }: { current: string; title: string; subtitle?: string; children: React.ReactNode }) {
   return (
@@ -76,4 +89,20 @@ export const quando = (iso: string | null): string => {
   if (minutos < 60) return `há ${minutos} min`
   const horas = Math.round(minutos / 60)
   return horas < 24 ? `há ${horas} h` : new Date(iso).toLocaleDateString('pt-BR')
+}
+
+/**
+ * Há quanto tempo, em palavras curtas.
+ *
+ * "Conectado" sozinho não distingue uma conexão estável de uma que reconectou agora
+ * mesmo — e é essa a diferença que interessa a quem está olhando por que o dado sumiu.
+ */
+export function duracao(desde: string): string {
+  const ms = Date.now() - new Date(desde).getTime()
+  if (!Number.isFinite(ms) || ms < 0) return 'há pouco'
+  const min = Math.floor(ms / 60_000)
+  if (min < 1) return 'há menos de um minuto'
+  if (min < 60) return `há ${min} min`
+  const h = Math.floor(min / 60)
+  return h < 24 ? `há ${h} h` : `há ${Math.floor(h / 24)} d`
 }
