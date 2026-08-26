@@ -92,6 +92,8 @@ const COM_PROPOSTA = projeto({ status: 'draft', hasBlueprint: true, blueprint: B
 
 let aplicado: Record<string, unknown> | null = null
 let mensagensEnviadas: string[] = []
+/** Quais conversas o servidor recebeu ordem de apagar. */
+let apagados: string[] = []
 let ligacoes: Record<string, unknown> | null = null
 let salvoNoProjeto: Record<string, unknown> | null = null
 let rodadasAutomaticas = 0
@@ -129,6 +131,7 @@ async function stub(
 ) {
   aplicado = null
   mensagensEnviadas = []
+  apagados = []
   ligacoes = null
   salvoNoProjeto = null
   rodadasAutomaticas = 0
@@ -197,6 +200,10 @@ async function stub(
     return r.fulfill({ json: { ...COM_PROPOSTA, checklist: CHECKLIST.map((i) => (i.completionMode === 'manual' ? { ...i, status: body.done ? 'done' : 'ready' } : i)) } })
   })
   await page.route('**/api/architect/projects/*', (r) => {
+    if (r.request().method() === 'DELETE') {
+      apagados.push(r.request().url().split('/').pop() as string)
+      return r.fulfill({ status: 204, body: '' })
+    }
     if (r.request().method() === 'PATCH') {
       salvoNoProjeto = r.request().postDataJSON() as Record<string, unknown>
       return r.fulfill({ json: { ...proj, ...salvoNoProjeto } })
@@ -244,6 +251,35 @@ test('um projeto existente aparece na lista com o estado dele', async ({ page })
   await page.goto('/architect')
   await expect(page.getByTestId(`architect-project-${PROJETO_ID}`)).toContainText('Aplicada')
   await expect(page.getByTestId(`architect-project-${PROJETO_ID}`)).toContainText('4/4 obrigatórios')
+})
+
+test('dá para apagar uma conversa, e a tela avisa que o que ela criou continua de pé', async ({ page }) => {
+  let listaAtual: unknown[] = [projeto({ status: 'applied' })]
+  await stub(page, { projects: listaAtual })
+  // A recarga depois de apagar tem que trazer a lista NOVA: apagar só no estado local
+  // mente quando a chamada falha no meio.
+  await page.route('**/api/architect/projects', (r) => r.fulfill({ json: listaAtual }))
+
+  await page.goto('/architect')
+  await expect(page.getByTestId(`architect-project-${PROJETO_ID}`)).toBeVisible()
+
+  await page.getByTestId(`architect-delete-${PROJETO_ID}`).click()
+  // O aviso é a parte que importa: apagar a conversa não desfaz a operação.
+  await expect(page.getByText(/O que ela já criou continua de pé/i)).toBeVisible()
+
+  listaAtual = []
+  await page.getByTestId('architect-delete-confirm').click()
+
+  await expect.poll(() => apagados).toContain(PROJETO_ID)
+  await expect(page.getByTestId(`architect-project-${PROJETO_ID}`)).toHaveCount(0)
+  await expect(page.getByText('Nenhuma operação montada ainda')).toBeVisible()
+})
+
+test('uma conversa que está sendo aplicada não pode ser apagada', async ({ page }) => {
+  // Ela escreve no escritório agora: sumir com o registro deixaria trabalho órfão.
+  await stub(page, { projects: [projeto({ status: 'applying' })] })
+  await page.goto('/architect')
+  await expect(page.getByTestId(`architect-delete-${PROJETO_ID}`)).toBeDisabled()
 })
 
 // --- a conversa -------------------------------------------------------------------------------
@@ -652,19 +688,31 @@ test('reconferir apura de novo contra o estado real', async ({ page }) => {
 
 // --- navegação -------------------------------------------------------------------------------------------------------
 
-test('“Montar operação” está no menu do desktop', async ({ page }) => {
+/**
+ * Onde fica a porta de entrada — e ela depende do modo de navegação.
+ *
+ * Com o prédio ligado, "Montar operação" mora no menu de ANDARES, logo abaixo de criar
+ * um à mão: é lá que ela pertence, porque é isso que ela faz. Sem o prédio não existe
+ * menu de andares, e ela continua sendo uma linha da barra lateral — tirá-la ali
+ * deixaria a tela sem caminho nenhum.
+ *
+ * O teste confere o modo do build em que está rodando em vez de presumir um: o `dist`
+ * do CI não tem `.env` e sobe em V1, e o de quem desenvolve sobe em V2.
+ */
+test('“Montar operação” tem entrada no menu, no modo que o build usa', async ({ page }) => {
   await stub(page)
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/architect')
-  await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toBeVisible()
-})
 
-test('“Montar operação” está no menu do celular', async ({ page }) => {
-  await stub(page)
-  await page.setViewportSize({ width: 390, height: 780 })
-  await page.goto('/architect')
-  await page.getByRole('button', { name: /menu/i }).click()
-  await expect(page.getByRole('link', { name: 'Montar operação' })).toBeVisible()
+  const menuDeAndares = page.getByTestId('building-switcher')
+  if (await menuDeAndares.count()) {
+    await menuDeAndares.first().click()
+    await expect(page.getByTestId('open-architect')).toBeVisible()
+    // E não está mais duplicada na barra lateral.
+    await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toHaveCount(0)
+  } else {
+    await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toBeVisible()
+  }
 })
 
 // --- celular -----------------------------------------------------------------------------------------------------------

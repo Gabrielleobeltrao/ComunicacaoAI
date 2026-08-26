@@ -278,6 +278,25 @@ export async function archiveProject(ownerId: string, projectId: ObjectId): Prom
   return atualizado
 }
 
+/**
+ * Apagar a CONVERSA — e só ela.
+ *
+ * O que o projeto criou não é dele: o andar, os agentes e os setores são do escritório
+ * desde o momento em que foram aplicados, e continuam de pé. Apagar aqui remove a
+ * conversa, as mensagens e o histórico de aplicação — nada mais. Quem quer desfazer o
+ * que foi criado usa `rollback`, que é outra decisão e tem outra tela.
+ *
+ * Enquanto uma aplicação está correndo, não: a operação em andamento escreve no
+ * escritório, e sumir com o registro dela no meio deixaria trabalho órfão sem ninguém
+ * para retomar. É a mesma recusa de `archiveProject`.
+ */
+export async function deleteProject(ownerId: string, projectId: ObjectId): Promise<{ id: string; title: string }> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (projeto.status === 'applying') throw new ArchitectRefusal('not_editable', 'não dá para apagar um projeto que está sendo aplicado')
+  await repo.deleteProjectData(ownerId, projectId)
+  return { id: projeto._id.toString(), title: projeto.title }
+}
+
 /** O DTO. A conversa, o prompt e o blueprint inteiro não saem em listagem. */
 export const projectSummary = (p: ArchitectProject) => ({
   id: p._id.toString(),

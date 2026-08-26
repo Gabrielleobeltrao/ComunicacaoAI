@@ -30,6 +30,24 @@ export interface SocketOptions {
 /** Quanto tempo esperar o handshake antes de desistir. */
 export const HANDSHAKE_TIMEOUT_MS = Number(process.env.WS_HANDSHAKE_TIMEOUT_MS ?? 15_000)
 
+/**
+ * O `lookup` que devolve o endereço JÁ CONFERIDO, nos dois contratos do Node.
+ *
+ * Exportado porque é aqui que mora a regra que quebrou tudo, e ela precisa de teste
+ * próprio: abrir um socket real para exercitá-la seria depender de rede para provar
+ * uma função de três linhas.
+ */
+export const lookupDoEnderecoFixado =
+  (fixado: { address: string; family: 4 | 6 }) =>
+  (
+    _hostname: string,
+    options: { all?: boolean } | undefined,
+    callback: (err: Error | null, address: string | { address: string; family: number }[], family?: number) => void,
+  ): void => {
+    if (options?.all) callback(null, [{ address: fixado.address, family: fixado.family }])
+    else callback(null, fixado.address, fixado.family)
+  }
+
 export const createRealSocket = (url: string, opts: SocketOptions = {}): StreamSocket => {
   const socket = new WebSocket(url, opts.protocols ?? [], {
     ...(opts.headers && Object.keys(opts.headers).length ? { headers: opts.headers } : {}),
@@ -41,9 +59,20 @@ export const createRealSocket = (url: string, opts: SocketOptions = {}): StreamS
      */
     ...(opts.pinnedAddress
       ? {
-          lookup: (_hostname: string, _options: unknown, callback: (err: Error | null, address: string, family: number) => void) => {
-            callback(null, opts.pinnedAddress!.address, opts.pinnedAddress!.family)
-          },
+          /**
+           * O `lookup` do Node tem DOIS contratos, e responder no errado quebra tudo.
+           *
+           * Com `all: true` — que é o que o `net.connect` pede desde que ganhou Happy
+           * Eyeballs — a resposta tem que ser um ARRAY de `{ address, family }`. Com
+           * `all` ausente, é o terno antigo `(erro, endereço, família)`.
+           *
+           * Respondendo sempre no formato antigo, o Node fazia `addresses[0].address`
+           * em cima de uma string: `'1.2.3.4'[0]` é `'1'`, `.address` é `undefined`, e
+           * a conexão morria com `ERR_INVALID_IP_ADDRESS: Invalid IP address: undefined`
+           * — um erro NOSSO que a tela mostrava como "o provedor recusou". Nenhuma
+           * conexão com endereço fixado chegava a abrir.
+           */
+          lookup: lookupDoEnderecoFixado(opts.pinnedAddress) as never,
         }
       : {}),
     handshakeTimeout: opts.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS,

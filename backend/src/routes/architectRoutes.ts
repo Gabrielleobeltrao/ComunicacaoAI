@@ -206,6 +206,18 @@ architectRouter.post('/projects/:id/archive', async (req, res, next) => {
   }
 })
 
+architectRouter.delete('/projects/:id', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const apagado = await service.deleteProject(res.locals.userId, id)
+    auditEntity(res, { id: apagado.id, label: apagado.title })
+    res.status(204).end()
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
 // --- aplicação ---------------------------------------------------------------------
 // Estas quatro são as únicas rotas do Arquiteto que escrevem no escritório — e a
 // primeira delas exige hash revisado, chave de operação e confirmação explícita.

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button, Card, EmptyState, Field, Input } from '../../ui'
 import { listConnections, listLive, sendFrame } from '../../lib/websocketApp'
 import type { WsConnection, WsLiveValue } from '../../lib/websocketApp'
-import { GRADE, SemConexao, WsPage, duracao } from './shared'
+import {GRADE, SemConexao, duracao} from './shared'
 
 /**
  * O DADO AO VIVO: o último valor de cada chave.
@@ -67,14 +67,14 @@ export function WebSocketLive() {
 
   if (conexoes !== null && conexoes.length === 0) {
     return (
-      <WsPage current="/apps/websocket/live" title="Dado ao vivo">
+      <>
         <SemConexao />
-      </WsPage>
+      </>
     )
   }
 
   return (
-    <WsPage current="/apps/websocket/live" title="Dado ao vivo" subtitle="O último valor de cada chave. É o mesmo que os agentes de código leem.">
+    <>
       <div style={{ display: 'grid', gap: 12 }} data-testid="ws-live">
         <Card padding="16px" style={{ display: 'grid', gap: 10 }}>
           <div style={GRADE}>
@@ -150,6 +150,6 @@ export function WebSocketLive() {
           </div>
         </Card>
       </div>
-    </WsPage>
+    </>
   )
 }

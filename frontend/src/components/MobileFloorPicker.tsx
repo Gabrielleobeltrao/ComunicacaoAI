@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
 import { useBuildingContext } from '../contexts/BuildingContext'
 import { Icon } from '../ui'
 
@@ -60,11 +61,18 @@ export function MobileFloorPicker({ open, onClose }: { open: boolean; onClose: (
     if (!open) setQuery('')
   }, [open])
 
+  const navigate = useNavigate()
+
   if (!open) return null
 
   const pick = (floorId: string) => {
     onClose()
     selectFloor(floorId, { preserveSection: true })
+  }
+
+  const paraArquiteto = () => {
+    onClose()
+    navigate('/architect')
   }
 
   return (
@@ -128,9 +136,35 @@ export function MobileFloorPicker({ open, onClose }: { open: boolean; onClose: (
             })
           )}
         </div>
+
+        {/* A mesma saída do menu de andares do desktop: quem escolhe andar também pode
+            querer MONTAR um. Sem isto, tirar o item da barra lateral deixaria o celular
+            sem caminho nenhum para ela. */}
+        <button onClick={() => paraArquiteto()} style={rodape} data-testid="floor-picker-architect">
+          <Icon name="sparkles" size={16} color="var(--text-muted)" />
+          Montar operação
+        </button>
       </div>
     </div>
   )
+}
+
+const rodape: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  width: '100%',
+  minHeight: 'var(--hit-min, 44px)',
+  padding: '10px 14px',
+  border: 0,
+  borderTop: '1px solid var(--border-subtle)',
+  background: 'transparent',
+  color: 'var(--text-body)',
+  font: 'inherit',
+  fontSize: 14.5,
+  fontWeight: 600,
+  textAlign: 'left',
+  cursor: 'pointer',
 }
 
 const overlay: React.CSSProperties = {

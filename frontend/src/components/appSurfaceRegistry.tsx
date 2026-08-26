@@ -3,11 +3,7 @@ import { AppSurfaceGuard } from './AppSurfaceGuard'
 import { ChannelOverview } from '../pages/ChannelOverview'
 import { Chats } from '../pages/Chats'
 import { Widgets } from '../pages/Widgets'
-import { WebSocketOverview } from '../pages/websocket/Overview'
-import { WebSocketMessages } from '../pages/websocket/Messages'
-import { WebSocketSubscriptions } from '../pages/websocket/Subscriptions'
-import { WebSocketLogs } from '../pages/websocket/Logs'
-import { WebSocketLive } from '../pages/websocket/Live'
+import { WebSocketApp } from '../pages/websocket/App'
 
 // The compiled allow list of App pages.
 //
@@ -73,31 +69,31 @@ export const APP_SURFACE_ROUTES: SurfaceRoute[] = [
     appKey: 'websocket',
     surfaceKey: 'overview',
     path: '/apps/websocket/overview',
-    element: () => guarded('websocket', 'overview', 'WebSocket · Visão geral', <WebSocketOverview />),
+    element: () => guarded('websocket', 'overview', 'WebSocket · Visão geral', <WebSocketApp />),
   },
   {
     appKey: 'websocket',
     surfaceKey: 'messages',
     path: '/apps/websocket/messages',
-    element: () => guarded('websocket', 'messages', 'WebSocket · Mensagens', <WebSocketMessages />),
+    element: () => guarded('websocket', 'messages', 'WebSocket · Mensagens', <WebSocketApp />),
   },
   {
     appKey: 'websocket',
     surfaceKey: 'subscriptions',
     path: '/apps/websocket/subscriptions',
-    element: () => guarded('websocket', 'subscriptions', 'WebSocket · Assinaturas', <WebSocketSubscriptions />),
+    element: () => guarded('websocket', 'subscriptions', 'WebSocket · Assinaturas', <WebSocketApp />),
   },
   {
     appKey: 'websocket',
     surfaceKey: 'live',
     path: '/apps/websocket/live',
-    element: () => guarded('websocket', 'live', 'WebSocket · Dado ao vivo', <WebSocketLive />),
+    element: () => guarded('websocket', 'live', 'WebSocket · Dado ao vivo', <WebSocketApp />),
   },
   {
     appKey: 'websocket',
     surfaceKey: 'logs',
     path: '/apps/websocket/logs',
-    element: () => guarded('websocket', 'logs', 'WebSocket · Logs', <WebSocketLogs />),
+    element: () => guarded('websocket', 'logs', 'WebSocket · Logs', <WebSocketApp />),
   },
 ]
 

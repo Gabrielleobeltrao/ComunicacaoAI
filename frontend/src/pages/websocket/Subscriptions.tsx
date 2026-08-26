@@ -11,7 +11,7 @@ import {
 } from '../../lib/websocketApp'
 import type { WsConnection, WsDestination, WsFilter, WsSubscription, WsTargets } from '../../lib/websocketApp'
 import { Button, Card, EmptyState, Field, Input, Textarea } from '../../ui'
-import { SemConexao, WsPage, quando, LINHA } from './shared'
+import {SemConexao, quando, LINHA} from './shared'
 import { DestinationFields } from './DestinationFields'
 
 /**
@@ -155,7 +155,7 @@ export function WebSocketSubscriptions() {
   }
 
   return (
-    <WsPage current="/apps/websocket/subscriptions" title="WebSocket · Assinaturas" subtitle="O que ouvir em cada conexão, e para onde mandar.">
+    <>
       {erro ? <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--coral-600, #d92d20)' }} data-testid="ws-sub-error">{erro}</p> : null}
       {carregando ? (
         <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>Carregando…</p>
@@ -309,6 +309,6 @@ export function WebSocketSubscriptions() {
           )}
         </div>
       )}
-    </WsPage>
+    </>
   )
 }

@@ -199,6 +199,8 @@ const RULES: Rule[] = [
   R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/archive', { entityType: 'architect_project', action: 'archive' }, { idAt: 3 }),
+  // Apagar a CONVERSA. O que ela criou continua de pé — ver `deleteProject`.
+  R('DELETE', 'api/architect/projects/:', { entityType: 'architect_project', action: 'delete' }, { idAt: 3 }),
   // Conversar não é auditado: é a fala da pessoa, e o log não guarda conteúdo. Gerar e
   // revisar, sim — os dois mudam a PROPOSTA, que é o que vai ser aplicado, e sem eles
   // no log não dá para contar a história de como o projeto chegou onde chegou. O que

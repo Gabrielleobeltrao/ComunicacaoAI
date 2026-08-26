@@ -9,6 +9,19 @@ import { BuildingSwitcher } from './BuildingSwitcher'
 import { PinnedAppsNav } from './PinnedAppsNav'
 import { useAppNavigation } from '../lib/appNavigation'
 
+/**
+ * O MIOLO do rail: a única parte que rola.
+ *
+ * A barra inteira rolava, então bastava fixar dois Apps com páginas para a marca sair
+ * pela cima e o cartão da conta pela baixo — os dois cortados, porque o `<aside>` é de
+ * altura fixa e o conteúdo passou dela. Agora marca e conta não encolhem, e o que
+ * sobra de lista rola aqui dentro.
+ *
+ * `min-h-0` não é enfeite: sem ele um filho de flex não encolhe abaixo do próprio
+ * conteúdo, e a rolagem simplesmente não acontece.
+ */
+const MIOLO = 'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain [scrollbar-width:thin]'
+
 export function Sidebar({ current }: { current: string }) {
   const navigate = useNavigate()
   const { data: session } = useSession()
@@ -40,19 +53,20 @@ export function Sidebar({ current }: { current: string }) {
       data-rail
     >
       <aside
-        className="absolute inset-y-0 left-0 z-30 flex w-(--rail-width-collapsed) flex-col gap-4 overflow-hidden border-r px-3 py-4 transition-[width,box-shadow] duration-200 ease-out group-hover:w-(--rail-width) group-hover:overflow-y-auto group-hover:shadow-[0_16px_40px_rgba(22,24,31,.16)]"
+        className="absolute inset-y-0 left-0 z-30 flex w-(--rail-width-collapsed) flex-col gap-4 overflow-hidden border-r px-3 py-4 transition-[width,box-shadow] duration-200 ease-out group-hover:w-(--rail-width) group-hover:shadow-[0_16px_40px_rgba(22,24,31,.16)]"
         style={{ background: 'var(--surface-rail)', borderColor: 'var(--border-subtle)' }}
       >
-        <div className="flex items-center justify-center gap-0 overflow-hidden pt-1 group-hover:justify-start group-hover:gap-2.5 group-hover:px-1.5">
+        <div className="flex shrink-0 items-center justify-center gap-0 overflow-hidden pt-1 group-hover:justify-start group-hover:gap-2.5 group-hover:px-1.5">
           <Brand size={18} word={false} />
           <span className={COLLAPSE_FADE} style={{ display: 'inline-flex' }}>
             <Brand size={18} mark={false} />
           </span>
         </div>
 
+        {bctx ? <div className="shrink-0"><BuildingSwitcher /></div> : null}
+
         {bctx ? (
-          <nav className="flex flex-col gap-2">
-            <BuildingSwitcher />
+          <nav className={MIOLO + ' gap-2'}>
             {navGroupsFor(bctx.activeFloorId, bctx.activeFloor?.name).map(({ group, label, items }) => (
               <div key={group} className="flex flex-col gap-1">
                 {/* Hidden entirely (not just zero-width) in the slim rail so it
@@ -81,7 +95,7 @@ export function Sidebar({ current }: { current: string }) {
             <PinnedAppsNav apps={pinned} />
           </nav>
         ) : (
-          <nav className="flex flex-col gap-1">
+          <nav className={MIOLO + ' gap-1'}>
             {NAV.map((item) => (
               <Link key={item.to} to={item.to} className={`${ITEM_BASE} ${item.to === current ? ACTIVE : INACTIVE}`}>
                 <Icon name={item.icon} size={18} />
@@ -107,7 +121,7 @@ export function Sidebar({ current }: { current: string }) {
             fica no seletor e configura outra coisa. */}
         <Link
           to="/settings"
-          className="mt-auto flex items-center justify-center gap-0 overflow-hidden rounded-md p-1.5 group-hover:justify-start group-hover:gap-2.5"
+          className="mt-auto flex shrink-0 items-center justify-center gap-0 overflow-hidden rounded-md p-1.5 group-hover:justify-start group-hover:gap-2.5"
           style={{ background: 'var(--surface-sunken)', textDecoration: 'none', color: 'inherit' }}
           title="Configurações da conta"
         >

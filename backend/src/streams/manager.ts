@@ -186,6 +186,46 @@ function naoLoga(texto: string, segredos: readonly string[] = []): string {
   return limpo.slice(0, 300)
 }
 
+/**
+ * De quem é a falha: do provedor, ou nossa.
+ *
+ * A distinção não é cosmética. "O provedor recusou" manda a pessoa conferir credencial
+ * e endereço num serviço que está impecável; foi exatamente o que aconteceu quando o
+ * nosso `lookup` respondia no formato errado e o Node devolvia
+ * `ERR_INVALID_IP_ADDRESS` — um defeito nosso, anunciado como culpa de quem estava do
+ * outro lado. Só a RECUSA de verdade no handshake é do provedor; DNS, rede, TLS e
+ * qualquer `ERR_*` do Node somos nós ou o caminho até lá.
+ */
+export function motivoDoErroDeSocket(ev: unknown): string {
+  const bruto =
+    typeof ev === 'string'
+      ? ev
+      : typeof ev === 'object' && ev !== null
+        ? String((ev as { message?: unknown }).message ?? (ev as { error?: { message?: unknown } }).error?.message ?? '')
+        : ''
+  const codigo =
+    typeof ev === 'object' && ev !== null
+      ? String((ev as { code?: unknown }).code ?? (ev as { error?: { code?: unknown } }).error?.code ?? '')
+      : ''
+  const texto = `${codigo} ${bruto}`
+
+  // A única que é MESMO do provedor: ele respondeu o handshake com uma recusa.
+  const http = /Unexpected server response:\s*(\d{3})/i.exec(bruto)
+  if (http) return `O provedor recusou a conexão de tempo real (HTTP ${http[1]}).`
+  if (/Invalid Sec-WebSocket-Accept|invalid.*handshake|Server sent.*subprotocol/i.test(bruto)) {
+    return 'O provedor recusou a conexão de tempo real no handshake.'
+  }
+
+  if (/ENOTFOUND|EAI_AGAIN|ERR_INVALID_IP_ADDRESS/i.test(texto)) return 'Não foi possível resolver o hostname do serviço.'
+  if (/ECONNREFUSED/i.test(texto)) return 'Nada atendeu nesse endereço e porta.'
+  if (/ETIMEDOUT|ERR_SOCKET_CONNECTION_TIMEOUT|EHOSTUNREACH|ENETUNREACH/i.test(texto)) return 'O serviço não respondeu a tempo.'
+  if (/CERT|ERR_TLS|self[- ]signed|DEPTH_ZERO/i.test(texto)) return 'O certificado do serviço não foi aceito.'
+  if (/ECONNRESET|EPIPE/i.test(texto)) return 'A conexão caiu antes de ser estabelecida.'
+  // Um `ERR_*` do Node é defeito de configuração ou nosso — nunca do outro lado.
+  if (/^ERR_[A-Z_]+/.test(codigo) || /^ERR_[A-Z_]+/.test(bruto)) return `Falha ao abrir a conexão: ${bruto || codigo}`
+  return bruto ? `Falha ao abrir a conexão: ${bruto}` : 'Falha ao abrir a conexão.'
+}
+
 /** Quem é este stream, do ponto de vista de quem recebe uma mensagem dele. */
 const contextOf = (vivo: Vivo): StreamContext => ({
   ownerId: vivo.record.ownerId,
@@ -554,7 +594,7 @@ export class StreamManager {
         // Uma mensagem que serve à assinatura é a prova de que ela funciona.
         if (depoisDeAutenticar?.aceita(bruto)) return encerrar(true, depoisDeAutenticar.mensagemOk)
       }
-      socket.onerror = () => encerrar(false, 'O provedor recusou a conexão de tempo real.')
+      socket.onerror = (ev) => encerrar(false, naoLoga(motivoDoErroDeSocket(ev), segredos))
       socket.onclose = () => encerrar(false, 'O provedor fechou a conexão antes de confirmar a credencial.')
     })
   }
@@ -660,7 +700,7 @@ export class StreamManager {
       if (vivo.geracao !== geracao) return
       // O quadro cru NÃO entra: um erro de autenticação costuma vir com a mensagem
       // que continha a credencial.
-      const msg = typeof ev === 'object' && ev !== null && typeof (ev as { message?: unknown }).message === 'string' ? (ev as { message: string }).message : 'erro no socket'
+      const msg = motivoDoErroDeSocket(ev)
       void setStreamError(vivo.record._id, naoLoga(msg, vivo.segredos), new Date(), this.instanceId).catch((e) => this.deps.onError(`stream ${id} erro`, e))
     }
 

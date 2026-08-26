@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { listConnections, listMessages, STATUS_LABEL } from '../../lib/websocketApp'
 import type { WsConnection, WsMessage, WsMessageStatus } from '../../lib/websocketApp'
 import { Card, EmptyState, Button } from '../../ui'
-import { StatusTag, WsPage, quando } from './shared'
+import {StatusTag, quando} from './shared'
 
 /**
  * O que chegou — inclusive o que foi recusado, e por quê.
@@ -50,7 +50,7 @@ export function WebSocketMessages() {
   const paginas = Math.ceil(total / POR_PAGINA)
 
   return (
-    <WsPage current="/apps/websocket/messages" title="WebSocket · Mensagens" subtitle="O que chegou, e o que foi descartado.">
+    <>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <select
           style={selectStyle}
@@ -142,6 +142,6 @@ export function WebSocketMessages() {
           </Button>
         </div>
       ) : null}
-    </WsPage>
+    </>
   )
 }

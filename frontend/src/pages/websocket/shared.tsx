@@ -1,3 +1,4 @@
+import { Link } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
 import { EmptyState, Tag } from '../../ui'
 import type { WsMessageStatus } from '../../lib/websocketApp'
@@ -9,13 +10,13 @@ import type { WsMessageStatus } from '../../lib/websocketApp'
  * evita quatro cópias que divergem na primeira mudança.
  */
 
-const ABAS = [
-  { key: 'overview', label: 'Visão geral', path: '/apps/websocket/overview' },
-  { key: 'messages', label: 'Mensagens', path: '/apps/websocket/messages' },
-  { key: 'subscriptions', label: 'Assinaturas', path: '/apps/websocket/subscriptions' },
-  { key: 'live', label: 'Dado ao vivo', path: '/apps/websocket/live' },
-  { key: 'logs', label: 'Logs', path: '/apps/websocket/logs' },
-]
+export const ABAS = [
+  { key: 'overview', label: 'Visão geral', path: '/apps/websocket/overview', title: 'WebSocket · Visão geral', subtitle: 'Conexões, estado e o que chegou.' },
+  { key: 'messages', label: 'Mensagens', path: '/apps/websocket/messages', title: 'WebSocket · Mensagens', subtitle: 'O que chegou, e o que foi descartado.' },
+  { key: 'subscriptions', label: 'Assinaturas', path: '/apps/websocket/subscriptions', title: 'WebSocket · Assinaturas', subtitle: 'O que ouvir em cada conexão, e para onde mandar.' },
+  { key: 'live', label: 'Dado ao vivo', path: '/apps/websocket/live', title: 'Dado ao vivo', subtitle: 'O último valor de cada chave. É o mesmo que os agentes de código leem.' },
+  { key: 'logs', label: 'Logs', path: '/apps/websocket/logs', title: 'WebSocket · Logs', subtitle: 'Conexão, reconexão, descarte e disparo.' },
+] as const
 
 /**
  * Grade que vira UMA coluna no celular.
@@ -36,9 +37,12 @@ export function WsPage({ current, title, subtitle, children }: { current: string
           está à vista, e sem elas só dá para trocar de página voltando ao menu. */}
       <nav style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }} data-testid="ws-tabs">
         {ABAS.map((aba) => (
-          <a
+          /* `Link`, e não `<a href>`: um href de verdade recarregava o site inteiro a
+             cada aba — a tela inteira piscava, tudo era buscado de novo e o App era
+             reconferido do zero. Trocar de aba é trocar de painel, não de sessão. */
+          <Link
             key={aba.key}
-            href={aba.path}
+            to={aba.path}
             style={{
               padding: '6px 12px',
               borderRadius: 999,
@@ -50,7 +54,7 @@ export function WsPage({ current, title, subtitle, children }: { current: string
             data-testid={`ws-tab-${aba.key}`}
           >
             {aba.label}
-          </a>
+          </Link>
         ))}
       </nav>
       {children}

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { listConnections, listLogs } from '../../lib/websocketApp'
 import type { WsConnection, WsLog } from '../../lib/websocketApp'
 import { Card, EmptyState } from '../../ui'
-import { WsPage, quando } from './shared'
+import {quando} from './shared'
 
 /**
  * O diário da integração.
@@ -62,7 +62,7 @@ export function WebSocketLogs() {
   }, [conexao])
 
   return (
-    <WsPage current="/apps/websocket/logs" title="WebSocket · Logs" subtitle="Conexão, reconexão, descarte e disparo.">
+    <>
       <div style={{ marginBottom: 12 }}>
         <select style={selectStyle} value={conexao} onChange={(e) => setConexao(e.target.value)} data-testid="ws-log-connection">
           <option value="">Todas as conexões</option>
@@ -89,6 +89,6 @@ export function WebSocketLogs() {
           ))}
         </div>
       )}
-    </WsPage>
+    </>
   )
 }

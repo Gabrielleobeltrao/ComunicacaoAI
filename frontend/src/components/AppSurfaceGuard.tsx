@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router'
 import { API_URL } from '../lib/api'
 import { AppLayout } from './AppLayout'
@@ -34,15 +34,26 @@ export function AppSurfaceGuard({
   const [access, setAccess] = useState<Access>({ state: 'checking' })
   const navigate = useNavigate()
 
-  const check = useCallback(async () => {
-    setAccess({ state: 'checking' })
+  /**
+   * Qual App já respondeu que sim.
+   *
+   * Trocar de aba dentro do MESMO App refaz a pergunta — a resposta é por superfície,
+   * e continua sendo. O que não pode é apagar a tela enquanto ela volta: antes daqui
+   * cada aba passava por "Carregando…" com o layout inteiro, e era metade do piscar.
+   */
+  const jaLiberado = useRef<string | null>(null)
+
+  const check = useCallback(async (silencioso = false) => {
+    if (!silencioso) setAccess({ state: 'checking' })
     try {
       const res = await fetch(`${API_URL}/api/apps/${appKey}/surfaces/${surfaceKey}/access`, { credentials: 'include' })
       const body = (await res.json()) as { ok?: boolean; reason?: string; appName?: string; activationRoute?: string }
       if (res.ok && body.ok) {
+        jaLiberado.current = appKey
         setAccess({ state: 'ok' })
         return
       }
+      jaLiberado.current = null
       setAccess({
         state: 'denied',
         reason: body.reason === 'inactive' || body.reason === 'needs_reauth' ? body.reason : 'unknown',
@@ -57,8 +68,8 @@ export function AppSurfaceGuard({
   }, [appKey, surfaceKey])
 
   useEffect(() => {
-    void check()
-  }, [check])
+    void check(jaLiberado.current === appKey)
+  }, [check, appKey])
 
   if (access.state === 'checking') {
     return (
