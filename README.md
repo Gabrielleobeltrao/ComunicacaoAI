@@ -221,10 +221,15 @@ igual. Escreva `{{token}}` — o segredo continua cifrado e entra só na hora de
 E se o serviço ecoar o token de volta numa mensagem, ele é riscado do histórico, do
 evento e do dado ao vivo.
 
-**Salvar reabre a conexão quando precisa.** Endereço, autenticação, credencial,
-cabeçalhos, mensagens iniciais, subprotocolos, batimento e prazos só valem no handshake:
-mudá-los reconecta sozinho. Filtro, schema, mapeamento, validade e espaçamento são lidos
-a cada mensagem e valem na seguinte, sem derrubar nada.
+**Salvar reabre a conexão.** Qualquer mudança na configuração reconecta o stream ativo,
+uma vez — salvar sem mudar nada não faz nada. A regra é essa e não uma lista de campos:
+a conexão guarda uma cópia da configuração no momento em que sobe, então "mudar sem
+reconectar" seria não mudar. O que está na tela é o que está no ar.
+
+**A credencial não entra no endereço.** `?apikey=...` em texto claro é recusado, com o
+caminho certo na mensagem: autenticação **parâmetro no endereço** com o valor no campo
+de credencial produz exatamente a mesma URL na hora de conectar, e o segredo continua
+cifrado. Query comum (`?feed=iex`) passa normalmente.
 
 **O que ele não faz, de propósito:** não aceita expressão, JavaScript nem template
 executável. Endereço, caminho, filtro e limite são dados; o servidor lê caminho de

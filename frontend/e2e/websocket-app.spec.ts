@@ -747,3 +747,58 @@ test('em 320 px o dado ao vivo não corta a tabela', async ({ page }) => {
   const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(folga, `estourou ${folga}px`).toBeLessThanOrEqual(0)
 })
+
+
+// --- a rodada final -----------------------------------------------------------------------
+
+test('a Visão geral se atualiza sozinha: o estado muda sem ninguém recarregar', async ({ page }) => {
+  await stub(page)
+  let chamadas = 0
+  const comecou = Date.now()
+  // Registrada DEPOIS do stub: a rota mais recente ganha, e é esta que responde.
+  //
+  // A virada é por TEMPO, e não por contagem de chamadas: em desenvolvimento o efeito
+  // monta duas vezes, e um stub que conta chamadas já responderia "reconectando" na
+  // primeira pintura — o teste passaria sem provar que a tela se atualiza sozinha.
+  await page.route('**/api/websocket/connections', (r) => {
+    chamadas += 1
+    const caiu = Date.now() - comecou > 2_000
+    const stream = {
+      id: 'stream-1',
+      state: caiu ? 'reconnecting' : 'connected',
+      lastConnectedAt: NOW,
+      lastEventAt: NOW,
+      lastError: caiu ? { message: 'conexão encerrada pelo outro lado', at: NOW } : null,
+      eventCount: chamadas,
+    }
+    return r.fulfill({ json: [{ ...CONNECTION, stream, messages: { total: chamadas * 3, accepted: chamadas * 2, lastAt: NOW } }] })
+  })
+
+  await page.goto('/apps/websocket/overview')
+  await expect(page.getByTestId('ws-state')).toContainText('Recebendo')
+  // Sem recarregar nada: a tela busca de novo sozinha.
+  await expect(page.getByTestId('ws-state')).toContainText('Reconectando', { timeout: 15_000 })
+  await expect(page.getByTestId('ws-error')).toContainText('encerrada pelo outro lado')
+})
+
+test('a atualização não fecha o formulário nem apaga o resultado do teste', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+
+  await page.getByTestId('ws-test-connection').click()
+  await expect(page.getByTestId('ws-test-result')).toBeVisible()
+  await page.getByTestId('ws-configure').click()
+  await expect(page.getByTestId('ws-advanced-toggle')).toBeVisible()
+
+  // Passa uma volta do polling.
+  await page.waitForTimeout(6_000)
+  await expect(page.getByTestId('ws-test-result')).toBeVisible()
+  await expect(page.getByTestId('ws-advanced-toggle')).toBeVisible()
+})
+
+test('uma conexão com a credencial no endereço não mostra o endereço, e diz o que fazer', async ({ page }) => {
+  await stub(page, { connections: [{ ...CONNECTION, config: null, needsFix: true }] })
+  await page.goto('/apps/websocket/overview')
+  await expect(page.getByTestId('ws-needs-fix')).toContainText('tire o parâmetro do endereço')
+  await expect(page.getByTestId('ws-endpoint')).toContainText('endereço não exibido')
+})

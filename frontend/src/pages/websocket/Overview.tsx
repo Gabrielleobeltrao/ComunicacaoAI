@@ -54,8 +54,59 @@ export function WebSocketOverview() {
       .catch(() => setErro('Não foi possível carregar as conexões.'))
       .finally(() => setCarregando(false))
 
+  /**
+   * O estado se atualiza sozinho.
+   *
+   * Uma tela parada sobre conexão de tempo real mente: ela dizia "Recebendo" enquanto o
+   * stream já estava reconectando, e a contagem de mensagens ficava congelada no que
+   * havia quando a página abriu. Cinco segundos é o ritmo de quem está olhando.
+   *
+   * Três cuidados que a diferença entre um polling útil e um incômodo:
+   *
+   * ABA OCULTA NÃO CONSULTA. Uma aba esquecida em segundo plano bateria no servidor a
+   * cada cinco segundos por horas — e o que ela mostra ninguém está vendo.
+   *
+   * SEM CHAMADAS SOBREPOSTAS. Uma resposta lenta faria a próxima sair antes de a
+   * anterior voltar, e a mais antiga poderia chegar por último e sobrescrever o estado
+   * novo com o velho.
+   *
+   * O QUE A PESSOA ESTÁ FAZENDO É PRESERVADO. Só a lista de conexões é trocada:
+   * formulário aberto, resultado do teste e cartão em edição são estado desta tela e
+   * não vêm do servidor, então não há como uma atualização apagá-los.
+   */
   useEffect(() => {
+    let vivo = true
+    let emVoo = false
     void carregar()
+
+    const tick = async () => {
+      if (!vivo || emVoo || document.visibilityState === 'hidden') return
+      emVoo = true
+      try {
+        const novas = await listConnections()
+        if (vivo) setConexoes(novas)
+      } catch {
+        // Uma falha de rede não vira erro na tela: a próxima volta em cinco segundos, e
+        // um aviso vermelho piscando a cada falha seria pior do que o silêncio.
+      } finally {
+        emVoo = false
+      }
+    }
+
+    const timer = setInterval(() => void tick(), 5_000)
+    // Voltar para a aba atualiza na hora, em vez de esperar o próximo intervalo.
+    const aoVoltar = () => {
+      if (document.visibilityState === 'visible') void tick()
+    }
+    document.addEventListener('visibilitychange', aoVoltar)
+    return () => {
+      vivo = false
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', aoVoltar)
+    }
+    // `carregar` é estável por construção (só usa setters); reagendar a cada render
+    // criaria um intervalo novo por render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const agir = async (id: string, fn: () => Promise<unknown>) => {
@@ -97,8 +148,16 @@ export function WebSocketOverview() {
               </div>
 
               <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="ws-endpoint">
-                {c.config?.endpoint || 'sem endereço configurado'}
+                {c.config?.endpoint || (c.needsFix ? 'endereço não exibido' : 'sem endereço configurado')}
               </p>
+              {/* Configuração antiga com a credencial no endereço: ela não é mostrada, e
+                  a tela diz o que fazer em vez de exibir a chave de novo. */}
+              {c.needsFix ? (
+                <p style={{ margin: 0, fontSize: 12.5, color: 'var(--mango-600, #b54708)' }} data-testid="ws-needs-fix">
+                  Esta conexão guarda a credencial dentro do endereço. Abra Configurar, tire o parâmetro do endereço e informe o valor no campo de
+                  credencial — a conexão continua funcionando igual.
+                </p>
+              ) : null}
               <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="ws-counts">
                 {c.messages.total} mensagem(ns) · {c.messages.accepted} aproveitada(s) · última {quando(c.messages.lastAt)}
                 {c.stream?.state === 'connected' && c.stream.lastConnectedAt ? ` · no ar ${duracao(c.stream.lastConnectedAt)}` : ''}

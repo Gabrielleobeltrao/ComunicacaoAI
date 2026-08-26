@@ -75,6 +75,11 @@ export interface WsConnection {
   name: string
   status: string
   config: WsConnectionConfig | null
+  /**
+   * A configuração existe, mas guarda a credencial em texto claro num campo que não dá
+   * para migrar sozinho — o endereço. Ela não é devolvida, e a tela pede a correção.
+   */
+  needsFix?: boolean
   stream: WsStream | null
   messages: { total: number; accepted: number; lastAt: string | null }
 }
