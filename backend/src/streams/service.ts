@@ -8,8 +8,10 @@ import {
   findStream,
   listResumableStreams,
   listStreams,
+  listOrphanStreams,
   listStreamsForInstallation,
   releaseAllLeases,
+  STREAM_LEASE_MS,
   setStreamPaused,
   upsertStream,
 } from './repository.js'
@@ -201,6 +203,52 @@ export const listOwnerStreams = listStreams
  * É a diferença entre um worker que reinicia e um worker que reinicia e some com os
  * streams de todo mundo até alguém perceber.
  */
+/**
+ * O RECONCILIADOR: de tempos em tempos, tenta assumir o que está órfão.
+ *
+ * Sem ele, a posse só era disputada quando alguém chamava `restoreStreams` — o que
+ * acontece uma vez, no boot. Uma instância que caísse deixava os streams dela parados
+ * até o próximo deploy: o arrendamento vencia, ninguém percebia, e o dado simplesmente
+ * parava de chegar sem nenhum erro em lugar nenhum.
+ *
+ * Ele é deliberadamente sonolento. O intervalo padrão é um terço do arrendamento, e
+ * cada volta só busca o que NÃO tem dono vivo — não é uma varredura de tudo. Ciclos não
+ * se sobrepõem: uma volta lenta atrasa a próxima em vez de rodar junto.
+ */
+/** Lido ao INICIAR, e não na carga do módulo: o ambiente já está montado nessa hora. */
+const intervaloDeReconciliacao = (): number => Number(process.env.STREAM_RECONCILE_MS ?? Math.max(10_000, Math.floor(STREAM_LEASE_MS / 3)))
+let reconciliador: NodeJS.Timeout | null = null
+let reconciliando = false
+
+export function startStreamReconciler(onError: (where: string, e: unknown) => void = () => undefined): void {
+  if (reconciliador) return
+  const volta = async () => {
+    if (reconciliando) return
+    reconciliando = true
+    try {
+      const gerente = streamManager()
+      if (!gerente) return
+      for (const record of await listOrphanStreams(gerente.instanceId)) {
+        // `start` já é idempotente e já disputa a posse: o que não é meu não sobe, e o
+        // que já é meu não abre um segundo socket.
+        await gerente.start(record).catch((e) => onError(`stream ${record._id.toString()} reconciliação`, e))
+      }
+    } catch (error) {
+      onError('reconciliação de streams', error)
+    } finally {
+      reconciliando = false
+    }
+  }
+  reconciliador = setInterval(() => void volta(), intervaloDeReconciliacao())
+  reconciliador.unref?.()
+}
+
+export function stopStreamReconciler(): void {
+  if (reconciliador) clearInterval(reconciliador)
+  reconciliador = null
+  reconciliando = false
+}
+
 export async function restoreStreams(onError: (where: string, e: unknown) => void = () => undefined): Promise<number> {
   const gerente = streamManager()
   if (!gerente) return 0
@@ -235,6 +283,9 @@ export function createStreamManager(
 }
 
 export async function shutdownStreams(): Promise<void> {
+  // O reconciliador para ANTES de tudo: uma volta iniciada durante o encerramento
+  // tentaria assumir streams que este processo está justamente largando.
+  stopStreamReconciler()
   const gerente = streamManager()
   await gerente?.stopAll()
   // Rede de segurança: `stopAll` já solta a posse de cada stream, mas um que tenha

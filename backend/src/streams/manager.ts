@@ -1,6 +1,7 @@
 import { backoffMs, publishEvent } from '../events/bus.js'
 import { claimStream, markStreamEvent, releaseStreamLease, renewStreamLease, setStreamError, setStreamState, STREAM_LEASE_MS } from './repository.js'
 import type { SocketOptions } from './socket.js'
+import type { ObjectId } from 'mongodb'
 import type { StreamAdapter, StreamContext, StreamRecord, StreamState } from './types.js'
 
 /**
@@ -36,6 +37,9 @@ export interface StreamSocket {
 
 export type SocketFactory = (url: string, opts?: SocketOptions) => StreamSocket
 
+/** Para que serve cada relógio do gerenciador. */
+export type TipoDeRelogio = 'heartbeat' | 'idle' | 'reconnect' | 'pong' | 'lease'
+
 export interface ManagerDeps {
   /**
    * Quem é ESTA instância, para a posse do stream.
@@ -65,7 +69,22 @@ export interface ManagerDeps {
    */
   credentialsOf: (ownerId: string, installationId: string) => Promise<Record<string, string> | null>
   publish?: typeof publishEvent
-  schedule?: (fn: () => void, ms: number) => { unref?: () => void }
+  /**
+   * A posse, injetável como o socket e o barramento.
+   *
+   * Não é conveniência de teste: é a mesma regra que o resto das dependências deste
+   * gerenciador segue — o que fala com o mundo entra por parâmetro. E é o único jeito de
+   * exercitar "o banco falhou na renovação", que é justamente o caminho onde um erro
+   * silencioso significa dois donos.
+   */
+  claimLease?: (id: ObjectId, instanceId: string) => Promise<boolean>
+  renewLease?: (id: ObjectId, instanceId: string) => Promise<boolean>
+  /**
+   * Agendar. O `tipo` é ignorado pelo relógio de verdade e existe para quem observa:
+   * antes daqui o teste adivinhava qual timer era qual pela DURAÇÃO, e bastou aparecer
+   * um quarto tipo de relógio para a adivinhação apontar para o errado.
+   */
+  schedule?: (fn: () => void, ms: number, tipo?: TipoDeRelogio) => { unref?: () => void }
   cancel?: (t: unknown) => void
   onError?: (where: string, error: unknown) => void
 }
@@ -120,6 +139,13 @@ interface Vivo {
   timerPong: unknown
   /** Renovação periódica da posse. Perder a posse solta o socket. */
   timerLease: unknown
+  /**
+   * Até quando a posse está CONFIRMADA por este processo.
+   *
+   * É o relógio local que decide se ainda há margem para insistir numa renovação que o
+   * banco não respondeu. Sem ele, "tentar de novo" não teria fim.
+   */
+  leaseAte: number
   /** Marcado no stop: um close que chega depois disso não deve reconectar. */
   encerrado: boolean
   /**
@@ -164,7 +190,7 @@ export class StreamManager {
   private readonly vivos = new Map<string, Vivo>()
   /** A identidade desta instância, usada na posse dos streams. */
   readonly instanceId: string
-  private readonly deps: Required<Pick<ManagerDeps, 'createSocket' | 'publish' | 'schedule' | 'cancel' | 'onError'>> & ManagerDeps
+  private readonly deps: Required<Pick<ManagerDeps, 'createSocket' | 'publish' | 'schedule' | 'cancel' | 'onError' | 'claimLease' | 'renewLease'>> & ManagerDeps
 
   constructor(deps: ManagerDeps) {
     this.instanceId = deps.instanceId ?? `${process.pid}-${Math.random().toString(36).slice(2, 10)}`
@@ -175,7 +201,20 @@ export class StreamManager {
       schedule: deps.schedule ?? ((fn, ms) => setTimeout(fn, ms)),
       cancel: deps.cancel ?? ((t) => clearTimeout(t as NodeJS.Timeout)),
       onError: deps.onError ?? (() => undefined),
+      claimLease: deps.claimLease ?? claimStream,
+      renewLease: deps.renewLease ?? renewStreamLease,
     }
+  }
+
+  /**
+   * Encurta o prazo confirmado de um stream, para o teste conseguir chegar ao caso
+   * "sem margem" sem esperar um arrendamento inteiro de relógio real.
+   *
+   * Não há caminho de produção que chame isto — nenhuma rota, nenhuma configuração.
+   */
+  forcarVencimentoDoLease(id: string): void {
+    const vivo = this.vivos.get(id)
+    if (vivo) vivo.leaseAte = Date.now()
   }
 
   stateOf(id: string): StreamState {
@@ -233,12 +272,12 @@ export class StreamManager {
      * conta, as duas derrubadas. Quem não pega a posse simplesmente não sobe; quando o
      * arrendamento do outro vencer, a próxima tentativa pega.
      */
-    if (!(await claimStream(record._id, this.instanceId))) return false
+    if (!(await this.deps.claimLease(record._id, this.instanceId))) return false
 
     // Primeiro o adapter montado a partir da conexão; depois o estático do App.
     const adapter = (await this.deps.adapterFor?.(record)) ?? this.deps.adapters.get(record.appKey) ?? null
     if (!adapter) {
-      await setStreamError(record._id, `nenhum adapter registrado para "${record.appKey}"`)
+      await setStreamError(record._id, `nenhum adapter registrado para "${record.appKey}"`, new Date(), this.instanceId)
       await releaseStreamLease(record._id, this.instanceId).catch(() => undefined)
       return false
     }
@@ -255,6 +294,7 @@ export class StreamManager {
       timerReconnect: null,
       timerPong: null,
       timerLease: null,
+      leaseAte: Date.now() + STREAM_LEASE_MS,
       encerrado: false,
       segredos: [],
     }
@@ -270,6 +310,7 @@ export class StreamManager {
     if (!vivo) return
     vivo.encerrado = true
     this.limparTimers(vivo)
+    this.pararRenovacao(vivo)
     try {
       vivo.socket?.close()
     } catch {
@@ -279,7 +320,7 @@ export class StreamManager {
     // A posse é devolvida no stop: sem isso, um deploy deixaria os streams travados
     // pelo tempo do arrendamento, e a instância nova ficaria um minuto sem poder abrir.
     await releaseStreamLease(vivo.record._id, this.instanceId).catch(() => undefined)
-    await setStreamState(vivo.record._id, 'disconnected')
+    await setStreamState(vivo.record._id, 'disconnected', new Date(), this.instanceId)
   }
 
   async subscribe(id: string, symbols: readonly string[]): Promise<void> {
@@ -467,12 +508,12 @@ export class StreamManager {
         // Recusado agora: a conexão não sobe, e o motivo fica visível.
         vivo.state = 'error'
         this.vivos.delete(id)
-        await setStreamError(vivo.record._id, naoLoga(error instanceof Error ? error.message : 'endereço recusado', vivo.segredos))
+        await setStreamError(vivo.record._id, naoLoga(error instanceof Error ? error.message : 'endereço recusado', vivo.segredos), new Date(), this.instanceId)
         return
       }
     }
     vivo.state = vivo.tentativas === 0 ? 'connecting' : 'reconnecting'
-    await setStreamState(vivo.record._id, vivo.state)
+    await setStreamState(vivo.record._id, vivo.state, new Date(), this.instanceId)
 
     const credencial = await this.deps.credentialsOf(vivo.record.ownerId, vivo.record.installationId)
     if (!credencial) {
@@ -480,7 +521,7 @@ export class StreamManager {
       // de propósito — e com uma credencial que já não vale.
       vivo.state = 'error'
       this.vivos.delete(id)
-      await setStreamError(vivo.record._id, 'conexão indisponível: revogada, expirada ou removida')
+      await setStreamError(vivo.record._id, 'conexão indisponível: revogada, expirada ou removida', new Date(), this.instanceId)
       return
     }
     // Um valor curto demais riscaria pedaços de mensagem legítima — `paper`, `usd`.
@@ -506,7 +547,7 @@ export class StreamManager {
       if (vivo.geracao !== geracao) return
       vivo.tentativas = 0
       vivo.state = 'connected'
-      void setStreamState(vivo.record._id, 'connected').catch((e) => this.deps.onError(`stream ${id} estado`, e))
+      void setStreamState(vivo.record._id, 'connected', new Date(), this.instanceId).catch((e) => this.deps.onError(`stream ${id} estado`, e))
       // A autenticação vai direto para o socket. Ela não passa por log, não entra no
       // documento do stream e não vira trace: o único registro é que foi enviada.
       const auth = vivo.adapter.authMessage?.(credencial)
@@ -548,7 +589,7 @@ export class StreamManager {
       // O quadro cru NÃO entra: um erro de autenticação costuma vir com a mensagem
       // que continha a credencial.
       const msg = typeof ev === 'object' && ev !== null && typeof (ev as { message?: unknown }).message === 'string' ? (ev as { message: string }).message : 'erro no socket'
-      void setStreamError(vivo.record._id, naoLoga(msg, vivo.segredos)).catch((e) => this.deps.onError(`stream ${id} erro`, e))
+      void setStreamError(vivo.record._id, naoLoga(msg, vivo.segredos), new Date(), this.instanceId).catch((e) => this.deps.onError(`stream ${id} erro`, e))
     }
 
     socket.onclose = () => {
@@ -567,7 +608,7 @@ export class StreamManager {
      */
     if (vivo.adapter.ingest) {
       const texto = typeof data === 'string' ? data : String(data)
-      await markStreamEvent(vivo.record._id, await vivo.adapter.ingest(texto, ctx))
+      await markStreamEvent(vivo.record._id, await vivo.adapter.ingest(texto, ctx), new Date(), this.instanceId)
       return
     }
 
@@ -583,7 +624,7 @@ export class StreamManager {
     }
     const problema = vivo.adapter.errorOf?.(bruto)
     if (problema) {
-      await setStreamError(vivo.record._id, naoLoga(problema, vivo.segredos))
+      await setStreamError(vivo.record._id, naoLoga(problema, vivo.segredos), new Date(), this.instanceId)
       return
     }
     const entradas = vivo.adapter.parse(bruto, ctx)
@@ -595,7 +636,7 @@ export class StreamManager {
       const { created } = await this.deps.publish(entrada)
       if (created) publicados += 1
     }
-    await markStreamEvent(vivo.record._id, publicados)
+    await markStreamEvent(vivo.record._id, publicados, new Date(), this.instanceId)
   }
 
   /**
@@ -615,11 +656,11 @@ export class StreamManager {
     if (vivo.tentativas > MAX_TENTATIVAS) {
       vivo.state = 'error'
       this.vivos.delete(id)
-      await setStreamError(vivo.record._id, `${naoLoga(motivo, vivo.segredos)} — desistindo após ${MAX_TENTATIVAS} tentativas`)
+      await setStreamError(vivo.record._id, `${naoLoga(motivo, vivo.segredos)} — desistindo após ${MAX_TENTATIVAS} tentativas`, new Date(), this.instanceId)
       return
     }
     vivo.state = 'reconnecting'
-    await setStreamState(vivo.record._id, 'reconnecting')
+    await setStreamState(vivo.record._id, 'reconnecting', new Date(), this.instanceId)
     // Espera crescente com jitter — a mesma do barramento. Sem o jitter, cem streams
     // que caíram junto voltam junto e derrubam de novo o que acabou de subir.
     const daQueda = vivo.geracao
@@ -627,7 +668,7 @@ export class StreamManager {
       // Outra reconexão pode ter começado no meio do caminho — a desta queda perdeu a vez.
       if (vivo.encerrado || vivo.geracao !== daQueda) return
       void this.conectar(vivo).catch((e) => this.deps.onError(`stream ${id} reconexão`, e))
-    }, backoffMs(vivo.tentativas))
+    }, backoffMs(vivo.tentativas), 'reconnect')
     timer.unref?.()
     vivo.timerReconnect = timer
   }
@@ -658,21 +699,88 @@ export class StreamManager {
    * caso que a posse existe para impedir.
    */
   private armarRenovacao(vivo: Vivo): void {
+    const intervalo = Math.max(1_000, Math.floor(STREAM_LEASE_MS / 3))
+
+    /**
+     * Renovar é a única coisa que autoriza este processo a continuar com o socket.
+     *
+     * Três decisões, e cada uma cobre um jeito diferente de agir sem posse:
+     *
+     * `false` é PERDA. Outra instância assumiu. O socket local fecha e o arrendamento
+     * NÃO é devolvido — ele já é de outro, e devolvê-lo entregaria o stream de volta
+     * para o vazio no meio do trabalho da dona nova.
+     *
+     * ERRO NÃO É SUCESSO. O banco pode estar momentaneamente fora; enquanto houver
+     * margem no prazo que já foi confirmado, tenta de novo em intervalos curtos. Tratar
+     * a exceção como "renovado" — que era o que o `catch(() => true)` fazia — é operar
+     * sem nenhuma prova de posse, pelo tempo que a falha durar.
+     *
+     * SEM MARGEM, FECHA. Se o prazo confirmado vai vencer e a confirmação não veio, o
+     * pressuposto é que outra instância vai assumir. Continuar seria o caso exato de
+     * dois sockets no mesmo serviço — e é melhor um stream a menos por um minuto do que
+     * dois donos gravando por cima um do outro.
+     */
     const renovar = async () => {
       if (vivo.encerrado) return
-      const minha = await renewStreamLease(vivo.record._id, this.instanceId).catch(() => true)
-      if (!minha) {
-        this.deps.onError(`stream ${vivo.record._id.toString()} posse`, new Error('outra instância assumiu este stream'))
-        await this.stop(vivo.record._id.toString()).catch(() => undefined)
+      const agoraMs = Date.now()
+
+      let confirmada: boolean | null = null
+      try {
+        confirmada = await this.deps.renewLease(vivo.record._id, this.instanceId)
+      } catch (error) {
+        this.deps.onError(`stream ${vivo.record._id.toString()} renovação`, error)
+        confirmada = null
+      }
+
+      if (confirmada === true) {
+        vivo.leaseAte = agoraMs + STREAM_LEASE_MS
+        const proximo = this.deps.schedule(renovar, intervalo, 'lease')
+        proximo.unref?.()
+        vivo.timerLease = proximo
         return
       }
-      const proximo = this.deps.schedule(() => void renovar(), Math.max(5_000, Math.floor(STREAM_LEASE_MS / 3)))
-      proximo.unref?.()
-      vivo.timerLease = proximo
+
+      if (confirmada === false) {
+        this.deps.onError(`stream ${vivo.record._id.toString()} posse`, new Error('outra instância assumiu este stream'))
+        await this.soltarLocal(vivo)
+        return
+      }
+
+      // Falha de banco: tenta de novo, mas só enquanto o prazo já confirmado aguentar.
+      const margem = vivo.leaseAte - agoraMs
+      if (margem <= intervalo) {
+        this.deps.onError(`stream ${vivo.record._id.toString()} posse`, new Error('não foi possível confirmar a posse antes do vencimento'))
+        await this.soltarLocal(vivo)
+        return
+      }
+      const tentarDeNovo = this.deps.schedule(renovar, Math.max(1_000, Math.floor(intervalo / 3)), 'lease')
+      tentarDeNovo.unref?.()
+      vivo.timerLease = tentarDeNovo
     }
-    const primeiro = this.deps.schedule(() => void renovar(), Math.max(5_000, Math.floor(STREAM_LEASE_MS / 3)))
+
+    const primeiro = this.deps.schedule(renovar, intervalo, 'lease')
     primeiro.unref?.()
     vivo.timerLease = primeiro
+  }
+
+  /**
+   * Larga o stream SEM mexer no arrendamento.
+   *
+   * É o caminho de quem perdeu a posse ou não conseguiu prová-la: fecha o socket, para
+   * os relógios, sai da memória — e não escreve nada no documento, porque ele já pode
+   * ser de outra instância.
+   */
+  private async soltarLocal(vivo: Vivo): Promise<void> {
+    vivo.encerrado = true
+    this.limparTimers(vivo)
+    this.pararRenovacao(vivo)
+    try {
+      vivo.socket?.close()
+    } catch {
+      // Fechar um socket já morto não é notícia.
+    }
+    vivo.socket = null
+    this.vivos.delete(vivo.record._id.toString())
   }
 
   private armarBatimento(vivo: Vivo): void {
@@ -725,16 +833,16 @@ export class StreamManager {
           } catch {
             // já era
           }
-        }, prazoResposta)
+        }, prazoResposta, 'pong')
         semResposta.unref?.()
         vivo.timerPong = semResposta
       }
 
-      const proximo = this.deps.schedule(bater, intervalo)
+      const proximo = this.deps.schedule(bater, intervalo, 'heartbeat')
       proximo.unref?.()
       vivo.timerHeartbeat = proximo
     }
-    const primeiro = this.deps.schedule(bater, intervalo)
+    const primeiro = this.deps.schedule(bater, intervalo, 'heartbeat')
     primeiro.unref?.()
     vivo.timerHeartbeat = primeiro
   }
@@ -762,17 +870,32 @@ export class StreamManager {
       } catch {
         // já era
       }
-    }, Math.min(vivo.adapter.idleTimeoutMs?.() ?? SILENCIO_MS, MAX_INTERVAL_MS))
+    }, Math.min(vivo.adapter.idleTimeoutMs?.() ?? SILENCIO_MS, MAX_INTERVAL_MS), 'idle')
     mudo.unref?.()
     vivo.timerIdle = mudo
   }
 
+  /**
+   * Os relógios DA CONEXÃO. O do arrendamento não está aqui, e é o ponto.
+   *
+   * `conectar` limpa os timers a cada tentativa — é assim que uma reconexão não deixa
+   * dois batimentos correndo. Enquanto o relógio da posse estava nesta lista, cada
+   * reconexão cancelava a renovação: o socket voltava, o arrendamento vencia em silêncio
+   * e outra instância assumia um stream que estava perfeitamente vivo.
+   *
+   * A posse é armada UMA vez, ao adquiri-la, e só some no `stop`, no encerramento ou
+   * quando ela é perdida.
+   */
   private limparTimers(vivo: Vivo): void {
-    for (const t of [vivo.timerHeartbeat, vivo.timerIdle, vivo.timerReconnect, vivo.timerPong, vivo.timerLease]) if (t) this.deps.cancel(t)
+    for (const t of [vivo.timerHeartbeat, vivo.timerIdle, vivo.timerReconnect, vivo.timerPong]) if (t) this.deps.cancel(t)
     vivo.timerHeartbeat = null
     vivo.timerIdle = null
     vivo.timerReconnect = null
     vivo.timerPong = null
+  }
+
+  private pararRenovacao(vivo: Vivo): void {
+    if (vivo.timerLease) this.deps.cancel(vivo.timerLease)
     vivo.timerLease = null
   }
 }

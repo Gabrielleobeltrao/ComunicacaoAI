@@ -228,9 +228,13 @@ reconectar" seria não mudar. O que está na tela é o que está no ar.
 
 **Uma instância por stream.** Cada conexão viva é tomada por um processo, com posse
 gravada no banco: duas instâncias que subam juntas não abrem dois sockets no mesmo
-serviço. Um encerramento limpo devolve a posse na hora; uma queda deixa a próxima
-assumir quando o prazo vence (`STREAM_LEASE_MS`). Num deploy de uma instância só, nada
-muda.
+serviço. A posse é renovada enquanto o stream vive — reconectar não interrompe isso — e
+só o dono do momento pode gravar estado, erro ou contador, então uma instância que
+travou não escreve por cima de quem assumiu. Se a renovação não puder ser confirmada
+antes do vencimento, o processo fecha o próprio socket em vez de seguir sem prova de
+posse. Um encerramento limpo devolve a posse na hora; depois de uma queda, outra
+instância assume sozinha quando o prazo vence (`STREAM_LEASE_MS`), sem restart e sem
+ninguém chamar nada. Num deploy de uma instância só, nada muda.
 
 **A credencial não entra no endereço.** `?apikey=...` em texto claro é recusado, com o
 caminho certo na mensagem: autenticação **parâmetro no endereço** com o valor no campo
