@@ -93,11 +93,24 @@ const COM_PROPOSTA = projeto({ status: 'draft', hasBlueprint: true, blueprint: B
 let aplicado: Record<string, unknown> | null = null
 let mensagensEnviadas: string[] = []
 let ligacoes: Record<string, unknown> | null = null
+let salvoNoProjeto: Record<string, unknown> | null = null
 let rodadasAutomaticas = 0
 
+// A FORMA REAL de `/api/providers`: `models` é uma lista de objetos, não de textos.
+// O stub antigo dizia `string[]` — a mesma suposição errada do código —, e por isso
+// nenhum teste pegou a tela caindo ao renderizar um objeto dentro de <option>.
 const PROVEDORES = [
-  { id: 'anthropic', label: 'Anthropic (Claude)', models: ['claude-um', 'claude-dois'], defaultModel: 'claude-um', configured: true },
-  { id: 'openai', label: 'OpenAI (GPT)', models: ['gpt-um'], defaultModel: 'gpt-um', configured: false },
+  {
+    id: 'anthropic',
+    label: 'Anthropic (Claude)',
+    models: [
+      { id: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+    ],
+    defaultModel: 'claude-sonnet-5',
+    configured: true,
+  },
+  { id: 'openai', label: 'OpenAI (GPT)', models: [{ id: 'gpt-5.1', label: 'GPT-5.1' }], defaultModel: 'gpt-5.1', configured: false },
 ]
 
 async function stub(
@@ -117,6 +130,7 @@ async function stub(
   aplicado = null
   mensagensEnviadas = []
   ligacoes = null
+  salvoNoProjeto = null
   rodadasAutomaticas = 0
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
 
@@ -182,7 +196,13 @@ async function stub(
     const body = r.request().postDataJSON() as { done: boolean }
     return r.fulfill({ json: { ...COM_PROPOSTA, checklist: CHECKLIST.map((i) => (i.completionMode === 'manual' ? { ...i, status: body.done ? 'done' : 'ready' } : i)) } })
   })
-  await page.route('**/api/architect/projects/*', (r) => r.fulfill({ json: proj }))
+  await page.route('**/api/architect/projects/*', (r) => {
+    if (r.request().method() === 'PATCH') {
+      salvoNoProjeto = r.request().postDataJSON() as Record<string, unknown>
+      return r.fulfill({ json: { ...proj, ...salvoNoProjeto } })
+    }
+    return r.fulfill({ json: proj })
+  })
 
   await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: [], pinned: [] } }))
   await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [] }))
@@ -355,6 +375,21 @@ test('só provedor configurado é oferecido', async ({ page }) => {
   await expect(seletor).toBeVisible()
   await expect(seletor.locator('option')).toHaveCount(1)
   await expect(seletor.locator('option')).toHaveText(['Anthropic (Claude)'])
+})
+
+test('o seletor de modelo mostra o RÓTULO e envia o id', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-advanced').getByText('Avançado').click()
+
+  // A tela não pode cair aqui: `models` são objetos, e renderizar o objeto derruba a
+  // árvore inteira do React — foi exatamente o que aconteceu em produção.
+  const modelo = page.getByTestId('architect-model-select')
+  await expect(modelo).toBeVisible()
+  await expect(modelo.locator('option')).toContainText(['Padrão', 'Claude Sonnet 5', 'Claude Haiku 4.5'])
+
+  await modelo.selectOption('claude-haiku-4-5')
+  await expect.poll(() => salvoNoProjeto?.model).toBe('claude-haiku-4-5')
 })
 
 test('sem provedor nenhum configurado, a tela manda para Configurações', async ({ page }) => {

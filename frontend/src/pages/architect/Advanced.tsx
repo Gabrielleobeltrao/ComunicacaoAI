@@ -76,8 +76,8 @@ export function Advanced({
                 >
                   <option value="">Padrão{atual ? ` (${atual.defaultModel})` : ''}</option>
                   {(atual?.models ?? []).map((m) => (
-                    <option key={m} value={m}>
-                      {m}
+                    <option key={m.id} value={m.id}>
+                      {m.label}
                     </option>
                   ))}
                 </Select>

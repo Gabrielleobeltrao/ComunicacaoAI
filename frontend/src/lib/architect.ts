@@ -1,4 +1,5 @@
 import { API_URL } from './api'
+import type { ProviderInfo } from './types'
 
 /**
  * “Montar operação”, do lado da tela.
@@ -189,10 +190,19 @@ export const previewProject = (id: string) => request<ArchitectPreview>(`/projec
 export const listTargets = () => request<ArchitectTargets>('/targets')
 export const setLinks = (id: string, links: BlueprintLink[]) => request<ArchitectProject>(`/projects/${id}/links`, { method: 'PATCH', body: JSON.stringify({ links }) })
 export const rollbackProject = (id: string) => request<ArchitectProject & { removed: string[]; kept: { key: string; reason: string }[] }>(`/projects/${id}/rollback`, { method: 'POST' })
+/**
+ * Os provedores da conta.
+ *
+ * O tipo vem de `types.ts`, que já descreve esta rota — redeclarar aqui foi o erro:
+ * `models` é `{id, label}[]`, e a versão local dizia `string[]`. O TypeScript acreditou
+ * na declaração errada, o `<option>` recebeu um objeto e a tela inteira caiu.
+ */
+export type ArchitectProvider = ProviderInfo & { configured: boolean }
+
 export const listProviders = () =>
   fetch(`${API_URL}/api/providers`, { credentials: 'include' })
     .then((r) => (r.ok ? r.json() : []))
-    .then((v) => v as { id: 'anthropic' | 'openai'; label: string; models: string[]; defaultModel: string; configured: boolean }[])
+    .then((v) => v as ArchitectProvider[])
 export const patchProject = (id: string, patch: { provider?: 'anthropic' | 'openai'; model?: string | null; title?: string }) =>
   request<ArchitectProject>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
 
