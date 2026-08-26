@@ -188,6 +188,8 @@ const contextOf = (vivo: Vivo): StreamContext => ({
 
 export class StreamManager {
   private readonly vivos = new Map<string, Vivo>()
+  /** As subidas em andamento, por stream. Ver o comentário em `start`. */
+  private readonly subindo = new Map<string, Promise<boolean>>()
   /** A identidade desta instância, usada na posse dos streams. */
   readonly instanceId: string
   private readonly deps: Required<Pick<ManagerDeps, 'createSocket' | 'publish' | 'schedule' | 'cancel' | 'onError' | 'claimLease' | 'renewLease'>> & ManagerDeps
@@ -215,6 +217,11 @@ export class StreamManager {
   forcarVencimentoDoLease(id: string): void {
     const vivo = this.vivos.get(id)
     if (vivo) vivo.leaseAte = Date.now()
+  }
+
+  /** Este stream já é responsabilidade deste processo — vivo ou subindo agora? */
+  isTracked(id: string): boolean {
+    return this.vivos.has(id) || this.subindo.has(id)
   }
 
   stateOf(id: string): StreamState {
@@ -265,6 +272,23 @@ export class StreamManager {
       return true
     }
     /**
+     * Duas chamadas ao mesmo tempo compartilham a MESMA subida.
+     *
+     * `vivos` só recebe o stream depois de resolver o adapter e a credencial — duas
+     * idas ao banco. Duas chamadas simultâneas atravessavam essa janela juntas, as duas
+     * viam o mapa vazio e as duas abriam socket; e a segunda ainda passava pela posse,
+     * porque o dono já era esta instância. O resultado era exatamente o que o
+     * arrendamento existe para evitar, dentro de um processo só.
+     */
+    const subindo = this.subindo.get(id)
+    if (subindo) return subindo
+    const promessa = this.iniciar(record, id).finally(() => this.subindo.delete(id))
+    this.subindo.set(id, promessa)
+    return promessa
+  }
+
+  private async iniciar(record: StreamRecord, id: string): Promise<boolean> {
+    /**
      * A POSSE, antes de qualquer coisa.
      *
      * Duas instâncias restaurando os mesmos streams abririam dois sockets no mesmo
@@ -277,7 +301,10 @@ export class StreamManager {
     // Primeiro o adapter montado a partir da conexão; depois o estático do App.
     const adapter = (await this.deps.adapterFor?.(record)) ?? this.deps.adapters.get(record.appKey) ?? null
     if (!adapter) {
-      await setStreamError(record._id, `nenhum adapter registrado para "${record.appKey}"`, new Date(), this.instanceId)
+      // A posse já foi tomada e o `Vivo` ainda não existe: gravar com a cerca de pé e
+      // devolver o arrendamento é o mesmo fim de sempre, escrito à mão porque não há
+      // objeto para passar a `finalizar`.
+      await setStreamError(record._id, `nenhum adapter registrado para "${record.appKey}"`, new Date(), this.instanceId).catch(() => undefined)
       await releaseStreamLease(record._id, this.instanceId).catch(() => undefined)
       return false
     }
@@ -308,6 +335,24 @@ export class StreamManager {
   async stop(id: string): Promise<void> {
     const vivo = this.vivos.get(id)
     if (!vivo) return
+    await this.finalizar(vivo, { estado: 'disconnected' })
+  }
+
+  /**
+   * O ÚNICO fim de um stream que ainda é desta instância.
+   *
+   * Ele existe porque a saída estava escrita em quatro lugares, e cada um esquecia uma
+   * coisa diferente: os caminhos de erro removiam do mapa e deixavam o relógio da posse
+   * correndo — um stream morto renovando o arrendamento para sempre, que nenhuma outra
+   * instância conseguia assumir e nenhuma tela mostrava.
+   *
+   * A ORDEM não é arbitrária. O estado final é gravado ENQUANTO a posse ainda existe:
+   * a escrita é cercada por `leaseOwner`, então soltar antes faz a gravação não achar
+   * nada e o stream ficar eternamente "conectado" depois de ter parado. Foi exatamente
+   * o que a versão anterior fazia.
+   */
+  private async finalizar(vivo: Vivo, fim: { estado: StreamState } | { erro: string }): Promise<void> {
+    const id = vivo.record._id.toString()
     vivo.encerrado = true
     this.limparTimers(vivo)
     this.pararRenovacao(vivo)
@@ -316,11 +361,21 @@ export class StreamManager {
     } catch {
       // Fechar um socket já morto não é notícia.
     }
+    vivo.socket = null
+    // Sai do mapa antes de qualquer espera: nada que rode depois pode encontrá-lo vivo.
     this.vivos.delete(id)
-    // A posse é devolvida no stop: sem isso, um deploy deixaria os streams travados
-    // pelo tempo do arrendamento, e a instância nova ficaria um minuto sem poder abrir.
+
+    if ('erro' in fim) {
+      vivo.state = 'error'
+      await setStreamError(vivo.record._id, fim.erro, new Date(), this.instanceId).catch(() => undefined)
+    } else {
+      vivo.state = fim.estado
+      await setStreamState(vivo.record._id, fim.estado, new Date(), this.instanceId).catch(() => undefined)
+    }
+
+    // E só então a posse volta a ficar livre — para outra instância poder assumir, e
+    // para um deploy não deixar os streams travados pelo prazo do arrendamento.
     await releaseStreamLease(vivo.record._id, this.instanceId).catch(() => undefined)
-    await setStreamState(vivo.record._id, 'disconnected', new Date(), this.instanceId)
   }
 
   async subscribe(id: string, symbols: readonly string[]): Promise<void> {
@@ -506,9 +561,7 @@ export class StreamManager {
         if (novo) vivo.adapter = novo
       } catch (error) {
         // Recusado agora: a conexão não sobe, e o motivo fica visível.
-        vivo.state = 'error'
-        this.vivos.delete(id)
-        await setStreamError(vivo.record._id, naoLoga(error instanceof Error ? error.message : 'endereço recusado', vivo.segredos), new Date(), this.instanceId)
+        await this.finalizar(vivo, { erro: naoLoga(error instanceof Error ? error.message : 'endereço recusado', vivo.segredos) })
         return
       }
     }
@@ -519,9 +572,7 @@ export class StreamManager {
     if (!credencial) {
       // Conexão revogada ou sumida. Reconectar seria bater numa porta que foi fechada
       // de propósito — e com uma credencial que já não vale.
-      vivo.state = 'error'
-      this.vivos.delete(id)
-      await setStreamError(vivo.record._id, 'conexão indisponível: revogada, expirada ou removida', new Date(), this.instanceId)
+      await this.finalizar(vivo, { erro: 'conexão indisponível: revogada, expirada ou removida' })
       return
     }
     // Um valor curto demais riscaria pedaços de mensagem legítima — `paper`, `usd`.
@@ -654,9 +705,7 @@ export class StreamManager {
     vivo.socket = null
     vivo.tentativas += 1
     if (vivo.tentativas > MAX_TENTATIVAS) {
-      vivo.state = 'error'
-      this.vivos.delete(id)
-      await setStreamError(vivo.record._id, `${naoLoga(motivo, vivo.segredos)} — desistindo após ${MAX_TENTATIVAS} tentativas`, new Date(), this.instanceId)
+      await this.finalizar(vivo, { erro: `${naoLoga(motivo, vivo.segredos)} — desistindo após ${MAX_TENTATIVAS} tentativas` })
       return
     }
     vivo.state = 'reconnecting'

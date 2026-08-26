@@ -26,11 +26,30 @@ export const listResumableStreams = (): Promise<StreamRecord[]> => streams.find(
  * é o que evita cada instância buscar todos os streams do sistema a cada volta só para
  * descartar os que já têm dono.
  */
-export const listOrphanStreams = (instanceId: string, now = new Date()): Promise<StreamRecord[]> =>
+export const listOrphanStreams = (instanceId: string, now = new Date(), esperaAposErroMs = 0): Promise<StreamRecord[]> =>
   streams
     .find({
       paused: { $ne: true },
+      /**
+       * Sem dono, dono vencido — ou desta instância.
+       *
+       * O último caso parece estranho e é necessário: um stream que ESTA instância
+       * possui mas que saiu da memória (um erro definitivo devolveu o arrendamento) não
+       * voltaria por nenhum outro caminho. Quem já está de pé é descartado no
+       * reconciliador, em memória, sem ida ao banco.
+       */
       $or: [{ leaseOwner: { $exists: false } }, { leaseOwner: null }, { leaseOwner: instanceId }, { leaseUntil: { $lt: now } }],
+      /**
+       * E o que acabou de falhar fica de fora por um tempo.
+       *
+       * Uma configuração permanentemente inválida — endereço recusado, App sem adapter —
+       * falha na hora, devolve a posse e volta a ser órfã: sem esta espera, cada volta do
+       * reconciliador tentaria de novo, para sempre, gastando banco e log com um erro que
+       * não vai mudar sozinho.
+       */
+      ...(esperaAposErroMs > 0
+        ? { $nor: [{ state: 'error', updatedAt: { $gt: new Date(now.getTime() - esperaAposErroMs) } }] }
+        : {}),
     })
     .toArray()
 export const countStreams = (ownerId: string): Promise<number> => streams.countDocuments({ ownerId })

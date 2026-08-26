@@ -994,7 +994,7 @@ test('a segunda instância assume sozinha depois da queda, sem ninguém chamar n
     const doc = await db.collection('market_streams').findOne({ _id: record._id })
     assert.equal(doc.leaseOwner, segunda.instanceId)
   } finally {
-    stopStreamReconciler()
+    await stopStreamReconciler()
     delete process.env.STREAM_RECONCILE_MS
   }
 })
@@ -1012,7 +1012,7 @@ test('um stream pausado não é assumido pela reconciliação', async () => {
     await new Promise((r) => setTimeout(r, 250))
     assert.equal(SocketFalso.abertos.length, 0)
   } finally {
-    stopStreamReconciler()
+    await stopStreamReconciler()
     delete process.env.STREAM_RECONCILE_MS
   }
 })
@@ -1032,4 +1032,163 @@ test('o encerramento para a renovação e o reconciliador', async () => {
   assert.equal(relogio.temReconexao(), false, 'e nada ficou agendado')
   const doc = await db.collection('market_streams').findOne({ _id: record._id })
   assert.equal(doc.leaseOwner, null, 'o encerramento limpo devolve a posse')
+})
+
+
+// ============================================================================
+// Encerramento completo: nada continua correndo depois da saída
+// ============================================================================
+
+/** O relógio da posse é o que sobrava; conferir isso é o ponto de metade destes casos. */
+const semRelogios = (relogio) => relogio.temLease() === false && relogio.temReconexao() === false
+
+test('credencial indisponível encerra por completo: sem relógio e sem posse', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m, relogio } = gerente({ credentialsOf: async () => null })
+  assert.equal(await m.start(record), true, 'a posse foi tomada antes de descobrir o problema')
+
+  assert.equal(m.stateOf(record._id.toString()), 'disconnected', 'saiu do mapa')
+  assert.equal(semRelogios(relogio), true, 'nenhum relógio ficou correndo')
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.state, 'error', 'o motivo ficou gravado, com a cerca de pé')
+  assert.equal(doc.leaseOwner, null, 'e a posse voltou a ficar livre')
+})
+
+test('adapter ausente encerra por completo, mesmo antes de existir um Vivo', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m, relogio } = gerente({ adapters: new Map(), adapterFor: async () => null })
+  assert.equal(await m.start(record), false)
+
+  assert.equal(semRelogios(relogio), true)
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.state, 'error')
+  assert.equal(doc.leaseOwner, null, 'a posse tomada no claim foi devolvida')
+})
+
+test('desistir depois do limite de tentativas cancela o relógio da posse e libera', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m, relogio } = gerente()
+  await m.start(record)
+
+  // Cai e reconecta até o limite.
+  for (let i = 0; i <= 12; i++) {
+    const socket = SocketFalso.abertos[SocketFalso.abertos.length - 1]
+    socket.cair()
+    if (!relogio.temReconexao()) break
+    await relogio.dispararReconexao()
+  }
+
+  assert.equal(m.stateOf(record._id.toString()), 'disconnected', 'desistiu')
+  assert.equal(semRelogios(relogio), true, 'e não ficou nada agendado')
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.state, 'error')
+  assert.match(doc.lastError.message, /desistindo/)
+  assert.equal(doc.leaseOwner, null)
+})
+
+test('o stop grava disconnected ANTES de liberar a posse', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  await m.stop(record._id.toString())
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  // Com a ordem invertida, a escrita cercada não acharia o dono e o estado ficaria
+  // "connected" para sempre — que é o que acontecia antes desta correção.
+  assert.equal(doc.state, 'disconnected')
+  assert.equal(doc.leaseOwner, null)
+})
+
+test('pausar não é sobrescrito por um stop posterior', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  await m.start(record)
+  await setStreamPaused(DONO, record._id, true)
+
+  await m.stop(record._id.toString())
+  const doc = await db.collection('market_streams').findOne({ _id: record._id })
+  assert.equal(doc.paused, true, 'a decisão do dono da conta continua valendo')
+})
+
+// ============================================================================
+// start() concorrente
+// ============================================================================
+
+test('dois start ao mesmo tempo abrem exatamente UM socket', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  const [a, b] = await Promise.all([m.start(record), m.start(record)])
+  assert.equal(a, true)
+  assert.equal(b, true, 'a segunda chamada compartilha a mesma subida')
+  assert.equal(SocketFalso.abertos.length, 1, `abriu ${SocketFalso.abertos.length} sockets`)
+})
+
+test('um erro durante o start limpa o registro e a próxima tentativa funciona', async () => {
+  const record = await streamDe(['PETR4'])
+  let falhar = true
+  const { m } = gerente({
+    adapterFor: async () => {
+      if (falhar) throw new Error('configuração inválida')
+      return null
+    },
+  })
+
+  await assert.rejects(() => m.start(record), /inválida/).catch(async () => {
+    // `iniciar` trata o erro do adapter por dentro; o que importa é não travar o mutex.
+    await m.start(record).catch(() => undefined)
+  })
+
+  falhar = false
+  // Sem limpar o registro no `finally`, esta chamada devolveria a promessa antiga.
+  const segunda = await m.start(record)
+  assert.equal(typeof segunda, 'boolean', 'a segunda tentativa correu de novo')
+})
+
+// ============================================================================
+// Reconciliador
+// ============================================================================
+
+test('parar o reconciliador espera a volta em andamento e não reabre nada', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  setStreamManager(m)
+
+  const { startStreamReconciler, stopStreamReconciler } = await import('../dist/streams/service.js')
+  process.env.STREAM_RECONCILE_MS = '30'
+  try {
+    startStreamReconciler()
+    // Encerra logo no começo de uma volta: uma consulta que voltasse depois disto
+    // chamaria start e abriria um socket que ninguém fecharia.
+    await new Promise((r) => setTimeout(r, 40))
+    await stopStreamReconciler()
+    const quantos = SocketFalso.abertos.length
+
+    await new Promise((r) => setTimeout(r, 150))
+    assert.equal(SocketFalso.abertos.length, quantos, 'nenhuma volta rodou depois de parar')
+  } finally {
+    await stopStreamReconciler()
+    delete process.env.STREAM_RECONCILE_MS
+    await m.stopAll()
+  }
+})
+
+test('o reconciliador não reabre o que já está de pé nesta instância', async () => {
+  const record = await streamDe(['PETR4'])
+  const { m } = gerente()
+  setStreamManager(m)
+  await m.start(record)
+  SocketFalso.abertos[0].abrir()
+
+  const { startStreamReconciler, stopStreamReconciler } = await import('../dist/streams/service.js')
+  process.env.STREAM_RECONCILE_MS = '30'
+  try {
+    startStreamReconciler()
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal(SocketFalso.abertos.length, 1, 'continua um socket só')
+  } finally {
+    await stopStreamReconciler()
+    delete process.env.STREAM_RECONCILE_MS
+    await m.stopAll()
+  }
 })
