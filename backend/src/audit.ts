@@ -77,8 +77,12 @@ export type AuditEntityType =
   // agente e setor criado pela aplicação é auditado como ele mesmo, pelo caminho de
   // sempre — senão a auditoria diria "projeto criado" sobre cinco agentes novos.
   | 'architect_project'
+  // A REGRA de um histórico genérico — o que gravar, de onde e por quanto tempo. Os
+  // registros que ela produz não são auditados um a um: são dado, e são milhares.
+  | 'data_recorder'
   | 'settings'
 export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
+  'data_recorder',
   'memory',
   'agent',
   'sector',

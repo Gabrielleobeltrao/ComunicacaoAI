@@ -9,6 +9,9 @@ import { BuildingProvider } from './contexts/BuildingContext'
 import { DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
 import { Building } from './pages/Building'
 import { ArchitectProjects } from './pages/architect/Projects'
+import { DataRecorders } from './pages/dataHistory/Recorders'
+import { RecorderForm } from './pages/dataHistory/RecorderForm'
+import { RecorderDetail } from './pages/dataHistory/RecorderDetail'
 import { ArchitectProject } from './pages/architect/Project'
 import { FloorView } from './pages/FloorView'
 import { AgentDetail } from './pages/AgentDetail'
@@ -120,6 +123,13 @@ function App() {
           <Route path="/setores/:sectorId/:section" element={<P><SectorDetail /></P>} />
         </>
       )}
+
+      {/* Históricos: a camada genérica de registro e agregação. É do PRÉDIO, como o
+          Arquiteto — o que ela guarda vem de qualquer fonte da conta, e não de um
+          andar. Existe nos dois modos de navegação. */}
+      <Route path="/historicos" element={<P><DataRecorders /></P>} />
+      <Route path="/historicos/novo" element={<P><RecorderForm /></P>} />
+      <Route path="/historicos/:recorderId" element={<P><RecorderDetail /></P>} />
 
       {/* Montar operação é do PRÉDIO, não de um andar: ela pode criar ou reutilizar
           vários. Por isso mora aqui, ao lado das outras áreas globais, e existe nos

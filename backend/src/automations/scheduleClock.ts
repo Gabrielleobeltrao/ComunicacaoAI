@@ -26,6 +26,24 @@ export function nextFireAt(cron: string, timezone: string, after: Date): Date | 
 // returns that same instant again.
 export const advanceFrom = (cron: string, timezone: string, lastFire: Date): Date | null => nextFireAt(cron, timezone, lastFire)
 
+/**
+ * O disparo mais recente que JÁ aconteceu — o espelho de `nextFireAt`.
+ *
+ * Existe para quem precisa alinhar um trabalho à agenda sem guardar "quando rodei da
+ * última vez": duas passadas entre dois disparos devolvem o mesmo instante, e é isso
+ * que torna a gravação idempotente. Devolve `null` na mesma condição do irmão — uma
+ * expressão ou fuso que o relógio não entende não derruba o laço de quem chamou.
+ */
+export function lastFireAt(cron: string, timezone: string, at: Date): Date | null {
+  if (!cron?.trim() || !timezone?.trim()) return null
+  try {
+    const it = CronExpressionParser.parse(cron, { currentDate: at, tz: timezone })
+    return it.prev().toDate()
+  } catch {
+    return null
+  }
+}
+
 // A schedule the process missed while it was down is SKIPPED, not replayed: three
 // days of "resumo do dia" arriving at once is noise, not recovery. This returns the
 // first fire that is still in the future, and how many were skipped (for the log).

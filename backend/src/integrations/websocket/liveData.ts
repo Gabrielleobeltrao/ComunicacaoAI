@@ -230,12 +230,42 @@ export async function putLiveValue(
     anterior.registro = registro
     anterior.seq = seq
     agendarGravacao(id, anterior, agora.getTime())
+    avisarHistorico(ownerId, connectionId, chave, value, agora)
     return true
   }
   const pendente: Pendente = { registro, gravando: false, ultimaEm: 0, seq, timer: null, emVoo: null }
   buffer.set(id, pendente)
   agendarGravacao(id, pendente, agora.getTime())
+  avisarHistorico(ownerId, connectionId, chave, value, agora)
   return true
+}
+
+/**
+ * O histórico fica sabendo — SEM virar histórico.
+ *
+ * O Live Data continua sendo só o valor de agora, com TTL: nada aqui grava série. O que
+ * este aviso faz é entregar o fato a quem tem regra para ele, que é o que evita o
+ * polling do plano — quem quer "gravar quando mudar" é acordado pela mudança, em vez de
+ * ficar perguntando de segundo em segundo se mudou.
+ *
+ * Sem esperar e sem propagar: uma regra de histórico com defeito não pode atrasar nem
+ * derrubar a atualização do valor ao vivo, que é o caminho quente.
+ */
+function avisarHistorico(ownerId: string, connectionId: string, chave: string, valor: unknown, agora: Date): void {
+  void import('../../dataHistory/engine.js')
+    .then(({ ingestFact }) =>
+      ingestFact(
+        {
+          ownerId,
+          sourceKey: `live_data:${connectionId}`,
+          entityKey: chave,
+          occurredAt: agora,
+          value: (valor && typeof valor === 'object' ? (valor as Record<string, unknown>) : { value: valor }),
+        },
+        agora,
+      ),
+    )
+    .catch(() => undefined)
 }
 
 /**
