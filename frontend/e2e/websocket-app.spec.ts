@@ -138,6 +138,10 @@ async function stub(
   )
   await page.route('**/api/websocket/logs**', (r) => r.fulfill({ json: opts.logs ?? [] }))
   await page.route('**/api/websocket/live**', (r) => r.fulfill({ json: { count: (opts.live ?? []).length, items: opts.live ?? [] } }))
+  await page.route('**/api/websocket/connections/*/test', (r) => {
+    const t = opts.teste ?? { ok: true, message: 'Conexão de tempo real aberta; este provedor não confirma a credencial.' }
+    return r.fulfill({ status: t.ok ? 200 : 400, json: t })
+  })
   await page.route('**/api/websocket/connections/*/send', (r) => {
     quadroEnviado = (r.request().postDataJSON() as { frame: string }).frame
     return r.fulfill({ json: { sent: true, message: 'Mensagem enviada.' } })
@@ -673,6 +677,73 @@ test('em 320 px o dado ao vivo não estoura para os lados', async ({ page }) => 
   await page.setViewportSize({ width: 320, height: 720 })
   await page.goto('/apps/websocket/live')
   await expect(page.getByTestId('ws-live')).toBeVisible()
+  const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(folga, `estourou ${folga}px`).toBeLessThanOrEqual(0)
+})
+
+
+// --- a rodada corretiva -----------------------------------------------------------------
+
+test('“Testar conexão” fica ao lado de Ligar, e mostra o resultado de verdade', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps/websocket/overview')
+  const botao = page.getByTestId('ws-test-connection')
+  await expect(botao).toBeVisible()
+  await botao.click()
+  await expect(page.getByTestId('ws-test-result')).toContainText('Conexão de tempo real aberta')
+})
+
+test('uma recusa aparece como recusa, e sem detalhe sensível', async ({ page }) => {
+  await stub(page, { teste: { ok: false, message: 'O provedor recusou a credencial.' } })
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-test-connection').click()
+  const r = page.getByTestId('ws-test-result')
+  await expect(r).toContainText('O provedor recusou a credencial')
+  // O resultado é anunciado para leitor de tela: ele chega depois de segundos de espera.
+  await expect(r).toHaveAttribute('role', 'status')
+  await expect(r).not.toContainText(/authorization|apikey|token=/i)
+})
+
+test('sem configuração, não dá para testar', async ({ page }) => {
+  await stub(page, { connections: [{ ...CONNECTION, config: null }] })
+  await page.goto('/apps/websocket/overview')
+  await expect(page.getByTestId('ws-test-connection')).toBeDisabled()
+})
+
+test('em 320 px o formulário inteiro cabe, sem estourar para os lados', async ({ page }) => {
+  await stub(page)
+  await page.setViewportSize({ width: 320, height: 900 })
+  await page.goto('/apps/websocket/overview')
+  await page.getByTestId('ws-configure').click()
+  await page.getByTestId('ws-advanced-toggle').click()
+
+  // As listas que mais apertam: filtro, cabeçalho, mensagem inicial e mapeamento.
+  await page.getByTestId('ws-header-add').click()
+  await page.getByTestId('ws-initial-add').click()
+  await page.getByTestId('ws-mapping-add').click()
+  await page.getByTestId('ws-add-filter').click()
+
+  const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(folga, `o formulário estourou ${folga}px`).toBeLessThanOrEqual(0)
+
+  // E os campos de DIGITAR continuam utilizáveis. Caixa de marcar fica de fora: ela tem
+  // 13 px por natureza, e medir a largura dela não diz nada sobre caber ou não caber.
+  const estreito = await page.evaluate(() => {
+    const campos = [...document.querySelectorAll('input:not([type="checkbox"]), select, textarea')] as HTMLElement[]
+    return campos
+      .map((c) => ({ id: c.dataset.testid ?? c.tagName, w: Math.round(c.getBoundingClientRect().width) }))
+      .filter((c) => c.w > 0 && c.w < 120)
+  })
+  expect(estreito, `campos espremidos demais para digitar: ${JSON.stringify(estreito)}`).toEqual([])
+})
+
+test('em 320 px o dado ao vivo não corta a tabela', async ({ page }) => {
+  await stub(page, {
+    live: [{ key: 'AAPL', value: { symbol: 'AAPL', price: 227.11, origem: 'um valor bem longo para forçar a largura da coluna' }, updates: 12, receivedAt: NOW, ageMs: 800 }],
+  })
+  await page.setViewportSize({ width: 320, height: 720 })
+  await page.goto('/apps/websocket/live')
+  await expect(page.getByTestId('ws-live-table')).toBeVisible()
   const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(folga, `estourou ${folga}px`).toBeLessThanOrEqual(0)
 })

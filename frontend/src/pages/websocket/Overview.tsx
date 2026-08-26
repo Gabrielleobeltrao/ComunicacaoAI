@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listConnections, pauseWsStream, resumeWsStream, startConnection, stopWsStream } from '../../lib/websocketApp'
+import { listConnections, pauseWsStream, resumeWsStream, startConnection, stopWsStream, testConnection } from '../../lib/websocketApp'
 import type { WsConnection } from '../../lib/websocketApp'
 import { Button, Card } from '../../ui'
 import { SemConexao, WsPage, duracao, quando } from './shared'
@@ -25,6 +25,26 @@ export function WebSocketOverview() {
   const [conexoes, setConexoes] = useState<WsConnection[]>([])
   const [carregando, setCarregando] = useState(true)
   const [editando, setEditando] = useState<string | null>(null)
+  const [testando, setTestando] = useState<string | null>(null)
+  const [resultado, setResultado] = useState<Record<string, { ok: boolean; message: string }>>({})
+
+  /**
+   * O resultado é o VERDADEIRO: abriu, o serviço recusou, o prazo estourou ou a
+   * configuração é inválida. Antes daqui o botão dizia "configuração lida com sucesso"
+   * sem ter aberto nada — a resposta certa para a pergunta errada.
+   */
+  async function testar(id: string) {
+    setTestando(id)
+    setResultado((atual) => ({ ...atual, [id]: undefined as never }))
+    try {
+      const r = await testConnection(id)
+      setResultado((atual) => ({ ...atual, [id]: r }))
+    } catch (e) {
+      setResultado((atual) => ({ ...atual, [id]: { ok: false, message: (e as Error).message } }))
+    } finally {
+      setTestando(null)
+    }
+  }
   const [busy, setBusy] = useState<string | null>(null)
   const [erro, setErro] = useState<string | null>(null)
 
@@ -83,6 +103,17 @@ export function WebSocketOverview() {
                 {c.messages.total} mensagem(ns) · {c.messages.accepted} aproveitada(s) · última {quando(c.messages.lastAt)}
                 {c.stream?.state === 'connected' && c.stream.lastConnectedAt ? ` · no ar ${duracao(c.stream.lastConnectedAt)}` : ''}
               </p>
+              {/* O resultado do teste, anunciado: quem usa leitor de tela precisa saber
+                  que a resposta chegou, e ela chega depois de segundos de espera. */}
+              {resultado[c.id] ? (
+                <p
+                  role="status"
+                  style={{ margin: 0, fontSize: 12.5, color: resultado[c.id]!.ok ? 'var(--mint-600, #12805c)' : 'var(--coral-600, #d92d20)' }}
+                  data-testid="ws-test-result"
+                >
+                  {resultado[c.id]!.message}
+                </p>
+              ) : null}
               {c.stream?.lastError ? (
                 <p style={{ margin: 0, fontSize: 12.5, color: 'var(--coral-600, #d92d20)' }} data-testid="ws-error">
                   {c.stream.lastError.message}
@@ -108,6 +139,19 @@ export function WebSocketOverview() {
                     Desligar
                   </Button>
                 ) : null}
+                {/* Testar fica ao lado de Ligar porque é a pergunta que vem ANTES dele:
+                    "este endereço e esta credencial funcionam?". Ele abre a conexão de
+                    verdade, com a configuração de verdade, e fecha. */}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon="plug"
+                  disabled={testando === c.id || !c.config}
+                  onClick={() => void testar(c.id)}
+                  data-testid="ws-test-connection"
+                >
+                  {testando === c.id ? 'Testando…' : 'Testar conexão'}
+                </Button>
                 <Button size="sm" variant="secondary" icon="settings" onClick={() => setEditando(editando === c.id ? null : c.id)} data-testid="ws-configure">
                   {editando === c.id ? 'Fechar' : 'Configurar'}
                 </Button>

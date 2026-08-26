@@ -17,6 +17,18 @@ const ABAS = [
   { key: 'logs', label: 'Logs', path: '/apps/websocket/logs' },
 ]
 
+/**
+ * Grade que vira UMA coluna no celular.
+ *
+ * As grades desta tela eram `1fr 1fr` fixo: em 320 px, dois campos de endereço lado a
+ * lado ficam com 140 px cada, e o conteúdo é cortado. `auto-fit` com largura mínima
+ * resolve sem media query e sem JavaScript — a coluna quebra quando não cabe.
+ */
+export const GRADE: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }
+
+/** A mesma ideia para as linhas com botão no fim (filtro, cabeçalho, mapeamento). */
+export const LINHA: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'flex-end' }
+
 export function WsPage({ current, title, subtitle, children }: { current: string; title: string; subtitle?: string; children: React.ReactNode }) {
   return (
     <AppLayout current={current} title={title} subtitle={subtitle}>

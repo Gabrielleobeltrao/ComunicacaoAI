@@ -178,7 +178,11 @@ barramento durável de eventos e os mesmos gatilhos internos.
    endereço ou primeira mensagem). Em *Avançado* ficam os caminhos de onde tirar
    conteúdo, identificador, canal e data, além de schema, filtros, deduplicação e
    limites. *Conferir endereço* valida antes de salvar.
-3. **Ligar** — o botão **Ligar** abre a conexão; dá para pausar, retomar e desligar.
+3. **Testar e ligar** — **Testar conexão** abre o socket de verdade, com a configuração
+   de verdade (cabeçalhos, subprotocolo, autenticação, endereço já conferido) e fecha em
+   seguida; o que ele responde é o que aconteceu — abriu, o serviço recusou, o prazo
+   estourou ou a configuração está incompleta. **Ligar** deixa a conexão de pé; dá para
+   pausar, retomar e desligar.
 4. **Assinar** — *Assinaturas*: o que ouvir (canal, filtros e a mensagem de inscrição)
    e **o que fazer com o que chegar**: só guardar, memória (do agente, setor, andar ou
    prédio), rotina, agente ou setor. *Só guardar* é o padrão e não gasta token nenhum;
@@ -204,6 +208,23 @@ não repete a outra.
 
 Fixe no menu como o Chat Web: fixado, ele vira um grupo expansível com as quatro
 páginas. Desfixar tira só a navegação — conexão, assinaturas e histórico ficam.
+
+**Texto ou JSON.** Numa conexão `text`, autenticação por mensagem, mensagens iniciais,
+inscrição, batimento e envio manual saem como texto puro — há serviço que assina com
+`SUBSCRIBE canal` e recusa qualquer coisa entre chaves. Numa conexão `json`, todos eles
+são conferidos como JSON antes de salvar.
+
+**A credencial não entra em campo público.** Cabeçalho, mensagem inicial, mensagem de
+autenticação e batimento ficam no metadata público da instalação: colar a chave neles a
+tiraria de dentro do campo cifrado sem ninguém perceber, porque a conexão funcionaria
+igual. Escreva `{{token}}` — o segredo continua cifrado e entra só na hora de conectar.
+E se o serviço ecoar o token de volta numa mensagem, ele é riscado do histórico, do
+evento e do dado ao vivo.
+
+**Salvar reabre a conexão quando precisa.** Endereço, autenticação, credencial,
+cabeçalhos, mensagens iniciais, subprotocolos, batimento e prazos só valem no handshake:
+mudá-los reconecta sozinho. Filtro, schema, mapeamento, validade e espaçamento são lidos
+a cada mensagem e valem na seguinte, sem derrubar nada.
 
 **O que ele não faz, de propósito:** não aceita expressão, JavaScript nem template
 executável. Endereço, caminho, filtro e limite são dados; o servidor lê caminho de
@@ -244,6 +265,20 @@ O modelo entra quando alguém quer uma frase.
 **Espaço entre eventos** controla o barramento à parte: guardar é barato e substitui o
 valor anterior; publicar é durável, é entregue e pode disparar trabalho. Com `0`, tudo
 vira evento como antes.
+
+### Conferindo na mão
+
+**Sem credencial:** *Apps → WebSocket Genérico → conectar*, endereço
+`wss://ws.postman-echo.com/raw`, autenticação **Nenhuma**. Clique em **Testar conexão**:
+ele abre de verdade e responde. Depois **Ligar**, e use *Dado ao vivo → Enviar uma
+mensagem* — o serviço devolve o que recebe, e a mensagem aparece em *Mensagens*.
+
+**Com autenticação:** no mesmo endereço, escolha *Cabeçalho* com nome `Authorization` e
+prefixo `Bearer `, e informe uma credencial qualquer no campo de credencial (ela vai
+cifrada). **Testar conexão** manda o cabeçalho no handshake. Para conferir que o segredo
+não vazou, procure por ele em *Logs*, *Mensagens* e *Dado ao vivo*: ele não está em
+nenhum. E tente escrever a mesma credencial num cabeçalho adicional — a tela recusa e
+pede `{{token}}`.
 
 ### Exemplo sem credencial nenhuma
 

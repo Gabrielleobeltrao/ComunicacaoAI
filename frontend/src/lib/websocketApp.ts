@@ -157,6 +157,9 @@ export const listLive = (installationId: string, prefix = '') =>
   request<{ count: number; items: WsLiveValue[] }>(`/live?installationId=${encodeURIComponent(installationId)}&prefix=${encodeURIComponent(prefix)}`)
 export const sendFrame = (installationId: string, frame: string) =>
   request<{ sent: boolean; message: string }>(`/connections/${installationId}/send`, { method: 'POST', body: JSON.stringify({ frame }) })
+/** Abre a conexão de verdade com a configuração real, e fecha. */
+export const testConnection = (installationId: string) =>
+  request<{ ok: boolean; message: string }>(`/connections/${installationId}/test`, { method: 'POST' })
 export const checkUrl = (endpoint: string) => request<{ ok: boolean; message: string }>('/check-url', { method: 'POST', body: JSON.stringify({ endpoint }) })
 export const startConnection = (id: string) => request<WsStream>(`/connections/${id}/start`, { method: 'POST' })
 export const pauseWsStream = (id: string) => request<WsStream>(`/streams/${id}/pause`, { method: 'POST' })

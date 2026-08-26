@@ -11,7 +11,7 @@ import {
 } from '../../lib/websocketApp'
 import type { WsConnection, WsDestination, WsFilter, WsSubscription, WsTargets } from '../../lib/websocketApp'
 import { Button, Card, EmptyState, Field, Input, Textarea } from '../../ui'
-import { SemConexao, WsPage, quando } from './shared'
+import { SemConexao, WsPage, quando, LINHA } from './shared'
 import { DestinationFields } from './DestinationFields'
 
 /**
@@ -195,7 +195,7 @@ export function WebSocketSubscriptions() {
               <Field label="Filtros da assinatura" hint="Só o que casar com todos pertence a esta assinatura. Vazio aceita tudo que passar pela conexão.">
                 <div style={{ display: 'grid', gap: 6 }}>
                   {rascunho.filters.map((f, i) => (
-                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 1fr auto', gap: 6 }}>
+                    <div key={i} style={LINHA}>
                       <Input
                         value={f.path}
                         onChange={(e) => setFiltro(i, { path: e.target.value })}

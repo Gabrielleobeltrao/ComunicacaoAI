@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { checkUrl, emptyConfig, saveConnection } from '../../lib/websocketApp'
 import type { WsAuthKind, WsConnection, WsConnectionConfig, WsDedupeStrategy, WsFilter } from '../../lib/websocketApp'
 import { Button, Field, Icon, Input, Textarea } from '../../ui'
+import { GRADE, LINHA } from './shared'
 
 /**
  * A configuração da conexão, em duas camadas.
@@ -116,7 +117,7 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
       </Field>
 
       {config.auth.kind === 'header' || config.auth.kind === 'query' ? (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <div style={GRADE}>
           <Field label={config.auth.kind === 'header' ? 'Nome do cabeçalho' : 'Nome do parâmetro'}>
             <Input value={config.auth.name} onChange={(e) => set({ auth: { ...config.auth, name: e.target.value } })} placeholder="Authorization" data-testid="ws-auth-name" />
           </Field>
@@ -159,7 +160,7 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
           <p style={{ margin: 0, fontSize: 12, color: 'var(--text-faint)' }}>
             Os caminhos são campos de objeto, como <code>data.evento</code>. Em branco, a mensagem inteira é usada.
           </p>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div style={GRADE}>
             <Field label="Caminho do conteúdo">
               <Input value={config.paths.payload} onChange={(e) => set({ paths: { ...config.paths, payload: e.target.value } })} data-testid="ws-path-payload" />
             </Field>
@@ -177,7 +178,7 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
           <Field label="Filtros" hint="Só o que casar com todos é aproveitado. Vazio aceita tudo.">
             <div style={{ display: 'grid', gap: 6 }}>
               {config.filters.map((f, i) => (
-                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 1fr auto', gap: 6 }}>
+                <div key={i} style={LINHA}>
                   <Input value={f.path} onChange={(e) => setFiltro(i, { path: e.target.value })} placeholder="data.tipo" data-testid={`ws-filter-path-${i}`} />
                   <select style={selectStyle} value={f.operator} onChange={(e) => setFiltro(i, { operator: e.target.value as 'equals' | 'contains' })} data-testid={`ws-filter-op-${i}`}>
                     <option value="equals">é igual a</option>
@@ -240,7 +241,7 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
             </p>
           ) : null}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div style={GRADE}>
             <Field label="Intervalo do ping (s)" hint="Vale para ESTA conexão.">
               <Input
                 type="number"
@@ -269,7 +270,7 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
             </select>
           </Field>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div style={GRADE}>
             <Field label="Mensagens por minuto">
               <Input
                 type="number"
@@ -334,7 +335,7 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
           <Field label="Cabeçalhos adicionais" hint="Alguns serviços exigem Origin ou um cabeçalho próprio. Use {{token}} no valor para a credencial entrar sem ficar guardada aqui.">
             <div style={{ display: 'grid', gap: 6 }} data-testid="ws-headers">
               {config.headers.map((h, i) => (
-                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6 }}>
+                <div key={i} style={LINHA}>
                   <Input
                     value={h.name}
                     placeholder="Origin"
@@ -364,7 +365,7 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
           <Field label="Mensagens ao conectar" hint="Enviadas nesta ordem assim que a conexão abre. Autenticar primeiro, assinar depois — é o que a maioria dos serviços exige.">
             <div style={{ display: 'grid', gap: 6 }} data-testid="ws-initial-messages">
               {config.initialMessages.map((m, i) => (
-                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 6 }}>
+                <div key={i} style={LINHA}>
                   <Input
                     value={m}
                     placeholder='{"action":"subscribe","params":{"symbols":"AAPL,TSLA"}}'
@@ -388,7 +389,7 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
           <Field label="Normalizar campos" hint="De onde ler, e como o campo passa a se chamar aqui dentro. É o que faz dois serviços diferentes virarem o mesmo objeto.">
             <div style={{ display: 'grid', gap: 6 }} data-testid="ws-mapping">
               {config.mapping.map((r, i) => (
-                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6 }}>
+                <div key={i} style={LINHA}>
                   <Input
                     value={r.from}
                     placeholder="$.data.ticker"
@@ -415,7 +416,7 @@ export function ConnectionForm({ connection, onSaved }: { connection: WsConnecti
           </Field>
 
           {config.mapping.length > 0 ? (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+            <div style={GRADE}>
               <Field label="Chave do dado ao vivo" hint="Qual campo identifica a coisa. Normalmente symbol.">
                 <Input value={config.liveKeyPath} placeholder="symbol" onChange={(e) => set({ liveKeyPath: e.target.value })} data-testid="ws-live-key" />
               </Field>
