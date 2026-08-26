@@ -5,6 +5,7 @@
 // código estável em vez de um 500.
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { ObjectId } from 'mongodb'
 import { startMongo, stopMongo } from './helpers/mongoServer.mjs'
 
 process.env.NODE_ENV = 'test'
@@ -91,6 +92,7 @@ test('o projeto de outra conta não existe: 404, e não 403', async () => {
     ['POST', `/projects/${meu.id}/validate`],
     ['GET', `/projects/${meu.id}/preview`],
     ['POST', `/projects/${meu.id}/archive`],
+    ['DELETE', `/projects/${meu.id}`],
   ]) {
     const r = await pedir(metodo, caminho, corpo)
     assert.equal(r.status, 404, `${metodo} ${caminho} devolveu ${r.status}`)
@@ -294,6 +296,41 @@ test('arquivar não apaga o projeto nem o que ele criou', async () => {
   assert.equal(listaPadrao.body.length, 0, 'sai da lista por padrão')
   const comArquivados = await pedir('GET', '/projects?includeArchived=true')
   assert.equal(comArquivados.body.length, 1)
+})
+
+test('apagar remove a conversa e as mensagens — e nada além disso', async () => {
+  const p = await criar('conversa a apagar')
+  await pedir('POST', `/projects/${p.id}/messages`, { content: 'primeira' })
+  assert.ok((await db.collection('architect_messages').countDocuments({})) > 0, 'a mensagem foi gravada')
+
+  const r = await pedir('DELETE', `/projects/${p.id}`)
+  assert.equal(r.status, 204)
+  assert.equal(await db.collection('architect_projects').countDocuments({}), 0)
+  assert.equal(await db.collection('architect_messages').countDocuments({}), 0, 'as mensagens vão junto')
+
+  // E some da listagem, inclusive com arquivados — apagar não é arquivar.
+  const lista = await pedir('GET', '/projects?includeArchived=true')
+  assert.equal(lista.body.length, 0)
+  assert.equal((await pedir('GET', `/projects/${p.id}`)).status, 404)
+})
+
+test('apagar NÃO apaga o que a conversa criou', async () => {
+  const p = await criar('conversa com andar')
+  // Um andar de verdade, criado pelo caminho de sempre: apagar a conversa não pode
+  // levá-lo junto. Quem quer desfazer o que foi criado usa rollback, que é outra tela.
+  const andar = await db.collection('offices').insertOne({ ownerId: DONO, name: 'Andar do teste', createdAt: new Date(), updatedAt: new Date() })
+
+  assert.equal((await pedir('DELETE', `/projects/${p.id}`)).status, 204)
+  assert.equal(await db.collection('offices').countDocuments({ _id: andar.insertedId }), 1, 'o andar continua de pé')
+})
+
+test('não dá para apagar um projeto que está sendo aplicado', async () => {
+  const p = await criar('conversa aplicando')
+  await db.collection('architect_projects').updateOne({ _id: new ObjectId(p.id) }, { $set: { status: 'applying' } })
+
+  const r = await pedir('DELETE', `/projects/${p.id}`)
+  assert.equal(r.status, 409, `devolveu ${r.status}`)
+  assert.equal(await db.collection('architect_projects').countDocuments({}), 1, 'continua lá')
 })
 
 test('projeto arquivado não aceita mais conversa', async () => {

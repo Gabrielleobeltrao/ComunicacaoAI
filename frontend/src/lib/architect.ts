@@ -213,6 +213,8 @@ export const recheckProject = (id: string) => request<ApplyResponse>(`/projects/
 export const markChecklistItem = (id: string, itemId: string, done: boolean) =>
   request<ArchitectProject>(`/projects/${id}/checklist/${encodeURIComponent(itemId)}`, { method: 'PATCH', body: JSON.stringify({ done }) })
 export const archiveProject = (id: string) => request<ArchitectProject>(`/projects/${id}/archive`, { method: 'POST' })
+/** Apaga a CONVERSA. O que ela criou continua de pé — ver `deleteProject` no servidor. */
+export const deleteProject = (id: string) => request<null>(`/projects/${id}`, { method: 'DELETE' })
 
 /**
  * A chave da operação, estável enquanto a aba estiver aberta e o hash for o mesmo.

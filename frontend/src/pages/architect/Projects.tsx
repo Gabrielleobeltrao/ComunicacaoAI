@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
-import { Badge, Button, Card, EmptyState, Icon, Textarea } from '../../ui'
-import { createProject, listProjects } from '../../lib/architect'
+import { Badge, Button, Card, Dialog, EmptyState, Icon, IconButton, Textarea } from '../../ui'
+import { createProject, deleteProject, listProjects } from '../../lib/architect'
 import type { ArchitectProject } from '../../lib/architect'
 import { STATUS_LABEL, statusTone } from './shared'
 
@@ -18,6 +18,9 @@ export function ArchitectProjects() {
   const [objetivo, setObjetivo] = useState('')
   const [erro, setErro] = useState<string | null>(null)
   const [criando, setCriando] = useState(false)
+  /** A conversa que está prestes a sumir. Apagar sem perguntar não é opção. */
+  const [aApagar, setAApagar] = useState<ArchitectProject | null>(null)
+  const [apagando, setApagando] = useState(false)
 
   useEffect(() => {
     listProjects()
@@ -39,6 +42,23 @@ export function ArchitectProjects() {
     } catch (e) {
       setErro((e as Error).message)
       setCriando(false)
+    }
+  }
+
+  async function apagar() {
+    if (!aApagar) return
+    setApagando(true)
+    setErro(null)
+    try {
+      await deleteProject(aApagar.id)
+      // A lista vem do servidor de novo: uma remoção só no estado local mente se a
+      // chamada tiver falhado no meio.
+      setProjetos(await listProjects())
+      setAApagar(null)
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setApagando(false)
     }
   }
 
@@ -100,31 +120,40 @@ export function ArchitectProjects() {
         ) : (
           <div className="flex flex-col gap-2" data-testid="architect-list">
             {projetos.map((p) => (
-              <button
+              /* Abrir e apagar são dois controles: um botão dentro de outro não é
+                 clicável de forma previsível — nem pelo mouse, nem pelo teclado. */
+              <div
                 key={p.id}
-                type="button"
-                data-testid={`architect-project-${p.id}`}
-                onClick={() => navigate(`/architect/${p.id}`)}
-                style={{
-                  textAlign: 'left',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 12,
-                  background: 'var(--surface-card)',
-                  padding: 14,
-                  minHeight: 44,
-                }}
+                className="flex items-start gap-2"
+                style={{ border: '1px solid var(--border-subtle)', borderRadius: 12, background: 'var(--surface-card)', padding: 14 }}
               >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span style={{ fontWeight: 600 }}>{p.title}</span>
-                  <Badge tone={statusTone(p.status)}>{STATUS_LABEL[p.status]}</Badge>
-                  {p.readiness.requiredTotal > 0 && (
-                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                      {p.readiness.requiredDone}/{p.readiness.requiredTotal} obrigatórios
-                    </span>
-                  )}
-                </div>
-                <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>{p.objective}</p>
-              </button>
+                <button
+                  type="button"
+                  data-testid={`architect-project-${p.id}`}
+                  onClick={() => navigate(`/architect/${p.id}`)}
+                  style={{ flex: 1, minWidth: 0, textAlign: 'left', border: 0, background: 'transparent', padding: 0, minHeight: 44, cursor: 'pointer' }}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span style={{ fontWeight: 600 }}>{p.title}</span>
+                    <Badge tone={statusTone(p.status)}>{STATUS_LABEL[p.status]}</Badge>
+                    {p.readiness.requiredTotal > 0 && (
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        {p.readiness.requiredDone}/{p.readiness.requiredTotal} obrigatórios
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>{p.objective}</p>
+                </button>
+                {/* Enquanto aplica, não: a operação em andamento escreve no escritório,
+                    e sumir com o registro dela deixaria trabalho sem quem retomasse. */}
+                <IconButton
+                  icon="trash-2"
+                  label={`Apagar “${p.title}”`}
+                  disabled={p.status === 'applying'}
+                  onClick={() => setAApagar(p)}
+                  data-testid={`architect-delete-${p.id}`}
+                />
+              </div>
             ))}
           </div>
         )}
@@ -133,6 +162,34 @@ export function ArchitectProjects() {
           <Icon name="info" size={14} />
           Nada é criado antes de você revisar e confirmar.
         </p>
+
+        {/* O que a conversa CRIOU não vai junto — e a tela diz isso antes, não depois. */}
+        <Dialog
+          open={aApagar !== null}
+          title="Apagar esta conversa?"
+          subtitle={aApagar?.title}
+          onClose={() => (apagando ? undefined : setAApagar(null))}
+          footer={
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button variant="secondary" onClick={() => setAApagar(null)} disabled={apagando}>
+                Cancelar
+              </Button>
+              <Button onClick={() => void apagar()} disabled={apagando} data-testid="architect-delete-confirm">
+                {apagando ? 'Apagando…' : 'Apagar conversa'}
+              </Button>
+            </div>
+          }
+        >
+          <p style={{ fontSize: 13.5, margin: 0 }}>
+            A conversa e as mensagens somem. <strong>O que ela já criou continua de pé</strong> — andar, agentes e setores
+            seguem funcionando e podem ser editados pelas telas de sempre.
+          </p>
+          {erro && (
+            <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="architect-delete-error">
+              {erro}
+            </p>
+          )}
+        </Dialog>
       </div>
     </AppLayout>
   )
