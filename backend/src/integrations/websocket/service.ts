@@ -17,6 +17,7 @@ import {
 } from './repository.js'
 import { dedupeKeyOf, parseMessage, podePublicar, previewOf, registerOverflow, subscriptionsFor } from './pipeline.js'
 import { applyMapping } from './mapping.js'
+import { mascarar } from './redact.js'
 import { putLiveValue } from './liveData.js'
 import { framesOnConnect } from './subscribe.js'
 import type { WsMessage, WsMessageStatus } from './types.js'
@@ -102,7 +103,17 @@ export async function ingestWebSocketMessage(
   bruto: string,
   config: WsConnectionConfig,
   now = new Date(),
+  /**
+   * A credencial em uso, para RISCAR do que vai ser guardado.
+   *
+   * Não é paranoia: há serviço que ecoa a mensagem de autenticação de volta, e há
+   * serviço que devolve o token no erro. Sem isto, a chave ia parar no trecho que a
+   * tela de Mensagens mostra e no payload do evento — os dois lugares mais fáceis de
+   * vazar justamente o que o resto do sistema protege.
+   */
+  segredos: readonly string[] = [],
 ): Promise<{ status: WsMessageStatus; eventIds: string[] }> {
+  const riscar = <T>(valor: T): T => (segredos.length ? (JSON.parse(mascarar(JSON.stringify(valor) ?? 'null', segredos)) as T) : valor)
   const guardar = async (status: WsMessageStatus, dados: Partial<WsMessage> = {}) => {
     const doc: WsMessage = {
       _id: new ObjectId(),
@@ -139,7 +150,7 @@ export async function ingestWebSocketMessage(
   const excesso = registerOverflow(ownerId, installationId, config.maxMessagesPerMinute, now.getTime())
   if (excesso.limited) {
     if (excesso.first) {
-      await guardar('rate_limited', { preview: previewOf(bruto), reason: `acima de ${config.maxMessagesPerMinute} mensagens por minuto` })
+      await guardar('rate_limited', { preview: riscar(previewOf(bruto)), reason: `acima de ${config.maxMessagesPerMinute} mensagens por minuto` })
       await writeLog(ownerId, installationId, 'dropped', `limite de ${config.maxMessagesPerMinute} mensagens por minuto atingido`, null, now)
     } else if (excesso.summarize) {
       // Um resumo por janela, e não uma linha por mensagem.
@@ -150,7 +161,7 @@ export async function ingestWebSocketMessage(
 
   const lida = parseMessage(bruto, config)
   if (lida.status !== 'accepted') {
-    await guardar(lida.status, { preview: lida.preview, reason: lida.reason })
+    await guardar(lida.status, { preview: riscar(lida.preview), reason: lida.reason })
     await writeLog(ownerId, installationId, lida.status === 'filtered' ? 'dropped' : 'invalid', lida.reason, null, now)
     return { status: lida.status, eventIds: [] }
   }
@@ -172,7 +183,7 @@ export async function ingestWebSocketMessage(
   if (mapeado && config.liveKeyPath) {
     const chaveViva = mapeado[config.liveKeyPath]
     if (typeof chaveViva === 'string' || typeof chaveViva === 'number') {
-      const coube = await putLiveValue(ownerId, installationId, String(chaveViva), mapeado, config.liveTtlSeconds, now)
+      const coube = await putLiveValue(ownerId, installationId, String(chaveViva), riscar(mapeado), config.liveTtlSeconds, now)
       if (!coube) await writeLog(ownerId, installationId, 'dropped', 'limite de chaves de dado ao vivo atingido nesta conexão', null, now)
     }
   }
@@ -187,7 +198,7 @@ export async function ingestWebSocketMessage(
   const reivindicaram = subscriptionsFor(brutaJson, lida.channel, ativas)
 
   const comum = {
-    preview: lida.preview,
+    preview: riscar(lida.preview),
     channel: lida.channel,
     messageId: chave,
     occurredAt: lida.occurredAt ?? now,
@@ -247,10 +258,10 @@ export async function ingestWebSocketMessage(
              * receba isto trata como texto de terceiro, não como instrução.
              */
             untrusted: true,
-            /** O quadro cru, já recortado pelo caminho configurado. */
-            payload: lida.payload,
+            /** O quadro cru, já recortado pelo caminho configurado — sem a credencial. */
+            payload: riscar(lida.payload),
             /** O mesmo fato com os nomes normalizados, quando há mapeamento. */
-            ...(mapeado ? { mappedData: mapeado } : {}),
+            ...(mapeado ? { mappedData: riscar(mapeado) } : {}),
             receivedAt: now.toISOString(),
           },
           occurredAt: lida.occurredAt ?? now,

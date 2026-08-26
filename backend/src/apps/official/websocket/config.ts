@@ -110,6 +110,8 @@ export const WS_LIMITS = {
   maxInitialMessages: 10,
   /** Teto do dado ao vivo: por conexão e por dono. Ver `liveData.ts`. */
   maxLiveKeysPerConnection: Number(process.env.WS_MAX_LIVE_KEYS ?? 500),
+  /** O teto do DONO: dez conexões abaixo do teto individual somam dez vezes o teto. */
+  maxLiveKeysPerOwner: Number(process.env.WS_MAX_LIVE_KEYS_PER_OWNER ?? 2_000),
   maxLiveTtlSeconds: 24 * 60 * 60,
 }
 
@@ -139,23 +141,52 @@ const numeroEntre = (v: unknown, padrao: number, min: number, max: number): numb
   return Math.min(Math.max(Math.round(n), min), max)
 }
 
-/** JSON, ou nada. Uma mensagem de inscrição malformada falharia só na hora de conectar. */
-function mensagem(bruto: unknown, campo: string): string {
+/**
+ * Um quadro de SAÍDA, no formato desta conexão.
+ *
+ * `json` exige JSON válido: uma inscrição malformada só falharia na hora de conectar, e
+ * aí longe de quem a escreveu. `text` aceita texto puro — há serviço que assina com
+ * `SUBSCRIBE canal` e recusa qualquer coisa entre chaves, e exigir JSON dele tornava o
+ * App genérico só no nome.
+ *
+ * O que nenhum dos dois aceita é template livre: a única substituição que existe é
+ * `{{token}}`, por um valor conhecido.
+ */
+function mensagem(bruto: unknown, campo: string, formato: WsFormat = 'json'): string {
   const t = texto(bruto, 4_000)
   if (!t) return ''
+  if (formato === 'text') return t
   try {
     JSON.parse(t)
   } catch {
-    throw new ValidationError(`${campo}: precisa ser um JSON válido.`)
+    throw new ValidationError(`${campo}: precisa ser um JSON válido. (Se o serviço espera texto puro, mude o formato da conexão para "texto".)`)
   }
   return t
+}
+
+/**
+ * O CAMPO PÚBLICO não pode conter a credencial de verdade.
+ *
+ * Cabeçalho, mensagem inicial, mensagem de autenticação e batimento ficam no metadata
+ * PÚBLICO da instalação — que é o que a tela lê e o que uma listagem devolve. Colar a
+ * chave neles a tira de dentro do campo cifrado e a põe em texto claro, e ninguém
+ * percebe porque a conexão funciona igual.
+ *
+ * O jeito certo é `{{token}}`: o segredo continua cifrado e entra só na hora de enviar.
+ */
+function semCredencial(valor: string, campo: string, credencial: string): string {
+  if (!credencial || credencial.length < 8) return valor
+  if (valor.includes(credencial)) {
+    throw new ValidationError(`${campo}: não escreva a credencial aqui — use {{token}} e ela entra na hora de conectar, sem ficar guardada.`)
+  }
+  return valor
 }
 
 /**
  * Cabeçalhos extras. O NOME é validado como nome de cabeçalho; o valor pode ser
  * `{{token}}`, e nesse caso o segredo entra só na hora de conectar.
  */
-function cabecalhos(bruto: unknown): { name: string; value: string }[] {
+function cabecalhos(bruto: unknown, credencialAtual = ''): { name: string; value: string }[] {
   const lista = Array.isArray(bruto) ? bruto : []
   if (lista.length > WS_LIMITS.maxHeaders) throw new ValidationError(`No máximo ${WS_LIMITS.maxHeaders} cabeçalhos.`)
   return lista.map((h, i) => {
@@ -165,19 +196,26 @@ function cabecalhos(bruto: unknown): { name: string; value: string }[] {
     // Sem dois-pontos, sem quebra de linha: os dois separam cabeçalhos no protocolo, e
     // um nome com eles é injeção de cabeçalho, não configuração.
     if (!/^[A-Za-z0-9-]+$/.test(name)) throw new ValidationError(`Cabeçalho ${i + 1}: use letras, números e hífen no nome.`)
-    const value = String(raw.value ?? '').replace(/[\r\n]/g, '').slice(0, 500)
+    const value = semCredencial(String(raw.value ?? '').replace(/[\r\n]/g, '').slice(0, 500), `Cabeçalho ${i + 1}`, credencialAtual)
     return { name, value }
   })
 }
 
 /** As mensagens iniciais, na ordem em que foram escritas. Cada uma precisa ser JSON. */
-function mensagensIniciais(bruto: unknown): string[] {
+function mensagensIniciais(bruto: unknown, formato: WsFormat, credencialAtual = ''): string[] {
   const lista = Array.isArray(bruto) ? bruto : []
   if (lista.length > WS_LIMITS.maxInitialMessages) throw new ValidationError(`No máximo ${WS_LIMITS.maxInitialMessages} mensagens iniciais.`)
-  return lista.map((m, i) => mensagem(m, `Mensagem inicial ${i + 1}`)).filter(Boolean)
+  return lista.map((m, i) => semCredencial(mensagem(m, `Mensagem inicial ${i + 1}`, formato), `Mensagem inicial ${i + 1}`, credencialAtual)).filter(Boolean)
 }
 
-export function normalizeConnectionConfig(bruto: unknown): WsConnectionConfig {
+/**
+ * `credencialAtual` é o segredo em vigor, quando quem chama o conhece.
+ *
+ * Ele NÃO é guardado nem devolvido: serve só para recusar um campo público que contenha
+ * o segredo em texto claro. Ausente, a conferência é pulada — é o caso de quem valida
+ * uma configuração sem ter acesso à credencial.
+ */
+export function normalizeConnectionConfig(bruto: unknown, credencialAtual = ''): WsConnectionConfig {
   const c = (typeof bruto === 'object' && bruto !== null ? bruto : {}) as Record<string, unknown>
   const auth = (typeof c.auth === 'object' && c.auth !== null ? c.auth : {}) as Record<string, unknown>
   const paths = (typeof c.paths === 'object' && c.paths !== null ? c.paths : {}) as Record<string, unknown>
@@ -190,7 +228,8 @@ export function normalizeConnectionConfig(bruto: unknown): WsConnectionConfig {
   if ((kind === 'header' || kind === 'query') && !texto(auth.name)) {
     throw new ValidationError('Informe o nome do cabeçalho ou do parâmetro de autenticação.')
   }
-  const messageTemplate = kind === 'message' ? mensagem(auth.messageTemplate, 'Mensagem de autenticação') : ''
+  const formato: WsFormat = c.format === 'text' ? 'text' : 'json'
+  const messageTemplate = kind === 'message' ? semCredencial(mensagem(auth.messageTemplate, 'Mensagem de autenticação', formato), 'Mensagem de autenticação', credencialAtual) : ''
   if (kind === 'message' && !messageTemplate) throw new ValidationError('Informe a mensagem de autenticação.')
 
   const filtrosBrutos = Array.isArray(c.filters) ? c.filters : []
@@ -208,20 +247,20 @@ export function normalizeConnectionConfig(bruto: unknown): WsConnectionConfig {
 
   return {
     endpoint,
-    format: c.format === 'text' ? 'text' : 'json',
+    format: formato,
     // O prefixo NÃO é aparado: `Bearer ` precisa do espaço no fim, e é o caso mais
     // comum de todos. Aparar transformava o cabeçalho em `Bearerabc`, que o serviço
     // recusa por um motivo que a tela não teria como explicar.
     auth: { kind, name: texto(auth.name, 100), prefix: String(auth.prefix ?? '').slice(0, 50), messageTemplate },
-    headers: cabecalhos(c.headers),
-    initialMessages: mensagensIniciais(c.initialMessages),
+    headers: cabecalhos(c.headers, credencialAtual),
+    initialMessages: mensagensIniciais(c.initialMessages, formato, credencialAtual),
     protocols: (Array.isArray(c.protocols) ? c.protocols : []).map((p) => texto(p, 60)).filter(Boolean).slice(0, WS_LIMITS.maxProtocols),
     heartbeat: {
       enabled: heartbeat.enabled === true,
       // O ping do protocolo não carrega mensagem: quando ele está ligado, o campo de
       // texto some da tela e daqui, em vez de ficar guardado sem efeito.
       native: heartbeat.enabled === true && heartbeat.native !== false,
-      message: heartbeat.enabled === true && heartbeat.native === false ? mensagem(heartbeat.message, 'Mensagem de heartbeat') : '',
+      message: heartbeat.enabled === true && heartbeat.native === false ? semCredencial(mensagem(heartbeat.message, 'Mensagem de heartbeat', formato), 'Mensagem de heartbeat', credencialAtual) : '',
       intervalMs: numeroEntre(heartbeat.intervalMs, 30_000, WS_LIMITS.minIntervalMs, WS_LIMITS.maxIntervalMs),
       timeoutMs: numeroEntre(heartbeat.timeoutMs, 10_000, 1_000, WS_LIMITS.maxIntervalMs),
     },

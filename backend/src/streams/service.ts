@@ -235,4 +235,13 @@ export function createStreamManager(
 export async function shutdownStreams(): Promise<void> {
   await streamManager()?.stopAll()
   setStreamManager(null)
+  /**
+   * O que estava dentro da janela de gravação vai ao banco ANTES de o processo sair.
+   *
+   * Sem isto, o valor mais recente de cada chave — que é o único que interessa — era
+   * justamente o que se perdia no SIGTERM. Falhar aqui não pode impedir o encerramento:
+   * um dado ao vivo perdido é ruim, um processo que não morre é pior.
+   */
+  const { flushLiveData } = await import('../integrations/websocket/liveData.js')
+  await flushLiveData().catch(() => undefined)
 }

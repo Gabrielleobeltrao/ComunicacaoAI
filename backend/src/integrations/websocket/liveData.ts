@@ -60,6 +60,15 @@ interface Pendente {
   ultimaEm: number
   /** A ordem de chegada deste valor. Ver `sequencias`. */
   seq: number
+  /** O relógio do fim da janela, quando há um armado. */
+  timer: ReturnType<typeof setTimeout> | null
+  /**
+   * A gravação EM VOO, para quem precisa esperar por ela.
+   *
+   * `gravando: boolean` dizia que havia uma, e não dava como aguardá-la: o encerramento
+   * via a marca, desistia, e o processo saía com a escrita pela metade.
+   */
+  emVoo: Promise<void> | null
 }
 
 const buffer = new Map<string, Pendente>()
@@ -83,6 +92,16 @@ const sequencias = new Map<string, number>()
  */
 const bases = new Map<string, number>()
 
+/**
+ * A maior ordem JÁ APLICADA por chave — independente de o registro ainda estar no buffer.
+ *
+ * Comparar com o que está no buffer não bastava: assim que a gravação sai, o registro é
+ * removido, e um tique atrasado que resumia depois disso não encontrava nada, se
+ * achava o primeiro e sobrescrevia o valor mais novo com um mais velho. Aqui a ordem
+ * sobrevive ao ciclo de vida do buffer.
+ */
+const aplicados = new Map<string, number>()
+
 function proximaSequencia(id: string): number {
   const seq = (sequencias.get(id) ?? 0) + 1
   sequencias.set(id, seq)
@@ -94,6 +113,7 @@ function proximaSequencia(id: string): number {
       // recomeçar do zero na próxima mensagem daquela chave.
       bases.set(k, (bases.get(k) ?? 0) + (sequencias.get(k) ?? 0))
       sequencias.delete(k)
+      aplicados.delete(k)
     }
   }
   return seq
@@ -122,7 +142,7 @@ export async function putLiveValue(
   // mesmo entre dois tiques do mesmo milissegundo.
   const seq = proximaSequencia(id)
 
-  if (!buffer.has(id) && !(await cabeMaisUma(ownerId, connectionId, id))) return false
+  if (!buffer.has(id) && !(await cabeMaisUma(ownerId, connectionId, id, chave))) return false
 
   /**
    * O buffer é lido DEPOIS do await, e não antes.
@@ -132,11 +152,12 @@ export async function putLiveValue(
    * do mesmo estado e o mais LENTO gravava por último — uma cotação velha sobrescrevendo
    * a nova, que é o pior defeito possível num dado que existe para ser o valor de agora.
    */
-  const anterior = buffer.get(id)
-  if (anterior && anterior.seq > seq) {
+  if ((aplicados.get(id) ?? 0) > seq) {
     // Já chegou algo mais novo enquanto esta chamada esperava. Não há o que fazer.
     return true
   }
+  aplicados.set(id, seq)
+  const anterior = buffer.get(id)
 
   const registro: LiveDataRecord = {
     _id: id,
@@ -162,33 +183,114 @@ export async function putLiveValue(
   if (anterior) {
     anterior.registro = registro
     anterior.seq = seq
-    if (!anterior.gravando && agora.getTime() - anterior.ultimaEm >= FLUSH_MS) await gravar(id)
+    agendarGravacao(id, anterior, agora.getTime())
     return true
   }
-  const pendente: Pendente = { registro, gravando: false, ultimaEm: 0, seq }
+  const pendente: Pendente = { registro, gravando: false, ultimaEm: 0, seq, timer: null, emVoo: null }
   buffer.set(id, pendente)
-  await gravar(id)
+  agendarGravacao(id, pendente, agora.getTime())
   return true
+}
+
+/**
+ * Grava agora, se a janela já passou; senão, marca para o fim dela.
+ *
+ * O ponto que faltava era o `else`: sem ele, os tiques dentro da janela ficavam no
+ * buffer esperando um PRÓXIMO tique para levá-los ao banco — e num serviço que manda
+ * uma rajada e cala, o último valor nunca era persistido. Quem lê no mesmo processo via
+ * o valor certo (o buffer responde primeiro) e quem lia no outro via o de antes.
+ *
+ * O relógio é armado UMA vez por janela: cada tique dentro dela só atualiza o valor que
+ * será gravado, e não cria outro agendamento.
+ */
+function agendarGravacao(id: string, pendente: Pendente, agora: number): void {
+  if (pendente.gravando || pendente.timer) return
+  const falta = pendente.ultimaEm + FLUSH_MS - agora
+  if (falta <= 0) {
+    void gravar(id)
+    return
+  }
+  const t = setTimeout(() => {
+    pendente.timer = null
+    void gravar(id)
+  }, falta)
+  t.unref?.()
+  pendente.timer = t
+}
+
+/**
+ * As chaves que ESTE processo já sabe que existem.
+ *
+ * A contagem no banco é uma leitura seguida de uma escrita, e entre as duas cabem
+ * outros tiques: com dez chaves novas chegando juntas, todas leem o mesmo total e todas
+ * passam. Reservar a vaga na memória, de forma síncrona, é o que fecha essa janela —
+ * o banco continua sendo a verdade, e isto é o freio de quem está produzindo.
+ */
+const conhecidas = new Map<string, Set<string>>()
+const doDono = new Map<string, Set<string>>()
+
+const conjunto = (mapa: Map<string, Set<string>>, chave: string): Set<string> => {
+  const atual = mapa.get(chave)
+  if (atual) return atual
+  const novo = new Set<string>()
+  mapa.set(chave, novo)
+  return novo
 }
 
 /**
  * Já existe? Então não é chave nova e o teto não se aplica — e o contador dela continua
  * de onde parou, em vez de recomeçar.
+ *
+ * Dois tetos: por conexão, para um campo inesperado no lugar do símbolo não criar uma
+ * chave por tique; e por DONO, porque dez conexões abaixo do teto individual somam dez
+ * vezes o teto na conta de quem paga.
  */
-async function cabeMaisUma(ownerId: string, connectionId: string, id: string): Promise<boolean> {
+async function cabeMaisUma(ownerId: string, connectionId: string, id: string, chave: string): Promise<boolean> {
+  const daConexao = conjunto(conhecidas, `${ownerId}:${connectionId}`)
+  const doOwner = conjunto(doDono, ownerId)
+  if (daConexao.has(chave)) return true
+
   const existente = await live.findOne({ _id: id }, { projection: { updates: 1 } })
   if (existente) {
     if (!bases.has(id)) bases.set(id, existente.updates ?? 0)
+    daConexao.add(chave)
+    doOwner.add(id)
     return true
   }
-  const quantas = await live.countDocuments({ ownerId, connectionId })
-  return quantas < WS_LIMITS.maxLiveKeysPerConnection
+  // Reconciliar com o banco só quando a memória ainda não sabe: um processo que subiu
+  // agora não conhece as chaves que já existiam.
+  if (daConexao.size === 0) {
+    for (const doc of await live.find({ ownerId, connectionId }, { projection: { key: 1 } }).limit(WS_LIMITS.maxLiveKeysPerConnection).toArray()) {
+      daConexao.add(doc.key)
+      doOwner.add(`${ownerId}:${connectionId}:${doc.key}`)
+    }
+    if (daConexao.has(chave)) return true
+  }
+  if (daConexao.size >= WS_LIMITS.maxLiveKeysPerConnection) return false
+  if (doOwner.size >= WS_LIMITS.maxLiveKeysPerOwner) return false
+
+  // A vaga é reservada AGORA, antes de qualquer espera: é o que impede a rajada de
+  // chaves novas passar toda pela mesma leitura.
+  daConexao.add(chave)
+  doOwner.add(id)
+  return true
 }
 
-async function gravar(id: string): Promise<void> {
+function gravar(id: string): Promise<void> {
   const pendente = buffer.get(id)
-  if (!pendente || pendente.gravando) return
+  if (!pendente) return Promise.resolve()
+  if (pendente.gravando) return pendente.emVoo ?? Promise.resolve()
+  if (pendente.timer) {
+    clearTimeout(pendente.timer)
+    pendente.timer = null
+  }
   pendente.gravando = true
+  const promessa = gravarAgora(id, pendente)
+  pendente.emVoo = promessa
+  return promessa
+}
+
+async function gravarAgora(id: string, pendente: Pendente): Promise<void> {
   const registro = pendente.registro
   try {
     await live.updateOne({ _id: id }, { $set: registro }, { upsert: true })
@@ -198,22 +300,43 @@ async function gravar(id: string): Promise<void> {
     // Derrubar a conexão por causa de uma escrita seria trocar o dado inteiro por um.
   } finally {
     pendente.gravando = false
+    pendente.emVoo = null
     // Só sai do buffer quando o que está nele é o que já foi gravado: se um tique novo
-    // chegou durante a escrita, ele fica esperando a próxima janela.
+    // chegou durante a escrita, ele fica esperando a próxima janela — e precisa de um
+    // relógio, senão espera para sempre.
     if (pendente.registro === registro) buffer.delete(id)
+    else agendarGravacao(id, pendente, Date.now())
   }
 }
 
-/** Descarrega o que está pendente. O worker chama no encerramento. */
+/**
+ * Descarrega o que está pendente. Chamado no encerramento, antes de o processo sair.
+ *
+ * Sem isto, tudo que estava dentro da janela no momento do SIGTERM se perdia — e é
+ * justamente o valor mais recente de cada chave que ficava para trás.
+ */
 export async function flushLiveData(): Promise<void> {
+  for (const p of buffer.values()) {
+    if (!p.timer) continue
+    clearTimeout(p.timer)
+    p.timer = null
+  }
+  // Duas voltas: a primeira espera o que já estava em voo, a segunda leva o que chegou
+  // durante ele. Sem a segunda, um tique que entrou no meio da escrita ficava para trás
+  // — e é sempre o mais recente.
+  await Promise.allSettled([...buffer.keys()].map((id) => gravar(id)))
   await Promise.allSettled([...buffer.keys()].map((id) => gravar(id)))
 }
 
 /** Só para os testes: zera o buffer entre casos. */
 export const resetLiveBuffer = (): void => {
+  for (const p of buffer.values()) if (p.timer) clearTimeout(p.timer)
   buffer.clear()
   sequencias.clear()
   bases.clear()
+  aplicados.clear()
+  conhecidas.clear()
+  doDono.clear()
 }
 
 const vivo = (r: LiveDataRecord | null, agora: Date): LiveDataRecord | null =>

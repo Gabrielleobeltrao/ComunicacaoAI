@@ -174,3 +174,57 @@ export async function testSubscription(
 
 /** Quanto tempo esperar por uma mensagem no teste. Alguém está olhando a tela. */
 export const TEST_TIMEOUT_MS = Number(process.env.WS_TEST_TIMEOUT_MS ?? 10_000)
+
+
+/**
+ * TESTAR A CONEXÃO: abre com a configuração real, autentica e fecha.
+ *
+ * O botão existia e não abria nada — o teste genérico de App confere se os campos
+ * obrigatórios estão preenchidos, e responde "a configuração está completa", que não é
+ * a pergunta de quem clica. Um endereço errado, um subprotocolo que o serviço recusa ou
+ * uma credencial inválida passavam por ele.
+ *
+ * O que sai daqui é `ok` e uma frase nossa. Nunca o quadro, nunca o corpo da resposta,
+ * nunca a credencial: um erro de autenticação costuma vir do provedor com a mensagem
+ * que o causou junto, e a mensagem que o causou é a que tem a chave.
+ */
+export async function testConnection(
+  ownerId: string,
+  installationId: string,
+  deps: {
+    adapterFor: (record: StreamRecord) => Promise<StreamAdapter | null>
+    credentialsOf: (ownerId: string, installationId: string) => Promise<Record<string, string> | null>
+    /** Um gerenciador para a sonda. Ela não usa estado — serve o do processo ou um novo. */
+    manager: () => { probe: StreamManagerProbe } | null
+  },
+): Promise<{ ok: boolean; message: string }> {
+  const gerente = deps.manager()
+  if (!gerente) return { ok: false, message: 'O motor de streams não está no ar neste processo.' }
+
+  let adapter: StreamAdapter | null
+  try {
+    // Aqui dentro acontece a conferência de endereço e a resolução de DNS: um destino
+    // interno é recusado no TESTE como é na conexão, e o endereço conferido é o mesmo
+    // em que a sonda vai abrir.
+    adapter = await deps.adapterFor({ ownerId, appKey: 'websocket', installationId, environment: 'default' } as StreamRecord)
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : 'endereço recusado' }
+  }
+  if (!adapter) return { ok: false, message: 'Esta conexão ainda não está configurada. Informe o endereço antes de testar.' }
+
+  /**
+   * Sem credencial é caso legítimo: `auth.kind: "none"` é a configuração de todo serviço
+   * público. Recusar aqui faria o teste falhar justamente no caso mais simples.
+   */
+  const credencial = (await deps.credentialsOf(ownerId, installationId)) ?? {}
+
+  return gerente.probe(adapter, 'default', credencial, TEST_TIMEOUT_MS)
+}
+
+/** Só o pedaço do gerenciador que a sonda usa — o resto não é necessário aqui. */
+type StreamManagerProbe = (
+  adapter: StreamAdapter,
+  environment: string,
+  credencial: Record<string, string>,
+  timeoutMs?: number,
+) => Promise<{ ok: boolean; message: string }>

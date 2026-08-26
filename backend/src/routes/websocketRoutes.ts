@@ -4,11 +4,13 @@ import type { NextFunction, Request, Response } from 'express'
 import { ValidationError } from '../building.js'
 import { normalizeConnectionConfig, connectionConfigPublic } from '../apps/official/websocket/config.js'
 import type { WsConnectionConfig } from '../apps/official/websocket/config.js'
-import { getInstallation, listInstallations, patchInstallation } from '../apps/installations.js'
+import { decryptInstallationConfig, getInstallation, listInstallations, patchInstallation } from '../apps/installations.js'
 import { resolveAppForOwner } from '../apps/privateApps.js'
 import { checkWebSocketUrl } from '../net/safeWebSocket.js'
 import { readConnectionConfig, websocketAdapterFor, writeConnectionConfig } from '../integrations/websocket/service.js'
-import { assertFrame, sendRawFrame, sendSubscribe, sendUnsubscribe, testSubscription } from '../integrations/websocket/subscribe.js'
+import { assertFrame, sendRawFrame, sendSubscribe, sendUnsubscribe, testConnection, testSubscription } from '../integrations/websocket/subscribe.js'
+import { StreamManager, streamManager } from '../streams/manager.js'
+import { createRealSocket } from '../streams/socket.js'
 import { listLiveValues } from '../integrations/websocket/liveData.js'
 import { archiveManagedTrigger, assertDestinationOwned, syncManagedTrigger } from '../integrations/websocket/managedTrigger.js'
 import {
@@ -56,14 +58,28 @@ const texto = (v: unknown, max = 200): string => String(v ?? '').trim().slice(0,
  * Filtro, caminho, schema e limite ficam de fora de propósito: eles são lidos a cada
  * mensagem, e derrubar a conexão por causa deles seria perder mensagem à toa.
  */
-function precisaReabrir(anterior: WsConnectionConfig | null, novo: WsConnectionConfig): boolean {
+export function precisaReabrir(anterior: WsConnectionConfig | null, novo: WsConnectionConfig): boolean {
   if (!anterior) return false
+  /**
+   * O que só vale NO HANDSHAKE ou NA ABERTURA — e por isso não muda numa conexão aberta.
+   *
+   * Cabeçalhos e mensagens iniciais entraram nesta lista depois: eles são enviados uma
+   * vez, ao abrir, então trocá-los numa conexão de pé não tinha efeito nenhum até o
+   * próximo restart. A pessoa salvava, via "salvo", e nada mudava — sem erro e sem aviso.
+   *
+   * Filtro, schema, mapeamento, TTL e espaçamento ficam de fora de propósito: eles são
+   * lidos a cada mensagem, valem na seguinte, e derrubar a conexão por causa deles seria
+   * perder dado para aplicar algo que já estava valendo.
+   */
   return (
     anterior.endpoint !== novo.endpoint ||
     JSON.stringify(anterior.auth) !== JSON.stringify(novo.auth) ||
+    JSON.stringify(anterior.headers) !== JSON.stringify(novo.headers) ||
+    JSON.stringify(anterior.initialMessages) !== JSON.stringify(novo.initialMessages) ||
     JSON.stringify(anterior.protocols) !== JSON.stringify(novo.protocols) ||
     JSON.stringify(anterior.heartbeat) !== JSON.stringify(novo.heartbeat) ||
-    anterior.idleTimeoutMs !== novo.idleTimeoutMs
+    anterior.idleTimeoutMs !== novo.idleTimeoutMs ||
+    anterior.connectTimeoutMs !== novo.connectTimeoutMs
   )
 }
 
@@ -106,7 +122,14 @@ websocketRouter.patch('/connections/:id', async (req, res, next) => {
     if (!app) return notFound(res)
 
     const body = (req.body ?? {}) as { name?: string; config?: unknown; token?: string }
-    const config = normalizeConnectionConfig(body.config)
+    /**
+     * A credencial em vigor — a nova, se veio uma; a guardada, se não.
+     *
+     * Ela entra só para a validação RECUSAR um campo público que a contenha em texto
+     * claro. Não é gravada por este caminho e não sai na resposta.
+     */
+    const credencialAtual = body.token || decryptInstallationConfig(instalacao).token || ''
+    const config = normalizeConnectionConfig(body.config, credencialAtual)
     // O endereço é conferido ANTES de gravar: guardar um endpoint que a conexão vai
     // recusar seria adiar o erro para longe de quem o causou.
     const alvo = await checkWebSocketUrl(config.endpoint)
@@ -248,6 +271,39 @@ function normalizeDestination(bruto: unknown): WsDestination {
  * Nada sensível sai daqui: id e nome, que é o que um seletor mostra.
  */
 /**
+ * TESTAR A CONEXÃO: abre de verdade, com a configuração de verdade, e fecha.
+ *
+ * Rota própria do App porque a genérica de instalação só sabe conferir campos
+ * preenchidos: ela não tem o endereço nem os cabeçalhos, que moram na configuração
+ * pública desta conexão e não na credencial.
+ */
+websocketRouter.post('/connections/:id/test', async (req, res, next) => {
+  try {
+    const id = oid(req.params.id)
+    if (!id) return notFound(res)
+    const instalacao = await getInstallation(res.locals.userId, id)
+    if (!instalacao || instalacao.appKey !== APP_KEY) return notFound(res)
+
+    const r = await testConnection(res.locals.userId, id.toString(), {
+      adapterFor: websocketAdapterFor,
+      credentialsOf: streamCredentials,
+      /**
+       * O gerenciador do processo quando ele existe; um descartável quando não.
+       *
+       * A sonda não usa o estado dele — nem o mapa de conexões vivas, nem os relógios —,
+       * e com `EMBEDDED_WORKER=false` a API não tem gerenciador nenhum. Sem isto, testar
+       * a conexão respondia "o motor não está no ar" numa instalação perfeitamente sadia.
+       */
+      manager: () => streamManager() ?? new StreamManager({ adapters: new Map(), createSocket: createRealSocket, credentialsOf: streamCredentials }),
+    })
+    auditEntity(res, { id: id.toString(), label: instalacao.name })
+    res.status(r.ok ? 200 : 400).json(r)
+  } catch (error) {
+    fail(res, error, next)
+  }
+})
+
+/**
  * Mandar um quadro por uma conexão que está de pé.
  *
  * É a ferramenta de quem está configurando: um serviço novo quase sempre exige um
@@ -264,11 +320,15 @@ websocketRouter.post('/connections/:id/send', async (req, res, next) => {
 
     const frame = String((req.body ?? {}).frame ?? '').slice(0, 8_000)
     if (!frame.trim()) throw new ValidationError('Escreva a mensagem que você quer enviar.')
+    // O formato é o DA CONEXÃO: exigir JSON de uma conexão de texto recusaria
+    // exatamente o quadro que aquele serviço espera.
+    let formato: WsConnectionConfig['format'] = 'json'
     try {
-      JSON.parse(frame)
+      formato = readConnectionConfig(instalacao.publicMetadata).format
     } catch {
-      throw new ValidationError('A mensagem precisa ser um JSON válido.')
+      // Não configurada ainda: vale o padrão, e o envio vai falhar por falta de conexão.
     }
+    assertFrame(frame, { format: formato }, 'Mensagem')
 
     const enviado = await sendRawFrame(res.locals.userId, id.toString(), frame)
     auditEntity(res, { id: id.toString(), label: instalacao.name })

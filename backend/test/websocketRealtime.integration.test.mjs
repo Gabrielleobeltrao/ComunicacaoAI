@@ -310,7 +310,10 @@ test('a mensagem mapeada vira o último valor da chave — sem chamar modelo nen
   servidor.enviar({ data: { ticker: 'AAPL', last: 227.1 } })
   servidor.enviar({ data: { ticker: 'AAPL', last: 227.11 } })
   servidor.enviar({ data: { ticker: 'TSLA', last: 410.5 } })
-  await ate(async () => (await liveData.getLiveValue(DONO, installationId, 'TSLA')) !== null, 'o dado ao vivo')
+  // Esperar a SEGUNDA cotação da AAPL, e não a chegada da TSLA: sob carga as duas se
+  // cruzam, e a TSLA chegar não prova que a AAPL#2 já foi processada.
+  await ate(async () => ((await liveData.getLiveValue(DONO, installationId, 'AAPL'))?.updates ?? 0) >= 2, 'as duas cotações da AAPL')
+  await ate(async () => (await liveData.getLiveValue(DONO, installationId, 'TSLA')) !== null, 'a cotação da TSLA')
 
   const aapl = await liveData.getLiveValue(DONO, installationId, 'AAPL')
   assert.equal(aapl.value.price, 227.11, 'o ÚLTIMO valor, não o primeiro')

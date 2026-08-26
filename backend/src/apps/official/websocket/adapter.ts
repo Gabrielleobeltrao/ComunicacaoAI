@@ -28,6 +28,9 @@ export type WsIngest = (
   installationId: string,
   raw: string,
   config: WsConnectionConfig,
+  now?: Date,
+  /** A credencial em uso, para ser riscada do que for guardado. */
+  segredos?: readonly string[],
 ) => Promise<{ status: string; eventIds: string[] }>
 
 /** As inscrições guardadas desta conexão. Injetado para o adapter não puxar o banco. */
@@ -66,9 +69,23 @@ export function buildWebSocketAdapter(
 
     pinnedAddress: () => pinned ?? null,
 
-    // A primeira mensagem, quando é assim que o serviço autentica. `{{token}}` é o único
-    // template que existe: uma substituição, de um nome conhecido, por um valor conhecido.
-    authMessage: config.auth.kind === 'message' ? () => JSON.parse(fillToken(config.auth.messageTemplate, credencial)) : undefined,
+    /**
+     * A primeira mensagem, quando é assim que o serviço autentica.
+     *
+     * O formato manda: numa conexão de texto o quadro sai como texto. Antes daqui ele
+     * era sempre `JSON.parse`ado, então uma conexão de texto que autenticasse por
+     * mensagem quebrava na abertura — num App que se diz genérico.
+     *
+     * `{{token}}` é o único template que existe: uma substituição, de um nome conhecido,
+     * por um valor conhecido.
+     */
+    authMessage:
+      config.auth.kind === 'message'
+        ? () => {
+            const quadro = fillToken(config.auth.messageTemplate, credencial)
+            return config.format === 'text' ? quadro : JSON.parse(quadro)
+          }
+        : undefined,
 
     /**
      * `symbols` não é usado por este App — forçar configuração genérica naquele campo
@@ -96,7 +113,8 @@ export function buildWebSocketAdapter(
 
     // Ping do protocolo quando dá: ele não vira mensagem para a aplicação do outro lado.
     heartbeatNative: () => config.heartbeat.enabled && config.heartbeat.native,
-    heartbeatMessage: config.heartbeat.enabled && !config.heartbeat.native ? () => JSON.parse(config.heartbeat.message) : undefined,
+    heartbeatMessage:
+      config.heartbeat.enabled && !config.heartbeat.native ? () => (config.format === 'text' ? config.heartbeat.message : JSON.parse(config.heartbeat.message)) : undefined,
     heartbeatTimeoutMs: () => config.heartbeat.timeoutMs,
     connectTimeoutMs: () => config.connectTimeoutMs,
 
@@ -122,7 +140,9 @@ export function buildWebSocketAdapter(
     ingest: async (raw, ctx) => {
       // A contagem do stream é de EVENTOS publicados: uma mensagem que serviu a duas
       // assinaturas produziu dois fatos, e uma que não serviu a nenhuma produziu zero.
-      const { eventIds } = await ingest(ctx.ownerId, ctx.installationId, raw, config)
+      // A credencial vai junto para ser RISCADA: um serviço que ecoa a autenticação de
+      // volta manda a chave de volta como conteúdo.
+      const { eventIds } = await ingest(ctx.ownerId, ctx.installationId, raw, config, undefined, credencial ? [credencial] : [])
       return eventIds.length
     },
   }

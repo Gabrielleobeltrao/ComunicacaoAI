@@ -287,7 +287,22 @@ export class StreamManager {
     const segredos = Object.values(credencial).filter((v) => typeof v === 'string' && v.length >= 8)
     let socket: StreamSocket
     try {
-      socket = this.deps.createSocket(adapter.url(environment))
+      /**
+       * O teste abre a conexão COM A CONFIGURAÇÃO DE VERDADE.
+       *
+       * Antes daqui ele abria só com a URL: sem cabeçalho, sem subprotocolo, sem o
+       * endereço já conferido e sem o prazo de handshake da conexão. Um serviço que
+       * autentica por cabeçalho recusava — e o teste dizia que a credencial estava
+       * errada quando o que estava errado era o teste. Pior: um serviço permissivo
+       * aceitava a conexão nua e o teste passava, prometendo que a configuração real
+       * funcionava.
+       */
+      socket = this.deps.createSocket(adapter.url(environment), {
+        headers: adapter.handshakeHeaders?.(credencial),
+        protocols: adapter.protocols?.(),
+        pinnedAddress: adapter.pinnedAddress?.(),
+        handshakeTimeoutMs: adapter.connectTimeoutMs?.(),
+      })
     } catch (error) {
       return { ok: false, message: naoLoga(error instanceof Error ? error.message : 'não foi possível abrir o socket', segredos) }
     }
