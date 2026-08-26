@@ -137,6 +137,15 @@ interface Vivo {
   timerReconnect: unknown
   /** Armado ao mandar o batimento, desarmado quando a resposta chega. */
   timerPong: unknown
+  /**
+   * A gravação de estado ainda EM VOO.
+   *
+   * O "conectado" é disparado sem espera de propósito — a mensagem seguinte não pode
+   * ficar atrás de uma ida ao banco. O efeito colateral é que ela pode chegar DEPOIS de
+   * um "desconectado" escrito logo em seguida, e o stream fica registrado como no ar
+   * para sempre. Guardar a promessa deixa o fim esperar por ela.
+   */
+  escritaDeEstado: Promise<void> | null
   /** Renovação periódica da posse. Perder a posse solta o socket. */
   timerLease: unknown
   /**
@@ -298,8 +307,22 @@ export class StreamManager {
      */
     if (!(await this.deps.claimLease(record._id, this.instanceId))) return false
 
-    // Primeiro o adapter montado a partir da conexão; depois o estático do App.
-    const adapter = (await this.deps.adapterFor?.(record)) ?? this.deps.adapters.get(record.appKey) ?? null
+    /**
+     * Primeiro o adapter montado a partir da conexão; depois o estático do App.
+     *
+     * O `try` não é decoração: `adapterFor` confere o endereço e resolve o DNS, e
+     * RECUSA lançando. A posse já foi tomada na linha acima — sem capturar aqui, o
+     * arrendamento ficava preso até vencer por causa de uma configuração que nunca vai
+     * funcionar, e nenhuma outra instância podia sequer tentar.
+     */
+    let adapter: StreamAdapter | null = null
+    try {
+      adapter = (await this.deps.adapterFor?.(record)) ?? this.deps.adapters.get(record.appKey) ?? null
+    } catch (error) {
+      await setStreamError(record._id, naoLoga(error instanceof Error ? error.message : 'configuração recusada'), new Date(), this.instanceId).catch(() => undefined)
+      await releaseStreamLease(record._id, this.instanceId).catch(() => undefined)
+      return false
+    }
     if (!adapter) {
       // A posse já foi tomada e o `Vivo` ainda não existe: gravar com a cerca de pé e
       // devolver o arrendamento é o mesmo fim de sempre, escrito à mão porque não há
@@ -320,6 +343,7 @@ export class StreamManager {
       timerIdle: null,
       timerReconnect: null,
       timerPong: null,
+      escritaDeEstado: null,
       timerLease: null,
       leaseAte: Date.now() + STREAM_LEASE_MS,
       encerrado: false,
@@ -354,6 +378,10 @@ export class StreamManager {
   private async finalizar(vivo: Vivo, fim: { estado: StreamState } | { erro: string }): Promise<void> {
     const id = vivo.record._id.toString()
     vivo.encerrado = true
+    // A gravação em voo primeiro: um "conectado" disparado há um instante chegaria
+    // DEPOIS do estado final e deixaria o stream registrado no ar para sempre.
+    await vivo.escritaDeEstado?.catch(() => undefined)
+    vivo.escritaDeEstado = null
     this.limparTimers(vivo)
     this.pararRenovacao(vivo)
     try {
@@ -598,7 +626,7 @@ export class StreamManager {
       if (vivo.geracao !== geracao) return
       vivo.tentativas = 0
       vivo.state = 'connected'
-      void setStreamState(vivo.record._id, 'connected', new Date(), this.instanceId).catch((e) => this.deps.onError(`stream ${id} estado`, e))
+      vivo.escritaDeEstado = setStreamState(vivo.record._id, 'connected', new Date(), this.instanceId).catch((e) => this.deps.onError(`stream ${id} estado`, e))
       // A autenticação vai direto para o socket. Ela não passa por log, não entra no
       // documento do stream e não vira trace: o único registro é que foi enviada.
       const auth = vivo.adapter.authMessage?.(credencial)

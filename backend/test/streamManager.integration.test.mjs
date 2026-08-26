@@ -1070,20 +1070,28 @@ test('desistir depois do limite de tentativas cancela o relógio da posse e libe
   const { m, relogio } = gerente()
   await m.start(record)
 
-  // Cai e reconecta até o limite.
-  for (let i = 0; i <= 12; i++) {
-    const socket = SocketFalso.abertos[SocketFalso.abertos.length - 1]
-    socket.cair()
-    if (!relogio.temReconexao()) break
-    await relogio.dispararReconexao()
+  /**
+   * Cada queda é ASSÍNCRONA: `onclose` dispara `quebrou`, que agenda a reconexão sem
+   * ninguém esperar por ela. Conferir logo depois de `cair()` lê o estado de antes — foi
+   * assim que a primeira versão deste teste ficou instável no CI.
+   */
+  for (let i = 0; i < 12 && m.activeCount > 0; i += 1) {
+    const antes = SocketFalso.abertos.length
+    SocketFalso.abertos[antes - 1].cair()
+    await ate(async () => relogio.temReconexao() || m.activeCount === 0, 'a próxima decisão')
+    if (m.activeCount === 0) break
+    relogio.dispararReconexao()
+    await ate(async () => SocketFalso.abertos.length > antes || m.activeCount === 0, 'reconectar ou desistir')
   }
 
   assert.equal(m.stateOf(record._id.toString()), 'disconnected', 'desistiu')
-  assert.equal(semRelogios(relogio), true, 'e não ficou nada agendado')
-  const doc = await db.collection('market_streams').findOne({ _id: record._id })
-  assert.equal(doc.state, 'error')
+  assert.equal(semRelogios(relogio), true, 'e não ficou relógio nenhum — nem o da posse')
+  // O gerenciador larga o stream ANTES de terminar de gravar: esperar a gravação é do
+  // teste, não sintoma de defeito.
+  await ate(async () => (await findStream(DONO, record._id))?.state === 'error', 'o motivo ser gravado')
+  const doc = await findStream(DONO, record._id)
   assert.match(doc.lastError.message, /desistindo/)
-  assert.equal(doc.leaseOwner, null)
+  await ate(async () => (await findStream(DONO, record._id))?.leaseOwner === null, 'a posse ser devolvida')
 })
 
 test('o stop grava disconnected ANTES de liberar a posse', async () => {
@@ -1124,25 +1132,29 @@ test('dois start ao mesmo tempo abrem exatamente UM socket', async () => {
   assert.equal(SocketFalso.abertos.length, 1, `abriu ${SocketFalso.abertos.length} sockets`)
 })
 
-test('um erro durante o start limpa o registro e a próxima tentativa funciona', async () => {
+test('adapterFor que LANÇA devolve a posse — e a próxima tentativa não fica travada', async () => {
   const record = await streamDe(['PETR4'])
   let falhar = true
   const { m } = gerente({
-    adapterFor: async () => {
-      if (falhar) throw new Error('configuração inválida')
-      return null
+    adapterFor: async (r) => {
+      if (falhar) throw new Error('endereço interno recusado')
+      return streamAdapters().get(r.appKey) ?? null
     },
   })
 
-  await assert.rejects(() => m.start(record), /inválida/).catch(async () => {
-    // `iniciar` trata o erro do adapter por dentro; o que importa é não travar o mutex.
-    await m.start(record).catch(() => undefined)
-  })
+  assert.equal(await m.start(record), false, 'não sobe com configuração recusada')
+  const depoisDaFalha = await findStream(DONO, record._id)
+  assert.equal(depoisDaFalha.state, 'error')
+  assert.match(depoisDaFalha.lastError.message, /interno/)
+  // Sem devolver a posse aqui, o arrendamento ficaria preso até vencer por causa de uma
+  // configuração que nunca vai funcionar — e nenhuma instância poderia sequer tentar.
+  assert.equal(depoisDaFalha.leaseOwner, null, 'a posse tomada antes da falha foi devolvida')
 
+  // E o registro de subida foi limpo: a próxima chamada corre de novo, não devolve a
+  // promessa antiga.
   falhar = false
-  // Sem limpar o registro no `finally`, esta chamada devolveria a promessa antiga.
-  const segunda = await m.start(record)
-  assert.equal(typeof segunda, 'boolean', 'a segunda tentativa correu de novo')
+  assert.equal(await m.start(record), true, 'a segunda tentativa sobe')
+  assert.equal(SocketFalso.abertos.length, 1)
 })
 
 // ============================================================================
