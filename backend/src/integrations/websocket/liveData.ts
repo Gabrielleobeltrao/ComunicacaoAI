@@ -40,6 +40,27 @@ export interface LiveDataRecord {
 
 const live = db.collection<LiveDataRecord>('live_data')
 
+/**
+ * A ESCRITA, atrás de um ponto injetável.
+ *
+ * Existe para o teste poder CONTAR escritas em vez de contar documentos — contar
+ * documentos não prova coalescência nenhuma: dez tiques da mesma chave produzem um
+ * documento com ou sem ela.
+ */
+type Escritor = (id: string, registro: LiveDataRecord) => Promise<void>
+let escrever: Escritor = async (id, registro) => {
+  await live.updateOne({ _id: id }, { $set: registro }, { upsert: true })
+}
+
+/** Troca o escritor. Só os testes chamam; devolve o anterior para restaurar. */
+export function setLiveWriter(fn: Escritor | null): Escritor {
+  const anterior = escrever
+  escrever = fn ?? (async (id, registro) => {
+    await live.updateOne({ _id: id }, { $set: registro }, { upsert: true })
+  })
+  return anterior
+}
+
 /** Quanto tempo o valor mais recente pode ficar só no buffer antes de ir ao banco. */
 const FLUSH_MS = Number(process.env.WS_LIVE_FLUSH_MS ?? 1_000)
 
@@ -237,6 +258,38 @@ const conjunto = (mapa: Map<string, Set<string>>, chave: string): Set<string> =>
   return novo
 }
 
+/** Donos cujas chaves já foram lidas do banco neste processo. */
+const hidratados = new Set<string>()
+
+/**
+ * Traz do banco o que este processo ainda não sabe sobre as chaves do dono.
+ *
+ * Sem isto, o teto só valia enquanto o processo vivesse: depois de um restart a memória
+ * começava vazia, e uma conta que já tinha as duas mil chaves ganhava mais duas mil.
+ *
+ * Só as NÃO VENCIDAS entram: o TTL do Mongo remove em até um minuto, e uma chave morta
+ * ocupando vaga faria o teto apertar sozinho com o tempo.
+ */
+async function hidratar(ownerId: string): Promise<void> {
+  if (hidratados.has(ownerId)) return
+  hidratados.add(ownerId)
+  const agora = new Date()
+  const docs = await live
+    // `updates` vem junto: a hidratação passa na frente da leitura por chave, e sem ele
+    // o contador recomeçava do 1 depois de um restart — que é justamente o caso que
+    // "continua de onde parou" existe para cobrir.
+    .find({ ownerId, expiresAt: { $gt: agora } }, { projection: { key: 1, connectionId: 1, updates: 1 } })
+    .limit(WS_LIMITS.maxLiveKeysPerOwner + 1)
+    .toArray()
+  const doOwner = conjunto(doDono, ownerId)
+  for (const doc of docs) {
+    const id = idDe(ownerId, doc.connectionId, doc.key)
+    conjunto(conhecidas, `${ownerId}:${doc.connectionId}`).add(doc.key)
+    doOwner.add(id)
+    if (!bases.has(id)) bases.set(id, doc.updates ?? 0)
+  }
+}
+
 /**
  * Já existe? Então não é chave nova e o teto não se aplica — e o contador dela continua
  * de onde parou, em vez de recomeçar.
@@ -244,28 +297,28 @@ const conjunto = (mapa: Map<string, Set<string>>, chave: string): Set<string> =>
  * Dois tetos: por conexão, para um campo inesperado no lugar do símbolo não criar uma
  * chave por tique; e por DONO, porque dez conexões abaixo do teto individual somam dez
  * vezes o teto na conta de quem paga.
+ *
+ * A reserva é feita na MEMÓRIA e de forma síncrona porque contar no banco é uma leitura
+ * seguida de uma escrita, e uma rajada de chaves novas atravessa a janela entre as
+ * duas. Isso pressupõe UM produtor por conexão — e é o que a arquitetura garante: o
+ * socket vive num processo só, e o `resourceMap` de streams impede dois. Se um dia
+ * houver dois produtores para a mesma conexão, esta reserva vira um `findOneAndUpdate`
+ * num documento de contagem.
  */
 async function cabeMaisUma(ownerId: string, connectionId: string, id: string, chave: string): Promise<boolean> {
+  await hidratar(ownerId)
   const daConexao = conjunto(conhecidas, `${ownerId}:${connectionId}`)
   const doOwner = conjunto(doDono, ownerId)
   if (daConexao.has(chave)) return true
 
-  const existente = await live.findOne({ _id: id }, { projection: { updates: 1 } })
-  if (existente) {
+  const existente = await live.findOne({ _id: id }, { projection: { updates: 1, expiresAt: 1 } })
+  if (existente && existente.expiresAt.getTime() > Date.now()) {
     if (!bases.has(id)) bases.set(id, existente.updates ?? 0)
     daConexao.add(chave)
     doOwner.add(id)
     return true
   }
-  // Reconciliar com o banco só quando a memória ainda não sabe: um processo que subiu
-  // agora não conhece as chaves que já existiam.
-  if (daConexao.size === 0) {
-    for (const doc of await live.find({ ownerId, connectionId }, { projection: { key: 1 } }).limit(WS_LIMITS.maxLiveKeysPerConnection).toArray()) {
-      daConexao.add(doc.key)
-      doOwner.add(`${ownerId}:${connectionId}:${doc.key}`)
-    }
-    if (daConexao.has(chave)) return true
-  }
+
   if (daConexao.size >= WS_LIMITS.maxLiveKeysPerConnection) return false
   if (doOwner.size >= WS_LIMITS.maxLiveKeysPerOwner) return false
 
@@ -274,6 +327,12 @@ async function cabeMaisUma(ownerId: string, connectionId: string, id: string, ch
   daConexao.add(chave)
   doOwner.add(id)
   return true
+}
+
+/** Devolve a vaga. Chamado quando a primeira gravação falha e quando a chave some. */
+function liberarVaga(ownerId: string, connectionId: string, chave: string): void {
+  conhecidas.get(`${ownerId}:${connectionId}`)?.delete(chave)
+  doDono.get(ownerId)?.delete(idDe(ownerId, connectionId, chave))
 }
 
 function gravar(id: string): Promise<void> {
@@ -293,11 +352,15 @@ function gravar(id: string): Promise<void> {
 async function gravarAgora(id: string, pendente: Pendente): Promise<void> {
   const registro = pendente.registro
   try {
-    await live.updateOne({ _id: id }, { $set: registro }, { upsert: true })
+    await escrever(id, registro)
     pendente.ultimaEm = Date.now()
   } catch {
     // Perder um tique não é notícia: o próximo chega em instantes e traz o valor novo.
     // Derrubar a conexão por causa de uma escrita seria trocar o dado inteiro por um.
+    //
+    // Mas se a chave NUNCA chegou ao banco, a vaga reservada para ela fica ocupada por
+    // um registro que não existe — e o teto aperta por uma escrita que falhou.
+    if (registro.updates === (bases.get(id) ?? 0) + 1) liberarVaga(registro.ownerId, registro.connectionId, registro.key)
   } finally {
     pendente.gravando = false
     pendente.emVoo = null
@@ -337,6 +400,7 @@ export const resetLiveBuffer = (): void => {
   aplicados.clear()
   conhecidas.clear()
   doDono.clear()
+  hidratados.clear()
 }
 
 const vivo = (r: LiveDataRecord | null, agora: Date): LiveDataRecord | null =>
@@ -389,7 +453,24 @@ export const countLiveKeys = (ownerId: string, connectionId: string): Promise<nu
 
 /** Remover tudo de uma conexão. Chamado quando ela é apagada. */
 export async function deleteLiveDataFor(ownerId: string, connectionId: string): Promise<void> {
-  for (const [id, p] of buffer) if (p.registro.ownerId === ownerId && p.registro.connectionId === connectionId) buffer.delete(id)
+  // Tudo o que esta conexão deixou na memória sai junto: registro pendente, relógio da
+  // janela, ordem, base do contador e a VAGA. Apagar só os documentos deixaria as vagas
+  // ocupadas por chaves que não existem mais — e o teto apertando sozinho.
+  for (const [id, p] of buffer) {
+    if (p.registro.ownerId !== ownerId || p.registro.connectionId !== connectionId) continue
+    if (p.timer) clearTimeout(p.timer)
+    buffer.delete(id)
+  }
+  const daConexao = conhecidas.get(`${ownerId}:${connectionId}`)
+  const doOwner = doDono.get(ownerId)
+  for (const chave of daConexao ?? []) {
+    const id = idDe(ownerId, connectionId, chave)
+    doOwner?.delete(id)
+    sequencias.delete(id)
+    bases.delete(id)
+    aplicados.delete(id)
+  }
+  conhecidas.delete(`${ownerId}:${connectionId}`)
   await live.deleteMany({ ownerId, connectionId })
 }
 

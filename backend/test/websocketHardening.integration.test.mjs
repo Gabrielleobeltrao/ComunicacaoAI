@@ -25,7 +25,7 @@ const { ensureStreamIndexes, upsertStream } = await import('../dist/streams/repo
 const { websocketAdapterFor, writeConnectionConfig, ingestWebSocketMessage } = await import('../dist/integrations/websocket/service.js')
 const { streamCredentials } = await import('../dist/streams/service.js')
 const { testConnection } = await import('../dist/integrations/websocket/subscribe.js')
-const { mascarar } = await import('../dist/integrations/websocket/redact.js')
+const { mascarar, mascararProfundo } = await import('../dist/integrations/websocket/redact.js')
 const wsRepo = await import('../dist/integrations/websocket/repository.js')
 const { resetRateLimits } = await import('../dist/integrations/websocket/pipeline.js')
 const { createInstallation } = await import('../dist/apps/installations.js')
@@ -388,20 +388,319 @@ test('mudar o que só vale no handshake reabre a conexão', () => {
   }
 })
 
-test('o que é lido a cada mensagem NÃO derruba a conexão', () => {
+test('QUALQUER campo diferente reabre — inclusive filtro, mapeamento e limites', () => {
   const antes = base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x' })
+  const comMapping = (extra) => base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x', ...extra })
   for (const [oque, depois] of [
-    ['filtros', base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x', filters: [{ path: 'tipo', operator: 'equals', value: 'tick' }] })],
-    ['schema', base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x', schema: { type: 'object' } })],
+    ['filtros', comMapping({ filters: [{ path: 'tipo', operator: 'equals', value: 'tick' }] })],
+    ['schema', comMapping({ schema: { type: 'object' } })],
     ['mapeamento', base({ mapping: [{ from: 'b', to: 'y' }], liveKeyPath: 'y' })],
-    ['validade do dado ao vivo', base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x', liveTtlSeconds: 600 })],
-    ['espaço entre eventos', base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x', publishThrottleMs: 500 })],
-    ['limites', base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x', maxMessagesPerMinute: 60 })],
+    ['validade do dado ao vivo', comMapping({ liveTtlSeconds: 600 })],
+    ['espaço entre eventos', comMapping({ publishThrottleMs: 500 })],
+    ['limite por minuto', comMapping({ maxMessagesPerMinute: 60 })],
+    ['tamanho máximo', comMapping({ maxMessageBytes: 8_000 })],
+    ['caminhos', comMapping({ paths: { payload: 'data' } })],
+    ['deduplicação', comMapping({ dedupe: 'payload_hash' })],
+    ['formato', comMapping({ format: 'text' })],
   ]) {
-    assert.equal(precisaReabrir(antes, depois), false, oque)
+    // O adapter guarda uma CÓPIA da configuração: sem reabrir, estes campos continuavam
+    // sendo lidos da cópia antiga — "mudar sem reconectar" era não mudar.
+    assert.equal(precisaReabrir(antes, depois), true, oque)
   }
+})
+
+test('configuração IDÊNTICA não reabre nada', () => {
+  const antes = base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x', filters: [{ path: 'tipo', operator: 'equals', value: 'tick' }] })
+  const igual = base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x', filters: [{ path: 'tipo', operator: 'equals', value: 'tick' }] })
+  assert.equal(precisaReabrir(antes, igual), false)
+  // E salvar duas vezes o mesmo também não: a comparação é do normalizado, não do bruto.
+  assert.equal(precisaReabrir(antes, base({ mapping: [{ from: 'a', to: 'x' }], liveKeyPath: 'x', filters: [{ path: 'tipo', operator: 'equals', value: 'tick' }], format: 'json' })), false)
 })
 
 test('sem configuração anterior não há o que reabrir', () => {
   assert.equal(precisaReabrir(null, base()), false)
+})
+
+
+// ============================================================================
+// Coalescência PROVADA: contando escritas, não documentos
+// ============================================================================
+//
+// Contar documentos não prova nada: dez tiques da mesma chave produzem um documento com
+// coalescência ou sem ela. O que precisa ser contado é quantas vezes o banco foi
+// escrito — e por isso o escritor é injetável.
+
+const comEscritorContado = async (fn) => {
+  const escritas = []
+  const anterior = liveData.setLiveWriter(async (id, registro) => {
+    escritas.push({ id, price: registro.value?.price, updates: registro.updates })
+    await db.collection('live_data').updateOne({ _id: id }, { $set: registro }, { upsert: true })
+  })
+  try {
+    await fn(escritas)
+  } finally {
+    liveData.setLiveWriter(anterior)
+  }
+}
+
+test('dez tiques na mesma janela geram UMA escrita, com o último valor', async () => {
+  await comEscritorContado(async (escritas) => {
+    for (let i = 0; i < 10; i++) await liveData.putLiveValue(DONO, 'w1', 'AAPL', { price: i }, 60)
+    // A primeira sai na hora (a janela nunca correu); as outras nove esperam.
+    assert.equal(escritas.length, 1, `esperava 1 escrita imediata, houve ${escritas.length}`)
+
+    await liveData.flushLiveData()
+    assert.equal(escritas.length, 2, 'a janela fecha com UMA escrita para os nove tiques')
+    assert.equal(escritas[1].price, 9, 'e ela leva o último valor')
+  })
+})
+
+test('uma janela nova permite outra escrita', async () => {
+  await comEscritorContado(async (escritas) => {
+    await liveData.putLiveValue(DONO, 'w2', 'AAPL', { price: 1 }, 60)
+    await liveData.flushLiveData()
+    const depoisDaPrimeira = escritas.length
+
+    // WS_LIVE_FLUSH_MS é 150 neste arquivo: passada a janela, a próxima sai na hora.
+    await esperar(200)
+    await liveData.putLiveValue(DONO, 'w2', 'AAPL', { price: 2 }, 60)
+    await liveData.flushLiveData()
+    assert.ok(escritas.length > depoisDaPrimeira, 'a janela nova escreveu de novo')
+    assert.equal(escritas[escritas.length - 1].price, 2)
+  })
+})
+
+test('o encerramento descarrega o que estava na janela', async () => {
+  await comEscritorContado(async (escritas) => {
+    await liveData.putLiveValue(DONO, 'w3', 'AAPL', { price: 1 }, 60)
+    await liveData.putLiveValue(DONO, 'w3', 'AAPL', { price: 2 }, 60)
+    const antes = escritas.length
+    // Sem o flush, o `2` esperaria o fim da janela — e o processo pode sair antes.
+    await liveData.flushLiveData()
+    assert.equal(escritas.length, antes + 1)
+    assert.equal(escritas[escritas.length - 1].price, 2)
+  })
+})
+
+test('uma escrita que falha não trava a chave: a próxima tenta de novo', async () => {
+  let falhar = true
+  const escritas = []
+  const anterior = liveData.setLiveWriter(async (id, registro) => {
+    escritas.push(registro.value?.price)
+    if (falhar) {
+      falhar = false
+      throw new Error('banco indisponível')
+    }
+    await db.collection('live_data').updateOne({ _id: id }, { $set: registro }, { upsert: true })
+  })
+  try {
+    await liveData.putLiveValue(DONO, 'w4', 'AAPL', { price: 1 }, 60)
+    assert.deepEqual(escritas, [1], 'tentou e falhou')
+
+    await esperar(200)
+    await liveData.putLiveValue(DONO, 'w4', 'AAPL', { price: 2 }, 60)
+    await liveData.flushLiveData()
+    assert.ok(escritas.length >= 2, 'tentou de novo')
+    assert.equal((await db.collection('live_data').findOne({ _id: `${DONO}:w4:AAPL` }))?.value?.price, 2)
+  } finally {
+    liveData.setLiveWriter(anterior)
+  }
+})
+
+test('a vaga é devolvida quando a PRIMEIRA gravação da chave falha', async () => {
+  const anterior = liveData.setLiveWriter(async () => {
+    throw new Error('banco indisponível')
+  })
+  try {
+    await liveData.putLiveValue(DONO, 'w5', 'AAPL', { price: 1 }, 60)
+  } finally {
+    liveData.setLiveWriter(anterior)
+  }
+  // A chave nunca chegou ao banco: ela não pode continuar ocupando vaga no teto.
+  const { WS_LIMITS } = await import('../dist/apps/official/websocket/config.js')
+  let aceitas = 0
+  for (let i = 0; i < WS_LIMITS.maxLiveKeysPerConnection; i++) {
+    if (await liveData.putLiveValue(DONO, 'w5', `k${i}`, i, 60)) aceitas += 1
+  }
+  assert.equal(aceitas, WS_LIMITS.maxLiveKeysPerConnection, 'a vaga da chave que falhou foi devolvida')
+})
+
+// ============================================================================
+// Limites que sobrevivem ao restart
+// ============================================================================
+
+test('o teto do dono sobrevive ao restart: a memória é reidratada do banco', async () => {
+  const { WS_LIMITS } = await import('../dist/apps/official/websocket/config.js')
+  // Enche o teto do dono, gravando de verdade.
+  const porConexao = WS_LIMITS.maxLiveKeysPerConnection
+  const conexoes = Math.ceil(WS_LIMITS.maxLiveKeysPerOwner / porConexao)
+  for (let c = 0; c < conexoes; c++) {
+    for (let i = 0; i < porConexao; i++) await liveData.putLiveValue(DONO, `full-${c}`, `k${i}`, i, 600)
+  }
+  await liveData.flushLiveData()
+
+  // "Reiniciar": a memória some, só o banco fica.
+  liveData.resetLiveBuffer()
+  assert.equal(await liveData.putLiveValue(DONO, 'full-nova', 'depois-do-restart', 1, 600), false, 'o teto continua valendo')
+})
+
+test('chave vencida por TTL não ocupa vaga depois do restart', async () => {
+  await liveData.putLiveValue(DONO, 'ttl1', 'ANTIGA', { price: 1 }, 5)
+  await liveData.flushLiveData()
+  // Faz o documento parecer vencido — o TTL do Mongo removeria em até um minuto.
+  await db.collection('live_data').updateOne({ _id: `${DONO}:ttl1:ANTIGA` }, { $set: { expiresAt: new Date(Date.now() - 1000) } })
+
+  liveData.resetLiveBuffer()
+  // A hidratação ignora vencidos: a chave nova entra sem disputar vaga com um morto.
+  assert.equal(await liveData.putLiveValue(DONO, 'ttl1', 'NOVA', { price: 2 }, 60), true)
+  assert.equal(await liveData.getLiveValue(DONO, 'ttl1', 'ANTIGA'), null, 'e a vencida não responde')
+})
+
+test('apagar a conexão devolve as vagas e limpa a memória dela', async () => {
+  const { WS_LIMITS } = await import('../dist/apps/official/websocket/config.js')
+  for (let i = 0; i < 10; i++) await liveData.putLiveValue(DONO, 'apagar', `k${i}`, i, 600)
+  await liveData.flushLiveData()
+
+  await liveData.deleteLiveDataFor(DONO, 'apagar')
+  assert.equal(await db.collection('live_data').countDocuments({ ownerId: DONO, connectionId: 'apagar' }), 0)
+  // As vagas voltaram: dá para encher a conexão de novo até o teto.
+  let aceitas = 0
+  for (let i = 0; i < WS_LIMITS.maxLiveKeysPerConnection; i++) {
+    if (await liveData.putLiveValue(DONO, 'apagar', `n${i}`, i, 600)) aceitas += 1
+  }
+  assert.equal(aceitas, WS_LIMITS.maxLiveKeysPerConnection)
+})
+
+test('duas conexões do mesmo dono não compartilham chave nem contador', async () => {
+  await liveData.putLiveValue(DONO, 'a', 'AAPL', { price: 1 }, 60)
+  await liveData.putLiveValue(DONO, 'b', 'AAPL', { price: 2 }, 60)
+  await liveData.flushLiveData()
+  assert.equal((await liveData.getLiveValue(DONO, 'a', 'AAPL')).value.price, 1)
+  assert.equal((await liveData.getLiveValue(DONO, 'b', 'AAPL')).value.price, 2)
+  assert.equal((await liveData.getLiveValue(DONO, 'a', 'AAPL')).updates, 1)
+})
+
+// ============================================================================
+// Segredos no endereço e nas formas codificadas
+// ============================================================================
+
+test('parâmetro de segredo no endereço é recusado, com o caminho certo na mensagem', () => {
+  for (const nome of ['apikey', 'api_key', 'token', 'access_token', 'key', 'authorization']) {
+    assert.throws(
+      () => normalizeConnectionConfig({ endpoint: `wss://exemplo.com/s?${nome}=valor-em-texto-claro` }),
+      /parâmetro no endereço|credencial/i,
+      nome,
+    )
+  }
+})
+
+test('query comum passa, e {{token}} também', () => {
+  const c = normalizeConnectionConfig({ endpoint: 'wss://exemplo.com/s?feed=iex&lang=pt&apikey={{token}}' })
+  assert.match(c.endpoint, /feed=iex/)
+  assert.match(c.endpoint, /lang=pt/)
+})
+
+test('a credencial no endereço é recusada literal e URL-encoded', () => {
+  const comBarra = 'chave/com+sinais=123456'
+  assert.throws(() => normalizeConnectionConfig({ endpoint: `wss://exemplo.com/s?feed=${comBarra}` }, comBarra), /credencial|{{token}}/i)
+  assert.throws(
+    () => normalizeConnectionConfig({ endpoint: `wss://exemplo.com/s?feed=${encodeURIComponent(comBarra)}` }, comBarra),
+    /credencial|{{token}}/i,
+    'a forma codificada também',
+  )
+})
+
+test('a máscara pega as três formas da mesma chave, e preserva os tipos', () => {
+  const segredo = 'chave/com+sinais=12345678'
+  const fora = mascararProfundo(
+    {
+      literal: segredo,
+      escapado: JSON.stringify(segredo).slice(1, -1),
+      codificado: encodeURIComponent(segredo),
+      dentro: { lista: [`prefixo ${segredo} sufixo`] },
+      numero: 42,
+      data: new Date(0),
+    },
+    [segredo],
+  )
+  const texto = JSON.stringify(fora)
+  assert.ok(!texto.includes('chave/com'), texto)
+  assert.ok(!texto.includes(encodeURIComponent(segredo)))
+  assert.equal(fora.numero, 42, 'número continua número')
+  assert.ok(fora.data instanceof Date, 'data continua data')
+})
+
+
+// ============================================================================
+// Configuração antiga com a credencial em texto claro
+// ============================================================================
+
+const { sanearConfiguracaoLegada } = await import('../dist/integrations/websocket/service.js')
+
+test('o segredo em campo migrável vira {{token}}, sem mudar o que é enviado', () => {
+  const antiga = normalizeConnectionConfig({
+    endpoint: 'wss://exemplo.com/s',
+    headers: [{ name: 'X-Key', value: SEGREDO }],
+    initialMessages: [`{"token":"${SEGREDO}"}`],
+    auth: { kind: 'message', name: '', messageTemplate: `{"t":"${SEGREDO}"}` },
+  })
+  // Sem credencial na validação, a configuração antiga entra como entrava antes.
+  const r = sanearConfiguracaoLegada(antiga, SEGREDO)
+  assert.equal(r.migrada, true)
+  assert.equal(r.precisaCorrigir, false)
+  assert.equal(r.config.headers[0].value, '{{token}}')
+  assert.equal(r.config.initialMessages[0], '{"token":"{{token}}"}')
+  assert.equal(r.config.auth.messageTemplate, '{"t":"{{token}}"}')
+  assert.ok(!JSON.stringify(r.config).includes(SEGREDO))
+})
+
+test('o segredo no ENDEREÇO não é migrável: a configuração não é devolvida', () => {
+  const antiga = normalizeConnectionConfig({ endpoint: `wss://exemplo.com/s?feed=${SEGREDO}` })
+  const r = sanearConfiguracaoLegada(antiga, SEGREDO)
+  assert.equal(r.precisaCorrigir, true)
+  assert.equal(r.migrada, false)
+})
+
+test('configuração sem segredo nenhum não é tocada', () => {
+  const limpa = normalizeConnectionConfig({ endpoint: 'wss://exemplo.com/s', headers: [{ name: 'Origin', value: 'https://x.com' }] })
+  const r = sanearConfiguracaoLegada(limpa, SEGREDO)
+  assert.equal(r.migrada, false)
+  assert.equal(r.precisaCorrigir, false)
+  assert.deepEqual(r.config, limpa)
+})
+
+test('a forma URL-encoded também é migrada', () => {
+  const comSinais = 'chave/com+sinais=12345678'
+  const antiga = normalizeConnectionConfig({ endpoint: 'wss://exemplo.com/s', headers: [{ name: 'X-Key', value: encodeURIComponent(comSinais) }] })
+  const r = sanearConfiguracaoLegada(antiga, comSinais)
+  assert.equal(r.migrada, true)
+  assert.equal(r.config.headers[0].value, '{{token}}')
+})
+
+// ============================================================================
+// O teste da página de Apps é o teste real
+// ============================================================================
+
+test('a sonda de instalação do WebSocket está registrada — todo botão de testar usa a real', async () => {
+  const { installationProbeFor } = await import('../dist/apps/connectionTests.js')
+  assert.ok(installationProbeFor('websocket'), 'sem ela, a página de Apps chama o teste genérico')
+
+  servidor = await startFakeWs()
+  novoGerente()
+  const instalacao = await instalar(servidor, { auth: { kind: 'none' } }, '')
+  const r = await installationProbeFor('websocket')(DONO, instalacao._id.toString())
+  assert.equal(r.ok, true, r.message)
+  assert.equal(servidor.estado.conexoes, 1, 'abriu de verdade')
+})
+
+test('autenticação de TEXTO sai sem aspas — nem no teste, nem na conexão', async () => {
+  servidor = await startFakeWs()
+  novoGerente()
+  const instalacao = await instalar(servidor, { format: 'text', auth: { kind: 'message', name: '', messageTemplate: 'AUTH {{token}}' } })
+
+  const r = await testar(instalacao)
+  assert.equal(r.ok, true, r.message)
+  await ate(() => servidor.estado.recebidas.length >= 1, 'a autenticação do teste')
+  assert.equal(servidor.estado.recebidas[0], `AUTH ${SEGREDO}`, 'sem aspas')
+  assert.ok(!servidor.estado.recebidas[0].startsWith('"'), 'nada de JSON.stringify num texto')
 })

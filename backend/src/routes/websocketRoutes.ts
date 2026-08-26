@@ -7,7 +7,7 @@ import type { WsConnectionConfig } from '../apps/official/websocket/config.js'
 import { decryptInstallationConfig, getInstallation, listInstallations, patchInstallation } from '../apps/installations.js'
 import { resolveAppForOwner } from '../apps/privateApps.js'
 import { checkWebSocketUrl } from '../net/safeWebSocket.js'
-import { readConnectionConfig, websocketAdapterFor, writeConnectionConfig } from '../integrations/websocket/service.js'
+import { readConnectionConfig, sanearConfiguracaoLegada, websocketAdapterFor, writeConnectionConfig } from '../integrations/websocket/service.js'
 import { assertFrame, sendRawFrame, sendSubscribe, sendUnsubscribe, testConnection, testSubscription } from '../integrations/websocket/subscribe.js'
 import { StreamManager, streamManager } from '../streams/manager.js'
 import { createRealSocket } from '../streams/socket.js'
@@ -61,40 +61,51 @@ const texto = (v: unknown, max = 200): string => String(v ?? '').trim().slice(0,
 export function precisaReabrir(anterior: WsConnectionConfig | null, novo: WsConnectionConfig): boolean {
   if (!anterior) return false
   /**
-   * O que só vale NO HANDSHAKE ou NA ABERTURA — e por isso não muda numa conexão aberta.
+   * QUALQUER diferença na configuração normalizada reabre a conexão. Uma vez.
    *
-   * Cabeçalhos e mensagens iniciais entraram nesta lista depois: eles são enviados uma
-   * vez, ao abrir, então trocá-los numa conexão de pé não tinha efeito nenhum até o
-   * próximo restart. A pessoa salvava, via "salvo", e nada mudava — sem erro e sem aviso.
+   * A lista de campos "que só valem no handshake" existia e estava certa em teoria — e
+   * errada na prática, porque o adapter guarda uma CÓPIA da configuração no momento em
+   * que a conexão sobe. Filtro, mapeamento e limites eram lidos daquela cópia, não do
+   * banco: mudá-los "sem reconectar" queria dizer não mudá-los.
    *
-   * Filtro, schema, mapeamento, TTL e espaçamento ficam de fora de propósito: eles são
-   * lidos a cada mensagem, valem na seguinte, e derrubar a conexão por causa deles seria
-   * perder dado para aplicar algo que já estava valendo.
+   * Comparar o normalizado inteiro é a regra que dá para explicar e que não mente:
+   * salvou diferente, reconecta; salvou igual, não acontece nada. O custo é uma
+   * reconexão a mais em mudanças que talvez não precisassem — e o benefício é a
+   * configuração na tela ser a configuração no ar.
    */
-  return (
-    anterior.endpoint !== novo.endpoint ||
-    JSON.stringify(anterior.auth) !== JSON.stringify(novo.auth) ||
-    JSON.stringify(anterior.headers) !== JSON.stringify(novo.headers) ||
-    JSON.stringify(anterior.initialMessages) !== JSON.stringify(novo.initialMessages) ||
-    JSON.stringify(anterior.protocols) !== JSON.stringify(novo.protocols) ||
-    JSON.stringify(anterior.heartbeat) !== JSON.stringify(novo.heartbeat) ||
-    anterior.idleTimeoutMs !== novo.idleTimeoutMs ||
-    anterior.connectTimeoutMs !== novo.connectTimeoutMs
-  )
+  return JSON.stringify(anterior) !== JSON.stringify(novo)
 }
 
 /** As conexões deste App, com a configuração pública e o estado do stream. */
 websocketRouter.get('/connections', async (req, res) => {
   const instalacoes = (await listInstallations(res.locals.userId, APP_KEY)).filter((i) => i.status !== 'revoked')
+  const app = await resolveAppForOwner(res.locals.userId, APP_KEY)
   const saida = await Promise.all(
     instalacoes.map(async (i) => {
       const id = i._id.toString()
       const [streams, stats] = await Promise.all([listStreamsForInstallation(res.locals.userId, id), messageStats(res.locals.userId, id)])
       let config = null
+      let precisaCorrigir = false
       try {
         // Uma conexão criada e ainda não configurada é normal — ela aparece na lista
         // esperando configuração, em vez de derrubar a página inteira.
-        config = connectionConfigPublic(readConnectionConfig(i.publicMetadata))
+        const lida = readConnectionConfig(i.publicMetadata)
+        /**
+         * Configuração antiga com a credencial em texto claro: migra quando dá, e
+         * quando não dá não devolve o conteúdo.
+         *
+         * A migração é gravada aqui mesmo, na leitura: o próximo salvamento passaria
+         * pela validação nova e falharia num campo que a pessoa nem editou.
+         */
+        const credencial = decryptInstallationConfig(i).token ?? ''
+        const saneada = sanearConfiguracaoLegada(lida, credencial)
+        precisaCorrigir = saneada.precisaCorrigir
+        if (saneada.migrada && app) {
+          await patchInstallation(res.locals.userId, i._id, app, {
+            publicMetadata: { ...(i.publicMetadata ?? {}), ...writeConnectionConfig(saneada.config) },
+          }).catch(() => undefined)
+        }
+        config = saneada.precisaCorrigir ? null : connectionConfigPublic(saneada.config)
       } catch {
         config = null
       }
@@ -103,6 +114,9 @@ websocketRouter.get('/connections', async (req, res) => {
         name: i.name,
         status: i.status,
         config,
+        // A tela precisa saber a diferença entre "ainda não configurada" e "configurada
+        // de um jeito que não dá para mostrar": as duas chegam com `config: null`.
+        needsFix: precisaCorrigir,
         stream: streams[0] ? streamPublic(streams[0]) : null,
         messages: { total: stats.total, accepted: stats.accepted, lastAt: stats.lastAt ? stats.lastAt.toISOString() : null },
       }

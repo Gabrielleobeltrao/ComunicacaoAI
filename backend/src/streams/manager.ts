@@ -124,6 +124,16 @@ interface Vivo {
 }
 
 /**
+ * Como uma mensagem vira QUADRO.
+ *
+ * Texto sai como texto; o resto é serializado. É uma regra só, e ela mora aqui porque
+ * existiam duas: a conexão viva fazia certo e a sonda fazia `JSON.stringify` sempre —
+ * então uma autenticação de texto (`AUTH xxx`) saía do teste como `"AUTH xxx"`, com
+ * aspas, e o serviço recusava. O teste culpava a credencial.
+ */
+export const comoQuadro = (mensagem: unknown): string => (typeof mensagem === 'string' ? mensagem : JSON.stringify(mensagem))
+
+/**
  * O único caminho por onde um texto vira registro. Corta o tamanho e risca a credencial.
  */
 function naoLoga(texto: string, segredos: readonly string[] = []): string {
@@ -367,7 +377,7 @@ export class StreamManager {
           return mandarExtra()
         }
         try {
-          socket.send(JSON.stringify(auth))
+          socket.send(comoQuadro(auth))
           // Sem confirmação de autenticação, a inscrição vai logo em seguida: esperar um
           // aviso que o serviço não manda seria esperar para sempre.
           if (!adapter.authOkOf) mandarExtra()
@@ -591,7 +601,7 @@ export class StreamManager {
 
   private enviar(vivo: Vivo, mensagem: unknown): void {
     try {
-      vivo.socket?.send(typeof mensagem === 'string' ? mensagem : JSON.stringify(mensagem))
+      vivo.socket?.send(comoQuadro(mensagem))
     } catch (error) {
       // Falhar ao enviar é sintoma de socket morto: o `onclose` vem em seguida e a
       // reconexão é dele. Registrar aqui só duplicaria o mesmo erro.

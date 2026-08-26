@@ -1,5 +1,6 @@
 import { ValidationError } from '../../../building.js'
 import { readPath } from '../../../automations/conditions.js'
+import { contemSegredo } from '../../../integrations/websocket/redact.js'
 import { normalizeMapping, normalizeMappingTarget } from '../../../integrations/websocket/mapping.js'
 import type { PayloadMappingRule } from '../../../integrations/websocket/mapping.js'
 
@@ -175,11 +176,45 @@ function mensagem(bruto: unknown, campo: string, formato: WsFormat = 'json'): st
  * O jeito certo é `{{token}}`: o segredo continua cifrado e entra só na hora de enviar.
  */
 function semCredencial(valor: string, campo: string, credencial: string): string {
-  if (!credencial || credencial.length < 8) return valor
-  if (valor.includes(credencial)) {
+  // Literal, escapada e percent-encoded: colar a URL que o serviço devolveu põe a chave
+  // codificada, e uma comparação só com a forma literal não a veria.
+  if (contemSegredo(valor, [credencial])) {
     throw new ValidationError(`${campo}: não escreva a credencial aqui — use {{token}} e ela entra na hora de conectar, sem ficar guardada.`)
   }
   return valor
+}
+
+/**
+ * Parâmetros de consulta cujo VALOR é quase sempre um segredo.
+ *
+ * O endereço fica no metadata público: uma chave colada em `?apikey=...` está em texto
+ * claro no banco, aparece na listagem e vai para qualquer lugar que mostre a conexão. O
+ * caminho certo já existe — `auth.kind: "query"` com o valor no campo de credencial —, e
+ * ele produz exatamente a mesma URL na hora de conectar.
+ *
+ * Query comum continua passando: só estes nomes são recusados, e só quando têm valor.
+ */
+const PARAMETROS_DE_SEGREDO = new Set(['apikey', 'api_key', 'api-key', 'token', 'access_token', 'accesstoken', 'auth_token', 'key', 'secret', 'password', 'authorization'])
+
+function enderecoSemSegredo(endpoint: string, credencial: string): string {
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    // Endereço malformado: quem reclama é a guarda de destino, com a mensagem dela.
+    return endpoint
+  }
+  for (const [nome, valor] of url.searchParams) {
+    if (!valor.trim()) continue
+    // `{{token}}` é o jeito certo e passa: o segredo entra só na hora de conectar.
+    if (valor.includes('{{token}}')) continue
+    if (PARAMETROS_DE_SEGREDO.has(nome.toLowerCase())) {
+      throw new ValidationError(
+        `O endereço traz "${nome}" com valor em texto claro, e ele ficaria guardado assim. Tire o parâmetro do endereço, escolha autenticação "parâmetro no endereço" com o nome "${nome}" e informe o valor no campo de credencial.`,
+      )
+    }
+  }
+  return semCredencial(endpoint, 'Endereço', credencial)
 }
 
 /**
@@ -221,7 +256,7 @@ export function normalizeConnectionConfig(bruto: unknown, credencialAtual = ''):
   const paths = (typeof c.paths === 'object' && c.paths !== null ? c.paths : {}) as Record<string, unknown>
   const heartbeat = (typeof c.heartbeat === 'object' && c.heartbeat !== null ? c.heartbeat : {}) as Record<string, unknown>
 
-  const endpoint = texto(c.endpoint, 2_000)
+  const endpoint = enderecoSemSegredo(texto(c.endpoint, 2_000), credencialAtual)
   if (!endpoint) throw new ValidationError('Informe o endereço wss:// do serviço.')
 
   const kind = (['none', 'header', 'query', 'message'] as const).find((k) => k === auth.kind) ?? 'none'

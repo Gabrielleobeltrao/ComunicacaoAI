@@ -7,6 +7,8 @@ import { normalizeConnectionConfig } from '../../apps/official/websocket/config.
 import type { WsConnectionConfig } from '../../apps/official/websocket/config.js'
 import { buildWebSocketAdapter } from '../../apps/official/websocket/adapter.js'
 import { assertPublicWebSocketUrl } from '../../net/safeWebSocket.js'
+import { registerInstallationProbe } from '../../apps/connectionTests.js'
+import { contemSegredo, variacoesDe } from './redact.js'
 import type { StreamAdapter, StreamRecord } from '../../streams/types.js'
 import {
   activeSubscriptions,
@@ -17,7 +19,7 @@ import {
 } from './repository.js'
 import { dedupeKeyOf, parseMessage, podePublicar, previewOf, registerOverflow, subscriptionsFor } from './pipeline.js'
 import { applyMapping } from './mapping.js'
-import { mascarar } from './redact.js'
+import { mascararProfundo } from './redact.js'
 import { putLiveValue } from './liveData.js'
 import { framesOnConnect } from './subscribe.js'
 import type { WsMessage, WsMessageStatus } from './types.js'
@@ -113,7 +115,9 @@ export async function ingestWebSocketMessage(
    */
   segredos: readonly string[] = [],
 ): Promise<{ status: WsMessageStatus; eventIds: string[] }> {
-  const riscar = <T>(valor: T): T => (segredos.length ? (JSON.parse(mascarar(JSON.stringify(valor) ?? 'null', segredos)) as T) : valor)
+  // Recursivo e preservando tipos — ver `redact.ts`. O caminho por texto quebrava
+  // quando o segredo continha aspas, e uma exceção ali derrubava a mensagem inteira.
+  const riscar = <T>(valor: T): T => mascararProfundo(valor, segredos)
   const guardar = async (status: WsMessageStatus, dados: Partial<WsMessage> = {}) => {
     const doc: WsMessage = {
       _id: new ObjectId(),
@@ -356,3 +360,85 @@ export async function assertUsableConnection(ownerId: string, installationId: st
   const r = await resolveConnection(ownerId, installationId, { requireConnectable: false })
   if (!r.ok) throw new ValidationError(r.message)
 }
+
+
+/**
+ * O teste desta conexão, disponível para QUALQUER caminho que teste uma instalação.
+ *
+ * Sem este registro, a página de Apps chamava o teste genérico — que só confere campos
+ * preenchidos — e a tela do App chamava o de verdade. Dois botões com o mesmo nome e
+ * respostas diferentes sobre a mesma conexão.
+ */
+/**
+ * A configuração ANTIGA, salva antes de a credencial ser recusada em campo público.
+ *
+ * Ela existe: quem configurou colando a chave no cabeçalho tem hoje o segredo em texto
+ * claro no metadata público. Duas situações, e elas exigem respostas diferentes.
+ *
+ * MIGRÁVEL. Em cabeçalho, mensagem inicial, autenticação e batimento, trocar o valor
+ * literal por `{{token}}` produz exatamente o mesmo quadro na hora de enviar — a
+ * substituição já acontece lá. É uma troca sem ambiguidade, e ela é feita.
+ *
+ * NÃO MIGRÁVEL. No ENDEREÇO não dá: `{{token}}` não é substituído na URL, e trocar
+ * mudaria para onde a conexão vai. Aí a configuração não é devolvida e a conexão é
+ * marcada como "precisa corrigir" — melhor uma tela que diz o que fazer do que uma tela
+ * que mostra a chave de novo.
+ *
+ * O valor encontrado nunca é registrado: nem no log, nem no retorno, nem no erro.
+ */
+export function sanearConfiguracaoLegada(
+  config: WsConnectionConfig,
+  credencial: string,
+): { config: WsConnectionConfig; migrada: boolean; precisaCorrigir: boolean } {
+  if (!credencial || credencial.length < 8) return { config, migrada: false, precisaCorrigir: false }
+
+  if (contemSegredo(config.endpoint, [credencial])) {
+    return { config, migrada: false, precisaCorrigir: true }
+  }
+
+  const trocar = (valor: string): string => (contemSegredo(valor, [credencial]) ? substituirPorPlaceholder(valor, credencial) : valor)
+  const headers = config.headers.map((h) => ({ ...h, value: trocar(h.value) }))
+  const initialMessages = config.initialMessages.map(trocar)
+  const messageTemplate = trocar(config.auth.messageTemplate)
+  const heartbeatMessage = trocar(config.heartbeat.message)
+
+  const migrada =
+    headers.some((h, i) => h.value !== config.headers[i].value) ||
+    initialMessages.some((m, i) => m !== config.initialMessages[i]) ||
+    messageTemplate !== config.auth.messageTemplate ||
+    heartbeatMessage !== config.heartbeat.message
+
+  if (!migrada) return { config, migrada: false, precisaCorrigir: false }
+  return {
+    config: {
+      ...config,
+      headers,
+      initialMessages,
+      auth: { ...config.auth, messageTemplate },
+      heartbeat: { ...config.heartbeat, message: heartbeatMessage },
+    },
+    migrada: true,
+    precisaCorrigir: false,
+  }
+}
+
+/** Troca todas as formas do segredo pelo marcador. Nunca devolve o valor encontrado. */
+function substituirPorPlaceholder(valor: string, credencial: string): string {
+  let fora = valor
+  for (const forma of variacoesDe(credencial)) fora = fora.split(forma).join('{{token}}')
+  return fora
+}
+
+registerInstallationProbe('websocket', async (ownerId, installationId) => {
+  const { testConnection } = await import('./subscribe.js')
+  const { StreamManager, streamManager } = await import('../../streams/manager.js')
+  const { createRealSocket } = await import('../../streams/socket.js')
+  const { streamCredentials } = await import('../../streams/service.js')
+  return testConnection(ownerId, installationId, {
+    adapterFor: websocketAdapterFor,
+    credentialsOf: streamCredentials,
+    // O gerenciador do processo quando existe; um descartável quando não — a sonda não
+    // usa o estado dele, e a API pode rodar sem worker embutido.
+    manager: () => streamManager() ?? new StreamManager({ adapters: new Map(), createSocket: createRealSocket, credentialsOf: streamCredentials }),
+  })
+})
