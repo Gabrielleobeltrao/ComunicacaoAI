@@ -195,6 +195,12 @@ const RULES: Rule[] = [
   // O que fica registrado é o que MUDA a conta: criar o projeto, editá-lo, aplicá-lo,
   // retomar e arquivar. A conversa não: ela é a fala da pessoa, e o log de auditoria
   // não é lugar de guardar conteúdo.
+  // O histórico genérico: a DEFINIÇÃO é auditada; a leitura, não — ler não muda nada.
+  R('POST', 'api/data-history/recorders', { entityType: 'data_recorder', action: 'create' }),
+  R('PATCH', 'api/data-history/recorders/:', { entityType: 'data_recorder', action: 'update' }, { idAt: 3 }),
+  R('DELETE', 'api/data-history/recorders/:', { entityType: 'data_recorder', action: 'delete' }, { idAt: 3 }),
+  // A prévia não grava nada: ela roda o motor contra amostras e joga fora.
+  R('POST', 'api/data-history/preview', null, { why: 'preview only, nothing is stored' }),
   R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
   R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),

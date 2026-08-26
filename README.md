@@ -314,6 +314,102 @@ de código lê o mesmo valor com `liveData.get`. Nenhuma credencial envolvida.
 Os ajustes (`WS_*`, `STREAM_MAX_INTERVAL_MS`) estão em
 [`backend/.env.example`](backend/.env.example).
 
+## Históricos (registro e agregação genérica)
+
+Uma camada de plataforma para **guardar o que acontece** e consultar depois. Ela não é
+de mercado, nem de WebSocket: recebe FATOS `{ dono, fonte, chave, quando, valor }` e um
+conjunto de regras que dizem quando um fato vira registro. Vela é uma configuração
+possível; estoque, pedido, sensor e métrica são outras, com o mesmo mecanismo.
+
+**Onde fica:** *Históricos*, no menu. Criar é um formulário: nome, de onde vem o dado, o
+que identifica cada série, quando guardar, o que calcular, por quanto tempo — e então
+**Testar configuração** antes de **Ativar**. O teste roda o motor de verdade contra
+amostras coladas por você e não grava nada.
+
+**De onde o dado pode vir:**
+
+| Fonte | O que ela referencia |
+|---|---|
+| Evento do sistema | um tipo do barramento (`market.candle.closed`, `integration.websocket.message`) |
+| Dado ao vivo | o id de uma conexão do WebSocket Genérico |
+| Agente, rotina, tool ou webhook | um nome livre; o código chama `recordFact(dono, nome, chave, valor)` |
+
+**Quando guardar:** toda ocorrência, quando mudar, de tempos em tempos, uma vez por dia,
+resumo por período, ou só quando os filtros baterem.
+
+**O que calcular no resumo:** `first`, `last`, `min`, `max`, `avg`, `sum` e `count` — por
+campo, com o nome de saída que você escolher. Nenhum modelo participa: a mesma janela,
+com os mesmos fatos, dá o mesmo objeto em qualquer worker e em qualquer ordem de chegada.
+
+### Exemplo 1 — BTCUSDT a cada 5 minutos
+
+```text
+Fonte:      Dado ao vivo → a conexão do WebSocket
+Chave:      symbol
+Quando:     Resumo por período · 5 minutos
+Calcular:   price  → primeiro → open
+            price  → maior    → high
+            price  → menor    → low
+            price  → último   → close
+            volume → soma     → volume
+```
+
+Sai uma linha por símbolo a cada cinco minutos:
+
+```json
+{ "symbol": "BTCUSDT", "windowStart": "…", "windowEnd": "…",
+  "open": 100, "high": 110, "low": 98, "close": 108, "volume": 1234 }
+```
+
+O motor não sabe que isso é uma vela — é uma agregação temporal configurada. Para
+semântica real de trade, cotação e vela fechada, o `marketData` continua sendo o motor
+especializado, e este aqui pode consumir os eventos dele.
+
+### Exemplo 2 — pedidos por hora, por loja
+
+O mesmo mecanismo, sem nada de mercado:
+
+```text
+Fonte:      Agente, rotina, tool ou webhook → "erp"
+Chave:      loja
+Quando:     Resumo por período · 1 hora
+Calcular:   total → soma       → faturamento
+            —     → contagem   → pedidos
+            total → média      → ticketMedio
+            total → maior      → maiorPedido
+```
+
+```json
+{ "loja": "centro", "windowStart": "…", "windowEnd": "…",
+  "faturamento": 200, "pedidos": 2, "ticketMedio": 100, "maiorPedido": 120 }
+```
+
+Estoque por SKU uma vez por dia é a mesma tela com *Uma vez por dia* no lugar do resumo.
+
+### Para agentes e código
+
+Quatro funções determinísticas, com o dono no filtro:
+
+| Função | Responde |
+|---|---|
+| `data_history.latest` | o registro mais recente de uma chave |
+| `data_history.range` | os registros de um período |
+| `data_history.aggregate` | first/last/min/max/avg/sum/count sobre o período, calculados pelo banco |
+| `data_history.series` | pares `{ at, value }` de um campo, em ordem de tempo |
+
+### O que ele NÃO é
+
+- **Não substitui o Dado ao vivo.** Live Data continua respondendo só "qual é o valor
+  agora", com TTL e uma linha por chave. O histórico é outra coisa e só existe onde você
+  pedir.
+- **Não substitui o `marketData`.** Trade, cotação e vela com semântica de mercado
+  continuam no motor especializado.
+- **Não usa modelo para calcular.** Soma, média e OHLC são aritmética; uma média
+  calculada por LLM muda de valor entre duas perguntas iguais.
+
+Limites e retenção (`DATA_HISTORY_*`) estão em
+[`backend/.env.example`](backend/.env.example).
+
 ## Montar operação (Arquiteto do Escritório)
 
 Uma conversa que monta uma operação inteira como **rascunho**: andar, agentes, setores,

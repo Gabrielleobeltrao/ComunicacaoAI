@@ -47,6 +47,9 @@ export const NAV_V2: NavItemDef[] = [
   // mora no menu de andares — `BuildingSwitcher` no desktop, `MobileFloorPicker` no
   // celular —, logo abaixo de criar um à mão. O endereço `/architect` não mudou.
   { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'control', path: () => '/apps', activePrefixes: () => ['/apps'] },
+  // Históricos: o que a conta guarda ao longo do tempo. Fica em CONTROLE porque é uma
+  // superfície de observação — quem entra aqui vem consultar, não construir.
+  { key: 'data-history', label: 'Históricos', icon: 'database', scope: 'general', group: 'control', path: () => '/historicos', activePrefixes: () => ['/historicos'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
 ]
 

@@ -18,6 +18,8 @@ import { ensureStreamIndexes } from '../streams/repository.js'
 import { createStreamManager, registerStreamAdapter, restoreStreams, shutdownStreams, startStreamReconciler } from '../streams/service.js'
 import { alpacaStreamAdapter } from '../apps/official/alpaca/index.js'
 import { closeDueCandles, registerMarketDataHandlers } from '../marketData/engine.js'
+import { closeDueWindows, registerDataHistoryHandlers, runDueSnapshots } from '../dataHistory/engine.js'
+import { ensureDataHistoryIndexes } from '../dataHistory/store.js'
 import { ensureCandleIndexes } from '../marketData/candleStore.js'
 import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
@@ -67,6 +69,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   await ensureCandleIndexes()
   await ensureMarketStateIndexes()
   await ensureWebSocketIndexes()
+  await ensureDataHistoryIndexes()
   // O motor de mercado escuta o barramento. Registrar aqui, e não na importação, deixa
   // o teste montar o mesmo motor sem herdar handlers de outro teste.
   registerMarketDataHandlers()
@@ -75,6 +78,9 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   // E os destinos do App de WebSocket: memória e rotina, pelos mesmos caminhos de
   // sempre. Agente e setor já são atendidos pelo gatilho interno acima.
   registerWebSocketDestinations()
+  // E o histórico genérico: ele escuta TODOS os tipos do barramento e decide pelo que
+  // está configurado. Nenhum tipo de evento novo foi criado para isso.
+  registerDataHistoryHandlers()
 
   let stopping = false
   // In-flight runs, so shutdown can wait for them instead of cutting them off.
@@ -148,6 +154,19 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   // As fontes web por horário entram na mesma varredura do agendador — não há relógio
   // novo. O intervalo mínimo de uma fonte é 5 min, então uma passada por minuto do
   // agendador é mais que suficiente para nenhuma atrasar.
+  /**
+   * O histórico genérico entra na mesma varredura das outras: fechar janela vencida e
+   * gravar snapshot é trabalho de relógio, e o worker já tem um. Um agendador novo
+   * seria um segundo lugar para o mesmo tipo de erro acontecer.
+   */
+  const historicoTimer = setInterval(() => {
+    void Promise.all([closeDueWindows(), runDueSnapshots()])
+      .then(([janelas, snaps]) => {
+        if (janelas.gravadas || snaps.gravados) console.log(`Histórico: ${janelas.gravadas} janela(s), ${snaps.gravados} snapshot(s)`)
+      })
+      .catch((error) => onError('histórico', error))
+  }, CANDLE_SWEEP_MS)
+
   const fontesTimer = setInterval(() => {
     void refreshScheduledWebSources()
       .then((quantas) => {
@@ -168,6 +187,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   fontesTimer.unref()
   eventTimer.unref()
   candleTimer.unref()
+  historicoTimer.unref()
 
   // Do one pass immediately: a restart should pick up pending work at once.
   await tickScheduler().catch((error) => onError('scheduler', error))
@@ -200,6 +220,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
       clearInterval(schedulerTimer)
       clearInterval(eventTimer)
       clearInterval(candleTimer)
+      clearInterval(historicoTimer)
       await shutdownStreams().catch((error) => onError('streams', error))
       // Let in-flight runs finish; their leases keep them ours meanwhile.
       await Promise.allSettled([...active])

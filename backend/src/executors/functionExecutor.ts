@@ -14,6 +14,7 @@ import type { FunctionContext } from './functionRegistry.js'
 // Só pelo efeito: é o que põe `liveData.*` no registry. Fica aqui, e não no registry,
 // para o arquivo do registry continuar sendo o arquivo das funções puras.
 import './liveDataFunctions.js'
+import './dataHistoryFunctions.js'
 import type { FunctionExecutorConfig } from './types.js'
 import type { ExecutorError, ExecutorResult } from './types.js'
 
