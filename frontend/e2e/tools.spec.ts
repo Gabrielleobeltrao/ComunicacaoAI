@@ -187,6 +187,40 @@ test('the language switcher changes the interface', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'New tool' })).toBeVisible()
 })
 
+test('em 320px o formulário da ferramenta cabe, com parâmetro e tudo', async ({ page }) => {
+  // A LISTA já era medida; o FORMULÁRIO, não — e é ele que tem a linha de parâmetro
+  // com quatro colunas (nome, tipo, descrição, obrigatório). Numa tela de 320 é aí
+  // que a largura estoura, não na lista.
+  await page.setViewportSize({ width: 320, height: 800 })
+  await stub(page, { tools: [] })
+  await page.goto('/tools')
+  await page.getByTestId('new-tool').click()
+  await expect(page.getByTestId('tool-form')).toBeVisible()
+  await page.getByTestId('add-param').click()
+  await expect(page.getByTestId('tool-param').first()).toBeVisible()
+
+  const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(folga, `o formulário estourou ${folga}px`).toBeLessThanOrEqual(1)
+
+  // E a linha do parâmetro cabe na largura do que a contém — ela pode empilhar, mas
+  // não pode transbordar por fora do cartão.
+  const estouro = await page.evaluate(() => {
+    const linha = document.querySelector('[data-testid="tool-param"]') as HTMLElement | null
+    if (!linha) return 'sem linha'
+    const pai = linha.parentElement as HTMLElement
+    return linha.getBoundingClientRect().width > pai.getBoundingClientRect().width + 1 ? `linha ${linha.scrollWidth} > cartão ${pai.clientWidth}` : null
+  })
+  expect(estouro, 'a linha do parâmetro transborda o cartão').toBeNull()
+
+  // Não estourar não basta: quatro colunas numa tela de 320 espremem os campos de
+  // texto até não caber uma palavra. Um campo de 20px é um campo que ninguém usa.
+  const larguras = await page.evaluate(() => {
+    const linha = document.querySelector('[data-testid="tool-param"]') as HTMLElement
+    return [...linha.querySelectorAll('input[type="text"], input:not([type]), select')].map((e) => Math.round(e.getBoundingClientRect().width))
+  })
+  for (const w of larguras) expect(w, `campo de ${w}px é estreito demais para digitar (todos: ${larguras.join(', ')})`).toBeGreaterThanOrEqual(90)
+})
+
 test('the Tools page works on a phone', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await stub(page)

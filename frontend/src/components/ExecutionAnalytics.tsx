@@ -116,7 +116,7 @@ export function ExecutionAnalytics({
               onClick={() => setPeriod(p)}
               data-testid={`analytics-period-${p}`}
               style={{
-                height: 28,
+                height: 32,
                 padding: '0 12px',
                 borderRadius: 'var(--radius-xs)',
                 border: 0,
@@ -216,7 +216,7 @@ export function ExecutionAnalytics({
                   data-testid={`group-${g}`}
                   aria-pressed={groupBy === g}
                   style={{
-                    height: 28,
+                    height: 32,
                     padding: '0 10px',
                     borderRadius: 999,
                     border: `1px solid ${groupBy === g ? 'var(--intent-brand)' : 'var(--border-strong)'}`,

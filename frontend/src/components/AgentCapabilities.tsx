@@ -126,7 +126,10 @@ export function AgentCapabilities({ agent, onSaved }: { agent: AgentSummary; onS
         ))}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      {/* Quebra em linhas quando não há largura para os três lado a lado. Sem isto,
+          num celular de 320px os dois botões ficavam com o espaço todo e sobravam
+          52px para o campo — menos do que a palavra que se digita nele. */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <Input
           value={rascunho}
           onChange={(e) => setRascunho(e.target.value)}
@@ -134,6 +137,7 @@ export function AgentCapabilities({ agent, onSaved }: { agent: AgentSummary; onS
           placeholder="mercado financeiro"
           aria-label="Nova competência"
           data-testid="agent-capability-input"
+          style={{ flex: '1 1 180px', minWidth: 0 }}
         />
         <Button variant="secondary" size="sm" onClick={adicionar} disabled={!rascunho.trim()} data-testid="agent-capability-add">
           Adicionar

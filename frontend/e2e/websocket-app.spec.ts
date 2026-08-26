@@ -370,13 +370,39 @@ test('no celular as quatro páginas continuam alcançáveis', async ({ page }) =
   await expect(page).toHaveURL(/\/apps\/websocket\/subscriptions/)
 })
 
-test('em 320px nada estoura a largura da tela', async ({ page }) => {
-  await stub(page, { messages: MENSAGENS })
+test('em 320px nenhuma das cinco páginas estoura a largura', async ({ page }) => {
+  // As cinco, e com conteúdo dentro: uma página vazia cabe em qualquer largura, e
+  // medir só as mensagens deixava visão geral, assinaturas, ao vivo e registros sem
+  // ninguém olhando. O que estoura é o dado — chave comprida, endereço, payload.
+  await stub(page, {
+    messages: MENSAGENS,
+    subscriptions: [ASSINATURA],
+    logs: [
+      { id: 'l1', installationId: INSTALLATION_ID, kind: 'connected', message: 'conexão aberta', subscriptionId: null, createdAt: NOW },
+      { id: 'l2', installationId: INSTALLATION_ID, kind: 'dropped', message: 'limite de 120 mensagens por minuto atingido em wss://feed.exemplo-com-endereco-comprido.test/stream', subscriptionId: null, createdAt: NOW },
+    ],
+    live: [
+      { key: 'mercado:acoes:PETR4:cotacao-consolidada', value: { symbol: 'PETR4', price: 38.42, origem: 'um valor bem longo para forçar a largura da coluna e não caber sozinho' }, updates: 128, receivedAt: NOW, ageMs: 800 },
+    ],
+  })
   await page.setViewportSize({ width: 320, height: 700 })
-  await page.goto('/apps/websocket/messages')
-  await expect(page.getByTestId('ws-messages')).toBeVisible()
-  const estoura = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)
-  expect(estoura).toBe(false)
+
+  const paginas = [
+    ['visão geral', '/apps/websocket/overview', 'ws-connections'],
+    ['mensagens', '/apps/websocket/messages', 'ws-messages'],
+    ['assinaturas', '/apps/websocket/subscriptions', 'ws-subscriptions'],
+    ['ao vivo', '/apps/websocket/live', 'ws-live'],
+    ['registros', '/apps/websocket/logs', 'ws-logs'],
+  ] as const
+
+  for (const [nome, rota, marca] of paginas) {
+    await page.goto(rota)
+    // A marca da página tem que estar à vista ANTES de medir: uma tela que não
+    // carregou não estoura largura nenhuma, e passaria sem provar nada.
+    await expect(page.getByTestId(marca), `${nome} não carregou`).toBeVisible()
+    const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+    expect(folga, `${nome} estourou ${folga}px`).toBeLessThanOrEqual(1)
+  }
 })
 
 // --- destinos que exigem escolher ---------------------------------------------------------
