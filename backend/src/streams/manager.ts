@@ -319,18 +319,11 @@ export class StreamManager {
     try {
       adapter = (await this.deps.adapterFor?.(record)) ?? this.deps.adapters.get(record.appKey) ?? null
     } catch (error) {
-      await setStreamError(record._id, naoLoga(error instanceof Error ? error.message : 'configuração recusada'), new Date(), this.instanceId).catch(() => undefined)
-      await releaseStreamLease(record._id, this.instanceId).catch(() => undefined)
-      return false
+      // A recusa vem por EXCEÇÃO, e é o caso normal: `adapterFor` confere o endereço e
+      // resolve o DNS, e é assim que ele diz não.
+      return this.desistirAntesDoVivo(record, naoLoga(error instanceof Error ? error.message : 'configuração recusada'))
     }
-    if (!adapter) {
-      // A posse já foi tomada e o `Vivo` ainda não existe: gravar com a cerca de pé e
-      // devolver o arrendamento é o mesmo fim de sempre, escrito à mão porque não há
-      // objeto para passar a `finalizar`.
-      await setStreamError(record._id, `nenhum adapter registrado para "${record.appKey}"`, new Date(), this.instanceId).catch(() => undefined)
-      await releaseStreamLease(record._id, this.instanceId).catch(() => undefined)
-      return false
-    }
+    if (!adapter) return this.desistirAntesDoVivo(record, `nenhum adapter registrado para "${record.appKey}"`)
     const vivo: Vivo = {
       record,
       adapter,
@@ -838,6 +831,23 @@ export class StreamManager {
     const primeiro = this.deps.schedule(renovar, intervalo, 'lease')
     primeiro.unref?.()
     vivo.timerLease = primeiro
+  }
+
+  /**
+   * O fim de uma subida que falhou DEPOIS de tomar a posse e ANTES de existir um `Vivo`.
+   *
+   * Nessa janela não há timer, socket nem entrada no mapa — só o arrendamento, já tomado.
+   * `finalizar` não serve aqui porque ele recebe um `Vivo`; sem este caminho, cada erro
+   * de configuração deixava a posse presa até vencer, e o reconciliador voltava a tentar
+   * a mesma configuração que nunca vai funcionar.
+   *
+   * A ordem é a mesma de sempre: grava com a cerca de pé, e só então devolve a posse.
+   * Nada é propagado — quem chamou recebe `false`, que é o contrato de `start`.
+   */
+  private async desistirAntesDoVivo(record: StreamRecord, motivo: string): Promise<false> {
+    await setStreamError(record._id, motivo, new Date(), this.instanceId).catch(() => undefined)
+    await releaseStreamLease(record._id, this.instanceId).catch(() => undefined)
+    return false
   }
 
   /**

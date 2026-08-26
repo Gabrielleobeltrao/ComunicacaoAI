@@ -1040,7 +1040,9 @@ test('o encerramento para a renovação e o reconciliador', async () => {
 // ============================================================================
 
 /** O relógio da posse é o que sobrava; conferir isso é o ponto de metade destes casos. */
-const semRelogios = (relogio) => relogio.temLease() === false && relogio.temReconexao() === false
+// Nenhum relógio de tipo NENHUM — não só posse e reconexão. Um batimento ou um detector
+// de silêncio esquecido segura o processo de pé e volta a mexer num stream já largado.
+const semRelogios = (relogio) => relogio.pendentes.size === 0
 
 test('credencial indisponível encerra por completo: sem relógio e sem posse', async () => {
   const record = await streamDe(['PETR4'])
@@ -1092,6 +1094,7 @@ test('desistir depois do limite de tentativas cancela o relógio da posse e libe
   const doc = await findStream(DONO, record._id)
   assert.match(doc.lastError.message, /desistindo/)
   await ate(async () => (await findStream(DONO, record._id))?.leaseOwner === null, 'a posse ser devolvida')
+  assert.equal((await findStream(DONO, record._id)).leaseUntil, null, 'e o prazo dela junto')
 })
 
 test('o stop grava disconnected ANTES de liberar a posse', async () => {
@@ -1132,29 +1135,54 @@ test('dois start ao mesmo tempo abrem exatamente UM socket', async () => {
   assert.equal(SocketFalso.abertos.length, 1, `abriu ${SocketFalso.abertos.length} sockets`)
 })
 
-test('adapterFor que LANÇA devolve a posse — e a próxima tentativa não fica travada', async () => {
+test('adapterFor que LANÇA devolve a posse, e não deixa nada para trás', async () => {
   const record = await streamDe(['PETR4'])
+  const SEGREDO_NA_MENSAGEM = 'endereço interno recusado'
   let falhar = true
-  const { m } = gerente({
+  const { m, relogio } = gerente({
     adapterFor: async (r) => {
-      if (falhar) throw new Error('endereço interno recusado')
+      if (falhar) throw new Error(SEGREDO_NA_MENSAGEM)
       return streamAdapters().get(r.appKey) ?? null
     },
   })
 
+  // O erro é tratado por dentro: quem chamou recebe `false`, não uma exceção.
   assert.equal(await m.start(record), false, 'não sobe com configuração recusada')
+
   const depoisDaFalha = await findStream(DONO, record._id)
   assert.equal(depoisDaFalha.state, 'error')
-  assert.match(depoisDaFalha.lastError.message, /interno/)
-  // Sem devolver a posse aqui, o arrendamento ficaria preso até vencer por causa de uma
+  assert.match(depoisDaFalha.lastError.message, /interno/, 'o motivo ficou legível')
+  // Sem devolver a posse, o arrendamento ficaria preso até vencer por causa de uma
   // configuração que nunca vai funcionar — e nenhuma instância poderia sequer tentar.
-  assert.equal(depoisDaFalha.leaseOwner, null, 'a posse tomada antes da falha foi devolvida')
+  assert.equal(depoisDaFalha.leaseOwner, null, 'a posse foi devolvida')
+  assert.equal(depoisDaFalha.leaseUntil, null, 'e o prazo dela também')
 
-  // E o registro de subida foi limpo: a próxima chamada corre de novo, não devolve a
-  // promessa antiga.
+  // Nada ficou pendurado: nem socket, nem stream gerenciado, nem relógio.
+  assert.equal(SocketFalso.abertos.length, 0, 'nenhum socket foi aberto')
+  assert.equal(m.activeCount, 0, 'nenhum stream ficou no mapa')
+  assert.equal(m.isTracked(record._id.toString()), false, 'nem em subida')
+  assert.equal(semRelogios(relogio), true, 'nenhum relógio ficou agendado')
+
+  // E a subida seguinte corre de novo, em vez de receber a promessa antiga.
   falhar = false
   assert.equal(await m.start(record), true, 'a segunda tentativa sobe')
   assert.equal(SocketFalso.abertos.length, 1)
+})
+
+test('a mensagem do erro de configuração passa pelo saneador antes de ser gravada', async () => {
+  const record = await streamDe(['PETR4'])
+  // Um provedor que despeja o corpo inteiro da resposta no erro é comum — e `lastError`
+  // vai para a tela. Sem sanear, o documento do stream vira o depósito daquele despejo.
+  const { m } = gerente({
+    adapterFor: async () => {
+      throw new Error(`recusado: ${'x'.repeat(5_000)}`)
+    },
+  })
+  assert.equal(await m.start(record), false)
+
+  const doc = await findStream(DONO, record._id)
+  assert.ok(doc.lastError.message.length <= 300, `mensagem gravada crua: ${doc.lastError.message.length} caracteres`)
+  assert.match(doc.lastError.message, /^recusado/, 'e o motivo continua legível')
 })
 
 // ============================================================================
