@@ -77,7 +77,7 @@ export async function dispatchAgentExecution(
   let resultado: ExecutorResult
   if (contrato.executorKind === 'function') {
     if (contrato.executorConfig.kind !== 'function') return semConfiguracao('function', comecou)
-    resultado = await executeRegisteredFunction(contrato.executorConfig, request.input, { ownerId: request.ownerId })
+    resultado = await executeRegisteredFunction(contrato.executorConfig, request.input, { ownerId: request.ownerId, agentId: request.agentId.toString() })
   } else if (contrato.executorKind === 'tool') {
     if (contrato.executorConfig.kind !== 'tool') return semConfiguracao('tool', comecou)
     resultado = await executeAgentTool(agent, request.ownerId, contrato.executorConfig, request.input)

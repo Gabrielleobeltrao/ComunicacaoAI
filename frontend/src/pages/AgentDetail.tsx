@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { AgentForm } from '../components/AgentForm'
+import { AgentRealtimeSources } from '../components/AgentRealtimeSources'
 import { AgentPlayground } from '../components/AgentPlayground'
 import { AgentActivations, AgentHistoryPanel, AgentRoutines } from '../components/AgentWorkAreas'
 import { AgentEventTriggers } from '../components/AgentEventTriggers'
@@ -598,6 +599,14 @@ export function AgentDetail() {
                         ficavam soltas, uma antes e outra depois, e a aba abria com três
                         blocos que não conversavam entre si. */}
                     <AgentForm key={`${agent._id}:${active}`} agent={agent} section={active} layout="flat" onSaved={load} availableMetrics={overview.availableMetrics} />
+                    {/* As fontes em tempo real ficam em "Como trabalha", ao lado das
+                        ferramentas: elas são o que o agente pode CONSULTAR, e não o que
+                        ele é. Guardar histórico é outra decisão, em outra tela. */}
+                    {active === 'como-trabalha' ? (
+                      <div style={{ marginTop: 18 }}>
+                        <AgentRealtimeSources agentId={agent._id} />
+                      </div>
+                    ) : null}
                     {/* Deleting lives in Avançado, after every setting, and is
                         mounted ONLY there — it used to sit under Visão geral, the
                         first thing anyone opens. */}

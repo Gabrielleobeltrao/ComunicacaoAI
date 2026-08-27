@@ -80,9 +80,13 @@ export type AuditEntityType =
   // A REGRA de um histórico genérico — o que gravar, de onde e por quanto tempo. Os
   // registros que ela produz não são auditados um a um: são dado, e são milhares.
   | 'data_recorder'
+  // Uma fonte de dados em tempo real vinculável a agentes. Ela não guarda nada:
+  // histórico é outra decisão, em outro lugar.
+  | 'realtime_source'
   | 'settings'
 export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'data_recorder',
+  'realtime_source',
   'memory',
   'agent',
   'sector',

@@ -314,6 +314,58 @@ de código lê o mesmo valor com `liveData.get`. Nenhuma credencial envolvida.
 Os ajustes (`WS_*`, `STREAM_MAX_INTERVAL_MS`) estão em
 [`backend/.env.example`](backend/.env.example).
 
+## Fontes de dados em tempo real (para agentes)
+
+Um agente consulta o valor de **agora** — sem guardar nada, e sem abrir conexão nenhuma.
+
+O stream já existe e já alimenta o [Dado ao vivo](#websocket-genérico). Esta camada só dá
+um **nome** a um pedaço dele e diz quais agentes podem olhar:
+
+```text
+WebSocket / fonte externa → Dado ao vivo → Fonte em tempo real → ferramenta do agente
+```
+
+Dez agentes lendo o mesmo par de moedas são dez leituras de uma linha do banco — **um
+stream só**, nunca um socket por agente.
+
+**Onde fica:** na tela do agente, aba *Como trabalha* → **Fontes de dados em tempo real**.
+Escolha a conexão pelo nome, a chave numa lista do que já chegou de verdade, e o apelido
+que o agente vai usar (`btc_price`). Opcionalmente limite os campos que ele enxerga.
+Ninguém copia id de banco.
+
+**Tempo real e histórico são decisões separadas.** Criar uma fonte **não** cria regra de
+gravação — as três combinações funcionam:
+
+| | Guardar histórico |
+|---|---|
+| **Consultar em tempo real** | ✓ só realtime · ✓ os dois |
+| **Não consultar** | ✓ só histórico |
+
+Se quiser guardar, configure em *Históricos*, à parte.
+
+### Como o agente consulta
+
+| Quem | Como |
+|---|---|
+| Agente de LLM | ferramenta `consultar_tempo_real` — aparece só quando há fonte concedida |
+| Agente de código | `realtime_data.get`, `.list`, `.wait_for_condition` |
+
+Os dois caminhos leem o **mesmo** leitor, então o que o modelo vê é o que o código vê. E
+nenhum tique entra no contexto sozinho: o agente pergunta quando precisa, uma resposta
+por vez. Código consulta sem gastar token, porque não há inferência no caminho.
+
+```json
+{ "found": true, "value": { "price": 64120.5 }, "receivedAt": "…", "ageMs": 900, "stale": false }
+```
+
+**Dado velho volta como velho.** Passado o prazo configurado, `stale: true` — e o valor
+vem junto, para quem chamou decidir se ainda serve. Um preço de doze segundos atrás
+entregue calado como "o preço de agora" é uma decisão tomada sobre uma premissa falsa.
+
+**Segurança:** tudo do dono; um agente só lê o que lhe foi concedido — um apelido que
+existe na conta mas não foi concedido àquele agente simplesmente não é encontrado; e a
+fonte guarda a *referência* da conexão, nunca a credencial dela.
+
 ## Históricos (registro e agregação genérica)
 
 Uma camada de plataforma para **guardar o que acontece** e consultar depois. Ela não é

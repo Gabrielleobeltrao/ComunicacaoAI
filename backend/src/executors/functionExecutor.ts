@@ -15,6 +15,7 @@ import type { FunctionContext } from './functionRegistry.js'
 // para o arquivo do registry continuar sendo o arquivo das funções puras.
 import './liveDataFunctions.js'
 import './dataHistoryFunctions.js'
+import './realtimeDataFunctions.js'
 import type { FunctionExecutorConfig } from './types.js'
 import type { ExecutorError, ExecutorResult } from './types.js'
 

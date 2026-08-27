@@ -63,6 +63,15 @@ export type FunctionHandler = (
 
 export interface FunctionContext {
   ownerId: string
+  /**
+   * QUEM está executando — quando há um agente.
+   *
+   * Existe porque algumas leituras são concedidas por agente, e não por conta: uma
+   * fonte em tempo real vinculada ao agente A não pode ser lida pelo agente B da mesma
+   * conta só porque os dois são do mesmo dono. Opcional de propósito: uma função pura,
+   * ou uma execução sem agente, continua funcionando sem ele.
+   */
+  agentId?: string
 }
 
 export interface RegisteredFunction {
