@@ -98,3 +98,56 @@ test('só a família que raciocina aceita o controle de esforço', () => {
   assert.equal(aceitaReasoningEffort(''), false)
   assert.equal(aceitaReasoningEffort('modelo-desconhecido'), false)
 })
+
+// --- a segunda tentativa, sem o ajuste ------------------------------------------------
+//
+// O nome do modelo diz que ele é da família que raciocina, mas não diz QUAL valor de
+// esforço aquela versão aceita — `minimal` nasceu com o gpt-5, e o gpt-5.1 mudou a
+// lista. Foi o que derrubou a produção: 400 em toda chamada de bastidor.
+
+const { criarChatParaTeste } = await import('../dist/openai.js')
+
+/** Um cliente de mentira que recusa QUALQUER pedido com o ajuste presente. */
+const clienteQueRecusaOAjuste = (registro) => ({
+  chat: {
+    completions: {
+      create: async (params) => {
+        registro.push(params)
+        if (params.reasoning_effort !== undefined) {
+          throw Object.assign(new Error("Invalid value: 'minimal' is not supported with this model"), { status: 400 })
+        }
+        return { choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }
+      },
+    },
+  },
+})
+
+test('um 400 com o ajuste presente vira uma segunda tentativa SEM ele', async () => {
+  const chamadas = []
+  const r = await criarChatParaTeste(clienteQueRecusaOAjuste(chamadas), { model: 'gpt-5.1', reasoning_effort: 'minimal', messages: [] })
+  assert.equal(r.choices[0].message.content, 'ok', 'a chamada foi salva pela segunda tentativa')
+  assert.equal(chamadas.length, 2)
+  assert.equal(chamadas[0].reasoning_effort, 'minimal')
+  assert.equal(chamadas[1].reasoning_effort, undefined, 'a segunda vai sem o ajuste')
+  assert.equal(chamadas[1].model, 'gpt-5.1', 'e com o resto igual')
+})
+
+test('sem o ajuste, um 400 sobe — repetir não resolveria', async () => {
+  const chamadas = []
+  const cliente = {
+    chat: { completions: { create: async (p) => { chamadas.push(p); throw Object.assign(new Error('prompt grande demais'), { status: 400 }) } } },
+  }
+  await assert.rejects(() => criarChatParaTeste(cliente, { model: 'gpt-5.1', messages: [] }), /grande demais/)
+  assert.equal(chamadas.length, 1, 'uma tentativa só')
+})
+
+test('chave inválida e limite de taxa NÃO são repetidos — repetir cobra duas vezes por nada', async () => {
+  for (const status of [401, 429, 500]) {
+    const chamadas = []
+    const cliente = {
+      chat: { completions: { create: async (p) => { chamadas.push(p); throw Object.assign(new Error('falhou'), { status }) } } },
+    }
+    await assert.rejects(() => criarChatParaTeste(cliente, { model: 'gpt-5.1', reasoning_effort: 'minimal', messages: [] }))
+    assert.equal(chamadas.length, 1, `status ${status} foi repetido`)
+  }
+})
