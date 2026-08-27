@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useBuildingContext } from '../contexts/BuildingContext'
-import { Icon } from '../ui'
+import { Button, Icon } from '../ui'
+import { BuildingSettingsDialog } from './BuildingSettingsDialog'
 
 // Touch-first floor switcher (mobile parity plan §6.2). A bottom sheet — NOT the
 // desktop popover reused inside a drawer — so switching floors is one tap from the
@@ -12,6 +13,7 @@ export function MobileFloorPicker({ open, onClose }: { open: boolean; onClose: (
   const sheetRef = useRef<HTMLDivElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const [query, setQuery] = useState('')
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const active = useMemo(() => floors.filter((f) => f.status === 'active'), [floors])
   const showSearch = active.length > 8
@@ -70,9 +72,10 @@ export function MobileFloorPicker({ open, onClose }: { open: boolean; onClose: (
     selectFloor(floorId, { preserveSection: true })
   }
 
-  const paraArquiteto = () => {
+  /** Sair da folha e ir para algum lugar. Fechar antes evita a folha por cima do destino. */
+  const irPara = (caminho: string) => {
     onClose()
-    navigate('/architect')
+    navigate(caminho)
   }
 
   return (
@@ -137,14 +140,35 @@ export function MobileFloorPicker({ open, onClose }: { open: boolean; onClose: (
           )}
         </div>
 
-        {/* A mesma saída do menu de andares do desktop: quem escolhe andar também pode
-            querer MONTAR um. Sem isto, tirar o item da barra lateral deixaria o celular
-            sem caminho nenhum para ela. */}
-        <button onClick={() => paraArquiteto()} style={rodape} data-testid="floor-picker-architect">
+        {/**
+         * As MESMAS ações do menu de andares do desktop.
+         *
+         * Elas viviam só lá, e no celular não há barra lateral: quem abria esta folha
+         * conseguia trocar de andar e mais nada — criar um, montar uma operação ou
+         * mexer no prédio exigia um computador. Uma tela que só serve para escolher é
+         * metade da tela.
+         *
+         * Criar em destaque, como no desktop: criar é a mesma coisa em toda a
+         * interface, então usa o mesmo componente, e não uma imitação em texto.
+         */}
+        <div style={{ padding: '8px 14px 4px', borderTop: '1px solid var(--border-subtle)' }}>
+          <Button icon="plus" style={{ width: '100%' }} onClick={() => irPara('/building')} data-testid="floor-picker-create">
+            Criar andar
+          </Button>
+        </div>
+        <button onClick={() => irPara('/architect')} style={rodape} data-testid="floor-picker-architect">
           <Icon name="sparkles" size={16} color="var(--text-muted)" />
           Montar operação
         </button>
+        <button onClick={() => setSettingsOpen(true)} style={{ ...rodape, borderTop: 0 }} data-testid="floor-picker-settings">
+          <Icon name="settings" size={16} color="var(--text-muted)" />
+          Configurações do prédio
+        </button>
       </div>
+
+      {/* As configurações do prédio são um pop-up daqui, como no desktop: elas são do
+          seletor que representa o espaço de trabalho, não de uma página. */}
+      <BuildingSettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} buildingName={building?.name ?? 'Meu prédio'} floors={floors} />
     </div>
   )
 }
