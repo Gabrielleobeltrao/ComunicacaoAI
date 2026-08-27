@@ -15,7 +15,7 @@ import type { AgentPreset } from './types'
 // A tabela abaixo existe para UM caso: o agente que ainda não foi criado, e por isso
 // ainda não tem resposta do servidor para consultar.
 
-export type AgentRole = 'researcher' | 'analyst' | 'coordinator' | 'executor'
+export type AgentRole = 'researcher' | 'analyst' | 'coordinator' | 'executor' | 'communicator' | 'custom'
 
 export type RoleSection =
   | 'definicao'
@@ -38,26 +38,37 @@ export interface RoleConfig {
   allowedApps: boolean
   /** Pode procurar páginas novas na internet? Só o pesquisador, e só se ligado. */
   allowedWebSearch?: boolean
+  /** Pode consultar fonte em tempo real? Só quem coleta. */
+  allowedRealtime?: boolean
+  /** O que a configuração pediu e o papel não permite — a tela avisa em vez de sumir. */
+  legacyConflicts?: string[]
   summary?: string
 }
 
 /** Espelho de `SECOES` no servidor. Só para o agente que ainda não existe. */
 const SECOES: Record<AgentRole, RoleSection[]> = {
-  researcher: ['definicao', 'conhecimento', 'web', 'busca-web', 'ferramentas', 'entrega', 'roteamento'],
+  // Quem coleta não aciona: não há bloco de ferramenta de execução aqui.
+  researcher: ['definicao', 'conhecimento', 'web', 'busca-web', 'entrega', 'roteamento'],
   analyst: ['definicao', 'entrada', 'entrega', 'roteamento'],
   coordinator: ['definicao', 'orquestracao', 'roteamento'],
   executor: ['definicao', 'ferramentas', 'entrada', 'entrega', 'roteamento'],
+  communicator: ['definicao', 'ferramentas', 'entrada', 'entrega', 'roteamento'],
+  // Personalizado é a ausência de perfil: cada capacidade é escolha do dono, e esconder
+  // um controle seria esconder uma escolha que só ele pode fazer.
+  custom: ['definicao', 'conhecimento', 'web', 'busca-web', 'ferramentas', 'entrada', 'entrega', 'orquestracao', 'roteamento'],
 }
 
 const POR_PRESET: Record<AgentPreset, { role: AgentRole; knowledge: boolean; tools: boolean }> = {
-  researcher: { role: 'researcher', knowledge: true, tools: true },
-  monitor: { role: 'researcher', knowledge: true, tools: true },
+  // Espelho do servidor. Quem coleta não aciona; quem executa recebe os dados na
+  // instrução; personalizado mantém o que o dono já tinha.
+  researcher: { role: 'researcher', knowledge: true, tools: false },
+  monitor: { role: 'researcher', knowledge: true, tools: false },
   analyst: { role: 'analyst', knowledge: false, tools: false },
   manager: { role: 'coordinator', knowledge: false, tools: false },
   secretary: { role: 'coordinator', knowledge: false, tools: false },
-  operator: { role: 'executor', knowledge: true, tools: true },
-  communicator: { role: 'executor', knowledge: true, tools: true },
-  custom: { role: 'executor', knowledge: true, tools: true },
+  operator: { role: 'executor', knowledge: false, tools: true },
+  communicator: { role: 'communicator', knowledge: false, tools: true },
+  custom: { role: 'custom', knowledge: true, tools: true },
 }
 
 export const roleOfPreset = (preset: AgentPreset | null | undefined): AgentRole =>
@@ -72,9 +83,17 @@ export const roleOfPreset = (preset: AgentPreset | null | undefined): AgentRole 
 export function roleConfigOf(agent: { preset?: AgentPreset | null; knowledgeEnabled?: boolean | null; roleConfig?: RoleConfig } | null): RoleConfig {
   if (agent?.roleConfig) return agent.roleConfig
   const base = POR_PRESET[agent?.preset ?? 'custom'] ?? POR_PRESET.custom
-  const knowledge = agent?.knowledgeEnabled === true ? true : agent?.knowledgeEnabled === false ? false : base.knowledge
+  /**
+   * O interruptor só anda DENTRO do que o papel permite.
+   *
+   * Ligar a base num papel que não a tem não devolve o bloco: era a mesma brecha do
+   * servidor, do lado da tela — um controle desenhado para uma capacidade que o motor
+   * ignoraria. Desligar continua valendo, porque desligar cabe em qualquer papel.
+   */
+  const podeBase = SECOES[base.role].includes('conhecimento')
+  const knowledge = agent?.knowledgeEnabled === false ? false : agent?.knowledgeEnabled === true ? podeBase : base.knowledge
   const secoes = SECOES[base.role]
-  const comBase: RoleSection[] = knowledge && !secoes.includes('conhecimento') ? ['conhecimento', 'web'] : []
+  const comBase: RoleSection[] = []
   return {
     role: base.role,
     sections: [...comBase, ...secoes].filter((s) => (s === 'conhecimento' || s === 'web' ? knowledge : true)),
@@ -86,7 +105,7 @@ export function roleConfigOf(agent: { preset?: AgentPreset | null; knowledgeEnab
   }
 }
 
-/** Este agente usa base própria? A escolha explícita do dono manda sobre o tipo. */
+/** Este agente usa base própria? A escolha do dono vale DENTRO do que o papel permite. */
 export function usesKnowledge(
   preset: AgentPreset | null | undefined,
   knowledgeEnabled?: boolean | null,

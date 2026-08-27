@@ -111,6 +111,18 @@ const ROTULOS: Record<AgentRole, { definicao: string; entrada: [string, string];
     entrega: ['O que ele deve devolver', 'Ex.: a confirmação com o identificador da operação.'],
     roteamento: ['Quando chamar este executor', 'Ex.: "quando for para enviar o e-mail de cobrança".'],
   },
+  communicator: {
+    definicao: 'Como escrever',
+    entrada: ['O que ele precisa receber para escrever', 'Ele escreve a partir do que RECEBE — não pesquisa. Diga que informações precisa ter em mãos.'],
+    entrega: ['Formato da mensagem', 'Ex.: tom, tamanho, assinatura, o que nunca pode aparecer.'],
+    roteamento: ['Quando chamar este comunicador', 'Ex.: "quando a resposta estiver pronta e precisar virar e-mail para o cliente".'],
+  },
+  custom: {
+    definicao: 'Como trabalhar',
+    entrada: ['O que ele precisa receber', 'O que precisa vir junto do pedido para ele fazer o trabalho.'],
+    entrega: ['O que ele deve devolver', 'Em que forma o resultado é útil para quem pediu.'],
+    roteamento: ['Quando chamar este agente', 'A frase que ajuda a decidir se o pedido é para ele.'],
+  },
 }
 
 /**

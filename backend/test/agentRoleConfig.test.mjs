@@ -60,23 +60,33 @@ test('3) pesquisador: base, sites e ferramentas de consulta continuam', () => {
     assert.equal(c.role, 'researcher', preset)
     assert.equal(c.allowedKnowledge, true, preset)
     assert.equal(c.allowedWeb, true, preset)
-    assert.equal(c.allowedTools, true, preset)
-    for (const secao of ['conhecimento', 'web', 'ferramentas', 'entrega', 'roteamento']) {
+    // Quem coleta NÃO aciona: levantar fatos e agir sobre o mundo são papéis diferentes.
+    assert.equal(c.allowedTools, false, preset)
+    assert.equal(c.allowedRealtime, true, preset)
+    for (const secao of ['conhecimento', 'web', 'busca-web', 'entrega', 'roteamento']) {
       assert.ok(c.sections.includes(secao), `${preset} precisa de "${secao}"`)
     }
+    assert.ok(!c.sections.includes('ferramentas'), `${preset} não desenha ferramenta de execução`)
   }
 })
 
 // --- 4) quem EXECUTA recebe ferramenta ---------------------------------------------------------
 
-test('4) executor: ferramentas e o que precisa receber para agir', () => {
-  for (const preset of ['operator', 'communicator', 'custom']) {
+test('4) executor e comunicador: ferramentas e o que precisam receber para agir', () => {
+  for (const [preset, papel] of [['operator', 'executor'], ['communicator', 'communicator'], ['custom', 'custom']]) {
     const c = cfg(preset)
-    assert.equal(c.role, 'executor', preset)
+    assert.equal(c.role, papel, preset)
     assert.equal(c.allowedTools, true, preset)
     assert.equal(c.allowedApps, true, preset)
     assert.ok(c.sections.includes('ferramentas'), preset)
     assert.ok(c.sections.includes('entrada'), preset)
+  }
+  // E nenhum dos dois pesquisa: os dados vêm na instrução.
+  for (const preset of ['operator', 'communicator']) {
+    const c = cfg(preset)
+    assert.equal(c.allowedKnowledge, false, preset)
+    assert.equal(c.allowedWebSearch, false, preset)
+    assert.equal(c.allowedRealtime, false, preset)
   }
 })
 
@@ -134,25 +144,30 @@ test('6) trocar o tipo muda o que ele pode fazer, na mesma hora', () => {
 
 test('7) configuração antiga carrega: sem preset, sem campo novo, nada explode', () => {
   const legado = cfg(undefined)
-  assert.equal(legado.role, 'executor', 'sem tipo declarado, mantém tudo — tirar capacidade quebraria quem funciona')
+  assert.equal(legado.role, 'custom', 'sem tipo declarado, mantém tudo — tirar capacidade quebraria quem funciona')
   assert.equal(legado.allowedKnowledge, true)
   assert.equal(legado.allowedTools, true)
-  assert.equal(roleOf(undefined), 'executor')
+  assert.equal(roleOf(undefined), 'custom')
   // Um preset que não existe mais no código também não derruba a leitura do agente.
-  assert.equal(cfg('perfil_que_nao_existe').role, 'executor')
+  assert.equal(cfg('perfil_que_nao_existe').role, 'custom')
 })
 
-test('7b) o override do dono traz o bloco de volta — na tela e no motor', () => {
+test('7b) o override incompatível NÃO traz o bloco de volta — nem na tela, nem no motor', () => {
+  // Os dois lados da mesma brecha, fechados juntos: o motor ignora, e a tela não
+  // desenha um controle que o motor ignoraria.
   const ligado = cfg('analyst', { knowledgeEnabled: true })
-  assert.equal(ligado.allowedKnowledge, true)
-  assert.ok(ligado.sections.includes('conhecimento'), 'esconder um bloco que o motor passou a usar é o mesmo defeito ao contrário')
-  assert.ok(ligado.sections.includes('web'))
+  assert.equal(ligado.allowedKnowledge, false)
+  assert.ok(!ligado.sections.includes('conhecimento'))
+  assert.ok(!ligado.sections.includes('web'))
+  assert.ok(ligado.legacyConflicts.includes('knowledge'), 'mas a tela sabe o que foi ignorado')
 
   const desligado = cfg('researcher', { knowledgeEnabled: false })
   assert.equal(desligado.allowedKnowledge, false)
   assert.ok(!desligado.sections.includes('conhecimento'))
-  // Ferramenta não é base: desligar uma não desliga a outra.
-  assert.equal(desligado.allowedTools, true)
+  // Desligar a base não mexe no resto do que o papel permite — e o pesquisador nunca
+  // teve ferramenta de execução para perder.
+  assert.equal(desligado.allowedWebSearch, true, 'a porta continua disponível para ser aberta')
+  assert.deepEqual(desligado.legacyConflicts, [], 'desligar o que se pode ter não é conflito')
 })
 
 // --- 8) o roteamento vale para todos -----------------------------------------------------------

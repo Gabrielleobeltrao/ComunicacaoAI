@@ -9,6 +9,7 @@
 // repetição e cobrança continuam lá, e não há uma segunda cópia de nada disso aqui. O que
 // este arquivo faz é traduzir o resultado para o formato comum.
 import { describeErrors, validateAgainstSchema } from '../jsonSchema.js'
+import { capabilitiesOf } from '../agentCapabilities.js'
 import { agentContractOf } from './contract.js'
 import { executeRegisteredFunction } from './functionExecutor.js'
 import { executeAgentTool } from './toolExecutor.js'
@@ -55,6 +56,12 @@ export function fromLlmResult(r: AgentExecutionResult, comecou: number): Executo
  * O contrato é lido de `agentContractOf`, então um agente antigo — sem nenhum campo novo
  * — cai em `llm` e segue exatamente como sempre seguiu.
  */
+/** Nada de útil chegou: nem dado estruturado, nem um pedido em texto. */
+const semEntrada = (request: ExecutorRequest): boolean => {
+  const temInput = request.input !== undefined && request.input !== null && (typeof request.input !== 'object' || Object.keys(request.input as object).length > 0)
+  return !temInput && !String(request.objective ?? '').trim()
+}
+
 export async function dispatchAgentExecution(
   agent: Agent,
   request: ExecutorRequest,
@@ -73,6 +80,27 @@ export async function dispatchAgentExecution(
    */
   const entradaRuim = conferirEntrada(contrato.inputJsonSchema, request.input)
   if (entradaRuim) return falha('invalid_input', entradaRuim, comecou, { executorKind: contrato.executorKind })
+
+  /**
+   * Quem trabalha SOBRE o que recebe não inventa o que não recebeu.
+   *
+   * Um analista sem evidência analisa o nada; um executor sem instrução completa não vai
+   * pesquisar o que falta — ele não tem como, e não deveria. Sem esta recusa a execução
+   * seguia e o modelo preenchia a lacuna sozinho, produzindo algo que parece resposta e
+   * não tem lastro. Recusar aqui devolve a decisão a quem conduz, que é de quem ela é.
+   *
+   * A checagem é mecânica de propósito: entrada VAZIA. Julgar se o conteúdo é suficiente
+   * exigiria entender o pedido, e um palpite errado bloquearia trabalho legítimo.
+   */
+  const capacidades = capabilitiesOf(agent)
+  if (capacidades.needsInputs && semEntrada(request)) {
+    return falha(
+      'invalid_input',
+      `${agent.name} trabalha a partir do que recebe e não recebeu nada. Envie os dados ou o resultado da etapa anterior — ele não busca por conta própria.`,
+      comecou,
+      { executorKind: contrato.executorKind, role: capacidades.role, reason: 'input_insuficiente' },
+    )
+  }
 
   let resultado: ExecutorResult
   if (contrato.executorKind === 'function') {

@@ -26,22 +26,27 @@ test('quem conduz não tem base operacional própria', () => {
   }
 })
 
-test('quem executa mantém base: ferramenta é o principal, mas o dono pode dar uma base', () => {
-  assert.equal(capabilitiesOf({ preset: 'operator' }).knowledge, true)
-  // E o perfil personalizado não perde nada: sem declaração, tirar capacidade quebraria
-  // agentes que já funcionam.
+test('quem executa recebe os dados na instrução — não busca base própria', () => {
+  // Mudou de propósito: um executor com base própria pesquisa em vez de executar o que
+  // foi mandado, e o papel deixa de significar algo.
+  assert.equal(capabilitiesOf({ preset: 'operator' }).knowledge, false)
+  // O perfil personalizado, ao contrário, não perde nada: sem declaração de tipo, tirar
+  // capacidade quebraria agentes que já funcionam.
   assert.equal(capabilitiesOf({ preset: 'custom' }).knowledge, true)
   assert.equal(capabilitiesOf({}).knowledge, true, 'agente antigo, sem preset')
 })
 
-test('a escolha explícita do dono manda sobre o tipo', () => {
+test('a escolha do dono manda DENTRO do papel, e não sobre ele', () => {
+  // Ligar o que o papel proíbe não funciona — e não some: fica registrado.
   const analista = { preset: 'analyst', knowledgeEnabled: true }
-  assert.equal(capabilitiesOf(analista).knowledge, true)
-  assert.match(capabilitiesOf(analista).summary, /ligada manualmente/)
+  assert.equal(capabilitiesOf(analista).knowledge, false)
+  assert.ok(capabilitiesOf(analista).legacyConflicts.includes('knowledge'))
+  assert.match(capabilitiesOf(analista).summary, /ignorado por não caber no papel/)
 
+  // Desligar o que o papel permite continua sendo escolha de quem configurou.
   const pesquisador = { preset: 'researcher', knowledgeEnabled: false }
   assert.equal(capabilitiesOf(pesquisador).knowledge, false)
-  assert.match(capabilitiesOf(pesquisador).summary, /desligada manualmente/)
+  assert.deepEqual(capabilitiesOf(pesquisador).legacyConflicts, [])
 })
 
 test('cada preset tem um papel, e cada papel tem um nome legível', () => {
@@ -50,6 +55,7 @@ test('cada preset tem um papel, e cada papel tem um nome legível', () => {
   assert.equal(roleOf('analyst'), 'analyst')
   assert.equal(roleOf('manager'), 'coordinator')
   assert.equal(roleOf('operator'), 'executor')
-  assert.equal(roleOf(undefined), 'executor', 'agente antigo cai no papel mais permissivo')
-  assert.deepEqual(Object.keys(ROLE_LABEL).sort(), ['analyst', 'coordinator', 'executor', 'researcher'])
+  assert.equal(roleOf('communicator'), 'communicator')
+  assert.equal(roleOf(undefined), 'custom', 'agente antigo é personalizado: a ausência de perfil')
+  assert.deepEqual(Object.keys(ROLE_LABEL).sort(), ['analyst', 'communicator', 'coordinator', 'custom', 'executor', 'researcher'])
 })

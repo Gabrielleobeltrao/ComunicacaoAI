@@ -70,11 +70,19 @@ test('2) o analista não recebe ferramenta externa, mas continua com memória', 
   assert.ok(lista.includes('buscar_memoria'), 'lembrar da conversa não é buscar base própria')
 })
 
-test('3 e 4) pesquisador e executor recebem as ferramentas concedidas', async () => {
-  for (const preset of ['researcher', 'operator', 'communicator', 'custom', 'monitor']) {
+test('3 e 4) quem EXECUTA recebe as ferramentas concedidas — quem COLETA, não', async () => {
+  // Executar é o trabalho de quem executa. O pesquisador levanta fatos e entrega;
+  // dar-lhe a ferramenta é deixá-lo agir por conta própria, que é o que o papel
+  // existe para separar.
+  for (const preset of ['operator', 'communicator', 'custom']) {
     const lista = await nomes(preset)
     assert.ok(lista.includes('consultar_estoque'), `${preset} precisa da ferramenta atribuída`)
     assert.ok(lista.includes('webhook_antigo'), `${preset}: a legada continua funcionando`)
+  }
+  for (const preset of ['researcher', 'monitor']) {
+    const lista = await nomes(preset)
+    assert.ok(!lista.includes('consultar_estoque'), `${preset} não aciona ferramenta externa`)
+    assert.ok(!lista.includes('webhook_antigo'), `${preset} não aciona ferramenta externa`)
   }
 })
 
@@ -101,11 +109,15 @@ test('7) agente antigo sem preset nenhum: nada é tirado dele', async () => {
   assert.ok(lista.includes('buscar_memoria'))
 })
 
-test('7b) o override do dono devolve a base a quem não a usa por padrão', async () => {
+test('7b) o override do dono NÃO devolve a base a quem o papel proíbe', async () => {
   const analista = { ...agenteCom('analyst'), knowledgeEnabled: true }
   const lista = (await resolveAgentTools(analista, OWNER)).map((t) => t.name)
-  // A base voltou, e com ela o "olhar a fonte" — que é leitura de site.
-  assert.ok(lista.includes('verificar_fonte'))
+  // Nem a base, nem o "olhar a fonte" — que é leitura de site, e portanto coleta.
+  assert.ok(!lista.includes('verificar_fonte'), 'o analista recuperou a leitura de site por interruptor')
+
+  // E onde o papel PERMITE, o interruptor continua mandando.
+  const pesquisador = { ...agenteCom('researcher'), knowledgeEnabled: true }
+  assert.ok((await resolveAgentTools(pesquisador, OWNER)).map((t) => t.name).includes('verificar_fonte'))
 })
 
 // --- a API carrega a regra até a tela ------------------------------------------------------
@@ -129,8 +141,12 @@ test('agente antigo, sem preset: a API responde do mesmo jeito, sem quebrar', as
   const legado = { ...agenteCom('custom') }
   delete legado.preset
   const publico = toPublicAgent(legado)
-  assert.equal(publico.roleConfig.role, 'executor')
+  // Sem preset ele é PERSONALIZADO — a ausência de perfil, não um executor. É o que
+  // preserva os agentes montados à mão: eles continuam com o que o dono configurou.
+  assert.equal(publico.roleConfig.role, 'custom')
   assert.equal(publico.roleConfig.allowedKnowledge, true)
+  assert.equal(publico.roleConfig.allowedTools, true)
+  assert.deepEqual(publico.roleConfig.legacyConflicts, [], 'nada dele é incompatível')
 })
 
 // --- num PLANO, quem procura é o pesquisador -------------------------------------------------
@@ -233,9 +249,13 @@ test('o pesquisador consulta — é o trabalho dele', async () => {
   assert.ok(c.estados.includes('reading_knowledge'))
 })
 
-test('o override do dono devolve a consulta a quem não a tem por padrão', async () => {
+test('o override do dono NÃO devolve a consulta a quem o papel proíbe', async () => {
+  // Era a brecha: `knowledgeEnabled: true` reativava a base em qualquer papel, e um
+  // analista voltava a analisar o que ele mesmo guardou em vez das evidências
+  // recebidas. O interruptor agora só anda dentro do que o papel permite — e isto é
+  // verificado no CAMINHO DE EXECUÇÃO, não só na matriz.
   const c = await rodar('analyst', { knowledgeEnabled: true })
-  assert.equal(c.retrieve, 1, 'escolha explícita manda sobre o tipo — e a tela mostra o bloco')
+  assert.equal(c.retrieve, 0, 'o analista continua sem consultar base própria')
 })
 
 test('"só responder com base no conhecimento" não bloqueia quem não consulta', async () => {

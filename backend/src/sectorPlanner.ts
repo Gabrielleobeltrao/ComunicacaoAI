@@ -25,6 +25,8 @@
 // Puro de propósito: sem banco, sem provedor e sem relógio. Quem chama o modelo injeta
 // a função; quem não tiver modelo ainda recebe um plano — o determinístico, abaixo.
 import { createHash } from 'node:crypto'
+import { roleAllows } from './agentCapabilities.js'
+import type { AgentRole, CapabilityName } from './agentCapabilities.js'
 import { normalize } from './lexicalRetrieval.js'
 import { RESPONSE_MODES } from './executors/contract.js'
 import { findFunction } from './executors/functionRegistry.js'
@@ -244,7 +246,37 @@ export interface ExecutionPlan {
   tasks: ExecutionTask[]
   /** O que fazer com os resultados. Ausente = consolidar como o coordenador achar melhor. */
   synthesisObjective?: string
+  /**
+   * O que NINGUÉM deste setor pode fazer.
+   *
+   * Uma etapa que exige uma capacidade que nenhum membro tem não vira tarefa improvisada
+   * para o agente mais próximo: ela sai do plano e aparece aqui, com o que falta. Quem
+   * conduz precisa poder dizer "não consigo esta parte, e é por isto" — improvisar
+   * produz uma resposta que parece completa e não é.
+   */
+  pendencies?: { objective: string; missing: CapabilityName; reason: string }[]
 }
+
+/**
+ * O que esta etapa EXIGE — lido do que ela pede, não de quem vai fazê-la.
+ *
+ * É deliberadamente simples e conservador: só reconhece o que está escrito de forma
+ * inequívoca, e na dúvida não exige nada. Um classificador esperto erraria para o lado
+ * caro — recusar etapas legítimas porque a frase não bateu com uma lista.
+ */
+export function capacidadeExigida(objetivo: string): CapabilityName | null {
+  const t = normalize(objetivo)
+  // Procurar coisa nova lá fora.
+  if (/\b(pesquis|buscar na web|procurar na internet|levantar (dados|informac)|investigar|descobrir)/.test(t)) return 'webSearch'
+  // Acionar alguma coisa do lado de fora.
+  if (/\b(enviar|mandar|publicar|postar|disparar|agendar|criar (no|um) |integr|chamar a api|executar a acao)/.test(t)) return 'externalTools'
+  // Conduzir.
+  if (/\b(planejar|dividir (as )?tarefas|orquestrar|coordenar|montar o plano|definir dependencias)/.test(t)) return 'orchestrates'
+  return null
+}
+
+/** Este membro tem a capacidade que a etapa exige? */
+export const membroPode = (m: PlannerMember, capacidade: CapabilityName): boolean => roleAllows(m.type ?? 'custom', capacidade)
 
 /** O que se sabe de um membro na hora de escolher. Vem carregado; este módulo não busca. */
 export interface PlannerMember {
@@ -256,7 +288,7 @@ export interface PlannerMember {
    * Não é etiqueta: quem analisa trabalha sobre o que recebe, e um plano que o aciona sem
    * entrada produz análise sobre o nada.
    */
-  type?: 'researcher' | 'analyst' | 'coordinator' | 'executor' | null
+  type?: AgentRole | null
   /** Quando mandar para ele — a frase escrita pelo dono, e a mais útil que existe aqui. */
   routingDescription?: string | null
   role?: string | null
@@ -516,6 +548,7 @@ export function validatePlan(bruto: unknown, membros: PlannerMember[], pergunta:
   const lista = Array.isArray(cru.tasks) ? cru.tasks : []
 
   const tarefas: ExecutionTask[] = []
+  const pendencias: { objective: string; missing: CapabilityName; reason: string }[] = []
   const porAgente = new Set<string>()
   const idsOriginais = new Map<string, string>() // id que o modelo usou → id normalizado
   for (const item of lista as Record<string, unknown>[]) {
@@ -529,6 +562,38 @@ export function validatePlan(bruto: unknown, membros: PlannerMember[], pergunta:
     // respondendo sozinho com a equipe parada ao lado. Se a tarefa precisa de
     // ferramenta ou de base, ela é de quem tem uma.
     if ((validos.get(agentId)!.type ?? 'executor') === 'coordinator') continue
+
+    /**
+     * A etapa exige algo que este agente não pode fazer? Então ela não é dele.
+     *
+     * O modelo sugere "peça ao analista para pesquisar os concorrentes" com frequência,
+     * e sem esta checagem a tarefa entrava: o analista recebia um pedido de busca, não
+     * tinha como buscar, e respondia do que sabia — uma resposta que parece pesquisa e
+     * não é. Aqui a etapa é reatribuída a quem pode; não havendo ninguém, ela vira
+     * pendência declarada.
+     */
+    const objetivoDaEtapa = texto(item?.objective) || pergunta
+    const exigida = capacidadeExigida(objetivoDaEtapa)
+    if (exigida && !membroPode(validos.get(agentId)!, exigida)) {
+      const capaz = membros.find((m) => membroPode(m, exigida) && !porAgente.has(m.agentId) && (m.type ?? 'executor') !== 'coordinator')
+      if (!capaz) {
+        pendencias.push({
+          objective: objetivoDaEtapa.slice(0, 300),
+          missing: exigida,
+          reason: `nenhum agente deste setor pode "${exigida}"`,
+        })
+        continue
+      }
+      // Reatribuída a quem pode, em vez de descartada: o trabalho continua sendo
+      // necessário — o que estava errado era o destinatário.
+      if (porAgente.has(capaz.agentId)) continue
+      porAgente.add(capaz.agentId)
+      const idNovo = `t${tarefas.length + 1}`
+      const originalNovo = texto(item?.id)
+      if (originalNovo) idsOriginais.set(originalNovo, idNovo)
+      tarefas.push({ id: idNovo, agentId: capaz.agentId, objective: objetivoDaEtapa.slice(0, 600), dependsOn: [] })
+      continue
+    }
     // Um agente por plano nesta etapa: duas tarefas para o mesmo agente são, quase
     // sempre, a mesma pergunta escrita duas vezes — e custam duas inferências.
     if (porAgente.has(agentId)) continue
@@ -627,9 +692,18 @@ export function validatePlan(bruto: unknown, membros: PlannerMember[], pergunta:
   tarefas.length = 0
   tarefas.push(...corrigidas)
 
+  /**
+   * Sem tarefa e COM pendência, o plano é a pendência.
+   *
+   * O plano reserva existe para quando o modelo devolve lixo: alguém tem de fazer o
+   * trabalho. Mas quando as etapas caíram porque ninguém do setor PODE fazê-las,
+   * improvisar um destinatário é o oposto do que se quer — o agente escolhido não tem a
+   * capacidade, e vai responder do que sabe. Melhor dizer o que falta.
+   */
+  if (tarefas.length === 0 && pendencias.length) return { tasks: [], pendencies: pendencias }
   if (tarefas.length === 0) return fallbackPlan(pergunta, membros, max)
   const sintese = texto(cru.synthesisObjective).slice(0, 400)
-  return { tasks: tarefas, ...(sintese ? { synthesisObjective: sintese } : {}) }
+  return { tasks: tarefas, ...(sintese ? { synthesisObjective: sintese } : {}), ...(pendencias.length ? { pendencies: pendencias } : {}) }
 }
 
 // --- a compilação: o plano vira executável, ou vira diagnóstico -----------------------------

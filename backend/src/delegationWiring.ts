@@ -2,6 +2,7 @@
 // agent store, tool resolver, task runtime, provider keys and delegation log. Kept
 // separate from ./delegation.ts so that module stays IO-free and unit-testable.
 import { getAgentById, listAgents } from './agents.js'
+import { roleAllows, roleOf } from './agentCapabilities.js'
 import type { Agent } from './agents.js'
 import { getFloor, listFloors } from './floors.js'
 import { getSectorById, normalizeSectorMode } from './sectors.js'
@@ -49,7 +50,26 @@ export async function resolveToolsWithDelegation(
   // tools it could not reach the team it was put in charge of. The grant itself stays
   // narrow (that sector's members, one level).
   const coordinatingNow = Boolean(childCtx.sectorGrant?.memberIds.length)
-  const canDelegate = agentCanDelegate(agent) || coordinatingNow
+  /**
+   * Delegar é ORQUESTRAR — e só quem conduz orquestra.
+   *
+   * A concessão do setor autoriza alcançar aquele time; ela não transforma um
+   * especialista em maestro. Sem esta checagem, pôr um pesquisador para coordenar um
+   * setor lhe daria as ferramentas de delegação, e o papel deixaria de significar algo
+   * no momento em que mais importa. Quem não conduz e recebe um setor continua
+   * executando a própria parte — e o plano é de quem conduz.
+   */
+  /**
+   * O TETO do papel, e não o padrão dele.
+   *
+   * A política de delegação do agente já É a escolha explícita do dono — é ela que diz
+   * "este aqui conduz". O papel entra como limite duro: quem coleta, analisa, executa ou
+   * comunica nunca orquestra, por mais que a política diga o contrário. Um agente sem
+   * perfil declarado, com política de delegação ligada, continua conduzindo como sempre
+   * conduziu.
+   */
+  const podeOrquestrar = roleAllows(roleOf(agent.preset), 'orchestrates')
+  const canDelegate = podeOrquestrar && (agentCanDelegate(agent) || coordinatingNow)
   return [...base, capabilityMissingTool(), ...(canDelegate ? buildDelegationTools(childCtx, deps) : [])]
 }
 
