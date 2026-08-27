@@ -51,9 +51,12 @@ describe('cada papel desenha o que é dele', () => {
     expect(cfg.sections).not.toContain('ferramentas')
   })
 
-  it('3) pesquisador: base, sites e ferramentas', () => {
+  it('3) pesquisador: base, sites e busca — e NENHUMA ferramenta de execução', () => {
     const cfg = roleConfigOf({ preset: 'researcher' })
-    expect(cfg.sections).toEqual(expect.arrayContaining(['conhecimento', 'web', 'ferramentas']))
+    expect(cfg.sections).toEqual(expect.arrayContaining(['conhecimento', 'web', 'busca-web']))
+    // Quem coleta levanta fatos e entrega; agir sobre o mundo é de quem executa.
+    expect(cfg.sections).not.toContain('ferramentas')
+    expect(cfg.allowedTools).toBe(false)
   })
 
   it('4) executor: ferramentas e o que precisa receber para agir', () => {
@@ -81,17 +84,20 @@ describe('cada papel desenha o que é dele', () => {
 describe('o que já estava configurado continua funcionando', () => {
   it('7) agente sem tipo declarado mantém tudo', () => {
     const cfg = roleConfigOf({})
-    expect(cfg.role).toBe('executor')
+    // Sem preset ele é PERSONALIZADO — a ausência de perfil, não um executor.
+    expect(cfg.role).toBe('custom')
     expect(cfg.allowedKnowledge).toBe(true)
     expect(cfg.allowedTools).toBe(true)
-    expect(roleOfPreset(null)).toBe('executor')
+    expect(roleOfPreset(null)).toBe('custom')
   })
 
-  it('7b) o override do dono traz o bloco de volta para a tela', () => {
+  it('7b) o override incompatível NÃO traz o bloco de volta para a tela', () => {
+    // A tela desenhava um controle que o motor ignoraria — o outro lado da mesma
+    // brecha. Agora ela obedece ao mesmo teto de papel que o servidor.
     const cfg = roleConfigOf({ preset: 'analyst', knowledgeEnabled: true })
-    expect(cfg.allowedKnowledge).toBe(true)
-    expect(cfg.sections).toContain('conhecimento')
-    expect(usesKnowledge('analyst', true)).toBe(true)
+    expect(cfg.allowedKnowledge).toBe(false)
+    expect(cfg.sections).not.toContain('conhecimento')
+    expect(usesKnowledge('analyst', true)).toBe(false)
   })
 
   it('7c) desligar a base à mão não desliga as ferramentas', () => {

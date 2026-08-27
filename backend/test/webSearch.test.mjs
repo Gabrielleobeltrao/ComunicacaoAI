@@ -42,7 +42,9 @@ test('1 e 2) só o pesquisador tem busca na web — e só com o interruptor liga
 })
 
 test('7) analista, coordenador e executor não recebem — nem ligando o interruptor', () => {
-  for (const preset of ['analyst', 'manager', 'secretary', 'operator', 'communicator', 'custom']) {
+  // `custom` fica de fora: ele é a AUSÊNCIA de perfil, e lá cada capacidade é escolha
+  // declarada do dono — inclusive esta. O que o goal proíbe é o preset com regra frouxa.
+  for (const preset of ['analyst', 'manager', 'secretary', 'operator', 'communicator']) {
     assert.equal(capabilitiesOf({ preset, webSearch: { enabled: true } }).webSearch, false, preset)
     // E a seção nem aparece na tela deles.
     assert.ok(!roleUIConfigOf({ preset }).sections.includes('busca-web'), preset)
@@ -50,6 +52,8 @@ test('7) analista, coordenador e executor não recebem — nem ligando o interru
   }
   // No pesquisador a seção existe SEMPRE — é onde se liga o interruptor.
   assert.ok(roleUIConfigOf({ preset: 'researcher' }).sections.includes('busca-web'))
+  // E no personalizado ela existe porque lá tudo é escolha — ligada, ela vale.
+  assert.equal(capabilitiesOf({ preset: 'custom', webSearch: { enabled: true } }).webSearch, true)
 })
 
 // --- 3) quando procurar ------------------------------------------------------------------------

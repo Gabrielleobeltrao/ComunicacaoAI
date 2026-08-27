@@ -297,7 +297,9 @@ test('cada agente do time roda com o PRÓPRIO provedor e modelo', async () => {
 test('no Playground, ferramenta de escrita não chega a nenhum agente do time', async () => {
   const { playgroundDelegationDeps } = await import('../dist/delegationWiring.js')
   const depsTeste = playgroundDelegationDeps()
-  const alvo = agente('Executor', { delegationPolicy: 'all' })
+  // Quem delega é quem CONDUZ: a fábrica cria pesquisadores por padrão, e pesquisador
+  // não orquestra — é o guarda de papel funcionando, não um defeito do teste.
+  const alvo = agente('Coordenador', { preset: 'manager', delegationPolicy: 'all' })
 
   // O resolvedor real, com o agente sem ferramenta própria: sobram as builtins e as de
   // time. Nenhuma de escrita pode passar.
@@ -308,7 +310,22 @@ test('no Playground, ferramenta de escrita não chega a nenhum agente do time', 
   assert.deepEqual(escrita.map((t) => t.name), [], 'nada que escreva pode sobrar no teste')
   // E o time continua alcançável, senão não haveria o que testar.
   assert.ok(ferramentas.some((t) => t.name === 'delegate_to_agent'))
-  assert.ok(ferramentas.some((t) => t.name === 'buscar_memoria'), 'buscar_memoria é leitura e continua disponível')
+
+  /**
+   * A leitura continua passando — provada em quem a tem.
+   *
+   * `buscar_memoria` é do agente que OPERA: quem só conduz não guarda operação para
+   * lembrar. Antes esta linha rodava sobre um pesquisador que também delegava, o que
+   * deixou de existir — delegar é de quem conduz. As duas garantias continuam valendo,
+   * cada uma em quem lhe diz respeito.
+   */
+  const membro = agente('Membro')
+  const doMembro = await depsTeste.resolveTools(membro, OWNER, rootContext({ ownerId: OWNER, buildingId: PREDIO.toString(), correlationId: 'c', agent: membro }))
+  assert.ok(doMembro.some((t) => t.name === 'buscar_memoria'), 'buscar_memoria é leitura e continua disponível')
+  assert.deepEqual(
+    doMembro.filter((t) => (t.risk ?? 'write') !== 'read' && !TEAM_TOOL_NAMES.includes(t.name)).map((t) => t.name),
+    [],
+  )
 })
 
 // --- organization não executa ----------------------------------------------------------------
@@ -1565,7 +1582,7 @@ test('a trilha diz o tipo do agente e se a base foi habilitada', async () => {
   const doAnalista = trilha.find((e) => e.type === 'agent' && e.metadata?.agentType === 'analyst')
   assert.ok(doAnalista, 'o tipo aparece na trilha')
   assert.equal(doAnalista.metadata.knowledge, false)
-  assert.match(doAnalista.metadata.reason, /não busca base própria/)
+  assert.match(doAnalista.metadata.reason, /não busca nada por conta própria/)
   const doCoordenador = trilha.find((e) => e.type === 'agent' && e.metadata?.agentType === 'coordinator')
   assert.equal(doCoordenador.metadata.knowledge, false)
 })

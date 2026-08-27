@@ -930,10 +930,13 @@ test('o coordenador só vê orquestração — nem app, nem ferramenta, nem base
   await expect(page.getByTestId('orchestration-partial-failure')).toBeVisible()
 })
 
-test('o pesquisador mantém base, sites e ferramentas', async ({ page }) => {
+test('o pesquisador mantém base e sites — e NÃO desenha o que ele aciona', async ({ page }) => {
   await stub(page, { agent: { ...AGENT, preset: 'researcher' } })
   await page.goto(`/floors/${FLOOR_ID}/agents/${AGENT_ID}/como-trabalha`)
-  await expect(page.getByText('O que ele aciona')).toBeVisible()
+  // Quem coleta levanta fatos e entrega. Acionar o mundo é de quem executa, e o bloco
+  // nem aparece: um controle desenhado para uma capacidade que o motor não dá seria o
+  // dono configurando uma coisa e vendo outra.
+  await expect(page.getByText('O que ele aciona')).toHaveCount(0)
   await abrirBloco(page, 'Web')
   await expect(page.getByTestId('agent-sources')).toBeVisible()
 })

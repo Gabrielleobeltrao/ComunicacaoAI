@@ -275,7 +275,15 @@ export async function resolveAgentTools(
    * que ela entrega é uma resposta por chamada, quando ele pedir — nenhum tique entra
    * no contexto sozinho.
    */
-  const emTempoReal = await fontesDoAgente(ownerId, agent._id).catch(() => [])
+  /**
+   * Tempo real é COLETA — e por isso passa pelo mesmo porteiro do resto.
+   *
+   * Ler o preço de agora é buscar um fato lá fora. Sem esta checagem, qualquer agente
+   * com uma fonte concedida viraria pesquisador por um caminho lateral: o analista
+   * consultaria em vez de analisar o que recebeu, e o coordenador pesquisaria em vez de
+   * conduzir. A concessão continua sendo necessária; ela deixou de ser suficiente.
+   */
+  const emTempoReal = capacidades.realtime ? await fontesDoAgente(ownerId, agent._id).catch(() => []) : []
   // Perguntar em vez de responder é capacidade de todo agente. Sem ela, diante de um
   // pedido amplo demais o modelo só sabe responder por cima — e cobrar por isso.
   const esclarecer = clarifyTool(jaPerguntou)

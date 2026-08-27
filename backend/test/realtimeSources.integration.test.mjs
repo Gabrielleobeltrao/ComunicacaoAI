@@ -260,18 +260,31 @@ test('a ferramenta do LLM sem nome lista o que existe, e recusa o que não foi c
   assert.deepEqual(corpo.disponiveis, [])
 })
 
-test('a ferramenta só aparece para o agente de LLM quando há fonte concedida', async () => {
+test('a ferramenta exige as DUAS coisas: fonte concedida e papel que pode consultar', async () => {
   const { resolveAgentTools } = await import('../dist/builtinTools.js')
   const conexao = await conectar()
-  const agente = { _id: AGENTE_A, ownerId: DONO, name: 'Analista', capabilities: [] }
+  const pesquisador = { _id: AGENTE_A, ownerId: DONO, name: 'Pesquisador', preset: 'researcher', capabilities: [] }
 
-  const semFonte = await resolveAgentTools(agente, DONO)
+  const semFonte = await resolveAgentTools(pesquisador, DONO)
   assert.equal(semFonte.some((t) => t.name === 'consultar_tempo_real'), false, 'sem fonte, sem ferramenta')
 
   await criarFonte(conexao)
-  const comFonte = await resolveAgentTools(agente, DONO)
+  const comFonte = await resolveAgentTools(pesquisador, DONO)
   assert.equal(comFonte.some((t) => t.name === 'consultar_tempo_real'), true)
   assert.equal(comFonte.some((t) => t.name === 'esperar_tempo_real'), true)
+
+  /**
+   * E a concessão sozinha não basta.
+   *
+   * Ler o valor de agora é COLETA. Sem esta segunda porta, bastaria conceder uma fonte
+   * para um analista virar pesquisador por um caminho lateral — consultando em vez de
+   * analisar o que recebeu.
+   */
+  for (const preset of ['analyst', 'manager', 'operator']) {
+    const outro = { _id: AGENTE_A, ownerId: DONO, name: preset, preset, capabilities: [] }
+    const lista = await resolveAgentTools(outro, DONO)
+    assert.equal(lista.some((t) => t.name === 'consultar_tempo_real'), false, `${preset} recebeu consulta em tempo real`)
+  }
 })
 
 // --- o Dado ao vivo continua sendo o que era ------------------------------------------------
