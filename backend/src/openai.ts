@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions'
 import { getCachedModels, setCachedModels } from './modelCache.js'
 // Uma fonte só para os padrões, e sem banco atrás dela — ver `modelDefaults.ts`.
 import { OPENAI_DEFAULT_MODEL, OPENAI_AUX_MODEL } from './modelDefaults.js'
@@ -50,6 +51,40 @@ export const aceitaReasoningEffort = (model: string | null | undefined): boolean
 /** O parâmetro, só quando ele cabe. */
 const esforco = (model: string | null | undefined, nivel: 'minimal' | 'low' | 'medium' | 'high' = 'minimal') =>
   aceitaReasoningEffort(model || DEFAULT_MODEL) ? { reasoning_effort: nivel } : {}
+
+/**
+ * Cria a resposta — e, se o provedor RECUSAR O PEDIDO, tenta de novo sem os ajustes.
+ *
+ * O nome do modelo diz que ele é da família que raciocina, mas não diz QUAL valor de
+ * esforço aquela versão aceita: `minimal` nasceu com o gpt-5 e o gpt-5.1 mudou a lista.
+ * Uma tabela nossa com os valores de cada modelo envelheceria no próximo lançamento — e
+ * enquanto ela estivesse errada, TODA chamada de bastidor da conta falharia com 400,
+ * que foi exatamente o que aconteceu em produção.
+ *
+ * Então a regra não é adivinhar: é ouvir. Um 400 com o ajuste presente vira uma segunda
+ * tentativa sem ele. O ajuste é otimização — perder o controle de esforço custa um
+ * pouco de latência; perder a chamada custa a funcionalidade inteira.
+ *
+ * Só o 400, e só uma vez: chave inválida, limite de taxa e provedor fora do ar não se
+ * resolvem repetindo, e repetir neles seria cobrar duas vezes por nada.
+ */
+/** Exposto só para o teste: é a regra de recuperação, e ela precisa de prova própria. */
+export const criarChatParaTeste = criarChat
+
+async function criarChat<T extends { model: string; reasoning_effort?: unknown }>(client: ReturnType<typeof buildClient>, params: T): Promise<ChatCompletion> {
+  // Nenhuma destas chamadas usa `stream`, então a resposta é sempre a completa.
+  const criar = (p: unknown) => client.chat.completions.create(p as ChatCompletionCreateParamsNonStreaming)
+  try {
+    return await criar(params)
+  } catch (error) {
+    const status = (error as { status?: number })?.status
+    if (status !== 400 || params.reasoning_effort === undefined) throw error
+    const { reasoning_effort: _descartado, ...semAjuste } = params
+    void _descartado
+    console.warn(`[openai] o modelo "${params.model}" recusou o ajuste de esforço; repetindo sem ele`)
+    return await criar(semAjuste)
+  }
+}
 
 // Background/utility calls (memory, extraction, guardrail check) are
 // classification-style tasks that don't need the flagship model — route them
@@ -266,7 +301,7 @@ export async function updateMemory(
   model?: string | null,
   apiKey?: string | null,
 ): Promise<string> {
-  const response = await buildClient(apiKey).chat.completions.create({
+  const response = await criarChat(buildClient(apiKey), {
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 300,
     // gpt-5 mini/nano are reasoning models; without this they burn the whole
@@ -289,7 +324,7 @@ export async function updateStructuredMemory(
   model?: string | null,
   apiKey?: string | null,
 ): Promise<Record<string, string>> {
-  const response = await buildClient(apiKey).chat.completions.create({
+  const response = await criarChat(buildClient(apiKey), {
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 300,
     ...esforco(model),
@@ -311,7 +346,7 @@ export async function extractIdentity(
   model?: string | null,
   apiKey?: string | null,
 ): Promise<Record<string, string> | null> {
-  const response = await buildClient(apiKey).chat.completions.create({
+  const response = await criarChat(buildClient(apiKey), {
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 200,
     ...esforco(model),
@@ -334,7 +369,7 @@ export async function checkGuardrail(
   model?: string | null,
   apiKey?: string | null,
 ): Promise<boolean> {
-  const response = await buildClient(apiKey).chat.completions.create({
+  const response = await criarChat(buildClient(apiKey), {
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 100,
     ...esforco(model),
@@ -361,7 +396,7 @@ export async function askAuxWithUsage(
   apiKey?: string | null,
   maxTokens = 600,
 ): Promise<{ text: string; usage: TokenUsage }> {
-  const response = await buildClient(apiKey).chat.completions.create({
+  const response = await criarChat(buildClient(apiKey), {
     model: model || DEFAULT_MODEL,
     max_completion_tokens: maxTokens,
     ...esforco(model),
@@ -382,7 +417,7 @@ export async function planSectorResponse(
   model?: string | null,
   apiKey?: string | null,
 ): Promise<SectorPlan> {
-  const response = await buildClient(apiKey).chat.completions.create({
+  const response = await criarChat(buildClient(apiKey), {
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 150,
     ...esforco(model),
@@ -410,7 +445,7 @@ export async function planStageTransition(
   apiKey?: string | null,
 ): Promise<number> {
   const validTargets = options.map((o) => o.target)
-  const response = await buildClient(apiKey).chat.completions.create({
+  const response = await criarChat(buildClient(apiKey), {
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 100,
     ...esforco(model),
@@ -436,7 +471,7 @@ export async function extractStructuredOutput(
   model?: string | null,
   apiKey?: string | null,
 ): Promise<Record<string, string>> {
-  const response = await buildClient(apiKey).chat.completions.create({
+  const response = await criarChat(buildClient(apiKey), {
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 300,
     ...esforco(model),
@@ -460,7 +495,7 @@ export async function transcribeImage(
   mediaType: string,
   apiKey?: string | null,
 ): Promise<string> {
-  const response = await buildClient(apiKey).chat.completions.create({
+  const response = await criarChat(buildClient(apiKey), {
     model: DEFAULT_MODEL,
     max_completion_tokens: 2048,
     messages: [
