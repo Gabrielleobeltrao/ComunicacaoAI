@@ -21,6 +21,20 @@ const refusalStatus: Record<string, number> = {
   budget_exceeded: 429,
   unreadable_response: 502,
   provider_error: 502,
+  /**
+   * Cada falha do provedor com o status que ela É.
+   *
+   * Chave inválida e modelo inexistente são configuração DESTA conta — 400, e não 502:
+   * um 502 diz "o outro lado falhou" e manda tentar de novo, que é exatamente o que não
+   * resolve. Limite de taxa é 429, porque aí esperar resolve mesmo.
+   */
+  provider_key_invalid: 400,
+  provider_model_unavailable: 400,
+  provider_rejected_request: 400,
+  provider_no_credit: 402,
+  provider_rate_limited: 429,
+  provider_timeout: 504,
+  provider_unavailable: 502,
   not_editable: 409,
   no_blueprint: 404,
   too_many_messages: 400,

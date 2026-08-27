@@ -31,6 +31,26 @@ import type { ResolvedTool, ToolCallRecord } from './agentTools.js'
 
 export const DEFAULT_MODEL = OPENAI_DEFAULT_MODEL
 
+/**
+ * Este modelo aceita `reasoning_effort`?
+ *
+ * Só a família que RACIOCINA aceita. Mandar o parâmetro para um modelo comum não é
+ * ignorado: a API responde 400 e a chamada inteira morre — em toda chamada, sempre. As
+ * funções de bastidor aqui embaixo mandavam o parâmetro sem perguntar, então bastava a
+ * conta apontar para um modelo clássico para tudo que passa por elas parar de funcionar,
+ * com uma mensagem que não dizia isso.
+ *
+ * A checagem é pelo NOME porque é o que se tem antes de chamar; na dúvida, não manda —
+ * perder o ajuste de esforço custa um pouco de latência, e mandá-lo indevidamente custa
+ * a resposta inteira.
+ */
+export const aceitaReasoningEffort = (model: string | null | undefined): boolean =>
+  /^(o[1-9]|gpt-5)/i.test(String(model ?? '').trim())
+
+/** O parâmetro, só quando ele cabe. */
+const esforco = (model: string | null | undefined, nivel: 'minimal' | 'low' | 'medium' | 'high' = 'minimal') =>
+  aceitaReasoningEffort(model || DEFAULT_MODEL) ? { reasoning_effort: nivel } : {}
+
 // Background/utility calls (memory, extraction, guardrail check) are
 // classification-style tasks that don't need the flagship model — route them
 // to a small, cheap model to keep token spend down.
@@ -252,7 +272,7 @@ export async function updateMemory(
     // gpt-5 mini/nano are reasoning models; without this they burn the whole
     // (small) token budget on reasoning and return empty content. These utility
     // tasks don't need reasoning.
-    reasoning_effort: 'minimal',
+    ...esforco(model),
     messages: [
       { role: 'system', content: MEMORY_UPDATE_SYSTEM_PROMPT },
       { role: 'user', content: buildMemoryUpdatePrompt(currentMemory, visitorMessage, agentReply) },
@@ -272,7 +292,7 @@ export async function updateStructuredMemory(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 300,
-    reasoning_effort: 'minimal',
+    ...esforco(model),
     messages: [
       { role: 'system', content: STRUCTURED_MEMORY_UPDATE_SYSTEM_PROMPT },
       { role: 'user', content: buildStructuredMemoryUpdatePrompt(currentMemory, visitorMessage, agentReply) },
@@ -294,7 +314,7 @@ export async function extractIdentity(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 200,
-    reasoning_effort: 'minimal',
+    ...esforco(model),
     messages: [
       { role: 'system', content: IDENTITY_EXTRACTION_SYSTEM_PROMPT },
       { role: 'user', content: buildIdentityExtractionPrompt(fields, recentMessages) },
@@ -317,7 +337,7 @@ export async function checkGuardrail(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 100,
-    reasoning_effort: 'minimal',
+    ...esforco(model),
     messages: [
       { role: 'system', content: GUARDRAIL_CHECK_SYSTEM_PROMPT },
       { role: 'user', content: buildGuardrailCheckPrompt(objective, recentMessages, visitorMessage) },
@@ -344,7 +364,7 @@ export async function askAuxWithUsage(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: maxTokens,
-    reasoning_effort: 'minimal',
+    ...esforco(model),
     messages: [{ role: 'user', content: prompt }],
   })
   return {
@@ -365,7 +385,7 @@ export async function planSectorResponse(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 150,
-    reasoning_effort: 'minimal',
+    ...esforco(model),
     messages: [
       { role: 'system', content: SECTOR_PLANNER_SYSTEM_PROMPT },
       {
@@ -393,7 +413,7 @@ export async function planStageTransition(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 100,
-    reasoning_effort: 'minimal',
+    ...esforco(model),
     messages: [
       { role: 'system', content: STAGE_TRANSITION_SYSTEM_PROMPT },
       {
@@ -419,7 +439,7 @@ export async function extractStructuredOutput(
   const response = await buildClient(apiKey).chat.completions.create({
     model: model || DEFAULT_MODEL,
     max_completion_tokens: 300,
-    reasoning_effort: 'minimal',
+    ...esforco(model),
     messages: [
       { role: 'system', content: STRUCTURED_OUTPUT_EXTRACTION_SYSTEM_PROMPT },
       {

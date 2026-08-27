@@ -1,4 +1,7 @@
 import { askAuxWithUsage } from '../llm.js'
+import { classifyLlmFailure } from '../llmFailure.js'
+import type { LlmFailureCode } from '../llmFailure.js'
+import { defaultModelOf } from '../modelDefaults.js'
 import type { TokenUsage } from '../llm.js'
 import { getMonthlyTokenCap, getProviderApiKey } from '../userSettings.js'
 import { getMonthlyTokens, recordReplyUsageOnce } from '../tokenUsage.js'
@@ -38,7 +41,8 @@ export type TurnFailure =
   | { code: 'no_provider_key'; message: string }
   | { code: 'budget_exceeded'; message: string }
   | { code: 'unreadable_response'; message: string }
-  | { code: 'provider_error'; message: string }
+  /** As falhas do provedor, classificadas. Ver `llmFailure.ts`. */
+  | { code: LlmFailureCode; message: string }
 
 export type TurnOutcome = { ok: true; result: ArchitectTurnResult; usage: TokenUsage } | { ok: false; failure: TurnFailure; usage: TokenUsage }
 
@@ -230,9 +234,20 @@ export async function runArchitectTurn(input: RunTurnInput): Promise<TurnOutcome
       await recordReplyUsageOnce(input.ownerId, usage, `${input.chargeKey}${sufixoDaChave}`)
       return { text }
     } catch (error) {
-      // Nada da mensagem do provedor vai adiante: ela pode conter a URL com a chave.
-      console.error('[architect] falha na chamada ao provedor:', (error as Error).message)
-      return { erro: { code: 'provider_error', message: 'O provedor não respondeu. Tente novamente em instantes.' } }
+      /**
+       * A causa é CLASSIFICADA, e não achatada numa frase só.
+       *
+       * Antes daqui, chave revogada, modelo inexistente, conta sem crédito e limite de
+       * taxa produziam todos "o provedor não respondeu, tente novamente" — e três
+       * dessas quatro não se resolvem tentando de novo. Quem via a mensagem tentava,
+       * falhava igual, e não tinha como descobrir o que consertar.
+       *
+       * O texto do provedor continua sem sair daqui: ele pode trazer a URL com a chave.
+       * O que vai para a tela é a nossa frase; o detalhe fica no registro do servidor.
+       */
+      const motivo = classifyLlmFailure(error, input.model ?? defaultModelOf(input.provider))
+      console.error(`[architect] falha na chamada ao provedor (${motivo.code}):`, (error as Error).message)
+      return { erro: motivo }
     }
   }
 
