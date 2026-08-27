@@ -3,6 +3,9 @@ import { ValidationError } from '../building.js'
 import { normalizeMappingPath, normalizeMappingTarget } from '../integrations/websocket/mapping.js'
 import { recordersCollection as recorders, apagarHistoricoDe, contarRegistros } from './store.js'
 import { normalizarAgenda } from './schedule.js'
+import { adapterDe, normalizarDestino } from './storage/index.js'
+import { apagarJanelasDe } from './windows.js'
+import { retencaoDe } from './types.js'
 import { conferirFonte } from './sources.js'
 import {
   AGGREGATIONS,
@@ -15,7 +18,7 @@ import {
   RECORDER_MODES,
   SOURCE_KINDS,
 } from './types.js'
-import type { AggregationRule, DataRecorderDefinition, PersistPolicy, RecorderFilter, RecorderMode, SourceKind } from './types.js'
+import type { AggregationRule, DataRecorderDefinition, PersistPolicy, RecorderFilter, RecorderMode, Retention, SourceKind } from './types.js'
 
 /**
  * A DEFINIÇÃO de um histórico: o que gravar, de onde, quando e por quanto tempo.
@@ -68,6 +71,30 @@ function normalizarAgregacoes(bruto: unknown): AggregationRule[] {
   })
 }
 
+/**
+ * A retenção pedida — aceitando o formato novo, o antigo, ou nenhum.
+ *
+ * Os três casos existem de verdade: a tela nova manda `retention`, um cliente antigo
+ * manda `retentionDays`, e quem não manda nada recebe o padrão. Recusar o formato
+ * antigo quebraria integrações que funcionam hoje.
+ */
+export function normalizarRetencao(bruto: { retention?: unknown; retentionDays?: unknown }): Retention {
+  const r = (bruto.retention ?? null) as { mode?: unknown; days?: unknown } | null
+  if (r && typeof r === 'object' && r.mode !== undefined) {
+    if (r.mode === 'forever') return { mode: 'forever' }
+    if (r.mode === 'ttl') {
+      const dias = Number(r.days)
+      if (!Number.isFinite(dias) || dias < 1 || dias > MAX_RETENTION_DAYS) throw new ValidationError(`retenção: entre 1 e ${MAX_RETENTION_DAYS} dias.`)
+      return { mode: 'ttl', days: Math.round(dias) }
+    }
+    throw new ValidationError('retenção: escolha "para sempre" ou um número de dias.')
+  }
+  if (bruto.retentionDays === null) return { mode: 'forever' }
+  const dias = bruto.retentionDays === undefined ? DEFAULT_RETENTION_DAYS : Number(bruto.retentionDays)
+  if (!Number.isFinite(dias) || dias < 1 || dias > MAX_RETENTION_DAYS) throw new ValidationError(`retenção: entre 1 e ${MAX_RETENTION_DAYS} dias.`)
+  return { mode: 'ttl', days: Math.round(dias) }
+}
+
 export interface RecorderInput {
   name?: unknown
   enabled?: unknown
@@ -83,6 +110,8 @@ export interface RecorderInput {
   aggregations?: unknown
   changePath?: unknown
   retentionDays?: unknown
+  retention?: unknown
+  storage?: unknown
   buildingId?: unknown
 }
 
@@ -148,8 +177,8 @@ export function normalizarRecorder(bruto: RecorderInput): Omit<DataRecorderDefin
   if (campos && campos.length > MAX_CAMPOS) throw new ValidationError(`no máximo ${MAX_CAMPOS} campos.`)
   const selectedFields = campos && campos.length ? campos.map((c, i) => normalizeMappingPath(c, `campo ${i + 1}`)) : null
 
-  const dias = bruto.retentionDays === null || bruto.retentionDays === undefined ? DEFAULT_RETENTION_DAYS : Number(bruto.retentionDays)
-  if (!Number.isFinite(dias) || dias < 1 || dias > MAX_RETENTION_DAYS) throw new ValidationError(`retenção: entre 1 e ${MAX_RETENTION_DAYS} dias.`)
+  const retention = normalizarRetencao(bruto)
+  const storage = normalizarDestino(bruto.storage)
 
   return {
     name,
@@ -165,7 +194,11 @@ export function normalizarRecorder(bruto: RecorderInput): Omit<DataRecorderDefin
     selectedFields,
     aggregations,
     changePath: caminhoOpcional(bruto.changePath, 'campo observado'),
-    retentionDays: Math.round(dias),
+    retention,
+    // O campo antigo continua sendo escrito: um cliente ou consulta que ainda o leia
+    // não pode passar a ver `null` de repente e concluir que nada expira.
+    retentionDays: retention.mode === 'ttl' ? retention.days : null,
+    storage,
     buildingId: bruto.buildingId ? String(bruto.buildingId) : null,
   }
 }
@@ -218,7 +251,11 @@ export async function atualizarRecorder(ownerId: string, id: ObjectId, bruto: Re
     selectedFields: bruto.selectedFields === undefined ? atual.selectedFields : bruto.selectedFields,
     aggregations: bruto.aggregations ?? atual.aggregations,
     changePath: bruto.changePath === undefined ? atual.changePath : bruto.changePath,
-    retentionDays: bruto.retentionDays === undefined ? atual.retentionDays : bruto.retentionDays,
+    // Trocar entre "para sempre" e "N dias" nos dois sentidos: o que não vier no patch
+    // continua como está, e o que vier ganha.
+    retention: bruto.retention === undefined ? retencaoDe(atual) : bruto.retention,
+    retentionDays: bruto.retentionDays === undefined ? undefined : bruto.retentionDays,
+    storage: bruto.storage === undefined ? (atual.storage ?? undefined) : bruto.storage,
     buildingId: bruto.buildingId === undefined ? atual.buildingId : bruto.buildingId,
   })
   await conferirFonte(ownerId, def.source)
@@ -228,9 +265,14 @@ export async function atualizarRecorder(ownerId: string, id: ObjectId, bruto: Re
 
 /** Apagar leva o histórico junto — é o que a pessoa espera de "apagar o histórico". */
 export async function apagarRecorder(ownerId: string, id: ObjectId): Promise<boolean> {
+  const atual = await obterRecorder(ownerId, id)
+  if (!atual) return false
   const r = await recorders.deleteOne({ _id: id, ownerId })
   if (!r.deletedCount) return false
-  await apagarHistoricoDe(ownerId, id)
+  // Pelo adapter: o histórico de um destino externo teria que ser apagado lá, e não
+  // aqui. As janelas abertas são nossas em qualquer caso — elas são estado do motor.
+  await adapterDe(atual).apagarTudo(ownerId, id)
+  await apagarJanelasDe(id)
   return true
 }
 

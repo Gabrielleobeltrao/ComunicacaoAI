@@ -20,6 +20,7 @@ import { alpacaStreamAdapter } from '../apps/official/alpaca/index.js'
 import { closeDueCandles, registerMarketDataHandlers } from '../marketData/engine.js'
 import { closeDueWindows, registerDataHistoryHandlers, runDueSnapshots } from '../dataHistory/engine.js'
 import { ensureDataHistoryIndexes } from '../dataHistory/store.js'
+import { ensureRealtimeSourceIndexes } from '../realtimeSources/repository.js'
 import { ensureCandleIndexes } from '../marketData/candleStore.js'
 import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
@@ -70,6 +71,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   await ensureMarketStateIndexes()
   await ensureWebSocketIndexes()
   await ensureDataHistoryIndexes()
+  await ensureRealtimeSourceIndexes()
   // O motor de mercado escuta o barramento. Registrar aqui, e não na importação, deixa
   // o teste montar o mesmo motor sem herdar handlers de outro teste.
   registerMarketDataHandlers()

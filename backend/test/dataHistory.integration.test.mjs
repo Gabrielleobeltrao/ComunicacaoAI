@@ -557,12 +557,22 @@ test('as tools leem o histórico, e não calculam com modelo nenhum', async () =
   assert.ok(serie.points.every((p) => typeof p.at === 'string'))
 })
 
-test('a tool de outro dono não lê o meu histórico', async () => {
+test('a tool de outro dono não lê o meu histórico — e diz que não existe', async () => {
   const { executeRegisteredFunction } = await import('../dist/executors/functionExecutor.js')
   const rec = await criar()
   await engine.ingestFact(fato({ a: 1 }, Date.now()))
-  const r = (await executeRegisteredFunction({ kind: 'function', functionName: 'data_history.range' }, { recorderId: rec._id.toString() }, { ownerId: OUTRO })).structured.data
-  assert.equal(r.count, 0, 'o dono está no filtro, sempre')
+
+  // A tool carrega a DEFINIÇÃO com o dono no filtro — precisa dela para saber onde o
+  // dado está. Isso tornou a recusa explícita: antes vinha uma lista vazia, que se
+  // confunde com "esse histórico está vazio".
+  const r = await executeRegisteredFunction({ kind: 'function', functionName: 'data_history.range' }, { recorderId: rec._id.toString() }, { ownerId: OUTRO })
+  assert.equal(r.ok, false)
+  assert.match(String(r.error.message ?? ''), /não existe nesta conta/)
+
+  // E para o dono continua funcionando.
+  const meu = (await executeRegisteredFunction({ kind: 'function', functionName: 'data_history.range' }, { recorderId: rec._id.toString() }, { ownerId: DONO }))
+    .structured.data
+  assert.equal(meu.count, 1)
 })
 
 test('sem dono na execução, a tool recusa em vez de vazar', async () => {
@@ -968,4 +978,182 @@ test('as tools filtram por tipo de registro', async () => {
   // E a paginação da tool.
   const pagina = await chamar('data_history.range', { recorderId: rec._id.toString(), recordKind: 'raw', limit: 2, skip: 2, order: 'asc' })
   assert.equal(pagina.count, 1)
+})
+
+// ============================================================================
+// Destino de armazenamento e retenção "para sempre"
+// ============================================================================
+
+test('o padrão é banco interno com prazo — e os dois são independentes', async () => {
+  const rec = await criar()
+  assert.deepEqual(rec.storage, { kind: 'internal', connectionId: null })
+  assert.deepEqual(rec.retention, { mode: 'ttl', days: 90 })
+
+  // Trocar um não mexe no outro.
+  const paraSempre = await atualizarRecorder(DONO, rec._id, { retention: { mode: 'forever' } })
+  assert.deepEqual(paraSempre.retention, { mode: 'forever' })
+  assert.deepEqual(paraSempre.storage, { kind: 'internal', connectionId: null }, 'o destino não mudou junto')
+})
+
+test('ttl calcula expiresAt a partir de quando foi GRAVADO', async () => {
+  await criar({ retention: { mode: 'ttl', days: 7 } })
+  await engine.ingestFact(fato({ a: 1 }, Date.now()))
+  const [r] = await registros()
+  assert.ok(r.expiresAt instanceof Date)
+  const dias = (r.expiresAt.getTime() - r.recordedAt.getTime()) / 86_400_000
+  assert.ok(Math.abs(dias - 7) < 0.01, `expira em ${dias} dias`)
+})
+
+test('para sempre grava expiresAt nulo — e o índice TTL não toca nele', async () => {
+  await criar({ retention: { mode: 'forever' } })
+  await engine.ingestFact(fato({ a: 1 }, Date.now()))
+  const [r] = await registros()
+  // É isto que faz "para sempre" funcionar sem coleção nova: o TTL do Mongo só apaga
+  // documento COM data, e um sem data nunca vence.
+  assert.equal(r.expiresAt, null)
+
+  // E o índice continua lá, do jeito que estava.
+  const indices = await db.collection('data_history_records').indexes()
+  const ttl = indices.find((i) => i.key?.expiresAt === 1)
+  assert.ok(ttl, 'o índice TTL continua existindo')
+  assert.equal(ttl.expireAfterSeconds, 0)
+})
+
+test('as duas retenções convivem no mesmo banco', async () => {
+  const eterno = await criar({ name: 'eterno', retention: { mode: 'forever' } })
+  const temporario = await criar({ name: 'temporário', retention: { mode: 'ttl', days: 3 } })
+  engine.limparCacheDeRecorders()
+  await engine.ingestFact(fato({ a: 1 }, Date.now()))
+
+  const doEterno = await registros({ recorderId: eterno._id })
+  const doTemporario = await registros({ recorderId: temporario._id })
+  assert.equal(doEterno[0].expiresAt, null)
+  assert.ok(doTemporario[0].expiresAt instanceof Date)
+})
+
+test('um recorder LEGADO, com retentionDays no documento, continua expirando igual', async () => {
+  const rec = await criar({ retention: { mode: 'ttl', days: 30 } })
+  // Volta o documento ao formato antigo: sem `retention`, só o número.
+  await db.collection('data_recorders').updateOne({ _id: rec._id }, { $unset: { retention: '' }, $set: { retentionDays: 30 } })
+  engine.limparCacheDeRecorders()
+
+  await engine.ingestFact(fato({ a: 1 }, Date.now()))
+  const [r] = await registros()
+  const dias = (r.expiresAt.getTime() - r.recordedAt.getTime()) / 86_400_000
+  assert.ok(Math.abs(dias - 30) < 0.01, `expira em ${dias} dias`)
+})
+
+test('um recorder legado SEM retentionDays é lido como para sempre — que é o que ele era', async () => {
+  const rec = await criar()
+  await db.collection('data_recorders').updateOne({ _id: rec._id }, { $unset: { retention: '', retentionDays: '' } })
+  engine.limparCacheDeRecorders()
+  await engine.ingestFact(fato({ a: 1 }, Date.now()))
+  assert.equal((await registros())[0].expiresAt, null)
+})
+
+test('um recorder legado SEM storage grava no banco interno', async () => {
+  const rec = await criar()
+  await db.collection('data_recorders').updateOne({ _id: rec._id }, { $unset: { storage: '' } })
+  engine.limparCacheDeRecorders()
+  await engine.ingestFact(fato({ a: 1 }, Date.now()))
+  assert.equal((await registros()).length, 1, 'ausente = interno, que era o único destino')
+})
+
+test('ir e voltar entre prazo e para sempre vale a partir do próximo registro', async () => {
+  const rec = await criar({ retention: { mode: 'ttl', days: 5 } })
+  await engine.ingestFact(fato({ n: 1 }, Date.now()))
+
+  await atualizarRecorder(DONO, rec._id, { retention: { mode: 'forever' } })
+  engine.limparCacheDeRecorders()
+  await engine.ingestFact(fato({ n: 2 }, Date.now() + 1))
+
+  await atualizarRecorder(DONO, rec._id, { retention: { mode: 'ttl', days: 10 } })
+  engine.limparCacheDeRecorders()
+  await engine.ingestFact(fato({ n: 3 }, Date.now() + 2))
+
+  const rs = await registros()
+  assert.equal(rs.length, 3)
+  // O que já foi gravado NÃO é reescrito: mudar a regra não muda o passado.
+  assert.ok(rs[0].expiresAt instanceof Date)
+  assert.equal(rs[1].expiresAt, null)
+  assert.ok(rs[2].expiresAt instanceof Date)
+  const dias = (rs[2].expiresAt.getTime() - rs[2].recordedAt.getTime()) / 86_400_000
+  assert.ok(Math.abs(dias - 10) < 0.01)
+})
+
+test('“para sempre” NÃO afrouxa a cota', async () => {
+  const rec = await criar({ retention: { mode: 'forever' } })
+  await db.collection('data_recorders').updateOne({ _id: rec._id }, { $set: { recordCount: 500_000 } })
+  engine.limparCacheDeRecorders()
+  await engine.ingestFact(fato({ a: 1 }, Date.now()))
+  assert.equal((await registros()).length, 0, 'guardar para sempre é sobre tempo, não sobre espaço')
+})
+
+test('“para sempre” também não afrouxa o limite de tamanho', async () => {
+  await criar({ retention: { mode: 'forever' } })
+  await engine.ingestFact(fato({ texto: 'x'.repeat(40_000) }, Date.now()))
+  assert.equal((await registros()).length, 0)
+})
+
+test('a validação da retenção recusa o que não dá para executar', async () => {
+  const { normalizarRetencao } = await import('../dist/dataHistory/recorders.js')
+  assert.deepEqual(normalizarRetencao({ retention: { mode: 'forever' } }), { mode: 'forever' })
+  assert.deepEqual(normalizarRetencao({ retention: { mode: 'ttl', days: 15 } }), { mode: 'ttl', days: 15 })
+  // O formato ANTIGO continua aceito pela API.
+  assert.deepEqual(normalizarRetencao({ retentionDays: 45 }), { mode: 'ttl', days: 45 })
+  assert.deepEqual(normalizarRetencao({ retentionDays: null }), { mode: 'forever' })
+  assert.deepEqual(normalizarRetencao({}), { mode: 'ttl', days: 90 }, 'sem nada, o padrão')
+
+  assert.throws(() => normalizarRetencao({ retention: { mode: 'ttl', days: 0 } }), /retenção/)
+  assert.throws(() => normalizarRetencao({ retention: { mode: 'ttl', days: 9999 } }), /retenção/)
+  assert.throws(() => normalizarRetencao({ retention: { mode: 'para_sempre' } }), /retenção/)
+})
+
+test('o destino é validado, e um desconhecido não vira "interno em silêncio"', async () => {
+  const { normalizarDestino, adapterDe, destinosDisponiveis } = await import('../dist/dataHistory/storage/index.js')
+  assert.deepEqual(normalizarDestino({ kind: 'internal' }), { kind: 'internal', connectionId: null })
+  assert.deepEqual(normalizarDestino(undefined), { kind: 'internal', connectionId: null })
+  assert.throws(() => normalizarDestino({ kind: 'postgres' }), /não está disponível/)
+  // O banco interno não usa conexão: oferecer o campo faria alguém preenchê-lo à toa.
+  assert.throws(() => normalizarDestino({ kind: 'internal', connectionId: 'abc' }), /não usa conexão/)
+
+  // Um documento com destino desconhecido recusa em vez de gravar em qualquer lugar.
+  assert.throws(() => adapterDe({ storage: { kind: 'nuvem-magica' } }), /desconhecido/)
+  // E ausente é interno.
+  assert.equal(adapterDe({ storage: null }).kind, 'internal')
+  assert.deepEqual(destinosDisponiveis(), [{ kind: 'internal', label: 'Banco interno' }])
+})
+
+test('o motor grava pelo adapter — trocar o destino troca para onde o dado vai', async () => {
+  // Um adapter de mentira, registrado só para este teste: se o motor conhecesse o
+  // Mongo por dentro, ele ignoraria isto e gravaria na coleção assim mesmo.
+  const { adapterDe } = await import('../dist/dataHistory/storage/index.js')
+  const rec = await criar()
+  const armazem = adapterDe(rec)
+  assert.equal(armazem.kind, 'internal')
+  assert.equal(typeof armazem.gravar, 'function')
+  assert.equal(typeof armazem.listar, 'function')
+  assert.equal(typeof armazem.agregar, 'function')
+  assert.equal(typeof armazem.apagarTudo, 'function')
+
+  // E o que ele grava é o que a leitura devolve — pelo mesmo adapter.
+  await engine.ingestFact(fato({ a: 1 }, Date.now()))
+  const lidos = await armazem.listar(DONO, { recorderId: rec._id })
+  assert.equal(lidos.length, 1)
+  assert.equal(await armazem.contar(DONO, { recorderId: rec._id }), 1)
+})
+
+test('apagar o recorder apaga pelo adapter, e não deixa janela para trás', async () => {
+  const rec = await criar({
+    mode: 'window_aggregate',
+    intervalMs: 60_000,
+    entityKeyPath: 'symbol',
+    aggregations: [{ from: 'price', op: 'last', to: 'close' }],
+  })
+  await engine.ingestFact(fato({ symbol: 'X', price: 1 }, Date.now()))
+  assert.equal(await db.collection('data_history_windows').countDocuments({}), 1)
+
+  await apagarRecorder(DONO, rec._id)
+  assert.equal(await db.collection('data_history_windows').countDocuments({}), 0, 'a janela aberta some junto')
+  assert.equal((await registros()).length, 0)
 })

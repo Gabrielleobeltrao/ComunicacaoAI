@@ -15,6 +15,23 @@ export type PersistPolicy = 'aggregate_only' | 'raw_only' | 'raw_and_aggregate'
 export type RecordKind = 'raw' | 'aggregate' | 'snapshot'
 export type FilterOperator = 'exists' | 'equals' | 'not_equals' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains'
 
+/** Onde o histórico é guardado. Hoje só o banco interno; a lista vem do servidor. */
+export interface StorageTarget {
+  kind: string
+  connectionId?: string | null
+}
+
+export interface StorageOption {
+  kind: string
+  label: string
+}
+
+/**
+ * Por quanto tempo. "Para sempre" quer dizer que o sistema não apaga sozinho — não que
+ * o espaço seja ilimitado: os limites de registros e de tamanho continuam valendo.
+ */
+export type Retention = { mode: 'forever' } | { mode: 'ttl'; days: number }
+
 /** Uma agenda: recorrência em cron e o fuso de quem configurou. */
 export interface RecorderSchedule {
   cron: string
@@ -61,6 +78,8 @@ export interface DataRecorder {
   aggregations: AggregationRule[]
   changePath: string | null
   retentionDays: number | null
+  retention: Retention
+  storage: StorageTarget
   recordCount: number
   lastRecordAt: string | null
   lastError: { message: string; at: string } | null
@@ -122,6 +141,7 @@ export const previewRecorder = (recorder: Record<string, unknown>, samples: unkn
   request<PreviewResult>('/preview', { method: 'POST', body: JSON.stringify({ recorder, samples }) })
 export const listKeys = (id: string) => request<(string | null)[]>(`/recorders/${id}/keys`)
 export const listSources = () => request<SourceCatalog>('/sources')
+export const listStorages = () => request<StorageOption[]>('/storages')
 export const listRecords = (
   id: string,
   q: { entityKey?: string; from?: string; to?: string; recordKind?: RecordKind | ''; limit?: number; skip?: number; order?: 'asc' | 'desc' } = {},
@@ -212,6 +232,18 @@ export const RECURRENCES = [
 /** Fusos comuns por aqui. Qualquer IANA válido é aceito pelo servidor. */
 export const TIMEZONES = ['America/Sao_Paulo', 'America/New_York', 'America/Chicago', 'Europe/Lisbon', 'Europe/London', 'UTC']
 
+/** As opções de prazo que a tela oferece. `null` é "para sempre". */
+export const RETENTIONS: { dias: number | null; label: string }[] = [
+  { dias: null, label: 'Para sempre' },
+  { dias: 7, label: '7 dias' },
+  { dias: 30, label: '30 dias' },
+  { dias: 90, label: '90 dias' },
+  { dias: 365, label: '1 ano' },
+]
+
+export const retentionLabel = (r: Retention): string =>
+  r.mode === 'forever' ? 'Para sempre' : (RETENTIONS.find((o) => o.dias === r.days)?.label ?? `${r.days} dias`)
+
 export const emptyRecorder = () => ({
   name: '',
   source: { kind: 'live_data' as SourceKind, ref: '' },
@@ -225,6 +257,7 @@ export const emptyRecorder = () => ({
   selectedFields: [] as string[],
   aggregations: [] as AggregationRule[],
   changePath: '',
-  retentionDays: 90,
+  retention: { mode: 'ttl', days: 90 } as Retention,
+  storage: { kind: 'internal', connectionId: null } as StorageTarget,
   enabled: true,
 })

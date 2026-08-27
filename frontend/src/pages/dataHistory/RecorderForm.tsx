@@ -10,14 +10,16 @@ import {
   POLICY_HINT,
   POLICY_LABEL,
   RECURRENCES,
+  RETENTIONS,
   SOURCE_LABEL,
   TIMEZONES,
   createRecorder,
   emptyRecorder,
   listSources,
+  listStorages,
   previewRecorder,
 } from '../../lib/dataHistory'
-import type { AggregationOp, FilterOperator, PersistPolicy, PreviewResult, RecorderMode, SourceCatalog, SourceKind } from '../../lib/dataHistory'
+import type { AggregationOp, FilterOperator, PersistPolicy, PreviewResult, RecorderMode, SourceCatalog, SourceKind, StorageOption } from '../../lib/dataHistory'
 
 /**
  * Criar um histórico, na ordem em que a pergunta aparece na cabeça de quem cria:
@@ -55,6 +57,9 @@ export function RecorderForm() {
    * já estava lá, que é uma das da lista — e o campo de texto nunca apareceria.
    */
   const [cronLivre, setCronLivre] = useState(false)
+  /** "Personalizado" no prazo, pelo mesmo motivo do cron: não dá para deduzir do valor. */
+  const [prazoLivre, setPrazoLivre] = useState(false)
+  const [destinos, setDestinos] = useState<StorageOption[]>([])
   const [amostras, setAmostras] = useState(AMOSTRA_EXEMPLO)
   const [previa, setPrevia] = useState<PreviewResult | null>(null)
   const [erro, setErro] = useState<string | null>(null)
@@ -69,6 +74,9 @@ export function RecorderForm() {
       // Sem catálogo a tela ainda funciona: o campo vira texto livre. Melhor do que
       // travar a criação porque uma listagem falhou.
       .catch(() => setFontes({ live_data: [], event: [] }))
+    listStorages()
+      .then(setDestinos)
+      .catch(() => setDestinos([]))
   }, [])
 
   const opcoes = form.source.kind === 'live_data' ? (fontes?.live_data ?? []) : form.source.kind === 'event' ? (fontes?.event ?? []) : []
@@ -122,12 +130,49 @@ export function RecorderForm() {
             <Field label="Nome" hint="Como você vai reconhecer este histórico.">
               <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Preço do BTC a cada 5 minutos" data-testid="recorder-name" />
             </Field>
-            <Field label="Guardar por" hint="Depois disso, o registro é apagado sozinho.">
+            <Field
+              label="Guardar por"
+              hint={
+                form.retention.mode === 'forever'
+                  ? 'O sistema não vai apagar nada sozinho. Os limites de quantidade e tamanho continuam valendo.'
+                  : 'Passado esse prazo, o registro é apagado sozinho.'
+              }
+            >
               <Select
-                value={String(form.retentionDays)}
-                onChange={(e) => set('retentionDays', Number(e.target.value))}
+                value={prazoLivre ? 'custom' : form.retention.mode === 'forever' ? 'forever' : String(form.retention.days)}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setPrazoLivre(v === 'custom')
+                  if (v === 'forever') set('retention', { mode: 'forever' })
+                  else if (v !== 'custom') set('retention', { mode: 'ttl', days: Number(v) })
+                }}
                 data-testid="recorder-retention"
-                options={[7, 30, 90, 180, 365].map((d) => ({ value: String(d), label: `${d} dias` }))}
+                options={[
+                  ...RETENTIONS.map((o) => ({ value: o.dias === null ? 'forever' : String(o.dias), label: o.label })),
+                  { value: 'custom', label: 'Personalizado' },
+                ]}
+              />
+            </Field>
+            {prazoLivre && (
+              <Field label="Quantos dias" hint="Entre 1 e 365.">
+                <Input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={String(form.retention.mode === 'ttl' ? form.retention.days : 90)}
+                  onChange={(e) => set('retention', { mode: 'ttl', days: Number(e.target.value) })}
+                  data-testid="recorder-retention-days"
+                />
+              </Field>
+            )}
+            {/* Onde salvar. Hoje há um destino só, e a lista vem do servidor mesmo
+                assim: quando o segundo aparecer, ele surge aqui sem mudar esta tela. */}
+            <Field label="Onde salvar" hint="Os dados ficam na sua conta, neste servidor.">
+              <Select
+                value={form.storage.kind}
+                onChange={(e) => set('storage', { kind: e.target.value, connectionId: null })}
+                data-testid="recorder-storage"
+                options={(destinos.length ? destinos : [{ kind: 'internal', label: 'Banco interno' }]).map((d) => ({ value: d.kind, label: d.label }))}
               />
             </Field>
           </div>

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
 import { Badge, Button, Card, EmptyState, Field, Input, Select, Switch } from '../../ui'
-import { KIND_LABEL, MODE_LABEL, OP_LABEL, SOURCE_LABEL, aggregateRecords, getRecorder, listKeys, listRecords, updateRecorder } from '../../lib/dataHistory'
+import { KIND_LABEL, MODE_LABEL, OP_LABEL, SOURCE_LABEL, aggregateRecords, getRecorder, listKeys, listRecords, retentionLabel, updateRecorder } from '../../lib/dataHistory'
 import type { DataRecorder, HistoryRecord, RecordKind } from '../../lib/dataHistory'
 
 /**
@@ -82,8 +82,9 @@ export function RecorderDetail() {
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone={rec.enabled ? 'success' : 'neutral'}>{rec.enabled ? 'Ativo' : 'Desligado'}</Badge>
                 <Badge tone="brand">{MODE_LABEL[rec.mode]}</Badge>
-                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                  {rec.recordCount.toLocaleString('pt-BR')} registro(s) · guarda por {rec.retentionDays} dias
+                <span style={{ fontSize: 13, color: 'var(--text-muted)' }} data-testid="recorder-storage-info">
+                  {rec.recordCount.toLocaleString('pt-BR')} registro(s) · {rec.storage?.kind === 'internal' ? 'Banco interno' : rec.storage?.kind} ·{' '}
+                  {retentionLabel(rec.retention)}
                 </span>
               </div>
               <Switch checked={rec.enabled} onChange={(v) => void alternar(v)} label="Ativo" data-testid="toggle-recorder" />

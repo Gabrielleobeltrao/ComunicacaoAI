@@ -231,6 +231,7 @@ import { privateAppRouter } from './routes/privateAppRoutes.js'
 import { appInstallationRouter } from './routes/appInstallationRoutes.js'
 import { streamRouter } from './routes/streamRoutes.js'
 import { dataHistoryRouter } from './routes/dataHistoryRoutes.js'
+import { realtimeSourceRouter } from './routes/realtimeSourceRoutes.js'
 import { policyRouter } from './routes/policyRoutes.js'
 import { websocketRouter } from './routes/websocketRoutes.js'
 import { architectRouter } from './routes/architectRoutes.js'
@@ -416,6 +417,7 @@ app.use('/api/private-apps', requireAuth, privateAppRouter)
 app.use('/api/app-installations', requireAuth, appInstallationRouter)
 app.use('/api/streams', requireAuth, streamRouter)
 app.use('/api/data-history', requireAuth, dataHistoryRouter)
+app.use('/api/realtime-sources', requireAuth, realtimeSourceRouter)
 app.use('/api/trading-policies', requireAuth, policyRouter)
 app.use('/api/websocket', requireAuth, websocketRouter)
 app.use('/api/architect', requireAuth, architectRouter)

@@ -2,6 +2,8 @@ import type { Agent } from './agents.js'
 import { connectionRefusalResult, resolveExecutableTool } from './tools/connectedTool.js'
 import { capabilitiesOf } from './agentCapabilities.js'
 import { memorySearchTool } from './memory/tool.js'
+import { fontesDoAgente } from './realtimeSources/repository.js'
+import { realtimeSourceTool, realtimeWaitTool } from './realtimeSources/tool.js'
 import { sourceCheckTool } from './automations/sourceTool.js'
 import { clarifyTool } from './clarify.js'
 import { sourceSettingsOf } from './agents.js'
@@ -265,6 +267,15 @@ export async function resolveAgentTools(
   // ela responde "sem_fonte", que é a verdade, em vez de não existir e o modelo ter que
   // adivinhar que não pode consultar.
   const fonte = sourceCheckTool(ownerId, agent._id, sourceSettingsOf(agent))
+  /**
+   * As fontes em tempo real concedidas a ESTE agente.
+   *
+   * A ferramenta só aparece quando existe pelo menos uma: oferecer ao modelo uma
+   * consulta que não tem o que consultar é convidá-lo a tentar e receber "nada". E o
+   * que ela entrega é uma resposta por chamada, quando ele pedir — nenhum tique entra
+   * no contexto sozinho.
+   */
+  const emTempoReal = await fontesDoAgente(ownerId, agent._id).catch(() => [])
   // Perguntar em vez de responder é capacidade de todo agente. Sem ela, diante de um
   // pedido amplo demais o modelo só sabe responder por cima — e cobrar por isso.
   const esclarecer = clarifyTool(jaPerguntou)
@@ -316,7 +327,11 @@ export async function resolveAgentTools(
   const enabled = capacidades.externalTools ? (agent.builtinTools ?? []).filter((entry) => !entry.migratedAt) : []
   // A memória é do agente que OPERA. Quem só conduz não tem operação para lembrar — e o
   // "olhar a fonte" é leitura de site, que segue a mesma regra da base.
-  const proprias = [...(capacidades.memory ? [memoria] : []), ...(capacidades.webSources ? [fonte] : []), esclarecer]
+  // Consultar uma fonte concedida é capacidade de todo agente que OPERA, como a
+  // memória: não é um App que se conecta, é algo que já está no prédio dele. Sem fonte
+  // concedida, a ferramenta não aparece.
+  const realtime = emTempoReal.length ? [realtimeSourceTool(ownerId, agent._id), realtimeWaitTool(ownerId, agent._id)] : []
+  const proprias = [...(capacidades.memory ? [memoria] : []), ...(capacidades.webSources ? [fonte] : []), ...realtime, esclarecer]
   if (enabled.length === 0) return [...proprias, ...http, ...custom, ...fromGrants]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')

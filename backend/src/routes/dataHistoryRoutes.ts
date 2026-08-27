@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { ValidationError } from '../building.js'
 import { explicarRecorder, limparCacheDeRecorders } from '../dataHistory/engine.js'
 import { catalogoDeFontes } from '../dataHistory/sources.js'
-import { agregarRegistros, chavesDoRecorder, contarDaConsulta, listarRegistros } from '../dataHistory/store.js'
+import { adapterDe, destinosDisponiveis } from '../dataHistory/storage/index.js'
 import { apagarRecorder, atualizarRecorder, criarRecorder, listarRecorders, normalizarRecorder, obterRecorder, usoDoRecorder } from '../dataHistory/recorders.js'
 import { RECORD_KINDS, historyPublic, recorderPublic } from '../dataHistory/types.js'
 import type { DataRecorderDefinition, RecordKind } from '../dataHistory/types.js'
@@ -35,6 +35,16 @@ const recusar = (res: Parameters<typeof notFound>[0], error: unknown, next: (e?:
  */
 dataHistoryRouter.get('/sources', async (req, res) => {
   res.json(await catalogoDeFontes(res.locals.userId))
+})
+
+/**
+ * Onde este servidor sabe guardar histórico.
+ *
+ * Hoje devolve um destino só. A tela lê desta lista mesmo assim: quando o segundo
+ * aparecer, ela passa a oferecê-lo sem mudar uma linha.
+ */
+dataHistoryRouter.get('/storages', (_req, res) => {
+  res.json(destinosDisponiveis())
 })
 
 dataHistoryRouter.get('/recorders', async (req, res) => {
@@ -183,8 +193,9 @@ dataHistoryRouter.post('/preview', async (req, res, next) => {
 dataHistoryRouter.get('/recorders/:id/keys', async (req, res) => {
   const id = oid(req.params.id)
   if (!id) return notFound(res)
-  if (!(await obterRecorder(res.locals.userId, id))) return notFound(res)
-  res.json(await chavesDoRecorder(res.locals.userId, id))
+  const rec = await obterRecorder(res.locals.userId, id)
+  if (!rec) return notFound(res)
+  res.json(await adapterDe(rec).chaves(res.locals.userId, id))
 })
 
 const periodo = (q: Record<string, unknown>) => {
@@ -199,7 +210,8 @@ const periodo = (q: Record<string, unknown>) => {
 dataHistoryRouter.get('/recorders/:id/records', async (req, res) => {
   const id = oid(req.params.id)
   if (!id) return notFound(res)
-  if (!(await obterRecorder(res.locals.userId, id))) return notFound(res)
+  const rec = await obterRecorder(res.locals.userId, id)
+  if (!rec) return notFound(res)
   const q = req.query as Record<string, unknown>
   const kind = RECORD_KINDS.includes(String(q.recordKind ?? '') as RecordKind) ? (String(q.recordKind) as RecordKind) : null
   const consulta = {
@@ -211,7 +223,10 @@ dataHistoryRouter.get('/recorders/:id/records', async (req, res) => {
     skip: Number(q.skip ?? 0),
     order: q.order === 'asc' ? ('asc' as const) : ('desc' as const),
   }
-  const [rs, total] = await Promise.all([listarRegistros(res.locals.userId, consulta), contarDaConsulta(res.locals.userId, consulta)])
+  // A leitura sai pelo MESMO adapter que gravou: trocar o destino não pode mudar o que
+  // a tela sabe perguntar.
+  const armazem = adapterDe(rec)
+  const [rs, total] = await Promise.all([armazem.listar(res.locals.userId, consulta), armazem.contar(res.locals.userId, consulta)])
   // `count` é o que veio nesta página; `total` é quanto existe. Sem os dois, a tela
   // não tem como dizer "mostrando 100 de 4.312".
   res.json({ count: rs.length, total, skip: consulta.skip, items: rs.map(historyPublic) })
@@ -228,7 +243,7 @@ dataHistoryRouter.get('/recorders/:id/aggregate', async (req, res, next) => {
     // mostrar quando alguém abre um histórico agregado.
     const regras = rec.aggregations.length ? rec.aggregations : [{ from: '', op: 'count' as const, to: 'total' }]
     const kind = RECORD_KINDS.includes(String(q.recordKind ?? '') as RecordKind) ? (String(q.recordKind) as RecordKind) : null
-    const r = await agregarRegistros(
+    const r = await adapterDe(rec).agregar(
       res.locals.userId,
       { recorderId: id, entityKey: q.entityKey ? String(q.entityKey) : null, ...periodo(q), recordKind: kind },
       regras,

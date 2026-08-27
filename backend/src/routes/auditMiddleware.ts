@@ -196,6 +196,12 @@ const RULES: Rule[] = [
   // retomar e arquivar. A conversa não: ela é a fala da pessoa, e o log de auditoria
   // não é lugar de guardar conteúdo.
   // O histórico genérico: a DEFINIÇÃO é auditada; a leitura, não — ler não muda nada.
+  // As fontes em tempo real: a DEFINIÇÃO e a concessão a um agente são auditadas; a
+  // leitura, não — ler o valor de agora não muda nada.
+  R('POST', 'api/realtime-sources', { entityType: 'realtime_source', action: 'create' }),
+  R('PATCH', 'api/realtime-sources/:', { entityType: 'realtime_source', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/realtime-sources/:', { entityType: 'realtime_source', action: 'delete' }, { idAt: 2 }),
+  R('POST', 'api/realtime-sources/:/agents/:', { entityType: 'realtime_source', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/data-history/recorders', { entityType: 'data_recorder', action: 'create' }),
   R('PATCH', 'api/data-history/recorders/:', { entityType: 'data_recorder', action: 'update' }, { idAt: 3 }),
   R('DELETE', 'api/data-history/recorders/:', { entityType: 'data_recorder', action: 'delete' }, { idAt: 3 }),
