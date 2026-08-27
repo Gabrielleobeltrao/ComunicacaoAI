@@ -264,3 +264,72 @@ test('a política de persistência vai e volta, com o padrão seguro', async () 
   const ambos = await pedir('PATCH', `/recorders/${padrao.body.id}`, { persistPolicy: 'raw_and_aggregate' })
   assert.equal(ambos.body.persistPolicy, 'raw_and_aggregate')
 })
+
+test('a API expõe destino e retenção, e aceita os dois formatos', async () => {
+  const padrao = (await pedir('POST', '/recorders', DEF)).body
+  assert.deepEqual(padrao.storage, { kind: 'internal', connectionId: null })
+  assert.deepEqual(padrao.retention, { mode: 'ttl', days: 90 })
+  assert.equal(padrao.retentionDays, 90, 'o campo antigo continua saindo, para quem já o lê')
+
+  const eterno = (await pedir('POST', '/recorders', { ...DEF, name: 'eterno', retention: { mode: 'forever' } })).body
+  assert.deepEqual(eterno.retention, { mode: 'forever' })
+  assert.equal(eterno.retentionDays, null, 'para sempre não tem prazo em dias')
+
+  // O formato ANTIGO na entrada continua funcionando.
+  const velho = (await pedir('POST', '/recorders', { ...DEF, name: 'formato velho', retentionDays: 15 })).body
+  assert.deepEqual(velho.retention, { mode: 'ttl', days: 15 })
+
+  // Ida e volta pelos dois lados.
+  const virouEterno = (await pedir('PATCH', `/recorders/${velho.id}`, { retention: { mode: 'forever' } })).body
+  assert.deepEqual(virouEterno.retention, { mode: 'forever' })
+  const voltou = (await pedir('PATCH', `/recorders/${velho.id}`, { retention: { mode: 'ttl', days: 200 } })).body
+  assert.deepEqual(voltou.retention, { mode: 'ttl', days: 200 })
+  assert.deepEqual(voltou.storage, { kind: 'internal', connectionId: null }, 'o destino ficou onde estava')
+})
+
+test('a API recusa retenção e destino impossíveis', async () => {
+  const prazoRuim = await pedir('POST', '/recorders', { ...DEF, retention: { mode: 'ttl', days: 5000 } })
+  assert.equal(prazoRuim.status, 400)
+  assert.match(prazoRuim.body.message, /retenção/)
+
+  const destinoRuim = await pedir('POST', '/recorders', { ...DEF, storage: { kind: 's3' } })
+  assert.equal(destinoRuim.status, 400)
+  assert.match(destinoRuim.body.message, /não está disponível/)
+})
+
+test('os destinos disponíveis vêm por rota, para a tela não fixar a lista', async () => {
+  const r = await pedir('GET', '/storages')
+  assert.equal(r.status, 200)
+  assert.deepEqual(r.body, [{ kind: 'internal', label: 'Banco interno' }])
+})
+
+test('“Banco interno + Para sempre”: o caminho inteiro, de ponta a ponta', async () => {
+  const rec = (await pedir('POST', '/recorders', {
+    name: 'Tudo que o ERP manda, para sempre',
+    source: { kind: 'manual', ref: 'erp' },
+    mode: 'every_event',
+    entityKeyPath: 'sku',
+    storage: { kind: 'internal' },
+    retention: { mode: 'forever' },
+  })).body
+  assert.deepEqual(rec.storage, { kind: 'internal', connectionId: null })
+  assert.deepEqual(rec.retention, { mode: 'forever' })
+
+  const engine = await import('../dist/dataHistory/engine.js')
+  engine.limparCacheDeRecorders()
+  await engine.ingestFact({ ownerId: DONO, sourceKey: 'manual:erp', entityKey: null, occurredAt: new Date('2026-01-01T00:00:00Z'), value: { sku: 'A', qty: 7 } })
+
+  const consulta = await pedir('GET', `/recorders/${rec.id}/records`)
+  assert.equal(consulta.body.total, 1)
+  assert.equal(consulta.body.items[0].value.qty, 7)
+  // E no banco, o registro não tem prazo nenhum.
+  assert.equal(await db.collection('data_history_records').countDocuments({ expiresAt: null }), 1)
+})
+
+test('o histórico de outro dono continua não existindo, com destino ou sem', async () => {
+  const meu = (await pedir('POST', '/recorders', { ...DEF, retention: { mode: 'forever' } })).body
+  sessao = VIZINHO
+  assert.equal((await pedir('GET', `/recorders/${meu.id}/records`)).status, 404)
+  assert.equal((await pedir('PATCH', `/recorders/${meu.id}`, { retention: { mode: 'ttl', days: 5 } })).status, 404)
+  assert.equal((await pedir('GET', '/storages')).status, 200, 'a lista de destinos é do servidor, não do dono')
+})

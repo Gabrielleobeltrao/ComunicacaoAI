@@ -74,6 +74,22 @@ const idDoRecorder = async (bruto: unknown) => {
   return id
 }
 
+/**
+ * O histórico e o armazém dele — com o dono no filtro.
+ *
+ * Carregar a definição não é custo à toa: é ela que diz ONDE o dado está. E de quebra a
+ * posse fica explícita, em vez de depender só do filtro da consulta lá embaixo.
+ */
+const abrir = async (recorderId: unknown, ctx?: FunctionContext) => {
+  const ownerId = exigirDono(ctx)
+  const id = await idDoRecorder(recorderId)
+  const { obterRecorder } = await import('../dataHistory/recorders.js')
+  const recorder = await obterRecorder(ownerId, id)
+  if (!recorder) throw new ErroDeFuncao('esse histórico não existe nesta conta.')
+  const { adapterDe } = await import('../dataHistory/storage/index.js')
+  return { ownerId, id, armazem: adapterDe(recorder) }
+}
+
 /** O DTO. Sempre o mesmo formato, venha de onde vier. */
 const comoSaida = (r: {
   entityKey: string | null
@@ -105,13 +121,8 @@ registerFunction({
   outputSchema: { type: 'object', properties: { found: { type: 'boolean' }, record: REGISTRO_SCHEMA } },
   timeoutMs: 5_000,
   handler: async (input, _config, ctx) => {
-    const { ultimoRegistro } = await import('../dataHistory/store.js')
-    const r = await ultimoRegistro(
-      exigirDono(ctx),
-      await idDoRecorder(input.recorderId),
-      input.entityKey ? String(input.entityKey) : null,
-      tipoDeRegistro(input.recordKind),
-    )
+    const { ownerId, id, armazem } = await abrir(input.recorderId, ctx)
+    const r = await armazem.ultimo(ownerId, id, input.entityKey ? String(input.entityKey) : null, tipoDeRegistro(input.recordKind))
     return { found: Boolean(r), record: r ? comoSaida(r) : null }
   },
 })
@@ -135,9 +146,9 @@ registerFunction({
   outputSchema: { type: 'object', properties: { count: { type: 'number' }, records: { type: 'array', items: REGISTRO_SCHEMA } } },
   timeoutMs: 8_000,
   handler: async (input, _config, ctx) => {
-    const { listarRegistros } = await import('../dataHistory/store.js')
-    const rs = await listarRegistros(exigirDono(ctx), {
-      recorderId: await idDoRecorder(input.recorderId),
+    const { ownerId, id, armazem } = await abrir(input.recorderId, ctx)
+    const rs = await armazem.listar(ownerId, {
+      recorderId: id,
       entityKey: input.entityKey ? String(input.entityKey) : null,
       from: data(input.from),
       to: data(input.to),
@@ -179,7 +190,7 @@ registerFunction({
   outputSchema: { type: 'object', properties: { result: { type: 'object', additionalProperties: true } } },
   timeoutMs: 8_000,
   handler: async (input, _config, ctx) => {
-    const { agregarRegistros } = await import('../dataHistory/store.js')
+    const { ownerId, id, armazem } = await abrir(input.recorderId, ctx)
     const { normalizeMappingPath, normalizeMappingTarget } = await import('../integrations/websocket/mapping.js')
     const regras = (Array.isArray(input.aggregations) ? input.aggregations : []).map((a, i) => {
       const item = (a ?? {}) as Record<string, unknown>
@@ -193,10 +204,10 @@ registerFunction({
         to: normalizeMappingTarget(item.to, `agregação ${i + 1}`),
       }
     })
-    const r = await agregarRegistros(
-      exigirDono(ctx),
+    const r = await armazem.agregar(
+      ownerId,
       {
-        recorderId: await idDoRecorder(input.recorderId),
+        recorderId: id,
         entityKey: input.entityKey ? String(input.entityKey) : null,
         from: data(input.from),
         to: data(input.to),
@@ -232,14 +243,14 @@ registerFunction({
   },
   timeoutMs: 8_000,
   handler: async (input, _config, ctx) => {
-    const { listarRegistros } = await import('../dataHistory/store.js')
+    const { ownerId, id, armazem } = await abrir(input.recorderId, ctx)
     const { readPath } = await import('../automations/conditions.js')
     const { normalizeMappingPath } = await import('../integrations/websocket/mapping.js')
     const campo = normalizeMappingPath(input.field, 'campo')
     // Em ordem crescente, sempre: uma série que serve para calcular é uma série no
     // sentido do tempo. Quem quiser o mais recente primeiro usa `range`.
-    const rs = await listarRegistros(exigirDono(ctx), {
-      recorderId: await idDoRecorder(input.recorderId),
+    const rs = await armazem.listar(ownerId, {
+      recorderId: id,
       entityKey: input.entityKey ? String(input.entityKey) : null,
       from: data(input.from),
       to: data(input.to),

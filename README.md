@@ -344,6 +344,15 @@ modo *só quando a condição bater* são obrigatórios, porque sem nenhum tudo 
 **O que guardar de cada dado** — o dado inteiro, ou só os campos escolhidos
 (`symbol`, `price`, `data.total`).
 
+**Onde salvar** — hoje, *Banco interno*: os dados ficam na sua conta, neste servidor. A
+lista vem do servidor (`GET /api/data-history/storages`), então um destino novo aparece
+na tela sem ela mudar.
+
+**Guardar por** — *Para sempre*, 7, 30, 90 dias, 1 ano ou personalizado. **Para sempre
+significa que o sistema não apaga sozinho** — não que o espaço seja ilimitado: os
+limites de registros por regra e de tamanho continuam valendo iguais. Destino e prazo
+são independentes: *Banco interno + Para sempre* é uma combinação como qualquer outra.
+
 **Por agenda** — recorrência e **fuso do dono**: a cada hora, todo dia às 8h, dias úteis,
 toda segunda, ou cron para o resto. `America/New_York` dispara às 8h de Nova York, não às
 8h do servidor. É o mesmo relógio das rotinas. Um retrato perdido não é tirado depois —
@@ -412,6 +421,20 @@ esteve abaixo do mínimo.
 
 Pedidos por hora é a mesma tela com *Resumo por período · 1 hora*, chave `loja` e
 `total → soma → faturamento`, `— → contagem → pedidos`.
+
+### Um destino novo, no futuro
+
+O motor não sabe o que é uma coleção do Mongo — ele pede ao adapter para gravar e para
+ler. Para acrescentar um Postgres da conta, uma planilha ou um bucket:
+
+1. escreva o adapter implementando `HistoryStorageAdapter` (`gravar` mais as cinco
+   leituras), em `backend/src/dataHistory/storage/`;
+2. registre-o no mapa de `storage/index.ts`;
+3. confira a posse da conexão em `normalizarDestino`, como a fonte já faz.
+
+A credencial fica **fora** da definição: ela vive cifrada na instalação do App, e o
+recorder guarda só a referência (`connectionId`). Uma senha dentro de uma definição de
+histórico apareceria em tela, em log e em prévia. Nada em `engine.ts` muda.
 
 ### Para agentes e código
 

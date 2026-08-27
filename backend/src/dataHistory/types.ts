@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { StorageTarget } from './storage/types.js'
 
 /**
  * Histórico GENÉRICO — o que aconteceu, guardado por uma regra.
@@ -68,6 +69,16 @@ export interface RecorderSchedule {
   timezone: string
 }
 
+/**
+ * Por quanto tempo o registro fica.
+ *
+ * `forever` significa uma coisa só, e vale dizer em voz alta: **o sistema não apaga
+ * sozinho**. Não significa espaço ilimitado — os tetos de registros por regra, de
+ * tamanho e de consulta continuam valendo iguais. Guardar para sempre é uma decisão
+ * sobre o tempo, não sobre a cota.
+ */
+export type Retention = { mode: 'forever' } | { mode: 'ttl'; days: number }
+
 /** As sete operações. Determinísticas, sem modelo no caminho. */
 export const AGGREGATIONS = ['first', 'last', 'min', 'max', 'avg', 'sum', 'count'] as const
 export type AggregationOp = (typeof AGGREGATIONS)[number]
@@ -111,7 +122,16 @@ export interface DataRecorderDefinition {
   aggregations: AggregationRule[]
   /** `on_change`: qual campo observar. Vazio = o valor todo. */
   changePath: string | null
+  /**
+   * O formato ANTIGO, mantido no documento por compatibilidade.
+   *
+   * Ele não é reescrito: `retencaoDe` traduz na leitura, e um recorder gravado antes de
+   * `retention` existir continua expirando exatamente como expirava.
+   */
   retentionDays: number | null
+  retention: Retention
+  /** Onde este histórico é guardado. Ausente = banco interno, que era o único destino. */
+  storage: StorageTarget
   /** Quantos registros este recorder já gravou. É a cota, e ela é do dono. */
   recordCount: number
   lastRecordAt: Date | null
@@ -257,6 +277,8 @@ export interface RecorderPublic {
   aggregations: AggregationRule[]
   changePath: string | null
   retentionDays: number | null
+  retention: Retention
+  storage: StorageTarget
   recordCount: number
   lastRecordAt: string | null
   lastError: { message: string; at: string } | null
@@ -279,7 +301,11 @@ export const recorderPublic = (r: DataRecorderDefinition): RecorderPublic => ({
   selectedFields: r.selectedFields,
   aggregations: r.aggregations,
   changePath: r.changePath,
-  retentionDays: r.retentionDays,
+  // Os dois saem: o novo para quem já lê `retention`, e o antigo porque cliente velho
+  // pode estar lendo `retentionDays`. Tirar o segundo quebraria sem avisar.
+  retentionDays: r.retention?.mode === 'forever' ? null : (r.retention?.days ?? r.retentionDays),
+  retention: r.retention ?? (r.retentionDays ? { mode: 'ttl', days: r.retentionDays } : { mode: 'forever' }),
+  storage: r.storage ?? { kind: 'internal', connectionId: null },
   recordCount: r.recordCount,
   lastRecordAt: r.lastRecordAt ? r.lastRecordAt.toISOString() : null,
   lastError: r.lastError ? { message: r.lastError.message, at: r.lastError.at.toISOString() } : null,
@@ -301,3 +327,31 @@ export const DEFAULT_RETENTION_DAYS = Number(process.env.DATA_HISTORY_RETENTION_
 export const MAX_RETENTION_DAYS = Number(process.env.DATA_HISTORY_MAX_RETENTION_DAYS ?? 365)
 /** Teto de leitura: uma consulta que devolve tudo é uma consulta que derruba o processo. */
 export const MAX_QUERY_LIMIT = Number(process.env.DATA_HISTORY_MAX_QUERY ?? 1_000)
+
+
+/**
+ * A retenção de um recorder, venha ela do formato novo ou do antigo.
+ *
+ * A tradução acontece na LEITURA, e não por migração: um documento gravado antes de
+ * `retention` existir tem só `retentionDays`, e continua expirando igual. Sem número
+ * nenhum e sem modo, o antigo `null` sempre significou "não expira" — e continua
+ * significando.
+ */
+export function retencaoDe(recorder: Pick<DataRecorderDefinition, 'retention' | 'retentionDays'>): Retention {
+  const r = recorder.retention
+  if (r?.mode === 'forever') return { mode: 'forever' }
+  if (r?.mode === 'ttl' && Number.isFinite(r.days) && r.days > 0) return { mode: 'ttl', days: r.days }
+  const dias = recorder.retentionDays
+  return typeof dias === 'number' && dias > 0 ? { mode: 'ttl', days: dias } : { mode: 'forever' }
+}
+
+/**
+ * Quando este registro expira — ou `null`, que o índice TTL do Mongo ignora.
+ *
+ * É por isso que "para sempre" funciona sem índice novo e sem coleção separada: o TTL
+ * só apaga documento com data, e um documento sem data nunca vence.
+ */
+export const expiraEmPara = (recorder: Pick<DataRecorderDefinition, 'retention' | 'retentionDays'>, agora: Date): Date | null => {
+  const r = retencaoDe(recorder)
+  return r.mode === 'forever' ? null : new Date(agora.getTime() + r.days * 86_400_000)
+}

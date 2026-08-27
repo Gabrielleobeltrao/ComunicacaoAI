@@ -33,6 +33,8 @@ const RECORDER = {
   changePath: null,
   persistPolicy: 'aggregate_only',
   retentionDays: 90,
+  retention: { mode: 'ttl', days: 90 },
+  storage: { kind: 'internal', connectionId: null },
   recordCount: 42,
   lastRecordAt: NOW,
   lastError: null,
@@ -69,6 +71,7 @@ async function stub(page: Page, opts: { recorders?: unknown[] } = {}) {
   await page.route('**/api/agents**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/sectors**', (r) => r.fulfill({ json: [] }))
 
+  await page.route('**/api/data-history/storages', (r) => r.fulfill({ json: [{ kind: 'internal', label: 'Banco interno' }] }))
   await page.route('**/api/data-history/sources', (r) =>
     r.fulfill({
       json: {
@@ -345,4 +348,77 @@ test('a consulta distingue bruto de resumo e mostra os dois instantes', async ({
   await page.getByTestId('filter-kind').selectOption('aggregate')
   await page.getByTestId('filter-apply').click()
   await expect(page.getByTestId('record-row')).toHaveCount(2)
+})
+
+
+// --- destino e retenção -----------------------------------------------------------
+
+test('“Onde salvar” aparece, com o banco interno vindo do servidor', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  const destino = page.getByTestId('recorder-storage')
+  await expect(destino).toBeVisible()
+  await expect(destino).toContainText('Banco interno')
+  await expect(destino).toHaveValue('internal')
+
+  await page.getByTestId('recorder-name').fill('Com destino')
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => criado?.storage).toEqual({ kind: 'internal', connectionId: null })
+})
+
+test('“Para sempre” é uma opção — e a tela diz o que ela significa', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-name').fill('Eterno')
+
+  await page.getByTestId('recorder-retention').selectOption('forever')
+  // A frase importa: "para sempre" é sobre TEMPO, não sobre espaço.
+  await expect(page.getByText(/não vai apagar nada sozinho/i)).toBeVisible()
+  await expect(page.getByText(/limites de quantidade e tamanho continuam valendo/i)).toBeVisible()
+
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => criado?.retention).toEqual({ mode: 'forever' })
+})
+
+test('os prazos prontos e o personalizado', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-name').fill('Com prazo')
+
+  for (const [valor, esperado] of [
+    ['7', 7],
+    ['30', 30],
+    ['365', 365],
+  ] as const) {
+    await page.getByTestId('recorder-retention').selectOption(valor)
+    await expect(page.getByTestId('recorder-retention-days')).toHaveCount(0)
+    void esperado
+  }
+
+  await page.getByTestId('recorder-retention').selectOption('custom')
+  const dias = page.getByTestId('recorder-retention-days')
+  await expect(dias).toBeVisible()
+  await dias.fill('45')
+
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => criado?.retention).toEqual({ mode: 'ttl', days: 45 })
+})
+
+test('destino e prazo são independentes: mudar um não mexe no outro', async ({ page }) => {
+  await stub(page, { recorders: [] })
+  await page.goto('/historicos/novo')
+  await page.getByTestId('recorder-name').fill('Interno e para sempre')
+  await page.getByTestId('recorder-retention').selectOption('forever')
+  await expect(page.getByTestId('recorder-storage')).toHaveValue('internal')
+
+  await page.getByTestId('recorder-activate').click()
+  await expect.poll(() => criado?.retention).toEqual({ mode: 'forever' })
+  expect(criado?.storage).toEqual({ kind: 'internal', connectionId: null })
+})
+
+test('a tela do histórico mostra onde ele guarda e por quanto tempo', async ({ page }) => {
+  await stub(page)
+  await page.goto('/historicos/rec-1')
+  await expect(page.getByTestId('recorder-storage-info')).toContainText('Banco interno')
+  await expect(page.getByTestId('recorder-storage-info')).toContainText('90 dias')
 })

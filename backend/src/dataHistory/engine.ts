@@ -6,9 +6,10 @@ import { agendaDoRecorder } from './schedule.js'
 import { onEvent } from '../events/bus.js'
 import { EVENT_TYPES } from '../events/types.js'
 import type { PlatformEvent } from '../events/types.js'
-import { recordersCollection as recorders, cabeNoLimite, inserirRegistro, sanearValor } from './store.js'
+import { recordersCollection as recorders, cabeNoLimite, sanearValor } from './store.js'
+import { adapterDe } from './storage/index.js'
 import { dobrarNaJanela, fecharJanela, janelasPendentes, janelasVencidas, marcarPersistida, valorDaJanela } from './windows.js'
-import { MAX_RECORDS_PER_RECORDER } from './types.js'
+import { MAX_RECORDS_PER_RECORDER, expiraEmPara } from './types.js'
 import type { DataRecorderDefinition, Fact, RecorderFilter } from './types.js'
 
 /**
@@ -122,8 +123,8 @@ const chaveDaEntidade = (valor: Record<string, unknown>, caminho: string | null)
 export const chaveDeDedupe = (partes: (string | number | null)[]): string =>
   createHash('sha256').update(partes.map((p) => String(p ?? '')).join('|')).digest('hex').slice(0, 40)
 
-const expiraEm = (recorder: DataRecorderDefinition, agora: Date): Date | null =>
-  recorder.retentionDays ? new Date(agora.getTime() + recorder.retentionDays * 86_400_000) : null
+/** Quando o registro vence — ou nunca, se a retenção for "para sempre". */
+const expiraEm = (recorder: DataRecorderDefinition, agora: Date): Date | null => expiraEmPara(recorder, agora)
 
 export type ResultadoDoFato = 'gravado' | 'repetido' | 'filtrado' | 'sem_mudanca' | 'acumulado' | 'tarde' | 'grande' | 'cota' | 'ignorado'
 
@@ -233,7 +234,7 @@ async function gravarBruto(
   agora: Date,
 ): Promise<ResultadoDoFato> {
   const dedupeKey = chaveDeDedupe([recorder._id.toString(), entityKey, occurredAt.getTime(), 'raw', fato.factId ?? JSON.stringify(valor)])
-  const r = await inserirRegistro(
+  const r = await adapterDe(recorder).gravar(
     {
       ownerId: recorder.ownerId,
       recorderId: recorder._id,
@@ -382,7 +383,7 @@ export async function closeDueWindows(agora = new Date(), limite = 200): Promise
       continue
     }
     const valor = valorDaJanela(janela, recorder.aggregations)
-    const r = await inserirRegistro({
+    const r = await adapterDe(recorder).gravar({
       ownerId: janela.ownerId,
       recorderId: janela.recorderId,
       sourceKey: `${recorder.source.kind}:${recorder.source.ref}`,
@@ -428,7 +429,7 @@ export async function runDueSnapshots(agora = new Date(), limite = 100): Promise
       const entityKey = chave === '_' ? null : chave
       const valor = recortar(guardado.valor, recorder.selectedFields)
       if (!cabeNoLimite(valor)) continue
-      const r = await inserirRegistro({
+      const r = await adapterDe(recorder).gravar({
         ownerId: recorder.ownerId,
         recorderId: recorder._id,
         sourceKey: `${recorder.source.kind}:${recorder.source.ref}`,
