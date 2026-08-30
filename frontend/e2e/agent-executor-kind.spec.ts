@@ -441,3 +441,57 @@ test('uma ação SEM contrato de saída fica em texto, e diz por quê', async ({
   await expect(page.getByTestId('response-mode-structured')).toHaveCount(0)
   await expect(page.getByTestId('executor-summary')).toContainText('Saída: Texto')
 })
+
+
+// --- os cards das funções -------------------------------------------------------------
+
+test('as funções aparecem em cards agrupados por família', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+
+  const picker = page.getByTestId('function-picker')
+  await expect(picker).toBeVisible()
+  // O prefixo já dizia o grupo; agora ele é usado. Com quase trinta funções, uma lista
+  // corrida obriga a ler todas para achar a que serve.
+  await expect(picker).toContainText('Cálculo')
+  await expect(picker).toContainText('Documentos brasileiros')
+
+  const card = picker.getByTestId('function-option-math.summary')
+  await expect(card).toContainText('math.summary')
+  await expect(card).toContainText('Resumo estatístico')
+  // As capacidades ficam à vista: é por elas que se procura quando não se sabe o nome.
+  await expect(card).toContainText('calculo')
+})
+
+test('o exemplo aparece na função ESCOLHIDA, e vem do schema dela', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+
+  // Antes de escolher, nenhum exemplo: vinte e sete blocos de JSON viram parede.
+  await expect(page.getByTestId('function-example-math.summary')).toHaveCount(0)
+
+  await page.getByTestId('function-option-math.summary').click()
+  const exemplo = page.getByTestId('function-example-math.summary')
+  await expect(exemplo).toBeVisible()
+  // Derivado do inputSchema — por isso ele nunca desatualiza quando o schema muda.
+  await expect(exemplo).toContainText('values')
+
+  // Trocar de função troca o exemplo, e o anterior some.
+  await page.getByTestId('function-search').fill('CPF')
+  await page.getByTestId('function-option-br.cpf').click()
+  await expect(page.getByTestId('function-example-br.cpf')).toBeVisible()
+  await expect(page.getByTestId('function-example-math.summary')).toHaveCount(0)
+})
+
+test('a busca continua filtrando os cards', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+  await page.getByTestId('function-search').fill('CPF')
+  await expect(page.getByTestId('function-option-br.cpf')).toBeVisible()
+  await expect(page.getByTestId('function-option-math.summary')).toHaveCount(0)
+  // E o cabeçalho da família some junto quando ela fica vazia.
+  await expect(page.getByTestId('function-picker')).not.toContainText('Cálculo')
+})
