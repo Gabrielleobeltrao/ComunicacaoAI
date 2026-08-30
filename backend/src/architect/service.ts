@@ -2,9 +2,10 @@ import { ObjectId } from 'mongodb'
 import { ValidationError } from '../building.js'
 import { maskSecrets, containsSecret } from './secrets.js'
 import { mergeBlueprintPatch, computeBlueprintHash } from './blueprint.js'
+import { diffBlueprints } from './diff.js'
 import { buildArchitectPrompt } from './prompt.js'
 import { runArchitectTurn } from './turn.js'
-import { loadAppsForPrompt, loadOwnershipContext } from './context.js'
+import { loadAppsForPrompt, loadExistingResources, loadOwnershipContext } from './context.js'
 import { applyBlueprintLinks, loadTargets } from './links.js'
 import { buildPreview } from './preview.js'
 import { deriveChecklist, applyChecklistState, computeReadiness } from './checklist.js'
@@ -137,7 +138,12 @@ async function runTurn(
   chargeKey: string,
   opts: { forceProposal?: boolean; secretMasked: boolean; answeringPending?: string },
 ): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
-  const [messages, apps] = await Promise.all([repo.recentMessages(ownerId, projeto._id, CONTEXTO), loadAppsForPrompt(ownerId)])
+  // O escritório atual entra junto: sem ele o Arquiteto propõe criar o que já existe.
+  const [messages, apps, existing] = await Promise.all([
+    repo.recentMessages(ownerId, projeto._id, CONTEXTO),
+    loadAppsForPrompt(ownerId),
+    loadExistingResources(ownerId).catch(() => undefined),
+  ])
 
   const respondidas = { ...projeto.answers }
   if (projeto.pendingQuestion && opts.answeringPending?.trim()) {
@@ -148,7 +154,7 @@ async function runTurn(
     ownerId,
     provider: projeto.provider,
     model: projeto.model,
-    prompt: buildArchitectPrompt({ project: { ...projeto, answers: respondidas }, messages, apps, forceProposal: opts.forceProposal }),
+    prompt: buildArchitectPrompt({ project: { ...projeto, answers: respondidas }, messages, apps, existing, forceProposal: opts.forceProposal }),
     chargeKey,
   })
 
@@ -170,12 +176,16 @@ async function runTurn(
     : projeto.blueprint
 
   const assumptions = mesclarSuposicoes(projeto.assumptions, turno.assumptions, answers)
+  const hash = blueprint ? computeBlueprintHash(blueprint) : null
   const patch: Partial<ArchitectProject> = {
     answers,
     pendingQuestion: turno.question ? { key: turno.question.key, text: turno.question.text } : null,
     assumptions,
     blueprint,
-    blueprintHash: blueprint ? computeBlueprintHash(blueprint) : null,
+    blueprintHash: hash,
+    // A versão anterior só é guardada quando a revisão MUDOU alguma coisa. Uma rodada
+    // que só respondeu uma pergunta não pode zerar o "o que mudou" da revisão passada.
+    ...(projeto.blueprint && hash !== projeto.blueprintHash ? { previousBlueprint: projeto.blueprint } : {}),
     // Proposta na mesa é `draft`; a validação é que promove para `ready`.
     status: blueprint ? 'draft' : 'discovery',
   }
@@ -320,6 +330,8 @@ export const projectDetail = (p: ArchitectProject) => ({
   assumptions: p.assumptions,
   blueprint: p.blueprint,
   blueprintHash: p.blueprintHash,
+  // O que a última revisão mexeu. Vazio na primeira proposta: não há com o que comparar.
+  changes: diffBlueprints(p.previousBlueprint, p.blueprint),
   checklist: p.checklist,
   applyState: p.applyState,
 })
@@ -393,6 +405,136 @@ export async function setBlueprintLinks(ownerId: string, projectId: ObjectId, li
       checklist,
       readiness: computeReadiness(checklist, []),
       // Uma ligação nova precisa ser validada de novo antes de aplicar.
+      status: 'draft',
+    })) ?? projeto
+  )
+}
+
+// --- correção à mão --------------------------------------------------------------------
+
+/**
+ * O que o dono pode corrigir sem pedir nada ao modelo.
+ *
+ * Texto, e só texto. Trocar o nome de um agente não deveria custar uma inferência e uma
+ * torcida — mas `floorKey`, `action` e `resourceId` não entram aqui de propósito: são os
+ * campos que decidem onde o recurso nasce e sobre qual recurso EXISTENTE ele escreve.
+ * `resourceId` continua vindo da tela de ligações, que confere a posse antes de gravar.
+ */
+const EDITAVEIS: Record<string, { lista: 'floors' | 'agents' | 'sectors' | 'routines' | 'appRequirements' | 'knowledgeRequirements'; campos: Record<string, { max: number; obrigatorio?: boolean }> }> = {
+  floor: {
+    lista: 'floors',
+    campos: { name: { max: L.MAX_NAME_CHARS, obrigatorio: true }, mission: { max: L.MAX_SHORT_TEXT_CHARS }, description: { max: L.MAX_SHORT_TEXT_CHARS }, rationale: { max: L.MAX_SHORT_TEXT_CHARS } },
+  },
+  agent: {
+    lista: 'agents',
+    campos: {
+      name: { max: L.MAX_NAME_CHARS, obrigatorio: true },
+      objective: { max: L.MAX_SHORT_TEXT_CHARS },
+      role: { max: L.MAX_SHORT_TEXT_CHARS },
+      instructions: { max: L.MAX_LONG_TEXT_CHARS },
+      constraints: { max: L.MAX_LONG_TEXT_CHARS },
+      rationale: { max: L.MAX_SHORT_TEXT_CHARS },
+    },
+  },
+  sector: { lista: 'sectors', campos: { name: { max: L.MAX_NAME_CHARS, obrigatorio: true }, instruction: { max: L.MAX_LONG_TEXT_CHARS }, rationale: { max: L.MAX_SHORT_TEXT_CHARS } } },
+  routine: { lista: 'routines', campos: { name: { max: L.MAX_NAME_CHARS, obrigatorio: true }, description: { max: L.MAX_SHORT_TEXT_CHARS }, rationale: { max: L.MAX_SHORT_TEXT_CHARS } } },
+  app: { lista: 'appRequirements', campos: { reason: { max: L.MAX_SHORT_TEXT_CHARS, obrigatorio: true } } },
+  knowledge: { lista: 'knowledgeRequirements', campos: { title: { max: L.MAX_NAME_CHARS, obrigatorio: true }, description: { max: L.MAX_SHORT_TEXT_CHARS } } },
+}
+
+export interface BlueprintEdit {
+  kind: string
+  key: string
+  fields?: Record<string, unknown>
+  remove?: boolean
+}
+
+/** Quem aponta para este item. Remover o que alguém usa deixaria a proposta quebrada. */
+function quemUsa(bp: OfficeBlueprintV1, kind: string, key: string): string[] {
+  const usos: string[] = []
+  if (kind === 'floor') {
+    for (const a of bp.agents ?? []) if (a.floorKey === key) usos.push(`o agente "${a.name}"`)
+    for (const s of bp.sectors ?? []) if (s.floorKey === key) usos.push(`o setor "${s.name}"`)
+    for (const r of bp.routines ?? []) if (r.floorKey === key) usos.push(`a rotina "${r.name}"`)
+  }
+  if (kind === 'agent') {
+    for (const f of bp.floors ?? []) if (f.coordinatorAgentKey === key) usos.push(`o andar "${f.name}" (coordenador)`)
+    for (const s of bp.sectors ?? []) if ((s.memberAgentKeys ?? []).includes(key) || s.coordinatorAgentKey === key) usos.push(`o setor "${s.name}"`)
+    for (const r of bp.routines ?? []) if (r.ownerAgentKey === key) usos.push(`a rotina "${r.name}"`)
+    for (const req of bp.appRequirements ?? []) if ((req.agentKeys ?? []).includes(key)) usos.push(`a permissão do App "${req.appKey}"`)
+  }
+  if (kind === 'sector' || kind === 'agent' || kind === 'floor') {
+    for (const req of bp.knowledgeRequirements ?? []) if (req.scope === kind && req.targetKey === key) usos.push(`o conhecimento "${req.title}"`)
+  }
+  return [...new Set(usos)].slice(0, 5)
+}
+
+/**
+ * Corrigir a proposta à mão — sem chamar o modelo.
+ *
+ * O valor não é economizar token: é que pedir "troque o nome para X" devolve uma
+ * proposta INTEIRA nova, e junto com o nome muda o que ninguém pediu para mudar. Aqui
+ * muda exatamente o campo que a pessoa editou, e o resto fica onde estava.
+ *
+ * O que sai daqui não é confiável por ser do dono: é texto de usuário, mascarado e
+ * limitado como o da conversa, e a proposta inteira volta para o validador antes de
+ * poder ser aplicada — a edição derruba o projeto para `draft` justamente por isso.
+ */
+export async function editBlueprint(ownerId: string, projectId: ObjectId, edits: unknown): Promise<ArchitectProject> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
+  if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para editar')
+  if (!Array.isArray(edits) || edits.length === 0) throw new ValidationError('informe o que mudou')
+
+  const anterior = projeto.blueprint
+  const bp: OfficeBlueprintV1 = structuredClone(anterior)
+
+  for (const bruto of edits.slice(0, 60)) {
+    const edit = (bruto ?? {}) as BlueprintEdit
+    const alvo = EDITAVEIS[String(edit.kind ?? '')]
+    if (!alvo) throw new ValidationError(`não dá para editar itens do tipo "${String(edit.kind ?? '')}"`)
+    const key = String(edit.key ?? '').trim()
+    const lista = (bp[alvo.lista] ?? []) as unknown as Record<string, unknown>[]
+    const item = lista.find((i) => i.key === key)
+    if (!item) throw new ValidationError('este item não está mais na proposta; recarregue a página')
+
+    if (edit.remove === true) {
+      const usos = quemUsa(bp, edit.kind, key)
+      // Remover em cascata apagaria o que a pessoa não pediu para apagar. Ela decide a
+      // ordem; o sistema só diz o que está no caminho.
+      if (usos.length > 0) throw new ValidationError(`não dá para remover: ${usos.join(', ')} depende deste item`)
+      ;(bp[alvo.lista] as unknown[]) = lista.filter((i) => i.key !== key)
+      continue
+    }
+
+    const fields = (edit.fields ?? {}) as Record<string, unknown>
+    for (const [nome, valor] of Object.entries(fields)) {
+      const regra = alvo.campos[nome]
+      if (!regra) throw new ValidationError(`o campo "${nome}" não é editável aqui`)
+      if (typeof valor !== 'string') throw new ValidationError(`o campo "${nome}" precisa ser texto`)
+      const texto = maskSecrets(valor).trim().slice(0, regra.max)
+      if (!texto) {
+        if (regra.obrigatorio) throw new ValidationError(`"${nome}" não pode ficar vazio`)
+        delete item[nome]
+        continue
+      }
+      item[nome] = texto
+    }
+  }
+
+  const hash = computeBlueprintHash(bp)
+  if (hash === projeto.blueprintHash) return projeto
+
+  const checklist = applyChecklistState(deriveChecklist(bp), new Set(), marcadosDe(projeto))
+  return (
+    (await repo.patchProject(ownerId, projectId, {
+      blueprint: bp,
+      previousBlueprint: anterior,
+      blueprintHash: hash,
+      checklist,
+      readiness: computeReadiness(checklist, []),
+      // Proposta mexida é proposta a validar de novo. E o hash muda, então uma
+      // confirmação em voo com o hash antigo é recusada — que é o comportamento certo.
       status: 'draft',
     })) ?? projeto
   )

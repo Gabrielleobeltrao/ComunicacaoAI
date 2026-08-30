@@ -54,3 +54,53 @@ export async function loadAppsForPrompt(ownerId: string): Promise<ArchitectAppIn
     .filter((app) => app.status === 'published' && isUsableApp(app))
     .map((app) => ({ key: app.key, name: app.name, connected: conectados.has(app.key) }))
 }
+
+/**
+ * O que a conta JÁ TEM, resumido para o prompt.
+ *
+ * Sem isto o Arquiteto é cego para o escritório existente: ele propõe criar um andar
+ * "Atendimento" para quem já tem um, e a pessoa recebe uma proposta que duplica o que
+ * ela construiu. Saber o que existe é o que permite dizer "reaproveite este".
+ *
+ * O que vai: NOME e OBJETIVO — o vocabulário da própria conta, que é o que ajuda o
+ * modelo a falar a língua de quem está do outro lado. O que NÃO vai: id de banco, em
+ * nenhum campo. O `resourceId` de um reaproveitamento é preenchido pela TELA, depois de
+ * o dono escolher; um id no prompt seria um id que o modelo pode inventar, e o
+ * validador teria de recusar depois de a pessoa já ter aprovado.
+ */
+export interface ExistingResources {
+  floors: { name: string; mission: string | null; agents: number }[]
+  agents: { name: string; objective: string; floor: string | null }[]
+  sectors: { name: string; mode: string; floor: string | null; members: number }[]
+}
+
+/** Teto por tipo: um escritório grande não pode empurrar a conversa para fora do prompt. */
+const MAX_POR_TIPO = 25
+
+export async function loadExistingResources(ownerId: string): Promise<ExistingResources> {
+  const [floors, agents, sectors] = await Promise.all([listFloors(ownerId), listAgents(ownerId), listSectors(ownerId)])
+  const nomeDoAndar = new Map(floors.map((f) => [f._id.toString(), f.name]))
+  const porAndar = new Map<string, number>()
+  for (const a of agents) {
+    const id = a.officeId?.toString() ?? ''
+    porAndar.set(id, (porAndar.get(id) ?? 0) + 1)
+  }
+  return {
+    floors: floors.slice(0, MAX_POR_TIPO).map((f) => ({
+      name: f.name,
+      mission: f.mission || null,
+      agents: porAndar.get(f._id.toString()) ?? 0,
+    })),
+    agents: agents.slice(0, MAX_POR_TIPO).map((a) => ({
+      name: a.name,
+      objective: String(a.objective ?? '').slice(0, 200),
+      floor: nomeDoAndar.get(a.officeId?.toString() ?? '') ?? null,
+    })),
+    sectors: sectors.slice(0, MAX_POR_TIPO).map((s) => ({
+      name: s.name,
+      mode: String(s.mode ?? 'organization'),
+      floor: nomeDoAndar.get(s.officeId?.toString() ?? '') ?? null,
+      members: (s.members ?? []).length,
+    })),
+  }
+}

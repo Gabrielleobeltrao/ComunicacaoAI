@@ -210,6 +210,9 @@ const RULES: Rule[] = [
   R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
   R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  // Correção à mão na proposta: muda o plano que a confirmação vai aplicar, e por isso
+  // entra no registro como qualquer outra alteração do projeto.
+  R('PATCH', 'api/architect/projects/:/blueprint', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/archive', { entityType: 'architect_project', action: 'archive' }, { idAt: 3 }),
   // Apagar a CONVERSA. O que ela criou continua de pé — ver `deleteProject`.
   R('DELETE', 'api/architect/projects/:', { entityType: 'architect_project', action: 'delete' }, { idAt: 3 }),

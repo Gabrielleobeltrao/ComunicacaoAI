@@ -39,6 +39,14 @@ export interface ArchitectProject {
   assumptions: ArchitectAssumption[]
   blueprintVersion: 1
   blueprint: OfficeBlueprintV1 | null
+  /**
+   * A proposta ANTERIOR, para o dono ver o que a revisão mexeu.
+   *
+   * Uma só, e não um histórico: o que se perde numa revisão se perde entre a versão
+   * que a pessoa leu e a que está na tela. Ausente nos projetos que já existiam — e
+   * ausente é "não há o que comparar", nunca "nada mudou".
+   */
+  previousBlueprint?: OfficeBlueprintV1 | null
   blueprintHash: string | null
   checklist: ArchitectChecklistItem[]
   readiness: ArchitectReadiness

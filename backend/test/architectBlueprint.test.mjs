@@ -11,6 +11,7 @@ const { emptyBlueprint, mergeBlueprintPatch, computeBlueprintHash } = await impo
 const { maskSecrets, containsSecret, maskSecretsDeep } = await import('../dist/architect/secrets.js')
 const { deriveChecklist, applyChecklistState, computeReadiness } = await import('../dist/architect/checklist.js')
 const { canTransition, isEditable } = await import('../dist/architect/state.js')
+const { diffBlueprints } = await import('../dist/architect/diff.js')
 const L = await import('../dist/architect/limits.js')
 
 // Uma proposta mínima que PASSA — a base de comparação de todo caso negativo daqui.
@@ -379,4 +380,61 @@ test('aplicar só sai de ready, e o que já foi aplicado não volta a ser rascun
   assert.equal(canTransition('archived', 'draft'), false)
   assert.equal(isEditable('applied'), false)
   assert.equal(isEditable('discovery'), true)
+})
+
+// --- 8) o que mudou entre uma versão e outra ------------------------------------------------
+
+test('sem versão anterior não há mudança a mostrar — e isso não é "nada mudou"', () => {
+  assert.deepEqual(diffBlueprints(null, valido()), [])
+  assert.deepEqual(diffBlueprints(undefined, valido()), [])
+})
+
+test('a mesma proposta duas vezes não inventa mudança', () => {
+  assert.deepEqual(diffBlueprints(valido(), valido()), [])
+})
+
+test('o agente que SUMIU aparece — é a mudança que ninguém percebe sozinho', () => {
+  const depois = valido()
+  depois.agents = depois.agents.filter((a) => a.key !== 'duvidas')
+  const mudancas = diffBlueprints(valido(), depois)
+  const sumiu = mudancas.find((m) => m.key === 'duvidas')
+  assert.equal(sumiu.change, 'removed')
+  assert.equal(sumiu.kind, 'agent')
+  assert.equal(sumiu.label, 'Atendente de dúvidas', 'o nome de quem saiu vem do que EXISTIA antes')
+  // E some primeiro na lista: é o que mais custa não ver.
+  assert.equal(mudancas[0].change, 'removed')
+})
+
+test('o campo alterado é dito pelo nome, em português', () => {
+  const depois = valido()
+  depois.agents[0].name = 'Recepcionista'
+  depois.agents[0].objective = 'Receber e encaminhar'
+  const m = diffBlueprints(valido(), depois).find((x) => x.key === 'gerente')
+  assert.equal(m.change, 'changed')
+  assert.deepEqual(m.fields, ['nome', 'objetivo'])
+  assert.equal(m.label, 'Recepcionista', 'o rótulo é o valor NOVO')
+})
+
+test('item novo é adição, e reordenar não é mudança nenhuma', () => {
+  const depois = valido()
+  depois.agents.push({ key: 'cobranca', action: 'create', floorKey: 'andar', name: 'Cobrança' })
+  assert.equal(diffBlueprints(valido(), depois).find((m) => m.key === 'cobranca').change, 'added')
+
+  const invertido = valido()
+  invertido.agents.reverse()
+  assert.deepEqual(diffBlueprints(valido(), invertido), [], 'casar por key, e não por posição')
+})
+
+test('a composição do setor conta como mudança', () => {
+  const depois = valido()
+  depois.sectors[0].memberAgentKeys = ['gerente']
+  depois.sectors[0].coordinatorAgentKey = 'duvidas'
+  const m = diffBlueprints(valido(), depois)[0]
+  assert.deepEqual(m.fields, ['coordenador', 'membros'])
+})
+
+test('a lista tem teto: uma proposta trocada inteira não vira uma parede de texto', () => {
+  const antes = { ...emptyBlueprint('t', 'o'), agents: Array.from({ length: 200 }, (_, i) => ({ key: `a${i}`, action: 'create', floorKey: 'andar', name: `Agente ${i}` })) }
+  const depois = { ...emptyBlueprint('t', 'o'), agents: [] }
+  assert.ok(diffBlueprints(antes, depois).length <= 60)
 })

@@ -102,6 +102,22 @@ architectRouter.patch('/projects/:id', async (req, res, next) => {
   }
 })
 
+// Corrigir a proposta à mão. Não chama modelo nenhum — e por isso não paga pedágio.
+architectRouter.patch('/projects/:id/blueprint', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const body = (req.body ?? {}) as { edits?: unknown }
+    // O mesmo lock da conversa: uma edição e uma rodada do modelo em voo escrevem o
+    // mesmo documento, e sem ele a última a gravar apagaria a outra.
+    const projeto = await withProjectLock(id.toString(), () => service.editBlueprint(res.locals.userId, id, body.edits))
+    auditEntity(res, { id: projeto._id.toString(), label: projeto.title })
+    res.json(service.projectDetail(projeto))
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
 // O que existe nesta conta, para a tela poder oferecer a escolha. Leitura pura.
 architectRouter.get('/targets', async (_req, res) => {
   res.json(await service.architectTargets(res.locals.userId))
