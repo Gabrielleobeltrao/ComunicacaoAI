@@ -188,3 +188,156 @@ test('valor solto na lista vira objeto, em vez de quebrar', async () => {
   assert.equal(r.count, 2)
   assert.equal(r.grupos.find((g) => g.chave === '1').quantos, 2)
 })
+
+// ============================================================================
+// O segundo lote: ordenar, cruzar, limpar texto, formatar e ler série
+// ============================================================================
+
+test('ordena por número como número — e não como texto', async () => {
+  // A armadilha clássica: comparando como texto, "10" vem antes de "9".
+  const r = await rodar('lista.ordenar', { items: [{ v: 9 }, { v: 10 }, { v: 2 }], por: 'v' })
+  assert.deepEqual(r.items.map((i) => i.v), [2, 9, 10])
+
+  const desc = await rodar('lista.ordenar', { items: [{ v: 9 }, { v: 10 }], por: 'v', ordem: 'decrescente' })
+  assert.deepEqual(desc.items.map((i) => i.v), [10, 9])
+
+  // Texto ordena como texto, respeitando acento.
+  const txt = await rodar('lista.ordenar', { items: [{ n: 'Ísis' }, { n: 'Ana' }, { n: 'Bruno' }], por: 'n' })
+  assert.deepEqual(txt.items.map((i) => i.n), ['Ana', 'Bruno', 'Ísis'])
+})
+
+test('ordenar com limite devolve os primeiros, e conta o total', async () => {
+  const r = await rodar('lista.ordenar', { items: [{ v: 1 }, { v: 5 }, { v: 3 }], por: 'v', ordem: 'decrescente', limite: 2 })
+  assert.equal(r.count, 3, 'o total continua sendo o da lista inteira')
+  assert.deepEqual(r.items.map((i) => i.v), [5, 3])
+})
+
+test('unicos mantém o PRIMEIRO de cada e conta quantos saíram', async () => {
+  const r = await rodar('lista.unicos', {
+    items: [{ e: 'a@x.com', n: 1 }, { e: 'b@x.com', n: 2 }, { e: 'a@x.com', n: 3 }],
+    por: 'e',
+  })
+  assert.equal(r.count, 2)
+  assert.equal(r.removidos, 1)
+  assert.equal(r.items[0].n, 1, 'o primeiro vence — o terceiro é a repetição')
+})
+
+test('juntar cruza duas listas, e o item principal manda nos campos repetidos', async () => {
+  const r = await rodar('lista.juntar', {
+    items: [{ id: 1, nome: 'Ana', origem: 'principal' }, { id: 2, nome: 'Bruno' }],
+    com: [{ id: 1, plano: 'ouro', origem: 'secundaria' }],
+    chave: 'id',
+  })
+  assert.equal(r.count, 2)
+  assert.equal(r.semPar, 1)
+  assert.equal(r.items[0].plano, 'ouro', 'trouxe o campo da segunda lista')
+  assert.equal(r.items[0].origem, 'principal', 'quem chamou pediu para enriquecer, não para sobrescrever')
+  assert.equal(r.items[1].plano, undefined, 'sem par, fica como estava')
+})
+
+test('juntar por chaves de nomes diferentes, e descartando quem não achou par', async () => {
+  const r = await rodar('lista.juntar', {
+    items: [{ sku: 'A' }, { sku: 'B' }],
+    com: [{ codigo: 'A', preco: 10 }],
+    chave: 'sku',
+    chaveDe: 'codigo',
+    somenteComPar: true,
+  })
+  assert.equal(r.count, 1)
+  assert.equal(r.items[0].preco, 10)
+})
+
+test('mesclar: o segundo manda, e profundo junta os de dentro', async () => {
+  const raso = await rodar('json.mesclar', { base: { a: 1, c: { x: 1 } }, sobrepor: { a: 2, c: { y: 2 } } })
+  assert.deepEqual(raso.resultado, { a: 2, c: { y: 2 } }, 'raso substitui o objeto inteiro')
+
+  const fundo = await rodar('json.mesclar', { base: { a: 1, c: { x: 1 } }, sobrepor: { c: { y: 2 } }, profundo: true })
+  assert.deepEqual(fundo.resultado, { a: 1, c: { x: 1, y: 2 } })
+})
+
+test('mesclar não deixa passar nome que mexe no protótipo', async () => {
+  const r = await rodar('json.mesclar', { base: { a: 1 }, sobrepor: JSON.parse('{"__proto__":{"poluido":true},"b":2}') })
+  assert.equal(r.resultado.b, 2)
+  assert.equal(({}).poluido, undefined, 'o protótipo continua limpo')
+})
+
+test('normalizar tem as quatro formas', async () => {
+  const t = '  Olá   Mundo Ção  '
+  assert.equal((await rodar('texto.normalizar', { texto: t })).resultado, 'Olá Mundo Ção')
+  assert.equal((await rodar('texto.normalizar', { texto: t, forma: 'minusculas' })).resultado, 'olá mundo ção')
+  assert.equal((await rodar('texto.normalizar', { texto: t, forma: 'sem_acento' })).resultado, 'Ola Mundo Cao')
+  assert.equal((await rodar('texto.normalizar', { texto: t, forma: 'identificador' })).resultado, 'ola-mundo-cao')
+})
+
+test('preencher troca os campos e AVISA o que faltou', async () => {
+  const r = await rodar('texto.preencher', {
+    modelo: 'Olá, {{cliente.nome}}. Seu pedido {{pedido}} está {{status}}.',
+    dados: { cliente: { nome: 'Ana' }, pedido: 42 },
+  })
+  assert.equal(r.resultado, 'Olá, Ana. Seu pedido 42 está .')
+  // Um texto com buraco parece pronto — quem chamou precisa poder decidir se manda.
+  assert.deepEqual(r.faltantes, ['status'])
+
+  const mantido = await rodar('texto.preencher', { modelo: 'Oi {{x}}', dados: {}, manterFaltantes: true })
+  assert.equal(mantido.resultado, 'Oi {{x}}')
+})
+
+test('preencher não resolve caminho que mexe no protótipo', async () => {
+  const r = await rodar('texto.preencher', { modelo: '{{__proto__.x}}|{{constructor}}', dados: { a: 1 } })
+  assert.equal(r.resultado, '|')
+})
+
+test('extrair conhece os padrões, tira repetidos e recusa o que não está na lista', async () => {
+  const texto = 'Fale com ana@x.com ou ana@x.com. Site: https://exemplo.test/a. CEP 01310-100.'
+  assert.deepEqual((await rodar('texto.extrair', { texto, tipo: 'email' })).encontrados, ['ana@x.com'])
+  assert.deepEqual((await rodar('texto.extrair', { texto, tipo: 'url' })).encontrados, ['https://exemplo.test/a.'])
+  assert.deepEqual((await rodar('texto.extrair', { texto, tipo: 'cep' })).encontrados, ['01310-100'])
+  // Sem expressão regular de fora: dar esse poder a quem chama é dar como travar o
+  // processo com uma expressão que não termina.
+  assert.match(await recusa('texto.extrair', { texto, tipo: '(a+)+$' }), /fora do contrato|escolha um de/)
+})
+
+test('formatar usa o fuso pedido — o horário é o de quem lê', async () => {
+  const data = '2026-03-10T14:00:00Z'
+  const sp = await rodar('data.formatar', { data, fuso: 'America/Sao_Paulo', formato: 'hora' })
+  const utc = await rodar('data.formatar', { data, fuso: 'UTC', formato: 'hora' })
+  assert.equal(utc.resultado, '14:00')
+  assert.equal(sp.resultado, '11:00', 'São Paulo é UTC-3')
+  assert.equal(sp.iso, '2026-03-10T14:00:00.000Z', 'o instante não muda — muda como se escreve')
+})
+
+test('formatar recusa fuso desconhecido em vez de devolver a hora errada', async () => {
+  assert.match(await recusa('data.formatar', { data: '2026-03-10T14:00:00Z', fuso: 'Marte/Olympus' }), /desconhecido/)
+  assert.match(await recusa('data.formatar', { data: 'ontem' }), /ISO 8601/)
+})
+
+test('serie lê variação, tendência, mediana e percentil', async () => {
+  const r = await rodar('math.serie', { values: [100, 110, 105, 120], percentil: 50 })
+  assert.equal(r.count, 4)
+  assert.equal(r.primeiro, 100)
+  assert.equal(r.ultimo, 120)
+  assert.equal(r.variacao, 20)
+  assert.equal(r.variacaoPercentual, 20)
+  assert.equal(r.tendencia, 'subindo')
+  assert.equal(r.mediana, 107.5)
+  assert.equal(r.percentil, 107.5, 'o percentil 50 é a mediana')
+})
+
+test('variação de um centavo é ESTÁVEL — agir sobre ruído é pior que não agir', async () => {
+  assert.equal((await rodar('math.serie', { values: [1000, 1000.5] })).tendencia, 'estavel')
+  assert.equal((await rodar('math.serie', { values: [1000, 900] })).tendencia, 'descendo')
+})
+
+test('sair de zero não tem variação percentual', async () => {
+  // Dividir por zero daria infinito, e "cresceu infinito por cento" não é resposta.
+  const r = await rodar('math.serie', { values: [0, 50] })
+  assert.equal(r.variacao, 50)
+  assert.equal(r.variacaoPercentual, null)
+})
+
+test('série vazia responde sem dados, e não com zeros', async () => {
+  const r = await rodar('math.serie', { values: [] })
+  assert.equal(r.count, 0)
+  assert.equal(r.tendencia, 'sem_dados')
+  assert.equal(r.mediana, null, 'zero seria um valor, e não é o caso')
+})

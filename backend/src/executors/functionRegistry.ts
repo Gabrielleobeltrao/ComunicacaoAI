@@ -910,3 +910,381 @@ registerFunction({
     return { resultado }
   },
 })
+
+// ============================================================================
+// Mais transformação: ordenar, cruzar, limpar texto, formatar e ler série
+// ============================================================================
+
+registerFunction({
+  functionName: 'lista.ordenar',
+  version: '1.0.0',
+  description: 'Ordena uma lista por um campo, crescente ou decrescente, e pode devolver só os primeiros.',
+  capabilities: ['dados'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      items: { type: 'array' },
+      por: { type: 'string', minLength: 1, description: 'Ex.: total' },
+      ordem: { type: 'string', enum: ['crescente', 'decrescente'] },
+      limite: { type: 'integer', minimum: 1, maximum: 1000, description: 'Quantos devolver. Ex.: 10' },
+    },
+    required: ['items', 'por'],
+  },
+  outputSchema: { type: 'object', properties: { count: { type: 'number' }, items: { type: 'array' } }, additionalProperties: false },
+  timeoutMs: 5_000,
+  handler: async (input) => {
+    const items = listaDe(input.items)
+    const por = caminhoSeguro(input.por, 'por')
+    const desc = input.ordem === 'decrescente'
+    const ordenada = [...items].sort((a, b) => {
+      const x = readPath(a, por)
+      const y = readPath(b, por)
+      const nx = numero(x)
+      const ny = numero(y)
+      // Número compara como número; o resto, como texto. Comparar "10" com "9" como
+      // texto poria o 10 antes, que é a armadilha clássica de ordenação.
+      const r = nx !== null && ny !== null ? nx - ny : String(x ?? '').localeCompare(String(y ?? ''), 'pt-BR')
+      return desc ? -r : r
+    })
+    const limite = Number(input.limite ?? 0)
+    return { count: ordenada.length, items: limite > 0 ? ordenada.slice(0, limite) : ordenada }
+  },
+})
+
+registerFunction({
+  functionName: 'lista.unicos',
+  version: '1.0.0',
+  description: 'Remove repetidos de uma lista, comparando por um campo. Fica o primeiro de cada.',
+  capabilities: ['dados'],
+  inputSchema: {
+    type: 'object',
+    properties: { items: { type: 'array' }, por: { type: 'string', minLength: 1, description: 'Ex.: email' } },
+    required: ['items', 'por'],
+  },
+  outputSchema: {
+    type: 'object',
+    properties: { count: { type: 'number' }, removidos: { type: 'number' }, items: { type: 'array' } },
+    additionalProperties: false,
+  },
+  timeoutMs: 5_000,
+  handler: async (input) => {
+    const items = listaDe(input.items)
+    const por = caminhoSeguro(input.por, 'por')
+    const vistos = new Set<string>()
+    const unicos: Record<string, unknown>[] = []
+    for (const item of items) {
+      const chave = JSON.stringify(readPath(item, por) ?? null)
+      if (vistos.has(chave)) continue
+      vistos.add(chave)
+      unicos.push(item)
+    }
+    return { count: unicos.length, removidos: items.length - unicos.length, items: unicos }
+  },
+})
+
+registerFunction({
+  functionName: 'lista.juntar',
+  version: '1.0.0',
+  description: 'Cruza duas listas por uma chave — como um PROCV. Traz os campos da segunda para a primeira.',
+  capabilities: ['dados'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      items: { type: 'array', description: 'A lista principal.' },
+      com: { type: 'array', description: 'A lista de onde trazer os campos.' },
+      chave: { type: 'string', minLength: 1, description: 'O campo em comum. Ex.: id' },
+      chaveDe: { type: 'string', description: 'O campo na segunda lista, quando tem outro nome.' },
+      somenteComPar: { type: 'boolean', description: 'Descartar quem não encontrou par. Padrão: não.' },
+    },
+    required: ['items', 'com', 'chave'],
+  },
+  outputSchema: {
+    type: 'object',
+    properties: { count: { type: 'number' }, semPar: { type: 'number' }, items: { type: 'array' } },
+    additionalProperties: false,
+  },
+  timeoutMs: 5_000,
+  handler: async (input) => {
+    const items = listaDe(input.items)
+    const outros = listaDe(input.com, 'com')
+    const chave = caminhoSeguro(input.chave, 'chave')
+    const chaveDe = input.chaveDe ? caminhoSeguro(input.chaveDe, 'chaveDe') : chave
+
+    // Índice pelo lado MENOR? Não: pelo lado de referência, sempre. Uma escolha
+    // condicional mudaria qual duplicata vence e o resultado deixaria de ser previsível.
+    const indice = new Map<string, Record<string, unknown>>()
+    for (const o of outros) {
+      const k = String(readPath(o, chaveDe) ?? '')
+      if (!indice.has(k)) indice.set(k, o)
+    }
+
+    let semPar = 0
+    const juntados: Record<string, unknown>[] = []
+    for (const item of items) {
+      const par = indice.get(String(readPath(item, chave) ?? ''))
+      if (!par) {
+        semPar += 1
+        if (input.somenteComPar !== true) juntados.push(item)
+        continue
+      }
+      // O item principal MANDA nos campos repetidos: quem chamou pediu para enriquecer
+      // a primeira lista, não para sobrescrevê-la.
+      juntados.push({ ...par, ...item })
+    }
+    return { count: juntados.length, semPar, items: juntados }
+  },
+})
+
+registerFunction({
+  functionName: 'json.mesclar',
+  version: '1.0.0',
+  description: 'Junta dois objetos. O segundo manda nos campos que existirem nos dois.',
+  capabilities: ['dados'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      base: { type: 'object', additionalProperties: true },
+      sobrepor: { type: 'object', additionalProperties: true },
+      profundo: { type: 'boolean', description: 'Juntar também os objetos de dentro. Padrão: não.' },
+    },
+    required: ['base', 'sobrepor'],
+  },
+  outputSchema: { type: 'object', properties: { resultado: { type: 'object', additionalProperties: true } }, additionalProperties: false },
+  timeoutMs: 5_000,
+  handler: async (input) => {
+    const limpo = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+    const juntar = (a: Record<string, unknown>, b: Record<string, unknown>, nivel = 0): Record<string, unknown> => {
+      const fora: Record<string, unknown> = { ...a }
+      for (const [k, v] of Object.entries(b)) {
+        // Nomes que mexem no protótipo não entram — nem no primeiro nível, nem nos de
+        // dentro. É o único ponto desta função onde um objeto de fora vira chave.
+        if (PROTOTIPO.has(k)) continue
+        const atual = fora[k]
+        fora[k] =
+          input.profundo === true && nivel < 5 && atual && typeof atual === 'object' && !Array.isArray(atual) && v && typeof v === 'object' && !Array.isArray(v)
+            ? juntar(atual as Record<string, unknown>, v as Record<string, unknown>, nivel + 1)
+            : v
+      }
+      return fora
+    }
+    return { resultado: juntar(limpo(input.base), limpo(input.sobrepor)) }
+  },
+})
+
+registerFunction({
+  functionName: 'texto.normalizar',
+  version: '1.0.0',
+  description: 'Limpa um texto: tira espaços sobrando, acentos, deixa em minúsculas ou vira um identificador.',
+  capabilities: ['texto'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      texto: { type: 'string' },
+      forma: { type: 'string', enum: ['limpo', 'minusculas', 'sem_acento', 'identificador'], description: 'Padrão: limpo' },
+    },
+    required: ['texto'],
+  },
+  outputSchema: { type: 'object', properties: { resultado: { type: 'string' } }, additionalProperties: false },
+  timeoutMs: 3_000,
+  handler: async (input) => {
+    const limpo = String(input.texto ?? '').trim().replace(/\s+/g, ' ')
+    const forma = String(input.forma ?? 'limpo')
+    if (forma === 'limpo') return { resultado: limpo }
+    // `normalize('NFD')` separa a letra do acento; a faixa abaixo remove só o acento.
+    const semAcento = limpo.normalize('NFD').replace(/[̀-ͯ]/g, '')
+    if (forma === 'sem_acento') return { resultado: semAcento }
+    if (forma === 'minusculas') return { resultado: limpo.toLowerCase() }
+    return { resultado: semAcento.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) }
+  },
+})
+
+registerFunction({
+  functionName: 'texto.preencher',
+  version: '1.0.0',
+  description: 'Preenche um modelo com os campos de um objeto: "Olá, {{nome}}" vira "Olá, Ana".',
+  capabilities: ['texto'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      modelo: { type: 'string', description: 'Ex.: Olá, {{cliente.nome}}' },
+      dados: { type: 'object', additionalProperties: true },
+      manterFaltantes: { type: 'boolean', description: 'Deixar {{campo}} quando não houver valor. Padrão: não — vira vazio.' },
+    },
+    required: ['modelo', 'dados'],
+  },
+  outputSchema: {
+    type: 'object',
+    properties: { resultado: { type: 'string' }, faltantes: { type: 'array', items: { type: 'string' } } },
+    additionalProperties: false,
+  },
+  timeoutMs: 3_000,
+  handler: async (input) => {
+    const faltantes: string[] = []
+    const resultado = String(input.modelo ?? '').replace(/\{\{\s*([A-Za-z0-9_.]{1,80})\s*\}\}/g, (inteiro, caminho: string) => {
+      // O caminho vem do MODELO, que é configuração — mas passa pelo mesmo guarda:
+      // um modelo é texto, e texto pode ter sido colado de qualquer lugar.
+      if (caminho.split('.').some((p) => PROTOTIPO.has(p))) return ''
+      const valor = readPath(input.dados, caminho)
+      if (valor === undefined || valor === null) {
+        faltantes.push(caminho)
+        return input.manterFaltantes === true ? inteiro : ''
+      }
+      return typeof valor === 'object' ? JSON.stringify(valor) : String(valor)
+    })
+    // Os faltantes saem à parte: um texto com buraco parece pronto, e quem chamou
+    // precisa poder decidir se manda assim mesmo.
+    return { resultado, faltantes: [...new Set(faltantes)] }
+  },
+})
+
+/**
+ * Os padrões que `texto.extrair` conhece — uma lista FECHADA.
+ *
+ * Aceitar expressão regular de quem chama seria dar a alguém de fora o poder de travar
+ * o processo com uma expressão que não termina. Uma lista fechada cobre o que se extrai
+ * de verdade e não tem esse risco.
+ */
+const PADROES: Record<string, RegExp> = {
+  email: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+  url: /https?:\/\/[^\s<>"']{3,300}/g,
+  numero: /-?\d+(?:[.,]\d+)?/g,
+  cpf: /\d{3}\.?\d{3}\.?\d{3}-?\d{2}/g,
+  cnpj: /\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}/g,
+  cep: /\d{5}-?\d{3}/g,
+  telefone: /\(?\d{2}\)?\s?9?\d{4}-?\d{4}/g,
+  data: /\d{1,4}[/-]\d{1,2}[/-]\d{1,4}/g,
+}
+
+registerFunction({
+  functionName: 'texto.extrair',
+  version: '1.0.0',
+  description: 'Tira de um texto os e-mails, links, números, datas, CPF, CNPJ, CEP ou telefones que aparecerem.',
+  capabilities: ['texto', 'dados'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      texto: { type: 'string' },
+      tipo: { type: 'string', enum: Object.keys(PADROES) },
+      limite: { type: 'integer', minimum: 1, maximum: 200 },
+    },
+    required: ['texto', 'tipo'],
+  },
+  outputSchema: {
+    type: 'object',
+    properties: { count: { type: 'number' }, encontrados: { type: 'array', items: { type: 'string' } } },
+    additionalProperties: false,
+  },
+  timeoutMs: 3_000,
+  handler: async (input) => {
+    const padrao = PADROES[String(input.tipo ?? '')]
+    if (!padrao) throw new ErroDeFuncao(`tipo: escolha um de ${Object.keys(PADROES).join(', ')}.`)
+    const texto = String(input.texto ?? '').slice(0, 100_000)
+    const limite = Math.min(Number(input.limite ?? 50), 200)
+    // Repetidos saem: um e-mail citado três vezes é um e-mail.
+    const encontrados = [...new Set(texto.match(new RegExp(padrao.source, 'g')) ?? [])].slice(0, limite)
+    return { count: encontrados.length, encontrados }
+  },
+})
+
+registerFunction({
+  functionName: 'data.formatar',
+  version: '1.0.0',
+  description: 'Escreve uma data no fuso e no formato pedidos — o horário é o de quem lê, não o do servidor.',
+  capabilities: ['data'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      data: { type: 'string', description: 'Ex.: 2026-03-10T14:00:00Z' },
+      fuso: { type: 'string', description: 'Ex.: America/Sao_Paulo' },
+      formato: { type: 'string', enum: ['data', 'data_hora', 'hora', 'dia_semana', 'iso'], description: 'Padrão: data_hora' },
+      idioma: { type: 'string', description: 'Ex.: pt-BR' },
+    },
+    required: ['data'],
+  },
+  outputSchema: { type: 'object', properties: { resultado: { type: 'string' }, iso: { type: 'string' } }, additionalProperties: false },
+  timeoutMs: 3_000,
+  handler: async (input) => {
+    const d = new Date(String(input.data ?? ''))
+    if (Number.isNaN(d.getTime())) throw new ErroDeFuncao('data: use ISO 8601, como 2026-03-10T14:00:00Z.')
+    const timeZone = String(input.fuso ?? 'UTC')
+    const locale = String(input.idioma ?? 'pt-BR')
+    const formato = String(input.formato ?? 'data_hora')
+    if (formato === 'iso') return { resultado: d.toISOString(), iso: d.toISOString() }
+    try {
+      const opcoes: Record<string, Intl.DateTimeFormatOptions> = {
+        data: { dateStyle: 'short' },
+        data_hora: { dateStyle: 'short', timeStyle: 'short' },
+        hora: { timeStyle: 'short' },
+        dia_semana: { weekday: 'long' },
+      }
+      return { resultado: new Intl.DateTimeFormat(locale, { timeZone, ...opcoes[formato] }).format(d), iso: d.toISOString() }
+    } catch {
+      // Fuso ou idioma que o ambiente não conhece: a recusa diz qual, em vez de devolver
+      // uma data no fuso errado — que passaria despercebida.
+      throw new ErroDeFuncao(`fuso ou idioma desconhecido: "${timeZone}" / "${locale}".`)
+    }
+  },
+})
+
+registerFunction({
+  functionName: 'math.serie',
+  version: '1.0.0',
+  description: 'Lê uma série de números: variação do começo ao fim, tendência, mediana e percentil.',
+  capabilities: ['cálculo', 'dados'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      values: { type: 'array', items: { type: 'number' }, description: 'Os números, em ordem de tempo.' },
+      percentil: { type: 'number', minimum: 0, maximum: 100, description: 'Ex.: 90' },
+    },
+    required: ['values'],
+  },
+  outputSchema: {
+    type: 'object',
+    properties: {
+      count: { type: 'number' },
+      primeiro: {},
+      ultimo: {},
+      variacao: {},
+      variacaoPercentual: {},
+      tendencia: { type: 'string' },
+      mediana: {},
+      percentil: {},
+    },
+    additionalProperties: false,
+  },
+  timeoutMs: 5_000,
+  handler: async (input) => {
+    const brutos = Array.isArray(input.values) ? input.values : []
+    if (brutos.length > MAX_ITENS) throw new ErroDeFuncao(`values: no máximo ${MAX_ITENS} números.`)
+    const nums = brutos.map(numero).filter((n): n is number => n !== null)
+    if (!nums.length) return { count: 0, primeiro: null, ultimo: null, variacao: null, variacaoPercentual: null, tendencia: 'sem_dados', mediana: null, percentil: null }
+
+    const primeiro = nums[0]
+    const ultimo = nums[nums.length - 1]
+    const variacao = ultimo - primeiro
+    // Sair de zero não tem variação percentual: dividir por zero daria infinito, e
+    // "cresceu infinito por cento" não é resposta.
+    const variacaoPercentual = primeiro === 0 ? null : (variacao / Math.abs(primeiro)) * 100
+    const ordenados = [...nums].sort((a, b) => a - b)
+    const meio = Math.floor(ordenados.length / 2)
+    const mediana = ordenados.length % 2 ? ordenados[meio] : (ordenados[meio - 1] + ordenados[meio]) / 2
+
+    let percentil: number | null = null
+    if (input.percentil !== undefined && input.percentil !== null) {
+      const p = Math.min(Math.max(Number(input.percentil), 0), 100)
+      // Interpolação linear: com poucos pontos, o índice inteiro devolve sempre o mesmo
+      // valor para percentis diferentes, e o número pareceria não reagir.
+      const pos = (p / 100) * (ordenados.length - 1)
+      const baixo = Math.floor(pos)
+      const alto = Math.ceil(pos)
+      percentil = baixo === alto ? ordenados[baixo] : ordenados[baixo] + (ordenados[alto] - ordenados[baixo]) * (pos - baixo)
+    }
+
+    // "Estável" existe de propósito: sem ele, uma variação de um centavo viraria
+    // "subindo", e quem lê agiria sobre ruído.
+    const limite = Math.abs(primeiro) * 0.001
+    const tendencia = Math.abs(variacao) <= limite ? 'estavel' : variacao > 0 ? 'subindo' : 'descendo'
+    return { count: nums.length, primeiro, ultimo, variacao, variacaoPercentual, tendencia, mediana, percentil }
+  },
+})

@@ -61,6 +61,7 @@ const familiaDe = (nome: string): string => (nome.includes('.') ? nome.split('.'
 const FAMILIA_LABEL: Record<string, string> = {
   lista: 'Listas e tabelas',
   json: 'Objetos e campos',
+  texto: 'Texto',
   dados: 'Conferência de dados',
   math: 'Cálculo',
   financeiro: 'Financeiro',
