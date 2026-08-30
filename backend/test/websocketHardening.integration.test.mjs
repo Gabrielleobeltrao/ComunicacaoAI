@@ -218,6 +218,31 @@ test('tiques simultâneos não se atropelam: o último vence e a contagem bate',
   assert.equal(r.updates, 20, 'e nenhuma atualização foi contada duas vezes')
 })
 
+test('a base lida do banco não conta de novo o que ESTE processo já escreveu', async () => {
+  /**
+   * A corrida que só aparecia com a máquina cheia: a leitura que semeia a base acontece
+   * depois de um `await`, e nesse intervalo uma escrita nossa pode ter chegado ao banco.
+   * O número lido já incluía o que a sequência ia contar de novo, e vinte tiques viravam
+   * vinte e um — silenciosamente, num contador que a tela mostra.
+   *
+   * Aqui a corrida é forçada: grava, esvazia o estado de memória (como se a chave
+   * tivesse saído do buffer) e grava de novo. A contagem tem de continuar de onde parou,
+   * sem repetir.
+   */
+  for (let i = 0; i < 5; i += 1) await liveData.putLiveValue(DONO, 'c9', 'PETR4', { price: i }, 60)
+  await liveData.flushLiveData()
+  assert.equal((await liveData.getLiveValue(DONO, 'c9', 'PETR4')).updates, 5)
+
+  // O processo "esquece" a chave, mas o documento continua lá com updates: 5.
+  liveData.resetLiveBuffer()
+  await Promise.all(Array.from({ length: 10 }, (_, i) => liveData.putLiveValue(DONO, 'c9', 'PETR4', { price: 100 + i }, 60)))
+  await liveData.flushLiveData()
+
+  const r = await liveData.getLiveValue(DONO, 'c9', 'PETR4')
+  assert.equal(r.updates, 15, `continuou de 5 e somou 10 — veio ${r.updates}`)
+  assert.equal(r.value.price, 109)
+})
+
 test('o teto por conexão vale mesmo com chaves novas chegando juntas', async () => {
   const teto = 500
   const resultados = await Promise.all(Array.from({ length: teto + 25 }, (_, i) => liveData.putLiveValue(DONO, 'c5', `k${i}`, i, 60)))

@@ -147,6 +147,21 @@ const bases = new Map<string, number>()
  */
 const aplicados = new Map<string, number>()
 
+/**
+ * A base guardada, DESCONTANDO o que este processo já escreveu.
+ *
+ * `bases` existe para o contador continuar de onde parou depois de um restart: ele soma
+ * o que estava no documento com a sequência desta execução. Só que a leitura que o
+ * semeia acontece depois de um `await`, e sob carga uma escrita NOSSA pode ter chegado
+ * ao banco nesse intervalo — aí o número lido já inclui o que a sequência vai contar de
+ * novo, e vinte tiques viram vinte e um.
+ *
+ * `aplicados` sabe qual foi a maior sequência que já foi gravada. Tirá-la do que veio do
+ * banco deixa a base valendo o que ela devia valer: o que existia ANTES de começarmos.
+ * Fora de uma corrida, `aplicados` é zero e nada muda.
+ */
+const baseSemAsNossas = (id: string, guardado: number): number => Math.max(0, guardado - (aplicados.get(id) ?? 0))
+
 function proximaSequencia(id: string): number {
   const seq = (sequencias.get(id) ?? 0) + 1
   sequencias.set(id, seq)
@@ -380,7 +395,7 @@ async function hidratarAgora(ownerId: string): Promise<void> {
     const ate = doc.expiresAt.getTime()
     mapaDe(conhecidas, `${ownerId}:${doc.connectionId}`).set(doc.key, ate)
     doOwner.set(id, ate)
-    if (!bases.has(id)) bases.set(id, doc.updates ?? 0)
+    if (!bases.has(id)) bases.set(id, baseSemAsNossas(id, doc.updates ?? 0))
   }
 }
 
@@ -414,7 +429,7 @@ async function cabeMaisUma(ownerId: string, connectionId: string, id: string, ch
 
   const existente = await live.findOne({ _id: id }, { projection: { updates: 1, expiresAt: 1 } })
   if (existente && existente.expiresAt.getTime() > agora) {
-    if (!bases.has(id)) bases.set(id, existente.updates ?? 0)
+    if (!bases.has(id)) bases.set(id, baseSemAsNossas(id, existente.updates ?? 0))
     daConexao.set(chave, ate)
     doOwner.set(id, ate)
     return true

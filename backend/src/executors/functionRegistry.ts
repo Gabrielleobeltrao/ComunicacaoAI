@@ -16,6 +16,10 @@
 // A pergunta que separa o seguro do inseguro não é "o que a função faz", é "quem
 // escolheu o código". Aqui, sempre quem escreveu o repositório.
 import { validateAgainstSchema, describeErrors } from '../jsonSchema.js'
+// Puros os dois, e é o que permite importá-los aqui: este arquivo não pode arrastar
+// banco nenhum. `mapping.ts` faria isso (ele importa `building.js`), por isso o guarda
+// de caminho abaixo é local em vez de reaproveitado de lá.
+import { evaluateCondition, readPath } from '../automations/conditions.js'
 
 /**
  * Um erro que o handler ESCOLHEU levantar — e cuja mensagem pode sair.
@@ -656,3 +660,253 @@ export function assertRegistryIsSound(): void {
   }
 }
 
+
+// ============================================================================
+// Transformar dados — o trabalho que hoje gasta um modelo para virar aritmética
+// ============================================================================
+//
+// Agrupar uma lista, filtrar por condição, conferir se um payload serve e recortar
+// campos são as quatro coisas que aparecem em quase todo fluxo. Feitas por modelo, cada
+// uma custa uma inferência, demora, e devolve resultado diferente para a mesma entrada —
+// que é o oposto do que um relatório precisa.
+
+/** Teto de itens. Uma lista sem limite é a memória do processo na mão de quem chama. */
+const MAX_ITENS = 1_000
+
+/**
+ * O caminho, conferido aqui mesmo.
+ *
+ * A mesma regra de `normalizeMappingPath`, escrita de novo de propósito: aquele módulo
+ * importa `building.js`, que abre o banco, e este arquivo existe para ser puro. Nove
+ * linhas duplicadas custam menos que arrastar o Mongo para dentro da fronteira.
+ */
+const PROTOTIPO = new Set(['__proto__', 'constructor', 'prototype'])
+function caminhoSeguro(bruto: unknown, campo: string): string {
+  const p = String(bruto ?? '').trim().replace(/^\$\.?/, '')
+  if (!p) throw new ErroDeFuncao(`${campo}: informe o campo.`)
+  if (p.length > 200) throw new ErroDeFuncao(`${campo}: caminho longo demais.`)
+  if (!/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+|\[\d+\])*$/.test(p)) {
+    throw new ErroDeFuncao(`${campo}: use um caminho simples, como "cliente.nome" — sem expressão nem código.`)
+  }
+  if (p.split(/[.[\]]/).some((parte) => PROTOTIPO.has(parte))) throw new ErroDeFuncao(`${campo}: caminho não permitido.`)
+  return p
+}
+
+const listaDe = (bruto: unknown, campo = 'items'): Record<string, unknown>[] => {
+  if (!Array.isArray(bruto)) throw new ErroDeFuncao(`${campo}: envie uma lista.`)
+  if (bruto.length > MAX_ITENS) throw new ErroDeFuncao(`${campo}: no máximo ${MAX_ITENS} itens por chamada.`)
+  return bruto.map((i) => (i && typeof i === 'object' && !Array.isArray(i) ? (i as Record<string, unknown>) : { valor: i }))
+}
+
+const numero = (v: unknown): number | null => {
+  const n = typeof v === 'number' ? v : Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+const OPERACOES = ['soma', 'contagem', 'media', 'minimo', 'maximo', 'primeiro', 'ultimo'] as const
+type Operacao = (typeof OPERACOES)[number]
+
+registerFunction({
+  functionName: 'lista.agrupar',
+  version: '1.0.0',
+  description: 'Agrupa uma lista por um campo e calcula soma, contagem, média, mínimo, máximo, primeiro ou último por grupo.',
+  capabilities: ['dados', 'cálculo'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      items: { type: 'array', description: 'A lista a agrupar.' },
+      por: { type: 'string', minLength: 1, description: 'O campo que define o grupo, ex.: loja' },
+      operacoes: {
+        type: 'array',
+        maxItems: 12,
+        items: {
+          type: 'object',
+          properties: {
+            de: { type: 'string', description: 'O campo a calcular. Não usado em "contagem".' },
+            op: { type: 'string', enum: [...OPERACOES] },
+            como: { type: 'string', description: 'O nome do resultado, ex.: faturamento' },
+          },
+          required: ['op', 'como'],
+        },
+      },
+    },
+    required: ['items', 'por'],
+  },
+  outputSchema: {
+    type: 'object',
+    properties: { count: { type: 'number' }, grupos: { type: 'array', items: { type: 'object', additionalProperties: true } } },
+    additionalProperties: false,
+  },
+  timeoutMs: 5_000,
+  handler: async (input) => {
+    const items = listaDe(input.items)
+    const por = caminhoSeguro(input.por, 'por')
+    const regras = (Array.isArray(input.operacoes) ? input.operacoes : []).map((o, i) => {
+      const item = (o ?? {}) as Record<string, unknown>
+      const op = String(item.op ?? '') as Operacao
+      if (!OPERACOES.includes(op)) throw new ErroDeFuncao(`operação ${i + 1}: "${String(item.op)}" não existe.`)
+      return { de: op === 'contagem' ? '' : caminhoSeguro(item.de, `operação ${i + 1}`), op, como: String(item.como ?? `r${i + 1}`).slice(0, 60) }
+    })
+
+    // `Map` preserva a ordem de aparição: o primeiro grupo a surgir é o primeiro a sair.
+    // Ordenar por conta própria mudaria o resultado sem ninguém pedir.
+    const grupos = new Map<string, Record<string, unknown>[]>()
+    for (const item of items) {
+      const chave = String(readPath(item, por) ?? '—')
+      const atual = grupos.get(chave)
+      if (atual) atual.push(item)
+      else grupos.set(chave, [item])
+    }
+
+    const saida = [...grupos.entries()].map(([chave, doGrupo]) => {
+      const linha: Record<string, unknown> = { chave, itens: doGrupo.length }
+      for (const r of regras) {
+        if (r.op === 'contagem') {
+          linha[r.como] = doGrupo.length
+          continue
+        }
+        const valores = doGrupo.map((i) => readPath(i, r.de))
+        if (r.op === 'primeiro') linha[r.como] = valores[0] ?? null
+        else if (r.op === 'ultimo') linha[r.como] = valores[valores.length - 1] ?? null
+        else {
+          // Só o que é número entra na conta. Um campo vazio não vira zero: zero é um
+          // valor, e somá-lo mudaria a média de quem não respondeu.
+          const numeros = valores.map(numero).filter((n): n is number => n !== null)
+          if (r.op === 'soma') linha[r.como] = numeros.reduce((a, b) => a + b, 0)
+          else if (r.op === 'media') linha[r.como] = numeros.length ? numeros.reduce((a, b) => a + b, 0) / numeros.length : null
+          else if (r.op === 'minimo') linha[r.como] = numeros.length ? Math.min(...numeros) : null
+          else if (r.op === 'maximo') linha[r.como] = numeros.length ? Math.max(...numeros) : null
+        }
+      }
+      return linha
+    })
+    return { count: saida.length, grupos: saida }
+  },
+})
+
+registerFunction({
+  functionName: 'lista.filtrar',
+  version: '1.0.0',
+  description: 'Filtra uma lista por condições — igual, diferente, contém, maior, menor, existe.',
+  capabilities: ['dados'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      items: { type: 'array' },
+      condicoes: {
+        type: 'array',
+        maxItems: 10,
+        items: {
+          type: 'object',
+          properties: {
+            caminho: { type: 'string', description: 'O campo, ex.: cliente.plano' },
+            operador: { type: 'string', enum: ['exists', 'absent', 'equals', 'not_equals', 'contains', 'gt', 'lt'] },
+            valor: {},
+          },
+          required: ['caminho', 'operador'],
+        },
+      },
+      modo: { type: 'string', enum: ['todas', 'qualquer'], description: 'Precisa passar em todas ou em pelo menos uma. Padrão: todas.' },
+    },
+    required: ['items', 'condicoes'],
+  },
+  outputSchema: {
+    type: 'object',
+    properties: { count: { type: 'number' }, removidos: { type: 'number' }, items: { type: 'array' } },
+    additionalProperties: false,
+  },
+  timeoutMs: 5_000,
+  handler: async (input) => {
+    const items = listaDe(input.items)
+    const brutas = Array.isArray(input.condicoes) ? input.condicoes : []
+    if (!brutas.length) throw new ErroDeFuncao('condicoes: informe ao menos uma — sem nenhuma, nada seria filtrado.')
+    const condicoes = brutas.map((c, i) => {
+      const item = (c ?? {}) as Record<string, unknown>
+      return { source: 'item', path: caminhoSeguro(item.caminho, `condição ${i + 1}`), operator: String(item.operador ?? 'exists'), value: item.valor }
+    })
+    const qualquer = input.modo === 'qualquer'
+    // O avaliador é o MESMO das rotinas: um "maior que" aqui decide igual a um "maior
+    // que" lá, e falha fechada do mesmo jeito.
+    const passa = (item: Record<string, unknown>) =>
+      qualquer
+        ? condicoes.some((c) => evaluateCondition(c as never, { item }))
+        : condicoes.every((c) => evaluateCondition(c as never, { item }))
+    const mantidos = items.filter(passa)
+    return { count: mantidos.length, removidos: items.length - mantidos.length, items: mantidos }
+  },
+})
+
+registerFunction({
+  functionName: 'dados.validar',
+  version: '1.0.0',
+  description: 'Confere se um dado bate com o formato esperado (JSON Schema) e diz o que está faltando ou errado.',
+  capabilities: ['dados', 'validação'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      /**
+       * Qualquer forma: objeto, lista, texto, número.
+       *
+       * `additionalProperties: true` é o que permite isso — sem ele, o validador entra
+       * no ramo de objeto e recusa TODA chave, porque não há `properties` declaradas.
+       * Um schema vazio aqui reprovaria justamente o dado que se quer conferir.
+       */
+      dados: { additionalProperties: true, description: 'O valor a conferir.' },
+      schema: { type: 'object', additionalProperties: true, description: 'O formato esperado, em JSON Schema.' },
+    },
+    required: ['dados', 'schema'],
+  },
+  outputSchema: {
+    type: 'object',
+    properties: { valido: { type: 'boolean' }, erros: { type: 'array', items: { type: 'string' } } },
+    additionalProperties: false,
+  },
+  timeoutMs: 5_000,
+  handler: async (input) => {
+    // O MESMO validador que confere argumento de ferramenta. Um segundo validador
+    // divergiria do primeiro, e aí "válido" passaria a significar duas coisas.
+    const r = validateAgainstSchema(input.schema, input.dados)
+    return { valido: r.valid, erros: r.valid ? [] : describeErrors(r.errors).split('; ').filter(Boolean) }
+  },
+})
+
+registerFunction({
+  functionName: 'json.selecionar',
+  version: '1.0.0',
+  description: 'Recorta só os campos que interessam de um objeto — inclusive campos aninhados.',
+  capabilities: ['dados'],
+  inputSchema: {
+    type: 'object',
+    properties: {
+      dados: { type: 'object', additionalProperties: true },
+      campos: { type: 'array', maxItems: 30, items: { type: 'string' }, description: 'Ex.: ["cliente.nome", "total"]' },
+      achatar: { type: 'boolean', description: 'Devolver "cliente_nome" em vez de aninhado. Padrão: sim.' },
+    },
+    required: ['dados', 'campos'],
+  },
+  outputSchema: { type: 'object', properties: { resultado: { type: 'object', additionalProperties: true } }, additionalProperties: false },
+  timeoutMs: 5_000,
+  handler: async (input) => {
+    const campos = (Array.isArray(input.campos) ? input.campos : []).map((c, i) => caminhoSeguro(c, `campo ${i + 1}`))
+    if (!campos.length) throw new ErroDeFuncao('campos: informe ao menos um.')
+    const achatar = input.achatar !== false
+    const resultado: Record<string, unknown> = {}
+    for (const c of campos) {
+      const lido = readPath(input.dados, c)
+      // Campo ausente não vira `null`: ele simplesmente não aparece. Um nulo diria "o
+      // valor é vazio", que é outra coisa.
+      if (lido === undefined) continue
+      if (achatar) resultado[c.replace(/[.[\]]/g, '_')] = lido
+      else {
+        const partes = c.split('.')
+        let alvo = resultado
+        for (const parte of partes.slice(0, -1)) {
+          if (typeof alvo[parte] !== 'object' || alvo[parte] === null) alvo[parte] = {}
+          alvo = alvo[parte] as Record<string, unknown>
+        }
+        alvo[partes[partes.length - 1]] = lido
+      }
+    }
+    return { resultado }
+  },
+})
