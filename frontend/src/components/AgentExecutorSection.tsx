@@ -3,6 +3,7 @@ import { Link } from 'react-router'
 import { listExecutorCatalog, listInstallations } from '../lib/apps'
 import type { CatalogAction, CatalogFunction, AppInstallation } from '../lib/apps'
 import type { ExecutorKind, ResponseMode } from '../lib/types'
+import { Icon } from '../ui'
 
 // COMO este agente executa — a pergunta que muda todo o resto do formulário.
 //
@@ -15,6 +16,63 @@ import type { ExecutorKind, ResponseMode } from '../lib/types'
 // Então é uma escolha só, no começo, e o formulário passa a fazer as perguntas do tipo
 // escolhido. Não confundir com `preset` (o PAPEL: quem pesquisa, quem analisa) nem com
 // `executionMode` das rotinas (com que frequência roda). Aqui é quem faz o trabalho.
+
+/**
+ * Um exemplo de chamada, DERIVADO do schema da própria função.
+ *
+ * Escrever um exemplo à mão para cada função seria melhor de ler e pior de manter: são
+ * quase trinta, e no dia em que um schema mudasse o exemplo passaria a ensinar o
+ * errado — que é pior do que não ter exemplo. Derivando, ele nunca desatualiza.
+ *
+ * A descrição de cada campo costuma trazer um "Ex.: BTCUSDT"; quando traz, é ele que
+ * aparece. É de graça e é o valor que quem escreveu o schema achou representativo.
+ */
+function exemploDe(schema: unknown): string | null {
+  const s = (schema ?? {}) as { properties?: Record<string, unknown>; required?: unknown }
+  const props = s.properties
+  if (!props || typeof props !== 'object') return null
+  const obrigatorios = Array.isArray(s.required) ? (s.required as string[]) : []
+  // Os obrigatórios primeiro; sem eles, os primeiros declarados. Um exemplo com dez
+  // campos não é exemplo, é despejo.
+  const nomes = (obrigatorios.length ? obrigatorios : Object.keys(props)).slice(0, 4)
+  const corpo: Record<string, unknown> = {}
+  for (const nome of nomes) {
+    const def = (props[nome] ?? {}) as { type?: string; enum?: unknown[]; description?: string; items?: unknown }
+    corpo[nome] = valorDeExemplo(def)
+  }
+  return Object.keys(corpo).length ? JSON.stringify(corpo, null, 2) : null
+}
+
+function valorDeExemplo(def: { type?: string; enum?: unknown[]; description?: string; items?: unknown }): unknown {
+  if (Array.isArray(def.enum) && def.enum.length) return def.enum[0]
+  // "Ex.: BTCUSDT" na descrição é o exemplo que o autor do schema já escolheu.
+  const daDescricao = /Ex\.?:\s*([^.\n]{1,40})/i.exec(def.description ?? '')
+  if (daDescricao && def.type !== 'number' && def.type !== 'integer') return daDescricao[1].trim().replace(/^["']|["']$/g, '')
+  if (def.type === 'number' || def.type === 'integer') return 10
+  if (def.type === 'boolean') return true
+  if (def.type === 'array') return [valorDeExemplo((def.items ?? {}) as { type?: string })]
+  if (def.type === 'object') return {}
+  return 'valor'
+}
+
+/** O prefixo antes do ponto: `lista.agrupar` → `lista`. É como as funções já se agrupam. */
+const familiaDe = (nome: string): string => (nome.includes('.') ? nome.split('.')[0] : 'geral')
+
+const FAMILIA_LABEL: Record<string, string> = {
+  lista: 'Listas e tabelas',
+  json: 'Objetos e campos',
+  texto: 'Texto',
+  dados: 'Conferência de dados',
+  math: 'Cálculo',
+  financeiro: 'Financeiro',
+  data: 'Datas',
+  br: 'Documentos brasileiros',
+  regra: 'Regras e faixas',
+  liveData: 'Dado ao vivo',
+  data_history: 'Histórico',
+  realtime_data: 'Tempo real do agente',
+  geral: 'Outras',
+}
 
 const TIPOS: { kind: ExecutorKind; titulo: string; resumo: string }[] = [
   { kind: 'llm', titulo: 'IA / LLM', resumo: 'Um modelo lê o pedido e responde. É como todo agente sempre funcionou.' },
@@ -131,17 +189,63 @@ export function AgentExecutorSection({
     [instalacoes],
   )
   const filtro = busca.trim().toLowerCase()
+  /**
+   * O filtro por FAMÍLIA, ao lado da busca.
+   *
+   * Buscar serve para quem já sabe o nome ou uma palavra da descrição. Filtrar serve
+   * para o caso oposto — "o que existe para mexer em lista?" —, que é a pergunta de
+   * quem está montando o agente pela primeira vez. As duas coisas somam: o filtro
+   * estreita o conjunto, a busca procura dentro dele.
+   */
+  const [familias, setFamilias] = useState<Set<string>>(new Set())
+  const [filtroAberto, setFiltroAberto] = useState(false)
+
+  /**
+   * As famílias possíveis vêm da lista INTEIRA, não da filtrada.
+   *
+   * Derivá-las do que está visível faria a opção sumir no instante em que fosse
+   * escolhida — e aí não haveria como desmarcá-la.
+   */
+  const familiasDisponiveis = useMemo(() => [...new Set(funcoes.map((f) => familiaDe(f.functionName)))], [funcoes])
+
+  const alternarFamilia = (familia: string) =>
+    setFamilias((atual) => {
+      const proximo = new Set(atual)
+      if (proximo.has(familia)) proximo.delete(familia)
+      else proximo.add(familia)
+      return proximo
+    })
   const funcoesVisiveis = useMemo(
     () =>
       funcoes.filter(
         (f) =>
-          !filtro ||
-          f.functionName.toLowerCase().includes(filtro) ||
-          f.description.toLowerCase().includes(filtro) ||
-          f.capabilities.some((c) => c.toLowerCase().includes(filtro)),
+          // Nenhuma família escolhida quer dizer TODAS — é o que "sem filtro" significa.
+          (familias.size === 0 || familias.has(familiaDe(f.functionName))) &&
+          (!filtro ||
+            f.functionName.toLowerCase().includes(filtro) ||
+            f.description.toLowerCase().includes(filtro) ||
+            f.capabilities.some((c) => c.toLowerCase().includes(filtro))),
       ),
-    [funcoes, filtro],
+    [funcoes, filtro, familias],
   )
+
+  /**
+   * As visíveis, agrupadas por família e na ordem em que as famílias aparecem.
+   *
+   * Ordem de aparição, e não alfabética: a lista já chega ordenada por nome do servidor,
+   * então "cálculo" antes de "datas" é o que a pessoa vê nas duas telas. Reordenar aqui
+   * criaria uma segunda ordem para a mesma coisa.
+   */
+  const porFamilia = useMemo(() => {
+    const mapa = new Map<string, CatalogFunction[]>()
+    for (const f of funcoesVisiveis) {
+      const familia = familiaDe(f.functionName)
+      const atual = mapa.get(familia)
+      if (atual) atual.push(f)
+      else mapa.set(familia, [f])
+    }
+    return [...mapa.entries()]
+  }, [funcoesVisiveis])
   const escolhida = funcoes.find((f) => f.functionName === draft.functionName) ?? null
   const appsComAcao = useMemo(() => [...new Map(acoes.map((a) => [a.appKey, a])).values()], [acoes])
   const acoesDoApp = acoes.filter((a) => a.appKey === draft.appKey)
@@ -237,36 +341,118 @@ export function AgentExecutorSection({
             cola um trecho seria a porta de execução arbitrária que o resto do sistema
             existe para fechar.
           */}
-          <input
-            id="function-search"
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            placeholder="Procurar por nome, descrição ou capacidade"
-            className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-            data-testid="function-search"
-          />
-          <ul className="max-h-56 space-y-1 overflow-y-auto" data-testid="function-list">
-            {funcoesVisiveis.length === 0 && <li className="p-2 text-xs text-(--text-faint)">Nenhuma função encontrada.</li>}
-            {funcoesVisiveis.map((f) => (
-              <li key={f.functionName}>
+          <div className="flex items-center gap-2">
+            <input
+              id="function-search"
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="Procurar por nome, descrição ou capacidade"
+              className="min-w-0 flex-1 rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+              data-testid="function-search"
+            />
+            <button
+              type="button"
+              onClick={() => setFiltroAberto((v) => !v)}
+              aria-expanded={filtroAberto}
+              aria-label={familias.size ? `Filtrar por tipo (${familias.size} ativo(s))` : 'Filtrar por tipo'}
+              title="Filtrar por tipo"
+              className={`ds-hit flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-2 text-xs ${
+                familias.size ? 'border-(--border-focus) text-(--intent-brand)' : 'border-(--border-strong) text-(--text-muted)'
+              }`}
+              data-testid="function-filter"
+            >
+              <Icon name="list-filter" size={16} />
+              {/* O número no botão: com o painel fechado, é a única pista de que há
+                  filtro ativo — e sem ela a lista parece incompleta sem motivo. */}
+              {familias.size > 0 && <span className="font-semibold">{familias.size}</span>}
+            </button>
+          </div>
+
+          {filtroAberto && (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-(--border-subtle) p-2" data-testid="function-filter-panel">
+              {familiasDisponiveis.map((familia) => {
+                const ativa = familias.has(familia)
+                return (
+                  <button
+                    key={familia}
+                    type="button"
+                    onClick={() => alternarFamilia(familia)}
+                    aria-pressed={ativa}
+                    className={`rounded-full border px-2.5 py-1 text-xs ${
+                      ativa ? 'border-(--border-focus) bg-(--surface-sunken) font-semibold' : 'border-(--border-subtle) text-(--text-muted)'
+                    }`}
+                    data-testid={`function-filter-${familia}`}
+                  >
+                    {FAMILIA_LABEL[familia] ?? familia}
+                  </button>
+                )
+              })}
+              {familias.size > 0 && (
                 <button
                   type="button"
-                  onClick={() => {
-                    set({ functionName: f.functionName, functionVersion: f.version })
-                    onContractDerived?.({ inputJsonSchema: f.inputSchema, outputJsonSchema: f.outputSchema })
-                  }}
-                  aria-pressed={draft.functionName === f.functionName}
-                  className={`w-full rounded-md border p-2 text-left ${
-                    draft.functionName === f.functionName ? 'border-(--border-focus)' : 'border-transparent hover:border-(--border-subtle)'
-                  }`}
-                  data-testid={`function-option-${f.functionName}`}
+                  onClick={() => setFamilias(new Set())}
+                  className="ml-auto rounded-full px-2 py-1 text-xs text-(--text-muted) underline"
+                  data-testid="function-filter-clear"
                 >
-                  <span className="block font-mono text-xs">{f.functionName}</span>
-                  <span className="block text-xs text-(--text-faint)">{f.description}</span>
+                  Limpar
                 </button>
-              </li>
+              )}
+            </div>
+          )}
+          {/* Agrupadas por família: com quase trinta funções, uma lista corrida obriga a
+              ler todas para achar a que serve. O prefixo já dizia o grupo — só não
+              estava sendo usado. */}
+          <div className="max-h-96 space-y-3 overflow-y-auto" data-testid="function-list">
+            {funcoesVisiveis.length === 0 && <p className="p-2 text-xs text-(--text-faint)">Nenhuma função encontrada.</p>}
+            {porFamilia.map(([familia, doGrupo]) => (
+              <div key={familia} className="space-y-1.5">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-(--text-faint)">{FAMILIA_LABEL[familia] ?? familia}</p>
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  {doGrupo.map((f) => {
+                    const escolhidaAqui = draft.functionName === f.functionName
+                    const exemplo = exemploDe(f.inputSchema)
+                    return (
+                      <button
+                        key={f.functionName}
+                        type="button"
+                        onClick={() => {
+                          set({ functionName: f.functionName, functionVersion: f.version })
+                          onContractDerived?.({ inputJsonSchema: f.inputSchema, outputJsonSchema: f.outputSchema })
+                        }}
+                        aria-pressed={escolhidaAqui}
+                        className={`flex h-full flex-col gap-1 rounded-lg border p-2.5 text-left transition ${
+                          escolhidaAqui ? 'border-(--border-focus) bg-(--surface-sunken)' : 'border-(--border-subtle) hover:border-(--border-strong)'
+                        }`}
+                        data-testid={`function-option-${f.functionName}`}
+                      >
+                        <span className="font-mono text-xs font-semibold">{f.functionName}</span>
+                        <span className="text-xs text-(--text-muted)">{f.description}</span>
+                        {f.capabilities?.length > 0 && (
+                          <span className="flex flex-wrap gap-1">
+                            {f.capabilities.slice(0, 3).map((c) => (
+                              <span key={c} className="rounded-full bg-(--surface-sunken) px-1.5 py-0.5 text-[10px] text-(--text-faint)">
+                                {c}
+                              </span>
+                            ))}
+                          </span>
+                        )}
+                        {/* O exemplo só aparece no card ESCOLHIDO: em todos, vinte e sete
+                            blocos de JSON viram parede de texto e ninguém lê nenhum. */}
+                        {escolhidaAqui && exemplo && (
+                          <pre
+                            className="mt-0.5 overflow-x-auto rounded bg-(--surface-sunken) p-1.5 text-[10.5px] leading-tight"
+                            data-testid={`function-example-${f.functionName}`}
+                          >
+                            {exemplo}
+                          </pre>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
             ))}
-          </ul>
+          </div>
           {escolhida && parametros.length > 0 && (
             <div className="space-y-2 rounded-md border border-(--border-subtle) p-2" data-testid="function-config">
               <p className="text-xs text-(--text-muted)">Parâmetros desta função</p>
