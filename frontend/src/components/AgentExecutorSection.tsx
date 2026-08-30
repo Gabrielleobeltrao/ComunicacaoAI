@@ -3,6 +3,7 @@ import { Link } from 'react-router'
 import { listExecutorCatalog, listInstallations } from '../lib/apps'
 import type { CatalogAction, CatalogFunction, AppInstallation } from '../lib/apps'
 import type { ExecutorKind, ResponseMode } from '../lib/types'
+import { Icon } from '../ui'
 
 // COMO este agente executa — a pergunta que muda todo o resto do formulário.
 //
@@ -187,16 +188,44 @@ export function AgentExecutorSection({
     [instalacoes],
   )
   const filtro = busca.trim().toLowerCase()
+  /**
+   * O filtro por FAMÍLIA, ao lado da busca.
+   *
+   * Buscar serve para quem já sabe o nome ou uma palavra da descrição. Filtrar serve
+   * para o caso oposto — "o que existe para mexer em lista?" —, que é a pergunta de
+   * quem está montando o agente pela primeira vez. As duas coisas somam: o filtro
+   * estreita o conjunto, a busca procura dentro dele.
+   */
+  const [familias, setFamilias] = useState<Set<string>>(new Set())
+  const [filtroAberto, setFiltroAberto] = useState(false)
+
+  /**
+   * As famílias possíveis vêm da lista INTEIRA, não da filtrada.
+   *
+   * Derivá-las do que está visível faria a opção sumir no instante em que fosse
+   * escolhida — e aí não haveria como desmarcá-la.
+   */
+  const familiasDisponiveis = useMemo(() => [...new Set(funcoes.map((f) => familiaDe(f.functionName)))], [funcoes])
+
+  const alternarFamilia = (familia: string) =>
+    setFamilias((atual) => {
+      const proximo = new Set(atual)
+      if (proximo.has(familia)) proximo.delete(familia)
+      else proximo.add(familia)
+      return proximo
+    })
   const funcoesVisiveis = useMemo(
     () =>
       funcoes.filter(
         (f) =>
-          !filtro ||
-          f.functionName.toLowerCase().includes(filtro) ||
-          f.description.toLowerCase().includes(filtro) ||
-          f.capabilities.some((c) => c.toLowerCase().includes(filtro)),
+          // Nenhuma família escolhida quer dizer TODAS — é o que "sem filtro" significa.
+          (familias.size === 0 || familias.has(familiaDe(f.functionName))) &&
+          (!filtro ||
+            f.functionName.toLowerCase().includes(filtro) ||
+            f.description.toLowerCase().includes(filtro) ||
+            f.capabilities.some((c) => c.toLowerCase().includes(filtro))),
       ),
-    [funcoes, filtro],
+    [funcoes, filtro, familias],
   )
 
   /**
@@ -311,14 +340,64 @@ export function AgentExecutorSection({
             cola um trecho seria a porta de execução arbitrária que o resto do sistema
             existe para fechar.
           */}
-          <input
-            id="function-search"
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            placeholder="Procurar por nome, descrição ou capacidade"
-            className="w-full rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
-            data-testid="function-search"
-          />
+          <div className="flex items-center gap-2">
+            <input
+              id="function-search"
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="Procurar por nome, descrição ou capacidade"
+              className="min-w-0 flex-1 rounded-lg border border-(--border-strong) bg-(--surface-card) px-3 py-2 text-sm outline-none focus:border-(--border-focus)"
+              data-testid="function-search"
+            />
+            <button
+              type="button"
+              onClick={() => setFiltroAberto((v) => !v)}
+              aria-expanded={filtroAberto}
+              aria-label={familias.size ? `Filtrar por tipo (${familias.size} ativo(s))` : 'Filtrar por tipo'}
+              title="Filtrar por tipo"
+              className={`ds-hit flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-2 text-xs ${
+                familias.size ? 'border-(--border-focus) text-(--intent-brand)' : 'border-(--border-strong) text-(--text-muted)'
+              }`}
+              data-testid="function-filter"
+            >
+              <Icon name="list-filter" size={16} />
+              {/* O número no botão: com o painel fechado, é a única pista de que há
+                  filtro ativo — e sem ela a lista parece incompleta sem motivo. */}
+              {familias.size > 0 && <span className="font-semibold">{familias.size}</span>}
+            </button>
+          </div>
+
+          {filtroAberto && (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-(--border-subtle) p-2" data-testid="function-filter-panel">
+              {familiasDisponiveis.map((familia) => {
+                const ativa = familias.has(familia)
+                return (
+                  <button
+                    key={familia}
+                    type="button"
+                    onClick={() => alternarFamilia(familia)}
+                    aria-pressed={ativa}
+                    className={`rounded-full border px-2.5 py-1 text-xs ${
+                      ativa ? 'border-(--border-focus) bg-(--surface-sunken) font-semibold' : 'border-(--border-subtle) text-(--text-muted)'
+                    }`}
+                    data-testid={`function-filter-${familia}`}
+                  >
+                    {FAMILIA_LABEL[familia] ?? familia}
+                  </button>
+                )
+              })}
+              {familias.size > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setFamilias(new Set())}
+                  className="ml-auto rounded-full px-2 py-1 text-xs text-(--text-muted) underline"
+                  data-testid="function-filter-clear"
+                >
+                  Limpar
+                </button>
+              )}
+            </div>
+          )}
           {/* Agrupadas por família: com quase trinta funções, uma lista corrida obriga a
               ler todas para achar a que serve. O prefixo já dizia o grupo — só não
               estava sendo usado. */}

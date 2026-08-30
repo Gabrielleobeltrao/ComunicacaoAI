@@ -495,3 +495,67 @@ test('a busca continua filtrando os cards', async ({ page }) => {
   // E o cabeçalho da família some junto quando ela fica vazia.
   await expect(page.getByTestId('function-picker')).not.toContainText('Cálculo')
 })
+
+
+// --- o filtro por tipo ----------------------------------------------------------------
+
+test('o filtro estreita por família, e o botão avisa que está ativo', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+
+  // Fechado por padrão: quem já sabe o nome usa a busca e não tropeça no filtro.
+  await expect(page.getByTestId('function-filter-panel')).toHaveCount(0)
+  await page.getByTestId('function-filter').click()
+  await expect(page.getByTestId('function-filter-panel')).toBeVisible()
+
+  await page.getByTestId('function-filter-br').click()
+  await expect(page.getByTestId('function-option-br.cpf')).toBeVisible()
+  await expect(page.getByTestId('function-option-math.summary')).toHaveCount(0)
+  // Com o painel fechado, o número no botão é a única pista de que a lista está
+  // estreitada — sem ele, ela parece incompleta sem motivo.
+  await expect(page.getByTestId('function-filter')).toContainText('1')
+})
+
+test('filtro e busca somam: o filtro estreita, a busca procura dentro', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+  await page.getByTestId('function-filter').click()
+  await page.getByTestId('function-filter-br').click()
+
+  // Uma busca que casaria com a outra família não a traz de volta.
+  await page.getByTestId('function-search').fill('estatístico')
+  await expect(page.getByTestId('function-option-math.summary')).toHaveCount(0)
+  await expect(page.getByTestId('function-list')).toContainText('Nenhuma função encontrada')
+})
+
+test('limpar devolve a lista inteira', async ({ page }) => {
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+  await page.getByTestId('function-filter').click()
+  await page.getByTestId('function-filter-br').click()
+  await expect(page.getByTestId('function-option-math.summary')).toHaveCount(0)
+
+  await page.getByTestId('function-filter-clear').click()
+  await expect(page.getByTestId('function-option-math.summary')).toBeVisible()
+  await expect(page.getByTestId('function-option-br.cpf')).toBeVisible()
+  await expect(page.getByTestId('function-filter-clear')).toHaveCount(0)
+})
+
+test('a opção de família não some quando é escolhida', async ({ page }) => {
+  // Derivar as opções do que está VISÍVEL faria a escolhida desaparecer no instante em
+  // que fosse marcada — e aí não haveria como desmarcá-la.
+  await stubApi(page, agenteBase())
+  await abrirAvancado(page)
+  await page.getByTestId('executor-kind-function').click()
+  await page.getByTestId('function-filter').click()
+  await page.getByTestId('function-filter-br').click()
+  await expect(page.getByTestId('function-filter-math')).toBeVisible()
+  await expect(page.getByTestId('function-filter-br')).toBeVisible()
+
+  // E desmarcar volta ao estado sem filtro.
+  await page.getByTestId('function-filter-br').click()
+  await expect(page.getByTestId('function-option-math.summary')).toBeVisible()
+})
