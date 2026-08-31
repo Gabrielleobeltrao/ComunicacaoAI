@@ -85,6 +85,14 @@ export function ResourceLinks({ project, onSalvar, carregando }: { project: Arch
   }
 
   const total = opcoes('floor').length + opcoes('agent').length + opcoes('sector').length + opcoes('routine').length
+  /**
+   * Sem NADA para reaproveitar, este bloco não existe.
+   *
+   * Ele ocupava a primeira linha da tela inteira para dizer "esta conta não tem nada
+   * para reaproveitar" — a informação menos acionável possível, no lugar mais nobre.
+   * Quem está começando do zero já sabe que está começando do zero.
+   */
+  if (total === 0) return null
 
   return (
     <Card>

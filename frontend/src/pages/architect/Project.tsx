@@ -411,6 +411,9 @@ export function ArchitectProject() {
                   top: 0,
                   alignSelf: 'flex-start',
                   maxHeight: 'calc(100dvh - 150px)',
+                  // Uma conversa curta não pode virar uma tira fina: o painel tem corpo
+                  // mesmo com duas mensagens, senão parece que a tela carregou pela metade.
+                  minHeight: 340,
                   borderRadius: 'var(--radius-card)',
                   background: 'var(--surface-card)',
                   border: '1px solid var(--border-subtle)',

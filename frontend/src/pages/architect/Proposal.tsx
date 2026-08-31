@@ -64,6 +64,27 @@ const LISTA: Partial<Record<PreviewItem['kind'], keyof Blueprint>> = {
   knowledge: 'knowledgeRequirements',
 }
 
+/** A ordem em que os grupos aparecem: o lugar, depois quem trabalha nele, depois o resto. */
+const GRUPOS: PreviewItem['kind'][] = ['floor', 'sector', 'agent', 'routine', 'app', 'knowledge']
+
+const GRUPO_LABEL: Record<PreviewItem['kind'], string> = {
+  building: 'Prédio',
+  floor: 'Andar',
+  sector: 'Setores',
+  agent: 'Quem trabalha',
+  routine: 'Roda sozinho',
+  app: 'Apps',
+  knowledge: 'Conhecimento',
+}
+
+const TITULO_GRUPO = {
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: '.06em',
+  textTransform: 'uppercase' as const,
+  color: 'var(--text-faint)',
+}
+
 const MUDANCA: Record<string, { label: string; tone: 'brand' | 'warning' | 'danger' }> = {
   added: { label: 'Novo', tone: 'brand' },
   removed: { label: 'Saiu', tone: 'danger' },
@@ -117,6 +138,17 @@ export function Proposal({
   const avisos = (preview?.issues ?? []).filter((i) => i.severity === 'warning')
   const mudancas = project.changes ?? []
 
+  /**
+   * A lista AGRUPADA por tipo.
+   *
+   * Uma fileira de vinte linhas com o mesmo formato não se lê — se rola. Agrupada, a
+   * pergunta "quantos agentes e quem são" tem resposta num olhar, e o rótulo do tipo
+   * sai de cada linha (fica no título do grupo) em vez de se repetir vinte vezes.
+   */
+  const porTipo = new Map<PreviewItem['kind'], PreviewItem[]>()
+  for (const item of preview?.items ?? []) porTipo.set(item.kind, [...(porTipo.get(item.kind) ?? []), item])
+  const gruposComItens = GRUPOS.filter((g) => (porTipo.get(g)?.length ?? 0) > 0)
+
   const abrir = (item: PreviewItem) => {
     setErroEdicao(null)
     setRascunho(valoresDe(project.blueprint, item))
@@ -146,18 +178,38 @@ export function Proposal({
 
   return (
     <div className="flex flex-col gap-3" data-testid="architect-proposal">
+      {/* A faixa: quanto vai ser feito, e o que fazer a respeito — na mesma linha.
+          Eram dois cartões grandes em pontas opostas da rolagem: a contagem no topo e
+          os botões depois de tudo, a uma tela inteira de distância do que eles aplicam. */}
       {preview && (
-        <Card>
+        <div
+          className="flex flex-wrap items-center justify-between gap-3"
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 5,
+            padding: '10px 14px',
+            borderRadius: 'var(--radius-card)',
+            background: 'var(--surface-card)',
+            border: '1px solid var(--border-subtle)',
+          }}
+        >
           <div className="flex flex-wrap items-center gap-2" data-testid="architect-counts">
             <Badge tone="brand">{preview.counts.create} a criar</Badge>
             {preview.counts.reuse > 0 && <Badge>{preview.counts.reuse} reaproveitados</Badge>}
             {preview.counts.update > 0 && <Badge tone="warning">{preview.counts.update} alterações</Badge>}
             {preview.counts.waitUser > 0 && <Badge tone="warning">{preview.counts.waitUser} dependem de você</Badge>}
           </div>
-        </Card>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={onRevisar} disabled={carregando} data-testid="architect-review">
+              Revisar mudanças
+            </Button>
+            <Button onClick={onAplicar} disabled={carregando || !preview?.valid} data-testid="architect-apply">
+              Aplicar
+            </Button>
+          </div>
+        </div>
       )}
-
-
 
       {erros.length > 0 && (
         <Card>
@@ -179,13 +231,66 @@ export function Proposal({
       {/* Duas colunas quando há espaço: o DESENHO e a LISTA de um lado, o que comenta
           a proposta do outro. `items-start` importa — sem ele o cartão curto estica até
           a altura do vizinho e vira um retângulo vazio do tamanho da tela. */}
+      {/* O DESENHO e o que comenta a proposta de um lado; a LISTA, que é o bloco
+          mais alto, sozinha do outro. Empilhar desenho e lista na mesma coluna
+          deixava a coluna vizinha vazia da metade da tela para baixo. */}
       <div className="grid items-start gap-3 xl:grid-cols-2">
         <div className="flex min-w-0 flex-col gap-3">
+
       {/* O desenho antes da lista: é ele que responde "quem aciona quem". */}
       <Flow blueprint={project.blueprint} />
+
+      {mudancas.length > 0 && (
+        <Card tone="sunken">
+          <div className="flex flex-col gap-2" data-testid="architect-changes">
+            <div>
+              <strong style={{ fontSize: 13 }}>O que mudou na última revisão</strong>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Comparado com a versão anterior desta proposta.</p>
+            </div>
+            {mudancas.map((m) => (
+              <div key={`${m.kind}-${m.key}-${m.change}`} className="flex flex-wrap items-center gap-2" style={{ fontSize: 12.5 }}>
+                <Badge tone={MUDANCA[m.change]?.tone ?? 'neutral'}>{MUDANCA[m.change]?.label ?? m.change}</Badge>
+                <span style={{ color: 'var(--text-muted)' }}>{KIND_LABEL[m.kind]}</span>
+                <span style={{ fontWeight: 600, overflowWrap: 'anywhere' }}>{m.label}</span>
+                {m.fields.length > 0 && <span style={{ color: 'var(--text-muted)' }}>— {m.fields.join(', ')}</span>}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+      {avisos.length > 0 && (
+        <Card tone="sunken">
+          <div className="flex flex-col gap-1" data-testid="architect-warnings">
+            <strong style={{ fontSize: 13 }}>Vale saber</strong>
+            {avisos.map((i, n) => (
+              <p key={`${i.path}-${n}`} style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                {i.message}
+              </p>
+            ))}
+          </div>
+        </Card>
+      )}
+      {(project.assumptions?.length ?? 0) > 0 && (
+        <Card tone="sunken">
+          <div className="flex flex-col gap-1" data-testid="architect-assumptions">
+            <strong style={{ fontSize: 13 }}>O que eu assumi</strong>
+            {project.assumptions!.map((a) => (
+              <p key={a.key} style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                {a.text}
+              </p>
+            ))}
+          </div>
+        </Card>
+      )}
+
+        </div>
+        <div className="flex min-w-0 flex-col gap-3">
       <Card>
-        <div className="flex flex-col gap-2" data-testid="architect-items">
-          {(preview?.items ?? []).map((item) => {
+        <div className="flex flex-col gap-4" data-testid="architect-items">
+          {gruposComItens.map((grupo) => (
+            <div key={grupo} className="flex flex-col gap-2">
+              <span style={TITULO_GRUPO}>{GRUPO_LABEL[grupo]}</span>
+              {(porTipo.get(grupo) ?? []).map((item) => {
             const id = `${item.kind}:${item.key}`
             const campos = CAMPOS[item.kind]
             const podeEditar = editavel && Boolean(campos)
@@ -241,7 +346,6 @@ export function Proposal({
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div className="flex flex-wrap items-center gap-2">
                     <span style={{ fontWeight: 600, fontSize: 13.5, overflowWrap: 'anywhere' }}>{item.label}</span>
-                    <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{KIND_LABEL[item.kind]}</span>
                     {/* Custo não se esconde: uma etapa que chama o modelo é dita como tal. */}
                     {item.usesLlm && (
                       <span style={{ fontSize: 11.5, color: 'var(--text-muted)', display: 'inline-flex', gap: 4, alignItems: 'center' }} data-testid="architect-uses-llm">
@@ -270,66 +374,15 @@ export function Proposal({
                 )}
               </div>
             )
-          })}
+              })}
+            </div>
+          ))}
         </div>
       </Card>
 
         </div>
-        <div className="flex min-w-0 flex-col gap-3">
-      {mudancas.length > 0 && (
-        <Card>
-          <div className="flex flex-col gap-2" data-testid="architect-changes">
-            <div>
-              <strong style={{ fontSize: 13 }}>O que mudou na última revisão</strong>
-              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Comparado com a versão anterior desta proposta.</p>
-            </div>
-            {mudancas.map((m) => (
-              <div key={`${m.kind}-${m.key}-${m.change}`} className="flex flex-wrap items-center gap-2" style={{ fontSize: 12.5 }}>
-                <Badge tone={MUDANCA[m.change]?.tone ?? 'neutral'}>{MUDANCA[m.change]?.label ?? m.change}</Badge>
-                <span style={{ color: 'var(--text-muted)' }}>{KIND_LABEL[m.kind]}</span>
-                <span style={{ fontWeight: 600, overflowWrap: 'anywhere' }}>{m.label}</span>
-                {m.fields.length > 0 && <span style={{ color: 'var(--text-muted)' }}>— {m.fields.join(', ')}</span>}
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-      {avisos.length > 0 && (
-        <Card>
-          <div className="flex flex-col gap-1" data-testid="architect-warnings">
-            <strong style={{ fontSize: 13 }}>Vale saber</strong>
-            {avisos.map((i, n) => (
-              <p key={`${i.path}-${n}`} style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                {i.message}
-              </p>
-            ))}
-          </div>
-        </Card>
-      )}
-      {(project.assumptions?.length ?? 0) > 0 && (
-        <Card>
-          <div className="flex flex-col gap-1" data-testid="architect-assumptions">
-            <strong style={{ fontSize: 13 }}>O que eu assumi</strong>
-            {project.assumptions!.map((a) => (
-              <p key={a.key} style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
-                {a.text}
-              </p>
-            ))}
-          </div>
-        </Card>
-      )}
-
-        </div>
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <Button variant="secondary" onClick={onRevisar} disabled={carregando} data-testid="architect-review">
-          Revisar mudanças
-        </Button>
-        <Button onClick={onAplicar} disabled={carregando || !preview?.valid} data-testid="architect-apply">
-          Aplicar
-        </Button>
-      </div>
     </div>
   )
 }

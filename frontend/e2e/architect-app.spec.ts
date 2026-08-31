@@ -696,10 +696,22 @@ test('a escolha de recurso só oferece o que é desta conta, e manda ação e id
   await expect.poll(() => ligacoes?.links).toEqual([{ kind: 'floor', key: 'atendimento', action: 'reuse', resourceId: 'f-real' }])
 })
 
-test('sem nada para reaproveitar, a tela diz isso em vez de um seletor vazio', async ({ page }) => {
+test('sem nada para reaproveitar, o bloco não existe — e com algo, ele aparece', async ({ page }) => {
+  // Ele ocupava a primeira linha da tela inteira para dizer "esta conta não tem nada
+  // para reaproveitar": a informação menos acionável possível, no lugar mais nobre.
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
-  await expect(page.getByTestId('architect-no-targets')).toBeVisible()
+  await expect(page.getByTestId('architect-proposal')).toBeVisible()
+  await expect(page.getByTestId('architect-links-editor')).toHaveCount(0)
+  await expect(page.getByTestId('architect-no-targets')).toHaveCount(0)
+
+  // E quando há o que escolher, ele está lá — que é a parte que importa.
+  await stub(page, {
+    project: COM_PROPOSTA,
+    targets: { floors: [{ id: 'f9', name: 'Outro andar' }], agents: [], sectors: [], routines: [] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-links-editor')).toBeVisible()
 })
 
 test('o que foi marcado na confirmação é o que vai no pedido', async ({ page }) => {
