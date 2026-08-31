@@ -1,4 +1,5 @@
 import type { ResolvedTool } from './agentTools.js'
+import { safeFetch } from './net/safeHttp.js'
 
 // These built-in apps carry their credential in the agent's per-app config (a
 // webhook URL / API token), so they don't need an account connection.
@@ -26,13 +27,18 @@ export function slackTools(_ownerId: string, config: Record<string, string>): Re
           return { ok: false, result: 'Webhook do Slack inválido (deve ser hooks.slack.com).' }
         }
         try {
-          const res = await fetch(webhookUrl, {
+          // Mesmo com o host preso a hooks.slack.com, a saída passa pela camada: é ela
+          // que confere o IP resolvido, fixa a conexão e corta a resposta.
+          const res = await safeFetch(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text: String(args.mensagem ?? '') }),
+            hostAllowlist: ['slack.com'],
+            timeoutMs: 10_000,
+            maxBytes: 32 * 1024,
           })
-          const text = (await res.text()).slice(0, 500)
-          return res.ok ? { ok: true, result: 'Mensagem enviada.' } : { ok: false, result: `Slack ${res.status}: ${text}` }
+          const ok = res.status >= 200 && res.status <= 299
+          return ok ? { ok: true, result: 'Mensagem enviada.' } : { ok: false, result: `Slack respondeu ${res.status}.` }
         } catch (error) {
           return { ok: false, result: `Falha ao enviar no Slack: ${(error as Error).message}` }
         }

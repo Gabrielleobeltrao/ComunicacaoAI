@@ -27,7 +27,10 @@ let proc
 let cliente
 let cookie = ''
 
-const comSessao = (extra = {}) => ({ ...extra, Cookie: cookie, 'Content-Type': 'application/json' })
+// `Origin` como um navegador manda: com o cookie de sessão em jogo, a API exige que a
+// mutação venha de uma origem conhecida — é a defesa de CSRF, e um cliente que simula
+// navegador precisa simular isso também.
+const comSessao = (extra = {}) => ({ ...extra, Cookie: cookie, Origin: `http://127.0.0.1:${PORTA}`, 'Content-Type': 'application/json' })
 
 before(async () => {
   const uri = await startMongo()

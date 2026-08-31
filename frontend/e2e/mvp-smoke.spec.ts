@@ -348,10 +348,20 @@ test('as telas do MVP cabem em 320, 390, 768 e 1440', async ({ page }) => {
    * empurra o contêiner inteiro.
    */
   const NOME_COMPRIDO = 'Atendimento ao Cliente Premium — suporte@empresa-de-atendimento-com-nome-bem-comprido.com.br'
+  /**
+   * `Origin` como o navegador manda.
+   *
+   * Com o cookie de sessão em jogo, a API exige que a mutação venha de uma origem
+   * conhecida — é a defesa de CSRF. `page.request` não é um navegador e não põe o
+   * cabeçalho sozinho, mas ele carrega o cookie da sessão: sem declarar a origem, estas
+   * duas chamadas são recusadas com 403, e a varredura mediria a conta vazia.
+   */
+  const daPagina = { Origin: new URL(page.url()).origin }
   await page.request.patch(`/api/agents/${agentes[0]._id}`, {
+    headers: daPagina,
     data: { name: NOME_COMPRIDO, objective: `${NOME_COMPRIDO} responde dúvidas, registra pedidos e encaminha o que não resolve.` },
   })
-  await page.request.patch(`/api/sectors/${setores[0]._id}`, { data: { name: NOME_COMPRIDO } })
+  await page.request.patch(`/api/sectors/${setores[0]._id}`, { headers: daPagina, data: { name: NOME_COMPRIDO } })
 
   // O nome comprido tem que estar MESMO na tela. Sem isto, um PATCH recusado deixaria
   // a varredura medindo a conta vazia de novo — passando pelo motivo errado.

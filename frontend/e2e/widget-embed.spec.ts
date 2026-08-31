@@ -59,6 +59,27 @@ async function stub(page: Page, over: { widgets?: unknown[] } = {}) {
   await page.route('**/api/widgets', (r) => (r.request().method() === 'GET' ? r.fulfill({ json: over.widgets ?? [WIDGET] }) : r.fallback()))
 }
 
+
+/**
+ * A SESSÃO do visitante, que o widget abre antes de qualquer outra coisa.
+ *
+ * Ela não existia: o navegador inventava o `conversationId` e ele valia como
+ * autorização. Agora o servidor assina um token preso ao widget e à conversa, e é ele
+ * que abre as mensagens e a sala — então toda jornada do visitante começa por aqui.
+ */
+const TOKEN = 'v1.token-de-teste.assinatura'
+async function stubSessaoVisitante(page: Page, over: { conversationId?: string } = {}) {
+  await page.route(`**/api/public/widgets/${CHAVE}/session`, (r) =>
+    r.fulfill({
+      json: {
+        token: TOKEN,
+        conversationId: over.conversationId ?? 'conversa-do-servidor',
+        expiresAt: new Date(Date.now() + 12 * 3600e3).toISOString(),
+      },
+    }),
+  )
+}
+
 // --- a lista ---------------------------------------------------------------------------------
 
 test('a lista mostra destino com o andar, a chave mascarada e o trecho para colar', async ({ page }) => {
@@ -108,6 +129,7 @@ test('a mensagem do visitante aparece na hora, sem esperar socket nem polling', 
   await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
     r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
   )
+  await stubSessaoVisitante(page)
   await page.route(`**/api/public/widgets/${CHAVE}/messages**`, (r) => {
     if (r.request().method() === 'POST') {
       const corpo = JSON.parse(r.request().postData() ?? '{}')
@@ -133,6 +155,7 @@ test('falha ao enviar devolve o texto ao campo, sem perder o que a pessoa escrev
   await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
     r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
   )
+  await stubSessaoVisitante(page)
   // Um erro SEM mensagem do servidor: aí a frase genérica é a certa.
   await page.route(`**/api/public/widgets/${CHAVE}/messages**`, (r) =>
     r.request().method() === 'POST' ? r.fulfill({ status: 500, body: 'erro interno' }) : r.fulfill({ json: [] }),
@@ -146,6 +169,54 @@ test('falha ao enviar devolve o texto ao campo, sem perder o que a pessoa escrev
   await expect(page.getByRole('textbox')).toHaveValue('preciso de ajuda')
 })
 
+test('o visitante abre uma SESSÃO antes de tudo, e toda chamada leva o token', async ({ page }) => {
+  const autorizacoes: (string | null)[] = []
+  const corpos: unknown[] = []
+  await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
+    r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
+  )
+  await stubSessaoVisitante(page)
+  await page.route(`**/api/public/widgets/${CHAVE}/messages**`, (r) => {
+    autorizacoes.push(r.request().headers()['authorization'] ?? null)
+    if (r.request().method() === 'POST') {
+      corpos.push(JSON.parse(r.request().postData() ?? '{}'))
+      return r.fulfill({ status: 201, json: [{ _id: 'm1', conversationId: 'conversa-do-servidor', role: 'visitor', content: 'oi', createdAt: NOW }] })
+    }
+    return r.fulfill({ json: [] })
+  })
+
+  await page.goto(`/widget/${CHAVE}`)
+  await page.getByRole('textbox').fill('oi')
+  await page.getByRole('button', { name: /enviar/i }).click()
+  await expect(page.getByText('oi')).toBeVisible()
+
+  // A leitura do histórico e o envio, os dois com o token — e nenhum deles pedindo a
+  // conversa pela URL, que era o que valia como autorização antes.
+  expect(autorizacoes.length).toBeGreaterThanOrEqual(2)
+  expect(autorizacoes.every((a) => a === `Bearer ${TOKEN}`)).toBe(true)
+  // O corpo não manda mais `conversationId`: quem decide a conversa é o token.
+  expect(corpos[0]).toEqual({ content: 'oi' })
+})
+
+test('o id da conversa guardado no navegador é TROCADO por uma sessão, sem perder o histórico', async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem('widget-conversation:chave-publica-de-teste', 'conversa-antiga'))
+  const pedidosDeSessao: unknown[] = []
+  await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
+    r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
+  )
+  await page.route(`**/api/public/widgets/${CHAVE}/session`, (r) => {
+    pedidosDeSessao.push(JSON.parse(r.request().postData() ?? '{}'))
+    return r.fulfill({ json: { token: TOKEN, conversationId: 'conversa-antiga', expiresAt: new Date(Date.now() + 12 * 3600e3).toISOString() } })
+  })
+  await page.route(`**/api/public/widgets/${CHAVE}/messages**`, (r) =>
+    r.fulfill({ json: [{ _id: 'antiga', conversationId: 'conversa-antiga', role: 'visitor', content: 'mensagem de antes', createdAt: NOW }] }),
+  )
+
+  await page.goto(`/widget/${CHAVE}`)
+  await expect(page.getByText('mensagem de antes')).toBeVisible()
+  expect(pedidosDeSessao).toEqual([{ conversationId: 'conversa-antiga' }])
+})
+
 // --- o App desativado, e o destino que deixou de atender ---------------------------------------
 //
 // Os dois têm conserto do lado de quem administra, e nenhum deles é chave errada. Dizer
@@ -155,6 +226,7 @@ test('App revogado: o chat não monta e diz o motivo do servidor', async ({ page
   await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
     r.fulfill({ status: 410, json: { error: 'Este chat está indisponível no momento.', code: 'web_chat_inactive' } }),
   )
+  await stubSessaoVisitante(page)
   await page.goto(`/widget/${CHAVE}`)
 
   await expect(page.getByText('Este chat está indisponível no momento.')).toBeVisible()
@@ -166,6 +238,7 @@ test('destino que deixou de atender: a mensagem NÃO é aceita, e o texto não s
   await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
     r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
   )
+  await stubSessaoVisitante(page)
   await page.route(`**/api/public/widgets/${CHAVE}/messages**`, (r) =>
     r.request().method() === 'POST'
       ? r.fulfill({ status: 409, json: { error: 'Este agente não existe mais nesta conta.', code: 'widget_destination_invalid' } })
@@ -193,6 +266,7 @@ const stubChat = async (page: Page, respostaDoAgente?: { atrasoMs: number; texto
   await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
     r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
   )
+  await stubSessaoVisitante(page)
   // A página faz um GET ao abrir, ANTES de qualquer envio. Sem esta marca, era ele quem
   // consumia a resposta do agente — e o teste media o carregamento, não a espera.
   let jaEnviou = false
@@ -254,6 +328,7 @@ test('uma falha no envio NÃO acende os pontinhos', async ({ page }) => {
   await page.route(`**/api/public/widgets/${CHAVE}`, (r) =>
     r.fulfill({ json: { name: 'Chat', primaryColor: '#111827', position: 'right', conversationPersistence: 'same_browser', firstMessage: null } }),
   )
+  await stubSessaoVisitante(page)
   await page.route(`**/api/public/widgets/${CHAVE}/messages**`, (r) =>
     r.request().method() === 'POST' ? r.fulfill({ status: 500, json: { error: 'falhou' } }) : r.fulfill({ json: [] }),
   )

@@ -15,6 +15,13 @@ on:
   pull_request:
     branches: [main, development]
 
+# O mínimo que os jobs precisam. Sem isto, o GITHUB_TOKEN vem com escrita no
+# repositório — e um passo comprometido (ou uma action trocada por baixo) teria permissão
+# para empurrar commit. É o motivo de as actions abaixo estarem fixadas por SHA: tag é um
+# ponteiro que o dono da action pode mover.
+permissions:
+  contents: read
+
 # A new push supersedes the previous run for the same ref.
 concurrency:
   group: ci-${{ github.ref }}
@@ -44,9 +51,9 @@ jobs:
       # que subiu.
       COMPOSE_ARGS: -f compose.production-test.yml -f compose.ci-smoke.yml --env-file compose.production-test.env
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           # Pinned to 20.19+: rolldown (vite's bundler) declares
           # engines.node "^20.19.0 || >=22.12.0", and on an older 20.x npm silently
@@ -69,13 +76,25 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Dependência com falha conhecida é a porta que não precisa ser arrombada. `high`
+      # como piso: `critical` sozinho deixaria passar exatamente a faixa que costuma ter
+      # execução remota.
+      - name: Dependências vulneráveis (npm audit)
+        run: npm audit --audit-level=high
+
+      # Segredo commitado não é revogado por `git rm`: ele fica no histórico e no fork de
+      # quem clonou. A varredura não tem dependência nem rede — roda igual aqui e na
+      # máquina de quem desenvolve (`npm run secret-scan`).
+      - name: Segredo no repositório
+        run: node scripts/secret-scan.mjs
+
       # O binário do mongod entre execuções. Sem isto, cada run baixa 76 MB de
       # novo — e era num cache frio que 29 processos disputavam o mesmo download.
       - name: Cache mongod binary
         # v5: a v4 roda em Node 20, que o runner já avisa que vai sair. O aviso não
         # quebra nada hoje e vira falha quando o Node 20 for removido — trocar agora é
         # mais barato que descobrir no dia.
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cache/mongodb-binaries
           key: mongod-${{ runner.os }}
@@ -159,7 +178,7 @@ jobs:
       # passo que não dá para ler — foi exatamente o que aconteceu aqui.
       - name: "E2E: relatório da falha"
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-report
           path: frontend/playwright-report
@@ -174,6 +193,27 @@ jobs:
 
       - name: Build frontend image
         run: docker build -t comunicacaoai-frontend:ci --build-arg VITE_API_URL=https://api.comunicacaoai.onplataform.com frontend
+
+      # A imagem carrega mais coisa que o nosso código: base, runtime e tudo o que veio
+      # junto. Falha ALTA ou CRÍTICA com correção disponível derruba o job — sem correção
+      # publicada, não há o que fazer no merge, e travar aí só ensinaria a ignorar.
+      - name: Scan das imagens (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: comunicacaoai-backend:ci
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Scan da imagem do frontend (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: comunicacaoai-frontend:ci
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
 
       # Sobe a pilha com `NODE_ENV=production` e as origens públicas reais: a validação
       # de produção roda por inteiro, sem flag de escape. O banco vem do override do CI
@@ -190,6 +230,11 @@ jobs:
         run: |
           set -euo pipefail
           cp compose.production-test.env.example compose.production-test.env
+          # Os segredos do EXEMPLO são recusados pela validação de produção — de
+          # propósito, para ninguém subir com eles. O CI gera os seus, diferentes entre
+          # si, que morrem junto com o job.
+          sed -i "s|^BETTER_AUTH_SECRET=.*|BETTER_AUTH_SECRET=$(openssl rand -hex 32)|" compose.production-test.env
+          sed -i "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$(openssl rand -hex 32)|" compose.production-test.env
           # Saudável aqui significa "existe um primário para escrever" — o healthcheck do
           # override responde isso pelo código de saída.
           docker compose $COMPOSE_ARGS up -d --wait --wait-timeout 150 mongo
@@ -250,9 +295,9 @@ jobs:
     env:
       CI: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '20.19'
           cache: npm
@@ -269,3 +314,32 @@ jobs:
       # e nenhuma chave de provedor — se precisasse de alguma, não rodaria aqui.
       - name: MVP smoke (Chromium)
         run: npm run smoke
+
+  # Análise estática do nosso código, em job próprio: ela demora e não deve segurar o
+  # retorno dos testes. `security-events: write` é o que permite publicar o resultado na
+  # aba Security — e é permissão que só este job recebe.
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Inicializar CodeQL
+        uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        with:
+          languages: ${{ matrix.language }}
+          # `security-extended` inclui as consultas de injeção e de SSRF — que é
+          # exatamente a classe que este repositório tem mais superfície para cometer.
+          queries: security-extended
+
+      - name: Analisar
+        uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        with:
+          category: /language:${{ matrix.language }}

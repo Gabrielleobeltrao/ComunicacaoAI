@@ -51,17 +51,19 @@ const PROD_URLS = {
 // The non-URL variables a production deploy must carry. There is no REDIS_URL any
 // more: the automation queue and scheduler live in MongoDB, so a deploy needs one
 // database and nothing else.
+// Valores FORTES e diferentes entre si — é o que a validação passou a exigir. Não são
+// credenciais de lugar nenhum: são cadeias longas e variadas, escritas para o teste.
 const PROD_SECRETS = {
   MONGODB_URI: 'mongodb://localhost:27017/comunicacaoai_test',
-  BETTER_AUTH_SECRET: 'x'.repeat(40),
-  ENCRYPTION_KEY: 'y'.repeat(40),
+  BETTER_AUTH_SECRET: 'K7q2Zx9wR4tB6nY1vJ8mC3sP5hD0gF2aL4eU7iO9kX1z',
+  ENCRYPTION_KEY: 'Q3n8Bv6cX2mZ9pL5tR7wY4hJ1kD0sG8fA6eN2uI5oT3b',
 }
 
 test('production: missing MONGODB_URI fails fast and names the variable', () => {
-  const { ok, out } = run({ ...PROD_URLS, BETTER_AUTH_SECRET: 'x'.repeat(40), ENCRYPTION_KEY: 'y'.repeat(40) })
+  const { ok, out } = run({ ...PROD_URLS, BETTER_AUTH_SECRET: PROD_SECRETS.BETTER_AUTH_SECRET, ENCRYPTION_KEY: PROD_SECRETS.ENCRYPTION_KEY })
   assert.equal(ok, false, 'should have thrown')
   assert.match(out, /MONGODB_URI/)
-  assert.doesNotMatch(out, /x{40}|y{40}/, 'must not print secret values')
+  assert.doesNotMatch(out, new RegExp(`${PROD_SECRETS.BETTER_AUTH_SECRET}|${PROD_SECRETS.ENCRYPTION_KEY}`), 'must not print secret values')
 })
 
 test('production: a required URL var missing fails fast at import', () => {
@@ -152,4 +154,51 @@ test('e a exigência de https continua valendo — não há flag de escape', () 
   })
   assert.equal(comHttp.ok, false)
   assert.match(comHttp.out, /https/i)
+})
+
+// --- a força dos segredos ---------------------------------------------------------------
+//
+// Um `ENCRYPTION_KEY=changeme` cifra toda credencial da plataforma com uma chave que
+// está em qualquer tutorial, e nada em runtime denuncia isso. A hora de recusar é a de
+// subir.
+
+test('segredo curto, previsível ou de exemplo não sobe em produção', () => {
+  const casos = [
+    ['curto demais', { BETTER_AUTH_SECRET: 'abc123' }, /at least 32/i],
+    ['placeholder', { BETTER_AUTH_SECRET: 'changeme-changeme-changeme-changeme-1' }, /placeholder/i],
+    ['pouca variação', { ENCRYPTION_KEY: 'ababababababababababababababababababab' }, /variation/i],
+  ]
+  for (const [nome, sobrescrito, esperado] of casos) {
+    const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS, ...sobrescrito })
+    assert.equal(ok, false, `${nome} deveria ser recusado`)
+    assert.match(out, esperado, nome)
+  }
+})
+
+test('os dois segredos precisam ser DIFERENTES', () => {
+  // Iguais, um vazamento derruba a sessão e o cofre de credenciais de uma vez só.
+  const mesmo = PROD_SECRETS.BETTER_AUTH_SECRET
+  const { ok, out } = run({ ...PROD_URLS, ...PROD_SECRETS, BETTER_AUTH_SECRET: mesmo, ENCRYPTION_KEY: mesmo })
+  assert.equal(ok, false)
+  assert.match(out, /must be different/i)
+})
+
+test('os segredos DO ARQUIVO DE EXEMPLO são recusados — ninguém sobe com eles', async () => {
+  const { readFileSync } = await import('node:fs')
+  const texto = readFileSync(new URL('../../compose.production-test.env.example', import.meta.url), 'utf8')
+  const doArquivo = {}
+  for (const linha of texto.split('\n')) {
+    const m = /^([A-Z0-9_]+)=(.*)$/.exec(linha.trim())
+    if (m) doArquivo[m[1]] = m[2]
+  }
+  const { ok } = run({
+    NODE_ENV: 'production',
+    MONGODB_URI: PROD_SECRETS.MONGODB_URI,
+    CLIENT_URL: doArquivo.CLIENT_URL,
+    BETTER_AUTH_URL: doArquivo.BETTER_AUTH_URL,
+    PUBLIC_URL: doArquivo.PUBLIC_URL,
+    BETTER_AUTH_SECRET: doArquivo.BETTER_AUTH_SECRET,
+    ENCRYPTION_KEY: doArquivo.ENCRYPTION_KEY,
+  })
+  assert.equal(ok, false, 'o exemplo não pode ser um segredo utilizável nem passar na validação')
 })

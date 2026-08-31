@@ -207,6 +207,9 @@ const RULES: Rule[] = [
   R('DELETE', 'api/data-history/recorders/:', { entityType: 'data_recorder', action: 'delete' }, { idAt: 3 }),
   // A prévia não grava nada: ela roda o motor contra amostras e joga fora.
   R('POST', 'api/data-history/preview', null, { why: 'preview only, nothing is stored' }),
+  // A sessão do visitante do widget: pública, sem dono para atribuir, e o token não
+  // pode ser registrado em lugar nenhum.
+  R('POST', 'api/public/widgets/:/session', null, { why: 'public visitor session, no owner context' }),
   R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
   R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),

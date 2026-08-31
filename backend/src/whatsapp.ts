@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { WithId } from 'mongodb'
 import { decrypt } from './crypto.js'
+import { safeFetch } from './net/safeHttp.js'
 import type { Widget } from './widgets.js'
 
 // A WhatsApp channel connects a phone number (through some provider) to an
@@ -44,6 +45,17 @@ export interface WhatsAppConfigField {
   type?: 'text' | 'password'
 }
 
+/** Tudo o que uma conferência de origem pode precisar — e nada além. */
+export interface InboundAuthContext {
+  /** O corpo EXATO recebido, para o HMAC bater byte a byte. */
+  rawBody?: Buffer
+  headers: Record<string, string | undefined>
+  /** A URL pública desta entrega, como o provedor a chamou. Twilio assina isto. */
+  url: string
+  /** Os parâmetros do formulário, quando o provedor posta `x-www-form-urlencoded`. */
+  params: Record<string, unknown>
+}
+
 export interface WhatsAppAdapter {
   key: string
   label: string
@@ -56,13 +68,16 @@ export interface WhatsAppAdapter {
   // GET verification handshake (Meta): return the challenge to echo, or null to
   // reject. Providers without a handshake (Evolution/Twilio) omit this.
   verifyChallenge?: (config: Record<string, string>, query: Record<string, string>) => string | null
-  // POST authenticity check (e.g. Meta's signature). Return false to drop the
-  // delivery. Omitted = no check.
-  authenticateInbound?: (
-    config: Record<string, string>,
-    rawBody: Buffer | undefined,
-    signature: string | undefined,
-  ) => boolean
+  /**
+   * A prova de que a entrega veio MESMO do provedor.
+   *
+   * Obrigatória em todos os adaptadores: o endereço do webhook é público, e sem prova
+   * de origem qualquer um cria conversa, faz o servidor baixar mídia e gasta o modelo
+   * na conta do dono. Cada provedor prova de um jeito — assinatura HMAC (Meta),
+   * assinatura sobre URL+parâmetros (Twilio) ou segredo combinado (Evolution) —, e
+   * `false` derruba a entrega antes de qualquer efeito.
+   */
+  authenticateInbound: (config: Record<string, string>, ctx: InboundAuthContext) => boolean
   // Parse a raw webhook body into zero or more inbound customer messages.
   parseInbound: (payload: unknown) => InboundMessage[]
   // Download the bytes for an inbound media reference (provider-specific auth).
@@ -78,6 +93,35 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
 }
 
+/**
+ * Os limites de um download de mídia.
+ *
+ * Um webhook diz "tem uma imagem em tal endereço" e o servidor vai buscar. Sem teto,
+ * sem prazo e sem lista de tipos, esse endereço é um jeito de fazer o servidor baixar
+ * o que o outro lado quiser, pelo tempo que ele quiser.
+ */
+const MEDIA_LIMITES = {
+  timeoutMs: 15_000,
+  maxBytes: 12 * 1024 * 1024,
+  contentTypeAllowlist: ['image/', 'application/pdf', 'text/', 'application/octet-stream', 'audio/', 'video/'],
+}
+
+/** De onde a mídia de cada provedor PODE vir. Fora daqui não há download nem credencial. */
+const HOSTS_TWILIO = ['twilio.com', 'twiliocdn.com']
+const HOSTS_META = ['facebook.com', 'fbcdn.net', 'whatsapp.net']
+
+/** O segredo comparado sem vazar o tempo da comparação. */
+function segredoConfere(esperado: string, recebido: string): boolean {
+  const a = Buffer.from(esperado)
+  const b = Buffer.from(recebido)
+  if (a.length !== b.length) return false
+  try {
+    return timingSafeEqual(a, b)
+  } catch {
+    return false
+  }
+}
+
 // --- Evolution API / Z-API (unofficial, QR-based) -------------------------
 const evolution: WhatsAppAdapter = {
   key: 'evolution',
@@ -89,8 +133,37 @@ const evolution: WhatsAppAdapter = {
     { key: 'baseUrl', label: 'URL da API', placeholder: 'https://sua-evolution.com', required: true },
     { key: 'instance', label: 'Instância', placeholder: 'nome da instância', required: true },
     { key: 'apiKey', label: 'API Key', required: true, type: 'password' },
+    {
+      key: 'webhookSecret',
+      label: 'Segredo do webhook',
+      placeholder: 'invente um segredo e configure na sua instância',
+      required: true,
+      type: 'password',
+    },
   ],
-  webhookNote: 'Cole o URL acima como webhook (evento messages.upsert) na configuração da sua instância.',
+  webhookNote:
+    'Cole o URL acima como webhook (evento messages.upsert) na sua instância e envie o segredo acima no cabeçalho "x-webhook-secret" (ou assine o corpo em "x-hub-signature-256").',
+  /**
+   * Evolution e Z-API não assinam nada por conta própria.
+   *
+   * Sem uma prova de origem, o endereço do webhook é público e QUALQUER um pode
+   * inventar uma mensagem em nome de um cliente — e ela viraria conversa, download de
+   * mídia e chamada ao modelo, tudo na conta do dono. O segredo é dele e viaja em
+   * cabeçalho; quem preferir assinar o corpo usa o mesmo HMAC do Meta.
+   */
+  authenticateInbound(config, { rawBody, headers }) {
+    const signature = headers['x-hub-signature-256']
+    const secret = config.webhookSecret?.trim()
+    // Sem segredo configurado o canal não recebe nada. Aberto por padrão era o buraco.
+    if (!secret) return false
+    const enviado = String(headers?.['x-webhook-secret'] ?? '').trim()
+    if (enviado) return segredoConfere(secret, enviado)
+    if (signature && rawBody) {
+      const esperado = `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`
+      return segredoConfere(esperado, signature)
+    }
+    return false
+  },
   parseInbound(payload) {
     const body = asRecord(payload)
     const event = body.event
@@ -160,13 +233,17 @@ const evolution: WhatsAppAdapter = {
     const instance = config.instance ?? ''
     if (!base || !instance) return { ok: false, error: 'Configuração incompleta (baseUrl/instance).' }
     try {
-      const res = await fetch(`${base}/message/sendText/${encodeURIComponent(instance)}`, {
+      // A URL da instância é digitada pelo dono: é endereço escolhido por usuário, e
+      // por isso sai pela camada com SSRF conferido — não por `fetch` direto.
+      const res = await safeFetch(`${base}/message/sendText/${encodeURIComponent(instance)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: config.apiKey ?? '' },
         body: JSON.stringify({ number: to, text }),
+        timeoutMs: 15_000,
+        maxBytes: 64 * 1024,
       })
-      const respBody = (await res.text()).slice(0, 500)
-      return res.ok ? { ok: true } : { ok: false, error: `Evolution ${res.status}: ${respBody}` }
+      // A resposta do outro lado não é ecoada: ela pode conter o que ele quiser.
+      return res.status >= 200 && res.status <= 299 ? { ok: true } : { ok: false, error: `Evolution respondeu ${res.status}.` }
     } catch (error) {
       return { ok: false, error: (error as Error).message }
     }
@@ -191,7 +268,7 @@ const meta: WhatsAppAdapter = {
       required: true,
       type: 'password',
     },
-    { key: 'appSecret', label: 'App Secret (recomendado)', required: false, type: 'password' },
+    { key: 'appSecret', label: 'App Secret', required: true, type: 'password' },
   ],
   webhookNote: 'Na Meta, use este URL como Callback URL e o mesmo Verify Token acima; assine o campo "messages".',
   verifyChallenge(config, query) {
@@ -200,16 +277,14 @@ const meta: WhatsAppAdapter = {
     }
     return null
   },
-  authenticateInbound(config, rawBody, signature) {
+  authenticateInbound(config, { rawBody, headers }) {
+    const signature = headers['x-hub-signature-256']
     const secret = config.appSecret?.trim()
-    if (!secret) return true // not configured → skip the check
-    if (!rawBody || !signature) return false
+    // Sem segredo, NADA passa. Antes isto era "pular a conferência" — e um canal sem
+    // App Secret aceitava qualquer entrega forjada como se fosse da Meta.
+    if (!secret || !rawBody || !signature) return false
     const expected = `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`
-    try {
-      return timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
-    } catch {
-      return false
-    }
+    return segredoConfere(expected, signature)
   },
   parseInbound(payload) {
     const body = asRecord(payload)
@@ -259,19 +334,29 @@ const meta: WhatsAppAdapter = {
     if (!ref.mediaId) return null
     const token = config.accessToken ?? ''
     try {
-      const lookup = await fetch(
-        `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(ref.mediaId)}`,
-        { headers: { Authorization: `Bearer ${token}` } },
-      )
-      if (!lookup.ok) return null
-      const meta = (await lookup.json()) as { url?: string; mime_type?: string }
+      const lookup = await safeFetch(`https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(ref.mediaId)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        hostAllowlist: HOSTS_META,
+        timeoutMs: 10_000,
+        maxBytes: 64 * 1024,
+        requireOk: true,
+      })
+      const meta = JSON.parse(lookup.body) as { url?: string; mime_type?: string }
       if (!meta.url) return null
-      const bin = await fetch(meta.url, { headers: { Authorization: `Bearer ${token}` } })
-      if (!bin.ok) return null
-      return {
-        bytes: Buffer.from(await bin.arrayBuffer()),
-        mimeType: meta.mime_type || ref.mimeType || 'application/octet-stream',
-      }
+      /**
+       * O ENDEREÇO veio de uma resposta de fora — mesmo sendo a Meta.
+       *
+       * O token do dono só viaja para host oficial: se a resposta trouxer outro
+       * destino, o download nem começa, e a credencial não vai junto.
+       */
+      const bin = await safeFetch(meta.url, {
+        headers: { Authorization: `Bearer ${token}` },
+        hostAllowlist: HOSTS_META,
+        asBytes: true,
+        requireOk: true,
+        ...MEDIA_LIMITES,
+      })
+      return { bytes: bin.bytes ?? Buffer.alloc(0), mimeType: meta.mime_type || ref.mimeType || 'application/octet-stream' }
     } catch {
       return null
     }
@@ -280,16 +365,17 @@ const meta: WhatsAppAdapter = {
     const phoneNumberId = config.phoneNumberId ?? ''
     if (!phoneNumberId) return { ok: false, error: 'Configuração incompleta (phoneNumberId).' }
     try {
-      const res = await fetch(
-        `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(phoneNumberId)}/messages`,
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${config.accessToken ?? ''}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text } }),
-        },
-      )
-      const respBody = (await res.text()).slice(0, 500)
-      return res.ok ? { ok: true } : { ok: false, error: `Meta ${res.status}: ${respBody}` }
+      const res = await safeFetch(`https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(phoneNumberId)}/messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.accessToken ?? ''}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text } }),
+        hostAllowlist: HOSTS_META,
+        timeoutMs: 15_000,
+        maxBytes: 64 * 1024,
+      })
+      // O corpo da resposta não volta para a tela: ele pode repetir o número, o texto
+      // enviado e o identificador da conta.
+      return res.status >= 200 && res.status <= 299 ? { ok: true } : { ok: false, error: `Meta respondeu ${res.status}.` }
     } catch (error) {
       return { ok: false, error: (error as Error).message }
     }
@@ -308,6 +394,23 @@ const twilio: WhatsAppAdapter = {
     { key: 'fromNumber', label: 'Número do WhatsApp', placeholder: '+14155238886', required: true },
   ],
   webhookNote: 'No Twilio, aponte "When a message comes in" (método POST) para este URL.',
+  /**
+   * A assinatura da Twilio é sobre a URL EXATA mais os parâmetros do formulário.
+   *
+   * Concatena-se a URL pública com cada par chave+valor em ordem alfabética e assina-se
+   * tudo com o Auth Token da conta. É por isso que a URL pública precisa estar certa:
+   * assinar outra coisa dá outro resultado, e a entrega legítima seria recusada.
+   */
+  authenticateInbound(config, { headers, url, params }) {
+    const token = config.authToken?.trim()
+    const assinatura = String(headers['x-twilio-signature'] ?? '')
+    if (!token || !assinatura) return false
+    const dados = Object.keys(params)
+      .sort()
+      .reduce((acc, chave) => acc + chave + String(params[chave] ?? ''), url)
+    const esperado = createHmac('sha1', token).update(Buffer.from(dados, 'utf8')).digest('base64')
+    return segredoConfere(esperado, assinatura)
+  },
   parseInbound(payload) {
     // Twilio posts application/x-www-form-urlencoded (parsed by express.urlencoded).
     const body = asRecord(payload)
@@ -337,16 +440,23 @@ const twilio: WhatsAppAdapter = {
   async fetchMedia(config, ref) {
     if (!ref.url) return null
     try {
-      const res = await fetch(ref.url, {
+      /**
+       * O endereço vem DENTRO do webhook.
+       *
+       * Mesmo com a assinatura conferida, ele não é lugar para mandar a credencial da
+       * conta: a lista de hosts oficiais é o que garante que o `Basic` do dono só sai
+       * para a Twilio. Fora dela não há download — e não há credencial.
+       */
+      const res = await safeFetch(ref.url, {
         headers: {
           Authorization: `Basic ${Buffer.from(`${config.accountSid ?? ''}:${config.authToken ?? ''}`).toString('base64')}`,
         },
+        hostAllowlist: HOSTS_TWILIO,
+        asBytes: true,
+        requireOk: true,
+        ...MEDIA_LIMITES,
       })
-      if (!res.ok) return null
-      return {
-        bytes: Buffer.from(await res.arrayBuffer()),
-        mimeType: res.headers.get('content-type') || ref.mimeType || 'application/octet-stream',
-      }
+      return { bytes: res.bytes ?? Buffer.alloc(0), mimeType: res.contentType || ref.mimeType || 'application/octet-stream' }
     } catch {
       return null
     }
@@ -362,16 +472,18 @@ const twilio: WhatsAppAdapter = {
     body.set('To', withPrefix(to))
     body.set('Body', text)
     try {
-      const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Messages.json`, {
+      const res = await safeFetch(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Messages.json`, {
         method: 'POST',
         headers: {
           Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString('base64')}`,
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: body.toString(),
+        hostAllowlist: HOSTS_TWILIO,
+        timeoutMs: 15_000,
+        maxBytes: 64 * 1024,
       })
-      const respBody = (await res.text()).slice(0, 500)
-      return res.ok ? { ok: true } : { ok: false, error: `Twilio ${res.status}: ${respBody}` }
+      return res.status >= 200 && res.status <= 299 ? { ok: true } : { ok: false, error: `Twilio respondeu ${res.status}.` }
     } catch (error) {
       return { ok: false, error: (error as Error).message }
     }
@@ -454,16 +566,21 @@ export function whatsAppUsesChallenge(widget: WithId<Widget>): boolean {
   return Boolean(adapter?.verifyChallenge)
 }
 
-// POST authenticity check (Meta signature). Returns true when there's no check
-// configured or the delivery is authentic.
-export function authenticateWhatsAppInbound(
-  widget: WithId<Widget>,
-  rawBody: Buffer | undefined,
-  signature: string | undefined,
-): boolean {
+/**
+ * A entrega é autêntica?
+ *
+ * Fecha por padrão: adaptador sem conferência, configuração ilegível ou provedor
+ * desconhecido devolvem `false`. Antes o padrão era `true` — e "não sei conferir"
+ * valia como "pode entrar".
+ */
+export function authenticateWhatsAppInbound(widget: WithId<Widget>, ctx: InboundAuthContext): boolean {
   const adapter = widget.whatsapp && getWhatsAppAdapter(widget.whatsapp.provider)
-  if (!adapter?.authenticateInbound) return true
+  if (!adapter?.authenticateInbound) return false
   const config = channelConfig(widget)
   if (!config) return false
-  return adapter.authenticateInbound(config, rawBody, signature)
+  try {
+    return adapter.authenticateInbound(config, ctx)
+  } catch {
+    return false
+  }
 }

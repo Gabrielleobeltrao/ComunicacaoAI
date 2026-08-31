@@ -83,6 +83,8 @@ export function validateConfig(): void {
     .map(([k]) => k)
   if (missing.length) throw new Error(`Missing required production environment: ${missing.join(', ')}`)
 
+  assertStrongSecrets({ BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET!, ENCRYPTION_KEY: process.env.ENCRYPTION_KEY! })
+
   for (const [name, value] of [
     ['CLIENT_URL', config.clientOrigins[0]],
     ['BETTER_AUTH_URL', config.betterAuthUrl],
@@ -95,5 +97,36 @@ export function validateConfig(): void {
       throw new Error(`Invalid URL in ${name}: ${value}`)
     }
     if (url.protocol !== 'https:') throw new Error(`${name} must be https in production: ${value}`)
+  }
+}
+
+/**
+ * Os dois segredos que sustentam a conta e o cofre.
+ *
+ * Um `ENCRYPTION_KEY=changeme` cifra tudo com uma chave que está em qualquer tutorial, e
+ * um `BETTER_AUTH_SECRET` igual a ele faz um único vazamento derrubar as duas defesas de
+ * uma vez. Nada disso é detectável em runtime — só na hora de subir. Exportada para o
+ * teste poder exercitar cada recusa sem simular um deploy inteiro.
+ */
+export function assertStrongSecrets(secrets: { BETTER_AUTH_SECRET: string; ENCRYPTION_KEY: string }): void {
+  const PLACEHOLDERS = [
+    'changeme', 'change-me', 'secret', 'password', 'senha', 'test', 'teste', 'example', 'exemplo',
+    'your-secret', 'your_secret', 'seu-segredo', 'placeholder', 'todo', 'xxxxxxxx', 'aaaaaaaa', '12345678',
+    'chave-de-teste', 'dev', 'development', 'localhost',
+    // O que os próprios arquivos de exemplo deste repositório escrevem. Um deploy que
+    // copiou o exemplo e não trocou nada é o caso mais provável de todos.
+    'replace', 'substitua', 'random-string', 'generated', 'insira',
+  ]
+  for (const [nome, valor] of Object.entries(secrets)) {
+    const v = String(valor ?? '').trim()
+    if (v.length < 32) throw new Error(`${nome} must be at least 32 characters in production`)
+    const minusculo = v.toLowerCase()
+    if (PLACEHOLDERS.some((p) => minusculo.includes(p))) throw new Error(`${nome} looks like a placeholder value`)
+    // Entropia grosseira: um segredo de 64 caracteres com quatro símbolos distintos é
+    // longo e previsível. Não substitui um gerador aleatório — recusa o óbvio.
+    if (new Set(v).size < 12) throw new Error(`${nome} has too little variation to be a real secret`)
+  }
+  if (secrets.BETTER_AUTH_SECRET.trim() === secrets.ENCRYPTION_KEY.trim()) {
+    throw new Error('BETTER_AUTH_SECRET and ENCRYPTION_KEY must be different secrets')
   }
 }

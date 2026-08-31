@@ -13,7 +13,9 @@ services:
   mongo:
     image: mongo:7
     ports:
-      - "27017:27017"
+      # SÓ no loopback. Sem o "127.0.0.1:", o Docker publica a porta em TODAS as
+      # interfaces — e um Mongo sem senha na rede do café é um banco de qualquer um.
+      - "127.0.0.1:27017:27017"
     volumes:
       - comunicacaoai_mongo:/data/db
     restart: unless-stopped
@@ -21,7 +23,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Idem: o Redis de desenvolvimento não atende ninguém fora desta máquina.
+      - "127.0.0.1:6379:6379"
     command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
     restart: unless-stopped
 

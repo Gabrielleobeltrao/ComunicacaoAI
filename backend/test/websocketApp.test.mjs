@@ -122,13 +122,13 @@ test('hostname público com porta explícita: o DNS recebe o NOME, sem a porta',
   let pedido = null
   setWebSocketResolver(async (host) => {
     pedido = host
-    return [{ address: '203.0.113.10', family: 4 }]
+    return [{ address: '93.184.216.34', family: 4 }]
   })
   try {
     const r = await assertPublicWebSocketUrl('wss://data-stream.binance.vision:443/ws/btcusdt@trade')
     assert.equal(pedido, 'data-stream.binance.vision', `o DNS recebeu "${pedido}"`)
     assert.equal(r.hostname, 'data-stream.binance.vision')
-    assert.equal(r.address, '203.0.113.10')
+    assert.equal(r.address, '93.184.216.34')
     assert.equal(r.family, 4)
     // 443 é a porta PADRÃO de wss: o parser a normaliza para fora, e é isso que garante
     // que ela não vá parar no nome entregue ao DNS.
@@ -145,7 +145,7 @@ test('porta não padrão continua fora do nome resolvido', async () => {
   let pedido = null
   setWebSocketResolver(async (host) => {
     pedido = host
-    return [{ address: '203.0.113.10', family: 4 }]
+    return [{ address: '93.184.216.34', family: 4 }]
   })
   try {
     const r = await assertPublicWebSocketUrl('wss://feed.exemplo.test:9443/stream')
@@ -169,7 +169,7 @@ test('um nome público que resolve para IPv6 público é aceito', async () => {
 
 test('um nome que resolve para QUALQUER endereço interno é recusado — mesmo com um público junto', async () => {
   for (const interno of ['127.0.0.1', '10.1.2.3', '192.168.0.9', '172.20.0.1', '169.254.169.254', '::1', 'fd00::5']) {
-    setWebSocketResolver(async () => [{ address: '203.0.113.10', family: 4 }, { address: interno, family: interno.includes(':') ? 6 : 4 }])
+    setWebSocketResolver(async () => [{ address: '93.184.216.34', family: 4 }, { address: interno, family: interno.includes(':') ? 6 : 4 }])
     await assert.rejects(() => assertPublicWebSocketUrl('wss://exemplo-publico.test/ws'), /interna/, interno)
   }
   setWebSocketResolver(null)
@@ -185,7 +185,7 @@ test('DNS que devolve lixo NUNCA chega ao validador de IP — e o erro diz o que
     assert.equal(r.message, 'Não foi possível resolver o hostname do serviço.', JSON.stringify(lixo))
   }
   // Um endereço que não é IP nenhum também não passa — e não vira "aceito".
-  setWebSocketResolver(async () => [{ address: '203.0.113.10', family: 4 }, { address: 'não-é-ip', family: 4 }])
+  setWebSocketResolver(async () => [{ address: '93.184.216.34', family: 4 }, { address: 'não-é-ip', family: 4 }])
   const misto = await checkWebSocketUrl('wss://exemplo-publico.test/ws')
   assert.equal(misto.ok, false)
   assert.match(misto.message, /conferir/)
@@ -216,7 +216,7 @@ test('o endereço fixado responde no formato que o Node pede — com `all` e sem
    * `addresses[0].address` em cima de uma string — `'2'.address` é `undefined` — e a
    * conexão morria com `ERR_INVALID_IP_ADDRESS: Invalid IP address: undefined`.
    */
-  const fn = lookupDoEnderecoFixado({ address: '203.0.113.10', family: 4 })
+  const fn = lookupDoEnderecoFixado({ address: '93.184.216.34', family: 4 })
 
   let comAll
   fn('exemplo-publico.test', { all: true }, (erro, resposta) => {
@@ -224,16 +224,16 @@ test('o endereço fixado responde no formato que o Node pede — com `all` e sem
     comAll = resposta
   })
   assert.ok(Array.isArray(comAll), 'com `all: true` a resposta precisa ser um array')
-  assert.deepEqual(comAll, [{ address: '203.0.113.10', family: 4 }])
+  assert.deepEqual(comAll, [{ address: '93.184.216.34', family: 4 }])
   // E é exatamente o que o Node lê: `addresses[0].address`.
-  assert.equal(comAll[0].address, '203.0.113.10')
+  assert.equal(comAll[0].address, '93.184.216.34')
 
   let semAll
   fn('exemplo-publico.test', {}, (erro, endereco, familia) => {
     assert.equal(erro, null)
     semAll = { endereco, familia }
   })
-  assert.deepEqual(semAll, { endereco: '203.0.113.10', familia: 4 })
+  assert.deepEqual(semAll, { endereco: '93.184.216.34', familia: 4 })
 
   // IPv6 pelo mesmo caminho.
   let v6

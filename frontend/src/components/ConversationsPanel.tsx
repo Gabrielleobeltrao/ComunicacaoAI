@@ -167,8 +167,14 @@ export function ConversationsPanel({ channel }: { channel?: 'web' | 'whatsapp' }
       loadToolCalls()
     }, 15000)
 
+    /**
+     * O dono acompanha pela sessão dele, não por um token de visitante.
+     *
+     * `watch-conversation` confere no servidor que este widget é desta conta antes de
+     * entrar na sala — a posse é decidida lá, e não pelo que a tela mandou.
+     */
     function joinRoom() {
-      socket.emit('join-conversation', { conversationId })
+      socket.emit('watch-conversation', { widgetId, conversationId })
     }
 
     function handleMessage(message: ConversationMessage) {
@@ -194,7 +200,7 @@ export function ConversationsPanel({ channel }: { channel?: 'web' | 'whatsapp' }
       clearTimeout(structuredDataTimeout)
       socket.off('connect', joinRoom)
       socket.off('message', handleMessage)
-      socket.emit('leave-conversation', { conversationId })
+      socket.emit('leave-conversation', { widgetId, conversationId })
     }
   }, [selected])
 

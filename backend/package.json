@@ -13,7 +13,8 @@
     "start:worker": "node dist/worker.js",
     "test": "node scripts/run-tests.mjs",
     "seed:demo": "tsx src/scripts/seedRestaurantDemo.ts",
-    "seed:bubbles": "tsx src/scripts/seedAgentBubbles.ts"
+    "seed:bubbles": "tsx src/scripts/seedAgentBubbles.ts",
+    "rotate:encryption-key": "node dist/scripts/rotateEncryptionKey.js"
   },
   "keywords": [],
   "author": "",

@@ -238,6 +238,7 @@ import { architectRouter } from './routes/architectRoutes.js'
 import { appGrantRouter } from './routes/appGrantRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
+import { guardAuthAttempts, requireKnownOrigin, securityHeaders } from './routes/httpSecurity.js'
 import { AUTO_MODEL, resolveAutoModel } from './autoModel.js'
 import { clarificationFrom, countClarifications } from './clarify.js'
 import { clarificationGuidance } from './clarifyBudget.js'
@@ -251,6 +252,9 @@ import { NOOP_TRACKER, createLiveTracker, instrumentTools } from './agentLiveTra
 import { onTraceEvent, preview as tracePreview, readTrace, traceEvent } from './executionTrace.js'
 import type { TraceInput } from './executionTrace.js'
 import { ensureFreshWithTimeout, ignoreWebUrl } from './webKnowledge.js'
+import { safeFetch } from './net/safeHttp.js'
+import { conversationRoom, idDeConversaAceitavel, issueVisitorToken, newConversationId, tokenFromRequest, verifyVisitorToken } from './widgetSession.js'
+import { LIMITES, anonymizeIp, checkOwnerStorage, clientIpOf, consumeRate, ensureAbuseGuardIndexes, ownerWithinBudget, withConcurrencySlot } from './abuseGuards.js'
 
 const app = express()
 // Behind the Coolify reverse proxy in production: trust exactly the first proxy
@@ -285,6 +289,12 @@ app.use(
   }),
 )
 
+// Os cabeçalhos primeiro: eles valem inclusive para as respostas de erro.
+app.use(securityHeaders)
+
+// Ritmo e registro na porta de entrada — antes do handler do Better Auth.
+app.use(guardAuthAttempts)
+
 app.all('/api/auth/*splat', toNodeHandler(auth))
 
 // Keep the raw body around so the WhatsApp webhook can verify Meta's signature.
@@ -298,6 +308,15 @@ app.use(
 // Twilio posts its webhooks as application/x-www-form-urlencoded.
 app.use(express.urlencoded({ extended: false }))
 
+/**
+ * Antes de qualquer mutação: a origem.
+ *
+ * Fica depois do parser de corpo (a resposta precisa ser JSON) e ANTES da auditoria e
+ * de toda rota privada — o registro de auditoria é de mudança que aconteceu, e uma
+ * requisição recusada aqui não chegou a acontecer.
+ */
+app.use(requireKnownOrigin)
+
 // Every change to the account is recorded ONCE, here: the middleware sees the
 // request line and the response status, never the body. It also stamps the request
 // id that correlates whatever a single request produced.
@@ -309,23 +328,74 @@ const io = new Server(httpServer, {
 })
 
 io.on('connection', (socket) => {
-  socket.on('join-conversation', ({ conversationId }: { conversationId?: string }) => {
-    if (typeof conversationId === 'string') {
-      socket.join(`conversation:${conversationId}`)
-    }
+  /**
+   * Entrar numa conversa exige a SESSÃO, não o id.
+   *
+   * O id vinha do cliente e servia de autorização: quem tivesse (ou adivinhasse) o de
+   * outra pessoa entrava na sala dela. Agora quem manda é o token assinado — preso ao
+   * widget, com prazo — e a sala carrega o widget no nome, então um token de um widget
+   * não alcança a conversa de outro nem por engano.
+   *
+   * A conferência acontece a CADA `join`, e o cliente reemite `join` ao reconectar: uma
+   * sessão que expirou no meio não é reaproveitada pela conexão nova.
+   */
+  socket.on('join-conversation', ({ widgetPublicKey, token }: { widgetPublicKey?: string; token?: string }) => {
+    void (async () => {
+      const widget = typeof widgetPublicKey === 'string' ? await getWidgetByPublicKey(widgetPublicKey) : null
+      if (!widget) return void socket.emit('conversation-denied', { reason: 'unauthorized' })
+      const sessao = verifyVisitorToken(token, widget._id.toString())
+      // A recusa não diz QUAL das condições falhou: token errado, expirado e de outro
+      // widget são a mesma resposta.
+      if (!sessao) return void socket.emit('conversation-denied', { reason: 'unauthorized' })
+      socket.join(conversationRoom(widget._id.toString(), sessao.conversationId))
+    })()
   })
 
-  socket.on('leave-conversation', ({ conversationId }: { conversationId?: string }) => {
-    if (typeof conversationId === 'string') {
-      socket.leave(`conversation:${conversationId}`)
-    }
-  })
+  /**
+   * Sair não é operação privilegiada: só se sai de sala em que já se está.
+   *
+   * Por isso as duas formas — a do visitante (widget + token) e a do dono (widgetId +
+   * conversa) — são aceitas sem conferência: nenhuma delas dá acesso a nada.
+   */
+  socket.on(
+    'leave-conversation',
+    ({ widgetPublicKey, token, widgetId, conversationId }: { widgetPublicKey?: string; token?: string; widgetId?: string; conversationId?: string }) => {
+      if (typeof widgetId === 'string' && typeof conversationId === 'string') socket.leave(conversationRoom(widgetId, conversationId))
+      if (typeof widgetPublicKey !== 'string') return
+      void (async () => {
+        const widget = await getWidgetByPublicKey(widgetPublicKey)
+        if (!widget) return
+        const sessao = verifyVisitorToken(token, widget._id.toString())
+        if (sessao) socket.leave(conversationRoom(widget._id.toString(), sessao.conversationId))
+      })()
+    },
+  )
 
+  /**
+   * A sala do dono continua exigindo sessão do Better Auth — e agora ela é reconferida
+   * a cada `join`, que é o que uma reconexão dispara.
+   */
   socket.on('join-owner', async () => {
     const session = await auth.api.getSession({ headers: fromNodeHeaders(socket.handshake.headers) })
     if (session) {
       socket.join(`owner:${session.user.id}`)
+    } else {
+      socket.emit('conversation-denied', { reason: 'unauthorized' })
     }
+  })
+
+  /**
+   * O dono acompanha UMA conversa pela tela de Chats.
+   *
+   * Ele não tem token de visitante — tem sessão. A posse do widget é conferida aqui,
+   * contra o dono da sessão, e não contra o que o cliente mandou.
+   */
+  socket.on('watch-conversation', async ({ widgetId, conversationId }: { widgetId?: string; conversationId?: string }) => {
+    const session = await auth.api.getSession({ headers: fromNodeHeaders(socket.handshake.headers) })
+    if (!session || typeof widgetId !== 'string' || typeof conversationId !== 'string' || !ObjectId.isValid(widgetId)) return
+    const widget = await getWidgetById(new ObjectId(widgetId))
+    if (!widget || widget.ownerId !== session.user.id) return
+    socket.join(conversationRoom(widgetId, conversationId))
   })
 })
 
@@ -339,7 +409,9 @@ onTraceEvent((evento, ownerId) => {
 })
 
 function broadcastMessage(message: WidgetMessage, ownerId: string) {
-  io.to(`conversation:${message.conversationId}`).emit('message', message)
+  // A sala carrega o widget: duas contas podiam ter o mesmo `conversationId` — o
+  // cliente escolhia — e a mensagem de uma chegava na tela da outra.
+  io.to(conversationRoom(message.widgetId.toString(), message.conversationId)).emit('message', message)
   io.to(`owner:${ownerId}`).emit('conversations-updated')
 }
 
@@ -3580,6 +3652,14 @@ app.post('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
   }
 
   try {
+    const espaco = await checkOwnerStorage(res.locals.userId, Buffer.byteLength(String(content), 'utf8'))
+    if (!espaco.allowed) {
+      res.status(413).json({
+        error: 'O espaço de armazenamento desta conta acabou. Apague documentos antigos para liberar.',
+        code: 'storage_quota_exceeded',
+      })
+      return
+    }
     const document = await createDocument(agent._id, title, content)
     res.status(201).json({ ...document, content: undefined })
   } catch (error) {
@@ -3614,6 +3694,16 @@ app.post(
       const content = await extractTextFromFile(req.file.buffer, req.file.mimetype, agent.provider, apiKey)
       if (!content.trim()) {
         res.status(400).json({ error: 'Could not extract any text from this file' })
+        return
+      }
+      // A cota do dono, conferida com o tamanho REAL do que vai entrar — depois da
+      // extração, porque é o texto extraído que ocupa espaço, não o arquivo enviado.
+      const espaco = await checkOwnerStorage(res.locals.userId, Buffer.byteLength(content, 'utf8'))
+      if (!espaco.allowed) {
+        res.status(413).json({
+          error: 'O espaço de armazenamento desta conta acabou. Apague documentos antigos para liberar.',
+          code: 'storage_quota_exceeded',
+        })
         return
       }
       const document = await createDocument(agent._id, title, content)
@@ -4237,10 +4327,32 @@ app.post('/api/whatsapp/:provider/webhook/:channelId', async (req, res) => {
   const channel = await getWidgetById(new ObjectId(channelId))
   if (!channel || channel.channel !== 'whatsapp' || channel.whatsapp?.provider !== provider) return
 
-  // Drop forged deliveries when the provider supports authentication (Meta).
+  // Ritmo por canal. O endereço é público: sem freio, uma enxurrada de entregas
+  // (autênticas ou não) vira trabalho e gasto na conta do dono.
+  const ritmo = await consumeRate(`wa-hook:${channelId}`, LIMITES.webhookPorCanal.limite, LIMITES.webhookPorCanal.janelaMs)
+  if (!ritmo.allowed) return
+
+  /**
+   * A prova de origem vem ANTES de tudo.
+   *
+   * Antes desta linha nada foi gravado, nenhuma mídia foi baixada e nenhum modelo foi
+   * chamado — e é essa ordem que importa: uma entrega forjada que só é descoberta
+   * depois já custou dinheiro e já poluiu a conversa do dono.
+   */
   const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody
-  const signature = req.headers['x-hub-signature-256']
-  if (!authenticateWhatsAppInbound(channel, rawBody, typeof signature === 'string' ? signature : undefined)) {
+  const headers = Object.fromEntries(
+    Object.entries(req.headers).map(([k, v]) => [k.toLowerCase(), Array.isArray(v) ? v[0] : v]),
+  ) as Record<string, string | undefined>
+  const autentico = authenticateWhatsAppInbound(channel, {
+    rawBody,
+    headers,
+    // A URL PÚBLICA desta entrega — é o que a Twilio assinou. Montada da configuração
+    // do servidor, e não do cabeçalho `Host`, que quem chama controla.
+    url: channelWebhookUrl(provider, channel._id),
+    params: (req.body ?? {}) as Record<string, unknown>,
+  })
+  if (!autentico) {
+    // O canal, e nada mais: assinatura, corpo e cabeçalho não vão para o log.
     console.warn('WhatsApp inbound failed authentication for channel', channelId)
     return
   }
@@ -4265,9 +4377,15 @@ app.post('/api/whatsapp/:provider/webhook/:channelId', async (req, res) => {
     if (!text) continue
     const visitorMessage = await addMessage(channel._id, msg.from, 'visitor', text, null, msg.externalId || null)
     broadcastMessage(visitorMessage, channel.ownerId)
-    respondWithAgentIfLinked(channel, msg.from, text).catch((error) =>
-      console.error('WhatsApp auto-reply failed:', error),
-    )
+    // Uma vaga por resposta: um canal inundado não abre cem execuções ao mesmo tempo
+    // na conta do dono. Sem vaga, a mensagem fica registrada e ninguém responde — que é
+    // melhor que responder tudo e estourar o custo.
+    withConcurrencySlot(
+      `llm:${channel.ownerId}`,
+      LIMITES.respostasSimultaneasPorDono.limite,
+      LIMITES.respostasSimultaneasPorDono.ttlMs,
+      () => respondWithAgentIfLinked(channel, msg.from, text),
+    ).catch((error) => console.error('WhatsApp auto-reply failed:', error))
   }
 })
 
@@ -4305,6 +4423,63 @@ app.get('/api/public/widgets/:publicKey', async (req, res) => {
   })
 })
 
+/**
+ * A sessão do visitante.
+ *
+ * É aqui que o navegador troca "eu sou uma aba nova" por um token assinado, preso a
+ * ESTE widget e a UMA conversa. Quem já estava conversando apresenta o id que guardou e
+ * recebe um token para ele — a troca segura da sessão antiga, para ninguém perder o
+ * histórico no dia em que isto subiu.
+ *
+ * A conversa nova ganha um id gerado pelo SERVIDOR: o cliente deixa de inventar
+ * identificador, que era o que fazia o limite por conversa não valer nada.
+ */
+app.post('/api/public/widgets/:publicKey/session', async (req, res) => {
+  const widget = await getWidgetByPublicKey(req.params.publicKey)
+  if (!widget) {
+    res.status(404).json({ error: 'Widget not found' })
+    return
+  }
+  const acesso = await webChatAccessFor(widget.ownerId)
+  if (!acesso.ok) {
+    res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
+    return
+  }
+  const ip = anonymizeIp(clientIpOf(req))
+  const existente = idDeConversaAceitavel((req.body ?? {}).conversationId)
+  // Conversa NOVA tem teto por IP; retomar uma que já existe, não — senão recarregar a
+  // página várias vezes trancaria o visitante fora do próprio atendimento.
+  if (!existente) {
+    const cota = await consumeRate(`widget-conv:${ip}`, LIMITES.widgetConversasPorIp.limite, LIMITES.widgetConversasPorIp.janelaMs)
+    if (!cota.allowed) {
+      res.set('Retry-After', String(cota.retryAfterSeconds)).status(429).json({ error: 'Muitas tentativas. Tente novamente em instantes.' })
+      return
+    }
+  }
+  const sessao = issueVisitorToken(widget._id.toString(), existente ?? newConversationId())
+  res.json(sessao)
+})
+
+/**
+ * A sessão do pedido — ou a recusa.
+ *
+ * Toda leitura e todo envio passam por aqui, e o `conversationId` sai do TOKEN. O que o
+ * cliente manda no corpo ou na query não é consultado: se fosse, o token seria enfeite.
+ */
+async function sessaoDoVisitante(req: Request, res: Response, widget: WithId<Widget>): Promise<{ conversationId: string; renovada?: { token: string; expiresAt: string } } | null> {
+  const sessao = verifyVisitorToken(tokenFromRequest(req as unknown as { headers: Record<string, unknown>; query: Record<string, unknown> }), widget._id.toString())
+  if (!sessao) {
+    // Uma frase só para token ausente, expirado, adulterado ou de outro widget.
+    res.status(401).json({ error: 'Sessão inválida ou expirada.', code: 'visitor_session_invalid' })
+    return null
+  }
+  return {
+    conversationId: sessao.conversationId,
+    // Rotação: passada a metade da validade, o uso já devolve o token seguinte.
+    ...(sessao.renovar ? { renovada: issueVisitorToken(widget._id.toString(), sessao.conversationId) } : {}),
+  }
+}
+
 app.get('/api/public/widgets/:publicKey/messages', async (req, res) => {
   const widget = await getWidgetByPublicKey(req.params.publicKey)
   if (!widget) {
@@ -4318,12 +4493,9 @@ app.get('/api/public/widgets/:publicKey/messages', async (req, res) => {
     res.status(acesso.status!).json({ error: acesso.error, code: acesso.code })
     return
   }
-  const conversationId = String(req.query.conversationId ?? '')
-  if (!conversationId) {
-    res.status(400).json({ error: 'conversationId is required' })
-    return
-  }
-  const messages = await listMessages(widget._id, conversationId)
+  const sessao = await sessaoDoVisitante(req, res, widget)
+  if (!sessao) return
+  const messages = await listMessages(widget._id, sessao.conversationId)
   res.json(messages)
 })
 
@@ -4352,14 +4524,35 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
     res.status(destinoAtual.status!).json({ error: destinoAtual.error, code: destinoAtual.code })
     return
   }
-  const { conversationId, content } = req.body ?? {}
-  if (!conversationId || !content) {
-    res.status(400).json({ error: 'conversationId and content are required' })
+  const sessao = await sessaoDoVisitante(req, res, widget)
+  if (!sessao) return
+  const conversationId = sessao.conversationId
+  const { content } = req.body ?? {}
+  if (!content) {
+    res.status(400).json({ error: 'content is required' })
     return
   }
 
-  // Anti-abuse: cap visitor messages per conversation over a rolling 24h so a
-  // spammed public widget can't run up the owner's LLM bill. 0 = unlimited.
+  /**
+   * Os freios, antes de gravar e antes de gastar.
+   *
+   * Por IP e por widget, no banco: o limite antigo era por conversa, e a conversa era
+   * escolhida pelo cliente — bastava um id novo a cada mensagem. A resposta é 429 seco
+   * com `Retry-After`, sem dizer qual teto foi atingido nem quanto ele vale.
+   */
+  const ip = anonymizeIp(clientIpOf(req))
+  for (const [chave, regra] of [
+    [`widget-msg-ip:${ip}`, LIMITES.widgetMensagensPorIp],
+    [`widget-msg:${widget._id.toString()}`, LIMITES.widgetMensagensPorWidget],
+  ] as const) {
+    const cota = await consumeRate(chave, regra.limite, regra.janelaMs)
+    if (!cota.allowed) {
+      res.set('Retry-After', String(cota.retryAfterSeconds)).status(429).json({ error: 'Muitas mensagens. Tente novamente em instantes.' })
+      return
+    }
+  }
+
+  // O teto do dono, escolhido por ele, continua valendo por conversa.
   const limitAgent = await getWidgetConfigAgent(widget)
   const dailyLimit = limitAgent?.dailyMessageLimit ?? 0
   if (dailyLimit > 0) {
@@ -4373,11 +4566,16 @@ app.post('/api/public/widgets/:publicKey/messages', async (req, res) => {
 
   const visitorMessage = await addMessage(widget._id, conversationId, 'visitor', content)
   broadcastMessage(visitorMessage, widget.ownerId)
-  res.status(201).json([visitorMessage])
+  res.status(201).json(sessao.renovada ? { messages: [visitorMessage], session: sessao.renovada } : [visitorMessage])
 
   // Fire-and-forget: the visitor's request doesn't wait on embeddings + Claude.
   // The reply (if any) arrives over the socket once it's ready.
-  respondWithAgentIfLinked(widget, conversationId, content).catch((error) => {
+  withConcurrencySlot(
+    `llm:${widget.ownerId}`,
+    LIMITES.respostasSimultaneasPorDono.limite,
+    LIMITES.respostasSimultaneasPorDono.ttlMs,
+    () => respondWithAgentIfLinked(widget, conversationId, content),
+  ).catch((error) => {
     console.error('Agent auto-reply failed:', error)
   })
 })
@@ -4418,11 +4616,15 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // until the owner hands the conversation back to the agent.
   if (await getHumanHandoff(widgetId, conversationId)) return
 
-  // Optional monthly token budget: once the owner is over their cap, stop all
-  // auto-replies (checked before any LLM call, so spend truly halts at zero).
-  const monthlyCap = await getMonthlyTokenCap(ownerId)
-  if (monthlyCap > 0 && (await getMonthlyTokens(ownerId)) >= monthlyCap) {
-    console.warn(`Monthly token cap reached for owner ${ownerId}; skipping auto-reply.`)
+  /**
+   * O teto de gasto do dono — conferido antes de qualquer chamada ao modelo.
+   *
+   * Fecha quando não dá para conferir: se a leitura do consumo falhar, não se gasta. Um
+   * teto que abre quando o banco tosse não é um teto — e é exatamente no momento de
+   * instabilidade que uma enxurrada custa mais caro.
+   */
+  if (!(await ownerWithinBudget(ownerId))) {
+    console.warn(`Monthly token cap reached (or unverifiable) for owner ${ownerId}; skipping auto-reply.`)
     return
   }
 
@@ -5021,12 +5223,16 @@ const safeHost = (url: string): string => {
 }
 
 async function sendStructuredOutputWebhook(url: string, payload: unknown) {
-  const response = await fetch(url, {
+  // O endereço é digitado pelo dono: sai pela camada com SSRF conferido, com prazo e
+  // teto. Um `fetch` direto aqui fazia deste campo um jeito de alcançar a rede interna.
+  const response = await safeFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    timeoutMs: 10_000,
+    maxBytes: 64 * 1024,
   })
-  if (!response.ok) {
+  if (response.status < 200 || response.status > 299) {
     // The owner's webhook URL frequently carries a token in the path or query, so
     // the log gets the host and the status — enough to diagnose, nothing to leak.
     console.error(`Structured output webhook returned ${response.status} (${safeHost(url)})`)
@@ -5071,6 +5277,10 @@ async function start() {
   })
   ensureTokenUsageIndexes().catch((error) => {
     console.error('ensureTokenUsageIndexes failed:', error)
+  })
+  // Contadores de abuso: o TTL é o que faz a janela expirar sozinha.
+  ensureAbuseGuardIndexes().catch((error) => {
+    console.error('ensureAbuseGuardIndexes failed:', error)
   })
   // Recover any charge whose key landed but whose daily rollup didn't (crash window).
   settlePendingCharges()
