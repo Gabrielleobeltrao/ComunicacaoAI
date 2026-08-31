@@ -160,12 +160,14 @@ async function runTurn(
 
   if (!resultado.ok) {
     // Fica registrado NA CONVERSA: uma falha invisível vira "o sistema não respondeu".
-    await repo.appendMessage(ownerId, projeto._id, 'system_notice', resultado.failure.message)
+    await repo.appendMessage(ownerId, projeto._id, 'system_notice', resultado.failure.message, { failure: true })
     throw new ArchitectRefusal(resultado.failure.code, resultado.failure.message)
   }
 
   const turno = resultado.result
   await repo.appendMessage(ownerId, projeto._id, 'assistant', turno.assistantText)
+  // Deu certo: o que falhou antes está resolvido, e para de aparecer como se fosse agora.
+  await repo.resolveFailureNotices(ownerId, projeto._id)
 
   // As respostas acumulam; o patch do modelo não pode apagar o que já foi respondido.
   const answers = { ...respondidas }
@@ -439,7 +441,16 @@ const EDITAVEIS: Record<string, { lista: 'floors' | 'agents' | 'sectors' | 'rout
   sector: { lista: 'sectors', campos: { name: { max: L.MAX_NAME_CHARS, obrigatorio: true }, instruction: { max: L.MAX_LONG_TEXT_CHARS }, rationale: { max: L.MAX_SHORT_TEXT_CHARS } } },
   routine: { lista: 'routines', campos: { name: { max: L.MAX_NAME_CHARS, obrigatorio: true }, description: { max: L.MAX_SHORT_TEXT_CHARS }, rationale: { max: L.MAX_SHORT_TEXT_CHARS } } },
   app: { lista: 'appRequirements', campos: { reason: { max: L.MAX_SHORT_TEXT_CHARS, obrigatorio: true } } },
-  knowledge: { lista: 'knowledgeRequirements', campos: { title: { max: L.MAX_NAME_CHARS, obrigatorio: true }, description: { max: L.MAX_SHORT_TEXT_CHARS } } },
+  knowledge: {
+    lista: 'knowledgeRequirements',
+    campos: {
+      title: { max: L.MAX_NAME_CHARS, obrigatorio: true },
+      description: { max: L.MAX_SHORT_TEXT_CHARS },
+      // O conteúdo do documento, quando a pessoa JÁ o tem. Enquanto ele não vem, o
+      // item continua pendência — o que nunca acontece é o texto ser inventado.
+      content: { max: L.MAX_KNOWLEDGE_CONTENT_CHARS },
+    },
+  },
 }
 
 export interface BlueprintEdit {
@@ -519,6 +530,12 @@ export async function editBlueprint(ownerId: string, projectId: ObjectId, edits:
         continue
       }
       item[nome] = texto
+    }
+
+    // O estado do conhecimento SEGUE o conteúdo, e não o contrário. Deixar a pessoa
+    // marcar "entregue" sem texto produziria uma base que parece pronta e não responde.
+    if (edit.kind === 'knowledge' && 'content' in fields) {
+      item.state = typeof item.content === 'string' && item.content.trim() ? 'supplied' : 'missing'
     }
   }
 

@@ -144,7 +144,16 @@ architectRouter.get('/projects/:id/messages', async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), L.MAX_MESSAGES_PER_PROJECT)
   const skip = Math.max(Number(req.query.skip) || 0, 0)
   const mensagens = await repo.listMessages(res.locals.userId, id, { limit, skip })
-  res.json(mensagens.map((m) => ({ id: m._id.toString(), role: m.role, content: m.content, createdAt: m.createdAt })))
+  res.json(
+    mensagens.map((m) => ({
+      id: m._id.toString(),
+      role: m.role,
+      content: m.content,
+      // A tela precisa saber se aquele vermelho ainda vale.
+      ...(m.failure ? { failure: true, resolved: Boolean(m.resolvedAt) } : {}),
+      createdAt: m.createdAt,
+    })),
+  )
 })
 
 architectRouter.post('/projects/:id/messages', async (req, res, next) => {

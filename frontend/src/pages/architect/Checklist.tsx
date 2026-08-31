@@ -71,7 +71,10 @@ export function Checklist({
               <strong style={{ fontSize: 13 }}>{n === 0 ? 'Para funcionar' : 'Quando puder'}</strong>
               {grupo.map((item) => {
                 const icone = ICONE[item.status]
-                const alvo = item.target && links.find((l) => l.kind === item.target!.kind && l.key === item.target!.key)
+                // O conhecimento não tem tela própria: quem tem é o agente ou o setor
+                // que vai receber o documento. É para lá que o "Abrir" leva.
+                const destino = item.linkTarget ?? item.target
+                const alvo = destino && links.find((l) => l.kind === destino.kind && l.key === destino.key)
                 return (
                   <div key={item.id} className="flex items-start gap-2" data-testid={`architect-check-${item.id}`}>
                     <Icon name={icone.nome} size={16} color={icone.cor} />

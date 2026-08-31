@@ -21,7 +21,7 @@ const TOM: Record<string, 'neutral' | 'brand' | 'success' | 'warning'> = {
  * para mudar. O que decide ESTRUTURA (em que andar o agente fica, se o item cria ou
  * altera recurso existente) continua vindo do plano e da tela de ligações.
  */
-const CAMPOS: Partial<Record<PreviewItem['kind'], { nome: string; label: string; linhas?: number }[]>> = {
+const CAMPOS: Partial<Record<PreviewItem['kind'], { nome: string; label: string; linhas?: number; hint?: string }[]>> = {
   floor: [
     { nome: 'name', label: 'Nome' },
     { nome: 'mission', label: 'Missão', linhas: 2 },
@@ -43,6 +43,14 @@ const CAMPOS: Partial<Record<PreviewItem['kind'], { nome: string; label: string;
   knowledge: [
     { nome: 'title', label: 'Título' },
     { nome: 'description', label: 'Descrição', linhas: 2 },
+    // O conteúdo, quando a pessoa JÁ o tem em mãos. Enquanto ele não vem, o item
+    // segue pendente — o que nunca acontece é o texto ser inventado para preencher.
+    {
+      nome: 'content',
+      label: 'Conteúdo (se você já tem)',
+      linhas: 6,
+      hint: 'Cole aqui o texto — cardápio, política, tabela. Ele vira um documento na base ao aplicar. Deixando vazio, o item continua pendente e nada é inventado.',
+    },
   ],
 }
 
@@ -207,6 +215,7 @@ export function Proposal({
                   {campos.map((campo) => (
                     <label key={campo.nome} className="flex flex-col gap-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                       {campo.label}
+                      {campo.hint && <span style={{ fontSize: 11.5, color: 'var(--text-faint)' }}>{campo.hint}</span>}
                       {campo.linhas ? (
                         <Textarea
                           rows={campo.linhas}

@@ -64,6 +64,14 @@ export interface ArchitectChecklistItem {
   status: ChecklistStatus
   completionMode: ChecklistCompletionMode
   target?: { kind: string; key: string; id?: string }
+  /**
+   * Para ONDE ir quando este item não é resolvido no próprio recurso.
+   *
+   * O conhecimento é o caso: o `target` dele é a pendência ("o cardápio chegou?"), que
+   * não é um lugar — quem tem tela é o agente ou o setor que vai receber o documento.
+   * Sem isto, "Enviar o cardápio" ficava marcado como pendente sem nenhum caminho.
+   */
+  linkTarget?: { kind: string; key: string }
   actionPath?: string
   dependsOn: string[]
 }

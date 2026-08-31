@@ -30,7 +30,7 @@ const BLUEPRINT = {
 const CHECKLIST = [
   { id: 'structure:floor-atendimento', category: 'structure', title: 'Andar “Atendimento do Restaurante”', description: 'Será criado.', required: true, status: 'ready', completionMode: 'resource_state', target: { kind: 'floor', key: 'atendimento' }, dependsOn: [] },
   { id: 'structure:agent-gerente', category: 'structure', title: 'Agente “Gerente de atendimento”', description: 'Recebe a conversa.', required: true, status: 'blocked', completionMode: 'resource_state', target: { kind: 'agent', key: 'gerente' }, dependsOn: ['structure:floor-atendimento'] },
-  { id: 'knowledge:cardapio', category: 'knowledge', title: 'Enviar o cardápio com preços', description: 'Sem ele, o agente não responde preço.', required: true, status: 'ready', completionMode: 'resource_state', target: { kind: 'knowledge', key: 'cardapio' }, dependsOn: [] },
+  { id: 'knowledge:cardapio', category: 'knowledge', title: 'Enviar o cardápio com preços', description: 'Sem ele, o agente não responde preço.', required: true, status: 'ready', completionMode: 'resource_state', target: { kind: 'knowledge', key: 'cardapio' }, linkTarget: { kind: 'agent', key: 'gerente' }, dependsOn: [] },
   { id: 'app:canal', category: 'app', title: 'Conectar web_chat', description: 'Receber as conversas do site.', required: true, status: 'ready', completionMode: 'connection_state', target: { kind: 'app', key: 'web_chat' }, actionPath: '/apps', dependsOn: [] },
   { id: 'test:conversa-de-teste', category: 'test', title: 'Testar a operação com uma conversa real', description: 'Converse com o agente de entrada.', required: true, status: 'blocked', completionMode: 'manual', dependsOn: ['structure:floor-atendimento'] },
 ]
@@ -471,6 +471,90 @@ test('o JSON existe, mas fica em “Avançado”', async ({ page }) => {
   await expect(page.getByTestId('architect-advanced')).toContainText('knowledgeRequirements')
 })
 
+test('1) o reaproveitamento proposto já vem apontado para o recurso de mesmo nome', async ({ page }) => {
+  // O modelo propõe "reuse" identificando pelo NOME — ele não escreve id. Sem a ponte,
+  // a pessoa recebia o select em "Criar novo" e um erro mandando escolher o recurso.
+  const comReuso = {
+    ...COM_PROPOSTA,
+    blueprint: { ...BLUEPRINT, floors: [{ ...BLUEPRINT.floors[0], action: 'reuse' }] },
+  }
+  await stub(page, {
+    project: comReuso,
+    targets: { floors: [{ id: 'f9', name: 'Atendimento do Restaurante' }], agents: [], sectors: [], routines: [] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  await expect(page.getByTestId('architect-link-suggested-floor-atendimento')).toContainText('Atendimento do Restaurante')
+  await expect(page.getByTestId('architect-link-floor-atendimento')).toHaveValue('reuse|f9')
+
+  await page.getByTestId('architect-links-save').click()
+  await expect.poll(() => ligacoes).toMatchObject({ links: [{ kind: 'floor', key: 'atendimento', action: 'reuse', resourceId: 'f9' }] })
+})
+
+test('sem um nome igual, nada é adivinhado', async ({ page }) => {
+  const comReuso = {
+    ...COM_PROPOSTA,
+    blueprint: { ...BLUEPRINT, floors: [{ ...BLUEPRINT.floors[0], action: 'reuse' }] },
+  }
+  await stub(page, {
+    project: comReuso,
+    // Dois com o mesmo nome: ligar ao errado seria pior que não sugerir.
+    targets: { floors: [{ id: 'f1', name: 'Atendimento do Restaurante' }, { id: 'f2', name: 'atendimento do restaurante' }], agents: [], sectors: [], routines: [] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-link-suggested-floor-atendimento')).toHaveCount(0)
+  await expect(page.getByTestId('architect-link-floor-atendimento')).toHaveValue('')
+})
+
+// --- 3) o conteúdo do conhecimento ---------------------------------------------------
+
+test('3) dá para colar o conteúdo do conhecimento na própria proposta', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-item-edit-knowledge-cardapio').click()
+
+  await expect(page.getByText(/nada é inventado/i)).toBeVisible()
+  await page.getByTestId('architect-edit-field-content').fill('Pizza margherita 40. Refrigerante 8.')
+  await page.getByTestId('architect-edit-save').click()
+
+  await expect.poll(() => edicoesEnviadas).toMatchObject([{ kind: 'knowledge', key: 'cardapio', fields: { content: 'Pizza margherita 40. Refrigerante 8.' } }])
+})
+
+// --- 4 e 5) a espera e o aviso que já passou -----------------------------------------
+
+test('4) a espera é anunciada, e não parece uma tela travada', async ({ page }) => {
+  await stub(page)
+  // Uma rodada lenta de propósito: é onde o "Pensando…" precisa se explicar.
+  await page.route('**/api/architect/projects/*/messages', async (r) => {
+    if (r.request().method() !== 'POST') return r.fulfill({ json: [] })
+    await new Promise((resolve) => setTimeout(resolve, 4500))
+    return r.fulfill({ json: { ...projeto(), assistantText: 'Pronto.', question: null } })
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-input').fill('oi')
+  await page.getByTestId('architect-send').click()
+
+  const espera = page.getByTestId('architect-thinking')
+  await expect(espera).toHaveAttribute('role', 'status')
+  await expect(espera).toContainText(/Pensando… \ds/)
+})
+
+test('5) a falha já resolvida sai do alarme, mas fica no histórico', async ({ page }) => {
+  await stub(page, {
+    messages: [
+      { id: 'm1', role: 'user', content: 'quero automatizar', createdAt: NOW },
+      { id: 'm2', role: 'system_notice', content: 'A chave do provedor foi recusada.', failure: true, resolved: true, createdAt: NOW },
+      { id: 'm3', role: 'assistant', content: 'Por onde falam com você?', createdAt: NOW },
+    ],
+    project: COM_PROPOSTA,
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  const aviso = page.getByTestId('architect-message-system_notice')
+  await expect(aviso).toContainText('A chave do provedor foi recusada')
+  await expect(aviso).toContainText('já resolvido')
+  await expect(aviso).toHaveAttribute('data-resolved', 'sim')
+})
+
 // --- a rodada corretiva -----------------------------------------------------------------------------
 
 test('a conversa começa sozinha: a descrição já recebe a primeira pergunta', async ({ page }) => {
@@ -768,6 +852,17 @@ test('a pendência leva direto ao lugar de resolver', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
   await expect(page.getByTestId('architect-check-link-app:canal')).toHaveAttribute('href', '/apps')
+})
+
+test('2) a pendência de conhecimento leva ao agente que vai receber o documento', async ({ page }) => {
+  // Depois de aplicar: é quando o agente existe e tem tela. Antes, não há para onde ir.
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await page.getByTestId('architect-apply-confirm').click()
+
+  // Sem isto, "Enviar o cardápio" ficava obrigatório e sem nenhum caminho.
+  await expect(page.getByTestId('architect-check-link-knowledge:cardapio')).toHaveAttribute('href', '/agents/a1')
 })
 
 test('reconferir apura de novo contra o estado real', async ({ page }) => {

@@ -62,6 +62,14 @@ export interface ArchitectMessage {
   projectId: ObjectId
   role: 'user' | 'assistant' | 'system_notice'
   content: string
+  /**
+   * Este aviso é uma FALHA do provedor — e não, por exemplo, o aviso de credencial
+   * removida. A distinção existe porque só a falha é resolvida por uma rodada que dá
+   * certo depois; o aviso de credencial continua valendo para sempre.
+   */
+  failure?: boolean
+  /** Quando uma rodada seguinte funcionou. A mensagem fica; o alarme, não. */
+  resolvedAt?: Date | null
   createdAt: Date
 }
 
@@ -201,7 +209,13 @@ export async function transitionProject(
 
 export const countMessages = (ownerId: string, projectId: ObjectId): Promise<number> => messages.countDocuments({ ownerId, projectId })
 
-export async function appendMessage(ownerId: string, projectId: ObjectId, role: ArchitectMessage['role'], content: string): Promise<ArchitectMessage> {
+export async function appendMessage(
+  ownerId: string,
+  projectId: ObjectId,
+  role: ArchitectMessage['role'],
+  content: string,
+  opts: { failure?: boolean } = {},
+): Promise<ArchitectMessage> {
   const doc: ArchitectMessage = {
     _id: new ObjectId(),
     ownerId,
@@ -209,10 +223,22 @@ export async function appendMessage(ownerId: string, projectId: ObjectId, role: 
     role,
     // Mascarado na ENTRADA. Depois de gravado já é tarde.
     content: maskSecrets(content).slice(0, L.MAX_MESSAGE_CHARS),
+    ...(opts.failure ? { failure: true, resolvedAt: null } : {}),
     createdAt: new Date(),
   }
   await messages.insertOne(doc)
   return doc
+}
+
+/**
+ * Marca como resolvidas as falhas anteriores desta conversa.
+ *
+ * A falha fica registrada — apagar histórico seria pior. O que não pode continuar é o
+ * alarme: depois de a pessoa configurar a chave e a rodada seguinte funcionar, o aviso
+ * vermelho de ontem continuava na tela parecendo o de agora.
+ */
+export async function resolveFailureNotices(ownerId: string, projectId: ObjectId): Promise<void> {
+  await messages.updateMany({ ownerId, projectId, role: 'system_notice', failure: true, resolvedAt: null }, { $set: { resolvedAt: new Date() } })
 }
 
 export function listMessages(ownerId: string, projectId: ObjectId, q: { limit: number; skip: number }): Promise<ArchitectMessage[]> {

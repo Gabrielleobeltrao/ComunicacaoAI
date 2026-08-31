@@ -28,6 +28,8 @@ export interface ChecklistItem {
   status: 'pending' | 'blocked' | 'ready' | 'done'
   completionMode: 'manual' | 'resource_state' | 'connection_state' | 'test_result'
   target?: { kind: string; key: string; id?: string }
+  /** Para onde ir quando o item não se resolve no próprio alvo — ver o servidor. */
+  linkTarget?: { kind: string; key: string }
   actionPath?: string
   dependsOn: string[]
 }
@@ -127,7 +129,7 @@ export interface Blueprint {
   sectors: { key: string; name: string; mode: string; memberAgentKeys: string[]; coordinatorAgentKey?: string | null; instruction?: string; rationale?: string }[]
   routines: { key: string; name: string; ownerAgentKey: string; description?: string; rationale?: string }[]
   appRequirements: { key: string; appKey: string; reason: string; required: boolean }[]
-  knowledgeRequirements: { key: string; title: string; description: string; required: boolean; state: string }[]
+  knowledgeRequirements: { key: string; title: string; description: string; required: boolean; state: string; content?: string }[]
   assumptions: { key: string; text: string }[]
   warnings: { path: string; message: string }[]
 }
@@ -160,6 +162,10 @@ export interface ArchitectMessage {
   id: string
   role: 'user' | 'assistant' | 'system_notice'
   content: string
+  /** Aviso de FALHA do provedor — o único tipo de aviso que uma rodada boa resolve. */
+  failure?: boolean
+  /** Já resolvido por uma rodada posterior: fica no histórico, sai do alarme. */
+  resolved?: boolean
   createdAt: string
 }
 

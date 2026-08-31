@@ -438,3 +438,24 @@ test('a lista tem teto: uma proposta trocada inteira não vira uma parede de tex
   const depois = { ...emptyBlueprint('t', 'o'), agents: [] }
   assert.ok(diffBlueprints(antes, depois).length <= 60)
 })
+
+// --- 2) a pendência de conhecimento aponta para onde se resolve ------------------------------
+
+const comConhecimento = (req) => ({ ...valido(), knowledgeRequirements: [req] })
+
+test('a pendência de conhecimento leva a quem vai RECEBER o documento', () => {
+  const item = deriveChecklist(
+    comConhecimento({ key: 'cardapio', scope: 'agent', targetKey: 'duvidas', title: 'Enviar o cardápio', description: '', required: true, expectedSource: 'upload', state: 'missing' }),
+  ).find((i) => i.id === 'knowledge:cardapio')
+  // O `target` é a pendência, e pendência não é lugar: sem isto, "Enviar o cardápio"
+  // ficava marcado como obrigatório e sem nenhum caminho para resolver.
+  assert.deepEqual(item.linkTarget, { kind: 'agent', key: 'duvidas' })
+  assert.deepEqual(item.target, { kind: 'knowledge', key: 'cardapio' }, 'quem confere o estado continua sendo o alvo')
+})
+
+test('o conhecimento do prédio não inventa um destino', () => {
+  const item = deriveChecklist(
+    comConhecimento({ key: 'geral', scope: 'building', title: 'Política geral', description: '', required: true, expectedSource: 'manual', state: 'missing' }),
+  ).find((i) => i.id === 'knowledge:geral')
+  assert.equal(item.linkTarget, undefined, 'a base do prédio não é uma tela de recurso')
+})

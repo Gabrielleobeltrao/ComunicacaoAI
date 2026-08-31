@@ -37,7 +37,18 @@ export function Conversation({
   onGenerate: () => void
 }) {
   const [texto, setTexto] = useState('')
+  const [segundos, setSegundos] = useState(0)
   const fim = useRef<HTMLDivElement>(null)
+
+  // Quanto tempo já se passou. Um "Pensando…" parado por trinta segundos é
+  // indistinguível de uma tela travada — e a pessoa recarrega no meio da rodada, que é
+  // justamente o que faz o trabalho parecer perdido.
+  useEffect(() => {
+    if (!pending) return setSegundos(0)
+    const inicio = Date.now()
+    const t = setInterval(() => setSegundos(Math.round((Date.now() - inicio) / 1000)), 1000)
+    return () => clearInterval(t)
+  }, [pending])
 
   useEffect(() => {
     fim.current?.scrollIntoView({ block: 'end' })
@@ -53,14 +64,26 @@ export function Conversation({
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="architect-conversation">
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto" style={{ paddingBottom: 12 }}>
-        {messages.map((m) => (
-          <div key={m.id} style={BOLHA(m.role)} data-testid={`architect-message-${m.role}`}>
-            {m.role === 'system_notice' && <Icon name="shield" size={14} />} {m.content}
-          </div>
-        ))}
+        {messages.map((m) => {
+          // Uma falha já resolvida fica no histórico, mas perde o vermelho: depois de a
+          // pessoa configurar a chave, o aviso de ontem continuava na tela com a mesma
+          // cara do de agora.
+          const resolvido = m.role === 'system_notice' && m.failure === true && m.resolved === true
+          return (
+            <div
+              key={m.id}
+              style={resolvido ? { ...BOLHA('assistant'), color: 'var(--text-faint)' } : BOLHA(m.role)}
+              data-testid={`architect-message-${m.role}`}
+              data-resolved={resolvido ? 'sim' : undefined}
+            >
+              {m.role === 'system_notice' && <Icon name={resolvido ? 'check' : 'shield'} size={14} />} {m.content}
+              {resolvido && <span style={{ fontSize: 11.5 }}> — já resolvido; a rodada seguinte funcionou.</span>}
+            </div>
+          )
+        })}
         {pending && (
-          <div style={{ ...BOLHA('assistant'), color: 'var(--text-muted)' }} data-testid="architect-thinking">
-            Pensando…
+          <div style={{ ...BOLHA('assistant'), color: 'var(--text-muted)' }} data-testid="architect-thinking" role="status" aria-live="polite">
+            {segundos >= 20 ? `Ainda trabalhando… ${segundos}s. Montar uma proposta inteira leva mais tempo.` : segundos >= 3 ? `Pensando… ${segundos}s` : 'Pensando…'}
           </div>
         )}
         <div ref={fim} />

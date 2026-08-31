@@ -481,3 +481,69 @@ test('editar um item que não está mais na proposta avisa em vez de criar um no
   assert.match(r.body.message, /recarregue a página/)
   assert.equal((await pedir('GET', `/projects/${p.id}`)).body.blueprintHash, p.blueprintHash, 'nada foi gravado')
 })
+
+// --- 3) o conteúdo do conhecimento, fornecido durante a montagem ---------------------------------
+
+test('3) colar o conteúdo tira o conhecimento de pendente — e apagá-lo devolve a pendência', async () => {
+  const p = await comProposta()
+  const previaAntes = await pedir('GET', `/projects/${p.id}/preview`)
+  assert.equal(previaAntes.body.items.find((i) => i.kind === 'knowledge').action, 'wait_user')
+
+  const r = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: 'Pizza margherita 40. Refrigerante 8. Sobremesa 15.' } }])
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  const req = r.body.blueprint.knowledgeRequirements.find((k) => k.key === 'cardapio')
+  assert.match(req.content, /Pizza margherita/)
+  assert.equal(req.state, 'supplied', 'o estado SEGUE o conteúdo; ninguém marca "entregue" sem texto')
+
+  const previa = await pedir('GET', `/projects/${p.id}/preview`)
+  const item = previa.body.items.find((i) => i.kind === 'knowledge')
+  assert.equal(item.action, 'create')
+  assert.equal(item.usesLlm, true, 'indexar custa, e a pessoa vê isso antes de aprovar')
+
+  const limpo = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: '' } }])
+  assert.equal(limpo.body.blueprint.knowledgeRequirements.find((k) => k.key === 'cardapio').state, 'missing')
+  assert.equal((await pedir('GET', `/projects/${p.id}/preview`)).body.items.find((i) => i.kind === 'knowledge').action, 'wait_user')
+})
+
+test('o conteúdo colado também passa pelo mascaramento e pelo teto', async () => {
+  const p = await comProposta()
+  const r = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: 'a chave é sk-ant-api03-NAOEUMSEGREDOREALdetesteXYZ123456' } }])
+  assert.equal(/sk-ant-api03/.test(JSON.stringify(r.body.blueprint)), false)
+
+  const gigante = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: 'x'.repeat(60_000) } }])
+  assert.equal(gigante.status, 200)
+  assert.ok(gigante.body.blueprint.knowledgeRequirements.find((k) => k.key === 'cardapio').content.length <= 40_000)
+  // E o que sai daqui continua passando pelo validador.
+  assert.equal((await pedir('POST', `/projects/${p.id}/validate`)).body.valid, true)
+})
+
+// --- 5) a falha do provedor para de assombrar depois de resolvida --------------------------------
+
+test('5) a falha fica no histórico, mas deixa de valer quando a rodada seguinte funciona', async () => {
+  await db.collection('user_settings').deleteMany({})
+  const p = await criar()
+  assert.equal((await pedir('POST', `/projects/${p.id}/messages`, { content: 'oi' })).status, 400)
+
+  const antes = (await pedir('GET', `/projects/${p.id}/messages`)).body
+  const falha = antes.find((m) => m.role === 'system_notice' && m.failure === true)
+  assert.ok(falha, 'a falha é registrada na conversa')
+  assert.equal(falha.resolved, false)
+
+  await setProviderApiKey(DONO, 'anthropic', 'chave-de-teste')
+  assert.equal((await pedir('POST', `/projects/${p.id}/messages`, { content: 'oi de novo' })).status, 200)
+
+  const depois = (await pedir('GET', `/projects/${p.id}/messages`)).body
+  assert.equal(depois.find((m) => m.id === falha.id).resolved, true)
+  assert.equal(depois.find((m) => m.id === falha.id).content, falha.content, 'a mensagem não é apagada; só perde o alarme')
+})
+
+test('o aviso de credencial não é falha, e nenhuma rodada boa o "resolve"', async () => {
+  const p = await criar()
+  await pedir('POST', `/projects/${p.id}/messages`, { content: 'minha chave é ghp_abcdefghijklmnopqrstuvwxyz0123' })
+  await pedir('POST', `/projects/${p.id}/messages`, { content: 'segue' })
+
+  const msgs = (await pedir('GET', `/projects/${p.id}/messages`)).body
+  const aviso = msgs.find((m) => m.role === 'system_notice' && /credencial/i.test(m.content))
+  assert.equal(aviso.failure, undefined, 'continua valendo para sempre: credencial se configura na página do App')
+  assert.equal(aviso.resolved, undefined)
+})
