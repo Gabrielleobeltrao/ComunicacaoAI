@@ -102,6 +102,22 @@ architectRouter.patch('/projects/:id', async (req, res, next) => {
   }
 })
 
+// Corrigir a proposta à mão. Não chama modelo nenhum — e por isso não paga pedágio.
+architectRouter.patch('/projects/:id/blueprint', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const body = (req.body ?? {}) as { edits?: unknown }
+    // O mesmo lock da conversa: uma edição e uma rodada do modelo em voo escrevem o
+    // mesmo documento, e sem ele a última a gravar apagaria a outra.
+    const projeto = await withProjectLock(id.toString(), () => service.editBlueprint(res.locals.userId, id, body.edits))
+    auditEntity(res, { id: projeto._id.toString(), label: projeto.title })
+    res.json(service.projectDetail(projeto))
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
 // O que existe nesta conta, para a tela poder oferecer a escolha. Leitura pura.
 architectRouter.get('/targets', async (_req, res) => {
   res.json(await service.architectTargets(res.locals.userId))
@@ -128,7 +144,16 @@ architectRouter.get('/projects/:id/messages', async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), L.MAX_MESSAGES_PER_PROJECT)
   const skip = Math.max(Number(req.query.skip) || 0, 0)
   const mensagens = await repo.listMessages(res.locals.userId, id, { limit, skip })
-  res.json(mensagens.map((m) => ({ id: m._id.toString(), role: m.role, content: m.content, createdAt: m.createdAt })))
+  res.json(
+    mensagens.map((m) => ({
+      id: m._id.toString(),
+      role: m.role,
+      content: m.content,
+      // A tela precisa saber se aquele vermelho ainda vale.
+      ...(m.failure ? { failure: true, resolved: Boolean(m.resolvedAt) } : {}),
+      createdAt: m.createdAt,
+    })),
+  )
 })
 
 architectRouter.post('/projects/:id/messages', async (req, res, next) => {

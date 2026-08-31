@@ -24,6 +24,9 @@ export const ACTION_LABEL: Record<PreviewItem['action'], string> = {
 }
 
 export const KIND_LABEL: Record<PreviewItem['kind'], string> = {
+  // O prédio entra quando a proposta mexe no nome dele. Faltava aqui, e o item saía
+  // rotulado como `undefined`.
+  building: 'Prédio',
   floor: 'Andar',
   agent: 'Agente',
   sector: 'Setor',

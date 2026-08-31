@@ -16,8 +16,8 @@ const BLUEPRINT = {
   objective: 'atender dúvidas e registrar pedidos',
   floors: [{ key: 'atendimento', name: 'Atendimento do Restaurante', workMode: 'organization' }],
   agents: [
-    { key: 'gerente', name: 'Gerente de atendimento', floorKey: 'atendimento' },
-    { key: 'duvidas', name: 'Atendente de dúvidas', floorKey: 'atendimento' },
+    { key: 'gerente', name: 'Gerente de atendimento', floorKey: 'atendimento', objective: 'Distribuir a conversa para quem sabe responder.', instructions: 'Nunca prometa prazo.' },
+    { key: 'duvidas', name: 'Atendente de dúvidas', floorKey: 'atendimento', objective: 'Responder horários, endereço e cardápio.', instructions: '' },
   ],
   sectors: [{ key: 'setor', name: 'Atendimento', mode: 'orchestrated', memberAgentKeys: ['gerente', 'duvidas'], coordinatorAgentKey: 'gerente' }],
   routines: [],
@@ -30,7 +30,7 @@ const BLUEPRINT = {
 const CHECKLIST = [
   { id: 'structure:floor-atendimento', category: 'structure', title: 'Andar “Atendimento do Restaurante”', description: 'Será criado.', required: true, status: 'ready', completionMode: 'resource_state', target: { kind: 'floor', key: 'atendimento' }, dependsOn: [] },
   { id: 'structure:agent-gerente', category: 'structure', title: 'Agente “Gerente de atendimento”', description: 'Recebe a conversa.', required: true, status: 'blocked', completionMode: 'resource_state', target: { kind: 'agent', key: 'gerente' }, dependsOn: ['structure:floor-atendimento'] },
-  { id: 'knowledge:cardapio', category: 'knowledge', title: 'Enviar o cardápio com preços', description: 'Sem ele, o agente não responde preço.', required: true, status: 'ready', completionMode: 'resource_state', target: { kind: 'knowledge', key: 'cardapio' }, dependsOn: [] },
+  { id: 'knowledge:cardapio', category: 'knowledge', title: 'Enviar o cardápio com preços', description: 'Sem ele, o agente não responde preço.', required: true, status: 'ready', completionMode: 'resource_state', target: { kind: 'knowledge', key: 'cardapio' }, linkTarget: { kind: 'agent', key: 'gerente' }, dependsOn: [] },
   { id: 'app:canal', category: 'app', title: 'Conectar web_chat', description: 'Receber as conversas do site.', required: true, status: 'ready', completionMode: 'connection_state', target: { kind: 'app', key: 'web_chat' }, actionPath: '/apps', dependsOn: [] },
   { id: 'test:conversa-de-teste', category: 'test', title: 'Testar a operação com uma conversa real', description: 'Converse com o agente de entrada.', required: true, status: 'blocked', completionMode: 'manual', dependsOn: ['structure:floor-atendimento'] },
 ]
@@ -42,12 +42,12 @@ const PREVIA = {
   valid: true,
   issues: [{ path: 'appRequirements[0]', code: 'app_not_connected', message: 'web_chat ainda não está conectado nesta conta', severity: 'warning', suggestedAction: 'conecte o App' }],
   items: [
-    { kind: 'floor', key: 'atendimento', label: 'Atendimento do Restaurante', action: 'create', detail: 'Andar novo.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
-    { kind: 'agent', key: 'gerente', label: 'Gerente de atendimento', action: 'create', detail: 'Recebe a conversa e decide quem responde.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
-    { kind: 'agent', key: 'duvidas', label: 'Atendente de dúvidas', action: 'create', detail: 'Responde o que mais perguntam.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
-    { kind: 'sector', key: 'setor', label: 'Atendimento', action: 'create', detail: 'Uma porta de entrada só.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
-    { kind: 'app', key: 'canal', label: 'web_chat', action: 'wait_user', detail: 'Receber as conversas do site. Conecte o App para os agentes poderem usá-lo.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
-    { kind: 'knowledge', key: 'cardapio', label: 'Enviar o cardápio com preços', action: 'wait_user', detail: 'Fica pendente até você enviar o conteúdo. Nada é inventado.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'floor', key: 'atendimento', label: 'Atendimento do Restaurante', action: 'create', detail: 'Andar novo.', rationale: 'Onde a operação de atendimento mora.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'agent', key: 'gerente', label: 'Gerente de atendimento', action: 'create', detail: 'Agente novo.', rationale: 'Recebe a conversa e decide quem responde.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'agent', key: 'duvidas', label: 'Atendente de dúvidas', action: 'create', detail: 'Agente novo.', rationale: 'Responde o que mais perguntam.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'sector', key: 'setor', label: 'Atendimento', action: 'create', detail: 'Setor no modo orchestrated.', rationale: 'Uma porta de entrada só.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'app', key: 'canal', label: 'web_chat', action: 'wait_user', detail: 'Receber as conversas do site. Conecte o App para os agentes poderem usá-lo.', rationale: '', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'knowledge', key: 'cardapio', label: 'Enviar o cardápio com preços', action: 'wait_user', detail: 'Fica pendente até você enviar o conteúdo. Nada é inventado.', rationale: 'Sem ele, o agente não responde preço.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
   ],
   checklist: CHECKLIST,
   readiness: READINESS,
@@ -97,6 +97,9 @@ let apagados: string[] = []
 let ligacoes: Record<string, unknown> | null = null
 let salvoNoProjeto: Record<string, unknown> | null = null
 let rodadasAutomaticas = 0
+/** O que a tela mandou corrigir na proposta — e a prévia que o servidor devolveria depois. */
+let edicoesEnviadas: { kind: string; key: string; fields?: Record<string, string>; remove?: boolean }[] = []
+let previaCorrente = PREVIA
 
 // A FORMA REAL de `/api/providers`: `models` é uma lista de objetos, não de textos.
 // O stub antigo dizia `string[]` — a mesma suposição errada do código —, e por isso
@@ -135,6 +138,8 @@ async function stub(
   ligacoes = null
   salvoNoProjeto = null
   rodadasAutomaticas = 0
+  edicoesEnviadas = []
+  previaCorrente = (opts.preview as typeof PREVIA) ?? PREVIA
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
 
   const proj = opts.project ?? projeto()
@@ -169,7 +174,26 @@ async function stub(
     r.fulfill({ json: { ...COM_PROPOSTA, assistantText: 'Montei uma primeira proposta.', question: null } }),
   )
   await page.route('**/api/architect/projects/*/validate', (r) => r.fulfill({ json: { valid: true, issues: PREVIA.issues } }))
-  await page.route('**/api/architect/projects/*/preview', (r) => r.fulfill({ json: opts.preview ?? PREVIA }))
+  await page.route('**/api/architect/projects/*/preview', (r) => r.fulfill({ json: previaCorrente }))
+  // Corrigir a proposta à mão: o servidor devolve o projeto com o que mudou, e a
+  // prévia seguinte já vem com o item corrigido — é assim que a tela real se comporta.
+  await page.route('**/api/architect/projects/*/blueprint', (r) => {
+    const body = r.request().postDataJSON() as { edits: typeof edicoesEnviadas }
+    edicoesEnviadas.push(...body.edits)
+    const mudancas: { kind: string; key: string; label: string; change: string; fields: string[] }[] = []
+    for (const e of body.edits) {
+      const anterior = previaCorrente.items.find((i) => i.kind === e.kind && i.key === e.key)
+      if (e.remove) {
+        mudancas.push({ kind: e.kind, key: e.key, label: anterior?.label ?? e.key, change: 'removed', fields: [] })
+        previaCorrente = { ...previaCorrente, items: previaCorrente.items.filter((i) => !(i.kind === e.kind && i.key === e.key)) }
+        continue
+      }
+      const nome = e.fields?.name ?? e.fields?.title ?? anterior?.label ?? e.key
+      mudancas.push({ kind: e.kind, key: e.key, label: nome, change: 'changed', fields: Object.keys(e.fields ?? {}) })
+      previaCorrente = { ...previaCorrente, items: previaCorrente.items.map((i) => (i.kind === e.kind && i.key === e.key ? { ...i, label: nome } : i)) }
+    }
+    return r.fulfill({ json: { ...COM_PROPOSTA, changes: mudancas } })
+  })
   await page.route('**/api/architect/projects/*/apply', (r) => {
     aplicado = r.request().postDataJSON() as Record<string, unknown>
     const a = opts.apply ?? {
@@ -347,6 +371,74 @@ test('a proposta mostra o que será criado e o que depende da pessoa', async ({ 
   await expect(page.getByTestId('architect-item-app-canal')).toContainText('Depende de você')
 })
 
+test('7) o porquê de cada item aparece — foi gerado e pago, não se joga fora', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-rationale-agent-gerente')).toContainText('Recebe a conversa e decide quem responde')
+  // O que VAI ACONTECER e o PORQUÊ são coisas diferentes, e aparecem separados.
+  await expect(page.getByTestId('architect-item-agent-gerente')).toContainText('Agente novo.')
+  await expect(page.getByTestId('architect-rationale-floor-atendimento')).toContainText('Onde a operação de atendimento mora')
+})
+
+test('6) trocar o nome de um agente é edição na tela, sem pedir nada ao modelo', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-item-edit-agent-gerente').click()
+
+  // O formulário abre com o que já está na proposta — corrigir não é redigitar.
+  const bloco = page.getByTestId('architect-edit-agent-gerente')
+  await expect(bloco.getByTestId('architect-edit-field-name')).toHaveValue('Gerente de atendimento')
+  await expect(bloco.getByTestId('architect-edit-field-objective')).toHaveValue(/Distribuir a conversa/)
+
+  await bloco.getByTestId('architect-edit-field-name').fill('Recepcionista')
+  await bloco.getByTestId('architect-edit-save').click()
+
+  await expect(page.getByTestId('architect-item-agent-gerente')).toContainText('Recepcionista')
+  expect(edicoesEnviadas).toHaveLength(1)
+  expect(edicoesEnviadas[0].kind).toBe('agent')
+  expect(edicoesEnviadas[0].fields?.name).toBe('Recepcionista')
+  // Nenhuma rodada de conversa foi disparada por causa de uma correção de texto.
+  expect(mensagensEnviadas).toEqual([])
+  expect(rodadasAutomaticas).toBe(0)
+})
+
+test('8) depois da correção, a tela diz o que mudou', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-changes')).toHaveCount(0, { timeout: 5000 })
+
+  await page.getByTestId('architect-item-edit-agent-duvidas').click()
+  await page.getByTestId('architect-edit-field-name').fill('Atendente do salão')
+  await page.getByTestId('architect-edit-save').click()
+
+  await expect(page.getByTestId('architect-changes')).toContainText('Atendente do salão')
+  await expect(page.getByTestId('architect-changes')).toContainText('Mudou')
+})
+
+test('tirar um item da proposta é possível, e a recusa do servidor é dita por inteiro', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.route('**/api/architect/projects/*/blueprint', (r) =>
+    r.fulfill({ status: 400, json: { code: 'validation_error', message: 'não dá para remover: o setor "Atendimento" depende deste item' } }),
+  )
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-item-edit-agent-duvidas').click()
+  await page.getByTestId('architect-edit-remove').click()
+  // Quem depende do item é a única pista útil; trocar por "não foi possível" a apagaria.
+  await expect(page.getByTestId('architect-edit-error')).toContainText('o setor "Atendimento" depende')
+  // O formulário continua aberto com o erro ao lado, e o item não sumiu da proposta:
+  // uma recusa do servidor não pode deixar a tela dizendo que a remoção aconteceu.
+  await expect(page.getByTestId('architect-edit-agent-duvidas')).toBeVisible()
+  await page.getByRole('button', { name: 'Cancelar' }).click()
+  await expect(page.getByTestId('architect-item-agent-duvidas')).toContainText('Atendente de dúvidas')
+})
+
+test('proposta já aplicada não se edita na tela', async ({ page }) => {
+  await stub(page, { project: { ...COM_PROPOSTA, status: 'applied', appliedAt: NOW } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-item-agent-gerente')).toBeVisible()
+  await expect(page.getByTestId('architect-item-edit-agent-gerente')).toHaveCount(0)
+})
+
 test('o que preocupa aparece como aviso, e não como erro', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
@@ -377,6 +469,90 @@ test('o JSON existe, mas fica em “Avançado”', async ({ page }) => {
   await expect(page.getByTestId('architect-proposal')).not.toContainText('blueprintPatch')
   await page.getByTestId('architect-advanced').getByText('Avançado').click()
   await expect(page.getByTestId('architect-advanced')).toContainText('knowledgeRequirements')
+})
+
+test('1) o reaproveitamento proposto já vem apontado para o recurso de mesmo nome', async ({ page }) => {
+  // O modelo propõe "reuse" identificando pelo NOME — ele não escreve id. Sem a ponte,
+  // a pessoa recebia o select em "Criar novo" e um erro mandando escolher o recurso.
+  const comReuso = {
+    ...COM_PROPOSTA,
+    blueprint: { ...BLUEPRINT, floors: [{ ...BLUEPRINT.floors[0], action: 'reuse' }] },
+  }
+  await stub(page, {
+    project: comReuso,
+    targets: { floors: [{ id: 'f9', name: 'Atendimento do Restaurante' }], agents: [], sectors: [], routines: [] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  await expect(page.getByTestId('architect-link-suggested-floor-atendimento')).toContainText('Atendimento do Restaurante')
+  await expect(page.getByTestId('architect-link-floor-atendimento')).toHaveValue('reuse|f9')
+
+  await page.getByTestId('architect-links-save').click()
+  await expect.poll(() => ligacoes).toMatchObject({ links: [{ kind: 'floor', key: 'atendimento', action: 'reuse', resourceId: 'f9' }] })
+})
+
+test('sem um nome igual, nada é adivinhado', async ({ page }) => {
+  const comReuso = {
+    ...COM_PROPOSTA,
+    blueprint: { ...BLUEPRINT, floors: [{ ...BLUEPRINT.floors[0], action: 'reuse' }] },
+  }
+  await stub(page, {
+    project: comReuso,
+    // Dois com o mesmo nome: ligar ao errado seria pior que não sugerir.
+    targets: { floors: [{ id: 'f1', name: 'Atendimento do Restaurante' }, { id: 'f2', name: 'atendimento do restaurante' }], agents: [], sectors: [], routines: [] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-link-suggested-floor-atendimento')).toHaveCount(0)
+  await expect(page.getByTestId('architect-link-floor-atendimento')).toHaveValue('')
+})
+
+// --- 3) o conteúdo do conhecimento ---------------------------------------------------
+
+test('3) dá para colar o conteúdo do conhecimento na própria proposta', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-item-edit-knowledge-cardapio').click()
+
+  await expect(page.getByText(/nada é inventado/i)).toBeVisible()
+  await page.getByTestId('architect-edit-field-content').fill('Pizza margherita 40. Refrigerante 8.')
+  await page.getByTestId('architect-edit-save').click()
+
+  await expect.poll(() => edicoesEnviadas).toMatchObject([{ kind: 'knowledge', key: 'cardapio', fields: { content: 'Pizza margherita 40. Refrigerante 8.' } }])
+})
+
+// --- 4 e 5) a espera e o aviso que já passou -----------------------------------------
+
+test('4) a espera é anunciada, e não parece uma tela travada', async ({ page }) => {
+  await stub(page)
+  // Uma rodada lenta de propósito: é onde o "Pensando…" precisa se explicar.
+  await page.route('**/api/architect/projects/*/messages', async (r) => {
+    if (r.request().method() !== 'POST') return r.fulfill({ json: [] })
+    await new Promise((resolve) => setTimeout(resolve, 4500))
+    return r.fulfill({ json: { ...projeto(), assistantText: 'Pronto.', question: null } })
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-input').fill('oi')
+  await page.getByTestId('architect-send').click()
+
+  const espera = page.getByTestId('architect-thinking')
+  await expect(espera).toHaveAttribute('role', 'status')
+  await expect(espera).toContainText(/Pensando… \ds/)
+})
+
+test('5) a falha já resolvida sai do alarme, mas fica no histórico', async ({ page }) => {
+  await stub(page, {
+    messages: [
+      { id: 'm1', role: 'user', content: 'quero automatizar', createdAt: NOW },
+      { id: 'm2', role: 'system_notice', content: 'A chave do provedor foi recusada.', failure: true, resolved: true, createdAt: NOW },
+      { id: 'm3', role: 'assistant', content: 'Por onde falam com você?', createdAt: NOW },
+    ],
+    project: COM_PROPOSTA,
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  const aviso = page.getByTestId('architect-message-system_notice')
+  await expect(aviso).toContainText('A chave do provedor foi recusada')
+  await expect(aviso).toContainText('já resolvido')
+  await expect(aviso).toHaveAttribute('data-resolved', 'sim')
 })
 
 // --- a rodada corretiva -----------------------------------------------------------------------------
@@ -678,6 +854,17 @@ test('a pendência leva direto ao lugar de resolver', async ({ page }) => {
   await expect(page.getByTestId('architect-check-link-app:canal')).toHaveAttribute('href', '/apps')
 })
 
+test('2) a pendência de conhecimento leva ao agente que vai receber o documento', async ({ page }) => {
+  // Depois de aplicar: é quando o agente existe e tem tela. Antes, não há para onde ir.
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await page.getByTestId('architect-apply-confirm').click()
+
+  // Sem isto, "Enviar o cardápio" ficava obrigatório e sem nenhum caminho.
+  await expect(page.getByTestId('architect-check-link-knowledge:cardapio')).toHaveAttribute('href', '/agents/a1')
+})
+
 test('reconferir apura de novo contra o estado real', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
@@ -705,13 +892,18 @@ test('“Montar operação” tem entrada no menu, no modo que o build usa', asy
   await page.goto('/architect')
 
   const menuDeAndares = page.getByTestId('building-switcher')
+  const naBarraLateral = page.locator('aside').getByRole('link', { name: 'Montar operação' })
+  // Esperar a barra lateral existir ANTES de decidir o modo. Contar logo depois do
+  // `goto` lia a tela antes de ela montar: dava zero nos dois, o teste caía no ramo V1
+  // e falhava de vez em quando por tempo, não por comportamento.
+  await expect.poll(async () => (await menuDeAndares.count()) + (await naBarraLateral.count())).toBeGreaterThan(0)
   if (await menuDeAndares.count()) {
     await menuDeAndares.first().click()
     await expect(page.getByTestId('open-architect')).toBeVisible()
     // E não está mais duplicada na barra lateral.
-    await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toHaveCount(0)
+    await expect(naBarraLateral).toHaveCount(0)
   } else {
-    await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toBeVisible()
+    await expect(naBarraLateral).toBeVisible()
   }
 })
 

@@ -15,6 +15,14 @@ const ORDEM: Kind[] = ['floor', 'agent', 'sector', 'routine']
 
 const VAZIO: ArchitectTargets = { floors: [], agents: [], sectors: [], routines: [] }
 
+/** Mesmo nome, ignorando acento, caixa e espaço sobrando. */
+const normal = (texto: string) =>
+  texto
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+
 export function ResourceLinks({ project, onSalvar, carregando }: { project: ArchitectProject; onSalvar: (links: BlueprintLink[]) => void; carregando: boolean }) {
   const [alvos, setAlvos] = useState<ArchitectTargets>(VAZIO)
   const [escolhas, setEscolhas] = useState<Record<string, string>>({})
@@ -36,7 +44,32 @@ export function ResourceLinks({ project, onSalvar, carregando }: { project: Arch
   const opcoes = (kind: Kind) =>
     kind === 'floor' ? alvos.floors : kind === 'agent' ? alvos.agents : kind === 'sector' ? alvos.sectors : alvos.routines
 
-  const valorDe = (item: (typeof itens)[number]) => escolhas[`${item.kind}:${item.key}`] ?? (item.action === 'create' ? '' : (item.resourceId ?? ''))
+  /**
+   * O recurso que a proposta quis dizer.
+   *
+   * O modelo propõe reaproveitar identificando pelo NOME — ele não pode escrever id, e
+   * não escreve. Sem esta ponte, a pessoa recebia um item marcado como "reaproveitar",
+   * um select aberto em "Criar novo" e um erro de validação dizendo para escolher o
+   * recurso: ela tinha que adivinhar qual, numa lista que pode ter dezenas.
+   *
+   * Quem grava continua sendo ela: isto pré-seleciona, e o servidor confere a posse.
+   */
+  const sugestaoDe = (item: (typeof itens)[number]) => {
+    if (item.action === 'create' || item.resourceId) return null
+    const iguais = opcoes(item.kind).filter((o) => normal(o.name) === normal(item.label))
+    // Dois recursos com o mesmo nome: aí não há sugestão possível, e adivinhar seria
+    // ligar a proposta ao recurso errado sem ninguém perceber.
+    return iguais.length === 1 ? iguais[0] : null
+  }
+
+  const valorDe = (item: (typeof itens)[number]) => {
+    const escolhido = escolhas[`${item.kind}:${item.key}`]
+    if (escolhido !== undefined) return escolhido
+    if (item.action !== 'create' && item.resourceId) return `${item.action}|${item.resourceId}`
+    if (item.action === 'create') return ''
+    const sugerido = sugestaoDe(item)
+    return sugerido ? `${item.action}|${sugerido.id}` : ''
+  }
 
   function salvar() {
     const links: BlueprintLink[] = itens
@@ -63,11 +96,18 @@ export function ResourceLinks({ project, onSalvar, carregando }: { project: Arch
           </p>
         ) : (
           <>
-            {itens.map((item) => (
+            {itens.map((item) => {
+              const sugerido = sugestaoDe(item)
+              return (
               <label key={`${item.kind}:${item.key}`} className="flex flex-col gap-1" style={{ fontSize: 12.5 }}>
                 <span style={{ color: 'var(--text-muted)' }}>
                   {KIND_LABEL[item.kind]}: {item.label}
                 </span>
+                {sugerido && (
+                  <span style={{ color: 'var(--text-muted)' }} data-testid={`architect-link-suggested-${item.kind}-${item.key}`}>
+                    A proposta pediu para reaproveitar — encontrei “{sugerido.name}” com este nome. Confirme abaixo.
+                  </span>
+                )}
                 <Select
                   data-testid={`architect-link-${item.kind}-${item.key}`}
                   value={valorDe(item)}
@@ -82,10 +122,11 @@ export function ResourceLinks({ project, onSalvar, carregando }: { project: Arch
                   ))}
                 </Select>
               </label>
-            ))}
+              )
+            })}
             <div>
               <Button variant="secondary" onClick={salvar} disabled={carregando} data-testid="architect-links-save">
-                Salvar escolhas
+                {itens.some((i) => sugestaoDe(i)) ? 'Confirmar escolhas' : 'Salvar escolhas'}
               </Button>
             </div>
           </>

@@ -12,6 +12,9 @@ import { Advanced } from './Advanced'
 import { ResourceLinks } from './ResourceLinks'
 import { STATUS_LABEL, statusTone } from './shared'
 
+/** Onde ainda dá para mexer na proposta. Aplicada ou arquivada, o servidor recusa. */
+const EDITAVEL: api.ArchitectStatus[] = ['discovery', 'draft', 'ready']
+
 type Aba = 'conversa' | 'proposta' | 'checklist'
 const ABAS: { key: Aba; label: string }[] = [
   { key: 'conversa', label: 'Conversa' },
@@ -95,6 +98,16 @@ export function ArchitectProject() {
   const enviar = (texto: string) => {
     setMensagens((atual) => [...atual, { id: `local-${Date.now()}`, role: 'user', content: texto, createdAt: new Date().toISOString() }])
     return registrar(() => api.sendMessage(projectId, texto))
+  }
+
+  /**
+   * Uma correção à mão na proposta. Não chama o modelo — e por isso o erro sobe: quem
+   * mostra a recusa é o próprio item, ao lado do campo que a pessoa acabou de mexer.
+   */
+  async function editarProposta(edits: api.BlueprintEdit[]) {
+    const p = await api.editBlueprint(projectId, edits)
+    setProjeto(p)
+    await recarregarPrevia(p)
   }
 
   async function revisar() {
@@ -227,7 +240,15 @@ export function ArchitectProject() {
   const proposta = (
     <div className="flex flex-col gap-3">
       {!aplicado && projeto.hasBlueprint && <ResourceLinks project={projeto} onSalvar={salvarLigacoes} carregando={pendente} />}
-      <Proposal project={projeto} preview={previa} carregando={pendente} onRevisar={revisar} onAplicar={abrirAplicacao} />
+      <Proposal
+        project={projeto}
+        preview={previa}
+        carregando={pendente}
+        editavel={EDITAVEL.includes(projeto.status)}
+        onEditar={editarProposta}
+        onRevisar={revisar}
+        onAplicar={abrirAplicacao}
+      />
       <Advanced project={projeto} steps={passos} onTrocarProvedor={trocarProvedor} onArquivar={arquivar} onDesfazer={desfazer} carregando={pendente} />
     </div>
   )

@@ -67,6 +67,9 @@ export function deriveChecklist(bp: OfficeBlueprintV1): ArchitectChecklistItem[]
       status: 'pending',
       completionMode: 'resource_state',
       target: { kind: 'knowledge', key: req.key },
+      // O documento é entregue na base de quem vai usá-lo. Prédio não tem link aqui:
+      // a base dele não é uma tela de recurso.
+      ...(req.targetKey && req.scope !== 'building' ? { linkTarget: { kind: req.scope, key: req.targetKey } } : {}),
       dependsOn: req.targetKey && req.scope === 'agent' ? [idDe('structure', `agent-${req.targetKey}`)] : req.targetKey && req.scope === 'sector' ? [idDe('structure', `sector-${req.targetKey}`)] : [],
     })
   }

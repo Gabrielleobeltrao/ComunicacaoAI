@@ -352,3 +352,198 @@ test('a listagem não carrega conversa nem blueprint inteiro', async () => {
   assert.equal('answers' in r.body[0], false)
   assert.equal(r.body[0].hasBlueprint, true)
 })
+
+// --- 6, 7 e 8) corrigir a proposta à mão, e ver o que mudou ------------------------------------------
+
+const comProposta = async () => {
+  const p = await criar()
+  await pedir('POST', `/projects/${p.id}/messages`, { content: 'quero automatizar' })
+  const r = await pedir('POST', `/projects/${p.id}/messages`, { content: 'pelo site' })
+  assert.equal(r.body.hasBlueprint, true, JSON.stringify(r.body))
+  return r.body
+}
+
+const editar = (id, edits) => pedir('PATCH', `/projects/${id}/blueprint`, { edits })
+
+test('6) trocar o nome de um agente não chama o modelo, e não mexe no resto', async () => {
+  const p = await comProposta()
+  const gastoAntes = await getMonthlyTokens(DONO)
+
+  const r = await editar(p.id, [{ kind: 'agent', key: 'duvidas', fields: { name: 'Atendente do salão', objective: 'Responder o que o cliente pergunta' } }])
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const duvidas = r.body.blueprint.agents.find((a) => a.key === 'duvidas')
+  assert.equal(duvidas.name, 'Atendente do salão')
+  assert.equal(duvidas.objective, 'Responder o que o cliente pergunta')
+  // Isto é o ponto: pedir a troca ao modelo devolveria uma proposta INTEIRA nova, e o
+  // que ninguém pediu para mudar mudaria junto.
+  assert.equal(duvidas.rationale, 'Responde o que mais perguntam.')
+  assert.deepEqual(
+    r.body.blueprint.agents.find((a) => a.key === 'gerente'),
+    p.blueprint.agents.find((a) => a.key === 'gerente'),
+  )
+  assert.equal(await getMonthlyTokens(DONO), gastoAntes, 'uma correção de texto não custa inferência')
+
+  // Hash novo e volta para rascunho: uma confirmação em voo com o hash antigo é recusada.
+  assert.notEqual(r.body.blueprintHash, p.blueprintHash)
+  assert.equal(r.body.status, 'draft')
+})
+
+test('8) depois da edição, o projeto diz o que mudou', async () => {
+  const p = await comProposta()
+  const r = await editar(p.id, [{ kind: 'agent', key: 'duvidas', fields: { name: 'Atendente do salão' } }])
+  const m = r.body.changes.find((c) => c.key === 'duvidas')
+  assert.equal(m.change, 'changed')
+  assert.deepEqual(m.fields, ['nome'])
+  // E continua lá no GET seguinte: não é um dado que vive só na resposta do PATCH.
+  const depois = await pedir('GET', `/projects/${p.id}`)
+  assert.deepEqual(depois.body.changes, r.body.changes)
+})
+
+test('a primeira proposta não finge que mudou alguma coisa', async () => {
+  const p = await comProposta()
+  assert.deepEqual(p.changes, [])
+})
+
+test('7) a prévia entrega o porquê de cada item, separado do que vai acontecer', async () => {
+  const p = await comProposta()
+  const r = await pedir('GET', `/projects/${p.id}/preview`)
+  const agente = r.body.items.find((i) => i.key === 'duvidas')
+  assert.equal(agente.detail, 'Agente novo.')
+  assert.equal(agente.rationale, 'Responde o que mais perguntam.', 'foi gerado e pago; é para ser lido')
+  assert.equal(r.body.items.find((i) => i.kind === 'floor').rationale, 'Onde a operação de atendimento mora.')
+})
+
+test('só texto se edita: andar, ação e recurso ligado não passam por aqui', async () => {
+  const p = await comProposta()
+  for (const fields of [{ floorKey: 'outro' }, { action: 'update' }, { resourceId: new ObjectId().toString() }, { key: 'outra' }]) {
+    const r = await editar(p.id, [{ kind: 'agent', key: 'duvidas', fields }])
+    assert.equal(r.status, 400, JSON.stringify(fields))
+    assert.match(r.body.message, /não é editável/)
+  }
+  // Nem por um tipo que não existe.
+  assert.equal((await editar(p.id, [{ kind: 'building', key: 'x', fields: { name: 'y' } }])).status, 400)
+})
+
+test('o que a pessoa escreve aqui também é mascarado', async () => {
+  const p = await comProposta()
+  const r = await editar(p.id, [{ kind: 'agent', key: 'duvidas', fields: { instructions: 'use a chave sk-ant-api03-NAOEUMSEGREDOREALdetesteXYZ123456 para responder' } }])
+  assert.equal(r.status, 200)
+  const texto = r.body.blueprint.agents.find((a) => a.key === 'duvidas').instructions
+  assert.match(texto, /credencial removida/)
+  assert.equal(/sk-ant-api03/.test(texto), false)
+})
+
+test('nome vazio é recusado, e o campo opcional apagado some de vez', async () => {
+  const p = await comProposta()
+  assert.equal((await editar(p.id, [{ kind: 'agent', key: 'duvidas', fields: { name: '   ' } }])).status, 400)
+
+  const r = await editar(p.id, [{ kind: 'agent', key: 'duvidas', fields: { rationale: '' } }])
+  assert.equal(r.status, 200)
+  assert.equal('rationale' in r.body.blueprint.agents.find((a) => a.key === 'duvidas'), false)
+})
+
+test('remover o que alguém usa é recusado dizendo QUEM usa — sem cascata silenciosa', async () => {
+  const p = await comProposta()
+  const r = await editar(p.id, [{ kind: 'agent', key: 'duvidas', remove: true }])
+  assert.equal(r.status, 400)
+  assert.match(r.body.message, /setor "Atendimento"/)
+  assert.match(r.body.message, /conhecimento/)
+
+  // Na ordem certa, sai. E o que restou continua íntegro.
+  const ok = await editar(p.id, [
+    { kind: 'knowledge', key: 'cardapio', remove: true },
+    { kind: 'sector', key: 'setor-atendimento', remove: true },
+    { kind: 'agent', key: 'duvidas', remove: true },
+  ])
+  assert.equal(ok.status, 200, JSON.stringify(ok.body))
+  assert.deepEqual(ok.body.blueprint.agents.map((a) => a.key), ['gerente'])
+  assert.equal(ok.body.changes.filter((c) => c.change === 'removed').length, 3)
+  assert.equal((await pedir('POST', `/projects/${p.id}/validate`)).body.valid, true, 'o que sobrou continua aplicável')
+})
+
+test('uma edição só vale para o dono, e só enquanto o projeto é editável', async () => {
+  const p = await comProposta()
+  sessao = VIZINHO
+  assert.equal((await editar(p.id, [{ kind: 'agent', key: 'duvidas', fields: { name: 'Meu' } }])).status, 404)
+  sessao = DONO
+
+  await pedir('POST', `/projects/${p.id}/archive`)
+  const r = await editar(p.id, [{ kind: 'agent', key: 'duvidas', fields: { name: 'Meu' } }])
+  assert.equal(r.status, 409)
+  assert.equal(r.body.code, 'not_editable')
+})
+
+test('editar um item que não está mais na proposta avisa em vez de criar um novo', async () => {
+  const p = await comProposta()
+  const r = await editar(p.id, [{ kind: 'agent', key: 'inexistente', fields: { name: 'Fantasma' } }])
+  assert.equal(r.status, 400)
+  assert.match(r.body.message, /recarregue a página/)
+  assert.equal((await pedir('GET', `/projects/${p.id}`)).body.blueprintHash, p.blueprintHash, 'nada foi gravado')
+})
+
+// --- 3) o conteúdo do conhecimento, fornecido durante a montagem ---------------------------------
+
+test('3) colar o conteúdo tira o conhecimento de pendente — e apagá-lo devolve a pendência', async () => {
+  const p = await comProposta()
+  const previaAntes = await pedir('GET', `/projects/${p.id}/preview`)
+  assert.equal(previaAntes.body.items.find((i) => i.kind === 'knowledge').action, 'wait_user')
+
+  const r = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: 'Pizza margherita 40. Refrigerante 8. Sobremesa 15.' } }])
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  const req = r.body.blueprint.knowledgeRequirements.find((k) => k.key === 'cardapio')
+  assert.match(req.content, /Pizza margherita/)
+  assert.equal(req.state, 'supplied', 'o estado SEGUE o conteúdo; ninguém marca "entregue" sem texto')
+
+  const previa = await pedir('GET', `/projects/${p.id}/preview`)
+  const item = previa.body.items.find((i) => i.kind === 'knowledge')
+  assert.equal(item.action, 'create')
+  assert.equal(item.usesLlm, true, 'indexar custa, e a pessoa vê isso antes de aprovar')
+
+  const limpo = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: '' } }])
+  assert.equal(limpo.body.blueprint.knowledgeRequirements.find((k) => k.key === 'cardapio').state, 'missing')
+  assert.equal((await pedir('GET', `/projects/${p.id}/preview`)).body.items.find((i) => i.kind === 'knowledge').action, 'wait_user')
+})
+
+test('o conteúdo colado também passa pelo mascaramento e pelo teto', async () => {
+  const p = await comProposta()
+  const r = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: 'a chave é sk-ant-api03-NAOEUMSEGREDOREALdetesteXYZ123456' } }])
+  assert.equal(/sk-ant-api03/.test(JSON.stringify(r.body.blueprint)), false)
+
+  const gigante = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: 'x'.repeat(60_000) } }])
+  assert.equal(gigante.status, 200)
+  assert.ok(gigante.body.blueprint.knowledgeRequirements.find((k) => k.key === 'cardapio').content.length <= 40_000)
+  // E o que sai daqui continua passando pelo validador.
+  assert.equal((await pedir('POST', `/projects/${p.id}/validate`)).body.valid, true)
+})
+
+// --- 5) a falha do provedor para de assombrar depois de resolvida --------------------------------
+
+test('5) a falha fica no histórico, mas deixa de valer quando a rodada seguinte funciona', async () => {
+  await db.collection('user_settings').deleteMany({})
+  const p = await criar()
+  assert.equal((await pedir('POST', `/projects/${p.id}/messages`, { content: 'oi' })).status, 400)
+
+  const antes = (await pedir('GET', `/projects/${p.id}/messages`)).body
+  const falha = antes.find((m) => m.role === 'system_notice' && m.failure === true)
+  assert.ok(falha, 'a falha é registrada na conversa')
+  assert.equal(falha.resolved, false)
+
+  await setProviderApiKey(DONO, 'anthropic', 'chave-de-teste')
+  assert.equal((await pedir('POST', `/projects/${p.id}/messages`, { content: 'oi de novo' })).status, 200)
+
+  const depois = (await pedir('GET', `/projects/${p.id}/messages`)).body
+  assert.equal(depois.find((m) => m.id === falha.id).resolved, true)
+  assert.equal(depois.find((m) => m.id === falha.id).content, falha.content, 'a mensagem não é apagada; só perde o alarme')
+})
+
+test('o aviso de credencial não é falha, e nenhuma rodada boa o "resolve"', async () => {
+  const p = await criar()
+  await pedir('POST', `/projects/${p.id}/messages`, { content: 'minha chave é ghp_abcdefghijklmnopqrstuvwxyz0123' })
+  await pedir('POST', `/projects/${p.id}/messages`, { content: 'segue' })
+
+  const msgs = (await pedir('GET', `/projects/${p.id}/messages`)).body
+  const aviso = msgs.find((m) => m.role === 'system_notice' && /credencial/i.test(m.content))
+  assert.equal(aviso.failure, undefined, 'continua valendo para sempre: credencial se configura na página do App')
+  assert.equal(aviso.resolved, undefined)
+})

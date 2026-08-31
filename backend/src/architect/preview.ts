@@ -17,6 +17,8 @@ export interface PreviewItem {
   /** `wait_user` é o item que depende de algo que só a pessoa pode fazer. */
   action: 'create' | 'reuse' | 'update' | 'wait_user'
   detail: string
+  /** O PORQUÊ deste item, nas palavras do plano. Custou token; é para ser lido. */
+  rationale?: string
   dependsOn: string[]
   /** Esta etapa gasta LLM quando rodar? A pessoa merece saber antes de aprovar. */
   usesLlm: boolean
@@ -65,6 +67,7 @@ export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipConte
       label: f.name,
       action: f.action,
       detail: f.action === 'create' ? 'Andar novo.' : 'Andar existente, reaproveitado.',
+      rationale: f.rationale?.trim() || undefined,
       dependsOn: [],
       usesLlm: false,
       requiresApproval: f.action === 'update',
@@ -77,7 +80,8 @@ export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipConte
       key: a.key,
       label: a.name,
       action: a.action,
-      detail: a.rationale?.trim() || 'Integra a equipe proposta.',
+      detail: a.action === 'create' ? 'Agente novo.' : a.action === 'reuse' ? 'Agente existente, reaproveitado.' : 'Altera um agente que já existe.',
+      rationale: a.rationale?.trim() || undefined,
       dependsOn: [`floor:${a.floorKey}`],
       // Criar um agente não chama modelo nenhum; ele passa a chamar quando alguém falar
       // com ele. Dizer o contrário aqui assustaria à toa.
@@ -92,7 +96,8 @@ export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipConte
       key: s.key,
       label: s.name,
       action: s.action,
-      detail: s.rationale?.trim() || `Setor no modo ${s.mode}.`,
+      detail: `Setor no modo ${s.mode}.`,
+      rationale: s.rationale?.trim() || undefined,
       dependsOn: (s.memberAgentKeys ?? []).map((k) => `agent:${k}`),
       usesLlm: false,
       requiresApproval: s.action === 'update',
@@ -106,6 +111,7 @@ export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipConte
       label: r.name,
       action: r.action,
       detail: 'Criada como rascunho: não roda até você publicar.',
+      rationale: r.rationale?.trim() || undefined,
       dependsOn: [`agent:${r.ownerAgentKey}`],
       // Uma rotina com etapa de agente chama o modelo toda vez que rodar.
       usesLlm: (r.steps ?? []).some((s) => String((s as { type?: unknown }).type ?? '').startsWith('agent.')),
@@ -137,6 +143,7 @@ export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipConte
       label: req.title,
       action: temConteudo ? 'create' : 'wait_user',
       detail: temConteudo ? 'Vira um documento na base do destino.' : 'Fica pendente até você enviar o conteúdo. Nada é inventado.',
+      rationale: req.description?.trim() || undefined,
       dependsOn: req.targetKey ? [`${req.scope}:${req.targetKey}`] : [],
       // A indexação usa embeddings, e isso tem custo. Vale dizer.
       usesLlm: temConteudo,

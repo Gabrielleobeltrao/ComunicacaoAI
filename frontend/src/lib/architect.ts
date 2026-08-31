@@ -28,6 +28,8 @@ export interface ChecklistItem {
   status: 'pending' | 'blocked' | 'ready' | 'done'
   completionMode: 'manual' | 'resource_state' | 'connection_state' | 'test_result'
   target?: { kind: string; key: string; id?: string }
+  /** Para onde ir quando o item não se resolve no próprio alvo — ver o servidor. */
+  linkTarget?: { kind: string; key: string }
   actionPath?: string
   dependsOn: string[]
 }
@@ -99,27 +101,47 @@ export interface ArchitectProject {
   applyState?: { operationId: string; status: string; error: string | null } | null
   /** Vem junto no GET: um reload de projeto aplicado precisa reconstruí-los. */
   links?: ArchitectLink[]
+  /** O que a última revisão mexeu. Vazio na primeira proposta. */
+  changes?: BlueprintChange[]
+}
+
+export interface BlueprintChange {
+  kind: 'floor' | 'agent' | 'sector' | 'routine' | 'app' | 'knowledge'
+  key: string
+  label: string
+  change: 'added' | 'removed' | 'changed'
+  fields: string[]
+}
+
+/** Uma correção à mão na proposta: um item, os campos de texto que mudaram. */
+export interface BlueprintEdit {
+  kind: PreviewItem['kind']
+  key: string
+  fields?: Record<string, string>
+  remove?: boolean
 }
 
 export interface Blueprint {
   title: string
   objective: string
-  floors: { key: string; name: string; workMode: string; rationale?: string }[]
-  agents: { key: string; name: string; floorKey: string; objective?: string; rationale?: string }[]
-  sectors: { key: string; name: string; mode: string; memberAgentKeys: string[]; coordinatorAgentKey?: string | null; rationale?: string }[]
-  routines: { key: string; name: string; ownerAgentKey: string }[]
+  floors: { key: string; name: string; workMode: string; mission?: string; description?: string; rationale?: string }[]
+  agents: { key: string; name: string; floorKey: string; objective?: string; role?: string; instructions?: string; constraints?: string; rationale?: string }[]
+  sectors: { key: string; name: string; mode: string; memberAgentKeys: string[]; coordinatorAgentKey?: string | null; instruction?: string; rationale?: string }[]
+  routines: { key: string; name: string; ownerAgentKey: string; description?: string; rationale?: string }[]
   appRequirements: { key: string; appKey: string; reason: string; required: boolean }[]
-  knowledgeRequirements: { key: string; title: string; description: string; required: boolean; state: string }[]
+  knowledgeRequirements: { key: string; title: string; description: string; required: boolean; state: string; content?: string }[]
   assumptions: { key: string; text: string }[]
   warnings: { path: string; message: string }[]
 }
 
 export interface PreviewItem {
-  kind: 'floor' | 'agent' | 'sector' | 'routine' | 'app' | 'knowledge'
+  kind: 'building' | 'floor' | 'agent' | 'sector' | 'routine' | 'app' | 'knowledge'
   key: string
   label: string
   action: 'create' | 'reuse' | 'update' | 'wait_user'
   detail: string
+  /** Por que este item está na proposta. O modelo escreveu; a tela mostra. */
+  rationale?: string
   dependsOn: string[]
   usesLlm: boolean
   requiresApproval: boolean
@@ -140,6 +162,10 @@ export interface ArchitectMessage {
   id: string
   role: 'user' | 'assistant' | 'system_notice'
   content: string
+  /** Aviso de FALHA do provedor — o único tipo de aviso que uma rodada boa resolve. */
+  failure?: boolean
+  /** Já resolvido por uma rodada posterior: fica no histórico, sai do alarme. */
+  resolved?: boolean
   createdAt: string
 }
 
@@ -189,6 +215,9 @@ export const validateProject = (id: string) => request<{ valid: boolean; issues:
 export const previewProject = (id: string) => request<ArchitectPreview>(`/projects/${id}/preview`)
 export const listTargets = () => request<ArchitectTargets>('/targets')
 export const setLinks = (id: string, links: BlueprintLink[]) => request<ArchitectProject>(`/projects/${id}/links`, { method: 'PATCH', body: JSON.stringify({ links }) })
+/** Corrige a proposta sem chamar o modelo — texto, e só. Ver `editBlueprint` no servidor. */
+export const editBlueprint = (id: string, edits: BlueprintEdit[]) =>
+  request<ArchitectProject>(`/projects/${id}/blueprint`, { method: 'PATCH', body: JSON.stringify({ edits }) })
 export const rollbackProject = (id: string) => request<ArchitectProject & { removed: string[]; kept: { key: string; reason: string }[] }>(`/projects/${id}/rollback`, { method: 'POST' })
 /**
  * Os provedores da conta.
