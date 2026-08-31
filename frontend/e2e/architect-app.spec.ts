@@ -439,6 +439,43 @@ test('proposta já aplicada não se edita na tela', async ({ page }) => {
   await expect(page.getByTestId('architect-item-edit-agent-gerente')).toHaveCount(0)
 })
 
+test('o arranjo muda com o que existe: conversa sozinha antes, proposta na frente depois', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 })
+  // Sem proposta, a conversa É a tela — antes ela dividia espaço com um painel que só
+  // dizia "a proposta aparece aqui".
+  await stub(page)
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-conversation')).toBeVisible()
+  await expect(page.getByTestId('architect-chat-panel')).toHaveCount(0)
+
+  // Com proposta, ela ocupa a área principal e a conversa vira painel lateral.
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-proposal')).toBeVisible()
+  const painel = page.getByTestId('architect-chat-panel')
+  await expect(painel).toBeVisible()
+
+  // O desenho fica na área principal, à esquerda do painel da conversa.
+  const fluxo = await page.getByTestId('architect-flow').boundingBox()
+  const chat = await painel.boundingBox()
+  expect(fluxo!.x).toBeLessThan(chat!.x)
+})
+
+test('a conversa recolhe e volta por um botão — recolhida, ela não some', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 })
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  await page.getByTestId('architect-chat-collapse').click()
+  await expect(page.getByTestId('architect-chat-panel')).toBeHidden()
+  // O caminho para pedir mudança não pode sumir junto com o painel.
+  const botao = page.getByTestId('architect-chat-open')
+  await expect(botao).toBeVisible()
+  await botao.click()
+  await expect(page.getByTestId('architect-chat-panel')).toBeVisible()
+  await expect(page.getByTestId('architect-input')).toBeVisible()
+})
+
 test('o fluxo mostra quem coordena e quem é acionado — não só a lista', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)

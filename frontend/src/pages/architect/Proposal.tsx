@@ -157,27 +157,7 @@ export function Proposal({
         </Card>
       )}
 
-      {/* O desenho antes da lista: é ele que responde "quem aciona quem". */}
-      <Flow blueprint={project.blueprint} />
 
-      {mudancas.length > 0 && (
-        <Card>
-          <div className="flex flex-col gap-2" data-testid="architect-changes">
-            <div>
-              <strong style={{ fontSize: 13 }}>O que mudou na última revisão</strong>
-              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Comparado com a versão anterior desta proposta.</p>
-            </div>
-            {mudancas.map((m) => (
-              <div key={`${m.kind}-${m.key}-${m.change}`} className="flex flex-wrap items-center gap-2" style={{ fontSize: 12.5 }}>
-                <Badge tone={MUDANCA[m.change]?.tone ?? 'neutral'}>{MUDANCA[m.change]?.label ?? m.change}</Badge>
-                <span style={{ color: 'var(--text-muted)' }}>{KIND_LABEL[m.kind]}</span>
-                <span style={{ fontWeight: 600, overflowWrap: 'anywhere' }}>{m.label}</span>
-                {m.fields.length > 0 && <span style={{ color: 'var(--text-muted)' }}>— {m.fields.join(', ')}</span>}
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
 
       {erros.length > 0 && (
         <Card>
@@ -193,19 +173,16 @@ export function Proposal({
         </Card>
       )}
 
-      {avisos.length > 0 && (
-        <Card>
-          <div className="flex flex-col gap-1" data-testid="architect-warnings">
-            <strong style={{ fontSize: 13 }}>Vale saber</strong>
-            {avisos.map((i, n) => (
-              <p key={`${i.path}-${n}`} style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                {i.message}
-              </p>
-            ))}
-          </div>
-        </Card>
-      )}
 
+
+
+      {/* Duas colunas quando há espaço: o DESENHO e a LISTA de um lado, o que comenta
+          a proposta do outro. `items-start` importa — sem ele o cartão curto estica até
+          a altura do vizinho e vira um retângulo vazio do tamanho da tela. */}
+      <div className="grid items-start gap-3 xl:grid-cols-2">
+        <div className="flex min-w-0 flex-col gap-3">
+      {/* O desenho antes da lista: é ele que responde "quem aciona quem". */}
+      <Flow blueprint={project.blueprint} />
       <Card>
         <div className="flex flex-col gap-2" data-testid="architect-items">
           {(preview?.items ?? []).map((item) => {
@@ -297,6 +274,38 @@ export function Proposal({
         </div>
       </Card>
 
+        </div>
+        <div className="flex min-w-0 flex-col gap-3">
+      {mudancas.length > 0 && (
+        <Card>
+          <div className="flex flex-col gap-2" data-testid="architect-changes">
+            <div>
+              <strong style={{ fontSize: 13 }}>O que mudou na última revisão</strong>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Comparado com a versão anterior desta proposta.</p>
+            </div>
+            {mudancas.map((m) => (
+              <div key={`${m.kind}-${m.key}-${m.change}`} className="flex flex-wrap items-center gap-2" style={{ fontSize: 12.5 }}>
+                <Badge tone={MUDANCA[m.change]?.tone ?? 'neutral'}>{MUDANCA[m.change]?.label ?? m.change}</Badge>
+                <span style={{ color: 'var(--text-muted)' }}>{KIND_LABEL[m.kind]}</span>
+                <span style={{ fontWeight: 600, overflowWrap: 'anywhere' }}>{m.label}</span>
+                {m.fields.length > 0 && <span style={{ color: 'var(--text-muted)' }}>— {m.fields.join(', ')}</span>}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+      {avisos.length > 0 && (
+        <Card>
+          <div className="flex flex-col gap-1" data-testid="architect-warnings">
+            <strong style={{ fontSize: 13 }}>Vale saber</strong>
+            {avisos.map((i, n) => (
+              <p key={`${i.path}-${n}`} style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                {i.message}
+              </p>
+            ))}
+          </div>
+        </Card>
+      )}
       {(project.assumptions?.length ?? 0) > 0 && (
         <Card>
           <div className="flex flex-col gap-1" data-testid="architect-assumptions">
@@ -309,6 +318,9 @@ export function Proposal({
           </div>
         </Card>
       )}
+
+        </div>
+      </div>
 
       <div className="flex flex-wrap gap-2">
         <Button variant="secondary" onClick={onRevisar} disabled={carregando} data-testid="architect-review">
