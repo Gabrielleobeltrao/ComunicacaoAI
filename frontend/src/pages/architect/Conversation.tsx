@@ -133,7 +133,7 @@ export function Conversation({
           rows={1}
           value={texto}
           disabled={disabled}
-          placeholder={disabled ? 'Este projeto já foi aplicado.' : 'Escreva sua resposta'}
+          placeholder={disabled ? 'Este projeto foi arquivado.' : 'Escreva sua resposta'}
           onChange={(e) => setTexto(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {

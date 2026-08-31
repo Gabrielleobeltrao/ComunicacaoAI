@@ -15,8 +15,10 @@ const TRANSICOES: Record<ArchitectStatus, ArchitectStatus[]> = {
   ready: ['discovery', 'draft', 'applying', 'archived'],
   // Aplicando: só termina, falha, ou (retomada) continua aplicando.
   applying: ['applied', 'failed', 'applying'],
-  // Aplicado é final para a estrutura; a checklist continua evoluindo.
-  applied: ['archived'],
+  // Aplicado NÃO é o fim da conversa: continuar falando abre uma rodada nova, e a
+  // proposta seguinte vem apoiada no que já foi criado (ver `rebaseSobreAplicado`).
+  // Sem esta transição, ajustar depois de aplicar exigia começar outro projeto do zero.
+  applied: ['draft', 'archived'],
   // Falhou no meio: retomar volta para applying; revisar volta para draft.
   failed: ['applying', 'draft', 'archived'],
   archived: [],
@@ -29,7 +31,19 @@ export const APPLY_FROM: ArchitectStatus[] = ['ready']
 /** Retomar só faz sentido no que ficou pelo caminho. */
 export const RESUME_FROM: ArchitectStatus[] = ['applying', 'failed']
 
-/** Estados em que a conversa ainda muda a proposta. Depois de aplicado, não muda mais. */
+/** Estados em que a proposta ainda pode ser MEXIDA à mão (editar, ligar recurso). */
 export const EDITABLE: ArchitectStatus[] = ['discovery', 'draft', 'ready', 'failed']
 
 export const isEditable = (status: ArchitectStatus): boolean => EDITABLE.includes(status)
+
+/**
+ * Estados em que a CONVERSA continua.
+ *
+ * `applied` entra aqui e não em `EDITABLE` de propósito: falar sempre se pode, e é o
+ * que a conversa produzir que reabre a proposta. O contrário — fechar o chat ao aplicar —
+ * obrigava a começar um projeto novo para trocar uma instrução, e o projeto novo não
+ * sabia o que já existia.
+ */
+export const CONVERSABLE: ArchitectStatus[] = [...EDITABLE, 'applied']
+
+export const isConversable = (status: ArchitectStatus): boolean => CONVERSABLE.includes(status)

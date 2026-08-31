@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Badge, Button, Card, Icon, IconButton, Input, Textarea } from '../../ui'
 import type { ArchitectPreview, ArchitectProject, Blueprint, BlueprintEdit, PreviewItem } from '../../lib/architect'
 import { ACTION_LABEL, KIND_LABEL } from './shared'
+import { Flow } from './Flow'
 
 // A proposta, do jeito que se lê: o que vai ser criado, o que já existe e o que
 // depende de você. O JSON fica em "Avançado", e não no caminho principal.
@@ -155,6 +156,9 @@ export function Proposal({
           </div>
         </Card>
       )}
+
+      {/* O desenho antes da lista: é ele que responde "quem aciona quem". */}
+      <Flow blueprint={project.blueprint} />
 
       {mudancas.length > 0 && (
         <Card>

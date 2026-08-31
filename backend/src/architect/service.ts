@@ -10,7 +10,7 @@ import { applyBlueprintLinks, loadTargets } from './links.js'
 import { buildPreview } from './preview.js'
 import { deriveChecklist, applyChecklistState, computeReadiness } from './checklist.js'
 import { validateOfficeBlueprint } from './validate.js'
-import { isEditable, RESUME_FROM } from './state.js'
+import { isConversable, isEditable, RESUME_FROM } from './state.js'
 import { getProviderKeyStatus } from '../userSettings.js'
 import { applyBlueprint, resumeApply, rollbackOperation, ApplyConflict, ApplyFailure } from './apply.js'
 import type { ApplyHooks } from './apply.js'
@@ -82,7 +82,8 @@ export async function sendMessage(
   opts: { forceProposal?: boolean } = {},
 ): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
   const projeto = await requireProject(ownerId, projectId)
-  if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
+  // Falar sempre se pode. O que a conversa produzir é que decide se a proposta reabre.
+  if (!isConversable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto foi arquivado')
 
   const texto = String(content ?? '').trim()
   if (!texto) throw new ValidationError('escreva alguma coisa')
@@ -119,7 +120,7 @@ export async function advanceTurn(
   opts: { forceProposal?: boolean } = {},
 ): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
   const projeto = await requireProject(ownerId, projectId)
-  if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
+  if (!isConversable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto foi arquivado')
   // A chave de cobrança sai da última mensagem: a mesma rodada, repetida por um erro
   // de rede, não cobra duas vezes.
   const ultima = (await repo.recentMessages(ownerId, projectId, 1))[0]
@@ -173,9 +174,19 @@ async function runTurn(
   const answers = { ...respondidas }
   for (const [k, v] of Object.entries(turno.answerPatch)) answers[k] = v
 
-  const blueprint = turno.blueprintPatch
+  const mesclado = turno.blueprintPatch
     ? mergeBlueprintPatch(projeto.blueprint, turno.blueprintPatch as Partial<OfficeBlueprintV1>, { title: projeto.title, objective: projeto.objective })
     : projeto.blueprint
+
+  /**
+   * Uma rodada depois de APLICADO não começa do zero.
+   *
+   * O que já foi criado vira `update` apontando para o recurso real, DEPOIS da mesclagem:
+   * o modelo devolve o item com "create" (é o que ele sabe escrever), e quem tem a última
+   * palavra sobre o que existe é o registro da aplicação, não a resposta dele. Sem isto,
+   * continuar a conversa depois de aplicar duplicaria o escritório inteiro.
+   */
+  const blueprint = turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExiste(ownerId, projeto, mesclado) : mesclado
 
   const assumptions = mesclarSuposicoes(projeto.assumptions, turno.assumptions, answers)
   const hash = blueprint ? computeBlueprintHash(blueprint) : null
@@ -188,8 +199,9 @@ async function runTurn(
     // A versão anterior só é guardada quando a revisão MUDOU alguma coisa. Uma rodada
     // que só respondeu uma pergunta não pode zerar o "o que mudou" da revisão passada.
     ...(projeto.blueprint && hash !== projeto.blueprintHash ? { previousBlueprint: projeto.blueprint } : {}),
-    // Proposta na mesa é `draft`; a validação é que promove para `ready`.
-    status: blueprint ? 'draft' : 'discovery',
+    // Proposta na mesa é `draft`; a validação é que promove para `ready`. Um projeto
+    // aplicado que ganhou proposta nova volta para `draft` — é a rodada seguinte.
+    status: blueprint ? 'draft' : projeto.status === 'applied' ? 'applied' : 'discovery',
   }
   if (blueprint) {
     const checklist = applyChecklistState(deriveChecklist(blueprint), new Set(), marcadosDe(projeto))
@@ -199,6 +211,41 @@ async function runTurn(
   const atualizado = (await repo.patchProject(ownerId, projeto._id, patch)) ?? projeto
 
   return { project: atualizado, assistantText: turno.assistantText, question: turno.question, secretMasked: opts.secretMasked }
+}
+
+/**
+ * A proposta, com o que JÁ EXISTE marcado como tal.
+ *
+ * Cada item que a aplicação criou passa a `update` com o `resourceId` real. `update`
+ * exige aprovação individual na confirmação, então a rodada seguinte não muda nada em
+ * silêncio: o dono vê item por item o que vai ser tocado no escritório que já roda.
+ *
+ * O mapa vem do `resourceMap` da operação — o mesmo registro que faz reaplicar não
+ * duplicar. Item sem entrada no mapa (não foi criado, ou foi criado por outro caminho)
+ * fica como está.
+ */
+async function marcarOQueJaExiste(ownerId: string, projeto: ArchitectProject, base: OfficeBlueprintV1 | null): Promise<OfficeBlueprintV1 | null> {
+  if (!base) return base
+  const operacao = await repo.lastOperation(ownerId, projeto._id)
+  const mapa = new Map(Object.entries(operacao?.resourceMap ?? {}))
+  if (mapa.size === 0) return base
+
+  const bp: OfficeBlueprintV1 = structuredClone(base)
+  const listas: [keyof OfficeBlueprintV1, string][] = [
+    ['floors', 'floor'],
+    ['agents', 'agent'],
+    ['sectors', 'sector'],
+    ['routines', 'routine'],
+  ]
+  for (const [lista, kind] of listas) {
+    for (const item of (bp[lista] ?? []) as unknown as { key: string; action: string; resourceId?: string | null }[]) {
+      const id = mapa.get(`${kind}:${item.key}`)
+      if (!id) continue
+      item.action = 'update'
+      item.resourceId = id
+    }
+  }
+  return bp
 }
 
 /** Uma suposição some quando a pergunta que ela cobria foi respondida. */

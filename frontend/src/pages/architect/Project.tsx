@@ -232,14 +232,16 @@ export function ArchitectProject() {
       messages={mensagens}
       question={pergunta}
       pending={pendente}
-      disabled={aplicado || projeto.status === 'archived'}
+      // A conversa não fecha ao aplicar: é por ela que se pede o ajuste seguinte, e a
+      // rodada nova vem apoiada no que já foi criado. Só o arquivado silencia.
+      disabled={projeto.status === 'archived'}
       onSend={enviar}
       onGenerate={() => registrar(() => api.generateProposal(projectId))}
     />
   )
   const proposta = (
     <div className="flex flex-col gap-3">
-      {!aplicado && projeto.hasBlueprint && <ResourceLinks project={projeto} onSalvar={salvarLigacoes} carregando={pendente} />}
+      {EDITAVEL.includes(projeto.status) && projeto.hasBlueprint && <ResourceLinks project={projeto} onSalvar={salvarLigacoes} carregando={pendente} />}
       <Proposal
         project={projeto}
         preview={previa}
@@ -257,6 +259,7 @@ export function ArchitectProject() {
   return (
     <AppLayout
       current="/architect"
+      wide
       title={projeto.title}
       titleExtra={<Badge tone={statusTone(projeto.status)} data-testid="architect-status">{STATUS_LABEL[projeto.status]}</Badge>}
       subtitle={projeto.objective}
@@ -378,7 +381,7 @@ export function ArchitectProject() {
             mesma tela responder a dois cliques diferentes. */}
         <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
           <div className={`min-w-0 flex-col lg:flex lg:flex-1 ${aba === 'conversa' ? 'flex' : 'hidden'}`}>{conversa}</div>
-          <div className={`min-w-0 flex-col gap-3 overflow-y-auto lg:flex lg:w-[380px] lg:shrink-0 ${aba === 'conversa' ? 'hidden' : 'flex'}`}>
+          <div className={`min-w-0 flex-col gap-3 overflow-y-auto lg:flex lg:w-[420px] lg:shrink-0 xl:w-[460px] ${aba === 'conversa' ? 'hidden' : 'flex'}`}>
             <div className={`flex-col lg:flex ${aba === 'proposta' ? 'flex' : 'hidden'}`}>{proposta}</div>
             <div className={`flex-col lg:flex ${aba === 'checklist' ? 'flex' : 'hidden'}`}>{checklist}</div>
           </div>

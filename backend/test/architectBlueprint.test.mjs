@@ -10,7 +10,7 @@ const { validateOfficeBlueprint, emptyOwnershipContext } = await import('../dist
 const { emptyBlueprint, mergeBlueprintPatch, computeBlueprintHash } = await import('../dist/architect/blueprint.js')
 const { maskSecrets, containsSecret, maskSecretsDeep } = await import('../dist/architect/secrets.js')
 const { deriveChecklist, applyChecklistState, computeReadiness } = await import('../dist/architect/checklist.js')
-const { canTransition, isEditable } = await import('../dist/architect/state.js')
+const { canTransition, isEditable, isConversable } = await import('../dist/architect/state.js')
 const { diffBlueprints } = await import('../dist/architect/diff.js')
 const L = await import('../dist/architect/limits.js')
 
@@ -371,14 +371,29 @@ test('“pronto” exige TODO obrigatório concluído e nenhum bloqueio', () => 
 
 // --- máquina de estados ------------------------------------------------------------------------------------
 
-test('aplicar só sai de ready, e o que já foi aplicado não volta a ser rascunho', () => {
+test('aplicar só sai de ready — e o aplicado reabre para a rodada seguinte', () => {
   assert.equal(canTransition('ready', 'applying'), true)
   assert.equal(canTransition('draft', 'applying'), false)
   assert.equal(canTransition('discovery', 'applying'), false)
-  assert.equal(canTransition('applied', 'draft'), false)
   assert.equal(canTransition('failed', 'applying'), true, 'retomar')
   assert.equal(canTransition('archived', 'draft'), false)
+
+  /**
+   * `applied → draft` passou a ser permitido, e a regra que ele substitui era pior:
+   * fechada a conversa, ajustar uma instrução exigia começar outro projeto — e o
+   * projeto novo não sabia o que já existia, então propunha criar tudo de novo.
+   *
+   * O que segura a duplicação não é a máquina de estados: é o serviço, que marca cada
+   * item já criado como `update` apontando para o recurso real antes de reabrir.
+   */
+  assert.equal(canTransition('applied', 'draft'), true)
+  assert.equal(canTransition('archived', 'discovery'), false, 'arquivado continua sendo fim de linha')
+
+  // Falar e MEXER são coisas diferentes: a conversa segue no aplicado, a edição à mão não
+  // — ela volta quando a rodada nova reabre a proposta como rascunho.
+  assert.equal(isConversable('applied'), true)
   assert.equal(isEditable('applied'), false)
+  assert.equal(isConversable('archived'), false)
   assert.equal(isEditable('discovery'), true)
 })
 

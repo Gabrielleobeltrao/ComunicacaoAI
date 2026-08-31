@@ -99,8 +99,55 @@ test('4) as regras de qualidade estão no prompt', () => {
   const p = buildArchitectPrompt(base)
   assert.match(p, /diz o RESULTADO, não a atividade/)
   assert.match(p, /QUANDO FALTA informação/)
-  assert.match(p, /Só crie setor quando houver mais de um agente com papéis DIFERENTES/)
+  assert.match(p, /papéis DIFERENTES pedem um setor com coordenador/)
   assert.match(p, /POUCOS agentes bem definidos/)
+})
+
+// --- o que o modelo precisa saber para montar uma OPERAÇÃO, e não um agente ------------
+
+test('o catálogo de perfis está no prompt, com quando usar cada um', () => {
+  const p = buildArchitectPrompt(base)
+  // Sem a lista, "preset" era um campo opcional que o modelo não sabia preencher — e
+  // todo agente nascia "personalizado", sem instrução de papel nem política de chamada.
+  for (const perfil of ['"manager"', '"researcher"', '"analyst"', '"operator"', '"communicator"', '"secretary"', '"monitor"', '"custom"']) {
+    assert.match(p, new RegExp(perfil.replace(/"/g, '"')), perfil)
+  }
+  assert.match(p, /"preset" NÃO é opcional/)
+  assert.match(p, /Escolher "custom" para tudo é o erro mais comum/)
+})
+
+test('o prompt ensina a decompor em ETAPAS e a montar setor', () => {
+  const p = buildArchitectPrompt(base)
+  assert.match(p, /ETAPAS do objetivo/)
+  assert.match(p, /UM agente por etapa/)
+  assert.match(p, /viram um SETOR/)
+  // Os três modos, com a diferença dita — escolher "organization" por engano produz um
+  // setor que não coordena nada.
+  assert.match(p, /"orchestrated": o coordenador decide/)
+  assert.match(p, /"pipeline": as etapas acontecem SEMPRE na mesma ordem/)
+  assert.match(p, /"organization": só agrupa na tela/)
+  // E a delegação, sem a qual o coordenador não alcança ninguém.
+  assert.match(p, /delegationPolicy":"floor"/)
+})
+
+test('agente tem nome de PESSOA; andar e setor têm nome de função', () => {
+  const p = buildArchitectPrompt(base)
+  assert.match(p, /NOMES SÃO NOMES DE PESSOA/)
+  assert.match(p, /não "Analista de Swing Trade"/)
+  assert.match(p, /O SETOR e o ANDAR, sim, têm nome de função/)
+})
+
+test('o exemplo MOSTRA a estrutura que o texto pede — ele é a alavanca mais forte', () => {
+  const p = buildArchitectPrompt(base)
+  // O exemplo antigo tinha dois agentes soltos, sem perfil e com nome de função: ele
+  // ensinava exatamente o que as regras proíbem.
+  assert.match(p, /"preset": "manager"/)
+  assert.match(p, /"preset": "researcher"/)
+  assert.match(p, /"mode": "orchestrated"/)
+  assert.match(p, /"coordinatorAgentKey": "marina"/)
+  assert.match(p, /"delegationPolicy": "floor"/)
+  assert.match(p, /"name": "Marina"/)
+  assert.equal(/"name": "(Atendente|Agendador|Analista|Agente)/.test(p), false, 'nome de função no exemplo ensina nome de função')
 })
 
 test('5) o reaproveitamento é documentado — e sem id', () => {

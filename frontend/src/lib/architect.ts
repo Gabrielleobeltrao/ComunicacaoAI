@@ -125,8 +125,8 @@ export interface Blueprint {
   title: string
   objective: string
   floors: { key: string; name: string; workMode: string; mission?: string; description?: string; rationale?: string }[]
-  agents: { key: string; name: string; floorKey: string; objective?: string; role?: string; instructions?: string; constraints?: string; rationale?: string }[]
-  sectors: { key: string; name: string; mode: string; memberAgentKeys: string[]; coordinatorAgentKey?: string | null; instruction?: string; rationale?: string }[]
+  agents: { key: string; name: string; floorKey: string; preset?: string; objective?: string; role?: string; instructions?: string; constraints?: string; rationale?: string }[]
+  sectors: { key: string; name: string; mode: string; floorKey?: string; memberAgentKeys: string[]; coordinatorAgentKey?: string | null; instruction?: string; rationale?: string }[]
   routines: { key: string; name: string; ownerAgentKey: string; description?: string; rationale?: string }[]
   appRequirements: { key: string; appKey: string; reason: string; required: boolean }[]
   knowledgeRequirements: { key: string; title: string; description: string; required: boolean; state: string; content?: string }[]

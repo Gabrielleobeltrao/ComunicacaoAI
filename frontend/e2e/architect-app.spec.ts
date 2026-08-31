@@ -16,10 +16,10 @@ const BLUEPRINT = {
   objective: 'atender dúvidas e registrar pedidos',
   floors: [{ key: 'atendimento', name: 'Atendimento do Restaurante', workMode: 'organization' }],
   agents: [
-    { key: 'gerente', name: 'Gerente de atendimento', floorKey: 'atendimento', objective: 'Distribuir a conversa para quem sabe responder.', instructions: 'Nunca prometa prazo.' },
-    { key: 'duvidas', name: 'Atendente de dúvidas', floorKey: 'atendimento', objective: 'Responder horários, endereço e cardápio.', instructions: '' },
+    { key: 'gerente', name: 'Marina', preset: 'manager', floorKey: 'atendimento', role: 'Recebe toda mensagem e decide quem resolve', objective: 'Distribuir a conversa para quem sabe responder.', instructions: 'Nunca prometa prazo.' },
+    { key: 'duvidas', name: 'Rafael', preset: 'researcher', floorKey: 'atendimento', role: 'Quando a pergunta for sobre cardápio ou horário', objective: 'Responder horários, endereço e cardápio.', instructions: '' },
   ],
-  sectors: [{ key: 'setor', name: 'Atendimento', mode: 'orchestrated', memberAgentKeys: ['gerente', 'duvidas'], coordinatorAgentKey: 'gerente' }],
+  sectors: [{ key: 'setor', name: 'Mesa de Atendimento', floorKey: 'atendimento', mode: 'orchestrated', memberAgentKeys: ['gerente', 'duvidas'], coordinatorAgentKey: 'gerente' }],
   routines: [],
   appRequirements: [{ key: 'canal', appKey: 'web_chat', reason: 'Receber as conversas do site.', required: true }],
   knowledgeRequirements: [{ key: 'cardapio', title: 'Enviar o cardápio com preços', description: 'Sem ele, o agente não responde preço.', required: true, state: 'missing' }],
@@ -29,7 +29,7 @@ const BLUEPRINT = {
 
 const CHECKLIST = [
   { id: 'structure:floor-atendimento', category: 'structure', title: 'Andar “Atendimento do Restaurante”', description: 'Será criado.', required: true, status: 'ready', completionMode: 'resource_state', target: { kind: 'floor', key: 'atendimento' }, dependsOn: [] },
-  { id: 'structure:agent-gerente', category: 'structure', title: 'Agente “Gerente de atendimento”', description: 'Recebe a conversa.', required: true, status: 'blocked', completionMode: 'resource_state', target: { kind: 'agent', key: 'gerente' }, dependsOn: ['structure:floor-atendimento'] },
+  { id: 'structure:agent-gerente', category: 'structure', title: 'Agente “Marina”', description: 'Recebe a conversa.', required: true, status: 'blocked', completionMode: 'resource_state', target: { kind: 'agent', key: 'gerente' }, dependsOn: ['structure:floor-atendimento'] },
   { id: 'knowledge:cardapio', category: 'knowledge', title: 'Enviar o cardápio com preços', description: 'Sem ele, o agente não responde preço.', required: true, status: 'ready', completionMode: 'resource_state', target: { kind: 'knowledge', key: 'cardapio' }, linkTarget: { kind: 'agent', key: 'gerente' }, dependsOn: [] },
   { id: 'app:canal', category: 'app', title: 'Conectar web_chat', description: 'Receber as conversas do site.', required: true, status: 'ready', completionMode: 'connection_state', target: { kind: 'app', key: 'web_chat' }, actionPath: '/apps', dependsOn: [] },
   { id: 'test:conversa-de-teste', category: 'test', title: 'Testar a operação com uma conversa real', description: 'Converse com o agente de entrada.', required: true, status: 'blocked', completionMode: 'manual', dependsOn: ['structure:floor-atendimento'] },
@@ -43,9 +43,9 @@ const PREVIA = {
   issues: [{ path: 'appRequirements[0]', code: 'app_not_connected', message: 'web_chat ainda não está conectado nesta conta', severity: 'warning', suggestedAction: 'conecte o App' }],
   items: [
     { kind: 'floor', key: 'atendimento', label: 'Atendimento do Restaurante', action: 'create', detail: 'Andar novo.', rationale: 'Onde a operação de atendimento mora.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
-    { kind: 'agent', key: 'gerente', label: 'Gerente de atendimento', action: 'create', detail: 'Agente novo.', rationale: 'Recebe a conversa e decide quem responde.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
-    { kind: 'agent', key: 'duvidas', label: 'Atendente de dúvidas', action: 'create', detail: 'Agente novo.', rationale: 'Responde o que mais perguntam.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
-    { kind: 'sector', key: 'setor', label: 'Atendimento', action: 'create', detail: 'Setor no modo orchestrated.', rationale: 'Uma porta de entrada só.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'agent', key: 'gerente', label: 'Marina', action: 'create', detail: 'Agente novo.', rationale: 'Recebe a conversa e decide quem responde.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'agent', key: 'duvidas', label: 'Rafael', action: 'create', detail: 'Agente novo.', rationale: 'Responde o que mais perguntam.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'sector', key: 'setor', label: 'Mesa de Atendimento', action: 'create', detail: 'Setor no modo orchestrated.', rationale: 'Uma porta de entrada só.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
     { kind: 'app', key: 'canal', label: 'web_chat', action: 'wait_user', detail: 'Receber as conversas do site. Conecte o App para os agentes poderem usá-lo.', rationale: '', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
     { kind: 'knowledge', key: 'cardapio', label: 'Enviar o cardápio com preços', action: 'wait_user', detail: 'Fica pendente até você enviar o conteúdo. Nada é inventado.', rationale: 'Sem ele, o agente não responde preço.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
   ],
@@ -366,7 +366,7 @@ test('a proposta mostra o que será criado e o que depende da pessoa', async ({ 
   await page.goto(`/architect/${PROJETO_ID}`)
   await expect(page.getByTestId('architect-counts')).toContainText('4 a criar')
   await expect(page.getByTestId('architect-counts')).toContainText('2 dependem de você')
-  await expect(page.getByTestId('architect-item-agent-gerente')).toContainText('Gerente de atendimento')
+  await expect(page.getByTestId('architect-item-agent-gerente')).toContainText('Marina')
   await expect(page.getByTestId('architect-item-knowledge-cardapio')).toContainText('Nada é inventado')
   await expect(page.getByTestId('architect-item-app-canal')).toContainText('Depende de você')
 })
@@ -387,7 +387,7 @@ test('6) trocar o nome de um agente é edição na tela, sem pedir nada ao model
 
   // O formulário abre com o que já está na proposta — corrigir não é redigitar.
   const bloco = page.getByTestId('architect-edit-agent-gerente')
-  await expect(bloco.getByTestId('architect-edit-field-name')).toHaveValue('Gerente de atendimento')
+  await expect(bloco.getByTestId('architect-edit-field-name')).toHaveValue('Marina')
   await expect(bloco.getByTestId('architect-edit-field-objective')).toHaveValue(/Distribuir a conversa/)
 
   await bloco.getByTestId('architect-edit-field-name').fill('Recepcionista')
@@ -429,7 +429,7 @@ test('tirar um item da proposta é possível, e a recusa do servidor é dita por
   // uma recusa do servidor não pode deixar a tela dizendo que a remoção aconteceu.
   await expect(page.getByTestId('architect-edit-agent-duvidas')).toBeVisible()
   await page.getByRole('button', { name: 'Cancelar' }).click()
-  await expect(page.getByTestId('architect-item-agent-duvidas')).toContainText('Atendente de dúvidas')
+  await expect(page.getByTestId('architect-item-agent-duvidas')).toContainText('Rafael')
 })
 
 test('proposta já aplicada não se edita na tela', async ({ page }) => {
@@ -437,6 +437,39 @@ test('proposta já aplicada não se edita na tela', async ({ page }) => {
   await page.goto(`/architect/${PROJETO_ID}`)
   await expect(page.getByTestId('architect-item-agent-gerente')).toBeVisible()
   await expect(page.getByTestId('architect-item-edit-agent-gerente')).toHaveCount(0)
+})
+
+test('o fluxo mostra quem coordena e quem é acionado — não só a lista', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const fluxo = page.getByTestId('architect-flow')
+  await expect(fluxo).toBeVisible()
+  // O andar, o setor e o MODO dele: um setor "organization" e um "orchestrated"
+  // produzem a mesma lista de itens e operações completamente diferentes.
+  await expect(page.getByTestId('architect-flow-floor-atendimento')).toContainText('Atendimento do Restaurante')
+  await expect(page.getByTestId('architect-flow-sector-setor')).toContainText('Mesa de Atendimento')
+  await expect(page.getByTestId('architect-flow-sector-setor')).toContainText('o coordenador decide quem responde')
+  // Quem coordena, quem é acionado, e o papel de cada um.
+  await expect(page.getByTestId('architect-flow-agent-gerente')).toContainText('Marina')
+  await expect(page.getByTestId('architect-flow-agent-gerente')).toContainText('coordena')
+  await expect(page.getByTestId('architect-flow-sector-setor')).toContainText('aciona')
+  await expect(page.getByTestId('architect-flow-agent-duvidas')).toContainText('busca informação')
+  // E o que depende da pessoa aparece junto do desenho.
+  await expect(page.getByTestId('architect-flow-needs')).toContainText('web_chat')
+})
+
+test('depois de aplicar, a conversa continua aberta para pedir ajuste', async ({ page }) => {
+  await stub(page, { project: { ...COM_PROPOSTA, status: 'applied', appliedAt: NOW } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  // O campo ficava desabilitado com "Este projeto já foi aplicado." — e trocar uma
+  // instrução exigia começar outro projeto, que não sabia o que já existia.
+  const campo = page.getByTestId('architect-input')
+  await expect(campo).toBeEnabled()
+  await campo.fill('troque o objetivo da Marina')
+  await page.getByTestId('architect-send').click()
+  await expect.poll(() => mensagensEnviadas).toContain('troque o objetivo da Marina')
 })
 
 test('o que preocupa aparece como aviso, e não como erro', async ({ page }) => {
