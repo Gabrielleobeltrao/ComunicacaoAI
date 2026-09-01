@@ -1291,14 +1291,23 @@ test('no celular é uma coluna só, com a conversa ABAIXO do conteúdo', async (
   await expect(page.getByTestId('architect-chat-collapse')).toBeHidden()
 })
 
-test('em 320 px nada estoura para os lados', async ({ page }) => {
+test('em 320 px nada estoura para os lados — nas quatro telas', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.setViewportSize({ width: 320, height: 720 })
+  const folga = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+
   for (const rota of ['/architect', `/architect/${PROJETO_ID}`]) {
     await page.goto(rota)
     await expect(page.getByTestId(rota === '/architect' ? 'architect-projects' : 'architect-conversation')).toBeVisible()
-    const folga = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
-    expect(folga, `${rota} estourou ${folga}px`).toBeLessThanOrEqual(0)
+    expect(await folga(), `${rota} estourou`).toBeLessThanOrEqual(0)
+  }
+
+  // O mapa do escritório é a tela mais larga que existe aqui — e é a mais nova. Um
+  // desenho de 400px numa viewport de 320 empurraria a página inteira para o lado.
+  for (const aba of ['fluxo', 'escritorio', 'checklist', 'proposta'] as const) {
+    await page.getByTestId(`architect-tab-${aba}`).click()
+    await page.waitForTimeout(400)
+    expect(await folga(), `a tela "${aba}" estourou`).toBeLessThanOrEqual(0)
   }
 })
 
