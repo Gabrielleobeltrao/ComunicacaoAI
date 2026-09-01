@@ -148,6 +148,44 @@ export interface PreviewItem {
   issues: BlueprintIssue[]
 }
 
+export interface CriticFinding {
+  source: 'responsibility' | 'executor' | 'architecture' | 'llm'
+  code: string
+  agentKey?: string
+  message: string
+  fix: string
+  severity: 'error' | 'warning'
+  evidence: string[]
+}
+
+export interface ArchitectureScore {
+  coverage: number
+  cohesion: number
+  executorFit: number
+  permissionSafety: number
+  setupCompleteness: number
+  handoffSimplicity: number
+  /** Os fatos por trás de cada nota. Nota sem fato é palpite com número. */
+  facts: Record<string, string[]>
+}
+
+export interface SimulationResult {
+  caseId: string
+  observedRoute: string[]
+  steps: { kind: string; ref: string; detail: string }[]
+  problems: { code: string; message: string; fix: string }[]
+  sideEffectsAvoided: string[]
+  matchedExpected: boolean
+}
+
+export interface SimulationRun {
+  version: number
+  createdAt?: string
+  cases: { id: string; input: string; trigger: string; expectedRoute: string[]; expectsApproval: boolean }[]
+  results: SimulationResult[]
+  passed: number
+}
+
 export interface ArchitectPreview {
   blueprintHash: string
   valid: boolean
@@ -156,6 +194,15 @@ export interface ArchitectPreview {
   checklist: ChecklistItem[]
   readiness: ArchitectReadiness
   counts: { create: number; reuse: number; update: number; waitUser: number }
+  /** O que a validação estrutural não vê: gerente sem equipe, executor incoerente. */
+  critique?: {
+    findings: CriticFinding[]
+    score: ArchitectureScore
+    mergeSplit: { agentKey: string; agentName: string; jobs: string[]; rationale: string }[]
+    clean: boolean
+  }
+  /** O ensaio da operação, sem efeito nenhum. */
+  simulation?: SimulationRun
 }
 
 export interface ArchitectMessage {

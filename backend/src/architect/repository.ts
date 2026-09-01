@@ -3,6 +3,7 @@ import { db } from '../db.js'
 import * as L from './limits.js'
 import { maskSecrets } from './secrets.js'
 import type { OperationBrief } from './brief.js'
+import type { SimulationRun } from './simulate.js'
 import type {
   ApplyStatus,
   ApplyStepResult,
@@ -64,6 +65,13 @@ export interface ArchitectProject {
    * ausente é "não há o que comparar", nunca "nada mudou".
    */
   previousBlueprint?: OfficeBlueprintV1 | null
+  /**
+   * O último ensaio da operação — cenários e resultados, versionados.
+   *
+   * Guardado no projeto para poder ser COMPARADO entre revisões: "o que quebrou desde a
+   * versão que eu aprovei?" só tem resposta se o ensaio anterior ficou registrado.
+   */
+  simulation?: SimulationRun | null
   blueprintHash: string | null
   checklist: ArchitectChecklistItem[]
   readiness: ArchitectReadiness

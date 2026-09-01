@@ -52,27 +52,58 @@ esses commits:
   inferência, com desfazer de uma versão.
 - 13 casos puros + 4 de integração.
 
-### Fase 5 (parte) — Classificador de recurso (`9d3559f`)
+### Fase 5 — Classificador de recurso (`9d3559f`)
 
 - `backend/src/architect/classify.ts`: decide agente, função, ferramenta ou rotina para
   cada trabalho, na ordem do custo, com a alternativa recusada registrada.
 - 13 casos puros, incluindo o restaurante da especificação que vira **um** agente com
   ferramenta, função e rotina — não quatro agentes.
 
+### Núcleo arquitetural — 7.7 a 7.12
+
+- `backend/src/architect/responsibility.ts`: a ficha de cada agente e a função como
+  CONTRATO. Gerente sem equipe, pesquisador sem fonte, analista sem entrada, operador
+  sem ferramenta, monitor sem gatilho e `custom` sem justificativa são recusados. O
+  perfil é conferido contra o catálogo real — um preset inventado vira agente sem papel.
+- `backend/src/architect/executorContract.ts`: `function` exige nome do registro e
+  schemas; `tool` exige App e ação que existam; e não há queda silenciosa para LLM —
+  cálculo entregue a modelo de linguagem é erro, não fallback. Ação de risco alto sem
+  aprovação vira aviso com o nome da ação.
+- `backend/src/architect/architecture.ts`: os sete detectores (superagente, microagente,
+  responsabilidade duplicada, limite vago, órfão, executor incompatível, permissão
+  incompatível), o orçamento de complexidade e o `architectureScore` — seis leituras
+  verificáveis, cada uma com os fatos que a formaram. Score não bloqueia nada e não se
+  chama confiança: quem bloqueia é a validação. `mergeSplitRationale` responde "por que
+  estes dois não foram juntados?" sem depender da memória de quem revisou.
+- `backend/src/architect/critic.ts`: junta as três camadas determinísticas, ordena erro
+  antes de aviso, e normaliza os achados do crítico LLM — que produz FINDING, nunca
+  patch, e nunca erro. Um crítico que edita o desenho é um segundo arquiteto.
+- `backend/src/architect/simulate.ts`: de 3 a 8 cenários derivados do Brief (ou do
+  desenho, nos projetos sem Brief), percorridos sem efeito nenhum — as ferramentas são
+  chamadas em dublê e a intenção fica registrada em `sideEffectsAvoided`. Rota esperada
+  comparada com a observada pela RESPONSABILIDADE declarada, nunca pelo nome (os agentes
+  têm nome de pessoa por desenho). Versionado no projeto para comparar revisões.
+- `frontend/src/pages/architect/Critique.tsx`: os achados com o conserto ao lado, a
+  leitura da operação com o fato de cada nota, o ensaio com o caminho e o aviso de que
+  nada foi executado, e o motivo de cada agente existir.
+
+Dois defeitos que os testes pegaram e que valem ser lembrados:
+
+- o ensaio carimbava a hora dentro da prévia, e isso quebrava a garantia de que duas
+  leituras da mesma proposta são idênticas — é sobre a prévia que a confirmação carrega
+  o hash. O carimbo ficou só no que é gravado;
+- com Brief vazio saía um cenário só. Projetos anteriores ao Brief ficariam sem ensaio
+  de verdade; agora os cenários saem do desenho quando não há trabalhos mapeados.
+
 ## O que falta, na ordem
 
 ### Arquiteto (Fase 7)
-1. `AgentResponsibilitySpec` completo por agente proposto (7.7) e contratos de executor
-   com recusa de `function` sem schema e `tool` sem ação real (7.8).
-2. Detectores de merge/split com `mergeSplitRationale` (7.9) e orçamento de
-   complexidade com `architectureScore` determinístico (7.10).
-3. Crítico arquitetural — camada determinística obrigatória e camada LLM que não altera
-   o Blueprint (7.11).
-4. Simulação de 3 a 8 cenários sem efeitos externos (7.12).
-5. Camadas Essencial/Recomendado/Completo do mesmo plano (7.10, 7.13).
-6. Compilador Brief → Blueprint ligado ao preview/diff/apply existente (7.14).
-7. Telas: "O que entendi" corrigível, cards de agente com responsabilidade e limites,
-   findings do crítico, dry-run.
+1. Camadas Essencial/Recomendado/Completo do mesmo plano (7.10, 7.13).
+2. Compilador Brief → Blueprint ligado ao preview/diff/apply existente (7.14).
+3. Telas: "O que entendi" corrigível na interface, cards de agente com responsabilidade
+   e limites (a API já existe; falta a tela).
+4. Crítico LLM acionado de verdade numa etapa própria (o contrato e o normalizador já
+   existem; hoje só a camada determinística roda).
 
 ### Knowledge Brain (Fases 1–6)
 8. `KnowledgeOwnerType` para os quatro escopos, migração idempotente e cota em todos

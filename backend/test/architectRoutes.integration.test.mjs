@@ -605,3 +605,64 @@ test('o que o servidor sabe sobre conexão não vem do patch', async () => {
   // O App não está conectado nesta conta de teste: o "true" do patch é ignorado.
   assert.equal(r.body.brief.integrations[0].connected, false)
 })
+
+// --- 7.11 e 7.12: o crítico e o ensaio chegam na prévia -----------------------------------
+
+test('a prévia carrega o crítico, o score e o ensaio — junto da decisão de aplicar', async () => {
+  const p = await comProposta()
+  const r = await pedir('GET', `/projects/${p.id}/preview`)
+  assert.equal(r.status, 200)
+
+  // Eles respondem o que a validação estrutural não responde, e é aqui que a pessoa
+  // decide. Numa segunda chamada, a decisão aconteceria antes da informação chegar.
+  assert.ok(r.body.critique, 'o crítico vem na prévia')
+  assert.equal(typeof r.body.critique.clean, 'boolean')
+  assert.ok(Array.isArray(r.body.critique.findings))
+  assert.ok(Array.isArray(r.body.critique.mergeSplit), 'o motivo de cada junção/separação fica registrado')
+  assert.ok(r.body.critique.score && typeof r.body.critique.score.coverage === 'number')
+  assert.ok(r.body.critique.score.facts, 'nota sem fato é palpite com número')
+
+  assert.ok(r.body.simulation, 'o ensaio vem junto')
+  assert.ok(r.body.simulation.cases.length >= 3 && r.body.simulation.cases.length <= 8)
+  assert.equal(r.body.simulation.results.length, r.body.simulation.cases.length)
+})
+
+test('o ensaio da prévia NÃO executa nada — e nada é gravado por olhar', async () => {
+  const p = await comProposta()
+  const agentesAntes = await db.collection('agents').countDocuments({})
+  const gastoAntes = await getMonthlyTokens(DONO)
+
+  const r = await pedir('GET', `/projects/${p.id}/preview`)
+  for (const resultado of r.body.simulation.results) {
+    // A ferramenta aparece como intenção registrada, nunca como chamada feita.
+    for (const passo of resultado.steps.filter((s) => s.kind === 'tool')) {
+      assert.match(passo.detail, /dublê/)
+    }
+  }
+  assert.equal(await db.collection('agents').countDocuments({}), agentesAntes, 'olhar a prévia não cria recurso')
+  assert.equal(await getMonthlyTokens(DONO), gastoAntes, 'o crítico e o ensaio são determinísticos: não chamam modelo')
+})
+
+test('o crítico do dublê aponta o que a proposta tem de fraco', async () => {
+  // A proposta do adaptador falso tem dois agentes num setor orquestrado e um App não
+  // conectado. O crítico precisa dizer alguma coisa útil sobre isso — e o que ele diz
+  // vem com conserto.
+  const p = await comProposta()
+  const r = await pedir('GET', `/projects/${p.id}/preview`)
+  for (const f of r.body.critique.findings) {
+    assert.ok(f.message && f.fix, 'um achado sem conserto é só um incômodo')
+    assert.ok(['responsibility', 'executor', 'architecture', 'llm'].includes(f.source))
+    assert.ok(['error', 'warning'].includes(f.severity))
+  }
+  // Erro antes de aviso: quem lê resolve na ordem em que as coisas travam.
+  const severidades = r.body.critique.findings.map((f) => f.severity)
+  assert.deepEqual(severidades, [...severidades].sort((a, b) => (a === b ? 0 : a === 'error' ? -1 : 1)))
+})
+
+test('o ensaio fica guardado no projeto, versionado', async () => {
+  const p = await comProposta()
+  const doc = await db.collection('architect_projects').findOne({ _id: new ObjectId(p.id) })
+  assert.ok(doc.simulation, 'o ensaio da versão que nasceu fica registrado')
+  assert.ok(doc.simulation.createdAt, 'no que é gravado o carimbo tem sentido: diz quando aquele ensaio aconteceu')
+  assert.equal(typeof doc.simulation.version, 'number')
+})

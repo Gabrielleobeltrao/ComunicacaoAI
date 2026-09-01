@@ -52,6 +52,63 @@ const PREVIA = {
   checklist: CHECKLIST,
   readiness: READINESS,
   counts: { create: 4, reuse: 0, update: 0, waitUser: 2 },
+  critique: {
+    clean: false,
+    findings: [
+      {
+        source: 'responsibility',
+        code: 'manager_without_team',
+        agentKey: 'gerente',
+        message: '"Marina" coordena, mas não alcança ninguém',
+        fix: 'dê a ela delegação por andar, ou liste quem ela pode acionar',
+        severity: 'error',
+        evidence: ['agente "Marina"'],
+      },
+      {
+        source: 'architecture',
+        code: 'orphan_agent',
+        agentKey: 'duvidas',
+        message: 'nada aciona "Rafael"',
+        fix: 'coloque-o num setor, ligue-o a um canal, ou dê a ele uma rotina',
+        severity: 'warning',
+        evidence: ['fora de setor', 'sem canal'],
+      },
+    ],
+    score: {
+      coverage: 100,
+      cohesion: 100,
+      executorFit: 100,
+      permissionSafety: 50,
+      setupCompleteness: 0,
+      handoffSimplicity: 100,
+      facts: {
+        coverage: ['2 de 2 agentes dizem o que entregam'],
+        cohesion: ['2 de 2 agentes ficam em até dois domínios'],
+        executorFit: ['2 de 2 agentes têm executor coerente com o papel'],
+        permissionSafety: ['1 de 2 agentes preveem passar para uma pessoa'],
+        setupCompleteness: ['2 pendências antes de a operação rodar sozinha'],
+        handoffSimplicity: ['0 repasses declarados entre agentes'],
+      },
+    },
+    mergeSplit: [
+      { agentKey: 'gerente', agentName: 'Marina', jobs: ['Distribuir a conversa'], rationale: 'cuida de atendimento; perfil manager' },
+      { agentKey: 'duvidas', agentName: 'Rafael', jobs: ['Responder horários'], rationale: 'cuida de atendimento; perfil researcher' },
+    ],
+  },
+  simulation: {
+    version: 1,
+    cases: [
+      { id: 'job:duvida', input: 'pergunta do cliente', trigger: 'mensagem', expectedRoute: ['Responder dúvida'], expectsApproval: false },
+      { id: 'fora-do-previsto', input: 'uma pergunta que não se encaixa', trigger: 'mensagem', expectedRoute: [], expectsApproval: false },
+      { id: 'aprovacao', input: 'um pedido que deveria exigir aprovação', trigger: 'mensagem', expectedRoute: [], expectsApproval: true },
+    ],
+    results: [
+      { caseId: 'job:duvida', observedRoute: ['Marina', 'Rafael'], steps: [{ kind: 'tool', ref: 'web_chat.reply', detail: 'dublê: a chamada foi registrada, não executada' }], problems: [], sideEffectsAvoided: ['web_chat.reply'], matchedExpected: true },
+      { caseId: 'fora-do-previsto', observedRoute: ['Marina'], steps: [], problems: [], sideEffectsAvoided: [], matchedExpected: true },
+      { caseId: 'aprovacao', observedRoute: ['Marina'], steps: [], problems: [{ code: 'missing_approval', message: 'o cenário exige aprovação e o caminho não para em ninguém', fix: 'ligue a passagem para humano' }], sideEffectsAvoided: [], matchedExpected: false },
+    ],
+    passed: 2,
+  },
 }
 
 const projeto = (extra: Record<string, unknown> = {}) => ({
@@ -528,6 +585,51 @@ test('depois de aplicar, a conversa continua aberta para pedir ajuste', async ({
   await campo.fill('troque o objetivo da Marina')
   await page.getByTestId('architect-send').click()
   await expect.poll(() => mensagensEnviadas).toContain('troque o objetivo da Marina')
+})
+
+test('o crítico aparece antes da lista, com o conserto ao lado', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const critica = page.getByTestId('architect-critique')
+  await expect(critica).toBeVisible()
+  // O que trava vem marcado como trava; o que vale ver, como aviso.
+  const gerente = page.getByTestId('architect-finding-manager_without_team')
+  await expect(gerente).toContainText('coordena, mas não alcança ninguém')
+  await expect(gerente).toContainText('O que fazer:')
+  await expect(gerente).toContainText('Trava')
+  await expect(page.getByTestId('architect-finding-orphan_agent')).toContainText('Vale ver')
+
+  // A leitura da operação carrega o FATO de cada nota — nota sem fato é palpite com número.
+  const score = page.getByTestId('architect-score')
+  await expect(score).toContainText('entrega declarada')
+  await expect(score).toContainText('2 de 2 agentes dizem o que entregam')
+  // E não se chama confiança da IA em lugar nenhum.
+  await expect(critica).not.toContainText(/confian/i)
+})
+
+test('o ensaio mostra o caminho e diz que nada foi executado', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const ensaio = page.getByTestId('architect-simulation')
+  await expect(ensaio).toContainText('2 de 3 cenários passaram')
+  // A garantia que mais importa: nada sai daqui.
+  await expect(ensaio).toContainText('sem executar nada')
+  await expect(ensaio).toContainText('dublê')
+  await expect(page.getByTestId('architect-scenario-job:duvida')).toContainText('Marina → Rafael')
+  // O cenário que falhou aparece com o motivo e o conserto.
+  const aprovacao = page.getByTestId('architect-scenario-aprovacao')
+  await expect(aprovacao).toContainText('não para em ninguém')
+  await expect(aprovacao).toContainText('ligue a passagem para humano')
+})
+
+test('o motivo de cada agente existir fica visível', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  const bloco = page.getByTestId('architect-mergesplit')
+  await expect(bloco).toContainText('Marina')
+  await expect(bloco).toContainText('perfil manager')
 })
 
 test('o que preocupa aparece como aviso, e não como erro', async ({ page }) => {

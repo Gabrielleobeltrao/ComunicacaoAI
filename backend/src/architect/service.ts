@@ -11,6 +11,8 @@ import { buildCapabilityManifest, manifestForPrompt } from './capabilities.js'
 import { applyBriefPatch, briefForPrompt, emptyBrief, resolveIntegrations } from './brief.js'
 import { gapsForPrompt, nextQuestions } from './nextQuestion.js'
 import { classifyBrief, classificationForPrompt } from './classify.js'
+import { runCritic } from './critic.js'
+import { runSimulation } from './simulate.js'
 import { ARCHITECT_CONSTITUTION_VERSION } from './constitution.js'
 import { applyBlueprintLinks, loadTargets } from './links.js'
 import { buildPreview } from './preview.js'
@@ -280,6 +282,10 @@ async function runTurn(
     const checklist = applyChecklistState(deriveChecklist(blueprint), new Set(), marcadosDe(projeto))
     patch.checklist = checklist
     patch.readiness = computeReadiness(checklist, [])
+    // O ensaio da versão que acabou de nascer. Guardado para a revisão seguinte poder
+    // responder "o que quebrou desde o que eu aprovei?".
+    // Aqui o carimbo tem sentido: diz quando ESTE ensaio aconteceu.
+    patch.simulation = runSimulation(briefNovo, blueprint, manifesto, briefNovo.version, new Date())
   }
   const atualizado = (await repo.patchProject(ownerId, projeto._id, patch)) ?? projeto
 
@@ -349,8 +355,22 @@ export async function validateProject(ownerId: string, projectId: ObjectId) {
 export async function previewProject(ownerId: string, projectId: ObjectId) {
   const projeto = await requireProject(ownerId, projectId)
   if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para revisar')
-  const ctx = await loadOwnershipContext(ownerId)
-  return buildPreview(projeto.blueprint, ctx, marcadosDe(projeto))
+  const [ctx, manifesto] = await Promise.all([loadOwnershipContext(ownerId), buildCapabilityManifest(ownerId).catch(() => null)])
+  const previa = buildPreview(projeto.blueprint, ctx, marcadosDe(projeto))
+
+  /**
+   * O crítico e o ensaio vão JUNTO da prévia.
+   *
+   * Eles respondem o que a validação estrutural não responde — o gerente sem equipe, o
+   * caminho que morre num App desconectado — e é na prévia que a pessoa decide aplicar.
+   * Separar em outra chamada faria a decisão acontecer antes da informação chegar.
+   *
+   * Os dois são determinísticos e não escrevem nada: rodar a prévia duas vezes dá o
+   * mesmo resultado, e nenhuma delas toca no escritório.
+   */
+  const critique = runCritic(projeto.blueprint, manifesto)
+  const simulation = runSimulation(projeto.brief ?? emptyBrief(projeto.objective), projeto.blueprint, manifesto, projeto.brief?.version ?? 0)
+  return { ...previa, critique, simulation }
 }
 
 /** Editar uma resposta anterior. Regerar a proposta é um passo separado e explícito. */
