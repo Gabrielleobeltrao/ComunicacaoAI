@@ -202,3 +202,30 @@ test('os segredos DO ARQUIVO DE EXEMPLO são recusados — ninguém sobe com ele
   })
   assert.equal(ok, false, 'o exemplo não pode ser um segredo utilizável nem passar na validação')
 })
+
+// --- a imagem de produção ---------------------------------------------------------------
+//
+// Duas afirmações sobre o Dockerfile que só custam caro quando quebram no deploy: a
+// imagem não carrega gerenciador de pacote, e a documentação manda subir o worker de um
+// jeito que essa imagem consegue executar. Conferir aqui é grátis; conferir com Docker
+// exige Docker, e é por isso que ninguém confere.
+
+test('a imagem de produção não carrega npm — e a documentação não manda usá-lo', async () => {
+  const { readFileSync } = await import('node:fs')
+  const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8')
+
+  // O npm vem embutido na base do Node e nunca roda em produção: o processo é
+  // `node dist/*.js`. O que fica é a árvore de dependências dele — e era a única coisa
+  // que o scanner de imagem reprovava.
+  assert.match(dockerfile, /rm -rf \/usr\/local\/lib\/node_modules\/npm/)
+
+  const doc = readFileSync(new URL('../../COOLIFY_DEPLOYMENT.md', import.meta.url), 'utf8')
+  // Sem npm na imagem, `npm run start:worker` como start command não sobe — a instrução
+  // e a imagem precisam concordar.
+  const instrucoes = doc.split('\n').filter((l) => /start command|processo separado/.test(l))
+  assert.ok(instrucoes.length > 0, 'a documentação do worker sumiu')
+  for (const linha of instrucoes) {
+    assert.doesNotMatch(linha, /`npm run start:worker`/, `a documentação ainda manda usar npm: ${linha}`)
+  }
+  assert.match(doc, /node dist\/worker\.js/)
+})

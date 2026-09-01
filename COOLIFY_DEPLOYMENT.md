@@ -106,7 +106,7 @@ pode passar por saudável. O motivo da falha sai no log como
 `Automation engine failed to start`.
 
 Com `EMBEDDED_WORKER=false` o motor roda em um processo separado
-(`npm run start:worker`); aí o `/api/ready` responde `{"engine":"separate"}` e passa
+(`node dist/worker.js`); aí o `/api/ready` responde `{"engine":"separate"}` e passa
 a cobrir só o banco — o log deixa isso explícito no boot.
 
 Confirmação pelo produto: crie uma rotina para daqui a poucos minutos na página do
@@ -118,8 +118,14 @@ agente e veja a execução aparecer em **Execuções**. O disparo tem precisão 
 Só faz sentido em escala bem maior. O caminho existe e não muda o comportamento:
 
 1. `EMBEDDED_WORKER=false` no backend;
-2. um segundo recurso, mesma imagem, start command `npm run start:worker`, sem
+2. um segundo recurso, mesma imagem, start command `node dist/worker.js`, sem
    domínio e sem porta, com as mesmas variáveis.
+
+   O comando é esse e não `npm run start:worker`: a imagem de produção não carrega
+   npm — ele vem embutido na base do Node, nunca é usado em produção, e a árvore de
+   dependências dele era a única coisa que o scanner de imagem reprovava. Quem
+   preferir não escrever comando nenhum usa o estágio `worker` (`--target worker`),
+   que já sobe com ele.
 
 Várias instâncias são seguras: a reivindicação de execução é uma única operação
 atômica no Mongo e cada disparo agendado carrega uma chave de idempotência única.

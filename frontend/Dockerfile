@@ -33,7 +33,17 @@ RUN npm run build
 
 # --- runtime stage -------------------------------------------------------------
 # Unprivileged nginx: runs as a non-root user and listens on 8080 by default.
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+FROM nginxinc/nginx-unprivileged:1.31-alpine AS runtime
+# Os pacotes do sistema, atualizados na hora da construção.
+#
+# A base fica parada entre as publicações do nginx, e nesse intervalo saem correções de
+# openssl, libxml2, zlib e afins — 33 achados de severidade alta ou crítica na tag
+# anterior, todos com correção publicada. `apk upgrade` pega o que já existe no
+# repositório da distribuição; sem ele, a imagem sai com o que a base tinha no dia em
+# que ela foi montada.
+USER root
+RUN apk upgrade --no-cache
+USER nginx
 # Static SPA + widget assets.
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
