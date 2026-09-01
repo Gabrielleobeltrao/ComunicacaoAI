@@ -37,6 +37,8 @@ export interface ArchitectProject {
    */
   pendingQuestion: { key: string; text: string } | null
   assumptions: ArchitectAssumption[]
+  /** A constituição vigente quando a proposta foi montada. Ausente nos projetos antigos. */
+  architectConstitutionVersion?: number
   blueprintVersion: 1
   blueprint: OfficeBlueprintV1 | null
   /**

@@ -1,4 +1,5 @@
 import { ARCHITECT_MARKER } from '../llmFake.js'
+import { constitutionForPrompt } from './constitution.js'
 import * as L from './limits.js'
 import type { ArchitectMessage, ArchitectProject } from './repository.js'
 import type { ExistingResources } from './context.js'
@@ -49,17 +50,9 @@ Formato de cada item do blueprint:
 
 Um setor "orchestrated" precisa de coordenador que seja membro dele e de pelo menos um outro membro. Todo membro trabalha no mesmo andar do setor.
 
-OS PERFIS DE AGENTE — escolha um, sempre. "preset" NÃO é opcional:
-- "manager": recebe o pedido, descobre quem tem a competência, delega e junta os resultados numa resposta só. É o coordenador de setor.
-- "researcher": busca informação onde foi autorizado (base, sites cadastrados, busca na web) e devolve o que achou COM a fonte. Não decide nada.
-- "analyst": recebe dados prontos e produz leitura, comparação ou conclusão. Não sai buscando.
-- "operator": executa ação real em App ou API autorizada (registrar, agendar, enviar, criar). Precisa de App conectado.
-- "communicator": transforma o resultado em mensagem para a pessoa — é quem fala no canal.
-- "secretary": recebe demanda, organiza, agenda e encaminha para quem resolve.
-- "monitor": acompanha uma fonte com frequência definida e avisa quando uma condição acontece. É o perfil de quem vigia preço, site ou fila.
-- "custom": SÓ quando nenhum dos anteriores serve. Usar "custom" é abrir mão de tudo o que o perfil já traz pronto (instruções, contratos, política de chamada) — se você escolher, explique no "rationale" por que nenhum perfil serviu.
+ESCOLHA SEMPRE UM PERFIL. "preset" NÃO é opcional, e os perfis que existem estão na lista de capacidades abaixo — com o que cada um pode fazer, resolvido pelo próprio sistema.
 
-Escolher "custom" para tudo é o erro mais comum e o mais caro: um agente sem perfil nasce sem instrução de papel, sem política de delegação e sem contrato de entrada e saída — e o dono precisa configurar tudo à mão depois.
+Escolher "custom" para tudo é o erro mais comum e o mais caro: um agente sem perfil nasce sem instrução de papel, sem política de delegação e sem contrato de entrada e saída — e o dono precisa configurar tudo à mão depois. Se escolher "custom", explique no "rationale" por que nenhum perfil serviu.
 
 COMO SE MONTA UMA OPERAÇÃO (e não um agente que faz tudo):
 1. Escreva as ETAPAS do objetivo em voz alta. "Analisar uma ação e indicar compra" tem etapas: coletar dados → analisar → explicar para a pessoa. Três etapas, três papéis.
@@ -160,6 +153,13 @@ export function buildArchitectPrompt(input: {
   existing?: ExistingResources
   /** Pedido explícito de proposta, mesmo com perguntas em aberto. */
   forceProposal?: boolean
+  /**
+   * O catálogo REAL desta conta, montado pelo servidor.
+   *
+   * Ausente só nos testes que exercitam outra coisa: sem ele o modelo volta a depender
+   * do que estiver escrito no texto fixo, que é exatamente o que envelhece sozinho.
+   */
+  capabilities?: string
 }): string {
   const { project, messages, apps } = input
   const respondidas = Object.entries(project.answers ?? {})
@@ -208,8 +208,11 @@ export function buildArchitectPrompt(input: {
     .join('\n')
 
   return `${ARCHITECT_MARKER}
+${constitutionForPrompt()}
+
 ${REGRAS}
 
+${input.capabilities ? `${input.capabilities}\n` : ''}
 ${EXEMPLO}
 
 Idioma da resposta: ${project.locale}.

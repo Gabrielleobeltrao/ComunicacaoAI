@@ -7,6 +7,8 @@ import { repairBlueprintPatch, repairReuseWithoutTarget } from './repair.js'
 import { buildArchitectPrompt } from './prompt.js'
 import { runArchitectTurn } from './turn.js'
 import { loadAppsForPrompt, loadExistingResources, loadOwnershipContext } from './context.js'
+import { buildCapabilityManifest, manifestForPrompt } from './capabilities.js'
+import { ARCHITECT_CONSTITUTION_VERSION } from './constitution.js'
 import { applyBlueprintLinks, loadTargets } from './links.js'
 import { buildPreview } from './preview.js'
 import { deriveChecklist, applyChecklistState, computeReadiness } from './checklist.js'
@@ -141,10 +143,13 @@ async function runTurn(
   opts: { forceProposal?: boolean; secretMasked: boolean; answeringPending?: string },
 ): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
   // O escritório atual entra junto: sem ele o Arquiteto propõe criar o que já existe.
-  const [messages, apps, existing] = await Promise.all([
+  const [messages, apps, existing, manifesto] = await Promise.all([
     repo.recentMessages(ownerId, projeto._id, CONTEXTO),
     loadAppsForPrompt(ownerId),
     loadExistingResources(ownerId).catch(() => undefined),
+    // O catálogo REAL desta conta, montado agora. Montado a cada rodada de propósito:
+    // é o que impede o Arquiteto de propor o App que a pessoa acabou de desconectar.
+    buildCapabilityManifest(ownerId).catch(() => null),
   ])
 
   const respondidas = { ...projeto.answers }
@@ -156,7 +161,14 @@ async function runTurn(
     ownerId,
     provider: projeto.provider,
     model: projeto.model,
-    prompt: buildArchitectPrompt({ project: { ...projeto, answers: respondidas }, messages, apps, existing, forceProposal: opts.forceProposal }),
+    prompt: buildArchitectPrompt({
+      project: { ...projeto, answers: respondidas },
+      messages,
+      apps,
+      existing,
+      capabilities: manifesto ? manifestForPrompt(manifesto) : undefined,
+      forceProposal: opts.forceProposal,
+    }),
     chargeKey,
   })
 
@@ -211,6 +223,9 @@ async function runTurn(
   const assumptions = mesclarSuposicoes(projeto.assumptions, turno.assumptions, answers)
   const hash = blueprint ? computeBlueprintHash(blueprint) : null
   const patch: Partial<ArchitectProject> = {
+    // Qual constituição valia quando esta proposta foi feita. Sem isso, mudar o texto
+    // das regras torna uma decisão antiga inexplicável — e impossível de reproduzir.
+    architectConstitutionVersion: ARCHITECT_CONSTITUTION_VERSION,
     answers,
     pendingQuestion: turno.question ? { key: turno.question.key, text: turno.question.text } : null,
     assumptions,
