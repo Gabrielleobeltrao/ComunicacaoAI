@@ -99,9 +99,15 @@ export function ArchitectProject() {
       setPergunta(r.question)
       setMensagens(await api.listMessages(projectId))
       await recarregarPrevia(r)
-      // A proposta nova traz a tela dela para a frente — mas não interrompe quem está
-      // olhando o desenho ou a checklist no momento.
-      if (r.hasBlueprint) setTela((atual) => (atual === 'proposta' ? atual : atual))
+      /**
+       * Uma revisão NÃO troca a tela.
+       *
+       * Quem pediu "muda o nome da Marina" está olhando o desenho ou a lista, e é ali
+       * que a mudança precisa aparecer — arrastar a pessoa para a Proposta a cada
+       * resposta faria a conversa disputar o lugar com o que ela mesma alterou. A tela
+       * só muda por clique na aba, ou quando a aplicação termina (aí vai para a
+       * checklist, que é o que sobra a fazer).
+       */
     } catch (e) {
       const err = e as api.ArchitectError
       setErro({ code: err.code ?? 'error', message: err.message })
@@ -133,6 +139,10 @@ export function ArchitectProject() {
       const p = await api.getProject(projectId)
       setProjeto(p)
       await recarregarPrevia(p)
+      // A REGRA, dita nos dois lugares em que ela vale: revisar e aplicar são cliques na
+      // Proposta, e mostram a Proposta — o resultado da validação aparece onde o botão
+      // estava. Uma revisão vinda da CONVERSA não mexe na tela: quem pediu a mudança
+      // está olhando o desenho ou a lista, e é ali que ela precisa aparecer.
       setTela('proposta')
     } catch (e) {
       setErro({ code: 'validate', message: (e as Error).message })

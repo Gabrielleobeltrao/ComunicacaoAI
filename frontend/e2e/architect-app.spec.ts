@@ -776,23 +776,94 @@ test('com vários andares, dá para escolher qual olhar', async ({ page }) => {
   await expect(page.getByTestId('architect-office-description')).toContainText('Bruno')
 })
 
-test('a prévia é SÓ desenho: não consulta estado ao vivo nem navega para id inventado', async ({ page }) => {
+test('a prévia é SÓ desenho: não pergunta nada ao servidor sobre ela', async ({ page }) => {
   const chamadas: string[] = []
   await stub(page, { project: COM_PROPOSTA })
   page.on('request', (r) => chamadas.push(r.url()))
 
   await page.goto(`/architect/${PROJETO_ID}`)
+  // A régua começa com a PÁGINA já assentada: o prédio e a lista de andares da barra
+  // lateral são carga normal da aplicação, e contá-los aqui mediria a coisa errada. O
+  // que se afirma é sobre abrir a tela Escritório, não sobre a aplicação existir.
+  await expect(page.getByTestId('architect-proposal')).toBeVisible()
+  await page.waitForTimeout(800)
+  const antes = chamadas.length
+
   await page.getByTestId('architect-tab-escritorio').click()
+  await expect(page.getByTestId('architect-office-map')).toBeVisible()
   await page.waitForTimeout(2500) // a sondagem de estado ao vivo roda a cada 2s
 
+  const depois = chamadas.slice(antes)
   // Não há execução de um agente que não existe: perguntar por ela seria inventar
   // trabalho para o servidor e prometer uma bolha que nunca vem.
-  expect(chamadas.filter((u) => u.includes('/agent-states'))).toEqual([])
+  expect(depois.filter((u) => u.includes('/agent-states'))).toEqual([])
+  // E nem a DESCOBERTA do andar acontece: o mapa desligado buscava `/api/floors` a cada
+  // montagem para escolher um andar que ninguém ia consultar — e a prévia não tem andar
+  // no banco para descobrir.
+  expect(depois.filter((u) => /\/api\/floors(\?|$)/.test(u))).toEqual([])
+})
 
-  // E clicar no mapa não leva a lugar nenhum: o id é temporário.
-  await page.getByTestId('architect-office-map').click({ position: { x: 60, y: 60 } })
+test('no rascunho, os agentes não são botões nem param o teclado', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-escritorio').click()
+  const mapa = page.getByTestId('architect-office-map')
+  await expect(mapa).toBeVisible()
+
+  // Os agentes ESTÃO desenhados — é o que impede esta asserção de passar por um mapa
+  // vazio, que é o jeito mais fácil de "não ter botão de agente".
+  expect(await mapa.locator('[data-office-agent]').count()).toBeGreaterThan(0)
+
+  // E nenhum deles é botão ou link: um botão que não faz nada é pior que nenhum botão,
+  // porque para o Tab e promete um clique.
+  await expect(mapa.locator('button[data-office-agent]')).toHaveCount(0)
+  await expect(mapa.locator('a[data-office-agent]')).toHaveCount(0)
+  // Os controles do MAPA continuam sendo botões — quem sai do caminho é só o agente.
+  expect(await mapa.getByRole('button').count()).toBeGreaterThan(0)
+  await expect(mapa.getByRole('button', { name: /Pausar a simulação/ })).toBeVisible()
+
+  // E o Tab não para em cima de nenhum deles.
+  await page.getByTestId('architect-tab-escritorio').focus()
+  for (let i = 0; i < 15; i++) {
+    await page.keyboard.press('Tab')
+    const emAgente = await page.evaluate(() => (document.activeElement as HTMLElement | null)?.hasAttribute('data-office-agent') ?? false)
+    expect(emAgente, `o Tab parou num agente na ${i + 1}ª parada`).toBe(false)
+  }
+
+  // E clicar em cima do desenho não navega: o id é temporário.
+  await mapa.click({ position: { x: 60, y: 60 } })
   await page.waitForTimeout(300)
   expect(page.url()).toContain(`/architect/${PROJETO_ID}`)
+})
+
+test('o mapa da prévia é uma seção com nome e descrição — não uma figura com botões dentro', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-escritorio').click()
+
+  const mapa = page.getByTestId('architect-office-map')
+  // `role="img"` sobre um contêiner com controles esconderia os controles de quem usa
+  // leitor de tela: uma imagem não contém botões.
+  await expect(mapa).not.toHaveAttribute('role', 'img')
+  await expect(mapa).toHaveAttribute('aria-label', /Mapa do escritório/)
+  const descrito = await mapa.getAttribute('aria-describedby')
+  expect(descrito).toBeTruthy()
+  await expect(page.locator(`#${descrito}`)).toContainText('Atendimento do Restaurante')
+})
+
+test('uma revisão não arrasta a pessoa para outra tela', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-escritorio').click()
+  await expect(page.getByTestId('architect-office-map')).toBeVisible()
+
+  await page.getByTestId('architect-input').fill('troque o nome da Marina')
+  await page.getByTestId('architect-send').click()
+  await expect.poll(() => mensagensEnviadas).toContain('troque o nome da Marina')
+
+  // Quem pediu a mudança está olhando o desenho: é ali que ela precisa aparecer.
+  await expect(page.getByTestId('architect-office-map')).toBeVisible()
+  await expect(page.getByTestId('architect-tab-escritorio')).toHaveAttribute('aria-selected', 'true')
 })
 
 // --- a rodada corretiva -----------------------------------------------------------------------------

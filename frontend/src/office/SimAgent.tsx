@@ -21,7 +21,8 @@ interface SimAgentProps {
   initialY: number
   register: (id: string, el: HTMLElement | null) => void
   setHovered: (id: string | null) => void
-  onOpen: () => void
+  /** Ausente = agente de RASCUNHO: ele aparece e anda, mas não é botão. */
+  onOpen?: () => void
   // Live-map overlay: the operational state the RUNTIME reported. When set, the
   // activity bubble is drawn above the head. It never drives position or
   // pathfinding, and pausing the simulation does not pause or fake it.
@@ -36,13 +37,24 @@ interface SimAgentProps {
 // animated AgentSprite, a contact shadow and a hover name pill.
 export function SimAgent({ agentId, name, character, status, view, initialX, initialY, register, setHovered, onOpen, opState, opDetail }: SimAgentProps) {
   const [hover, setHover] = useState(false)
+  /**
+   * Sem ação, não é botão — mesma regra do `MapAgent`.
+   *
+   * Na prévia do Arquiteto os agentes são rascunho: eles continuam aparecendo e
+   * andando, mas não param o Tab nem prometem um clique que não leva a lugar nenhum.
+   */
+  const interativo = typeof onOpen === 'function'
+  const Elemento = (interativo ? 'button' : 'div') as 'button'
   const seated = view.motion === 'seated'
   const headTop = seated ? '78.6%' : '100%'
   const placement = bubblePlacement(initialX, headTop)
   return (
-    <button
+    <Elemento
       ref={(el) => register(agentId, el)}
-      onClick={onOpen}
+      {...(interativo ? { type: 'button' as const, onClick: onOpen } : { 'aria-hidden': true })}
+      // Identificável de fora: é por aqui que o teste afirma que o agente existe no
+      // desenho e que o teclado não para nele.
+      data-office-agent={name}
       onMouseEnter={() => {
         setHover(true)
         setHovered(agentId)
@@ -67,7 +79,7 @@ export function SimAgent({ agentId, name, character, status, view, initialX, ini
           border: 0,
           background: 'transparent',
           padding: 0,
-          cursor: 'pointer',
+          cursor: interativo ? 'pointer' : 'default',
           willChange: 'transform',
         } as CSSProperties
       }
@@ -91,6 +103,6 @@ export function SimAgent({ agentId, name, character, status, view, initialX, ini
       ) : null}
       <span style={{ position: 'absolute', bottom: 4, width: '58%', height: 8, borderRadius: '50%', background: 'var(--map-shadow)', filter: 'blur(2px)' }} />
       <AgentSprite character={character} mode={view.mode} direction={view.direction} motion={view.motion} frame={view.frame} alt={name} style={{ position: 'relative', zIndex: 2 }} />
-    </button>
+    </Elemento>
   )
 }

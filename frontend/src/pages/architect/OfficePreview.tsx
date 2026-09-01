@@ -64,8 +64,9 @@ export function OfficePreview({ blueprint }: { blueprint: Blueprint | null | und
           </div>
 
           {/* O que o mapa mostra, em texto. Vale para quem usa leitor de tela e para
-              quem não quer contar cadeira no desenho. */}
-          <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="architect-office-description">
+              quem não quer contar cadeira no desenho. O `id` amarra esta frase ao mapa
+              logo abaixo: é ela que descreve aquele desenho, e não um parágrafo solto. */}
+          <p id="architect-office-desc" style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="architect-office-description">
             {describeFloor(andar)}
           </p>
 
@@ -75,10 +76,17 @@ export function OfficePreview({ blueprint }: { blueprint: Blueprint | null | und
         </div>
       </Card>
 
-      {/* `readOnly`: sem estado ao vivo e sem navegação — ver OfficeFloor. */}
-      <div data-testid="architect-office-map" aria-label={describeFloor(andar)} role="img">
+      {/*
+        `readOnly`: sem estado ao vivo e sem navegação — ver OfficeFloor.
+
+        SEM `role="img"`: o mapa tem controles de verdade dentro (aproximar, ajustar à
+        tela, tela cheia), e uma imagem não contém botões — anunciá-lo como figura
+        esconderia esses controles de quem navega por leitor de tela. É uma `section`
+        com nome próprio, descrita pela frase acima.
+      */}
+      <section aria-label="Mapa do escritório proposto" aria-describedby="architect-office-desc" data-testid="architect-office-map">
         <OfficeFloor agents={andar?.agents ?? []} sectors={andar?.sectors ?? []} readOnly />
-      </div>
+      </section>
     </div>
   )
 }

@@ -287,7 +287,7 @@ export function OfficeFloor({
                 setHovered={sim.setHovered}
                 opState={opStates[a.id]?.state}
                 opDetail={opStates[a.id]?.safeDetail}
-                onOpen={readOnly ? () => undefined : () => navigate(`/agents/${a.id}`)}
+                onOpen={readOnly ? undefined : () => navigate(`/agents/${a.id}`)}
               />
             ))
           : [
