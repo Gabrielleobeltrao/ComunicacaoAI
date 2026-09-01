@@ -95,11 +95,34 @@ function respostaDoDuble(prompt: string): string {
       return ''
     }
   }
+  if (prompt.includes(CRITIQUE_MARKER)) return architectCritique()
   return prompt.includes(ARCHITECT_MARKER) ? architectTurn(prompt) : ''
 }
 
 /** A marca que o prompt do Arquiteto carrega. Ver `architect/prompt.ts`. */
 export const ARCHITECT_MARKER = '[[ARQUITETO_V1]]'
+
+/** A do crítico auxiliar. Ver `architect/criticLlm.ts`. */
+export const CRITIQUE_MARKER = '[[ARQUITETO_CRITICA_V1]]'
+
+/**
+ * A leitura auxiliar do dublê: um achado, sem agente, sempre igual.
+ *
+ * Sem `agentKey` de propósito — o desenho é compilado, e um dublê que fixasse uma
+ * chave passaria a testar o compilador em vez do caminho do crítico.
+ */
+function architectCritique(): string {
+  return JSON.stringify({
+    findings: [
+      {
+        code: 'limite_vago',
+        message: 'Nenhum agente diz o que NÃO faz; sem isso os dois se sobrepõem na primeira dúvida difícil.',
+        fix: 'Escreva uma linha de "não faz" em cada agente.',
+        evidence: ['não faz: (não declarado)'],
+      },
+    ],
+  })
+}
 
 /**
  * Duas rodadas, e nada mais: a primeira pergunta, a segunda propõe.
@@ -135,6 +158,39 @@ function architectTurn(prompt: string): string {
     phase: 'proposal',
     question: null,
     answerPatch: {},
+    /**
+     * O ENTENDIMENTO é o que o dublê preenche — o desenho quem faz é o compilador.
+     *
+     * O `blueprintPatch` abaixo continua vindo porque é o sinal de "já dá para propor",
+     * e porque projeto sem Brief ainda usa o caminho antigo. Mas num projeto com Brief
+     * quem manda é isto aqui: mudar um `job` daqui muda a proposta inteira, que é
+     * exatamente o que a jornada de verdade faz.
+     */
+    briefPatch: {
+      businessGoal: 'atender quem chega pelo site do restaurante',
+      channels: ['web'],
+      jobs: [
+        {
+          id: 'duvidas',
+          name: 'Responder dúvidas de horário, endereço e cardápio',
+          trigger: 'alguém manda mensagem no site',
+          input: 'a pergunta da pessoa',
+          decision: 'qual resposta cabe, e o que precisa ser confirmado',
+          action: 'responder',
+          output: 'a resposta para a pessoa',
+        },
+        {
+          id: 'reclamacoes',
+          name: 'Avaliar reclamações e recomendar o que fazer',
+          trigger: 'a conversa vira reclamação',
+          input: 'o que a pessoa relatou',
+          decision: 'a gravidade e o que priorizar',
+          action: 'recomendar o encaminhamento',
+          output: 'a recomendação para o dono',
+        },
+      ],
+      knowledgeNeeds: [{ subject: 'Cardápio com preços', required: true }],
+    },
     blueprintPatch: {
       title: 'Atendimento do Restaurante',
       objective: 'atender dúvidas e registrar pedidos',

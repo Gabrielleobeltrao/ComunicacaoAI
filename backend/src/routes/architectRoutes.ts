@@ -152,6 +152,19 @@ architectRouter.patch('/projects/:id/links', async (req, res, next) => {
   }
 })
 
+architectRouter.patch('/projects/:id/layer', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const body = (req.body ?? {}) as { layer?: unknown }
+    const projeto = await service.setProjectLayer(res.locals.userId, id, body.layer)
+    auditEntity(res, { id: projeto._id.toString(), label: projeto.title })
+    res.json(service.projectDetail(projeto))
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
 architectRouter.get('/projects/:id/messages', async (req, res) => {
   const id = oid(req.params.id)
   if (!id) return notFound(res)

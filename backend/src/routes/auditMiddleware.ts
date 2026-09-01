@@ -216,6 +216,8 @@ const RULES: Rule[] = [
   // Correção à mão na proposta: muda o plano que a confirmação vai aplicar, e por isso
   // entra no registro como qualquer outra alteração do projeto.
   R('PATCH', 'api/architect/projects/:/blueprint', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  // Trocar a camada muda o que vai ser escrito no escritório: é uma revisão da proposta.
+  R('PATCH', 'api/architect/projects/:/layer', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   // O entendimento do negócio corrigido à mão: muda o que a proposta seguinte assume.
   R('PATCH', 'api/architect/projects/:/brief', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/archive', { entityType: 'architect_project', action: 'archive' }, { idAt: 3 }),

@@ -220,9 +220,11 @@ test('com o App conectado, a permissão só sai se o dono aprovar', async () => 
   const aprovado = await projetoPronto()
   await aplicar(aprovado.id, aprovado.hash, 'op-b', { approvedAppKeys: ['web_chat'] })
   const agentes2 = await db.collection('agents').find({ ownerId: DONO }).toArray()
-  const gerente = agentes2.find((a) => a.name.includes('Gerente'))
-  assert.equal(gerente.appGrants.length, 1)
-  assert.equal(gerente.appGrants[0].appKey, 'web_chat')
+  // A permissão vai para quem a proposta indicou — e só para ele. Procurar pelo nome
+  // dizia menos: os agentes têm nome de pessoa, escolhido pelo compilador.
+  const comPermissao = agentes2.filter((a) => (a.appGrants ?? []).length > 0)
+  assert.equal(comPermissao.length, 1, 'permissão concedida a mais de um agente')
+  assert.equal(comPermissao[0].appGrants[0].appKey, 'web_chat')
 })
 
 test('a rotina nasce rascunho, e o Arquiteto não publica nada', async () => {
@@ -380,9 +382,9 @@ test('com instalação E permissão, a pendência se resolve sozinha', async () 
   assert.equal(r.body.checklist.find((i) => i.id === itemApp.id).status, 'done')
 
   // E é permissão de verdade no agente, não um estado guardado no projeto.
-  const gerente = await db.collection('agents').findOne({ ownerId: DONO, name: /Gerente/ })
-  assert.equal(gerente.appGrants.length, 1)
-  assert.equal(gerente.appGrants[0].appKey, 'web_chat')
+  const comPermissao = await db.collection('agents').find({ ownerId: DONO, 'appGrants.0': { $exists: true } }).toArray()
+  assert.equal(comPermissao.length, 1)
+  assert.equal(comPermissao[0].appGrants[0].appKey, 'web_chat')
 })
 
 // --- a conversa não fecha ao aplicar -------------------------------------------------------

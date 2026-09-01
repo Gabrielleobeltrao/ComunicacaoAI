@@ -161,6 +161,25 @@ test('a conversa pergunta primeiro e só depois propõe', async () => {
   assert.equal(await db.collection('agents').countDocuments({}), 0)
 })
 
+test('a proposta chega já revisada — e a leitura do modelo não bloqueia nada', async () => {
+  const p = await criar()
+  await pedir('POST', `/projects/${p.id}/messages`, { content: 'quero automatizar o atendimento' })
+  await pedir('POST', `/projects/${p.id}/messages`, { content: 'pelo site' })
+
+  const previa = await pedir('GET', `/projects/${p.id}/preview`)
+  assert.equal(previa.body.critique.llmStatus, 'ok', JSON.stringify(previa.body.critique))
+  const doModelo = previa.body.critique.findings.filter((f) => f.source === 'llm')
+  assert.equal(doModelo.length, 1, 'a leitura auxiliar da revisão precisa chegar junto da proposta')
+  assert.equal(doModelo[0].severity, 'warning')
+  // Ela não decide nada: o que decide continua sendo a validação estrutural.
+  assert.equal((await pedir('POST', `/projects/${p.id}/validate`)).body.valid, true)
+
+  // E é UMA leitura por revisão: abrir a prévia de novo não gasta.
+  const antes = await getMonthlyTokens(DONO)
+  await pedir('GET', `/projects/${p.id}/preview`)
+  assert.equal(await getMonthlyTokens(DONO), antes)
+})
+
 test('a credencial colada no meio da conversa é removida e a pessoa é avisada', async () => {
   const p = await criar()
   const r = await pedir('POST', `/projects/${p.id}/messages`, { content: 'minha chave é ghp_abcdefghijklmnopqrstuvwxyz0123' })
@@ -365,6 +384,11 @@ const comProposta = async () => {
 
 const editar = (id, edits) => pedir('PATCH', `/projects/${id}/blueprint`, { edits })
 
+// A proposta é compilada do entendimento: as chaves vêm dos trabalhos que o Brief
+// descreve. Derivá-las daqui é o que impede este arquivo de fixar um desenho que quem
+// decide é o compilador.
+const chaveDo = (bp, lista) => bp[lista][0].key
+
 test('6) trocar o nome de um agente não chama o modelo, e não mexe no resto', async () => {
   const p = await comProposta()
   const gastoAntes = await getMonthlyTokens(DONO)
@@ -377,7 +401,9 @@ test('6) trocar o nome de um agente não chama o modelo, e não mexe no resto', 
   assert.equal(duvidas.objective, 'Responder o que o cliente pergunta')
   // Isto é o ponto: pedir a troca ao modelo devolveria uma proposta INTEIRA nova, e o
   // que ninguém pediu para mudar mudaria junto.
-  assert.equal(duvidas.rationale, 'Responde o que mais perguntam.')
+  // O ponto continua sendo este: o porquê que veio junto da proposta não se perde
+  // quando alguém corrige o nome.
+  assert.equal(duvidas.rationale, p.blueprint.agents.find((a) => a.key === 'duvidas').rationale)
   assert.deepEqual(
     r.body.blueprint.agents.find((a) => a.key === 'gerente'),
     p.blueprint.agents.find((a) => a.key === 'gerente'),
@@ -410,8 +436,9 @@ test('7) a prévia entrega o porquê de cada item, separado do que vai acontecer
   const r = await pedir('GET', `/projects/${p.id}/preview`)
   const agente = r.body.items.find((i) => i.key === 'duvidas')
   assert.equal(agente.detail, 'Agente novo.')
-  assert.equal(agente.rationale, 'Responde o que mais perguntam.', 'foi gerado e pago; é para ser lido')
-  assert.equal(r.body.items.find((i) => i.kind === 'floor').rationale, 'Onde a operação de atendimento mora.')
+  assert.equal(agente.rationale, p.blueprint.agents.find((a) => a.key === 'duvidas').rationale, 'o porquê é para ser lido')
+  assert.ok(agente.rationale, 'item sem porquê é item que ninguém consegue discutir')
+  assert.ok(r.body.items.find((i) => i.kind === 'floor').rationale)
 })
 
 test('só texto se edita: andar, ação e recurso ligado não passam por aqui', async () => {
@@ -447,18 +474,19 @@ test('remover o que alguém usa é recusado dizendo QUEM usa — sem cascata sil
   const p = await comProposta()
   const r = await editar(p.id, [{ kind: 'agent', key: 'duvidas', remove: true }])
   assert.equal(r.status, 400)
-  assert.match(r.body.message, /setor "Atendimento"/)
+  assert.match(r.body.message, /setor "/)
   assert.match(r.body.message, /conhecimento/)
 
   // Na ordem certa, sai. E o que restou continua íntegro.
   const ok = await editar(p.id, [
-    { kind: 'knowledge', key: 'cardapio', remove: true },
-    { kind: 'sector', key: 'setor-atendimento', remove: true },
+    { kind: 'knowledge', key: chaveDo(p.blueprint, 'knowledgeRequirements'), remove: true },
+    { kind: 'app', key: chaveDo(p.blueprint, 'appRequirements'), remove: true },
+    { kind: 'sector', key: chaveDo(p.blueprint, 'sectors'), remove: true },
     { kind: 'agent', key: 'duvidas', remove: true },
   ])
   assert.equal(ok.status, 200, JSON.stringify(ok.body))
-  assert.deepEqual(ok.body.blueprint.agents.map((a) => a.key), ['gerente'])
-  assert.equal(ok.body.changes.filter((c) => c.change === 'removed').length, 3)
+  assert.deepEqual(ok.body.blueprint.agents.map((a) => a.key), ['reclamacoes'])
+  assert.equal(ok.body.changes.filter((c) => c.change === 'removed').length, 4)
   assert.equal((await pedir('POST', `/projects/${p.id}/validate`)).body.valid, true, 'o que sobrou continua aplicável')
 })
 
@@ -489,9 +517,9 @@ test('3) colar o conteúdo tira o conhecimento de pendente — e apagá-lo devol
   const previaAntes = await pedir('GET', `/projects/${p.id}/preview`)
   assert.equal(previaAntes.body.items.find((i) => i.kind === 'knowledge').action, 'wait_user')
 
-  const r = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: 'Pizza margherita 40. Refrigerante 8. Sobremesa 15.' } }])
+  const r = await editar(p.id, [{ kind: 'knowledge', key: chaveDo(p.blueprint, 'knowledgeRequirements'), fields: { content: 'Pizza margherita 40. Refrigerante 8. Sobremesa 15.' } }])
   assert.equal(r.status, 200, JSON.stringify(r.body))
-  const req = r.body.blueprint.knowledgeRequirements.find((k) => k.key === 'cardapio')
+  const req = r.body.blueprint.knowledgeRequirements[0]
   assert.match(req.content, /Pizza margherita/)
   assert.equal(req.state, 'supplied', 'o estado SEGUE o conteúdo; ninguém marca "entregue" sem texto')
 
@@ -500,19 +528,19 @@ test('3) colar o conteúdo tira o conhecimento de pendente — e apagá-lo devol
   assert.equal(item.action, 'create')
   assert.equal(item.usesLlm, true, 'indexar custa, e a pessoa vê isso antes de aprovar')
 
-  const limpo = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: '' } }])
-  assert.equal(limpo.body.blueprint.knowledgeRequirements.find((k) => k.key === 'cardapio').state, 'missing')
+  const limpo = await editar(p.id, [{ kind: 'knowledge', key: chaveDo(p.blueprint, 'knowledgeRequirements'), fields: { content: '' } }])
+  assert.equal(limpo.body.blueprint.knowledgeRequirements[0].state, 'missing')
   assert.equal((await pedir('GET', `/projects/${p.id}/preview`)).body.items.find((i) => i.kind === 'knowledge').action, 'wait_user')
 })
 
 test('o conteúdo colado também passa pelo mascaramento e pelo teto', async () => {
   const p = await comProposta()
-  const r = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: 'a chave é sk-ant-api03-NAOEUMSEGREDOREALdetesteXYZ123456' } }])
+  const r = await editar(p.id, [{ kind: 'knowledge', key: chaveDo(p.blueprint, 'knowledgeRequirements'), fields: { content: 'a chave é sk-ant-api03-NAOEUMSEGREDOREALdetesteXYZ123456' } }])
   assert.equal(/sk-ant-api03/.test(JSON.stringify(r.body.blueprint)), false)
 
-  const gigante = await editar(p.id, [{ kind: 'knowledge', key: 'cardapio', fields: { content: 'x'.repeat(60_000) } }])
+  const gigante = await editar(p.id, [{ kind: 'knowledge', key: chaveDo(p.blueprint, 'knowledgeRequirements'), fields: { content: 'x'.repeat(60_000) } }])
   assert.equal(gigante.status, 200)
-  assert.ok(gigante.body.blueprint.knowledgeRequirements.find((k) => k.key === 'cardapio').content.length <= 40_000)
+  assert.ok(gigante.body.blueprint.knowledgeRequirements[0].content.length <= 40_000)
   // E o que sai daqui continua passando pelo validador.
   assert.equal((await pedir('POST', `/projects/${p.id}/validate`)).body.valid, true)
 })

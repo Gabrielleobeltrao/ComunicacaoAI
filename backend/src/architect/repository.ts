@@ -3,6 +3,7 @@ import { db } from '../db.js'
 import * as L from './limits.js'
 import { maskSecrets } from './secrets.js'
 import type { OperationBrief } from './brief.js'
+import type { CriticFinding } from './critic.js'
 import type { SimulationRun } from './simulate.js'
 import type {
   ApplyStatus,
@@ -13,6 +14,7 @@ import type {
   ArchitectLocale,
   ArchitectReadiness,
   ArchitectStatus,
+  BlueprintLayer,
   OfficeBlueprintV1,
 } from './types.js'
 
@@ -56,7 +58,28 @@ export interface ArchitectProject {
    */
   previousBrief?: OperationBrief | null
   blueprintVersion: 1
+  /**
+   * O PLANO INTEIRO — as três camadas juntas, cada item marcado com a sua.
+   *
+   * O que a pessoa aprova e o que a aplicação escreve é o RECORTE da camada escolhida;
+   * guardar o plano inteiro é o que permite trocar de camada sem refazer a conversa, e
+   * o que faz "Recomendado" ser o mesmo plano de "Essencial" com mais coisa — não outra
+   * proposta.
+   */
   blueprint: OfficeBlueprintV1 | null
+  /**
+   * A camada escolhida. Ausente nos projetos anteriores às camadas: eles não têm item
+   * marcado, então o recorte é o plano inteiro e nada muda para eles.
+   */
+  layer?: BlueprintLayer
+  /**
+   * Este plano veio do COMPILADOR, e não do modelo.
+   *
+   * Só um plano compilado pode ser recompilado quando o Brief muda: recompilar o
+   * desenho que o modelo fez trocaria as chaves de tudo — e, num projeto aplicado,
+   * chave nova é recurso novo ao lado do que já existe.
+   */
+  compiled?: boolean
   /**
    * A proposta ANTERIOR, para o dono ver o que a revisão mexeu.
    *
@@ -73,6 +96,14 @@ export interface ArchitectProject {
    */
   simulation?: SimulationRun | null
   blueprintHash: string | null
+  /**
+   * A leitura auxiliar do modelo sobre ESTA revisão.
+   *
+   * Guardada com o hash de quando foi feita: se a proposta mudou, a leitura fala de
+   * outro desenho e é descartada na hora de mostrar. Guardar sem o hash faria a tela
+   * apontar problema em agente que já não existe.
+   */
+  llmCritique?: { hash: string; findings: CriticFinding[]; status: 'ok' | 'failed'; createdAt: Date } | null
   checklist: ArchitectChecklistItem[]
   readiness: ArchitectReadiness
   applyState: ArchitectApplyState | null
