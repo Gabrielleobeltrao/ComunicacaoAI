@@ -42,6 +42,9 @@ export type AuditAction =
   // 'activate' (que muda o estado) e de 'test' (que não executa nada).
   | 'run'
   | 'disconnect'
+  // Tentativa de entrar na conta que NÃO deu certo. Sucesso não vira evento: ele já
+  // está na sessão, e registrar todo login com sucesso afogaria o que importa ver.
+  | 'login_failed'
 export const AUDIT_ACTIONS: AuditAction[] = [
   'run',
   'create',
@@ -56,6 +59,7 @@ export const AUDIT_ACTIONS: AuditAction[] = [
   'publish',
   'test',
   'disconnect',
+  'login_failed',
 ]
 
 // What it happened to.
@@ -84,6 +88,8 @@ export type AuditEntityType =
   // histórico é outra decisão, em outro lugar.
   | 'realtime_source'
   | 'settings'
+  // A sessão de quem entra na conta. Só a tentativa recusada é registrada aqui.
+  | 'session'
 export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'data_recorder',
   'realtime_source',
@@ -101,6 +107,7 @@ export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'knowledge',
   'architect_project',
   'settings',
+  'session',
 ]
 
 // Retention: audit events are kept indefinitely by default. There is no TTL index

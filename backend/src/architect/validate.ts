@@ -390,6 +390,66 @@ export function validateOfficeBlueprint(bruto: unknown, ctx: BlueprintOwnershipC
     }
   })
 
+  /**
+   * --- a FORMA da operação -------------------------------------------------------------
+   *
+   * Nada aqui bloqueia: são avisos. O que o modelo entrega pode ser tecnicamente válido e
+   * ainda assim ser uma operação capenga — um agente sozinho fazendo três etapas, todo
+   * mundo "personalizado", ninguém coordenando. Sem alguém dizendo isso em voz alta, o
+   * dono aplica e só descobre usando.
+   */
+  const agentes = bp.agents ?? []
+  const setores = bp.sectors ?? []
+
+  const semPerfil = agentes.filter((a) => !texto(a?.preset).trim() || texto(a?.preset) === 'custom')
+  if (semPerfil.length > 0 && semPerfil.length === agentes.length && agentes.length > 0) {
+    aviso(
+      'agents',
+      'all_custom',
+      'todos os agentes vão nascer sem perfil (personalizados)',
+      'um perfil (gerente, pesquisador, analista, executor…) já traz instrução de papel, contrato e política de chamada prontos',
+    )
+  } else if (semPerfil.length > 0) {
+    aviso('agents', 'custom_agent', `${semPerfil.length} agente(s) sem perfil definido`, 'confira se algum perfil pronto não serviria melhor')
+  }
+
+  const emSetor = new Set(setores.flatMap((s) => s?.memberAgentKeys ?? []))
+  const soltos = agentes.filter((a) => !emSetor.has(a?.key))
+  if (agentes.length > 1 && setores.length === 0) {
+    aviso(
+      'sectors',
+      'no_sector',
+      'são vários agentes e nenhum setor: eles não vão conversar entre si',
+      'um setor com coordenador é o que faz um acionar o outro; sem ele, cada agente é uma ilha',
+    )
+  } else if (setores.length > 0 && soltos.length > 0) {
+    aviso('agents', 'agent_outside_sector', `${soltos.length} agente(s) fora de qualquer setor`, 'quem fica de fora só é acionado à mão')
+  }
+
+  for (const setor of setores) {
+    if (texto(setor?.mode) !== 'orchestrated') continue
+    const coord = agentes.find((a) => a?.key === texto(setor?.coordinatorAgentKey))
+    const politica = texto(coord?.delegationPolicy)
+    // Um coordenador sem alcance é um coordenador no papel: ele recebe o pedido e não
+    // consegue chamar ninguém.
+    if (coord && politica && politica !== 'floor' && politica !== 'all' && politica !== 'selected') {
+      aviso(`sectors`, 'coordinator_cannot_delegate', `o coordenador de "${texto(setor?.name)}" não pode acionar os outros`, 'use delegação por andar ou selecionada')
+    }
+  }
+
+  /**
+   * Nome de agente é nome de PESSOA.
+   *
+   * O modelo tende a escrever "Analista de Swing Trade" — que é o cargo, não o nome. Fica
+   * como aviso e não como erro: é preferência de produto, e o dono pode discordar.
+   */
+  const CARGO = /^(agente|assistente|atendente|analista|gerente|coordenador|especialista|operador|robô|bot|monitor|pesquisador|secret[áa]rio|comunicador)\b/i
+  for (const a of agentes) {
+    if (CARGO.test(texto(a?.name).trim())) {
+      aviso('agents', 'name_is_a_role', `"${texto(a?.name)}" é o cargo, não um nome`, 'dê um nome de pessoa; o que ele faz já está no papel e no objetivo')
+    }
+  }
+
   // --- segredo ---------------------------------------------------------------------------
   // Última barreira: nada do que vai virar instrução, documento ou nome pode carregar
   // credencial. Um segredo dentro do blueprint seria copiado para o banco na aplicação.

@@ -16,9 +16,17 @@ interface AppLayoutProps {
   // Optional actions rendered at the right of the topbar.
   actions?: ReactNode
   children: ReactNode
+  /**
+   * Área de TRABALHO em duas colunas, e não uma página de leitura.
+   *
+   * O padrão (`max-w-5xl`) é largura de leitura: bom para lista e formulário, e apertado
+   * demais para uma tela que precisa mostrar conversa e proposta lado a lado — as duas
+   * ficavam espremidas em 1024px enquanto sobrava metade do monitor vazia ao lado.
+   */
+  wide?: boolean
 }
 
-export function AppLayout({ current, title, titleExtra, subtitle, actions, children }: AppLayoutProps) {
+export function AppLayout({ current, title, titleExtra, subtitle, actions, children, wide = false }: AppLayoutProps) {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [floorPickerOpen, setFloorPickerOpen] = useState(false)
   const building = useOptionalBuildingContext()
@@ -67,7 +75,7 @@ export function AppLayout({ current, title, titleExtra, subtitle, actions, child
         </header>
 
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-5xl" style={{ padding: 'var(--gutter-screen)' }}>
+          <div className={`mx-auto ${wide ? 'max-w-[1600px]' : 'max-w-5xl'}`} style={{ padding: 'var(--gutter-screen)' }}>
             {/* Page header — the module title/subtitle live inside the content now. */}
             {/* No telefone o cabeçalho empilha: com os botões na mesma linha do título
                 sobravam ~150px para o subtítulo, e ele saía cortado por falta de espaço,

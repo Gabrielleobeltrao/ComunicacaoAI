@@ -34,6 +34,9 @@ export function ArchitectProject() {
   const [dialogo, setDialogo] = useState(false)
   const [aplicando, setAplicando] = useState(false)
   const [aba, setAba] = useState<Aba>('conversa')
+  // A conversa recolhida vira um botão flutuante. Estado da aba, não do servidor: é
+  // preferência de quem está olhando agora.
+  const [chatAberto, setChatAberto] = useState(true)
   // A rodada automática vale UMA vez por projeto. O efeito pode ser remontado, e cada
   // remontagem seria outra chamada ao modelo — cobrada.
   const jaIniciou = useRef<string | null>(null)
@@ -232,14 +235,16 @@ export function ArchitectProject() {
       messages={mensagens}
       question={pergunta}
       pending={pendente}
-      disabled={aplicado || projeto.status === 'archived'}
+      // A conversa não fecha ao aplicar: é por ela que se pede o ajuste seguinte, e a
+      // rodada nova vem apoiada no que já foi criado. Só o arquivado silencia.
+      disabled={projeto.status === 'archived'}
       onSend={enviar}
       onGenerate={() => registrar(() => api.generateProposal(projectId))}
     />
   )
   const proposta = (
     <div className="flex flex-col gap-3">
-      {!aplicado && projeto.hasBlueprint && <ResourceLinks project={projeto} onSalvar={salvarLigacoes} carregando={pendente} />}
+      {EDITAVEL.includes(projeto.status) && projeto.hasBlueprint && <ResourceLinks project={projeto} onSalvar={salvarLigacoes} carregando={pendente} />}
       <Proposal
         project={projeto}
         preview={previa}
@@ -257,6 +262,7 @@ export function ArchitectProject() {
   return (
     <AppLayout
       current="/architect"
+      wide
       title={projeto.title}
       titleExtra={<Badge tone={statusTone(projeto.status)} data-testid="architect-status">{STATUS_LABEL[projeto.status]}</Badge>}
       subtitle={projeto.objective}
@@ -375,13 +381,95 @@ export function ArchitectProject() {
 
         {/* Cada painel é montado UMA vez; quem esconde é o CSS. Montar duas vezes
             (uma para o desktop, outra para o celular) duplicaria o estado e faria a
-            mesma tela responder a dois cliques diferentes. */}
+            mesma tela responder a dois cliques diferentes.
+
+            O ARRANJO muda com o que existe:
+
+            * Sem proposta, a conversa É a tela — centrada e larga, porque é tudo o que
+              está acontecendo. Antes ela dividia espaço com um painel que só dizia
+              "a proposta aparece aqui".
+            * Com proposta, ela passa a ser a peça principal e ocupa a área maior; a
+              conversa vira um painel lateral que acompanha a rolagem e pode ser
+              recolhido. Empilhar tudo numa coluna de 420px era o que fazia os blocos
+              parecerem despejados um em cima do outro. */}
         <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
-          <div className={`min-w-0 flex-col lg:flex lg:flex-1 ${aba === 'conversa' ? 'flex' : 'hidden'}`}>{conversa}</div>
-          <div className={`min-w-0 flex-col gap-3 overflow-y-auto lg:flex lg:w-[380px] lg:shrink-0 ${aba === 'conversa' ? 'hidden' : 'flex'}`}>
-            <div className={`flex-col lg:flex ${aba === 'proposta' ? 'flex' : 'hidden'}`}>{proposta}</div>
-            <div className={`flex-col lg:flex ${aba === 'checklist' ? 'flex' : 'hidden'}`}>{checklist}</div>
-          </div>
+          {!projeto.hasBlueprint ? (
+            <div className="mx-auto flex min-h-0 w-full min-w-0 flex-col lg:max-w-3xl">{conversa}</div>
+          ) : (
+            <>
+              <div className={`min-w-0 flex-col gap-3 lg:flex lg:flex-1 ${aba === 'conversa' ? 'hidden' : 'flex'}`}>
+                <div className={`flex-col gap-3 lg:flex ${aba === 'proposta' ? 'flex' : 'hidden'}`}>{proposta}</div>
+                <div className={`flex-col lg:flex ${aba === 'checklist' ? 'flex' : 'hidden'}`}>{checklist}</div>
+              </div>
+
+              {/* A conversa acompanha a rolagem: pedir um ajuste não deveria exigir
+                  subir a página inteira de volta. */}
+              <aside
+                className={`min-w-0 flex-col lg:w-[400px] lg:shrink-0 ${aba === 'conversa' ? 'flex' : 'hidden'} ${chatAberto ? 'lg:flex' : 'lg:hidden'}`}
+                style={{
+                  position: 'sticky',
+                  top: 0,
+                  alignSelf: 'flex-start',
+                  maxHeight: 'calc(100dvh - 150px)',
+                  // Uma conversa curta não pode virar uma tira fina: o painel tem corpo
+                  // mesmo com duas mensagens, senão parece que a tela carregou pela metade.
+                  minHeight: 340,
+                  borderRadius: 'var(--radius-card)',
+                  background: 'var(--surface-card)',
+                  border: '1px solid var(--border-subtle)',
+                  boxShadow: 'var(--shadow-card)',
+                }}
+                data-testid="architect-chat-panel"
+              >
+                <div
+                  className="hidden lg:flex"
+                  style={{ alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px 0' }}
+                >
+                  <strong style={{ fontSize: 13 }}>Conversa</strong>
+                  <button
+                    type="button"
+                    onClick={() => setChatAberto(false)}
+                    data-testid="architect-chat-collapse"
+                    style={{ border: 0, background: 'transparent', color: 'var(--text-muted)', fontSize: 12.5, minHeight: 32, cursor: 'pointer' }}
+                  >
+                    Recolher
+                  </button>
+                </div>
+                <div className="flex min-h-0 flex-1 flex-col" style={{ padding: '0 14px 12px' }}>
+                  {conversa}
+                </div>
+              </aside>
+
+              {/* Recolhida, ela vira um botão — e não some, que seria perder o único
+                  caminho para pedir mudança. */}
+              {!chatAberto && (
+                <button
+                  type="button"
+                  onClick={() => setChatAberto(true)}
+                  data-testid="architect-chat-open"
+                  className="hidden lg:flex"
+                  style={{
+                    position: 'fixed',
+                    right: 24,
+                    bottom: 24,
+                    zIndex: 30,
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '12px 18px',
+                    borderRadius: 999,
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--intent-brand)',
+                    color: '#fff',
+                    fontSize: 13.5,
+                    boxShadow: 'var(--shadow-lg, 0 10px 30px rgba(0,0,0,.18))',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Icon name="message-circle" size={16} /> Conversa
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
 

@@ -27,18 +27,35 @@ interface WidgetMessage {
   createdAt: string
 }
 
-function getConversationId(publicKey: string, persistence: ConversationPersistence) {
-  if (persistence === 'always_new') {
-    return crypto.randomUUID()
-  }
+interface VisitorSession {
+  token: string
+  conversationId: string
+  expiresAt: string
+}
 
-  const key = `widget-conversation:${publicKey}`
-  let conversationId = localStorage.getItem(key)
-  if (!conversationId) {
-    conversationId = crypto.randomUUID()
-    localStorage.setItem(key, conversationId)
-  }
-  return conversationId
+const chaveDaConversa = (publicKey: string) => `widget-conversation:${publicKey}`
+
+/**
+ * A sessão vem do SERVIDOR — o navegador não inventa mais o identificador.
+ *
+ * Antes o id era gerado aqui e valia como autorização: quem tivesse o de outra pessoa
+ * entrava na conversa dela. Agora o servidor assina um token preso a este widget e a
+ * esta conversa, e é ele que abre a sala e as mensagens.
+ *
+ * Quem já estava conversando manda o id guardado e recebe um token para ele: é a troca
+ * da sessão antiga, feita uma vez, para ninguém perder o histórico.
+ */
+async function abrirSessao(publicKey: string, persistence: ConversationPersistence): Promise<VisitorSession> {
+  const anterior = persistence === 'always_new' ? null : localStorage.getItem(chaveDaConversa(publicKey))
+  const res = await fetch(`${API_URL}/api/public/widgets/${publicKey}/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(anterior ? { conversationId: anterior } : {}),
+  })
+  if (!res.ok) throw new Error('sessao')
+  const sessao = (await res.json()) as VisitorSession
+  if (persistence !== 'always_new') localStorage.setItem(chaveDaConversa(publicKey), sessao.conversationId)
+  return sessao
 }
 
 export function Widget() {
@@ -68,7 +85,13 @@ export function Widget() {
    *
    * Como estado, a chegada do id dispara o efeito, e ele entra na sala.
    */
-  const [conversationId, setConversationId] = useState<string | null>(null)
+  const [sessao, setSessao] = useState<VisitorSession | null>(null)
+  const conversationId = sessao?.conversationId ?? null
+  // O token vive numa referência além do estado: os `fetch` de dentro de intervalos e
+  // handlers precisam SEMPRE do mais recente, e não do que existia quando o efeito montou.
+  const tokenRef = useRef<string | null>(null)
+  tokenRef.current = sessao?.token ?? null
+  const autorizacao = (): Record<string, string> => (tokenRef.current ? { Authorization: `Bearer ${tokenRef.current}` } : {})
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -94,12 +117,15 @@ export function Widget() {
         const configData: WidgetConfig = await configRes.json()
         setConfig(configData)
 
-        // Depends on the config (some_browser vs always_new), so this can
-        // only be resolved after the config request comes back.
-        const id = getConversationId(key, configData.conversationPersistence)
-        setConversationId(id)
+        // Depende da configuração (same_browser vs always_new), então só dá para
+        // resolver depois que ela volta.
+        const nova = await abrirSessao(key, configData.conversationPersistence)
+        setSessao(nova)
+        tokenRef.current = nova.token
 
-        const messagesRes = await fetch(`${API_URL}/api/public/widgets/${key}/messages?conversationId=${id}`)
+        const messagesRes = await fetch(`${API_URL}/api/public/widgets/${key}/messages`, {
+          headers: { Authorization: `Bearer ${nova.token}` },
+        })
         setMessages(messagesRes.ok ? await messagesRes.json() : [])
       } catch {
         setError('Não foi possível carregar o widget.')
@@ -117,11 +143,14 @@ export function Widget() {
   // arriving until a manual page refresh.
   useEffect(() => {
     // Só depois de existir uma conversa. Antes disto não há sala para entrar.
-    if (!conversationId) return
+    if (!conversationId || !publicKey) return
     const id = conversationId
+    const chave = publicKey
 
+    // A cada conexão — inclusive reconexão — a autorização é apresentada de novo. Uma
+    // sessão que expirou no meio não é herdada pela conexão nova.
     function joinRoom() {
-      socket.emit('join-conversation', { conversationId: id })
+      socket.emit('join-conversation', { widgetPublicKey: chave, token: tokenRef.current })
     }
 
     function handleMessage(message: WidgetMessage) {
@@ -142,9 +171,9 @@ export function Widget() {
     return () => {
       socket.off('connect', joinRoom)
       socket.off('message', handleMessage)
-      socket.emit('leave-conversation', { conversationId: id })
+      socket.emit('leave-conversation', { widgetPublicKey: chave, token: tokenRef.current })
     }
-  }, [conversationId])
+  }, [conversationId, publicKey])
 
   // Low-frequency fallback in case a socket event is missed (e.g. a reconnect gap).
   // A rede de segurança, e só isso: com o socket funcionando ela nunca traz novidade.
@@ -155,7 +184,7 @@ export function Widget() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_URL}/api/public/widgets/${publicKey}/messages?conversationId=${conversationId}`)
+        const res = await fetch(`${API_URL}/api/public/widgets/${publicKey}/messages`, { headers: autorizacao() })
         if (res.ok) {
           const lista = (await res.json()) as WidgetMessage[]
           setMessages(lista)
@@ -206,12 +235,18 @@ export function Widget() {
     try {
       const res = await fetch(`${API_URL}/api/public/widgets/${publicKey}/messages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId, content }),
+        headers: { 'Content-Type': 'application/json', ...autorizacao() },
+        body: JSON.stringify({ content }),
       })
       if (res.status === 429) {
         setInput(content)
-        setNotice('Você atingiu o limite de mensagens por hoje. Tente novamente mais tarde.')
+        // O servidor diz quando voltar quando sabe dizer; ele não conta qual teto foi.
+        const espera = Number(res.headers.get('Retry-After') ?? 0)
+        setNotice(
+          espera > 0 && espera < 3600
+            ? `Muitas mensagens seguidas. Tente de novo em ${espera < 60 ? `${espera}s` : `${Math.ceil(espera / 60)} min`}.`
+            : 'Você atingiu o limite de mensagens por hoje. Tente novamente mais tarde.',
+        )
         return
       }
       if (!res.ok) {
@@ -235,7 +270,13 @@ export function Widget() {
       // A rota devolve uma LISTA (contrato existente, mantido). Aceitar as duas formas
       // custa uma linha e evita depender do formato exato numa resposta que já é nossa.
       const corpo = await res.json().catch(() => null)
-      const criadas: WidgetMessage[] = Array.isArray(corpo) ? corpo : corpo?._id ? [corpo] : []
+      // Rotação: passada a metade da validade, o servidor devolve o token seguinte junto.
+      if (corpo?.session?.token) {
+        tokenRef.current = corpo.session.token as string
+        setSessao((atual) => (atual ? { ...atual, ...(corpo.session as VisitorSession) } : atual))
+      }
+      const lista = Array.isArray(corpo) ? corpo : Array.isArray(corpo?.messages) ? corpo.messages : corpo?._id ? [corpo] : []
+      const criadas: WidgetMessage[] = lista
       if (criadas.length > 0) {
         setMessages((prev) => {
           const novas = criadas.filter((c) => c?._id && !prev.some((m) => m._id === c._id))

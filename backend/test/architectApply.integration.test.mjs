@@ -384,3 +384,64 @@ test('com instalação E permissão, a pendência se resolve sozinha', async () 
   assert.equal(gerente.appGrants.length, 1)
   assert.equal(gerente.appGrants[0].appKey, 'web_chat')
 })
+
+// --- a conversa não fecha ao aplicar -------------------------------------------------------
+
+test('depois de aplicado dá para continuar conversando — e a rodada nova NÃO duplica nada', async () => {
+  const { id, hash } = await projetoPronto()
+  await aplicar(id, hash, 'op-1')
+  assert.equal(await db.collection('agents').countDocuments({ ownerId: DONO }), 2)
+
+  // Antes, aqui vinha 409: ajustar uma instrução depois de aplicar obrigava a começar
+  // outro projeto — e o projeto novo não sabia o que já existia.
+  const r = await pedir('POST', `/projects/${id}/messages`, { content: 'quero ajustar o atendimento' })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.equal(r.body.status, 'draft', 'a proposta reabre')
+
+  // O que já foi criado volta como "alterar", apontando para o recurso REAL: sem isso,
+  // cada item voltaria como "criar" e a segunda aplicação duplicaria o escritório.
+  const detalhe = await pedir('GET', `/projects/${id}`)
+  for (const item of [...detalhe.body.blueprint.floors, ...detalhe.body.blueprint.agents, ...detalhe.body.blueprint.sectors]) {
+    assert.equal(item.action, 'update', `${item.key} deveria apontar para o que já existe`)
+    assert.match(String(item.resourceId ?? ''), /^[a-f0-9]{24}$/, `${item.key} sem recurso real`)
+  }
+
+  // E a prévia trata tudo como alteração — que exige aprovação item a item na confirmação.
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.equal(previa.body.counts.create, 0)
+  assert.ok(previa.body.counts.update >= 3)
+  assert.ok(previa.body.items.filter((i) => i.kind !== 'app' && i.kind !== 'knowledge').every((i) => i.requiresApproval))
+})
+
+test('a segunda aplicação altera o que existe em vez de criar de novo', async () => {
+  const { id, hash } = await projetoPronto()
+  await aplicar(id, hash, 'op-1')
+  const antes = await db.collection('agents').find({ ownerId: DONO }).toArray()
+
+  await pedir('POST', `/projects/${id}/messages`, { content: 'ajuste o time' })
+  await pedir('POST', `/projects/${id}/validate`)
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  const chaves = previa.body.items.filter((i) => i.requiresApproval).map((i) => i.key)
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: previa.body.blueprintHash,
+    idempotencyKey: 'op-2',
+    confirm: true,
+    approvedUpdateKeys: chaves,
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const depois = await db.collection('agents').find({ ownerId: DONO }).toArray()
+  assert.equal(depois.length, antes.length, 'nenhum agente novo — os mesmos foram atualizados')
+  assert.deepEqual(
+    depois.map((a) => a._id.toString()).sort(),
+    antes.map((a) => a._id.toString()).sort(),
+  )
+})
+
+test('arquivado, sim, silencia a conversa', async () => {
+  const { id } = await projetoPronto()
+  await pedir('POST', `/projects/${id}/archive`)
+  const r = await pedir('POST', `/projects/${id}/messages`, { content: 'oi' })
+  assert.equal(r.status, 409)
+  assert.match(r.body.message, /arquivado/)
+})
