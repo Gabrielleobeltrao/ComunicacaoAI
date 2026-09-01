@@ -192,7 +192,17 @@ async function stub(
       mudancas.push({ kind: e.kind, key: e.key, label: nome, change: 'changed', fields: Object.keys(e.fields ?? {}) })
       previaCorrente = { ...previaCorrente, items: previaCorrente.items.map((i) => (i.kind === e.kind && i.key === e.key ? { ...i, label: nome } : i)) }
     }
-    return r.fulfill({ json: { ...COM_PROPOSTA, changes: mudancas } })
+    // O servidor devolve o blueprint JÁ com a edição aplicada — é o que faz o desenho
+    // do escritório e o fluxo acompanharem sem recarregar. Um stub que devolvesse o
+    // blueprint antigo esconderia justamente isso.
+    const blueprint = {
+      ...BLUEPRINT,
+      agents: BLUEPRINT.agents.map((a) => {
+        const edit = body.edits.find((e) => e.kind === 'agent' && e.key === a.key)
+        return edit?.fields ? { ...a, ...edit.fields } : a
+      }),
+    }
+    return r.fulfill({ json: { ...COM_PROPOSTA, blueprint, changes: mudancas } })
   })
   await page.route('**/api/architect/projects/*/apply', (r) => {
     aplicado = r.request().postDataJSON() as Record<string, unknown>
@@ -439,26 +449,36 @@ test('proposta já aplicada não se edita na tela', async ({ page }) => {
   await expect(page.getByTestId('architect-item-edit-agent-gerente')).toHaveCount(0)
 })
 
-test('o arranjo muda com o que existe: conversa sozinha antes, proposta na frente depois', async ({ page }) => {
-  await page.setViewportSize({ width: 1600, height: 900 })
-  // Sem proposta, a conversa É a tela — antes ela dividia espaço com um painel que só
-  // dizia "a proposta aparece aqui".
+test('quatro telas, uma por vez — e a escolhida fica marcada', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  // Proposta é a primeira: é onde se decide.
+  await expect(page.getByTestId('architect-tab-proposta')).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByTestId('architect-proposal')).toBeVisible()
+  await expect(page.getByTestId('architect-flow')).toHaveCount(0)
+
+  for (const [aba, alvo] of [
+    ['fluxo', 'architect-flow'],
+    ['escritorio', 'architect-office-preview'],
+    ['checklist', 'architect-checklist'],
+    ['proposta', 'architect-proposal'],
+  ] as const) {
+    await page.getByTestId(`architect-tab-${aba}`).click()
+    await expect(page.getByTestId(alvo)).toBeVisible()
+    await expect(page.getByTestId(`architect-tab-${aba}`)).toHaveAttribute('aria-selected', 'true')
+    // Uma por vez: as outras não ficam montadas atrás.
+    const outras = ['architect-flow', 'architect-office-preview', 'architect-checklist', 'architect-proposal'].filter((t) => t !== alvo)
+    for (const t of outras) await expect(page.getByTestId(t)).toHaveCount(0)
+  }
+})
+
+test('sem proposta ainda, não há abas — a conversa é a tela', async ({ page }) => {
   await stub(page)
   await page.goto(`/architect/${PROJETO_ID}`)
   await expect(page.getByTestId('architect-conversation')).toBeVisible()
-  await expect(page.getByTestId('architect-chat-panel')).toHaveCount(0)
-
-  // Com proposta, ela ocupa a área principal e a conversa vira painel lateral.
-  await stub(page, { project: COM_PROPOSTA })
-  await page.goto(`/architect/${PROJETO_ID}`)
-  await expect(page.getByTestId('architect-proposal')).toBeVisible()
-  const painel = page.getByTestId('architect-chat-panel')
-  await expect(painel).toBeVisible()
-
-  // O desenho fica na área principal, à esquerda do painel da conversa.
-  const fluxo = await page.getByTestId('architect-flow').boundingBox()
-  const chat = await painel.boundingBox()
-  expect(fluxo!.x).toBeLessThan(chat!.x)
+  await expect(page.getByTestId('architect-tabs')).toHaveCount(0)
 })
 
 test('a conversa recolhe e volta por um botão — recolhida, ela não some', async ({ page }) => {
@@ -479,6 +499,7 @@ test('a conversa recolhe e volta por um botão — recolhida, ela não some', as
 test('o fluxo mostra quem coordena e quem é acionado — não só a lista', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-fluxo').click()
 
   const fluxo = page.getByTestId('architect-flow')
   await expect(fluxo).toBeVisible()
@@ -623,6 +644,155 @@ test('5) a falha já resolvida sai do alarme, mas fica no histórico', async ({ 
   await expect(aviso).toContainText('A chave do provedor foi recusada')
   await expect(aviso).toContainText('já resolvido')
   await expect(aviso).toHaveAttribute('data-resolved', 'sim')
+})
+
+
+// --- o chat flutuante ------------------------------------------------------------------------
+
+test('no desktop o chat FLUTUA: ele não toma largura de nada', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const painel = page.getByTestId('architect-chat-panel')
+  expect(await painel.evaluate((el) => getComputedStyle(el).position)).toBe('fixed')
+
+  // A largura da área de trabalho é a MESMA com o chat aberto e fechado. Era isso que a
+  // coluna lateral fazia: ela comia 400px da proposta o tempo todo.
+  const comChat = (await page.getByTestId('architect-workspace').boundingBox())!.width
+  await page.getByTestId('architect-chat-collapse').click()
+  await expect(painel).toBeHidden()
+  const semChat = (await page.getByTestId('architect-workspace').boundingBox())!.width
+  expect(semChat).toBe(comChat)
+
+  // Fechado, ele vira botão — o caminho para pedir mudança não some.
+  await expect(page.getByTestId('architect-chat-open')).toBeVisible()
+})
+
+test('fechar e reabrir preserva a conversa e o que estava digitado', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await stub(page, {
+    project: COM_PROPOSTA,
+    messages: [{ id: 'm1', role: 'assistant', content: 'Montei a proposta.', createdAt: NOW }],
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-message-assistant')).toContainText('Montei a proposta.')
+
+  await page.getByTestId('architect-input').fill('quero trocar o nome da Marina')
+  await page.getByTestId('architect-chat-collapse').click()
+  await page.getByTestId('architect-chat-open').click()
+
+  // O texto continua lá: fechar é esconder, não desmontar. Perder o que a pessoa
+  // escreveu ao clicar em "fechar" seria um jeito eficiente de ensinar a nunca fechar.
+  await expect(page.getByTestId('architect-input')).toHaveValue('quero trocar o nome da Marina')
+  await expect(page.getByTestId('architect-message-assistant')).toContainText('Montei a proposta.')
+})
+
+test('trocar de tela não mexe na conversa — e existe UMA conversa só', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  await page.getByTestId('architect-input').fill('rascunho de pergunta')
+  await page.getByTestId('architect-tab-escritorio').click()
+  await page.getByTestId('architect-tab-checklist').click()
+  await expect(page.getByTestId('architect-input')).toHaveValue('rascunho de pergunta')
+  // Duas instâncias montadas (uma do desktop, outra do celular) fariam o que você
+  // digitou numa não estar na outra.
+  await expect(page.getByTestId('architect-conversation')).toHaveCount(1)
+})
+
+// --- a prévia do escritório --------------------------------------------------------------------
+
+test('o escritório mostra os agentes e setores da proposta', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-escritorio').click()
+
+  await expect(page.getByTestId('architect-office-totals')).toContainText('2 agentes')
+  await expect(page.getByTestId('architect-office-totals')).toContainText('1 setor')
+  await expect(page.getByTestId('architect-office-totals')).toContainText('1 andar')
+
+  // O mesmo mapa da página inicial, com a descrição em texto ao lado dele.
+  await expect(page.getByTestId('architect-office-map')).toBeVisible()
+  const descricao = page.getByTestId('architect-office-description')
+  await expect(descricao).toContainText('Atendimento do Restaurante')
+  await expect(descricao).toContainText('2 agentes')
+  await expect(descricao).toContainText('Mesa de Atendimento (Marina, Rafael)')
+  // E fica dito que é rascunho: um mapa idêntico ao do escritório real precisa avisar
+  // que nada ali existe ainda.
+  await expect(page.getByTestId('architect-office-notice')).toContainText('nada aqui existe ainda')
+})
+
+test('a prévia acompanha a proposta: editar um nome redesenha o escritório', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  await page.getByTestId('architect-item-edit-agent-gerente').click()
+  await page.getByTestId('architect-edit-field-name').fill('Bruna')
+  await page.getByTestId('architect-edit-save').click()
+
+  await page.getByTestId('architect-tab-escritorio').click()
+  // Sem recarregar nada: o desenho vem do blueprint que acabou de mudar.
+  await expect(page.getByTestId('architect-office-description')).toContainText('Bruna')
+})
+
+test('agente fora de setor aparece na área comum', async ({ page }) => {
+  const comSolto = {
+    ...COM_PROPOSTA,
+    blueprint: {
+      ...BLUEPRINT,
+      agents: [...BLUEPRINT.agents, { key: 'solto', name: 'Tereza', floorKey: 'atendimento', preset: 'operator' }],
+    },
+  }
+  await stub(page, { project: comSolto })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-escritorio').click()
+
+  // Quem não está em setor é acionado à mão. Isso precisa ser visível ANTES de aplicar.
+  await expect(page.getByTestId('architect-office-description')).toContainText('área comum')
+  await expect(page.getByTestId('architect-office-description')).toContainText('Tereza')
+})
+
+test('com vários andares, dá para escolher qual olhar', async ({ page }) => {
+  const doisAndares = {
+    ...COM_PROPOSTA,
+    blueprint: {
+      ...BLUEPRINT,
+      floors: [
+        BLUEPRINT.floors[0],
+        { key: 'mesa-analise', name: 'Mesa de Análise', workMode: 'organization' },
+      ],
+      agents: [...BLUEPRINT.agents, { key: 'bruno', name: 'Bruno', floorKey: 'mesa-analise', preset: 'analyst' }],
+    },
+  }
+  await stub(page, { project: doisAndares })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-escritorio').click()
+
+  await expect(page.getByTestId('architect-office-totals')).toContainText('2 andares')
+  await page.getByTestId('architect-office-floor-select').selectOption('mesa-analise')
+  await expect(page.getByTestId('architect-office-description')).toContainText('Mesa de Análise')
+  await expect(page.getByTestId('architect-office-description')).toContainText('Bruno')
+})
+
+test('a prévia é SÓ desenho: não consulta estado ao vivo nem navega para id inventado', async ({ page }) => {
+  const chamadas: string[] = []
+  await stub(page, { project: COM_PROPOSTA })
+  page.on('request', (r) => chamadas.push(r.url()))
+
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-escritorio').click()
+  await page.waitForTimeout(2500) // a sondagem de estado ao vivo roda a cada 2s
+
+  // Não há execução de um agente que não existe: perguntar por ela seria inventar
+  // trabalho para o servidor e prometer uma bolha que nunca vem.
+  expect(chamadas.filter((u) => u.includes('/agent-states'))).toEqual([])
+
+  // E clicar no mapa não leva a lugar nenhum: o id é temporário.
+  await page.getByTestId('architect-office-map').click({ position: { x: 60, y: 60 } })
+  await page.waitForTimeout(300)
+  expect(page.url()).toContain(`/architect/${PROJETO_ID}`)
 })
 
 // --- a rodada corretiva -----------------------------------------------------------------------------
@@ -779,6 +949,8 @@ test('a falha mostra o motivo e quantos recursos ficaram de pé', async ({ page 
 })
 
 test('depois de aplicar, os passos ficam visíveis em “Avançado”', async ({ page }) => {
+  // Aplicar leva para a checklist; o "Avançado" vive na tela da proposta.
+  // (o clique na aba entra logo antes de abrir o "Avançado", abaixo)
   await stub(page, {
     project: COM_PROPOSTA,
     apply: {
@@ -801,6 +973,7 @@ test('depois de aplicar, os passos ficam visíveis em “Avançado”', async ({
   await page.goto(`/architect/${PROJETO_ID}`)
   await page.getByTestId('architect-apply').click()
   await page.getByTestId('architect-apply-confirm').click()
+  await page.getByTestId('architect-tab-proposta').click()
   await page.getByTestId('architect-advanced').getByText('Avançado').click()
   await expect(page.getByTestId('architect-steps')).toContainText('floor: atendimento')
   await expect(page.getByTestId('architect-steps')).toContainText('não está conectado')
@@ -946,6 +1119,7 @@ test('uma aplicação interrompida é retomável, e a tela diz que o feito conti
 test('obrigatório e opcional são contados separados, e “pronto” não mente', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-checklist').click()
   await expect(page.getByTestId('architect-required-progress')).toHaveText('0/4')
   await expect(page.getByTestId('architect-ready')).toContainText('Ainda faltam pendências obrigatórias')
 })
@@ -953,6 +1127,7 @@ test('obrigatório e opcional são contados separados, e “pronto” não mente
 test('o item automático não tem botão de marcar; o manual tem', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-checklist').click()
   await expect(page.getByTestId('architect-check-auto-app:canal')).toContainText('conferido pelo sistema')
   await expect(page.getByTestId('architect-check-toggle-app:canal')).toHaveCount(0)
   await expect(page.getByTestId('architect-check-toggle-test:conversa-de-teste')).toBeVisible()
@@ -961,6 +1136,7 @@ test('o item automático não tem botão de marcar; o manual tem', async ({ page
 test('a pendência leva direto ao lugar de resolver', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-checklist').click()
   await expect(page.getByTestId('architect-check-link-app:canal')).toHaveAttribute('href', '/apps')
 })
 
@@ -970,6 +1146,7 @@ test('2) a pendência de conhecimento leva ao agente que vai receber o documento
   await page.goto(`/architect/${PROJETO_ID}`)
   await page.getByTestId('architect-apply').click()
   await page.getByTestId('architect-apply-confirm').click()
+  await page.getByTestId('architect-tab-checklist').click()
 
   // Sem isto, "Enviar o cardápio" ficava obrigatório e sem nenhum caminho.
   await expect(page.getByTestId('architect-check-link-knowledge:cardapio')).toHaveAttribute('href', '/agents/a1')
@@ -978,6 +1155,7 @@ test('2) a pendência de conhecimento leva ao agente que vai receber o documento
 test('reconferir apura de novo contra o estado real', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-tab-checklist').click()
   await page.getByTestId('architect-recheck').click()
   await expect(page.getByTestId('architect-check-app:canal')).toContainText('Conectar web_chat')
   await expect(page.getByTestId('architect-check-auto-app:canal')).toBeVisible()
@@ -1019,19 +1197,27 @@ test('“Montar operação” tem entrada no menu, no modo que o build usa', asy
 
 // --- celular -----------------------------------------------------------------------------------------------------------
 
-test('no celular, conversa, proposta e checklist são abas de uma coluna só', async ({ page }) => {
+test('no celular é uma coluna só, com a conversa ABAIXO do conteúdo', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.setViewportSize({ width: 390, height: 780 })
   await page.goto(`/architect/${PROJETO_ID}`)
 
   await expect(page.getByTestId('architect-tabs')).toBeVisible()
-  await expect(page.getByTestId('architect-conversation')).toBeVisible()
-
   await page.getByTestId('architect-tab-proposta').click()
   await expect(page.getByTestId('architect-counts')).toBeVisible()
-
   await page.getByTestId('architect-tab-checklist').click()
   await expect(page.getByTestId('architect-required-progress')).toBeVisible()
+
+  // No telefone a conversa NÃO flutua por cima: ela é o último bloco da coluna. Uma
+  // janela fixa numa tela de 390px cobriria o conteúdo que ela serve para ajustar.
+  const painel = page.getByTestId('architect-chat-panel')
+  await expect(painel).toBeVisible()
+  expect(await painel.evaluate((el) => getComputedStyle(el).position)).toBe('static')
+  const area = await page.getByTestId('architect-workspace').boundingBox()
+  const chat = await painel.boundingBox()
+  expect(chat!.y).toBeGreaterThan(area!.y)
+  // E o botão de fechar é exclusivo do desktop: no telefone não há para onde recolher.
+  await expect(page.getByTestId('architect-chat-collapse')).toBeHidden()
 })
 
 test('em 320 px nada estoura para os lados', async ({ page }) => {

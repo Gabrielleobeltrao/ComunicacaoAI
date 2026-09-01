@@ -52,7 +52,25 @@ function useReducedMotion(): boolean {
   return reduced
 }
 
-export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSummary[]; sectors?: SectorSummary[]; floorId?: string }) {
+export function OfficeFloor({
+  agents,
+  sectors = [],
+  floorId,
+  readOnly = false,
+}: {
+  agents: AgentSummary[]
+  sectors?: SectorSummary[]
+  floorId?: string
+  /**
+   * SIMULAÇÃO: nada aqui existe no banco ainda.
+   *
+   * Usado pela prévia do Arquiteto, que desenha um rascunho. Duas coisas mudam, e as
+   * duas pelo mesmo motivo — o que está no mapa não é um recurso: o estado ao vivo não
+   * é consultado (não há execução de agente que não existe) e clicar não navega (o id é
+   * temporário; a navegação levaria a uma página de nada).
+   */
+  readOnly?: boolean
+}) {
   const navigate = useNavigate()
   const chars = useMemo(() => buildCharacterResolver(agents.map((a) => a._id)), [agents])
 
@@ -105,7 +123,7 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
 
   const reducedMotion = useReducedMotion()
   // Live-map overlay (off unless the flag is on): read-only per-agent state.
-  const opStates = useAgentStates(featureFlags.aiOfficeLiveStatus, floorId)
+  const opStates = useAgentStates(featureFlags.aiOfficeLiveStatus && !readOnly, floorId)
   const simOn = OFFICE_FEATURES.simulation && (!reducedMotion || IGNORE_REDUCED_MOTION)
   const sim = useOfficeSimulation(layout, grid, {
     modeFor,
@@ -151,7 +169,7 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
       department={accentFor(s.agentId)}
       hoverLift={false}
       style={{ zIndex }}
-      onOpen={() => navigate(`/agents/${s.agentId}`)}
+      onOpen={readOnly ? undefined : () => navigate(`/agents/${s.agentId}`)}
     />
   )
 
@@ -269,7 +287,7 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
                 setHovered={sim.setHovered}
                 opState={opStates[a.id]?.state}
                 opDetail={opStates[a.id]?.safeDetail}
-                onOpen={() => navigate(`/agents/${a.id}`)}
+                onOpen={readOnly ? () => undefined : () => navigate(`/agents/${a.id}`)}
               />
             ))
           : [
@@ -292,7 +310,7 @@ export function OfficeFloor({ agents, sectors = [], floorId }: { agents: AgentSu
                     department={accentFor(o.agentId)}
                     hoverLift={false}
                     style={{ zIndex: 3 }}
-                    onOpen={() => navigate(`/agents/${o.agentId}`)}
+                    onOpen={readOnly ? undefined : () => navigate(`/agents/${o.agentId}`)}
                   />
                 )
               }),
