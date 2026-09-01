@@ -135,7 +135,68 @@ Defeitos que os testes pegaram neste bloco:
 - o recorte cortava setor de um membro e demovia gerente mesmo quando nada tinha sido
   cortado, o que reescrevia projeto legado sem ninguém ter pedido.
 
+### Knowledge Brain — Fase 1 e API unificada (`45dae5c`)
+
+- `backend/src/knowledge.ts`: `KnowledgeOwnerType` cobre `building | floor | sector |
+  agent`. Mesmas coleções, mesmo chunking, mesmos embeddings, mesmo índice vetorial —
+  quatro coleções separadas obrigariam a busca a consultar quatro lugares e o orçamento
+  de trechos a ser dividido antes de saber o que existe. `ownerFilter` mantém o ramo
+  legado só para o agente, que é o único escopo com passado.
+- Campos curatoriais retrocompatíveis: `format`, `lifecycleStatus`, `authority`,
+  `validFrom/validUntil`, `verifiedAt/verifiedBy`, `reviewIntervalDays`, `confidence` e
+  `links`. Os defaults são aplicados na LEITURA (`withKnowledgeDefaults`), nunca por
+  migração: reescrever a coleção mudaria o `updatedAt` de documentos que ninguém tocou.
+  `confidence` não tem default e não vem do cliente — ela decide precedência entre
+  documentos que se contradizem.
+- `backend/src/knowledgeScope.ts`: os resolvers dono-a-dono. O `scopeId` do cliente é um
+  pedido; quem decide é o getter que já filtra por conta. Id inválido, inexistente e de
+  outra conta dão a MESMA recusa. O prédio nunca vem do cliente.
+- `backend/src/knowledgeService.ts`: a camada compartilhada — validação, cota e
+  serialização num lugar só. Era aqui que estava o buraco: o caminho do agente conferia
+  a cota da conta e o do setor não, então dava para encher o disco escolhendo a porta. A
+  cota vale também na EDIÇÃO, senão bastava entrar pequeno e crescer depois.
+- `backend/src/routes/knowledgeRoutes.ts`: `/api/knowledge/documents` para os quatro
+  escopos. As rotas por dono continuam existindo como ADAPTADORES da mesma camada —
+  mesmo caminho, mesmo contrato. A rota do agente mantém o que sempre aceitou (sem teto
+  de caracteres), porque impor o teto do setor agora recusaria em silêncio um texto que
+  ontem entrava.
+- `backend/src/abuseGuards.ts`: a cota soma os quatro donos. Faltava `buildings` — e um
+  escopo de fora não daria um número menor, daria uma porta por onde encher o disco.
+- `backend/src/architect/knowledge.ts`: conhecimento de andar e prédio vira documento
+  indexado. Ia para a memória determinística por falta de dono, e o efeito era visível —
+  o cardápio salvo no andar não era encontrado por busca semântica e não contava para a
+  cota. A memória continua sendo o que sempre foi: fato acumulado por execução.
+- `backend/src/knowledgeMigration.ts` + `src/scripts/migrateArchitectKnowledge.ts`: a
+  cópia do que já está gravado. Idempotente pela marca `memory:<id>` e pelo índice único
+  do banco; retomável porque cada item registra o próprio resultado em
+  `knowledge_migrations`; não destrutiva — a memória original fica, e a confirmação vem
+  de uma LEITURA do documento, não do retorno da escrita. Não roda no boot.
+- `backend/src/floors.ts`: apagar um andar leva a base dele. Sem isso, documento e chunk
+  ficariam apontando para um dono que não existe — invisíveis em qualquer tela, contados
+  na cota para sempre, e ainda alcançáveis pela busca vetorial.
+
+Defeitos e decisões deste bloco:
+
+- rodar um arquivo de teste direto (`node --test`) carrega o `.env` do desenvolvedor e
+  chama o provedor de embedding DE VERDADE. A suíte (`scripts/run-tests.mjs`) zera a
+  chave; fora dela, um "erro" pode ser só a rede respondendo;
+- o teto de 100 mil caracteres é da nota curada, não do upload: um PDF extraído passa
+  disso com facilidade, e quem limita ali é a cota. Pela rota JSON o corpo grande nem
+  chega ao validador — o parser do Express recusa antes;
+- `ownersFilter` nasceu sem uso e foi removido: `countUnindexedFor` já montava o mesmo
+  `$or`.
+
 ## O que falta, na ordem
+
+### Knowledge Brain — próximo bloco (Fase 2)
+1. `knowledgeAccess` no agente (`own`/`building`/`floor`/`sectorMode`), com agentes
+   legados resolvendo para o comportamento atual até alguém salvar uma política.
+2. `resolveKnowledgeOwnersForExecution` única, usada por chat, delegação, setor, rotina
+   e playground — nenhum fluxo monta a própria lista de owners.
+3. Busca híbrida combinando os quatro escopos dentro do mesmo orçamento global, com
+   deduplicação entre escopos e proveniência por trecho.
+4. Decidir e executar a remoção da memória original já copiada (a migração deste bloco
+   deixou tudo de pé de propósito).
 
 ### Arquiteto (Fase 7)
 1. Nada bloqueando: o núcleo (7.7 a 7.14) está fechado. O que sobra é acabamento —
@@ -171,6 +232,14 @@ Defeitos que os testes pegaram neste bloco:
   renomear em silêncio duplica o escritório na revisão seguinte.
 - **O hash carimba o que vai ser APLICADO.** Se ele fosse do plano inteiro, trocar de
   camada não mudaria o hash — e a confirmação feita sobre um recorte aplicaria outro.
+- **Uma base, quatro donos.** O documento tem um dono canônico; a leitura de vários
+  escopos é política de acesso, não uma segunda base.
+- **Default na leitura, nunca migração silenciosa.** Um campo novo com default correto
+  não justifica reescrever o que já está gravado.
+- **A recusa é a mesma para não existe e não é seu.** Distinguir os dois conta que o id
+  existe em algum lugar.
+- **Migração confirma antes de marcar.** "Deu certo porque não lançou" é como uma falha
+  silenciosa vira dado perdido.
 - **O crítico do modelo não bloqueia e não edita.** Bloquear daria a um palpite a palavra
   final sobre aplicar; editar criaria um segundo arquiteto, e ninguém saberia qual dos
   dois propôs o que está sendo aprovado.
