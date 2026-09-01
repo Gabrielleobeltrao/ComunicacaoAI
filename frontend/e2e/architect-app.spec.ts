@@ -714,6 +714,34 @@ test('sem nada para reaproveitar, o bloco não existe — e com algo, ele aparec
   await expect(page.getByTestId('architect-links-editor')).toBeVisible()
 })
 
+test('a proposta travada por reaproveitamento tem saída na tela', async ({ page }) => {
+  // O caso real: itens marcados como "reaproveitar" numa conta sem nada para apontar.
+  // A aplicação ficava bloqueada e não havia, na tela inteira, o que escolher.
+  const travada = {
+    ...COM_PROPOSTA,
+    blueprint: {
+      ...BLUEPRINT,
+      floors: [{ ...BLUEPRINT.floors[0], action: 'reuse' }],
+      agents: BLUEPRINT.agents.map((a) => ({ ...a, action: 'reuse' })),
+    },
+  }
+  await stub(page, { project: travada, targets: { floors: [], agents: [], sectors: [], routines: [] } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const bloco = page.getByTestId('architect-links-pending')
+  await expect(bloco).toContainText('travando a aplicação')
+  await page.getByTestId('architect-links-create-pending').click()
+
+  // Um clique resolve os três: eles passam a ser criados.
+  await expect.poll(() => ligacoes).toMatchObject({
+    links: [
+      { kind: 'floor', key: 'atendimento', action: 'create' },
+      { kind: 'agent', key: 'gerente', action: 'create' },
+      { kind: 'agent', key: 'duvidas', action: 'create' },
+    ],
+  })
+})
+
 test('o que foi marcado na confirmação é o que vai no pedido', async ({ page }) => {
   await stub(page, {
     project: COM_PROPOSTA,

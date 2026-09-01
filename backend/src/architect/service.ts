@@ -3,6 +3,7 @@ import { ValidationError } from '../building.js'
 import { maskSecrets, containsSecret } from './secrets.js'
 import { mergeBlueprintPatch, computeBlueprintHash } from './blueprint.js'
 import { diffBlueprints } from './diff.js'
+import { repairBlueprintPatch, repairReuseWithoutTarget } from './repair.js'
 import { buildArchitectPrompt } from './prompt.js'
 import { runArchitectTurn } from './turn.js'
 import { loadAppsForPrompt, loadExistingResources, loadOwnershipContext } from './context.js'
@@ -174,9 +175,20 @@ async function runTurn(
   const answers = { ...respondidas }
   for (const [k, v] of Object.entries(turno.answerPatch)) answers[k] = v
 
-  const mesclado = turno.blueprintPatch
-    ? mergeBlueprintPatch(projeto.blueprint, turno.blueprintPatch as Partial<OfficeBlueprintV1>, { title: projeto.title, objective: projeto.objective })
+  /**
+   * O que dá para consertar sozinho é consertado ANTES de virar proposta.
+   *
+   * Delegação "só estes" com lista vazia, etapa de rotina sem forma, reaproveitamento de
+   * um recurso que não existe: nada disso a pessoa consegue resolver na tela — e os três
+   * apareciam como erro vermelho bloqueando a aplicação. Cada conserto deixa um aviso,
+   * porque mudar o plano de alguém em silêncio é pior que o erro.
+   */
+  const consertoDoPatch = turno.blueprintPatch ? repairBlueprintPatch(turno.blueprintPatch) : null
+  const mesclado = consertoDoPatch
+    ? mergeBlueprintPatch(projeto.blueprint, consertoDoPatch.patch as Partial<OfficeBlueprintV1>, { title: projeto.title, objective: projeto.objective })
     : projeto.blueprint
+
+  const consertoDoReuso = mesclado ? repairReuseWithoutTarget(mesclado, existing) : null
 
   /**
    * Uma rodada depois de APLICADO não começa do zero.
@@ -186,7 +198,15 @@ async function runTurn(
    * palavra sobre o que existe é o registro da aplicação, não a resposta dele. Sem isto,
    * continuar a conversa depois de aplicar duplicaria o escritório inteiro.
    */
-  const blueprint = turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExiste(ownerId, projeto, mesclado) : mesclado
+  const comReuso = consertoDoReuso?.blueprint ?? mesclado
+  const blueprint = turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExiste(ownerId, projeto, comReuso) : comReuso
+
+  // Os avisos do conserto entram JUNTO dos do modelo: quem lê a proposta lê tudo num
+  // lugar só, e não descobre a mudança comparando duas versões.
+  if (blueprint) {
+    const avisos = [...(consertoDoPatch?.warnings ?? []), ...(consertoDoReuso?.warnings ?? [])]
+    if (avisos.length) blueprint.warnings = [...(blueprint.warnings ?? []), ...avisos].slice(0, L.MAX_WARNINGS)
+  }
 
   const assumptions = mesclarSuposicoes(projeto.assumptions, turno.assumptions, answers)
   const hash = blueprint ? computeBlueprintHash(blueprint) : null
