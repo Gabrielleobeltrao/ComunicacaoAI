@@ -10,6 +10,7 @@ import { loadAppsForPrompt, loadExistingResources, loadOwnershipContext } from '
 import { buildCapabilityManifest, manifestForPrompt } from './capabilities.js'
 import { applyBriefPatch, briefForPrompt, emptyBrief, resolveIntegrations } from './brief.js'
 import { gapsForPrompt, nextQuestions } from './nextQuestion.js'
+import { classifyBrief, classificationForPrompt } from './classify.js'
 import { ARCHITECT_CONSTITUTION_VERSION } from './constitution.js'
 import { applyBlueprintLinks, loadTargets } from './links.js'
 import { buildPreview } from './preview.js'
@@ -170,6 +171,14 @@ async function runTurn(
    */
   const briefAtual = resolveIntegrations(projeto.brief ?? emptyBrief(projeto.objective), manifesto)
   const lacunas = nextQuestions(briefAtual, manifesto)
+  /**
+   * A classificação vem ANTES do desenho, e vai junto no prompt.
+   *
+   * É o que impede as duas patologias: o superagente (tudo num só) e o enxame (um
+   * agente por microetapa). O servidor decide o que é agente, o que é função e o que é
+   * ferramenta; o modelo desenha em cima disso.
+   */
+  const classificacao = classifyBrief(briefAtual, manifesto)
 
   const resultado = await runArchitectTurn({
     ownerId,
@@ -182,6 +191,7 @@ async function runTurn(
       existing,
       capabilities: manifesto ? manifestForPrompt(manifesto) : undefined,
       brief: briefForPrompt(briefAtual),
+      classification: classificationForPrompt(classificacao) || undefined,
       // Com pedido explícito de proposta não há entrevista: a pessoa já disse que quer
       // ver o desenho agora.
       gaps: opts.forceProposal ? undefined : gapsForPrompt(lacunas),

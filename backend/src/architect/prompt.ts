@@ -158,6 +158,8 @@ export function buildArchitectPrompt(input: {
   brief?: string
   /** Os assuntos que ELE pode perguntar agora. Fora desta lista, não pergunte. */
   gaps?: string
+  /** Como cada trabalho já foi classificado pelo servidor: agente, função, ferramenta. */
+  classification?: string
   /**
    * O catálogo REAL desta conta, montado pelo servidor.
    *
@@ -223,6 +225,7 @@ ${EXEMPLO}
 O ENTENDIMENTO ATUAL DO NEGÓCIO (atualize-o em "briefPatch" a cada resposta):
 ${input.brief ?? 'Ainda não entendi nada — esta é a primeira rodada.'}
 
+${input.classification ? `${input.classification}\n` : ''}
 ${input.gaps ?? ''}
 
 Idioma da resposta: ${project.locale}.
