@@ -95,15 +95,53 @@ Dois defeitos que os testes pegaram e que valem ser lembrados:
 - com Brief vazio saía um cenário só. Projetos anteriores ao Brief ficariam sem ensaio
   de verdade; agora os cenários saem do desenho quando não há trabalhos mapeados.
 
+### Compilador, camadas e crítico LLM — 7.13 e 7.14 (`790fa39`, `921aaf3`)
+
+- `backend/src/architect/compile.ts`: o Blueprint deixa de vir da LLM. O `blueprintPatch`
+  do modelo continua importando como SINAL de "já dá para propor", mas o conteúdo é
+  descartado: o desenho é derivado do Brief pelo classificador e pelas regras. Mesmo
+  Brief, mesmo catálogo, mesmo desenho — inclusive as chaves, que saem do id do trabalho.
+  Os nomes são de pessoa e escolhidos por POSIÇÃO numa lista fixa, nunca sorteados.
+  Chave estável não é preciosismo: é o que liga a proposta ao recurso já aplicado. Se
+  `marina` virasse `agent-2` na revisão seguinte, o diff diria que um agente sumiu e
+  outro nasceu — e a aplicação criaria um segundo escritório ao lado do que roda.
+- Camadas: o projeto guarda o PLANO INTEIRO em `blueprint` e a camada escolhida em
+  `layer`. O que a pessoa lê, o que o hash carimba, o que o crítico avalia, o que o
+  ensaio percorre e o que a aplicação escreve é sempre o RECORTE (`selectLayer`). Trocar
+  de camada muda o hash e derruba para rascunho — uma confirmação em voo com o hash
+  antigo é recusada, e uma tela mostrando "Essencial" nunca aplica o "Completo".
+- O recorte fecha as dependências: setor que perdeu membros a ponto de sobrar um deixa
+  de existir, rotina sem dono não entra, e quem sobrou sozinho não continua coordenando
+  o vazio. As regras de TAMANHO só valem quando algo foi cortado — sem essa distinção, o
+  recorte reescreveria projeto legado, que não tem camada em item nenhum.
+- `backend/src/architect/criticLlm.ts`: a leitura auxiliar do modelo roda depois da
+  compilação, uma vez por revisão, cacheada por hash no projeto. Produz finding, nunca
+  patch; nunca declara erro; e prazo, falha do provedor ou resposta ilegível não quebram
+  a proposta — o pior caso é a proposta sem a segunda leitura. Leitura de outra revisão é
+  descartada, e a tela diz que foi, em vez de apontar problema em agente que não existe.
+  O prazo é injetável (`ask`) porque garantia que ninguém consegue exercitar é frase.
+- Corrigir o Brief refaz o desenho na hora, sem inferência (`recompilar`). Projeto cujo
+  desenho veio do modelo NÃO é recompilado: as chaves seriam outras.
+- Telas: `Brief.tsx` (os fatos, corrigíveis, com desfazer), `Layers.tsx` (os três
+  recortes com a contagem de cada um) e `AgentCards.tsx` (a ficha: entrega, acionamento,
+  o que NÃO faz, executor, contratos, ferramentas, handoff, por que é separado). O que
+  não foi declarado aparece como "não declarado".
+
+Defeitos que os testes pegaram neste bloco:
+
+- rotina compilada nascia sem etapa, e rotina sem etapa é recusada pelo validador — a
+  proposta compilava e não aplicava. O compilador passou a emitir a etapa `agent.execute`
+  do dono, por `agentKey`, que a aplicação troca pelo id real;
+- o recorte cortava setor de um membro e demovia gerente mesmo quando nada tinha sido
+  cortado, o que reescrevia projeto legado sem ninguém ter pedido.
+
 ## O que falta, na ordem
 
 ### Arquiteto (Fase 7)
-1. Camadas Essencial/Recomendado/Completo do mesmo plano (7.10, 7.13).
-2. Compilador Brief → Blueprint ligado ao preview/diff/apply existente (7.14).
-3. Telas: "O que entendi" corrigível na interface, cards de agente com responsabilidade
-   e limites (a API já existe; falta a tela).
-4. Crítico LLM acionado de verdade numa etapa própria (o contrato e o normalizador já
-   existem; hoje só a camada determinística roda).
+1. Nada bloqueando: o núcleo (7.7 a 7.14) está fechado. O que sobra é acabamento —
+   `successMetric` por agente ainda sai vazio na ficha, e o crítico auxiliar só é
+   acionado na rodada de conversa (trocar de camada não dispara outra leitura, ela fica
+   marcada como obsoleta até a próxima rodada).
 
 ### Knowledge Brain (Fases 1–6)
 8. `KnowledgeOwnerType` para os quatro escopos, migração idempotente e cota em todos
@@ -129,3 +167,10 @@ Dois defeitos que os testes pegaram e que valem ser lembrados:
   proposta aprovada sobre algo que não serve. Sem casamento exato, é pendência.
 - **`connected`, `risk` e capacidades vêm da fonte real.** Toda cópia dessas verdades
   diverge na primeira mudança.
+- **Chave de item é derivada e estável.** Ela é o que liga proposta e recurso aplicado;
+  renomear em silêncio duplica o escritório na revisão seguinte.
+- **O hash carimba o que vai ser APLICADO.** Se ele fosse do plano inteiro, trocar de
+  camada não mudaria o hash — e a confirmação feita sobre um recorte aplicaria outro.
+- **O crítico do modelo não bloqueia e não edita.** Bloquear daria a um palpite a palavra
+  final sobre aplicar; editar criaria um segundo arquiteto, e ninguém saberia qual dos
+  dois propôs o que está sendo aprovado.
