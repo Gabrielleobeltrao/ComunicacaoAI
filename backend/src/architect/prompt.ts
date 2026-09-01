@@ -34,6 +34,7 @@ Responda SOMENTE com um objeto JSON, sem cerca de código e sem texto antes ou d
   "phase": "discovery" | "proposal" | "revision",
   "question": null | { "key": "identificador-curto", "text": "a pergunta", "why": "por que isto importa", "choices": [{ "value": "v", "label": "rótulo" }], "allowUnknown": true },
   "answerPatch": { "chave-da-pergunta": "resposta" },
+  "briefPatch": null | { "businessGoal": "...", "channels": [...], "jobs": [{ "id": "chave-curta", "name": "...", "trigger": "o que faz começar", "input": "o que chega", "decision": "o julgamento exigido — vazio quando é só execução", "action": "o que é feito", "output": "o que sai", "risk": "low"|"medium"|"high", "requiresHumanApproval": true|false }], "integrations": [{ "key": "chave-do-app", "need": "para quê" }], "knowledgeNeeds": [{ "subject": "...", "required": true }], "humanApprovals": [{ "action": "...", "rule": "..." }], "knownFacts": [{ "key": "...", "value": "...", "source": "user" }], "successCriteria": [...], "constraints": [...] },
   "blueprintPatch": null | { "title": "...", "objective": "...", "floors": [...], "agents": [...], "sectors": [...], "routines": [...], "appRequirements": [...], "knowledgeRequirements": [...], "assumptions": [...], "warnings": [...] },
   "assumptions": [{ "key": "k", "text": "o que você assumiu por falta de resposta", "questionKey": "pergunta-que-resolveria" }],
   "warnings": [{ "path": "onde", "message": "o que preocupa" }]
@@ -153,6 +154,10 @@ export function buildArchitectPrompt(input: {
   existing?: ExistingResources
   /** Pedido explícito de proposta, mesmo com perguntas em aberto. */
   forceProposal?: boolean
+  /** O que já foi entendido do negócio. */
+  brief?: string
+  /** Os assuntos que ELE pode perguntar agora. Fora desta lista, não pergunte. */
+  gaps?: string
   /**
    * O catálogo REAL desta conta, montado pelo servidor.
    *
@@ -214,6 +219,11 @@ ${REGRAS}
 
 ${input.capabilities ? `${input.capabilities}\n` : ''}
 ${EXEMPLO}
+
+O ENTENDIMENTO ATUAL DO NEGÓCIO (atualize-o em "briefPatch" a cada resposta):
+${input.brief ?? 'Ainda não entendi nada — esta é a primeira rodada.'}
+
+${input.gaps ?? ''}
 
 Idioma da resposta: ${project.locale}.
 Objetivo declarado: ${project.objective || project.title}

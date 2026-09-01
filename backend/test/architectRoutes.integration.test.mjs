@@ -547,3 +547,61 @@ test('o aviso de credencial não é falha, e nenhuma rodada boa o "resolve"', as
   assert.equal(aviso.failure, undefined, 'continua valendo para sempre: credencial se configura na página do App')
   assert.equal(aviso.resolved, undefined)
 })
+
+// --- Fase 4: o entendimento do negócio, antes do desenho ------------------------------------
+
+test('a conversa produz um Brief, e ele chega na tela', async () => {
+  const p = await criar()
+  const r = await pedir('POST', `/projects/${p.id}/messages`, { content: 'quero automatizar' })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  // O dublê do modelo devolve um `briefPatch`; o que importa aqui é o caminho: o
+  // entendimento é gravado, versionado e devolvido junto do projeto.
+  const detalhe = await pedir('GET', `/projects/${p.id}`)
+  assert.ok('brief' in detalhe.body, 'o Brief faz parte do projeto')
+})
+
+test('corrigir "O que entendi" não gasta inferência — e dá para desfazer', async () => {
+  const p = await criar()
+  const gastoAntes = await getMonthlyTokens(DONO)
+
+  const r = await pedir('PATCH', `/projects/${p.id}/brief`, {
+    patch: { businessGoal: 'atender o cliente do restaurante pelo WhatsApp', channels: ['WhatsApp'] },
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.equal(r.body.brief.businessGoal, 'atender o cliente do restaurante pelo WhatsApp')
+  assert.deepEqual(r.body.brief.channels, ['WhatsApp'])
+  assert.equal(await getMonthlyTokens(DONO), gastoAntes, 'corrigir o entendimento é edição, não conversa')
+
+  // Segunda correção, e o desfazer volta à primeira.
+  const segunda = await pedir('PATCH', `/projects/${p.id}/brief`, { patch: { businessGoal: 'outra coisa' } })
+  assert.equal(segunda.body.brief.businessGoal, 'outra coisa')
+  assert.equal(segunda.body.canUndoBrief, true)
+
+  const desfeito = await pedir('PATCH', `/projects/${p.id}/brief`, { undo: true })
+  assert.equal(desfeito.body.brief.businessGoal, 'atender o cliente do restaurante pelo WhatsApp')
+  assert.equal(desfeito.body.canUndoBrief, false, 'uma só: o que se perde é entre a versão lida e a da tela')
+
+  // E não há o que desfazer duas vezes.
+  const denovo = await pedir('PATCH', `/projects/${p.id}/brief`, { undo: true })
+  assert.equal(denovo.status, 400)
+})
+
+test('o Brief é do dono, e de mais ninguém', async () => {
+  const p = await criar()
+  await pedir('PATCH', `/projects/${p.id}/brief`, { patch: { businessGoal: 'meu negócio' } })
+  sessao = VIZINHO
+  const r = await pedir('PATCH', `/projects/${p.id}/brief`, { patch: { businessGoal: 'sequestrado' } })
+  assert.equal(r.status, 404)
+  sessao = DONO
+  assert.equal((await pedir('GET', `/projects/${p.id}`)).body.brief.businessGoal, 'meu negócio')
+})
+
+test('o que o servidor sabe sobre conexão não vem do patch', async () => {
+  const p = await criar()
+  const r = await pedir('PATCH', `/projects/${p.id}/brief`, {
+    patch: { integrations: [{ key: 'web_chat', need: 'receber mensagens', connected: true }] },
+  })
+  // O App não está conectado nesta conta de teste: o "true" do patch é ignorado.
+  assert.equal(r.body.brief.integrations[0].connected, false)
+})

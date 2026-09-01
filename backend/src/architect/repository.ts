@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb'
 import { db } from '../db.js'
 import * as L from './limits.js'
 import { maskSecrets } from './secrets.js'
+import type { OperationBrief } from './brief.js'
 import type {
   ApplyStatus,
   ApplyStepResult,
@@ -39,6 +40,20 @@ export interface ArchitectProject {
   assumptions: ArchitectAssumption[]
   /** A constituição vigente quando a proposta foi montada. Ausente nos projetos antigos. */
   architectConstitutionVersion?: number
+  /**
+   * O ENTENDIMENTO do negócio — o artefato que vem antes do desenho.
+   *
+   * Ausente nos projetos criados antes desta versão: eles continuam funcionando pelo
+   * caminho antigo (conversa → blueprint), e é isso que os mantém abertos.
+   */
+  brief?: OperationBrief
+  /**
+   * A versão anterior do Brief, para desfazer a última mudança.
+   *
+   * Uma só, pelo mesmo motivo do `previousBlueprint`: o que se perde numa correção se
+   * perde entre a versão que a pessoa leu e a que está na tela.
+   */
+  previousBrief?: OperationBrief | null
   blueprintVersion: 1
   blueprint: OfficeBlueprintV1 | null
   /**

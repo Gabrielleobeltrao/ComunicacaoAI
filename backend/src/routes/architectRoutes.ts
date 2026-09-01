@@ -118,6 +118,22 @@ architectRouter.patch('/projects/:id/blueprint', async (req, res, next) => {
   }
 })
 
+// "O que entendi", corrigido à mão. Não chama modelo nenhum.
+architectRouter.patch('/projects/:id/brief', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const body = (req.body ?? {}) as { patch?: unknown; undo?: boolean }
+    const projeto = await withProjectLock(id.toString(), () =>
+      body.undo === true ? service.undoBrief(res.locals.userId, id) : service.editBrief(res.locals.userId, id, body.patch),
+    )
+    auditEntity(res, { id: projeto._id.toString(), label: projeto.title })
+    res.json(service.projectDetail(projeto))
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
 // O que existe nesta conta, para a tela poder oferecer a escolha. Leitura pura.
 architectRouter.get('/targets', async (_req, res) => {
   res.json(await service.architectTargets(res.locals.userId))

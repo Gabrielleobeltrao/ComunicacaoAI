@@ -8,6 +8,8 @@ import { buildArchitectPrompt } from './prompt.js'
 import { runArchitectTurn } from './turn.js'
 import { loadAppsForPrompt, loadExistingResources, loadOwnershipContext } from './context.js'
 import { buildCapabilityManifest, manifestForPrompt } from './capabilities.js'
+import { applyBriefPatch, briefForPrompt, emptyBrief, resolveIntegrations } from './brief.js'
+import { gapsForPrompt, nextQuestions } from './nextQuestion.js'
 import { ARCHITECT_CONSTITUTION_VERSION } from './constitution.js'
 import { applyBlueprintLinks, loadTargets } from './links.js'
 import { buildPreview } from './preview.js'
@@ -157,6 +159,18 @@ async function runTurn(
     respondidas[projeto.pendingQuestion.key] = opts.answeringPending.trim()
   }
 
+  /**
+   * O ENTENDIMENTO entra no prompt, e as lacunas também.
+   *
+   * O modelo recebe o que já foi entendido do negócio e a lista fechada de assuntos que
+   * ele pode perguntar agora. Escolher a pergunta é do servidor: deixar o modelo
+   * escolher produzia pergunta já respondida e pergunta técnica que ele mesmo deveria
+   * deduzir — e as duas custam a mesma coisa, que é a pessoa parar de acreditar que o
+   * sistema está entendendo.
+   */
+  const briefAtual = resolveIntegrations(projeto.brief ?? emptyBrief(projeto.objective), manifesto)
+  const lacunas = nextQuestions(briefAtual, manifesto)
+
   const resultado = await runArchitectTurn({
     ownerId,
     provider: projeto.provider,
@@ -167,6 +181,10 @@ async function runTurn(
       apps,
       existing,
       capabilities: manifesto ? manifestForPrompt(manifesto) : undefined,
+      brief: briefForPrompt(briefAtual),
+      // Com pedido explícito de proposta não há entrevista: a pessoa já disse que quer
+      // ver o desenho agora.
+      gaps: opts.forceProposal ? undefined : gapsForPrompt(lacunas),
       forceProposal: opts.forceProposal,
     }),
     chargeKey,
@@ -195,6 +213,15 @@ async function runTurn(
    * apareciam como erro vermelho bloqueando a aplicação. Cada conserto deixa um aviso,
    * porque mudar o plano de alguém em silêncio é pior que o erro.
    */
+  /**
+   * O Brief é atualizado ANTES do desenho.
+   *
+   * A ordem importa: o entendimento é o que justifica a estrutura. E o anterior fica
+   * guardado — desfazer a última correção é o que permite dizer "não era isso" sem
+   * recomeçar a entrevista.
+   */
+  const briefNovo = turno.briefPatch ? resolveIntegrations(applyBriefPatch(briefAtual, turno.briefPatch), manifesto) : briefAtual
+
   const consertoDoPatch = turno.blueprintPatch ? repairBlueprintPatch(turno.blueprintPatch) : null
   const mesclado = consertoDoPatch
     ? mergeBlueprintPatch(projeto.blueprint, consertoDoPatch.patch as Partial<OfficeBlueprintV1>, { title: projeto.title, objective: projeto.objective })
@@ -226,6 +253,7 @@ async function runTurn(
     // Qual constituição valia quando esta proposta foi feita. Sem isso, mudar o texto
     // das regras torna uma decisão antiga inexplicável — e impossível de reproduzir.
     architectConstitutionVersion: ARCHITECT_CONSTITUTION_VERSION,
+    ...(turno.briefPatch ? { brief: briefNovo, previousBrief: projeto.brief ?? null } : {}),
     answers,
     pendingQuestion: turno.question ? { key: turno.question.key, text: turno.question.text } : null,
     assumptions,
@@ -414,6 +442,10 @@ export const projectDetail = (p: ArchitectProject) => ({
   assumptions: p.assumptions,
   blueprint: p.blueprint,
   blueprintHash: p.blueprintHash,
+  // O entendimento vai junto: é ele que a tela mostra como "O que entendi", e é por ele
+  // que a pessoa corrige o Arquiteto sem precisar reabrir a conversa inteira.
+  brief: p.brief ?? null,
+  canUndoBrief: Boolean(p.previousBrief),
   // O que a última revisão mexeu. Vazio na primeira proposta: não há com o que comparar.
   changes: diffBlueprints(p.previousBlueprint, p.blueprint),
   checklist: p.checklist,
@@ -637,6 +669,31 @@ export async function editBlueprint(ownerId: string, projectId: ObjectId, edits:
       status: 'draft',
     })) ?? projeto
   )
+}
+
+/**
+ * Corrigir o entendimento à mão — sem gastar inferência.
+ *
+ * "O que entendi" existe para ser corrigido: se a pessoa precisa reabrir a conversa e
+ * torcer para o modelo entender que ela discorda, o painel vira decoração. Aqui o
+ * patch é o mesmo contrato do modelo, validado do mesmo jeito.
+ */
+export async function editBrief(ownerId: string, projectId: ObjectId, patch: unknown): Promise<ArchitectProject> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!isConversable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto foi arquivado')
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new ValidationError('informe o que mudou')
+
+  const manifesto = await buildCapabilityManifest(ownerId).catch(() => null)
+  const atual = projeto.brief ?? emptyBrief(projeto.objective)
+  const novo = resolveIntegrations(applyBriefPatch(atual, patch), manifesto)
+  return (await repo.patchProject(ownerId, projectId, { brief: novo, previousBrief: atual })) ?? projeto
+}
+
+/** Desfazer a última mudança do entendimento. Uma só — ver `previousBrief`. */
+export async function undoBrief(ownerId: string, projectId: ObjectId): Promise<ArchitectProject> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!projeto.previousBrief) throw new ValidationError('não há mudança recente para desfazer')
+  return (await repo.patchProject(ownerId, projectId, { brief: projeto.previousBrief, previousBrief: null })) ?? projeto
 }
 
 export const architectTargets = (ownerId: string) => loadTargets(ownerId)

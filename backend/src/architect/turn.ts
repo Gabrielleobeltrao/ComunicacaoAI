@@ -33,6 +33,14 @@ export interface ArchitectTurnResult {
   question: ArchitectQuestion | null
   answerPatch: Record<string, unknown>
   blueprintPatch: Record<string, unknown> | null
+  /**
+   * O que o modelo ENTENDEU do negócio nesta rodada.
+   *
+   * Separado do desenho de propósito: o entendimento é o que justifica a estrutura, e
+   * misturar os dois num artefato só foi o que fazia o Arquiteto inventar andar e
+   * agente a partir de uma frase.
+   */
+  briefPatch: Record<string, unknown> | null
   assumptions: { key: string; text: string; questionKey?: string }[]
   warnings: { path: string; message: string }[]
 }
@@ -147,6 +155,10 @@ export function normalizeTurn(bruto: unknown): ArchitectTurnResult | null {
 
   const blueprintPatch =
     r.blueprintPatch && typeof r.blueprintPatch === 'object' && !Array.isArray(r.blueprintPatch) ? semResourceId(r.blueprintPatch as Record<string, unknown>) : null
+  // O Brief também passa pelo removedor de id: o entendimento do negócio não tem id de
+  // banco, e um que aparecesse ali seria inventado.
+  const briefPatch =
+    r.briefPatch && typeof r.briefPatch === 'object' && !Array.isArray(r.briefPatch) ? semResourceId(r.briefPatch as Record<string, unknown>) : null
 
   const lista = <T>(v: unknown, fn: (o: Record<string, unknown>) => T | null, teto: number): T[] =>
     Array.isArray(v)
@@ -162,6 +174,7 @@ export function normalizeTurn(bruto: unknown): ArchitectTurnResult | null {
     question,
     answerPatch,
     blueprintPatch,
+    briefPatch,
     assumptions: lista(
       r.assumptions,
       (o) => {
