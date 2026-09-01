@@ -281,3 +281,43 @@ test('projeto sem leitura nenhuma diz isso — não finge que foi revisado', asy
   const previa = await service.previewProject(DONO, p._id)
   assert.equal(previa.critique.llmStatus, 'absent')
 })
+
+// --- corrigir o entendimento refaz o desenho -----------------------------------------
+
+test('corrigir "O que entendi" refaz a proposta — sem chamar o modelo', async () => {
+  const { emptyBrief, applyBriefPatch } = await import('../dist/architect/brief.js')
+  const { compileBrief } = await import('../dist/architect/compile.js')
+  const brief = applyBriefPatch(emptyBrief('atender'), {
+    businessGoal: 'atender o cliente',
+    jobs: [{ id: 'duvidas', name: 'Responder dúvidas', trigger: 'chega mensagem', input: 'a pergunta', decision: 'o que responder', action: 'responder', output: 'a resposta' }],
+  })
+  const compilado = compileBrief(brief, null, { title: 'Teste', objective: 'teste' })
+  const p = await projetoCom(compilado.blueprint, { brief, compiled: true })
+
+  const gastoAntes = await getMonthlyTokens(DONO)
+  const depois = await service.editBrief(DONO, p._id, {
+    jobs: [
+      ...brief.jobs,
+      { id: 'reclamacoes', name: 'Avaliar reclamações e recomendar', trigger: 'vira reclamação', input: 'o relato', decision: 'a gravidade', action: 'recomendar', output: 'a recomendação' },
+    ],
+  })
+
+  assert.equal(await getMonthlyTokens(DONO), gastoAntes, 'refazer o desenho compilado não custa inferência')
+  assert.deepEqual(depois.blueprint.agents.map((a) => a.key), ['duvidas', 'reclamacoes'], 'o trabalho novo virou agente')
+  assert.notEqual(depois.blueprintHash, p.blueprintHash, 'desenho novo pede aprovação de novo')
+  assert.equal(depois.status, 'draft')
+
+  // E desfazer volta as duas coisas: o entendimento e o desenho.
+  const desfeito = await service.undoBrief(DONO, p._id)
+  assert.deepEqual(desfeito.blueprint.agents.map((a) => a.key), ['duvidas'])
+  assert.equal(desfeito.blueprintHash, p.blueprintHash, 'desfazer devolve exatamente a revisão anterior')
+})
+
+test('projeto legado NÃO é recompilado quando o entendimento muda', async () => {
+  // O desenho do modelo tem outras chaves. Recompilar trocaria todas — e num projeto
+  // aplicado, chave nova é recurso novo ao lado do que já existe.
+  const p = await projetoCom(LEGADO(), { brief: { ...(await import('../dist/architect/brief.js')).emptyBrief('atender'), businessGoal: 'x' } })
+  const depois = await service.editBrief(DONO, p._id, { businessGoal: 'outra coisa completamente' })
+  assert.deepEqual(depois.blueprint, p.blueprint, 'o desenho do legado não pode ser reescrito')
+  assert.equal(depois.blueprintHash, p.blueprintHash)
+})

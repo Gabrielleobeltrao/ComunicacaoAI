@@ -96,6 +96,18 @@ export interface ArchitectProject {
   pendingQuestion?: { key: string; text: string } | null
   assumptions?: { key: string; text: string; questionKey?: string }[]
   blueprint?: Blueprint | null
+  /**
+   * O PLANO INTEIRO — as três camadas juntas. `blueprint` é o recorte da escolhida.
+   *
+   * Os dois vêm porque respondem perguntas diferentes: o recorte é o que vai ser
+   * aplicado, e o plano é do que sai a comparação entre as camadas.
+   */
+  plan?: Blueprint | null
+  layer?: BlueprintLayer
+  layerCounts?: Record<BlueprintLayer, { agents: number; sectors: number; routines: number; apps: number }> | null
+  /** O que o Arquiteto entendeu do negócio. É o que a tela mostra como "O que entendi". */
+  brief?: OperationBrief | null
+  canUndoBrief?: boolean
   blueprintHash?: string | null
   checklist?: ChecklistItem[]
   applyState?: { operationId: string; status: string; error: string | null } | null
@@ -103,6 +115,39 @@ export interface ArchitectProject {
   links?: ArchitectLink[]
   /** O que a última revisão mexeu. Vazio na primeira proposta. */
   changes?: BlueprintChange[]
+}
+
+export type BlueprintLayer = 'essential' | 'recommended' | 'complete'
+
+export const LAYERS: { key: BlueprintLayer; label: string; hint: string }[] = [
+  { key: 'essential', label: 'Essencial', hint: 'o caminho mínimo até a primeira resposta' },
+  { key: 'recommended', label: 'Recomendado', hint: 'o que faz a resposta ser boa' },
+  { key: 'complete', label: 'Completo', hint: 'tudo o que foi entendido, inclusive o que roda sozinho' },
+]
+
+/** O ENTENDIMENTO: o que a operação faz, em fatos — antes de virar desenho. */
+export interface OperationBrief {
+  version: number
+  businessGoal: string
+  audience: string
+  channels: string[]
+  jobs: {
+    id: string
+    name: string
+    trigger?: string
+    input?: string
+    decision?: string
+    action?: string
+    output?: string
+    frequency?: string
+    volume?: string
+    risk?: string
+  }[]
+  knowledgeNeeds: { subject: string; required: boolean; source?: string }[]
+  integrations: { name: string; purpose?: string; connected?: boolean }[]
+  constraints: string[]
+  assumptions: { id: string; text: string; status: string }[]
+  openQuestions: string[]
 }
 
 export interface BlueprintChange {
@@ -125,11 +170,31 @@ export interface Blueprint {
   title: string
   objective: string
   floors: { key: string; name: string; workMode: string; mission?: string; description?: string; rationale?: string }[]
-  agents: { key: string; name: string; floorKey: string; preset?: string; objective?: string; role?: string; instructions?: string; constraints?: string; rationale?: string }[]
+  agents: {
+    key: string
+    name: string
+    floorKey: string
+    preset?: string
+    objective?: string
+    role?: string
+    instructions?: string
+    constraints?: string
+    rationale?: string
+    executorKind?: 'llm' | 'function' | 'tool'
+    functionName?: string
+    inputContract?: string
+    outputContract?: string
+    activationModes?: string[]
+    delegationPolicy?: string
+    callableAgentKeys?: string[]
+    handoffEnabled?: boolean
+    layer?: BlueprintLayer
+    layerReason?: string
+  }[]
   sectors: { key: string; name: string; mode: string; floorKey?: string; memberAgentKeys: string[]; coordinatorAgentKey?: string | null; instruction?: string; rationale?: string }[]
-  routines: { key: string; name: string; ownerAgentKey: string; description?: string; rationale?: string }[]
-  appRequirements: { key: string; appKey: string; reason: string; required: boolean }[]
-  knowledgeRequirements: { key: string; title: string; description: string; required: boolean; state: string; content?: string }[]
+  routines: { key: string; name: string; ownerAgentKey: string; description?: string; rationale?: string; triggerType?: string; cron?: string; layer?: BlueprintLayer; layerReason?: string }[]
+  appRequirements: { key: string; appKey: string; reason: string; required: boolean; agentKeys?: string[]; layer?: BlueprintLayer; layerReason?: string }[]
+  knowledgeRequirements: { key: string; title: string; description: string; required: boolean; state: string; content?: string; scope?: string; targetKey?: string; layer?: BlueprintLayer; layerReason?: string }[]
   assumptions: { key: string; text: string }[]
   warnings: { path: string; message: string }[]
 }
@@ -200,9 +265,20 @@ export interface ArchitectPreview {
     score: ArchitectureScore
     mergeSplit: { agentKey: string; agentName: string; jobs: string[]; rationale: string }[]
     clean: boolean
+    /**
+     * A leitura auxiliar do modelo sobre ESTA revisão.
+     *
+     * `stale` é a leitura de outra revisão, descartada; `absent` é "ainda não houve".
+     * A tela diz qual dos dois — fingir que a proposta foi revisada é pior que dizer
+     * que não foi.
+     */
+    llmStatus?: 'ok' | 'failed' | 'stale' | 'absent'
   }
   /** O ensaio da operação, sem efeito nenhum. */
   simulation?: SimulationRun
+  /** A camada que este recorte representa, e o que cada uma entrega. */
+  layer?: BlueprintLayer
+  layerCounts?: Record<BlueprintLayer, { agents: number; sectors: number; routines: number; apps: number }>
 }
 
 export interface ArchitectMessage {
@@ -263,6 +339,14 @@ export const previewProject = (id: string) => request<ArchitectPreview>(`/projec
 export const listTargets = () => request<ArchitectTargets>('/targets')
 export const setLinks = (id: string, links: BlueprintLink[]) => request<ArchitectProject>(`/projects/${id}/links`, { method: 'PATCH', body: JSON.stringify({ links }) })
 /** Corrige a proposta sem chamar o modelo — texto, e só. Ver `editBlueprint` no servidor. */
+export const setLayer = (id: string, layer: BlueprintLayer) =>
+  request<ArchitectProject>(`/projects/${id}/layer`, { method: 'PATCH', body: JSON.stringify({ layer }) })
+
+export const editBrief = (id: string, patch: Partial<OperationBrief>) =>
+  request<ArchitectProject>(`/projects/${id}/brief`, { method: 'PATCH', body: JSON.stringify({ patch }) })
+
+export const undoBrief = (id: string) => request<ArchitectProject>(`/projects/${id}/brief`, { method: 'PATCH', body: JSON.stringify({ undo: true }) })
+
 export const editBlueprint = (id: string, edits: BlueprintEdit[]) =>
   request<ArchitectProject>(`/projects/${id}/blueprint`, { method: 'PATCH', body: JSON.stringify({ edits }) })
 export const rollbackProject = (id: string) => request<ArchitectProject & { removed: string[]; kept: { key: string; reason: string }[] }>(`/projects/${id}/rollback`, { method: 'POST' })

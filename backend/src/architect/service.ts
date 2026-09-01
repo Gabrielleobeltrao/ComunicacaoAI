@@ -11,6 +11,8 @@ import { runArchitectTurn } from './turn.js'
 import { loadAppsForPrompt, loadExistingResources, loadOwnershipContext } from './context.js'
 import { buildCapabilityManifest, manifestForPrompt } from './capabilities.js'
 import { applyBriefPatch, briefForPrompt, emptyBrief, resolveIntegrations } from './brief.js'
+import type { OperationBrief } from './brief.js'
+import type { ArchitectCapabilityManifest } from './capabilities.js'
 import { gapsForPrompt, nextQuestions } from './nextQuestion.js'
 import { classifyBrief, classificationForPrompt } from './classify.js'
 import { runCritic } from './critic.js'
@@ -847,14 +849,53 @@ export async function editBrief(ownerId: string, projectId: ObjectId, patch: unk
   const manifesto = await buildCapabilityManifest(ownerId).catch(() => null)
   const atual = projeto.brief ?? emptyBrief(projeto.objective)
   const novo = resolveIntegrations(applyBriefPatch(atual, patch), manifesto)
-  return (await repo.patchProject(ownerId, projectId, { brief: novo, previousBrief: atual })) ?? projeto
+  return (await repo.patchProject(ownerId, projectId, { brief: novo, previousBrief: atual, ...recompilar(projeto, novo, manifesto) })) ?? projeto
 }
 
 /** Desfazer a última mudança do entendimento. Uma só — ver `previousBrief`. */
 export async function undoBrief(ownerId: string, projectId: ObjectId): Promise<ArchitectProject> {
   const projeto = await requireProject(ownerId, projectId)
   if (!projeto.previousBrief) throw new ValidationError('não há mudança recente para desfazer')
-  return (await repo.patchProject(ownerId, projectId, { brief: projeto.previousBrief, previousBrief: null })) ?? projeto
+  const manifesto = await buildCapabilityManifest(ownerId).catch(() => null)
+  return (
+    (await repo.patchProject(ownerId, projectId, {
+      brief: projeto.previousBrief,
+      previousBrief: null,
+      ...recompilar(projeto, projeto.previousBrief, manifesto),
+    })) ?? projeto
+  )
+}
+
+/**
+ * Corrigir o ENTENDIMENTO refaz o DESENHO — na hora, sem passar pelo modelo.
+ *
+ * É o que dá sentido a "O que entendi" ser editável: corrigir "não é um restaurante, é
+ * uma clínica" e ver a proposta continuar a mesma seria a tela dizendo que ouviu e não
+ * mudando nada. Como o desenho é compilado, refazer não custa inferência.
+ *
+ * Só vale para plano compilado: o desenho que o modelo fez tem outras chaves, e trocar
+ * as chaves de um projeto aplicado criaria um segundo escritório ao lado do que roda.
+ * A leitura auxiliar do modelo NÃO é refeita aqui — ela fica obsoleta e é descartada na
+ * prévia, porque uma correção de texto não deve gastar uma inferência.
+ */
+function recompilar(projeto: ArchitectProject, brief: OperationBrief, manifesto: ArchitectCapabilityManifest | null): Partial<ArchitectProject> {
+  if (!projeto.compiled || brief.jobs.length === 0) return {}
+  const { blueprint } = compileBrief(brief, manifesto, { title: projeto.title, objective: projeto.objective })
+  const recorte = selectLayer(blueprint, camadaDe(projeto))
+  const hash = computeBlueprintHash(recorte)
+  if (hash === projeto.blueprintHash) return { blueprint }
+
+  const checklist = applyChecklistState(deriveChecklist(recorte), new Set(), marcadosDe(projeto))
+  return {
+    blueprint,
+    blueprintHash: hash,
+    previousBlueprint: recorteDe(projeto),
+    checklist,
+    readiness: computeReadiness(checklist, []),
+    simulation: runSimulation(brief, recorte, manifesto, brief.version, new Date()),
+    // Desenho novo é proposta a validar de novo — e o hash antigo, em voo, é recusado.
+    status: 'draft',
+  }
 }
 
 export const architectTargets = (ownerId: string) => loadTargets(ownerId)

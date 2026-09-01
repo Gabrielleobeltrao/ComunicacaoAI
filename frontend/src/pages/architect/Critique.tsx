@@ -45,6 +45,18 @@ export function Critique({ preview }: { preview: ArchitectPreview | null }) {
                 Problemas que a estrutura não pega: eles passam pela aplicação e aparecem depois, em uso.
               </p>
             </div>
+            {/* De onde veio a leitura auxiliar, quando ela não veio. Uma proposta que
+                não foi lida pelo modelo e uma que foi lida e não achou nada são coisas
+                diferentes; a tela não pode deixar as duas com a mesma cara. */}
+            {critica.llmStatus && critica.llmStatus !== 'ok' && (
+              <p style={{ fontSize: 12, color: 'var(--text-faint)' }} data-testid="architect-llm-status">
+                {critica.llmStatus === 'stale'
+                  ? 'A leitura do modelo era da revisão anterior e foi descartada. A próxima rodada da conversa faz outra.'
+                  : critica.llmStatus === 'failed'
+                    ? 'A leitura auxiliar do modelo não foi concluída nesta revisão. O que está acima veio das regras.'
+                    : 'Esta revisão ainda não passou pela leitura auxiliar do modelo.'}
+              </p>
+            )}
             {critica.findings.map((f, i) => (
               <div key={`${f.code}-${i}`} className="flex flex-wrap items-start gap-2" data-testid={`architect-finding-${f.code}`}>
                 <Badge tone={f.severity === 'error' ? 'danger' : 'warning'}>{f.severity === 'error' ? 'Trava' : 'Vale ver'}</Badge>

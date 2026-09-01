@@ -6,6 +6,7 @@ import * as api from '../../lib/architect'
 import type { ApplyResponse, ApplyStep, ArchitectMessage, ArchitectPreview, ArchitectProject, ArchitectQuestion, BlueprintLink } from '../../lib/architect'
 import { Conversation } from './Conversation'
 import { Proposal } from './Proposal'
+import { Brief } from './Brief'
 import { Checklist } from './Checklist'
 import { ApplyDialog } from './ApplyDialog'
 import { Advanced } from './Advanced'
@@ -130,6 +131,46 @@ export function ArchitectProject() {
     const p = await api.editBlueprint(projectId, edits)
     setProjeto(p)
     await recarregarPrevia(p)
+  }
+
+  /**
+   * Trocar a camada é uma REVISÃO, não um filtro: muda o que vai ser criado, então
+   * derruba para rascunho e invalida o hash confirmado. A tela recarrega a prévia
+   * porque o crítico e o ensaio são refeitos para o recorte novo.
+   */
+  async function trocarCamada(layer: api.BlueprintLayer) {
+    setPendente(true)
+    setErro(null)
+    try {
+      const p = await api.setLayer(projectId, layer)
+      setProjeto(p)
+      await recarregarPrevia(p)
+    } catch (e) {
+      setErro({ code: (e as api.ArchitectError).code ?? 'layer', message: (e as Error).message })
+    } finally {
+      setPendente(false)
+    }
+  }
+
+  /** Corrigir o entendimento refaz o desenho — sem passar pelo modelo. */
+  async function corrigirBrief(patch: Partial<api.OperationBrief>) {
+    const p = await api.editBrief(projectId, patch)
+    setProjeto(p)
+    await recarregarPrevia(p)
+  }
+
+  async function desfazerBrief() {
+    setPendente(true)
+    setErro(null)
+    try {
+      const p = await api.undoBrief(projectId)
+      setProjeto(p)
+      await recarregarPrevia(p)
+    } catch (e) {
+      setErro({ code: (e as api.ArchitectError).code ?? 'brief', message: (e as Error).message })
+    } finally {
+      setPendente(false)
+    }
   }
 
   async function revisar() {
@@ -267,6 +308,9 @@ export function ArchitectProject() {
   )
   const proposta = (
     <div className="flex flex-col gap-3">
+      {/* O ENTENDIMENTO antes do desenho: é dele que a proposta é compilada, e é onde
+          um mal-entendido custa menos para corrigir. */}
+      <Brief project={projeto} editavel={EDITAVEL.includes(projeto.status)} carregando={pendente} onCorrigir={corrigirBrief} onDesfazer={desfazerBrief} />
       {EDITAVEL.includes(projeto.status) && projeto.hasBlueprint && <ResourceLinks project={projeto} onSalvar={salvarLigacoes} carregando={pendente} />}
       <Proposal
         project={projeto}
@@ -276,6 +320,7 @@ export function ArchitectProject() {
         onEditar={editarProposta}
         onRevisar={revisar}
         onAplicar={abrirAplicacao}
+        onTrocarCamada={trocarCamada}
       />
       <Advanced project={projeto} steps={passos} onTrocarProvedor={trocarProvedor} onArquivar={arquivar} onDesfazer={desfazer} carregando={pendente} />
     </div>

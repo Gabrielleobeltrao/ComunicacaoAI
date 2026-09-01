@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { Badge, Button, Card, Icon, IconButton, Input, Textarea } from '../../ui'
-import type { ArchitectPreview, ArchitectProject, Blueprint, BlueprintEdit, PreviewItem } from '../../lib/architect'
+import type { ArchitectPreview, ArchitectProject, Blueprint, BlueprintEdit, BlueprintLayer, PreviewItem } from '../../lib/architect'
 import { ACTION_LABEL, KIND_LABEL } from './shared'
 import { Critique } from './Critique'
+import { AgentFicha } from './AgentCards'
+import { Layers } from './Layers'
 
 // A proposta, do jeito que se lê: o que vai ser criado, o que já existe e o que
 // depende de você. O JSON fica em "Avançado", e não no caminho principal.
@@ -109,6 +111,7 @@ export function Proposal({
   onEditar,
   onRevisar,
   onAplicar,
+  onTrocarCamada,
 }: {
   project: ArchitectProject
   preview: ArchitectPreview | null
@@ -118,6 +121,7 @@ export function Proposal({
   onEditar: (edits: BlueprintEdit[]) => Promise<void>
   onRevisar: () => void
   onAplicar: () => void
+  onTrocarCamada: (layer: BlueprintLayer) => void
 }) {
   const [editando, setEditando] = useState<string | null>(null)
   const [rascunho, setRascunho] = useState<Record<string, string>>({})
@@ -211,8 +215,12 @@ export function Proposal({
         </div>
       )}
 
+      {/* Quanto aplicar agora vem primeiro: é a decisão que muda todo o resto da tela. */}
+      <Layers preview={preview} atual={project.layer ?? 'complete'} editavel={editavel} carregando={carregando} onTrocar={onTrocarCamada} />
+
       {/* O crítico e o ensaio vêm ANTES da lista: eles decidem se vale aplicar. */}
       <Critique preview={preview} />
+
 
       {erros.length > 0 && (
         <Card>
@@ -288,6 +296,15 @@ export function Proposal({
           {gruposComItens.map((grupo) => (
             <div key={grupo} className="flex flex-col gap-2">
               <span style={TITULO_GRUPO}>{GRUPO_LABEL[grupo]}</span>
+              {grupo === 'agent' && (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Cada um com o que entrega, quando é acionado e com o quê. O que estiver em branco precisa ser dito antes de aplicar.
+                </span>
+              )}
+              <div
+                className={grupo === 'agent' ? 'grid items-start gap-3' : 'flex flex-col gap-2'}
+                style={grupo === 'agent' ? { gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' } : undefined}
+              >
               {(porTipo.get(grupo) ?? []).map((item) => {
             const id = `${item.kind}:${item.key}`
             const campos = CAMPOS[item.kind]
@@ -339,7 +356,12 @@ export function Proposal({
             }
 
             return (
-              <div key={id} className="flex flex-wrap items-start gap-2" data-testid={`architect-item-${item.kind}-${item.key}`}>
+              <div
+                key={id}
+                className="flex flex-wrap items-start gap-2"
+                data-testid={`architect-item-${item.kind}-${item.key}`}
+                style={item.kind === 'agent' ? { padding: 10, borderRadius: 10, background: 'var(--surface-sunken)' } : undefined}
+              >
                 <Badge tone={TOM[item.action]}>{ACTION_LABEL[item.action]}</Badge>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div className="flex flex-wrap items-center gap-2">
@@ -359,6 +381,9 @@ export function Proposal({
                       <span style={{ fontWeight: 600 }}>Por quê:</span> {item.rationale}
                     </p>
                   )}
+                  {/* A ficha do agente vem NA linha dele: o que ele entrega, com o quê,
+                      e por que é separado — sem virar uma segunda lista de agentes. */}
+                  {item.kind === 'agent' && <AgentFicha agentKey={item.key} blueprint={project.blueprint} preview={preview} />}
                 </div>
                 {podeEditar && (
                   <IconButton
@@ -373,6 +398,7 @@ export function Proposal({
               </div>
             )
               })}
+              </div>
             </div>
           ))}
         </div>
