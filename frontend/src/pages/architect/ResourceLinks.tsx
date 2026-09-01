@@ -85,22 +85,50 @@ export function ResourceLinks({ project, onSalvar, carregando }: { project: Arch
   }
 
   const total = opcoes('floor').length + opcoes('agent').length + opcoes('sector').length + opcoes('routine').length
+
   /**
-   * Sem NADA para reaproveitar, este bloco não existe.
+   * O que a proposta quer reaproveitar e ainda não tem recurso escolhido.
+   *
+   * É o item que trava a aplicação com "o agente reutilizado precisa apontar para um
+   * recurso existente". Enquanto houver um destes, este bloco precisa estar na tela —
+   * mesmo sem nada para escolher, porque a saída ("criar novo") é aqui.
+   */
+  const pendentes = itens.filter((i) => i.action !== 'create' && !i.resourceId)
+
+  /**
+   * Sem nada para reaproveitar E sem pendência, este bloco não existe.
    *
    * Ele ocupava a primeira linha da tela inteira para dizer "esta conta não tem nada
    * para reaproveitar" — a informação menos acionável possível, no lugar mais nobre.
-   * Quem está começando do zero já sabe que está começando do zero.
    */
-  if (total === 0) return null
+  if (total === 0 && pendentes.length === 0) return null
+
+  /** Resolve todas as pendências de uma vez, criando o que não foi ligado a nada. */
+  function criarOsPendentes() {
+    onSalvar(pendentes.map((i) => ({ kind: i.kind, key: i.key, action: 'create' as const })))
+  }
 
   return (
     <Card>
       <div className="flex flex-col gap-2" data-testid="architect-links-editor">
         <strong style={{ fontSize: 13 }}>Aproveitar o que já existe</strong>
+        {pendentes.length > 0 && (
+          <div className="flex flex-col gap-2" data-testid="architect-links-pending">
+            <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              {pendentes.length === 1
+                ? '1 item da proposta pede para reaproveitar algo e ainda não aponta para nada — é o que está travando a aplicação.'
+                : `${pendentes.length} itens da proposta pedem para reaproveitar algo e ainda não apontam para nada — é o que está travando a aplicação.`}
+            </p>
+            <div>
+              <Button variant="secondary" onClick={criarOsPendentes} disabled={carregando} data-testid="architect-links-create-pending">
+                Criar todos como novos
+              </Button>
+            </div>
+          </div>
+        )}
         {total === 0 ? (
           <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="architect-no-targets">
-            Esta conta ainda não tem andares, agentes ou setores para reaproveitar. Tudo será criado.
+            Esta conta ainda não tem andares, agentes ou setores para escolher.
           </p>
         ) : (
           <>

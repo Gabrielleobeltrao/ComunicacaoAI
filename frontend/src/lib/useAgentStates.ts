@@ -100,6 +100,15 @@ export function useAgentStates(enabled: boolean, explicitFloorId?: string | null
   // Sem andar explícito, resolve o primeiro ativo — é o que o mapa do andar fazia.
   const [resolvedFloorId, setResolvedFloorId] = useState<string | null>(explicitFloorId ?? null)
   useEffect(() => {
+    /**
+     * Desligado é desligado: nem a descoberta do andar acontece.
+     *
+     * Faltava esta linha. Com `enabled: false` a sondagem não começava, mas a busca do
+     * andar ativo saía assim mesmo — `GET /api/floors` a cada montagem, para escolher um
+     * andar que ninguém ia consultar. Na prévia do Arquiteto isso é pior que desperdício:
+     * ela desenha um rascunho, e um rascunho não tem andar no banco para descobrir.
+     */
+    if (!enabled) return
     if (explicitFloorId) {
       setResolvedFloorId(explicitFloorId)
       return
@@ -113,7 +122,7 @@ export function useAgentStates(enabled: boolean, explicitFloorId?: string | null
     return () => {
       alive = false
     }
-  }, [explicitFloorId])
+  }, [enabled, explicitFloorId])
 
   const floorId = enabled ? resolvedFloorId : null
   const [, force] = useState(0)

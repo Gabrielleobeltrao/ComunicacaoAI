@@ -54,6 +54,15 @@ export function MapAgent({
   onOpen,
   style,
 }: MapAgentProps) {
+  /**
+   * Sem ação, não é botão.
+   *
+   * `onOpen` ausente é o caso da PRÉVIA: os agentes ali são rascunho e não abrem página
+   * nenhuma. Renderizar um `<button>` mesmo assim colocava no caminho do teclado uma
+   * parada que não faz nada — e prometia, no cursor, um clique que não acontece.
+   */
+  const interativo = typeof onOpen === 'function'
+  const Elemento = (interativo ? 'button' : 'div') as 'button'
   const [hovered, setHovered] = useState(false)
   const view = facing === 'costas' ? 'costas' : 'frente'
   const variant = `${view}${seated ? '-sentado' : ''}${pose === 'ligacao' ? '-ligacao' : ''}` as CharacterView
@@ -66,8 +75,11 @@ export function MapAgent({
   const headTop = seated ? '78.6%' : '100%'
   const placement = bubblePlacement(x, headTop)
   return (
-    <button
-      onClick={onOpen}
+    <Elemento
+      {...(interativo ? { type: 'button' as const, onClick: onOpen } : { 'aria-hidden': true })}
+      // Identificável de fora: é por aqui que o teste afirma que o agente existe no
+      // desenho e que o teclado não para nele.
+      data-office-agent={name}
       onMouseEnter={(e) => {
         setHovered(true)
         if (hoverLift) e.currentTarget.style.transform = 'translateY(-3px)'
@@ -88,7 +100,7 @@ export function MapAgent({
         border: 0,
         background: 'transparent',
         padding: 0,
-        cursor: 'pointer',
+        cursor: interativo ? 'pointer' : 'default',
         transition: 'transform var(--dur-base) var(--ease-bounce)',
         ...style,
         // While hovered, lift the whole agent (sprite + name pill) above the desks
@@ -157,6 +169,6 @@ export function MapAgent({
           outlineOffset: -2,
         }}
       />
-    </button>
+    </Elemento>
   )
 }

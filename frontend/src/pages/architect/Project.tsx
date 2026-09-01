@@ -9,16 +9,27 @@ import { Proposal } from './Proposal'
 import { Checklist } from './Checklist'
 import { ApplyDialog } from './ApplyDialog'
 import { Advanced } from './Advanced'
+import { Flow } from './Flow'
+import { OfficePreview } from './OfficePreview'
 import { ResourceLinks } from './ResourceLinks'
 import { STATUS_LABEL, statusTone } from './shared'
 
 /** Onde ainda dá para mexer na proposta. Aplicada ou arquivada, o servidor recusa. */
 const EDITAVEL: api.ArchitectStatus[] = ['discovery', 'draft', 'ready']
 
-type Aba = 'conversa' | 'proposta' | 'checklist'
-const ABAS: { key: Aba; label: string }[] = [
-  { key: 'conversa', label: 'Conversa' },
+/**
+ * A área de trabalho tem QUATRO telas, e mostra uma por vez.
+ *
+ * Antes eram painéis lado a lado disputando a mesma largura: a proposta espremida numa
+ * coluna, a conversa em outra, e o resto empilhado embaixo. Cada uma destas responde a
+ * uma pergunta diferente — o que vai ser feito, como vai funcionar, como vai ficar, e o
+ * que falta — e nenhuma delas cabe em meia tela.
+ */
+type Tela = 'proposta' | 'fluxo' | 'escritorio' | 'checklist'
+const TELAS: { key: Tela; label: string }[] = [
   { key: 'proposta', label: 'Proposta' },
+  { key: 'fluxo', label: 'Fluxo' },
+  { key: 'escritorio', label: 'Escritório' },
   { key: 'checklist', label: 'Checklist' },
 ]
 
@@ -33,8 +44,8 @@ export function ArchitectProject() {
   const [erro, setErro] = useState<{ code: string; message: string } | null>(null)
   const [dialogo, setDialogo] = useState(false)
   const [aplicando, setAplicando] = useState(false)
-  const [aba, setAba] = useState<Aba>('conversa')
-  // A conversa recolhida vira um botão flutuante. Estado da aba, não do servidor: é
+  const [tela, setTela] = useState<Tela>('proposta')
+  // A conversa fechada vira um botão flutuante. Estado da aba, não do servidor: é
   // preferência de quem está olhando agora.
   const [chatAberto, setChatAberto] = useState(true)
   // A rodada automática vale UMA vez por projeto. O efeito pode ser remontado, e cada
@@ -88,7 +99,15 @@ export function ArchitectProject() {
       setPergunta(r.question)
       setMensagens(await api.listMessages(projectId))
       await recarregarPrevia(r)
-      if (r.hasBlueprint) setAba((atual) => (atual === 'conversa' ? atual : 'proposta'))
+      /**
+       * Uma revisão NÃO troca a tela.
+       *
+       * Quem pediu "muda o nome da Marina" está olhando o desenho ou a lista, e é ali
+       * que a mudança precisa aparecer — arrastar a pessoa para a Proposta a cada
+       * resposta faria a conversa disputar o lugar com o que ela mesma alterou. A tela
+       * só muda por clique na aba, ou quando a aplicação termina (aí vai para a
+       * checklist, que é o que sobra a fazer).
+       */
     } catch (e) {
       const err = e as api.ArchitectError
       setErro({ code: err.code ?? 'error', message: err.message })
@@ -120,7 +139,11 @@ export function ArchitectProject() {
       const p = await api.getProject(projectId)
       setProjeto(p)
       await recarregarPrevia(p)
-      setAba('proposta')
+      // A REGRA, dita nos dois lugares em que ela vale: revisar e aplicar são cliques na
+      // Proposta, e mostram a Proposta — o resultado da validação aparece onde o botão
+      // estava. Uma revisão vinda da CONVERSA não mexe na tela: quem pediu a mudança
+      // está olhando o desenho ou a lista, e é ali que ela precisa aparecer.
+      setTela('proposta')
     } catch (e) {
       setErro({ code: 'validate', message: (e as Error).message })
     }
@@ -145,7 +168,7 @@ export function ArchitectProject() {
       setLinks(r.links)
       setPassos(r.operation?.steps ?? [])
       setDialogo(false)
-      setAba('checklist')
+      setTela('checklist')
     } catch (e) {
       setErro({ code: (e as api.ArchitectError).code ?? 'apply', message: (e as Error).message })
     } finally {
@@ -262,7 +285,6 @@ export function ArchitectProject() {
   return (
     <AppLayout
       current="/architect"
-      wide
       title={projeto.title}
       titleExtra={<Badge tone={statusTone(projeto.status)} data-testid="architect-status">{STATUS_LABEL[projeto.status]}</Badge>}
       subtitle={projeto.objective}
@@ -353,124 +375,126 @@ export function ArchitectProject() {
           </Card>
         )}
 
-        {/* Celular: uma coluna e três abas. Desktop: conversa à esquerda, painel à
-            direita — as abas somem porque as duas colunas cabem ao mesmo tempo. */}
-        <nav className="flex gap-2 lg:hidden" data-testid="architect-tabs">
-          {ABAS.map((a) => (
-            <button
-              key={a.key}
-              type="button"
-              data-testid={`architect-tab-${a.key}`}
-              aria-current={aba === a.key ? 'page' : undefined}
-              onClick={() => setAba(a.key)}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                minHeight: 40,
-                borderRadius: 999,
-                border: '1px solid var(--border-subtle)',
-                background: aba === a.key ? 'var(--intent-brand)' : 'var(--surface-card)',
-                color: aba === a.key ? '#fff' : 'var(--text-muted)',
-                fontSize: 13,
-              }}
-            >
-              {a.label}
-            </button>
-          ))}
-        </nav>
-
-        {/* Cada painel é montado UMA vez; quem esconde é o CSS. Montar duas vezes
-            (uma para o desktop, outra para o celular) duplicaria o estado e faria a
-            mesma tela responder a dois cliques diferentes.
-
-            O ARRANJO muda com o que existe:
-
-            * Sem proposta, a conversa É a tela — centrada e larga, porque é tudo o que
-              está acontecendo. Antes ela dividia espaço com um painel que só dizia
-              "a proposta aparece aqui".
-            * Com proposta, ela passa a ser a peça principal e ocupa a área maior; a
-              conversa vira um painel lateral que acompanha a rolagem e pode ser
-              recolhido. Empilhar tudo numa coluna de 420px era o que fazia os blocos
-              parecerem despejados um em cima do outro. */}
-        <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
-          {!projeto.hasBlueprint ? (
-            <div className="mx-auto flex min-h-0 w-full min-w-0 flex-col lg:max-w-3xl">{conversa}</div>
-          ) : (
-            <>
-              <div className={`min-w-0 flex-col gap-3 lg:flex lg:flex-1 ${aba === 'conversa' ? 'hidden' : 'flex'}`}>
-                <div className={`flex-col gap-3 lg:flex ${aba === 'proposta' ? 'flex' : 'hidden'}`}>{proposta}</div>
-                <div className={`flex-col lg:flex ${aba === 'checklist' ? 'flex' : 'hidden'}`}>{checklist}</div>
-              </div>
-
-              {/* A conversa acompanha a rolagem: pedir um ajuste não deveria exigir
-                  subir a página inteira de volta. */}
-              <aside
-                className={`min-w-0 flex-col lg:w-[400px] lg:shrink-0 ${aba === 'conversa' ? 'flex' : 'hidden'} ${chatAberto ? 'lg:flex' : 'lg:hidden'}`}
+        {/* A navegação entre as quatro telas. Uma por vez, e a mesma no celular e no
+            desktop: duas navegações diferentes para o mesmo conteúdo é o que fazia a
+            versão de telefone e a de computador divergirem a cada mudança. */}
+        {projeto.hasBlueprint && (
+          <nav className="flex flex-wrap gap-2" role="tablist" aria-label="Áreas da operação" data-testid="architect-tabs">
+            {TELAS.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                role="tab"
+                aria-selected={tela === t.key}
+                aria-current={tela === t.key ? 'page' : undefined}
+                data-testid={`architect-tab-${t.key}`}
+                onClick={() => setTela(t.key)}
                 style={{
-                  position: 'sticky',
-                  top: 0,
-                  alignSelf: 'flex-start',
-                  maxHeight: 'calc(100dvh - 150px)',
-                  // Uma conversa curta não pode virar uma tira fina: o painel tem corpo
-                  // mesmo com duas mensagens, senão parece que a tela carregou pela metade.
-                  minHeight: 340,
+                  minHeight: 40,
+                  padding: '0 16px',
+                  borderRadius: 999,
+                  border: '1px solid var(--border-subtle)',
+                  background: tela === t.key ? 'var(--intent-brand)' : 'var(--surface-card)',
+                  color: tela === t.key ? '#fff' : 'var(--text-muted)',
+                  fontSize: 13,
+                  cursor: 'pointer',
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+        )}
+
+        {/* A tela escolhida, no meio e com largura de trabalho. O chat NÃO entra neste
+            fluxo: ele flutua, justamente para não roubar largura de nada aqui. */}
+        <div className="flex w-full min-w-0 flex-col" data-testid="architect-workspace">
+          {!projeto.hasBlueprint ? null : tela === 'proposta' ? (
+            proposta
+          ) : tela === 'fluxo' ? (
+            <Flow blueprint={projeto.blueprint} />
+          ) : tela === 'escritorio' ? (
+            <OfficePreview blueprint={projeto.blueprint} />
+          ) : (
+            checklist
+          )}
+        </div>
+
+        {/* A CONVERSA — uma instância só, sempre no mesmo lugar da árvore.
+            Montar uma para o desktop e outra para o celular duplicaria o estado: o que
+            você digitou numa não estaria na outra. Quem muda é a posição:
+
+            * sem proposta, ela é a tela (centrada, no fluxo da página);
+            * com proposta, ela vira janela flutuante no canto — fixa, então não tira
+              largura da proposta, do fluxo, do escritório nem da checklist;
+            * no celular, nunca sobrepõe: fica abaixo do conteúdo, na coluna. */}
+        <aside
+          aria-label="Conversa com o Arquiteto"
+          data-testid="architect-chat-panel"
+          className={
+            projeto.hasBlueprint
+              ? `mt-4 flex min-w-0 flex-col lg:fixed lg:bottom-6 lg:right-6 lg:z-30 lg:mt-0 lg:w-[420px] ${chatAberto ? 'lg:flex' : 'lg:hidden'}`
+              : 'mx-auto flex min-h-0 w-full min-w-0 flex-col lg:max-w-3xl'
+          }
+          style={
+            projeto.hasBlueprint
+              ? {
                   borderRadius: 'var(--radius-card)',
                   background: 'var(--surface-card)',
                   border: '1px solid var(--border-subtle)',
-                  boxShadow: 'var(--shadow-card)',
-                }}
-                data-testid="architect-chat-panel"
+                  boxShadow: 'var(--shadow-raised)',
+                  maxHeight: 'min(70dvh, 640px)',
+                }
+              : undefined
+          }
+        >
+          {projeto.hasBlueprint && (
+            <div className="hidden lg:flex" style={{ alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px 0' }}>
+              <strong style={{ fontSize: 13 }}>Arquiteto</strong>
+              <button
+                type="button"
+                onClick={() => setChatAberto(false)}
+                data-testid="architect-chat-collapse"
+                aria-label="Fechar a conversa"
+                style={{ border: 0, background: 'transparent', color: 'var(--text-muted)', fontSize: 12.5, minHeight: 32, cursor: 'pointer' }}
               >
-                <div
-                  className="hidden lg:flex"
-                  style={{ alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px 0' }}
-                >
-                  <strong style={{ fontSize: 13 }}>Conversa</strong>
-                  <button
-                    type="button"
-                    onClick={() => setChatAberto(false)}
-                    data-testid="architect-chat-collapse"
-                    style={{ border: 0, background: 'transparent', color: 'var(--text-muted)', fontSize: 12.5, minHeight: 32, cursor: 'pointer' }}
-                  >
-                    Recolher
-                  </button>
-                </div>
-                <div className="flex min-h-0 flex-1 flex-col" style={{ padding: '0 14px 12px' }}>
-                  {conversa}
-                </div>
-              </aside>
-
-              {/* Recolhida, ela vira um botão — e não some, que seria perder o único
-                  caminho para pedir mudança. */}
-              {!chatAberto && (
-                <button
-                  type="button"
-                  onClick={() => setChatAberto(true)}
-                  data-testid="architect-chat-open"
-                  className="hidden lg:flex"
-                  style={{
-                    position: 'fixed',
-                    right: 24,
-                    bottom: 24,
-                    zIndex: 30,
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '12px 18px',
-                    borderRadius: 999,
-                    border: '1px solid var(--border-subtle)',
-                    background: 'var(--intent-brand)',
-                    color: '#fff',
-                    fontSize: 13.5,
-                    boxShadow: 'var(--shadow-lg, 0 10px 30px rgba(0,0,0,.18))',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Icon name="message-circle" size={16} /> Conversa
-                </button>
-              )}
-            </>
+                Fechar
+              </button>
+            </div>
           )}
-        </div>
+          <div className="flex min-h-0 flex-1 flex-col" style={projeto.hasBlueprint ? { padding: '0 14px 12px' } : undefined}>
+            {conversa}
+          </div>
+        </aside>
+
+        {/* Fechada, ela não some: viraria a perda do único caminho para pedir mudança. */}
+        {projeto.hasBlueprint && !chatAberto && (
+          <button
+            type="button"
+            onClick={() => setChatAberto(true)}
+            data-testid="architect-chat-open"
+            className="hidden lg:flex"
+            style={{
+              position: 'fixed',
+              right: 24,
+              bottom: 24,
+              zIndex: 30,
+              alignItems: 'center',
+              gap: 8,
+              padding: '12px 18px',
+              borderRadius: 999,
+              border: '1px solid var(--border-subtle)',
+              background: 'var(--intent-brand)',
+              color: '#fff',
+              fontSize: 13.5,
+              minHeight: 44,
+              boxShadow: 'var(--shadow-raised)',
+              cursor: 'pointer',
+            }}
+          >
+            <Icon name="message-circle" size={16} /> Abrir Arquiteto
+          </button>
+        )}
       </div>
 
       {previa && (

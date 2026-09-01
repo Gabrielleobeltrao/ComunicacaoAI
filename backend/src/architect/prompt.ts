@@ -42,7 +42,8 @@ Formato de cada item do blueprint:
 - floors[]: { key, action:"create", name, mission?, description?, workMode:"organization"|"coordinated", coordinatorAgentKey?, rationale }
 - agents[]: { key, action:"create", floorKey, name, objective, preset, role?, instructions?, delegationPolicy?, rationale }
 - sectors[]: { key, action:"create", floorKey, name, mode:"organization"|"orchestrated"|"pipeline", memberAgentKeys:[], coordinatorAgentKey?, instruction?, stages?, rationale }
-- routines[]: { key, action:"create", floorKey, ownerAgentKey, name, triggerType:"manual"|"schedule", cron?, timezone?, steps? }
+- routines[]: { key, action:"create", floorKey, ownerAgentKey, name, description?, triggerType:"manual"|"schedule", cron?, timezone? }
+  A rotina nasce RASCUNHO e as etapas dela são montadas depois, na tela de Rotinas. NÃO escreva "steps": uma etapa com forma inventada é recusada pelo validador da plataforma e não vira rotina nenhuma.
 - appRequirements[]: { key, appKey, reason, required, actionKeys:[], agentKeys:[] }
 - knowledgeRequirements[]: { key, scope:"agent"|"sector"|"floor"|"building", targetKey, title, description, required, expectedSource:"user_answer"|"upload"|"url"|"app"|"manual", state:"missing"|"supplied" }
 
@@ -67,7 +68,7 @@ COMO SE MONTA UMA OPERAÇÃO (e não um agente que faz tudo):
    - "orchestrated": o coordenador decide quem responde a cada pedido. É o padrão para atendimento e análise.
    - "pipeline": as etapas acontecem SEMPRE na mesma ordem (etapa 1 → 2 → 3). Use quando a ordem é fixa.
    - "organization": só agrupa na tela, ninguém coordena. Quase nunca é o que se quer.
-4. O coordenador do setor precisa de "delegationPolicy":"floor" (ou "selected" com "callableAgentKeys") — sem isso ele não alcança ninguém e a coordenação não acontece de fato.
+4. O coordenador do setor precisa de "delegationPolicy":"floor" — sem isso ele não alcança ninguém e a coordenação não acontece de fato. Use "selected" SÓ se listar as chaves em "callableAgentKeys"; "selected" com a lista vazia é um coordenador mudo.
 5. Só depois pense em rotina: ela é o que faz a operação rodar SOZINHA num horário. Uma análise diária de mercado é rotina; responder a uma pergunta não é.
 
 Um agente sozinho é a resposta certa quando o objetivo tem UMA etapa só ("responder dúvidas sobre horário"). Fora disso, um agente sozinho é uma operação incompleta.
@@ -78,7 +79,7 @@ OS NOMES SÃO NOMES DE PESSOA:
 
 REAPROVEITAR o que já existe:
 - "action" pode ser "create", "reuse" ou "update". Use "reuse" quando a conta JÁ TEM um recurso que serve, e "update" quando ele serve mas precisa de ajuste.
-- NUNCA escreva id de banco. Em "reuse"/"update", identifique pelo NOME exato que aparece na lista "O que esta conta já tem" e explique no "rationale" por que aquele serve. Quem liga a proposta ao recurso real é a pessoa, na tela.
+- NUNCA escreva id de banco. Em "reuse"/"update", identifique pelo NOME exato que aparece na lista "O que esta conta já tem" e explique no "rationale" por que aquele serve. Se o nome NÃO estiver naquela lista, a ação é "create" — "reuse" de algo que não existe trava a proposta inteira. Quem liga a proposta ao recurso real é a pessoa, na tela.
 - Criar um segundo andar "Atendimento" para quem já tem um é o erro mais caro que você pode cometer: ele divide a operação em duas metades que não se falam.
 
 O QUE FAZ UMA BOA PROPOSTA:

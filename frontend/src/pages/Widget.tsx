@@ -94,10 +94,24 @@ export function Widget() {
   const autorizacao = (): Record<string, string> => (tokenRef.current ? { Authorization: `Bearer ${tokenRef.current}` } : {})
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
+  /**
+   * A carga vale UMA vez por widget.
+   *
+   * O efeito pode rodar duas vezes — no `StrictMode` do desenvolvimento ele roda sempre,
+   * e uma remontagem qualquer produz o mesmo efeito em produção. Sem esta trava, cada
+   * abertura do chat pedia DUAS sessões: duas conversas criadas, duas vagas gastas do
+   * limite por IP, e o histórico carregado pertencendo à segunda enquanto a primeira
+   * ficava órfã. É a mesma trava que a tela do Arquiteto já usa para não pagar duas
+   * inferências por montagem.
+   */
+  const jaCarregou = useRef<string | null>(null)
+
   useEffect(() => {
     if (!publicKey) return
     // Capture the narrowed value so it stays `string` inside the closure below.
     const key = publicKey
+    if (jaCarregou.current === key) return
+    jaCarregou.current = key
 
     async function load() {
       try {

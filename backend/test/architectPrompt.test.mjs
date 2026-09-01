@@ -171,3 +171,18 @@ test('o prompt continua limitado: mensagem longa é cortada', () => {
   const p = buildArchitectPrompt({ ...base, messages: [{ role: 'user', content: 'x'.repeat(20_000) }] })
   assert.ok(p.length < 30_000, `prompt com ${p.length} caracteres`)
 })
+
+// --- o que já chegou torto de produção ---------------------------------------------------
+
+test('o prompt fecha as três portas que travaram uma proposta real', () => {
+  const p = buildArchitectPrompt(base)
+  // 1. "reuse" de um nome que não está na lista do que a conta tem — foram OITO erros
+  //    numa proposta só, e nenhum deles a pessoa conseguia resolver.
+  assert.match(p, /Se o nome NÃO estiver naquela lista, a ação é "create"/)
+  // 2. delegação "selected" com a lista vazia.
+  assert.match(p, /"selected" com a lista vazia é um coordenador mudo/)
+  // 3. etapas de rotina inventadas: elas viravam "id is required" e "unknown step
+  //    type: undefined" na cara de quem estava montando um atendimento.
+  assert.match(p, /NÃO escreva "steps"/)
+  assert.match(p, /tela de Rotinas/)
+})

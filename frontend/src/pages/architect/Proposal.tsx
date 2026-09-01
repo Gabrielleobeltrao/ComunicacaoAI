@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Badge, Button, Card, Icon, IconButton, Input, Textarea } from '../../ui'
 import type { ArchitectPreview, ArchitectProject, Blueprint, BlueprintEdit, PreviewItem } from '../../lib/architect'
 import { ACTION_LABEL, KIND_LABEL } from './shared'
-import { Flow } from './Flow'
 
 // A proposta, do jeito que se lê: o que vai ser criado, o que já existe e o que
 // depende de você. O JSON fica em "Avançado", e não no caminho principal.
@@ -228,17 +227,14 @@ export function Proposal({
 
 
 
-      {/* Duas colunas quando há espaço: o DESENHO e a LISTA de um lado, o que comenta
-          a proposta do outro. `items-start` importa — sem ele o cartão curto estica até
-          a altura do vizinho e vira um retângulo vazio do tamanho da tela. */}
       {/* O DESENHO e o que comenta a proposta de um lado; a LISTA, que é o bloco
           mais alto, sozinha do outro. Empilhar desenho e lista na mesma coluna
           deixava a coluna vizinha vazia da metade da tela para baixo. */}
-      <div className="grid items-start gap-3 xl:grid-cols-2">
-        <div className="flex min-w-0 flex-col gap-3">
+      {/* Leitura VERTICAL, de cima a baixo: resumo e ações, o que trava, o que
+          comenta a proposta, e por fim o que vai ser feito, item a item. Em duas
+          colunas, metade disso ficava fora do caminho dos olhos — e agora esta
+          tela tem a largura inteira da área de trabalho para ela. */}
 
-      {/* O desenho antes da lista: é ele que responde "quem aciona quem". */}
-      <Flow blueprint={project.blueprint} />
 
       {mudancas.length > 0 && (
         <Card tone="sunken">
@@ -283,8 +279,6 @@ export function Proposal({
         </Card>
       )}
 
-        </div>
-        <div className="flex min-w-0 flex-col gap-3">
       <Card>
         <div className="flex flex-col gap-4" data-testid="architect-items">
           {gruposComItens.map((grupo) => (
@@ -380,8 +374,6 @@ export function Proposal({
         </div>
       </Card>
 
-        </div>
-      </div>
 
     </div>
   )
