@@ -742,6 +742,12 @@ export interface KnowledgeSource {
   title: string | null
   ownerType: KnowledgeOwnerType
   ownerId: string
+  /** Quanto este trecho casou com a pergunta. É o que torna a seleção discutível. */
+  score?: number
+  /** Por semelhança ou por termo exato — as duas erram de jeitos diferentes. */
+  retrieval?: 'vector' | 'lexical'
+  /** Por que a base deste trecho estava disponível: própria, do andar, do setor… */
+  reason?: string
   /** QUANDO foi capturado. Uma resposta sobre "hoje" precisa saber a idade da fonte. */
   capturedAt?: string | null
   /** Escrito à mão ou lido de um site. Ausente quando a origem não foi resolvida. */
@@ -1011,7 +1017,15 @@ export function selectKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number;
 //   unavailable — embedding/vector search FAILED. Never confused with 'empty': the
 //                 model must not be told "there is no knowledge" when the truth is
 //                 "we could not look".
-export type GroundingStatus = 'ok' | 'empty' | 'no_base' | 'unavailable'
+/**
+ * O que aconteceu na busca — e os quatro casos precisam continuar distinguíveis.
+ *
+ * `empty` é "procurei e não achei". `unavailable` é "não consegui procurar" — e é o que
+ * impede o agente de afirmar ausência sobre uma base que tem a resposta escrita.
+ * `no_base` é "não há base para procurar". `denied` é novo: a política deste agente não
+ * lhe dá base nenhuma, e isso não é o mesmo que não existir conhecimento.
+ */
+export type GroundingStatus = 'ok' | 'empty' | 'no_base' | 'unavailable' | 'denied'
 
 export interface RetrievalResult {
   context: string[]
@@ -1039,22 +1053,34 @@ export interface RetrievalResult {
   truncated?: boolean
 }
 
-export async function retrieveContext(
-  agentIds: ObjectId | ObjectId[],
+/**
+ * A busca nas bases QUE ESTE AGENTE PODE LER — quatro escopos, um orçamento só.
+ *
+ * O orçamento é global de propósito: `topK`, teto de caracteres e score mínimo valem
+ * para a seleção inteira, e não por escopo. Um orçamento por escopo daria quatro vezes
+ * mais contexto para quem tem quatro bases ligadas — e o trecho fraco do prédio entraria
+ * na frente do trecho forte do agente só porque cada um tinha sua cota.
+ *
+ * Quem decide QUAIS bases é `resolveKnowledgeOwnersForExecution`. Aqui já chegam
+ * resolvidas: esta função não sabe de política e não recebe id de cliente.
+ */
+export async function retrieveForOwners(
+  owners: (KnowledgeOwner & { reason?: string })[],
   query: string,
-  opts: { verifiedSectorId?: ObjectId | null; topK?: number; charBudget?: number; minScore?: number; filters?: KnowledgeFilters | null } = {},
+  opts: { topK?: number; charBudget?: number; minScore?: number; filters?: KnowledgeFilters | null } = {},
 ): Promise<RetrievalResult> {
-  const ids = Array.isArray(agentIds) ? agentIds : [agentIds]
-  const owners: KnowledgeOwner[] = ids.map((id) => ({ ownerType: 'agent' as const, ownerId: id }))
-  // The sector base joins ONLY with an explicit sector context — never implied by
-  // the agent's home sector.
-  if (opts.verifiedSectorId) owners.push({ ownerType: 'sector', ownerId: opts.verifiedSectorId })
   if (owners.length === 0 || !query.trim()) return { context: [], sources: [], status: 'no_base', failed: false }
+
+  // De qual base veio, e por quê — para a proveniência dizer "do setor Mesa, porque a
+  // execução começou nele" em vez de repetir um id.
+  const motivo = new Map<string, string>()
+  for (const o of owners) if (o.reason) motivo.set(`${o.ownerType}:${o.ownerId.toString()}`, o.reason)
 
   const emResultado = (
     selected: KnowledgeHit[],
     status: GroundingStatus,
     failed: boolean,
+    retrieval?: 'vector' | 'lexical',
     encontrados?: number,
   ): RetrievalResult => ({
     context: selected.map((hit) => hit.content),
@@ -1065,6 +1091,9 @@ export async function retrieveContext(
       title: hit.title ? String(hit.title).slice(0, 120) : null,
       ownerType: hit.ownerType,
       ownerId: hit.ownerId,
+      ...(typeof hit.score === 'number' ? { score: hit.score } : {}),
+      ...(retrieval ? { retrieval } : {}),
+      ...(motivo.has(`${hit.ownerType}:${hit.ownerId}`) ? { reason: motivo.get(`${hit.ownerType}:${hit.ownerId}`) } : {}),
       ...(hit.origin ? { origin: hit.origin } : {}),
       ...(hit.capturedAt ? { capturedAt: new Date(hit.capturedAt).toISOString() } : {}),
     })),
@@ -1074,6 +1103,13 @@ export async function retrieveContext(
     ...(encontrados !== undefined && encontrados > selected.length ? { truncated: true } : {}),
   })
 
+  /**
+   * O quanto se BUSCA cresce com o número de bases; o quanto se ESCOLHE, não.
+   *
+   * Trazer poucos candidatos de quatro bases faria a seleção global escolher entre
+   * sobras: cada base devolveria só os seus melhores, e o melhor do conjunto poderia
+   * nem ter sido lido. O corte continua sendo um só, depois.
+   */
   const limite = Math.max(opts.topK ?? RETRIEVAL_TOP_K, 5) * owners.length
 
   // --- metade 1: o vizinho semântico ------------------------------------------------------
@@ -1090,7 +1126,7 @@ export async function retrieveContext(
     console.error('knowledge retrieval (vector) failed:', (error as Error).message)
     vetorialFalhou = true
   }
-  if (selecionados.length > 0) return emResultado(selecionados, 'ok', false, encontrados)
+  if (selecionados.length > 0) return emResultado(selecionados, 'ok', false, 'vector', encontrados)
 
   // --- metade 2: o termo exato ------------------------------------------------------------
   //
@@ -1100,7 +1136,7 @@ export async function retrieveContext(
   try {
     const brutosLexicais = await searchKnowledgeLexicallyForOwners(owners, query, limite, opts.filters)
     const lexicais = selectKnowledgeHits(brutosLexicais, opts)
-    if (lexicais.length > 0) return emResultado(lexicais, 'ok', false, brutosLexicais.length)
+    if (lexicais.length > 0) return emResultado(lexicais, 'ok', false, 'lexical', brutosLexicais.length)
   } catch (error) {
     console.error('knowledge retrieval (lexical) failed:', (error as Error).message)
     return emResultado([], 'unavailable', true)
@@ -1122,4 +1158,24 @@ export async function retrieveContext(
   // Se a semântica sequer rodou, o honesto é 'unavailable': a busca exata não substitui
   // a outra, e afirmar ausência aqui seria afirmar demais.
   return emResultado([], vetorialFalhou ? 'unavailable' : 'empty', vetorialFalhou)
+}
+
+/**
+ * A forma ANTIGA: agentes mais, se houver, o setor validado da execução.
+ *
+ * Mantida porque há um chamador que ainda não tem agente carregado (o widget monta a
+ * lista a partir do canal). Ela não decide política nenhuma — monta os mesmos donos que
+ * o comportamento legado sempre montou e entrega para a busca acima.
+ */
+export async function retrieveContext(
+  agentIds: ObjectId | ObjectId[],
+  query: string,
+  opts: { verifiedSectorId?: ObjectId | null; topK?: number; charBudget?: number; minScore?: number; filters?: KnowledgeFilters | null } = {},
+): Promise<RetrievalResult> {
+  const ids = Array.isArray(agentIds) ? agentIds : [agentIds]
+  const owners: (KnowledgeOwner & { reason?: string })[] = ids.map((id) => ({ ownerType: 'agent' as const, ownerId: id, reason: 'own' }))
+  // The sector base joins ONLY with an explicit sector context — never implied by
+  // the agent's home sector.
+  if (opts.verifiedSectorId) owners.push({ ownerType: 'sector', ownerId: opts.verifiedSectorId, reason: 'execution_sector' })
+  return retrieveForOwners(owners, query, opts)
 }

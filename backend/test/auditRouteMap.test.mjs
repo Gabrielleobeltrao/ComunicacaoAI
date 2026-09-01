@@ -129,6 +129,7 @@ const ROUTER_PREFIX = {
   'routes/dataHistoryRoutes.ts': '/api/data-history',
   'routes/architectRoutes.ts': '/api/architect',
   'routes/knowledgeRoutes.ts': '/api/knowledge',
+  'routes/knowledgeAccessRoutes.ts': '/api/agents/:agentId',
 }
 
 function declaredRoutes() {

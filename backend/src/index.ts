@@ -88,9 +88,9 @@ import { runMigrations } from './migrate.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
+import { retrieveForAgent } from './knowledgeRetrieval.js'
 import {
   createDocument,
-  retrieveContext,
   deleteAllForAgent,
   deleteAllForSector,
   backfillKnowledgeOwners,
@@ -245,6 +245,7 @@ import { policyRouter } from './routes/policyRoutes.js'
 import { websocketRouter } from './routes/websocketRoutes.js'
 import { architectRouter } from './routes/architectRoutes.js'
 import { appGrantRouter } from './routes/appGrantRoutes.js'
+import { knowledgeAccessRouter } from './routes/knowledgeAccessRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
 import { guardAuthAttempts, requireKnownOrigin, securityHeaders } from './routes/httpSecurity.js'
@@ -511,6 +512,8 @@ app.use('/api/trading-policies', requireAuth, policyRouter)
 app.use('/api/websocket', requireAuth, websocketRouter)
 app.use('/api/architect', requireAuth, architectRouter)
 app.use('/api/agents/:agentId', requireAuth, appGrantRouter)
+// O que este agente pode LER: a política de acesso ao conhecimento.
+app.use('/api/agents/:agentId', requireAuth, knowledgeAccessRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
 app.use('/api/hooks', webhookRouter)
 
@@ -3165,7 +3168,10 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
    * diferentes para a mesma base davam duas respostas diferentes.
    */
   const buscarBase = async (): Promise<{ context: string[]; status: GroundingStatus }> =>
-    retrieveContext([agent._id], lastUser.content).catch((error) => {
+    // A MESMA porta dos outros executores: a política do agente decide as bases, e o
+    // orçamento é um só. Montar a lista aqui faria o teste responder diferente da
+    // produção — que é exatamente o que um teste não pode fazer.
+    retrieveForAgent(res.locals.userId, agent, lastUser.content).catch((error) => {
       console.error('Playground knowledge search failed, replying without grounding:', error)
       return { context: [] as string[], status: 'unavailable' as GroundingStatus }
     })
@@ -4657,7 +4663,6 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // picks the specialists (or asks to clarify) and merges them into one voice.
   let agent: WithId<Agent>
   let replyObjective: string
-  let knowledgeAgentIds: ObjectId[]
   let replyAgentName: string | null
   let clarificationTopics: string[] | null
   // O setor rodado pelo executor único; ausente quando o canal aponta para um agente só.
@@ -4678,7 +4683,6 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     setorDoCanal = setor
     agent = config
     replyObjective = config.objective
-    knowledgeAgentIds = [config._id]
     replyAgentName = null
     clarificationTopics = null
   } else {
@@ -4686,7 +4690,6 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     if (!single) return
     agent = single
     replyObjective = single.objective
-    knowledgeAgentIds = [single._id]
     replyAgentName = null
     clarificationTopics = null
   }
@@ -4756,7 +4759,7 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // every consulted specialist, for a sector. Skipped when only clarifying.
   // Only a SECTOR-answered channel reads the sector's shared base; a widget wired
   // straight to one agent stays on that agent's own knowledge.
-  const { context: knowledgeBase } = await retrieveContext(knowledgeAgentIds, visitorContent, { verifiedSectorId: widget.sectorId ?? null })
+  const { context: knowledgeBase } = await retrieveForAgent(ownerId, agent, visitorContent, { verifiedSectorId: widget.sectorId ?? null })
   const knowledge = [
     ...knowledgeBase,
     // Idem no canal: quem escolheu "sempre" ou "quando mudar" espera o conteúdo aqui.

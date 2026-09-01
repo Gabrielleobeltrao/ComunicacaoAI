@@ -28,6 +28,7 @@ delete process.env.VOYAGE_API_KEY
 const { executeSectorTeam, sectorRunContext, rootContext, buildDelegationTools, TEAM_TOOL_NAMES } = await import('../dist/delegation.js')
 const { createDocumentFor } = await import('../dist/knowledge.js')
 const { retrieveContext } = await import('../dist/knowledge.js')
+const { retrieveForAgents } = await import('../dist/knowledgeRetrieval.js')
 const { db } = await import('../dist/db.js')
 
 const OWNER = 'owner-setor'
@@ -96,8 +97,16 @@ function deps(agentes, over = {}) {
       startDelegation: async () => new ObjectId(),
       finishDelegation: async () => undefined,
       recordEvent: (e) => eventos.push(e),
-      // A busca de verdade, contra o banco de verdade.
-      retrieveContext: (agentId, query, opts) => retrieveContext(agentId, query, { verifiedSectorId: opts.sectorId ?? null }),
+      // A busca de verdade, contra o banco de verdade — e pela MESMA ligação da
+      // produção: a política de cada agente decide as bases. Um atalho aqui testaria um
+      // caminho que ninguém executa.
+      retrieveContext: async (agentId, query, opts) => {
+        const ids = Array.isArray(agentId) ? agentId : [agentId]
+        // Pelo MESMO carregador com escopo de conta que a produção usa — aqui ele é o
+        // dublê do teste. Um id de outro dono não carrega agente e por isso não vira base.
+        const carregados = (await Promise.all(ids.map((id) => base.deps.loadAgent(opts.ownerId, id)))).filter(Boolean)
+        return retrieveForAgents(opts.ownerId, carregados, query, { verifiedSectorId: opts.sectorId ?? null })
+      },
     },
   }
   return base

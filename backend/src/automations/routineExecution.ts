@@ -92,10 +92,17 @@ export interface RoutineExecutionDeps {
   loadAgent: (ownerId: string, agentId: ObjectId) => Promise<Agent | null>
   // Owner-scoped: returns null both for a foreign and for a malformed id.
   resolveOwnedSectorId: (ownerId: string, raw: unknown) => Promise<ObjectId | null>
+  /**
+   * A leitura passa pela política do agente, como em todo executor.
+   *
+   * Recebe o AGENTE, e não o id: é a política dele que decide as bases, e o id sozinho
+   * obrigaria quem implementa a dependência a carregá-lo de novo — ou, pior, a montar a
+   * lista de donos por conta própria.
+   */
   retrieveContext: (
-    agentId: ObjectId,
+    agent: Agent,
     query: string,
-    opts: { verifiedSectorId: ObjectId | null },
+    opts: { verifiedSectorId: ObjectId | null; ownerId: string },
   ) => Promise<{ context: string[]; failed: boolean; status?: string; sources?: { documentId: string | null; title: string | null }[] }>
   resolveTools: (agent: Agent, ownerId: string) => Promise<ResolvedTool[]>
   apiKeyFor: (ownerId: string, provider: string) => Promise<string | null>
@@ -332,7 +339,9 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
   // the input — serialized when it is an object, which used to retrieve nothing.
   const knowledgeQuery = buildRetrievalQuery({ objective: agent.objective ?? call.objective, instructions: call.instructions, input: call.input })
   if (knowledgeQuery) tracker.report('reading_knowledge')
-  const retrieved = knowledgeQuery ? await deps.retrieveContext(agent._id, knowledgeQuery, { verifiedSectorId }) : { context: [], failed: false, status: 'no_base' }
+  const retrieved = knowledgeQuery
+    ? await deps.retrieveContext(agent, knowledgeQuery, { verifiedSectorId, ownerId: ctx.ownerId })
+    : { context: [], failed: false, status: 'no_base' }
   const grounding = (retrieved.status as string | undefined) ?? (retrieved.failed ? 'unavailable' : retrieved.context.length ? 'ok' : 'empty')
   // An agent told to answer only from curated knowledge does NOT answer when the base
   // could not be consulted. Nothing is invented, and nothing is spent.

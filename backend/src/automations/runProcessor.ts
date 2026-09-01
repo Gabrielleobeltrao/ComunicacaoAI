@@ -30,7 +30,7 @@ import { executeRoutineStep } from './routineExecution.js'
 import { createLiveTracker } from '../agentLiveTracker.js'
 import { findRootByKey, finishExecutionRoot, markRootRunning, runExecutionKey } from '../executionRoots.js'
 import type { Provider } from '../llm.js'
-import { retrieveContext } from '../knowledge.js'
+import { retrieveForAgent } from '../knowledgeRetrieval.js'
 import { decryptConfig, getConnection } from '../connections/service.js'
 import { insertDeliveryIdempotent, updateDelivery } from '../connections/repository.js'
 import { maskDestination, sendEmail, sendTelegram } from '../connections/adapters.js'
@@ -159,7 +159,7 @@ function buildDeps(run: AutomationRun): RunnerDeps {
         {
           loadAgent: getAgentById,
           resolveOwnedSectorId,
-          retrieveContext,
+          retrieveContext: (agent, query, opts) => retrieveForAgent(opts.ownerId, agent, query, { verifiedSectorId: opts.verifiedSectorId }),
           resolveTools: async (agent, ownerId) =>
             resolveToolsWithDelegation(
               agent,

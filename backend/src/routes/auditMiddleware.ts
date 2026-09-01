@@ -95,6 +95,9 @@ const RULES: Rule[] = [
   R('POST', 'api/agents/:/event-triggers/:/pause', { entityType: 'event_trigger', action: 'pause' }, { idAt: 4 }),
   R('POST', 'api/agents/:/event-triggers/:/archive', { entityType: 'event_trigger', action: 'archive' }, { idAt: 4 }),
 
+  // Quem lê o quê é uma mudança de permissão, e entra no registro como tal.
+  R('PUT', 'api/agents/:/knowledge-access', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
+
   // --- agent knowledge ---------------------------------------------------------------
   R('POST', 'api/agents/:/documents/upload', { entityType: 'knowledge', action: 'create' }),
   R('POST', 'api/agents/:/documents', { entityType: 'knowledge', action: 'create' }),
