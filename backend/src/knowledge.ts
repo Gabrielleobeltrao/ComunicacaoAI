@@ -7,16 +7,39 @@ export { buildRetrievalQuery } from './retrievalQuery.js'
 import { embedText, embedTexts } from './voyage.js'
 import { extractTerms, extractWindow, scoreDocument, scoreText, termsToPattern } from './lexicalRetrieval.js'
 
-// Curated knowledge base (RAG) shared by agents AND sectors. There is ONE store:
-// the same `knowledge_documents` / `knowledge_chunks` collections, the same Voyage
-// embeddings and the same Atlas Vector Search index — a document just belongs to an
-// owner, which is either an agent or a sector.
+// Curated knowledge base (RAG) shared by the whole hierarchy. There is ONE store: the
+// same `knowledge_documents` / `knowledge_chunks` collections, the same chunking, the
+// same Voyage embeddings and the same Atlas Vector Search index — a document just
+// belongs to an owner, which is a building, a floor, a sector or an agent.
+//
+// Quatro donos, uma base. A alternativa — uma coleção por escopo — obrigaria a busca a
+// consultar quatro lugares, o orçamento de trechos a ser dividido antes de saber o que
+// existe, e cada correção a ser feita quatro vezes. Aqui um documento tem UM dono
+// canônico, e a busca combina escopos filtrando por `ownerType`/`ownerId`.
 //
 // Backwards compatibility: legacy rows only had `agentId`. Every row now also carries
 // `ownerType` + `ownerId`, backfilled as ('agent', agentId) — and `agentId` keeps
 // being written for agent-owned rows, so older code paths and any un-migrated reader
 // keep working during the transition.
-export type KnowledgeOwnerType = 'agent' | 'sector'
+export type KnowledgeOwnerType = 'building' | 'floor' | 'sector' | 'agent'
+
+export const KNOWLEDGE_OWNER_TYPES: readonly KnowledgeOwnerType[] = ['building', 'floor', 'sector', 'agent']
+
+export const isKnowledgeOwnerType = (v: unknown): v is KnowledgeOwnerType => KNOWLEDGE_OWNER_TYPES.includes(v as KnowledgeOwnerType)
+
+/**
+ * O CICLO DE VIDA de um documento, e o peso dele.
+ *
+ * Os dois existem porque "o que a base sabe" não é uma pilha plana: uma política
+ * oficial aprovada e um rascunho de alguém não podem valer a mesma coisa quando as
+ * duas respondem a mesma pergunta. Os campos são gravados agora e passam a decidir
+ * precedência quando o Context Engine existir; até lá, eles descrevem — não filtram.
+ */
+export type KnowledgeLifecycleStatus = 'draft' | 'approved' | 'archived'
+export const KNOWLEDGE_LIFECYCLE_STATUSES: readonly KnowledgeLifecycleStatus[] = ['draft', 'approved', 'archived']
+
+export type KnowledgeAuthority = 'official_policy' | 'procedure' | 'reference' | 'note'
+export const KNOWLEDGE_AUTHORITIES: readonly KnowledgeAuthority[] = ['official_policy', 'procedure', 'reference', 'note']
 
 export interface KnowledgeOwner {
   ownerType: KnowledgeOwnerType
@@ -65,8 +88,63 @@ export interface KnowledgeDocument {
    */
   indexedHash?: string | null
   chunkCount: number
+  /**
+   * O formato do conteúdo. Markdown é o único hoje, e por isso o campo é opcional: um
+   * documento antigo não o tem, e a leitura devolve 'markdown' sem reescrever nada.
+   */
+  format?: 'markdown'
+  lifecycleStatus?: KnowledgeLifecycleStatus
+  authority?: KnowledgeAuthority
+  /** A janela em que este documento VALE. Ausente = vale sempre, que é o caso comum. */
+  validFrom?: Date | null
+  validUntil?: Date | null
+  /** Quem conferiu, quando, e de quanto em quanto tempo isto precisa ser reconferido. */
+  verifiedAt?: Date | null
+  verifiedBy?: string | null
+  reviewIntervalDays?: number | null
+  /**
+   * A confiança — SOMENTE quando ela vem de um processo verificável.
+   *
+   * Nunca preenchida pela interface e nunca por um modelo dizendo que está confiante:
+   * um número inventado aqui viraria precedência real na hora de escolher o que
+   * responde, e ninguém saberia de onde ele veio.
+   */
+  confidence?: { value: number; method: string; at: Date } | null
+  /**
+   * As ligações entre documentos, para a fase do grafo.
+   *
+   * Gravado agora, resolvido depois: o campo existe para que um documento escrito hoje
+   * não precise ser reescrito quando os links passarem a ser navegáveis.
+   */
+  links?: { target: string; resolvedDocumentId?: ObjectId | null; label?: string }[]
   createdAt: Date
   updatedAt: Date
+}
+
+/**
+ * O documento COMO ELE É LIDO — com os defaults dos campos que ainda não existiam.
+ *
+ * Aplicado na leitura, e não por migração: reescrever a coleção inteira para gravar
+ * `format: 'markdown'` custaria uma passada em tudo o que já está lá, mudaria o
+ * `updatedAt` de documentos que ninguém tocou e não acrescentaria uma informação
+ * sequer — o default é a verdade sobre eles.
+ *
+ * `confidence` NÃO ganha default. Ausente significa "ninguém mediu", e um número
+ * inventado aqui viraria precedência de verdade na hora de escolher o que responde.
+ */
+export function withKnowledgeDefaults<T extends Partial<KnowledgeDocument>>(doc: T): T & {
+  format: 'markdown'
+  lifecycleStatus: KnowledgeLifecycleStatus
+  authority: KnowledgeAuthority
+} {
+  return {
+    ...doc,
+    format: doc.format ?? 'markdown',
+    // `approved` é o default porque é o que os documentos existentes SÃO: eles já
+    // respondem hoje. Nascer `draft` tiraria da busca tudo o que está gravado.
+    lifecycleStatus: doc.lifecycleStatus ?? 'approved',
+    authority: doc.authority ?? 'reference',
+  }
 }
 
 export interface KnowledgeChunk {
@@ -120,11 +198,14 @@ export function chunkText(text: string): string[] {
 // A filter that matches rows written before the ownerType backfill as well as new
 // ones — the transition never hides a document.
 export function ownerFilter(owner: KnowledgeOwner): Record<string, unknown> {
+  // Só o agente tem passado: linha antiga não tem `ownerType`, e casa por `agentId`.
+  // Prédio, andar e setor nasceram com o modelo novo — não há linha legada deles.
   if (owner.ownerType === 'agent') {
     return { $or: [{ ownerType: 'agent', ownerId: owner.ownerId }, { ownerType: { $exists: false }, agentId: owner.ownerId }] }
   }
-  return { ownerType: 'sector', ownerId: owner.ownerId }
+  return { ownerType: owner.ownerType, ownerId: owner.ownerId }
 }
+
 
 export interface WebDocumentMeta {
   sourceType: 'web'
@@ -174,6 +255,14 @@ export interface CreateDocumentInput {
   sourceRef?: string | null
   authorId?: string | null
   web?: WebDocumentMeta
+  lifecycleStatus?: KnowledgeLifecycleStatus
+  authority?: KnowledgeAuthority
+  validFrom?: Date | null
+  validUntil?: Date | null
+  verifiedAt?: Date | null
+  verifiedBy?: string | null
+  reviewIntervalDays?: number | null
+  links?: KnowledgeDocument['links']
 }
 
 export async function createDocumentFor(owner: KnowledgeOwner, input: CreateDocumentInput) {
@@ -190,6 +279,17 @@ export async function createDocumentFor(owner: KnowledgeOwner, input: CreateDocu
     authorId: input.authorId ?? null,
     indexStatus: 'pending',
     chunkCount: 0,
+    // Gravados no documento novo; ausentes continuam válidos nos antigos, onde o
+    // default da leitura diz a mesma coisa.
+    format: 'markdown',
+    lifecycleStatus: input.lifecycleStatus ?? 'approved',
+    authority: input.authority ?? 'reference',
+    ...(input.validFrom !== undefined ? { validFrom: input.validFrom } : {}),
+    ...(input.validUntil !== undefined ? { validUntil: input.validUntil } : {}),
+    ...(input.verifiedAt !== undefined ? { verifiedAt: input.verifiedAt } : {}),
+    ...(input.verifiedBy !== undefined ? { verifiedBy: input.verifiedBy } : {}),
+    ...(input.reviewIntervalDays !== undefined ? { reviewIntervalDays: input.reviewIntervalDays } : {}),
+    ...(input.links ? { links: input.links } : {}),
     createdAt: now,
     updatedAt: now,
   }
@@ -422,10 +522,27 @@ export function getDocument(agentId: ObjectId, documentId: ObjectId) {
   return getDocumentFor({ ownerType: 'agent', ownerId: agentId }, documentId)
 }
 
-export async function updateDocumentFor(owner: KnowledgeOwner, documentId: ObjectId, updates: { title?: string; content?: string; web?: WebDocumentMeta }) {
+export interface UpdateDocumentInput {
+  title?: string
+  content?: string
+  web?: WebDocumentMeta
+  lifecycleStatus?: KnowledgeLifecycleStatus
+  authority?: KnowledgeAuthority
+  validFrom?: Date | null
+  validUntil?: Date | null
+  verifiedAt?: Date | null
+  verifiedBy?: string | null
+  reviewIntervalDays?: number | null
+  links?: KnowledgeDocument['links']
+}
+
+export async function updateDocumentFor(owner: KnowledgeOwner, documentId: ObjectId, updates: UpdateDocumentInput) {
   const setFields: Partial<KnowledgeDocument> = { updatedAt: new Date() }
   if (updates.title !== undefined) setFields.title = updates.title
   if (updates.web !== undefined) setFields.web = updates.web
+  for (const campo of ['lifecycleStatus', 'authority', 'validFrom', 'validUntil', 'verifiedAt', 'verifiedBy', 'reviewIntervalDays', 'links'] as const) {
+    if (updates[campo] !== undefined) (setFields as Record<string, unknown>)[campo] = updates[campo]
+  }
   if (updates.content !== undefined) {
     setFields.content = updates.content
     setFields.indexStatus = 'pending'
@@ -470,6 +587,20 @@ export function deleteAllForAgent(agentId: ObjectId) {
 }
 export function deleteAllForSector(sectorId: ObjectId) {
   return deleteAllFor({ ownerType: 'sector', ownerId: sectorId })
+}
+/**
+ * Andar e prédio apagados levam a base deles junto.
+ *
+ * Sem isto, apagar um andar deixaria documentos e chunks apontando para um dono que
+ * não existe: invisíveis em qualquer tela, contados na cota da conta para sempre, e
+ * ainda alcançáveis pela busca vetorial, que filtra por `ownerId` e não pergunta se
+ * aquele id ainda é de alguém.
+ */
+export function deleteAllForFloor(floorId: ObjectId) {
+  return deleteAllFor({ ownerType: 'floor', ownerId: floorId })
+}
+export function deleteAllForBuilding(buildingId: ObjectId) {
+  return deleteAllFor({ ownerType: 'building', ownerId: buildingId })
 }
 
 export const VECTOR_INDEX_NAME = 'knowledge_vector_index'
@@ -517,6 +648,9 @@ export async function ensureVectorIndex() {
 // Plain Mongo indexes for the CRUD/listing paths.
 export async function ensureKnowledgeIndexes(): Promise<void> {
   await documents.createIndex({ ownerType: 1, ownerId: 1, createdAt: -1 })
+  // A listagem ordena por `updatedAt` — sem este índice ela ordena em memória, e uma
+  // base grande passa a custar uma varredura por página.
+  await documents.createIndex({ ownerType: 1, ownerId: 1, updatedAt: -1 })
   await chunks.createIndex({ ownerType: 1, ownerId: 1 })
   await chunks.createIndex({ documentId: 1 })
   /**

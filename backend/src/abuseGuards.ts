@@ -162,12 +162,15 @@ export async function checkOwnerStorage(ownerId: string, adicionandoBytes = 0): 
   if (!(quotaBytes > 0)) return { allowed: true, usedBytes: 0, quotaBytes: 0 }
 
   /**
-   * O documento não guarda o id da CONTA: ele guarda o do agente, setor ou andar que o
-   * possui. Somar por `ownerId` da conta daria zero sempre — uma cota que nunca dispara
-   * é pior que nenhuma, porque parece que existe.
+   * O documento não guarda o id da CONTA: ele guarda o do agente, setor, andar ou
+   * prédio que o possui. Somar por `ownerId` da conta daria zero sempre — uma cota que
+   * nunca dispara é pior que nenhuma, porque parece que existe.
+   *
+   * Os QUATRO donos entram. Deixar um de fora não daria um número um pouco menor: daria
+   * um escopo por onde encher o disco sem que a cota percebesse.
    */
   const donos: unknown[] = []
-  for (const colecao of ['agents', 'sectors', 'offices']) {
+  for (const colecao of ['agents', 'sectors', 'offices', 'buildings']) {
     const ids = await db.collection(colecao).find({ ownerId }, { projection: { _id: 1 } }).toArray()
     donos.push(...ids.map((d) => d._id))
   }

@@ -128,6 +128,7 @@ const ROUTER_PREFIX = {
   'routes/realtimeSourceRoutes.ts': '/api/realtime-sources',
   'routes/dataHistoryRoutes.ts': '/api/data-history',
   'routes/architectRoutes.ts': '/api/architect',
+  'routes/knowledgeRoutes.ts': '/api/knowledge',
 }
 
 function declaredRoutes() {

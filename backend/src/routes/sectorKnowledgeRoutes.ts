@@ -1,8 +1,10 @@
 import { Router } from 'express'
+import type { Response } from 'express'
 import { ObjectId } from 'mongodb'
 import { getSectorById } from '../sectors.js'
-import { createDocumentFor, deleteDocumentFor, getDocumentFor, listDocumentsFor, reindexDocumentFor, updateDocumentFor } from '../knowledge.js'
+import { listDocumentsFor } from '../knowledge.js'
 import type { KnowledgeDocument } from '../knowledge.js'
+import { KnowledgeQuotaError, KnowledgeValidationError, getDocument, removeDocument, reindexDocument, saveDocument, updateDocument } from '../knowledgeService.js'
 import { oid } from './http.js'
 
 // Shared SECTOR knowledge — a curated base the whole team reads, reusing the same
@@ -10,6 +12,11 @@ import { oid } from './http.js'
 // Mounted at /api/sectors/:sectorId behind requireAuth. Every route resolves the
 // sector through the OWNER's scope first, so an ObjectId from another tenant simply
 // 404s — never leaks.
+//
+// ADAPTADOR: o contrato desta rota não muda (é o que a tela do setor consome), mas
+// quem grava é `knowledgeService`. Era aqui que faltava a conferência de cota — o
+// caminho do agente conferia, o do setor não, e dava para encher o disco pelo setor.
+// Com uma camada só, a regra deixa de depender de qual porta alguém usou.
 export const sectorKnowledgeRouter = Router({ mergeParams: true })
 
 // Content limits: a curated note, not a file dump.
@@ -28,6 +35,19 @@ function serialize(doc: KnowledgeDocument | (Omit<KnowledgeDocument, '_id'> & { 
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
   }
+}
+
+/** A recusa da camada compartilhada, traduzida sem mudar o que a tela já lia. */
+function recusa(res: Response, erro: unknown): boolean {
+  if (erro instanceof KnowledgeQuotaError) {
+    res.status(413).json({ error: erro.message, code: erro.code })
+    return true
+  }
+  if (erro instanceof KnowledgeValidationError) {
+    res.status(400).json({ error: erro.message })
+    return true
+  }
+  return false
 }
 
 async function requireSector(ownerId: string, raw: string): Promise<ObjectId | null> {
@@ -73,9 +93,10 @@ sectorKnowledgeRouter.post('/documents', async (req, res) => {
   const source = ['manual', 'run', 'conversation'].includes(rawSource) ? rawSource : 'manual'
   const sourceRef = typeof (req.body ?? {}).sourceRef === 'string' ? String((req.body as Record<string, unknown>).sourceRef).slice(0, 200) : null
   try {
-    const doc = await createDocumentFor({ ownerType: 'sector', ownerId: sectorId }, { title: title!, content: content!, source, sourceRef, authorId: res.locals.userId })
+    const doc = await saveDocument(res.locals.userId, { ownerType: 'sector', ownerId: sectorId }, { title: title!, content: content!, source, sourceRef, authorId: res.locals.userId })
     res.status(201).json(serialize(doc))
   } catch (e) {
+    if (recusa(res, e)) return
     console.error('Failed to create sector knowledge document:', e)
     res.status(502).json({ error: 'Failed to process document. Check the embedding service configuration.' })
   }
@@ -89,7 +110,7 @@ sectorKnowledgeRouter.get('/documents/:documentId', async (req, res) => {
     res.status(404).json({ error: 'not found' })
     return
   }
-  const doc = await getDocumentFor({ ownerType: 'sector', ownerId: sectorId }, documentId)
+  const doc = await getDocument({ ownerType: 'sector', ownerId: sectorId }, documentId)
   if (!doc) {
     res.status(404).json({ error: 'Document not found' })
     return
@@ -115,13 +136,14 @@ sectorKnowledgeRouter.patch('/documents/:documentId', async (req, res) => {
     return
   }
   try {
-    const doc = await updateDocumentFor({ ownerType: 'sector', ownerId: sectorId }, documentId, { title, content })
+    const doc = await updateDocument(res.locals.userId, { ownerType: 'sector', ownerId: sectorId }, documentId, { title, content })
     if (!doc) {
       res.status(404).json({ error: 'Document not found' })
       return
     }
     res.json(serialize(doc))
   } catch (e) {
+    if (recusa(res, e)) return
     console.error('Failed to update sector knowledge document:', e)
     res.status(502).json({ error: 'Failed to process document.' })
   }
@@ -136,7 +158,7 @@ sectorKnowledgeRouter.post('/documents/:documentId/reindex', async (req, res) =>
     res.status(404).json({ error: 'not found' })
     return
   }
-  const doc = await reindexDocumentFor({ ownerType: 'sector', ownerId: sectorId }, documentId)
+  const doc = await reindexDocument({ ownerType: 'sector', ownerId: sectorId }, documentId)
   if (!doc) {
     res.status(404).json({ error: 'Document not found' })
     return
@@ -152,7 +174,7 @@ sectorKnowledgeRouter.delete('/documents/:documentId', async (req, res) => {
     res.status(404).json({ error: 'not found' })
     return
   }
-  const deleted = await deleteDocumentFor({ ownerType: 'sector', ownerId: sectorId }, documentId)
+  const deleted = await removeDocument({ ownerType: 'sector', ownerId: sectorId }, documentId)
   if (!deleted) {
     res.status(404).json({ error: 'Document not found' })
     return

@@ -158,6 +158,15 @@ import { liveWebhookCountByAgent } from './automations/webhookTriggers.js'
 import { listActivePublished } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
+import { knowledgeRouter } from './routes/knowledgeRoutes.js'
+import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
+import {
+  KnowledgeQuotaError,
+  KnowledgeValidationError,
+  extractUpload,
+  saveDocument,
+  updateDocument as atualizarDocumento,
+} from './knowledgeService.js'
 import { sectorExecutionRouter } from './routes/sectorExecutionRoutes.js'
 import type { GroundingStatus, KnowledgeOwner } from './knowledge.js'
 import { availableMetricKeys, composeAgentStats, getAgentEventMetricsBatch, periodSince, PERIODS, resolveMetricKey } from './agentMetrics.js'
@@ -477,6 +486,14 @@ app.use('/api/memories', requireAuth, memoryRouter)
 // Agent routines + history (agent-owned scheduled automations). Sub-paths that this
 // router doesn't handle fall through to the inline /api/agents/:agentId routes below.
 app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
+/**
+ * A base de conhecimento dos QUATRO escopos, por uma porta só.
+ *
+ * As rotas por dono (`/api/agents/:id/documents`, `/api/sectors/:id/documents`)
+ * continuam existindo com o mesmo contrato — elas são adaptadores desta mesma camada.
+ * Apagá-las agora quebraria a tela em produção sem ganhar nada.
+ */
+app.use('/api/knowledge', requireAuth, knowledgeRouter)
 // Shared sector knowledge (same store as agent knowledge). Non-matching sub-paths
 // fall through to the inline /api/sectors/:sectorId routes below.
 app.use('/api/sectors/:sectorId', requireAuth, sectorKnowledgeRouter)
@@ -3634,6 +3651,24 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   })
 })
 
+/**
+ * A recusa da camada compartilhada, traduzida para o que estas rotas já devolviam.
+ *
+ * O código e a frase da cota são os mesmos de antes: a tela que já sabia reagir a
+ * `storage_quota_exceeded` continua reagindo igual.
+ */
+function recusaDeConhecimento(res: Response, erro: unknown): boolean {
+  if (erro instanceof KnowledgeQuotaError) {
+    res.status(413).json({ error: erro.message, code: erro.code })
+    return true
+  }
+  if (erro instanceof KnowledgeValidationError) {
+    res.status(400).json({ error: erro.message })
+    return true
+  }
+  return false
+}
+
 app.post('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
   const agentId = String(req.params.agentId)
   if (!ObjectId.isValid(agentId)) {
@@ -3652,17 +3687,17 @@ app.post('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
   }
 
   try {
-    const espaco = await checkOwnerStorage(res.locals.userId, Buffer.byteLength(String(content), 'utf8'))
-    if (!espaco.allowed) {
-      res.status(413).json({
-        error: 'O espaço de armazenamento desta conta acabou. Apague documentos antigos para liberar.',
-        code: 'storage_quota_exceeded',
-      })
-      return
-    }
-    const document = await createDocument(agent._id, title, content)
+    /**
+     * ADAPTADOR: mesma rota, mesmo contrato, camada compartilhada por baixo.
+     *
+     * `maxContent: null` mantém o que esta rota SEMPRE aceitou. O teto de cem mil
+     * caracteres nasceu no setor, e aplicá-lo aqui agora recusaria em silêncio um
+     * texto que ontem entrava — quem limita este caminho é a cota, como sempre foi.
+     */
+    const document = await saveDocument(res.locals.userId, { ownerType: 'agent', ownerId: agent._id }, { title, content, maxContent: null })
     res.status(201).json({ ...document, content: undefined })
   } catch (error) {
+    if (recusaDeConhecimento(res, error)) return
     console.error('Failed to create knowledge document:', error)
     res.status(502).json({ error: 'Failed to process document. Check the embedding service configuration.' })
   }
@@ -3691,24 +3726,13 @@ app.post(
 
     try {
       const apiKey = await getProviderApiKey(res.locals.userId, agent.provider)
-      const content = await extractTextFromFile(req.file.buffer, req.file.mimetype, agent.provider, apiKey)
-      if (!content.trim()) {
-        res.status(400).json({ error: 'Could not extract any text from this file' })
-        return
-      }
-      // A cota do dono, conferida com o tamanho REAL do que vai entrar — depois da
-      // extração, porque é o texto extraído que ocupa espaço, não o arquivo enviado.
-      const espaco = await checkOwnerStorage(res.locals.userId, Buffer.byteLength(content, 'utf8'))
-      if (!espaco.allowed) {
-        res.status(413).json({
-          error: 'O espaço de armazenamento desta conta acabou. Apague documentos antigos para liberar.',
-          code: 'storage_quota_exceeded',
-        })
-        return
-      }
-      const document = await createDocument(agent._id, title, content)
+      // A cota do dono é conferida lá dentro com o tamanho REAL do que vai entrar —
+      // depois da extração, porque é o texto extraído que ocupa espaço, não o arquivo.
+      const content = await extractUpload(req.file.buffer, req.file.mimetype, agent.provider, apiKey)
+      const document = await saveDocument(res.locals.userId, { ownerType: 'agent', ownerId: agent._id }, { title, content, maxContent: null })
       res.status(201).json({ ...document, content: undefined })
     } catch (error) {
+      if (recusaDeConhecimento(res, error)) return
       console.error('Failed to process uploaded document:', error)
       res.status(502).json({ error: 'Failed to process the uploaded file.' })
     }
@@ -3788,13 +3812,14 @@ app.patch('/api/agents/:agentId/documents/:documentId', requireAuth, async (req,
   }
 
   try {
-    const document = await updateDocument(agent._id, new ObjectId(documentId), updates)
+    const document = await atualizarDocumento(res.locals.userId, { ownerType: 'agent', ownerId: agent._id }, new ObjectId(documentId), { ...updates, maxContent: null })
     if (!document) {
       res.status(404).json({ error: 'Document not found' })
       return
     }
     res.json({ ...document, content: undefined })
   } catch (error) {
+    if (recusaDeConhecimento(res, error)) return
     console.error('Failed to update knowledge document:', error)
     res.status(502).json({ error: 'Failed to process document. Check the embedding service configuration.' })
   }
@@ -5286,6 +5311,12 @@ async function start() {
   settlePendingCharges()
     .then((n) => n && console.log(`Settled ${n} pending token charge(s)`))
     .catch((error) => console.error('settlePendingCharges failed:', error))
+  // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
+  // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
+  // ninguém está olhando. Ela é um script, e é chamada à mão.
+  ensureKnowledgeMigrationIndexes().catch((error) => {
+    console.error('ensureKnowledgeMigrationIndexes failed:', error)
+  })
   ensureKnowledgeIndexes().catch((error) => {
     console.error('ensureKnowledgeIndexes failed:', error)
   })

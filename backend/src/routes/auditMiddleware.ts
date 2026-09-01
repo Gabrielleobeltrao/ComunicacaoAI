@@ -210,6 +210,17 @@ const RULES: Rule[] = [
   // A sessão do visitante do widget: pública, sem dono para atribuir, e o token não
   // pode ser registrado em lugar nenhum.
   R('POST', 'api/public/widgets/:/session', null, { why: 'public visitor session, no owner context' }),
+  /**
+   * A base de conhecimento pela porta única — MESMO tipo de entidade das rotas por dono.
+   *
+   * O objeto é o mesmo documento; só a porta é outra. Um tipo novo faria a mesma
+   * exclusão aparecer no registro com dois nomes, dependendo de por onde ela passou.
+   */
+  R('POST', 'api/knowledge/documents/upload', { entityType: 'knowledge', action: 'create' }),
+  R('POST', 'api/knowledge/documents', { entityType: 'knowledge', action: 'create' }),
+  R('PATCH', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  R('DELETE', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'delete' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/documents/:/reindex', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
   R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),

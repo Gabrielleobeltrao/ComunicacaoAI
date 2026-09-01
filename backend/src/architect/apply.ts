@@ -375,7 +375,8 @@ async function executarSaga(ctx: Contexto): Promise<void> {
       // etapa falhar — antes, virava um documento sob um ObjectId novo, que não era de
       // agente nenhum e não aparecia em tela nenhuma.
       const r = await writeArchitectKnowledge(ctx.ownerId, req, conteudo, { resolve: (kind, key) => ctx.mapa.get(chave(kind as ApplyStepKind, key)) })
-      return { id: r.id, status: 'created', message: r.mechanism === 'memory' ? 'guardado na memória do escopo' : undefined }
+      // Os quatro escopos gravam na base canônica: mesma indexação, mesma busca.
+      return { id: r.id, status: 'created', message: undefined }
     })
   }
 
