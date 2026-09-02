@@ -592,3 +592,58 @@ test('fonte de dataset sem dizer o conjunto é recusada', async () => {
   }))
   assert.match(r.error.message, /qual conjunto/)
 })
+
+// --- o AO VIVO: o que chegou, não quem está de pé ------------------------------------
+
+test('o ao vivo devolve as ÚLTIMAS LEITURAS, e não só a lista de fontes', async () => {
+  // A primeira versão desta aba listava nomes com bolinha verde e chamava isso de "ao
+  // vivo". Quem abre quer ver o VALOR que acabou de entrar.
+  const f = await svc.createSource(DONO, entrada())
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+
+  const { items } = await svc.liveView(DONO)
+  assert.equal(items.length, 1)
+  assert.equal(items[0].readings.length, 1)
+  assert.equal(items[0].readings[0].value.preco, 1234.56)
+  assert.ok(items[0].readings[0].at instanceof Date)
+  assert.equal(items[0].health, 'online')
+})
+
+test('o valor do ao vivo sai REDIGIDO', async () => {
+  // Uma tela que fica aberta na parede do escritório não pode mostrar o que veio dentro
+  // do payload.
+  corpoAtual = JSON.stringify({ dados: { preco: '10,50', nome: 'ACME', apiKey: 'nao-pode-aparecer' } })
+  const f = await svc.createSource(DONO, entrada({
+    mapping: {
+      version: 1,
+      fields: [
+        { to: 'preco', from: 'dados.preco', transforms: [{ op: 'number' }], required: true },
+        { to: 'apiKey', from: 'dados.apiKey' },
+      ],
+    },
+  }))
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+
+  const { items } = await svc.liveView(DONO)
+  assert.equal(items[0].readings[0].value.apiKey, '«oculto»')
+  assert.equal(items[0].readings[0].value.preco, 10.5)
+})
+
+test('fonte pausada não aparece no ao vivo', async () => {
+  const f = await svc.createSource(DONO, entrada())
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+  await svc.setSourceStatus(DONO, f._id, 'paused')
+  assert.equal((await svc.liveView(DONO)).items.length, 0)
+})
+
+test('o ao vivo de uma conta não enxerga a outra', async () => {
+  const f = await svc.createSource(DONO, entrada())
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+  assert.equal((await svc.liveView('vizinho')).items.length, 0)
+})

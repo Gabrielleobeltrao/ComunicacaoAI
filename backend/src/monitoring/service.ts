@@ -569,3 +569,88 @@ export async function overview(ownerId: string, agora: Date = new Date()) {
 }
 
 export const sourcesCollection = sources
+
+// --- o AO VIVO -------------------------------------------------------------------------
+
+export interface LiveReading {
+  at: Date
+  /** O valor já mapeado — e redigido antes de sair daqui. */
+  value: Record<string, unknown>
+}
+
+export interface LiveSource {
+  id: string
+  name: string
+  kind: MonitoringSourceKind
+  health: string
+  lastReadAt: Date | null
+  latencyMs: number | null
+  reconnects: number
+  readsOk: number
+  readsFailed: number
+  /** As últimas leituras que viraram registro. É o que "ao vivo" quer dizer. */
+  readings: LiveReading[]
+  /** Quantas execuções esta fonte causou — o elo com o Flow. */
+  triggers: number
+}
+
+/**
+ * O que está CHEGANDO — e não só quem está de pé.
+ *
+ * A primeira versão desta aba listava as fontes ativas e chamava isso de "ao vivo". Mas
+ * quem abre "ao vivo" quer ver o VALOR que acabou de entrar, não uma lista de nomes com
+ * bolinha verde: a pergunta é "o que está acontecendo agora", e um nome não responde isso.
+ *
+ * O valor sai REDIGIDO: a mesma peneira da amostra do wizard. Uma tela que fica aberta na
+ * parede do escritório não pode mostrar o que veio dentro do payload.
+ */
+export async function liveView(ownerId: string, limitePorFonte = 5): Promise<{ items: LiveSource[] }> {
+  const ativas = await sources.find({ ownerId, status: 'active' }).sort({ name: 1 }).limit(50).toArray()
+  if (ativas.length === 0) return { items: [] }
+
+  const { listarRegistros } = await import('../dataHistory/store.js')
+  const { redactSample } = await import('./mapping.js')
+  const agora = new Date()
+
+  const items = await Promise.all(
+    ativas.map(async (f) => {
+      const recorderId = f.destination.recorderId
+      const registros = recorderId
+        ? await listarRegistros(ownerId, { recorderId, limit: limitePorFonte }).catch(() => [])
+        : []
+
+      /**
+       * Quantas execuções esta fonte causou.
+       *
+       * Contado das execuções que o monitor pediu, e não de um contador próprio: um
+       * contador aqui divergiria do painel de execuções na primeira falha de escrita, e
+       * aí a mesma pergunta teria duas respostas.
+       */
+      const monitorIds = await db
+        .collection('monitors')
+        .find({ ownerId, 'source.kind': 'database', 'source.datasetKey': recorderId?.toString() ?? '__nenhum__' }, { projection: { _id: 1 } })
+        .toArray()
+      const triggers = monitorIds.length
+        ? await db.collection('automation_runs').countDocuments({
+            ownerId,
+            requestId: { $in: monitorIds.map((m) => new RegExp(`^monitor:${m._id.toString()}:`)) },
+          })
+        : 0
+
+      return {
+        id: f._id.toString(),
+        name: f.name,
+        kind: f.kind,
+        health: computeHealth(f, agora).health,
+        lastReadAt: f.telemetry.lastReadAt,
+        latencyMs: f.telemetry.lastLatencyMs,
+        reconnects: f.telemetry.reconnects,
+        readsOk: f.telemetry.readsOk,
+        readsFailed: f.telemetry.readsFailed,
+        readings: registros.map((r) => ({ at: r.occurredAt, value: redactSample(r.value) as Record<string, unknown> })),
+        triggers,
+      }
+    }),
+  )
+  return { items }
+}

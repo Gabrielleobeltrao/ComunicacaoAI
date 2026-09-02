@@ -6,6 +6,7 @@ import * as api from '../lib/monitoring'
 import { HEALTH_LABEL, KIND_LABEL, STATUS_LABEL, desde, frase } from '../lib/monitoring'
 import type { OverviewItem, SourceKind, SourceSummary, TestOutcome } from '../lib/monitoring'
 import * as mon from '../lib/monitors'
+import type * as mon2 from '../lib/monitoring'
 import { useActivityPulse } from '../lib/activity'
 
 // A CENTRAL DE MONITORAMENTO — cinco perguntas, uma tela.
@@ -32,6 +33,7 @@ export function MonitoringCenter() {
   const aba = ((params.get('tab') as Aba) ?? 'overview') as Aba
   const [visao, setVisao] = useState<{ items: OverviewItem[]; summary: Record<string, number> } | null>(null)
   const [fontes, setFontes] = useState<SourceSummary[] | null>(null)
+  const [aoVivo, setAoVivo] = useState<mon2.LiveSource[] | null>(null)
   const [erro, setErro] = useState<string | null>(null)
   const [aviso, setAviso] = useState<string | null>(null)
   const [wizard, setWizard] = useState(false)
@@ -39,7 +41,8 @@ export function MonitoringCenter() {
   const carregar = useCallback(async () => {
     setErro(null)
     try {
-      if (aba === 'overview' || aba === 'live') setVisao(await api.overview())
+      if (aba === 'overview') setVisao(await api.overview())
+      if (aba === 'live') setAoVivo(await api.live())
       if (aba === 'sources' || aba === 'monitors' || aba === 'history') setFontes(await api.listSources())
     } catch (e) {
       setErro((e as Error).message)
@@ -130,7 +133,7 @@ export function MonitoringCenter() {
         )}
 
         {aba === 'monitors' && <AbaMonitores fontes={fontes} />}
-        {aba === 'live' && <AoVivo visao={visao} />}
+        {aba === 'live' && <AoVivo fontes={aoVivo} />}
         {aba === 'history' && <Historico fontes={fontes} />}
       </div>
     </AppLayout>
@@ -640,8 +643,15 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
   )
 }
 
-function AoVivo({ visao }: { visao: { items: OverviewItem[] } | null }) {
-  const ativas = (visao?.items ?? []).filter((i) => i.status === 'active')
+/**
+ * O AO VIVO — o que está CHEGANDO, e não só quem está de pé.
+ *
+ * A primeira versão listava as fontes ativas com bolinha verde. Mas quem abre "ao vivo"
+ * quer ver o valor que acabou de entrar: um nome não responde "o que está acontecendo
+ * agora". O valor vem redigido do servidor — esta tela costuma ficar aberta na parede.
+ */
+function AoVivo({ fontes }: { fontes: mon2.LiveSource[] | null }) {
+  if (!fontes) return null
   return (
     <>
       <Card>
@@ -649,19 +659,37 @@ function AoVivo({ visao }: { visao: { items: OverviewItem[] } | null }) {
           Atualiza sozinho pelo mesmo canal das execuções. Sem sondagem: quando algo anda, a lista se refaz.
         </p>
       </Card>
-      {ativas.length === 0 && (
+      {fontes.length === 0 && (
         <Card>
           <p style={{ fontSize: 13.5, color: 'var(--text-muted)' }}>Nenhuma fonte ativa. Ative uma para ver leitura chegando.</p>
         </Card>
       )}
-      {ativas.map((i) => (
-        <Card key={i.id}>
-          <div className="flex flex-wrap items-center gap-2" data-testid="live-item">
-            <Badge tone={TOM[i.health]}>{HEALTH_LABEL[i.health]}</Badge>
-            <strong style={{ fontSize: 14 }}>{i.name}</strong>
-            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
-              última {desde(i.lastReadAt)} · {i.readsOk} leituras · {i.readsFailed} falhas
-            </span>
+      {fontes.map((f) => (
+        <Card key={f.id}>
+          <div className="flex flex-col gap-2" data-testid="live-item">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={TOM[f.health]}>{HEALTH_LABEL[f.health]}</Badge>
+              <strong style={{ fontSize: 14 }}>{f.name}</strong>
+            </div>
+            <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="live-metricas">
+              última {desde(f.lastReadAt)} · {f.readsOk} leituras · {f.readsFailed} falhas · {f.reconnects} reconexões · {f.triggers} disparos
+            </p>
+            {f.readings.length === 0 ? (
+              <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Nada chegou ainda.</p>
+            ) : (
+              <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-testid="live-valores">
+                {f.readings.map((leitura, i) => (
+                  <li key={`${leitura.at}-${i}`} style={{ fontSize: 12.5, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{new Date(leitura.at).toLocaleTimeString('pt-BR')}</span>
+                    <span style={{ overflowX: 'auto' }}>
+                      {Object.entries(leitura.value)
+                        .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+                        .join(' · ')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </Card>
       ))}

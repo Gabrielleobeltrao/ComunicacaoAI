@@ -311,13 +311,38 @@ o comentário no teste agora diz por quê.
 Comandos: `npx playwright test e2e/monitoring-center.spec.ts` → **12/12** (com 320 px no
 construtor). Bateria: E2E **664** · frontend **292** · lint **0 erros**.
 
+## Bloco 11 — o Ao vivo mostra o que CHEGOU ✅
+
+`liveView` em `backend/src/monitoring/service.ts`, rota `GET /api/monitoring/live`, e a aba
+refeita.
+
+A primeira versão listava as fontes ativas com bolinha verde e chamava isso de "ao vivo".
+Mas quem abre essa aba quer ver o **valor que acabou de entrar** — um nome não responde "o
+que está acontecendo agora".
+
+- as últimas leituras vêm do histórico da própria fonte, pelo recorder dela;
+- **o valor sai redigido** pela mesma peneira da amostra do wizard: esta tela costuma ficar
+  aberta na parede do escritório, e o que veio dentro do payload não pode aparecer nela;
+- métricas por fonte: última leitura, latência, leituras boas, falhas, **reconexões** e
+  **disparos**;
+- os disparos são contados das execuções que o monitor pediu, e não de um contador próprio
+  — um contador aqui divergiria do painel de execuções na primeira falha de escrita, e a
+  mesma pergunta passaria a ter duas respostas.
+
+Comandos: `node --test test/monitoringSource.integration.test.mjs` → **48/48**;
+`npx playwright test e2e/monitoring-center.spec.ts` → **15/15**.
+Bateria: backend **1420 + 1934** · E2E **667** · frontend **292** · lint **0 erros**.
+
+**Nota de ambiente**: uma rodada de E2E falhou inteira com "Cannot navigate to invalid URL"
+— o `vite preview` estava servindo um build antigo. Não era código; matar o preview e
+reconstruir resolveu. Fica registrado porque a leitura errada aqui seria "a Central quebrou".
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **A aba "Ao vivo" mostra estado, não fluxo**: ela lista as fontes ativas e se atualiza
-   pelo socket, mas não mostra o VALOR que chegou nem contagem de reconexão por fonte.
+2. **Grants por agente/setor sobre fonte**, e autorização reconferida antes da leitura.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

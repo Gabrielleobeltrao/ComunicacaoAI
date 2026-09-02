@@ -125,6 +125,26 @@ const req = <T>(caminho: string, init: { method?: string; body?: unknown } = {})
 
 export const meta = () => req<{ kinds: { kind: SourceKind; pull: boolean; push: boolean; needsUrl: boolean; needsConnection: boolean }[]; transforms: string[] }>('/api/monitoring/meta')
 export const overview = () => req<{ items: OverviewItem[]; summary: Record<string, number> }>('/api/monitoring/overview')
+export interface LiveReading {
+  at: string
+  value: Record<string, unknown>
+}
+
+export interface LiveSource {
+  id: string
+  name: string
+  kind: SourceKind
+  health: SourceHealth
+  lastReadAt: string | null
+  latencyMs: number | null
+  reconnects: number
+  readsOk: number
+  readsFailed: number
+  readings: LiveReading[]
+  triggers: number
+}
+
+export const live = () => req<{ items: LiveSource[] }>('/api/monitoring/live').then((r) => r.items)
 export const listSources = () => req<{ items: SourceSummary[] }>('/api/monitoring/sources').then((r) => r.items)
 export const createSource = (body: unknown) => req<{ id: string; status: SourceStatus }>('/api/monitoring/sources', { method: 'POST', body })
 export const updateSource = (id: string, body: unknown) => req<{ id: string }>(`/api/monitoring/sources/${id}`, { method: 'PUT', body })

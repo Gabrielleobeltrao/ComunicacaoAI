@@ -6,6 +6,7 @@ import {
   duplicateSource,
   getSource,
   listSources,
+  liveView,
   overview,
   readSourceOnce,
   setSourceStatus,
@@ -52,6 +53,17 @@ monitoringRouter.get('/meta', (_req, res) => {
 /** A VISÃO GERAL: saúde, última leitura, latência, falhas e próximo disparo. */
 monitoringRouter.get('/overview', async (_req, res) => {
   res.json(await overview(res.locals.userId))
+})
+
+/**
+ * O AO VIVO: o que está chegando, e não só quem está de pé.
+ *
+ * Quem abre esta aba quer ver o VALOR que acabou de entrar — um nome com bolinha verde não
+ * responde "o que está acontecendo agora". O valor sai redigido: uma tela que fica aberta
+ * na parede do escritório não pode mostrar o que veio dentro do payload.
+ */
+monitoringRouter.get('/live', async (_req, res) => {
+  res.json(await liveView(res.locals.userId))
 })
 
 monitoringRouter.get('/sources', async (_req, res) => {

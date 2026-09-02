@@ -65,7 +65,26 @@ const AMOSTRA = {
 let criado: unknown = null
 let ativou = false
 
-async function stub(page: Page, opts: { ativarErro?: string } = {}) {
+const LIVE = [
+  {
+    id: ID,
+    name: 'Preço do fornecedor',
+    kind: 'api_polling',
+    health: 'online',
+    lastReadAt: new Date(Date.now() - 20_000).toISOString(),
+    latencyMs: 180,
+    reconnects: 2,
+    readsOk: 12,
+    readsFailed: 1,
+    triggers: 3,
+    readings: [
+      { at: new Date(Date.now() - 20_000).toISOString(), value: { preco: 1234.56, apiKey: '«oculto»' } },
+      { at: new Date(Date.now() - 80_000).toISOString(), value: { preco: 1200 } },
+    ],
+  },
+]
+
+async function stub(page: Page, opts: { ativarErro?: string; live?: unknown[] } = {}) {
   criado = null
   ativou = false
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
@@ -79,6 +98,7 @@ async function stub(page: Page, opts: { ativarErro?: string } = {}) {
   )
   await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: [], pinned: [] } }))
   await page.route('**/api/monitoring/overview', (r) => r.fulfill({ json: OVERVIEW }))
+  await page.route('**/api/monitoring/live', (r) => r.fulfill({ json: { items: opts.live ?? LIVE } }))
   await page.route('**/api/monitoring/sources/test', (r) => r.fulfill({ json: AMOSTRA }))
   await page.route(`**/api/monitoring/sources/${ID}/activate`, (r) => {
     if (opts.ativarErro) return r.fulfill({ status: 400, json: { message: opts.ativarErro } })
@@ -270,6 +290,32 @@ test('em 320 px o construtor de monitor cabe', async ({ page }) => {
   await stub(page)
   await page.goto('/monitoring?tab=monitors')
   await expect(page.getByTestId('monitor-builder')).toBeVisible()
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
+})
+
+test('a aba Ao vivo mostra o VALOR que chegou, não só o nome da fonte', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=live')
+  const valores = page.getByTestId('live-valores')
+  await expect(valores).toContainText('preco: 1234.56')
+  // Redigido no servidor: esta tela costuma ficar aberta na parede do escritório.
+  await expect(valores).toContainText('«oculto»')
+  await expect(page.getByTestId('live-metricas')).toContainText('2 reconexões')
+  await expect(page.getByTestId('live-metricas')).toContainText('3 disparos')
+})
+
+test('sem leitura, o Ao vivo diz que nada chegou em vez de ficar vazio', async ({ page }) => {
+  await stub(page, { live: [{ ...LIVE[0], readings: [] }] })
+  await page.goto('/monitoring?tab=live')
+  await expect(page.getByText('Nada chegou ainda.')).toBeVisible()
+})
+
+test('em 320 px o Ao vivo não empurra a página para os lados', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 })
+  await stub(page)
+  await page.goto('/monitoring?tab=live')
+  await expect(page.getByTestId('live-item').first()).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
 })
