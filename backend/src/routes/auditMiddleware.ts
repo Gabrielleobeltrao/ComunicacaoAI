@@ -236,6 +236,22 @@ const RULES: Rule[] = [
   R('PATCH', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
   R('DELETE', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'delete' }, { idAt: 3 }),
   R('POST', 'api/knowledge/documents/:/reindex', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  /**
+   * DATABASES. Criar, editar e apagar um database ou dataset muda o que os agentes
+   * conseguem consultar — entra no registro. Consultar não: leitura não é mudança, e um
+   * registro por consulta afogaria o log justamente quando ele importa.
+   */
+  R('POST', 'api/databases', { entityType: 'database', action: 'create' }),
+  R('PATCH', 'api/databases/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/databases/:', { entityType: 'database', action: 'delete' }, { idAt: 2 }),
+  R('POST', 'api/databases/:/datasets', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('PATCH', 'api/databases/:/datasets/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/databases/:/datasets/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('PUT', 'api/databases/:/grants', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/databases/:/grants/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/databases/:/datasets/:/rows', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/databases/:/datasets/:/query', null, { why: 'read, not a change' }),
+
   R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
   R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),

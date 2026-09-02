@@ -131,6 +131,7 @@ const ROUTER_PREFIX = {
   'routes/knowledgeRoutes.ts': '/api/knowledge',
   'routes/knowledgeAccessRoutes.ts': '/api/agents/:agentId',
   'routes/resourceRoutes.ts': '/api/resources',
+  'routes/databaseRoutes.ts': '/api/databases',
 }
 
 function declaredRoutes() {

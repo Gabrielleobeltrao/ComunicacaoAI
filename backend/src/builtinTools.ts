@@ -8,6 +8,7 @@ import { sourceCheckTool } from './automations/sourceTool.js'
 import { clarifyTool } from './clarify.js'
 import { sourceSettingsOf } from './agents.js'
 import { getToolsByIds } from './tools.js'
+import { databaseToolsFor } from './databases/agentTools.js'
 import { executeToolCall } from './toolExecution.js'
 import type { ResolvedTool } from './agentTools.js'
 import { resolveHttpTool } from './agentTools.js'
@@ -294,6 +295,14 @@ export async function resolveAgentTools(
   // getToolsByIds is owner-scoped, so a stale or foreign id resolves to nothing.
   // Each tool gets its own per-run counter, which is what stops a model from
   // hammering the same endpoint in a loop.
+  /**
+   * As ferramentas de DATABASE — tipadas, e com a permissão reconferida a cada chamada.
+   *
+   * Elas só aparecem quando o agente alcança algum database: uma ferramenta visível que
+   * recusa toda chamada gasta contexto do modelo para não fazer nada.
+   */
+  const bancos = capacidades.externalTools ? await databaseToolsFor({ accountId: ownerId, agent }).catch(() => []) : []
+
   const assigned = capacidades.externalTools ? await getToolsByIds(ownerId, agent.toolIds ?? []) : []
   const custom: ResolvedTool[] = assigned
     .filter((tool) => tool.enabled)
@@ -340,7 +349,7 @@ export async function resolveAgentTools(
   // concedida, a ferramenta não aparece.
   const realtime = emTempoReal.length ? [realtimeSourceTool(ownerId, agent._id), realtimeWaitTool(ownerId, agent._id)] : []
   const proprias = [...(capacidades.memory ? [memoria] : []), ...(capacidades.webSources ? [fonte] : []), ...realtime, esclarecer]
-  if (enabled.length === 0) return [...proprias, ...http, ...custom, ...fromGrants]
+  if (enabled.length === 0) return [...proprias, ...http, ...custom, ...bancos, ...fromGrants]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')
   const googleConnected = needsGoogle ? (await getGoogleStatus(ownerId)).connected : false
@@ -352,5 +361,5 @@ export async function resolveAgentTools(
     if (app.connection === 'google' && !googleConnected) continue
     builtins.push(...app.resolve(ownerId, entry.config ?? {}))
   }
-  return [...proprias, ...http, ...custom, ...fromGrants, ...builtins]
+  return [...proprias, ...http, ...custom, ...bancos, ...fromGrants, ...builtins]
 }

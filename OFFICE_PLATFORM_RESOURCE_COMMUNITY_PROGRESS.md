@@ -120,10 +120,65 @@ busca com o tipo na URL, erro que não vira vazio, vazio dito como vazio, 320 px
 overflow, grupos da navegação) e o teste de navegação atualizado. Vitest 287, E2E 621,
 smoke 6, lint sem erro novo.
 
+### Fase 3 — Data Stores/Databases (backend) ✅
+
+`backend/src/databases/`: `types.ts`, `store.ts` (stores, datasets, grants, telemetria,
+cotas e índices), `queryDsl.ts`, `schemaValidation.ts`, `access.ts`, `adapters.ts` e
+`agentTools.ts`. Rotas em `routes/databaseRoutes.ts` (`/api/databases`).
+
+Decisões que valem registro:
+
+- **nenhum registro é copiado**. `data_history` lê a coleção que os recorders já
+  alimentam; `market_data` lê `market_candles` e é somente leitura, porque candle e
+  indicador vêm de um pipeline que já sabe fechar janela e deduplicar. Duplicar criaria
+  duas séries com o mesmo nome e valores diferentes;
+- **DSL fechada, não lista de bloqueio**. Não existe lista de bloqueio confiável para uma
+  linguagem inteira: `$where` executa JavaScript, `$lookup` atravessa coleções, um
+  `$regex` mal construído derruba o banco. O que passa é campo declarado no schema, sete
+  operadores, `and`/`or` com teto de profundidade **e de nós** (mil irmãos têm
+  profundidade 1 e derrubam igual), ordenação por campo conhecido e limite do servidor;
+- **o prefixo `value.` é do servidor**: um campo chamado `ownerId` no schema vira
+  `value.ownerId` e nunca alcança a raiz do documento, onde moram escopo e identidade;
+- **precedência**: `deny` vence sempre; direto > setor > andar > prédio; sem grant, sem
+  acesso. A hierarquia é lida na hora — tirar o agente do setor tira o acesso na próxima
+  execução, sem limpar grant nenhum;
+- **mutabilidade é do dataset e independe de grant**: `append_only` recusa update/delete
+  mesmo para quem administra a conta, porque alterar o passado de uma série não é uma
+  questão de permissão;
+- **a permissão é reconferida imediatamente antes de cada leitura** da ferramenta, e não
+  ao montar a lista: entre montar e o modelo chamar cabe uma revogação;
+- **credencial não entra na config do adapter** — qualquer chave com cara de segredo é
+  recusada na escrita, porque a config viaja para a tela e para o catálogo;
+- `DATABASES_ENABLED=0` **nega a rota**.
+
+Testes: 30 em `backend/test/databases.integration.test.mjs` — DSL (campo, operador,
+operador de Mongo como valor, bomba por profundidade e por contagem, escape do
+`contains`, tetos), schema, precedência completa com deny, membership que muda o acesso,
+dataset restrito, store pausado, mutabilidade, consulta real sem cópia, isolamento entre
+contas com o MESMO recorder, telemetria sem conteúdo, ferramentas do agente (sem grant não
+existem; revogação bloqueia a próxima chamada; o motivo do filtro recusado volta), rotas e
+flag. **Teeth**: revertendo a precedência do deny e a lista de campos da DSL, caem 3.
+
+Suíte: 1354 + 1670, verde. Vitest 287, smoke 6.
+
+## Pendências honestas da Fase 3
+
+- **UI de Databases não foi feita** (a fase pedia tela completa de datasets/query/grants).
+  O backend está inteiro e testado; a tela é a próxima ação.
+- `external_app` está declarado e recusa consulta com `not_implemented` — um adapter que
+  respondesse vazio seria pior que a recusa honesta.
+- O adapter `database` ainda **não** foi registrado no `registry.ts` de Resources: ele
+  entra quando a projeção de catálogo do database estiver escrita.
+- Migração de recorders existentes para Data Stores (dual-read da 9.2) não começou.
+
 ## Próxima ação exata
 
-Fase 3: Data Stores/Databases — modelos `data_stores`/`dataset_definitions`, adapters
-`data_history` (reusando os recorders existentes) e `market_data` (virtual, read-only),
-DSL de consulta segura e validada no servidor, capabilities/grants, ferramentas tipadas
-`database_*` para os agentes, cotas, índices, impacto e UI. Registrar o adapter
-`database` no `registry.ts` só quando ele tiver fonte canônica.
+1. UI de Databases (`/databases`): lista, detalhe com datasets/schema, consulta paginada e
+   grants com o impacto de setor antes de salvar.
+2. Registrar o adapter `database` em `resources/registry.ts` (list/get/access/impact
+   delegando para `databases/access.ts`).
+3. Migração 9.2: Data Store padrão por conta apontando para os recorders existentes, em
+   dual-read, sem mover registro.
+
+Fases 4 a 11 (Tools versionadas, Flows/Monitors, Activity, Extensions, Marketplace,
+Sandbox, hardening) **não foram iniciadas**.

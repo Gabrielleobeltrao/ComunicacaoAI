@@ -84,6 +84,13 @@ export type AuditEntityType =
   // A REGRA de um histórico genérico — o que gravar, de onde e por quanto tempo. Os
   // registros que ela produz não são auditados um a um: são dado, e são milhares.
   | 'data_recorder'
+  /**
+   * Um DATABASE — o recurso lógico, seus datasets e seus grants.
+   *
+   * Os REGISTROS dentro dele não são auditados um a um pelo mesmo motivo do histórico:
+   * são dado, e são milhares. O que entra aqui é a mudança de estrutura e de quem alcança.
+   */
+  | 'database'
   // Uma fonte de dados em tempo real vinculável a agentes. Ela não guarda nada:
   // histórico é outra decisão, em outro lugar.
   | 'realtime_source'
