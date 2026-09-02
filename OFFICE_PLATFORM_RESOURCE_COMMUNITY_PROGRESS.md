@@ -235,12 +235,53 @@ um `npm run build` morto no meio deixou `dist` desatualizado e processos de test
 disputando CPU e portas. Depois de limpar, a mesma suíte passou inteira. Vale registrar
 porque a leitura errada aqui seria "a Fase 4 quebrou a autenticação".
 
+### Fase 5 (núcleo) — Condition AST e MonitorState ✅
+
+`backend/src/monitors/condition.ts` e `state.ts`.
+
+- **borda é diferente de nível.** "RSI cruzou 30 para cima" não é "RSI está abaixo de 30":
+  a primeira só existe comparando o agora com o antes. Os seis modos (`level`, `enter`,
+  `exit`, `cross_up`, `cross_down`, `change`) são testados um a um, inclusive o caso em que
+  não há valor anterior — o primeiro tique não inventa uma travessia;
+- **o estado mora no banco.** Guardá-lo na memória do processo funcionaria até o primeiro
+  restart, e restart é justamente quando ninguém está olhando;
+- **a transição é atômica**: `findOneAndUpdate` com a versão anterior no filtro. Quem perde
+  a corrida sai como `lost_race` sem disparar;
+- **a marca do evento vem antes de tudo**: a mesma entrega processada duas vezes não é
+  transição nova. A ordem importa — conferir isso depois do debounce faria um evento
+  repetido consumir a janela de um evento legítimo;
+- **debounce e cooldown medem coisas diferentes**: distância da última observação e do
+  último disparo. Um monitor com os dois iguais não tem os dois;
+- **zero token**: nada no caminho chama modelo. Um modelo avaliando condição a cada tique
+  custa por tique, erra de vez em quando e não é reproduzível.
+
+**Defeito real encontrado pelo teste**: `Number(null)` é 0, e `0 < 30` fazia um campo
+AUSENTE disparar um monitor de "abaixo de 30" — o alarme que toca sozinho de madrugada.
+Ausência agora é `null`, e comparação com `null` é falsa.
+
+Testes: 16 em `backend/test/monitors.integration.test.mjs`. **Teeth**: revertendo o dedupe
+por evento, cai 1. A janela de corrida entre eventos DISTINTOS simultâneos não tem teste
+determinístico, e o teste diz isso em vez de fingir que tem.
+
+Suíte: 1354 + 1698, verde.
+
+## Pendências honestas da Fase 5
+
+- **o monitor ainda não dispara um Flow**: `action.flowId` existe no modelo e nada o
+  executa. Falta ligar `observe()` ao enfileiramento da automação — é o próximo passo, e
+  sem ele o monitor observa e registra, mas não age.
+- `operationKind` (`routine | flow | monitor`) não foi introduzido nas automações.
+- Não há rotas nem UI de monitor; o builder visual/natural não existe.
+
 ## Próxima ação exata
 
-1. Ligar `app_action` e `registered_function` ao dispatcher único, com a versão publicada
-   decidindo o que roda.
-2. Fase 5 — Flows e Monitors: `operationKind` compatível, `ConditionAst`, `MonitorState`
-   com transição atômica, debounce, cooldown e dedupe.
+1. Ligar `observe()` ao enfileiramento do Flow (uma execução por transição, com a
+   idempotência da fila existente).
+2. `operationKind` compatível nas automações, com normalização na leitura.
+3. Rotas e builder de monitor, com rascunho obrigatório (salvar nunca publica).
+
+Fases 6 a 11 (Activity, Extensions, Marketplace, Sandbox, hardening) **não foram
+iniciadas**.
 
 Fases 4 a 11 (Tools versionadas, Flows/Monitors, Activity, Extensions, Marketplace,
 Sandbox, hardening) **não foram iniciadas**.
