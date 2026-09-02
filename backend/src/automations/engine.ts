@@ -26,6 +26,7 @@ import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
 import { registerMonitorObservers, resumePendingDispatches } from '../monitors/dispatch.js'
 import { registerDatabaseMonitors } from '../monitors/dataSource.js'
+import { dueSources, readSourceOnce } from '../monitoring/service.js'
 import { ensureMonitorIndexes } from '../monitors/state.js'
 import { registerWebSocketDestinations } from '../integrations/websocket/destinations.js'
 import { websocketAdapterFor } from '../integrations/websocket/service.js'
@@ -104,6 +105,29 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
    * evento, então retomar nunca cria uma segunda execução.
    */
   resumePendingDispatches().catch((error) => onError('monitores pendentes', error))
+
+  /**
+   * As fontes PUXADAS da Central, lidas pelo mesmo worker que já roda o resto.
+   *
+   * Um processo próprio para isso seria mais uma coisa para subir, monitorar e reiniciar —
+   * e o trabalho é o mesmo tipo de trabalho: acordar de tempos em tempos, ver o que
+   * venceu, fazer, gravar. Quem grava é o histórico; quem observa são os monitores; o que
+   * este laço acrescenta é só o "agora".
+   */
+  const relogioDeFontes = setInterval(() => {
+    void (async () => {
+      try {
+        for (const fonte of await dueSources()) {
+          // Uma falha de fonte não derruba as outras: cada leitura já grava a própria
+          // telemetria e devolve erro como dado.
+          await readSourceOnce(fonte).catch((error) => onError(`fonte ${fonte._id.toString()}`, error))
+        }
+      } catch (error) {
+        onError('varredura de fontes', error)
+      }
+    })()
+  }, Number(process.env.MONITORING_POLL_MS ?? 15_000))
+  relogioDeFontes.unref()
 
   let stopping = false
   // In-flight runs, so shutdown can wait for them instead of cutting them off.
@@ -238,6 +262,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
     stop: async () => {
       if (stopping) return
       stopping = true
+      clearInterval(relogioDeFontes)
       clearInterval(fontesTimer)
       clearInterval(runTimer)
       clearInterval(schedulerTimer)

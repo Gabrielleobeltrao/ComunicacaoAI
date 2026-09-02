@@ -5,7 +5,7 @@
 // casos protegem a derivação — e o estado que o produto mais precisa dizer: `degraded`.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { backoffDelay, computeHealth, nextReadAt, FALHAS_PARA_DEGRADAR } from '../dist/monitoring/health.js'
+import { backoffDelay, computeHealth, isDue, nextReadAt, FALHAS_PARA_DEGRADAR } from '../dist/monitoring/health.js'
 
 const AGORA = new Date('2026-01-01T12:00:00.000Z')
 const base = (over = {}) => ({
@@ -92,9 +92,15 @@ test('fonte que EMPURRA não tem próximo disparo — ela chega, não é chamada
   assert.equal(nextReadAt(base({ status: 'paused' }), AGORA), null)
 })
 
-test('leitura atrasada não devolve horário no passado', () => {
+test('leitura atrasada devolve o instante VERDADEIRO, mesmo no passado', () => {
+  // A primeira versão empurrava o horário atrasado para o futuro, para a tela não mostrar
+  // o passado — e com isso a varredura nunca considerava vencida uma fonte atrasada: ela
+  // ficava parada para sempre, com o painel prometendo uma leitura que não vinha.
   const atrasada = base({ telemetry: { ...base().telemetry, lastReadAt: new Date(AGORA.getTime() - 300_000) } })
-  assert.ok(nextReadAt(atrasada, AGORA) > AGORA)
+  const proximo = nextReadAt(atrasada, AGORA)
+  assert.ok(proximo < AGORA, 'quem decide precisa da verdade; quem mostra é que arredonda')
+  assert.equal(isDue(atrasada, AGORA), true)
+  assert.equal(isDue(base(), AGORA), false, 'acabou de ler: não venceu')
 })
 
 // --- backoff ----------------------------------------------------------------------------

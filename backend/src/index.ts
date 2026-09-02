@@ -163,6 +163,8 @@ import { agentResourceAccessRouter, resourceRouter } from './routes/resourceRout
 import { databaseRouter } from './routes/databaseRoutes.js'
 import { monitorRouter } from './routes/monitorRoutes.js'
 import { activityRouter } from './routes/activityRoutes.js'
+import { monitoringRouter } from './routes/monitoringRoutes.js'
+import { ensureMonitoringIndexes } from './monitoring/service.js'
 import { extensionRouter } from './routes/extensionRoutes.js'
 import { ensureExtensionIndexes } from './extensions/packages.js'
 import { ensureBrokerIndexes } from './extensionRuntime/broker.js'
@@ -523,6 +525,7 @@ app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
 app.use('/api/databases', requireAuth, databaseRouter)
 app.use('/api/monitors', requireAuth, monitorRouter)
 app.use('/api/activity', requireAuth, activityRouter)
+app.use('/api/monitoring', requireAuth, monitoringRouter)
 app.use('/api/extensions', requireAuth, extensionRouter)
 app.use('/api/resources', requireAuth, resourceRouter)
 app.use('/api/agents/:agentId', requireAuth, agentResourceAccessRouter)
@@ -5457,6 +5460,9 @@ async function start() {
   })
   ensureReviewIndexes().catch((error) => {
     console.error('ensureReviewIndexes failed:', error)
+  })
+  ensureMonitoringIndexes().catch((error) => {
+    console.error('ensureMonitoringIndexes failed:', error)
   })
   /**
    * O runner isolado, quando ele foi configurado.

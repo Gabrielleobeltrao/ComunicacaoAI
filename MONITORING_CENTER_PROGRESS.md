@@ -83,6 +83,52 @@ Comando: `node --test test/monitoringMapping.test.mjs` → **23/23**.
 
 Comando: `node --test test/monitoringHealth.test.mjs` → **13/13**.
 
+## Bloco 3 — o serviço, as rotas e o pipeline real ✅
+
+`backend/src/monitoring/{collect,service}.ts`, `routes/monitoringRoutes.ts`, laço no
+`automations/engine.ts`.
+
+O pipeline inteiro **sem uma linha de motor novo**:
+
+```
+fonte → collectOnce (safeFetch) → mapping → schema → recorder → dataset → monitor → Flow → Activity
+```
+
+- **quem busca é `safeFetch`**, que resolve o host, recusa endereço privado e de metadados e
+  **revalida cada redirect**. Um cliente HTTP próprio aqui seria um segundo lugar decidindo o
+  que é seguro alcançar;
+- **quem guarda é o recorder do histórico** (`source.kind: 'manual'`, que o motor já
+  oferecia como porta para integração nova). Filtro, agregação e retenção não foram
+  reescritos — e o registro gravado já acorda os monitores de dataset pelo caminho de ontem;
+- **testar é a leitura real**, com a amostra **redigida**: um teste que valida só a
+  configuração não prova nada, porque o que quebra é o outro lado;
+- **ativar exige ter lido**: uma fonte nunca testada, ativada, nasce degradada minutos
+  depois e o painel abre vermelho por configuração que ninguém conferiu;
+- **a telemetria é gravada inclusive quando falha** — caminho de erro que sai sem escrever é
+  fonte que quebra em silêncio e continua verde na tela;
+- **excluir a fonte não leva o histórico**: apagar a regra de coleta é diferente de apagar o
+  passado;
+- rotas em `/api/monitoring` com `MONITORING_CENTER_ENABLED=0` negando de verdade (404), e
+  auditoria em criar/editar/ativar/pausar/duplicar/excluir — testar e ler ficam de fora
+  porque são leitura.
+
+### Três defeitos reais que os testes acharam
+
+1. **`nextReadAt` empurrava horário atrasado para o futuro.** A intenção era a tela não
+   mostrar o passado; o efeito era a varredura **nunca** considerar vencida uma fonte
+   atrasada — ela ficaria parada para sempre com o painel prometendo uma leitura que não
+   vinha. Agora a função devolve a verdade e existe `isDue`; arredondar é problema de quem
+   mostra. O teste anterior tinha travado o comportamento errado e foi corrigido.
+2. **O cache de recorders do histórico.** Testar a fonte antes de ativar preenchia o cache
+   com "nenhum recorder para esta chave", e a primeira coleta de verdade não gravava nada
+   por até um cache inteiro. Quem cria o recorder agora desfaz a lembrança.
+3. **A dedupe por conteúdo guardava o hash do que foi LIDO.** Com isso, testar antes de
+   ativar fazia a primeira coleta real achar que "não mudou". O hash guardado passou a ser o
+   do que foi **gravado**.
+
+Comandos: `node --test test/monitoringSource.integration.test.mjs test/monitoringHealth.test.mjs`
+→ **42/42**; `npm run test -w backend` → **1390 + 1900, 0 falhas**.
+
 ## Próxima ação exata
 
 1. Serviço de fontes: criar, testar de verdade (com `safeFetch`, que já revalida redirect),

@@ -31,6 +31,7 @@ const SOURCES: Partial<Record<AuditEntityType, { collection: string; field: stri
   // "Você pôs de plantão o monitor RSI sobrevendido" — o nome vem do próprio monitor.
   monitor: { collection: 'monitors', field: 'name' },
   extension: { collection: 'extension_packages', field: 'name' },
+  monitoring_source: { collection: 'monitoring_sources', field: 'name' },
 }
 
 // A label is short and plain by construction: no newlines, bounded length.

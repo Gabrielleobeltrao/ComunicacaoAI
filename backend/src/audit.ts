@@ -110,6 +110,8 @@ export type AuditEntityType =
    * App, e continua no registro dela.
    */
   | 'extension'
+  /** Uma FONTE da Central de Monitoramento: a regra do que o escritório observa sozinho. */
+  | 'monitoring_source'
   | 'settings'
   // A sessão de quem entra na conta. Só a tentativa recusada é registrada aqui.
   | 'session'
@@ -118,6 +120,7 @@ export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'realtime_source',
   'monitor',
   'extension',
+  'monitoring_source',
   'memory',
   'agent',
   'sector',

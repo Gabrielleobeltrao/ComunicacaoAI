@@ -122,6 +122,8 @@ export interface MonitoringTelemetry {
   readsFailed: number
   /** Reconexões, para fontes que mantêm sessão. */
   reconnects: number
+  /** O conteúdo da última leitura gravada. É o que faz "de novo o mesmo" não virar linha. */
+  lastContentHash?: string | null
 }
 
 export const emptyTelemetry = (): MonitoringTelemetry => ({
@@ -134,6 +136,7 @@ export const emptyTelemetry = (): MonitoringTelemetry => ({
   readsOk: 0,
   readsFailed: 0,
   reconnects: 0,
+  lastContentHash: null,
 })
 
 /**

@@ -67,8 +67,21 @@ export function nextReadAt(source: Pick<MonitoringSource, 'cadence' | 'status' |
   const intervalo = source.cadence.intervalMs ?? 0
   if (intervalo <= 0) return null
   const base = source.telemetry.lastReadAt ?? agora
-  const proximo = new Date(base.getTime() + intervalo)
-  return proximo > agora ? proximo : new Date(agora.getTime() + 1_000)
+  /**
+   * O instante VERDADEIRO, mesmo quando ele já passou.
+   *
+   * A primeira versão empurrava um horário atrasado para o futuro, para a tela não mostrar
+   * o passado — e com isso a varredura nunca considerava vencida uma fonte atrasada: ela
+   * ficava parada para sempre, com o painel prometendo uma leitura que não vinha. Quem
+   * mostra é que arredonda; quem decide precisa da verdade.
+   */
+  return new Date(base.getTime() + intervalo)
+}
+
+/** Está vencida? A pergunta que a varredura faz, escrita uma vez. */
+export const isDue = (source: Pick<MonitoringSource, 'cadence' | 'status' | 'telemetry'>, agora: Date = new Date()): boolean => {
+  const proximo = nextReadAt(source, agora)
+  return proximo !== null && proximo <= agora
 }
 
 /**

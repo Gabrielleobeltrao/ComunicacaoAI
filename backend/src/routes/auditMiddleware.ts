@@ -267,6 +267,21 @@ const RULES: Rule[] = [
   R('POST', 'api/extensions/installed/:/template', { entityType: 'extension', action: 'create' }, { idAt: 3 }),
   R('DELETE', 'api/extensions/installed/:', { entityType: 'extension', action: 'pause' }, { idAt: 3 }),
 
+  /**
+   * As FONTES da Central. Criar, editar, ativar e apagar mudam o que o escritório
+   * observa sozinho — e "quem ligou esta fonte" é exatamente o que uma auditoria
+   * precisa responder. Testar e ler NÃO entram: são leitura, e são frequentes.
+   */
+  R('POST', 'api/monitoring/sources', { entityType: 'monitoring_source', action: 'create' }),
+  R('PUT', 'api/monitoring/sources/:', { entityType: 'monitoring_source', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/monitoring/sources/:/activate', { entityType: 'monitoring_source', action: 'activate' }, { idAt: 3 }),
+  R('POST', 'api/monitoring/sources/:/pause', { entityType: 'monitoring_source', action: 'pause' }, { idAt: 3 }),
+  R('POST', 'api/monitoring/sources/:/duplicate', { entityType: 'monitoring_source', action: 'create' }, { idAt: 3 }),
+  R('DELETE', 'api/monitoring/sources/:', { entityType: 'monitoring_source', action: 'delete' }, { idAt: 3 }),
+  R('POST', 'api/monitoring/sources/test', null, { why: 'leitura de teste, não muda nada' }),
+  R('POST', 'api/monitoring/sources/:/test', null, { why: 'leitura de teste, não muda nada' }),
+  R('POST', 'api/monitoring/sources/:/read', null, { why: 'coleta sob demanda: o registro é auditado pelo histórico' }),
+
   // O MONITOR é uma regra que age sozinha: quem a criou, quem a pôs de plantão e quem a
   // pausou é exatamente o que uma auditoria precisa responder depois. Publicar é
   // `activate` e não `publish`: o que muda é o ESTADO de plantão, não uma versão imutável.
