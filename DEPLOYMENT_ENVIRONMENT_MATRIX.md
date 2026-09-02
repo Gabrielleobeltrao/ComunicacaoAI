@@ -72,6 +72,14 @@ Secrets are never real in this repo. URLs are public and are the real values abo
 | `SANDBOX_RUNNER_SECRET` | backend + runner | Required to run code | Runtime | **Secret** | `openssl rand -hex 32` | Generated, shared by the pair | On suspicion | The runner answers 503 to everyone; a runner without a secret is worse than no runner |
 | `SANDBOX_RUNNER_TIMEOUT_MS` | backend | Optional (`20000`) | Runtime | Public | `20000` | Deploy config | Slow runners | The backend cuts a call at 20s; the runner has its own cap and the smaller one wins |
 | `PLATFORM_REVIEWERS` | backend | Optional (**default empty**) | Runtime | Public | `<accountId>,<accountId>` | Deploy config — **never the request body** | Team changes | Nobody can review, so code cannot be published. That is the default |
+| `MONITORING_CENTER_ENABLED` | backend | Optional (default on) | Runtime | Public | *(unset)* | Deploy config | Rolling the Monitoring Center back | `0` makes `/api/monitoring` answer 404 |
+| `MONITORING_POLL_MS` | backend | Optional (`15000`) | Runtime | Public | `15000` | Deploy config | Tuning source latency vs. DB load | The worker sweeps due sources every 15s |
+| `BROWSER_WORKER_URL` | backend | Optional | Runtime | Public | `http://browser-worker:4400` | Deploy config — **never a request** | Worker moves | Without it (and the secret) the `browser` source type refuses |
+| `BROWSER_WORKER_SECRET` | backend + worker | Required for page sources | Runtime | **Secret** | `openssl rand -hex 32` | Generated, shared by the pair | On suspicion | The worker answers 503 to everyone |
+| `BROWSER_CONCURRENCY` / `BROWSER_KILL_SWITCH` | browser-worker | Optional (`2` / off) | Runtime | Public | `2` | Deploy config | Throughput / incident | Above the cap it answers 429; the kill switch refuses everything with the process up |
+| `BROWSER_ALLOW_LOOPBACK` | browser-worker | **Test only** | Runtime | Public | *(unset)* | Never set in production | — | Frees `127.0.0.1` and **nothing else**: metadata and private ranges stay blocked |
+| `VISION_ENABLED` | backend | Optional (**default off**) | Runtime | Public | *(unset)* | Deploy config | Enabling image reading | Anything other than `1` keeps vision off. Having a model key is not the same as wanting pages read by guesswork |
+| `VISION_MODEL` | backend | Optional (`claude-sonnet-5`) | Runtime | Public | `claude-sonnet-5` | Deploy config | Model change | Uses the default |
 | `SANDBOX_EPHEMERAL` / `SANDBOX_NO_NEW_PRIVILEGES` / `SANDBOX_SECCOMP` | runner | Optional (default off) | Runtime | Public | `1` | Deploy config, matching what the orchestrator really applies | Deployment changes | The measured profile reports them false, and the backend refuses to enable code. See `SANDBOX_RUNBOOK.md` |
 | `SANDBOX_CONCURRENCY` | runner | Optional (`1`) | Runtime | Public | `1` | Deploy config | Throughput | One execution at a time; above the cap the runner refuses instead of queueing |
 | `SANDBOX_HANDLE_TTL_MS` / `SANDBOX_HANDLE_MAX_USES` | backend | Optional (`30000` / `5`) | Runtime | Public | `30000` | Deploy config | Tuning the capability broker | Capability handles live 30s and are good for at most 5 uses |
@@ -129,6 +137,9 @@ for, and backfills:
 | `sandbox_capability_handles` | Short-lived capability handles (TTL index); stores the token HASH, never the token | — |
 | `sandbox_kill_switches` | Code disabled by package, version or hash | — |
 | `extension_reviews` | Immutable review decisions, bound to (subject, hash, reviewer) | — (no update path exists by design) |
+| `monitoring_sources` | Monitoring Center sources: scope, typed config, versioned mapping, cadence, freshness, telemetry | — (existing recorders are projected only by the explicit `POST /api/monitoring/migrate/recorders`, which touches no recorder and has a rollback) |
+| `monitoring_source_grants` | Who reaches a source (agent/sector/floor/building), deny-wins | — |
+| `monitoring_webhook_deliveries` | Replay protection for webhook sources (TTL 7 days) | — |
 | `data_stores` / `dataset_definitions` | Databases and their datasets | — (existing histories are projected only by the explicit `POST /api/databases/migrate/histories`, which moves no records and has a rollback) |
 
 Rolling back the application code is safe: the added fields are ignored by the

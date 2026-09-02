@@ -569,14 +569,47 @@ Comandos: `npm run test:browser-worker` → **25/25**;
 uma página cujo valor **só existe depois do JavaScript**.
 Bateria: backend **1445 + 1973** · runner **21** · browser-worker **25**.
 
+## Bloco 20 — screenshot e visão, o último degrau ✅
+
+`browser-worker/src/render.mjs` (retrato), `backend/src/monitoring/visionProvider.ts` e a
+escalada final em `collect.ts`.
+
+A cadeia de sites está **completa**: JSON → JSON-LD → seletor DOM → **browser renderizado**
+→ **screenshot/OCR/visão**.
+
+- **o retrato só é tirado quando a visão é o próximo degrau**, e é **cortado no seletor**
+  quando existe um: mandar a página inteira para um modelo de visão é dar a ele mais chance
+  de ler o número errado, além de custar mais;
+- **o provedor produz leituras; ele nunca decide se elas valem.** Quem decide é o portão,
+  que não conhece provedor nenhum — juntar os dois faria o modelo arbitrar sobre a própria
+  qualidade, e um modelo perguntado sobre a própria certeza responde bem demais;
+- o pedido ao modelo é **estreito de propósito**: um campo por vez, o valor como aparece,
+  o texto cru que embasou, e a instrução explícita de **não adivinhar** — um valor inventado
+  com confiança alta é pior do que dizer que não conseguiu ler;
+- **confiança fora do intervalo vira zero**: um modelo que devolvesse `confidence: "alta"`
+  passaria no portão sem isso;
+- **campo obrigatório é tratado como crítico** — exige 95% e confirmação;
+- **a amostra é o texto lido, nunca a imagem**: uma imagem ali viraria um print do site
+  inteiro na tela de quem configurou;
+- **`VISION_ENABLED=1` é exigido além da chave**: ter uma chave de modelo não é o mesmo que
+  querer que páginas sejam lidas por adivinhação;
+- e há teste afirmando que **a visão não é chamada quando um degrau anterior resolveu** —
+  pagar adivinhação com o dado ali seria o pior dos dois mundos.
+
+Comandos: `npm run test:browser-worker` → **28/28**;
+`node --test test/monitoringBrowser.integration.test.mjs` → **19/19**.
+Bateria: backend **1445 + 1980** · runner **21** · browser-worker **28** · secret-scan limpo
+em 2233 arquivos. `DEPLOYMENT_ENVIRONMENT_MATRIX.md` documenta as variáveis e as coleções
+novas.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **Screenshot e OCR/visão** no worker: o portão de confiança/evidência existe e está
-   testado (14 casos), e o `health` responde `vision: false`. Falta o provedor que produz a
-   leitura — e sem ele nenhuma fonte depende de visão, que é o estado seguro.
+2. **Script personalizado na sandbox** sobre DOM/JSON sanitizado: o runner de código existe
+   e executa (bloco 1 do OFFICE_PLATFORM), mas nenhuma fonte de monitoramento oferece essa
+   opção ainda — falta ligar o `runtimeKind: 'code'` a um passo de extração da fonte.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

@@ -176,6 +176,8 @@ import { providerFromEnv } from './extensionRuntime/httpProvider.js'
 import { ensureReviewIndexes } from './extensionRuntime/review.js'
 import { registerSandboxProvider } from './extensionRuntime/provider.js'
 import { browserWorkerFromEnv, registerBrowserWorker } from './monitoring/browserProvider.js'
+import { visionProviderFromEnv } from './monitoring/visionProvider.js'
+import { registerVisionProvider } from './monitoring/vision.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
 import { ensureContextManifestIndexes } from './contextManifest.js'
 import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
@@ -5490,6 +5492,14 @@ async function start() {
   // servidor, e sem ela o tipo `browser` continua recusando.
   const paginas = browserWorkerFromEnv()
   if (paginas) registerBrowserWorker(paginas)
+  /**
+   * A visão, quando alguém a ligou de propósito.
+   *
+   * `VISION_ENABLED=1` é exigido além da chave: ter uma chave de modelo não é o mesmo que
+   * querer que páginas sejam lidas por adivinhação.
+   */
+  const visao = visionProviderFromEnv()
+  if (visao) registerVisionProvider(visao)
   ensureToolVersionCallIndexes().catch((error) => {
     console.error('ensureToolVersionCallIndexes failed:', error)
   })

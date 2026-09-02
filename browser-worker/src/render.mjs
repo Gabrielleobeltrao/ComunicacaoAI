@@ -30,6 +30,8 @@ export async function loadEngine() {
 
 export const RENDER_LIMITES = {
   timeoutMs: 20_000,
+  /** O retrato tem teto próprio: ele viaja na resposta e depois para dentro de um modelo. */
+  maxScreenshotBytes: 2 * 1024 * 1024,
   maxSubrequests: 40,
   maxTotalBytes: 8 * 1024 * 1024,
   /** Depois disso, o que a página ainda estiver buscando não interessa mais. */
@@ -120,7 +122,28 @@ export async function renderPage(rawUrl, opcoes = {}) {
     await pagina.waitForTimeout(limites.quietMs)
 
     const html = await pagina.content()
+
+    /**
+     * O RETRATO — só quando pedido, e cortado no elemento quando há seletor.
+     *
+     * A imagem é o último recurso, e ela custa: bytes na resposta, tokens no modelo que
+     * vai lê-la e um caminho onde o dado deixa de ser lido e passa a ser adivinhado. Tirar
+     * sempre seria pagar isso em toda coleta.
+     *
+     * Quando existe seletor, o corte é nele: mandar a página inteira para um modelo de
+     * visão é dar a ele mais chance de ler o número errado, além de custar mais.
+     */
+    let screenshot = null
+    if (opcoes.screenshot) {
+      const alvo = opcoes.selector ? await pagina.$(opcoes.selector).catch(() => null) : null
+      const buffer = await (alvo ?? pagina).screenshot({ type: 'png', ...(alvo ? {} : { fullPage: false }) }).catch(() => null)
+      if (buffer && buffer.length <= (limites.maxScreenshotBytes ?? 2 * 1024 * 1024)) {
+        screenshot = { base64: buffer.toString('base64'), bytes: buffer.length, croppedTo: opcoes.selector && alvo ? opcoes.selector : null }
+      }
+    }
+
     return {
+      ...(screenshot ? { screenshot } : {}),
       status: resposta?.status() ?? 0,
       contentType: String(resposta?.headers()['content-type'] ?? 'text/html'),
       body: html,

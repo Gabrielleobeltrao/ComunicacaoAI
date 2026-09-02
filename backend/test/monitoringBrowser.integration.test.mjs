@@ -211,8 +211,127 @@ test('o health do worker diz o que ele faz e o que não faz', async () => {
   const h = await bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }).health()
   assert.equal(h.ok, true)
   assert.equal(h.capabilities.fetch, true)
-  // Screenshot e visão continuam fora — e dizer isso é o que impede alguém de configurar
-  // uma fonte que depende deles.
-  assert.equal(h.capabilities.screenshot, false)
+  // Quem renderiza, retrata. Visão continua FORA do worker: ela é do backend, que tem o
+  // provedor de modelo — o worker só produz a imagem.
   assert.equal(h.capabilities.vision, false)
+})
+
+// --- a VISÃO como último degrau ---------------------------------------------------------
+//
+// Ela é adivinhação com boa aparência. Estes casos protegem o que impede o palpite de
+// virar dado: ela só acontece quando tudo antes falhou, quando alguém a escolheu, e o que
+// ela produz passa pelo portão de confiança e evidência.
+
+const { registerVisionProvider, resetVisionProvider } = await import('../dist/monitoring/vision.js')
+
+const paginaOpaca = { '/p': { body: '<html><body><canvas id="grafico"></canvas></body></html>' } }
+const fonteComVisao = (over = {}) =>
+  fonte({
+    config: { url: `http://127.0.0.1:${portaSite}/p`, strategy: ['json', 'jsonld', 'dom', 'browser', 'vision'] },
+    mapping: { version: 1, fields: [{ to: 'preco', from: 'preco', transforms: [{ op: 'number', locale: 'pt-BR' }] }] },
+    ...over,
+  })
+
+test('sem provedor de visão, o último degrau não acontece', async () => {
+  resetVisionProvider()
+  bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
+  respostas = paginaOpaca
+
+  const r = await svc.testSource(DONO, fonteComVisao())
+  assert.equal(r.ok, false)
+  assert.match(r.error.message, /provedor de visão|renderiza/)
+})
+
+test('ACEITAÇÃO: a visão lê o valor, e ele passa pelo portão', async () => {
+  bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
+  respostas = paginaOpaca
+  registerVisionProvider({
+    read: async ({ imageRef, fields }) => {
+      // O provedor recebe a IMAGEM que o worker produziu — não a página, não a URL.
+      assert.ok(imageRef.length > 0, 'a imagem chega ao provedor')
+      assert.deepEqual(fields.map((f) => f.name), ['preco'])
+      return [{ field: 'preco', value: 'R$ 42,50', confidence: 0.98, evidence: { rawText: 'R$ 42,50', provider: 'teste' } }]
+    },
+    health: async () => ({ ok: true, provider: 'teste' }),
+  })
+
+  const r = await svc.testSource(DONO, fonteComVisao())
+  assert.equal(r.ok, true, JSON.stringify(r.error ?? {}))
+  assert.equal(r.strategy, 'vision')
+  assert.deepEqual(r.rows, [{ preco: 42.5 }])
+})
+
+test('a amostra da visão é o TEXTO lido, e nunca a imagem', async () => {
+  bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
+  respostas = paginaOpaca
+  registerVisionProvider({
+    read: async () => [{ field: 'preco', value: '10,00', confidence: 0.99, evidence: { rawText: '10,00', provider: 'teste' } }],
+    health: async () => ({ ok: true, provider: 'teste' }),
+  })
+
+  const r = await svc.testSource(DONO, fonteComVisao())
+  const texto = JSON.stringify(r.sample)
+  // Uma imagem na amostra viraria um print do site inteiro na tela de quem configurou.
+  assert.ok(!/iVBOR|base64/.test(texto))
+  assert.match(texto, /leituraPorImagem/)
+})
+
+test('leitura com POUCA confiança não vira dado, e o motivo sobe', async () => {
+  bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
+  respostas = paginaOpaca
+  registerVisionProvider({
+    read: async () => [{ field: 'preco', value: '42,50', confidence: 0.3, evidence: { rawText: '42,50', provider: 'teste' } }],
+    health: async () => ({ ok: true, provider: 'teste' }),
+  })
+
+  const r = await svc.testSource(DONO, fonteComVisao())
+  assert.equal(r.ok, false)
+  // "Leu, mas não com confiança" manda olhar a página; "não achei" manda procurar seletor.
+  assert.match(r.error.message, /confiança/)
+})
+
+test('campo OBRIGATÓRIO é tratado como crítico: exige confirmação', async () => {
+  bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
+  respostas = paginaOpaca
+  registerVisionProvider({
+    read: async () => [{ field: 'preco', value: '42,50', confidence: 0.99, evidence: { rawText: '42,50', provider: 'teste' } }],
+    health: async () => ({ ok: true, provider: 'teste' }),
+  })
+
+  const r = await svc.testSource(DONO, fonteComVisao({
+    mapping: { version: 1, fields: [{ to: 'preco', from: 'preco', required: true, transforms: [{ op: 'number', locale: 'pt-BR' }] }] },
+  }))
+  assert.equal(r.ok, false)
+  assert.match(r.error.message, /segunda leitura/)
+})
+
+test('sem evidência, a leitura não passa nem com confiança alta', async () => {
+  bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
+  respostas = paginaOpaca
+  registerVisionProvider({
+    read: async () => [{ field: 'preco', value: '42,50', confidence: 1, evidence: { rawText: '', provider: '' } }],
+    health: async () => ({ ok: true, provider: 'teste' }),
+  })
+
+  const r = await svc.testSource(DONO, fonteComVisao())
+  assert.equal(r.ok, false)
+  assert.match(r.error.message, /evidência/)
+})
+
+test('a visão NÃO é chamada quando um degrau anterior resolveu', async () => {
+  bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
+  respostas = { '/p': { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preco: '5,00' }) } }
+  let chamou = false
+  registerVisionProvider({
+    read: async () => {
+      chamou = true
+      return []
+    },
+    health: async () => ({ ok: true, provider: 'teste' }),
+  })
+
+  const r = await svc.testSource(DONO, fonteComVisao())
+  assert.equal(r.strategy, 'json')
+  assert.equal(chamou, false, 'pagar adivinhação quando o dado estava ali seria o pior dos dois mundos')
+  resetVisionProvider()
 })

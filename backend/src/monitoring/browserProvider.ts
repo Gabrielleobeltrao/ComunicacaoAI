@@ -21,6 +21,9 @@ export interface BrowserFetchRequest {
    * Por isso ele não é o padrão: é o que se tenta quando os degraus baratos não deram.
    */
   render?: boolean
+  /** O retrato só é pedido quando a visão é o próximo degrau. */
+  screenshot?: boolean
+  selector?: string
   limits?: { timeoutMs?: number; maxBytes?: number; maxTotalBytes?: number; maxSubrequests?: number }
 }
 
@@ -35,6 +38,8 @@ export interface BrowserFetchResult {
   rendered?: boolean
   subrequests?: { url: string; status: number; bytes: number }[]
   blocked?: { url: string; reason: string }[]
+  /** PNG em base64, quando pedido. Ele não passa por disco em nenhum dos dois lados. */
+  screenshot?: { base64: string; bytes: number; croppedTo: string | null }
   error?: { kind: 'blocked' | 'timeout' | 'fetch' | 'unavailable'; message: string }
 }
 
@@ -103,6 +108,7 @@ export function httpBrowserWorker(config: { baseUrl: string; secret: string; tim
             rendered: bruto.rendered === true,
             subrequests: Array.isArray(bruto.subrequests) ? bruto.subrequests : [],
             blocked: Array.isArray(bruto.blocked) ? bruto.blocked : [],
+            ...(bruto.screenshot?.base64 ? { screenshot: bruto.screenshot } : {}),
           }
         }
         const tipos = ['blocked', 'timeout', 'fetch', 'unavailable'] as const

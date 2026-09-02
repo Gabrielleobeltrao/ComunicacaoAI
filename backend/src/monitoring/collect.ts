@@ -24,7 +24,7 @@ export interface CollectResult {
   /** A amostra REDIGIDA do bruto — para a tela conferir o mapeamento sem ver segredo. */
   sample: unknown
   /** Qual estratégia respondeu. A tela mostra isso: "li o JSON" é diferente de "li o HTML". */
-  strategy: 'json' | 'jsonld' | 'dom' | 'feed' | 'none'
+  strategy: 'json' | 'jsonld' | 'dom' | 'feed' | 'vision' | 'none'
   missing: string[]
   mappingVersion: number | null
   latencyMs: number
@@ -206,11 +206,54 @@ async function coletarDeBrowser(source: FonteColetavel, comecou: number): Promis
    * Perguntar "o que saiu daqui serve?" é a pergunta certa, e ela só pode ser feita depois
    * de mapear.
    */
+  const podeVer = estrategias.includes('vision')
+  let leituraDeVisao: { rows: Record<string, unknown>[]; recusas: string[] } | null = null
+
   if (r.ok && podeRenderizar && !rendeuValor(r, source)) {
     const saude = await worker.health()
     if (saude.capabilities.render) {
       precisouRenderizar = true
-      r = await worker.fetchPage({ url: cfg.url, render: true, limits: { timeoutMs: source.retry.timeoutMs } })
+      r = await worker.fetchPage({
+        url: cfg.url,
+        render: true,
+        // O retrato só é pedido quando a visão é o próximo degrau: tirar sempre custaria
+        // bytes e tokens em toda coleta que nunca vai olhar a imagem.
+        screenshot: podeVer && saude.capabilities.screenshot,
+        ...(cfg.selector ? { selector: cfg.selector } : {}),
+        limits: { timeoutMs: source.retry.timeoutMs },
+      })
+
+      /**
+       * A VISÃO é o último degrau, e ela é adivinhação com boa aparência.
+       *
+       * Só acontece quando tudo antes falhou, quando alguém a escolheu explicitamente na
+       * estratégia, e quando existe provedor. E o que sai dela não vira dado sozinho: cada
+       * leitura passa pelo portão de confiança e evidência.
+       */
+      if (podeVer && !rendeuValor(r, source) && r.screenshot?.base64) {
+        leituraDeVisao = await lerComVisao(r.screenshot.base64, source)
+      }
+    }
+  }
+
+  if (leituraDeVisao) {
+    const latencyMs = Date.now() - comecou
+    if (leituraDeVisao.rows.length === 0) {
+      // Recusar dizendo o motivo é o ponto: "a visão leu, mas não com confiança suficiente"
+      // manda a pessoa olhar a página; "não achei" a manda procurar um seletor.
+      return falha('empty', leituraDeVisao.recusas[0] ?? 'a leitura por imagem não passou na conferência', latencyMs, r.status ?? null)
+    }
+    return {
+      ok: true,
+      rows: leituraDeVisao.rows,
+      // A amostra da visão é o TEXTO lido, não a imagem: uma imagem na amostra viraria um
+      // print do site inteiro na tela de quem configurou.
+      sample: redactSample({ leituraPorImagem: leituraDeVisao.rows }),
+      strategy: 'vision',
+      missing: [],
+      mappingVersion: source.mapping.version,
+      latencyMs,
+      status: r.status ?? null,
     }
   }
 
@@ -315,6 +358,45 @@ function rendeuValor(r: { body?: string; contentType?: string }, source: FonteCo
   } catch {
     return false
   }
+}
+
+/**
+ * A leitura por imagem, com cada campo passando pelo portão.
+ *
+ * O que volta são só as leituras ACEITAS. Uma recusa não vira campo nulo na linha: ela
+ * fica de fora, e o motivo sobe — porque uma linha com metade dos campos lidos por
+ * adivinhação é pior do que nenhuma.
+ */
+async function lerComVisao(imagem: string, source: FonteColetavel): Promise<{ rows: Record<string, unknown>[]; recusas: string[] }> {
+  const { visionProvider, gateVisionReading } = await import('./vision.js')
+  const provedor = visionProvider()
+  const saude = await provedor.health()
+  if (!saude.ok) return { rows: [], recusas: ['não há provedor de visão configurado'] }
+
+  const campos = source.mapping.fields.map((f) => ({ name: f.to }))
+  const leituras = await provedor.read({ imageRef: imagem, fields: campos })
+  if (leituras.length === 0) return { rows: [], recusas: ['a leitura por imagem não devolveu nada'] }
+
+  const linha: Record<string, unknown> = {}
+  const recusas: string[] = []
+
+  for (const regra of source.mapping.fields) {
+    const leitura = leituras.find((l) => l.field === regra.to)
+    if (!leitura) {
+      recusas.push(`"${regra.to}" não foi lido na imagem`)
+      continue
+    }
+    const decisao = gateVisionReading(leitura, {
+      // Um campo que o mapeamento marcou obrigatório é o que decide: ele é crítico, e o
+      // portão exige confiança alta e confirmação para ele.
+      critical: regra.required === true,
+      ...(regra.transforms ? { transforms: regra.transforms } : {}),
+    })
+    if (decisao.accepted) linha[regra.to] = decisao.value
+    else recusas.push(`"${regra.to}": ${decisao.explanation}`)
+  }
+
+  return { rows: Object.keys(linha).length ? [linha] : [], recusas }
 }
 
 export interface CollectOptions {

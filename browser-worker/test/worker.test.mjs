@@ -205,9 +205,8 @@ test('replay é recusado', async () => {
 test('o health diz o que ele faz E o que não faz', async () => {
   const r = await chamar('/health', {})
   assert.equal(r.body.capabilities.fetch, true)
-  // Screenshot e visão continuam fora: dizer que faz sem fazer é o que leva alguém a
-  // configurar uma fonte que nunca vai funcionar.
-  assert.equal(r.body.capabilities.screenshot, false)
+  // Visão continua fora do worker: dizer que faz sem fazer é o que leva alguém a
+  // configurar uma fonte que nunca vai funcionar. Ela é do backend, que tem o provedor.
   assert.equal(r.body.capabilities.vision, false)
 })
 
@@ -307,4 +306,37 @@ test('a renderização respeita o teto de subrequisições', async (t) => {
 
 test('sem motor, renderizar RECUSA em vez de fingir', async () => {
   await assert.rejects(() => renderPage('https://exemplo.test/x', { engine: null }), /motor de renderização/)
+})
+
+test('o RETRATO só é tirado quando pedido', async (t) => {
+  const motor = await loadEngine()
+  if (!motor) return t.skip('sem motor neste ambiente')
+
+  respostas = { '/foto': { body: '<html><body><div id="alvo">R$ 42,50</div></body></html>' } }
+
+  const sem = await renderPage(`http://127.0.0.1:${portaAlvo}/foto`, { engine: motor })
+  assert.equal(sem.screenshot, undefined, 'tirar sempre custaria bytes e tokens em toda coleta')
+
+  const com = await renderPage(`http://127.0.0.1:${portaAlvo}/foto`, { engine: motor, screenshot: true })
+  assert.ok(com.screenshot.bytes > 0)
+  assert.match(com.screenshot.base64.slice(0, 8), /^iVBOR/, 'é um PNG')
+})
+
+test('com seletor, o retrato é CORTADO no elemento', async (t) => {
+  const motor = await loadEngine()
+  if (!motor) return t.skip('sem motor neste ambiente')
+
+  respostas = { '/corte': { body: '<html><body><p>muito texto irrelevante</p><div id="alvo">R$ 42,50</div></body></html>' } }
+  const r = await renderPage(`http://127.0.0.1:${portaAlvo}/corte`, { engine: motor, screenshot: true, selector: '#alvo' })
+  // Mandar a página inteira para um modelo de visão é dar a ele mais chance de ler o
+  // número errado, além de custar mais.
+  assert.equal(r.screenshot.croppedTo, '#alvo')
+})
+
+test('o health diz que retrata quando há motor', async () => {
+  const motor = await loadEngine()
+  const r = await chamar('/health', {})
+  assert.equal(r.body.capabilities.screenshot, Boolean(motor))
+  // Visão continua fora do worker: ela é do backend, que tem o provedor de modelo.
+  assert.equal(r.body.capabilities.vision, false)
 })

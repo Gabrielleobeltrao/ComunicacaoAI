@@ -62,7 +62,9 @@ export function createBrowserWorker({ secret = SECRET } = {}) {
       return responder(res, 200, {
         ok: !desligado(),
         killSwitch: desligado(),
-        capabilities: { fetch: true, render: Boolean(motor), screenshot: false, vision: false },
+        // Screenshot vem junto do motor: quem renderiza, retrata. Visão continua fora —
+        // ela é do backend, que tem o provedor de modelo; o worker só produz a imagem.
+        capabilities: { fetch: true, render: Boolean(motor), screenshot: Boolean(motor), vision: false },
         limits: LIMITES,
         concurrency: CONCORRENCIA,
       })
@@ -89,7 +91,11 @@ export function createBrowserWorker({ secret = SECRET } = {}) {
          * por nada. O caminho barato continua sendo o padrão; o caro é uma escolha.
          */
         const r = pedido.render === true
-          ? await renderPage(String(pedido.url ?? ''), { limits: pedido.limits })
+          ? await renderPage(String(pedido.url ?? ''), {
+              limits: pedido.limits,
+              screenshot: pedido.screenshot === true,
+              ...(pedido.selector ? { selector: String(pedido.selector) } : {}),
+            })
           : await fetchWithSubrequests(String(pedido.url ?? ''), Array.isArray(pedido.subrequests) ? pedido.subrequests.map(String) : [], {
               limits: pedido.limits,
             })
@@ -117,6 +123,9 @@ export function createBrowserWorker({ secret = SECRET } = {}) {
           rendered: r.rendered === true,
           subrequests: r.subrequests.map((s) => ({ url: s.url, status: s.status, bytes: s.bytes })),
           blocked: r.blocked,
+          // A imagem só volta quando foi pedida — ela é grande, e uma resposta que a
+          // carrega sem necessidade custa em toda coleta.
+          ...(r.screenshot ? { screenshot: r.screenshot } : {}),
           ms: Date.now() - comecou,
         })
       } catch (erro) {
