@@ -87,6 +87,14 @@ export async function conferirFonteRealtime(ownerId: string, sourceKind: Realtim
     if (!instalacao) throw new ValidationError('conexão: essa conexão não existe nesta conta.')
     return instalacao.name
   }
+  if (sourceKind === 'monitoring') {
+    // A mesma regra da conexão: a existência é conferida NESTA conta. Um id de outra conta
+    // é um pedido, e aceitá-lo faria um alias local apontar para dado alheio.
+    if (!ObjectId.isValid(sourceRef)) throw new ValidationError('fonte: escolha uma fonte da Central.')
+    const fonte = await db.collection('monitoring_sources').findOne({ _id: new ObjectId(sourceRef), ownerId }, { projection: { name: 1 } })
+    if (!fonte) throw new ValidationError('fonte: essa fonte não existe nesta conta.')
+    return String(fonte.name)
+  }
   throw new ValidationError('fonte: tipo não suportado.')
 }
 

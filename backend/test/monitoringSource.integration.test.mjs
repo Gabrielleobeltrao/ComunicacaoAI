@@ -55,7 +55,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['monitoring_sources', 'data_recorders', 'data_history_records', 'connections', 'buildings'])
+  for (const c of ['monitoring_sources', 'data_recorders', 'data_history_records', 'connections', 'buildings', 'live_data', 'realtime_sources'])
     await db.collection(c).deleteMany({})
   corpoAtual = JSON.stringify({ dados: { preco: '1.234,56', nome: '  ACME  ' } })
   tipoAtual = 'application/json'
@@ -930,4 +930,75 @@ test('sem paginação declarada, nada muda: uma requisição e nenhum relatório
   const r = await svc.testSource(DONO, await svc.getSource(DONO, f._id))
   assert.equal(r.ok, true)
   assert.equal(r.pages, undefined)
+})
+
+// --- o AO VIVO como destino de verdade ----------------------------------------------------
+//
+// `realtimeSourceId` nascia null, era preservado em toda atualização e nunca recebia nada.
+// Uma fonte com `live: true, history: false` não tinha recorder — e o Ao vivo, que lia do
+// histórico, mostrava zero leituras para sempre.
+
+test('ACEITAÇÃO: live=true, history=false grava o valor de agora e ele aparece no Ao vivo', async () => {
+  const f = await svc.createSource(DONO, entrada({ name: 'Só ao vivo', destination: { live: true, history: false } }))
+  await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+
+  const materializada = await svc.getSource(DONO, f._id)
+  assert.ok(materializada.destination.realtimeSourceId, 'ativar uma fonte ao vivo cria o par em tempo real')
+  assert.equal(materializada.destination.recorderId, null, 'sem histórico, não há recorder')
+
+  const leitura = await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  assert.equal(leitura.ok, true)
+  assert.equal(leitura.recorded, 0, 'sem histórico, nada é gravado como fato')
+
+  const { flushLiveData } = await import('../dist/integrations/websocket/liveData.js')
+  await flushLiveData()
+
+  const { items } = await svc.liveView(DONO)
+  const item = items.find((i) => i.name === 'Só ao vivo')
+  assert.ok(item, 'a fonte precisa aparecer no Ao vivo')
+  assert.equal(item.readings.length, 1, 'com um valor guardado, a aba mostra um valor')
+  assert.equal(item.readings[0].value.preco, 1234.56)
+})
+
+test('o valor ao vivo é lido pelo mesmo caminho que um agente usaria', async () => {
+  const f = await svc.createSource(DONO, entrada({ name: 'Ao vivo canônico', destination: { live: true, history: false } }))
+  await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+
+  const { flushLiveData, getLiveValue } = await import('../dist/integrations/websocket/liveData.js')
+  await flushLiveData()
+
+  // Um armazenamento próprio aqui seria um segundo lugar guardando "o valor de agora".
+  const valor = await getLiveValue(DONO, svc.liveConnectionOf(f._id), 'valor')
+  assert.ok(valor, 'o valor precisa estar no live_data, que é onde esta plataforma guarda o agora')
+  assert.equal(valor.value.preco, 1234.56)
+})
+
+test('a fonte em tempo real nasce sem agente nenhum: acesso é concessão', async () => {
+  const f = await svc.createSource(DONO, entrada({ name: 'Sem agentes', destination: { live: true, history: false } }))
+  await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+
+  const rtId = (await svc.getSource(DONO, f._id)).destination.realtimeSourceId
+  const rt = await db.collection('realtime_sources').findOne({ _id: rtId })
+  assert.deepEqual(rt.agentIds, [])
+})
+
+test('uma fonte com os DOIS destinos alimenta os dois', async () => {
+  const f = await svc.createSource(DONO, entrada({ name: 'Os dois', destination: { live: true, history: true } }))
+  await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+
+  const m = await svc.getSource(DONO, f._id)
+  assert.ok(m.destination.recorderId)
+  assert.ok(m.destination.realtimeSourceId)
+
+  const leitura = await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  assert.ok(leitura.recorded > 0)
+
+  const { flushLiveData, getLiveValue } = await import('../dist/integrations/websocket/liveData.js')
+  await flushLiveData()
+  assert.ok(await getLiveValue(DONO, svc.liveConnectionOf(f._id), 'valor'))
 })

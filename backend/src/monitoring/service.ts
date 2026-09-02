@@ -441,6 +441,9 @@ export async function testSource(ownerId: string, entrada: MonitoringSource | So
  * retenção. A Central não repete nada disso; ela só diz qual `sourceKey` alimentar.
  */
 async function materializarDestino(fonte: MonitoringSource): Promise<ObjectId | null> {
+  // O AO VIVO é outro destino, e outro subsistema. Uma fonte pode ter os dois, um só, ou
+  // — antes disto — pedir "ao vivo" e não aparecer em lugar nenhum.
+  if (fonte.destination.live) await materializarAoVivo(fonte)
   if (!fonte.destination.history) return null
   if (fonte.destination.recorderId) return fonte.destination.recorderId
   const recorder = await criarRecorder(fonte.ownerId, {
@@ -472,6 +475,62 @@ async function materializarDestino(fonte: MonitoringSource): Promise<ObjectId | 
   await ensureDatasetForRecorder(fonte.ownerId, recorder)
   return recorder._id
 }
+
+/**
+ * A CONEXÃO do Dado ao vivo desta fonte.
+ *
+ * O `live_data` guarda o último valor por `(conta, conexão, chave)`. Uma fonte da Central
+ * não é uma conexão de WebSocket, mas ocupa exatamente o mesmo papel: é a origem que
+ * empurra valores identificados por chave. Usar a mesma coleção é o que faz o valor
+ * aparecer para o agente, para a tool de tempo real e para o Ao vivo pelo mesmo caminho —
+ * um armazenamento próprio aqui seria um segundo lugar guardando "o valor de agora".
+ */
+export const liveConnectionOf = (id: ObjectId): string => `monitoring:${id.toString()}`
+
+/**
+ * O destino AO VIVO, criado no subsistema canônico.
+ *
+ * `realtimeSourceId` era decorativo: nascia `null`, era preservado em toda atualização e
+ * nunca recebia nada. Uma fonte com `live: true` e `history: false` não tinha recorder, e o
+ * Ao vivo — que lia do histórico — mostrava a fonte com zero leituras para sempre.
+ *
+ * A fonte em tempo real é criada DESLIGADA para agentes (`agentIds: []`): acesso é
+ * concessão, não padrão, e quem concede faz isso em Fontes de dados, olhando quem alcança.
+ */
+async function materializarAoVivo(fonte: MonitoringSource): Promise<ObjectId | null> {
+  if (fonte.destination.realtimeSourceId) return fonte.destination.realtimeSourceId
+  const { criarFonte } = await import('../realtimeSources/repository.js')
+  const alias = `monitoring_${fonte._id.toString().slice(-8)}`
+  try {
+    const rt = await criarFonte(fonte.ownerId, {
+      name: fonte.name,
+      sourceKind: 'monitoring',
+      sourceRef: fonte._id.toString(),
+      key: CHAVE_AO_VIVO,
+      alias,
+      allowedFields: fonte.mapping.fields.map((f) => f.to),
+      // Três vezes o intervalo, como a janela de validade: o mesmo critério de "velho".
+      staleAfterSeconds: Math.max(30, Math.round((fonte.freshness.staleAfterMs || 900_000) / 1000)),
+      agentIds: [],
+      enabled: true,
+    })
+    await sources.updateOne({ _id: fonte._id }, { $set: { 'destination.realtimeSourceId': rt._id, updatedAt: new Date() } })
+    return rt._id
+  } catch (erro) {
+    // Um alias repetido não impede a fonte de existir: ela já tem um par em tempo real.
+    if ((erro as { code?: number }).code === 11000) return null
+    throw erro
+  }
+}
+
+/**
+ * A chave única do valor ao vivo de uma fonte sem entidade.
+ *
+ * Quando a fonte declara `entityKeyPath`, cada entidade vira uma chave — é o caso do
+ * "preço por papel". Sem ele, a fonte tem um valor só, e inventar uma chave por leitura
+ * encheria o `live_data` de chaves mortas em uma hora.
+ */
+const CHAVE_AO_VIVO = 'valor'
 
 /**
  * O monitor de uma fonte — criado no motor canônico, e sempre RASCUNHO.
@@ -576,6 +635,26 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
     )
     // Leitura boa, zero gravado: a fonte está saudável, o dado é que não mudou.
     return { ok: true, rows: r.rows.length, recorded: 0, latencyMs: r.latencyMs, unchanged: true }
+  }
+
+  /**
+   * O AO VIVO recebe o valor de agora — e ele é um destino, não um efeito colateral.
+   *
+   * `live=true, history=false` gravava em lugar nenhum: a fonte lia, dizia que estava
+   * saudável, e o painel Ao vivo mostrava zero leituras para sempre. O que faltava era
+   * escrever no `live_data`, que é onde "o valor de agora" mora nesta plataforma.
+   *
+   * O TTL é a janela de validade da própria fonte: um valor que já não vale não pode
+   * continuar respondendo como se fosse de agora.
+   */
+  if (fonte.destination.live) {
+    const { putLiveValue } = await import('../integrations/websocket/liveData.js')
+    const conexao = liveConnectionOf(fonte._id)
+    const ttl = Math.max(30, Math.round((fonte.freshness.staleAfterMs || 900_000) / 1000))
+    for (const linha of r.rows.slice(0, 200)) {
+      const chave = fonte.entityKeyPath ? String(linha[fonte.entityKeyPath] ?? '') || CHAVE_AO_VIVO : CHAVE_AO_VIVO
+      await putLiveValue(fonte.ownerId, conexao, chave, linha, ttl, agora)
+    }
   }
 
   let recorded = 0
@@ -822,15 +901,29 @@ export async function liveView(ownerId: string, limitePorFonte = 5): Promise<{ i
   if (ativas.length === 0) return { items: [] }
 
   const { listarRegistros } = await import('../dataHistory/store.js')
+  const { latestLiveValues } = await import('../integrations/websocket/liveData.js')
   const { redactSample } = await import('./mapping.js')
   const agora = new Date()
 
   const items = await Promise.all(
     ativas.map(async (f) => {
       const recorderId = f.destination.recorderId
+      /**
+       * O que apareceu aqui vem do destino que a fonte REALMENTE tem.
+       *
+       * Ler só do histórico deixava a fonte de `live=true, history=false` mostrando zero
+       * leituras para sempre — ela não tem recorder, e nunca teria. Com histórico, o
+       * histórico responde "como variou"; sem ele, o Dado ao vivo responde "quanto está
+       * agora", que é a pergunta desta aba.
+       */
       const registros = recorderId
         ? await listarRegistros(ownerId, { recorderId, limit: limitePorFonte }).catch(() => [])
-        : []
+        : f.destination.live
+          ? (await latestLiveValues(ownerId, liveConnectionOf(f._id), limitePorFonte, agora).catch(() => [])).map((v) => ({
+              occurredAt: v.receivedAt,
+              value: v.value,
+            }))
+          : []
 
       /**
        * Quantas execuções esta fonte causou.
