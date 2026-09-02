@@ -181,3 +181,105 @@ export function describeCondition(ast: ConditionAst): string {
       return ''
   }
 }
+
+// --- a SIMULAÇÃO -----------------------------------------------------------------------
+
+export interface SimulationInput {
+  condition: unknown
+  triggerMode: TriggerMode
+  threshold?: number | null
+  thresholdField?: string | null
+  /** O que a fonte devolveria agora. */
+  value: Record<string, unknown>
+  /** O que ela devolveu antes — é o que transforma estado em BORDA. */
+  previous?: Record<string, unknown> | null
+  /** Os campos que a fonte oferece, para a condição ser validada contra eles. */
+  fields?: string[]
+}
+
+export interface SimulationResult {
+  conditionIsTrue: boolean
+  wouldTrigger: boolean
+  /** Por que sim ou por que não, em português. */
+  explanation: string
+  conditionText: string
+}
+
+/**
+ * O que ACONTECERIA — sem tocar em estado, sem gravar e sem disparar nada.
+ *
+ * Existe porque "RSI cruzou 30 para cima" é uma frase que parece óbvia e engana: quem
+ * escreve não distingue estado de borda até ver os dois lado a lado. A simulação mostra a
+ * diferença com um valor de antes e um de agora, antes de a regra ir para o ar.
+ *
+ * Ela não lê o estado real de propósito: simular com a memória de plantão faria o
+ * resultado depender do que o monitor viu ontem, e quem simula quer entender a REGRA.
+ */
+export function simulateMonitor(input: SimulationInput): SimulationResult {
+  const campos = input.fields?.length ? input.fields : camposCitados(input.condition)
+  // `parseCondition` já recusa com o motivo em português; embrulhar em outro erro só
+  // trocaria a mensagem por uma pior.
+  const condition = parseCondition(input.condition, campos)
+
+  const anterior = input.previous ?? null
+  const ehVerdade = evaluateCondition(condition, { value: input.value, previous: anterior })
+  const era = anterior ? evaluateCondition(condition, { value: anterior, previous: null }) : false
+
+  const campo = input.thresholdField ?? undefined
+  const numero = (v: Record<string, unknown> | null) => {
+    if (!campo || !v) return null
+    const bruto = v[campo]
+    if (bruto === null || bruto === undefined || bruto === '' || typeof bruto === 'boolean') return null
+    const n = Number(bruto)
+    return Number.isFinite(n) ? n : null
+  }
+
+  const disparou = shouldTrigger({
+    mode: input.triggerMode,
+    was: era,
+    is: ehVerdade,
+    previousValue: numero(anterior),
+    currentValue: numero(input.value),
+    threshold: input.threshold ?? null,
+    valueChanged: JSON.stringify(anterior) !== JSON.stringify(input.value),
+  })
+
+  return {
+    conditionIsTrue: ehVerdade,
+    wouldTrigger: disparou,
+    conditionText: describeCondition(condition),
+    explanation: explicar(input.triggerMode, era, ehVerdade, disparou, Boolean(anterior)),
+  }
+}
+
+/** A frase que separa estado de borda — que é o mal-entendido que a simulação existe para desfazer. */
+function explicar(modo: TriggerMode, era: boolean, agora: boolean, disparou: boolean, tinhaAnterior: boolean): string {
+  if (disparou) {
+    if (modo === 'level') return 'dispara: a condição está verdadeira, e este modo avisa sempre que ela estiver'
+    if (modo === 'enter') return 'dispara: a condição passou de falsa para verdadeira'
+    if (modo === 'exit') return 'dispara: a condição passou de verdadeira para falsa'
+    if (modo === 'change') return 'dispara: o valor mudou'
+    return 'dispara: o valor cruzou o limiar'
+  }
+  if (!tinhaAnterior && (modo === 'cross_up' || modo === 'cross_down')) {
+    // Cruzamento precisa de DOIS números. Sem o de antes não existe travessia — e isto é
+    // diferente de `enter`, que na primeira observação considera "era falsa", como o motor
+    // real faz. A simulação existe para prever o motor, não para discordar dele.
+    return 'não dispara: sem um valor anterior não existe travessia'
+  }
+  if (modo === 'enter' && era && agora) return 'não dispara: a condição já era verdadeira antes, e isto é estado, não borda'
+  if (modo === 'enter' && !agora) return 'não dispara: a condição é falsa agora'
+  if (modo === 'exit' && !era) return 'não dispara: a condição não era verdadeira antes'
+  if (modo === 'change') return 'não dispara: o valor é o mesmo'
+  return agora ? 'não dispara: a condição é verdadeira, mas não houve a transição que este modo espera' : 'não dispara: a condição é falsa'
+}
+
+/** Os nomes que a condição cita — para simular sem exigir a lista de campos da fonte. */
+function camposCitados(bruto: unknown, saida: string[] = []): string[] {
+  if (!bruto || typeof bruto !== 'object') return saida
+  const n = bruto as Record<string, unknown>
+  if (typeof n.field === 'string') saida.push(n.field)
+  if (Array.isArray(n.children)) for (const f of n.children) camposCitados(f, saida)
+  if (n.child) camposCitados(n.child, saida)
+  return saida
+}

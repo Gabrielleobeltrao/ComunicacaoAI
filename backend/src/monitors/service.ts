@@ -248,3 +248,13 @@ export async function describeMonitors(ownerId: string) {
 }
 
 export const MONITOR_EVENT_TYPES = EVENT_TYPES
+
+
+/**
+ * A simulação mora em `condition.ts` — ela é PURA, e este arquivo abre o banco.
+ *
+ * Reexportada aqui porque é daqui que a rota a importa, e mudar o caminho de import seria
+ * mexer no chamador por um motivo que é organização interna.
+ */
+export { simulateMonitor } from './condition.js'
+export type { SimulationInput, SimulationResult } from './condition.js'

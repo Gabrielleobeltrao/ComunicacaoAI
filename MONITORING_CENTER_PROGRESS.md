@@ -267,6 +267,28 @@ Comandos: `node --test test/monitoringFeed.test.mjs` → **9/9** (2 de ameaça);
 websocket, app_action e dataset — oito, na verdade. Falta **browser** (com visão) e **SSE**
 como protocolo explícito.
 
+## Bloco 9 — a simulação de monitor ✅
+
+`simulateMonitor` em `backend/src/monitors/condition.ts`, rota `POST /api/monitors/simulate`.
+
+Ela existe porque **"RSI cruzou 30 para cima" é uma frase que parece óbvia e engana**: quem
+escreve não distingue ESTADO de BORDA até ver os dois lado a lado. A simulação mostra a
+diferença com um valor de antes e um de agora, antes de a regra ir para o ar — e devolve a
+explicação em português de por que dispara ou não.
+
+- **é pura e mora no módulo da condição**, não no serviço que abre o banco: um teste que
+  precisasse de Mongo para conferir uma regra estaria medindo outra coisa;
+- **não lê o estado de plantão** de propósito — simular com a memória faria o resultado
+  depender do que o monitor viu ontem, e quem simula quer entender a REGRA;
+- **ela prevê o motor, não discorda dele.** O primeiro teste que escrevi afirmava que
+  `enter` não dispara sem valor anterior; o motor real trata a primeira observação como
+  "era falsa" e dispara. Quem estava errado era o teste. Cruzamento, esse sim, precisa de
+  dois números — e a explicação diz isso;
+- AST com AND/OR aninhado é simulada inteira, e campo ausente continua não virando zero.
+
+Comando: `node --test test/monitorSimulation.test.mjs` → **10/10**.
+Bateria: **1420 + 1930, 0 falhas**.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje

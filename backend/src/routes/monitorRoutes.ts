@@ -8,6 +8,7 @@ import {
   describeMonitors,
   publishMonitor,
   setMonitorStatus,
+  simulateMonitor,
   updateMonitor,
 } from '../monitors/service.js'
 import { COMPARISON_OPS, TRIGGER_MODES } from '../monitors/condition.js'
@@ -90,6 +91,20 @@ monitorRouter.post('/:id/pause', async (req, res, next) => {
     const m = await setMonitorStatus(res.locals.userId, id, 'paused')
     if (!m) return notFound(res)
     res.json({ id: m._id.toString(), status: m.status })
+  } catch (erro) {
+    if (!recusa(res, erro)) next(erro as Error)
+  }
+})
+
+/**
+ * SIMULAR — o que aconteceria, sem tocar em estado nem disparar nada.
+ *
+ * "RSI cruzou 30 para cima" é uma frase que parece óbvia e engana: quem escreve não
+ * distingue estado de borda até ver os dois lado a lado.
+ */
+monitorRouter.post('/simulate', async (req, res, next) => {
+  try {
+    res.json(simulateMonitor(req.body ?? {}))
   } catch (erro) {
     if (!recusa(res, erro)) next(erro as Error)
   }

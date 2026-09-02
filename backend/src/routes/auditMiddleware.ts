@@ -288,6 +288,7 @@ const RULES: Rule[] = [
   // pausou é exatamente o que uma auditoria precisa responder depois. Publicar é
   // `activate` e não `publish`: o que muda é o ESTADO de plantão, não uma versão imutável.
   R('POST', 'api/monitors', { entityType: 'monitor', action: 'create' }),
+  R('POST', 'api/monitors/simulate', null, { why: 'simulação pura: não toca em estado nem dispara' }),
   R('PUT', 'api/monitors/:', { entityType: 'monitor', action: 'update' }, { idAt: 2 }),
   R('POST', 'api/monitors/:/publish', { entityType: 'monitor', action: 'activate' }, { idAt: 2 }),
   R('POST', 'api/monitors/:/pause', { entityType: 'monitor', action: 'pause' }, { idAt: 2 }),
