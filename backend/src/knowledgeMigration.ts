@@ -273,3 +273,56 @@ export async function auditArchitectMemoryMigration(tenantId: string): Promise<M
     items,
   }
 }
+
+
+// --- a LIMPEZA, que é um comando à parte ------------------------------------------------
+//
+// A migração copiou e não apagou nada — de propósito. Esta é a outra metade, e ela existe
+// com três travas, porque uma exclusão em massa sobre dados que alguém confiou ao sistema
+// não tem desfazer:
+//
+// 1. DRY-RUN por padrão. Sem `confirm: true` ela diz o que faria e não faz nada.
+// 2. Confere a cópia POR LEITURA, item a item, na hora. O registro da migração diz o que
+//    aconteceu semanas atrás; ele não diz se o documento continua lá.
+// 3. Retomável: cada item é independente, e o que não pôde ser conferido continua de pé.
+
+export interface CleanupResult {
+  dryRun: boolean
+  eligible: number
+  deleted: number
+  skipped: { memoryId: string; reason: string }[]
+}
+
+export async function cleanupMigratedMemories(tenantId: string, opts: { confirm?: boolean; limit?: number } = {}): Promise<CleanupResult> {
+  const auditoria = await auditArchitectMemoryMigration(tenantId)
+  const candidatos = auditoria.items.filter((i) => i.safeToClean).slice(0, opts.limit ?? 1000)
+  const fora: CleanupResult = { dryRun: !opts.confirm, eligible: candidatos.length, deleted: 0, skipped: [] }
+
+  for (const item of auditoria.items.filter((i) => !i.safeToClean)) {
+    fora.skipped.push({ memoryId: item.memoryId, reason: item.problem ?? 'cópia não confirmada' })
+  }
+  if (!opts.confirm) return fora
+
+  for (const item of candidatos) {
+    /**
+     * A cópia é conferida DE NOVO, agora.
+     *
+     * Entre a auditoria e esta linha alguém pode ter apagado o documento — e aí a memória
+     * original passou a ser a única cópia que resta. Reconferir custa uma leitura por
+     * item; não reconferir custa o dado.
+     */
+    const doc = item.documentId
+      ? await documentsCollection.findOne({ _id: new ObjectId(item.documentId) }, { projection: { content: 1 } })
+      : null
+    const memoria = await memories.findOne({ _id: new ObjectId(item.memoryId), tenantId })
+    const texto = memoria ? textoDe(memoria.payload) : null
+    if (!doc || !texto || String(doc.content ?? '').trim() !== texto.content.trim()) {
+      fora.skipped.push({ memoryId: item.memoryId, reason: 'a cópia não confere mais no momento da limpeza' })
+      continue
+    }
+    await memories.deleteOne({ _id: new ObjectId(item.memoryId), tenantId })
+    await migrations.updateOne({ _id: new ObjectId(item.memoryId) }, { $set: { at: new Date() } })
+    fora.deleted += 1
+  }
+  return fora
+}
