@@ -125,6 +125,28 @@ export async function publishVersion(ownerId: string, toolId: ObjectId, input: P
     throw new ToolVersionError('declare o que a ferramenta devolve antes de publicar', 'missing_output_schema')
   }
 
+  /**
+   * O MANIFESTO precisa dizer o que a versão executa — na publicação, não na primeira chamada.
+   *
+   * Uma versão de `app_action` sem `appKey`/`actionKey` e uma de `registered_function` sem
+   * `functionName` são imutáveis assim que nascem: descobrir o defeito no momento em que o
+   * modelo chama significa publicar algo que nunca poderá funcionar e não poderá ser
+   * corrigido, só sucedido. A EXISTÊNCIA da função fica para a execução, de propósito —
+   * ela depende do que este servidor tem registrado, e isso muda entre deploys.
+   */
+  if (input.runtimeKind === 'app_action') {
+    const { appKey, actionKey } = input.manifest as { appKey?: unknown; actionKey?: unknown }
+    if (!appKey || typeof appKey !== 'string' || !actionKey || typeof actionKey !== 'string') {
+      throw new ToolVersionError('diga qual App e qual ação esta versão executa', 'invalid_manifest')
+    }
+  }
+  if (input.runtimeKind === 'registered_function') {
+    const { functionName } = input.manifest as { functionName?: unknown }
+    if (!functionName || typeof functionName !== 'string') {
+      throw new ToolVersionError('diga qual função esta versão executa', 'invalid_manifest')
+    }
+  }
+
   const existente = await versions.findOne({ ownerId, toolId, version: input.version })
   if (existente) throw new ToolVersionError(`a versão ${input.version} já foi publicada e não pode ser alterada`, 'immutable')
 
@@ -174,3 +196,71 @@ export function describeLegacyTool(tool: Tool): { runtimeKind: ToolRuntimeKind; 
     status: tool.enabled ? 'active' : 'draft',
   }
 }
+
+/**
+ * A versão que MANDA no runtime de uma ferramenta — a última publicada.
+ *
+ * Ferramenta sem versão nenhuma devolve `null`, e é isso que mantém toda ferramenta HTTP
+ * antiga rodando pelo caminho de sempre: o dispatcher só desvia quando existe uma versão
+ * publicada dizendo que aquele runtime é outro.
+ *
+ * Fixar versão por instalação é da fase do Marketplace; aqui a conta é dona do que
+ * publica, e o que vale é o que ela publicou por último.
+ */
+export const activeRuntimeVersion = (ownerId: string, toolId: ObjectId) =>
+  versions.find({ ownerId, toolId }).sort({ createdAt: -1 }).limit(1).next()
+
+/** As versões ativas de várias ferramentas de uma vez — uma consulta, não uma por ferramenta. */
+export async function activeRuntimeVersions(ownerId: string, toolIds: ObjectId[]): Promise<Map<string, ToolVersion>> {
+  const mapa = new Map<string, ToolVersion>()
+  if (toolIds.length === 0) return mapa
+  const todas = await versions.find({ ownerId, toolId: { $in: toolIds } }).sort({ createdAt: -1 }).toArray()
+  for (const v of todas) {
+    const chave = v.toolId.toString()
+    // Ordenado do mais novo para o mais velho: a primeira de cada ferramenta é a ativa.
+    if (!mapa.has(chave)) mapa.set(chave, v)
+  }
+  return mapa
+}
+
+// O REGISTRO de que uma versão executou — telemetria segura, no mesmo formato do resto.
+//
+// Nunca argumento, nunca resposta, nunca credencial: o que rodou, se deu certo e quanto
+// tempo levou. Ação de App também grava em `app_action_events` pelo caminho do grant; as
+// duas linhas respondem perguntas diferentes ("o que este App fez" e "o que esta versão
+// fez"), e é por isso que nenhuma das duas substitui a outra.
+export interface ToolVersionCall {
+  _id: ObjectId
+  ownerId: string
+  agentId: ObjectId | null
+  toolId: ObjectId
+  toolName: string
+  version: string
+  runtimeKind: ToolRuntimeKind
+  risk: ToolRisk
+  /** O hash do que rodou. É por ele que se confere que foi o que passou pela revisão. */
+  sha256: string
+  ok: boolean
+  status: 'executed' | 'refused'
+  durationMs: number
+  createdAt: Date
+}
+
+const versionCalls = db.collection<ToolVersionCall>('tool_version_calls')
+
+export async function ensureToolVersionCallIndexes(): Promise<void> {
+  await versionCalls.createIndex({ ownerId: 1, createdAt: -1 })
+  await versionCalls.createIndex({ ownerId: 1, toolId: 1, createdAt: -1 })
+}
+
+export async function recordVersionCall(call: Omit<ToolVersionCall, '_id' | 'createdAt'>): Promise<void> {
+  try {
+    await versionCalls.insertOne({ ...call, _id: new ObjectId(), createdAt: new Date() })
+  } catch (erro) {
+    // Auditoria que falha não derruba a execução que já aconteceu — mas também não some.
+    console.error('[toolVersions] falha ao registrar chamada:', erro)
+  }
+}
+
+export const listVersionCalls = (ownerId: string, toolId: ObjectId, limit = 50) =>
+  versionCalls.find({ ownerId, toolId }).sort({ createdAt: -1 }).limit(limit).toArray()

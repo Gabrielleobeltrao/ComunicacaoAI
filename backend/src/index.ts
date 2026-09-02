@@ -167,7 +167,7 @@ import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
 import { ensureKnowledgeGraphIndexes } from './knowledgeGraph.js'
 import { ensureResourceAuditIndexes } from './resources/audit.js'
 import { ensureDatabaseIndexes } from './databases/store.js'
-import { ToolVersionError, describeLegacyTool, ensureToolVersionIndexes, latestVersion, listVersions, publishVersion } from './toolVersions.js'
+import { ToolVersionError, describeLegacyTool, ensureToolVersionCallIndexes, ensureToolVersionIndexes, latestVersion, listVersionCalls, listVersions, publishVersion } from './toolVersions.js'
 import { notFound as naoEncontrado, oid as paraObjectId } from './routes/http.js'
 import { ensureKnowledgeProposalIndexes } from './knowledgeProposals.js'
 import { ensureKnowledgeConflictIndexes } from './knowledgeConflicts.js'
@@ -2258,7 +2258,13 @@ app.get('/api/tools/:toolId/versions', requireAuth, async (req, res) => {
   if (!id) return naoEncontrado(res)
   const tool = await getTool(res.locals.userId, id)
   if (!tool) return naoEncontrado(res)
-  res.json({ items: await listVersions(res.locals.userId, id), current: describeLegacyTool(tool) })
+  res.json({
+    items: await listVersions(res.locals.userId, id),
+    current: describeLegacyTool(tool),
+    // O que esta ferramenta REALMENTE fez: metadado de execução, nunca argumento
+    // nem resposta. É a trilha que responde "o que rodou com este hash".
+    calls: await listVersionCalls(res.locals.userId, id, 20).catch(() => []),
+  })
 })
 
 app.post('/api/tools/:toolId/versions', requireAuth, async (req, res, next) => {
@@ -5428,6 +5434,9 @@ async function start() {
   // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
   // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
   // ninguém está olhando. Ela é um script, e é chamada à mão.
+  ensureToolVersionCallIndexes().catch((error) => {
+    console.error('ensureToolVersionCallIndexes failed:', error)
+  })
   ensureToolVersionIndexes().catch((error) => {
     console.error('ensureToolVersionIndexes failed:', error)
   })
