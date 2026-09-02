@@ -163,6 +163,8 @@ import { agentResourceAccessRouter, resourceRouter } from './routes/resourceRout
 import { databaseRouter } from './routes/databaseRoutes.js'
 import { monitorRouter } from './routes/monitorRoutes.js'
 import { activityRouter } from './routes/activityRoutes.js'
+import { extensionRouter } from './routes/extensionRoutes.js'
+import { ensureExtensionIndexes } from './extensions/packages.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
 import { ensureContextManifestIndexes } from './contextManifest.js'
 import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
@@ -516,6 +518,7 @@ app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
 app.use('/api/databases', requireAuth, databaseRouter)
 app.use('/api/monitors', requireAuth, monitorRouter)
 app.use('/api/activity', requireAuth, activityRouter)
+app.use('/api/extensions', requireAuth, extensionRouter)
 app.use('/api/resources', requireAuth, resourceRouter)
 app.use('/api/agents/:agentId', requireAuth, agentResourceAccessRouter)
 app.use('/api/knowledge', requireAuth, knowledgeRouter)
@@ -5438,6 +5441,9 @@ async function start() {
   // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
   // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
   // ninguém está olhando. Ela é um script, e é chamada à mão.
+  ensureExtensionIndexes().catch((error) => {
+    console.error('ensureExtensionIndexes failed:', error)
+  })
   ensureToolVersionCallIndexes().catch((error) => {
     console.error('ensureToolVersionCallIndexes failed:', error)
   })

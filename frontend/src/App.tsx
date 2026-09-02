@@ -18,6 +18,7 @@ import { Resources } from './pages/Resources'
 import { Databases } from './pages/Databases'
 import { Monitors } from './pages/Monitors'
 import { Activity } from './pages/Activity'
+import { Marketplace } from './pages/Marketplace'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
 import { Dashboard } from './pages/Dashboard'
@@ -79,6 +80,7 @@ function App() {
           <Route path="/databases" element={<P><Databases /></P>} />
           <Route path="/monitors" element={<P><Monitors /></P>} />
           <Route path="/activity" element={<P><Activity /></P>} />
+          <Route path="/community" element={<P><Marketplace /></P>} />
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
           <Route path="/floors/:floorId/agents" element={<P><Agents /></P>} />
           <Route path="/floors/:floorId/agents/:agentId" element={<P><AgentDetail /></P>} />

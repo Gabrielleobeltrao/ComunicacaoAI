@@ -101,12 +101,14 @@ test('em 320 px o catálogo não estoura para os lados', async ({ page }) => {
   expect(overflow).toBeLessThanOrEqual(1)
 })
 
-test('a navegação separa ESCRITÓRIO, RECURSOS e OPERAÇÕES', async ({ page }) => {
+test('a navegação separa ESCRITÓRIO, RECURSOS, OPERAÇÕES e COMUNIDADE', async ({ page }) => {
   await stub(page)
   await page.goto('/resources')
   const nav = page.locator('nav').first()
   await expect(nav).toContainText('RECURSOS')
   await expect(nav).toContainText('OPERAÇÕES')
-  // COMUNIDADE não promete o que ainda não existe.
-  await expect(nav).not.toContainText('COMUNIDADE')
+  // COMUNIDADE entrou quando a tela passou a existir — e o link leva a ela. A regra é a
+  // mesma de antes: nada de item que promete o que não existe.
+  await expect(nav).toContainText('COMUNIDADE')
+  await expect(nav.getByRole('link', { name: 'Comunidade' })).toHaveAttribute('href', '/community')
 })

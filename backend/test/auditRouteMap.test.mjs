@@ -133,6 +133,7 @@ const ROUTER_PREFIX = {
   'routes/resourceRoutes.ts': '/api/resources',
   'routes/databaseRoutes.ts': '/api/databases',
   'routes/monitorRoutes.ts': '/api/monitors',
+  'routes/extensionRoutes.ts': '/api/extensions',
 }
 
 function declaredRoutes() {

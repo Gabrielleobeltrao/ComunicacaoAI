@@ -246,6 +246,24 @@ const RULES: Rule[] = [
   // quem publicou o quê.
   R('POST', 'api/tools/:/versions', { entityType: 'tool', action: 'create' }, { idAt: 2 }),
 
+  /**
+   * EXTENSÕES: criar, congelar uma versão, mover o ciclo e instalar.
+   *
+   * Publicar uma versão é imutável depois — o registro é a única forma de saber quem
+   * publicou o quê. E instalar é conceder alcance a código de terceiro dentro do
+   * escritório: exatamente o tipo de mudança que uma auditoria existe para responder.
+   */
+  R('POST', 'api/extensions/packages', { entityType: 'extension', action: 'create' }),
+  R('POST', 'api/extensions/packages/:/versions', { entityType: 'extension', action: 'publish' }, { idAt: 3 }),
+  R('POST', 'api/extensions/packages/from-tool/:', { entityType: 'extension', action: 'create' }),
+  // O backfill CRIA pacotes a partir do que a conta já tem: é mudança, e entra no registro.
+  R('POST', 'api/extensions/backfill/apps', { entityType: 'extension', action: 'create' }),
+  R('POST', 'api/extensions/packages/:/status', { entityType: 'extension', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/extensions/installed/:', { entityType: 'extension', action: 'create' }, { idAt: 3 }),
+  R('POST', 'api/extensions/installed/:/update', { entityType: 'extension', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/extensions/installed/:/template', { entityType: 'extension', action: 'create' }, { idAt: 3 }),
+  R('DELETE', 'api/extensions/installed/:', { entityType: 'extension', action: 'pause' }, { idAt: 3 }),
+
   // O MONITOR é uma regra que age sozinha: quem a criou, quem a pôs de plantão e quem a
   // pausou é exatamente o que uma auditoria precisa responder depois. Publicar é
   // `activate` e não `publish`: o que muda é o ESTADO de plantão, não uma versão imutável.

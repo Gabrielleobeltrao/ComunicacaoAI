@@ -8,7 +8,7 @@ export type NavScope = 'general' | 'floor' | 'communication'
 // scheduled work is CREATED inside each agent as Rotinas/Gatilhos, never in a
 // standalone builder. 'control' is the opposite direction — one building-wide place
 // to SEE that work: what is scheduled, armed, running and done.
-export type NavGroup = 'operation' | 'resources' | 'communication' | 'control'
+export type NavGroup = 'operation' | 'resources' | 'communication' | 'control' | 'community'
 
 export interface NavItemDef {
   key: string
@@ -67,6 +67,11 @@ export const NAV_V2: NavItemDef[] = [
   { key: 'activity', label: 'Atividade', icon: 'activity', scope: 'general', group: 'control', path: () => '/activity', activePrefixes: () => ['/activity'] },
   { key: 'monitors', label: 'Monitores', icon: 'radar', scope: 'general', group: 'control', path: () => '/monitors', activePrefixes: () => ['/monitors'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
+  // COMUNIDADE: o que dá para instalar, o que é seu e o que já está aqui. Entrou quando o
+  // Marketplace passou a existir de verdade — um item de menu que leva a uma tela vazia
+  // promete e não entrega. Fica no fim da lista porque fica no fim dos grupos: uma
+  // declaração fora de ordem faria a trilha do teclado discordar da tela.
+  { key: 'community', label: 'Comunidade', icon: 'store', scope: 'general', group: 'community', path: () => '/community', activePrefixes: () => ['/community'] },
 ]
 
 export function navItemsFor(_floorId: string | null): NavItemDef[] {
@@ -74,18 +79,19 @@ export function navItemsFor(_floorId: string | null): NavItemDef[] {
 }
 
 /**
- * A ordem das quatro camadas: quem existe, o que o escritório possui, o que acontece.
+ * A ordem das camadas: quem existe, o que o escritório possui, o que acontece, e o que dá
+ * para trazer de fora.
  *
- * COMUNIDADE não está aqui: um item de menu que leva a uma tela que ainda não existe é
- * pior que a ausência dele — ele promete e não entrega, e quem clica descobre sozinho.
- * Ele entra quando o Marketplace entrar.
+ * COMUNIDADE fica por último de propósito: ela é a única que traz coisa de terceiro para
+ * dentro, e essa distância na lista é a mesma distância que a cabeça de quem usa faz.
  */
-const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'resources', 'communication', 'control']
+const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'resources', 'communication', 'control', 'community']
 const NAV_GROUP_LABEL: Record<NavGroup, string> = {
   operation: 'ESCRITÓRIO',
   resources: 'RECURSOS',
   communication: 'COMUNICAÇÃO',
   control: 'OPERAÇÕES',
+  community: 'COMUNIDADE',
 }
 
 // Ordered, non-empty nav groups for the rail/drawer. The operation group shows the

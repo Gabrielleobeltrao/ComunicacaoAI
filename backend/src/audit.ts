@@ -102,6 +102,14 @@ export type AuditEntityType =
    * (a execução do Flow) já é auditado como execução.
    */
   | 'monitor'
+  /**
+   * Uma EXTENSÃO — o pacote compartilhável e a instalação dele.
+   *
+   * O que entra aqui é criar, congelar versão, mover o ciclo e instalar. O que uma
+   * extensão instalada FAZ é auditado como o que ela é: uma ação de App é uma ação de
+   * App, e continua no registro dela.
+   */
+  | 'extension'
   | 'settings'
   // A sessão de quem entra na conta. Só a tentativa recusada é registrada aqui.
   | 'session'
@@ -109,6 +117,7 @@ export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'data_recorder',
   'realtime_source',
   'monitor',
+  'extension',
   'memory',
   'agent',
   'sector',
