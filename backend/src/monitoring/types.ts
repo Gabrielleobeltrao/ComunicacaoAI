@@ -231,6 +231,25 @@ export interface MonitoringSource {
   destination: MonitoringDestination
   telemetry: MonitoringTelemetry
   /**
+   * O ALUGUEL da coleta — o que impede dois processos de lerem a mesma fonte junto.
+   *
+   * Sem ele, a API e o worker podem coletar ao mesmo tempo: duas leituras concorrentes
+   * gravam duas linhas do mesmo instante, cada uma sobrescreve a telemetria da outra e o
+   * `lastContentHash` acaba sendo o da que terminou por último — que não é a última.
+   *
+   * O aluguel VENCE em vez de ser devolvido: um processo que morre no meio da leitura
+   * devolveria nada, e a fonte ficaria travada para sempre esperando um dono que não volta.
+   */
+  lease?: { owner: string; until: Date } | null
+  /**
+   * Quando esta fonte pode ser tentada de novo. Depois de uma falha, é o backoff.
+   *
+   * Antes, o atraso era CALCULADO e devolvido na resposta — e ninguém o lia. A fonte
+   * quebrada continuava sendo tentada no intervalo cheio, martelando um serviço que já
+   * tinha dito que não estava bem.
+   */
+  nextAttemptAt?: Date | null
+  /**
    * O segredo que assina as entregas de webhook — cifrado, e nunca devolvido.
    *
    * Ele é mostrado uma vez, na criação e na rotação. Um segredo que a tela consegue

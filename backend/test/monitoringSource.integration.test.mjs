@@ -737,3 +737,77 @@ test('fonte que empurra continua sem cadência de consulta', async () => {
     /chega sozinha/,
   )
 })
+
+// --- aluguel e backoff: dois processos, uma leitura ---------------------------------------
+
+test('duas varreduras concorrentes NÃO levam a mesma fonte', async () => {
+  const f = await svc.createSource(DONO, entrada())
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+
+  const daquiUmMinuto = new Date(Date.now() + 120_000)
+  const [a, b] = await Promise.all([svc.claimDueSources('worker-a', daquiUmMinuto), svc.claimDueSources('worker-b', daquiUmMinuto)])
+  const levaram = [...a, ...b].filter((x) => x._id.equals(f._id))
+  assert.equal(levaram.length, 1, 'só um processo pode ler a mesma fonte no mesmo instante')
+
+  // Devolvido, ela volta a ser alugável — e por quem devolveu, não por qualquer um.
+  const dono = a.some((x) => x._id.equals(f._id)) ? 'worker-a' : 'worker-b'
+  await svc.releaseSource(f._id, 'quem-nao-alugou')
+  assert.equal((await svc.claimDueSources('worker-c', daquiUmMinuto)).some((x) => x._id.equals(f._id)), false)
+  await svc.releaseSource(f._id, dono)
+  assert.equal((await svc.claimDueSources('worker-c', daquiUmMinuto)).some((x) => x._id.equals(f._id)), true)
+})
+
+test('o aluguel VENCE sozinho: um processo que morreu não trava a fonte para sempre', async () => {
+  const f = await svc.createSource(DONO, entrada())
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+
+  const daquiUmMinuto = new Date(Date.now() + 120_000)
+  assert.equal((await svc.claimDueSources('worker-morto', daquiUmMinuto)).length, 1)
+  // Nada é devolvido — o processo morreu. Passado o aluguel, outro pode pegar.
+  const depoisDoAluguel = new Date(daquiUmMinuto.getTime() + svc.LEASE_MS + 1000)
+  assert.equal((await svc.claimDueSources('worker-vivo', depoisDoAluguel)).some((x) => x._id.equals(f._id)), true)
+})
+
+test('falhar ADIA a próxima tentativa — e o adiamento é respeitado pela varredura', async () => {
+  const f = await svc.createSource(DONO, entrada({
+    config: { url: `http://127.0.0.1:${porta}/erro`, method: 'GET' },
+    retry: { backoffMs: 300_000, maxAttempts: 3, jitterRatio: 0 },
+  }))
+  await db.collection('monitoring_sources').updateOne({ _id: f._id }, { $set: { status: 'active', 'telemetry.lastReadAt': new Date(Date.now() - 300_000) } })
+
+  const r = await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  assert.equal(r.ok, false)
+  assert.ok(r.nextAttemptMs > 0)
+
+  const guardada = await svc.getSource(DONO, f._id)
+  assert.ok(guardada.nextAttemptAt instanceof Date, 'o atraso é gravado, não só devolvido')
+
+  // Vencida pelo intervalo, mas ainda dentro do backoff: não entra na varredura.
+  const logoDepois = new Date(Date.now() + 61_000)
+  assert.ok(guardada.nextAttemptAt > logoDepois, 'o backoff precisa passar do intervalo, senão não adia nada')
+  assert.equal((await svc.dueSources(logoDepois)).some((x) => x._id.equals(f._id)), false)
+
+  // Passado o backoff, ela volta.
+  const depoisDoBackoff = new Date(guardada.nextAttemptAt.getTime() + 1000)
+  assert.equal((await svc.dueSources(depoisDoBackoff)).some((x) => x._id.equals(f._id)), true)
+})
+
+test('uma leitura boa apaga o adiamento', async () => {
+  const f = await svc.createSource(DONO, entrada())
+  await db.collection('monitoring_sources').updateOne({ _id: f._id }, { $set: { status: 'active', nextAttemptAt: new Date(Date.now() + 600_000) } })
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  assert.equal((await svc.getSource(DONO, f._id)).nextAttemptAt, null)
+})
+
+test('o limite de taxa declarado é cumprido por quem prometeu', async () => {
+  const f = await svc.createSource(DONO, entrada({ retry: { rateLimitPerMinute: 2 } }))
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  await db.collection('monitoring_sources').updateOne({ _id: f._id }, { $set: { status: 'active' } })
+
+  // Duas por minuto são 30 s de distância mínima — mesmo com intervalo de 60 s vencido.
+  const lida = await svc.getSource(DONO, f._id)
+  assert.equal(svc.dentroDoLimiteDeTaxa(lida, new Date(lida.telemetry.lastReadAt.getTime() + 20_000)), false)
+  assert.equal(svc.dentroDoLimiteDeTaxa(lida, new Date(lida.telemetry.lastReadAt.getTime() + 31_000)), true)
+})

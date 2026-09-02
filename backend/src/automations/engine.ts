@@ -26,7 +26,7 @@ import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
 import { registerMonitorObservers, resumePendingDispatches } from '../monitors/dispatch.js'
 import { registerDatabaseMonitors } from '../monitors/dataSource.js'
-import { dueSources, readSourceOnce } from '../monitoring/service.js'
+import { claimDueSources, readSourceOnce, releaseSource } from '../monitoring/service.js'
 import { ensureMonitorIndexes } from '../monitors/state.js'
 import { registerWebSocketDestinations } from '../integrations/websocket/destinations.js'
 import { websocketAdapterFor } from '../integrations/websocket/service.js'
@@ -117,10 +117,13 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   const relogioDeFontes = setInterval(() => {
     void (async () => {
       try {
-        for (const fonte of await dueSources()) {
+        for (const fonte of await claimDueSources(id)) {
           // Uma falha de fonte não derruba as outras: cada leitura já grava a própria
-          // telemetria e devolve erro como dado.
-          await readSourceOnce(fonte).catch((error) => onError(`fonte ${fonte._id.toString()}`, error))
+          // telemetria e devolve erro como dado. O aluguel é devolvido de qualquer jeito —
+          // segurá-lo até vencer atrasaria a próxima leitura por um erro já registrado.
+          await readSourceOnce(fonte)
+            .catch((error) => onError(`fonte ${fonte._id.toString()}`, error))
+            .finally(() => releaseSource(fonte._id, id).catch(() => {}))
         }
       } catch (error) {
         onError('varredura de fontes', error)

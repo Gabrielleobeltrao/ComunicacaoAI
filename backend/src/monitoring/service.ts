@@ -524,28 +524,28 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
   try {
     headers = await cabecalhosDaConexao(fonte)
   } catch (erro) {
-    await registrarFalha(fonte, 'connection_missing', agora)
-    return { ok: false, rows: 0, recorded: 0, latencyMs: 0, error: { kind: 'connection_missing', message: (erro as Error).message } }
+    const atraso = await registrarFalha(fonte, 'connection_missing', agora)
+    return { ok: false, rows: 0, recorded: 0, latencyMs: 0, error: { kind: 'connection_missing', message: (erro as Error).message }, nextAttemptMs: atraso }
   }
 
   const r = await collectOnce(fonte, { headers, ownerId: fonte.ownerId })
   if (!r.ok) {
-    await registrarFalha(fonte, r.error?.kind ?? 'erro', agora, r.latencyMs)
+    const atraso = await registrarFalha(fonte, r.error?.kind ?? 'erro', agora, r.latencyMs)
     return {
       ok: false,
       rows: 0,
       recorded: 0,
       latencyMs: r.latencyMs,
       error: r.error ?? { kind: 'erro', message: 'falhou' },
-      nextAttemptMs: backoffDelay(fonte.retry, fonte.telemetry.consecutiveFailures + 1),
+      nextAttemptMs: atraso,
     }
   }
 
   // Campo obrigatório faltando NÃO vira leitura boa: gravar meia linha é pior do que não
   // gravar, porque a série fica com um buraco que parece dado.
   if (r.missing.length) {
-    await registrarFalha(fonte, 'schema', agora, r.latencyMs)
-    return { ok: false, rows: r.rows.length, recorded: 0, latencyMs: r.latencyMs, error: { kind: 'schema', message: `faltou: ${r.missing.join(', ')}` } }
+    const atraso = await registrarFalha(fonte, 'schema', agora, r.latencyMs)
+    return { ok: false, rows: r.rows.length, recorded: 0, latencyMs: r.latencyMs, error: { kind: 'schema', message: `faltou: ${r.missing.join(', ')}` }, nextAttemptMs: atraso }
   }
 
   /**
@@ -567,6 +567,8 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
           'telemetry.lastLatencyMs': r.latencyMs,
           'telemetry.consecutiveFailures': 0,
           'telemetry.lastErrorCode': null,
+          // Leu bem: o backoff acabou. Deixá-lo no futuro adiaria a próxima leitura boa.
+          nextAttemptAt: null,
           updatedAt: agora,
         },
         $inc: { 'telemetry.readsOk': 1 },
@@ -612,6 +614,7 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
          * faria a primeira coleta de verdade achar que "não mudou" e não gravar nada.
          */
         ...(recorded > 0 || !fonte.destination.history ? { 'telemetry.lastContentHash': hashDaLeitura } : {}),
+        nextAttemptAt: null,
         updatedAt: agora,
       },
       $inc: { 'telemetry.readsOk': 1 },
@@ -628,14 +631,30 @@ function hashDaLinha(linha: Record<string, unknown>): string {
   return (h >>> 0).toString(36)
 }
 
-async function registrarFalha(fonte: MonitoringSource, code: string, agora: Date, latencyMs = 0): Promise<void> {
+async function registrarFalha(fonte: MonitoringSource, code: string, agora: Date, latencyMs = 0): Promise<number> {
+  /**
+   * O atraso da próxima tentativa é GRAVADO, não só devolvido.
+   *
+   * Antes ele era calculado e entregue na resposta, onde ninguém o lia: a varredura
+   * continuava chamando no intervalo cheio, e uma fonte quebrada martelava de 15 em 15
+   * segundos um serviço que já tinha respondido 500.
+   */
+  const atraso = backoffDelay(fonte.retry, fonte.telemetry.consecutiveFailures + 1)
   await sources.updateOne(
     { _id: fonte._id },
     {
-      $set: { 'telemetry.lastReadAt': agora, 'telemetry.lastErrorAt': agora, 'telemetry.lastErrorCode': code, 'telemetry.lastLatencyMs': latencyMs, updatedAt: agora },
+      $set: {
+        'telemetry.lastReadAt': agora,
+        'telemetry.lastErrorAt': agora,
+        'telemetry.lastErrorCode': code,
+        'telemetry.lastLatencyMs': latencyMs,
+        nextAttemptAt: new Date(agora.getTime() + atraso),
+        updatedAt: agora,
+      },
       $inc: { 'telemetry.readsFailed': 1, 'telemetry.consecutiveFailures': 1 },
     },
   )
+  return atraso
 }
 
 /** As fontes que precisam ser lidas agora. É o que o worker pergunta a cada tique. */
@@ -647,10 +666,80 @@ export async function dueSources(agora: Date = new Date(), limite = 50): Promise
    * muda para sempre. Quem decide se venceu é `isDue`, que sabe dos dois.
    */
   const candidatas = await sources
-    .find({ status: 'active', 'cadence.mode': { $in: ['interval', 'cron'] } })
+    .find({
+      status: 'active',
+      'cadence.mode': { $in: ['interval', 'cron'] },
+      // O backoff é respeitado AQUI: uma fonte que acabou de falhar não volta no intervalo
+      // cheio martelando um serviço que já disse que não está bem.
+      $and: [
+        { $or: [{ nextAttemptAt: null }, { nextAttemptAt: { $exists: false } }, { nextAttemptAt: { $lte: agora } }] },
+        { $or: [{ lease: null }, { lease: { $exists: false } }, { 'lease.until': { $lte: agora } }] },
+      ],
+    })
     .limit(limite * 4)
     .toArray()
-  return candidatas.filter((f) => isDue(f, agora)).slice(0, limite)
+  return candidatas.filter((f) => isDue(f, agora) && dentroDoLimiteDeTaxa(f, agora)).slice(0, limite)
+}
+
+/**
+ * O LIMITE DE TAXA que a fonte declarou — respeitado antes de bater na porta.
+ *
+ * `rateLimitPerMinute` existia no modelo e não era lido por ninguém: uma fonte configurada
+ * para "no máximo 2 por minuto" com intervalo de 15 s fazia quatro. Quem prometeu o limite
+ * foi esta plataforma, então é ela que precisa cumpri-lo.
+ */
+export function dentroDoLimiteDeTaxa(fonte: Pick<MonitoringSource, 'retry' | 'telemetry'>, agora: Date = new Date()): boolean {
+  const limite = fonte.retry.rateLimitPerMinute
+  if (!limite || limite <= 0) return true
+  const ultima = fonte.telemetry.lastReadAt
+  if (!ultima) return true
+  return agora.getTime() - ultima.getTime() >= 60_000 / limite
+}
+
+/** Quanto tempo um processo segura uma fonte antes de o aluguel vencer sozinho. */
+export const LEASE_MS = Number(process.env.MONITORING_LEASE_MS ?? 120_000)
+
+/**
+ * As fontes vencidas, ALUGADAS para este processo — uma de cada vez, e para um dono só.
+ *
+ * `dueSources` sozinha não basta: a API e o worker podem chamá-la no mesmo segundo e ler a
+ * mesma fonte junto. Duas leituras concorrentes gravam duas linhas do mesmo instante, cada
+ * uma sobrescreve a telemetria da outra, e o `lastContentHash` que sobra é o da que
+ * terminou por último — que não é a última.
+ *
+ * O aluguel é tomado por `findOneAndUpdate` condicional: quem primeiro trocar o documento
+ * leva; o segundo recebe `null` e segue para a próxima fonte. E ele VENCE em vez de ser
+ * devolvido — um processo que morre no meio da leitura devolveria nada, e a fonte ficaria
+ * travada para sempre esperando um dono que não volta.
+ */
+export async function claimDueSources(owner: string, agora: Date = new Date(), limite = 50): Promise<MonitoringSource[]> {
+  const candidatas = await dueSources(agora, limite)
+  const alugadas: MonitoringSource[] = []
+  const ate = new Date(agora.getTime() + LEASE_MS)
+  for (const fonte of candidatas) {
+    const tomada = await sources.findOneAndUpdate(
+      {
+        _id: fonte._id,
+        status: 'active',
+        $or: [{ lease: null }, { lease: { $exists: false } }, { 'lease.until': { $lte: agora } }],
+      },
+      { $set: { lease: { owner, until: ate }, updatedAt: agora } },
+      { returnDocument: 'after' },
+    )
+    if (tomada) alugadas.push(tomada)
+  }
+  return alugadas
+}
+
+/**
+ * Devolve o aluguel — e só o próprio.
+ *
+ * O `lease.owner` entra no filtro porque um aluguel já vencido pode ter sido tomado por
+ * outro processo enquanto este terminava: apagar sem conferir o dono deixaria a fonte
+ * livre no meio da leitura de outro.
+ */
+export async function releaseSource(id: ObjectId, owner: string): Promise<void> {
+  await sources.updateOne({ _id: id, 'lease.owner': owner }, { $set: { lease: null } })
 }
 
 /** A VISÃO GERAL — uma linha por fonte, com o que a pessoa precisa para decidir olhar. */
