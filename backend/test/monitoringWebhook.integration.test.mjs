@@ -53,11 +53,18 @@ beforeEach(async () => {
   limparCacheDeRecorders()
 })
 
+/**
+ * O instante vai por padrão — é o que um provedor que assina de verdade manda.
+ *
+ * A fonte nasce com `timestampPolicy: 'required'`: sem instante, a assinatura não envelhece
+ * e uma requisição capturada hoje valeria para sempre. `semTimestamp: true` exercita
+ * justamente essa recusa.
+ */
 const entregar = (corpo, over = {}) =>
   wh.receiveWebhook(over.publicKey ?? credencial.publicKey, corpo, {
     'x-signature': over.signature ?? signBody(over.secret ?? credencial.secret, corpo),
     ...(over.eventId ? { 'x-event-id': over.eventId } : {}),
-    ...(over.timestamp ? { 'x-timestamp': String(over.timestamp) } : {}),
+    ...(over.semTimestamp ? {} : { 'x-timestamp': String(over.timestamp ?? (over.agora ?? new Date()).getTime()) }),
   }, over.agora)
 
 const CORPO = JSON.stringify({ id: 'p-1', valor: '10,50' })
@@ -170,4 +177,119 @@ test('girar o segredo de uma fonte que não é webhook é recusado', async () =>
     destination: { history: true },
   })
   await assert.rejects(() => wh.rotateWebhookSecret(DONO, api._id), /não é um webhook/)
+})
+
+// --- uma identidade por LINHA -------------------------------------------------------------
+
+test('uma entrega com VÁRIAS linhas grava várias — não uma', async () => {
+  // O mesmo `factId` para todas as linhas fazia o motor de histórico ver a segunda como
+  // repetição da primeira e descartá-la. As outras sumiam sem erro nenhum.
+  const emLista = await svc.createSource(DONO, {
+    name: 'Pedidos em lote',
+    kind: 'webhook',
+    config: {},
+    cadence: { mode: 'stream' },
+    mapping: {
+      version: 1,
+      itemsPath: 'pedidos',
+      fields: [{ to: 'pedido', from: 'id', required: true }, { to: 'total', from: 'valor', transforms: [{ op: 'number' }] }],
+    },
+    destination: { history: true },
+  })
+  const cred = await wh.rotateWebhookSecret(DONO, emLista._id)
+  await svc.setSourceStatus(DONO, emLista._id, 'active')
+  limparCacheDeRecorders()
+
+  const corpo = JSON.stringify({ pedidos: [{ id: 'a', valor: '1' }, { id: 'b', valor: '2' }, { id: 'c', valor: '3' }] })
+  const r = await wh.receiveWebhook(cred.publicKey, corpo, {
+    'x-signature': signBody(cred.secret, corpo),
+    'x-event-id': 'lote-1',
+    'x-timestamp': String(Date.now()),
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.recorded, 3, 'três pedidos são três fatos')
+
+  const gravados = await db.collection('data_history_records').find({ ownerId: DONO }).toArray()
+  assert.deepEqual(gravados.map((g) => g.value.pedido).sort(), ['a', 'b', 'c'])
+})
+
+test('o mesmo LOTE reenviado continua sendo um só — a identidade por linha é estável', async () => {
+  const emLista = await svc.createSource(DONO, {
+    name: 'Lote repetido',
+    kind: 'webhook',
+    config: {},
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, itemsPath: 'pedidos', fields: [{ to: 'pedido', from: 'id', required: true }] },
+    destination: { history: true },
+  })
+  const cred = await wh.rotateWebhookSecret(DONO, emLista._id)
+  await svc.setSourceStatus(DONO, emLista._id, 'active')
+  limparCacheDeRecorders()
+
+  const corpo = JSON.stringify({ pedidos: [{ id: 'a' }, { id: 'b' }] })
+  const cabecalhos = () => ({ 'x-signature': signBody(cred.secret, corpo), 'x-event-id': 'lote-2', 'x-timestamp': String(Date.now()) })
+  assert.equal((await wh.receiveWebhook(cred.publicKey, corpo, cabecalhos())).recorded, 2)
+  assert.equal((await wh.receiveWebhook(cred.publicKey, corpo, cabecalhos())).reason, 'duplicate')
+  assert.equal(await db.collection('data_history_records').countDocuments({ ownerId: DONO }), 2)
+})
+
+// --- política de instante -----------------------------------------------------------------
+
+test('AMEAÇA: sem instante, a fonte estrita recusa — o replay é só reenviar os mesmos bytes', async () => {
+  const r = await entregar(CORPO, { eventId: 'sem-ts', semTimestamp: true })
+  assert.equal(r.ok, false)
+  assert.equal(r.reason, 'unauthorized')
+  assert.equal(await db.collection('data_history_records').countDocuments({ ownerId: DONO }), 0)
+})
+
+test('a fonte que ESCOLHEU aceitar sem instante continua funcionando', async () => {
+  // Provedor que não manda instante existe. Recusar a entrega dele seria trocar um risco
+  // por uma fonte que não funciona — a escolha fica gravada onde dá para auditar.
+  const frouxa = await svc.createSource(DONO, {
+    name: 'Provedor sem instante',
+    kind: 'webhook',
+    config: { timestampPolicy: 'optional' },
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, fields: [{ to: 'pedido', from: 'id', required: true }] },
+    destination: { history: true },
+  })
+  assert.equal(frouxa.config.timestampPolicy, 'optional')
+  const cred = await wh.rotateWebhookSecret(DONO, frouxa._id)
+  await svc.setSourceStatus(DONO, frouxa._id, 'active')
+  limparCacheDeRecorders()
+
+  const corpo = JSON.stringify({ id: 'x-1' })
+  const r = await wh.receiveWebhook(cred.publicKey, corpo, { 'x-signature': signBody(cred.secret, corpo) })
+  assert.equal(r.ok, true)
+})
+
+test('uma fonte de webhook nasce EXIGINDO o instante', async () => {
+  assert.equal(fonte.config.timestampPolicy, 'required')
+})
+
+// --- o reenvio corrigido ------------------------------------------------------------------
+
+test('entrega malformada NÃO bloqueia o reenvio corrigido do mesmo evento', async () => {
+  // O registro de idempotência é gravado antes de olhar o corpo, e tem que ser. Mas
+  // mantê-lo depois de uma recusa corrigível transformava o mesmo `x-event-id` corrigido em
+  // "duplicado" para sempre: do outro lado, alguém reenviava o evento certo e ouvia silêncio.
+  const quebrada = await entregar('{isso nao e json', { eventId: 'e-corrige' })
+  assert.equal(quebrada.reason, 'mapping')
+
+  const corrigida = await entregar(CORPO, { eventId: 'e-corrige' })
+  assert.equal(corrigida.ok, true, 'o reenvio corrigido precisa passar')
+  assert.equal(corrigida.recorded, 1)
+})
+
+test('entrega sem campo obrigatório também não queima o event-id', async () => {
+  const semCampo = await entregar(JSON.stringify({ valor: '9' }), { eventId: 'e-falta' })
+  assert.equal(semCampo.reason, 'schema')
+
+  const completa = await entregar(CORPO, { eventId: 'e-falta' })
+  assert.equal(completa.ok, true)
+})
+
+test('a entrega BOA continua bloqueando o replay dela mesma', async () => {
+  assert.equal((await entregar(CORPO, { eventId: 'e-boa' })).ok, true)
+  assert.equal((await entregar(CORPO, { eventId: 'e-boa' })).reason, 'duplicate')
 })

@@ -102,6 +102,16 @@ export async function receiveWebhook(
    */
   const timestamp = Number(headers['x-timestamp'] ?? 0)
   if (timestamp && Math.abs(agora.getTime() - timestamp) > MAX_SKEW_MS) return { ok: false, reason: 'unauthorized' }
+  /**
+   * SEM instante, a decisão é da POLÍTICA — e não do silêncio.
+   *
+   * Antes, entrega sem `x-timestamp` pulava a conferência inteira: bastava não mandar o
+   * cabeçalho para o replay voltar a valer para sempre. Uma fonte que nasce hoje exige o
+   * instante; uma que já existia continua como estava, porque mudar a regra de um webhook
+   * em produção quebraria a integração do outro lado por uma decisão que é nossa.
+   */
+  const politica = (fonte.config as { timestampPolicy?: string }).timestampPolicy ?? 'optional'
+  if (!timestamp && politica === 'required') return { ok: false, reason: 'unauthorized' }
 
   if (fonte.status !== 'active') return { ok: false, reason: 'paused' }
 
@@ -119,27 +129,55 @@ export async function receiveWebhook(
     throw erro
   }
 
+  /**
+   * A memória da entrega é DESFEITA quando a recusa é corrigível.
+   *
+   * O registro de idempotência é gravado antes de olhar o corpo, e tem que ser: é ele que
+   * faz duas entregas simultâneas do mesmo evento virarem uma. Mas se o corpo vem
+   * malformado ou falta um campo obrigatório, nada foi gravado — e manter a lembrança
+   * transformava o mesmo `x-event-id` corrigido em "duplicado" para sempre. Do outro lado,
+   * alguém reenviava o evento certo e recebia silêncio.
+   */
+  const esquecerEntrega = () => deliveries.deleteOne({ sourceId: fonte._id, idempotencyKey }).catch(() => undefined)
+
   let corpo: unknown
   try {
     corpo = JSON.parse(body)
   } catch {
+    await esquecerEntrega()
     return { ok: false, reason: 'mapping' }
   }
 
   const mapeado = applyMapping(corpo, fonte.mapping)
-  if (mapeado.missing.length) return { ok: false, reason: 'schema' }
+  if (mapeado.missing.length) {
+    await esquecerEntrega()
+    return { ok: false, reason: 'schema' }
+  }
 
   let recorded = 0
-  for (const linha of mapeado.rows.slice(0, 200)) {
-    const r = await ingestFact({
+  const linhas = mapeado.rows.slice(0, 200)
+  for (const [i, linha] of linhas.entries()) {
+    const entityKey = fonte.entityKeyPath ? String(linha[fonte.entityKeyPath] ?? '') || null : null
+    await ingestFact({
       ownerId: fonte.ownerId,
       sourceKey: sourceKeyOf(fonte._id),
-      entityKey: fonte.entityKeyPath ? String(linha[fonte.entityKeyPath] ?? '') || null : null,
+      entityKey,
       occurredAt: agora,
       value: linha,
-      factId: `${fonte._id.toString()}:${idempotencyKey}`,
+      /**
+       * UMA identidade por LINHA — não uma por entrega.
+       *
+       * O mesmo `factId` para todas as linhas fazia uma entrega de cinco itens gravar um:
+       * o motor de histórico via a segunda como repetição da primeira e a descartava. As
+       * outras quatro sumiam sem erro nenhum, que é o pior jeito de perder dado.
+       *
+       * A chave da entidade entra antes do índice quando existe: ela é estável entre
+       * reenvios, e o índice muda se o provedor reordenar a lista.
+       */
+      factId: `${fonte._id.toString()}:${idempotencyKey}:${entityKey ?? i}`,
+    }).then((r) => {
+      recorded += r.gravado ?? 0
     })
-    recorded += r.gravado ?? 0
   }
 
   await sourcesCollection.updateOne(

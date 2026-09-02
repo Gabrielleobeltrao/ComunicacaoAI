@@ -84,6 +84,18 @@ export interface WebhookConfig {
   kind: 'webhook'
   /** Gerada pelo servidor. O segredo fica cifrado, fora daqui. */
   webhookPublicKey: string | null
+  /**
+   * O que fazer quando a entrega chega SEM instante.
+   *
+   * Uma assinatura não envelhece sozinha: sem instante, uma requisição capturada hoje
+   * continua válida para sempre, e o replay é só reenviar os mesmos bytes. `required` é o
+   * padrão de quem nasce agora.
+   *
+   * `optional` existe porque provedor que não manda instante também existe — e recusar a
+   * entrega dele seria trocar um risco por uma fonte que não funciona. Quem escolhe isso
+   * está dizendo que aceita o risco, e a escolha fica gravada onde dá para auditar.
+   */
+  timestampPolicy: 'required' | 'optional'
 }
 
 export interface StreamConfig {
@@ -176,7 +188,7 @@ export function validateConfig(kind: MonitoringSourceKind, bruto: unknown): Type
     rss: ['url', 'headerNames', 'extractScript'],
     http_page: ['url', 'headerNames', 'selector', 'extractScript'],
     browser: ['url', 'selector', 'strategy', 'extractScript'],
-    webhook: ['webhookPublicKey'],
+    webhook: ['webhookPublicKey', 'timestampPolicy'],
     websocket: ['installationId', 'protocol', 'url', 'subscriptions', 'heartbeatMs'],
     app_action: ['appKey', 'actionKey', 'installationId'],
     dataset: ['dataStoreId', 'datasetKey'],
@@ -236,7 +248,14 @@ export function validateConfig(kind: MonitoringSourceKind, bruto: unknown): Type
           : ['json', 'jsonld', 'dom', 'browser']) as BrowserConfig['strategy'],
       }
     case 'webhook':
-      return { kind, webhookPublicKey: c.webhookPublicKey ? String(c.webhookPublicKey) : null }
+      return {
+        kind,
+        webhookPublicKey: c.webhookPublicKey ? String(c.webhookPublicKey) : null,
+        // Estrito por padrão. Um documento antigo, sem o campo, é lido como `optional` no
+        // recebimento — mudar o comportamento de webhooks que já funcionam seria quebrar
+        // integrações de terceiros por uma decisão nossa.
+        timestampPolicy: c.timestampPolicy === 'optional' ? 'optional' : 'required',
+      }
     case 'websocket': {
       // O protocolo é DITO. Adivinhar por `wss://` versus `https://` erraria num SSE
       // servido por uma API que também fala WebSocket — e o erro só apareceria em produção.
