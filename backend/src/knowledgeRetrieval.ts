@@ -1,9 +1,12 @@
-import type { ObjectId } from 'mongodb'
 import { resolveKnowledgeOwnersForExecution } from './knowledgeAccess.js'
 import type { ExecutionContext, ResolvedOwner } from './knowledgeAccess.js'
+import { ObjectId } from 'mongodb'
 import { retrieveForOwners, RETRIEVAL_CHAR_BUDGET, RETRIEVAL_MIN_SCORE, RETRIEVAL_TOP_K } from './knowledge.js'
+import { openConflictsForDocuments, precedence } from './knowledgeConflicts.js'
+import type { ConflictCandidate } from './knowledgeConflicts.js'
 import type { KnowledgeFilters, RetrievalResult } from './knowledge.js'
 import { deriveRequirement, recordContextManifest } from './contextManifest.js'
+import { recordKnowledgeGap } from './knowledgeGaps.js'
 import type { Agent } from './agents.js'
 
 // A PORTA ÚNICA da leitura de conhecimento.
@@ -56,10 +59,92 @@ export async function retrieveForAgent(
     await registrar(accountId, agent, query, opts, vazio)
     return vazio
   }
-  const r = await retrieveForOwners(owners, query, opts)
-  const resultado = { ...r, owners }
+  const bruto = await retrieveForOwners(owners, query, opts)
+  const resultado = { ...(await aplicarConflitos(accountId, bruto)), owners }
   await registrar(accountId, agent, query, opts, resultado)
   return resultado
+}
+
+/**
+ * Dois trechos que se contradizem NUNCA vão juntos para o modelo.
+ *
+ * Quando a precedência decide — aprovado sobre rascunho, política oficial sobre nota,
+ * verificado mais recentemente entre iguais —, o perdedor sai e o motivo fica registrado.
+ * Quando ela NÃO decide, os dois saem e o estado vira `conflict`: mandar os dois e torcer
+ * é exatamente a decisão silenciosa que este bloco existe para não ter, e mandar um
+ * escolhido no par seria a mesma coisa com um passo a mais.
+ */
+async function aplicarConflitos(accountId: string, r: RetrievalResult): Promise<RetrievalResult> {
+  const ids = [...new Set(r.sources.map((s) => s.documentId).filter(Boolean))] as string[]
+  if (ids.length < 2) return r
+
+  const abertos = await openConflictsForDocuments(accountId, ids.map((id) => new ObjectId(id)))
+  if (abertos.length === 0) return r
+
+  const { db } = await import('./db.js')
+  const envolvidos = [...new Set(abertos.flatMap((c) => c.documentIds.map((id) => id.toString())))].filter((id) => ids.includes(id))
+  if (envolvidos.length < 2) return r
+
+  const docs = await db
+    .collection('knowledge_documents')
+    .find({ _id: { $in: envolvidos.map((id) => new ObjectId(id)) } }, { projection: { title: 1, content: 1, authority: 1, lifecycleStatus: 1, verifiedAt: 1, updatedAt: 1 } })
+    .toArray()
+  const porId = new Map(
+    docs.map((d) => [
+      d._id.toString(),
+      {
+        id: d._id.toString(),
+        title: String(d.title ?? ''),
+        content: String(d.content ?? ''),
+        authority: String(d.authority ?? 'reference'),
+        lifecycleStatus: d.lifecycleStatus as string,
+        verifiedAt: d.verifiedAt as Date,
+        updatedAt: d.updatedAt as Date,
+      },
+    ]),
+  )
+
+  const removidos = new Set<string>()
+  const ignorados = [...(r.ignored ?? [])]
+  let indeciso = false
+  for (const conflito of abertos) {
+    const partes: ConflictCandidate[] = conflito.documentIds.map((id) => porId.get(id.toString())).filter(Boolean) as ConflictCandidate[]
+    if (partes.length < 2) continue
+    let vencedor: ConflictCandidate | null = partes[0]
+    for (const outro of partes.slice(1)) {
+      const escolhido = precedence(vencedor, outro)
+      if (!escolhido) {
+        vencedor = null
+        break
+      }
+      vencedor = escolhido
+    }
+    if (!vencedor) {
+      indeciso = true
+      for (const p of partes) {
+        removidos.add(p.id)
+        ignorados.push({ kind: 'document', ref: p.id, reason: `conflito não resolvido sobre "${conflito.subject}" — a regra não decide qual vale` })
+      }
+      continue
+    }
+    for (const p of partes) {
+      if (p.id === vencedor.id) continue
+      removidos.add(p.id)
+      ignorados.push({ kind: 'document', ref: p.id, reason: `conflito sobre "${conflito.subject}": ${vencedor.authority} tem precedência` })
+    }
+  }
+
+  if (removidos.size === 0) return { ...r, ignored: ignorados }
+  const manter = r.sources.map((s, i) => ({ s, i })).filter(({ s }) => !s.documentId || !removidos.has(s.documentId))
+  return {
+    ...r,
+    context: manter.map(({ i }) => r.context[i]).filter((c) => c !== undefined),
+    sources: manter.map(({ s }) => s),
+    ignored: ignorados,
+    // Indeciso é `conflict` mesmo quando sobrou contexto: quem exige grounding precisa
+    // poder parar, e a tela precisa poder dizer que há uma decisão pendente.
+    status: indeciso ? 'conflict' : manter.length > 0 ? r.status : 'empty',
+  }
 }
 
 /**
@@ -76,6 +161,31 @@ async function registrar(
   r: AgentRetrievalResult,
 ): Promise<void> {
   if (!opts.execution) return
+
+  /**
+   * A LACUNA nasce aqui, junto do manifesto — e pelo mesmo motivo.
+   *
+   * "A base não respondeu" é um sinal que existia em toda execução e se perdia: cada uma
+   * era um registro solto, e ninguém ia ler dez mil deles. Agregada por assunto, ela vira
+   * a resposta para "o que falta na nossa base?".
+   *
+   * `denied` NÃO gera lacuna: não falta conhecimento, falta permissão — e tratá-los
+   * igual mandaria alguém escrever um documento que já existe do outro lado da política.
+   */
+  if (['empty', 'no_base', 'unavailable'].includes(r.status)) {
+    const escopo = r.owners.find((o) => o.reason === 'own') ?? r.owners[0]
+    if (escopo) {
+      await recordKnowledgeGap({
+        ownerId: accountId,
+        scopeType: escopo.ownerType,
+        scopeId: escopo.ownerId,
+        agentId: agent._id,
+        question: query,
+        cause: r.status as 'empty' | 'no_base' | 'unavailable',
+      })
+    }
+  }
+
   await recordContextManifest({
     ownerId: accountId,
     executionId: opts.execution.executionId,

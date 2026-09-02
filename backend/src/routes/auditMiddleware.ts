@@ -220,6 +220,15 @@ const RULES: Rule[] = [
    * exclusão aparecer no registro com dois nomes, dependendo de por onde ela passou.
    */
   R('POST', 'api/knowledge/documents/upload', { entityType: 'knowledge', action: 'create' }),
+  // Aprovar uma proposta CRIA um documento; recusar decide sobre ela. Os dois são
+  // mudanças no que os agentes leem, e entram no registro.
+  R('POST', 'api/knowledge/proposals/:/approve', { entityType: 'knowledge', action: 'create' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/proposals/:/reject', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/conflicts/:/resolve', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/gaps/:/resolve', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/gaps/:/dismiss', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  // Varrer não muda documento nenhum: é uma leitura que grava o que encontrou.
+  R('POST', 'api/knowledge/conflicts/scan', null, { why: 'detection, not a change' }),
   R('POST', 'api/knowledge/documents', { entityType: 'knowledge', action: 'create' }),
   R('PATCH', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
   R('DELETE', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'delete' }, { idAt: 3 }),

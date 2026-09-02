@@ -693,6 +693,72 @@ export async function findBySourceRef(owner: KnowledgeOwner, sourceRef: string):
   return documents.findOne({ ...ownerFilter(owner), sourceRef }, { projection: { content: 0 } }) as Promise<KnowledgeDocument | null>
 }
 
+/**
+ * O ESTADO DE REVISÃO de um documento — calculado, nunca perguntado a um modelo.
+ *
+ * Comparar datas é aritmética. Uma LLM decidindo se um documento venceu erraria de vez
+ * em quando, custaria por documento e não teria como ser reproduzida — três razões, e
+ * qualquer uma bastaria.
+ */
+export type ReviewState = 'ok' | 'due_for_review' | 'expiring_soon' | 'expired'
+
+export function reviewStateOf(
+  doc: Pick<KnowledgeDocument, 'validUntil' | 'verifiedAt' | 'reviewIntervalDays' | 'updatedAt'>,
+  now: Date = new Date(),
+  soonDays = 14,
+): ReviewState {
+  const venceEm = doc.validUntil ? new Date(doc.validUntil).getTime() : null
+  if (venceEm !== null && venceEm <= now.getTime()) return 'expired'
+  if (venceEm !== null && venceEm - now.getTime() <= soonDays * 86400_000) return 'expiring_soon'
+  if (doc.reviewIntervalDays && doc.reviewIntervalDays > 0) {
+    // Sem verificação registrada, a última edição é o melhor que existe — e é honesto
+    // dizer que ela conta como "a última vez que alguém olhou".
+    const base = doc.verifiedAt ? new Date(doc.verifiedAt).getTime() : new Date(doc.updatedAt).getTime()
+    if (now.getTime() - base >= doc.reviewIntervalDays * 86400_000) return 'due_for_review'
+  }
+  return 'ok'
+}
+
+/**
+ * Os documentos que precisam de atenção — vencidos, vencendo e com revisão atrasada.
+ *
+ * Uma varredura por escopo, com o cálculo feito no banco: trazer a base inteira para
+ * decidir em memória é exatamente o que a cota existe para impedir.
+ */
+export async function listDocumentsNeedingReview(owner: KnowledgeOwner, now: Date = new Date(), soonDays = 14) {
+  const limite = new Date(now.getTime() + soonDays * 86400_000)
+  const docs = await documents
+    .find(
+      {
+        $and: [
+          ownerFilter(owner),
+          { $or: [{ validUntil: { $lte: limite } }, { reviewIntervalDays: { $gt: 0 } }] },
+        ],
+      },
+      { projection: { content: 0 } },
+    )
+    .limit(500)
+    .toArray()
+  return docs
+    .map((d) => ({ document: d as Omit<KnowledgeDocument, 'content'>, state: reviewStateOf(d, now, soonDays) }))
+    .filter((x) => x.state !== 'ok')
+}
+
+/**
+ * A busca encontra ESTE documento por ESTE assunto, neste escopo?
+ *
+ * É a conferência de que uma lacuna foi mesmo resolvida. Fica na camada de conhecimento,
+ * e não na rota, porque quem sabe buscar é quem sabe buscar — e porque a regra de que
+ * ninguém procura por donos fora daqui vale inclusive para uma conferência.
+ *
+ * Não envolve política de acesso: aqui não há agente respondendo, há um escopo sendo
+ * conferido contra um assunto.
+ */
+export async function scopeSearchFinds(owner: KnowledgeOwner, subject: string, documentId: ObjectId): Promise<boolean> {
+  const r = await retrieveForOwners([owner], subject, { minScore: 0 })
+  return r.sources.some((s) => s.documentId === documentId.toString())
+}
+
 /** Só o carimbo de validade: renovar não reescreve texto e não gera embedding. */
 export async function touchWebDocument(owner: KnowledgeOwner, documentId: ObjectId, fetchedAt: Date, expiresAt: Date | null): Promise<void> {
   await documents.updateOne(
@@ -1119,10 +1185,12 @@ export function selectKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number;
  *
  * `empty` é "procurei e não achei". `unavailable` é "não consegui procurar" — e é o que
  * impede o agente de afirmar ausência sobre uma base que tem a resposta escrita.
- * `no_base` é "não há base para procurar". `denied` é novo: a política deste agente não
- * lhe dá base nenhuma, e isso não é o mesmo que não existir conhecimento.
+ * `no_base` é "não há base para procurar". `denied` é a política: este agente não tem
+ * base nenhuma, e isso não é o mesmo que não existir conhecimento. `conflict` é o pior
+ * de todos para esconder — dois documentos dizem coisas diferentes e a regra não decidiu
+ * qual vale.
  */
-export type GroundingStatus = 'ok' | 'empty' | 'no_base' | 'unavailable' | 'denied'
+export type GroundingStatus = 'ok' | 'empty' | 'no_base' | 'unavailable' | 'denied' | 'conflict'
 
 export interface RetrievalResult {
   context: string[]

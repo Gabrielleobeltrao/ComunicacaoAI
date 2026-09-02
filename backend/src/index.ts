@@ -161,6 +161,9 @@ import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import { knowledgeRouter } from './routes/knowledgeRoutes.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
 import { ensureContextManifestIndexes } from './contextManifest.js'
+import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
+import { ensureKnowledgeProposalIndexes } from './knowledgeProposals.js'
+import { ensureKnowledgeConflictIndexes } from './knowledgeConflicts.js'
 import {
   KnowledgeQuotaError,
   KnowledgeValidationError,
@@ -5341,6 +5344,15 @@ async function start() {
   // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
   // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
   // ninguém está olhando. Ela é um script, e é chamada à mão.
+  ensureKnowledgeGapIndexes().catch((error) => {
+    console.error('ensureKnowledgeGapIndexes failed:', error)
+  })
+  ensureKnowledgeProposalIndexes().catch((error) => {
+    console.error('ensureKnowledgeProposalIndexes failed:', error)
+  })
+  ensureKnowledgeConflictIndexes().catch((error) => {
+    console.error('ensureKnowledgeConflictIndexes failed:', error)
+  })
   ensureContextManifestIndexes().catch((error) => {
     console.error('ensureContextManifestIndexes failed:', error)
   })
