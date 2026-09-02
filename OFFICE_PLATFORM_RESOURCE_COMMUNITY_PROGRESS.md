@@ -454,6 +454,89 @@ Testes: 27, incluindo a suíte de ameaça. Bateria: 1354 + 1804, verde.
 
 Testes: 9. Bateria: 1354 + 1813 backend, verde.
 
+## Sessão de fechamento — as lacunas reais, resolvidas
+
+### Bloco 1 — runner isolado de verdade ✅ `60a27d2`
+
+`runner/` (serviço próprio, deployável), `backend/src/extensionRuntime/httpProvider.ts`,
+execução ligada em `executors/toolExecutor.ts`.
+
+O que estava errado antes: `toolExecutor` respondia `not_configured` para código porque não
+havia onde executar. Agora há — **fora** do processo que tem o banco e as chaves.
+
+- **cada execução é um processo filho novo** com `--permission` (nega filesystem,
+  subprocesso, worker e addon nativo dentro do próprio Node),
+  `--disallow-code-generation-from-strings` (mata eval e `new Function`),
+  `--max-old-space-size`, programa inteiro via `-e` (não há arquivo para ler nem nada em
+  disco para sobrar), `env: { PATH }` e SIGKILL no timeout;
+- **o perfil é MEDIDO**: `profile.mjs` roda um filho e olha o que ele conseguiu, tenta
+  escrever na raiz e tenta abrir conexão de saída. Nesta máquina `networkDenied` dá `false`,
+  e um teste afirma que por isso `canExecuteCode` responde `profile_incomplete`;
+- **autenticação de serviço**: HMAC sobre o corpo, janela de 60 s, nonce de uso único —
+  replay recusado por teste;
+- **a URL do runner vem da configuração do servidor**, nunca de um pedido;
+- **o hash do código é conferido dos dois lados**;
+- **bilhetes de capacidade** são emitidos para a execução e revogados no `finally`;
+- a varredura "nada executa aqui" passou a cobrir o **backend inteiro** (>100 arquivos),
+  e não só um diretório.
+
+Comandos: `npm run test:runner` → 21/21. `node --test test/sandboxEndToEnd.integration.test.mjs`
+→ 12/12, com o runner subindo como **processo separado**.
+
+### Bloco 2 — a revisão saiu do manifesto ✅ `8349f49`
+
+`backend/src/extensionRuntime/review.ts` + middleware de papel em `routes/extensionRoutes.ts`.
+
+O que estava errado antes: o portão lia `humanReview` do manifesto — que é escrito pelo
+autor. Era o autor assinando o próprio atestado.
+
+- `extension_reviews` é **imutável** e ligado a (assunto, hash, revisor); não existe caminho
+  de atualização no arquivo, de propósito;
+- o papel vem de `PLATFORM_REVIEWERS`, resolvido em **middleware** que sobrescreve
+  `res.locals.isReviewer` em toda requisição — `isReviewer` do cliente nunca é lido;
+- a aprovação vale para o **hash**: aprovar `1.0.0` e publicar outro código com o mesmo
+  número não funciona, e mudar uma linha invalida a aprovação sozinho;
+- aprovação de quem **perdeu** o papel deixa de valer;
+- sem `PLATFORM_REVIEWERS`, ninguém revisa e código continua impublicável.
+
+Comando: `node --test test/reviewRegistry.integration.test.mjs` → 10/10.
+
+### Bloco 3 — instalar CRIA a coisa ✅ `e1e36e7`
+
+`backend/src/extensions/materialize.ts`.
+
+O que estava errado antes: `createdRefs: []` — o catálogo dizia "instalado" e o escritório
+continuava sem o App.
+
+- a instalação escreve nos subsistemas **canônicos** (`createPrivateApp`, `createTool`);
+  se a criação falhar, a linha da instalação sai junto;
+- **cabeçalho com nome de credencial não vira cabeçalho** — vira instrução para configurar
+  a autenticação cifrada, que é a regra que o produto já aplica pela porta da frente;
+- a ferramenta nasce **desligada**: ligada sem credencial só produz erro na cara de quem usa;
+- `baselineAt` por recurso — "editado" é comparado com a criação, não com o instante da
+  instalação, senão tudo pareceria editado desde o primeiro segundo;
+- **desinstalar desliga o intocado e preserva o editado**; nada é apagado;
+- **atualizar preserva o ajuste de quem instalou** e reescreve o resto;
+- prévia de impacto em `GET /api/extensions/installed/:id/impact`.
+
+Comando: `node --test test/extensions.integration.test.mjs` → 34/34.
+
+### Bloco 4 — o monitor de dataset observa a gravação ✅ `a23ca78`
+
+`backend/src/monitors/dataSource.ts` + ouvinte em `dataHistory/store.ts`.
+
+- o aviso sai de `inserirRegistro`, **único lugar por onde todo registro passa**;
+- a identidade do evento é a `dedupeKey` do registro: uma execução por registro, dedupe e
+  recuperação após restart saem disso de graça;
+- assinatura **registrada, não importada**: o histórico não depende de monitores para
+  gravar, e falha de quem escuta não desfaz a gravação;
+- o valor observado é o do registro mais `occurredAt` — nenhum metadado que a condição não
+  deveria alcançar.
+
+Comando: `node --test test/monitorDatabaseSource.integration.test.mjs` → 10/10.
+
+Bateria após os quatro blocos: `npm run test -w backend` → **1354 + 1853, 0 falhas**.
+
 ## Bateria completa desta sessão
 
 Rodada inteira, na ordem do plano, com o repositório no commit `671b38e`:
