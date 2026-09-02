@@ -65,7 +65,10 @@ export const NAV_V2: NavItemDef[] = [
   // Execuções porque as duas respondem à mesma pergunta em níveis diferentes — aqui a
   // cadeia inteira, lá a execução da automação.
   { key: 'activity', label: 'Atividade', icon: 'activity', scope: 'general', group: 'control', path: () => '/activity', activePrefixes: () => ['/activity'] },
-  { key: 'monitors', label: 'Monitores', icon: 'radar', scope: 'general', group: 'control', path: () => '/monitors', activePrefixes: () => ['/monitors'] },
+  // A CENTRAL é a porta: ela responde "está tudo bem?", e de dentro dela se chega às
+  // fontes e aos monitores. Monitores continua tendo endereço próprio — quem tinha o
+  // bookmark não perde —, mas quem chega pelo menu chega pela pergunta certa.
+  { key: 'monitoring', label: 'Monitoramento', icon: 'radar', scope: 'general', group: 'control', path: () => '/monitoring', activePrefixes: () => ['/monitoring', '/monitors'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
   // COMUNIDADE: o que dá para instalar, o que é seu e o que já está aqui. Entrou quando o
   // Marketplace passou a existir de verdade — um item de menu que leva a uma tela vazia

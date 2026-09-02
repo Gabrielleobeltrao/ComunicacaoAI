@@ -162,6 +162,33 @@ Sete itens da lista, todos com teste que falha sem a correção:
 Comandos: `node --test test/monitoringMapping.test.mjs test/monitoringSource.integration.test.mjs test/monitoringHealth.test.mjs`
 → **81/81**; `npm run test -w backend` → **1401 + 1905, 0 falhas**.
 
+## Bloco 5 — a Central na tela: cinco abas e o wizard ✅
+
+`frontend/src/lib/monitoring.ts`, `pages/MonitoringCenter.tsx`, rota `/monitoring` e o item
+de menu.
+
+As abas **não são categorias**: são as perguntas que alguém faz, na ordem em que faz. "Está
+tudo bem?" (visão geral), "de onde vem?" (fontes), "o que dispara?" (monitores), "o que
+está chegando agora?" (ao vivo), "o que aconteceu?" (histórico).
+
+- **a saúde é dita em português, com o motivo**: `api_polling / degraded / 3` não é uma
+  frase, e às três da manhã ninguém monta uma de cabeça. A tela mostra "degradada · a
+  última leitura boa tem 42 min · 3 falhas";
+- **o wizard testa de verdade** e mostra a amostra **redigida** — credencial aparece como
+  «oculto», e o teste é a mesma leitura que a fonte fará quando ativa;
+- **a fonte nasce rascunho**, e a revisão do wizard diz isso antes de salvar: nada é
+  consultado até alguém ativar;
+- **a recusa do servidor aparece na tela** em vez de virar estado silencioso — inclusive a
+  de ativar sem ter lido;
+- **o menu passou a apontar para a Central**, mantendo `/monitors` como endereço próprio:
+  quem tinha o bookmark não perde, e quem chega pelo menu chega pela pergunta certa;
+- o "ao vivo" usa o socket que já existe — quando algo anda, a lista se refaz. Sem sondagem.
+
+Comandos: `npx playwright test e2e/monitoring-center.spec.ts` → **8/8**, incluindo **320 px**
+(Central e wizard) e acessibilidade (rótulo nos campos, erro em `role="alert"`).
+Bateria: E2E **660** passaram · frontend **292** · lint **0 erros** · secret-scan limpo em
+2206 arquivos · backend **1401 + 1905**.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje

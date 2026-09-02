@@ -17,6 +17,7 @@ import { FloorView } from './pages/FloorView'
 import { Resources } from './pages/Resources'
 import { Databases } from './pages/Databases'
 import { Monitors } from './pages/Monitors'
+import { MonitoringCenter } from './pages/MonitoringCenter'
 import { Activity } from './pages/Activity'
 import { Marketplace } from './pages/Marketplace'
 import { AgentDetail } from './pages/AgentDetail'
@@ -79,6 +80,7 @@ function App() {
           <Route path="/resources" element={<P><Resources /></P>} />
           <Route path="/databases" element={<P><Databases /></P>} />
           <Route path="/monitors" element={<P><Monitors /></P>} />
+          <Route path="/monitoring" element={<P><MonitoringCenter /></P>} />
           <Route path="/activity" element={<P><Activity /></P>} />
           <Route path="/community" element={<P><Marketplace /></P>} />
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
