@@ -273,6 +273,10 @@ const RULES: Rule[] = [
   R('POST', 'api/monitors/:/pause', { entityType: 'monitor', action: 'pause' }, { idAt: 2 }),
   R('DELETE', 'api/monitors/:', { entityType: 'monitor', action: 'delete' }, { idAt: 2 }),
 
+  // A migração cria Data Stores e datasets a partir do que a conta já grava: é mudança.
+  R('POST', 'api/databases/migrate/histories', { entityType: 'database', action: 'create' }),
+  R('POST', 'api/databases/migrate/histories/rollback', { entityType: 'database', action: 'delete' }),
+
   R('POST', 'api/databases', { entityType: 'database', action: 'create' }),
   R('PATCH', 'api/databases/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/databases/:', { entityType: 'database', action: 'delete' }, { idAt: 2 }),

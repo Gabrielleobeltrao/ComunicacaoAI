@@ -116,10 +116,26 @@ export interface PublishInput {
 export async function publishVersion(ownerId: string, toolId: ObjectId, input: PublishInput): Promise<ToolVersion> {
   if (!SEMVER.test(input.version)) throw new ToolVersionError('a versão usa o formato 1.0.0')
   if (!RUNTIME_KINDS.includes(input.runtimeKind)) throw new ToolVersionError('runtime desconhecido')
-  if (input.runtimeKind === 'code' && process.env.CODE_TOOLS_ENABLED !== '1') {
-    // Fail-closed: sem runtime isolado saudável, código não é publicável. Editar e
-    // validar estaticamente pode; publicar não.
-    throw new ToolVersionError('ferramentas de código exigem o runtime isolado, que não está habilitado', 'code_runtime_disabled')
+  if (input.runtimeKind === 'code') {
+    /**
+     * CÓDIGO passa pelo portão inteiro — e ele é o mesmo do resto da plataforma.
+     *
+     * Fail-closed: sem runtime isolado saudável, código não é publicável. Editar e
+     * validar estaticamente pode; publicar não. A flag continua respondendo com o
+     * código de erro de sempre, porque é ela que a tela sabe explicar.
+     */
+    const { canPublishCode } = await import('./extensionRuntime/gate.js')
+    const m = input.manifest as { runtime?: string; source?: string; humanReview?: { reviewerId: string; at: Date } | null }
+    const portao = await canPublishCode({
+      version: input.version,
+      runtime: (m.runtime === 'javascript' ? 'javascript' : 'python') as 'python' | 'javascript',
+      source: String(m.source ?? ''),
+      humanReview: m.humanReview ?? null,
+    })
+    if (!portao.ok) {
+      const codigo = portao.code === 'flag_off' ? 'code_runtime_disabled' : portao.code
+      throw new ToolVersionError(portao.message, codigo)
+    }
   }
   if (!input.outputSchema) {
     throw new ToolVersionError('declare o que a ferramenta devolve antes de publicar', 'missing_output_schema')

@@ -63,6 +63,13 @@ Secrets are never real in this repo. URLs are public and are the real values abo
 | `GOOGLE_CLIENT_ID` | backend | Optional | Runtime | Secret-ish | *(blank)* | Google Cloud OAuth client | Provider policy | Google Calendar integration hidden |
 | `GOOGLE_CLIENT_SECRET` | backend | Optional | Runtime | **Secret** | *(blank)* | Google Cloud OAuth client | Provider policy / on suspicion | Google OAuth callback fails |
 | `GOOGLE_REDIRECT_URI` | backend | Optional | Runtime | Public | `https://api.comunicacaoai.onplataform.com/api/integrations/google/callback` | Derived from `BETTER_AUTH_URL` if unset | Backend domain changes | Defaults to `BETTER_AUTH_URL` + `/api/integrations/google/callback` |
+| `RESOURCE_PLATFORM_ENABLED` | backend | Optional (default on) | Runtime | Public | *(unset)* | Deploy config | Rolling the resource layer back | `0` makes `/api/resources` answer 404 — the route is closed, not just the button |
+| `DATABASES_ENABLED` | backend | Optional (default on) | Runtime | Public | *(unset)* | Deploy config | Rolling Databases back | `0` makes `/api/databases` answer 404 |
+| `MONITORS_ENABLED` | backend | Optional (default on) | Runtime | Public | *(unset)* | Deploy config | Rolling Monitors back | `0` makes `/api/monitors` answer 404. Monitors already published keep their state; nothing is deleted |
+| `COMMUNITY_MARKETPLACE_ENABLED` | backend | Optional (default on) | Runtime | Public | *(unset)* | Deploy config | Closing the community catalog | `0` makes the catalog and community installs answer 404. Creating and publishing your OWN packages stays open — it needs no community |
+| `CODE_TOOLS_ENABLED` | backend | Optional (**default off**) | Runtime | Public | *(unset)* | Deploy config | Only when a real isolated runner exists | Anything other than `1` keeps code tools unpublishable and unexecutable. **Setting it to `1` is not enough**: the gate also requires a registered `SandboxRuntimeProvider` whose `health()` proves non-root, read-only rootfs, denied network, no-new-privileges, seccomp, ephemeral env and verified cleanup. No such provider ships in this repository, so code stays off |
+| `SANDBOX_HANDLE_TTL_MS` / `SANDBOX_HANDLE_MAX_USES` | backend | Optional (`30000` / `5`) | Runtime | Public | `30000` | Deploy config | Tuning the capability broker | Capability handles live 30s and are good for at most 5 uses |
+| `EXECUTOR_TOOL_TIMEOUT_MS` | backend | Optional (`30000`) | Runtime | Public | `30000` | Deploy config | Slow third-party APIs | A tool call is cut at 30s |
 
 ## `CLIENT_URL` vs `CLIENT_URLS`
 
@@ -110,6 +117,12 @@ for, and backfills:
 | `sectors` | — | `entryPolicy: 'open_members'` (current behaviour, unchanged) |
 | `buildings` | — | `floorCommunication`: `all` for a multi-floor building, `isolated` for a single-floor one |
 | `offices` (floors) | — | read as `workMode: 'organization'` (current behaviour) |
+| `monitors` / `monitor_states` | Watch rules and their on-duty state | — (new; nothing is backfilled) |
+| `tool_versions` / `tool_version_calls` | Frozen tool versions and safe call telemetry | — (legacy tools stay `http`/`0.0.0`, derived at read time) |
+| `extension_packages` / `extension_versions` / `extension_installations` | Shareable packages, frozen versions, per-account installs | — (private Apps get a package only through the explicit `POST /api/extensions/backfill/apps`) |
+| `sandbox_capability_handles` | Short-lived capability handles (TTL index); stores the token HASH, never the token | — |
+| `sandbox_kill_switches` | Code disabled by package, version or hash | — |
+| `data_stores` / `dataset_definitions` | Databases and their datasets | — (existing histories are projected only by the explicit `POST /api/databases/migrate/histories`, which moves no records and has a rollback) |
 
 Rolling back the application code is safe: the added fields are ignored by the
 previous version, the legacy `builtinTools` entries are still present (stamped

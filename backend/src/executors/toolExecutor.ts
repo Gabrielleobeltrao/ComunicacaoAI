@@ -313,9 +313,18 @@ async function executarVersao(
       return { ...r, metadata: { ...r.metadata, ...base } }
     }
 
-    // `code`: fail-closed. A versão só é publicável com o runtime isolado habilitado, e
-    // enquanto ele não executa de verdade, aceitar a chamada seria prometer o que não há.
-    return falha('not_configured', 'Ferramentas de código exigem o runtime isolado, que ainda não executa.', comecou, base)
+    /**
+     * `code`: passa pelo MESMO portão da publicação, agora com o kill switch pelo hash.
+     *
+     * Uma versão publicada ontem pode ter sido desligada hoje — e o desligamento vale na
+     * execução, não na próxima publicação. Sem provider isolado saudável, isto recusa.
+     */
+    const { canExecuteCode } = await import('../extensionRuntime/gate.js')
+    const portao = await canExecuteCode({ sha256: versao.sha256, version: versao.version })
+    if (!portao.ok) return falha('not_configured', portao.message, comecou, base)
+    // O portão abriu, mas quem executa é o runner remoto — e ligar esta ponta é a parte
+    // que exige um provider de verdade, que ainda não existe neste repositório.
+    return falha('not_configured', 'Não há runner isolado configurado para executar este código.', comecou, base)
   })()
 
   /**

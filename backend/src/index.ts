@@ -165,6 +165,8 @@ import { monitorRouter } from './routes/monitorRoutes.js'
 import { activityRouter } from './routes/activityRoutes.js'
 import { extensionRouter } from './routes/extensionRoutes.js'
 import { ensureExtensionIndexes } from './extensions/packages.js'
+import { ensureBrokerIndexes } from './extensionRuntime/broker.js'
+import { ensureKillSwitchIndexes } from './extensionRuntime/gate.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
 import { ensureContextManifestIndexes } from './contextManifest.js'
 import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
@@ -5443,6 +5445,12 @@ async function start() {
   // ninguém está olhando. Ela é um script, e é chamada à mão.
   ensureExtensionIndexes().catch((error) => {
     console.error('ensureExtensionIndexes failed:', error)
+  })
+  ensureBrokerIndexes().catch((error) => {
+    console.error('ensureBrokerIndexes failed:', error)
+  })
+  ensureKillSwitchIndexes().catch((error) => {
+    console.error('ensureKillSwitchIndexes failed:', error)
   })
   ensureToolVersionCallIndexes().catch((error) => {
     console.error('ensureToolVersionCallIndexes failed:', error)

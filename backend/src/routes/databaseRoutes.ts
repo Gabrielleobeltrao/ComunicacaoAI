@@ -20,6 +20,7 @@ import { AdapterError, runInsert, runQuery } from '../databases/adapters.js'
 import { QueryDslError } from '../databases/queryDsl.js'
 import { DATABASE_CAPABILITIES } from '../databases/types.js'
 import type { DatabaseCapability } from '../databases/types.js'
+import { migrateHistoriesToDataStores, rollbackHistoryMigration } from '../databases/migration.js'
 import { resolveSubject } from '../resources/scope.js'
 import { notFound, oid } from './http.js'
 
@@ -54,6 +55,29 @@ const recusa = (res: Parameters<typeof notFound>[0], erro: unknown): boolean => 
   }
   return false
 }
+
+/**
+ * A migração 9.2, pedida por quem administra a conta.
+ *
+ * Sem `apply=1` a resposta é o PLANO — e ela não move registro nenhum: os históricos
+ * continuam onde estão, e o que nasce é a projeção que os torna visíveis como Database.
+ */
+databaseRouter.post('/migrate/histories', async (req, res, next) => {
+  try {
+    res.json(await migrateHistoriesToDataStores(res.locals.userId, { dryRun: String(req.query.apply ?? '') !== '1' }))
+  } catch (erro) {
+    if (!recusa(res, erro)) next(erro as Error)
+  }
+})
+
+/** O reverso: apaga só o que a migração criou. Registro nenhum é tocado. */
+databaseRouter.post('/migrate/histories/rollback', async (_req, res, next) => {
+  try {
+    res.json(await rollbackHistoryMigration(res.locals.userId))
+  } catch (erro) {
+    if (!recusa(res, erro)) next(erro as Error)
+  }
+})
 
 databaseRouter.get('/', async (_req, res) => {
   const stores = await listDataStores(res.locals.userId)
