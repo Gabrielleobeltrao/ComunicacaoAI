@@ -5,7 +5,8 @@
   "workspaces": [
     "frontend",
     "backend",
-    "runner"
+    "runner",
+    "browser-worker"
   ],
   "scripts": {
     "dev": "concurrently -n frontend,backend,worker -c blue,green,magenta \"npm run dev -w frontend\" \"npm run dev:api -w backend\" \"npm run dev:worker -w backend\"",
@@ -13,7 +14,8 @@
     "dev:api": "concurrently -n frontend,backend -c blue,green \"npm run dev -w frontend\" \"npm run dev:api -w backend\"",
     "smoke": "npm run build && node scripts/mvp-smoke.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
-    "test:runner": "npm test -w runner"
+    "test:runner": "npm test -w runner",
+    "test:browser-worker": "npm test -w browser-worker"
   },
   "devDependencies": {
     "concurrently": "^10.0.3"

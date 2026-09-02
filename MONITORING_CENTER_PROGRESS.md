@@ -379,13 +379,68 @@ Bateria: E2E **669** · frontend **292** · lint **0 erros**.
 **Nota de ambiente (de novo)**: o `vite preview` servindo build antigo derruba a suíte
 inteira com "Cannot navigate to invalid URL". Matar o preview antes de reconstruir resolve.
 
+## Bloco 14 — o portão de visão/OCR ✅
+
+`backend/src/monitoring/vision.ts`.
+
+Ler um número de uma imagem é **palpite com boa aparência**: `1.234` vira `1234`, `l` vira
+`1`, um gráfico com sombra vira qualquer coisa. Um palpite desses acionando um Flow que
+manda dinheiro é o pior tipo de defeito — raro, silencioso, e quando aparece já aconteceu.
+
+Por isso a visão aqui **não devolve um valor**: devolve valor + **confiança** + **evidência**,
+e um portão decide se aquilo pode virar dado.
+
+- **sem evidência não passa** (texto cru e provedor): não há o que conferir depois;
+- **piso de confiança de 95% para dado crítico**, 70% para o resto. Um reconhecedor 80%
+  seguro erra um em cinco, e um em cinco é muito quando cada erro é uma ação no mundo;
+- **dado crítico exige confirmação**: duas leituras independentes que concordam. Uma leitura
+  muito confiante e errada é indistinguível de uma muito confiante e certa;
+- ausente continua não virando zero;
+- **o provedor padrão recusa** — enquanto não houver um, uma fonte que dependeria de visão
+  não lê nada em vez de ler um palpite.
+
+**Defeito real que o teste pegou**: a recusa por falta de confirmação ainda devolvia o
+valor calculado. Ele acabaria gravado por quem não olhasse `accepted`. Toda recusa devolve
+`null` agora.
+
+Comando: `node --test test/monitoringVision.test.mjs` → **14/14**.
+
+## Bloco 15 — o browser em worker isolado ✅
+
+`browser-worker/` — serviço próprio, deployável, com Dockerfile e README.
+
+Buscar uma página é seguir um endereço que **outra pessoa escolheu**. Fazer isso de dentro
+da API significa pedir requisições a partir da rede interna — e é assim que a metadata da
+nuvem sai pela porta da frente.
+
+- **cada salto de redirect é revalidado**: validar só a URL digitada e seguir redirects
+  alegremente é o erro clássico;
+- **cada subrequisição é conferida como se fosse a primeira**, e uma bloqueada **não
+  derruba a página**: derrubar tudo faria um `<img>` para rede interna esconder o conteúdo
+  legítimo e a informação de que alguém tentou;
+- **DNS rebinding fechado**: o guarda devolve o ENDEREÇO conferido e a conexão usa ele, sem
+  perguntar ao DNS de novo. Se **qualquer** endereço resolvido for privado, o alvo inteiro é
+  recusado — escolher "o primeiro que serve" seria cair no ataque;
+- `::ffff:169.254.169.254` é reconhecido como metadata;
+- download, tipo binário e `Content-Disposition: attachment` são recusados;
+- orçamento de bytes conferido **antes** de pedir — deixar a requisição sair e falhar por
+  tamanho reportava a causa errada e gastava uma ida à rede condenada;
+- **kill switch** por variável, sem derrubar o processo;
+- o `health` **diz o que ele não faz**: `render: false`. Sem motor de renderização, uma
+  fonte que dependa de JavaScript sabe que não foi atendida, em vez de receber HTML cru
+  como se fosse página renderizada.
+
+Comando: `npm run test:browser-worker` → **19/19**, sendo 8 de ameaça.
+Bateria: backend **1434 + 1949** · secret-scan limpo em 2217 arquivos.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **Browser em worker isolado** e **OCR/visão com confiança e evidência**: nada existe. É a
-   maior lacuna que resta, e o plano é explícito que dado incerto não dispara.
+2. **Ligar o worker à Central**: o tipo `browser` ainda não usa o worker — o contrato, o
+   guarda e os limites estão de pé, falta o adapter no `collect.ts` e o registro por
+   variável de ambiente, como o do runner de código.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e
