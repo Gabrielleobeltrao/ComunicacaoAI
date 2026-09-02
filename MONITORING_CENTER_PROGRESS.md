@@ -337,12 +337,40 @@ Bateria: backend **1420 + 1934** · E2E **667** · frontend **292** · lint **0 
 — o `vite preview` estava servindo um build antigo. Não era código; matar o preview e
 reconstruir resolveu. Fica registrado porque a leitura errada aqui seria "a Central quebrou".
 
+## Bloco 12 — grants por agente/setor sobre fonte ✅
+
+`backend/src/monitoring/access.ts` + rotas de grant e `GET /sources/:id/access`.
+
+A precedência **não é nova, de propósito**: `deny` vence qualquer `allow`, e entre
+permissões a mais específica ganha (agente > setor > andar > prédio). Inventar uma
+precedência própria faria a mesma pergunta ter duas respostas dependendo do recurso — e a
+errada seria descoberta em produção.
+
+- **o agente é resolvido contra a conta antes de qualquer coisa**: perguntar "o agente X
+  pode?" com um id de outra conta já seria vazamento, mesmo sem ler nada;
+- **a hierarquia é resolvida, não guardada no grant** — quem lê é o `resolveAgentSubject`
+  canônico, e a associação de setor mora no setor;
+- **revogação vale na hora**: entre conceder e usar cabe uma revogação, e a conferência é
+  imediatamente antes do uso;
+- fonte pausada não é alcançada por agente nem com grant;
+- `GET /sources/:id/access` existe para a matriz do agente mostrar **a mesma resposta** que
+  a execução vai dar — duas respostas para a mesma pergunta é como se descobre, tarde, que
+  a tela mentia.
+
+**Meu fixture estava errado, não o código**: pus a associação de setor no agente, e o
+resolvedor canônico lê dos membros do setor. Quatro casos falharam até eu corrigir o teste.
+
+Comando: `node --test test/monitoringGrants.integration.test.mjs` → **15/15** (3 de ameaça:
+agente de outra conta, fonte de outra conta e revogação).
+Bateria: **1420 + 1949**, secret-scan limpo em 2215 arquivos.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **Grants por agente/setor sobre fonte**, e autorização reconferida antes da leitura.
+2. **Wizard**: autenticação pelo Vault (escolher a conexão) e a opção de criar Monitor+Flow
+   ao final.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

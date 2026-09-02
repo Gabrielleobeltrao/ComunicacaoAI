@@ -167,6 +167,7 @@ import { monitoringRouter } from './routes/monitoringRoutes.js'
 import { ensureMonitoringIndexes } from './monitoring/service.js'
 import { monitoringWebhookRouter } from './routes/monitoringWebhookRoutes.js'
 import { ensureWebhookIndexes as ensureMonitoringWebhookIndexes } from './monitoring/webhookSource.js'
+import { ensureSourceGrantIndexes } from './monitoring/access.js'
 import { extensionRouter } from './routes/extensionRoutes.js'
 import { ensureExtensionIndexes } from './extensions/packages.js'
 import { ensureBrokerIndexes } from './extensionRuntime/broker.js'
@@ -5471,6 +5472,9 @@ async function start() {
   })
   ensureMonitoringWebhookIndexes().catch((error) => {
     console.error('ensureMonitoringWebhookIndexes failed:', error)
+  })
+  ensureSourceGrantIndexes().catch((error) => {
+    console.error('ensureSourceGrantIndexes failed:', error)
   })
   /**
    * O runner isolado, quando ele foi configurado.

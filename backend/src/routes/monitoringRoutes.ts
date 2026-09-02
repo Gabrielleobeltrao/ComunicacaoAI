@@ -16,6 +16,7 @@ import {
 import { KIND_CAPABILITIES, MONITORING_SOURCE_KINDS } from '../monitoring/types.js'
 import { computeHealth, nextReadAt } from '../monitoring/health.js'
 import { rotateWebhookSecret } from '../monitoring/webhookSource.js'
+import { deleteSourceGrant, listSourceGrants, putSourceGrant, resolveSourceAccess } from '../monitoring/access.js'
 import { notFound, oid } from './http.js'
 
 // AS ROTAS da Central — e a flag que nega de verdade.
@@ -211,6 +212,54 @@ monitoringRouter.post('/sources/:id/webhook-secret', async (req, res, next) => {
   } catch (erro) {
     if (!recusa(res, erro)) next(erro as Error)
   }
+})
+
+// --- os grants: quem alcança esta fonte ------------------------------------------------
+
+monitoringRouter.get('/sources/:id/grants', async (req, res) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  res.json({ items: await listSourceGrants(res.locals.userId, id) })
+})
+
+monitoringRouter.put('/sources/:id/grants', async (req, res, next) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  const body = (req.body ?? {}) as { subjectType?: string; subjectId?: string; capabilities?: string[]; effect?: string }
+  try {
+    const g = await putSourceGrant(res.locals.userId, {
+      sourceId: id,
+      subjectType: (body.subjectType ?? 'agent') as 'agent',
+      subjectId: String(body.subjectId ?? ''),
+      capabilities: (body.capabilities ?? []) as ('read' | 'configure')[],
+      ...(body.effect === 'deny' ? { effect: 'deny' as const } : {}),
+    })
+    res.json({ id: g._id.toString(), effect: g.effect, capabilities: g.capabilities })
+  } catch (erro) {
+    if (!recusa(res, erro)) res.status(400).json({ message: (erro as Error).message, error: (erro as Error).message })
+  }
+})
+
+monitoringRouter.delete('/sources/:id/grants/:subjectType/:subjectId', async (req, res) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  const removido = await deleteSourceGrant(res.locals.userId, id, String(req.params.subjectType) as 'agent', String(req.params.subjectId))
+  if (!removido) return notFound(res)
+  res.status(204).end()
+})
+
+/**
+ * "Este agente alcança esta fonte?" — a pergunta respondida pelo resolvedor canônico.
+ *
+ * Existe como rota porque a matriz de acesso do agente precisa mostrar a MESMA resposta
+ * que a execução vai dar. Duas respostas para a mesma pergunta é como se descobre, tarde,
+ * que a tela mentia.
+ */
+monitoringRouter.get('/sources/:id/access', async (req, res) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  const agentId = typeof req.query.agentId === 'string' ? oid(req.query.agentId) : null
+  res.json(await resolveSourceAccess({ accountId: res.locals.userId, sourceId: id, agentId }))
 })
 
 monitoringRouter.delete('/sources/:id', async (req, res) => {
