@@ -17,6 +17,31 @@ import { BlockedTarget } from './guard.mjs'
 const SECRET = process.env.BROWSER_WORKER_SECRET ?? ''
 const PORT = Number(process.env.PORT ?? 4400)
 const CONCORRENCIA = Number(process.env.BROWSER_CONCURRENCY ?? 2)
+/**
+ * O TETO DE TEMPO do pedido inteiro — maior que o da página, e por cima dele.
+ *
+ * Os limites de dentro cobrem cada etapa: a navegação, a espera de silêncio, cada
+ * subrequisição. Somados, ainda dá para uma página patológica segurar a vaga por muito
+ * mais do que qualquer um desses números sugere — e as vagas são duas. Este teto é o que
+ * garante que a vaga volta.
+ */
+const tetoMs = () => Number(process.env.BROWSER_REQUEST_TIMEOUT_MS ?? 45_000)
+
+/** Corre contra o relógio: o que vier primeiro, o trabalho ou o teto. */
+async function comTeto(promessa, ms) {
+  let alarme
+  try {
+    return await Promise.race([
+      promessa,
+      new Promise((_, rejeitar) => {
+        // Em segundos quando faz sentido: "passou de 0s" não explica nada a quem lê o log.
+        alarme = setTimeout(() => rejeitar(new Error(`o pedido passou do teto de ${ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`}`)), ms)
+      }),
+    ])
+  } finally {
+    clearTimeout(alarme)
+  }
+}
 /** O interruptor: liga em `1` e o worker recusa tudo, sem precisar derrubar o processo. */
 const desligado = () => process.env.BROWSER_KILL_SWITCH === '1'
 
@@ -65,7 +90,7 @@ export function createBrowserWorker({ secret = SECRET } = {}) {
         // Screenshot vem junto do motor: quem renderiza, retrata. Visão continua fora —
         // ela é do backend, que tem o provedor de modelo; o worker só produz a imagem.
         capabilities: { fetch: true, render: Boolean(motor), screenshot: Boolean(motor), vision: false },
-        limits: LIMITES,
+        limits: { ...LIMITES, requestTimeoutMs: tetoMs() },
         concurrency: CONCORRENCIA,
       })
     }
@@ -90,15 +115,18 @@ export function createBrowserWorker({ secret = SECRET } = {}) {
          * Subir um Chromium para ler um JSON seria pagar segundos e centenas de megabytes
          * por nada. O caminho barato continua sendo o padrão; o caro é uma escolha.
          */
-        const r = pedido.render === true
-          ? await renderPage(String(pedido.url ?? ''), {
-              limits: pedido.limits,
-              screenshot: pedido.screenshot === true,
-              ...(pedido.selector ? { selector: String(pedido.selector) } : {}),
-            })
-          : await fetchWithSubrequests(String(pedido.url ?? ''), Array.isArray(pedido.subrequests) ? pedido.subrequests.map(String) : [], {
-              limits: pedido.limits,
-            })
+        const r = await comTeto(
+          pedido.render === true
+            ? renderPage(String(pedido.url ?? ''), {
+                limits: pedido.limits,
+                screenshot: pedido.screenshot === true,
+                ...(pedido.selector ? { selector: String(pedido.selector) } : {}),
+              })
+            : fetchWithSubrequests(String(pedido.url ?? ''), Array.isArray(pedido.subrequests) ? pedido.subrequests.map(String) : [], {
+                limits: pedido.limits,
+              }),
+          tetoMs(),
+        )
         // O log conta o que aconteceu, nunca o conteúdo: sem corpo, sem cabeçalho.
         console.log(
           JSON.stringify({
@@ -132,7 +160,7 @@ export function createBrowserWorker({ secret = SECRET } = {}) {
         const bloqueado = erro instanceof BlockedTarget
         return responder(res, 200, {
           ok: false,
-          error: { kind: bloqueado ? 'blocked' : /tempo esgotado|timeout/i.test(String(erro.message)) ? 'timeout' : 'fetch', message: String(erro.message).slice(0, 200) },
+          error: { kind: bloqueado ? 'blocked' : /tempo esgotado|timeout|passou do teto/i.test(String(erro.message)) ? 'timeout' : 'fetch', message: String(erro.message).slice(0, 200) },
           ms: Date.now() - comecou,
         })
       } finally {

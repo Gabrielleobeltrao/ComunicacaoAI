@@ -21,6 +21,15 @@ export const LIMITES = {
 /** Tipos que uma fonte de monitoramento lê. Um binário não é um deles. */
 const TIPOS_ACEITOS = /^(text\/|application\/(json|xml|xhtml|rss|atom|ld\+json))/i
 
+/**
+ * O que uma PÁGINA precisa para montar — mais largo, e só no caminho da renderização.
+ *
+ * Estilo, fonte e imagem não são dados que a Central lê, mas sem eles o retrato mostra uma
+ * página desmontada — e é do retrato que a leitura por visão sai. Executável continua fora:
+ * um `application/octet-stream` não ajuda a renderizar nada.
+ */
+export const TIPOS_DE_RENDER = /^(text\/|image\/|font\/|application\/(json|xml|xhtml|rss|atom|ld\+json|javascript|x-javascript|font-woff2?|wasm))/i
+
 export async function fetchOnce(rawUrl, opcoes = {}) {
   const limites = { ...LIMITES, ...opcoes.limits }
   const resolver = opcoes.resolver
@@ -57,7 +66,7 @@ function umaRequisicao(conferido, limites, headersExtra) {
         servername: ehHttps ? conferido.url.hostname : undefined,
         port: conferido.url.port || (ehHttps ? 443 : 80),
         path: `${conferido.url.pathname}${conferido.url.search}`,
-        method: 'GET',
+        method: limites.method ?? 'GET',
         headers: {
           host: conferido.url.host,
           'user-agent': 'ComunicacaoAI-Monitor/1.0',
@@ -77,7 +86,7 @@ function umaRequisicao(conferido, limites, headersExtra) {
         }
 
         const tipo = String(res.headers['content-type'] ?? '')
-        if (!TIPOS_ACEITOS.test(tipo)) {
+        if (!(limites.accept ?? TIPOS_ACEITOS).test(tipo)) {
           res.destroy()
           return reject(new BlockedTarget(`tipo de conteúdo não é lido aqui: ${tipo.split(';')[0] || 'desconhecido'}`))
         }
@@ -97,7 +106,12 @@ function umaRequisicao(conferido, limites, headersExtra) {
           }
           partes.push(c)
         })
-        res.on('end', () => resolve({ status, contentType: tipo, body: Buffer.concat(partes).toString('utf8'), bytes }))
+        res.on('end', () => {
+          const bruto = Buffer.concat(partes)
+          // O buffer vai junto quando pedido: quem preenche uma resposta no navegador
+          // precisa dos bytes originais, e converter uma imagem para utf8 a destrói.
+          resolve({ status, contentType: tipo, body: bruto.toString('utf8'), ...(limites.binary ? { buffer: bruto } : {}), bytes })
+        })
         res.on('error', reject)
       },
     )

@@ -29,6 +29,8 @@ before(async () => {
   porta = worker.address().port
 
   alvo = createServer((req, res) => {
+    // A página que NUNCA responde: é ela que prova que o teto do pedido devolve a vaga.
+    if (req.url === '/trava') return
     const r = respostas[req.url] ?? respostas['*']
     if (!r) {
       res.writeHead(404, { 'content-type': 'text/plain' })
@@ -339,4 +341,92 @@ test('o health diz que retrata quando há motor', async () => {
   assert.equal(r.body.capabilities.screenshot, Boolean(motor))
   // Visão continua fora do worker: ela é do backend, que tem o provedor de modelo.
   assert.equal(r.body.capabilities.vision, false)
+})
+
+// --- DNS REBINDING: o ataque com nome ----------------------------------------------------
+//
+// Conferir o endereço e depois deixar o Chromium resolver de novo não fecha nada: entre a
+// conferência e a conexão, o mesmo nome pode passar a responder um endereço privado. O que
+// prova que fechou é a conexão acontecer NO ENDEREÇO CONFERIDO — e a prova é um nome que o
+// DNS de verdade não resolve: se a página carrega, ninguém perguntou ao DNS.
+
+test('AMEAÇA: a página é buscada no ENDEREÇO conferido, não no nome resolvido de novo', async (t) => {
+  const motor = await loadEngine()
+  if (!motor) return t.skip('sem motor neste ambiente')
+
+  respostas = { '*': { headers: { 'content-type': 'text/html' }, body: '<html><body><p id="x">servido pelo endereco fixado</p></body></html>' } }
+  // Um nome que o DNS real não conhece. Só o resolvedor injetado sabe onde ele mora.
+  const resolver = async () => [{ address: '127.0.0.1', family: 4 }]
+  const r = await renderPage(`http://alvo-que-nao-existe.invalid:${portaAlvo}/x`, { engine: motor, resolver })
+
+  assert.match(r.body, /servido pelo endereco fixado/, 'se o navegador tivesse resolvido sozinho, este nome não iria a lugar nenhum')
+})
+
+test('AMEAÇA: o nome que MUDA de endereço entre a conferência e a subrequisição não passa', async (t) => {
+  const motor = await loadEngine()
+  if (!motor) return t.skip('sem motor neste ambiente')
+
+  respostas = {
+    '*': {
+      headers: { 'content-type': 'text/html' },
+      body: '<html><body><p>legitimo</p><script>fetch("/segunda").catch(()=>{})</script></body></html>',
+    },
+  }
+  // O nome responde loopback (liberado no teste) nas duas primeiras resoluções — a
+  // conferência prévia, antes de subir o navegador, e a busca do documento — e vira rede
+  // privada a partir da terceira. É exatamente a troca do rebinding, e o que a subrequisição
+  // encontra é o endereço novo.
+  let vezes = 0
+  const resolver = async () => {
+    vezes += 1
+    return vezes <= 2 ? [{ address: '127.0.0.1', family: 4 }] : [{ address: '10.0.0.5', family: 4 }]
+  }
+  const r = await renderPage(`http://muda-de-ideia.invalid:${portaAlvo}/x`, { engine: motor, resolver })
+
+  assert.match(r.body, /legitimo/, 'a página principal foi buscada no endereço que passou')
+  assert.ok(
+    r.blocked.some((b) => /rede interna/.test(b.reason)),
+    `a segunda resolução, privada, precisa ser recusada: ${JSON.stringify(r.blocked)}`,
+  )
+})
+
+test('AMEAÇA: POST partindo de dentro da página não sai por esta rede', async (t) => {
+  const motor = await loadEngine()
+  if (!motor) return t.skip('sem motor neste ambiente')
+
+  respostas = {
+    '*': {
+      headers: { 'content-type': 'text/html' },
+      body: '<html><body><p>ok</p><script>fetch("/enviar",{method:"POST",body:"x"}).catch(()=>{})</script></body></html>',
+    },
+  }
+  const r = await renderPage(`http://127.0.0.1:${portaAlvo}/post`, { engine: motor })
+  assert.ok(r.blocked.some((b) => /método POST/.test(b.reason)), JSON.stringify(r.blocked))
+})
+
+test('o pedido tem TETO de tempo: a vaga volta mesmo com uma página que não termina', async () => {
+  // Somados, os limites de cada etapa ainda deixam uma página patológica segurar a vaga
+  // por muito mais do que qualquer um desses números sugere — e as vagas são duas.
+  const antes = process.env.BROWSER_REQUEST_TIMEOUT_MS
+  process.env.BROWSER_REQUEST_TIMEOUT_MS = '400'
+  try {
+    const saude = await chamar('/health', {})
+    assert.equal(saude.body.limits.requestTimeoutMs, 400, 'o teto é anunciado: quem chama precisa saber quanto tempo tem')
+
+    const comecou = Date.now()
+    const r = await chamar('/fetch', { url: `http://127.0.0.1:${portaAlvo}/trava` })
+    const levou = Date.now() - comecou
+    assert.equal(r.body.ok, false)
+    assert.equal(r.body.error.kind, 'timeout', 'estourar o teto é tempo esgotado, e não uma falha de busca')
+    assert.match(r.body.error.message, /passou do teto/)
+    assert.ok(levou < 5_000, `o teto precisa cortar antes dos limites internos: levou ${levou} ms`)
+
+    // E a vaga voltou: o próximo pedido é atendido em vez de receber "ocupado".
+    respostas = { '/depois': { body: '<html><body>ok</body></html>' } }
+    const seguinte = await chamar('/fetch', { url: `http://127.0.0.1:${portaAlvo}/depois` })
+    assert.equal(seguinte.body.ok, true)
+  } finally {
+    if (antes === undefined) delete process.env.BROWSER_REQUEST_TIMEOUT_MS
+    else process.env.BROWSER_REQUEST_TIMEOUT_MS = antes
+  }
 })
