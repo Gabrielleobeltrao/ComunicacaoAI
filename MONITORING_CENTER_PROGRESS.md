@@ -189,16 +189,40 @@ Comandos: `npx playwright test e2e/monitoring-center.spec.ts` → **8/8**, inclu
 Bateria: E2E **660** passaram · frontend **292** · lint **0 erros** · secret-scan limpo em
 2206 arquivos · backend **1401 + 1905**.
 
+## Bloco 6 — os tipos que empurram, por orquestração pura ✅
+
+`fonteDoRecorder` em `backend/src/monitoring/service.ts`.
+
+Os tipos que EMPURRAM já tinham porta no motor de histórico: `event` para o barramento e
+`live_data` para uma conexão de WebSocket. Ligar a fonte diretamente nelas é o oposto de
+inventar caminho — o dado chega pelo mesmo lugar de sempre, e a Central só diz que agora
+tem alguém guardando.
+
+- `internal_event` → recorder com `source: { kind: 'event', ref: <tipo do evento> }`;
+- `websocket` → recorder com `source: { kind: 'live_data', ref: <instalação> }`;
+- os que a Central puxa continuam em `manual`, a porta que o motor já oferecia;
+- **fonte que empurra sem dizer de onde não ativa**: sem `eventType`/`installationId` ela
+  ficaria ativa, verde e muda para sempre, esperando uma entrega que ninguém faz;
+- **o isolamento entre contas é do guarda canônico**: apontar para conexão de outra conta é
+  recusado pelo próprio `criarRecorder`. Uma segunda checagem aqui seria uma segunda
+  opinião sobre a mesma coisa.
+
+Teste de aceitação: evento no barramento → recorder da fonte → registro no dataset, sem uma
+linha de código próprio da Central no caminho.
+
+Comando: `node --test test/monitoringSource.integration.test.mjs` → **38/38**;
+`npm run test -w backend` → **1401 + 1909, 0 falhas**.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
 2. **As cinco abas da Central** e o wizard: nada disso está na tela ainda.
-3. **Tipos que ainda não coletam**: webhook (com assinatura, rotação e replay), WebSocket/
-   **SSE**, App/action, RSS/Atom, dataset e evento interno. Hoje só `api_polling`, `rss` e
-   `http_page` passam por `collectOnce` — e `rss` cai no caminho de página, sem parser de
-   feed.
+3. **Tipos que ainda não funcionam**: webhook (URL gerada, assinatura, rotação de segredo e
+   proteção de replay), **SSE** como protocolo explícito, App/action, RSS/Atom com parser de
+   feed de verdade (hoje cai no caminho de página) e `dataset` como fonte da Central.
+   `internal_event` e `websocket` passaram a funcionar por orquestração.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e
    o plano é explícito que dado incerto não dispara.
 5. **Grants por agente/setor** sobre fonte, e autorização reconferida antes da leitura.

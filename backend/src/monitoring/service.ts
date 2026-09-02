@@ -179,6 +179,23 @@ const schemaDoMapeamento = (mapping: MonitoringSource['mapping']): Record<string
 /** A chave que liga esta fonte ao histórico. Estável, derivada do id: não há o que sincronizar. */
 export const sourceKeyOf = (id: ObjectId | string) => `manual:monitoring:${id.toString()}`
 
+/**
+ * De onde o recorder desta fonte ESCUTA.
+ *
+ * Os tipos que EMPURRAM já têm porta no motor de histórico: `event` para o barramento e
+ * `live_data` para uma conexão de WebSocket. Ligar a fonte diretamente nelas é o oposto de
+ * inventar um caminho — o dado chega pelo mesmo lugar de sempre, e a Central só diz que
+ * agora tem alguém guardando.
+ *
+ * Os que a Central PUXA usam `manual`, que é a porta que o motor já oferecia justamente
+ * para uma integração nova entrar sem código novo dentro dele.
+ */
+function fonteDoRecorder(fonte: MonitoringSource): { kind: 'event' | 'live_data' | 'manual'; ref: string } {
+  if (fonte.kind === 'internal_event' && fonte.config.eventType) return { kind: 'event', ref: fonte.config.eventType }
+  if (fonte.kind === 'websocket' && fonte.config.installationId) return { kind: 'live_data', ref: fonte.config.installationId }
+  return { kind: 'manual', ref: `monitoring:${fonte._id.toString()}` }
+}
+
 export async function createSource(ownerId: string, input: SourceInput): Promise<MonitoringSource> {
   if ((await sources.countDocuments({ ownerId })) >= MAX_POR_CONTA) {
     throw new MonitoringError(`limite de ${MAX_POR_CONTA} fontes por conta`, 'quota')
@@ -240,6 +257,18 @@ export async function setSourceStatus(ownerId: string, id: ObjectId, status: Mon
    */
   if (status === 'active' && !fonte.telemetry.lastOkAt && KIND_CAPABILITIES[fonte.kind].pull) {
     throw new MonitoringError('teste a fonte antes de ativar: ela ainda não leu nada', 'never_read')
+  }
+  /**
+   * Uma fonte que EMPURRA precisa dizer de onde o dado chega.
+   *
+   * Sem `eventType` ou `installationId`, o recorder cairia em `manual` e ficaria esperando
+   * uma entrega que ninguém faz — uma fonte ativa, verde, e muda para sempre.
+   */
+  if (status === 'active' && fonte.kind === 'internal_event' && !fonte.config.eventType) {
+    throw new MonitoringError('escolha qual evento esta fonte observa', 'missing_source_ref')
+  }
+  if (status === 'active' && fonte.kind === 'websocket' && !fonte.config.installationId) {
+    throw new MonitoringError('escolha qual conexão de WebSocket esta fonte observa', 'missing_source_ref')
   }
   if (status === 'active') await materializarDestino(fonte)
   return (await sources.findOneAndUpdate({ _id: id, ownerId }, { $set: { status, updatedAt: new Date() } }, { returnDocument: 'after' })) ?? null
@@ -344,9 +373,7 @@ async function materializarDestino(fonte: MonitoringSource): Promise<void> {
   const recorder = await criarRecorder(fonte.ownerId, {
     name: fonte.name,
     enabled: true,
-    // `manual` é a porta que o motor de histórico já oferecia para uma integração nova
-    // entrar sem código novo dentro dele.
-    source: { kind: 'manual', ref: `monitoring:${fonte._id.toString()}` },
+    source: fonteDoRecorder(fonte),
     entityKeyPath: fonte.entityKeyPath,
     mode: 'every_event',
     selectedFields: fonte.mapping.fields.map((f) => f.to),

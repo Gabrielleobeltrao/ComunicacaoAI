@@ -416,3 +416,75 @@ test('a fonte gravada não guarda valor de cabeçalho — só o NOME', async () 
   assert.ok(texto.includes('Authorization'), 'o nome viaja: é ele que diz o que a conexão preenche')
   assert.ok(!/Bearer|sk-|senha/.test(texto), 'o valor sai da conexão cifrada, na hora da leitura')
 })
+
+// --- os tipos que EMPURRAM: orquestração pura, sem caminho novo ----------------------------
+
+test('fonte de EVENTO INTERNO liga o recorder no barramento, sem caminho novo', async () => {
+  const f = await svc.createSource(DONO, entrada({
+    kind: 'internal_event',
+    config: { eventType: 'market.candle.closed' },
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, fields: [{ to: 'rsi', from: 'rsi' }] },
+  }))
+  const ativa = await svc.setSourceStatus(DONO, f._id, 'active')
+  assert.equal(ativa.status, 'active', 'quem empurra não precisa ter lido: ela nunca é chamada')
+
+  const recorder = await db.collection('data_recorders').findOne({ ownerId: DONO })
+  // O dado chega pelo mesmo lugar de sempre; a Central só disse que agora tem quem guarde.
+  assert.deepEqual(recorder.source, { kind: 'event', ref: 'market.candle.closed' })
+})
+
+test('fonte de WEBSOCKET apontando para conexão de outra conta é RECUSADA', async () => {
+  // Quem recusa é o guarda canônico do histórico, que confere a posse da conexão. É
+  // exatamente por isso que a Central delega em vez de criar o recorder por conta própria:
+  // o isolamento entre contas já está resolvido lá, e uma segunda checagem aqui seria uma
+  // segunda opinião sobre a mesma coisa.
+  const f = await svc.createSource(DONO, entrada({
+    kind: 'websocket',
+    config: { installationId: new ObjectId().toString() },
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, fields: [{ to: 'preco', from: 'preco' }] },
+  }))
+  await assert.rejects(() => svc.setSourceStatus(DONO, f._id, 'active'), /conexão não existe nesta conta/)
+  assert.equal(await db.collection('data_recorders').countDocuments({ ownerId: DONO }), 0)
+})
+
+test('fonte que empurra SEM dizer de onde não ativa', async () => {
+  // Sem isso ela ficaria ativa, verde, e muda para sempre — esperando uma entrega que
+  // ninguém faz.
+  const evento = await svc.createSource(DONO, entrada({
+    kind: 'internal_event',
+    config: {},
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] },
+  }))
+  await assert.rejects(() => svc.setSourceStatus(DONO, evento._id, 'active'), /qual evento/)
+
+  const ws = await svc.createSource(DONO, entrada({
+    name: 'WS sem conexão',
+    kind: 'websocket',
+    config: {},
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] },
+  }))
+  await assert.rejects(() => svc.setSourceStatus(DONO, ws._id, 'active'), /qual conexão/)
+})
+
+test('ACEITAÇÃO: evento do barramento → recorder da fonte → dataset', async () => {
+  const { ingestFact } = await import('../dist/dataHistory/engine.js')
+  const { limparCacheDeRecorders } = await import('../dist/dataHistory/engine.js')
+  const f = await svc.createSource(DONO, entrada({
+    kind: 'internal_event',
+    config: { eventType: 'market.candle.closed' },
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, fields: [{ to: 'rsi', from: 'rsi' }] },
+  }))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+  limparCacheDeRecorders()
+
+  // O fato entra pelo caminho de sempre — e a fonte não precisou de código próprio.
+  const r = await ingestFact({ ownerId: DONO, sourceKey: 'event:market.candle.closed', entityKey: null, occurredAt: new Date(), value: { rsi: 12 }, factId: 'e1' })
+  assert.equal(r.gravado, 1)
+  const registro = await db.collection('data_history_records').findOne({ ownerId: DONO })
+  assert.equal(registro.value.rsi, 12)
+})
