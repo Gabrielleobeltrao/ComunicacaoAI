@@ -196,11 +196,51 @@ origem — que é o resultado de toda a precedência, e não a soma dos grants.
   começou. Ela não bloqueia nada: databases novos funcionam, e os históricos existentes
   continuam pelo caminho de sempre.
 
+### Fase 4 (parcial) — versões imutáveis de ferramenta ✅
+
+`backend/src/toolVersions.ts` + rotas `GET/POST /api/tools/:id/versions`.
+
+- **nenhuma ferramenta existente foi tocada.** `runtimeKind` e `version` são DERIVADOS na
+  leitura (`describeLegacyTool` → `http`, `0.0.0`). Uma migração que carimbasse o campo em
+  massa mudaria o `updatedAt` de tudo o que já roda para gravar o que dá para calcular. Um
+  teste afirma que publicar não altera a ferramenta e que o documento não ganha campo;
+- **versão publicada é imutável e tem hash.** "Instalei a ferramenta X" só significa algo
+  se X não puder mudar por baixo; senão a permissão revisada ontem vale para outro
+  comportamento hoje. O hash ignora a ORDEM das chaves — uma reescrita cosmética não pode
+  virar "versão diferente" na conferência;
+- **output schema é exigido no publicável**: sem contrato de saída, quem instala descobre
+  a forma do retorno testando em produção;
+- **`runtimeKind: code` é fail-closed**: sem `CODE_TOOLS_ENABLED=1` a publicação é
+  recusada com código próprio. O risco de código é `high_risk` por definição — declarar
+  `read` seria otimismo sobre algo que ainda não roda em sandbox nenhuma;
+- o risco de HTTP vem do MÉTODO, não do que alguém digitou.
+
+Testes: 12 em `backend/test/toolVersions.integration.test.mjs`. **Teeth**: revertendo a
+imutabilidade, o fail-closed do código e a exigência de output schema, caem 3.
+
+Suíte: 1354 + 1682, verde.
+
+## Pendências honestas da Fase 4
+
+- **`app_action` e `registered_function` ainda não executam** por este caminho: o modelo
+  aceita o `runtimeKind`, mas o dispatcher continua atendendo App por grant e função pelo
+  registro, como sempre. Ligar os dois ao dispatcher único é o resto da fase.
+- Editor de versões na tela não foi feito.
+- Migração 9.2 (Data Store apontando para recorders existentes) segue pendente.
+
+## Defeito de ambiente encontrado
+
+Uma execução da suíte acusou 31 falhas em testes que sobem o app inteiro. Não era código:
+um `npm run build` morto no meio deixou `dist` desatualizado e processos de teste órfãos
+disputando CPU e portas. Depois de limpar, a mesma suíte passou inteira. Vale registrar
+porque a leitura errada aqui seria "a Fase 4 quebrou a autenticação".
+
 ## Próxima ação exata
 
-Fase 4 — Tool versionada: `runtimeKind` (`http` preservando IDs e `customToolIds`,
-`app_action`, `registered_function`), versões imutáveis com hash, output schema exigido no
-publicável, e tudo continuando a passar pelo dispatcher único.
+1. Ligar `app_action` e `registered_function` ao dispatcher único, com a versão publicada
+   decidindo o que roda.
+2. Fase 5 — Flows e Monitors: `operationKind` compatível, `ConditionAst`, `MonitorState`
+   com transição atômica, debounce, cooldown e dedupe.
 
 Fases 4 a 11 (Tools versionadas, Flows/Monitors, Activity, Extensions, Marketplace,
 Sandbox, hardening) **não foram iniciadas**.

@@ -167,6 +167,8 @@ import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
 import { ensureKnowledgeGraphIndexes } from './knowledgeGraph.js'
 import { ensureResourceAuditIndexes } from './resources/audit.js'
 import { ensureDatabaseIndexes } from './databases/store.js'
+import { ToolVersionError, describeLegacyTool, ensureToolVersionIndexes, latestVersion, listVersions, publishVersion } from './toolVersions.js'
+import { notFound as naoEncontrado, oid as paraObjectId } from './routes/http.js'
 import { ensureKnowledgeProposalIndexes } from './knowledgeProposals.js'
 import { ensureKnowledgeConflictIndexes } from './knowledgeConflicts.js'
 import {
@@ -2222,7 +2224,75 @@ app.get('/api/tools', requireAuth, async (_req, res) => {
       usedBy.get(id)?.push({ _id: agent._id.toString(), name: agent.name })
     }
   }
-  res.json(tools.map((t) => ({ ...toPublicTool(t), usedBy: usedBy.get(t._id.toString()) ?? [] })))
+  /**
+   * Runtime, versão e risco vêm DERIVADOS na leitura.
+   *
+   * Nenhuma ferramenta existente foi tocada: `_id`, nome e atribuição continuam os
+   * mesmos, e é isso que faz nenhuma delas parar de funcionar. Uma migração que
+   * carimbasse `runtimeKind` em massa mudaria o `updatedAt` de tudo o que já roda para
+   * gravar uma informação que já dá para calcular.
+   */
+  const comVersoes = await Promise.all(
+    tools.map(async (t) => {
+      const publicada = await latestVersion(ownerId, t._id).catch(() => null)
+      return {
+        ...toPublicTool(t),
+        usedBy: usedBy.get(t._id.toString()) ?? [],
+        ...describeLegacyTool(t),
+        ...(publicada ? { version: publicada.version, runtimeKind: publicada.runtimeKind, risk: publicada.risk, sha256: publicada.sha256 } : {}),
+      }
+    }),
+  )
+  res.json(comVersoes)
+})
+
+/**
+ * As versões de uma ferramenta, e a publicação de uma nova.
+ *
+ * Publicar é o que torna uma ferramenta compartilhável: a versão fica imutável e ganha
+ * hash, e é o hash que permite conferir, na hora de executar, que o que roda é o que foi
+ * revisado.
+ */
+app.get('/api/tools/:toolId/versions', requireAuth, async (req, res) => {
+  const id = paraObjectId(String(req.params.toolId))
+  if (!id) return naoEncontrado(res)
+  const tool = await getTool(res.locals.userId, id)
+  if (!tool) return naoEncontrado(res)
+  res.json({ items: await listVersions(res.locals.userId, id), current: describeLegacyTool(tool) })
+})
+
+app.post('/api/tools/:toolId/versions', requireAuth, async (req, res, next) => {
+  const id = paraObjectId(String(req.params.toolId))
+  if (!id) return naoEncontrado(res)
+  const tool = await getTool(res.locals.userId, id)
+  if (!tool) return naoEncontrado(res)
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const v = await publishVersion(res.locals.userId, id, {
+      version: String(body.version ?? ''),
+      runtimeKind: (body.runtimeKind as never) ?? 'http',
+      // O manifesto da versão é o que a ferramenta É hoje — sem segredo: cabeçalho e
+      // corpo com credencial ficam no documento cifrado, e não na versão publicável.
+      manifest: (body.manifest as Record<string, unknown>) ?? {
+        method: tool.method,
+        url: tool.url,
+        allowedDomains: tool.allowedDomains,
+        timeoutMs: tool.timeoutMs,
+        maxCallsPerRun: tool.maxCallsPerRun,
+      },
+      inputSchema: (body.inputSchema as Record<string, unknown>) ?? tool.inputSchema,
+      outputSchema: (body.outputSchema as Record<string, unknown>) ?? null,
+      changelog: typeof body.changelog === 'string' ? body.changelog : '',
+    })
+    auditEntity(res, { id: tool._id.toString(), label: `${tool.name} ${v.version}` })
+    res.status(201).json({ version: v.version, runtimeKind: v.runtimeKind, risk: v.risk, sha256: v.sha256, immutable: v.immutable })
+  } catch (erro) {
+    if (erro instanceof ToolVersionError) {
+      res.status(erro.code === 'immutable' ? 409 : 400).json({ code: erro.code, message: erro.message, error: erro.message })
+      return
+    }
+    next(erro as Error)
+  }
 })
 
 const toolError = (res: Response, error: unknown): boolean => {
@@ -5358,6 +5428,9 @@ async function start() {
   // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
   // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
   // ninguém está olhando. Ela é um script, e é chamada à mão.
+  ensureToolVersionIndexes().catch((error) => {
+    console.error('ensureToolVersionIndexes failed:', error)
+  })
   ensureDatabaseIndexes().catch((error) => {
     console.error('ensureDatabaseIndexes failed:', error)
   })

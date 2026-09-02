@@ -241,6 +241,11 @@ const RULES: Rule[] = [
    * conseguem consultar — entra no registro. Consultar não: leitura não é mudança, e um
    * registro por consulta afogaria o log justamente quando ele importa.
    */
+  // Publicar uma VERSÃO de ferramenta é uma mudança no que pode ser instalado e
+  // executado — e ela é imutável depois, o que torna o registro a única forma de saber
+  // quem publicou o quê.
+  R('POST', 'api/tools/:/versions', { entityType: 'tool', action: 'create' }, { idAt: 2 }),
+
   R('POST', 'api/databases', { entityType: 'database', action: 'create' }),
   R('PATCH', 'api/databases/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/databases/:', { entityType: 'database', action: 'delete' }, { idAt: 2 }),
