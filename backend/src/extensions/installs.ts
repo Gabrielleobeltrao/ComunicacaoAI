@@ -1,4 +1,6 @@
 import { ObjectId } from 'mongodb'
+import { dematerialize, installImpact, materializeInstall, rematerialize } from './materialize.js'
+import type { CreatedRef, DematerializeResult, ImpactItem } from './materialize.js'
 import { ExtensionError, getVersion, installationsCollection, packagesCollection, versionsCollection } from './packages.js'
 import type { ExtensionInstallation, ExtensionPackage, ExtensionVersion, PermissionRequest } from './types.js'
 
@@ -61,12 +63,39 @@ export async function install(ownerId: string, packageId: ObjectId, input: Insta
     updatedAt: agora,
   }
   try {
+    // A linha primeiro: o índice único é quem garante que duas instalações simultâneas
+    // não materializem duas vezes o mesmo App.
     await installationsCollection.insertOne(doc)
   } catch (erro) {
     if ((erro as { code?: number }).code === 11000) throw new ExtensionError('este pacote já está instalado nesta conta', 'duplicate')
     throw erro
   }
+
+  /**
+   * E agora a coisa EXISTE de verdade.
+   *
+   * Instalar sem materializar seria uma promessa: o catálogo diria "instalado" e o
+   * escritório continuaria sem o App. Se a criação falhar, a linha sai junto — uma
+   * instalação apontando para nada é pior do que nenhuma.
+   */
+  try {
+    const refs = await materializeInstall(ownerId, pacote, congelada)
+    if (refs.length) {
+      await installationsCollection.updateOne({ _id: doc._id }, { $set: { createdRefs: refs, updatedAt: new Date() } })
+      doc.createdRefs = refs
+    }
+  } catch (erro) {
+    await installationsCollection.deleteOne({ _id: doc._id })
+    throw erro
+  }
   return doc
+}
+
+/** O que esta instalação criou, e o que quem instalou já editou. */
+export const impactOf = async (ownerId: string, packageId: ObjectId): Promise<ImpactItem[]> => {
+  const instalacao = await getInstallation(ownerId, packageId)
+  if (!instalacao) throw new ExtensionError('esta extensão não está instalada', 'not_found')
+  return installImpact(ownerId, instalacao)
 }
 
 export const getInstallation = (ownerId: string, packageId: ObjectId) => installationsCollection.findOne({ ownerId, packageId })
@@ -168,6 +197,20 @@ export async function applyUpdate(
     { returnDocument: 'after' },
   )
   if (!atualizado) throw new ExtensionError('a instalação mudou enquanto isto acontecia', 'conflict')
+
+  /**
+   * A versão nova aplicada sobre o que existe — PRESERVANDO o que a pessoa mudou.
+   *
+   * Um recurso editado depois da instalação deixou de ser o que veio do pacote. Sobrescrevê-lo
+   * seria a atualização desfazendo, em silêncio, o ajuste que alguém fez ontem.
+   */
+  const congelada = await getVersion(packageId, previa.to)
+  if (congelada && pacote) {
+    const r = await rematerialize(ownerId, atualizado, pacote, congelada)
+    const refs = [...r.updated, ...r.preserved, ...r.created]
+    if (refs.length) await installationsCollection.updateOne({ _id: atualizado._id }, { $set: { createdRefs: refs } })
+    return { ...atualizado, createdRefs: refs, preserved: r.preserved } as ExtensionInstallation & { preserved: CreatedRef[] }
+  }
   return atualizado
 }
 
@@ -177,14 +220,19 @@ export async function applyUpdate(
  * O histórico de execução aponta para esta instalação. Apagá-la deixaria linhas do painel
  * apontando para o nada, e é justamente quando algo deu errado que alguém vai olhar.
  */
-export async function uninstall(ownerId: string, packageId: ObjectId): Promise<ExtensionInstallation | null> {
-  return (
-    (await installationsCollection.findOneAndUpdate(
-      { ownerId, packageId },
-      { $set: { status: 'paused', updatedAt: new Date() } },
-      { returnDocument: 'after' },
-    )) ?? null
+export async function uninstall(ownerId: string, packageId: ObjectId): Promise<(ExtensionInstallation & { impact: DematerializeResult }) | null> {
+  const instalacao = await getInstallation(ownerId, packageId)
+  if (!instalacao) return null
+
+  // O que veio do pacote e não foi tocado é DESLIGADO; o que a pessoa editou fica, e é
+  // reportado. Apagar quebraria o histórico de execução, que aponta para estes recursos.
+  const impact = await dematerialize(ownerId, instalacao)
+  const pausada = await installationsCollection.findOneAndUpdate(
+    { ownerId, packageId },
+    { $set: { status: 'paused', updatedAt: new Date() } },
+    { returnDocument: 'after' },
   )
+  return pausada ? { ...pausada, impact } : null
 }
 
 /**

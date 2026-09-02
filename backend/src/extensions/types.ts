@@ -126,8 +126,13 @@ export interface ExtensionInstallation {
   config: Record<string, unknown>
   /** O que esta conta concedeu, aqui. O pacote não traz permissão de ninguém. */
   grants: PermissionRequest[]
-  /** O que a instalação criou no escritório — é o que o rollback consegue desfazer. */
-  createdRefs: { kind: string; id: string }[]
+  /**
+   * O que a instalação CRIOU no escritório — e o que ainda falta para cada coisa.
+   *
+   * É por esta lista que a desinstalação sabe o que desligar, e é ela que diz a quem
+   * instalou o que precisa ser preenchido: a credencial nunca veio no pacote.
+   */
+  createdRefs: { kind: string; id: string; pending?: string; baselineAt?: Date }[]
   installedAt: Date
   updatedAt: Date
 }

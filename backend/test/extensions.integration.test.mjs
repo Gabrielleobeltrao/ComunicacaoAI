@@ -31,15 +31,34 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['extension_packages', 'extension_versions', 'extension_installations']) await db.collection(c).deleteMany({})
+  for (const c of ['extension_packages', 'extension_versions', 'extension_installations', 'app_definitions', 'tools', 'connections'])
+    await db.collection(c).deleteMany({})
 })
 
+// Um manifesto de App COMPLETO — e ele precisa ser completo desde que instalar passou a
+// criar o App de verdade: um manifesto que não vira App não deveria instalar.
 const MANIFESTO = {
   key: 'crm_simples',
+  version: '1.0.0',
+  source: 'private',
   name: 'CRM Simples',
-  actions: [{ key: 'criar_contato', risk: 'write', execution: { kind: 'http', method: 'POST', url: 'https://api.exemplo.test/contatos' } }],
+  description: 'cadastro de contatos',
+  categories: [],
   // A DEFINIÇÃO do campo de credencial viaja; o valor é que não pode.
   auth: { kind: 'api_key', fields: [{ key: 'apiKey', label: 'Chave da API' }] },
+  allowedDomains: ['api.exemplo.test'],
+  supportsMultipleConnections: false,
+  actions: [
+    {
+      key: 'criar_contato',
+      name: 'Criar contato',
+      description: 'cria um contato novo no CRM a partir de nome e e-mail',
+      risk: 'write',
+      inputSchema: { type: 'object', properties: { nome: { type: 'string' } } },
+      execution: { kind: 'http', method: 'POST', url: 'https://api.exemplo.test/contatos' },
+    },
+  ],
+  status: 'available',
 }
 
 const PERMISSOES = [{ kind: 'network', key: 'api.exemplo.test', capabilities: ['read'], reason: 'consultar contatos' }]
@@ -187,7 +206,10 @@ test('a instalação NÃO traz credencial, grant nem dado do autor', async () =>
   const i = await inst.install(OUTRO, p._id)
   assert.deepEqual(i.config, {}, 'a configuração é de quem instala')
   assert.deepEqual(i.grants, [], 'o pacote PEDE; quem instala é que concede')
-  assert.deepEqual(i.createdRefs, [])
+  // O App foi criado — e o que falta é dito: a credencial nunca viajou dentro do pacote.
+  assert.equal(i.createdRefs.length, 1)
+  assert.match(i.createdRefs[0].pending, /credenciais/)
+  assert.equal(await db.collection('connections').countDocuments({ ownerId: OUTRO }), 0)
 })
 
 test('pacote suspenso bloqueia instalação nova na hora, dizendo por quê', async () => {
@@ -388,4 +410,193 @@ test('preparar uma ferramenta para compartilhar leva a FORMA, nunca o valor do c
   const texto = JSON.stringify(versao)
   assert.ok(!texto.includes('segredo-que-nao-pode-viajar'), 'o valor fica cifrado na conta de origem')
   assert.equal(versao.permissionManifest[0].key, 'api.cep.test')
+})
+
+// --- a instalação MATERIALIZA ------------------------------------------------------------
+
+test('instalar um App cria o App privado de verdade — e sem credencial do autor', async () => {
+  const p = await pkg.createPackage(AUTOR, { kind: 'app', slug: 'app-materializa', name: 'CRM', visibility: 'community' })
+  await pkg.publishPackageVersion(AUTOR, p._id, {
+    version: '1.0.0',
+    manifest: {
+      key: 'crm_instalado',
+      version: '1.0.0',
+      source: 'private',
+      name: 'CRM Instalado',
+      description: 'contatos',
+      categories: [],
+      auth: { kind: 'api_key', fields: [{ key: 'apiKey', label: 'Chave' }] },
+      allowedDomains: ['api.crm.test'],
+      supportsMultipleConnections: false,
+      actions: [
+        {
+          key: 'criar',
+          name: 'Criar',
+          description: 'cria um contato novo no CRM a partir dos dados informados',
+          risk: 'write',
+          inputSchema: { type: 'object', properties: {} },
+          execution: { kind: 'http', method: 'POST', url: 'https://api.crm.test/c' },
+        },
+      ],
+      status: 'available',
+    },
+  })
+  await pkg.transition(p._id, 'submitted', { actorId: AUTOR })
+  await pkg.transition(p._id, 'in_review', REVISOR)
+  await pkg.transition(p._id, 'approved', { ...REVISOR, review: { decision: 'approved', reviewerId: 'revisor', notes: '' } })
+  await pkg.transition(p._id, 'published', REVISOR)
+
+  const i = await inst.install(OUTRO, p._id)
+  assert.equal(i.createdRefs.length, 1, 'instalar sem materializar seria uma promessa')
+  assert.equal(i.createdRefs[0].kind, 'app_definition')
+  assert.match(i.createdRefs[0].pending, /credenciais/)
+
+  // O App existe na conta de QUEM INSTALOU, e é dela.
+  const app = await db.collection('app_definitions').findOne({ ownerId: OUTRO, key: 'crm_instalado' })
+  assert.ok(app, 'o App foi criado no subsistema canônico')
+  assert.equal(await db.collection('app_definitions').countDocuments({ ownerId: AUTOR }), 0)
+  // Nenhuma conexão do autor viajou junto.
+  assert.equal(await db.collection('connections').countDocuments({ ownerId: OUTRO }), 0)
+})
+
+test('instalar uma Tool cria a ferramenta DESLIGADA, com os cabeçalhos vazios', async () => {
+  const p = await pkg.createPackage(AUTOR, { kind: 'tool', slug: 'tool-materializa', name: 'Consulta CEP', visibility: 'community' })
+  await pkg.publishPackageVersion(AUTOR, p._id, {
+    version: '1.0.0',
+    manifest: {
+      kind: 'http_tool',
+      name: 'consulta_cep',
+      description: 'consulta um endereço a partir do CEP informado',
+      method: 'GET',
+      url: 'https://api.cep.test/v1',
+      headerNames: ['Authorization'],
+      inputSchema: { type: 'object', properties: { cep: { type: 'string' } } },
+    },
+  })
+  await pkg.transition(p._id, 'submitted', { actorId: AUTOR })
+  await pkg.transition(p._id, 'in_review', REVISOR)
+  await pkg.transition(p._id, 'approved', { ...REVISOR, review: { decision: 'approved', reviewerId: 'revisor', notes: '' } })
+  await pkg.transition(p._id, 'published', REVISOR)
+
+  const i = await inst.install(OUTRO, p._id)
+  const ferramenta = await db.collection('tools').findOne({ ownerId: OUTRO, name: 'consulta_cep' })
+  assert.ok(ferramenta)
+  assert.equal(ferramenta.enabled, false, 'ligada sem credencial só produz erro na cara de quem usar')
+  // `Authorization` NÃO vira cabeçalho: credencial mora na seção de autenticação, cifrada.
+  // Materializar contornando essa regra criaria pela porta da comunidade o documento que o
+  // produto recusa criar pela porta da frente.
+  assert.deepEqual(ferramenta.headers, [])
+  assert.match(i.createdRefs[0].pending, /configure a autenticação \(Authorization\)/)
+})
+
+test('materializar em cima de um nome que já existe é recusado, e a instalação não fica pela metade', async () => {
+  await db.collection('tools').insertOne({ ownerId: OUTRO, name: 'consulta_cep', description: 'minha', enabled: true, method: 'GET', url: 'https://x.test', headers: [], inputSchema: {}, createdAt: new Date(), updatedAt: new Date() })
+
+  const p = await pkg.createPackage(AUTOR, { kind: 'tool', slug: 'tool-conflito', name: 'Consulta CEP', visibility: 'community' })
+  await pkg.publishPackageVersion(AUTOR, p._id, {
+    version: '1.0.0',
+    manifest: { kind: 'http_tool', name: 'consulta_cep', description: 'consulta um endereço a partir do CEP informado', method: 'GET', url: 'https://api.cep.test/v1', inputSchema: { type: 'object', properties: {} } },
+  })
+  await pkg.transition(p._id, 'submitted', { actorId: AUTOR })
+  await pkg.transition(p._id, 'in_review', REVISOR)
+  await pkg.transition(p._id, 'approved', { ...REVISOR, review: { decision: 'approved', reviewerId: 'revisor', notes: '' } })
+  await pkg.transition(p._id, 'published', REVISOR)
+
+  await assert.rejects(() => inst.install(OUTRO, p._id), /já existe uma ferramenta/)
+  // A linha da instalação saiu junto: apontar para nada é pior do que não existir.
+  assert.equal(await inst.getInstallation(OUTRO, p._id), null)
+})
+
+// --- desinstalar e atualizar preservam o que a pessoa mudou ----------------------------------
+
+const pacoteDeFerramenta = async (slug, manifestOver = {}) => {
+  const p = await pkg.createPackage(AUTOR, { kind: 'tool', slug, name: 'Ferramenta', visibility: 'community' })
+  await pkg.publishPackageVersion(AUTOR, p._id, {
+    version: '1.0.0',
+    manifest: {
+      kind: 'http_tool',
+      name: `ferramenta_${slug}`,
+      description: 'consulta a API de teste quando alguém pede um dado dela',
+      method: 'GET',
+      url: 'https://api.test/v1',
+      inputSchema: { type: 'object', properties: {} },
+      ...manifestOver,
+    },
+  })
+  await pkg.transition(p._id, 'submitted', { actorId: AUTOR })
+  await pkg.transition(p._id, 'in_review', REVISOR)
+  await pkg.transition(p._id, 'approved', { ...REVISOR, review: { decision: 'approved', reviewerId: 'revisor', notes: '' } })
+  return pkg.transition(p._id, 'published', REVISOR)
+}
+
+test('desinstalar DESLIGA o que veio do pacote e não foi tocado — e nunca apaga', async () => {
+  const p = await pacoteDeFerramenta('tool-desliga')
+  const i = await inst.install(OUTRO, p._id)
+  const toolId = new ObjectId(i.createdRefs[0].id)
+  await db.collection('tools').updateOne({ _id: toolId }, { $set: { enabled: true } })
+
+  const r = await inst.uninstall(OUTRO, p._id)
+  assert.equal(r.status, 'paused')
+  assert.equal(r.impact.disabled.length, 1)
+  const depois = await db.collection('tools').findOne({ _id: toolId })
+  assert.ok(depois, 'nada é apagado: o histórico de execução aponta para cá')
+  assert.equal(depois.enabled, false)
+})
+
+test('desinstalar PRESERVA o que quem instalou editou', async () => {
+  const p = await pacoteDeFerramenta('tool-editada')
+  const i = await inst.install(OUTRO, p._id)
+  const toolId = new ObjectId(i.createdRefs[0].id)
+  // A pessoa mexeu depois de instalar: isso deixou de ser o que veio do pacote.
+  await db.collection('tools').updateOne({ _id: toolId }, { $set: { enabled: true, url: 'https://meu-proxy.test/v1', updatedAt: new Date(Date.now() + 5_000) } })
+
+  const r = await inst.uninstall(OUTRO, p._id)
+  assert.equal(r.impact.disabled.length, 0)
+  assert.equal(r.impact.kept.length, 1)
+  const depois = await db.collection('tools').findOne({ _id: toolId })
+  assert.equal(depois.enabled, true, 'desinstalar não desfaz o ajuste de quem instalou')
+  assert.equal(depois.url, 'https://meu-proxy.test/v1')
+})
+
+test('a prévia de impacto responde antes de desinstalar', async () => {
+  const p = await pacoteDeFerramenta('tool-impacto')
+  await inst.install(OUTRO, p._id)
+  const impacto = await inst.impactOf(OUTRO, p._id)
+  assert.equal(impacto.length, 1)
+  assert.equal(impacto[0].exists, true)
+  assert.equal(impacto[0].edited, false)
+  assert.equal(impacto[0].name, 'ferramenta_tool-impacto')
+})
+
+test('atualizar reescreve o que veio do pacote e PRESERVA o que foi editado', async () => {
+  const p = await pacoteDeFerramenta('tool-atualiza')
+  const i = await inst.install(OUTRO, p._id)
+  const toolId = new ObjectId(i.createdRefs[0].id)
+
+  await pkg.publishPackageVersion(AUTOR, p._id, {
+    version: '1.1.0',
+    manifest: { kind: 'http_tool', name: 'ferramenta_tool-atualiza', description: 'consulta a API de teste quando alguém pede um dado dela', method: 'POST', url: 'https://api.test/v2', inputSchema: { type: 'object', properties: {} } },
+  })
+  await inst.applyUpdate(OUTRO, p._id, { approvePermissions: true })
+
+  const depois = await db.collection('tools').findOne({ _id: toolId })
+  assert.equal(depois.url, 'https://api.test/v2', 'o que não foi tocado recebe a versão nova')
+  assert.equal(depois.method, 'POST')
+})
+
+test('atualizar NÃO desfaz o ajuste de quem instalou', async () => {
+  const p = await pacoteDeFerramenta('tool-preserva')
+  const i = await inst.install(OUTRO, p._id)
+  const toolId = new ObjectId(i.createdRefs[0].id)
+  await db.collection('tools').updateOne({ _id: toolId }, { $set: { url: 'https://meu-proxy.test/v1', updatedAt: new Date(Date.now() + 5_000) } })
+
+  await pkg.publishPackageVersion(AUTOR, p._id, {
+    version: '1.1.0',
+    manifest: { kind: 'http_tool', name: 'ferramenta_tool-preserva', description: 'consulta a API de teste quando alguém pede um dado dela', method: 'GET', url: 'https://api.test/v2', inputSchema: { type: 'object', properties: {} } },
+  })
+  const r = await inst.applyUpdate(OUTRO, p._id, { approvePermissions: true })
+
+  const depois = await db.collection('tools').findOne({ _id: toolId })
+  assert.equal(depois.url, 'https://meu-proxy.test/v1', 'a atualização não desfaz, em silêncio, o ajuste de ontem')
+  assert.equal(r.preserved.length, 1)
 })
