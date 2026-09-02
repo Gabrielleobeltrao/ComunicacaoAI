@@ -32,8 +32,16 @@ export const DEFAULT_LIMITS: SandboxLimits = { cpuMs: 2_000, memoryMb: 128, pids
  */
 export interface SandboxExecuteRequest {
   runtime: SandboxRuntime
-  /** Referência à versão publicada. O código é buscado por hash, nunca colado aqui. */
+  /** Referência à versão publicada — para o dia em que houver um armazém de artefatos. */
   artifactRef: string
+  /**
+   * O CÓDIGO congelado da versão.
+   *
+   * Ele viaja junto porque não existe (ainda) um armazém de artefatos que o runner possa
+   * buscar. O que amarra o que roda ao que foi revisado é o `sha256`: o runner confere o
+   * hash do que recebeu antes de executar, e recusa se não bater.
+   */
+  source: string
   sha256: string
   input: unknown
   limits: SandboxLimits

@@ -8,6 +8,7 @@
 //
 // O que este arquivo acrescenta é a tradução: do formato de ferramenta para o
 // `ExecutorResult`, com teto de tempo e erro tipado.
+import { createHash } from 'node:crypto'
 import { ObjectId } from 'mongodb'
 import { describeErrors, validateAgainstSchema } from '../jsonSchema.js'
 import { resolveGrant } from '../apps/grants.js'
@@ -322,9 +323,71 @@ async function executarVersao(
     const { canExecuteCode } = await import('../extensionRuntime/gate.js')
     const portao = await canExecuteCode({ sha256: versao.sha256, version: versao.version })
     if (!portao.ok) return falha('not_configured', portao.message, comecou, base)
-    // O portão abriu, mas quem executa é o runner remoto — e ligar esta ponta é a parte
-    // que exige um provider de verdade, que ainda não existe neste repositório.
-    return falha('not_configured', 'Não há runner isolado configurado para executar este código.', comecou, base)
+
+    const m = versao.manifest as { runtime?: string; source?: string; capabilities?: { kind: 'app_action' | 'database_query'; target: string }[] }
+    if (!m.source) return falha('not_configured', 'Esta versão não tem código para executar.', comecou, base)
+
+    /**
+     * As CAPACIDADES declaradas viram bilhetes de curta duração, presos a esta execução.
+     *
+     * Nenhum segredo atravessa a fronteira: o que vai é um identificador que o broker
+     * reconfere no resolvedor canônico antes de qualquer efeito. E o que é emitido aqui é
+     * revogado no fim, aconteça o que acontecer — bilhete que sobrevive à execução é
+     * chave esquecida na fechadura.
+     */
+    const { issueHandle, revokeForExecution } = await import('../extensionRuntime/broker.js')
+    const chaveDaExecucao = `tool:${tool._id.toString()}:${comecou}`
+    const handles: string[] = []
+    for (const cap of (m.capabilities ?? []).slice(0, 10)) {
+      const { token } = await issueHandle({ ownerId, agentId: agent._id, executionKey: chaveDaExecucao, capability: cap })
+      handles.push(token)
+    }
+
+    try {
+      const { sandboxProvider } = await import('../extensionRuntime/provider.js')
+      const r = await sandboxProvider().execute({
+        runtime: m.runtime === 'python' ? 'python' : 'javascript',
+        artifactRef: `${tool._id.toString()}@${versao.version}`,
+        source: m.source,
+        /**
+         * O hash do CÓDIGO, conferido do outro lado.
+         *
+         * Não é o mesmo `sha256` da versão: aquele é do manifesto inteiro e amarra a
+         * versão à revisão; este amarra o que chegou ao runner ao que saiu daqui. Sem
+         * ele, um proxy no meio trocaria o corpo e o runner rodaria outra coisa.
+         */
+        sha256: createHash('sha256').update(m.source).digest('hex'),
+        input: args,
+        limits: {
+          cpuMs: Number((versao.manifest as { cpuMs?: number }).cpuMs ?? 2_000),
+          memoryMb: Number((versao.manifest as { memoryMb?: number }).memoryMb ?? 128),
+          pids: 32,
+          wallMs: Number((versao.manifest as { wallMs?: number }).wallMs ?? 5_000),
+          outputBytes: 64 * 1024,
+        },
+        capabilityHandles: handles,
+        correlationId: chaveDaExecucao,
+      })
+
+      if (!r.ok) {
+        const tipo = r.error?.kind === 'timeout' ? 'timeout' : r.error?.kind === 'unavailable' ? 'not_configured' : 'tool'
+        return {
+          ok: false,
+          metadata: { ...base, ...(r.metrics ? { metrics: r.metrics } : {}) },
+          telemetry: { durationMs: Date.now() - comecou, externalCalls: 1 },
+          error: { kind: tipo, message: r.error?.message ?? 'a execução falhou' },
+        }
+      }
+      return {
+        ok: true,
+        ...(r.output !== undefined && r.output !== null ? { structured: { data: r.output, valid: true, repaired: false } } : {}),
+        text: typeof r.output === 'string' ? r.output : JSON.stringify(r.output ?? null),
+        metadata: { ...base, ...(r.metrics ? { metrics: r.metrics } : {}) },
+        telemetry: { durationMs: Date.now() - comecou, externalCalls: 1 },
+      }
+    } finally {
+      await revokeForExecution(chaveDaExecucao).catch(() => undefined)
+    }
   })()
 
   /**

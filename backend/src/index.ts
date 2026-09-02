@@ -167,6 +167,9 @@ import { extensionRouter } from './routes/extensionRoutes.js'
 import { ensureExtensionIndexes } from './extensions/packages.js'
 import { ensureBrokerIndexes } from './extensionRuntime/broker.js'
 import { ensureKillSwitchIndexes } from './extensionRuntime/gate.js'
+import { providerFromEnv } from './extensionRuntime/httpProvider.js'
+import { ensureReviewIndexes } from './extensionRuntime/review.js'
+import { registerSandboxProvider } from './extensionRuntime/provider.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
 import { ensureContextManifestIndexes } from './contextManifest.js'
 import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
@@ -5452,6 +5455,18 @@ async function start() {
   ensureKillSwitchIndexes().catch((error) => {
     console.error('ensureKillSwitchIndexes failed:', error)
   })
+  ensureReviewIndexes().catch((error) => {
+    console.error('ensureReviewIndexes failed:', error)
+  })
+  /**
+   * O runner isolado, quando ele foi configurado.
+   *
+   * A URL e o segredo vêm do ambiente do SERVIDOR, nunca de um pedido: deixar o cliente
+   * escolher o endereço do runner seria dar a ele um proxy para a rede interna. Sem os
+   * dois, nada é registrado e o padrão fail-closed continua valendo.
+   */
+  const runner = providerFromEnv()
+  if (runner) registerSandboxProvider(runner)
   ensureToolVersionCallIndexes().catch((error) => {
     console.error('ensureToolVersionCallIndexes failed:', error)
   })
