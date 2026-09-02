@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 import { getFloor } from './floors.js'
 import { getBuilding } from './building.js'
-import { createDocumentFor, findBySourceRef } from './knowledge.js'
+import { createDocumentFor, findBySourceRef, ownerFilter as ownerFilterOf } from './knowledge.js'
 import type { KnowledgeOwner } from './knowledge.js'
 
 // A MUDANÇA DE CASA do conhecimento de andar e prédio.
@@ -40,6 +40,7 @@ export interface MigrationRecord {
 }
 
 const memories = db.collection('memories')
+const documentsCollection = db.collection('knowledge_documents')
 const migrations = db.collection<MigrationRecord>('knowledge_migrations')
 
 export const MIGRATION_SOURCE = 'architect-memory'
@@ -172,3 +173,103 @@ export async function migrateArchitectKnowledge(opts: { tenantId?: string; limit
 
 /** O que já foi copiado, para quem quiser conferir antes de decidir apagar o original. */
 export const listMigrationRecords = (tenantId: string) => migrations.find({ tenantId }).toArray()
+
+
+// --- a AUDITORIA da mudança de casa ----------------------------------------------------
+//
+// A migração copiou; ela não apagou nada, de propósito. Apagar o original na mesma
+// passada é apostar que a cópia deu certo, e uma aposta dessas só é descoberta quando
+// alguém procura o texto e ele não está em lugar nenhum.
+//
+// O que existe aqui é a CONFERÊNCIA: para cada memória do Arquiteto, onde ela foi parar,
+// se a cópia está lá para ser lida, e se o conteúdo bate. Nada é removido — nem por esta
+// função, nem por engano: ela não escreve.
+
+export interface MigrationAuditItem {
+  memoryId: string
+  scope: 'floor' | 'building'
+  /** O dono do registro, quando ele ainda existe nesta conta. */
+  ownerId: string | null
+  title: string
+  documentId: string | null
+  /** A cópia foi encontrada E o conteúdo bate — conferido por LEITURA, não pelo registro. */
+  copyConfirmed: boolean
+  /** Por que este item ainda não pode ser considerado copiado. */
+  problem: string | null
+  /**
+   * Seguro para uma limpeza futura?
+   *
+   * Verdadeiro só quando a cópia foi lida e o texto confere. Um "provavelmente" aqui
+   * viraria uma exclusão de verdade lá na frente.
+   */
+  safeToClean: boolean
+}
+
+export interface MigrationAudit {
+  total: number
+  confirmed: number
+  unmatched: number
+  safeToClean: number
+  items: MigrationAuditItem[]
+}
+
+/**
+ * O que já foi copiado, o que não foi, e o que dá para limpar depois — sem limpar nada.
+ *
+ * A confirmação vem de ler o DOCUMENTO e comparar o texto com o da memória. O registro
+ * da migração diz o que aconteceu na hora; ele não diz se o documento continua lá
+ * depois — alguém pode tê-lo apagado, e nesse caso a memória original é a única cópia
+ * que resta.
+ */
+export async function auditArchitectMemoryMigration(tenantId: string): Promise<MigrationAudit> {
+  const registros = await memories.find({ tenantId, sourceType: 'architect', scope: { $in: ['floor', 'building'] } }).toArray()
+  const items: MigrationAuditItem[] = []
+
+  for (const registro of registros) {
+    const memoryId = registro._id as ObjectId
+    const texto = textoDe(registro.payload)
+    const marca = await migrations.findOne({ _id: memoryId })
+    const owner = await donoDe(registro as Record<string, unknown>)
+
+    let documentId: string | null = null
+    let copyConfirmed = false
+    let problem: string | null = null
+
+    if (!texto) {
+      problem = 'o registro não tem conteúdo para copiar'
+    } else if (!owner) {
+      problem = 'o dono deste registro não existe mais nesta conta'
+    } else {
+      // Procurada pela marca estável, e não pelo id guardado no registro da migração:
+      // é a marca que sobrevive a uma reexecução, e é ela que o banco usa para impedir
+      // a segunda cópia.
+      const doc = await documentsCollection.findOne({ ...ownerFilterOf(owner), sourceRef: sourceRefFor(memoryId) })
+      if (!doc) {
+        problem = marca?.status === 'done' ? 'a cópia foi registrada mas não está mais na base' : 'ainda não copiado'
+      } else {
+        documentId = doc._id.toString()
+        copyConfirmed = String(doc.content ?? '').trim() === texto.content.trim()
+        if (!copyConfirmed) problem = 'a cópia existe, mas o texto não confere com o original'
+      }
+    }
+
+    items.push({
+      memoryId: memoryId.toString(),
+      scope: registro.scope as 'floor' | 'building',
+      ownerId: owner ? owner.ownerId.toString() : null,
+      title: texto?.title ?? '(sem título)',
+      documentId,
+      copyConfirmed,
+      problem,
+      safeToClean: copyConfirmed,
+    })
+  }
+
+  return {
+    total: items.length,
+    confirmed: items.filter((i) => i.copyConfirmed).length,
+    unmatched: items.filter((i) => !i.copyConfirmed).length,
+    safeToClean: items.filter((i) => i.safeToClean).length,
+    items,
+  }
+}

@@ -15,7 +15,7 @@ process.env.VOYAGE_API_KEY = ''
 
 const { mongoClient, db } = await import('../dist/db.js')
 const { ensureKnowledgeIndexes } = await import('../dist/knowledge.js')
-const { migrateArchitectKnowledge, ensureKnowledgeMigrationIndexes, sourceRefFor, listMigrationRecords } = await import('../dist/knowledgeMigration.js')
+const { migrateArchitectKnowledge, ensureKnowledgeMigrationIndexes, sourceRefFor, listMigrationRecords, auditArchitectMemoryMigration } = await import('../dist/knowledgeMigration.js')
 const { createFloor } = await import('../dist/floors.js')
 const { ensureDefaultBuilding } = await import('../dist/building.js')
 const { writeMemory } = await import('../dist/memory/records.js')
@@ -178,4 +178,63 @@ test('registro sem conteúdo falha com motivo — e não vira documento vazio', 
   assert.equal(r.failed, 1)
   assert.match(r.errors[0].error, /conteúdo/)
   assert.equal(await db.collection('knowledge_documents').countDocuments({}), 0)
+})
+
+// --- a auditoria (que não apaga nada) --------------------------------------------------
+
+test('a auditoria confere a cópia por LEITURA, e não pelo registro da migração', async () => {
+  await cenario()
+  await migrateArchitectKnowledge({ tenantId: DONO })
+
+  const antes = await auditArchitectMemoryMigration(DONO)
+  assert.equal(antes.total, 2)
+  assert.equal(antes.confirmed, 2)
+  assert.equal(antes.safeToClean, 2)
+  for (const item of antes.items) {
+    assert.ok(item.documentId)
+    assert.equal(item.problem, null)
+  }
+
+  // Alguém apagou o documento depois de migrado: o registro continua dizendo "feito", e
+  // a memória original passa a ser a única cópia que resta. A auditoria precisa ver isso.
+  await db.collection('knowledge_documents').deleteOne({ ownerType: 'floor' })
+  const depois = await auditArchitectMemoryMigration(DONO)
+  assert.equal(depois.confirmed, 1)
+  assert.equal(depois.unmatched, 1)
+  assert.equal(depois.safeToClean, 1, 'o que perdeu a cópia não pode ser marcado como seguro para limpar')
+  assert.match(depois.items.find((i) => !i.copyConfirmed).problem, /não está mais na base/)
+})
+
+test('cópia com texto diferente do original NÃO conta como copiada', async () => {
+  const { andar } = await cenario()
+  await migrateArchitectKnowledge({ tenantId: DONO })
+  await db.collection('knowledge_documents').updateOne({ ownerType: 'floor' }, { $set: { content: 'outra coisa' } })
+
+  const r = await auditArchitectMemoryMigration(DONO)
+  const item = r.items.find((i) => i.scope === 'floor')
+  assert.equal(item.copyConfirmed, false)
+  assert.equal(item.safeToClean, false)
+  assert.match(item.problem, /não confere/)
+  assert.ok(andar)
+})
+
+test('a auditoria NÃO apaga nada — nem memória, nem documento', async () => {
+  await cenario()
+  await migrateArchitectKnowledge({ tenantId: DONO })
+  const memoriasAntes = await db.collection('memories').countDocuments({ tenantId: DONO })
+  const docsAntes = await db.collection('knowledge_documents').countDocuments({})
+
+  await auditArchitectMemoryMigration(DONO)
+  await auditArchitectMemoryMigration(DONO)
+
+  assert.equal(await db.collection('memories').countDocuments({ tenantId: DONO }), memoriasAntes)
+  assert.equal(await db.collection('knowledge_documents').countDocuments({}), docsAntes)
+})
+
+test('item ainda não migrado aparece como pendente, sem documento', async () => {
+  await cenario()
+  const r = await auditArchitectMemoryMigration(DONO)
+  assert.equal(r.confirmed, 0)
+  assert.equal(r.safeToClean, 0)
+  assert.deepEqual(r.items.map((i) => i.problem).sort(), ['ainda não copiado', 'ainda não copiado'])
 })
