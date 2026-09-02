@@ -90,6 +90,19 @@ export const cabeNoLimite = (valor: unknown): boolean => {
  * chegando de novo — resposta legítima, e a vaga volta porque nada foi gravado; um
  * erro de verdade também devolve a vaga, e sobe.
  */
+export type RecordListener = (record: DataHistoryRecord) => void | Promise<void>
+const ouvintes: RecordListener[] = []
+
+/** Escutar o que foi gravado. Registrado no arranque, como o resto dos handlers. */
+export function onRecordWritten(fn: RecordListener): void {
+  ouvintes.push(fn)
+}
+
+/** Some com todos — usado entre testes, para um não herdar o ouvinte do outro. */
+export function resetRecordListeners(): void {
+  ouvintes.length = 0
+}
+
 export async function inserirRegistro(doc: Omit<DataHistoryRecord, '_id'>, teto?: number): Promise<'gravado' | 'repetido' | 'cota'> {
   const comCota = typeof teto === 'number' && Number.isFinite(teto)
   if (comCota) {
@@ -101,6 +114,21 @@ export async function inserirRegistro(doc: Omit<DataHistoryRecord, '_id'>, teto?
   }
   try {
     await records.insertOne({ _id: new ObjectId(), ...doc } as DataHistoryRecord)
+    /**
+     * Quem observa este histórico fica sabendo — e só quando o registro EXISTE.
+     *
+     * O aviso sai daqui porque este é o único lugar por onde todo registro passa;
+     * espalhá-lo pelos três chamadores do motor faria o quarto chamador, escrito depois,
+     * nascer sem ele. É por registro (`dedupeKey`), então a mesma entrega gravada duas
+     * vezes não vira duas observações — a segunda nem chega aqui.
+     *
+     * Assinatura registrada, e não importada: o histórico não pode depender de monitores
+     * para gravar. Sem ninguém escutando, nada muda.
+     */
+    for (const ouvinte of ouvintes) {
+      // Falha de quem escuta não desfaz a gravação: o registro já é um fato.
+      void Promise.resolve(ouvinte(doc as DataHistoryRecord)).catch((erro) => console.error('[dataHistory] ouvinte falhou:', erro))
+    }
     return 'gravado'
   } catch (error) {
     if (comCota) await recorders.updateOne({ _id: doc.recorderId }, { $inc: { recordCount: -1 } }).catch(() => undefined)

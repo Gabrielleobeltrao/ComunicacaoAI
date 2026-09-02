@@ -25,6 +25,7 @@ import { ensureCandleIndexes } from '../marketData/candleStore.js'
 import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
 import { registerMonitorObservers, resumePendingDispatches } from '../monitors/dispatch.js'
+import { registerDatabaseMonitors } from '../monitors/dataSource.js'
 import { ensureMonitorIndexes } from '../monitors/state.js'
 import { registerWebSocketDestinations } from '../integrations/websocket/destinations.js'
 import { websocketAdapterFor } from '../integrations/websocket/service.js'
@@ -84,6 +85,9 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   // segunda verdade sobre o que aconteceu — ele lê o evento que já foi publicado, e o
   // que ele reconhece como transição vira execução pela fila de sempre.
   registerMonitorObservers(onError)
+  // E os monitores de DATASET: eles observam no instante da gravação, e não por varredura
+  // — uma varredura chegaria atrasada e leria o mesmo registro várias vezes.
+  registerDatabaseMonitors(onError)
   // E os destinos do App de WebSocket: memória e rotina, pelos mesmos caminhos de
   // sempre. Agente e setor já são atendidos pelo gatilho interno acima.
   registerWebSocketDestinations()
