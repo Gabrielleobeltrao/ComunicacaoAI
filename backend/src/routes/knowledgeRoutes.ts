@@ -18,6 +18,7 @@ import {
 } from '../knowledgeService.js'
 import type { KnowledgeDocument } from '../knowledge.js'
 import { listDocumentsNeedingReview, scopeSearchFinds } from '../knowledge.js'
+import { analyzeDocumentImpact, buildKnowledgeGraph, clearGraphLayout, getGraphLayout, saveGraphLayout } from '../knowledgeGraph.js'
 import { dismissKnowledgeGap, listKnowledgeGaps, resolveKnowledgeGap } from '../knowledgeGaps.js'
 import { ProposalError, approveKnowledgeProposal, getKnowledgeProposal, listKnowledgeProposals, rejectKnowledgeProposal } from '../knowledgeProposals.js'
 import { listKnowledgeConflicts, resolveKnowledgeConflict, scanScopeForConflicts } from '../knowledgeConflicts.js'
@@ -386,4 +387,73 @@ knowledgeRouter.get('/review', async (req, res) => {
       updatedAt: document.updatedAt,
     })),
   })
+})
+
+// --- o mapa, o layout e o impacto ---------------------------------------------------------
+
+knowledgeRouter.get('/graph', async (req, res) => {
+  const floorId = req.query.floorId ? oid(String(req.query.floorId)) : null
+  if (req.query.floorId && !floorId) return notFound(res)
+  // O andar precisa ser DESTA conta: um id alheio não desenha o mapa de outra pessoa.
+  if (floorId) {
+    const { getFloor } = await import('../floors.js')
+    if (!(await getFloor(res.locals.userId, floorId))) return notFound(res)
+  }
+  const viewAs = req.query.viewAs ? oid(String(req.query.viewAs)) : null
+  if (req.query.viewAs && !viewAs) return notFound(res)
+
+  const grafo = await buildKnowledgeGraph(res.locals.userId, {
+    floorId,
+    viewAsAgentId: viewAs,
+    search: typeof req.query.q === 'string' ? req.query.q.slice(0, 120) : null,
+    status: ['indexed', 'pending', 'error'].includes(String(req.query.status)) ? (String(req.query.status) as 'indexed') : null,
+    source: typeof req.query.source === 'string' ? req.query.source.slice(0, 40) : null,
+    limit: Number(req.query.limit) || 200,
+    skip: Number(req.query.skip) || 0,
+  })
+
+  // As posições arrastadas entram no DTO: sem elas, o mapa reorganizaria por baixo de
+  // quem acabou de organizá-lo.
+  const viewKey = floorId ? `floor:${floorId.toString()}` : 'building'
+  const posicoes = new Map((await getGraphLayout(res.locals.userId, viewKey)).map((p) => [p.nodeId, { x: p.x, y: p.y }]))
+  res.json({
+    ...grafo,
+    viewKey,
+    nodes: grafo.nodes.map((n) => ({ ...n, position: posicoes.get(n.id) ?? null })),
+  })
+})
+
+knowledgeRouter.put('/graph/layout', async (req, res) => {
+  const body = (req.body ?? {}) as { viewKey?: unknown; positions?: unknown }
+  const viewKey = String(body.viewKey ?? '').slice(0, 120)
+  if (!viewKey) {
+    res.status(400).json({ code: 'invalid', message: 'informe a visão' })
+    return
+  }
+  const saved = await saveGraphLayout(res.locals.userId, viewKey, Array.isArray(body.positions) ? (body.positions as { nodeId: string; x: number; y: number }[]) : [])
+  res.json({ saved })
+})
+
+knowledgeRouter.delete('/graph/layout', async (req, res) => {
+  const viewKey = String(req.query.viewKey ?? '').slice(0, 120)
+  if (!viewKey) {
+    res.status(400).json({ code: 'invalid', message: 'informe a visão' })
+    return
+  }
+  res.json({ cleared: await clearGraphLayout(res.locals.userId, viewKey) })
+})
+
+/**
+ * O que quebra se este documento sair.
+ *
+ * `accessibleBy` é permissão; `actuallyUsedBy` é evidência. As duas contagens vêm de
+ * lugares diferentes de propósito — "três agentes usam este documento" era a frase que
+ * dava para escrever só com a permissão na mão, e ela é falsa.
+ */
+knowledgeRouter.get('/documents/:documentId/impact', async (req, res) => {
+  const alvo = await donoDoDocumento(res, String(req.params.documentId))
+  if (!alvo) return notFound(res)
+  const impacto = await analyzeDocumentImpact(res.locals.userId, alvo.documentId)
+  if (!impacto) return notFound(res)
+  res.json(impacto)
 })

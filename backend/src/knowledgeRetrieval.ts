@@ -1,7 +1,8 @@
 import { resolveKnowledgeOwnersForExecution } from './knowledgeAccess.js'
 import type { ExecutionContext, ResolvedOwner } from './knowledgeAccess.js'
 import { ObjectId } from 'mongodb'
-import { retrieveForOwners, RETRIEVAL_CHAR_BUDGET, RETRIEVAL_MIN_SCORE, RETRIEVAL_TOP_K } from './knowledge.js'
+import { retrieveForOwners, selectKnowledgeHitsDetailed, RETRIEVAL_CHAR_BUDGET, RETRIEVAL_MIN_SCORE, RETRIEVAL_TOP_K } from './knowledge.js'
+import { neighborsOf } from './knowledgeLinks.js'
 import { openConflictsForDocuments, precedence } from './knowledgeConflicts.js'
 import type { ConflictCandidate } from './knowledgeConflicts.js'
 import type { KnowledgeFilters, RetrievalResult } from './knowledge.js'
@@ -37,6 +38,8 @@ export interface AgentRetrievalOptions extends ExecutionContext {
   execution?: { executionId: string; kind: string } | null
   /** O agente foi configurado para não responder sem base? Muda o que é obrigatório. */
   requireGrounding?: boolean
+  /** Liga/desliga a expansão pelo grafo nesta chamada. Ausente = o padrão da instalação. */
+  graphExpansion?: boolean
 }
 
 /**
@@ -60,9 +63,85 @@ export async function retrieveForAgent(
     return vazio
   }
   const bruto = await retrieveForOwners(owners, query, opts)
-  const resultado = { ...(await aplicarConflitos(accountId, bruto)), owners }
+  const expandido = await expandirPeloGrafo(owners, query, opts, bruto)
+  const resultado = { ...(await aplicarConflitos(accountId, expandido)), owners }
   await registrar(accountId, agent, query, opts, resultado)
   return resultado
+}
+
+/**
+ * A EXPANSÃO por ligações — um salto, e desligada por padrão.
+ *
+ * A ideia é simples: se o documento que respondeu cita outro, o citado talvez complete a
+ * resposta. O risco também é: relação no grafo NÃO é relevância. Um documento pode citar
+ * dez outros por organização, e trazer os dez empurraria para fora do orçamento o trecho
+ * que de fato respondia.
+ *
+ * Por isso o vizinho não entra por fora: ele volta para a MESMA seleção, com o mesmo
+ * corte de score e o mesmo teto de caracteres, competindo com os seeds. E por isso a
+ * flag existe — ela fica desligada até um eval mostrar ganho medido, e é o caminho de
+ * volta se o ganho não aparecer em produção.
+ */
+export const GRAPH_EXPANSION_ENABLED = process.env.KNOWLEDGE_GRAPH_EXPANSION === '1'
+export const GRAPH_EXPANSION_MAX_NEIGHBORS = Number(process.env.KNOWLEDGE_GRAPH_EXPANSION_MAX ?? 5)
+
+async function expandirPeloGrafo(
+  owners: ResolvedOwner[],
+  query: string,
+  opts: AgentRetrievalOptions,
+  r: RetrievalResult,
+): Promise<RetrievalResult> {
+  const ligada = opts.graphExpansion ?? GRAPH_EXPANSION_ENABLED
+  if (!ligada || r.status !== 'ok' || r.sources.length === 0) return r
+
+  const seeds = [...new Set(r.sources.map((s) => s.documentId).filter(Boolean))] as string[]
+  const vizinhos = await neighborsOf(seeds.map((id) => new ObjectId(id)), owners, GRAPH_EXPANSION_MAX_NEIGHBORS)
+  if (vizinhos.length === 0) return r
+
+  // O vizinho é pontuado pelo MESMO critério do texto: entrar só por ser citado seria
+  // tratar organização como relevância.
+  const { extractTerms, extractWindow, scoreDocument } = await import('./lexicalRetrieval.js')
+  const termos = extractTerms(query)
+  const candidatos = vizinhos
+    .map((d) => ({
+      content: extractWindow(d.content ?? '', termos),
+      score: scoreDocument(d.title, d.content ?? '', termos),
+      ownerType: d.ownerType,
+      ownerId: d.ownerId.toString(),
+      documentId: d._id.toString(),
+      title: d.title,
+    }))
+    .filter((c) => c.score > 0 && c.content)
+  if (candidatos.length === 0) return r
+
+  const jaEscolhidos = r.sources.map((s, i) => ({
+    content: r.context[i] ?? '',
+    score: s.score ?? 1,
+    ownerType: s.ownerType,
+    ownerId: s.ownerId,
+    documentId: s.documentId ?? undefined,
+    title: s.title ?? undefined,
+  }))
+  const { selected } = selectKnowledgeHitsDetailed([...jaEscolhidos, ...candidatos], opts)
+  const novos = new Set(candidatos.map((c) => c.documentId))
+  return {
+    ...r,
+    context: selected.map((h) => h.content),
+    sources: selected.map((h) => {
+      const anterior = r.sources.find((s) => s.documentId === h.documentId)
+      return {
+        documentId: h.documentId ?? null,
+        title: h.title ?? null,
+        ownerType: h.ownerType,
+        ownerId: h.ownerId,
+        score: h.score,
+        // Fica REGISTRADO que este trecho entrou por expansão: sem isso, o eval não
+        // consegue medir se a expansão ajudou ou só encheu o orçamento.
+        retrieval: anterior?.retrieval ?? (novos.has(h.documentId ?? '') ? 'graph_expansion' : undefined),
+        reason: anterior?.reason,
+      }
+    }),
+  }
 }
 
 /**

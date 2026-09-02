@@ -810,8 +810,13 @@ export interface KnowledgeSource {
   ownerId: string
   /** Quanto este trecho casou com a pergunta. É o que torna a seleção discutível. */
   score?: number
-  /** Por semelhança ou por termo exato — as duas erram de jeitos diferentes. */
-  retrieval?: 'vector' | 'lexical'
+  /**
+   * Como este trecho chegou: por semelhança, por termo exato ou por expansão de ligação.
+   *
+   * As três erram de jeitos diferentes, e é por esta marca que o eval consegue medir se
+   * a expansão pelo grafo ajudou ou só ocupou o orçamento.
+   */
+  retrieval?: 'vector' | 'lexical' | 'graph_expansion'
   /** Por que a base deste trecho estava disponível: própria, do andar, do setor… */
   reason?: string
   /** QUANDO foi capturado. Uma resposta sobre "hoje" precisa saber a idade da fonte. */

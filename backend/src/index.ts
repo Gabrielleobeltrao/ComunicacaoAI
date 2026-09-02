@@ -162,6 +162,7 @@ import { knowledgeRouter } from './routes/knowledgeRoutes.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
 import { ensureContextManifestIndexes } from './contextManifest.js'
 import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
+import { ensureKnowledgeGraphIndexes } from './knowledgeGraph.js'
 import { ensureKnowledgeProposalIndexes } from './knowledgeProposals.js'
 import { ensureKnowledgeConflictIndexes } from './knowledgeConflicts.js'
 import {
@@ -5344,6 +5345,9 @@ async function start() {
   // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
   // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
   // ninguém está olhando. Ela é um script, e é chamada à mão.
+  ensureKnowledgeGraphIndexes().catch((error) => {
+    console.error('ensureKnowledgeGraphIndexes failed:', error)
+  })
   ensureKnowledgeGapIndexes().catch((error) => {
     console.error('ensureKnowledgeGapIndexes failed:', error)
   })

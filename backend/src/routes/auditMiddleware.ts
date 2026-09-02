@@ -229,6 +229,9 @@ const RULES: Rule[] = [
   R('POST', 'api/knowledge/gaps/:/dismiss', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
   // Varrer não muda documento nenhum: é uma leitura que grava o que encontrou.
   R('POST', 'api/knowledge/conflicts/scan', null, { why: 'detection, not a change' }),
+  // Posição de nó não é conhecimento: arrastar não muda o que ninguém lê.
+  R('PUT', 'api/knowledge/graph/layout', null, { why: 'view preference, not knowledge' }),
+  R('DELETE', 'api/knowledge/graph/layout', null, { why: 'view preference, not knowledge' }),
   R('POST', 'api/knowledge/documents', { entityType: 'knowledge', action: 'create' }),
   R('PATCH', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
   R('DELETE', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'delete' }, { idAt: 3 }),

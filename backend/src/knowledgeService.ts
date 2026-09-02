@@ -1,6 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { checkOwnerStorage } from './abuseGuards.js'
 import { extractTextFromFile } from './fileExtraction.js'
+import { resolveLinks } from './knowledgeLinks.js'
 import {
   createDocumentFor,
   deleteDocumentFor,
@@ -135,7 +136,10 @@ export async function saveDocument(accountId: string, owner: KnowledgeOwner, inp
 
   await exigirEspaco(accountId, content)
   const { maxContent: _teto, ...resto } = input
-  return (await createDocumentFor(owner, { ...resto, title, content })) as KnowledgeDocument
+  // As ligações `[[Título]]` viram referências por ID no momento de salvar. Guardar o
+  // título quebraria a conexão no dia em que alguém renomeasse o alvo.
+  const links = resto.links ?? (await resolveLinks(accountId, [owner], content))
+  return (await createDocumentFor(owner, { ...resto, title, content, links })) as KnowledgeDocument
 }
 
 export async function updateDocument(
@@ -165,6 +169,7 @@ export async function updateDocument(
      * de saber se a gravação vai acontecer.
      */
     await exigirEspaco(accountId, campos.content)
+    campos.links = await resolveLinks(accountId, [owner], campos.content)
   }
   return (await updateDocumentFor(owner, documentId, campos)) as KnowledgeDocument | null
 }
