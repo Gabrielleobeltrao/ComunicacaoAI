@@ -1,6 +1,7 @@
 import { knowledgeAdapter } from './adapters/knowledgeAdapter.js'
 import { appAdapter } from './adapters/appAdapter.js'
 import { toolAdapter } from './adapters/toolAdapter.js'
+import { databaseAdapter } from './adapters/databaseAdapter.js'
 import type { ResourceAdapter, ResourceKind } from './types.js'
 
 // O REGISTRO de adapters — o único lugar que sabe quais tipos existem.
@@ -13,9 +14,7 @@ const ADAPTERS: Partial<Record<ResourceKind, ResourceAdapter>> = {
   knowledge: knowledgeAdapter,
   app: appAdapter,
   tool: toolAdapter,
-  // `database` entra na Fase 3. Ausente aqui é honesto: o tipo existe no contrato e
-  // ainda não tem fonte canônica — e um adapter vazio responderia "nada encontrado"
-  // como se fosse a verdade.
+  database: databaseAdapter,
 }
 
 export const adapterFor = (kind: ResourceKind): ResourceAdapter | null => ADAPTERS[kind] ?? null

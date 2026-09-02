@@ -161,24 +161,38 @@ flag. **Teeth**: revertendo a precedência do deny e a lista de campos da DSL, c
 
 Suíte: 1354 + 1670, verde. Vitest 287, smoke 6.
 
+### Fase 3 (continuação) — catálogo e UI ✅
+
+- `resources/adapters/databaseAdapter.ts` registrado: Database entra no catálogo comum,
+  na matriz do agente e na análise de impacto, delegando a decisão para
+  `databases/access.ts`. `availableKinds()` agora devolve os quatro tipos.
+- `pages/Databases.tsx` (`/databases`) + `lib/databases.ts`: lista com a ORIGEM dita em
+  voz alta (mercado não é memória nem conhecimento), detalhe com datasets e mutabilidade,
+  criação de dataset por `campo:tipo` (JSON cru na tela é pedir para errar), e consulta
+  mostrando "quantos vieram de quantos existem" — a diferença muda a conclusão de quem lê.
+- Item **Databases** na navegação, em RECURSOS. `/historicos` permanece: ele é a REGRA de
+  gravação e Databases é o recurso que a expõe; mover a rota agora quebraria bookmark por
+  uma reorganização que ainda não terminou.
+
+Testes: 7 em `frontend/e2e/databases.spec.ts`. E2E 628, smoke 6, secret-scan limpo.
+
 ## Pendências honestas da Fase 3
 
-- **UI de Databases não foi feita** (a fase pedia tela completa de datasets/query/grants).
-  O backend está inteiro e testado; a tela é a próxima ação.
 - `external_app` está declarado e recusa consulta com `not_implemented` — um adapter que
   respondesse vazio seria pior que a recusa honesta.
-- O adapter `database` ainda **não** foi registrado no `registry.ts` de Resources: ele
-  entra quando a projeção de catálogo do database estiver escrita.
-- Migração de recorders existentes para Data Stores (dual-read da 9.2) não começou.
+- Tela de **grants de database** não foi feita: a API existe (`PUT/DELETE
+  /api/databases/:id/grants`) e é testada, mas quem quiser conceder hoje precisa chamá-la.
+  A tela precisa mostrar o impacto de um grant de setor ANTES de salvar, e isso é o
+  próximo item, não um detalhe visual.
+- Migração 9.2 (Data Store padrão apontando para recorders existentes, em dual-read) não
+  começou.
 
 ## Próxima ação exata
 
-1. UI de Databases (`/databases`): lista, detalhe com datasets/schema, consulta paginada e
-   grants com o impacto de setor antes de salvar.
-2. Registrar o adapter `database` em `resources/registry.ts` (list/get/access/impact
-   delegando para `databases/access.ts`).
-3. Migração 9.2: Data Store padrão por conta apontando para os recorders existentes, em
-   dual-read, sem mover registro.
+1. Tela de grants de Database, com o impacto de setor mostrado antes de salvar.
+2. Migração 9.2 em dual-read, sem mover registro.
+3. Fase 4 — Tool versionada: `runtimeKind` (`http` preservando IDs e `customToolIds`,
+   `app_action`, `registered_function`), versões imutáveis com hash, e o dispatcher único.
 
 Fases 4 a 11 (Tools versionadas, Flows/Monitors, Activity, Extensions, Marketplace,
 Sandbox, hardening) **não foram iniciadas**.

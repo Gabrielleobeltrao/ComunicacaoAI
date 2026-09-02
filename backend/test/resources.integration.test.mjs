@@ -109,10 +109,8 @@ const politica = (agentId, p) =>
 
 test('o catálogo lista os tipos que TÊM fonte canônica, e só eles', async () => {
   const tipos = availableKinds()
-  assert.deepEqual(tipos.sort(), ['app', 'knowledge', 'tool'])
-  // `database` existe no contrato e ainda não tem adapter: responder "nada encontrado"
-  // por ele seria afirmar sobre um tipo que ninguém implementou.
-  assert.equal(adapterFor('database'), null)
+  assert.deepEqual(tipos.sort(), ['app', 'database', 'knowledge', 'tool'])
+  assert.ok(adapterFor('database'))
 })
 
 test('capacidade administrativa NUNCA é de agente', () => {

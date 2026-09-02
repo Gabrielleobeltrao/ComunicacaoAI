@@ -54,7 +54,11 @@ export const NAV_V2: NavItemDef[] = [
   { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'resources', path: () => '/apps', activePrefixes: () => ['/apps'] },
   // Históricos: o que a conta guarda ao longo do tempo. Fica em CONTROLE porque é uma
   // superfície de observação — quem entra aqui vem consultar, não construir.
-  { key: 'data-history', label: 'Históricos', icon: 'database', scope: 'general', group: 'resources', path: () => '/historicos', activePrefixes: () => ['/historicos'] },
+  { key: 'databases', label: 'Databases', icon: 'database', scope: 'general', group: 'resources', path: () => '/databases', activePrefixes: () => ['/databases'] },
+  // Históricos continua no lugar de sempre: ele é a REGRA de gravação, e Databases é o
+  // recurso que a expõe. Mover a rota agora quebraria bookmark por uma reorganização
+  // que ainda não terminou.
+  { key: 'data-history', label: 'Históricos', icon: 'clock', scope: 'general', group: 'resources', path: () => '/historicos', activePrefixes: () => ['/historicos'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
 ]
 
