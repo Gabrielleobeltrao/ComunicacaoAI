@@ -58,12 +58,14 @@ export function MonitoringCenter() {
     if (aba === 'overview' || aba === 'live') void carregar()
   })
 
-  const acao = async (fn: () => Promise<unknown>, mensagem?: string) => {
+  const acao = async <T,>(fn: () => Promise<T>, mensagem?: string | ((r: T) => string)) => {
     setErro(null)
     setAviso(null)
     try {
-      await fn()
-      if (mensagem) setAviso(mensagem)
+      const r = await fn()
+      // A mensagem pode depender do RESULTADO — "coletei" e "não mudou nada" são
+      // notícias diferentes, e avisar sempre a mesma coisa mente sobre o que aconteceu.
+      if (mensagem) setAviso(typeof mensagem === 'function' ? mensagem(r) : mensagem)
       await carregar()
     } catch (e) {
       setErro((e as Error).message)
@@ -188,7 +190,10 @@ function VisaoGeral({ visao }: { visao: { items: OverviewItem[]; summary: Record
 
 // --- fontes ----------------------------------------------------------------------------
 
-function ListaDeFontes({ fontes, acao }: { fontes: SourceSummary[] | null; acao: (fn: () => Promise<unknown>, m?: string) => Promise<void> }) {
+/** A ação da lista: a mensagem pode ser fixa ou vir do resultado da chamada. */
+type Acao = <T>(fn: () => Promise<T>, m?: string | ((r: T) => string)) => Promise<void>
+
+function ListaDeFontes({ fontes, acao }: { fontes: SourceSummary[] | null; acao: Acao }) {
   if (!fontes) return null
   if (fontes.length === 0) {
     return (
@@ -215,6 +220,21 @@ function ListaDeFontes({ fontes, acao }: { fontes: SourceSummary[] | null; acao:
             <div className="flex flex-wrap gap-2">
               <Button variant="ghost" onClick={() => acao(() => api.testSource(f.id), 'Fonte testada.')} data-testid="fonte-testar">
                 Testar
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() =>
+                  acao(
+                    () => api.readNow(f.id),
+                    (r) =>
+                      r.unchanged
+                        ? 'Coletado. Nada mudou desde a última leitura, então nada foi gravado.'
+                        : `Coletado: ${r.rows} ${r.rows === 1 ? 'linha lida' : 'linhas lidas'}, ${r.recorded} ${r.recorded === 1 ? 'gravada' : 'gravadas'}.`,
+                  )
+                }
+                data-testid="fonte-coletar"
+              >
+                Coletar agora
               </Button>
               {f.status !== 'active' && (
                 <Button onClick={() => acao(() => api.activate(f.id), 'Fonte ativada.')} data-testid="fonte-ativar">

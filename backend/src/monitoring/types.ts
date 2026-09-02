@@ -124,6 +124,17 @@ export interface MonitoringTelemetry {
   reconnects: number
   /** O conteúdo da última leitura gravada. É o que faz "de novo o mesmo" não virar linha. */
   lastContentHash?: string | null
+  /**
+   * O TESTE — separado da leitura de verdade, de propósito.
+   *
+   * Testar prova que a configuração funciona; ler é o trabalho. Misturar os dois faria um
+   * teste bem-sucedido contar como leitura: a fonte apareceria "no ar" sem nunca ter
+   * coletado, e o `lastContentHash` de um teste envenenaria a dedupe da primeira coleta
+   * real — ela acharia que "não mudou" e não gravaria nada.
+   */
+  lastTestAt?: Date | null
+  lastTestOkAt?: Date | null
+  lastTestError?: string | null
 }
 
 export const emptyTelemetry = (): MonitoringTelemetry => ({
@@ -137,6 +148,9 @@ export const emptyTelemetry = (): MonitoringTelemetry => ({
   readsFailed: 0,
   reconnects: 0,
   lastContentHash: null,
+  lastTestAt: null,
+  lastTestOkAt: null,
+  lastTestError: null,
 })
 
 /**

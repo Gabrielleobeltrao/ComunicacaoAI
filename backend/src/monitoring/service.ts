@@ -261,7 +261,14 @@ export async function setSourceStatus(ownerId: string, id: ObjectId, status: Mon
    * Uma fonte que nunca respondeu, ativada, vira uma fonte degradada minutos depois — e o
    * painel nasce vermelho por uma configuração que ninguém chegou a testar.
    */
-  if (status === 'active' && !fonte.telemetry.lastOkAt && KIND_CAPABILITIES[fonte.kind].pull) {
+  /**
+   * Ativar exige uma prova de que a configuração FUNCIONA — teste ou leitura.
+   *
+   * As duas servem porque as duas provam a mesma coisa: alguém chegou no outro lado e
+   * trouxe dado. Exigir só a leitura obrigava a gravar histórico para destravar um botão.
+   */
+  const provou = fonte.telemetry.lastOkAt ?? fonte.telemetry.lastTestOkAt
+  if (status === 'active' && !provou && KIND_CAPABILITIES[fonte.kind].pull) {
     throw new MonitoringError('teste a fonte antes de ativar: ela ainda não leu nada', 'never_read')
   }
   /**
@@ -364,6 +371,31 @@ export async function testSource(ownerId: string, entrada: MonitoringSource | So
 
   const headers = await cabecalhosDaConexao({ ownerId, connectionId: fonte.connectionId ?? null, config: fonte.config })
   const r = await collectOnce(fonte, { headers, ownerId })
+
+  /**
+   * O teste de uma fonte GRAVADA deixa marca — e só a do teste.
+   *
+   * Sem isto, quem testava com sucesso não conseguia ativar: o portão pedia `lastOkAt`, que
+   * só a coleta real escreve, e a pessoa era empurrada para "coletar agora" só para
+   * destravar o botão — gravando histórico que ela não pediu.
+   *
+   * O que NÃO é tocado aqui: `readsOk`, `consecutiveFailures`, `lastReadAt` e
+   * `lastContentHash`. Um teste não é uma leitura, e o hash de um teste envenenaria a
+   * dedupe da primeira coleta de verdade.
+   */
+  if ('_id' in entrada) {
+    await sources.updateOne(
+      { _id: fonte._id, ownerId },
+      {
+        $set: {
+          'telemetry.lastTestAt': new Date(),
+          ...(r.ok ? { 'telemetry.lastTestOkAt': new Date(), 'telemetry.lastTestError': null } : { 'telemetry.lastTestError': r.error?.message?.slice(0, 200) ?? 'falhou' }),
+          updatedAt: new Date(),
+        },
+      },
+    )
+  }
+
   const presentes = new Set(Object.entries(r.rows[0] ?? {}).filter(([, v]) => v !== null && v !== undefined).map(([k]) => k))
   return { ...r, fields: fonte.mapping.fields.map((f) => ({ name: f.to, present: presentes.has(f.to) })) }
 }

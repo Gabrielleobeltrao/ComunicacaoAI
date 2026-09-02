@@ -652,3 +652,52 @@ test('o ao vivo de uma conta não enxerga a outra', async () => {
   await svc.setSourceStatus(DONO, f._id, 'active')
   assert.equal((await svc.liveView('vizinho')).items.length, 0)
 })
+
+// --- testar destrava ativar, sem virar leitura ------------------------------------------
+//
+// Testar prova a configuração; ler é o trabalho. Antes, o portão de ativação só aceitava
+// `lastOkAt` — escrito pela coleta real — então quem testava com sucesso era empurrado a
+// "coletar agora" só para destravar o botão, gravando histórico que não pediu.
+
+test('testar com sucesso destrava a ativação de uma fonte pull que nunca coletou', async () => {
+  const f = await svc.createSource(DONO, entrada())
+  const r = await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+  assert.equal(r.ok, true)
+
+  const depois = await svc.getSource(DONO, f._id)
+  assert.ok(depois.telemetry.lastTestOkAt, 'o teste bem-sucedido deixa marca')
+  assert.equal(depois.telemetry.lastOkAt, null, 'e o teste NÃO se disfarça de leitura')
+
+  const ativa = await svc.setSourceStatus(DONO, f._id, 'active')
+  assert.equal(ativa.status, 'active')
+})
+
+test('testar não grava histórico nem contamina a dedupe da primeira coleta', async () => {
+  const f = await svc.createSource(DONO, entrada())
+  await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+
+  const testada = await svc.getSource(DONO, f._id)
+  assert.equal(testada.telemetry.lastContentHash ?? null, null, 'o hash do teste envenenaria a dedupe')
+  assert.equal(testada.telemetry.readsOk, 0)
+  assert.equal(testada.telemetry.lastReadAt, null)
+  assert.equal(await db.collection('data_history_records').countDocuments({ ownerId: DONO }), 0)
+
+  // E a primeira coleta de verdade grava — não acha que "não mudou".
+  await svc.setSourceStatus(DONO, f._id, 'active')
+  const leitura = await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  assert.equal(leitura.unchanged ?? false, false)
+  assert.ok(leitura.recorded > 0, 'a primeira coleta real grava')
+})
+
+test('teste que falha marca o erro e continua barrando a ativação', async () => {
+  const f = await svc.createSource(DONO, entrada({ config: { url: `http://127.0.0.1:${porta}/erro`, method: 'GET' } }))
+  const r = await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+  assert.equal(r.ok, false)
+
+  const depois = await svc.getSource(DONO, f._id)
+  assert.ok(depois.telemetry.lastTestAt, 'a tentativa fica registrada')
+  assert.equal(depois.telemetry.lastTestOkAt ?? null, null)
+  assert.ok(depois.telemetry.lastTestError)
+
+  await assert.rejects(() => svc.setSourceStatus(DONO, f._id, 'active'), /ainda não leu nada/)
+})
