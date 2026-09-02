@@ -58,6 +58,11 @@ export interface ActivityFilters {
   status?: ActivityStatus
   source?: ActivitySource
   floorId?: string
+  /** Os recortes que ligam a linha do tempo ao resto do escritório. */
+  monitorId?: string
+  flowId?: string
+  agentId?: string
+  sectorId?: string
 }
 
 export async function listActivity(filtros: ActivityFilters = {}, before?: string): Promise<{ items: ActivityItem[]; nextBefore: string | null }> {
@@ -65,6 +70,10 @@ export async function listActivity(filtros: ActivityFilters = {}, before?: strin
   if (filtros.status) q.set('status', filtros.status)
   if (filtros.source) q.set('source', filtros.source)
   if (filtros.floorId) q.set('floorId', filtros.floorId)
+  if (filtros.monitorId) q.set('monitorId', filtros.monitorId)
+  if (filtros.flowId) q.set('flowId', filtros.flowId)
+  if (filtros.agentId) q.set('agentId', filtros.agentId)
+  if (filtros.sectorId) q.set('sectorId', filtros.sectorId)
   if (before) q.set('before', before)
   const r = await fetch(`${API_URL}/api/activity?${q.toString()}`, { credentials: 'include' })
   if (!r.ok) {

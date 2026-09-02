@@ -537,6 +537,41 @@ Comando: `node --test test/monitorDatabaseSource.integration.test.mjs` → 10/10
 
 Bateria após os quatro blocos: `npm run test -w backend` → **1354 + 1853, 0 falhas**.
 
+### Bloco 5 — integrações que faltavam ✅
+
+`backend/src/databases/adapters.ts` (adapter `external_app`) e
+`backend/src/activity/timeline.ts` (recortes).
+
+- **`external_app` executa pelo caminho oficial de Apps**: `resolveGrant` resolve o App,
+  confere que a instalação é desta conta, checa status e compatibilidade e decifra a
+  credencial. O `adapterConfig` guarda só referência — chave do App, chave da ação e id da
+  instalação —, e um teste percorre o documento afirmando que credencial nenhuma está lá;
+- consulta é **leitura**: `autonomousWriteActionKeys` vai vazio, então este caminho não
+  autoriza escrita nem por engano;
+- "quantos vieram" nunca vira "quantos existem": o App não diz o total, e inventar um seria
+  apresentar uma contagem que ninguém contou;
+- **os recortes da Activity** por monitor, flow, agente e setor acontecem ANTES da página.
+  Peneirar depois de paginar mostraria três linhas numa página de vinte e faria a
+  continuação mentir. Monitor e flow vêm da execução; agente e setor, dos passos;
+- `null` e lista vazia querem dizer coisas opostas no refinamento — confundir os dois faria
+  um filtro sem resultado mostrar tudo. Há teste para isso.
+
+Comandos: `node --test test/externalAppDatabase.integration.test.mjs` → 4/4;
+`node --test test/activityTimeline.integration.test.mjs` → 11/11;
+`npx playwright test e2e/activity.spec.ts` → 7/7.
+
+### Bloco 6 — threat model, runbook e ambiente ✅
+
+- `SANDBOX_THREAT_MODEL.md`: ativos, cinco perfis de atacante, tabela de ameaça → trava →
+  cobertura, o fail-closed item a item, e **uma seção inteira do que continua descoberto** —
+  um threat model que só lista vitórias não serve para nada;
+- `SANDBOX_RUNBOOK.md`: subir, conferir o perfil item a item, incidente de pacote (kill
+  switch por hash, por pacote, suspensão), incidente de runner fora do ar, giro de segredo,
+  nomear revisor, e o que cada log contém e não contém;
+- `DEPLOYMENT_ENVIRONMENT_MATRIX.md`: `SANDBOX_RUNNER_URL`, `SANDBOX_RUNNER_SECRET`,
+  `SANDBOX_RUNNER_TIMEOUT_MS`, `PLATFORM_REVIEWERS`, as três marcas de perfil do runner,
+  `SANDBOX_CONCURRENCY` e a coleção `extension_reviews`.
+
 ## Bateria completa desta sessão
 
 Rodada inteira, na ordem do plano, com o repositório no commit `671b38e`:

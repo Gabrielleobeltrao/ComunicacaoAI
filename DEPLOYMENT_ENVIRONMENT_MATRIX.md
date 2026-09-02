@@ -68,6 +68,12 @@ Secrets are never real in this repo. URLs are public and are the real values abo
 | `MONITORS_ENABLED` | backend | Optional (default on) | Runtime | Public | *(unset)* | Deploy config | Rolling Monitors back | `0` makes `/api/monitors` answer 404. Monitors already published keep their state; nothing is deleted |
 | `COMMUNITY_MARKETPLACE_ENABLED` | backend | Optional (default on) | Runtime | Public | *(unset)* | Deploy config | Closing the community catalog | `0` makes the catalog and community installs answer 404. Creating and publishing your OWN packages stays open — it needs no community |
 | `CODE_TOOLS_ENABLED` | backend | Optional (**default off**) | Runtime | Public | *(unset)* | Deploy config | Only when a real isolated runner exists | Anything other than `1` keeps code tools unpublishable and unexecutable. **Setting it to `1` is not enough**: the gate also requires a registered `SandboxRuntimeProvider` whose `health()` proves non-root, read-only rootfs, denied network, no-new-privileges, seccomp, ephemeral env and verified cleanup. No such provider ships in this repository, so code stays off |
+| `SANDBOX_RUNNER_URL` | backend | Optional | Runtime | Public | `http://sandbox-runner:4300` | Deploy config — **never a request** | Runner moves | Without it (or the secret) no provider is registered and code stays fail-closed |
+| `SANDBOX_RUNNER_SECRET` | backend + runner | Required to run code | Runtime | **Secret** | `openssl rand -hex 32` | Generated, shared by the pair | On suspicion | The runner answers 503 to everyone; a runner without a secret is worse than no runner |
+| `SANDBOX_RUNNER_TIMEOUT_MS` | backend | Optional (`20000`) | Runtime | Public | `20000` | Deploy config | Slow runners | The backend cuts a call at 20s; the runner has its own cap and the smaller one wins |
+| `PLATFORM_REVIEWERS` | backend | Optional (**default empty**) | Runtime | Public | `<accountId>,<accountId>` | Deploy config — **never the request body** | Team changes | Nobody can review, so code cannot be published. That is the default |
+| `SANDBOX_EPHEMERAL` / `SANDBOX_NO_NEW_PRIVILEGES` / `SANDBOX_SECCOMP` | runner | Optional (default off) | Runtime | Public | `1` | Deploy config, matching what the orchestrator really applies | Deployment changes | The measured profile reports them false, and the backend refuses to enable code. See `SANDBOX_RUNBOOK.md` |
+| `SANDBOX_CONCURRENCY` | runner | Optional (`1`) | Runtime | Public | `1` | Deploy config | Throughput | One execution at a time; above the cap the runner refuses instead of queueing |
 | `SANDBOX_HANDLE_TTL_MS` / `SANDBOX_HANDLE_MAX_USES` | backend | Optional (`30000` / `5`) | Runtime | Public | `30000` | Deploy config | Tuning the capability broker | Capability handles live 30s and are good for at most 5 uses |
 | `EXECUTOR_TOOL_TIMEOUT_MS` | backend | Optional (`30000`) | Runtime | Public | `30000` | Deploy config | Slow third-party APIs | A tool call is cut at 30s |
 
@@ -122,6 +128,7 @@ for, and backfills:
 | `extension_packages` / `extension_versions` / `extension_installations` | Shareable packages, frozen versions, per-account installs | — (private Apps get a package only through the explicit `POST /api/extensions/backfill/apps`) |
 | `sandbox_capability_handles` | Short-lived capability handles (TTL index); stores the token HASH, never the token | — |
 | `sandbox_kill_switches` | Code disabled by package, version or hash | — |
+| `extension_reviews` | Immutable review decisions, bound to (subject, hash, reviewer) | — (no update path exists by design) |
 | `data_stores` / `dataset_definitions` | Databases and their datasets | — (existing histories are projected only by the explicit `POST /api/databases/migrate/histories`, which moves no records and has a rollback) |
 
 Rolling back the application code is safe: the added fields are ignored by the

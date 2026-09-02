@@ -162,3 +162,72 @@ test('os filtros e a paginação respondem sem inventar página', async () => {
   assert.equal(seguinte.items.length, 0)
   assert.equal(seguinte.nextBefore, null)
 })
+
+// --- os recortes que ligam a linha do tempo ao resto ------------------------------------
+
+test('filtrar por MONITOR mostra só o que aquele monitor pediu', async () => {
+  await disparar()
+  const outroMonitor = new ObjectId()
+
+  const so = await listActivity({ ownerId: DONO, monitorId: monitor._id.toString() })
+  assert.equal(so.items.length, 1)
+  assert.equal(so.items[0].origin.id, monitor._id.toString())
+
+  const nenhum = await listActivity({ ownerId: DONO, monitorId: outroMonitor.toString() })
+  assert.equal(nenhum.items.length, 0, 'filtro sem resultado é vazio, e não "tudo"')
+})
+
+test('filtrar por FLOW mostra só as execuções daquela operação', async () => {
+  await disparar()
+  const doFlow = await listActivity({ ownerId: DONO, flowId: flow._id.toString() })
+  assert.equal(doFlow.items.length, 1)
+  const deOutro = await listActivity({ ownerId: DONO, flowId: new ObjectId().toString() })
+  assert.equal(deOutro.items.length, 0)
+})
+
+test('filtrar por AGENTE olha os passos — é lá que o agente aparece', async () => {
+  const { run } = await disparar()
+  const agentId = new ObjectId()
+  await db.collection('step_runs').insertOne({
+    ownerId: DONO,
+    runId: run._id,
+    stepId: 'a1',
+    stepType: 'agent.execute',
+    attempt: 1,
+    status: 'succeeded',
+    outputPreview: null,
+    artifactIds: [],
+    agentId,
+    startedAt: new Date(),
+    finishedAt: new Date(),
+    error: null,
+  })
+
+  const doAgente = await listActivity({ ownerId: DONO, agentId: agentId.toString() })
+  assert.equal(doAgente.items.length, 1)
+  const deOutro = await listActivity({ ownerId: DONO, agentId: new ObjectId().toString() })
+  assert.equal(deOutro.items.length, 0)
+})
+
+test('o recorte acontece ANTES da página, para a continuação não mentir', async () => {
+  await disparar()
+  // Uma execução que o filtro não alcança, para provar que ela não ocupa vaga na página.
+  await db.collection('execution_roots').insertOne({
+    executionKey: 'run:outra',
+    ownerId: DONO,
+    buildingId: BUILDING,
+    originFloorId: FLOOR,
+    source: 'manual',
+    sourceRefId: new ObjectId(),
+    environment: 'production',
+    status: 'succeeded',
+    startedAt: new Date(),
+    finishedAt: new Date(),
+    createdAt: new Date(),
+    errorKind: null,
+  })
+
+  const pagina = await listActivity({ ownerId: DONO, monitorId: monitor._id.toString(), limit: 1 })
+  assert.equal(pagina.items.length, 1, 'a página vem cheia do que o filtro alcança')
+  assert.equal(pagina.items[0].origin.kind, 'monitor')
+})

@@ -106,3 +106,18 @@ test('em 320 px a linha do tempo não empurra a página para os lados', async ({
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
 })
+
+test('clicar no monitor RECORTA a lista — e o recorte vai para a consulta', async ({ page }) => {
+  await stub(page)
+  await page.goto('/activity')
+  await page.getByTestId('activity-filtrar-monitor').first().click()
+  await expect.poll(() => pedidos.some((u) => u.includes('monitorId=m1'))).toBe(true)
+  await expect(page.getByTestId('activity-limpar-recorte')).toBeVisible()
+})
+
+test('clicar na operação recorta por ela', async ({ page }) => {
+  await stub(page)
+  await page.goto('/activity')
+  await page.getByTestId('activity-filtrar-flow').first().click()
+  await expect.poll(() => pedidos.some((u) => u.includes('flowId=f1'))).toBe(true)
+})

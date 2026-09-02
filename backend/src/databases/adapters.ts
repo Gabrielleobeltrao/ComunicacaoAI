@@ -100,6 +100,66 @@ async function queryMarketData(store: DataStore, dataset: DataSetDefinition, spe
   }
 }
 
+/**
+ * Um Database que vive num App conectado.
+ *
+ * Nada de HTTP aqui, e nada de credencial: quem executa é o MESMO caminho que o modelo
+ * usaria — `resolveGrant` resolve o App, confere que a instalação é desta conta, checa
+ * status e compatibilidade, decifra a credencial e devolve a ação pronta. Um segundo
+ * caminho seria um segundo lugar decidindo permissão, e no dia em que divergissem um
+ * estaria autorizando o que o outro recusa.
+ *
+ * O `adapterConfig` guarda REFERÊNCIA: a chave do App, a chave da ação e o id da
+ * instalação. Credencial continua onde sempre esteve — na conexão cifrada.
+ */
+async function queryExternalApp(store: DataStore, dataset: DataSetDefinition, spec: QuerySpec): Promise<QueryResult> {
+  const cfg = store.adapterConfig as { appKey?: string; actionKey?: string; installationId?: string; agentId?: string }
+  if (!cfg.appKey || !cfg.actionKey || !cfg.installationId) {
+    throw new AdapterError('este database não diz qual App e qual ação ele consulta', 'bad_config')
+  }
+
+  const { resolveGrant } = await import('../apps/grants.js')
+  // O grant é montado a partir da CONFIGURAÇÃO do Data Store, e a ação pedida é uma só: o
+  // Database não empresta ao chamador mais do que ele declara consultar.
+  const ferramentas = await resolveGrant(store.ownerId, {
+    appKey: cfg.appKey,
+    installationId: cfg.installationId,
+    actionKeys: [cfg.actionKey],
+    // Consulta é LEITURA: nenhuma ação de escrita é autorizada por este caminho.
+    autonomousWriteActionKeys: [],
+    resourceConfig: {},
+  })
+
+  const normal = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const alvo = ferramentas.find((f) => normal(f.name) === normal(cfg.actionKey!) || normal(f.name).endsWith(`__${normal(cfg.actionKey!)}`))
+  if (!alvo) throw new AdapterError('a conexão deste App precisa ser revista em Apps', 'not_found')
+
+  // O filtro do DSL vira argumento da ação — o mesmo objeto fechado que o resto usa. Não
+  // há concatenação de texto em lugar nenhum: não existe consulta para injetar.
+  const argumentos: Record<string, unknown> = { dataset: dataset.key, ...(spec.filter ? { filter: spec.filter } : {}), limit: spec.limit ?? 50, skip: spec.skip ?? 0 }
+  const saida = await alvo.run(argumentos)
+  if (!saida.ok) throw new AdapterError('o App recusou a consulta', 'refused')
+
+  let corpo: unknown
+  try {
+    corpo = JSON.parse(saida.result)
+  } catch {
+    throw new AdapterError('o App devolveu algo que não é uma tabela', 'bad_response')
+  }
+  const linhas = Array.isArray(corpo) ? corpo : Array.isArray((corpo as { rows?: unknown[] })?.rows) ? (corpo as { rows: unknown[] }).rows : null
+  if (!linhas) throw new AdapterError('o App devolveu algo que não é uma tabela', 'bad_response')
+
+  const rows = linhas.slice(0, spec.limit ?? 50).map((l) => (l && typeof l === 'object' ? (l as Record<string, unknown>) : { valor: l }))
+  return {
+    rows,
+    // Quantos VIERAM. O App não diz quantos existem, e inventar um total seria apresentar
+    // uma contagem que ninguém contou.
+    total: rows.length,
+    freshness: null,
+    truncated: linhas.length > rows.length,
+  }
+}
+
 export interface RunQueryInput {
   accountId: string
   dataStoreId: ObjectId
@@ -139,10 +199,8 @@ export async function runQuery(input: RunQueryInput): Promise<QueryResult> {
     throw erro
   }
 
-  const executar = store.adapterKind === 'market_data' ? queryMarketData : queryDataHistory
-  if (store.adapterKind === 'external_app') {
-    throw new AdapterError('consulta a App externo ainda não está disponível', 'not_implemented')
-  }
+  const executar =
+    store.adapterKind === 'market_data' ? queryMarketData : store.adapterKind === 'external_app' ? queryExternalApp : queryDataHistory
 
   try {
     const r = await executar(store, dataset, spec)

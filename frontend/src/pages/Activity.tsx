@@ -67,6 +67,15 @@ export function Activity() {
         )}
 
         <div className="flex flex-wrap gap-2" data-testid="activity-filtros">
+          {(filtros.monitorId || filtros.flowId) && (
+            <Button
+              variant="ghost"
+              onClick={() => setFiltros({ status: filtros.status, source: filtros.source })}
+              data-testid="activity-limpar-recorte"
+            >
+              Ver tudo de novo
+            </Button>
+          )}
           <Select
             value={filtros.status ?? ''}
             onChange={(e) => setFiltros({ ...filtros, status: (e.target.value || undefined) as api.ActivityStatus | undefined })}
@@ -113,10 +122,33 @@ export function Activity() {
                 <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>· {duracao(item.durationMs)}</span>
               </div>
 
-              {/* A cadeia: de onde veio até onde chegou. */}
+              {/* A cadeia: de onde veio até onde chegou. Clicar recorta por aquela peça —
+                  é a pergunta seguinte que quem lê uma linha sempre faz. */}
               <p style={{ fontSize: 14 }} data-testid="activity-cadeia">
                 {cadeia(item).join(' → ')}
               </p>
+              <div className="flex flex-wrap gap-2">
+                {item.origin?.kind === 'monitor' && (
+                  <button
+                    type="button"
+                    onClick={() => setFiltros({ ...filtros, monitorId: (item.origin as { kind: 'monitor'; id: string }).id })}
+                    style={{ fontSize: 12, textDecoration: 'underline', background: 'none', border: 0, cursor: 'pointer', color: 'var(--text-muted)', minHeight: 'var(--hit-min, 44px)' }}
+                    data-testid="activity-filtrar-monitor"
+                  >
+                    só deste monitor
+                  </button>
+                )}
+                {item.flow && (
+                  <button
+                    type="button"
+                    onClick={() => setFiltros({ ...filtros, flowId: item.flow!.id })}
+                    style={{ fontSize: 12, textDecoration: 'underline', background: 'none', border: 0, cursor: 'pointer', color: 'var(--text-muted)', minHeight: 'var(--hit-min, 44px)' }}
+                    data-testid="activity-filtrar-flow"
+                  >
+                    só desta operação
+                  </button>
+                )}
+              </div>
 
               {item.steps.length > 0 && (
                 <ul className="flex flex-wrap gap-2" style={{ listStyle: 'none', padding: 0, margin: 0 }}>

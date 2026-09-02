@@ -61,6 +61,18 @@ export interface ActivityQuery {
   floorId?: string
   status?: ExecutionRoot['status']
   source?: ExecutionRoot['source']
+  /**
+   * Os filtros que exigem olhar a EXECUÇÃO, e não a raiz.
+   *
+   * Monitor, flow, setor e agente não estão no `execution_roots` — eles estão na execução
+   * da automação e nos passos. Por isso eles viram uma consulta de ids ANTES da página:
+   * peneirar depois de paginar mostraria três linhas numa página de vinte e faria a
+   * paginação mentir.
+   */
+  monitorId?: string
+  flowId?: string
+  agentId?: string
+  sectorId?: string
   limit?: number
   before?: Date
 }
@@ -90,6 +102,19 @@ export async function listActivity(query: ActivityQuery): Promise<{ items: Activ
   if (query.source) filtro.source = query.source
   if (query.floorId && ObjectId.isValid(query.floorId)) filtro.originFloorId = new ObjectId(query.floorId)
   if (query.before) filtro.createdAt = { $lt: query.before }
+
+  /**
+   * O recorte por monitor, flow, agente ou setor entra ANTES da página.
+   *
+   * Cada um deles é uma pergunta sobre a execução, não sobre a raiz: qual automação rodou,
+   * qual monitor pediu, qual agente apareceu num passo. Resolver isso primeiro e passar os
+   * ids para o filtro da raiz é o que mantém a página cheia e a continuação correta.
+   */
+  const refinado = await refinarPorExecucao(query)
+  if (refinado) {
+    if (refinado.length === 0) return { items: [], nextBefore: null }
+    filtro.sourceRefId = { $in: refinado }
+  }
 
   const raizes = await roots.find(filtro).sort({ createdAt: -1 }).limit(limite).toArray()
   if (raizes.length === 0) return { items: [], nextBefore: null }
@@ -130,6 +155,45 @@ export async function listActivity(query: ActivityQuery): Promise<{ items: Activ
 
   const items = raizes.map((raiz) => montar(raiz, porRun, porExecucao, nomesDeFlow, nomesDeMonitor))
   return { items, nextBefore: raizes.length === limite ? raizes[raizes.length - 1].createdAt : null }
+}
+
+/**
+ * Os ids de execução que atendem aos filtros de execução — ou `null` quando não há nenhum.
+ *
+ * `null` e lista vazia querem dizer coisas opostas: `null` é "não perguntei", vazio é
+ * "perguntei e não há". Confundir os dois faria um filtro sem resultado mostrar tudo.
+ */
+async function refinarPorExecucao(query: ActivityQuery): Promise<ObjectId[] | null> {
+  const porRun: Record<string, unknown> = { ownerId: query.ownerId }
+  let perguntou = false
+
+  if (query.flowId && ObjectId.isValid(query.flowId)) {
+    porRun.automationId = new ObjectId(query.flowId)
+    perguntou = true
+  }
+  if (query.monitorId && ObjectId.isValid(query.monitorId)) {
+    // A correlação do monitor viaja no `requestId`, derivada do evento e sem payload.
+    porRun.requestId = { $regex: `^monitor:${query.monitorId}:` }
+    perguntou = true
+  }
+  if (!perguntou && !query.agentId && !query.sectorId) return null
+
+  let ids = perguntou ? (await runs.find(porRun, { projection: { _id: 1 } }).limit(500).toArray()).map((r) => r._id) : null
+
+  /**
+   * Agente e setor moram nos PASSOS: uma execução aparece porque um passo dela citou o
+   * agente. É a mesma pergunta que a tela do agente faz, respondida do outro lado.
+   */
+  if (query.agentId || query.sectorId) {
+    const porPasso: Record<string, unknown> = { ownerId: query.ownerId }
+    if (query.agentId && ObjectId.isValid(query.agentId)) porPasso.agentId = new ObjectId(query.agentId)
+    if (query.sectorId && ObjectId.isValid(query.sectorId)) porPasso.sectorId = new ObjectId(query.sectorId)
+    if (ids) porPasso.runId = { $in: ids }
+    const dosPassos = await steps.distinct('runId', porPasso)
+    ids = dosPassos as ObjectId[]
+  }
+
+  return ids ?? []
 }
 
 function montar(
