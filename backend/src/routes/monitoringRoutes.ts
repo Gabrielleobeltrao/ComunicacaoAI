@@ -14,6 +14,7 @@ import {
 } from '../monitoring/service.js'
 import { KIND_CAPABILITIES, MONITORING_SOURCE_KINDS } from '../monitoring/types.js'
 import { computeHealth, nextReadAt } from '../monitoring/health.js'
+import { rotateWebhookSecret } from '../monitoring/webhookSource.js'
 import { notFound, oid } from './http.js'
 
 // AS ROTAS da Central — e a flag que nega de verdade.
@@ -171,6 +172,30 @@ monitoringRouter.post('/sources/:id/duplicate', async (req, res, next) => {
     const f = await duplicateSource(res.locals.userId, id)
     if (!f) return notFound(res)
     res.status(201).json({ id: f._id.toString(), name: f.name, status: f.status })
+  } catch (erro) {
+    if (!recusa(res, erro)) next(erro as Error)
+  }
+})
+
+/**
+ * A credencial do webhook — mostrada UMA vez.
+ *
+ * Criar e girar são a mesma rota de propósito: girar é o caminho normal quando alguém
+ * suspeita do segredo, e ter que apagar a fonte para isso faria a pessoa adiar.
+ */
+monitoringRouter.post('/sources/:id/webhook-secret', async (req, res, next) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  try {
+    const cred = await rotateWebhookSecret(res.locals.userId, id)
+    if (!cred) return notFound(res)
+    res.json({
+      publicKey: cred.publicKey,
+      // A única vez que ele aparece. A partir daqui, só existe cifrado.
+      secret: cred.secret,
+      url: `${process.env.PUBLIC_URL ?? ''}/api/monitoring-hooks/${cred.publicKey}`,
+      instrucoes: 'Assine o corpo com HMAC-SHA256 e envie em x-signature. Opcionalmente, x-event-id e x-timestamp.',
+    })
   } catch (erro) {
     if (!recusa(res, erro)) next(erro as Error)
   }

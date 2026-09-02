@@ -199,6 +199,13 @@ export interface MonitoringSource {
   dedupe: { mode: 'none' | 'content_hash' | 'field'; field?: string | null }
   destination: MonitoringDestination
   telemetry: MonitoringTelemetry
+  /**
+   * O segredo que assina as entregas de webhook — cifrado, e nunca devolvido.
+   *
+   * Ele é mostrado uma vez, na criação e na rotação. Um segredo que a tela consegue
+   * reexibir é um segredo que vaza no primeiro print.
+   */
+  webhookSecretEncrypted?: string
   createdAt: Date
   updatedAt: Date
 }

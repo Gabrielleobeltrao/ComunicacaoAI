@@ -281,6 +281,8 @@ const RULES: Rule[] = [
   R('POST', 'api/monitoring/sources/test', null, { why: 'leitura de teste, não muda nada' }),
   R('POST', 'api/monitoring/sources/:/test', null, { why: 'leitura de teste, não muda nada' }),
   R('POST', 'api/monitoring/sources/:/read', null, { why: 'coleta sob demanda: o registro é auditado pelo histórico' }),
+  // Girar o segredo de um webhook é exatamente o que uma auditoria precisa mostrar depois.
+  R('POST', 'api/monitoring/sources/:/webhook-secret', { entityType: 'monitoring_source', action: 'rotate' }, { idAt: 3 }),
 
   // O MONITOR é uma regra que age sozinha: quem a criou, quem a pôs de plantão e quem a
   // pausou é exatamente o que uma auditoria precisa responder depois. Publicar é

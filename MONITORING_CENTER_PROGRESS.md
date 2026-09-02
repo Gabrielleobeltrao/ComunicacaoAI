@@ -213,16 +213,43 @@ linha de código próprio da Central no caminho.
 Comando: `node --test test/monitoringSource.integration.test.mjs` → **38/38**;
 `npm run test -w backend` → **1401 + 1909, 0 falhas**.
 
+## Bloco 7 — a fonte de webhook, sem criptografia nova ✅
+
+`backend/src/monitoring/webhookSource.ts`, `routes/monitoringWebhookRoutes.ts`.
+
+Assinar, conferir em tempo constante e derivar a chave de idempotência **já existia** nos
+Flows, testado. O que muda aqui é o destino: a entrega vira FATO em vez de execução, e daí
+em diante o caminho é o de qualquer outra fonte.
+
+- **assinatura errada responde igual a fonte inexistente.** Dizer "existe, mas a assinatura
+  está errada" entrega meia informação a quem está adivinhando endereços;
+- **replay não vira segundo fato**: com `x-event-id`, a identidade é o evento; sem ele, o
+  hash do corpo. Quem decide é o índice único — uma leitura antes seria opinião velha no
+  instante em que chegasse;
+- **entrega velha é recusada** por `x-timestamp` fora da janela de 5 min: sem isso, uma
+  requisição capturada hoje continua válida para sempre, porque a assinatura não envelhece
+  sozinha;
+- **o segredo nunca volta.** Mostrado uma vez, na criação e na rotação; depois só existe
+  cifrado. Um segredo que a tela reexibe vaza no primeiro print;
+- **girar mantém a URL**: trocar o endereço junto obrigaria o outro lado a se reconfigurar
+  por um motivo que é nosso;
+- o corpo **cru** é o que se confere — reserializar o objeto já parseado mudaria um espaço e
+  derrubaria a assinatura de um provedor honesto;
+- a memória de entregas expira em 7 dias: um reenvio de três meses depois não é o replay que
+  interessa impedir, e guardar para sempre é pagar por um índice que só cresce.
+
+Comando: `node --test test/monitoringWebhook.integration.test.mjs` → **15/15**, sendo 6 de
+ameaça. Bateria: **1401 + 1924**, secret-scan limpo em 2209 arquivos.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
 2. **As cinco abas da Central** e o wizard: nada disso está na tela ainda.
-3. **Tipos que ainda não funcionam**: webhook (URL gerada, assinatura, rotação de segredo e
-   proteção de replay), **SSE** como protocolo explícito, App/action, RSS/Atom com parser de
-   feed de verdade (hoje cai no caminho de página) e `dataset` como fonte da Central.
-   `internal_event` e `websocket` passaram a funcionar por orquestração.
+3. **Tipos que ainda não funcionam**: **SSE** como protocolo explícito, App/action,
+   RSS/Atom com parser de feed de verdade (hoje cai no caminho de página) e `dataset` como
+   fonte da Central. `internal_event`, `websocket` e `webhook` funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e
    o plano é explícito que dado incerto não dispara.
 5. **Grants por agente/setor** sobre fonte, e autorização reconferida antes da leitura.

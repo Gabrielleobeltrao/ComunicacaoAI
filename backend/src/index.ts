@@ -165,6 +165,8 @@ import { monitorRouter } from './routes/monitorRoutes.js'
 import { activityRouter } from './routes/activityRoutes.js'
 import { monitoringRouter } from './routes/monitoringRoutes.js'
 import { ensureMonitoringIndexes } from './monitoring/service.js'
+import { monitoringWebhookRouter } from './routes/monitoringWebhookRoutes.js'
+import { ensureWebhookIndexes as ensureMonitoringWebhookIndexes } from './monitoring/webhookSource.js'
 import { extensionRouter } from './routes/extensionRoutes.js'
 import { ensureExtensionIndexes } from './extensions/packages.js'
 import { ensureBrokerIndexes } from './extensionRuntime/broker.js'
@@ -551,6 +553,9 @@ app.use('/api/agents/:agentId', requireAuth, appGrantRouter)
 app.use('/api/agents/:agentId', requireAuth, knowledgeAccessRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
 app.use('/api/hooks', webhookRouter)
+// O receptor das fontes de webhook: público como o dos Flows, e pelo mesmo motivo — quem
+// entrega é o servidor de outra empresa, que não tem sessão aqui.
+app.use('/api/monitoring-hooks', monitoringWebhookRouter)
 
 app.get('/api/providers', requireAuth, async (_req, res) => {
   const results = await Promise.all(
@@ -5463,6 +5468,9 @@ async function start() {
   })
   ensureMonitoringIndexes().catch((error) => {
     console.error('ensureMonitoringIndexes failed:', error)
+  })
+  ensureMonitoringWebhookIndexes().catch((error) => {
+    console.error('ensureMonitoringWebhookIndexes failed:', error)
   })
   /**
    * O runner isolado, quando ele foi configurado.

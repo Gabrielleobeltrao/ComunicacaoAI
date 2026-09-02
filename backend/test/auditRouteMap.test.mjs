@@ -216,7 +216,9 @@ test('every route file is covered by the scan', () => {
   // webhookRoutes is the public receiver (skipped by prefix); logRoutes is read-only.
   // appRoutes is the read-only App catalog.
   // activityRoutes é a linha do tempo: leitura pura, sem um único verbo de escrita.
-  const exempt = new Set(['webhookRoutes.ts', 'logRoutes.ts', 'executionRoutes.ts', 'appRoutes.ts', 'sectorExecutionRoutes.ts', 'activityRoutes.ts'])
+  // monitoringWebhookRoutes é o receptor público, como webhookRoutes: quem prova quem é
+  // ali é a assinatura do corpo, e não uma sessão para auditar.
+  const exempt = new Set(['webhookRoutes.ts', 'logRoutes.ts', 'executionRoutes.ts', 'appRoutes.ts', 'sectorExecutionRoutes.ts', 'activityRoutes.ts', 'monitoringWebhookRoutes.ts'])
   for (const file of files) {
     assert.ok(scanned.has(file) || exempt.has(file), `${file} is neither scanned nor exempt`)
   }
