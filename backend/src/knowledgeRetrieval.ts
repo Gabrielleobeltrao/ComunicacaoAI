@@ -1,8 +1,9 @@
 import type { ObjectId } from 'mongodb'
 import { resolveKnowledgeOwnersForExecution } from './knowledgeAccess.js'
 import type { ExecutionContext, ResolvedOwner } from './knowledgeAccess.js'
-import { retrieveForOwners } from './knowledge.js'
+import { retrieveForOwners, RETRIEVAL_CHAR_BUDGET, RETRIEVAL_MIN_SCORE, RETRIEVAL_TOP_K } from './knowledge.js'
 import type { KnowledgeFilters, RetrievalResult } from './knowledge.js'
+import { deriveRequirement, recordContextManifest } from './contextManifest.js'
 import type { Agent } from './agents.js'
 
 // A PORTA ÚNICA da leitura de conhecimento.
@@ -23,6 +24,16 @@ export interface AgentRetrievalOptions extends ExecutionContext {
   charBudget?: number
   minScore?: number
   filters?: KnowledgeFilters | null
+  /**
+   * De qual execução isto faz parte.
+   *
+   * Presente = grava o manifesto. Ausente = não grava, e é o caso de quem chama a busca
+   * para conferir uma configuração, não para responder alguém. O manifesto é registro de
+   * execução; um por clique de tela viraria ruído sem dono.
+   */
+  execution?: { executionId: string; kind: string } | null
+  /** O agente foi configurado para não responder sem base? Muda o que é obrigatório. */
+  requireGrounding?: boolean
 }
 
 /**
@@ -41,10 +52,48 @@ export async function retrieveForAgent(
 ): Promise<AgentRetrievalResult> {
   const { owners } = await resolveKnowledgeOwnersForExecution(accountId, agent, { verifiedSectorId: opts.verifiedSectorId ?? null })
   if (owners.length === 0) {
-    return { context: [], sources: [], status: 'denied', failed: false, owners: [] }
+    const vazio: AgentRetrievalResult = { context: [], sources: [], status: 'denied', failed: false, owners: [] }
+    await registrar(accountId, agent, query, opts, vazio)
+    return vazio
   }
   const r = await retrieveForOwners(owners, query, opts)
-  return { ...r, owners }
+  const resultado = { ...r, owners }
+  await registrar(accountId, agent, query, opts, resultado)
+  return resultado
+}
+
+/**
+ * O manifesto sai daqui — do lado do SERVIDOR, com o que de fato aconteceu.
+ *
+ * Registrar dentro da busca (e não em cada executor) é o que impede as seis portas de
+ * divergirem no que relatam: quem responde sobre a execução é quem executou a busca.
+ */
+async function registrar(
+  accountId: string,
+  agent: Pick<Agent, '_id' | 'knowledgeAccess'>,
+  query: string,
+  opts: AgentRetrievalOptions,
+  r: AgentRetrievalResult,
+): Promise<void> {
+  if (!opts.execution) return
+  await recordContextManifest({
+    ownerId: accountId,
+    executionId: opts.execution.executionId,
+    executionKind: opts.execution.kind,
+    agentId: agent._id,
+    requested: deriveRequirement(r.owners, query, { requireGrounding: opts.requireGrounding }),
+    allowed: r.owners,
+    sources: r.sources,
+    contextChars: r.context.reduce((n, c) => n + c.length, 0),
+    groundingStatus: r.status,
+    budget: {
+      topK: opts.topK ?? RETRIEVAL_TOP_K,
+      charBudget: opts.charBudget ?? RETRIEVAL_CHAR_BUDGET,
+      minScore: opts.minScore ?? RETRIEVAL_MIN_SCORE,
+    },
+    ignored: r.ignored ?? [],
+    documentMeta: r.documentMeta,
+  })
 }
 
 /**

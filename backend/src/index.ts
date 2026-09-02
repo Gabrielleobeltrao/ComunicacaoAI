@@ -160,6 +160,7 @@ import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import { knowledgeRouter } from './routes/knowledgeRoutes.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
+import { ensureContextManifestIndexes } from './contextManifest.js'
 import {
   KnowledgeQuotaError,
   KnowledgeValidationError,
@@ -3144,6 +3145,15 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   }
 
   /**
+   * A identidade DESTA execução, lida antes de qualquer busca.
+   *
+   * Ela é a chave do manifesto e da trilha: sem um id, o que foi lido nesta conversa não
+   * tem como ser reencontrado depois — nem pela tela de execução, nem pela análise de
+   * impacto, que conta uso real por execução.
+   */
+  const traceChat = typeof (req.body ?? {}).traceId === 'string' ? String(req.body.traceId).slice(0, 100) : null
+
+  /**
    * O site ANTES da busca — o passo que faltava para um agente sozinho.
    *
    * No time, o executor compartilhado já fazia isso antes de perguntar à base. No chat de
@@ -3171,7 +3181,16 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     // A MESMA porta dos outros executores: a política do agente decide as bases, e o
     // orçamento é um só. Montar a lista aqui faria o teste responder diferente da
     // produção — que é exatamente o que um teste não pode fazer.
-    retrieveForAgent(res.locals.userId, agent, lastUser.content).catch((error) => {
+    retrieveForAgent(res.locals.userId, agent, lastUser.content, {
+      requireGrounding: Boolean(agent.requireGrounding),
+      // O manifesto é gravado com o id da execução — o mesmo que a trilha usa, quando ela
+      // existe. Sem trilha, o id do agente e o instante: uma execução sem identidade não
+      // teria como ser reencontrada no mapa depois.
+      // A raiz da execução só é aberta adiante; aqui o que identifica esta leitura é o
+      // agente e a trilha, quando ela existe. Um manifesto precisa de um id que a tela
+      // consiga reencontrar — e o da trilha é o que ela já usa.
+      execution: { executionId: traceChat ?? agent._id.toString(), kind: 'playground' },
+    }).catch((error) => {
       console.error('Playground knowledge search failed, replying without grounding:', error)
       return { context: [] as string[], status: 'unavailable' as GroundingStatus }
     })
@@ -3333,7 +3352,6 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     })
     return
   }
-  const traceChat = typeof (req.body ?? {}).traceId === 'string' ? String(req.body.traceId).slice(0, 100) : null
   const trilhaChat = (entrada: Omit<TraceInput, 'ownerId' | 'executionId'>) => {
     if (!traceChat) return
     traceEvent({ ...entrada, ownerId: res.locals.userId, executionId: traceChat })
@@ -4759,7 +4777,13 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // every consulted specialist, for a sector. Skipped when only clarifying.
   // Only a SECTOR-answered channel reads the sector's shared base; a widget wired
   // straight to one agent stays on that agent's own knowledge.
-  const { context: knowledgeBase } = await retrieveForAgent(ownerId, agent, visitorContent, { verifiedSectorId: widget.sectorId ?? null })
+  const { context: knowledgeBase } = await retrieveForAgent(ownerId, agent, visitorContent, {
+    verifiedSectorId: widget.sectorId ?? null,
+    requireGrounding: Boolean(agent.requireGrounding),
+    // O id do widget e o da conversa: a execução do canal ainda não tem raiz neste
+    // ponto, e um manifesto sem identidade não seria reencontrável depois.
+    execution: { executionId: `${widget._id.toString()}:${conversationId.toString()}`, kind: 'channel' },
+  })
   const knowledge = [
     ...knowledgeBase,
     // Idem no canal: quem escolheu "sempre" ou "quando mudar" espera o conteúdo aqui.
@@ -5317,6 +5341,9 @@ async function start() {
   // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
   // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
   // ninguém está olhando. Ela é um script, e é chamada à mão.
+  ensureContextManifestIndexes().catch((error) => {
+    console.error('ensureContextManifestIndexes failed:', error)
+  })
   ensureKnowledgeMigrationIndexes().catch((error) => {
     console.error('ensureKnowledgeMigrationIndexes failed:', error)
   })

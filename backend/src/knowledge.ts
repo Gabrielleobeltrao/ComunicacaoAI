@@ -808,6 +808,10 @@ export async function searchKnowledgeForOwners(
           $or: [{ 'doc.web.expiresAt': { $exists: false } }, { 'doc.web.expiresAt': null }, { 'doc.web.expiresAt': { $gt: new Date() } }],
         },
       },
+      // Arquivado, rascunho e vencido não respondem como fato atual. O recorte vem do
+      // DOCUMENTO — o chunk não guarda ciclo de vida, e duplicá-lo nele envelheceria
+      // em separado na primeira edição.
+      { $match: prefixarDoc(curationFilter()) },
       ...(Object.keys(metadataFilter(filtros)).length > 0
         ? [
             {
@@ -857,6 +861,55 @@ export async function searchKnowledgeForOwners(
  *
  * Ausente = tudo, que é como a busca sempre funcionou.
  */
+/**
+ * O que NÃO responde uma pergunta sobre o estado atual.
+ *
+ * Arquivado nunca: ele foi tirado de circulação por alguém, e voltar pela busca seria
+ * desfazer a decisão em silêncio. Vencido também não — mas por outro motivo: ele PODE
+ * ser a única evidência histórica que existe, e por isso o filtro é opcional. Quem
+ * pergunta "qual é a política hoje" não pode receber a de 2023 como fato; quem pergunta
+ * "o que valia em 2023" precisa dela, e aí ela vem marcada como histórica.
+ *
+ * Rascunho e proposta ficam de fora pelo mesmo motivo que uma proposta não vira
+ * documento sozinha: o que ainda não foi aprovado não responde em nome da empresa.
+ */
+/**
+ * O mesmo recorte, escrito para o documento que veio por `$lookup`.
+ *
+ * O `$lookup` traz `doc` como ARRAY, e um filtro sobre `doc.campo` casa quando qualquer
+ * elemento casa — que aqui é o único, então a semântica é a desejada. O prefixo é
+ * aplicado por função para as duas buscas usarem a MESMA regra: duas cópias divergiriam
+ * na primeira mudança de política, e a que erra seria a que ninguém está lendo.
+ */
+export function prefixarDoc(filtro: Record<string, unknown>): Record<string, unknown> {
+  const prefixar = (f: Record<string, unknown>): Record<string, unknown> => {
+    const fora: Record<string, unknown> = {}
+    for (const [chave, valor] of Object.entries(f)) {
+      if (chave === '$and' || chave === '$or' || chave === '$nor') {
+        fora[chave] = (valor as Record<string, unknown>[]).map(prefixar)
+      } else {
+        fora[`doc.${chave}`] = valor
+      }
+    }
+    return fora
+  }
+  return prefixar(filtro)
+}
+
+export function curationFilter(now: Date = new Date(), opts: { includeExpired?: boolean; includeDrafts?: boolean } = {}): Record<string, unknown> {
+  const partes: Record<string, unknown>[] = [
+    // Ausente = aprovado: é o default de leitura dos documentos que já existiam.
+    opts.includeDrafts
+      ? { lifecycleStatus: { $ne: 'archived' } }
+      : { $or: [{ lifecycleStatus: { $exists: false } }, { lifecycleStatus: 'approved' }] },
+  ]
+  if (!opts.includeExpired) {
+    partes.push({ $or: [{ validUntil: { $exists: false } }, { validUntil: null }, { validUntil: { $gt: now } }] })
+    partes.push({ $or: [{ validFrom: { $exists: false } }, { validFrom: null }, { validFrom: { $lte: now } }] })
+  }
+  return { $and: partes }
+}
+
 export interface KnowledgeFilters {
   /** Só documentos publicados a partir desta data (metadado declarado pela página). */
   publishedAfter?: Date | null
@@ -934,7 +987,14 @@ export async function searchKnowledgeLexicallyForOwners(
       // O recorte por metadado entra ANTES da comparação de texto: o que está fora do
       // período nem chega a ser lido.
       ...metadataFilter(filtros),
-      $and: [naoVencido(new Date()), { $or: [{ content: { $regex: padrao, $options: 'i' } }, { title: { $regex: padrao, $options: 'i' } }] }],
+      $and: [
+        naoVencido(new Date()),
+        // O MESMO recorte curatorial da busca vetorial: arquivado, rascunho e vencido
+        // não respondem como fato atual, e a regra não pode depender de qual das duas
+        // buscas atendeu a pergunta.
+        curationFilter(),
+        { $or: [{ content: { $regex: padrao, $options: 'i' } }, { title: { $regex: padrao, $options: 'i' } }] },
+      ],
     })
     // Um teto de leitura: o corte por nota acontece depois, em memória.
     .limit(Math.max(limit * 4, 20))
@@ -979,28 +1039,65 @@ export function combineKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number
 
 // The selection itself, keeping the hit (so provenance survives): relevance floor,
 // then dedup, then top-K within the character budget.
-export function selectKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number; charBudget?: number; minScore?: number } = {}): KnowledgeHit[] {
+export interface IgnoredHit {
+  kind: string
+  ref: string
+  reason: string
+}
+
+/**
+ * A seleção, com o motivo de cada descarte.
+ *
+ * "Não usou" sem motivo é uma reclamação sem endereço: o dono vê o documento na tela,
+ * vê o agente respondendo sem ele, e não tem como saber se foi score baixo, orçamento
+ * cheio ou texto repetido. Cada um desses tem uma ação diferente.
+ */
+export function selectKnowledgeHitsDetailed(
+  hits: KnowledgeHit[],
+  opts: { topK?: number; charBudget?: number; minScore?: number } = {},
+): { selected: KnowledgeHit[]; ignored: IgnoredHit[] } {
   const topK = opts.topK ?? RETRIEVAL_TOP_K
   const charBudget = opts.charBudget ?? RETRIEVAL_CHAR_BUDGET
   const minScore = opts.minScore ?? RETRIEVAL_MIN_SCORE
   const seen = new Set<string>()
   const out: KnowledgeHit[] = []
+  const ignored: IgnoredHit[] = []
+  const descartar = (hit: KnowledgeHit, reason: string) => {
+    if (ignored.length < 20) ignored.push({ kind: 'chunk', ref: hit.documentId ?? hit.title ?? '(sem id)', reason })
+  }
   let used = 0
   for (const hit of [...hits].sort((a, b) => b.score - a.score)) {
     const content = (hit.content ?? '').trim()
     if (!content) continue
+    if (out.length >= topK) {
+      descartar(hit, 'o limite de trechos já tinha sido alcançado')
+      continue
+    }
     // Below the floor it never reaches the prompt: a weak match presented as curated
     // knowledge is worse than no knowledge at all.
-    if (typeof hit.score === 'number' && hit.score < minScore) continue
+    if (typeof hit.score === 'number' && hit.score < minScore) {
+      descartar(hit, `relevância abaixo do mínimo (${hit.score.toFixed(2)} < ${minScore})`)
+      continue
+    }
     const key = content.replace(/\s+/g, ' ').toLowerCase()
-    if (seen.has(key)) continue // same passage from agent + sector base
-    if (used + content.length > charBudget) continue
+    if (seen.has(key)) {
+      // same passage from agent + sector base
+      descartar(hit, 'o mesmo texto já tinha entrado por outra base')
+      continue
+    }
+    if (used + content.length > charBudget) {
+      descartar(hit, 'não cabia no orçamento de caracteres')
+      continue
+    }
     seen.add(key)
     out.push({ ...hit, content })
     used += content.length
-    if (out.length >= topK) break
   }
-  return out
+  return { selected: out, ignored }
+}
+
+export function selectKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number; charBudget?: number; minScore?: number } = {}): KnowledgeHit[] {
+  return selectKnowledgeHitsDetailed(hits, opts).selected
 }
 
 // Retrieve the context for an execution: the agent's base, plus the sector's when the
@@ -1051,6 +1148,10 @@ export interface RetrievalResult {
   topScore?: number
   /** A seleção foi cortada: existe mais do que o que está aqui. */
   truncated?: boolean
+  /** O que foi visto e NÃO entrou, com o motivo. Vai para o manifesto. */
+  ignored?: IgnoredHit[]
+  /** Autoridade e validade de cada documento selecionado, para o manifesto e a precedência. */
+  documentMeta?: Map<string, { authority: string | null; validAtExecution: boolean | null }>
 }
 
 /**
@@ -1076,6 +1177,7 @@ export async function retrieveForOwners(
   const motivo = new Map<string, string>()
   for (const o of owners) if (o.reason) motivo.set(`${o.ownerType}:${o.ownerId.toString()}`, o.reason)
 
+  let descartados: IgnoredHit[] = []
   const emResultado = (
     selected: KnowledgeHit[],
     status: GroundingStatus,
@@ -1083,6 +1185,7 @@ export async function retrieveForOwners(
     retrieval?: 'vector' | 'lexical',
     encontrados?: number,
   ): RetrievalResult => ({
+    ignored: descartados,
     context: selected.map((hit) => hit.content),
     ...(selected.length > 0 ? { topScore: Math.max(...selected.map((h) => (typeof h.score === 'number' ? h.score : 0))) } : {}),
     sources: selected.map((hit) => ({
@@ -1119,14 +1222,16 @@ export async function retrieveForOwners(
   try {
     const brutos = await searchKnowledgeForOwners(owners, query, limite, opts.filters)
     encontrados = brutos.length
-    selecionados = selectKnowledgeHits(brutos, opts)
+    const escolha = selectKnowledgeHitsDetailed(brutos, opts)
+    selecionados = escolha.selected
+    descartados = escolha.ignored
   } catch (error) {
     // Sem Atlas Search ou sem chave de embedding, ela falha SEMPRE. Isso não é "não há
     // conhecimento" — é "não consegui olhar por semelhança". A busca exata ainda pode.
     console.error('knowledge retrieval (vector) failed:', (error as Error).message)
     vetorialFalhou = true
   }
-  if (selecionados.length > 0) return emResultado(selecionados, 'ok', false, 'vector', encontrados)
+  if (selecionados.length > 0) return await comMetadados(emResultado(selecionados, 'ok', false, 'vector', encontrados))
 
   // --- metade 2: o termo exato ------------------------------------------------------------
   //
@@ -1135,8 +1240,11 @@ export async function retrieveForOwners(
   // dizer "não há dados" seria mentira sobre uma base que tem a resposta escrita.
   try {
     const brutosLexicais = await searchKnowledgeLexicallyForOwners(owners, query, limite, opts.filters)
-    const lexicais = selectKnowledgeHits(brutosLexicais, opts)
-    if (lexicais.length > 0) return emResultado(lexicais, 'ok', false, 'lexical', brutosLexicais.length)
+    const escolhaLexical = selectKnowledgeHitsDetailed(brutosLexicais, opts)
+    if (escolhaLexical.selected.length > 0) {
+      descartados = escolhaLexical.ignored
+      return await comMetadados(emResultado(escolhaLexical.selected, 'ok', false, 'lexical', brutosLexicais.length))
+    }
   } catch (error) {
     console.error('knowledge retrieval (lexical) failed:', (error as Error).message)
     return emResultado([], 'unavailable', true)
@@ -1158,6 +1266,34 @@ export async function retrieveForOwners(
   // Se a semântica sequer rodou, o honesto é 'unavailable': a busca exata não substitui
   // a outra, e afirmar ausência aqui seria afirmar demais.
   return emResultado([], vetorialFalhou ? 'unavailable' : 'empty', vetorialFalhou)
+}
+
+/**
+ * A autoridade e a validade de cada documento selecionado.
+ *
+ * Uma leitura a mais por busca, e ela paga por si: é o que permite ao manifesto dizer
+ * "isto veio de uma política oficial e estava válida na hora", e é o que a precedência
+ * usa quando dois trechos se contradizem. Sem ela, os dois chegariam ao modelo com o
+ * mesmo peso e ele escolheria sozinho, sem dizer que escolheu.
+ */
+async function comMetadados(r: RetrievalResult): Promise<RetrievalResult> {
+  const ids = [...new Set(r.sources.map((s) => s.documentId).filter(Boolean))] as string[]
+  if (ids.length === 0) return r
+  const agora = new Date()
+  const docs = await documents
+    .find({ _id: { $in: ids.map((id) => new ObjectId(id)) } }, { projection: { authority: 1, lifecycleStatus: 1, validFrom: 1, validUntil: 1 } })
+    .toArray()
+  const meta = new Map<string, { authority: string | null; validAtExecution: boolean | null }>()
+  for (const d of docs) {
+    // `null` quando o documento não declara janela nenhuma: "sem validade declarada" não
+    // é o mesmo que "válido", e um `true` aqui inventaria uma conferência que ninguém fez.
+    const temJanela = d.validFrom || d.validUntil
+    const valido = !temJanela
+      ? null
+      : (!d.validFrom || new Date(d.validFrom) <= agora) && (!d.validUntil || new Date(d.validUntil) > agora)
+    meta.set(d._id.toString(), { authority: (d.authority as string) ?? null, validAtExecution: valido })
+  }
+  return { ...r, documentMeta: meta }
 }
 
 /**

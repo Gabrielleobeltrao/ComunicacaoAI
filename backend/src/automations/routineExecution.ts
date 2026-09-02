@@ -102,7 +102,7 @@ export interface RoutineExecutionDeps {
   retrieveContext: (
     agent: Agent,
     query: string,
-    opts: { verifiedSectorId: ObjectId | null; ownerId: string },
+    opts: { verifiedSectorId: ObjectId | null; ownerId: string; executionId?: string; requireGrounding?: boolean },
   ) => Promise<{ context: string[]; failed: boolean; status?: string; sources?: { documentId: string | null; title: string | null }[] }>
   resolveTools: (agent: Agent, ownerId: string) => Promise<ResolvedTool[]>
   apiKeyFor: (ownerId: string, provider: string) => Promise<string | null>
@@ -340,7 +340,14 @@ export async function executeRoutineStep(call: RoutineStepCall, ctx: RoutineRunC
   const knowledgeQuery = buildRetrievalQuery({ objective: agent.objective ?? call.objective, instructions: call.instructions, input: call.input })
   if (knowledgeQuery) tracker.report('reading_knowledge')
   const retrieved = knowledgeQuery
-    ? await deps.retrieveContext(agent, knowledgeQuery, { verifiedSectorId, ownerId: ctx.ownerId })
+    ? await deps.retrieveContext(agent, knowledgeQuery, {
+        verifiedSectorId,
+        ownerId: ctx.ownerId,
+        // A execução da rotina é o `runId`: é por ele que a tela de execução encontra o
+        // que foi lido, e é ele que a análise de impacto conta como uso real.
+        executionId: ctx.runId,
+        requireGrounding: Boolean(agent.requireGrounding),
+      })
     : { context: [], failed: false, status: 'no_base' }
   const grounding = (retrieved.status as string | undefined) ?? (retrieved.failed ? 'unavailable' : retrieved.context.length ? 'ok' : 'empty')
   // An agent told to answer only from curated knowledge does NOT answer when the base

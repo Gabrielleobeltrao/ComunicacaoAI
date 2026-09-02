@@ -216,7 +216,11 @@ export function productionDelegationDeps(): DelegationDeps {
     retrieveContext: async (agentId, query, opts) => {
       const ids = Array.isArray(agentId) ? agentId : [agentId]
       const agentes = (await Promise.all(ids.map((id) => getAgentById(opts.ownerId, id)))).filter(Boolean) as Agent[]
-      return retrieveForAgents(opts.ownerId, agentes, query, { verifiedSectorId: opts.sectorId ?? null })
+      return retrieveForAgents(opts.ownerId, agentes, query, {
+        verifiedSectorId: opts.sectorId ?? null,
+        requireGrounding: opts.requireGrounding,
+        ...(opts.executionId ? { execution: { executionId: opts.executionId, kind: 'delegation' } } : {}),
+      })
     },
     livePassages: (ownerId, agent) => livePassagesFor(ownerId, agent),
     chargeUsage: (ownerId, usage, chargeKey) => recordReplyUsageOnce(ownerId, usage, chargeKey).then(() => undefined),

@@ -159,7 +159,12 @@ function buildDeps(run: AutomationRun): RunnerDeps {
         {
           loadAgent: getAgentById,
           resolveOwnedSectorId,
-          retrieveContext: (agent, query, opts) => retrieveForAgent(opts.ownerId, agent, query, { verifiedSectorId: opts.verifiedSectorId }),
+          retrieveContext: (agent, query, opts) =>
+            retrieveForAgent(opts.ownerId, agent, query, {
+              verifiedSectorId: opts.verifiedSectorId,
+              requireGrounding: opts.requireGrounding,
+              ...(opts.executionId ? { execution: { executionId: opts.executionId, kind: 'routine' } } : {}),
+            }),
           resolveTools: async (agent, ownerId) =>
             resolveToolsWithDelegation(
               agent,
