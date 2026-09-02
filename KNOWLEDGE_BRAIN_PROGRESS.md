@@ -186,17 +186,51 @@ Defeitos e decisões deste bloco:
 - `ownersFilter` nasceu sem uso e foi removido: `countUnindexedFor` já montava o mesmo
   `$or`.
 
+### Knowledge Brain — Fase 2: acesso, resolução única e busca conjunta (`6512bf8`, `b2a6ca6`)
+
+- `backend/src/knowledgeAccess.ts`: a política do agente (`own`, `building`, `floor`,
+  `sectorMode`, `selectedSectorIds`) e `resolveKnowledgeOwnersForExecution`, a fonte
+  única. Andar e prédio vêm da relação real do agente; o setor da execução precisa ter
+  sido validado antes de chegar; o setor de casa vem da associação real; os escolhidos
+  são reconferidos contra a conta A CADA execução, então um setor apagado para de entrar
+  sem ninguém precisar limpar a política. Cada base sai com o motivo, e sem repetição.
+- Agente sem política salva mantém exatamente o comportamento anterior — resolvido na
+  LEITURA (`policyOf`), nunca em `withAgentDefaults`: a diferença entre "o dono escolheu"
+  e "é o padrão" precisa continuar visível, e é o que `configured` responde.
+- `backend/src/routes/knowledgeAccessRoutes.ts`: `GET/PUT /api/agents/:id/knowledge-access`
+  e `GET .../resolved`, que mostra a política virada em bases com nome — regra não se
+  confere lendo regra. Setor de outra conta dá a mesma recusa de setor inexistente.
+- `backend/src/knowledgeRetrieval.ts`: `retrieveForAgent`/`retrieveForAgents`, a porta
+  única. Chat de teste, canal/widget, delegação, execução de setor e rotina entram por
+  ela. A dependência da rotina passou a receber o AGENTE em vez do id — com o id, quem
+  implementa a dependência teria que carregá-lo de novo ou montar a lista sozinho.
+- `backend/src/knowledge.ts`: `retrieveForOwners` com orçamento GLOBAL (topK, caracteres
+  e score mínimo valem para a seleção inteira), proveniência por trecho (dono, documento,
+  título, score, tipo de busca e motivo da base) e o estado `denied`.
+- `backend/src/knowledgeMigration.ts`: `auditArchitectMemoryMigration` — só leitura. A
+  confirmação vem de ler o documento e comparar o texto, não do registro da migração:
+  ele diz o que aconteceu na hora, não se o documento continua lá depois.
+- `backend/test/knowledgeResolverSingleSource.test.mjs`: a guarda contra a volta do
+  defeito. As funções de busca por dono não podem ser chamadas fora da camada, e a
+  resolução da política existe em um arquivo só.
+
+Decisões e defeitos deste bloco:
+
+- o teste do time de setor tinha a própria ligação de busca, que passou a divergir da
+  produção assim que a política entrou. Ele agora usa o mesmo carregador com escopo de
+  conta — um atalho ali testaria um caminho que ninguém executa;
+- a memória original do Arquiteto continua de pé. A auditoria diz o que já pode ser
+  limpo; a limpeza é um comando explícito, e vai precisar desta lista.
+
 ## O que falta, na ordem
 
-### Knowledge Brain — próximo bloco (Fase 2)
-1. `knowledgeAccess` no agente (`own`/`building`/`floor`/`sectorMode`), com agentes
-   legados resolvendo para o comportamento atual até alguém salvar uma política.
-2. `resolveKnowledgeOwnersForExecution` única, usada por chat, delegação, setor, rotina
-   e playground — nenhum fluxo monta a própria lista de owners.
-3. Busca híbrida combinando os quatro escopos dentro do mesmo orçamento global, com
-   deduplicação entre escopos e proveniência por trecho.
-4. Decidir e executar a remoção da memória original já copiada (a migração deste bloco
-   deixou tudo de pé de propósito).
+### Knowledge Brain — próximo bloco (Fase 3)
+1. `ContextRequirement` no Planner e `ContextManifest` por execução (3.1, 3.2).
+2. Fontes internas, lacunas, propostas, validade, autoridade e conflitos (3.3–3.7).
+3. Tela de "Acesso ao conhecimento" na configuração do agente (a API já existe; falta a
+   interface, e ela é a única forma de o dono usar a política sem chamar a API à mão).
+4. Executar a remoção das memórias já copiadas, com comando explícito e a auditoria como
+   entrada.
 
 ### Arquiteto (Fase 7)
 1. Nada bloqueando: o núcleo (7.7 a 7.14) está fechado. O que sobra é acabamento —
@@ -240,6 +274,12 @@ Defeitos e decisões deste bloco:
   existe em algum lugar.
 - **Migração confirma antes de marcar.** "Deu certo porque não lançou" é como uma falha
   silenciosa vira dado perdido.
+- **Uma resolução, cinco executores.** Cinco listas de bases são cinco chances de a
+  mesma pergunta ter respostas diferentes conforme a porta por onde ela entrou.
+- **Orçamento é global, não por escopo.** Por escopo, quem liga quatro bases recebe
+  quatro vezes mais contexto, e o trecho fraco entra na frente do forte.
+- **"Não pode ler" ≠ "não achei" ≠ "não consegui procurar".** Os três levam a frases
+  diferentes, e confundi-los faz o agente afirmar ausência sobre uma base cheia.
 - **O crítico do modelo não bloqueia e não edita.** Bloquear daria a um palpite a palavra
   final sobre aplicar; editar criaria um segundo arquiteto, e ninguém saberia qual dos
   dois propôs o que está sendo aprovado.
