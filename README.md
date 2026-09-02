@@ -8,8 +8,7 @@ A SaaS platform for managing goal-oriented AI communication agents, connected to
 > on a durable worker, while chat/widget/WhatsApp remain first-class **conversational
 > channels**. The pivot ships behind feature flags (OFF by default) — nothing below
 > changes until they're enabled. See
-> [`docs/architecture/automation-pivot.md`](docs/architecture/automation-pivot.md) and
-> [`AI_BUILDING_PIVOT_IMPLEMENTATION_REPORT.md`](AI_BUILDING_PIVOT_IMPLEMENTATION_REPORT.md).
+> [`docs/architecture/automation-pivot.md`](docs/architecture/automation-pivot.md).
 
 ## What it does
 

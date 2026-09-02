@@ -174,5 +174,11 @@ GOOGLE_REDIRECT_URI=https://api.comunicacaoai.onplataform.com/api/integrations/g
 ```
 
 `comunicacaoai.onplataform.com` and `api.comunicacaoai.onplataform.com` share the
-registrable domain `onplataform.com`, so they are **same-site** — see the cookie
-note in `DEPLOYMENT_READINESS_REPORT.md`.
+registrable domain `onplataform.com`, so requests between them are **same-site**
+(the backend host is a subdomain of the frontend's).
+
+That costs nothing to configure: in production Better Auth issues cookies with
+`SameSite=None; Secure`, which are sent on both same-site and cross-site requests
+over HTTPS — login works as-is once TLS is live. The cookies are **host-only** (no
+`Domain` attribute) on `api.comunicacaoai.onplataform.com`, and every private
+API/Socket.IO call targets that host.
