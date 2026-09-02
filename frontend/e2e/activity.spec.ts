@@ -97,3 +97,12 @@ test('sem nada no período, a tela diz isso em vez de ficar vazia', async ({ pag
   await page.goto('/activity')
   await expect(page.getByText('Nada aconteceu ainda com esses filtros')).toBeVisible()
 })
+
+test('em 320 px a linha do tempo não empurra a página para os lados', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 })
+  await stub(page)
+  await page.goto('/activity')
+  await expect(page.getByTestId('activity-item').first()).toBeVisible()
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
+})

@@ -116,3 +116,12 @@ test('o motivo de uma suspensão fica visível em Minhas criações', async ({ p
   await page.goto('/community?tab=mine')
   await expect(page.getByTestId('my-package')).toContainText('domínio trocado sem aviso')
 })
+
+test('em 320 px o catálogo e o diff de permissões cabem', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 })
+  await stub(page, { previa: PREVIA_AMPLIA })
+  await page.goto('/community?tab=installed')
+  await expect(page.getByTestId('update-diff')).toBeVisible()
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
+})

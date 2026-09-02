@@ -124,3 +124,13 @@ test('publicar com tudo pronto passa pelo endpoint de publicação', async ({ pa
   await page.getByTestId('monitor-publicar').click()
   await expect.poll(() => publicou).toBe(true)
 })
+
+test('em 320 px o construtor inteiro cabe, sem estourar para os lados', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 })
+  await stub(page, { lista: [] })
+  await page.goto('/monitors')
+  await page.getByTestId('monitor-novo').click()
+  await expect(page.getByTestId('monitor-form')).toBeVisible()
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
+})

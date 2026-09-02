@@ -454,6 +454,37 @@ Testes: 27, incluindo a suíte de ameaça. Bateria: 1354 + 1804, verde.
 
 Testes: 9. Bateria: 1354 + 1813 backend, verde.
 
+## Bateria completa desta sessão
+
+Rodada inteira, na ordem do plano, com o repositório no commit `671b38e`:
+
+| Comando | Resultado |
+| --- | --- |
+| `npm run build` | verde |
+| `npm run test -w backend` | 1354 + 1822, 0 falhas (inclui a suíte de ameaça) |
+| `npm run test -w frontend` | 292, 0 falhas |
+| `npm run lint -w frontend` | 0 erros (avisos preexistentes de fast-refresh e de specs antigos) |
+| `npm run test:e2e -w frontend` | 647 passaram, 17 pulados |
+| `npm run smoke` | verde, saída 0 |
+| `npm run secret-scan` | 2178 arquivos, nada encontrado |
+
+As telas novas (Monitores, Atividade, Comunidade) têm caso de 320 px afirmando que a página
+não rola para os lados, e o smoke continua conferindo o alvo mínimo de toque.
+
+## Por que NÃO existe REPORT
+
+O plano manda criar `OFFICE_PLATFORM_RESOURCE_COMMUNITY_REPORT.md` **só quando todas as
+fases e critérios de aceite estiverem realmente concluídos**. Eles não estão, e a razão é
+uma só e é honesta:
+
+**a Fase 9 exige isolamento comprovado, e não existe runner isolado neste repositório.** O
+critério de aceite dela é código rodando com isolamento demonstrado; o que existe é a
+fronteira que impede rodar sem ele. Escrever um relatório de conclusão com esse buraco
+seria dizer que a plataforma executa código de terceiro com segurança — que é exatamente a
+afirmação que não pode ser feita.
+
+O restante das pendências está listado por fase acima.
+
 ## Próxima ação exata
 
 1. Fase 11 — migração 9.2 (Data Store padrão apontando para os recorders existentes, com
