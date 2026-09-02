@@ -43,9 +43,26 @@ const CONSULTA = {
 }
 
 let criado: Record<string, unknown> | null = null
+let grantSalvo: Record<string, unknown> | null = null
+
+const GRANTS = {
+  items: [
+    { id: 'g1', subjectType: 'sector', subjectId: 's1', capabilities: ['discover', 'query'], effect: 'allow', datasetKeys: [], updatedAt: NOW },
+  ],
+}
+
+const IMPACTO = {
+  dataStoreId: DB_ID,
+  name: 'Operações',
+  datasets: [{ key: 'ordens', mutability: 'append_only' }],
+  grants: 1,
+  accessibleBy: [{ agentId: 'a1', name: 'Marina', origin: 'sector' }],
+  recommendation: 'prefer_archive',
+}
 
 async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } = {}) {
   criado = null
+  grantSalvo = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   const user = { id: 'u1', email: 'qa@local.test', name: 'QA', emailVerified: true, createdAt: NOW, updatedAt: NOW }
   await page.route('**/api/auth/**', (r) =>
@@ -58,6 +75,17 @@ async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } =
   await page.route(`**/api/databases/${DB_ID}/datasets`, (r) => {
     criado = r.request().postDataJSON() as Record<string, unknown>
     return r.fulfill({ status: 201, json: { key: String(criado.key) } })
+  })
+  await page.route('**/api/agents', (r) => r.fulfill({ json: [{ _id: 'a1', name: 'Marina' }] }))
+  await page.route('**/api/sectors', (r) => r.fulfill({ json: [{ _id: 's1', name: 'Análise' }] }))
+  await page.route(`**/api/databases/${DB_ID}/impact`, (r) => r.fulfill({ json: IMPACTO }))
+  await page.route(`**/api/databases/${DB_ID}/grants/**`, (r) => r.fulfill({ status: 204, body: '' }))
+  await page.route(`**/api/databases/${DB_ID}/grants`, (r) => {
+    if (r.request().method() === 'PUT') {
+      grantSalvo = r.request().postDataJSON() as Record<string, unknown>
+      return r.fulfill({ json: { id: 'g2', ...grantSalvo } })
+    }
+    return r.fulfill({ json: GRANTS })
   })
   await page.route(`**/api/databases/${DB_ID}`, (r) => r.fulfill({ json: DETALHE }))
   await page.route('**/api/databases', (r) => {
@@ -132,4 +160,43 @@ test('em 320 px a tabela rola dentro do bloco, e a página não', async ({ page 
   await expect(page.getByTestId('dataset-query-table')).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
+})
+
+// --- grants ------------------------------------------------------------------------------
+
+test('conceder a um SETOR avisa que vale para quem entrar depois', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/databases?id=${DB_ID}`)
+  await page.getByTestId('grant-new').click()
+  await page.getByTestId('grant-subject').selectOption('sector:s1')
+  // O impacto ANTES de salvar: um setor é gente, e a decisão é tomada sobre pessoas.
+  await expect(page.getByTestId('grant-impact')).toContainText('inclusive os que entrarem depois')
+  await page.getByTestId('grant-save').click()
+  await expect.poll(() => (grantSalvo as { subjectType?: string } | null)?.subjectType).toBe('sector')
+})
+
+test('negar é uma escolha explícita, e a tela diz que ela vence', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/databases?id=${DB_ID}`)
+  await page.getByTestId('grant-new').click()
+  await page.getByTestId('grant-subject').selectOption('agent:a1')
+  await page.getByTestId('grant-deny').check()
+  await expect(page.getByTestId('grant-form')).toContainText('vence qualquer permissão herdada')
+  await page.getByTestId('grant-save').click()
+  await expect.poll(() => (grantSalvo as { effect?: string } | null)?.effect).toBe('deny')
+})
+
+test('a tela mostra quem consegue consultar HOJE, com a origem', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/databases?id=${DB_ID}`)
+  const efetivo = page.getByTestId('grants-effective')
+  await expect(efetivo).toContainText('Marina')
+  await expect(efetivo).toContainText('pelo setor')
+})
+
+test('sem grant nenhum, a tela diz o que isso significa', async ({ page }) => {
+  await stub(page)
+  await page.route(`**/api/databases/${DB_ID}/grants`, (r) => r.fulfill({ json: { items: [] } }))
+  await page.goto(`/databases?id=${DB_ID}`)
+  await expect(page.getByTestId('grants-empty')).toContainText('nenhum agente consulta')
 })

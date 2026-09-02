@@ -176,23 +176,31 @@ Suíte: 1354 + 1670, verde. Vitest 287, smoke 6.
 
 Testes: 7 em `frontend/e2e/databases.spec.ts`. E2E 628, smoke 6, secret-scan limpo.
 
-## Pendências honestas da Fase 3
+### Fase 3 (conclusão) — grants na tela ✅
 
-- `external_app` está declarado e recusa consulta com `not_implemented` — um adapter que
-  respondesse vazio seria pior que a recusa honesta.
-- Tela de **grants de database** não foi feita: a API existe (`PUT/DELETE
-  /api/databases/:id/grants`) e é testada, mas quem quiser conceder hoje precisa chamá-la.
-  A tela precisa mostrar o impacto de um grant de setor ANTES de salvar, e isso é o
-  próximo item, não um detalhe visual.
+`components/DatabaseGrants.tsx`: conceder, negar e remover, com o IMPACTO antes de salvar.
+Conceder a um setor não vale para "o setor" — vale para cada agente que está nele agora e
+para quem entrar depois, e quem concede vê isso antes de confirmar. `deny` é uma escolha
+explícita, porque ele vence qualquer allow herdado e uma exceção que não pode ser dita
+vira remoção de acesso legítimo. A tela também mostra quem consegue consultar HOJE, com a
+origem — que é o resultado de toda a precedência, e não a soma dos grants.
+
+4 testes E2E novos (11 no arquivo). E2E 632, backend 1354 + 1670, smoke 6.
+
+**A Fase 3 está completa**, com uma exceção declarada: `external_app` recusa consulta com
+`not_implemented`. Um adapter que respondesse vazio seria pior que a recusa honesta.
+
+## Pendências honestas
+
 - Migração 9.2 (Data Store padrão apontando para recorders existentes, em dual-read) não
-  começou.
+  começou. Ela não bloqueia nada: databases novos funcionam, e os históricos existentes
+  continuam pelo caminho de sempre.
 
 ## Próxima ação exata
 
-1. Tela de grants de Database, com o impacto de setor mostrado antes de salvar.
-2. Migração 9.2 em dual-read, sem mover registro.
-3. Fase 4 — Tool versionada: `runtimeKind` (`http` preservando IDs e `customToolIds`,
-   `app_action`, `registered_function`), versões imutáveis com hash, e o dispatcher único.
+Fase 4 — Tool versionada: `runtimeKind` (`http` preservando IDs e `customToolIds`,
+`app_action`, `registered_function`), versões imutáveis com hash, output schema exigido no
+publicável, e tudo continuando a passar pelo dispatcher único.
 
 Fases 4 a 11 (Tools versionadas, Flows/Monitors, Activity, Extensions, Marketplace,
 Sandbox, hardening) **não foram iniciadas**.

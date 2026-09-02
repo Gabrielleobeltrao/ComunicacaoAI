@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { Badge, Button, Card, Input, Textarea } from '../ui'
 import * as api from '../lib/databases'
+import { DatabaseGrants } from '../components/DatabaseGrants'
 import type { DatabaseDetail, DatabaseSummary, DatasetSummary, QueryResult } from '../lib/databases'
 
 // DATABASES — o sistema de registros do escritório.
@@ -241,6 +242,8 @@ function DetalheDoDatabase({ id, onVoltar, onMudou }: { id: string; onVoltar: ()
       </Card>
 
       {dataset && <ConsultaDoDataset databaseId={id} dataset={dataset} />}
+
+      <DatabaseGrants databaseId={id} />
     </div>
   )
 }
