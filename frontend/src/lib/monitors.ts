@@ -48,12 +48,17 @@ export interface MonitorState {
   error: { code: string; message: string } | null
 }
 
+/** De onde o monitor observa. `database` é também o que uma fonte da Central alimenta. */
+export type MonitorSource =
+  | { kind: 'internal_event'; eventType: string }
+  | { kind: 'database'; dataStoreId: string; datasetKey: string }
+
 export interface MonitorSummary {
   id: string
   name: string
   status: MonitorStatus
-  source: { kind: 'internal_event'; eventType: string } | { kind: 'database'; datasetKey: string }
-  condition: ConditionCompare
+  source: MonitorSource
+  condition: ConditionNode
   conditionText: string
   triggerMode: TriggerMode
   threshold: number | null
@@ -72,8 +77,8 @@ export interface MonitorMeta {
 
 export interface MonitorInput {
   name: string
-  source: { kind: 'internal_event'; eventType: string }
-  condition: ConditionCompare
+  source: MonitorSource
+  condition: ConditionNode
   triggerMode: TriggerMode
   threshold?: number | null
   thresholdField?: string | null

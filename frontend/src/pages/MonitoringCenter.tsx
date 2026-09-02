@@ -1065,6 +1065,14 @@ function resumoDaConfig(kind: SourceKind, c: Cfg): string {
 function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
   const observaveis = (fontes ?? []).filter((f) => f.destination.history)
   const [fonteId, setFonteId] = useState('')
+  const [nome, setNome] = useState('')
+  const [flowId, setFlowId] = useState('')
+  const [flows, setFlows] = useState<mon.FlowOption[]>([])
+  const [monitores, setMonitores] = useState<mon.MonitorSummary[] | null>(null)
+  const [editando, setEditando] = useState<string | null>(null)
+  const [erro, setErro] = useState<string | null>(null)
+  const [aviso, setAviso] = useState<string | null>(null)
+  const [salvando, setSalvando] = useState(false)
   const [modo, setModo] = useState<mon.TriggerMode>('enter')
   const [juncao, setJuncao] = useState<'and' | 'or'>('and')
   const [partes, setPartes] = useState<{ field: string; op: mon.ComparisonOp; value: string; delta: boolean; deltaMode: 'absolute' | 'percent' }[]>([
@@ -1082,6 +1090,122 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
 
   const fonte = observaveis.find((f) => f.id === fonteId)
   const camposDaFonte = fonte?.mapping.fields.map((c) => c.to) ?? []
+
+  const carregar = useCallback(async () => {
+    setErro(null)
+    try {
+      const [ms, fs] = await Promise.all([mon.listMonitors(), mon.listFlows().catch(() => [] as mon.FlowOption[])])
+      setMonitores(ms)
+      setFlows(fs)
+    } catch (e) {
+      setErro((e as Error).message)
+    }
+  }, [])
+
+  useEffect(() => {
+    void carregar()
+  }, [carregar])
+
+  /** Os monitores desta conta que observam uma fonte da Central, agrupados por fonte. */
+  const fonteDoMonitor = (m: mon.MonitorSummary) => {
+    if (m.source.kind !== 'database') return undefined
+    const chave = m.source.datasetKey
+    return observaveis.find((f) => f.datasetKey && f.datasetKey === chave)
+  }
+
+  const limpar = () => {
+    setEditando(null)
+    setNome('')
+    setFlowId('')
+    setPartes([{ field: '', op: 'lt', value: '', delta: false, deltaMode: 'absolute' }])
+    setModo('enter')
+    setThreshold('')
+    setThresholdField('')
+    setDebounceMs(0)
+    setCooldownMs(0)
+    setResultado(null)
+  }
+
+  /**
+   * Carrega um monitor no formulário para EDITAR — em vez de criar um segundo parecido.
+   *
+   * Sem isto, corrigir um limiar significava apagar e refazer, e o estado observado
+   * (quando a condição virou verdadeira pela última vez) ia junto.
+   */
+  const editar = (m: mon.MonitorSummary) => {
+    setEditando(m.id)
+    setNome(m.name)
+    setFlowId(m.flowId ?? '')
+    setModo(m.triggerMode)
+    setThreshold(m.threshold === null ? '' : String(m.threshold))
+    setThresholdField(m.thresholdField ?? '')
+    setDebounceMs(m.debounceMs)
+    setCooldownMs(m.cooldownMs)
+    const alvo = fonteDoMonitor(m)
+    if (alvo) setFonteId(alvo.id)
+    const folhas = m.condition.kind === 'and' || m.condition.kind === 'or' ? m.condition.children : [m.condition]
+    if (m.condition.kind === 'and' || m.condition.kind === 'or') setJuncao(m.condition.kind)
+    setPartes(
+      folhas
+        .filter((n): n is Extract<mon.ConditionNode, { kind: 'compare' } | { kind: 'delta' }> => n.kind === 'compare' || n.kind === 'delta')
+        .map((n) => ({
+          field: n.field,
+          op: n.op,
+          value: String(n.value),
+          delta: n.kind === 'delta',
+          deltaMode: n.kind === 'delta' ? n.mode : ('absolute' as const),
+        })),
+    )
+    setResultado(null)
+    setAviso(null)
+  }
+
+  const corpoDoMonitor = () => ({
+    name: nome.trim(),
+    condition: condicao(),
+    triggerMode: modo,
+    ...(threshold !== '' ? { threshold: Number(threshold) } : { threshold: null }),
+    ...(thresholdField ? { thresholdField } : { thresholdField: null }),
+    debounceMs,
+    cooldownMs,
+    flowId: flowId || null,
+  })
+
+  const acaoDeMonitor = async (fn: () => Promise<unknown>, mensagem: string) => {
+    setErro(null)
+    setAviso(null)
+    setSalvando(true)
+    try {
+      await fn()
+      setAviso(mensagem)
+      await carregar()
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  /**
+   * Salvar cria — no motor canônico, sempre RASCUNHO — ou atualiza o que está aberto.
+   *
+   * A criação passa pela Central (`/sources/:id/monitor`) porque é ela que materializa o
+   * destino da fonte antes: um monitor de dataset sem dataset é recusado, e recusar depois
+   * de a pessoa preencher tudo seria descobrir tarde o que dava para preparar antes.
+   */
+  const salvarMonitor = () =>
+    acaoDeMonitor(async () => {
+      if (editando) {
+        const atual = monitores?.find((m) => m.id === editando)
+        if (!atual) throw new Error('este monitor não existe mais: recarregue a lista')
+        await mon.updateMonitor(editando, { ...corpoDoMonitor(), source: atual.source })
+        return
+      }
+      if (!fonteId) throw new Error('escolha a fonte observada')
+      await api.createMonitorForSource(fonteId, corpoDoMonitor())
+    }, editando ? 'Monitor atualizado. Publique quando estiver certo.' : 'Monitor criado como rascunho. Ele só age depois de publicado.')
+
+  const faltaParaSalvar = !nome.trim() ? 'dê um nome ao monitor' : !editando && !fonteId ? 'escolha a fonte observada' : !partes.some((p) => p.field) ? 'monte ao menos uma condição' : null
 
   const condicao = (): mon.ConditionNode => {
     const folhas = partes
@@ -1129,6 +1253,10 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
           <p style={{ fontSize: 13 }}>
             Um monitor observa o dado que uma fonte já normalizou — ele nunca consulta o serviço lá fora a cada condição.
           </p>
+
+          <Field label="Nome do monitor" hint="É por ele que alguém encontra a regra depois — “preço abaixo de 100”, não “monitor 3”.">
+            <Input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Preço abaixo de 100" data-testid="monitor-nome" />
+          </Field>
 
           <Field label="Observar a fonte" hint="Só fontes que gravam histórico podem ser observadas.">
             <Select
@@ -1291,6 +1419,21 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
             />
           </Field>
 
+          <Field
+            label="Quando disparar, rodar o Flow"
+            hint="Opcional. Sem Flow, o monitor observa e registra — é o que serve para acompanhar sem agir."
+          >
+            <Select value={flowId} onChange={(e) => setFlowId(e.target.value)} data-testid="monitor-flow">
+              <option value="">Nenhum: só observar</option>
+              {flows.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                  {f.lastPublishedVersion === null ? ' (ainda sem publicação)' : ''}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
           {/* A PRÉVIA, montada na tela: sem ela, quem monta só descobre o que escreveu
               depois de salvar. */}
           <p style={{ fontSize: 13.5 }} data-testid="monitor-previa">
@@ -1300,6 +1443,33 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
             {cooldownMs > 0 ? ` Avisando no máximo a cada ${Math.round(cooldownMs / 1000)}s.` : ''}
             {aoFaltar === 'degrade' ? ' Dado velho não dispara e marca a fonte.' : ' Dado velho não dispara.'}
           </p>
+
+          {erro && (
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="monitor-erro">
+              {erro}
+            </p>
+          )}
+          {aviso && (
+            <p role="status" style={{ fontSize: 13 }} data-testid="monitor-aviso">
+              {aviso}
+            </p>
+          )}
+          {faltaParaSalvar && (
+            <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="monitor-falta">
+              Para salvar, {faltaParaSalvar}.
+            </p>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => void salvarMonitor()} disabled={salvando || Boolean(faltaParaSalvar)} data-testid="monitor-salvar">
+              {editando ? 'Salvar alterações' : 'Criar rascunho'}
+            </Button>
+            {editando && (
+              <Button variant="ghost" onClick={limpar} data-testid="monitor-cancelar-edicao">
+                Cancelar edição
+              </Button>
+            )}
+          </div>
         </div>
       </Card>
 
@@ -1343,16 +1513,74 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
             ? `${observaveis.length} fonte(s) gravam histórico e podem ser observadas.`
             : 'Cadastre uma fonte que grave histórico: sem dado normalizado não há o que observar.'}
         </p>
-        <div>
-          <a
-            href="/monitors"
-            style={{ fontSize: 13, textDecoration: 'underline', minHeight: 'var(--hit-min, 44px)', display: 'inline-flex', alignItems: 'center' }}
-            data-testid="monitores-link"
-          >
-            Ver e publicar monitores
-          </a>
-        </div>
       </Card>
+
+      {monitores?.length === 0 && (
+        <Card>
+          <p style={{ fontSize: 13 }} data-testid="monitores-vazio">
+            Nenhum monitor ainda. Monte a condição acima e crie o primeiro — ele nasce rascunho e só age depois de publicado.
+          </p>
+        </Card>
+      )}
+
+      {(monitores ?? []).map((m) => {
+        const daFonte = fonteDoMonitor(m)
+        return (
+          <Card key={m.id}>
+            <div className="flex flex-col gap-2" data-testid="monitor-item">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={m.status === 'published' ? 'success' : m.status === 'paused' ? 'warning' : 'neutral'}>{mon.STATUS_LABEL[m.status]}</Badge>
+                <strong style={{ fontSize: 14 }}>{m.name}</strong>
+                {daFonte && <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>observa “{daFonte.name}”</span>}
+              </div>
+              <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                {m.conditionText} — {mon.TRIGGER_LABEL[m.triggerMode]}
+                {m.flowId ? ` · roda ${flows.find((f) => f.id === m.flowId)?.name ?? 'um Flow'}` : ' · só observa'}
+              </p>
+              {m.state && (
+                <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="monitor-estado">
+                  {m.state.conditionIsTrue ? 'a condição está verdadeira agora' : 'a condição está falsa agora'}
+                  {m.state.lastTriggeredAt ? ` · disparou ${desde(m.state.lastTriggeredAt)}` : ' · nunca disparou'}
+                </p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button variant="ghost" onClick={() => editar(m)} data-testid="monitor-editar">
+                  Editar
+                </Button>
+                {m.status !== 'published' && (
+                  <Button
+                    onClick={() => void acaoDeMonitor(() => mon.publishMonitor(m.id), 'Monitor publicado: a partir de agora ele observa de verdade.')}
+                    data-testid="monitor-publicar"
+                  >
+                    Publicar
+                  </Button>
+                )}
+                {m.status === 'published' && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => void acaoDeMonitor(() => mon.pauseMonitor(m.id), 'Monitor pausado. Ele para de observar, e o que já registrou continua.')}
+                    data-testid="monitor-pausar"
+                  >
+                    Pausar
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    // A confirmação é do navegador de propósito: um diálogo próprio aqui
+                    // seria mais código para a mesma pergunta de uma linha.
+                    if (!window.confirm(`Excluir “${m.name}”? O que ele já registrou continua; a regra é que deixa de existir.`)) return
+                    void acaoDeMonitor(() => mon.deleteMonitor(m.id), 'Monitor excluído.')
+                  }}
+                  data-testid="monitor-excluir"
+                >
+                  Excluir
+                </Button>
+              </div>
+            </div>
+          </Card>
+        )
+      })}
     </>
   )
 }
@@ -1413,31 +1641,149 @@ function AoVivo({ fontes }: { fontes: mon2.LiveSource[] | null }) {
 
 function Historico({ fontes }: { fontes: SourceSummary[] | null }) {
   const [fonte, setFonte] = useState('')
-  const lista = (fontes ?? []).filter((f) => !fonte || f.id === fonte)
+  const [tipo, setTipo] = useState('')
+  const [resultado, setResultado] = useState('')
+  const [eventos, setEventos] = useState<api.MonitoringEvent[] | null>(null)
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [erro, setErro] = useState<string | null>(null)
+  const [carregando, setCarregando] = useState(false)
+
+  const buscar = useCallback(
+    async (continuar = false) => {
+      setCarregando(true)
+      setErro(null)
+      try {
+        const p = await api.history({
+          ...(fonte ? { sourceId: fonte } : {}),
+          ...(tipo ? { kind: tipo } : {}),
+          ...(resultado ? { outcome: resultado } : {}),
+          ...(continuar && cursor ? { cursor } : {}),
+          limit: 25,
+        })
+        setEventos((antes) => (continuar && antes ? [...antes, ...p.items] : p.items))
+        setCursor(p.nextCursor)
+      } catch (e) {
+        setErro((e as Error).message)
+      } finally {
+        setCarregando(false)
+      }
+    },
+    [fonte, tipo, resultado, cursor],
+  )
+
+  // Trocar um filtro recomeça a lista: continuar de um cursor de outro filtro misturaria
+  // duas perguntas na mesma resposta.
+  useEffect(() => {
+    setCursor(null)
+    void (async () => {
+      setCarregando(true)
+      setErro(null)
+      try {
+        const p = await api.history({
+          ...(fonte ? { sourceId: fonte } : {}),
+          ...(tipo ? { kind: tipo } : {}),
+          ...(resultado ? { outcome: resultado } : {}),
+          limit: 25,
+        })
+        setEventos(p.items)
+        setCursor(p.nextCursor)
+      } catch (e) {
+        setErro((e as Error).message)
+      } finally {
+        setCarregando(false)
+      }
+    })()
+  }, [fonte, tipo, resultado])
+
+  const tom = (o: api.EventOutcome) => (o === 'ok' ? 'success' : o === 'failed' ? 'danger' : o === 'refused' ? 'warning' : 'neutral')
+
   return (
     <>
-      <Select value={fonte} onChange={(e) => setFonte(e.target.value)} style={{ maxWidth: 280 }} data-testid="historico-filtro">
-        <option value="">Todas as fontes</option>
-        {(fontes ?? []).map((f) => (
-          <option key={f.id} value={f.id}>
-            {f.name}
-          </option>
-        ))}
-      </Select>
-      {lista.map((f) => (
-        <Card key={f.id}>
+      <Card>
+        <div className="flex flex-col gap-2 sm:flex-row" data-testid="historico-filtros">
+          <Field label="Fonte" style={{ flex: 1 }}>
+            <Select value={fonte} onChange={(e) => setFonte(e.target.value)} data-testid="historico-filtro">
+              <option value="">Todas as fontes</option>
+              {(fontes ?? []).map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="O que aconteceu" style={{ flex: 1 }}>
+            <Select
+              value={tipo}
+              onChange={(e) => setTipo(e.target.value)}
+              options={[{ value: '', label: 'tudo' }, ...(Object.keys(api.EVENT_KIND_LABEL) as api.EventKind[]).map((k) => ({ value: k, label: api.EVENT_KIND_LABEL[k] }))]}
+              data-testid="historico-tipo"
+            />
+          </Field>
+          <Field label="Resultado" style={{ flex: 1 }}>
+            <Select
+              value={resultado}
+              onChange={(e) => setResultado(e.target.value)}
+              options={[
+                { value: '', label: 'qualquer' },
+                ...(Object.keys(api.EVENT_OUTCOME_LABEL) as api.EventOutcome[]).map((o) => ({ value: o, label: api.EVENT_OUTCOME_LABEL[o] })),
+              ]}
+              data-testid="historico-resultado"
+            />
+          </Field>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+          O conteúdo lido não aparece aqui: o log diz o que aconteceu, não o que passou por ele.
+        </p>
+      </Card>
+
+      {erro && (
+        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="historico-erro">
+          {erro}
+        </p>
+      )}
+
+      {eventos?.length === 0 && (
+        <Card>
+          <p style={{ fontSize: 13 }} data-testid="historico-vazio">
+            Nada aconteceu ainda com este filtro. Quando uma fonte coletar, receber ou disparar um monitor, aparece aqui.
+          </p>
+        </Card>
+      )}
+
+      {(eventos ?? []).map((e) => (
+        <Card key={e.id}>
           <div className="flex flex-col gap-1" data-testid="historico-item">
-            <strong style={{ fontSize: 14 }}>{f.name}</strong>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={tom(e.outcome)}>{api.EVENT_OUTCOME_LABEL[e.outcome]}</Badge>
+              <strong style={{ fontSize: 14 }}>{e.sourceName}</strong>
+              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                {api.EVENT_KIND_LABEL[e.kind]} · {desde(e.at)}
+              </span>
+            </div>
             <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
-              {f.telemetry.readsOk} leituras boas · {f.telemetry.readsFailed} falhas · última {desde(f.telemetry.lastReadAt)}
-              {f.telemetry.lastErrorCode ? ` · último erro: ${f.telemetry.lastErrorCode}` : ''}
+              {e.durationMs !== null ? `${e.durationMs} ms` : ''}
+              {e.rows !== null ? ` · ${e.rows} ${e.rows === 1 ? 'linha lida' : 'linhas lidas'}` : ''}
+              {e.recorded !== null ? ` · ${e.recorded} ${e.recorded === 1 ? 'gravada' : 'gravadas'}` : ''}
+              {e.pages && e.pages > 1 ? ` · ${e.pages} páginas` : ''}
+              {e.monitorName ? ` · monitor “${e.monitorName}”` : ''}
+              {e.runId ? ` · execução ${e.runId}` : ''}
             </p>
-            <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              O conteúdo lido não aparece aqui: o log diz o que aconteceu, não o que passou por ele.
-            </p>
+            {e.errorMessage && (
+              <p style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="historico-erro-item">
+                {e.errorCode}: {e.errorMessage}
+              </p>
+            )}
           </div>
         </Card>
       ))}
+
+      {cursor && (
+        <div>
+          <Button variant="ghost" onClick={() => void buscar(true)} disabled={carregando} data-testid="historico-mais">
+            {carregando ? 'Buscando…' : 'Ver mais'}
+          </Button>
+        </div>
+      )}
     </>
   )
 }

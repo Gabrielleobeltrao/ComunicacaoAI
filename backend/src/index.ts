@@ -165,6 +165,7 @@ import { monitorRouter } from './routes/monitorRoutes.js'
 import { activityRouter } from './routes/activityRoutes.js'
 import { monitoringRouter } from './routes/monitoringRoutes.js'
 import { ensureMonitoringIndexes } from './monitoring/service.js'
+import { ensureMonitoringHistoryIndexes } from './monitoring/history.js'
 import { monitoringWebhookRouter } from './routes/monitoringWebhookRoutes.js'
 import { ensureWebhookIndexes as ensureMonitoringWebhookIndexes } from './monitoring/webhookSource.js'
 import { ensureSourceGrantIndexes } from './monitoring/access.js'
@@ -5469,6 +5470,9 @@ async function start() {
   })
   ensureReviewIndexes().catch((error) => {
     console.error('ensureReviewIndexes failed:', error)
+  })
+  ensureMonitoringHistoryIndexes().catch((error) => {
+    console.error('ensureMonitoringHistoryIndexes failed:', error)
   })
   ensureMonitoringIndexes().catch((error) => {
     console.error('ensureMonitoringIndexes failed:', error)

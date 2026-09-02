@@ -19,6 +19,7 @@ import { computeHealth, nextReadAt } from '../monitoring/health.js'
 import { rotateWebhookSecret } from '../monitoring/webhookSource.js'
 import { deleteSourceGrant, listSourceGrants, putSourceGrant, resolveSourceAccess } from '../monitoring/access.js'
 import { migrateRecordersToSources, rollbackRecorderMigration } from '../monitoring/migration.js'
+import { listarEventos } from '../monitoring/history.js'
 import { MonitorError } from '../monitors/service.js'
 import { notFound, oid } from './http.js'
 
@@ -59,6 +60,40 @@ monitoringRouter.get('/meta', (_req, res) => {
     kinds: MONITORING_SOURCE_KINDS.map((k) => ({ kind: k, ...KIND_CAPABILITIES[k] })),
     transforms: ['number', 'trim', 'lower', 'upper', 'boolean', 'date', 'first', 'join', 'replace', 'default'],
   })
+})
+
+/**
+ * O HISTÓRICO OPERACIONAL — o que aconteceu, com filtro e página.
+ *
+ * A aba mostrava contadores acumulados, que não respondem nenhuma das perguntas de quem
+ * abre isto às três da manhã: quando parou, quanto demorou, quantas linhas vieram, qual
+ * foi o erro, e se aquele Flow disparou por causa desta fonte.
+ *
+ * Conteúdo não sai aqui: o log diz o que aconteceu, nunca o que passou por ele.
+ */
+monitoringRouter.get('/history', async (req, res, next) => {
+  const q = req.query
+  const instante = (v: unknown): Date | null => {
+    const d = v ? new Date(String(v)) : null
+    return d && !Number.isNaN(d.getTime()) ? d : null
+  }
+  try {
+    res.json(
+      await listarEventos(res.locals.userId, {
+        sourceId: q.sourceId ? oid(String(q.sourceId)) : null,
+        kind: ['collect', 'delivery', 'dispatch'].includes(String(q.kind)) ? (String(q.kind) as 'collect' | 'delivery' | 'dispatch') : null,
+        outcome: ['ok', 'unchanged', 'failed', 'refused'].includes(String(q.outcome))
+          ? (String(q.outcome) as 'ok' | 'unchanged' | 'failed' | 'refused')
+          : null,
+        since: instante(q.since),
+        until: instante(q.until),
+        limit: Number(q.limit ?? 50),
+        cursor: q.cursor ? String(q.cursor) : null,
+      }),
+    )
+  } catch (erro) {
+    if (!recusa(res, erro)) next(erro as Error)
+  }
 })
 
 /** A VISÃO GERAL: saúde, última leitura, latência, falhas e próximo disparo. */
@@ -117,6 +152,13 @@ monitoringRouter.get('/sources', async (_req, res) => {
       retry: f.retry,
       freshness: f.freshness,
       destination: { live: f.destination.live, history: f.destination.history, retentionDays: f.destination.retentionDays ?? null },
+      /**
+       * A chave do conjunto que esta fonte alimenta — quando ela já foi materializada.
+       *
+       * É por ela que a aba Monitores sabe quais monitores observam esta fonte. Sem isso, a
+       * tela teria de adivinhar por nome, que é o jeito de errar quando alguém renomeia.
+       */
+      datasetKey: f.destination.recorderId ? f.destination.recorderId.toString() : null,
       entityKeyPath: f.entityKeyPath,
       dedupe: f.dedupe,
       // A saúde vai junto: a lista é a mesma pergunta da visão geral, com mais detalhe.

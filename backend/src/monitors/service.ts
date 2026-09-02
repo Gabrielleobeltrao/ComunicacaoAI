@@ -225,7 +225,12 @@ export async function describeMonitors(ownerId: string) {
       id: m._id.toString(),
       name: m.name,
       status: m.status,
-      source: m.source.kind === 'internal_event' ? { kind: m.source.kind, eventType: m.source.eventType } : { kind: m.source.kind, datasetKey: m.source.datasetKey },
+      // O `dataStoreId` vai junto: sem ele a tela não consegue reenviar a mesma fonte
+      // numa edição, e "salvar" viraria "criar em outro lugar".
+      source:
+        m.source.kind === 'internal_event'
+          ? { kind: m.source.kind, eventType: m.source.eventType }
+          : { kind: m.source.kind, dataStoreId: m.source.dataStoreId.toString(), datasetKey: m.source.datasetKey },
       condition: m.condition,
       conditionText: describeCondition(m.condition),
       triggerMode: m.triggerMode,

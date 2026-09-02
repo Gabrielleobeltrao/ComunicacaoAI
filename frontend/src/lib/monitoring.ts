@@ -80,6 +80,8 @@ export interface SourceSummary {
   cadence: { mode: string; intervalMs: number | null; cron?: string | null; timezone?: string | null }
   freshness: { staleAfterMs: number; onStale: string }
   destination: { live: boolean; history: boolean; retentionDays: number | null }
+  /** A chave do conjunto que esta fonte alimenta — só depois de ela ser materializada. */
+  datasetKey?: string | null
   nextReadAt: string | null
   telemetry: Telemetry
 }
@@ -187,6 +189,52 @@ export const remove = (id: string) => req<null>(`/api/monitoring/sources/${id}`,
  */
 export const createMonitorForSource = (id: string, body: unknown) =>
   req<{ id: string; status: string }>(`/api/monitoring/sources/${id}/monitor`, { method: 'POST', body })
+
+export type EventKind = 'collect' | 'delivery' | 'dispatch'
+export type EventOutcome = 'ok' | 'unchanged' | 'failed' | 'refused'
+
+export interface MonitoringEvent {
+  id: string
+  sourceId: string
+  sourceName: string
+  kind: EventKind
+  outcome: EventOutcome
+  at: string
+  durationMs: number | null
+  rows: number | null
+  recorded: number | null
+  errorCode: string | null
+  errorMessage: string | null
+  pages: number | null
+  monitorId: string | null
+  monitorName: string | null
+  runId: string | null
+}
+
+export const EVENT_KIND_LABEL: Record<EventKind, string> = {
+  collect: 'coleta',
+  delivery: 'entrega recebida',
+  dispatch: 'monitor disparou',
+}
+
+export const EVENT_OUTCOME_LABEL: Record<EventOutcome, string> = {
+  ok: 'deu certo',
+  unchanged: 'sem novidade',
+  failed: 'falhou',
+  refused: 'recusada',
+}
+
+/**
+ * O histórico operacional, com filtro e página.
+ *
+ * Contadores acumulados não respondem nenhuma das perguntas de quem abre isto às três da
+ * manhã: quando parou, quanto demorou, quantas linhas vieram, qual foi o erro.
+ */
+export const history = (filtro: { sourceId?: string; kind?: string; outcome?: string; cursor?: string; limit?: number } = {}) => {
+  const q = new URLSearchParams()
+  for (const [k, v] of Object.entries(filtro)) if (v) q.set(k, String(v))
+  return req<{ items: MonitoringEvent[]; nextCursor: string | null }>(`/api/monitoring/history${q.toString() ? `?${q}` : ''}`)
+}
 
 /** O tempo relativo como gente lê. Sem biblioteca: são quatro casos. */
 export function desde(iso: string | null, agora = Date.now()): string {

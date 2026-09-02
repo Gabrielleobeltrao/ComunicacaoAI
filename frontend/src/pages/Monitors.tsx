@@ -3,7 +3,7 @@ import { AppLayout } from '../components/AppLayout'
 import { Badge, Button, Card, Field, Input, Select } from '../ui'
 import * as api from '../lib/monitors'
 import { OP_LABEL, STATUS_LABEL, TRIGGER_LABEL } from '../lib/monitors'
-import type { ComparisonOp, FlowOption, MonitorInput, MonitorSummary, TriggerMode } from '../lib/monitors'
+import type { ComparisonOp, ConditionCompare, FlowOption, MonitorInput, MonitorSummary, TriggerMode } from '../lib/monitors'
 
 // MONITORES — o plantão do escritório.
 //
@@ -15,7 +15,20 @@ import type { ComparisonOp, FlowOption, MonitorInput, MonitorSummary, TriggerMod
 // Salvar e publicar são botões diferentes porque são coisas diferentes: o rascunho é
 // livre, e o que fica de plantão é o que alguém revisou.
 
-const VAZIO: MonitorInput = {
+/**
+ * O que ESTA tela edita — o caso simples, de propósito.
+ *
+ * Um evento da plataforma e uma comparação só. A árvore inteira (E/OU, variação,
+ * cruzamento) é montada na Central, que é onde a fonte já normalizou os campos e a prévia
+ * consegue dizer o que a regra significa. Estreitar aqui é o que impede esta tela de
+ * mostrar meia condição de uma regra que ela não sabe editar.
+ */
+type EntradaSimples = Omit<MonitorInput, 'source' | 'condition'> & {
+  source: { kind: 'internal_event'; eventType: string }
+  condition: ConditionCompare
+}
+
+const VAZIO: EntradaSimples = {
   name: '',
   source: { kind: 'internal_event', eventType: '' },
   condition: { kind: 'compare', field: '', op: 'lt', value: 0 },
@@ -30,7 +43,7 @@ export function Monitors() {
   const [meta, setMeta] = useState<api.MonitorMeta | null>(null)
   const [flows, setFlows] = useState<FlowOption[]>([])
   const [erro, setErro] = useState<string | null>(null)
-  const [editando, setEditando] = useState<{ id: string | null; input: MonitorInput } | null>(null)
+  const [editando, setEditando] = useState<{ id: string | null; input: EntradaSimples } | null>(null)
   const [salvando, setSalvando] = useState(false)
 
   const carregar = useCallback(async () => {
@@ -257,7 +270,10 @@ export function Monitors() {
                       input: {
                         name: m.name,
                         source: m.source.kind === 'internal_event' ? { kind: 'internal_event', eventType: m.source.eventType } : VAZIO.source,
-                        condition: m.condition,
+                        // Esta tela edita a comparação simples. Uma regra montada na
+                        // Central (E/OU, variação) é editada lá, onde a prévia sabe
+                        // descrevê-la — abrir meia condição aqui perderia a outra metade.
+                        condition: m.condition.kind === 'compare' ? m.condition : VAZIO.condition,
                         triggerMode: m.triggerMode,
                         threshold: m.threshold,
                         thresholdField: m.thresholdField,

@@ -26,6 +26,8 @@ import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
 import { registerMonitorObservers, resumePendingDispatches } from '../monitors/dispatch.js'
 import { registerDatabaseMonitors } from '../monitors/dataSource.js'
+import { registerMonitoringHistoryBridge } from '../monitoring/history.js'
+import { startSseSupervisor } from '../monitoring/sse.js'
 import { claimDueSources, readSourceOnce, releaseSource } from '../monitoring/service.js'
 import { ensureMonitorIndexes } from '../monitors/state.js'
 import { registerWebSocketDestinations } from '../integrations/websocket/destinations.js'
@@ -89,6 +91,8 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   // E os monitores de DATASET: eles observam no instante da gravação, e não por varredura
   // — uma varredura chegaria atrasada e leria o mesmo registro várias vezes.
   registerDatabaseMonitors(onError)
+  // O fio entre a fonte, o monitor e o Flow — anotado depois do disparo, nunca no lugar dele.
+  registerMonitoringHistoryBridge()
   // E os destinos do App de WebSocket: memória e rotina, pelos mesmos caminhos de
   // sempre. Agente e setor já são atendidos pelo gatilho interno acima.
   registerWebSocketDestinations()
@@ -114,6 +118,14 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
    * venceu, fazer, gravar. Quem grava é o histórico; quem observa são os monitores; o que
    * este laço acrescenta é só o "agora".
    */
+  /**
+   * Os fluxos SSE — assinaturas que vivem, não leituras que acontecem.
+   *
+   * O supervisor reconcilia sozinho: ativar uma fonte na tela sobe a assinatura sem
+   * reiniciar nada, e pausar realmente para de consumir a rede do outro lado.
+   */
+  const fluxos = startSseSupervisor({ onError: (e) => onError('fluxo SSE', e) })
+
   const relogioDeFontes = setInterval(() => {
     void (async () => {
       try {
@@ -266,6 +278,9 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
       if (stopping) return
       stopping = true
       clearInterval(relogioDeFontes)
+      // As assinaturas de fluxo fecham junto: um socket vivo depois do desligamento
+      // continuaria recebendo dado que ninguém vai gravar.
+      await fluxos.stop().catch(() => undefined)
       clearInterval(fontesTimer)
       clearInterval(runTimer)
       clearInterval(schedulerTimer)

@@ -7,6 +7,7 @@ import { ingestFact } from '../dataHistory/engine.js'
 import { applyMapping } from './mapping.js'
 import { MonitoringError, sourceKeyOf, sourcesCollection } from './service.js'
 import type { MonitoringSource } from './types.js'
+import { registrarEvento } from './history.js'
 
 // A FONTE de WEBHOOK — e nenhuma criptografia nova.
 //
@@ -35,6 +36,32 @@ export async function ensureWebhookIndexes(): Promise<void> {
   // cresce, e um reenvio de três meses depois não é o replay que interessa impedir.
   await deliveries.createIndex({ receivedAt: 1 }, { expireAfterSeconds: 7 * 24 * 3600, name: 'entregas_expiram' })
 }
+
+/**
+ * A MEMÓRIA DE ENTREGA — de qualquer fonte que recebe, não só do webhook.
+ *
+ * A dedupe do motor de histórico compõe a identidade do fato com o INSTANTE em que ele
+ * ocorreu, e está certa: o mesmo preço às 10h e às 11h são dois fatos. Mas uma entrega
+ * repetida — o mesmo `x-event-id`, ou o mesmo evento SSE reenviado depois de uma
+ * reconexão — não é um fato novo, e o instante da segunda chegada é diferente do da
+ * primeira. Sem esta memória, cada reconexão duplicaria a série inteira.
+ *
+ * Devolve `false` quando a entrega já tinha chegado. O índice único é quem decide: uma
+ * leitura antes seria uma opinião velha no instante em que chegasse.
+ */
+export async function lembrarEntrega(ownerId: string, sourceId: ObjectId, idempotencyKey: string, agora = new Date()): Promise<boolean> {
+  try {
+    await deliveries.insertOne({ _id: new ObjectId(), sourceId, ownerId, idempotencyKey, receivedAt: agora })
+    return true
+  } catch (erro) {
+    if ((erro as { code?: number }).code === 11000) return false
+    throw erro
+  }
+}
+
+/** Desfaz a lembrança — para uma recusa corrigível não queimar o id do evento. */
+export const esquecerEntregaDe = (sourceId: ObjectId, idempotencyKey: string): Promise<unknown> =>
+  deliveries.deleteOne({ sourceId, idempotencyKey }).catch(() => undefined)
 
 /** A janela em que uma entrega é considerada "de agora". Fora dela, é replay. */
 export const MAX_SKEW_MS = 5 * 60_000
@@ -115,18 +142,18 @@ export async function receiveWebhook(
 
   if (fonte.status !== 'active') return { ok: false, reason: 'paused' }
 
+  /** Uma linha no histórico operacional desta fonte. Entrega é outro tipo de evento. */
+  const anotar = (outcome: 'ok' | 'failed' | 'refused', extra: Record<string, unknown> = {}) =>
+    registrarEvento({ ownerId: fonte.ownerId, sourceId: fonte._id, sourceName: fonte.name, kind: 'delivery', outcome, at: agora, ...extra })
+
   const eventId = typeof headers['x-event-id'] === 'string' ? (headers['x-event-id'] as string) : null
   const idempotencyKey = eventId
     ? `evt:${eventId}`
     : `hash:${createHash('sha256').update(body).digest('hex').slice(0, 32)}`
 
-  try {
-    // O índice único é quem decide: duas entregas simultâneas do mesmo evento, só uma
-    // passa. Uma leitura antes seria uma opinião velha no instante em que chegasse.
-    await deliveries.insertOne({ _id: new ObjectId(), sourceId: fonte._id, ownerId: fonte.ownerId, idempotencyKey, receivedAt: agora })
-  } catch (erro) {
-    if ((erro as { code?: number }).code === 11000) return { ok: false, reason: 'duplicate' }
-    throw erro
+  if (!(await lembrarEntrega(fonte.ownerId, fonte._id, idempotencyKey, agora))) {
+    await anotar('refused', { errorCode: 'duplicate', errorMessage: 'esta entrega já tinha chegado' })
+    return { ok: false, reason: 'duplicate' }
   }
 
   /**
@@ -138,19 +165,21 @@ export async function receiveWebhook(
    * transformava o mesmo `x-event-id` corrigido em "duplicado" para sempre. Do outro lado,
    * alguém reenviava o evento certo e recebia silêncio.
    */
-  const esquecerEntrega = () => deliveries.deleteOne({ sourceId: fonte._id, idempotencyKey }).catch(() => undefined)
+  const esquecerEntrega = () => esquecerEntregaDe(fonte._id, idempotencyKey)
 
   let corpo: unknown
   try {
     corpo = JSON.parse(body)
   } catch {
     await esquecerEntrega()
+    await anotar('failed', { errorCode: 'mapping', errorMessage: 'o corpo entregue não é JSON' })
     return { ok: false, reason: 'mapping' }
   }
 
   const mapeado = applyMapping(corpo, fonte.mapping)
   if (mapeado.missing.length) {
     await esquecerEntrega()
+    await anotar('failed', { errorCode: 'schema', errorMessage: `faltou: ${mapeado.missing.join(', ')}` })
     return { ok: false, reason: 'schema' }
   }
 
@@ -187,6 +216,7 @@ export async function receiveWebhook(
       $inc: { 'telemetry.readsOk': 1 },
     },
   )
+  await anotar('ok', { rows: linhas.length, recorded })
   return { ok: true, recorded }
 }
 

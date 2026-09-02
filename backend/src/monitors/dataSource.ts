@@ -83,11 +83,44 @@ export async function observarRegistro(record: DataHistoryRecord): Promise<Dispa
   return saidas
 }
 
+/**
+ * Quem quiser SABER o que foi observado — sem observar de novo.
+ *
+ * O resultado do disparo era descartado aqui dentro. Quem precisa registrar "este Flow
+ * disparou por causa desta fonte" só tinha duas saídas ruins: observar o registro de novo
+ * (o que dobraria as execuções) ou adivinhar por consulta ao painel de execuções depois.
+ *
+ * O ouvinte NUNCA muda o resultado nem interrompe o disparo: ele recebe o que já
+ * aconteceu.
+ */
+type DispatchListener = (record: DataHistoryRecord, resultados: { monitor: MonitorDefinition; result: DispatchResult }[]) => void | Promise<void>
+const ouvintesDeDisparo: DispatchListener[] = []
+export const onMonitorDispatched = (fn: DispatchListener): void => void ouvintesDeDisparo.push(fn)
+/** Some com todos — usado entre testes, para um não herdar o ouvinte do outro. */
+export const resetDispatchListeners = (): void => void (ouvintesDeDisparo.length = 0)
+
 /** Liga a ponte. Chamado uma vez, no arranque do motor — como o resto dos handlers. */
 export function registerDatabaseMonitors(onError: (where: string, e: unknown) => void = () => undefined): void {
   onRecordWritten(async (record) => {
     try {
-      await observarRegistro(record)
+      const monitores = await monitoresDe(record)
+      const resultados: { monitor: MonitorDefinition; result: DispatchResult }[] = []
+      for (const monitor of monitores) {
+        resultados.push({
+          monitor,
+          result: await observeAndDispatch({
+            ownerId: record.ownerId,
+            monitor,
+            value: valorObservado(record),
+            eventId: record.dedupeKey,
+            now: record.recordedAt,
+          }),
+        })
+      }
+      for (const ouvinte of ouvintesDeDisparo) {
+        // Um ouvinte que quebra não pode calar os outros nem o disparo, que já aconteceu.
+        await Promise.resolve(ouvinte(record, resultados)).catch((e) => onError('ouvinte de disparo', e))
+      }
     } catch (erro) {
       onError(`monitor do registro ${record.dedupeKey}`, erro)
     }

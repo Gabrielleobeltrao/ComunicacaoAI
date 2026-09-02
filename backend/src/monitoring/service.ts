@@ -12,6 +12,7 @@ import type { CollectResult } from './collect.js'
 import { backoffDelay, computeHealth, isDue, nextReadAt } from './health.js'
 import { nextFireAt } from '../automations/scheduleClock.js'
 import { validateMapping } from './mapping.js'
+import { registrarEvento } from './history.js'
 import { KIND_CAPABILITIES, MONITORING_SOURCE_KINDS, emptyTelemetry } from './types.js'
 import type { MonitoringSource, MonitoringSourceKind, MonitoringStatus } from './types.js'
 
@@ -232,7 +233,10 @@ export const sourceKeyOf = (id: ObjectId | string) => `manual:monitoring:${id.to
  */
 function fonteDoRecorder(fonte: MonitoringSource): { kind: 'event' | 'live_data' | 'manual'; ref: string } {
   if (fonte.kind === 'internal_event' && fonte.config.eventType) return { kind: 'event', ref: fonte.config.eventType }
-  if (fonte.kind === 'websocket' && fonte.config.installationId) return { kind: 'live_data', ref: fonte.config.installationId }
+  // Um SSE não tem instalação: ele é entregue por este processo, como um evento próprio.
+  if (fonte.kind === 'websocket' && fonte.config.protocol !== 'sse' && fonte.config.installationId) {
+    return { kind: 'live_data', ref: fonte.config.installationId }
+  }
   return { kind: 'manual', ref: `monitoring:${fonte._id.toString()}` }
 }
 
@@ -314,8 +318,19 @@ export async function setSourceStatus(ownerId: string, id: ObjectId, status: Mon
   if (status === 'active' && fonte.kind === 'internal_event' && !fonte.config.eventType) {
     throw new MonitoringError('escolha qual evento esta fonte observa', 'missing_source_ref')
   }
-  if (status === 'active' && fonte.kind === 'websocket' && !fonte.config.installationId) {
-    throw new MonitoringError('escolha qual conexão de WebSocket esta fonte observa', 'missing_source_ref')
+  /**
+   * O fluxo precisa dizer DE ONDE — e o "onde" de cada protocolo é diferente.
+   *
+   * WebSocket chega pela instalação do App, que é quem tem a conexão e a credencial. SSE é
+   * uma resposta HTTP que nunca termina, e o "onde" dele é o endereço. Exigir instalação
+   * dos dois deixava toda fonte SSE impossível de ativar.
+   */
+  if (status === 'active' && fonte.kind === 'websocket') {
+    const sse = fonte.config.protocol === 'sse'
+    if (sse && !fonte.config.url) throw new MonitoringError('uma fonte SSE precisa do endereço do fluxo', 'missing_source_ref')
+    if (!sse && !fonte.config.installationId) {
+      throw new MonitoringError('escolha qual conexão de WebSocket esta fonte observa', 'missing_source_ref')
+    }
   }
   if (status === 'active') await materializarDestino(fonte)
   return (await sources.findOneAndUpdate({ _id: id, ownerId }, { $set: { status, updatedAt: new Date() } }, { returnDocument: 'after' })) ?? null
@@ -584,12 +599,14 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
     headers = await cabecalhosDaConexao(fonte)
   } catch (erro) {
     const atraso = await registrarFalha(fonte, 'connection_missing', agora)
+    await anotar(fonte, 'failed', { at: agora, durationMs: 0, errorCode: 'connection_missing', errorMessage: (erro as Error).message })
     return { ok: false, rows: 0, recorded: 0, latencyMs: 0, error: { kind: 'connection_missing', message: (erro as Error).message }, nextAttemptMs: atraso }
   }
 
   const r = await collectOnce(fonte, { headers, ownerId: fonte.ownerId, cursor: fonte.cursor ?? null })
   if (!r.ok) {
     const atraso = await registrarFalha(fonte, r.error?.kind ?? 'erro', agora, r.latencyMs)
+    await anotar(fonte, 'failed', { at: agora, durationMs: r.latencyMs, errorCode: r.error?.kind ?? 'erro', errorMessage: r.error?.message })
     return {
       ok: false,
       rows: 0,
@@ -604,6 +621,7 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
   // gravar, porque a série fica com um buraco que parece dado.
   if (r.missing.length) {
     const atraso = await registrarFalha(fonte, 'schema', agora, r.latencyMs)
+    await anotar(fonte, 'failed', { at: agora, durationMs: r.latencyMs, rows: r.rows.length, errorCode: 'schema', errorMessage: `faltou: ${r.missing.join(', ')}` })
     return { ok: false, rows: r.rows.length, recorded: 0, latencyMs: r.latencyMs, error: { kind: 'schema', message: `faltou: ${r.missing.join(', ')}` }, nextAttemptMs: atraso }
   }
 
@@ -633,6 +651,7 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
         $inc: { 'telemetry.readsOk': 1 },
       },
     )
+    await anotar(fonte, 'unchanged', { at: agora, durationMs: r.latencyMs, rows: r.rows.length, recorded: 0, pages: r.pages?.fetched ?? null })
     // Leitura boa, zero gravado: a fonte está saudável, o dado é que não mudou.
     return { ok: true, rows: r.rows.length, recorded: 0, latencyMs: r.latencyMs, unchanged: true }
   }
@@ -647,35 +666,9 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
    * O TTL é a janela de validade da própria fonte: um valor que já não vale não pode
    * continuar respondendo como se fosse de agora.
    */
-  if (fonte.destination.live) {
-    const { putLiveValue } = await import('../integrations/websocket/liveData.js')
-    const conexao = liveConnectionOf(fonte._id)
-    const ttl = Math.max(30, Math.round((fonte.freshness.staleAfterMs || 900_000) / 1000))
-    for (const linha of r.rows.slice(0, 200)) {
-      const chave = fonte.entityKeyPath ? String(linha[fonte.entityKeyPath] ?? '') || CHAVE_AO_VIVO : CHAVE_AO_VIVO
-      await putLiveValue(fonte.ownerId, conexao, chave, linha, ttl, agora)
-    }
-  }
+  await gravarAoVivo(fonte, r.rows, agora)
 
-  let recorded = 0
-  if (fonte.destination.history) {
-    for (const linha of r.rows.slice(0, 200)) {
-      const resultado = await ingestFact({
-        ownerId: fonte.ownerId,
-        sourceKey: sourceKeyOf(fonte._id),
-        entityKey: fonte.entityKeyPath ? String(linha[fonte.entityKeyPath] ?? '') || null : null,
-        occurredAt: agora,
-        value: linha,
-        // A identidade do fato: com ela, a mesma leitura entregue duas vezes grava uma.
-        ...(fonte.dedupe.mode === 'field' && fonte.dedupe.field
-          ? { factId: `${fonte._id.toString()}:${String(linha[fonte.dedupe.field] ?? '')}` }
-          : fonte.dedupe.mode === 'content_hash'
-            ? { factId: `${fonte._id.toString()}:${hashDaLinha(linha)}` }
-            : {}),
-      })
-      recorded += resultado.gravado ?? 0
-    }
-  }
+  const recorded = await gravarNoHistorico(fonte, r.rows, agora)
 
   await sources.updateOne(
     { _id: fonte._id },
@@ -702,8 +695,67 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
       $inc: { 'telemetry.readsOk': 1 },
     },
   )
+  await anotar(fonte, 'ok', { at: agora, durationMs: r.latencyMs, rows: r.rows.length, recorded, pages: r.pages?.fetched ?? null })
   return { ok: true, rows: r.rows.length, recorded, latencyMs: r.latencyMs }
 }
+
+/**
+ * As LINHAS no histórico — o mesmo caminho para quem puxa e para quem recebe um fluxo.
+ *
+ * O `factId` é por linha, e é ele que faz a mesma entrega chegando duas vezes gravar uma.
+ * Sem ele, um reenvio de fluxo depois de uma reconexão duplicaria a série inteira.
+ */
+export async function gravarNoHistorico(
+  fonte: Pick<MonitoringSource, '_id' | 'ownerId' | 'destination' | 'entityKeyPath' | 'dedupe'>,
+  linhas: Record<string, unknown>[],
+  agora: Date,
+  sufixo?: (linha: Record<string, unknown>, i: number) => string,
+): Promise<number> {
+  if (!fonte.destination.history) return 0
+  let recorded = 0
+  for (const [i, linha] of linhas.slice(0, 200).entries()) {
+    const identidade = sufixo
+      ? `${fonte._id.toString()}:${sufixo(linha, i)}`
+      : fonte.dedupe.mode === 'field' && fonte.dedupe.field
+        ? `${fonte._id.toString()}:${String(linha[fonte.dedupe.field] ?? '')}`
+        : fonte.dedupe.mode === 'content_hash'
+          ? `${fonte._id.toString()}:${hashDaLinha(linha)}`
+          : null
+    const resultado = await ingestFact({
+      ownerId: fonte.ownerId,
+      sourceKey: sourceKeyOf(fonte._id),
+      entityKey: fonte.entityKeyPath ? String(linha[fonte.entityKeyPath] ?? '') || null : null,
+      occurredAt: agora,
+      value: linha,
+      ...(identidade ? { factId: identidade } : {}),
+    })
+    recorded += resultado.gravado ?? 0
+  }
+  return recorded
+}
+
+/** O valor de agora, no Dado ao vivo. Mesmo destino para quem puxa e para quem recebe. */
+export async function gravarAoVivo(
+  fonte: Pick<MonitoringSource, '_id' | 'ownerId' | 'destination' | 'entityKeyPath' | 'freshness'>,
+  linhas: Record<string, unknown>[],
+  agora: Date,
+): Promise<void> {
+  if (!fonte.destination.live) return
+  const { putLiveValue } = await import('../integrations/websocket/liveData.js')
+  const conexao = liveConnectionOf(fonte._id)
+  const ttl = Math.max(30, Math.round((fonte.freshness.staleAfterMs || 900_000) / 1000))
+  for (const linha of linhas.slice(0, 200)) {
+    const chave = fonte.entityKeyPath ? String(linha[fonte.entityKeyPath] ?? '') || CHAVE_AO_VIVO : CHAVE_AO_VIVO
+    await putLiveValue(fonte.ownerId, conexao, chave, linha, ttl, agora)
+  }
+}
+
+/** Uma linha no histórico operacional. O nome curto existe porque ele aparece cinco vezes. */
+const anotar = (
+  fonte: MonitoringSource,
+  outcome: 'ok' | 'unchanged' | 'failed',
+  extra: Partial<Parameters<typeof registrarEvento>[0]>,
+): Promise<void> => registrarEvento({ ownerId: fonte.ownerId, sourceId: fonte._id, sourceName: fonte.name, kind: 'collect', outcome, ...extra })
 
 /** O hash do conteúdo — é o que faz "o mesmo valor de novo" não virar uma segunda linha. */
 function hashDaLinha(linha: Record<string, unknown>): string {
