@@ -206,3 +206,28 @@ test('operationKind é DERIVADO quando o campo não existe — nada foi carimbad
   const gravado = await db.collection('automations').findOne({ _id: flow._id })
   assert.equal(gravado.operationKind, undefined, 'criar não carimba: o legado continua sem o campo')
 })
+
+test('a flag MONITORS_ENABLED=0 nega a rota de verdade', async () => {
+  const express = (await import('express')).default
+  const { monitorRouter } = await import('../dist/routes/monitorRoutes.js')
+  const app = express()
+  app.use((req, res, next) => {
+    res.locals.userId = DONO
+    next()
+  })
+  app.use('/api/monitors', monitorRouter)
+  const servidor = app.listen(0)
+  const porta = servidor.address().port
+  try {
+    process.env.MONITORS_ENABLED = '0'
+    const negado = await fetch(`http://127.0.0.1:${porta}/api/monitors`)
+    assert.equal(negado.status, 404, 'a flag fecha a rota, não só o botão')
+
+    delete process.env.MONITORS_ENABLED
+    const aberto = await fetch(`http://127.0.0.1:${porta}/api/monitors`)
+    assert.equal(aberto.status, 200)
+  } finally {
+    delete process.env.MONITORS_ENABLED
+    servidor.close()
+  }
+})

@@ -22,6 +22,17 @@ import { notFound, oid } from './http.js'
 
 export const monitorRouter = Router()
 
+// A flag NEGA de verdade: `MONITORS_ENABLED=0` responde 404, e não esconde o botão. Uma
+// flag cosmética deixa a rota aberta para quem souber o caminho — que é exatamente quem
+// não deveria entrar.
+monitorRouter.use((_req, res, next) => {
+  if (process.env.MONITORS_ENABLED === '0') {
+    res.status(404).json({ code: 'not_found', message: 'not found' })
+    return
+  }
+  next()
+})
+
 const recusa = (res: Parameters<typeof notFound>[0], erro: unknown): boolean => {
   if (erro instanceof MonitorError) {
     res.status(erro.code === 'not_found' ? 404 : 400).json({ code: erro.code, message: erro.message, error: erro.message })
