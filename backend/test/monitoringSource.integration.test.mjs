@@ -374,3 +374,45 @@ test('coletar uma fonte que EMPURRA é recusado, e não fingido', async () => {
   assert.equal(r.ok, false)
   assert.equal(r.error.kind, 'not_supported')
 })
+
+// --- AMEAÇA: segredo nunca fica na fonte ------------------------------------------------
+
+test('AMEAÇA: credencial na QUERY é recusada na criação', async () => {
+  // Uma chave na query viaja no log do outro lado, no referer e no histórico de quem colar
+  // o endereço. Recusar na leitura seria tarde: gravada, ela já vazou para o documento.
+  await assert.rejects(
+    () => svc.createSource(DONO, entrada({ config: { url: `http://127.0.0.1:${porta}/x?api_key=abc123` } })),
+    /parece uma credencial/,
+  )
+  await assert.rejects(
+    () => svc.createSource(DONO, entrada({ config: { url: `http://127.0.0.1:${porta}/x`, query: [{ key: 'token', value: 'abc' }] } })),
+    /parece uma credencial/,
+  )
+})
+
+test('AMEAÇA: credencial no USUÁRIO da URL é recusada', async () => {
+  await assert.rejects(
+    () => svc.createSource(DONO, entrada({ config: { url: `http://user:senha@127.0.0.1:${porta}/x` } })),
+    /tire a credencial do endereço/,
+  )
+})
+
+test('AMEAÇA: token no CORPO é recusado', async () => {
+  await assert.rejects(
+    () => svc.createSource(DONO, entrada({ config: { url: `http://127.0.0.1:${porta}/x`, method: 'POST', body: '{"auth":"Bearer abcdefghijklmno"}' } })),
+    /credencial/,
+  )
+})
+
+test('parâmetro comum continua passando: a peneira é por credencial, não por query', async () => {
+  const f = await svc.createSource(DONO, entrada({ config: { url: `http://127.0.0.1:${porta}/x?pagina=2`, query: [{ key: 'limite', value: '50' }] } }))
+  assert.ok(f._id)
+})
+
+test('a fonte gravada não guarda valor de cabeçalho — só o NOME', async () => {
+  const f = await svc.createSource(DONO, entrada({ config: { url: `http://127.0.0.1:${porta}/x`, headerNames: ['Authorization'] } }))
+  const doc = await db.collection('monitoring_sources').findOne({ _id: f._id })
+  const texto = JSON.stringify(doc)
+  assert.ok(texto.includes('Authorization'), 'o nome viaja: é ele que diz o que a conexão preenche')
+  assert.ok(!/Bearer|sk-|senha/.test(texto), 'o valor sai da conexão cifrada, na hora da leitura')
+})

@@ -129,16 +129,53 @@ fonte → collectOnce (safeFetch) → mapping → schema → recorder → datase
 Comandos: `node --test test/monitoringSource.integration.test.mjs test/monitoringHealth.test.mjs`
 → **42/42**; `npm run test -w backend` → **1390 + 1900, 0 falhas**.
 
+## Bloco 4 — as correções pedidas na revisão ✅
+
+Sete itens da lista, todos com teste que falha sem a correção:
+
+1. **`backoffDelay` nunca fica abaixo do backoff base.** Sem o piso, uma razão de jitter
+   alta faz a terceira tentativa esperar menos que a primeira — o "aleatório" vira rajada
+   justo quando o outro lado está pedindo calma;
+2. **a lista de transformações é conferida, não só declarada.** `{ op: 'exec' }` era aceito
+   e ignorado em silêncio: o mapeamento parecia ter transformado quando não transformou, e
+   o erro apareceria como número estranho numa série semanas depois. Cada `op` tem os
+   parâmetros dela validados (`join` sem separador, `replace` sem texto, `default` com
+   objeto — todos recusados);
+3. **o destino do mapping é mais apertado que a origem**: sem `$`, porque a chave de saída
+   vira campo de um documento do Mongo e `$` é lido como operador. Na origem ele continua
+   aceito, porque APIs usam `$id` e ler não é escrever. `__proto__`, `constructor` e
+   `prototype` já eram recusados nos dois lados;
+4. **a versão do mapping é inteiro positivo** — `1.5` e `-2` não ordenam nada;
+5. **o número exige formato explícito quando é ambíguo.** `"1.234"` é mil em pt-BR e
+   um-vírgula-dois em en-US; chutar acerta metade das vezes, e a metade errada vira alarme
+   de madrugada sobre um valor mil vezes maior. Sem `locale`, o ambíguo devolve `null`; com
+   `pt-BR`/`en-US`, os dois lados funcionam. O que não é ambíguo (`42`, `1.5`, `R$ 10,50`,
+   `1.234.567`, `1.234,56`) passa sem declaração;
+6. **tetos de bytes por valor, por linha e pela leitura inteira.** Um campo que devolve dez
+   megabytes viraria dez megabytes por linha, quinhentas vezes, no event loop e depois no
+   banco. Valor estourado é cortado e o corte é **dito**; linha estourada é descartada
+   inteira, porque meia linha é pior — o buraco parece dado;
+7. **segredo nunca fica na fonte.** Credencial na query, no usuário da URL ou no corpo é
+   recusada na **criação**: gravada, ela já vazou para o documento que a tela lê inteiro. A
+   fonte guarda só o NOME do cabeçalho; o valor sai da conexão cifrada na hora da leitura.
+
+Comandos: `node --test test/monitoringMapping.test.mjs test/monitoringSource.integration.test.mjs test/monitoringHealth.test.mjs`
+→ **81/81**; `npm run test -w backend` → **1401 + 1905, 0 falhas**.
+
 ## Próxima ação exata
 
-1. Serviço de fontes: criar, testar de verdade (com `safeFetch`, que já revalida redirect),
-   amostra redigida, pausar, duplicar, excluir — orquestrando recorder e fonte ao vivo.
-2. Pipeline fonte → Live/Dataset → Monitor → Flow → Activity, reusando `dataHistory`,
-   `monitors/dispatch` e a linha do tempo.
-3. Rotas + as cinco abas da Central.
-4. Sites: JSON → JSON-LD → DOM → browser em worker isolado, com SSRF revalidado em cada
-   subrequisição.
-5. Bateria completa e testes de ameaça.
+1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
+   `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
+   capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
+2. **As cinco abas da Central** e o wizard: nada disso está na tela ainda.
+3. **Tipos que ainda não coletam**: webhook (com assinatura, rotação e replay), WebSocket/
+   **SSE**, App/action, RSS/Atom, dataset e evento interno. Hoje só `api_polling`, `rss` e
+   `http_page` passam por `collectOnce` — e `rss` cai no caminho de página, sem parser de
+   feed.
+4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e
+   o plano é explícito que dado incerto não dispara.
+5. **Grants por agente/setor** sobre fonte, e autorização reconferida antes da leitura.
+6. E2E 320 px, acessibilidade, e a bateria completa (frontend, lint, smoke, secret-scan).
 
 ## O que ainda NÃO existe
 

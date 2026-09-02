@@ -217,7 +217,8 @@ export interface MonitoringSource {
  * ela tem a forma que tem.
  */
 export type TransformOp =
-  | { op: 'number' }
+  /** O formato é EXPLÍCITO: adivinhar entre "1.234" (mil) e "1.234" (um vírgula dois) erra metade das vezes. */
+  | { op: 'number'; locale?: 'pt-BR' | 'en-US' }
   | { op: 'trim' }
   | { op: 'lower' }
   | { op: 'upper' }

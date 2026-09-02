@@ -6,7 +6,7 @@
 // fixa, e a amostra que a tela mostra sem mostrar segredo.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyMapping, applyTransforms, readPath, redactSample, validateMapping, MappingError } from '../dist/monitoring/mapping.js'
+import { applyMapping, applyTransforms, parseNumber, readPath, redactSample, validateMapping, MappingError } from '../dist/monitoring/mapping.js'
 
 // --- o caminho ------------------------------------------------------------------------
 
@@ -45,10 +45,12 @@ test('ausente NÃO vira zero', () => {
   assert.equal(applyTransforms('não é número', [{ op: 'number' }]), null)
 })
 
-test('número aceita o formato que a web devolve', () => {
+test('número aceita o formato que a web devolve — quando ele não é ambíguo', () => {
   assert.equal(applyTransforms('R$ 1.234,56', [{ op: 'number' }]), 1234.56)
   assert.equal(applyTransforms('42', [{ op: 'number' }]), 42)
   assert.equal(applyTransforms('-3.5', [{ op: 'number' }]), -3.5)
+  // E recusa o que é: ver o caso do separador ambíguo mais abaixo.
+  assert.equal(applyTransforms('1.234', [{ op: 'number' }]), null)
 })
 
 test('replace é literal, nunca expressão regular', () => {
@@ -153,4 +155,86 @@ test('a amostra corta texto longo e lista grande — ela mostra a FORMA', () => 
 test('a amostra não entra em profundidade infinita', () => {
   const fundo = { a: { b: { c: { d: { e: { f: { g: { h: 1 } } } } } } } }
   assert.doesNotThrow(() => JSON.stringify(redactSample(fundo)))
+})
+
+// --- a lista de transformações é CONFERIDA, não só declarada ---------------------------
+
+test('transformação desconhecida é recusada, e não ignorada em silêncio', () => {
+  // Ignorar faria o mapeamento parecer que transformou quando não transformou — e o erro
+  // apareceria como número estranho numa série, semanas depois.
+  assert.throws(() => validateMapping({ fields: [{ to: 'a', from: 'x', transforms: [{ op: 'exec' }] }] }), /transformação desconhecida/)
+  assert.throws(() => validateMapping({ fields: [{ to: 'a', from: 'x', transforms: [{}] }] }), /transformação desconhecida/)
+  assert.throws(() => validateMapping({ fields: [{ to: 'a', from: 'x', transforms: 'trim' }] }), /precisam ser uma lista/)
+})
+
+test('cada transformação precisa dos parâmetros dela', () => {
+  assert.throws(() => validateMapping({ fields: [{ to: 'a', from: 'x', transforms: [{ op: 'join' }] }] }), /separador/)
+  assert.throws(() => validateMapping({ fields: [{ to: 'a', from: 'x', transforms: [{ op: 'replace', find: '' }] }] }), /texto a procurar/)
+  assert.throws(() => validateMapping({ fields: [{ to: 'a', from: 'x', transforms: [{ op: 'default', value: { a: 1 } }] }] }), /valor simples/)
+  assert.throws(() => validateMapping({ fields: [{ to: 'a', from: 'x', transforms: [{ op: 'number', locale: 'de-DE' }] }] }), /pt-BR ou en-US/)
+})
+
+test('transformações demais são recusadas', () => {
+  const muitas = Array.from({ length: 20 }, () => ({ op: 'trim' }))
+  assert.throws(() => validateMapping({ fields: [{ to: 'a', from: 'x', transforms: muitas }] }), /demais/)
+})
+
+test('o DESTINO é mais apertado que a origem: sem `$`', () => {
+  // A chave de saída vira campo de um documento do Mongo, e `$` é lido como operador.
+  assert.throws(() => validateMapping({ fields: [{ to: '$set', from: 'x' }] }), /nome de campo válido/)
+  // Na ORIGEM ele é aceito: APIs usam `$id`, e ler não é escrever.
+  assert.doesNotThrow(() => validateMapping({ fields: [{ to: 'id', from: '$id' }] }))
+})
+
+test('a versão do mapeamento é um inteiro positivo', () => {
+  assert.throws(() => validateMapping({ version: 1.5, fields: [{ to: 'a', from: 'x' }] }), /inteiro positivo/)
+  assert.throws(() => validateMapping({ version: 0, fields: [{ to: 'a', from: 'x' }] }), /inteiro positivo/)
+  assert.throws(() => validateMapping({ version: -2, fields: [{ to: 'a', from: 'x' }] }), /inteiro positivo/)
+  assert.equal(validateMapping({ version: 7, fields: [{ to: 'a', from: 'x' }] }).version, 7)
+})
+
+// --- o número não é adivinhado -----------------------------------------------------------
+
+test('separador AMBÍGUO sem formato declarado é recusado, não chutado', () => {
+  // "1.234" é mil em pt-BR e um-vírgula-dois em en-US. Chutar acerta metade das vezes, e a
+  // metade errada vira alarme de madrugada sobre um valor mil vezes maior.
+  assert.equal(parseNumber('1.234'), null)
+  assert.equal(parseNumber('1,234'), null)
+})
+
+test('com o formato DITO, os dois lados funcionam', () => {
+  assert.equal(parseNumber('1.234', 'pt-BR'), 1234)
+  assert.equal(parseNumber('1.234', 'en-US'), 1.234)
+  assert.equal(parseNumber('1.234,56', 'pt-BR'), 1234.56)
+  assert.equal(parseNumber('1,234.56', 'en-US'), 1234.56)
+})
+
+test('o que NÃO é ambíguo passa sem formato declarado', () => {
+  assert.equal(parseNumber('42'), 42)
+  assert.equal(parseNumber('1.5'), 1.5)
+  assert.equal(parseNumber('R$ 10,50'), 10.5)
+  assert.equal(parseNumber('1.234.567'), 1234567, 'três pontos só podem ser milhar')
+  assert.equal(parseNumber('1.234,56'), 1234.56, 'os dois separadores presentes: o último é o decimal')
+})
+
+// --- os tetos de tamanho --------------------------------------------------------------------
+
+test('valor gigante é CORTADO, e o corte é dito', () => {
+  const r = applyMapping({ texto: 'x'.repeat(20_000) }, { version: 1, fields: [{ to: 'texto', from: 'texto' }] })
+  assert.equal(r.rows[0].texto.length, 8_000)
+  assert.deepEqual(r.truncated, ['texto'])
+})
+
+test('objeto gigante num campo vira null, e não dez megabytes por linha', () => {
+  const enorme = { lista: Array.from({ length: 5_000 }, (_, i) => ({ i, txt: 'abcdefghij' })) }
+  const r = applyMapping({ campo: enorme }, { version: 1, fields: [{ to: 'campo', from: 'campo' }] })
+  assert.equal(r.rows[0].campo, null)
+  assert.deepEqual(r.truncated, ['campo'])
+})
+
+test('a leitura inteira tem orçamento: não são 500 linhas gigantes', () => {
+  const itens = Array.from({ length: 500 }, () => ({ t: 'y'.repeat(7_000) }))
+  const r = applyMapping({ itens }, { version: 1, itemsPath: 'itens', fields: [{ to: 't', from: 't' }] })
+  assert.ok(r.rows.length < 500, `veio ${r.rows.length}`)
+  assert.ok(r.rows.length > 0, 'o orçamento corta, não zera')
 })

@@ -81,6 +81,15 @@ function normalizar(input: SourceInput): Omit<MonitoringSource, '_id' | 'ownerId
     }
   }
 
+  /**
+   * SEGREDO nunca fica na fonte — nem na URL, nem na query, nem no corpo.
+   *
+   * Uma chave na query viaja no log do servidor do outro lado, no referer e no histórico
+   * do navegador de quem colar o endereço. A peneira recusa na criação, e não na leitura:
+   * gravado, o segredo já vazou para o documento que a tela lê inteiro.
+   */
+  assertSemSegredo(config)
+
   const mapping = validateMapping(input.mapping)
 
   const modo = input.cadence?.mode ?? (caps.pull ? 'interval' : 'stream')
@@ -120,6 +129,42 @@ function normalizar(input: SourceInput): Omit<MonitoringSource, '_id' | 'ownerId
     entityKeyPath: input.entityKeyPath ? String(input.entityKeyPath) : null,
     dedupe: input.dedupe ?? { mode: 'content_hash' },
     destination: { ...destino, recorderId: null, realtimeSourceId: null, retentionDays: input.destination?.retentionDays ?? null },
+  }
+}
+
+/**
+ * Nome que denuncia credencial. `token` entra sozinho de propósito: um parâmetro chamado
+ * `token`, `authToken` ou `t0ken` é credencial em qualquer API que já vi, e o custo de um
+ * falso positivo é a pessoa renomear o parâmetro — bem menor que o de vazar a chave.
+ */
+const PARECE_SEGREDO = /(api[-_]?key|apikey|token|bearer|secret|password|senha|credential|private[-_]?key|authorization|auth)/i
+const VALOR_DE_SEGREDO = /(^|[^A-Za-z0-9])(sk-[A-Za-z0-9]{8,}|ghp_[A-Za-z0-9]{8,}|ey[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9._-]{12,})/
+
+function assertSemSegredo(config: MonitoringSource['config']): void {
+  const url = String(config.url ?? '')
+  if (url) {
+    let alvo: URL | null = null
+    try {
+      alvo = new URL(url)
+    } catch {
+      alvo = null
+    }
+    if (alvo) {
+      if (alvo.username || alvo.password) throw new MonitoringError('tire a credencial do endereço: use uma conexão', 'secret_in_config')
+      for (const [chave, valor] of alvo.searchParams) {
+        if (PARECE_SEGREDO.test(chave) || VALOR_DE_SEGREDO.test(valor)) {
+          throw new MonitoringError(`o parâmetro "${chave}" parece uma credencial: use uma conexão`, 'secret_in_config')
+        }
+      }
+    }
+  }
+  for (const q of config.query ?? []) {
+    if (PARECE_SEGREDO.test(String(q.key)) || VALOR_DE_SEGREDO.test(String(q.value))) {
+      throw new MonitoringError(`o parâmetro "${q.key}" parece uma credencial: use uma conexão`, 'secret_in_config')
+    }
+  }
+  if (config.body && VALOR_DE_SEGREDO.test(config.body)) {
+    throw new MonitoringError('o corpo parece carregar uma credencial: use uma conexão', 'secret_in_config')
   }
 }
 

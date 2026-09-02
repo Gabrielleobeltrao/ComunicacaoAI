@@ -100,7 +100,13 @@ export function backoffDelay(
   const base = retry.backoffMs * 2 ** (n - 1)
   const teto = Math.min(base, 15 * 60_000)
   const ratio = Math.min(1, Math.max(0, retry.jitterRatio))
-  // O jitter subtrai: a espera fica entre `teto*(1-ratio)` e `teto`. Nunca menor que o
-  // backoff base do primeiro degrau, para o "aleatório" não virar uma rajada.
-  return Math.round(teto - teto * ratio * aleatorio())
+  /**
+   * O jitter subtrai — mas nunca abaixo do backoff base.
+   *
+   * Sem o piso, uma razão alta transforma a terceira tentativa numa espera menor que a
+   * primeira: o "aleatório" vira rajada justo quando o outro lado está pedindo calma. O
+   * piso é o degrau inicial, que é a menor espera que alguém configurou de propósito.
+   */
+  const comJitter = teto - teto * ratio * aleatorio()
+  return Math.round(Math.max(retry.backoffMs, comJitter))
 }
