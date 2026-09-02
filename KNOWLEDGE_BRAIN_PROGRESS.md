@@ -222,15 +222,64 @@ Decisões e defeitos deste bloco:
 - a memória original do Arquiteto continua de pé. A auditoria diz o que já pode ser
   limpo; a limpeza é um comando explícito, e vai precisar desta lista.
 
+### Knowledge Brain — Fases 3 a 6 (`967499a`, `28636e9`, `f256e15`, `d498c62`, `1737533`)
+
+**Context Engine.** `contextManifest.ts` grava, por execução, o que a política permitiu, o
+que foi pedido, o que voltou, o que coube e o que ficou de fora com o motivo. IDs, títulos
+e números — nunca o prompt, nunca o trecho. Os requisitos são DERIVADOS da política: uma
+inferência para concluir que o agente precisa consultar o que a política dele permite
+seria uma chamada paga para repetir uma regra que o servidor já conhece. Gravado dentro da
+porta única, e não em cada executor — quem responde sobre a execução é quem executou a
+busca. `countExecutionsUsingDocument` é a metade "usou" da análise de impacto.
+
+**Inteligência operacional.** `knowledgeGaps.ts` agrega a falta por assunto (a mesma
+pergunta escrita de outro jeito soma na mesma lacuna) e redige o que identifica alguém;
+`denied` não gera lacuna, porque falta permissão e não conhecimento. Resolver exige que a
+busca ENCONTRE o documento pelo assunto. `knowledgeProposals.ts` mantém a proposta fora do
+retrieval até uma aprovação humana criar o documento; sem evidência independente ela nasce
+`needs_review`, o que quebra o ciclo de a IA citar a si mesma. `knowledgeConflicts.ts`
+detecta valores incompatíveis do mesmo assunto e aplica precedência determinística —
+quando ela não decide, os dois trechos saem e o estado vira `conflict`.
+
+**Links, grafo e impacto.** `[[Título]]` é escrito por nome e guardado por id, então
+renomear não quebra a ligação; o não resolvido fica como pendência visível. O grafo é
+derivado das relações reais e da mesma resolução de política da execução — "ver como
+agente" REMOVE o que ele não alcança. A expansão de um salto existe atrás de flag: o
+vizinho volta para a mesma seleção e compete com os seeds. `analyzeDocumentImpact` separa
+`accessibleBy` (política) de `actuallyUsedBy` (manifestos).
+
+**Interface.** `?view=office|knowledge` no `FloorView`; `KnowledgeMap` em SVG, com o
+retrato do agente que o sistema já usa e a cor real do setor; inspector que separa pode-ler
+de leu; editor Markdown com o renderizador seguro das mensagens e os campos de curadoria;
+"Acesso ao conhecimento" na configuração do agente.
+
+**Evals e limpeza.** `scripts/evalContextEngine.mjs` mede antes/depois. Medição desta
+instalação: 4/5 → 5/5 acertos, +25 caracteres, sem vazamento. A flag continua DESLIGADA
+porque a medição rodou sem provedor de embedding — o ganho é sobre a busca exata, e não
+sobre o sistema inteiro. `cleanupMigratedMemories` é simulação por padrão, reconfere a
+cópia por leitura na hora da exclusão e é retomável.
+
+Defeitos e decisões deste bloco:
+
+- no Playwright, a rota registrada por ÚLTIMO vence. Os stubs genéricos estavam antes dos
+  específicos e a página recebia a lista de andares no lugar da analítica;
+- `@xyflow/react` foi dispensado: pan, zoom e arrastar são trinta linhas de ponteiro,
+  enquanto a dependência traria bundle, nós em `div` que atrapalham o foco por teclado e
+  simulação física — o oposto do que `prefers-reduced-motion` pede;
+- o Arquiteto NÃO ganhou manifesto próprio: ele não lê a base de conhecimento hoje, e um
+  manifesto vazio por turno seria telemetria inventada. Os agentes que ele aplica gravam
+  manifesto normalmente, pelos executores.
+
 ## O que falta, na ordem
 
-### Knowledge Brain — próximo bloco (Fase 3)
-1. `ContextRequirement` no Planner e `ContextManifest` por execução (3.1, 3.2).
-2. Fontes internas, lacunas, propostas, validade, autoridade e conflitos (3.3–3.7).
-3. Tela de "Acesso ao conhecimento" na configuração do agente (a API já existe; falta a
-   interface, e ela é a única forma de o dono usar a política sem chamar a API à mão).
-4. Executar a remoção das memórias já copiadas, com comando explícito e a auditoria como
-   entrada.
+### Knowledge Brain — o que ficou de fora, com o motivo
+1. Ligar a expansão do grafo por padrão — depende de rodar `evalContextEngine.mjs` com o
+   provedor de embedding configurado. O número atual não autoriza a mudança.
+2. Executar a limpeza das memórias já copiadas em produção (o comando existe e é
+   explícito; rodá-lo é uma decisão do dono, com a auditoria na mão).
+3. Camada LLM auxiliar do detector de conflitos (hoje só a heurística determinística, que
+   é a que decide; o modelo entraria como sinalizador).
+4. Versionamento de documento — a ação `Histórico` não existe e não foi simulada.
 
 ### Arquiteto (Fase 7)
 1. Nada bloqueando: o núcleo (7.7 a 7.14) está fechado. O que sobra é acabamento —
@@ -280,6 +329,18 @@ Decisões e defeitos deste bloco:
   quatro vezes mais contexto, e o trecho fraco entra na frente do forte.
 - **"Não pode ler" ≠ "não achei" ≠ "não consegui procurar".** Os três levam a frases
   diferentes, e confundi-los faz o agente afirmar ausência sobre uma base cheia.
+- **O manifesto é fato do servidor.** Citação escrita pelo modelo é citação de memória:
+  às vezes de um documento que não foi consultado.
+- **Telemetria não é uma segunda cópia do conteúdo.** IDs, títulos e números; o resto fica
+  no documento, que é onde ele já está.
+- **Proposta não é documento.** Sem aprovação humana ela não responde, e sem evidência
+  independente ela não vai para a fila — é assim que a IA para de citar a si mesma.
+- **Conflito sem regra que decida não vai para o modelo.** Escolher no par é a decisão
+  silenciosa com um passo a mais.
+- **Remover é diferente de esconder.** Um mapa que desenha o que a pessoa não pode ver e
+  conta com o CSS entrega o dado na primeira aba de rede aberta.
+- **Flag só liga com número.** Ganho medido sobre metade do sistema não autoriza mudar o
+  padrão do sistema inteiro.
 - **O crítico do modelo não bloqueia e não edita.** Bloquear daria a um palpite a palavra
   final sobre aplicar; editar criaria um segundo arquiteto, e ninguém saberia qual dos
   dois propôs o que está sendo aprovado.
