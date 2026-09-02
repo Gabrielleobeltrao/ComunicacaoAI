@@ -144,6 +144,9 @@ test('o wizard testa DE VERDADE e mostra a amostra redigida', async ({ page }) =
 
   await page.getByTestId('wizard-nome').fill('Preço do fornecedor')
   await page.getByTestId('wizard-avancar').click()
+  // Passo da conexão: sem credencial digitada, só a escolha do cofre.
+  await expect(page.getByTestId('wizard-conexao')).toBeVisible()
+  await page.getByTestId('wizard-avancar').click()
   await page.getByTestId('wizard-url').fill('https://api.exemplo.test/precos')
   await page.getByTestId('wizard-avancar').click()
 
@@ -158,6 +161,7 @@ test('a fonte criada pelo wizard nasce RASCUNHO, e a tela diz isso', async ({ pa
   await page.goto('/monitoring?tab=sources')
   await page.getByTestId('fonte-nova').click()
   await page.getByTestId('wizard-nome').fill('Nova')
+  await page.getByTestId('wizard-avancar').click()
   await page.getByTestId('wizard-avancar').click()
   await page.getByTestId('wizard-url').fill('https://api.exemplo.test/x')
   await page.getByTestId('wizard-avancar').click()
@@ -318,4 +322,45 @@ test('em 320 px o Ao vivo não empurra a página para os lados', async ({ page }
   await expect(page.getByTestId('live-item').first()).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
+})
+
+test('o wizard autentica pelo COFRE: escolhe a conexão, e nenhum valor é digitado', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/app-installations', (r) =>
+    r.fulfill({ json: [{ _id: 'c1', name: 'CRM produção', appKey: 'crm', status: 'connected' }] }),
+  )
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-nova').click()
+  await page.getByTestId('wizard-nome').fill('Com credencial')
+  await page.getByTestId('wizard-avancar').click()
+
+  await expect(page.getByTestId('wizard-conexao')).toContainText('CRM produção')
+  await page.getByTestId('wizard-conexao').selectOption('c1')
+  // Só o NOME do cabeçalho: o valor sai do cofre na hora da leitura.
+  await page.getByTestId('wizard-headers').fill('Authorization')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-url').fill('https://api.exemplo.test/x')
+
+  for (let i = 0; i < 4; i++) await page.getByTestId('wizard-avancar').click()
+  await expect(page.getByTestId('wizard-revisao')).toContainText('conexão do cofre')
+  await page.getByTestId('wizard-salvar').click()
+
+  await expect.poll(() => criado).not.toBeNull()
+  expect(criado).toMatchObject({ connectionId: 'c1', config: { headerNames: ['Authorization'] } })
+  // Nenhum valor de credencial atravessa o corpo do pedido.
+  expect(JSON.stringify(criado)).not.toMatch(/Bearer|sk-|senha/)
+})
+
+test('o monitor opcional do wizard nasce RASCUNHO', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-nova').click()
+  await page.getByTestId('wizard-nome').fill('Com monitor')
+  for (let i = 0; i < 5; i++) await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-avancar').click()
+
+  await page.getByTestId('wizard-criar-monitor').click()
+  await expect(page.getByTestId('wizard-revisao')).toContainText('ninguém revisou')
+  await page.getByTestId('wizard-salvar').click()
+  await expect(page.getByTestId('monitoring-aviso')).toContainText('monitor em rascunho')
 })

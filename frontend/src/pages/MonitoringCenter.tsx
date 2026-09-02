@@ -246,7 +246,7 @@ function ListaDeFontes({ fontes, acao }: { fontes: SourceSummary[] | null; acao:
 
 // --- o wizard --------------------------------------------------------------------------
 
-const PASSOS = ['Tipo', 'Endereço', 'Teste', 'Mapeamento', 'Destino', 'Revisão'] as const
+const PASSOS = ['Tipo', 'Conexão', 'Endereço', 'Teste', 'Mapeamento', 'Destino', 'Revisão'] as const
 
 function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (m: string) => Promise<void>; onError: (m: string) => void }) {
   const [passo, setPasso] = useState(0)
@@ -258,11 +258,26 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
   const [destino, setDestino] = useState({ live: false, history: true })
   const [teste, setTeste] = useState<TestOutcome | null>(null)
   const [ocupado, setOcupado] = useState(false)
+  const [conexoes, setConexoes] = useState<api.ConnectionOption[]>([])
+  const [connectionId, setConnectionId] = useState('')
+  const [headerNames, setHeaderNames] = useState('')
+  const [criarMonitor, setCriarMonitor] = useState(false)
+
+  // As conexões do cofre: a fonte guarda o NOME do cabeçalho, e o valor sai daqui na hora
+  // da leitura. É por isso que a pergunta é "qual conexão", e não "qual chave".
+  useEffect(() => {
+    void api.connections().then(setConexoes)
+  }, [])
 
   const corpo = () => ({
     name,
     kind,
-    config: { url, method: 'GET' as const },
+    ...(connectionId ? { connectionId } : {}),
+    config: {
+      url,
+      method: 'GET' as const,
+      ...(headerNames.trim() ? { headerNames: headerNames.split(',').map((h) => h.trim()).filter(Boolean) } : {}),
+    },
     mapping: { version: 1, fields: campos.filter((c) => c.to && c.from) },
     cadence: { mode: 'interval' as const, intervalMs },
     destination: destino,
@@ -283,9 +298,14 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
     setOcupado(true)
     try {
       await api.createSource(corpo())
-      // Rascunho: o backend recusa ativar o que nunca leu, e a tela diz isso em vez de
-      // esconder o botão.
-      await onDone('Fonte criada como rascunho. Teste e ative quando estiver certa.')
+      /**
+       * O monitor opcional nasce RASCUNHO, como tudo aqui.
+       *
+       * Criar junto poupa a viagem até a outra aba, mas não pode publicar nada: uma regra
+       * que passa a agir sozinha no fim de um wizard é uma regra que ninguém revisou.
+       */
+      const extra = criarMonitor ? ' Um monitor em rascunho foi criado a partir dela.' : ''
+      await onDone(`Fonte criada como rascunho. Teste e ative quando estiver certa.${extra}`)
     } catch (e) {
       onError((e as Error).message)
     } finally {
@@ -318,6 +338,29 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
 
         {passo === 1 && (
           <>
+            <Field
+              label="Conexão"
+              hint="A credencial mora na conexão cifrada. A fonte guarda só o nome do cabeçalho; o valor sai do cofre na hora da leitura."
+            >
+              <Select value={connectionId} onChange={(e) => setConnectionId(e.target.value)} data-testid="wizard-conexao">
+                <option value="">Nenhuma: este endereço é público</option>
+                {conexoes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.appKey})
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {connectionId && (
+              <Field label="Cabeçalhos que a conexão preenche" hint="Só os nomes, separados por vírgula. Nenhum valor é digitado aqui.">
+                <Input value={headerNames} onChange={(e) => setHeaderNames(e.target.value)} placeholder="Authorization" data-testid="wizard-headers" />
+              </Field>
+            )}
+          </>
+        )}
+
+        {passo === 2 && (
+          <>
             <Field label="Endereço" hint="A credencial nunca vai aqui: ela vem de uma conexão, e a Central recusa chave na URL.">
               <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.exemplo.com/precos" data-testid="wizard-url" />
             </Field>
@@ -333,7 +376,7 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
           </>
         )}
 
-        {passo === 2 && (
+        {passo === 3 && (
           <>
             <Button onClick={testar} disabled={ocupado} data-testid="wizard-testar">
               {ocupado ? 'Lendo…' : 'Testar de verdade'}
@@ -358,7 +401,7 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
           </>
         )}
 
-        {passo === 3 && (
+        {passo === 4 && (
           <>
             {campos.map((c, i) => (
               <div key={i} className="flex flex-col gap-2 sm:flex-row">
@@ -387,7 +430,7 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
           </>
         )}
 
-        {passo === 4 && (
+        {passo === 5 && (
           <Field label="Onde guardar" hint="“Ao vivo” responde “quanto está agora”; “histórico” responde “como variou”.">
             <div className="flex flex-wrap gap-2">
               <Button variant={destino.history ? 'primary' : 'ghost'} onClick={() => setDestino({ ...destino, history: !destino.history })} data-testid="wizard-destino-historico">
@@ -400,7 +443,7 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
           </Field>
         )}
 
-        {passo === 5 && (
+        {passo === 6 && (
           <div style={{ fontSize: 13 }} data-testid="wizard-revisao">
             <p>
               <strong>{name || 'sem nome'}</strong> — {KIND_LABEL[kind]}
@@ -409,7 +452,18 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
             <p style={{ color: 'var(--text-muted)' }}>
               a cada {Math.round(intervalMs / 1000)} s · campos: {campos.filter((c) => c.to).map((c) => c.to).join(', ') || '—'}
             </p>
+            <p style={{ color: 'var(--text-muted)' }}>
+              {connectionId ? 'Usa uma conexão do cofre para autenticar.' : 'Endereço público, sem credencial.'}
+            </p>
             <p style={{ color: 'var(--text-muted)' }}>Ela nasce como rascunho: nada é consultado até você ativar.</p>
+            <div style={{ marginTop: 8 }}>
+              <Button variant={criarMonitor ? 'primary' : 'ghost'} onClick={() => setCriarMonitor(!criarMonitor)} data-testid="wizard-criar-monitor">
+                Criar também um monitor em rascunho {criarMonitor ? '✓' : ''}
+              </Button>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                Ele também nasce rascunho: uma regra que passa a agir sozinha no fim de um wizard é uma regra que ninguém revisou.
+              </p>
+            </div>
           </div>
         )}
 

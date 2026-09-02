@@ -364,13 +364,28 @@ Comando: `node --test test/monitoringGrants.integration.test.mjs` → **15/15** 
 agente de outra conta, fonte de outra conta e revogação).
 Bateria: **1420 + 1949**, secret-scan limpo em 2215 arquivos.
 
+## Bloco 13 — o wizard autentica pelo cofre e pode criar o monitor ✅
+
+- **passo de conexão**: o wizard pergunta "qual conexão", e não "qual chave". A fonte guarda
+  só o NOME do cabeçalho; o valor sai do cofre cifrado na hora da leitura. Um caso E2E
+  afirma que **nenhum valor de credencial atravessa o corpo do pedido**;
+- **monitor opcional na revisão**, e ele nasce rascunho como tudo aqui: uma regra que passa
+  a agir sozinha no fim de um wizard é uma regra que ninguém revisou. A tela diz isso com
+  essas palavras.
+
+Comandos: `npx playwright test e2e/monitoring-center.spec.ts` → **17/17**.
+Bateria: E2E **669** · frontend **292** · lint **0 erros**.
+
+**Nota de ambiente (de novo)**: o `vite preview` servindo build antigo derruba a suíte
+inteira com "Cannot navigate to invalid URL". Matar o preview antes de reconstruir resolve.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **Wizard**: autenticação pelo Vault (escolher a conexão) e a opção de criar Monitor+Flow
-   ao final.
+2. **Browser em worker isolado** e **OCR/visão com confiança e evidência**: nada existe. É a
+   maior lacuna que resta, e o plano é explícito que dado incerto não dispara.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

@@ -123,6 +123,25 @@ const req = <T>(caminho: string, init: { method?: string; body?: unknown } = {})
     ...(init.body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(init.body) }),
   }).then((r) => json<T>(r))
 
+export interface ConnectionOption {
+  id: string
+  name: string
+  appKey: string
+  status: string
+}
+
+/**
+ * As conexões que podem emprestar credencial a uma fonte.
+ *
+ * A fonte guarda só o NOME do cabeçalho; o valor sai daqui, cifrado, na hora da leitura. É
+ * por isso que o wizard pergunta "qual conexão" em vez de "qual chave".
+ */
+export const connections = () =>
+  fetch(`${API_URL}/api/app-installations`, { credentials: 'include' })
+    .then((r) => (r.ok ? (r.json() as Promise<{ _id: string; name: string; appKey: string; status: string }[]>) : []))
+    .then((lista) => lista.map((c) => ({ id: String(c._id), name: c.name, appKey: c.appKey, status: c.status })))
+    .catch(() => [] as ConnectionOption[])
+
 export const meta = () => req<{ kinds: { kind: SourceKind; pull: boolean; push: boolean; needsUrl: boolean; needsConnection: boolean }[]; transforms: string[] }>('/api/monitoring/meta')
 export const overview = () => req<{ items: OverviewItem[]; summary: Record<string, number> }>('/api/monitoring/overview')
 export interface LiveReading {
