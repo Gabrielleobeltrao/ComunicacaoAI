@@ -159,10 +159,12 @@ import { listActivePublished } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import { knowledgeRouter } from './routes/knowledgeRoutes.js'
+import { agentResourceAccessRouter, resourceRouter } from './routes/resourceRoutes.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
 import { ensureContextManifestIndexes } from './contextManifest.js'
 import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
 import { ensureKnowledgeGraphIndexes } from './knowledgeGraph.js'
+import { ensureResourceAuditIndexes } from './resources/audit.js'
 import { ensureKnowledgeProposalIndexes } from './knowledgeProposals.js'
 import { ensureKnowledgeConflictIndexes } from './knowledgeConflicts.js'
 import {
@@ -499,6 +501,14 @@ app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
  * continuam existindo com o mesmo contrato — elas são adaptadores desta mesma camada.
  * Apagá-las agora quebraria a tela em produção sem ganhar nada.
  */
+/**
+ * O catálogo COMUM de recursos — leitura, e só.
+ *
+ * Mutação continua nas rotas canônicas de cada tipo: é lá que moram as validações que
+ * aquele tipo entende, e uma rota genérica de escrita teria que reimplementar todas elas.
+ */
+app.use('/api/resources', requireAuth, resourceRouter)
+app.use('/api/agents/:agentId', requireAuth, agentResourceAccessRouter)
 app.use('/api/knowledge', requireAuth, knowledgeRouter)
 // Shared sector knowledge (same store as agent knowledge). Non-matching sub-paths
 // fall through to the inline /api/sectors/:sectorId routes below.
@@ -5345,6 +5355,9 @@ async function start() {
   // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
   // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
   // ninguém está olhando. Ela é um script, e é chamada à mão.
+  ensureResourceAuditIndexes().catch((error) => {
+    console.error('ensureResourceAuditIndexes failed:', error)
+  })
   ensureKnowledgeGraphIndexes().catch((error) => {
     console.error('ensureKnowledgeGraphIndexes failed:', error)
   })

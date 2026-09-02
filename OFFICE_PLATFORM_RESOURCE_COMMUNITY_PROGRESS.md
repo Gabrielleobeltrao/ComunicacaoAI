@@ -57,12 +57,47 @@ caber no formato genérico é pior que não ter abstração.
 
 ## Fases
 
-### Fase 0 — Baseline e ADR ✅ sem mudança de código
+### Fase 0 — Baseline e ADR ✅ `c9e4bfe`
 
 Baseline reproduzido, ADR e matriz acima registrados. Nenhum comportamento alterado.
 
+### Fase 1 — Resource contracts e access facade ✅
+
+`backend/src/resources/`: `types.ts` (contratos, catálogos de capacidade e a trava
+`agentCapabilitiesOnly`), `scope.ts` (sujeito resolvido pelo servidor, com a hierarquia
+lida agora e não copiada para dentro de grant), `registry.ts`, `catalog.ts`, `access.ts`,
+`audit.ts` e adapters de LEITURA para Knowledge, App e Tool.
+
+Decisões que valem registro:
+
+- a camada comum **delega**. Knowledge decide pela política de conhecimento (a mesma que
+  roda quando o agente responde), App pelos três gates (instalação utilizável + ação
+  concedida + escrita autônoma), Tool por atribuição + habilitada + escrita autônoma. Uma
+  regra genérica de herança por cima disso só poderia afrouxá-los;
+- `database` está no contrato e **não** tem adapter: um adapter vazio responderia "nada
+  encontrado" como se fosse verdade. Ele chega na Fase 3;
+- escopo de outra conta responde 404 na rota, e não 200 com lista vazia — a diferença
+  entre "não é seu" e "está vazio" é o que um inventário de contas alheias precisa;
+- pendência ≠ acesso: conexão pausada, versão incompatível, App "em breve" e ferramenta
+  desligada aparecem com código e ação corretiva, nunca como acesso funcional;
+- `RESOURCE_PLATFORM_ENABLED=0` **nega a rota** (404), não só esconde a tela.
+
+Rotas (leitura; mutação continua nas rotas canônicas de cada tipo):
+`GET /api/resources`, `/:kind/:id`, `/:kind/:id/access`, `/:kind/:id/impact` e
+`GET /api/agents/:id/resource-access`.
+
+Testes: 22 em `backend/test/resources.integration.test.mjs` — isolamento entre contas nas
+quatro entradas, recusa idêntica para id inválido/inexistente/alheio, delegação de
+Knowledge com origem correta, atribuição como permissão de Tool, escrita exigindo
+autorização, os três gates de App, matriz mostrando o negado com motivo, impacto separando
+pode-usar de usou, e a flag negando. **Teeth**: revertendo a exigência de escrita autônoma,
+a flag e a trava de capacidade, caem 3 testes.
+
+Suíte: 1354 + 1640, verde.
+
 ## Próxima ação exata
 
-Fase 1: criar `backend/src/resources/` (`types`, `registry`, `catalog`, `access`, `scope`,
-`impact`, `audit`) com adapters de LEITURA para Knowledge, App e Tool, delegando a decisão
-de acesso às políticas especializadas que já existem, e expor `GET /api/resources*`.
+Fase 2: navegação única (OFFICE/RESOURCES/OPERATIONS/COMMUNITY), tela global de Resources,
+seção contextual em andar/setor e a matriz **Access** na página do agente consumindo
+`GET /api/agents/:id/resource-access`. Preservar rotas antigas com redirect e cobrir
+320/360/390/768/1440.
