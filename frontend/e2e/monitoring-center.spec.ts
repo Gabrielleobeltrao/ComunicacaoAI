@@ -63,6 +63,7 @@ const AMOSTRA = {
 }
 
 let criado: unknown = null
+let monitorCriado: unknown = null
 let ativou = false
 
 const LIVE = [
@@ -84,8 +85,9 @@ const LIVE = [
   },
 ]
 
-async function stub(page: Page, opts: { ativarErro?: string; live?: unknown[] } = {}) {
+async function stub(page: Page, opts: { ativarErro?: string; live?: unknown[]; monitorErro?: string } = {}) {
   criado = null
+  monitorCriado = null
   ativou = false
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   const user = { id: 'u1', email: 'qa@local.test', name: 'QA', emailVerified: true, createdAt: NOW, updatedAt: NOW }
@@ -104,6 +106,11 @@ async function stub(page: Page, opts: { ativarErro?: string; live?: unknown[] } 
     if (opts.ativarErro) return r.fulfill({ status: 400, json: { message: opts.ativarErro } })
     ativou = true
     return r.fulfill({ json: { status: 'active' } })
+  })
+  await page.route('**/api/monitoring/sources/*/monitor', (r) => {
+    monitorCriado = r.request().postDataJSON()
+    if (opts.monitorErro) return r.fulfill({ status: 400, json: { message: opts.monitorErro } })
+    return r.fulfill({ status: 201, json: { id: 'mon-1', status: 'draft' } })
   })
   await page.route('**/api/monitoring/sources', (r) => {
     if (r.request().method() === 'POST') {
@@ -150,10 +157,87 @@ test('o wizard testa DE VERDADE e mostra a amostra redigida', async ({ page }) =
   await page.getByTestId('wizard-url').fill('https://api.exemplo.test/precos')
   await page.getByTestId('wizard-avancar').click()
 
+  // O MAPEAMENTO vem antes do teste: sem ele, o teste despeja a resposta inteira e deixa
+  // quem lê procurando qual pedaço interessava.
+  await expect(page.getByTestId('wizard-mapeamento-explica')).toBeVisible()
+  await page.getByTestId('wizard-campo-to-0').fill('preco')
+  await page.getByTestId('wizard-campo-from-0').fill('dados.preco')
+  await page.getByTestId('wizard-avancar').click()
+
   await page.getByTestId('wizard-testar').click()
   const amostra = page.getByTestId('wizard-amostra')
   await expect(amostra).toContainText('«oculto»', { timeout: 5000 })
   await expect(amostra).toContainText('120 ms')
+  // E ele diz o que ACHOU, que é a pergunta de quem testa.
+  await expect(page.getByTestId('wizard-campos-achados')).toContainText('Achei: preco')
+})
+
+test('o teste diz o que NÃO achou, e a recusa do servidor aparece como recusa', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/monitoring/sources/test', (r) =>
+    r.fulfill({ json: { ...AMOSTRA, ok: true, fields: [{ name: 'preco', present: true }, { name: 'estoque', present: false }] } }),
+  )
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-nova').click()
+  await page.getByTestId('wizard-nome').fill('Faltando')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-url').fill('https://api.exemplo.test/x')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-campo-to-0').fill('preco')
+  await page.getByTestId('wizard-campo-from-0').fill('dados.preco')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-testar').click()
+  await expect(page.getByTestId('wizard-campos-achados')).toContainText('Não achei: estoque')
+})
+
+test('cada TIPO manda a sua própria configuração — e não url+GET+intervalo para todos', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-nova').click()
+  await page.getByTestId('wizard-nome').fill('Recebe sozinha')
+  await page.getByTestId('wizard-tipo').selectOption('webhook')
+  // Um webhook não autentica por cabeçalho nem tem endereço: aqueles passos somem.
+  await expect(page.getByTestId('wizard-tipo-explica')).toContainText('chega sozinho')
+  await page.getByTestId('wizard-avancar').click()
+  await expect(page.getByTestId('wizard-webhook-explica')).toBeVisible()
+  await expect(page.getByTestId('wizard-url')).toHaveCount(0)
+  await expect(page.getByTestId('wizard-intervalo')).toHaveCount(0)
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-campo-to-0').fill('total')
+  await page.getByTestId('wizard-campo-from-0').fill('payload.total')
+  await page.getByTestId('wizard-avancar').click()
+  // E o teste diz POR QUE não há o que testar, em vez de oferecer um botão que não serve.
+  await expect(page.getByTestId('wizard-sem-teste')).toContainText('ele chega')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-salvar').click()
+
+  await expect.poll(() => criado).not.toBeNull()
+  expect(criado).toMatchObject({ kind: 'webhook', config: {}, cadence: { mode: 'stream' } })
+  expect(JSON.stringify(criado)).not.toContain('"url"')
+  expect(JSON.stringify(criado)).not.toContain('intervalMs')
+})
+
+test('o ritmo por HORÁRIO manda cron e fuso, e não um intervalo', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-nova').click()
+  await page.getByTestId('wizard-nome').fill('Toda manhã')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-url').fill('https://api.exemplo.test/x')
+  await page.getByTestId('wizard-ritmo').selectOption('cron')
+  await page.getByTestId('wizard-cron').fill('0 9 * * *')
+  await page.getByTestId('wizard-fuso').fill('America/Sao_Paulo')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-campo-to-0').fill('preco')
+  await page.getByTestId('wizard-campo-from-0').fill('dados.preco')
+  for (let i = 0; i < 3; i++) await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-salvar').click()
+
+  await expect.poll(() => criado).not.toBeNull()
+  expect(criado).toMatchObject({ cadence: { mode: 'cron', cron: '0 9 * * *', timezone: 'America/Sao_Paulo' } })
 })
 
 test('a fonte criada pelo wizard nasce RASCUNHO, e a tela diz isso', async ({ page }) => {
@@ -165,11 +249,9 @@ test('a fonte criada pelo wizard nasce RASCUNHO, e a tela diz isso', async ({ pa
   await page.getByTestId('wizard-avancar').click()
   await page.getByTestId('wizard-url').fill('https://api.exemplo.test/x')
   await page.getByTestId('wizard-avancar').click()
-  await page.getByTestId('wizard-avancar').click()
   await page.getByTestId('wizard-campo-to-0').fill('preco')
   await page.getByTestId('wizard-campo-from-0').fill('dados.preco')
-  await page.getByTestId('wizard-avancar').click()
-  await page.getByTestId('wizard-avancar').click()
+  for (let i = 0; i < 3; i++) await page.getByTestId('wizard-avancar').click()
   await expect(page.getByTestId('wizard-revisao')).toContainText('nasce como rascunho')
   await page.getByTestId('wizard-salvar').click()
 
@@ -342,6 +424,7 @@ test('o wizard autentica pelo COFRE: escolhe a conexão, e nenhum valor é digit
   await page.getByTestId('wizard-url').fill('https://api.exemplo.test/x')
 
   for (let i = 0; i < 4; i++) await page.getByTestId('wizard-avancar').click()
+  await expect(page.getByTestId('wizard-revisao')).toBeVisible()
   await expect(page.getByTestId('wizard-revisao')).toContainText('conexão do cofre')
   await page.getByTestId('wizard-salvar').click()
 
@@ -351,18 +434,59 @@ test('o wizard autentica pelo COFRE: escolhe a conexão, e nenhum valor é digit
   expect(JSON.stringify(criado)).not.toMatch(/Bearer|sk-|senha/)
 })
 
-test('o monitor opcional do wizard nasce RASCUNHO', async ({ page }) => {
+test('o monitor opcional do wizard é CRIADO de verdade, e nasce rascunho', async ({ page }) => {
   await stub(page)
   await page.goto('/monitoring?tab=sources')
   await page.getByTestId('fonte-nova').click()
   await page.getByTestId('wizard-nome').fill('Com monitor')
-  for (let i = 0; i < 5; i++) await page.getByTestId('wizard-avancar').click()
   await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-url').fill('https://api.exemplo.test/x')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-campo-to-0').fill('preco')
+  await page.getByTestId('wizard-campo-from-0').fill('dados.preco')
+  for (let i = 0; i < 3; i++) await page.getByTestId('wizard-avancar').click()
 
   await page.getByTestId('wizard-criar-monitor').click()
   await expect(page.getByTestId('wizard-revisao')).toContainText('ninguém revisou')
+
+  // Sem o mínimo, salvar fica indisponível: a promessa não pode sair na frente do registro.
+  await expect(page.getByTestId('wizard-monitor-falta')).toBeVisible()
+  await expect(page.getByTestId('wizard-salvar')).toBeDisabled()
+
+  await page.getByTestId('wizard-monitor-campo').selectOption('preco')
+  await page.getByTestId('wizard-monitor-valor').fill('10')
   await page.getByTestId('wizard-salvar').click()
-  await expect(page.getByTestId('monitoring-aviso')).toContainText('monitor em rascunho')
+
+  // O monitor é um POST de verdade — e a mensagem só fala dele depois da resposta.
+  await expect.poll(() => monitorCriado).not.toBeNull()
+  expect(monitorCriado).toMatchObject({
+    condition: { kind: 'compare', field: 'preco', op: 'lt', value: 10 },
+    triggerMode: 'enter',
+    flowId: null,
+  })
+  await expect(page.getByTestId('monitoring-aviso')).toContainText('mon-1')
+})
+
+test('se o monitor FALHA, a tela não diz que ele foi criado', async ({ page }) => {
+  await stub(page, { monitorErro: 'o campo "preco" não existe nesta fonte' })
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-nova').click()
+  await page.getByTestId('wizard-nome').fill('Monitor que falha')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-url').fill('https://api.exemplo.test/x')
+  await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-campo-to-0').fill('preco')
+  await page.getByTestId('wizard-campo-from-0').fill('dados.preco')
+  for (let i = 0; i < 3; i++) await page.getByTestId('wizard-avancar').click()
+  await page.getByTestId('wizard-criar-monitor').click()
+  await page.getByTestId('wizard-monitor-campo').selectOption('preco')
+  await page.getByTestId('wizard-monitor-valor').fill('10')
+  await page.getByTestId('wizard-salvar').click()
+
+  // A recusa do servidor aparece inteira, e nenhuma mensagem promete um monitor.
+  await expect(page.getByTestId('monitoring-error')).toContainText('não existe nesta fonte')
 })
 
 test('a AST oferece MUDANÇA, e a prévia diz que é variação', async ({ page }) => {

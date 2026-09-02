@@ -54,6 +54,10 @@ export interface Telemetry {
   readsOk: number
   readsFailed: number
   reconnects: number
+  /** O TESTE, separado da leitura: é ele que destrava a ativação sem gravar histórico. */
+  lastTestAt?: string | null
+  lastTestOkAt?: string | null
+  lastTestError?: string | null
 }
 
 export interface FieldRule {
@@ -73,7 +77,7 @@ export interface SourceSummary {
   config: Record<string, unknown>
   mapping: { version: number; itemsPath?: string | null; fields: FieldRule[] }
   schema: Record<string, unknown>
-  cadence: { mode: string; intervalMs: number | null }
+  cadence: { mode: string; intervalMs: number | null; cron?: string | null; timezone?: string | null }
   freshness: { staleAfterMs: number; onStale: string }
   destination: { live: boolean; history: boolean; retentionDays: number | null }
   nextReadAt: string | null
@@ -174,6 +178,15 @@ export const activate = (id: string) => req<{ status: SourceStatus }>(`/api/moni
 export const pause = (id: string) => req<{ status: SourceStatus }>(`/api/monitoring/sources/${id}/pause`, { method: 'POST' })
 export const duplicate = (id: string) => req<{ id: string; name: string }>(`/api/monitoring/sources/${id}/duplicate`, { method: 'POST' })
 export const remove = (id: string) => req<null>(`/api/monitoring/sources/${id}`, { method: 'DELETE' })
+
+/**
+ * O monitor de uma fonte — criado de verdade, no motor canônico.
+ *
+ * O wizard oferece isso no fim, e a promessa precisa ter registro atrás: dizer "um monitor
+ * foi criado" sem criar nada é a mentira que só aparece quando a pessoa vai procurá-lo.
+ */
+export const createMonitorForSource = (id: string, body: unknown) =>
+  req<{ id: string; status: string }>(`/api/monitoring/sources/${id}/monitor`, { method: 'POST', body })
 
 /** O tempo relativo como gente lê. Sem biblioteca: são quatro casos. */
 export function desde(iso: string | null, agora = Date.now()): string {
