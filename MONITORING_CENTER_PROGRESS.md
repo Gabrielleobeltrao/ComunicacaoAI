@@ -63,6 +63,26 @@ por nome de campo E por formato do valor.
 
 Comando: `node --test test/monitoringMapping.test.mjs` → **23/23**.
 
+## Bloco 2 (parcial) — saúde derivada e backoff ✅
+
+`backend/src/monitoring/health.ts`.
+
+- **a saúde é calculada, nunca gravada.** Um campo `health` no banco vira mentira no
+  primeiro processo que esquece de atualizá-lo: a fonte para às três da manhã e a tela
+  continua verde porque ninguém rodou o job;
+- **`degraded` é o estado que o produto mais precisa dizer**: "online" e "offline" não
+  descrevem o caso mais comum, que é a fonte responder com dado velho demais para decidir
+  alguma coisa. Ele aparece por falhas seguidas (3) **ou** por idade além da janela;
+- **`never_read` não é "online"**: dizer online sobre uma fonte que nunca leu seria afirmar
+  sobre algo que não aconteceu;
+- **fonte que empurra não tem "próximo disparo"** — ela chega, não é chamada. Devolver um
+  horário ali seria a tela prometendo um evento que ninguém agendou;
+- **o backoff tem jitter e teto**: sem jitter, cem fontes que caíram juntas voltam juntas e
+  a primeira tentativa depois de um incidente vira o segundo incidente. O aleatório entra
+  como parâmetro para o teste medir a fórmula em vez de medir a sorte.
+
+Comando: `node --test test/monitoringHealth.test.mjs` → **13/13**.
+
 ## Próxima ação exata
 
 1. Serviço de fontes: criar, testar de verdade (com `safeFetch`, que já revalida redirect),
