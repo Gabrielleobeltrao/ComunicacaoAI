@@ -5,6 +5,7 @@ import { Badge, Button, Card, Field, Input, Select, Tabs } from '../ui'
 import * as api from '../lib/monitoring'
 import { HEALTH_LABEL, KIND_LABEL, STATUS_LABEL, desde, frase } from '../lib/monitoring'
 import type { OverviewItem, SourceKind, SourceSummary, TestOutcome } from '../lib/monitoring'
+import * as mon from '../lib/monitors'
 import { useActivityPulse } from '../lib/activity'
 
 // A CENTRAL DE MONITORAMENTO — cinco perguntas, uma tela.
@@ -436,25 +437,206 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
 
 // --- monitores, ao vivo e histórico -------------------------------------------------------
 
+/**
+ * A aba de MONITORES — a condição montada de pedaços fechados, com prévia e simulação.
+ *
+ * O construtor é de listas, e não de texto livre: o que dispara ação sozinho precisa ser
+ * conferível. E a simulação está aqui porque "cruzou 30 para cima" parece óbvio e engana —
+ * quem escreve não distingue estado de borda até ver os dois lado a lado.
+ */
 function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
+  const observaveis = (fontes ?? []).filter((f) => f.destination.history)
+  const [fonteId, setFonteId] = useState('')
+  const [modo, setModo] = useState<mon.TriggerMode>('enter')
+  const [juncao, setJuncao] = useState<'and' | 'or'>('and')
+  const [partes, setPartes] = useState<{ field: string; op: mon.ComparisonOp; value: string }[]>([{ field: '', op: 'lt', value: '' }])
+  const [antes, setAntes] = useState<Record<string, string>>({})
+  const [agora, setAgora] = useState<Record<string, string>>({})
+  const [resultado, setResultado] = useState<mon.SimulationResult | null>(null)
+  const [erroSim, setErroSim] = useState<string | null>(null)
+
+  const fonte = observaveis.find((f) => f.id === fonteId)
+  const camposDaFonte = fonte?.mapping.fields.map((c) => c.to) ?? []
+
+  const condicao = (): mon.ConditionNode => {
+    const folhas = partes
+      .filter((p) => p.field)
+      .map((p) => {
+        const n = Number(p.value)
+        const valor: number | string | boolean = p.value === 'true' ? true : p.value === 'false' ? false : p.value !== '' && Number.isFinite(n) ? n : p.value
+        return { kind: 'compare' as const, field: p.field, op: p.op, value: valor }
+      })
+    if (folhas.length === 0) return { kind: 'compare', field: '', op: 'lt', value: 0 }
+    return folhas.length === 1 ? folhas[0] : { kind: juncao, children: folhas }
+  }
+
+  const simular = async () => {
+    setErroSim(null)
+    setResultado(null)
+    try {
+      const numero = (v: Record<string, string>) =>
+        Object.fromEntries(Object.entries(v).map(([k, x]) => [k, x === '' ? null : Number.isFinite(Number(x)) ? Number(x) : x]))
+      setResultado(
+        await mon.simulate({
+          condition: condicao(),
+          triggerMode: modo,
+          value: numero(agora),
+          previous: Object.keys(antes).length ? numero(antes) : null,
+          ...(camposDaFonte.length ? { fields: camposDaFonte } : {}),
+        }),
+      )
+    } catch (e) {
+      setErroSim((e as Error).message)
+    }
+  }
+
+  const campos = mon.camposDaCondicao(condicao())
+
   return (
-    <Card>
-      <div className="flex flex-col gap-2">
-        <p style={{ fontSize: 13.5 }}>
-          Um monitor observa o dado que uma fonte já normalizou — ele nunca consulta o serviço lá fora a cada condição.
-        </p>
+    <>
+      <Card>
+        <div className="flex flex-col gap-3" data-testid="monitor-builder">
+          <p style={{ fontSize: 13 }}>
+            Um monitor observa o dado que uma fonte já normalizou — ele nunca consulta o serviço lá fora a cada condição.
+          </p>
+
+          <Field label="Observar a fonte" hint="Só fontes que gravam histórico podem ser observadas.">
+            <Select
+              value={fonteId}
+              onChange={(e) => setFonteId(e.target.value)}
+              data-testid="monitor-fonte"
+            >
+              <option value="">Escolha uma fonte</option>
+              {observaveis.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          {partes.map((p, i) => (
+            <div key={i} className="flex flex-col gap-2 sm:flex-row">
+              <Field label={i === 0 ? 'Campo' : juncao === 'and' ? 'E o campo' : 'Ou o campo'} style={{ flex: 1 }}>
+                {camposDaFonte.length ? (
+                  <Select
+                    value={p.field}
+                    onChange={(e) => setPartes(partes.map((x, j) => (i === j ? { ...x, field: e.target.value } : x)))}
+                    data-testid={`monitor-campo-${i}`}
+                  >
+                    <option value="">Escolha</option>
+                    {camposDaFonte.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </Select>
+                ) : (
+                  <Input
+                    value={p.field}
+                    onChange={(e) => setPartes(partes.map((x, j) => (i === j ? { ...x, field: e.target.value } : x)))}
+                    placeholder="rsi"
+                    data-testid={`monitor-campo-${i}`}
+                  />
+                )}
+              </Field>
+              <Field label="Comparação" style={{ flex: 1 }}>
+                <Select
+                  value={p.op}
+                  onChange={(e) => setPartes(partes.map((x, j) => (i === j ? { ...x, op: e.target.value as mon.ComparisonOp } : x)))}
+                  options={(Object.keys(mon.OP_LABEL) as mon.ComparisonOp[]).map((o) => ({ value: o, label: mon.OP_LABEL[o] }))}
+                  data-testid={`monitor-op-${i}`}
+                />
+              </Field>
+              <Field label="Valor" style={{ flex: 1 }}>
+                <Input
+                  value={p.value}
+                  onChange={(e) => setPartes(partes.map((x, j) => (i === j ? { ...x, value: e.target.value } : x)))}
+                  data-testid={`monitor-valor-${i}`}
+                />
+              </Field>
+            </div>
+          ))}
+
+          <div className="flex flex-wrap gap-2">
+            <Button variant="ghost" onClick={() => setPartes([...partes, { field: '', op: 'lt', value: '' }])} data-testid="monitor-add-parte">
+              Adicionar condição
+            </Button>
+            {partes.length > 1 && (
+              <Button variant="ghost" onClick={() => setJuncao(juncao === 'and' ? 'or' : 'and')} data-testid="monitor-juncao">
+                Exigir {juncao === 'and' ? 'todas' : 'qualquer uma'}
+              </Button>
+            )}
+          </div>
+
+          <Field label="Avisar" hint="Borda é diferente de nível: “passou a ser verdadeira” avisa uma vez, não a cada tique.">
+            <Select
+              value={modo}
+              onChange={(e) => setModo(e.target.value as mon.TriggerMode)}
+              options={(Object.keys(mon.TRIGGER_LABEL) as mon.TriggerMode[]).map((t) => ({ value: t, label: mon.TRIGGER_LABEL[t] }))}
+              data-testid="monitor-modo"
+            />
+          </Field>
+
+          {/* A PRÉVIA, montada na tela: sem ela, quem monta só descobre o que escreveu
+              depois de salvar. */}
+          <p style={{ fontSize: 13.5 }} data-testid="monitor-previa">
+            Quando <strong>{mon.descreverCondicao(condicao())}</strong> — {mon.TRIGGER_LABEL[modo]}.
+          </p>
+        </div>
+      </Card>
+
+      <Card>
+        <div className="flex flex-col gap-3" data-testid="monitor-simulacao">
+          <p style={{ fontSize: 13 }}>
+            Simule com uma amostra: o valor de <strong>antes</strong> e o de <strong>agora</strong>. É a diferença entre estado e borda.
+          </p>
+          {campos.map((c) => (
+            <div key={c} className="flex flex-col gap-2 sm:flex-row">
+              <Field label={`${c} antes`} style={{ flex: 1 }}>
+                <Input value={antes[c] ?? ''} onChange={(e) => setAntes({ ...antes, [c]: e.target.value })} data-testid={`sim-antes-${c}`} />
+              </Field>
+              <Field label={`${c} agora`} style={{ flex: 1 }}>
+                <Input value={agora[c] ?? ''} onChange={(e) => setAgora({ ...agora, [c]: e.target.value })} data-testid={`sim-agora-${c}`} />
+              </Field>
+            </div>
+          ))}
+          <div>
+            <Button onClick={simular} data-testid="monitor-simular">
+              Simular
+            </Button>
+          </div>
+          {erroSim && (
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="sim-erro">
+              {erroSim}
+            </p>
+          )}
+          {resultado && (
+            <div data-testid="sim-resultado">
+              <p style={{ fontSize: 14, fontWeight: 700 }}>{resultado.wouldTrigger ? 'Dispararia' : 'Não dispararia'}</p>
+              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{resultado.explanation}</p>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <Card>
         <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="monitores-fontes">
-          {fontes?.length
-            ? `${fontes.filter((f) => f.destination.history).length} fonte(s) gravam histórico e podem ser observadas.`
-            : 'Cadastre uma fonte primeiro: sem dado normalizado não há o que observar.'}
+          {observaveis.length
+            ? `${observaveis.length} fonte(s) gravam histórico e podem ser observadas.`
+            : 'Cadastre uma fonte que grave histórico: sem dado normalizado não há o que observar.'}
         </p>
         <div>
-          <a href="/monitors" style={{ fontSize: 13, textDecoration: 'underline', minHeight: 'var(--hit-min, 44px)', display: 'inline-flex', alignItems: 'center' }} data-testid="monitores-link">
-            Abrir monitores
+          <a
+            href="/monitors"
+            style={{ fontSize: 13, textDecoration: 'underline', minHeight: 'var(--hit-min, 44px)', display: 'inline-flex', alignItems: 'center' }}
+            data-testid="monitores-link"
+          >
+            Ver e publicar monitores
           </a>
         </div>
-      </div>
-    </Card>
+      </Card>
+    </>
   )
 }
 

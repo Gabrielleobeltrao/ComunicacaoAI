@@ -289,12 +289,35 @@ explicação em português de por que dispara ou não.
 Comando: `node --test test/monitorSimulation.test.mjs` → **10/10**.
 Bateria: **1420 + 1930, 0 falhas**.
 
+## Bloco 10 — a aba de Monitores: AST, prévia e simulação ✅
+
+`AbaMonitores` em `frontend/src/pages/MonitoringCenter.tsx` + o cliente em `lib/monitors.ts`.
+
+- **o construtor é de listas fechadas**, não de texto livre: o que dispara ação sozinho
+  precisa ser conferível. Escolhida a fonte, os campos oferecidos são os que ela **mapeou**;
+- **AND/OR compondo**: "adicionar condição" empilha, e um botão troca entre exigir todas ou
+  qualquer uma. A prévia mostra a frase composta;
+- **a prévia é montada na tela**, para o rascunho: o backend também descreve, e é ele quem
+  manda quando a regra já existe — mas sem esta versão quem monta só descobriria o que
+  escreveu depois de salvar;
+- **a simulação lado a lado** — o valor de antes e o de agora. É a diferença entre estado e
+  borda, e há um caso E2E que troca só o "antes" e vê o veredito mudar de "Dispararia" para
+  "estado, não borda".
+
+**Armadilha reencontrada**: no Playwright a ÚLTIMA rota registrada vence, e o stub genérico
+`**/api/**` engolia a rota específica de simulação. Já tinha acontecido neste repositório;
+o comentário no teste agora diz por quê.
+
+Comandos: `npx playwright test e2e/monitoring-center.spec.ts` → **12/12** (com 320 px no
+construtor). Bateria: E2E **664** · frontend **292** · lint **0 erros**.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **As cinco abas da Central** e o wizard: nada disso está na tela ainda.
+2. **A aba "Ao vivo" mostra estado, não fluxo**: ela lista as fontes ativas e se atualiza
+   pelo socket, mas não mostra o VALOR que chegou nem contagem de reconexão por fonte.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

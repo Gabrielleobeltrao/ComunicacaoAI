@@ -123,3 +123,53 @@ export const listFlows = () =>
   req<{ items: { id: string; name: string; status: string; lastPublishedVersion: number | null }[] }>('/api/automations?limit=100').then((r) =>
     r.items.map((a) => ({ id: String(a.id), name: a.name, status: a.status, lastPublishedVersion: a.lastPublishedVersion })),
   )
+
+// --- a AST e a simulação ------------------------------------------------------------
+
+/** Um nó da condição. AND/OR aninham; `compare` e `delta` são as folhas. */
+export type ConditionNode =
+  | { kind: 'compare'; field: string; op: ComparisonOp; value: number | string | boolean }
+  | { kind: 'delta'; field: string; op: ComparisonOp; value: number; mode: 'absolute' | 'percent' }
+  | { kind: 'and'; children: ConditionNode[] }
+  | { kind: 'or'; children: ConditionNode[] }
+  | { kind: 'not'; child: ConditionNode }
+
+export interface SimulationResult {
+  conditionIsTrue: boolean
+  wouldTrigger: boolean
+  explanation: string
+  conditionText: string
+}
+
+export const simulate = (body: {
+  condition: ConditionNode
+  triggerMode: TriggerMode
+  threshold?: number | null
+  thresholdField?: string | null
+  value: Record<string, unknown>
+  previous?: Record<string, unknown> | null
+  fields?: string[]
+}) => req<SimulationResult>('/api/monitors/simulate', { method: 'POST', body })
+
+/**
+ * A frase da condição, montada na tela.
+ *
+ * O backend também descreve — e é ele quem manda quando a regra já existe. Esta versão é
+ * para o RASCUNHO, que ainda não foi ao servidor: sem ela, quem monta a condição só
+ * descobre o que escreveu depois de salvar.
+ */
+export function descreverCondicao(no: ConditionNode): string {
+  if (no.kind === 'compare') return `${no.field} ${OP_LABEL[no.op]} ${no.value}`
+  if (no.kind === 'delta') return `${no.field} variou ${OP_LABEL[no.op]} ${no.value}${no.mode === 'percent' ? '%' : ''}`
+  if (no.kind === 'not') return `não (${descreverCondicao(no.child)})`
+  const juncao = no.kind === 'and' ? ' e ' : ' ou '
+  return no.children.map((c) => (c.kind === 'and' || c.kind === 'or' ? `(${descreverCondicao(c)})` : descreverCondicao(c))).join(juncao)
+}
+
+/** Os campos que a condição cita — é o que a simulação precisa preencher. */
+export function camposDaCondicao(no: ConditionNode, saida: string[] = []): string[] {
+  if (no.kind === 'compare' || no.kind === 'delta') saida.push(no.field)
+  else if (no.kind === 'not') camposDaCondicao(no.child, saida)
+  else for (const c of no.children) camposDaCondicao(c, saida)
+  return [...new Set(saida.filter(Boolean))]
+}

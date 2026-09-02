@@ -198,3 +198,78 @@ test('acessibilidade: os campos do wizard têm rótulo, e o erro é anunciado', 
   await page.getByTestId('fonte-ativar').click()
   await expect(page.getByRole('alert')).toContainText('não dá')
 })
+
+test('a aba de Monitores monta a condição de pedaços fechados, com prévia', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=monitors')
+  await expect(page.getByTestId('monitor-builder')).toBeVisible()
+
+  // A fonte oferece os campos que ela mapeou: o construtor é de listas, não de texto livre.
+  await page.getByTestId('monitor-fonte').selectOption(ID)
+  await page.getByTestId('monitor-campo-0').selectOption('preco')
+  await page.getByTestId('monitor-op-0').selectOption('lt')
+  await page.getByTestId('monitor-valor-0').fill('30')
+
+  // A prévia aparece antes de salvar: sem ela, só se descobre o que foi escrito depois.
+  await expect(page.getByTestId('monitor-previa')).toContainText('preco abaixo de 30')
+  await expect(page.getByTestId('monitor-previa')).toContainText('quando passar a ser verdadeira')
+})
+
+test('AND e OR: a condição composta aparece na prévia', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=monitors')
+  await page.getByTestId('monitor-fonte').selectOption(ID)
+  await page.getByTestId('monitor-campo-0').selectOption('preco')
+  await page.getByTestId('monitor-valor-0').fill('30')
+
+  await page.getByTestId('monitor-add-parte').click()
+  await page.getByTestId('monitor-campo-1').selectOption('preco')
+  await page.getByTestId('monitor-op-1').selectOption('gt')
+  await page.getByTestId('monitor-valor-1').fill('10')
+  await expect(page.getByTestId('monitor-previa')).toContainText('preco abaixo de 30 e preco acima de 10')
+
+  await page.getByTestId('monitor-juncao').click()
+  await expect(page.getByTestId('monitor-previa')).toContainText('preco abaixo de 30 ou preco acima de 10')
+})
+
+test('a simulação mostra a diferença entre ESTADO e BORDA', async ({ page }) => {
+  await stub(page)
+  // A rota específica vem DEPOIS do stub genérico: no Playwright a última registrada é a
+  // que vence, e `**/api/**` engoliria esta.
+  await page.route('**/api/monitors/simulate', (r) => {
+    const corpo = r.request().postDataJSON() as { previous?: Record<string, number> | null }
+    // O servidor decide; o stub só reflete os dois casos que o teste quer distinguir.
+    const jaEra = corpo.previous && Number(corpo.previous.preco) < 30
+    return r.fulfill({
+      json: {
+        conditionIsTrue: true,
+        wouldTrigger: !jaEra,
+        explanation: jaEra ? 'não dispara: a condição já era verdadeira antes, e isto é estado, não borda' : 'dispara: a condição passou de falsa para verdadeira',
+        conditionText: 'preco abaixo de 30',
+      },
+    })
+  })
+  await page.goto('/monitoring?tab=monitors')
+  await page.getByTestId('monitor-fonte').selectOption(ID)
+  await page.getByTestId('monitor-campo-0').selectOption('preco')
+  await page.getByTestId('monitor-valor-0').fill('30')
+
+  await page.getByTestId('sim-antes-preco').fill('55')
+  await page.getByTestId('sim-agora-preco').fill('22')
+  await page.getByTestId('monitor-simular').click()
+  await expect(page.getByTestId('sim-resultado')).toContainText('Dispararia')
+
+  await page.getByTestId('sim-antes-preco').fill('25')
+  await page.getByTestId('monitor-simular').click()
+  await expect(page.getByTestId('sim-resultado')).toContainText('Não dispararia')
+  await expect(page.getByTestId('sim-resultado')).toContainText('estado, não borda')
+})
+
+test('em 320 px o construtor de monitor cabe', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 })
+  await stub(page)
+  await page.goto('/monitoring?tab=monitors')
+  await expect(page.getByTestId('monitor-builder')).toBeVisible()
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
+})
