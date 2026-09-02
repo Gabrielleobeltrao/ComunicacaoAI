@@ -106,10 +106,14 @@ export interface CodePublishRequest {
   version?: string
   runtime: SandboxRuntime
   source: string
-  /** Já houve revisão humana desta versão? Primeira publicação sempre exige. */
-  humanReview?: { reviewerId: string; at: Date } | null
-  /** Mudou permissão ou runtime em relação à versão anterior? Também exige revisão. */
-  permissionsChanged?: boolean
+  /**
+   * O QUE está sendo publicado, para achar a revisão dele.
+   *
+   * `humanReview` não existe mais como entrada: ele vinha do manifesto, e o manifesto é
+   * escrito pelo autor — era o autor assinando o próprio atestado. A aprovação agora é
+   * procurada no registro do servidor, pelo hash do código.
+   */
+  subject?: { type: 'extension' | 'tool'; id: ObjectId } | null
 }
 
 /**
@@ -129,10 +133,17 @@ export async function canPublishCode(req: CodePublishRequest): Promise<GateResul
   if (morto) return recusa('killed', `este código está desligado: ${morto.reason}`)
   if (!scan.ok) return recusa('scan_failed', 'o código usa construções que não são permitidas', scan.findings.filter((f) => f.severity === 'block'))
 
-  // Revisão humana: sempre na primeira publicação, e sempre que permissão ou runtime
-  // mudarem. "Já revisaram antes" não vale para outra coisa.
-  if (!req.humanReview) return recusa('review_required', 'a primeira publicação de código exige revisão humana')
-  if (req.permissionsChanged && !req.humanReview) return recusa('review_required', 'mudança de permissão ou runtime exige revisão humana')
+  /**
+   * A REVISÃO, procurada no registro do servidor e amarrada ao hash DESTE código.
+   *
+   * Amarrar ao hash é o que faz "já foi revisado" significar alguma coisa: aprovar a
+   * versão 1.0.0 não aprova outro código publicado depois com o mesmo número, e mudar uma
+   * linha invalida a aprovação sozinho, sem ninguém precisar reparar nisso.
+   */
+  if (!req.subject) return recusa('review_required', 'a publicação de código precisa dizer o que está sendo publicado')
+  const { findApproval } = await import('./review.js')
+  const aprovacao = await findApproval(req.subject.type, req.subject.id, scan.sha256)
+  if (!aprovacao) return recusa('review_required', 'este código ainda não foi aprovado por um revisor da plataforma')
 
   return { ok: true, value: scan }
 }

@@ -125,12 +125,14 @@ export async function publishVersion(ownerId: string, toolId: ObjectId, input: P
      * código de erro de sempre, porque é ela que a tela sabe explicar.
      */
     const { canPublishCode } = await import('./extensionRuntime/gate.js')
-    const m = input.manifest as { runtime?: string; source?: string; humanReview?: { reviewerId: string; at: Date } | null }
+    const m = input.manifest as { runtime?: string; source?: string }
     const portao = await canPublishCode({
       version: input.version,
       runtime: (m.runtime === 'javascript' ? 'javascript' : 'python') as 'python' | 'javascript',
       source: String(m.source ?? ''),
-      humanReview: m.humanReview ?? null,
+      // A aprovação é procurada no registro do servidor, por ferramenta e por hash — e
+      // não num campo que veio junto com o código.
+      subject: { type: 'tool', id: toolId },
     })
     if (!portao.ok) {
       const codigo = portao.code === 'flag_off' ? 'code_runtime_disabled' : portao.code

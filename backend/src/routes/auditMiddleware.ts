@@ -258,6 +258,9 @@ const RULES: Rule[] = [
   R('POST', 'api/extensions/packages/from-tool/:', { entityType: 'extension', action: 'create' }),
   // O backfill CRIA pacotes a partir do que a conta já tem: é mudança, e entra no registro.
   R('POST', 'api/extensions/backfill/apps', { entityType: 'extension', action: 'create' }),
+  // A DECISÃO de revisão é o registro mais importante que existe aqui: ela é o que
+  // autoriza código a rodar, e quem a tomou precisa estar no log de auditoria também.
+  R('POST', 'api/extensions/review/decisions', { entityType: 'extension', action: 'publish' }),
   R('POST', 'api/extensions/packages/:/status', { entityType: 'extension', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/extensions/installed/:', { entityType: 'extension', action: 'create' }, { idAt: 3 }),
   R('POST', 'api/extensions/installed/:/update', { entityType: 'extension', action: 'update' }, { idAt: 3 }),

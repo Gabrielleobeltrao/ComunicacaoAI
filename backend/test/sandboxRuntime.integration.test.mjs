@@ -19,6 +19,7 @@ const provider = await import('../dist/extensionRuntime/provider.js')
 const scanner = await import('../dist/extensionRuntime/scanner.js')
 const broker = await import('../dist/extensionRuntime/broker.js')
 const gate = await import('../dist/extensionRuntime/gate.js')
+const review = await import('../dist/extensionRuntime/review.js')
 
 const DONO = 'dono-sandbox'
 
@@ -44,13 +45,70 @@ after(async () => {
   await stopMongo()
 })
 
+const REVISOR = 'revisor-da-plataforma'
+
+/** A aprovação é do SERVIDOR, presa ao hash — nunca um campo no manifesto do autor. */
+const aprovar = (subjectId, source) =>
+  review.recordReview({
+    subjectType: 'tool',
+    subjectId,
+    version: '1.0.0',
+    sha256: scanner.scanSource(source, 'python').sha256,
+    decision: 'approved',
+    reviewerId: REVISOR,
+  })
+
+before(async () => {
+  await review.ensureReviewIndexes()
+})
+
 beforeEach(async () => {
-  for (const c of ['sandbox_capability_handles', 'sandbox_kill_switches', 'agents', 'data_stores']) await db.collection(c).deleteMany({})
+  for (const c of ['sandbox_capability_handles', 'sandbox_kill_switches', 'agents', 'data_stores', 'extension_reviews']) await db.collection(c).deleteMany({})
   provider.resetSandboxProvider()
   delete process.env.CODE_TOOLS_ENABLED
+  process.env.PLATFORM_REVIEWERS = REVISOR
 })
 
 // --- a fronteira: nada executa aqui ------------------------------------------------------
+
+test('o BACKEND INTEIRO não contém forma de executar código de terceiro neste processo', () => {
+  // A varredura era só do diretório do runtime. Ela passou a ser do backend inteiro: o
+  // perigo não é o arquivo que se lembra de conferir, é o que alguém acrescenta depois em
+  // outro lugar. `dist` fica de fora — é saída de compilação, não fonte.
+  const raiz = new URL('../src/', import.meta.url)
+  const arquivos = []
+  const andar = (url) => {
+    for (const entrada of readdirSync(url, { withFileTypes: true })) {
+      if (entrada.isDirectory()) andar(new URL(`${entrada.name}/`, url))
+      else if (entrada.name.endsWith('.ts')) arquivos.push(new URL(entrada.name, url))
+    }
+  }
+  andar(raiz)
+  assert.ok(arquivos.length > 100, 'a varredura precisa ter achado o backend inteiro')
+
+  const proibidos = [
+    /\beval\s*\(/,
+    /new\s+Function\s*\(/,
+    /from\s+['"]node:vm['"]/,
+    /require\s*\(\s*['"](vm|node:vm|child_process|node:child_process)['"]/,
+    /from\s+['"](child_process|node:child_process)['"]/,
+    /\b(execSync|spawnSync|execFile|fork)\s*\(/,
+  ]
+  for (const arquivo of arquivos) {
+    const fonte = readFileSync(arquivo, 'utf8')
+    const semComentarios = fonte
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*') && !l.trim().startsWith('/*'))
+      .join('\n')
+    for (const padrao of proibidos) {
+      assert.ok(!padrao.test(semComentarios), `${arquivo.pathname.split('/src/')[1]} usa ${padrao}`)
+    }
+    assert.ok(
+      !/from\s+['"](node:)?(vm|child_process|worker_threads)['"]/.test(semComentarios),
+      `${arquivo.pathname.split('/src/')[1]} importa um módulo de execução`,
+    )
+  }
+})
 
 test('o módulo de runtime não contém NENHUMA forma de executar código neste processo', () => {
   const dir = new URL('../src/extensionRuntime/', import.meta.url)
@@ -182,17 +240,19 @@ test('o achado diz a LINHA, e não devolve o fonte', () => {
 
 const publicavel = 'import json\n\ndef run(e):\n    return {"ok": True}\n'
 
-test('publicar exige runtime, scanner limpo E revisão humana', async () => {
+test('publicar exige runtime, scanner limpo E aprovação registrada no servidor', async () => {
   process.env.CODE_TOOLS_ENABLED = '1'
   provider.registerSandboxProvider(providerFalso())
+  const subjectId = new ObjectId()
 
-  const semRevisao = await gate.canPublishCode({ runtime: 'python', source: publicavel })
+  const semRevisao = await gate.canPublishCode({ runtime: 'python', source: publicavel, subject: { type: 'tool', id: subjectId } })
   assert.equal(semRevisao.code, 'review_required')
 
-  const sujo = await gate.canPublishCode({ runtime: 'python', source: 'import socket\n', humanReview: { reviewerId: 'r', at: new Date() } })
+  const sujo = await gate.canPublishCode({ runtime: 'python', source: 'import socket\n', subject: { type: 'tool', id: subjectId } })
   assert.equal(sujo.code, 'scan_failed')
 
-  const bom = await gate.canPublishCode({ runtime: 'python', source: publicavel, humanReview: { reviewerId: 'r', at: new Date() } })
+  await aprovar(subjectId, publicavel)
+  const bom = await gate.canPublishCode({ runtime: 'python', source: publicavel, subject: { type: 'tool', id: subjectId } })
   assert.equal(bom.ok, true)
   assert.ok(bom.value.sha256)
   assert.deepEqual(bom.value.imports, ['json'])
@@ -201,11 +261,13 @@ test('publicar exige runtime, scanner limpo E revisão humana', async () => {
 test('o kill switch desliga por HASH, em qualquer conta', async () => {
   process.env.CODE_TOOLS_ENABLED = '1'
   provider.registerSandboxProvider(providerFalso())
-  const { value } = await gate.canPublishCode({ runtime: 'python', source: publicavel, humanReview: { reviewerId: 'r', at: new Date() } })
+  const subjectId = new ObjectId()
+  await aprovar(subjectId, publicavel)
+  const { value } = await gate.canPublishCode({ runtime: 'python', source: publicavel, subject: { type: 'tool', id: subjectId } })
 
   await gate.killSwitch({ sha256: value.sha256, reason: 'exfiltrava dado por timing', createdBy: 'seguranca' })
 
-  const publicar = await gate.canPublishCode({ runtime: 'python', source: publicavel, humanReview: { reviewerId: 'r', at: new Date() } })
+  const publicar = await gate.canPublishCode({ runtime: 'python', source: publicavel, subject: { type: 'tool', id: subjectId } })
   assert.equal(publicar.code, 'killed')
   const executar = await gate.canExecuteCode({ sha256: value.sha256 })
   assert.equal(executar.code, 'killed')
@@ -344,7 +406,7 @@ test('publicar uma ferramenta de código passa pelo portão inteiro', async () =
     },
   )
 
-  // Limpo, mas sem revisão humana: ainda não publica.
+  // Limpo, mas sem aprovação registrada: ainda não publica.
   await assert.rejects(
     () => publishVersion(DONO, toolId, versaoCode()),
     (e) => {
@@ -353,8 +415,16 @@ test('publicar uma ferramenta de código passa pelo portão inteiro', async () =
     },
   )
 
-  // Tudo no lugar: publica.
-  const v = await publishVersion(DONO, toolId, versaoCode({ humanReview: { reviewerId: 'revisor', at: new Date() } }))
+  // Tudo no lugar: publica. A aprovação é gravada pelo SERVIDOR, presa ao hash do código.
+  await review.recordReview({
+    subjectType: 'tool',
+    subjectId: toolId,
+    version: '1.0.0',
+    sha256: scanner.scanSource('import json\n\ndef run(e):\n    return {"ok": True}\n', 'python').sha256,
+    decision: 'approved',
+    reviewerId: REVISOR,
+  })
+  const v = await publishVersion(DONO, toolId, versaoCode())
   assert.equal(v.runtimeKind, 'code')
   assert.equal(v.risk, 'high_risk', 'código é high_risk por definição')
 
