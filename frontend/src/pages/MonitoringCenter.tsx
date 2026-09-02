@@ -506,7 +506,14 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
   const [fonteId, setFonteId] = useState('')
   const [modo, setModo] = useState<mon.TriggerMode>('enter')
   const [juncao, setJuncao] = useState<'and' | 'or'>('and')
-  const [partes, setPartes] = useState<{ field: string; op: mon.ComparisonOp; value: string }[]>([{ field: '', op: 'lt', value: '' }])
+  const [partes, setPartes] = useState<{ field: string; op: mon.ComparisonOp; value: string; delta: boolean; deltaMode: 'absolute' | 'percent' }[]>([
+    { field: '', op: 'lt', value: '', delta: false, deltaMode: 'absolute' },
+  ])
+  const [threshold, setThreshold] = useState('')
+  const [thresholdField, setThresholdField] = useState('')
+  const [debounceMs, setDebounceMs] = useState(0)
+  const [cooldownMs, setCooldownMs] = useState(0)
+  const [aoFaltar, setAoFaltar] = useState<'ignore' | 'degrade'>('degrade')
   const [antes, setAntes] = useState<Record<string, string>>({})
   const [agora, setAgora] = useState<Record<string, string>>({})
   const [resultado, setResultado] = useState<mon.SimulationResult | null>(null)
@@ -520,6 +527,9 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
       .filter((p) => p.field)
       .map((p) => {
         const n = Number(p.value)
+        // MUDANÇA é outra pergunta: "variou mais que X" compara com o valor anterior, e não
+        // com um limite fixo. Misturar as duas na mesma folha faria a prévia mentir.
+        if (p.delta) return { kind: 'delta' as const, field: p.field, op: p.op, value: Number.isFinite(n) ? n : 0, mode: p.deltaMode }
         const valor: number | string | boolean = p.value === 'true' ? true : p.value === 'false' ? false : p.value !== '' && Number.isFinite(n) ? n : p.value
         return { kind: 'compare' as const, field: p.field, op: p.op, value: valor }
       })
@@ -537,6 +547,8 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
         await mon.simulate({
           condition: condicao(),
           triggerMode: modo,
+          ...(threshold !== '' ? { threshold: Number(threshold) } : {}),
+          ...(thresholdField ? { thresholdField } : {}),
           value: numero(agora),
           previous: Object.keys(antes).length ? numero(antes) : null,
           ...(camposDaFonte.length ? { fields: camposDaFonte } : {}),
@@ -605,18 +617,42 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
                   data-testid={`monitor-op-${i}`}
                 />
               </Field>
-              <Field label="Valor" style={{ flex: 1 }}>
+              <Field label={p.delta ? 'Variação' : 'Valor'} style={{ flex: 1 }}>
                 <Input
                   value={p.value}
                   onChange={(e) => setPartes(partes.map((x, j) => (i === j ? { ...x, value: e.target.value } : x)))}
                   data-testid={`monitor-valor-${i}`}
                 />
               </Field>
+              <Field label="Comparar com" style={{ flex: 1 }}>
+                <Select
+                  value={p.delta ? `delta-${p.deltaMode}` : 'nivel'}
+                  onChange={(e) =>
+                    setPartes(
+                      partes.map((x, j) =>
+                        i === j
+                          ? { ...x, delta: e.target.value !== 'nivel', deltaMode: e.target.value === 'delta-percent' ? 'percent' : 'absolute' }
+                          : x,
+                      ),
+                    )
+                  }
+                  options={[
+                    { value: 'nivel', label: 'o valor de agora' },
+                    { value: 'delta-absolute', label: 'quanto variou' },
+                    { value: 'delta-percent', label: 'quanto variou (%)' },
+                  ]}
+                  data-testid={`monitor-comparar-${i}`}
+                />
+              </Field>
             </div>
           ))}
 
           <div className="flex flex-wrap gap-2">
-            <Button variant="ghost" onClick={() => setPartes([...partes, { field: '', op: 'lt', value: '' }])} data-testid="monitor-add-parte">
+            <Button
+              variant="ghost"
+              onClick={() => setPartes([...partes, { field: '', op: 'lt', value: '', delta: false, deltaMode: 'absolute' }])}
+              data-testid="monitor-add-parte"
+            >
               Adicionar condição
             </Button>
             {partes.length > 1 && (
@@ -635,10 +671,73 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
             />
           </Field>
 
+          {(modo === 'cross_up' || modo === 'cross_down') && (
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Field label="Campo do cruzamento" hint="Cruzar precisa de dois números: o de antes e o de agora." style={{ flex: 1 }}>
+                {camposDaFonte.length ? (
+                  <Select
+                    value={thresholdField}
+                    onChange={(e) => setThresholdField(e.target.value)}
+                    data-testid="monitor-threshold-campo"
+                  >
+                    <option value="">Escolha</option>
+                    {camposDaFonte.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </Select>
+                ) : (
+                  <Input value={thresholdField} onChange={(e) => setThresholdField(e.target.value)} data-testid="monitor-threshold-campo" />
+                )}
+              </Field>
+              <Field label="Limiar" style={{ flex: 1 }}>
+                <Input value={threshold} onChange={(e) => setThreshold(e.target.value)} data-testid="monitor-threshold" />
+              </Field>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Field label="Debounce (s)" hint="Distância mínima entre observações." style={{ flex: 1 }}>
+              <Input
+                type="number"
+                min={0}
+                value={Math.round(debounceMs / 1000)}
+                onChange={(e) => setDebounceMs(Math.max(0, Number(e.target.value)) * 1000)}
+                data-testid="monitor-debounce"
+              />
+            </Field>
+            <Field label="Cooldown (s)" hint="Distância mínima entre disparos. É outra coisa: um protege de fonte tagarela, o outro de avisar demais." style={{ flex: 1 }}>
+              <Input
+                type="number"
+                min={0}
+                value={Math.round(cooldownMs / 1000)}
+                onChange={(e) => setCooldownMs(Math.max(0, Number(e.target.value)) * 1000)}
+                data-testid="monitor-cooldown"
+              />
+            </Field>
+          </div>
+
+          <Field label="Se o dado estiver velho ou faltando" hint="Decidir sobre um número que já não é verdade é o alarme que toca sozinho de madrugada.">
+            <Select
+              value={aoFaltar}
+              onChange={(e) => setAoFaltar(e.target.value as 'ignore' | 'degrade')}
+              options={[
+                { value: 'degrade', label: 'não disparar e marcar a fonte como degradada' },
+                { value: 'ignore', label: 'não disparar e seguir em silêncio' },
+              ]}
+              data-testid="monitor-stale"
+            />
+          </Field>
+
           {/* A PRÉVIA, montada na tela: sem ela, quem monta só descobre o que escreveu
               depois de salvar. */}
           <p style={{ fontSize: 13.5 }} data-testid="monitor-previa">
-            Quando <strong>{mon.descreverCondicao(condicao())}</strong> — {mon.TRIGGER_LABEL[modo]}.
+            Quando <strong>{mon.descreverCondicao(condicao())}</strong> — {mon.TRIGGER_LABEL[modo]}
+            {threshold !== '' && (modo === 'cross_up' || modo === 'cross_down') ? ` de ${threshold}` : ''}.
+            {debounceMs > 0 ? ` Observando no máximo a cada ${Math.round(debounceMs / 1000)}s.` : ''}
+            {cooldownMs > 0 ? ` Avisando no máximo a cada ${Math.round(cooldownMs / 1000)}s.` : ''}
+            {aoFaltar === 'degrade' ? ' Dado velho não dispara e marca a fonte.' : ' Dado velho não dispara.'}
           </p>
         </div>
       </Card>

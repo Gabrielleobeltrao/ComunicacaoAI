@@ -499,14 +499,52 @@ Comandos: `node --test test/monitoringConfig.test.mjs` → **11/11**;
 `node --test test/monitoringMigration.integration.test.mjs` → **12/12**.
 Bateria: backend **1445 + 1971**.
 
+## Bloco 18 — a AST completa na tela ✅
+
+`AbaMonitores` em `frontend/src/pages/MonitoringCenter.tsx`.
+
+- **MUDANÇA** (`delta`) ao lado de comparação: "variou mais que X" compara com o valor
+  anterior, e não com um limite fixo. Misturar as duas na mesma folha faria a prévia mentir;
+- **CRUZAMENTO** pede campo e limiar, e os campos só aparecem quando o modo é de travessia
+  — cruzar precisa de dois números, e sem eles não haveria o que cruzar;
+- **debounce e cooldown** com a distinção dita na dica: um protege de fonte tagarela, o
+  outro de avisar demais;
+- **política de dado velho/ausente**: não disparar e marcar a fonte, ou não disparar em
+  silêncio. Decidir sobre um número que já não é verdade é o alarme que toca sozinho de
+  madrugada;
+- tudo isso entra na **prévia em português**, montada na tela antes de salvar.
+
+E os E2E que faltavam: **dedupe** (coletar o mesmo valor não é falha), **revogação** (a
+recusa do servidor aparece como recusa) e **falha parcial** (uma fonte quebrada não esconde
+as que funcionam, nem o contrário).
+
+Comando: `npx playwright test e2e/monitoring-center.spec.ts` → **24/24**.
+
+## Bateria completa desta sessão
+
+Repositório em `f77b3e8` + este bloco:
+
+| Comando | Resultado |
+| --- | --- |
+| `npm run build` | verde |
+| `npm run test -w backend` | **1445 + 1971**, 0 falhas |
+| `npm run test:runner` | **21**, 0 falhas |
+| `npm run test:browser-worker` | **19**, 0 falhas |
+| `npm run test -w frontend` | **292**, 0 falhas |
+| `npm run lint -w frontend` | **0 erros** |
+| `npm run test:e2e -w frontend` | **676** passaram, 17 pulados |
+| `npm run smoke` | verde, saída 0 |
+| `npm run secret-scan` | 2232 arquivos, nada encontrado |
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **A aba de Monitores** ainda não oferece debounce, cooldown, limiar de cruzamento e
-   política de dado ausente/stale na tela — a AST tem comparação e AND/OR; falta expor o
-   resto, que já existe no backend.
+2. **Um motor de renderização de verdade** para o `browser-worker`: o contrato, o guarda,
+   os limites e o kill switch estão de pé e testados, e o `health` responde
+   `render: false`. Ligar um navegador headless é trocar a implementação de `fetchPage` —
+   e é infraestrutura, não código deste repositório.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

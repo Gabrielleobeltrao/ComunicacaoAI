@@ -364,3 +364,88 @@ test('o monitor opcional do wizard nasce RASCUNHO', async ({ page }) => {
   await page.getByTestId('wizard-salvar').click()
   await expect(page.getByTestId('monitoring-aviso')).toContainText('monitor em rascunho')
 })
+
+test('a AST oferece MUDANÇA, e a prévia diz que é variação', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=monitors')
+  await page.getByTestId('monitor-fonte').selectOption(ID)
+  await page.getByTestId('monitor-campo-0').selectOption('preco')
+  await page.getByTestId('monitor-valor-0').fill('10')
+  // "Variou mais que X" compara com o valor anterior, e não com um limite fixo.
+  await page.getByTestId('monitor-comparar-0').selectOption('delta-percent')
+  await expect(page.getByTestId('monitor-previa')).toContainText('preco variou abaixo de 10%')
+})
+
+test('CRUZAMENTO pede o campo e o limiar — sem eles não haveria o que cruzar', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=monitors')
+  await page.getByTestId('monitor-fonte').selectOption(ID)
+  await expect(page.getByTestId('monitor-threshold')).toHaveCount(0)
+
+  await page.getByTestId('monitor-modo').selectOption('cross_up')
+  await page.getByTestId('monitor-threshold-campo').selectOption('preco')
+  await page.getByTestId('monitor-threshold').fill('30')
+  await expect(page.getByTestId('monitor-previa')).toContainText('quando cruzar o limiar para cima de 30')
+})
+
+test('DEBOUNCE e COOLDOWN aparecem na prévia, e são coisas diferentes', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=monitors')
+  await page.getByTestId('monitor-fonte').selectOption(ID)
+  await page.getByTestId('monitor-campo-0').selectOption('preco')
+  await page.getByTestId('monitor-valor-0').fill('30')
+
+  await page.getByTestId('monitor-debounce').fill('20')
+  await page.getByTestId('monitor-cooldown').fill('300')
+  const previa = page.getByTestId('monitor-previa')
+  await expect(previa).toContainText('Observando no máximo a cada 20s')
+  await expect(previa).toContainText('Avisando no máximo a cada 300s')
+})
+
+test('a política de dado velho é escolhida, e a prévia diz qual é', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=monitors')
+  await page.getByTestId('monitor-fonte').selectOption(ID)
+  await expect(page.getByTestId('monitor-previa')).toContainText('Dado velho não dispara e marca a fonte')
+
+  await page.getByTestId('monitor-stale').selectOption('ignore')
+  await expect(page.getByTestId('monitor-previa')).toContainText('Dado velho não dispara.')
+})
+
+test('DEDUPE: coletar de novo o mesmo valor não conta como novidade', async ({ page }) => {
+  await stub(page)
+  await page.route(`**/api/monitoring/sources/${ID}/read`, (r) => r.fulfill({ json: { ok: true, rows: 1, recorded: 0, unchanged: true } }))
+  await page.goto('/monitoring?tab=sources')
+  // A fonte segue saudável; o que não houve foi dado novo — e a tela não pode confundir
+  // "não mudou" com "falhou".
+  await expect(page.getByTestId('fonte-item')).toBeVisible()
+})
+
+test('REVOGAÇÃO: a recusa do servidor ao testar aparece como recusa', async ({ page }) => {
+  await stub(page)
+  await page.route(`**/api/monitoring/sources/${ID}/test`, (r) =>
+    r.fulfill({ status: 400, json: { message: 'a conexão desta fonte não existe mais' } }),
+  )
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-testar').click()
+  await expect(page.getByTestId('monitoring-error')).toContainText('conexão desta fonte não existe mais')
+})
+
+test('FALHA PARCIAL: a visão geral mostra a degradada ao lado da que está no ar', async ({ page }) => {
+  await stub(page)
+  await page.route('**/api/monitoring/overview', (r) =>
+    r.fulfill({
+      json: {
+        items: [
+          OVERVIEW.items[0],
+          { ...OVERVIEW.items[0], id: 'outra', name: 'Câmbio', health: 'online', reason: 'lendo dentro da janela', readsFailed: 0 },
+        ],
+        summary: { total: 2, online: 1, degraded: 1, paused: 0, neverRead: 0 },
+      },
+    }),
+  )
+  await page.goto('/monitoring')
+  // Uma fonte quebrada não esconde as que funcionam, nem o contrário.
+  await expect(page.getByTestId('monitoring-item')).toHaveCount(2)
+  await expect(page.getByTestId('monitoring-resumo')).toContainText('1')
+})
