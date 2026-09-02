@@ -589,19 +589,71 @@ Rodada inteira, na ordem do plano, com o repositório no commit `671b38e`:
 As telas novas (Monitores, Atividade, Comunidade) têm caso de 320 px afirmando que a página
 não rola para os lados, e o smoke continua conferindo o alvo mínimo de toque.
 
+## Bateria da sessão de fechamento
+
+Repositório em `bde20bf`:
+
+| Comando | Resultado |
+| --- | --- |
+| `npm run build` | verde |
+| `npm run test -w backend` | **1354 + 1871**, 0 falhas |
+| `npm run test:runner` | **21**, 0 falhas |
+| `npm run test -w frontend` | **292**, 0 falhas |
+| `npm run lint -w frontend` | 0 erros |
+| `npm run test:e2e -w frontend` | **652** passaram, 17 pulados |
+| `npm run smoke` | verde, saída 0 |
+| `npm run secret-scan` | 2195 arquivos, nada encontrado |
+
+Nenhum teste foi pulado ou enfraquecido para chegar aqui. Três testes que existiam mudaram
+de conteúdo porque o COMPORTAMENTO mudou, e a mudança está dita em cada um: o `humanReview`
+do manifesto deixou de existir, os fixtures de manifesto passaram a ser manifestos válidos
+(um pacote que não vira App não deveria instalar), e a varredura de "nada executa aqui"
+passou a cobrir o backend inteiro em vez de um diretório.
+
+## O que AINDA falta — e por quê
+
+Nenhum destes itens está escondido atrás de "concluído".
+
+1. **O canal de volta do capability broker.** Os bilhetes são emitidos, presos à execução,
+   contados e revogados; a permissão é reconferida no resolvedor canônico. Mas o código
+   dentro da sandbox não tem por onde usá-los, porque a rede está negada — e negada é o
+   que se quer. Falta um relay do runner para o backend. Enquanto isso, uma ferramenta de
+   código roda **pura**: entrada e saída, sem alcançar App nem Database.
+   *Próxima ação:* endpoint no runner que aceita pedido do filho por stdout-protocolo e
+   repassa ao broker, com a mesma assinatura de serviço.
+2. **Python.** O runner responde `runtimes: ["javascript"]` e recusa Python como
+   indisponível em vez de adivinhar. O modelo de permissão que sustenta o isolamento é do
+   Node; Python exigiria um segundo mecanismo, e fingir que ele existe seria pior.
+3. **Superfície global de Flows e editor DAG.** O motor é o de automações e não vai mudar;
+   falta a tela. Monitores já apontam para Flows publicados por `automationId`.
+4. **Editor de versões de Tool na tela.** A API existe (`GET/POST /api/tools/:id/versions`,
+   com a trilha de chamadas), a tela não.
+5. **Construtor de monitor em linguagem natural.** O construtor de listas fechadas existe e
+   é o caminho seguro; o de linguagem natural precisaria produzir rascunho revisável, e
+   nada disso pode publicar sozinho.
+6. **Marketplace: detalhe do item, denúncia e tela de revisão.** A API de revisão existe
+   (`/review/queue`, `/review/decisions`) e a lista mostra procedência, versão, permissões
+   da atualização e motivo de suspensão. Faltam as telas.
+
 ## Por que NÃO existe REPORT
 
 O plano manda criar `OFFICE_PLATFORM_RESOURCE_COMMUNITY_REPORT.md` **só quando todas as
 fases e critérios de aceite estiverem realmente concluídos**. Eles não estão, e a razão é
 uma só e é honesta:
 
-**a Fase 9 exige isolamento comprovado, e não existe runner isolado neste repositório.** O
-critério de aceite dela é código rodando com isolamento demonstrado; o que existe é a
-fronteira que impede rodar sem ele. Escrever um relatório de conclusão com esse buraco
-seria dizer que a plataforma executa código de terceiro com segurança — que é exatamente a
-afirmação que não pode ser feita.
+**o runner existe e executa, mas o produto ainda não está completo.** A lista da seção
+anterior é curta e específica, e dois itens dela mudam o que a plataforma consegue
+prometer: sem o canal do broker, código de terceiro não alcança App nem Database — o que é
+seguro, mas não é o produto descrito no plano; e três superfícies (Flows, versões de Tool,
+detalhe do Marketplace) existem em API e não em tela.
 
-O restante das pendências está listado por fase acima.
+**O bloqueio externo que resta é um só, e ele não é de código:** para ligar
+`CODE_TOOLS_ENABLED=1` em produção é preciso um deploy do runner com o cerco fechado —
+`--read-only`, `--cap-drop=ALL`, `--security-opt no-new-privileges`, rede interna sem
+egress, e as marcas `SANDBOX_EPHEMERAL/NO_NEW_PRIVILEGES/SECCOMP`. O contrato está pronto
+(`runner/Dockerfile` e `SANDBOX_RUNBOOK.md` trazem o comando exato), o backend mede o
+resultado item a item e recusa sozinho enquanto qualquer um for falso. **A única ação
+humana necessária é esse deploy.** Nada em código destrava isso, e nada deveria.
 
 ## Próxima ação exata
 
