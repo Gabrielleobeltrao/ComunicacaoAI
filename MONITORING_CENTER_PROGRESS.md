@@ -241,15 +241,40 @@ em diante o caminho é o de qualquer outra fonte.
 Comando: `node --test test/monitoringWebhook.integration.test.mjs` → **15/15**, sendo 6 de
 ameaça. Bateria: **1401 + 1924**, secret-scan limpo em 2209 arquivos.
 
+## Bloco 8 — RSS/Atom, App/action e dataset ✅
+
+`backend/src/monitoring/feed.ts` e os dois coletores em `collect.ts`.
+
+- **o parser de feed é fechado e sem dependência nova.** Um feed é XML, mas ler um não
+  exige um parser de XML genérico: os dois formatos têm a mesma forma, e trazer uma
+  biblioteca completa significaria carregar DTD e entidade externa junto — que é exatamente
+  onde mora o XXE. Há teste afirmando que `<!ENTITY xxe SYSTEM "file:///etc/passwd">` fica
+  como texto, e outro afirmando que `&amp;lt;` não vira `<` (desfazer `&amp;` antes
+  reconstruiria a etiqueta);
+- **RSS deixou de cair no caminho de página**: antes, quem configurava um feed recebia um
+  pedido de seletor CSS para um formato que já é estruturado;
+- **`app_action` passa pelo executor oficial de Apps** — grant, instalação, compatibilidade
+  e credencial cifrada. `autonomousWriteActionKeys` vai vazio: consulta é leitura, e este
+  caminho não autoriza escrita nem por engano;
+- **`dataset` lê pelo adapter de sempre**, cobrindo o caso que o monitor de gravação não
+  cobre: olhar periodicamente o estado atual.
+
+Comandos: `node --test test/monitoringFeed.test.mjs` → **9/9** (2 de ameaça);
+`node --test test/monitoringSource.integration.test.mjs` → **44/44**;
+`npm run test -w backend` → **1410 + 1930, 0 falhas**.
+
+**Seis dos nove tipos funcionam**: api_polling, http_page, rss, webhook, internal_event,
+websocket, app_action e dataset — oito, na verdade. Falta **browser** (com visão) e **SSE**
+como protocolo explícito.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
 2. **As cinco abas da Central** e o wizard: nada disso está na tela ainda.
-3. **Tipos que ainda não funcionam**: **SSE** como protocolo explícito, App/action,
-   RSS/Atom com parser de feed de verdade (hoje cai no caminho de página) e `dataset` como
-   fonte da Central. `internal_event`, `websocket` e `webhook` funcionam.
+3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
+   **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e
    o plano é explícito que dado incerto não dispara.
 5. **Grants por agente/setor** sobre fonte, e autorização reconferida antes da leitura.

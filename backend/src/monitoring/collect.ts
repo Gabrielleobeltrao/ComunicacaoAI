@@ -1,4 +1,5 @@
 import { safeFetch } from '../net/safeHttp.js'
+import { parseFeed, pareceFeed } from './feed.js'
 import { applyMapping, redactSample } from './mapping.js'
 import type { MappedResult } from './mapping.js'
 import type { MonitoringSource } from './types.js'
@@ -23,7 +24,7 @@ export interface CollectResult {
   /** A amostra REDIGIDA do bruto — para a tela conferir o mapeamento sem ver segredo. */
   sample: unknown
   /** Qual estratégia respondeu. A tela mostra isso: "li o JSON" é diferente de "li o HTML". */
-  strategy: 'json' | 'jsonld' | 'dom' | 'none'
+  strategy: 'json' | 'jsonld' | 'dom' | 'feed' | 'none'
   missing: string[]
   mappingVersion: number | null
   latencyMs: number
@@ -100,12 +101,84 @@ export function extractBySelector(html: string, selector: string): string | null
 const ehJson = (contentType: string, corpo: string) =>
   /json/i.test(contentType) || (corpo.trim().startsWith('{') && corpo.trim().endsWith('}')) || (corpo.trim().startsWith('[') && corpo.trim().endsWith(']'))
 
+/**
+ * Uma ação de App como fonte — pelo MESMO caminho de permissão que o modelo usaria.
+ *
+ * `resolveGrant` resolve o App, confere que a instalação é desta conta, checa status e
+ * compatibilidade e decifra a credencial. Um segundo caminho aqui seria um segundo lugar
+ * decidindo permissão.
+ */
+async function coletarDeApp(source: FonteColetavel, comecou: number, opts: CollectOptions): Promise<CollectResult> {
+  const cfg = source.config
+  if (!cfg.appKey || !cfg.actionKey || !cfg.installationId) {
+    return falha('not_supported', 'esta fonte não diz qual App e qual ação ela consulta', Date.now() - comecou)
+  }
+  if (!opts.ownerId) return falha('not_supported', 'leitura de App exige a conta', Date.now() - comecou)
+
+  try {
+    const { resolveGrant } = await import('../apps/grants.js')
+    const ferramentas = await resolveGrant(opts.ownerId, {
+      appKey: cfg.appKey,
+      installationId: cfg.installationId,
+      actionKeys: [cfg.actionKey],
+      // Consulta é LEITURA: nenhuma ação de escrita é autorizada por este caminho.
+      autonomousWriteActionKeys: [],
+      resourceConfig: {},
+    })
+    const normal = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const alvo = ferramentas.find((f) => normal(f.name) === normal(cfg.actionKey!) || normal(f.name).endsWith(`__${normal(cfg.actionKey!)}`))
+    if (!alvo) return falha('blocked', 'a conexão deste App precisa ser revista em Apps', Date.now() - comecou)
+
+    const saida = await alvo.run({})
+    const latencyMs = Date.now() - comecou
+    if (!saida.ok) return falha('http', 'o App recusou a consulta', latencyMs)
+
+    let corpo: unknown
+    try {
+      corpo = JSON.parse(saida.result)
+    } catch {
+      corpo = { texto: saida.result }
+    }
+    const mapeado = applyMapping(corpo, source.mapping)
+    return { ok: true, rows: mapeado.rows, sample: redactSample(corpo), strategy: 'json', missing: mapeado.missing, mappingVersion: mapeado.mappingVersion, latencyMs, status: null }
+  } catch (erro) {
+    return falha('http', String((erro as Error).message).slice(0, 200), Date.now() - comecou)
+  }
+}
+
+/**
+ * Um dataset como fonte — o que já está guardado, lido pelo adapter de sempre.
+ *
+ * Serve para observar um conjunto que outro caminho alimenta: o monitor de dataset já faz
+ * isso na gravação, e esta fonte cobre o outro caso — olhar periodicamente o estado atual.
+ */
+async function coletarDeDataset(source: FonteColetavel, comecou: number, opts: CollectOptions): Promise<CollectResult> {
+  const cfg = source.config
+  if (!cfg.dataStoreId || !cfg.datasetKey) return falha('not_supported', 'esta fonte não diz qual conjunto ela lê', Date.now() - comecou)
+  if (!opts.ownerId) return falha('not_supported', 'leitura de dataset exige a conta', Date.now() - comecou)
+
+  try {
+    const { ObjectId } = await import('mongodb')
+    const { runQuery } = await import('../databases/adapters.js')
+    const r = await runQuery({ accountId: opts.ownerId, dataStoreId: new ObjectId(cfg.dataStoreId), datasetKey: cfg.datasetKey, query: { limit: 50 } })
+    const latencyMs = Date.now() - comecou
+    const mapeado = applyMapping({ rows: r.rows }, source.mapping)
+    return { ok: true, rows: mapeado.rows, sample: redactSample({ rows: r.rows.slice(0, 3) }), strategy: 'json', missing: mapeado.missing, mappingVersion: mapeado.mappingVersion, latencyMs, status: null }
+  } catch (erro) {
+    return falha('http', String((erro as Error).message).slice(0, 200), Date.now() - comecou)
+  }
+}
+
 export interface CollectOptions {
   /** Cabeçalhos já resolvidos pela CONEXÃO. Nunca vêm do documento da fonte. */
   headers?: Record<string, string>
   /** Injetável no teste: o mesmo contrato de `safeFetch`. */
   fetcher?: typeof safeFetch
+  /** A conta — exigida pelos tipos que passam por outro subsistema com permissão. */
+  ownerId?: string
 }
+
+type FonteColetavel = Pick<MonitoringSource, 'kind' | 'config' | 'mapping' | 'retry'>
 
 /**
  * Uma leitura da fonte, do jeito que ela declarou ser.
@@ -114,14 +187,24 @@ export interface CollectOptions {
  * deu errado — e uma exceção subindo daqui apagaria justamente a informação de que a
  * fonte está falhando.
  */
-export async function collectOnce(source: Pick<MonitoringSource, 'kind' | 'config' | 'mapping' | 'retry'>, opts: CollectOptions = {}): Promise<CollectResult> {
+export async function collectOnce(source: FonteColetavel, opts: CollectOptions = {}): Promise<CollectResult> {
   const comecou = Date.now()
   const buscar = opts.fetcher ?? safeFetch
   const cfg = source.config
 
+  /**
+   * Os tipos que a Central PUXA por outro subsistema — e não por HTTP.
+   *
+   * `app_action` passa pelo executor oficial de Apps (grant, instalação, credencial
+   * cifrada); `dataset` lê o que já está guardado. Nos dois casos, quem sabe fazer é quem
+   * já fazia: a Central só pede e mapeia o que voltou.
+   */
+  if (source.kind === 'app_action') return coletarDeApp(source, comecou, opts)
+  if (source.kind === 'dataset') return coletarDeDataset(source, comecou, opts)
+
   if (source.kind !== 'api_polling' && source.kind !== 'rss' && source.kind !== 'http_page') {
-    // Os outros tipos são EMPURRADOS ou pertencem a outro subsistema. Fingir uma leitura
-    // aqui seria a Central duplicando o que o App e o barramento já fazem.
+    // Os outros tipos são EMPURRADOS. Fingir uma leitura aqui seria a Central duplicando o
+    // que o barramento e o App já fazem.
     return falha('not_supported', 'este tipo de fonte não é lido por polling', Date.now() - comecou)
   }
   if (!cfg.url) return falha('not_supported', 'esta fonte não tem endereço', Date.now() - comecou)
@@ -163,7 +246,19 @@ export async function collectOnce(source: Pick<MonitoringSource, 'kind' | 'confi
   let bruto: unknown = null
   let strategy: CollectResult['strategy'] = 'none'
 
-  if (ehJson(resposta.contentType ?? '', corpo)) {
+  /**
+   * FEED antes de tudo, quando a fonte é de feed.
+   *
+   * Um RSS caía no caminho de página e exigia seletor — a pessoa configurava um feed e a
+   * Central pedia CSS. O parser é fechado (sem DTD, sem entidade externa: não há XXE para
+   * explorar) e devolve os mesmos campos nos dois formatos.
+   */
+  if (source.kind === 'rss' || pareceFeed(resposta.contentType ?? '', corpo)) {
+    const itens = parseFeed(corpo)
+    if (itens.length === 0) return falha('empty', 'não encontrei itens neste feed', latencyMs, resposta.status)
+    bruto = { items: itens }
+    strategy = 'feed'
+  } else if (ehJson(resposta.contentType ?? '', corpo)) {
     try {
       bruto = JSON.parse(corpo)
       strategy = 'json'

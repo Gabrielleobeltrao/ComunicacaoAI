@@ -44,7 +44,7 @@ export const KIND_CAPABILITIES: Record<MonitoringSourceKind, { pull: boolean; pu
   rss: { pull: true, push: false, needsUrl: true, needsConnection: false },
   http_page: { pull: true, push: false, needsUrl: true, needsConnection: false },
   browser: { pull: true, push: false, needsUrl: true, needsConnection: false },
-  dataset: { pull: false, push: true, needsUrl: false, needsConnection: false },
+  dataset: { pull: true, push: false, needsUrl: false, needsConnection: false },
   internal_event: { pull: false, push: true, needsUrl: false, needsConnection: false },
 }
 

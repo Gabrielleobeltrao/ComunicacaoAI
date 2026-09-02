@@ -488,3 +488,107 @@ test('ACEITAÇÃO: evento do barramento → recorder da fonte → dataset', asyn
   const registro = await db.collection('data_history_records').findOne({ ownerId: DONO })
   assert.equal(registro.value.rsi, 12)
 })
+
+// --- RSS: parser de verdade, não caminho de página ------------------------------------
+
+test('fonte RSS é lida como FEED, e não exige seletor CSS', async () => {
+  // Antes, um RSS caía no caminho de página e a Central pedia CSS para um formato que já
+  // é estruturado.
+  tipoAtual = 'application/rss+xml'
+  corpoAtual = '<rss><channel><item><guid>a1</guid><title>Alta do dólar</title><link>https://ex.test/1</link></item></channel></rss>'
+
+  const r = await svc.testSource(DONO, entrada({
+    kind: 'rss',
+    config: { url: `http://127.0.0.1:${porta}/feed` },
+    mapping: { version: 1, itemsPath: 'items', fields: [{ to: 'titulo', from: 'title', required: true }, { to: 'url', from: 'link' }] },
+  }))
+
+  assert.equal(r.ok, true)
+  assert.equal(r.strategy, 'feed')
+  assert.deepEqual(r.rows, [{ titulo: 'Alta do dólar', url: 'https://ex.test/1' }])
+})
+
+test('feed sem itens é recusado, e não vira leitura vazia boa', async () => {
+  tipoAtual = 'application/rss+xml'
+  corpoAtual = '<rss><channel></channel></rss>'
+  const r = await svc.testSource(DONO, entrada({ kind: 'rss', config: { url: `http://127.0.0.1:${porta}/feed` } }))
+  assert.equal(r.ok, false)
+  assert.equal(r.error.kind, 'empty')
+})
+
+// --- App/action e dataset como fonte ---------------------------------------------------
+
+test('fonte de App sem instalação recusa pelo caminho de permissão de sempre', async () => {
+  const r = await svc.testSource(DONO, entrada({
+    kind: 'app_action',
+    config: { appKey: 'crm', actionKey: 'listar', installationId: new ObjectId().toString() },
+    mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] },
+  }))
+  assert.equal(r.ok, false)
+  assert.ok(['blocked', 'http'].includes(r.error.kind))
+})
+
+test('fonte de App sem dizer App e ação é recusada', async () => {
+  const r = await svc.testSource(DONO, entrada({ kind: 'app_action', config: {}, mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] } }))
+  assert.equal(r.error.kind, 'not_supported')
+  assert.match(r.error.message, /qual App e qual ação/)
+})
+
+test('fonte de DATASET lê o que já está guardado', async () => {
+  const { ensureDatabaseIndexes } = await import('../dist/databases/store.js')
+  await ensureDatabaseIndexes()
+  const dataStoreId = new ObjectId()
+  const recorderId = new ObjectId()
+  await db.collection('data_stores').insertOne({
+    _id: dataStoreId,
+    ownerId: DONO,
+    buildingId: null,
+    name: 'Hist',
+    description: '',
+    owner: { ownerType: 'account', ownerId: DONO },
+    adapterKind: 'data_history',
+    adapterConfig: {},
+    status: 'active',
+    retention: { mode: 'forever' },
+    version: 1,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
+  await db.collection('dataset_definitions').insertOne({
+    ownerId: DONO,
+    dataStoreId,
+    key: recorderId.toString(),
+    name: 'Série',
+    schema: { type: 'object', properties: { preco: { type: 'number' } } },
+    mutability: 'append_only',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
+  await db.collection('data_history_records').insertOne({
+    ownerId: DONO,
+    recorderId,
+    value: { preco: 33 },
+    occurredAt: new Date(),
+    recordedAt: new Date(),
+    dedupeKey: 'd1',
+  })
+
+  const r = await svc.testSource(DONO, entrada({
+    kind: 'dataset',
+    config: { dataStoreId: dataStoreId.toString(), datasetKey: recorderId.toString() },
+    cadence: { mode: 'interval', intervalMs: 60_000 },
+    mapping: { version: 1, itemsPath: 'rows', fields: [{ to: 'preco', from: 'preco' }] },
+  }))
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.rows, [{ preco: 33 }])
+})
+
+test('fonte de dataset sem dizer o conjunto é recusada', async () => {
+  const r = await svc.testSource(DONO, entrada({
+    kind: 'dataset',
+    config: {},
+    cadence: { mode: 'interval', intervalMs: 60_000 },
+    mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] },
+  }))
+  assert.match(r.error.message, /qual conjunto/)
+})

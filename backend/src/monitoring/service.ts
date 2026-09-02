@@ -357,7 +357,7 @@ export async function testSource(ownerId: string, entrada: MonitoringSource | So
       : ({ ...normalizar(entrada as SourceInput), ownerId, _id: new ObjectId(), status: 'draft', telemetry: emptyTelemetry(), createdAt: new Date(), updatedAt: new Date() } as MonitoringSource)
 
   const headers = await cabecalhosDaConexao({ ownerId, connectionId: fonte.connectionId ?? null, config: fonte.config })
-  const r = await collectOnce(fonte, { headers })
+  const r = await collectOnce(fonte, { headers, ownerId })
   const presentes = new Set(Object.entries(r.rows[0] ?? {}).filter(([, v]) => v !== null && v !== undefined).map(([k]) => k))
   return { ...r, fields: fonte.mapping.fields.map((f) => ({ name: f.to, present: presentes.has(f.to) })) }
 }
@@ -416,7 +416,7 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
     return { ok: false, rows: 0, recorded: 0, latencyMs: 0, error: { kind: 'connection_missing', message: (erro as Error).message } }
   }
 
-  const r = await collectOnce(fonte, { headers })
+  const r = await collectOnce(fonte, { headers, ownerId: fonte.ownerId })
   if (!r.ok) {
     await registrarFalha(fonte, r.error?.kind ?? 'erro', agora, r.latencyMs)
     return {
