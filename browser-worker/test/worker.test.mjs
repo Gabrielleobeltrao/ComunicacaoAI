@@ -202,12 +202,12 @@ test('replay é recusado', async () => {
   __resetNonces()
 })
 
-test('o health DIZ o que ele não faz', async () => {
+test('o health diz o que ele faz E o que não faz', async () => {
   const r = await chamar('/health', {})
   assert.equal(r.body.capabilities.fetch, true)
-  // Sem motor de render, dizer `false` é o que impede a Central de tratar HTML cru como
-  // página renderizada.
-  assert.equal(r.body.capabilities.render, false)
+  // Screenshot e visão continuam fora: dizer que faz sem fazer é o que leva alguém a
+  // configurar uma fonte que nunca vai funcionar.
+  assert.equal(r.body.capabilities.screenshot, false)
   assert.equal(r.body.capabilities.vision, false)
 })
 
@@ -229,4 +229,82 @@ test('a busca por HTTP devolve erro TIPADO, e não exceção', async () => {
   assert.equal(r.status, 200)
   assert.equal(r.body.ok, false)
   assert.equal(r.body.error.kind, 'blocked')
+})
+
+// --- a RENDERIZAÇÃO de verdade ----------------------------------------------------------
+//
+// O descuido clássico mora aqui: validar a URL digitada e deixar o navegador buscar tudo o
+// que a página pedir é entregar a decisão para a página. Um `fetch` para a metadata dentro
+// do JavaScript dela sai pela rede do worker, e a validação inicial não impediu nada.
+
+import { loadEngine, renderPage } from '../src/render.mjs'
+
+test('a capacidade de renderizar é MEDIDA, não declarada', async () => {
+  const motor = await loadEngine()
+  const r = await chamar('/health', {})
+  assert.equal(r.body.capabilities.render, Boolean(motor), 'dizer que renderiza sem conseguir faria configurar uma fonte que nunca ia funcionar')
+})
+
+test('RENDERIZA a página e devolve o HTML depois do JavaScript', async (t) => {
+  const motor = await loadEngine()
+  if (!motor) return t.skip('sem motor neste ambiente')
+
+  respostas = {
+    '/render': {
+      body: '<html><body><div id="alvo">antes</div><script>document.getElementById("alvo").textContent="depois"</script></body></html>',
+    },
+  }
+  const r = await renderPage(`http://127.0.0.1:${portaAlvo}/render`, { engine: motor })
+  assert.equal(r.rendered, true)
+  // O HTML cru diz "antes"; o renderizado diz "depois". É essa a diferença que o motor faz.
+  assert.match(r.body, /depois/)
+  assert.ok(!/>antes</.test(r.body))
+})
+
+test('AMEAÇA: subrequisição para a METADATA é abortada, e a página continua', async (t) => {
+  const motor = await loadEngine()
+  if (!motor) return t.skip('sem motor neste ambiente')
+
+  respostas = {
+    '/comFetch': {
+      body: `<html><body><div id="ok">conteudo legitimo</div>
+        <script>fetch('http://169.254.169.254/latest/meta-data/').catch(()=>{})</script>
+        </body></html>`,
+    },
+  }
+  const r = await renderPage(`http://127.0.0.1:${portaAlvo}/comFetch`, { engine: motor })
+
+  assert.match(r.body, /conteudo legitimo/, 'derrubar tudo esconderia o conteúdo e a tentativa')
+  assert.ok(
+    r.blocked.some((b) => b.url.includes('169.254.169.254')),
+    `a tentativa precisa aparecer: ${JSON.stringify(r.blocked)}`,
+  )
+})
+
+test('AMEAÇA: imagem apontando para rede privada é abortada', async (t) => {
+  const motor = await loadEngine()
+  if (!motor) return t.skip('sem motor neste ambiente')
+
+  respostas = { '/comImg': { body: '<html><body><img src="http://10.0.0.5/logo.png"><p>texto</p></body></html>' } }
+  const r = await renderPage(`http://127.0.0.1:${portaAlvo}/comImg`, { engine: motor })
+  assert.ok(r.blocked.some((b) => b.url.includes('10.0.0.5')))
+  assert.match(r.body, /texto/)
+})
+
+test('a renderização respeita o teto de subrequisições', async (t) => {
+  const motor = await loadEngine()
+  if (!motor) return t.skip('sem motor neste ambiente')
+
+  const muitas = Array.from({ length: 30 }, (_, i) => `<img src="/img${i}.png">`).join('')
+  respostas = { '*': { headers: { 'content-type': 'text/html' }, body: `<html><body>${muitas}</body></html>` } }
+  const r = await renderPage(`http://127.0.0.1:${portaAlvo}/muitas`, { engine: motor, limits: { maxSubrequests: 5 } })
+  // O que o teto garante é quantas requisições SAEM. As recusas acima do teto continuam
+  // sendo registradas — esconder que a página pediu mais trinta seria perder a informação
+  // que importa quando alguém for investigar.
+  assert.ok(r.subrequests.length <= 5, `saíram ${r.subrequests.length}`)
+  assert.ok(r.blocked.some((b) => /limite de subrequisições/.test(b.reason)))
+})
+
+test('sem motor, renderizar RECUSA em vez de fingir', async () => {
+  await assert.rejects(() => renderPage('https://exemplo.test/x', { engine: null }), /motor de renderização/)
 })

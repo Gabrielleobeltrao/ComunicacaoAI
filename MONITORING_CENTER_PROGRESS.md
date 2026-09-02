@@ -536,15 +536,47 @@ Repositório em `f77b3e8` + este bloco:
 | `npm run smoke` | verde, saída 0 |
 | `npm run secret-scan` | 2232 arquivos, nada encontrado |
 
+## Bloco 19 — a renderização de verdade ✅
+
+`browser-worker/src/render.mjs` + a escalada em `collect.ts`.
+
+O motor existe: Chromium via Playwright, que já estava no repositório para o E2E.
+
+- **toda requisição que a página faz é interceptada e conferida pelo mesmo guarda** — a
+  navegação, os redirects, os scripts, as imagens e cada `fetch` que o JavaScript inventar
+  em tempo de execução. O descuido clássico é validar a URL digitada e deixar o navegador
+  buscar o resto: aí é a **página** que decide para onde o worker faz requisição;
+- há teste com uma página que chama `fetch('http://169.254.169.254/…')` no próprio
+  JavaScript: a tentativa é **abortada e reportada**, e o conteúdo legítimo continua sendo
+  lido. Derrubar tudo esconderia as duas coisas;
+- o sandbox do Chromium fica **ligado**: `--no-sandbox` é o que transforma uma página
+  hostil em código rodando com o usuário do worker;
+- downloads recusados, sem sessão nem credencial, e o navegador **sempre** fecha no
+  `finally` — um Chromium esquecido por execução consome a máquina em minutos;
+- `health` **mede** a capacidade: `render` só é `true` se o motor carregar.
+
+### O degrau caro só é pago quando o barato não resolve
+
+A primeira versão da escalada perguntava "o seletor achou alguma coisa?" — e achava: uma
+página que mostra "carregando" até o JavaScript rodar tem o elemento lá, com o texto errado.
+O degrau barato dizia sucesso e a fonte lia `null` para sempre.
+
+A pergunta certa é **"o que saiu daqui serve?"**, e ela só pode ser feita depois de mapear.
+Há um teste que mede o tempo: ler um JSON não sobe navegador.
+
+Comandos: `npm run test:browser-worker` → **25/25**;
+`node --test test/monitoringBrowser.integration.test.mjs` → **12/12**, com a aceitação de
+uma página cujo valor **só existe depois do JavaScript**.
+Bateria: backend **1445 + 1973** · runner **21** · browser-worker **25**.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **Um motor de renderização de verdade** para o `browser-worker`: o contrato, o guarda,
-   os limites e o kill switch estão de pé e testados, e o `health` responde
-   `render: false`. Ligar um navegador headless é trocar a implementação de `fetchPage` —
-   e é infraestrutura, não código deste repositório.
+2. **Screenshot e OCR/visão** no worker: o portão de confiança/evidência existe e está
+   testado (14 casos), e o `health` responde `vision: false`. Falta o provedor que produz a
+   leitura — e sem ele nenhuma fonte depende de visão, que é o estado seguro.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

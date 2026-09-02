@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { verify } from './auth.mjs'
 import { fetchWithSubrequests, LIMITES } from './fetchPage.mjs'
+import { loadEngine, renderPage } from './render.mjs'
 import { BlockedTarget } from './guard.mjs'
 
 // O WORKER de páginas — separado da API, e com um interruptor.
@@ -54,12 +55,14 @@ export function createBrowserWorker({ secret = SECRET } = {}) {
     const url = new URL(req.url ?? '/', 'http://worker')
 
     if (url.pathname === '/health') {
+      // A capacidade de renderizar é MEDIDA, não declarada: o motor ou carrega, ou não.
+      // Dizer que renderiza sem conseguir faria a Central configurar uma fonte que nunca
+      // ia funcionar.
+      const motor = await loadEngine()
       return responder(res, 200, {
         ok: !desligado(),
         killSwitch: desligado(),
-        // O worker é honesto sobre o que ele NÃO faz: sem motor de render, quem depende
-        // disso precisa saber antes de configurar uma fonte que nunca vai funcionar.
-        capabilities: { fetch: true, render: false, screenshot: false, vision: false },
+        capabilities: { fetch: true, render: Boolean(motor), screenshot: false, vision: false },
         limits: LIMITES,
         concurrency: CONCORRENCIA,
       })
@@ -79,16 +82,24 @@ export function createBrowserWorker({ secret = SECRET } = {}) {
       emVoo += 1
       const comecou = Date.now()
       try {
-        const r = await fetchWithSubrequests(String(pedido.url ?? ''), Array.isArray(pedido.subrequests) ? pedido.subrequests.map(String) : [], {
-          limits: pedido.limits,
-        })
+        /**
+         * RENDERIZAR só quando pedido — e só quando há motor.
+         *
+         * Subir um Chromium para ler um JSON seria pagar segundos e centenas de megabytes
+         * por nada. O caminho barato continua sendo o padrão; o caro é uma escolha.
+         */
+        const r = pedido.render === true
+          ? await renderPage(String(pedido.url ?? ''), { limits: pedido.limits })
+          : await fetchWithSubrequests(String(pedido.url ?? ''), Array.isArray(pedido.subrequests) ? pedido.subrequests.map(String) : [], {
+              limits: pedido.limits,
+            })
         // O log conta o que aconteceu, nunca o conteúdo: sem corpo, sem cabeçalho.
         console.log(
           JSON.stringify({
-            evento: 'fetch',
+            evento: pedido.render === true ? 'render' : 'fetch',
             correlationId: String(pedido.correlationId ?? '').slice(0, 64),
             status: r.status,
-            saltos: r.chain.length,
+            saltos: (r.chain ?? []).length,
             sub: r.subrequests.length,
             bloqueadas: r.blocked.length,
             ms: Date.now() - comecou,
@@ -100,10 +111,10 @@ export function createBrowserWorker({ secret = SECRET } = {}) {
           contentType: r.contentType,
           body: r.body,
           finalUrl: r.finalUrl,
-          chain: r.chain,
-          // Sem motor de render: dizer `false` é o que impede a Central de tratar HTML cru
-          // como página renderizada.
-          rendered: false,
+          chain: r.chain ?? [r.finalUrl],
+          // Dito pelo caminho que respondeu: só a renderização de verdade devolve `true`,
+          // e é isso que impede a Central de tratar HTML cru como página renderizada.
+          rendered: r.rendered === true,
           subrequests: r.subrequests.map((s) => ({ url: s.url, status: s.status, bytes: s.bytes })),
           blocked: r.blocked,
           ms: Date.now() - comecou,

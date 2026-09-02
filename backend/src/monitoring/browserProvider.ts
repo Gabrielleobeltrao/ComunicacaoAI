@@ -14,7 +14,14 @@ export interface BrowserFetchRequest {
   url: string
   subrequests?: string[]
   correlationId?: string
-  limits?: { timeoutMs?: number; maxBytes?: number; maxTotalBytes?: number }
+  /**
+   * Pedir a página RENDERIZADA — o degrau caro.
+   *
+   * Subir um navegador para ler um JSON é pagar segundos e centenas de megabytes por nada.
+   * Por isso ele não é o padrão: é o que se tenta quando os degraus baratos não deram.
+   */
+  render?: boolean
+  limits?: { timeoutMs?: number; maxBytes?: number; maxTotalBytes?: number; maxSubrequests?: number }
 }
 
 export interface BrowserFetchResult {

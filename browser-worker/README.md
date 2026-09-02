@@ -27,15 +27,33 @@ Uma subrequisição bloqueada **não derruba a página**: ela é reportada, e a 
 o que veio. Derrubar tudo faria um `<img>` para a rede interna esconder o conteúdo legítimo
 — e a informação de que alguém tentou.
 
-## O que ele NÃO faz
+## Renderização
 
-`GET /health` responde `capabilities: { fetch: true, render: false, screenshot: false,
-vision: false }`. **Não há motor de renderização aqui.** Ele busca e devolve o conteúdo; uma
-fonte que dependa de JavaScript executado sabe que não foi atendida, em vez de receber HTML
-cru como se fosse página renderizada.
+`POST /fetch` com `render: true` sobe um Chromium **de verdade** (Playwright) e devolve o
+HTML depois do JavaScript.
 
-Ligar um motor de verdade (um navegador headless) é trocar a implementação de `fetchPage` e
-passar `render: true` — o contrato, a autenticação, o guarda e os limites já estão de pé.
+E aqui está o ponto que faz a diferença: **toda requisição que a página faz é interceptada
+e conferida pelo mesmo guarda** — a navegação, os redirects, os scripts, as imagens e cada
+`fetch` que o JavaScript inventar em tempo de execução. O descuido clássico é validar a URL
+digitada e deixar o navegador buscar o resto: aí é a página que decide para onde o worker
+faz requisição, e um `fetch('http://169.254.169.254/…')` dentro dela sai pela rede do worker.
+
+Uma subrequisição bloqueada **não derruba a página**: ela é abortada e reportada em
+`blocked`. Derrubar tudo esconderia o conteúdo legítimo e a informação de que alguém tentou.
+
+O sandbox do próprio Chromium fica **ligado** — `--no-sandbox` é o que transforma uma página
+hostil em código rodando com o usuário do worker. Downloads são recusados, não há sessão nem
+credencial, e o navegador **sempre** fecha no `finally`: um Chromium esquecido por execução
+consome a máquina em minutos.
+
+`GET /health` **mede** a capacidade em vez de declarar: `render` só é `true` se o motor
+carregar. Screenshot e visão continuam `false` — dizer que faz sem fazer é o que leva alguém
+a configurar uma fonte que nunca vai funcionar.
+
+A Central só paga esse degrau quando os baratos não deram: ela busca simples, mapeia, e
+**se o mapeamento não produziu valor** é que renderiza. A pergunta é "o que saiu daqui
+serve?", e não "o seletor achou algo" — uma página que mostra "carregando" até o JavaScript
+rodar responde sim à segunda e não à primeira.
 
 ## Autenticação
 

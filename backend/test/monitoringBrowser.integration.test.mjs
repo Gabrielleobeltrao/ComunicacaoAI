@@ -130,15 +130,49 @@ test('o seletor DOM é o terceiro degrau', async () => {
   assert.deepEqual(r.rows, [{ preco: 7.5 }])
 })
 
-test('sem dado estruturado e sem seletor, a recusa DIZ que falta renderização', async () => {
-  // "Precisa de renderização" é diferente de "não achei": quem lê precisa saber que falta
-  // um motor, e não um seletor.
+test('sem dado estruturado, o degrau caro é tentado — e a recusa diz o que aconteceu', async () => {
+  // "Precisou renderizar e ainda assim não trouxe dado" é diferente de "não achei": a
+  // primeira diz que o caminho caro já foi tentado, e que o problema é a página.
   bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
   respostas = { '/p': { body: '<html><body>só texto</body></html>' } }
 
   const r = await svc.testSource(DONO, fonte())
   assert.equal(r.ok, false)
-  assert.match(r.error.message, /precisa de renderização/)
+  // Dizer que ela JÁ foi renderizada muda o que a pessoa faz em seguida: sem isso, ela vai
+  // procurar um motor que já rodou em vez de olhar a página.
+  assert.match(r.error.message, /mesmo renderizada/)
+})
+
+test('ACEITAÇÃO: a página que só existe DEPOIS do JavaScript é lida', async () => {
+  // É a diferença que o motor faz: o HTML cru não tem o dado; o renderizado tem.
+  bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
+  respostas = {
+    '/p': {
+      body: `<html><body><div id="preco">carregando</div>
+        <script>document.getElementById('preco').textContent='R$ 42,50'</script></body></html>`,
+    },
+  }
+
+  const r = await svc.testSource(DONO, fonte({
+    config: { url: `http://127.0.0.1:${portaSite}/p`, selector: '#preco', strategy: ['json', 'jsonld', 'dom', 'browser'] },
+    mapping: { version: 1, fields: [{ to: 'preco', from: 'texto', transforms: [{ op: 'number', locale: 'pt-BR' }] }] },
+  }))
+
+  assert.equal(r.ok, true, JSON.stringify(r.error ?? {}))
+  assert.deepEqual(r.rows, [{ preco: 42.5 }], 'o seletor pegou o texto que o JavaScript escreveu')
+})
+
+test('o degrau caro NÃO é pago quando o barato resolve', async () => {
+  bp.registerBrowserWorker(bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }))
+  respostas = { '/p': { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preco: '1,50' }) } }
+
+  const comecou = Date.now()
+  const r = await svc.testSource(DONO, fonte())
+  assert.equal(r.ok, true)
+  assert.equal(r.strategy, 'json')
+  // Subir um navegador para ler um JSON custa segundos; o caminho barato custa
+  // milissegundos. A diferença é grande o bastante para ser medida.
+  assert.ok(Date.now() - comecou < 3_000, 'não subiu navegador para ler JSON')
 })
 
 // --- ameaça, pelo caminho real ------------------------------------------------------------
@@ -173,9 +207,12 @@ test('worker fora do ar é INDISPONIBILIDADE, não falha da página', async () =
   assert.equal(r.error.kind, 'not_supported')
 })
 
-test('o health do worker DIZ que ele não renderiza', async () => {
+test('o health do worker diz o que ele faz e o que não faz', async () => {
   const h = await bp.httpBrowserWorker({ baseUrl, secret: SEGREDO }).health()
   assert.equal(h.ok, true)
   assert.equal(h.capabilities.fetch, true)
-  assert.equal(h.capabilities.render, false)
+  // Screenshot e visão continuam fora — e dizer isso é o que impede alguém de configurar
+  // uma fonte que depende deles.
+  assert.equal(h.capabilities.screenshot, false)
+  assert.equal(h.capabilities.vision, false)
 })

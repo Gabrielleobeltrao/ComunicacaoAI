@@ -181,10 +181,39 @@ async function coletarDeBrowser(source: FonteColetavel, comecou: number): Promis
   if (!cfg.url) return falha('not_supported', 'esta fonte não tem endereço', Date.now() - comecou)
 
   const { browserWorker } = await import('./browserProvider.js')
-  const r = await browserWorker().fetchPage({
-    url: cfg.url,
-    limits: { timeoutMs: source.retry.timeoutMs },
-  })
+  const worker = browserWorker()
+
+  /**
+   * Os degraus, do mais barato ao mais caro.
+   *
+   * A busca simples primeiro: se a página já entrega JSON, JSON-LD ou o texto do seletor,
+   * subir um navegador seria pagar segundos por nada. Só quando ela NÃO entrega — e quando
+   * o motor existe — é que se paga o caro.
+   */
+  const estrategias = (cfg.strategy as string[] | undefined) ?? ['json', 'jsonld', 'dom', 'browser']
+  const podeRenderizar = estrategias.includes('browser')
+
+  let r = await worker.fetchPage({ url: cfg.url, limits: { timeoutMs: source.retry.timeoutMs } })
+  let precisouRenderizar = false
+
+  /**
+   * A escalada olha o RESULTADO, não o HTML.
+   *
+   * A primeira versão perguntava "o seletor achou alguma coisa?" — e achava: uma página que
+   * mostra "carregando" até o JavaScript rodar tem o elemento lá, com o texto errado. O
+   * degrau barato dizia sucesso e a fonte lia `null` para sempre.
+   *
+   * Perguntar "o que saiu daqui serve?" é a pergunta certa, e ela só pode ser feita depois
+   * de mapear.
+   */
+  if (r.ok && podeRenderizar && !rendeuValor(r, source)) {
+    const saude = await worker.health()
+    if (saude.capabilities.render) {
+      precisouRenderizar = true
+      r = await worker.fetchPage({ url: cfg.url, render: true, limits: { timeoutMs: source.retry.timeoutMs } })
+    }
+  }
+
   const latencyMs = Date.now() - comecou
 
   if (!r.ok) {
@@ -222,7 +251,13 @@ async function coletarDeBrowser(source: FonteColetavel, comecou: number): Promis
        */
       return falha(
         'not_supported',
-        r.rendered ? 'a página não trouxe dado estruturado, e nenhum seletor foi definido' : 'esta página precisa de renderização, e o worker configurado não renderiza',
+        r.rendered
+          ? // Dizer que ela JÁ foi renderizada muda o que a pessoa faz em seguida: sem
+            // isso, ela vai procurar um motor que já rodou em vez de olhar a página.
+            `${precisouRenderizar ? 'mesmo renderizada, a ' : 'a '}página não trouxe dado estruturado, e nenhum seletor foi definido`
+          : precisouRenderizar
+            ? 'a página precisou de renderização e ainda assim não trouxe dado utilizável'
+            : 'esta página precisa de renderização, e o worker configurado não renderiza',
         latencyMs,
         r.status ?? null,
       )
@@ -245,6 +280,40 @@ async function coletarDeBrowser(source: FonteColetavel, comecou: number): Promis
     mappingVersion: mapeado.mappingVersion,
     latencyMs,
     status: r.status ?? null,
+  }
+}
+
+/**
+ * O que veio do degrau barato já produz VALOR?
+ *
+ * Não "o seletor achou algo", e sim "o mapeamento produziu alguma coisa que não é nula".
+ * A diferença é exatamente a página que mostra "carregando" até o JavaScript rodar: o
+ * elemento existe, o texto está errado, e a pergunta ingênua responde sim.
+ */
+function rendeuValor(r: { body?: string; contentType?: string }, source: FonteColetavel): boolean {
+  const corpo = r.body ?? ''
+  let bruto: unknown = null
+  if (ehJson(r.contentType ?? '', corpo)) {
+    try {
+      bruto = JSON.parse(corpo)
+    } catch {
+      return false
+    }
+  } else {
+    const ld = extractJsonLd(corpo)
+    if (ld.length) bruto = ld.length === 1 ? ld[0] : ld
+    else if (source.config.selector) {
+      const texto = extractBySelector(corpo, source.config.selector)
+      if (texto === null) return false
+      bruto = { texto }
+    } else return false
+  }
+
+  try {
+    const { rows } = applyMapping(bruto, source.mapping)
+    return rows.some((linha) => Object.values(linha).some((v) => v !== null && v !== undefined && v !== ''))
+  } catch {
+    return false
   }
 }
 
