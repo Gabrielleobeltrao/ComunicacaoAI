@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { AppLayout } from '../components/AppLayout'
 import { FloorSettingsDialog } from '../components/FloorSettingsDialog'
 import { ExecutionAnalytics } from '../components/ExecutionAnalytics'
@@ -8,6 +8,7 @@ import type { Floor, FloorMetrics } from '../lib/floors'
 import { featureFlags } from '../featureFlags'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { OfficeFloor } from '../office/OfficeFloor'
+import { KnowledgeMap } from '../knowledge/KnowledgeMap'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import { Button, MetricStat } from '../ui'
 
@@ -17,6 +18,20 @@ import { Button, MetricStat } from '../ui'
 export function FloorView() {
   const { floorId } = useParams<{ floorId: string }>()
   const navigate = useNavigate()
+  /**
+   * Escritório ou Conhecimento — na URL.
+   *
+   * Guardar a escolha só no estado faria um link compartilhado abrir sempre no mapa do
+   * escritório, inclusive quando a pessoa mandou justamente o de conhecimento. `?view=`
+   * é o que torna a visão compartilhável e reabrível.
+   */
+  const [params, setParams] = useSearchParams()
+  const view = params.get('view') === 'knowledge' ? 'knowledge' : 'office'
+  const trocarVisao = (proxima: 'office' | 'knowledge') => {
+    const p = new URLSearchParams(params)
+    p.set('view', proxima)
+    setParams(p, { replace: true })
+  }
   const building = useOptionalBuildingContext()
   // Agents + sectors of THIS floor drive the visual map (the office simulation).
   const { agents, sectors } = useAgentsAndWidgets(floorId)
@@ -61,8 +76,43 @@ export function FloorView() {
           {/* The most relevant floor numbers sit ABOVE the map, so a glance at the
               floor page reads its operational state before the visual. */}
           <FloorSummary activity={activity} metrics={metrics} />
-          {/* The visual office map is the centre of the floor view (scoped). */}
-          <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
+
+          {/* Duas leituras do MESMO andar: quem trabalha aqui, e o que se sabe aqui. */}
+          <nav className="flex flex-wrap gap-2" role="tablist" aria-label="Visão do andar" data-testid="floor-view-switch">
+            {([
+              ['office', 'Escritório'],
+              ['knowledge', 'Conhecimento'],
+            ] as const).map(([chave, rotulo]) => (
+              <button
+                key={chave}
+                type="button"
+                role="tab"
+                aria-selected={view === chave}
+                onClick={() => trocarVisao(chave)}
+                data-testid={`floor-view-${chave}`}
+                style={{
+                  minHeight: 40,
+                  padding: '0 16px',
+                  borderRadius: 999,
+                  border: '1px solid var(--border-subtle)',
+                  background: view === chave ? 'var(--intent-brand)' : 'var(--surface-card)',
+                  color: view === chave ? '#fff' : 'var(--text-muted)',
+                  fontSize: 13,
+                  cursor: 'pointer',
+                }}
+              >
+                {rotulo}
+              </button>
+            ))}
+          </nav>
+
+          {/* O mapa do escritório continua exatamente o que era; a visão de conhecimento
+              troca SÓ a área central, e não a página. */}
+          {view === 'office' ? (
+            <OfficeFloor floorId={floor.id} agents={agents} sectors={sectors} />
+          ) : (
+            <KnowledgeMap floorId={floor.id} floorName={floor.name} />
+          )}
           {/* The SAME analytics service the building view reads, scoped to this
               floor — never a second formula. */}
           <ExecutionAnalytics

@@ -6,6 +6,7 @@ import { METRIC_KEY_LABEL } from '../lib/agentStats'
 import { Icon } from '../ui'
 import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue } from './AgentDefinitionFields'
 import { CollapsibleBlock } from './CollapsibleBlock'
+import { KnowledgeAccessSection } from './KnowledgeAccessSection'
 import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import type {
   AgentBuiltinTool,
@@ -1994,6 +1995,16 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               duas perguntas diferentes: "de onde ele tira" e "o que ele já tem". Estavam
               no mesmo bloco, e a lista de documentos empurrava o formulário de adicionar
               para fora da tela. */}
+          {/* O que ele PODE LER — a política de acesso, ao lado das fontes.
+              É a mesma pergunta vista dos dois lados: aqui entra o que existe, ali se
+              decide quais bases ele alcança. Separar em outra tela faria a segunda ser
+              esquecida, e o padrão do sistema viraria a única política que existe. */}
+          {agent?._id && !isCreating && (
+            <div className="mb-3">
+              <KnowledgeAccessSection agentId={agent._id} />
+            </div>
+          )}
+
           <CollapsibleBlock title="Fontes de conhecimento" showHeader={stacked} testId="knowledge-sources-block">
             <div className="space-y-3">
               <p className="text-sm text-(--text-muted)">
