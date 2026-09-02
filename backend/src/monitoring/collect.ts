@@ -1,6 +1,6 @@
 import { safeFetch } from '../net/safeHttp.js'
 import { parseFeed, pareceFeed } from './feed.js'
-import { applyMapping, redactSample } from './mapping.js'
+import { applyMapping, readPath, redactSample } from './mapping.js'
 import type { MappedResult } from './mapping.js'
 import type { MonitoringSource } from './types.js'
 
@@ -30,6 +30,8 @@ export interface CollectResult {
   latencyMs: number
   status: number | null
   error?: { kind: CollectErrorKind; message: string }
+  /** Quantas páginas foram buscadas, e por que parou. A tela mostra isso. */
+  pages?: { fetched: number; stoppedBecause: 'sem-proxima' | 'max-paginas' | 'bytes' | 'linhas' | 'tempo'; cursor: string | null }
 }
 
 const falha = (kind: CollectErrorKind, message: string, latencyMs: number, status: number | null = null): CollectResult => ({
@@ -406,6 +408,13 @@ export interface CollectOptions {
   fetcher?: typeof safeFetch
   /** A conta — exigida pelos tipos que passam por outro subsistema com permissão. */
   ownerId?: string
+  /**
+   * O cursor guardado da última coleta — usado só quando a fonte pediu retomada.
+   *
+   * Ele vem de fora porque quem guarda estado é o serviço, não o coletor: uma função que
+   * lê e escreve o documento da fonte no meio da coleta seria dois donos do mesmo campo.
+   */
+  cursor?: string | null
 }
 
 type FonteColetavel = Pick<MonitoringSource, 'kind' | 'config' | 'mapping' | 'retry'>
@@ -417,7 +426,30 @@ type FonteColetavel = Pick<MonitoringSource, 'kind' | 'config' | 'mapping' | 're
  * deu errado — e uma exceção subindo daqui apagaria justamente a informação de que a
  * fonte está falhando.
  */
+/**
+ * Os TETOS da paginação — o que impede "buscar o resto" de virar "buscar para sempre".
+ *
+ * Uma API que devolve cursor não-nulo por engano transforma uma coleta em um laço infinito
+ * contra o servidor de outra pessoa. `maxPages` sozinho não basta: vinte páginas de dez
+ * megabytes ainda são duzentos megabytes na memória do worker.
+ */
+export const TETOS_DE_PAGINA = {
+  maxBytes: 4 * 1024 * 1024,
+  maxRows: 1_000,
+  /** O relógio de parede da coleta inteira, independente do tempo de cada requisição. */
+  maxMs: 60_000,
+}
+
+/** O cursor da resposta, lido pelo mesmo caminho seguro do mapeamento. */
+function cursorDa(bruto: unknown, caminho: string): string | null {
+  const v = readPath(bruto, caminho)
+  if (v === null || v === undefined || v === '' || v === false) return null
+  const s = String(v)
+  return s && s !== 'null' && s !== 'undefined' ? s.slice(0, 500) : null
+}
+
 export async function collectOnce(source: FonteColetavel, opts: CollectOptions = {}): Promise<CollectResult> {
+
   const comecou = Date.now()
   const buscar = opts.fetcher ?? safeFetch
   const cfg = source.config
@@ -440,11 +472,31 @@ export async function collectOnce(source: FonteColetavel, opts: CollectOptions =
   }
   if (!cfg.url) return falha('not_supported', 'esta fonte não tem endereço', Date.now() - comecou)
 
+  /**
+   * A PAGINAÇÃO — buscar o resto, com teto em tudo.
+   *
+   * Sem ela, uma API paginada entregava a primeira página e a série ficava pela metade,
+   * sem erro nenhum: o número existia, estava certo, e era de vinte por cento dos dados.
+   *
+   * Só vale para `api_polling` com JSON: um feed já traz os itens que o feed tem, e uma
+   * página HTML paginada é navegação, não API. E a primeira requisição é sempre a mesma —
+   * quem não pagina passa por aqui sem custo.
+   */
+  const endereco = cfg.url
+  const paginacao = source.kind === 'api_polling' ? (cfg.pagination ?? { kind: 'none' }) : { kind: 'none' as const }
+  const paginado = paginacao.kind !== 'none'
+  const maxPaginas = Math.min(20, Math.max(1, Number(paginacao.maxPages ?? 5)))
+  const urlDaPagina = (cursor: string | null, numero: number): string => {
+    const url = new URL(endereco)
+    for (const q of cfg.query ?? []) url.searchParams.set(String(q.key), String(q.value))
+    if (paginacao.kind === 'page' && numero > 1) url.searchParams.set(paginacao.pageParam ?? 'page', String(numero))
+    if (paginacao.kind === 'cursor' && cursor) url.searchParams.set('cursor', cursor)
+    return url.toString()
+  }
+
   let resposta
   try {
-    const url = new URL(cfg.url)
-    for (const q of cfg.query ?? []) url.searchParams.set(String(q.key), String(q.value))
-    resposta = await buscar(url.toString(), {
+    resposta = await buscar(urlDaPagina(paginacao.kind === 'cursor' && paginacao.resume === true ? (opts.cursor ?? null) : null, 1), {
       method: cfg.method === 'POST' ? 'POST' : 'GET',
       ...(opts.headers ? { headers: opts.headers } : {}),
       ...(cfg.body ? { body: cfg.body } : {}),
@@ -528,9 +580,97 @@ export async function collectOnce(source: FonteColetavel, opts: CollectOptions =
     return falha('mapping', String((erro as Error).message).slice(0, 200), latencyMs, resposta.status)
   }
 
+  /**
+   * As PÁGINAS SEGUINTES — e a razão da parada, que é o que a tela precisa dizer.
+   *
+   * "Buscou 5 de no máximo 5" é uma notícia diferente de "buscou 3 e acabou": a primeira
+   * quase sempre quer dizer que o teto cortou o dado no meio.
+   */
+  let paginas: CollectResult['pages']
+  if (paginado && (strategy === 'json' || strategy === 'jsonld')) {
+    let bytes = corpo.length
+    let buscadas = 1
+    let cursor = paginacao.kind === 'cursor' ? cursorDa(bruto, paginacao.cursorPath ?? '') : null
+    let motivo: NonNullable<CollectResult['pages']>['stoppedBecause'] = 'sem-proxima'
+
+    while (true) {
+      if (buscadas >= maxPaginas) {
+        motivo = 'max-paginas'
+        break
+      }
+      if (paginacao.kind === 'cursor' && !cursor) break
+      if (bytes >= TETOS_DE_PAGINA.maxBytes) {
+        motivo = 'bytes'
+        break
+      }
+      if (mapeado.rows.length >= TETOS_DE_PAGINA.maxRows) {
+        motivo = 'linhas'
+        break
+      }
+      if (Date.now() - comecou >= TETOS_DE_PAGINA.maxMs) {
+        motivo = 'tempo'
+        break
+      }
+
+      let seguinte
+      try {
+        seguinte = await buscar(urlDaPagina(cursor, buscadas + 1), {
+          method: cfg.method === 'POST' ? 'POST' : 'GET',
+          ...(opts.headers ? { headers: opts.headers } : {}),
+          ...(cfg.body ? { body: cfg.body } : {}),
+          timeoutMs: source.retry.timeoutMs,
+          requireOk: true,
+        })
+      } catch {
+        // Uma página seguinte que falha NÃO derruba o que já veio: a leitura entrega o que
+        // conseguiu e diz onde parou. Perder tudo por causa da página 4 seria pior.
+        motivo = 'sem-proxima'
+        break
+      }
+
+      const corpoSeguinte = seguinte.body ?? ''
+      bytes += corpoSeguinte.length
+      buscadas += 1
+
+      let brutoSeguinte: unknown
+      try {
+        brutoSeguinte = JSON.parse(corpoSeguinte)
+      } catch {
+        motivo = 'sem-proxima'
+        break
+      }
+
+      const comScriptSeguinte = await aplicarScript(brutoSeguinte, source)
+      if (!comScriptSeguinte.ok) {
+        motivo = 'sem-proxima'
+        break
+      }
+      let linhasSeguintes: MappedResult
+      try {
+        linhasSeguintes = applyMapping(comScriptSeguinte.data, source.mapping)
+      } catch {
+        motivo = 'sem-proxima'
+        break
+      }
+      // Página vazia é o fim, mesmo com cursor: uma API que devolve cursor não-nulo por
+      // engano viraria laço infinito contra o servidor de outra pessoa.
+      if (linhasSeguintes.rows.length === 0) break
+      mapeado.rows.push(...linhasSeguintes.rows.slice(0, TETOS_DE_PAGINA.maxRows - mapeado.rows.length))
+
+      if (paginacao.kind === 'cursor') {
+        const proximo = cursorDa(brutoSeguinte, paginacao.cursorPath ?? '')
+        // O mesmo cursor de novo é a API dizendo "não sei avançar". Seguir seria reler.
+        if (proximo === cursor) break
+        cursor = proximo
+      }
+    }
+    paginas = { fetched: buscadas, stoppedBecause: motivo, cursor: paginacao.kind === 'cursor' && paginacao.resume === true ? cursor : null }
+  }
+
   return {
     ok: true,
     rows: mapeado.rows,
+    ...(paginas ? { pages: paginas } : {}),
     // A amostra vai REDIGIDA: ela existe para conferir o mapeamento, não para expor o
     // corpo inteiro numa tela que alguém fotografa e cola num chamado.
     // A amostra é do BRUTO, e não do que o script produziu: quem confere o mapeamento

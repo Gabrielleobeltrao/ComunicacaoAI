@@ -528,7 +528,7 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
     return { ok: false, rows: 0, recorded: 0, latencyMs: 0, error: { kind: 'connection_missing', message: (erro as Error).message }, nextAttemptMs: atraso }
   }
 
-  const r = await collectOnce(fonte, { headers, ownerId: fonte.ownerId })
+  const r = await collectOnce(fonte, { headers, ownerId: fonte.ownerId, cursor: fonte.cursor ?? null })
   if (!r.ok) {
     const atraso = await registrarFalha(fonte, r.error?.kind ?? 'erro', agora, r.latencyMs)
     return {
@@ -614,6 +614,9 @@ export async function readSourceOnce(fonte: MonitoringSource, agora: Date = new 
          * faria a primeira coleta de verdade achar que "não mudou" e não gravar nada.
          */
         ...(recorded > 0 || !fonte.destination.history ? { 'telemetry.lastContentHash': hashDaLeitura } : {}),
+        // O cursor de retomada avança com a leitura. Sem `resume`, `pages.cursor` é nulo e
+        // a próxima coleta recomeça do início — que é o certo para "o estado de agora".
+        ...(r.pages ? { cursor: r.pages.cursor } : {}),
         nextAttemptAt: null,
         updatedAt: agora,
       },

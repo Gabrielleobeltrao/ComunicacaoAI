@@ -168,8 +168,10 @@ export interface MonitoringConfig {
   body?: string
   /** Nomes de cabeçalho que a conexão preenche. O valor nunca está aqui. */
   headerNames?: string[]
-  /** Paginação, quando a API tem. */
-  pagination?: { kind: 'none' | 'cursor' | 'page'; cursorPath?: string; pageParam?: string; maxPages?: number }
+  /** Paginação, quando a API tem. `resume` só existe no cursor de retomada. */
+  pagination?: { kind: 'none' | 'cursor' | 'page'; cursorPath?: string; pageParam?: string; maxPages?: number; resume?: boolean }
+  /** A política de instante do webhook. Documento antigo sem o campo é lido como opcional. */
+  timestampPolicy?: 'required' | 'optional'
   /** `app_action`. */
   appKey?: string
   actionKey?: string
@@ -249,6 +251,15 @@ export interface MonitoringSource {
    * tinha dito que não estava bem.
    */
   nextAttemptAt?: Date | null
+  /**
+   * O cursor guardado — só para a fonte que pediu RETOMADA.
+   *
+   * Num cursor de retomada (um feed que só cresce), começar da primeira página toda vez
+   * relê o passado inteiro a cada coleta. Quem guarda é o serviço, e não o coletor: uma
+   * função que lê e escreve o documento da fonte no meio da coleta seria dois donos do
+   * mesmo campo.
+   */
+  cursor?: string | null
   /**
    * O segredo que assina as entregas de webhook — cifrado, e nunca devolvido.
    *

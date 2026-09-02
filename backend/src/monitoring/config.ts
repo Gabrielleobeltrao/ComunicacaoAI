@@ -53,7 +53,18 @@ export interface ApiPollingConfig {
   body: string | null
   /** Nomes que a conexão preenche. O valor nunca está aqui. */
   headerNames: string[]
-  pagination: { kind: 'none' } | { kind: 'cursor'; cursorPath: string; maxPages: number } | { kind: 'page'; pageParam: string; maxPages: number }
+  /**
+   * Como buscar o resto — quando a resposta vem em pedaços.
+   *
+   * `resume` só existe no cursor, e por um motivo: num cursor de *retomada* (um feed que
+   * só cresce), começar da primeira página toda vez relê o passado inteiro a cada coleta.
+   * Num cursor de *paginação do estado atual*, retomar puliria o começo. Só quem
+   * configurou sabe qual dos dois é, então é uma pergunta, não um palpite.
+   */
+  pagination:
+    | { kind: 'none' }
+    | { kind: 'cursor'; cursorPath: string; maxPages: number; resume: boolean }
+    | { kind: 'page'; pageParam: string; maxPages: number }
 }
 
 export interface RssConfig {
@@ -217,7 +228,12 @@ export function validateConfig(kind: MonitoringSourceKind, bruto: unknown): Type
         extractScript: scriptValido(c.extractScript),
         pagination:
           paginacao?.kind === 'cursor'
-            ? { kind: 'cursor', cursorPath: texto(paginacao.cursorPath, 'cursorPath', 200), maxPages: Math.min(20, Math.max(1, Number(paginacao.maxPages ?? 5))) }
+            ? {
+                kind: 'cursor',
+                cursorPath: texto(paginacao.cursorPath, 'cursorPath', 200),
+                maxPages: Math.min(20, Math.max(1, Number(paginacao.maxPages ?? 5))),
+                resume: paginacao.resume === true,
+              }
             : paginacao?.kind === 'page'
               ? { kind: 'page', pageParam: texto(paginacao.pageParam, 'pageParam', 60), maxPages: Math.min(20, Math.max(1, Number(paginacao.maxPages ?? 5))) }
               : { kind: 'none' },

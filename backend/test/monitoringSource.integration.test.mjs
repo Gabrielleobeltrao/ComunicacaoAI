@@ -811,3 +811,123 @@ test('o limite de taxa declarado é cumprido por quem prometeu', async () => {
   assert.equal(svc.dentroDoLimiteDeTaxa(lida, new Date(lida.telemetry.lastReadAt.getTime() + 20_000)), false)
   assert.equal(svc.dentroDoLimiteDeTaxa(lida, new Date(lida.telemetry.lastReadAt.getTime() + 31_000)), true)
 })
+
+// --- paginação: buscar o resto, com teto em tudo ------------------------------------------
+//
+// Sem ela, uma API paginada entregava a primeira página e a série ficava pela metade, sem
+// erro nenhum: o número existia, estava certo, e era de vinte por cento dos dados.
+
+const paginado = (over = {}) => ({
+  ...entrada(),
+  name: `Paginada ${Math.random().toString(36).slice(2, 8)}`,
+  mapping: { version: 1, itemsPath: 'itens', fields: [{ to: 'id', from: 'id', required: true }] },
+  ...over,
+})
+
+test('paginação por NÚMERO busca as páginas seguintes e junta as linhas', async () => {
+  const paginas = { 1: ['a', 'b'], 2: ['c', 'd'], 3: [] }
+  const vistas = []
+  const servidor = createServer((req, res) => {
+    const n = Number(new URL(req.url, 'http://x').searchParams.get('page') ?? 1)
+    vistas.push(n)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ itens: (paginas[n] ?? []).map((id) => ({ id })) }))
+  })
+  await new Promise((r) => servidor.listen(0, '127.0.0.1', r))
+  const p = servidor.address().port
+  try {
+    const f = await svc.createSource(
+      DONO,
+      paginado({ config: { url: `http://127.0.0.1:${p}/lista`, method: 'GET', pagination: { kind: 'page', pageParam: 'page', maxPages: 5 } } }),
+    )
+    const r = await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+    assert.equal(r.ok, true)
+    assert.deepEqual(r.rows.map((x) => x.id), ['a', 'b', 'c', 'd'])
+    assert.equal(r.pages.fetched, 3)
+    assert.equal(r.pages.stoppedBecause, 'sem-proxima', 'página vazia é o fim')
+    assert.deepEqual(vistas, [1, 2, 3])
+  } finally {
+    servidor.close()
+  }
+})
+
+test('paginação por CURSOR segue o caminho declarado e para quando ele acaba', async () => {
+  const porCursor = { '': { itens: [{ id: 'a' }], meta: { next: 'c1' } }, c1: { itens: [{ id: 'b' }], meta: { next: null } } }
+  const servidor = createServer((req, res) => {
+    const c = new URL(req.url, 'http://x').searchParams.get('cursor') ?? ''
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(porCursor[c] ?? { itens: [] }))
+  })
+  await new Promise((r) => servidor.listen(0, '127.0.0.1', r))
+  const p = servidor.address().port
+  try {
+    const f = await svc.createSource(
+      DONO,
+      paginado({ config: { url: `http://127.0.0.1:${p}/lista`, method: 'GET', pagination: { kind: 'cursor', cursorPath: 'meta.next', maxPages: 10 } } }),
+    )
+    const r = await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+    assert.deepEqual(r.rows.map((x) => x.id), ['a', 'b'])
+    assert.equal(r.pages.fetched, 2)
+    assert.equal(r.pages.cursor, null, 'sem retomada, nada é guardado para a próxima coleta')
+  } finally {
+    servidor.close()
+  }
+})
+
+test('o TETO de páginas corta, e a razão da parada é dita', async () => {
+  // Uma API que devolve cursor não-nulo por engano viraria laço infinito contra o servidor
+  // de outra pessoa. "Buscou 3 de no máximo 3" é notícia diferente de "buscou 3 e acabou".
+  const servidor = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ itens: [{ id: Math.random().toString(36).slice(2) }], meta: { next: Math.random().toString(36).slice(2) } }))
+  })
+  await new Promise((r) => servidor.listen(0, '127.0.0.1', r))
+  const p = servidor.address().port
+  try {
+    const f = await svc.createSource(
+      DONO,
+      paginado({ config: { url: `http://127.0.0.1:${p}/infinita`, method: 'GET', pagination: { kind: 'cursor', cursorPath: 'meta.next', maxPages: 3 } } }),
+    )
+    const r = await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+    assert.equal(r.pages.fetched, 3)
+    assert.equal(r.pages.stoppedBecause, 'max-paginas')
+  } finally {
+    servidor.close()
+  }
+})
+
+test('o cursor de RETOMADA é guardado, e a coleta seguinte começa dele', async () => {
+  const pedidos = []
+  const servidor = createServer((req, res) => {
+    const c = new URL(req.url, 'http://x').searchParams.get('cursor') ?? ''
+    pedidos.push(c)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    // Uma página só por coleta, com um cursor que sempre avança: é o feed que só cresce.
+    res.end(JSON.stringify({ itens: [{ id: `i-${pedidos.length}` }], meta: { next: `c${pedidos.length}` } }))
+  })
+  await new Promise((r) => servidor.listen(0, '127.0.0.1', r))
+  const p = servidor.address().port
+  try {
+    const f = await svc.createSource(
+      DONO,
+      paginado({
+        config: { url: `http://127.0.0.1:${p}/feed`, method: 'GET', pagination: { kind: 'cursor', cursorPath: 'meta.next', maxPages: 1, resume: true } },
+      }),
+    )
+    await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+    const guardado = (await svc.getSource(DONO, f._id)).cursor
+    assert.ok(guardado, 'com retomada, o cursor precisa sobreviver à coleta')
+
+    await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+    assert.equal(pedidos[1], guardado, 'a coleta seguinte começa de onde a anterior parou')
+  } finally {
+    servidor.close()
+  }
+})
+
+test('sem paginação declarada, nada muda: uma requisição e nenhum relatório de páginas', async () => {
+  const f = await svc.createSource(DONO, entrada())
+  const r = await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+  assert.equal(r.ok, true)
+  assert.equal(r.pages, undefined)
+})

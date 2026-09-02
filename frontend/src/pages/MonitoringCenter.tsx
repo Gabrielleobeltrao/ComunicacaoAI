@@ -304,6 +304,7 @@ interface Cfg {
   headerNames: string
   paginacao: 'none' | 'cursor' | 'page'
   cursorPath: string
+  retomar: boolean
   pageParam: string
   maxPages: number
   selector: string
@@ -328,6 +329,7 @@ const CFG_VAZIA: Cfg = {
   headerNames: '',
   paginacao: 'none',
   cursorPath: '',
+  retomar: false,
   pageParam: 'page',
   maxPages: 5,
   selector: '',
@@ -359,7 +361,7 @@ function configDoTipo(kind: SourceKind, c: Cfg): Record<string, unknown> {
         ...(c.headerNames.trim() ? { headerNames: lista(c.headerNames) } : {}),
         pagination:
           c.paginacao === 'cursor'
-            ? { kind: 'cursor', cursorPath: c.cursorPath, maxPages: c.maxPages }
+            ? { kind: 'cursor', cursorPath: c.cursorPath, maxPages: c.maxPages, resume: c.retomar }
             : c.paginacao === 'page'
               ? { kind: 'page', pageParam: c.pageParam, maxPages: c.maxPages }
               : { kind: 'none' },
@@ -761,9 +763,25 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
                       />
                     </Field>
                     {cfg.paginacao === 'cursor' && (
-                      <Field label="Caminho do cursor">
-                        <Input value={cfg.cursorPath} onChange={(e) => setCfg({ ...cfg, cursorPath: e.target.value })} placeholder="meta.next" data-testid="wizard-cursor" />
-                      </Field>
+                      <>
+                        <Field label="Caminho do cursor">
+                          <Input value={cfg.cursorPath} onChange={(e) => setCfg({ ...cfg, cursorPath: e.target.value })} placeholder="meta.next" data-testid="wizard-cursor" />
+                        </Field>
+                        <Field
+                          label="O que fazer na próxima coleta"
+                          hint="Num feed que só cresce, recomeçar do início relê o passado inteiro toda vez. Numa listagem do estado atual, retomar pularia o começo."
+                        >
+                          <Select
+                            value={cfg.retomar ? 'retomar' : 'inicio'}
+                            onChange={(e) => setCfg({ ...cfg, retomar: e.target.value === 'retomar' })}
+                            options={[
+                              { value: 'inicio', label: 'começar do início de novo' },
+                              { value: 'retomar', label: 'continuar de onde parou' },
+                            ]}
+                            data-testid="wizard-retomar"
+                          />
+                        </Field>
+                      </>
                     )}
                     {cfg.paginacao === 'page' && (
                       <Field label="Parâmetro da página">
