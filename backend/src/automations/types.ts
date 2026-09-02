@@ -198,6 +198,19 @@ export interface AutomationDefinition {
   limits: AutomationLimits
 }
 
+/**
+ * O que esta automação É, para quem lê.
+ *
+ * `routine` é a rotina que mora dentro de um agente; `flow` é a operação autônoma do
+ * escritório. O campo é OPCIONAL e derivado na leitura quando ausente: carimbar em massa
+ * mudaria o `updatedAt` de tudo o que já roda para gravar o que dá para calcular, e uma
+ * migração destrutiva no boot é exatamente o que este plano proíbe.
+ *
+ * `monitor` não aparece aqui: monitor é outra coleção, com estado de plantão próprio. Ele
+ * existe no tipo porque a superfície é a mesma para quem lê a lista de operações.
+ */
+export type OperationKind = 'routine' | 'flow' | 'monitor'
+
 export interface Automation {
   _id: ObjectId
   /** A marca do Arquiteto, quando foi ele que criou. Ausente em tudo o mais. */
@@ -208,6 +221,8 @@ export interface Automation {
   // When set, this automation is an agent ROUTINE — owned by and surfaced inside the
   // agent, not a standalone "Automação". Absent for legacy standalone automations.
   agentId?: ObjectId
+  /** Ausente = derivado por `operationKindOf`. Ver `OperationKind`. */
+  operationKind?: OperationKind
   name: string
   description: string
   status: AutomationStatus
@@ -248,3 +263,12 @@ export const DEFAULT_LIMITS: AutomationLimits = {
   maxOutputChars: 200_000,
   maxTokens: null,
 }
+
+/**
+ * O tipo da operação, com a ausência do campo preservando o comportamento legado.
+ *
+ * Uma automação com `agentId` é rotina de agente — foi assim que ela foi criada e é assim
+ * que a tela do agente a mostra. Sem `agentId`, ela é uma operação do escritório.
+ */
+export const operationKindOf = (a: Pick<Automation, 'agentId' | 'operationKind'>): OperationKind =>
+  a.operationKind ?? (a.agentId ? 'routine' : 'flow')

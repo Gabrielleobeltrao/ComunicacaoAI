@@ -16,6 +16,7 @@ import { ArchitectProject } from './pages/architect/Project'
 import { FloorView } from './pages/FloorView'
 import { Resources } from './pages/Resources'
 import { Databases } from './pages/Databases'
+import { Monitors } from './pages/Monitors'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
 import { Dashboard } from './pages/Dashboard'
@@ -75,6 +76,7 @@ function App() {
           {/* Canonical floor-scoped routes */}
           <Route path="/resources" element={<P><Resources /></P>} />
           <Route path="/databases" element={<P><Databases /></P>} />
+          <Route path="/monitors" element={<P><Monitors /></P>} />
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
           <Route path="/floors/:floorId/agents" element={<P><Agents /></P>} />
           <Route path="/floors/:floorId/agents/:agentId" element={<P><AgentDetail /></P>} />

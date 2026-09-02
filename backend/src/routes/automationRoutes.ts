@@ -3,6 +3,7 @@ import { ValidationError } from '../building.js'
 import { AutomationValidationError } from '../automations/service.js'
 import * as service from '../automations/service.js'
 import { createRun } from '../automations/runService.js'
+import { operationKindOf } from '../automations/types.js'
 import type { Automation, AutomationVersion } from '../automations/types.js'
 import { fail, notFound, oid } from './http.js'
 
@@ -17,6 +18,8 @@ const toPublic = (a: Automation) => ({
   name: a.name,
   description: a.description,
   status: a.status,
+  // Derivado quando ausente: nenhum documento existente foi carimbado para isto.
+  operationKind: operationKindOf(a),
   trigger: a.trigger,
   draftDefinition: a.draftDefinition,
   currentVersion: a.currentVersion,

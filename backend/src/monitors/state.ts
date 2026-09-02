@@ -49,6 +49,16 @@ export interface MonitorState {
   lastTriggeredAt: Date | null
   cooldownUntil: Date | null
   lastEventId: string | null
+  /**
+   * O disparo que ainda não virou execução.
+   *
+   * Entre reconhecer a transição e enfileirar o Flow cabe um restart — e sem esta marca
+   * o alerta some: a borda já foi consumida, e o próximo evento não é mais transição. A
+   * marca é escrita na MESMA operação atômica que reconhece o disparo, e limpa quando a
+   * execução existe. Recuperar é reenfileirar com a mesma chave de idempotência, que é o
+   * que faz a segunda tentativa encontrar a primeira execução em vez de criar outra.
+   */
+  pendingDispatch: { eventId: string; at: Date } | null
   status: MonitorStatus
   error: { code: string; message: string } | null
   version: number
@@ -169,11 +179,13 @@ export async function observe(input: ObserveInput): Promise<ObserveResult> {
           ? {
               lastTriggeredAt: agora,
               cooldownUntil: monitor.cooldownMs > 0 ? new Date(agora.getTime() + monitor.cooldownMs) : null,
+              // A intenção, gravada junto com a borda: as duas na mesma escrita, ou nenhuma.
+              pendingDispatch: { eventId: input.eventId, at: agora },
             }
           : {}),
       },
       $inc: { version: 1 },
-      $setOnInsert: { _id: new ObjectId(), ownerId: input.ownerId, monitorId: monitor._id, ...(vaiDisparar ? {} : { lastTriggeredAt: null, cooldownUntil: null }) },
+      $setOnInsert: { _id: new ObjectId(), ownerId: input.ownerId, monitorId: monitor._id, ...(vaiDisparar ? {} : { lastTriggeredAt: null, cooldownUntil: null, pendingDispatch: null }) },
     },
     { upsert: !anterior, returnDocument: 'after' },
   )
@@ -190,9 +202,43 @@ export async function observe(input: ObserveInput): Promise<ObserveResult> {
 export async function markDegraded(ownerId: string, monitorId: ObjectId, error: { code: string; message: string }): Promise<void> {
   await states.updateOne(
     { ownerId, monitorId },
-    { $set: { status: 'degraded' as MonitorStatus, error: { code: error.code, message: error.message.slice(0, 300) } }, $inc: { version: 1 } },
-    { upsert: false },
+    {
+      $set: { status: 'degraded' as MonitorStatus, error: { code: error.code, message: error.message.slice(0, 300) } },
+      $inc: { version: 1 },
+      /**
+       * Um monitor que nunca observou também pode estar quebrado.
+       *
+       * Sem o upsert, o Flow apagado antes da primeira observação não deixava marca
+       * nenhuma: a tela mostrava "de plantão" para algo que não tinha para onde
+       * disparar. O estado nasce vazio — nenhum valor observado, nenhuma borda — e
+       * carregando só o que é verdade: está degradado.
+       */
+      $setOnInsert: {
+        _id: new ObjectId(),
+        ownerId,
+        monitorId,
+        previousValue: null,
+        currentValue: null,
+        conditionWasTrue: false,
+        conditionIsTrue: false,
+        lastObservedAt: null,
+        lastTriggeredAt: null,
+        cooldownUntil: null,
+        lastEventId: null,
+        pendingDispatch: null,
+      },
+    },
+    { upsert: true },
   )
 }
+
+/** A execução existe: a intenção some. Condicionada ao evento, para não limpar outra. */
+export async function clearPendingDispatch(ownerId: string, monitorId: ObjectId, eventId: string): Promise<void> {
+  await states.updateOne({ ownerId, monitorId, 'pendingDispatch.eventId': eventId }, { $set: { pendingDispatch: null } })
+}
+
+/** O que ficou para trás quando o processo caiu no meio. Lido no arranque do worker. */
+export const listPendingDispatches = (limit = 100) =>
+  states.find({ pendingDispatch: { $ne: null } }).sort({ 'pendingDispatch.at': 1 }).limit(limit).toArray()
 
 export { monitors as monitorsCollection, states as monitorStatesCollection }

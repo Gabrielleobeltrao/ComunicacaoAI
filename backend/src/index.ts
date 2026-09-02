@@ -161,6 +161,8 @@ import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
 import { knowledgeRouter } from './routes/knowledgeRoutes.js'
 import { agentResourceAccessRouter, resourceRouter } from './routes/resourceRoutes.js'
 import { databaseRouter } from './routes/databaseRoutes.js'
+import { monitorRouter } from './routes/monitorRoutes.js'
+import { activityRouter } from './routes/activityRoutes.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
 import { ensureContextManifestIndexes } from './contextManifest.js'
 import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
@@ -512,6 +514,8 @@ app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
  * aquele tipo entende, e uma rota genérica de escrita teria que reimplementar todas elas.
  */
 app.use('/api/databases', requireAuth, databaseRouter)
+app.use('/api/monitors', requireAuth, monitorRouter)
+app.use('/api/activity', requireAuth, activityRouter)
 app.use('/api/resources', requireAuth, resourceRouter)
 app.use('/api/agents/:agentId', requireAuth, agentResourceAccessRouter)
 app.use('/api/knowledge', requireAuth, knowledgeRouter)

@@ -59,6 +59,9 @@ export const NAV_V2: NavItemDef[] = [
   // recurso que a expõe. Mover a rota agora quebraria bookmark por uma reorganização
   // que ainda não terminou.
   { key: 'data-history', label: 'Históricos', icon: 'clock', scope: 'general', group: 'resources', path: () => '/historicos', activePrefixes: () => ['/historicos'] },
+  // O plantão: o que o escritório vigia. Fica em OPERAÇÕES porque é observação — quem
+  // entra aqui vem ver o que está armado, não construir um agente.
+  { key: 'monitors', label: 'Monitores', icon: 'radar', scope: 'general', group: 'control', path: () => '/monitors', activePrefixes: () => ['/monitors'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
 ]
 

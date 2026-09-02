@@ -24,6 +24,8 @@ import { ensureRealtimeSourceIndexes } from '../realtimeSources/repository.js'
 import { ensureCandleIndexes } from '../marketData/candleStore.js'
 import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
+import { registerMonitorObservers, resumePendingDispatches } from '../monitors/dispatch.js'
+import { ensureMonitorIndexes } from '../monitors/state.js'
 import { registerWebSocketDestinations } from '../integrations/websocket/destinations.js'
 import { websocketAdapterFor } from '../integrations/websocket/service.js'
 import { ensureWebSocketIndexes } from '../integrations/websocket/repository.js'
@@ -70,6 +72,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   await ensureCandleIndexes()
   await ensureMarketStateIndexes()
   await ensureWebSocketIndexes()
+  await ensureMonitorIndexes()
   await ensureDataHistoryIndexes()
   await ensureRealtimeSourceIndexes()
   // O motor de mercado escuta o barramento. Registrar aqui, e não na importação, deixa
@@ -77,12 +80,26 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   registerMarketDataHandlers()
   // E o gatilho interno: é ele que transforma um evento do barramento em execução.
   registerInternalEventTriggers(onError)
+  // E os monitores: outro consumidor do MESMO barramento. O monitor não observa uma
+  // segunda verdade sobre o que aconteceu — ele lê o evento que já foi publicado, e o
+  // que ele reconhece como transição vira execução pela fila de sempre.
+  registerMonitorObservers(onError)
   // E os destinos do App de WebSocket: memória e rotina, pelos mesmos caminhos de
   // sempre. Agente e setor já são atendidos pelo gatilho interno acima.
   registerWebSocketDestinations()
   // E o histórico genérico: ele escuta TODOS os tipos do barramento e decide pelo que
   // está configurado. Nenhum tipo de evento novo foi criado para isso.
   registerDataHistoryHandlers()
+
+  /**
+   * O disparo que ficou pendurado quando o processo caiu.
+   *
+   * A borda já foi consumida e a execução não chegou a existir; sem esta varredura o
+   * alerta só voltaria a andar quando a fonte publicasse de novo — o que, numa fonte
+   * de hora em hora, é uma hora de silêncio. A chave de idempotência é derivada do
+   * evento, então retomar nunca cria uma segunda execução.
+   */
+  resumePendingDispatches().catch((error) => onError('monitores pendentes', error))
 
   let stopping = false
   // In-flight runs, so shutdown can wait for them instead of cutting them off.

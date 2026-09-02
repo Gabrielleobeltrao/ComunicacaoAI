@@ -132,6 +132,7 @@ const ROUTER_PREFIX = {
   'routes/knowledgeAccessRoutes.ts': '/api/agents/:agentId',
   'routes/resourceRoutes.ts': '/api/resources',
   'routes/databaseRoutes.ts': '/api/databases',
+  'routes/monitorRoutes.ts': '/api/monitors',
 }
 
 function declaredRoutes() {
@@ -212,7 +213,8 @@ test('every route file is covered by the scan', () => {
   const scanned = new Set(Object.keys(ROUTER_PREFIX).map((f) => f.replace('routes/', '')))
   // webhookRoutes is the public receiver (skipped by prefix); logRoutes is read-only.
   // appRoutes is the read-only App catalog.
-  const exempt = new Set(['webhookRoutes.ts', 'logRoutes.ts', 'executionRoutes.ts', 'appRoutes.ts', 'sectorExecutionRoutes.ts'])
+  // activityRoutes é a linha do tempo: leitura pura, sem um único verbo de escrita.
+  const exempt = new Set(['webhookRoutes.ts', 'logRoutes.ts', 'executionRoutes.ts', 'appRoutes.ts', 'sectorExecutionRoutes.ts', 'activityRoutes.ts'])
   for (const file of files) {
     assert.ok(scanned.has(file) || exempt.has(file), `${file} is neither scanned nor exempt`)
   }

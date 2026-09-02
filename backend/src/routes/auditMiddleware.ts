@@ -246,6 +246,15 @@ const RULES: Rule[] = [
   // quem publicou o quê.
   R('POST', 'api/tools/:/versions', { entityType: 'tool', action: 'create' }, { idAt: 2 }),
 
+  // O MONITOR é uma regra que age sozinha: quem a criou, quem a pôs de plantão e quem a
+  // pausou é exatamente o que uma auditoria precisa responder depois. Publicar é
+  // `activate` e não `publish`: o que muda é o ESTADO de plantão, não uma versão imutável.
+  R('POST', 'api/monitors', { entityType: 'monitor', action: 'create' }),
+  R('PUT', 'api/monitors/:', { entityType: 'monitor', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/monitors/:/publish', { entityType: 'monitor', action: 'activate' }, { idAt: 2 }),
+  R('POST', 'api/monitors/:/pause', { entityType: 'monitor', action: 'pause' }, { idAt: 2 }),
+  R('DELETE', 'api/monitors/:', { entityType: 'monitor', action: 'delete' }, { idAt: 2 }),
+
   R('POST', 'api/databases', { entityType: 'database', action: 'create' }),
   R('PATCH', 'api/databases/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
   R('DELETE', 'api/databases/:', { entityType: 'database', action: 'delete' }, { idAt: 2 }),

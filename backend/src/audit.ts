@@ -94,12 +94,21 @@ export type AuditEntityType =
   // Uma fonte de dados em tempo real vinculável a agentes. Ela não guarda nada:
   // histórico é outra decisão, em outro lugar.
   | 'realtime_source'
+  /**
+   * Um MONITOR — o que fica de plantão e aciona um Flow sozinho.
+   *
+   * O que entra aqui é a mudança da regra: criar, editar, pôr de plantão, pausar,
+   * apagar. As OBSERVAÇÕES não entram — são milhares por dia, e o que elas produzem
+   * (a execução do Flow) já é auditado como execução.
+   */
+  | 'monitor'
   | 'settings'
   // A sessão de quem entra na conta. Só a tentativa recusada é registrada aqui.
   | 'session'
 export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
   'data_recorder',
   'realtime_source',
+  'monitor',
   'memory',
   'agent',
   'sector',
