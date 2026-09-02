@@ -17,6 +17,7 @@ import { KIND_CAPABILITIES, MONITORING_SOURCE_KINDS } from '../monitoring/types.
 import { computeHealth, nextReadAt } from '../monitoring/health.js'
 import { rotateWebhookSecret } from '../monitoring/webhookSource.js'
 import { deleteSourceGrant, listSourceGrants, putSourceGrant, resolveSourceAccess } from '../monitoring/access.js'
+import { migrateRecordersToSources, rollbackRecorderMigration } from '../monitoring/migration.js'
 import { notFound, oid } from './http.js'
 
 // AS ROTAS da Central — e a flag que nega de verdade.
@@ -65,6 +66,29 @@ monitoringRouter.get('/overview', async (_req, res) => {
  */
 monitoringRouter.get('/live', async (_req, res) => {
   res.json(await liveView(res.locals.userId))
+})
+
+/**
+ * A migração: dar uma linha na Central ao que já monitora.
+ *
+ * Projeção, não mudança — a fonte nasce pausada e aponta para o recorder que já existia.
+ * Sem `apply=1`, a resposta é o plano.
+ */
+monitoringRouter.post('/migrate/recorders', async (req, res, next) => {
+  try {
+    res.json(await migrateRecordersToSources(res.locals.userId, { dryRun: String(req.query.apply ?? '') !== '1' }))
+  } catch (erro) {
+    if (!recusa(res, erro)) next(erro as Error)
+  }
+})
+
+/** O reverso: apaga só as projeções intocadas. Recorder nenhum é tocado. */
+monitoringRouter.post('/migrate/recorders/rollback', async (_req, res, next) => {
+  try {
+    res.json(await rollbackRecorderMigration(res.locals.userId))
+  } catch (erro) {
+    if (!recusa(res, erro)) next(erro as Error)
+  }
 })
 
 monitoringRouter.get('/sources', async (_req, res) => {

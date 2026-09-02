@@ -458,12 +458,55 @@ bloqueado no segundo salto.
 Comando: `node --test test/monitoringBrowser.integration.test.mjs` → **10/10**.
 Bateria: backend **1434 + 1959** · runner **21** · browser-worker **19**.
 
+## Bloco 17 — unions discriminadas, SSE explícito e migração com rollback ✅
+
+`backend/src/monitoring/config.ts` e `migration.ts`.
+
+### A configuração deixou de ser um saco de opcionais
+
+O modelo antigo tinha `url?`, `appKey?`, `datasetKey?`, `eventType?` e mais dez, todos no
+mesmo objeto: uma fonte de webhook aceitava `url`, uma de dataset aceitava `selector`, e
+nada reclamava. O campo errado ficava guardado, aparecia na tela e confundia quem fosse
+editar depois.
+
+Agora cada tipo diz o que tem, e **o que não pertence é recusado, não ignorado** — porque
+campo ignorado é campo que alguém preencheu achando que ia funcionar.
+
+**Efeito colateral bom**: quatro testes passaram a falhar porque a recusa mudou de lugar —
+antes uma fonte sem `eventType` nascia e só era barrada na ativação; agora ela nem chega a
+existir. A recusa vem onde a pessoa ainda está olhando.
+
+### SSE é DITO, não adivinhado
+
+`protocol: 'websocket' | 'sse'`. Adivinhar por `wss://` versus `https://` erraria num SSE
+servido por uma API que também fala WebSocket — e o erro só apareceria em produção. SSE
+exige o endereço do fluxo; WebSocket exige a conexão do App. Heartbeat com piso e teto:
+silêncio além dele é conexão morta, mesmo sem erro.
+
+E a paginação virou fechada (cursor, página ou nenhuma), com teto de páginas: paginação sem
+limite é um laço.
+
+### A migração é projeção, não mudança
+
+O que já monitora continua monitorando. A fonte criada **aponta** para o recorder que já
+existia, nasce **pausada**, e o recorder não é tocado — nem o `updatedAt` dele. Recorder
+`manual` de fora da Central é pulado em vez de descrito errado.
+
+O rollback apaga **só as projeções intocadas**: uma que alguém ativou ou que já leu deixou
+de ser projeção, e fica.
+
+Comandos: `node --test test/monitoringConfig.test.mjs` → **11/11**;
+`node --test test/monitoringMigration.integration.test.mjs` → **12/12**.
+Bateria: backend **1445 + 1971**.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **SSE como protocolo explícito** e **unions discriminadas** para `config`/`cadence`.
+2. **A aba de Monitores** ainda não oferece debounce, cooldown, limiar de cruzamento e
+   política de dado ausente/stale na tela — a AST tem comparação e AND/OR; falta expor o
+   resto, que já existe no backend.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

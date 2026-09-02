@@ -273,6 +273,8 @@ const RULES: Rule[] = [
    * precisa responder. Testar e ler NÃO entram: são leitura, e são frequentes.
    */
   R('POST', 'api/monitoring/sources', { entityType: 'monitoring_source', action: 'create' }),
+  R('POST', 'api/monitoring/migrate/recorders', { entityType: 'monitoring_source', action: 'create' }),
+  R('POST', 'api/monitoring/migrate/recorders/rollback', { entityType: 'monitoring_source', action: 'delete' }),
   R('PUT', 'api/monitoring/sources/:', { entityType: 'monitoring_source', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/monitoring/sources/:/activate', { entityType: 'monitoring_source', action: 'activate' }, { idAt: 3 }),
   R('POST', 'api/monitoring/sources/:/pause', { entityType: 'monitoring_source', action: 'pause' }, { idAt: 3 }),

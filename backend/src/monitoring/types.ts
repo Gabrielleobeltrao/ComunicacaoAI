@@ -162,6 +162,15 @@ export interface MonitoringConfig {
   /** `websocket` — a instalação do App de WebSocket, com as subscriptions dela. */
   installationId?: string
   subscriptions?: string[]
+  /**
+   * WebSocket ou SSE — DITO, e não adivinhado pela URL.
+   *
+   * Adivinhar por `wss://` versus `https://` erraria num SSE servido por uma API que
+   * também fala WebSocket, e o erro só apareceria em produção.
+   */
+  protocol?: 'websocket' | 'sse'
+  /** Silêncio além disso é conexão morta, mesmo sem erro. */
+  heartbeatMs?: number
   /** `dataset`. */
   dataStoreId?: string
   datasetKey?: string

@@ -217,7 +217,9 @@ test('o seletor lê o TEXTO, sem as etiquetas', () => {
 test('a ordem das estratégias: JSON, depois JSON-LD, depois seletor', async () => {
   tipoAtual = 'text/html'
   corpoAtual = '<html><script type="application/ld+json">{"preco":"7,50","nome":"X"}</script><div class="p">ignorado</div></html>'
+  // `selector` é de página, não de API: a união discriminada recusa o campo no tipo errado.
   const r = await svc.testSource(DONO, entrada({
+    kind: 'http_page',
     config: { url: `http://127.0.0.1:${porta}/pagina`, selector: '.p' },
     mapping: { version: 1, fields: [{ to: 'preco', from: 'preco', transforms: [{ op: 'number' }] }] },
   }))
@@ -449,25 +451,24 @@ test('fonte de WEBSOCKET apontando para conexão de outra conta é RECUSADA', as
   assert.equal(await db.collection('data_recorders').countDocuments({ ownerId: DONO }), 0)
 })
 
-test('fonte que empurra SEM dizer de onde não ativa', async () => {
-  // Sem isso ela ficaria ativa, verde, e muda para sempre — esperando uma entrega que
-  // ninguém faz.
-  const evento = await svc.createSource(DONO, entrada({
-    kind: 'internal_event',
-    config: {},
-    cadence: { mode: 'stream' },
-    mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] },
-  }))
-  await assert.rejects(() => svc.setSourceStatus(DONO, evento._id, 'active'), /qual evento/)
-
-  const ws = await svc.createSource(DONO, entrada({
-    name: 'WS sem conexão',
-    kind: 'websocket',
-    config: {},
-    cadence: { mode: 'stream' },
-    mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] },
-  }))
-  await assert.rejects(() => svc.setSourceStatus(DONO, ws._id, 'active'), /qual conexão/)
+test('fonte que empurra SEM dizer de onde nem CHEGA A EXISTIR', async () => {
+  // Antes ela nascia e só era barrada na ativação. Com a união discriminada, o tipo diz o
+  // que precisa e a recusa vem na criação — que é onde a pessoa ainda está olhando.
+  await assert.rejects(
+    () => svc.createSource(DONO, entrada({ kind: 'internal_event', config: {}, cadence: { mode: 'stream' }, mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] } })),
+    /eventType/,
+  )
+  await assert.rejects(
+    () =>
+      svc.createSource(DONO, entrada({
+        name: 'WS sem conexão',
+        kind: 'websocket',
+        config: {},
+        cadence: { mode: 'stream' },
+        mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] },
+      })),
+    /conexão do App/,
+  )
 })
 
 test('ACEITAÇÃO: evento do barramento → recorder da fonte → dataset', async () => {
@@ -528,10 +529,11 @@ test('fonte de App sem instalação recusa pelo caminho de permissão de sempre'
   assert.ok(['blocked', 'http'].includes(r.error.kind))
 })
 
-test('fonte de App sem dizer App e ação é recusada', async () => {
-  const r = await svc.testSource(DONO, entrada({ kind: 'app_action', config: {}, mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] } }))
-  assert.equal(r.error.kind, 'not_supported')
-  assert.match(r.error.message, /qual App e qual ação/)
+test('fonte de App sem dizer App e ação é recusada na CRIAÇÃO', async () => {
+  await assert.rejects(
+    () => svc.createSource(DONO, entrada({ kind: 'app_action', config: {}, mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] } })),
+    /appKey/,
+  )
 })
 
 test('fonte de DATASET lê o que já está guardado', async () => {
@@ -583,14 +585,17 @@ test('fonte de DATASET lê o que já está guardado', async () => {
   assert.deepEqual(r.rows, [{ preco: 33 }])
 })
 
-test('fonte de dataset sem dizer o conjunto é recusada', async () => {
-  const r = await svc.testSource(DONO, entrada({
-    kind: 'dataset',
-    config: {},
-    cadence: { mode: 'interval', intervalMs: 60_000 },
-    mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] },
-  }))
-  assert.match(r.error.message, /qual conjunto/)
+test('fonte de dataset sem dizer o conjunto é recusada na CRIAÇÃO', async () => {
+  await assert.rejects(
+    () =>
+      svc.createSource(DONO, entrada({
+        kind: 'dataset',
+        config: {},
+        cadence: { mode: 'interval', intervalMs: 60_000 },
+        mapping: { version: 1, fields: [{ to: 'a', from: 'a' }] },
+      })),
+    /dataStoreId/,
+  )
 })
 
 // --- o AO VIVO: o que chegou, não quem está de pé ------------------------------------

@@ -4,6 +4,7 @@ import { criarRecorder } from '../dataHistory/recorders.js'
 import { ingestFact, limparCacheDeRecorders } from '../dataHistory/engine.js'
 import { decryptInstallationConfig, getInstallation } from '../apps/installations.js'
 import { collectOnce } from './collect.js'
+import { ConfigError, validateConfig } from './config.js'
 import type { CollectResult } from './collect.js'
 import { backoffDelay, computeHealth, isDue, nextReadAt } from './health.js'
 import { validateMapping } from './mapping.js'
@@ -68,17 +69,22 @@ function normalizar(input: SourceInput): Omit<MonitoringSource, '_id' | 'ownerId
   if (!MONITORING_SOURCE_KINDS.includes(input.kind)) throw new MonitoringError('tipo de fonte desconhecido')
 
   const caps = KIND_CAPABILITIES[input.kind]
-  const config = input.config ?? {}
-  if (caps.needsUrl && !config.url) throw new MonitoringError('esta fonte precisa de um endereço')
-  if (config.url) {
-    // A forma agora; a POSSE do endereço (público, não privado) é conferida na leitura, por
-    // `safeFetch`, que resolve o host de verdade — validar aqui seria uma segunda opinião.
-    try {
-      const u = new URL(config.url)
-      if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('esquema')
-    } catch {
-      throw new MonitoringError('o endereço não é uma URL válida')
-    }
+  /**
+   * A configuração é validada CONTRA O TIPO, por união discriminada.
+   *
+   * O que não pertence àquele tipo é recusado, e não ignorado: um `selector` numa fonte de
+   * dataset foi digitado por alguém que esperava alguma coisa, e ignorar em silêncio deixa
+   * essa pessoa esperando para sempre.
+   *
+   * A POSSE do endereço (público, não privado) continua sendo conferida na leitura, por
+   * quem resolve o host de verdade — validar aqui seria uma segunda opinião.
+   */
+  let config: MonitoringSource['config']
+  try {
+    config = validateConfig(input.kind, input.config ?? {}) as unknown as MonitoringSource['config']
+  } catch (erro) {
+    if (erro instanceof ConfigError) throw new MonitoringError(erro.message, 'invalid_config')
+    throw erro
   }
 
   /**
