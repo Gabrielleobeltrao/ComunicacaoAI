@@ -341,12 +341,135 @@ idempotência aleatória caem 2 (inclusive o de aceitação).
 - O construtor é o de listas fechadas; a versão "natural" (descrever em português) não foi
   feita.
 
+### Fase 6 — Activity unificada ✅ `dc1245b`
+
+`backend/src/activity/timeline.ts`, `routes/activityRoutes.ts`, `frontend/src/lib/activity.ts`,
+`pages/Activity.tsx`.
+
+- **projeção, não coleção.** A resposta de "o que aconteceu, do começo ao fim?" está em
+  quatro coleções que já existem. Gravar uma quinta com o mesmo conteúdo criaria uma
+  segunda verdade que envelhece — bastaria um passo falhar entre as duas escritas para o
+  painel contar uma história que o histórico nega. Sem coleção nova, sem TTL novo, sem
+  contagem própria;
+- **a correlação do monitor viaja no `requestId`** (`monitor:<id>:<eventId>`), derivada do
+  evento e sem payload: é o que liga a execução ao monitor sem gravar o que ele viu;
+- **entrega contada UMA vez**, pelo passo que a executa. Contar também no nível da execução
+  seria a duplicação hierárquica que o painel não pode ter;
+- **nada de conteúdo**: nem payload de gatilho, nem prompt, nem resposta, nem documento. Um
+  teste percorre a resposta inteira procurando o valor que o monitor observou;
+- tempo real pelo socket que já existe, com janela de 1 s — um evento por passo faria uma
+  requisição por passo;
+- `MONITORS_ENABLED=0` passou a negar a rota de monitores de verdade.
+
+Testes: 7 (projeção) + 6 (regras da tela) + 4 (e2e). **Teeth**: contando entrega no nível da
+execução cai 1; vazando o payload do gatilho cai 1.
+
+### Fases 7 e 8 — Extension packages e Marketplace ✅ `b909338`
+
+`backend/src/extensions/{types,packages,installs,backfill,templates}.ts`,
+`routes/extensionRoutes.ts`, `frontend/src/pages/Marketplace.tsx`.
+
+- **pacote, versão e instalação separados**, porque respondem a perguntas diferentes: o que
+  existe, o que foi congelado e o que esta conta usa. Juntá-los faria editar um rascunho
+  mudar o que já está instalado na conta de outra pessoa;
+- **versão publicada é imutável e tem hash** (ordem de chaves não conta). Republicar o mesmo
+  número é recusado pelo índice único E pela conferência;
+- **credencial no manifesto impede publicar**, e a recusa diz o CAMINHO, nunca o valor. A
+  DEFINIÇÃO do campo de credencial continua viajando — é ela que diz a quem instala o que
+  fornecer;
+- **o ciclo é um grafo**: `draft → testing → submitted → in_review → approved → published`,
+  com suspensão e deprecação. Aprovar e publicar são da revisão, e a revisão fica gravada na
+  versão. Suspender exige motivo, e o motivo é visível para quem instalou;
+- **a instalação fixa a versão**: o autor publicar não muda o que já roda. Atualizar que
+  amplia permissão é recusado sem aprovação explícita do diff;
+- **desinstalar pausa e guarda**: o histórico de execução aponta para a instalação;
+- **a contagem de instalações vem do banco**, nunca de um contador — "3 mil instalações" é
+  exatamente o número que convence, e um contador incrementado à mão diverge no primeiro erro;
+- **backfill** dos Apps privados em pacote privado: idempotente, com dry-run, e
+  `app_definitions` continua sendo a fonte. Ferramenta só vira pacote quando o autor pede —
+  empacotar o trabalho de alguém por varredura é decidir por essa pessoa;
+- **template é blueprint congelado**, aplicado pelo Arquiteto que já existe: instalar abre a
+  proposta e **nada é criado até alguém aprovar a prévia**. Memória, conversa, execução,
+  documento, dado e credencial do autor não viajam — a recusa é na publicação, antes de
+  alguém baixar;
+- `COMMUNITY_MARKETPLACE_ENABLED=0` fecha catálogo e instalação com 404.
+
+Testes: 26 + 9 + 6 (e2e). **Teeth**: sem a peneira de segredo, sem o grafo de estados e sem
+a aprovação do diff caem 3.
+
+### Fases 9 e 10 — Sandbox Runtime e código da comunidade ✅ `5c66e58`
+
+`backend/src/extensionRuntime/{provider,scanner,broker,gate}.ts`.
+
+**O estado real: código continua inexecutável, e isso é a entrega.** Não existe runner
+isolado neste repositório, e por isso `CODE_TOOLS_ENABLED` permanece desligado. O que foi
+construído é a fronteira que impede qualquer atalho.
+
+- **nada executa neste processo.** Sem `eval`, `new Function`, `vm`, `child_process`, `exec`
+  ou Python local — e um teste LÊ o fonte do diretório inteiro para afirmar isso, porque um
+  teste que só chama a API não distingue "não executa" de "executa em outro lugar";
+- **o provider padrão recusa tudo.** Fail-closed não é uma mensagem simpática: é o estado em
+  que o sistema fica quando ninguém configurou nada. Um runner marcado `testOnly` não pode
+  ser registrado em produção, e a recusa acontece no registro;
+- **a flag não é a garantia.** `CODE_TOOLS_ENABLED=1` sozinho não libera: o `health()` é
+  conferido item a item (não-root, FS somente leitura, rede negada, `no-new-privileges`,
+  seccomp, efêmero, limpeza conferível). Aceitar o `ok: true` inteiro seria confiar em quem
+  está do outro lado da fronteira para dizer se a fronteira existe;
+- **scanner léxico com allowlist fechada** e SBOM lido do fonte. Ele tira comentários e
+  conteúdo de string antes de procurar, e o achado devolve a LINHA, nunca o trecho. Está
+  documentado no próprio arquivo que uma varredura léxica é derrotável — ela evita gastar
+  execução com o que já dá para recusar de graça, e não substitui a sandbox;
+- **capability broker**: o token nunca é gravado (só o hash), vale para UMA execução, tem
+  usos contados e expira por TTL do banco. E a permissão é **reconferida no resolvedor
+  canônico a cada uso** — o bilhete responde "pediu?", o resolvedor responde "ainda pode?";
+- **kill switch** por pacote, versão ou hash, com motivo obrigatório, valendo na execução e
+  na publicação;
+- **revisão humana** exigida na primeira publicação e em mudança de permissão/runtime;
+- o portão está LIGADO ao caminho real: `publishVersion` de `runtimeKind: 'code'` passa por
+  ele, e a execução também.
+
+Testes: 27, incluindo a suíte de ameaça. Bateria: 1354 + 1804, verde.
+
+### Fase 11 (parcial) — migração 9.2, rollback e documentação ✅ `5c66e58`
+
+`backend/src/databases/migration.ts` e as rotas `POST /api/databases/migrate/histories[/rollback]`.
+
+- **nenhum registro é movido.** Os `data_history_records` continuam onde estão, com o mesmo
+  `recorderId`; o que nasce é a projeção que os torna visíveis como Database. Mover milhões
+  de linhas para uma tela nova encontrá-las seria pagar caro para não ganhar nada — e uma
+  migração que reescreve dado é a que não dá para repetir quando falha no meio;
+- **a chave do dataset É o id do recorder**, que é como o adapter o encontra: um campo a
+  menos para a migração manter sincronizado. Um teste consulta pelo adapter depois de
+  migrar, sem backfill nenhum;
+- **idempotente e retomável**: o índice único do nome decide o store, e a chave decide o
+  dataset. Um recorder criado depois entra numa segunda passagem;
+- **rollback desfaz só o que a migração criou**: um dataset feito à mão depois fica, e o
+  store fica de pé enquanto tiver algo dentro;
+- schema derivado do que o recorder guarda; sem campos declarados ele fica ABERTO, em vez de
+  declarar uma forma que não existe;
+- `retentionDays` não é tocado, e Históricos continua sendo a regra de gravação — o
+  dual-read é o efeito natural de a migração não escrever nada do lado antigo;
+- `DEPLOYMENT_ENVIRONMENT_MATRIX.md` documenta as cinco flags (com o que cada `0` fecha de
+  verdade) e as coleções novas.
+
+Testes: 9. Bateria: 1354 + 1813 backend, verde.
+
 ## Próxima ação exata
 
-1. Fase 6 — Activity unificada: projeção correlacionada por `ExecutionRoot` (fonte →
-   monitor → flow → agentes/steps → entrega), ligada ao Socket.IO que já existe, sem
-   duplicar contagem hierárquica e sem persistir payload, prompt, resposta ou segredo.
+1. Fase 11 — migração 9.2 (Data Store padrão apontando para os recorders existentes, com
+   dual-read), fixtures e a bateria completa registrada.
 2. Ligar o recorder de dataset ao `observe()` para a fonte `database` de monitor.
-3. `operationKind` compatível nas automações, com normalização na leitura.
+3. Escrever um `SandboxRuntimeProvider` de verdade (fora deste repositório) — enquanto ele
+   não existir, `CODE_TOOLS_ENABLED` fica desligado e é isso que o portão garante.
 
-Fases 7 a 11 (Extensions, Marketplace, Sandbox, hardening) **não foram iniciadas**.
+## Pendências honestas das Fases 7 a 10
+
+- **não existe runner isolado**: a fronteira, o scanner, o broker e o kill switch estão
+  prontos e testados, mas nada executa código. `CODE_TOOLS_ENABLED` continua desligado;
+- o scanner é **léxico**, não AST — está dito no arquivo e nos testes. Ele é a primeira
+  peneira, nunca a defesa;
+- o Marketplace não tem página de detalhe por item nem "reportar item": a lista mostra
+  procedência, versão, permissões da atualização e motivo de suspensão, que é o que decide
+  instalar ou não;
+- revisão de pacote não tem tela: a transição existe na API, e o papel de revisor vem da
+  plataforma (`res.locals.isReviewer`), não do corpo do pedido.
