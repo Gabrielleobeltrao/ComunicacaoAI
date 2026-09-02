@@ -220,12 +220,42 @@ imutabilidade, o fail-closed do código e a exigência de output schema, caem 3.
 
 Suíte: 1354 + 1682, verde.
 
+### Fase 4 (conclusão) — os runtimes executando de verdade ✅ `e256dbd`
+
+`backend/src/executors/toolExecutor.ts`, `builtinTools.ts`, `toolVersions.ts`, rota de
+versões e `backend/test/toolRuntimeDispatch.integration.test.mjs`.
+
+- **a versão publicada decide o runtime.** `activeRuntimeVersion` é lida na execução; sem
+  versão, a ferramenta cai no caminho HTTP de sempre — nenhuma migração, nenhum campo novo
+  no documento. Um teste afirma que a ferramenta sem versão continua chamando a URL dela, e
+  que publicar uma versão `http` também não desvia nada;
+- **nenhum mecanismo novo.** `app_action` vai pelo mesmo `executarAcaoDeApp` do executor do
+  agente (grant → instalação → compatibilidade de versão → escrita autônoma), e
+  `registered_function` pelo mesmo `executeRegisteredFunction`. Um segundo caminho seria um
+  segundo lugar onde a permissão é decidida, e no dia em que divergissem um autorizaria o
+  que o outro recusa;
+- **a autorização é reconferida dentro da chamada**, relendo o agente do banco. Entre
+  montar a lista de ferramentas e o modelo decidir chamar cabe uma revogação. Dois testes
+  cobrem isso: a ferramenta tirada do agente depois da montagem não executa, e o agente
+  apagado não executa nada;
+- **entrada e saída conferidas contra o contrato PUBLICADO**, não contra o do documento.
+  Sem a conferência de saída, `outputSchema` é enfeite: quem instala encadeia o resultado
+  confiando numa forma que ninguém verifica;
+- **limite por execução** (`maxCallsPerRun`, padrão 5) e **trilha por chamada**
+  (`tool_version_calls`) com o hash do que rodou — nunca argumento, nunca resposta. Recusa
+  é gravada como recusa, e não como execução;
+- **o manifesto é conferido na publicação**: uma versão imutável não pode nascer sem dizer
+  qual App/ação ou qual função ela executa. A EXISTÊNCIA da função fica para a execução, de
+  propósito — ela depende do que este servidor tem registrado, e isso muda entre deploys;
+- `code` continua fail-closed: publicar exige `CODE_TOOLS_ENABLED=1`, e executar responde
+  que o runtime isolado ainda não roda.
+
+Testes: 14 novos. **Teeth**: desligando o desvio por versão caem 8; trocando a releitura do
+agente pela cópia em memória caem 2. Bateria do backend: 1712/1712.
+
 ## Pendências honestas da Fase 4
 
-- **`app_action` e `registered_function` ainda não executam** por este caminho: o modelo
-  aceita o `runtimeKind`, mas o dispatcher continua atendendo App por grant e função pelo
-  registro, como sempre. Ligar os dois ao dispatcher único é o resto da fase.
-- Editor de versões na tela não foi feito.
+- Editor de versões na tela não foi feito (a trilha já sai em `GET /api/tools/:id/versions`).
 - Migração 9.2 (Data Store apontando para recorders existentes) segue pendente.
 
 ## Defeito de ambiente encontrado
@@ -265,23 +295,58 @@ determinístico, e o teste diz isso em vez de fingir que tem.
 
 Suíte: 1354 + 1698, verde.
 
+### Fase 5 (conclusão) — o monitor acionando o Flow ✅ `e8e3601`
+
+`backend/src/monitors/dispatch.ts`, `service.ts`, `routes/monitorRoutes.ts`,
+`frontend/src/pages/Monitors.tsx` e os testes
+`monitorFlowDispatch.integration` (15) + `monitorService.integration` (15) +
+`e2e/monitors.spec.ts` (5).
+
+- **quem executa é o motor que já existe.** O disparo chama `createRun` da automação:
+  mesma fila (inserir É enfileirar), mesmas leases, mesma versão PUBLICADA, mesmo
+  `ExecutionRoot`, mesma auditoria. Um executor próprio aqui seria um segundo lugar
+  decidindo retry, concorrência e idempotência;
+- **exatamente uma execução por transição**, por duas guardas independentes: a transição
+  atômica do `observe()` (dois workers, um vence) e a chave de idempotência derivada do
+  EVENTO (`<monitorId>:mon:<eventId>`), que faz o reprocessamento encontrar a execução que
+  já existe em vez de criar outra;
+- **a conferência do Flow vem ANTES de observar.** Observar consome a borda e arma o
+  cooldown; se o Flow sumiu, foi pausado ou nunca foi publicado, consumir a borda jogaria o
+  alerta fora em silêncio. Em vez disso o monitor fica DEGRADADO com a borda intacta — e o
+  `markDegraded` passou a criar o estado quando ele não existe, senão um monitor quebrado
+  antes da primeira observação não deixava marca nenhuma;
+- **o restart não perde o alerta.** `pendingDispatch` é gravado na MESMA operação atômica
+  que reconhece a borda, e limpo quando a execução existe. `resumePendingDispatches()` roda
+  no arranque do motor; retomar usa a mesma chave, então nunca cria uma segunda execução;
+- **rascunho obrigatório**: salvar nunca publica, e editar um monitor publicado o devolve
+  para rascunho. Um monitor sem Flow não publica — publicado sem ação seria um rascunho
+  mentindo;
+- **a condição é montada de listas fechadas.** Num dataset os campos vêm do schema
+  declarado; num evento da plataforma não existe schema declarado neste repositório, então
+  o que se confere é a FORMA do nome (identificador simples, sem `$` e sem ponto). Inventar
+  uma lista de campos de evento seria uma segunda verdade envelhecendo sozinha;
+- **zero token no caminho inteiro**: condição, borda e enfileiramento não chamam modelo. O
+  teste de aceitação mede `usage.inputTokens + outputTokens === 0` depois do `processRun`.
+
+**Teeth**: sem a conferência do Flow caem 4; sem a marca atômica de intenção e com chave de
+idempotência aleatória caem 2 (inclusive o de aceitação).
+
 ## Pendências honestas da Fase 5
 
-- **o monitor ainda não dispara um Flow**: `action.flowId` existe no modelo e nada o
-  executa. Falta ligar `observe()` ao enfileiramento da automação — é o próximo passo, e
-  sem ele o monitor observa e registra, mas não age.
-- `operationKind` (`routine | flow | monitor`) não foi introduzido nas automações.
-- Não há rotas nem UI de monitor; o builder visual/natural não existe.
+- `operationKind` (`routine | flow | monitor`) não foi introduzido nas automações: o Flow
+  ainda é uma automação como qualquer outra, e a tela de monitores lista todas.
+- A fonte `database` de monitor é aceita e validada, mas **nada a alimenta ainda**: só o
+  barramento de eventos chama `observarEvento`. Ligar o recorder ao `observe()` é o que
+  falta para um monitor de dataset observar sozinho.
+- O construtor é o de listas fechadas; a versão "natural" (descrever em português) não foi
+  feita.
 
 ## Próxima ação exata
 
-1. Ligar `observe()` ao enfileiramento do Flow (uma execução por transição, com a
-   idempotência da fila existente).
-2. `operationKind` compatível nas automações, com normalização na leitura.
-3. Rotas e builder de monitor, com rascunho obrigatório (salvar nunca publica).
+1. Fase 6 — Activity unificada: projeção correlacionada por `ExecutionRoot` (fonte →
+   monitor → flow → agentes/steps → entrega), ligada ao Socket.IO que já existe, sem
+   duplicar contagem hierárquica e sem persistir payload, prompt, resposta ou segredo.
+2. Ligar o recorder de dataset ao `observe()` para a fonte `database` de monitor.
+3. `operationKind` compatível nas automações, com normalização na leitura.
 
-Fases 6 a 11 (Activity, Extensions, Marketplace, Sandbox, hardening) **não foram
-iniciadas**.
-
-Fases 4 a 11 (Tools versionadas, Flows/Monitors, Activity, Extensions, Marketplace,
-Sandbox, hardening) **não foram iniciadas**.
+Fases 7 a 11 (Extensions, Marketplace, Sandbox, hardening) **não foram iniciadas**.
