@@ -1,3 +1,4 @@
+import { nextFireAt } from '../automations/scheduleClock.js'
 import type { MonitoringFreshness, MonitoringHealth, MonitoringSource, MonitoringTelemetry } from './types.js'
 
 // A SAÚDE de uma fonte — calculada, nunca gravada.
@@ -63,6 +64,20 @@ export function computeHealth(
  */
 export function nextReadAt(source: Pick<MonitoringSource, 'cadence' | 'status' | 'telemetry'>, agora: Date = new Date()): Date | null {
   if (source.status !== 'active') return null
+  /**
+   * Cron: o relógio é o MESMO das rotinas — `scheduleClock`, no fuso de quem configurou.
+   *
+   * A conta é feita a partir da última leitura, não de agora: perguntar "qual o próximo
+   * disparo depois deste instante" a uma fonte que perdeu o horário responderia sempre o
+   * horário de amanhã, e a fonte atrasada nunca venceria. A partir da última leitura, o
+   * disparo perdido continua no passado — que é o que faz `isDue` dizer a verdade.
+   */
+  if (source.cadence.mode === 'cron') {
+    const cron = source.cadence.cron
+    if (!cron) return null
+    const base = source.telemetry.lastReadAt ?? agora
+    return nextFireAt(cron, source.cadence.timezone || 'UTC', base)
+  }
   if (source.cadence.mode !== 'interval') return null
   const intervalo = source.cadence.intervalMs ?? 0
   if (intervalo <= 0) return null

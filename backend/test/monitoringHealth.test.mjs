@@ -123,3 +123,41 @@ test('o backoff tem teto: insistir de hora em hora não é insistir', () => {
   const agressivo = { backoffMs: 60_000, jitterRatio: 0, maxAttempts: 20 }
   assert.equal(backoffDelay(agressivo, 20, () => 0), 15 * 60_000)
 })
+
+// --- CRON: o horário que dispara de verdade ---------------------------------------------
+//
+// `cadence.mode: 'cron'` era aceito pelo modelo e ignorado pela varredura, que só procurava
+// `interval`. A fonte ficava ativa, verde e muda para sempre.
+
+test('cron: o próximo disparo sai do relógio das rotinas, no fuso configurado', () => {
+  const f = base({
+    cadence: { mode: 'cron', intervalMs: null, cron: '0 9 * * *', timezone: 'UTC' },
+    telemetry: { ...base().telemetry, lastReadAt: new Date('2026-01-01T08:00:00.000Z') },
+  })
+  assert.deepEqual(nextReadAt(f, AGORA), new Date('2026-01-01T09:00:00.000Z'))
+})
+
+test('cron: o disparo PERDIDO continua no passado, e a fonte vence', () => {
+  // A conta sai da última leitura, e não de agora — senão a fonte atrasada seria sempre
+  // reagendada para amanhã e nunca leria.
+  const f = base({
+    cadence: { mode: 'cron', intervalMs: null, cron: '0 9 * * *', timezone: 'UTC' },
+    telemetry: { ...base().telemetry, lastReadAt: new Date('2026-01-01T07:00:00.000Z') },
+  })
+  assert.equal(isDue(f, AGORA), true)
+})
+
+test('cron: quem já leu depois do horário de hoje espera o de amanhã', () => {
+  const f = base({
+    cadence: { mode: 'cron', intervalMs: null, cron: '0 9 * * *', timezone: 'UTC' },
+    telemetry: { ...base().telemetry, lastReadAt: new Date('2026-01-01T09:00:30.000Z') },
+  })
+  assert.equal(isDue(f, AGORA), false)
+  assert.deepEqual(nextReadAt(f, AGORA), new Date('2026-01-02T09:00:00.000Z'))
+})
+
+test('cron: expressão que o relógio não entende não vira horário inventado', () => {
+  const f = base({ cadence: { mode: 'cron', intervalMs: null, cron: 'todo dia às nove', timezone: 'UTC' } })
+  assert.equal(nextReadAt(f, AGORA), null)
+  assert.equal(isDue(f, AGORA), false)
+})

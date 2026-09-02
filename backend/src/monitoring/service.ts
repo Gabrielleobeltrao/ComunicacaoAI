@@ -3,10 +3,14 @@ import { db } from '../db.js'
 import { criarRecorder } from '../dataHistory/recorders.js'
 import { ingestFact, limparCacheDeRecorders } from '../dataHistory/engine.js'
 import { decryptInstallationConfig, getInstallation } from '../apps/installations.js'
+import { ensureDatasetForRecorder } from '../databases/migration.js'
+import { createMonitor } from '../monitors/service.js'
+import type { MonitorInput } from '../monitors/service.js'
 import { collectOnce } from './collect.js'
 import { ConfigError, validateConfig } from './config.js'
 import type { CollectResult } from './collect.js'
 import { backoffDelay, computeHealth, isDue, nextReadAt } from './health.js'
+import { nextFireAt } from '../automations/scheduleClock.js'
 import { validateMapping } from './mapping.js'
 import { KIND_CAPABILITIES, MONITORING_SOURCE_KINDS, emptyTelemetry } from './types.js'
 import type { MonitoringSource, MonitoringSourceKind, MonitoringStatus } from './types.js'
@@ -63,6 +67,42 @@ export interface SourceInput {
 const MIN_INTERVAL_MS = 15_000
 const MAX_INTERVAL_MS = 24 * 60 * 60_000
 
+/**
+ * A CADÊNCIA como união discriminada — cada modo com o que ele exige, e nada mais.
+ *
+ * Antes, `cron` era aceito sem conferência nenhuma: a expressão ia crua para o banco e a
+ * varredura só procurava `mode: 'interval'`. A fonte ficava ativa, verde e muda para
+ * sempre, e o único jeito de descobrir era ir procurar o dado que nunca chegou.
+ *
+ * O relógio é o mesmo das rotinas. Um segundo parser de cron aqui seria uma segunda
+ * opinião sobre "quando é a próxima terça" — e as duas divergiriam no horário de verão.
+ */
+function validarCadencia(puxa: boolean, bruto: SourceInput['cadence']): MonitoringSource['cadence'] {
+  const modo = bruto?.mode ?? (puxa ? 'interval' : 'stream')
+  if (puxa && modo === 'stream') throw new MonitoringError('esta fonte é lida por consulta: escolha um intervalo ou um horário')
+  if (!puxa && modo !== 'stream') throw new MonitoringError('esta fonte chega sozinha: ela não tem intervalo')
+
+  if (modo === 'stream') return { mode: 'stream', intervalMs: null, cron: null, timezone: null }
+
+  if (modo === 'cron') {
+    const cron = String(bruto?.cron ?? '').trim()
+    if (!cron) throw new MonitoringError('escreva o horário em cron, ou escolha um intervalo')
+    const timezone = String(bruto?.timezone ?? '').trim() || 'UTC'
+    // Conferida AGORA, contra o mesmo relógio que vai disparar. Uma expressão que este
+    // relógio não entende é uma fonte que nunca leria — e o lugar de descobrir isso é aqui.
+    if (!nextFireAt(cron, timezone, new Date())) {
+      throw new MonitoringError('não entendi esse horário: use cron de 5 campos e um fuso válido', 'invalid_cron')
+    }
+    return { mode: 'cron', intervalMs: null, cron, timezone }
+  }
+
+  const intervalMs = Number(bruto?.intervalMs ?? 60_000)
+  if (!Number.isFinite(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_INTERVAL_MS) {
+    throw new MonitoringError(`o intervalo fica entre ${MIN_INTERVAL_MS / 1000}s e 24h`)
+  }
+  return { mode: 'interval', intervalMs, cron: null, timezone: null }
+}
+
 function normalizar(input: SourceInput): Omit<MonitoringSource, '_id' | 'ownerId' | 'status' | 'telemetry' | 'createdAt' | 'updatedAt'> {
   const name = String(input.name ?? '').trim()
   if (!name || name.length > 120) throw new MonitoringError('dê um nome à fonte')
@@ -98,14 +138,8 @@ function normalizar(input: SourceInput): Omit<MonitoringSource, '_id' | 'ownerId
 
   const mapping = validateMapping(input.mapping)
 
-  const modo = input.cadence?.mode ?? (caps.pull ? 'interval' : 'stream')
-  if (caps.pull && modo === 'stream') throw new MonitoringError('esta fonte é lida por consulta: escolha um intervalo')
-  if (!caps.pull && modo !== 'stream') throw new MonitoringError('esta fonte chega sozinha: ela não tem intervalo')
-
-  const intervalMs = modo === 'interval' ? Number(input.cadence?.intervalMs ?? 60_000) : null
-  if (intervalMs !== null && (!Number.isFinite(intervalMs) || intervalMs < MIN_INTERVAL_MS || intervalMs > MAX_INTERVAL_MS)) {
-    throw new MonitoringError(`o intervalo fica entre ${MIN_INTERVAL_MS / 1000}s e 24h`)
-  }
+  const cadence = validarCadencia(caps.pull, input.cadence)
+  const intervalMs = cadence.intervalMs
 
   const destino = { live: Boolean(input.destination?.live), history: input.destination?.history !== false }
   if (!destino.live && !destino.history) throw new MonitoringError('escolha ao menos um destino: ao vivo ou histórico')
@@ -119,7 +153,7 @@ function normalizar(input: SourceInput): Omit<MonitoringSource, '_id' | 'ownerId
     config,
     schema: input.schema ?? schemaDoMapeamento(mapping),
     mapping,
-    cadence: { mode: modo, intervalMs, cron: input.cadence?.cron ?? null, timezone: input.cadence?.timezone ?? null },
+    cadence,
     retry: {
       timeoutMs: Math.min(60_000, Math.max(1_000, Number(input.retry?.timeoutMs ?? 10_000))),
       maxAttempts: Math.min(10, Math.max(1, Number(input.retry?.maxAttempts ?? 3))),
@@ -406,8 +440,9 @@ export async function testSource(ownerId: string, entrada: MonitoringSource | So
  * O recorder é do histórico: ele já sabe filtrar, deduplicar, agregar e apagar por
  * retenção. A Central não repete nada disso; ela só diz qual `sourceKey` alimentar.
  */
-async function materializarDestino(fonte: MonitoringSource): Promise<void> {
-  if (!fonte.destination.history || fonte.destination.recorderId) return
+async function materializarDestino(fonte: MonitoringSource): Promise<ObjectId | null> {
+  if (!fonte.destination.history) return null
+  if (fonte.destination.recorderId) return fonte.destination.recorderId
   const recorder = await criarRecorder(fonte.ownerId, {
     name: fonte.name,
     enabled: true,
@@ -426,6 +461,45 @@ async function materializarDestino(fonte: MonitoringSource): Promise<void> {
    * quem sabe que a resposta mudou, então é aqui que a lembrança é desfeita.
    */
   limparCacheDeRecorders()
+
+  /**
+   * O recorder também vira DATASET — senão ninguém consegue observá-lo.
+   *
+   * Um monitor de Central é um monitor de dataset: a condição é conferida contra o schema
+   * declarado, e o registro gravado acorda o monitor pelo caminho que já existe. Sem o
+   * dataset, a fonte grava histórico que monitor nenhum alcança.
+   */
+  await ensureDatasetForRecorder(fonte.ownerId, recorder)
+  return recorder._id
+}
+
+/**
+ * O monitor de uma fonte — criado no motor canônico, e sempre RASCUNHO.
+ *
+ * A Central não tem motor de monitor: ela materializa o destino (recorder + dataset) e
+ * entrega o resto para `monitors/service`, que valida a condição contra o schema, confere
+ * o Flow e grava. Publicar continua sendo um ato separado: uma regra que passa a agir
+ * sozinha no fim de um wizard é uma regra que ninguém revisou.
+ */
+export async function createMonitorForSource(
+  ownerId: string,
+  id: ObjectId,
+  entrada: Omit<MonitorInput, 'source'>,
+): Promise<{ id: string; status: string }> {
+  const fonte = await sources.findOne({ _id: id, ownerId })
+  if (!fonte) throw new MonitoringError('fonte não encontrada', 'not_found')
+  if (!fonte.destination.history) {
+    throw new MonitoringError('só uma fonte que grava histórico pode ser observada por um monitor', 'no_history')
+  }
+  const recorderId = await materializarDestino(fonte)
+  if (!recorderId) throw new MonitoringError('não foi possível preparar o destino desta fonte', 'no_history')
+  const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(ownerId, {
+    _id: recorderId,
+    name: fonte.name,
+    selectedFields: fonte.mapping.fields.map((f) => f.to),
+  })
+  const m = await createMonitor(ownerId, { ...entrada, source: { kind: 'database', dataStoreId, datasetKey } })
+  return { id: m._id.toString(), status: m.status }
 }
 
 export interface ReadOutcome {
@@ -566,7 +640,16 @@ async function registrarFalha(fonte: MonitoringSource, code: string, agora: Date
 
 /** As fontes que precisam ser lidas agora. É o que o worker pergunta a cada tique. */
 export async function dueSources(agora: Date = new Date(), limite = 50): Promise<MonitoringSource[]> {
-  const candidatas = await sources.find({ status: 'active', 'cadence.mode': 'interval' }).limit(limite * 4).toArray()
+  /**
+   * Os dois modos que são LIDOS por consulta — não só o intervalo.
+   *
+   * Filtrar por `interval` deixava toda fonte de horário fora da varredura: ativa, verde e
+   * muda para sempre. Quem decide se venceu é `isDue`, que sabe dos dois.
+   */
+  const candidatas = await sources
+    .find({ status: 'active', 'cadence.mode': { $in: ['interval', 'cron'] } })
+    .limit(limite * 4)
+    .toArray()
   return candidatas.filter((f) => isDue(f, agora)).slice(0, limite)
 }
 

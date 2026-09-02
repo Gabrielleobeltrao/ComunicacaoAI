@@ -701,3 +701,39 @@ test('teste que falha marca o erro e continua barrando a ativação', async () =
 
   await assert.rejects(() => svc.setSourceStatus(DONO, f._id, 'active'), /ainda não leu nada/)
 })
+
+// --- cadência: união validada, e o cron que entra na varredura --------------------------
+
+test('cron inválido é recusado na criação — e não vira fonte ativa e muda', async () => {
+  await assert.rejects(
+    () => svc.createSource(DONO, entrada({ cadence: { mode: 'cron', cron: 'todo dia de manhã', timezone: 'UTC' } })),
+    /não entendi esse horário/,
+  )
+  await assert.rejects(() => svc.createSource(DONO, entrada({ cadence: { mode: 'cron' } })), /escreva o horário em cron/)
+})
+
+test('cron válido é guardado com o fuso, e a fonte vencida aparece na varredura', async () => {
+  const f = await svc.createSource(DONO, entrada({ cadence: { mode: 'cron', cron: '*/5 * * * *', timezone: 'America/Sao_Paulo' } }))
+  assert.equal(f.cadence.mode, 'cron')
+  assert.equal(f.cadence.cron, '*/5 * * * *')
+  assert.equal(f.cadence.timezone, 'America/Sao_Paulo')
+  assert.equal(f.cadence.intervalMs, null)
+
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+
+  // Uma hora depois da última leitura, um cron de 5 em 5 minutos está vencido há muito.
+  const daquiUmaHora = new Date(Date.now() + 3_600_000)
+  const vencidas = await svc.dueSources(daquiUmaHora, 50)
+  assert.ok(
+    vencidas.some((x) => x._id.equals(f._id)),
+    'a fonte de horário precisa entrar na varredura — antes ela ficava fora para sempre',
+  )
+})
+
+test('fonte que empurra continua sem cadência de consulta', async () => {
+  await assert.rejects(
+    () => svc.createSource(DONO, entrada({ kind: 'webhook', config: {}, cadence: { mode: 'cron', cron: '*/5 * * * *' } })),
+    /chega sozinha/,
+  )
+})

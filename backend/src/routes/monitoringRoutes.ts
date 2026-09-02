@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import {
   MonitoringError,
+  createMonitorForSource,
   createSource,
   deleteSource,
   duplicateSource,
@@ -18,6 +19,7 @@ import { computeHealth, nextReadAt } from '../monitoring/health.js'
 import { rotateWebhookSecret } from '../monitoring/webhookSource.js'
 import { deleteSourceGrant, listSourceGrants, putSourceGrant, resolveSourceAccess } from '../monitoring/access.js'
 import { migrateRecordersToSources, rollbackRecorderMigration } from '../monitoring/migration.js'
+import { MonitorError } from '../monitors/service.js'
 import { notFound, oid } from './http.js'
 
 // AS ROTAS da Central — e a flag que nega de verdade.
@@ -37,8 +39,15 @@ monitoringRouter.use((_req, res, next) => {
 
 const recusa = (res: Parameters<typeof notFound>[0], erro: unknown): boolean => {
   if (erro instanceof MonitoringError) {
-    const status = erro.code === 'duplicate' ? 409 : erro.code === 'quota' ? 413 : 400
+    const status = erro.code === 'duplicate' ? 409 : erro.code === 'quota' ? 413 : erro.code === 'not_found' ? 404 : 400
     res.status(status).json({ code: erro.code, message: erro.message, error: erro.message })
+    return true
+  }
+  // A recusa do motor de monitores chega inteira: ela já diz qual campo não existe na
+  // fonte ou qual Flow não é desta conta, e trocar isso por "erro interno" apagaria a
+  // única informação capaz de consertar o formulário.
+  if (erro instanceof MonitorError) {
+    res.status(erro.code === 'not_found' ? 404 : 400).json({ code: erro.code, message: erro.message, error: erro.message })
     return true
   }
   return false
@@ -209,6 +218,33 @@ monitoringRouter.post('/sources/:id/duplicate', async (req, res, next) => {
     const f = await duplicateSource(res.locals.userId, id)
     if (!f) return notFound(res)
     res.status(201).json({ id: f._id.toString(), name: f.name, status: f.status })
+  } catch (erro) {
+    if (!recusa(res, erro)) next(erro as Error)
+  }
+})
+
+/**
+ * O monitor de uma fonte — criado de verdade, no motor canônico.
+ *
+ * O wizard oferece isso no fim, e a promessa precisa ter registro atrás: dizer "um monitor
+ * foi criado" sem criar nada é a mentira que só aparece quando a pessoa vai procurá-lo.
+ */
+monitoringRouter.post('/sources/:id/monitor', async (req, res, next) => {
+  const id = oid(String(req.params.id))
+  if (!id) return notFound(res)
+  const b = req.body ?? {}
+  try {
+    const m = await createMonitorForSource(res.locals.userId, id, {
+      name: String(b.name ?? ''),
+      condition: b.condition,
+      triggerMode: b.triggerMode,
+      threshold: b.threshold ?? null,
+      thresholdField: b.thresholdField ?? null,
+      debounceMs: Number(b.debounceMs ?? 0),
+      cooldownMs: Number(b.cooldownMs ?? 0),
+      flowId: b.flowId ?? null,
+    })
+    res.status(201).json(m)
   } catch (erro) {
     if (!recusa(res, erro)) next(erro as Error)
   }
