@@ -175,6 +175,7 @@ import { ensureKillSwitchIndexes } from './extensionRuntime/gate.js'
 import { providerFromEnv } from './extensionRuntime/httpProvider.js'
 import { ensureReviewIndexes } from './extensionRuntime/review.js'
 import { registerSandboxProvider } from './extensionRuntime/provider.js'
+import { browserWorkerFromEnv, registerBrowserWorker } from './monitoring/browserProvider.js'
 import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
 import { ensureContextManifestIndexes } from './contextManifest.js'
 import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
@@ -5485,6 +5486,10 @@ async function start() {
    */
   const runner = providerFromEnv()
   if (runner) registerSandboxProvider(runner)
+  // O worker de páginas, quando configurado. Mesma regra: a URL vem do ambiente do
+  // servidor, e sem ela o tipo `browser` continua recusando.
+  const paginas = browserWorkerFromEnv()
+  if (paginas) registerBrowserWorker(paginas)
   ensureToolVersionCallIndexes().catch((error) => {
     console.error('ensureToolVersionCallIndexes failed:', error)
   })

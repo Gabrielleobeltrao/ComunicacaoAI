@@ -433,14 +433,37 @@ nuvem sai pela porta da frente.
 Comando: `npm run test:browser-worker` → **19/19**, sendo 8 de ameaça.
 Bateria: backend **1434 + 1949** · secret-scan limpo em 2217 arquivos.
 
+## Bloco 16 — o tipo `browser` ligado ao worker ✅
+
+`backend/src/monitoring/browserProvider.ts` + o coletor em `collect.ts`.
+
+**Os nove tipos de fonte agora existem.** O `browser` busca pelo worker isolado, e a cadeia
+de estratégias é a mesma das outras páginas: JSON → JSON-LD → seletor DOM.
+
+- **sem worker configurado, o tipo recusa** — a mesma regra do runner de código: o que não
+  foi configurado não existe;
+- a URL do worker vem da **configuração do servidor**, nunca de um pedido: deixar o cliente
+  escolher seria entregar a ele um proxy para a rede interna, que é o que o worker existe
+  para impedir;
+- **a resposta do worker é conferida** antes de virar resultado: tratar o que vem do outro
+  lado da fronteira como já válido é deixar o worker escolher no que o backend acredita;
+- **sem dado estruturado e sem seletor, a recusa diz que falta RENDERIZAÇÃO** — é diferente
+  de "não achei": quem lê precisa saber que falta um motor, e não um seletor;
+- worker fora do ar e segredo errado são **indisponibilidade**, não falha da página.
+
+O teste sobe o worker **de verdade**, em processo separado, e a Central coleta através
+dele — incluindo os dois casos de ameaça: metadata bloqueada, e redirect para metadata
+bloqueado no segundo salto.
+
+Comando: `node --test test/monitoringBrowser.integration.test.mjs` → **10/10**.
+Bateria: backend **1434 + 1959** · runner **21** · browser-worker **19**.
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **Ligar o worker à Central**: o tipo `browser` ainda não usa o worker — o contrato, o
-   guarda e os limites estão de pé, falta o adapter no `collect.ts` e o registro por
-   variável de ambiente, como o do runner de código.
+2. **SSE como protocolo explícito** e **unions discriminadas** para `config`/`cadence`.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

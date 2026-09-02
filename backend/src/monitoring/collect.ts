@@ -169,6 +169,85 @@ async function coletarDeDataset(source: FonteColetavel, comecou: number, opts: C
   }
 }
 
+/**
+ * Uma página buscada pelo WORKER isolado — nunca por este processo.
+ *
+ * O tipo `browser` existe para a página que precisa de mais do que um GET. Quem busca é o
+ * worker, que roda fora daqui e revalida cada salto e cada subrequisição; o que este
+ * arquivo faz é mapear o que voltou, com a mesma cadeia de estratégias das outras páginas.
+ */
+async function coletarDeBrowser(source: FonteColetavel, comecou: number): Promise<CollectResult> {
+  const cfg = source.config
+  if (!cfg.url) return falha('not_supported', 'esta fonte não tem endereço', Date.now() - comecou)
+
+  const { browserWorker } = await import('./browserProvider.js')
+  const r = await browserWorker().fetchPage({
+    url: cfg.url,
+    limits: { timeoutMs: source.retry.timeoutMs },
+  })
+  const latencyMs = Date.now() - comecou
+
+  if (!r.ok) {
+    const kind: CollectErrorKind = r.error?.kind === 'blocked' ? 'blocked' : r.error?.kind === 'timeout' ? 'timeout' : r.error?.kind === 'unavailable' ? 'not_supported' : 'http'
+    return falha(kind, r.error?.message ?? 'a busca falhou', latencyMs)
+  }
+
+  const corpo = r.body ?? ''
+  let bruto: unknown = null
+  let strategy: CollectResult['strategy'] = 'none'
+
+  // A mesma ordem de sempre: o que custa menos, primeiro.
+  if (ehJson(r.contentType ?? '', corpo)) {
+    try {
+      bruto = JSON.parse(corpo)
+      strategy = 'json'
+    } catch {
+      return falha('parse', 'a resposta parecia JSON e não é', latencyMs, r.status ?? null)
+    }
+  } else {
+    const ld = extractJsonLd(corpo)
+    if (ld.length) {
+      bruto = ld.length === 1 ? ld[0] : ld
+      strategy = 'jsonld'
+    } else if (cfg.selector) {
+      const texto = extractBySelector(corpo, cfg.selector)
+      if (texto === null) return falha('empty', `o seletor "${cfg.selector}" não encontrou nada na página`, latencyMs, r.status ?? null)
+      bruto = { texto }
+      strategy = 'dom'
+    } else {
+      /**
+       * Sem seletor e sem dado estruturado, o próximo passo seria a página RENDERIZADA — e
+       * o worker diz que não renderiza. Recusar com essa razão é diferente de recusar por
+       * "não achei": quem lê precisa saber que falta um motor, e não um seletor.
+       */
+      return falha(
+        'not_supported',
+        r.rendered ? 'a página não trouxe dado estruturado, e nenhum seletor foi definido' : 'esta página precisa de renderização, e o worker configurado não renderiza',
+        latencyMs,
+        r.status ?? null,
+      )
+    }
+  }
+
+  let mapeado
+  try {
+    mapeado = applyMapping(bruto, source.mapping)
+  } catch (erro) {
+    return falha('mapping', String((erro as Error).message).slice(0, 200), latencyMs, r.status ?? null)
+  }
+
+  return {
+    ok: true,
+    rows: mapeado.rows,
+    sample: redactSample(bruto),
+    strategy,
+    missing: mapeado.missing,
+    mappingVersion: mapeado.mappingVersion,
+    latencyMs,
+    status: r.status ?? null,
+  }
+}
+
 export interface CollectOptions {
   /** Cabeçalhos já resolvidos pela CONEXÃO. Nunca vêm do documento da fonte. */
   headers?: Record<string, string>
@@ -201,6 +280,7 @@ export async function collectOnce(source: FonteColetavel, opts: CollectOptions =
    */
   if (source.kind === 'app_action') return coletarDeApp(source, comecou, opts)
   if (source.kind === 'dataset') return coletarDeDataset(source, comecou, opts)
+  if (source.kind === 'browser') return coletarDeBrowser(source, comecou)
 
   if (source.kind !== 'api_polling' && source.kind !== 'rss' && source.kind !== 'http_page') {
     // Os outros tipos são EMPURRADOS. Fingir uma leitura aqui seria a Central duplicando o
