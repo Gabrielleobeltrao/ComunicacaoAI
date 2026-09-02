@@ -7,6 +7,7 @@ import { Icon } from '../ui'
 import { AgentDefinitionFields, AgentRunConfigFields, type AgentDefinitionValue } from './AgentDefinitionFields'
 import { CollapsibleBlock } from './CollapsibleBlock'
 import { KnowledgeAccessSection } from './KnowledgeAccessSection'
+import { ResourceAccessMatrix } from './ResourceAccessMatrix'
 import { cleanRunConfig, type RunConfig } from '../lib/runConfig'
 import type {
   AgentBuiltinTool,
@@ -1995,6 +1996,14 @@ export function AgentForm({ agent, onSaved, layout = 'wizard', section, floorId,
               duas perguntas diferentes: "de onde ele tira" e "o que ele já tem". Estavam
               no mesmo bloco, e a lista de documentos empurrava o formulário de adicionar
               para fora da tela. */}
+          {/* A MATRIZ de acesso: o que ele consegue usar de fato, e por que não usa o
+              resto. A pergunta que alguém traz até aqui é quase sempre a segunda. */}
+          {agent?._id && !isCreating && (
+            <div className="mb-3">
+              <ResourceAccessMatrix agentId={agent._id} />
+            </div>
+          )}
+
           {/* O que ele PODE LER — a política de acesso, ao lado das fontes.
               É a mesma pergunta vista dos dois lados: aqui entra o que existe, ali se
               decide quais bases ele alcança. Separar em outra tela faria a segunda ser

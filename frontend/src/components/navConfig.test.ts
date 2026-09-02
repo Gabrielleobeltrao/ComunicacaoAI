@@ -36,8 +36,18 @@ describe('the CONTROLE group', () => {
     // Canais and Conversas became pages of the Chat Web / WhatsApp Apps, so the
     // static communication group is gone: those entries are built at runtime from
     // the account's active Apps and the user's pins.
-    expect(groups.map((g) => g.group)).toEqual(['operation', 'control'])
-    expect(groups.find((g) => g.group === 'control')?.label).toBe('CONTROLE')
+    //
+    // RECURSOS entrou entre os dois: "o que o escritório possui" é uma pergunta
+    // diferente de "o que aconteceu", e elas estavam no mesmo grupo.
+    expect(groups.map((g) => g.group)).toEqual(['operation', 'resources', 'control'])
+    expect(groups.find((g) => g.group === 'control')?.label).toBe('OPERAÇÕES')
+    expect(groups.find((g) => g.group === 'resources')?.label).toBe('RECURSOS')
+  })
+
+  it('COMUNIDADE não aparece antes de existir', () => {
+    // Um item de menu que leva a uma tela inexistente promete e não entrega.
+    const labels = navGroupsFor('floor-1', 'Térreo').map((g) => g.label)
+    expect(labels.some((l) => /COMUNIDADE|MARKETPLACE/i.test(l))).toBe(false)
   })
 
   it('carries Apps, the account-wide catalogue', () => {

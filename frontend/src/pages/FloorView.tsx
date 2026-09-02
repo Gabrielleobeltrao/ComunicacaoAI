@@ -9,6 +9,7 @@ import { featureFlags } from '../featureFlags'
 import { useOptionalBuildingContext } from '../contexts/BuildingContext'
 import { OfficeFloor } from '../office/OfficeFloor'
 import { KnowledgeMap } from '../knowledge/KnowledgeMap'
+import { FloorResources } from '../components/FloorResources'
 import { useAgentsAndWidgets } from '../lib/useAgentsAndWidgets'
 import { Button, MetricStat } from '../ui'
 
@@ -105,6 +106,10 @@ export function FloorView() {
               </button>
             ))}
           </nav>
+
+          {/* Os RECURSOS deste andar. Não é uma segunda lista: é o mesmo catálogo,
+              filtrado por contexto — e é por isso que ele nunca diverge do global. */}
+          <FloorResources floorId={floor.id} />
 
           {/* O mapa do escritório continua exatamente o que era; a visão de conhecimento
               troca SÓ a área central, e não a página. */}

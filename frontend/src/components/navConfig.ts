@@ -8,7 +8,7 @@ export type NavScope = 'general' | 'floor' | 'communication'
 // scheduled work is CREATED inside each agent as Rotinas/Gatilhos, never in a
 // standalone builder. 'control' is the opposite direction — one building-wide place
 // to SEE that work: what is scheduled, armed, running and done.
-export type NavGroup = 'operation' | 'communication' | 'control'
+export type NavGroup = 'operation' | 'resources' | 'communication' | 'control'
 
 export interface NavItemDef {
   key: string
@@ -46,10 +46,15 @@ export const NAV_V2: NavItemDef[] = [
   // "Montar operação" NÃO está aqui de propósito: ela cria e reutiliza andares, então
   // mora no menu de andares — `BuildingSwitcher` no desktop, `MobileFloorPicker` no
   // celular —, logo abaixo de criar um à mão. O endereço `/architect` não mudou.
-  { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'control', path: () => '/apps', activePrefixes: () => ['/apps'] },
+  /**
+   * RECURSOS: o que o escritório possui. Apps já era isto e estava em CONTROLE, ao lado
+   * de telas de observação — o que misturava "o que existe" com "o que aconteceu".
+   */
+  { key: 'resources', label: 'Recursos', icon: 'layers', scope: 'general', group: 'resources', path: () => '/resources', activePrefixes: () => ['/resources'] },
+  { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'resources', path: () => '/apps', activePrefixes: () => ['/apps'] },
   // Históricos: o que a conta guarda ao longo do tempo. Fica em CONTROLE porque é uma
   // superfície de observação — quem entra aqui vem consultar, não construir.
-  { key: 'data-history', label: 'Históricos', icon: 'database', scope: 'general', group: 'control', path: () => '/historicos', activePrefixes: () => ['/historicos'] },
+  { key: 'data-history', label: 'Históricos', icon: 'database', scope: 'general', group: 'resources', path: () => '/historicos', activePrefixes: () => ['/historicos'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
 ]
 
@@ -57,11 +62,19 @@ export function navItemsFor(_floorId: string | null): NavItemDef[] {
   return NAV_V2.filter((i) => !i.featureFlag || featureFlags[i.featureFlag])
 }
 
-const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'communication', 'control']
+/**
+ * A ordem das quatro camadas: quem existe, o que o escritório possui, o que acontece.
+ *
+ * COMUNIDADE não está aqui: um item de menu que leva a uma tela que ainda não existe é
+ * pior que a ausência dele — ele promete e não entrega, e quem clica descobre sozinho.
+ * Ele entra quando o Marketplace entrar.
+ */
+const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'resources', 'communication', 'control']
 const NAV_GROUP_LABEL: Record<NavGroup, string> = {
-  operation: 'ANDAR',
+  operation: 'ESCRITÓRIO',
+  resources: 'RECURSOS',
   communication: 'COMUNICAÇÃO',
-  control: 'CONTROLE',
+  control: 'OPERAÇÕES',
 }
 
 // Ordered, non-empty nav groups for the rail/drawer. The operation group shows the
@@ -72,7 +85,7 @@ export function navGroupsFor(floorId: string | null, activeFloorName?: string): 
   for (const group of NAV_GROUP_ORDER) {
     const items = all.filter((i) => i.group === group)
     if (!items.length) continue
-    const label = group === 'operation' && activeFloorName ? `ANDAR · ${activeFloorName.toUpperCase()}` : NAV_GROUP_LABEL[group]
+    const label = group === 'operation' && activeFloorName ? `ESCRITÓRIO · ${activeFloorName.toUpperCase()}` : NAV_GROUP_LABEL[group]
     groups.push({ group, label, items })
   }
   return groups

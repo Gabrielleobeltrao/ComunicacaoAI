@@ -95,9 +95,35 @@ a flag e a trava de capacidade, caem 3 testes.
 
 Suíte: 1354 + 1640, verde.
 
+### Fase 2 — UI organizacional e Access do agente ✅
+
+- `navConfig.ts` ganhou o grupo **RECURSOS** e renomeou os outros: ESCRITÓRIO, RECURSOS,
+  OPERAÇÕES. Apps e Históricos saíram de "controle" — "o que o escritório possui" e "o que
+  aconteceu" eram duas perguntas no mesmo grupo. **COMUNIDADE não entrou**: um item de menu
+  que leva a uma tela inexistente promete e não entrega; ele chega com o Marketplace.
+- `pages/Resources.tsx` (`/resources`): catálogo global com filtro por tipo na URL, busca e
+  os quatro estados distintos. Dono e estado aparecem separados — confundi-los é o que faz
+  alguém achar que um App conectado está disponível para todo agente.
+- `components/ResourceAccessMatrix.tsx` na página do agente: mostra o **negado** com o
+  motivo, e a pendência com a ação. A pergunta que alguém traz até essa tela é quase sempre
+  "por que ele não usa aquilo?", e uma matriz só do permitido não a responde.
+- `components/FloorResources.tsx`: contagens do andar vindas do MESMO catálogo, filtradas
+  por escopo — uma segunda lista divergiria na primeira regra esquecida.
+- Rotas antigas preservadas: nenhuma foi movida ou removida nesta fase.
+
+Defeito encontrado pelo smoke: os atalhos de recurso no andar nasceram com alvo de toque
+de 26 px, abaixo do mínimo de 44. Corrigido no link (o `Badge` desenha; quem precisa ser
+tocável é o link).
+
+Testes: 6 novos em `frontend/e2e/resources.spec.ts` (lista com dono e estado, filtro e
+busca com o tipo na URL, erro que não vira vazio, vazio dito como vazio, 320 px sem
+overflow, grupos da navegação) e o teste de navegação atualizado. Vitest 287, E2E 621,
+smoke 6, lint sem erro novo.
+
 ## Próxima ação exata
 
-Fase 2: navegação única (OFFICE/RESOURCES/OPERATIONS/COMMUNITY), tela global de Resources,
-seção contextual em andar/setor e a matriz **Access** na página do agente consumindo
-`GET /api/agents/:id/resource-access`. Preservar rotas antigas com redirect e cobrir
-320/360/390/768/1440.
+Fase 3: Data Stores/Databases — modelos `data_stores`/`dataset_definitions`, adapters
+`data_history` (reusando os recorders existentes) e `market_data` (virtual, read-only),
+DSL de consulta segura e validada no servidor, capabilities/grants, ferramentas tipadas
+`database_*` para os agentes, cotas, índices, impacto e UI. Registrar o adapter
+`database` no `registry.ts` só quando ele tiver fonte canônica.

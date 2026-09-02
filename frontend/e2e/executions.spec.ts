@@ -227,13 +227,15 @@ test('the in-flight tab lists work that is happening now', async ({ page }) => {
   await expect(list).toContainText('350 tokens')
 })
 
-test('Execuções is in the sidebar under CONTROLE and opens from it', async ({ page }) => {
+test('Execuções is in the sidebar under OPERAÇÕES and opens from it', async ({ page }) => {
   await stub(page)
   // From another top-level page, so the rail is not mid-redirect.
   await page.route('**/api/tools', (r) => r.fulfill({ json: [] }))
   await page.goto('/tools')
   await page.hover('aside')
-  await expect(page.getByText('CONTROLE')).toBeVisible()
+  // O grupo foi renomeado quando RECURSOS passou a existir: "o que o escritório possui"
+  // e "o que aconteceu" eram duas perguntas no mesmo lugar.
+  await expect(page.getByText('OPERAÇÕES')).toBeVisible()
   await page.getByRole('link', { name: 'Execuções' }).click()
   await expect(page).toHaveURL(/\/executions$/)
 })

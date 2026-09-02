@@ -14,6 +14,7 @@ import { RecorderForm } from './pages/dataHistory/RecorderForm'
 import { RecorderDetail } from './pages/dataHistory/RecorderDetail'
 import { ArchitectProject } from './pages/architect/Project'
 import { FloorView } from './pages/FloorView'
+import { Resources } from './pages/Resources'
 import { AgentDetail } from './pages/AgentDetail'
 import { Agents } from './pages/Agents'
 import { Dashboard } from './pages/Dashboard'
@@ -71,6 +72,7 @@ function App() {
           {/* A memória é do prédio inteiro, não de um andar: fica ao lado dos logs. */}
           <Route path="/memories" element={<P><Memories /></P>} />
           {/* Canonical floor-scoped routes */}
+          <Route path="/resources" element={<P><Resources /></P>} />
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
           <Route path="/floors/:floorId/agents" element={<P><Agents /></P>} />
           <Route path="/floors/:floorId/agents/:agentId" element={<P><AgentDetail /></P>} />
