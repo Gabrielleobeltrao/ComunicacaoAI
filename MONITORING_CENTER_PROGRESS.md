@@ -602,14 +602,57 @@ Bateria: backend **1445 + 1980** · runner **21** · browser-worker **28** · se
 em 2233 arquivos. `DEPLOYMENT_ENVIRONMENT_MATRIX.md` documenta as variáveis e as coleções
 novas.
 
+## Bloco 21 — o script de extração, na sandbox ✅
+
+`extractScript` em `config.ts` e `aplicarScript` em `collect.ts`.
+
+O DSL fechado continua sendo o caminho normal. O script existe para a transformação que ele
+não faz — somar uma lista, cruzar dois campos — e o **custo de passar pela sandbox é
+exatamente o custo que essa escolha deve ter**.
+
+- **roda só na sandbox**, no runner isolado que já existe: modelo de permissão do Node
+  negando disco, subprocesso, worker e addon nativo, sem rede, com teto de tempo e memória.
+  Executar aqui, mesmo "só uma transformaçãozinha", seria rodar código de terceiro no
+  processo que tem o banco e as chaves;
+- **sobre dado já sanitizado**: JSON analisado, JSON-LD ou o texto de um seletor. HTML cru
+  nunca chega — um script recebendo a página inteira teria dentro dela o script do site, e o
+  ponto de rodar isolado é que o código de terceiro não escolhe o que roda;
+- **versionado**, com a versão sendo inteiro positivo, e limitado a 8 000 caracteres: um
+  script maior não é uma transformação, é um programa, e programa tem outro lugar;
+- **fail-closed**: sem sandbox saudável a fonte **falha**, e não segue sem o script —
+  seguir aplicaria o mapeamento a um dado ainda não transformado e produziria valores
+  errados com cara de certos;
+- **nada além do dado atravessa**: nenhuma credencial, nenhum id de conta, nenhuma URL;
+- a **amostra continua sendo o bruto**, porque é ele que explica o que o script fez.
+
+O teste sobe o runner **de verdade**, em processo separado, e prova que o script não alcança
+disco, subprocesso nem rede — e que um laço infinito é cortado.
+
+Comando: `node --test test/monitoringScript.integration.test.mjs` → **11/11**.
+
+## Bateria completa — final
+
+| Comando | Resultado |
+| --- | --- |
+| `npm run build` | verde |
+| `npm run test -w backend` | **1445 + 1991**, 0 falhas |
+| `npm run test:runner` | **21**, 0 falhas |
+| `npm run test:browser-worker` | **28**, 0 falhas |
+| `npm run test -w frontend` | **292**, 0 falhas |
+| `npm run lint -w frontend` | **0 erros** |
+| `npm run test:e2e -w frontend` | **676** passaram, 17 pulados |
+| `npm run smoke` | verde, saída 0 |
+| `npm run secret-scan` | 2234 arquivos, nada encontrado |
+
 ## Próxima ação exata
 
 1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
    `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
    capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **Script personalizado na sandbox** sobre DOM/JSON sanitizado: o runner de código existe
-   e executa (bloco 1 do OFFICE_PLATFORM), mas nenhuma fonte de monitoramento oferece essa
-   opção ainda — falta ligar o `runtimeKind: 'code'` a um passo de extração da fonte.
+2. **O script de extração e o retrato não estão no wizard**: os dois existem na API e são
+   testados, mas quem usa a tela ainda não consegue configurá-los. É configuração avançada,
+   e a decisão de deixá-la fora do wizard inicial foi deliberada — mas ela é uma lacuna de
+   interface, e está registrada como tal.
 3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
    **SSE** como protocolo explícito. Os outros oito funcionam.
 4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e

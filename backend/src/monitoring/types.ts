@@ -181,6 +181,14 @@ export interface MonitoringConfig {
   /** `http_page` e `browser`: a estratégia, em ordem de preferência. */
   strategy?: ('json' | 'jsonld' | 'dom' | 'browser' | 'vision')[]
   selector?: string
+  /**
+   * O script de extração — versionado, e executado SÓ na sandbox.
+   *
+   * Ele recebe dado já sanitizado (JSON analisado ou texto extraído), nunca HTML cru. O
+   * DSL fechado continua sendo o caminho normal; isto é para a transformação que ele não
+   * faz, e o custo de passar pela sandbox é exatamente o custo que essa escolha deve ter.
+   */
+  extractScript?: { version: number; source: string } | null
 }
 
 export interface MonitoringSource {

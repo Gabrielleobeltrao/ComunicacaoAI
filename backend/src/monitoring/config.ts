@@ -14,8 +14,39 @@ import type { MonitoringSourceKind } from './types.js'
 
 export type StreamProtocol = 'websocket' | 'sse'
 
+/**
+ * O SCRIPT de extração — o último recurso quando o DSL fechado não alcança.
+ *
+ * Ele roda **só na sandbox**, sobre dado já sanitizado (JSON analisado ou texto extraído,
+ * nunca HTML cru com script dentro), e é versionado: mudar o script muda a versão, e é ela
+ * que explica por que uma série antiga tem a forma que tem.
+ *
+ * O DSL continua sendo o caminho normal. Isto existe para a transformação que ele não faz
+ * — e o custo de usá-lo é passar pela sandbox, que é exatamente o custo que se quer que
+ * essa escolha tenha.
+ */
+export interface ExtractScript {
+  version: number
+  source: string
+}
+
+/** Um script grande não é uma transformação, é um programa — e programa tem outro lugar. */
+export const MAX_SCRIPT_CHARS = 8_000
+
+function scriptValido(bruto: unknown): ExtractScript | null {
+  if (!bruto) return null
+  const s = bruto as { version?: unknown; source?: unknown }
+  const source = String(s.source ?? '').trim()
+  if (!source) return null
+  if (source.length > MAX_SCRIPT_CHARS) throw new ConfigError(`o script passa de ${MAX_SCRIPT_CHARS} caracteres`, 'extractScript')
+  const version = Number(s.version ?? 1)
+  if (!Number.isInteger(version) || version < 1) throw new ConfigError('a versão do script é um inteiro positivo', 'extractScript')
+  return { version, source }
+}
+
 export interface ApiPollingConfig {
   kind: 'api_polling'
+  extractScript?: ExtractScript | null
   url: string
   method: 'GET' | 'POST'
   query: { key: string; value: string }[]
@@ -27,12 +58,14 @@ export interface ApiPollingConfig {
 
 export interface RssConfig {
   kind: 'rss'
+  extractScript?: ExtractScript | null
   url: string
   headerNames: string[]
 }
 
 export interface HttpPageConfig {
   kind: 'http_page'
+  extractScript?: ExtractScript | null
   url: string
   headerNames: string[]
   selector: string | null
@@ -40,6 +73,7 @@ export interface HttpPageConfig {
 
 export interface BrowserConfig {
   kind: 'browser'
+  extractScript?: ExtractScript | null
   url: string
   selector: string | null
   /** A ordem em que as estratégias são tentadas. Do mais barato ao mais caro. */
@@ -138,10 +172,10 @@ export function validateConfig(kind: MonitoringSourceKind, bruto: unknown): Type
   const c = (bruto ?? {}) as Record<string, unknown>
 
   const permitidos: Record<MonitoringSourceKind, string[]> = {
-    api_polling: ['url', 'method', 'query', 'body', 'headerNames', 'pagination'],
-    rss: ['url', 'headerNames'],
-    http_page: ['url', 'headerNames', 'selector'],
-    browser: ['url', 'selector', 'strategy'],
+    api_polling: ['url', 'method', 'query', 'body', 'headerNames', 'pagination', 'extractScript'],
+    rss: ['url', 'headerNames', 'extractScript'],
+    http_page: ['url', 'headerNames', 'selector', 'extractScript'],
+    browser: ['url', 'selector', 'strategy', 'extractScript'],
     webhook: ['webhookPublicKey'],
     websocket: ['installationId', 'protocol', 'url', 'subscriptions', 'heartbeatMs'],
     app_action: ['appKey', 'actionKey', 'installationId'],
@@ -168,6 +202,7 @@ export function validateConfig(kind: MonitoringSourceKind, bruto: unknown): Type
         })),
         body: metodo === 'POST' && c.body ? String(c.body).slice(0, 10_000) : null,
         headerNames: nomes(c.headerNames),
+        extractScript: scriptValido(c.extractScript),
         pagination:
           paginacao?.kind === 'cursor'
             ? { kind: 'cursor', cursorPath: texto(paginacao.cursorPath, 'cursorPath', 200), maxPages: Math.min(20, Math.max(1, Number(paginacao.maxPages ?? 5))) }
@@ -177,14 +212,21 @@ export function validateConfig(kind: MonitoringSourceKind, bruto: unknown): Type
       }
     }
     case 'rss':
-      return { kind, url: urlValida(c.url), headerNames: nomes(c.headerNames) }
+      return { kind, url: urlValida(c.url), headerNames: nomes(c.headerNames), extractScript: scriptValido(c.extractScript) }
     case 'http_page':
-      return { kind, url: urlValida(c.url), headerNames: nomes(c.headerNames), selector: c.selector ? texto(c.selector, 'selector', 200) : null }
+      return {
+        kind,
+        url: urlValida(c.url),
+        headerNames: nomes(c.headerNames),
+        selector: c.selector ? texto(c.selector, 'selector', 200) : null,
+        extractScript: scriptValido(c.extractScript),
+      }
     case 'browser':
       return {
         kind,
         url: urlValida(c.url),
         selector: c.selector ? texto(c.selector, 'selector', 200) : null,
+        extractScript: scriptValido(c.extractScript),
         // A ordem padrão é a que custa menos primeiro, e a visão fica de fora até alguém
         // pedir: ela é palpite, e palpite precisa ser escolhido de propósito.
         strategy: (Array.isArray(c.strategy) && c.strategy.length

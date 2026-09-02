@@ -511,9 +511,19 @@ export async function collectOnce(source: FonteColetavel, opts: CollectOptions =
     }
   }
 
+  /**
+   * O SCRIPT, quando existe — e só depois de o dado estar sanitizado.
+   *
+   * `bruto` aqui já é JSON analisado, JSON-LD ou o TEXTO de um seletor. HTML cru nunca
+   * chega: um script recebendo a página inteira teria dentro dela o script do site, e o
+   * ponto de rodar isolado é que o código de terceiro não escolhe o que roda.
+   */
+  const comScript = await aplicarScript(bruto, source)
+  if (!comScript.ok) return falha('mapping', comScript.message, latencyMs, resposta.status)
+
   let mapeado: MappedResult
   try {
-    mapeado = applyMapping(bruto, source.mapping)
+    mapeado = applyMapping(comScript.data, source.mapping)
   } catch (erro) {
     return falha('mapping', String((erro as Error).message).slice(0, 200), latencyMs, resposta.status)
   }
@@ -523,6 +533,8 @@ export async function collectOnce(source: FonteColetavel, opts: CollectOptions =
     rows: mapeado.rows,
     // A amostra vai REDIGIDA: ela existe para conferir o mapeamento, não para expor o
     // corpo inteiro numa tela que alguém fotografa e cola num chamado.
+    // A amostra é do BRUTO, e não do que o script produziu: quem confere o mapeamento
+    // precisa ver o que chegou, para entender o que o script fez com aquilo.
     sample: redactSample(bruto),
     strategy,
     missing: mapeado.missing,
@@ -530,4 +542,47 @@ export async function collectOnce(source: FonteColetavel, opts: CollectOptions =
     latencyMs,
     status: resposta.status,
   }
+}
+
+/**
+ * Roda o script de extração na SANDBOX — nunca aqui.
+ *
+ * O runner isolado é o mesmo das ferramentas de código: modelo de permissão do Node
+ * negando disco, subprocesso, worker e addon nativo, sem rede, com teto de tempo e de
+ * memória. Executar aqui, mesmo "só uma transformaçãozinha", seria rodar código de
+ * terceiro no processo que tem o banco e as chaves.
+ *
+ * Sem sandbox saudável a fonte FALHA, e não segue sem o script: seguir aplicaria o
+ * mapeamento a um dado que ainda não foi transformado, e produziria valores errados com
+ * cara de certos.
+ */
+async function aplicarScript(bruto: unknown, source: FonteColetavel): Promise<{ ok: true; data: unknown } | { ok: false; message: string }> {
+  const script = source.config.extractScript
+  if (!script?.source) return { ok: true, data: bruto }
+
+  const { sandboxProvider } = await import('../extensionRuntime/provider.js')
+  const { createHash } = await import('node:crypto')
+
+  // O programa que o runner executa: a função do autor, chamada com o dado sanitizado.
+  const programa = `${script.source}
+
+function run(entrada) { return extract(entrada.data) }`
+  const saude = await sandboxProvider().health()
+  if (!saude.ok) return { ok: false, message: 'esta fonte usa script de extração, e não há runtime isolado disponível' }
+
+  const r = await sandboxProvider().execute({
+    runtime: 'javascript',
+    artifactRef: `monitoring-script@${script.version}`,
+    source: programa,
+    sha256: createHash('sha256').update(programa).digest('hex'),
+    // Só o dado. Nenhuma credencial, nenhum id de conta, nenhuma URL.
+    input: { data: bruto },
+    limits: { cpuMs: 2_000, memoryMb: 128, pids: 32, wallMs: Math.min(10_000, source.retry.timeoutMs), outputBytes: 256 * 1024 },
+    capabilityHandles: [],
+    correlationId: `monitoring:script:${script.version}`,
+  })
+
+  if (!r.ok) return { ok: false, message: `o script de extração falhou: ${r.error?.message ?? 'erro'}` }
+  if (r.output === null || r.output === undefined) return { ok: false, message: 'o script de extração não devolveu nada' }
+  return { ok: true, data: r.output }
 }
