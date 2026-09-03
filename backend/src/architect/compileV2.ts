@@ -370,8 +370,29 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
     const vigilancia = parseDataCondition(`${job?.trigger ?? ''} ${job?.name ?? ''}`)
     if (vigilancia && decision.kind !== 'agent') {
       compilarVigilancia(bp, pending, { brief, job, decision, condicao: vigilancia, floorKey: andarDo(job) })
-      if (decision.kind === 'function' && !decision.resolved) {
-        pending.push({ kind: 'function', ref: decision.jobName, because: 'nenhuma função registrada faz este cálculo' })
+      if (decision.kind === 'function') {
+        if (decision.resolved && decision.resourceRef) {
+          /**
+           * A CONTA fica registrada no plano, com nome.
+           *
+           * Resolvida, a função não aparecia em lugar nenhum do Blueprint: o monitor comparava
+           * um `rsi` que nada no plano produzia, e quem lesse a proposta não tinha como saber
+           * que a conta é determinística — nem auditar qual versão dela roda.
+           */
+          bp.resources.tools.push({
+            key: slug(`funcao-${decision.resourceRef}-${decision.jobId}`),
+            action: 'create',
+            ...ESSENCIAL,
+            rationale: `${decision.jobName}: a conta é determinística — mesma série, mesmo número`,
+            dependsOn: [],
+            name: decision.resourceRef,
+            description: `Calcula ${decision.jobName} com a função registrada ${decision.resourceRef}`,
+            provider: 'function',
+            agentKeys: [],
+          })
+        } else {
+          pending.push({ kind: 'function', ref: decision.jobName, because: 'nenhuma função registrada faz este cálculo' })
+        }
       }
       continue
     }
@@ -695,6 +716,22 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       required: true,
     })
   }
+  /**
+   * O FLOW também precisa de prova — senão ele nunca pode entrar no ar.
+   *
+   * A ativação exige teste aprovado, e só o que declara teste é ativável. Sem esta entrada, o
+   * Flow ficava rascunho para sempre e o monitor recusava publicar: `publishMonitor` exige
+   * versão publicada do Flow que ele aciona. A cadeia inteira parava por uma prova ausente.
+   */
+  for (const flow of bp.operations.flows) {
+    bp.acceptanceTests.push({
+      key: slug(`teste-${flow.key}`),
+      kind: 'flow',
+      targetKey: flow.key,
+      expectation: 'o Flow tem etapa e todas as dependências resolvem',
+      required: true,
+    })
+  }
   for (const c of bp.operations.channels) {
     bp.acceptanceTests.push({
       key: slug(`teste-${c.key}`),
@@ -807,11 +844,42 @@ function compilarVigilancia(
     floorKey,
     name: `Avisar: ${decision.jobName}`,
     trigger: { type: 'monitor', monitorKey },
-    steps: dono
-      ? [{ id: 'avisar', type: 'agent.execute', config: { agentKey: dono.key, instruction: job?.action ? `${decision.jobName}. ${job.action}.` : decision.jobName } }]
-      : [],
+    /**
+     * O AVISO é o trabalho — e ele não precisa de agente.
+     *
+     * Sem etapa nenhuma o Flow não faz nada, não passa no teste de aceitação e nunca pode ser
+     * publicado: a cadeia inteira parava aqui, porque `publishMonitor` exige versão publicada
+     * do Flow. Montar o texto do que aconteceu é determinístico — um agente aqui só
+     * acrescentaria custo e a chance de ele reescrever o número.
+     *
+     * Quando existe um agente, ele entra DEPOIS: o texto já está pronto, e o que ele
+     * acrescenta é julgamento, não formatação.
+     */
+    steps: [
+      {
+        id: 'aviso',
+        type: 'transform.template',
+        name: 'Montar o aviso',
+        enabled: true,
+        config: { template: `${decision.jobName}: {{input}}` },
+      },
+      ...(dono
+        ? [
+            {
+              id: 'avaliar',
+              type: 'agent.execute',
+              name: 'Avaliar e completar',
+              enabled: true,
+              dependsOn: ['aviso'],
+              config: { agentKey: dono.key, instruction: job?.action ? `${decision.jobName}. ${job.action}.` : decision.jobName },
+            },
+          ]
+        : []),
+    ],
   })
-  if (!dono) pending.push({ kind: 'flow_step', ref: decision.jobName, because: 'não há agente para executar o aviso' })
+  // A ENTREGA é o que continua pendente: ela precisa de uma conexão concreta, escolhida na
+  // hora de aplicar. O aviso existe; por onde ele sai é a pergunta que sobra.
+  pending.push({ kind: 'delivery', ref: decision.jobName, because: 'escolha por onde o aviso sai: uma conexão da sua conta' })
 }
 
 /**

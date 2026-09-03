@@ -666,10 +666,30 @@ async function provarEAtivar(ctx: Contexto): Promise<void> {
    * trabalho inteiro existe para não ter.
    */
   if (resultados.some((r) => r.kind === 'source' && r.status === 'passed')) {
+    let criouAlgo = false
     for (const p of await aplicarV2(ctx, false)) {
       if (p.status === 'created') {
+        criouAlgo = true
         await registrar(ctx, { kind: p.kind, key: p.key, status: 'created', resourceId: p.resourceId ?? null, ...(p.message ? { message: p.message } : {}) })
       }
+    }
+    /**
+     * O que nasceu na segunda passada precisa ser PROVADO antes de entrar no ar.
+     *
+     * A rodada de provas anterior viu o monitor como "não criado nesta aplicação" — e um
+     * teste `skipped` não torna nada ativável. Sem reprovar aqui, o monitor recém-criado
+     * ficaria rascunho para sempre, com o Flow ativo e ninguém para acioná-lo.
+     */
+    if (criouAlgo) {
+      const segunda = await runAcceptanceTests({ ownerId: ctx.ownerId, blueprint: ctx.v2, resourceMap: ctx.mapa, operationId: ctx.operation._id })
+      // O melhor resultado de cada teste vale: o que era `skipped` por ausência agora tem
+      // veredito, e o que já passara não é rebaixado por uma segunda leitura.
+      for (const nova of segunda) {
+        const i = resultados.findIndex((r) => r.key === nova.key)
+        if (i < 0) resultados.push(nova)
+        else if (resultados[i].status !== 'passed') resultados[i] = nova
+      }
+      await repo.recordAcceptance(ctx.ownerId, ctx.operation._id, resultados)
     }
   }
 
