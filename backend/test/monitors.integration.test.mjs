@@ -203,3 +203,25 @@ test('nenhum token é gasto no caminho determinístico', async () => {
   const estado = await getState(DONO, monitor._id)
   assert.ok(estado.version >= 20)
 })
+
+test('AMEAÇA: a PRIMEIRA observação concorrente também produz um estado só', async () => {
+  /**
+   * A corrida que o teste da entrega duplicada só pega às vezes.
+   *
+   * O caminho de atualização põe a `version` anterior no filtro, e quem perde não acha
+   * documento. O caminho de INSERÇÃO não tem `version` para pôr: dois upserts simultâneos
+   * sobre um monitor que nunca foi observado inserem os dois, e o mesmo evento vira dois
+   * disparos. É determinístico quando o índice único existe: um insere, o outro colide.
+   */
+  await db.collection('monitor_states').deleteMany({})
+  const { ensureMonitorStateIndexes } = await import('../dist/monitors/state.js')
+  await ensureMonitorStateIndexes()
+
+  const idx = await db.collection('monitor_states').indexes()
+  const unico = idx.find((i) => i.unique && i.key.ownerId === 1 && i.key.monitorId === 1)
+  assert.ok(unico, `sem índice único em (ownerId, monitorId) o upsert concorrente não é atômico: ${JSON.stringify(idx.map((i) => i.key))}`)
+
+  const tentativas = await Promise.all([1, 2, 3, 4].map(() => observar({ rsi: 25 }, 'primeira-entrega')))
+  assert.equal(tentativas.filter((r) => r.triggered).length, 1, 'quatro workers, um disparo')
+  assert.equal(await db.collection('monitor_states').countDocuments({}), 1, 'um monitor tem um estado')
+})

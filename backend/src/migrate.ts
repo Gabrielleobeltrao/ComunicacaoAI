@@ -159,6 +159,8 @@ export async function runMigrations(): Promise<void> {
 async function backfillBuildingsAndFloors(): Promise<void> {
   await ensureBuildingIndexes()
   await ensureFloorIndexes()
+  // Um estado por monitor: é o índice que torna atômico o upsert da primeira observação.
+  await (await import('./monitors/state.js')).ensureMonitorStateIndexes()
 
   const officesCol = db.collection('offices')
   const officeOwners = (await officesCol.distinct('ownerId')) as string[]

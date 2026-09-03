@@ -75,6 +75,27 @@ export interface MonitorState {
 const monitors = db.collection<MonitorDefinition>('monitors')
 const states = db.collection<MonitorState>('monitor_states')
 
+/**
+ * UM estado por monitor, garantido pelo banco.
+ *
+ * O upsert só é atômico quando os campos do filtro têm índice único: sem ele, dois workers
+ * observando pela primeira vez o mesmo monitor inserem dois documentos, e a mesma entrega
+ * vira dois disparos — exatamente o alarme duplicado que o `lastEventId` existe para evitar.
+ * O caminho de atualização já estava protegido pela `version`; a inserção não tinha o que pôr
+ * no filtro.
+ *
+ * Retrocompatível: se a coleção já carrega o resultado dessa corrida, o índice não sobe e o
+ * comportamento continua o de hoje. Nada é apagado aqui — decidir qual estado vale é escolha
+ * de quem administra, e um estado descartado por engano faz um monitor avisar de novo.
+ */
+export async function ensureMonitorStateIndexes(): Promise<void> {
+  try {
+    await states.createIndex({ ownerId: 1, monitorId: 1 }, { unique: true, name: 'um_estado_por_monitor' })
+  } catch (erro) {
+    console.warn('[monitors] índice único de estado não pôde ser criado:', erro instanceof Error ? erro.message : erro)
+  }
+}
+
 export async function ensureMonitorIndexes(): Promise<void> {
   await monitors.createIndex({ ownerId: 1, status: 1 })
   await states.createIndex({ monitorId: 1 }, { unique: true })
@@ -168,7 +189,16 @@ export async function observe(input: ObserveInput): Promise<ObserveResult> {
    */
   const vaiDisparar = disparou && !emCooldown
   const filtro: Record<string, unknown> = { ownerId: input.ownerId, monitorId: monitor._id }
-  if (anterior) filtro.version = anterior.version
+  /**
+   * Sem estado anterior, a escrita é uma INSERÇÃO — e só.
+   *
+   * `version` só existe em documento já escrito, então `$exists: false` nunca casa com um.
+   * Sem essa cláusula, o worker que lê `anterior: null` e chega ao banco DEPOIS do outro
+   * casa com o documento recém-criado e o sobrescreve: a transição do primeiro é apagada e
+   * o mesmo evento dispara duas vezes. O índice único sozinho não pega isto, porque o upsert
+   * que encontra documento atualiza em vez de inserir.
+   */
+  filtro.version = anterior ? anterior.version : { $exists: false }
 
 
   const atualizado = await states.findOneAndUpdate(
@@ -196,7 +226,17 @@ export async function observe(input: ObserveInput): Promise<ObserveResult> {
       $setOnInsert: { _id: new ObjectId(), ownerId: input.ownerId, monitorId: monitor._id, ...(vaiDisparar ? {} : { lastTriggeredAt: null, cooldownUntil: null, pendingDispatch: null }) },
     },
     { upsert: !anterior, returnDocument: 'after' },
-  )
+  ).catch((erro: unknown) => {
+    /**
+     * A COLISÃO é a resposta certa, e não um erro.
+     *
+     * Quem perde a corrida de inserção recebe E11000 do índice único: o estado existe, foi
+     * escrito pelo outro worker, e este evento já está contado. Sair como se tivesse
+     * disparado é o duplo aviso que o índice existe para impedir.
+     */
+    if ((erro as { code?: number })?.code === 11000) return null
+    throw erro
+  })
 
   if (!atualizado) {
     // Outro worker escreveu primeiro. Ele disparou (ou não) pela mesma regra; este sai.
