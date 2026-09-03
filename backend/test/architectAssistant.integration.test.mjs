@@ -30,7 +30,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'architect_projects', 'monitoring_sources', 'automations', 'connections'])
+  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'architect_projects', 'monitoring_sources', 'automations', 'connections', 'audit_events'])
     await db.collection(c).deleteMany({})
 
   predio = new ObjectId()
@@ -169,4 +169,50 @@ test('AMBIGUIDADE vira uma pergunta curta, e não um palpite', async () => {
   const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'crie um relatório?' })
   assert.ok(r.question, 'a pergunta precisa existir')
   assert.match(r.question, /responda|monte/)
+})
+
+// --- o registro ---------------------------------------------------------------------------------
+
+test('a rodada que CRIA um projeto fica registrada; a que só responde, não', async () => {
+  const express = (await import('express')).default
+  const { architectRouter } = await import('../dist/routes/architectRoutes.js')
+  const app = express()
+  app.use(express.json())
+  app.use((_req, res, next) => {
+    res.locals.userId = DONO
+    next()
+  })
+  app.use('/api/architect', architectRouter)
+  const servidor = await new Promise((r) => {
+    const s = app.listen(0, () => r(s))
+  })
+  const porta = servidor.address().port
+  const turno = (message) =>
+    fetch(`http://127.0.0.1:${porta}/api/architect/assistant/turn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    }).then((r) => r.json())
+
+  try {
+    await db.collection('audit_events').deleteMany({})
+
+    // Perguntar não muda nada: uma linha por pergunta feita afogaria o histórico.
+    await turno('Qual o valor do dólar hoje?')
+    await new Promise((r) => setImmediate(r))
+    assert.equal(await db.collection('audit_events').countDocuments({ ownerId: DONO }), 0)
+
+    // Propor abre um projeto — e um projeto criado pelo chat flutuante não pode ficar sem
+    // registro só porque não passou pela tela do Arquiteto.
+    const r = await turno('Automatize atendimento e reservas pelo WhatsApp')
+    assert.ok(r.projectId)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const evento = await db.collection('audit_events').findOne({ ownerId: DONO })
+    assert.ok(evento, 'a criação pelo assistente ficou sem registro')
+    assert.equal(evento.entityType, 'architect_project')
+    assert.equal(evento.action, 'create')
+    assert.equal(evento.entityId, r.projectId)
+  } finally {
+    await new Promise((r) => servidor.close(r))
+  }
 })

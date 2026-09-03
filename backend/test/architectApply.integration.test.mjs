@@ -13,6 +13,9 @@ process.env.NODE_ENV = 'test'
 process.env.LLM_FAKE = '1'
 process.env.MONGODB_URI = await startMongo()
 process.env.ENCRYPTION_KEY ||= 'chave-de-teste-que-nao-e-segredo'
+// Os testes de aceitação batem numa origem DE VERDADE. O guarda de SSRF recusa loopback
+// por padrão, e é o alvo local que estes casos precisam.
+process.env.ALLOW_LOOPBACK_HTTP_TARGETS = '1'
 
 const { mongoClient, db } = await import('../dist/db.js')
 const { architectRouter } = await import('../dist/routes/architectRoutes.js')
@@ -25,7 +28,13 @@ const { setProviderApiKey } = await import('../dist/userSettings.js')
 const { resetGuards } = await import('../dist/architect/guard.js')
 const { createInstallation } = await import('../dist/apps/installations.js')
 const { getApp } = await import('../dist/apps/registry.js')
+const { ensureExecutionRootIndexes } = await import('../dist/executionRoots.js')
 const express = (await import('express')).default
+const { createServer } = await import('node:http')
+
+let origem
+let portaDaOrigem
+let corpoDaOrigem = { rsi: 22.5 }
 
 const DONO = 'dono-aplicacao'
 const VIZINHO = 'vizinho-aplicacao'
@@ -48,6 +57,16 @@ before(async () => {
   await repo.ensureArchitectIndexes()
   await ensureTokenUsageIndexes()
   await ensureRunIndexes()
+  await ensureExecutionRootIndexes()
+
+  // A ORIGEM de verdade que os testes de aceitação consultam. Um mock devolvendo o que o
+  // teste espera provaria só que o mock funciona.
+  origem = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(corpoDaOrigem))
+  })
+  await new Promise((r) => origem.listen(0, r))
+  portaDaOrigem = origem.address().port
 
   const app = express()
   app.use(express.json())
@@ -65,6 +84,7 @@ before(async () => {
 })
 
 after(async () => {
+  origem?.close()
   await new Promise((resolve) => server.close(resolve))
   await mongoClient.close().catch(() => undefined)
   await stopMongo()
@@ -90,9 +110,11 @@ beforeEach(async () => {
     'dataset_definitions',
     'monitoring_sources',
     'monitors',
+    'execution_roots',
   ])
     await db.collection(c).deleteMany({})
   resetGuards()
+  corpoDaOrigem = { rsi: 22.5 }
   sessao = DONO
   await setProviderApiKey(DONO, 'anthropic', 'chave-de-teste')
 })
@@ -490,7 +512,7 @@ const planoSimples = (bp2) => {
       key: 'fonte',
       name: 'Cotações CXSE3',
       kind: 'api_polling',
-      config: { url: 'https://api.exemplo.test/cotacoes', method: 'GET' },
+      config: { url: `http://127.0.0.1:${portaDaOrigem}/cotacoes`, method: 'GET' },
       mapping: { version: 1, fields: [{ to: 'rsi', from: 'rsi', required: true }] },
       cadence: { mode: 'interval', intervalMs: 60_000 },
     }),
@@ -675,4 +697,103 @@ test('o rollback NÃO apaga o recurso do V2 editado depois de criado', async () 
   assert.equal(r.status, 200, JSON.stringify(r.body))
   assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
   assert.ok(r.body.kept.some((k) => /editado depois/.test(k.reason)), JSON.stringify(r.body.kept))
+})
+
+// --- prova e ativação: "pronto" é o que passou num teste ------------------------------------------
+
+const comTestes = (bp2, testes) => {
+  planoSimples(bp2)
+  bp2.operations.monitors = [
+    itemV2({
+      key: 'rsi',
+      dependsOn: ['candles'],
+      name: 'RSI baixo',
+      observes: { kind: 'dataset', datasetKey: 'candles' },
+      condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+      triggerMode: 'enter',
+      threshold: 30,
+      thresholdField: 'rsi',
+    }),
+  ]
+  bp2.acceptanceTests = testes
+}
+
+test('ACEITAÇÃO: a fonte que passou no teste E foi autorizada entra no ar', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]),
+  )
+
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-ativa',
+    confirm: true,
+    approvedActivationKeys: ['fonte'],
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'active', 'a fonte provada e autorizada tem que entrar no ar')
+
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  assert.equal(operacao.acceptance.find((a) => a.key === 't-fonte').status, 'passed')
+})
+
+test('a fonte que passou no teste mas NÃO foi autorizada continua parada', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]),
+  )
+  // Nenhuma `approvedActivationKeys`: aplicar a proposta não coloca a operação para rodar.
+  const r = await aplicar(id, hash, 'op-sem-autorizacao')
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'draft')
+
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const passo = operacao.steps.find((p) => p.kind === 'source' && p.status === 'skipped')
+  assert.match(passo.message, /não foi autorizado/)
+})
+
+test('AMEAÇA: a fonte AUTORIZADA que REPROVOU no teste não entra no ar', async () => {
+  // A origem responde 200, mas sem o campo obrigatório: a fonte parece viva.
+  corpoDaOrigem = { outra: 1 }
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]),
+  )
+
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-reprovada',
+    confirm: true,
+    approvedActivationKeys: ['fonte'],
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'draft', 'autorização não substitui prova')
+
+  // E a prontidão diz por quê, em vez de ficar verde.
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  assert.equal(projeto.readiness.ready, false)
+  assert.ok(projeto.readiness.blockers.some((b) => /não trouxe rsi/.test(b)), JSON.stringify(projeto.readiness.blockers))
+  assert.ok(projeto.checklist.some((i) => i.id === 't-fonte' || i.id === 'test:t-fonte'))
+})
+
+test('a prova entra na checklist com `test_result`, e não pode ser marcada à mão', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [
+      { key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true },
+      { key: 't-mon', kind: 'monitor_simulation', targetKey: 'rsi', expectation: 'dispara', required: true },
+    ]),
+  )
+  await aplicar(id, hash, 'op-checklist')
+
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  const deTeste = projeto.checklist.filter((i) => i.completionMode === 'test_result')
+  assert.equal(deTeste.length, 2, JSON.stringify(projeto.checklist.map((i) => i.id)))
+  for (const i of deTeste) assert.equal(i.status, 'done', i.description)
 })

@@ -10,6 +10,8 @@ import { auditEntity } from './auditMiddleware.js'
 import { runAssistantTurn, resolveUiContext, ASSISTANT_LIMITS } from '../architect/assistant.js'
 import { loadOfficeInventory, summarizeInventory } from '../architect/inventory.js'
 import { fail, notFound, oid } from './http.js'
+import { recordAudit } from '../audit.js'
+import { randomUUID } from 'node:crypto'
 
 // “Montar operação”, do lado da API.
 //
@@ -97,6 +99,28 @@ architectRouter.post('/assistant/turn', async (req, res, next) => {
       uiContext: (b.uiContext ?? null) as never,
       ...(b.classified !== undefined ? { classified: b.classified } : {}),
     })
+    /**
+     * A rodada só é REGISTRADA quando ela cria alguma coisa.
+     *
+     * Responder e explicar não mudam nada, e uma linha de auditoria por pergunta feita
+     * afogaria o histórico. Mas a proposta abre um projeto — e um projeto criado pelo chat
+     * flutuante não pode ficar sem registro só porque não passou pela tela do Arquiteto.
+     */
+    if (r.projectId) {
+      await recordAudit({
+        ownerId: res.locals.userId,
+        actorType: 'user',
+        actorId: res.locals.userId,
+        action: 'create',
+        entityType: 'architect_project',
+        entityId: r.projectId,
+        entityLabel: null,
+        floorId: null,
+        result: 'success',
+        requestId: typeof res.locals.requestId === 'string' ? res.locals.requestId : randomUUID(),
+        metadata: { method: 'POST', statusCode: 200, via: 'assistant' },
+      })
+    }
     res.json(r)
   } catch (erro) {
     next(erro as Error)
@@ -358,7 +382,14 @@ architectRouter.post('/projects/:id/apply', async (req, res, next) => {
   const id = oid(req.params.id)
   if (!id) return notFound(res)
   try {
-    const body = (req.body ?? {}) as { blueprintHash?: string; idempotencyKey?: string; confirm?: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[] }
+    const body = (req.body ?? {}) as {
+      blueprintHash?: string
+      idempotencyKey?: string
+      confirm?: boolean
+      approvedAppKeys?: string[]
+      approvedUpdateKeys?: string[]
+      approvedActivationKeys?: string[]
+    }
     const r = await service.applyProject(res.locals.userId, id, {
       blueprintHash: String(body.blueprintHash ?? ''),
       idempotencyKey: String(body.idempotencyKey ?? ''),
@@ -367,6 +398,9 @@ architectRouter.post('/projects/:id/apply', async (req, res, next) => {
       // O que a tela marcou. Conferido de novo na saga: o checkbox decide o que é
       // enviado, o servidor decide o que é feito.
       approvedUpdateKeys: Array.isArray(body.approvedUpdateKeys) ? body.approvedUpdateKeys.map(String).slice(0, 60) : [],
+      // Entrar no ar é outra autorização. Sem ela, o recurso é criado e fica parado —
+      // aplicar uma proposta nunca coloca a operação para rodar sozinha no mesmo instante.
+      approvedActivationKeys: Array.isArray(body.approvedActivationKeys) ? body.approvedActivationKeys.map(String).slice(0, 60) : [],
     })
     auditEntity(res, { id: r.project._id.toString(), label: r.project.title })
     res.json({ ...service.projectDetail(r.project), operation: r.operation, links: r.links })

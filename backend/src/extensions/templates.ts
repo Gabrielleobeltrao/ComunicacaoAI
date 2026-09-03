@@ -1,5 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { computeBlueprintHash } from '../architect/blueprint.js'
+import { asV2 } from '../architect/blueprintV2.js'
+import { architectV2Enabled } from '../architect/flags.js'
 import { loadOwnershipContext } from '../architect/context.js'
 import { createProject, patchProject } from '../architect/repository.js'
 import type { ArchitectProject } from '../architect/repository.js'
@@ -113,9 +115,21 @@ export async function installTemplate(ownerId: string, packageId: ObjectId, opco
     title: blueprint.title || pacote.name,
     objective: blueprint.objective || pacote.summary,
   })
-  const hash = computeBlueprintHash(blueprint)
+  /**
+   * Com a flag do V2 ligada, o template chega como proposta V2 — convertida, nunca
+   * reescrita.
+   *
+   * A conversão preserva `key` e `resourceId`, e o que o V1 não diz ela NÃO inventa: um
+   * agente sem função vira um agente com a função vazia e uma pendência declarada. Um
+   * template instalado como V2 tem que passar pelas mesmas pendências que qualquer
+   * proposta — inventar a responsabilidade que falta pareceria mais amigável e seria
+   * mentira na ficha do agente.
+   */
+  const v2 = architectV2Enabled() ? asV2(blueprint, 'create') : null
+  const hash = computeBlueprintHash(blueprint, v2?.blueprint)
   const comBlueprint = await patchProject(ownerId, projeto._id, {
     blueprint,
+    ...(v2 ? { blueprintVersion: 2 as const, blueprintV2: v2.blueprint } : {}),
     blueprintHash: hash,
     /**
      * Fica em RASCUNHO, nunca aplicado.

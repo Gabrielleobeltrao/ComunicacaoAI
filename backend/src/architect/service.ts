@@ -3,6 +3,9 @@ import { ValidationError } from '../building.js'
 import { maskSecrets, containsSecret } from './secrets.js'
 import { mergeBlueprintPatch, computeBlueprintHash } from './blueprint.js'
 import { compileBrief, layerCounts, selectLayer } from './compile.js'
+import { compileBriefV2 } from './compileV2.js'
+import { loadOfficeInventory } from './inventory.js'
+import { architectV2Enabled } from './flags.js'
 import { runLlmCritique } from './criticLlm.js'
 import { diffBlueprints } from './diff.js'
 import { repairBlueprintPatch, repairReuseWithoutTarget } from './repair.js'
@@ -255,6 +258,30 @@ async function runTurn(
   const compilar = briefNovo.jobs.length > 0 && !legadoDoModelo && Boolean(turno.blueprintPatch || (turno.briefPatch && projeto.compiled))
   const compilado = compilar ? compileBrief(briefNovo, manifesto, { title: projeto.title, objective: projeto.objective }) : null
 
+  /**
+   * O plano V2 é compilado do MESMO Brief, e só quando a flag está ligada.
+   *
+   * As `key`s saem do mesmo `slug()` do V1, e é isso que faz `floor:atendimento` e
+   * `agent:marina` resolverem no mesmo `resourceMap` durante a aplicação: o V1 cria a
+   * organização, o V2 acrescenta recursos e operações em cima dela. Chaves diferentes
+   * criariam dois escritórios lado a lado.
+   *
+   * Com a flag desligada isto nem roda, e o projeto continua exatamente como era.
+   */
+  const compiladoV2 =
+    compilado && architectV2Enabled()
+      ? compileBriefV2({
+          brief: briefNovo,
+          manifest: manifesto,
+          inventory: await loadOfficeInventory(ownerId).catch(() => null),
+          base: { title: projeto.title, objective: projeto.objective },
+          changeKind: projeto.status === 'applied' ? 'expand' : 'create',
+          // Os andares vêm do plano V1: é ele que a saga aplica, e é dele que sai a `key`
+          // que o `resourceMap` vai conhecer.
+          floors: compilado.blueprint.floors.map((f) => ({ key: f.key, name: f.name })),
+        })
+      : null
+
   const consertoDoPatch = !compilado && turno.blueprintPatch ? repairBlueprintPatch(turno.blueprintPatch) : null
   const mesclado = compilado
     ? compilado.blueprint
@@ -307,6 +334,7 @@ async function runTurn(
     // que só respondeu uma pergunta não pode zerar o "o que mudou" da revisão passada.
     ...(projeto.blueprint && hash !== projeto.blueprintHash ? { previousBlueprint: recorteDe(projeto) } : {}),
     ...(compilado ? { compiled: true } : {}),
+    ...(compiladoV2 ? { blueprintVersion: 2 as const, blueprintV2: compiladoV2.blueprint } : {}),
     // Proposta na mesa é `draft`; a validação é que promove para `ready`. Um projeto
     // aplicado que ganhou proposta nova volta para `draft` — é a rodada seguinte.
     status: blueprint ? 'draft' : projeto.status === 'applied' ? 'applied' : 'discovery',
@@ -589,7 +617,7 @@ export const projectDetail = (p: ArchitectProject) => ({
 export async function applyProject(
   ownerId: string,
   projectId: ObjectId,
-  input: { blueprintHash: string; idempotencyKey: string; confirm: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[] },
+  input: { blueprintHash: string; idempotencyKey: string; confirm: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[] },
   hooks: ApplyHooks = {},
 ) {
   const projeto = await requireProject(ownerId, projectId)

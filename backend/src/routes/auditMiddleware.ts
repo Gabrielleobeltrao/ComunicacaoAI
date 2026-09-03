@@ -127,6 +127,9 @@ const RULES: Rule[] = [
   R('POST', 'api/floors/:/archive', { entityType: 'floor', action: 'archive' }, { idAt: 2 }),
   // Restoring is its own verb: it used to fall through to "created a floor".
   R('POST', 'api/floors/:/restore', { entityType: 'floor', action: 'restore' }, { idAt: 2 }),
+  // O purge é a exclusão IRREVERSÍVEL, com tudo que morava no andar. É a mutação que mais
+  // precisa de registro: sem ela, "cadê o meu setor?" não tem resposta em lugar nenhum.
+  R('POST', 'api/floors/:/purge', { entityType: 'floor', action: 'delete' }, { idAt: 2 }),
   R('PATCH', 'api/building', { entityType: 'building', action: 'update' }),
   // Who may talk to whom across floors is a security decision of the building.
   R('PATCH', 'api/building/floor-communication', { entityType: 'building', action: 'update' }),
@@ -335,6 +338,10 @@ const RULES: Rule[] = [
   // no log não dá para contar a história de como o projeto chegou onde chegou. O que
   // fica registrado é a ação e o projeto; nunca o prompt, a conversa ou o blueprint.
   R('POST', 'api/architect/projects/:/messages', null, { why: 'conversation traffic' }),
+  // A rodada do assistente é conversa: responder e explicar não mudam nada. Quando ela vira
+  // proposta, quem registra a criação é o próprio `POST /projects`, chamado por dentro — e
+  // registrar aqui também contaria a mesma criação duas vezes.
+  R('POST', 'api/architect/assistant/turn', null, { why: 'conversation traffic' }),
   R('POST', 'api/architect/projects/:/turn', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/generate', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/validate', { entityType: 'architect_project', action: 'test' }, { idAt: 3 }),

@@ -333,3 +333,55 @@ test('a ordem de aplicação sai coerente: fonte antes de histórico, histórico
   assert.ok(ordem.indexOf(fonte) < ordem.indexOf(historico))
   assert.ok(ordem.indexOf(historico) < ordem.indexOf(monitor))
 })
+
+// --- os andares decididos fora ---------------------------------------------------------------
+//
+// Enquanto a flag do V2 rola, quem cria andares e agentes continua sendo a saga do V1, a
+// partir do plano V1. Se o V2 inventasse as próprias `key`s, o Flow dele apontaria para um
+// andar que ninguém criou — e `floor:atendimento` nunca resolveria no `resourceMap`.
+
+const briefDeVigilancia = () => ({
+  ...emptyBrief('Acompanhar CXSE3'),
+  liveDataNeeds: [{ source: 'cotação CXSE3', freshness: 'até 1 minuto', required: true }],
+  jobs: [
+    {
+      id: 'avisar-rsi',
+      name: 'Avisar sobre o RSI',
+      trigger: 'quando o RSI ficar abaixo de 30',
+      input: 'as cotações de CXSE3',
+      decision: '',
+      action: 'monitorar e avisar',
+      output: 'o aviso',
+      frequency: 'a cada candle',
+    },
+  ],
+})
+
+test('os andares recebidos de fora são usados COMO ESTÃO — nenhuma key é inventada', () => {
+  const r = compilar(briefDeVigilancia(), { floors: [{ key: 'operacao', name: 'Operação' }] })
+  assert.deepEqual(
+    r.blueprint.organization.floors.map((f) => f.key),
+    ['operacao'],
+  )
+  // E o andar recebido nasce como `reuse`: quem o cria é a aplicação da organização.
+  assert.equal(r.blueprint.organization.floors[0].action, 'reuse')
+})
+
+test('TUDO que o V2 aponta para andar aponta para um andar que existe no plano', () => {
+  const r = compilar(briefDeVigilancia(), { floors: [{ key: 'operacao', name: 'Operação' }] })
+  const chaves = new Set(r.blueprint.organization.floors.map((f) => f.key))
+  const referencias = [
+    ...r.blueprint.organization.agents.map((a) => a.floorKey),
+    ...r.blueprint.organization.sectors.map((s) => s.floorKey),
+    ...r.blueprint.operations.flows.map((f) => f.floorKey),
+    ...r.blueprint.operations.routines.map((x) => x.floorKey),
+  ].filter(Boolean)
+  assert.ok(referencias.length > 0, 'o brief de vigilância tem que gerar pelo menos um Flow ou agente')
+  for (const ref of referencias) assert.ok(chaves.has(ref), `aponta para "${ref}", que não é um andar do plano`)
+})
+
+test('SEM andares de fora, o V2 continua decidindo os próprios — o caminho antigo não muda', () => {
+  const r = compilar(briefDeVigilancia())
+  assert.equal(r.blueprint.organization.floors.length >= 1, true)
+  assert.equal(r.blueprint.organization.floors[0].action, 'create')
+})

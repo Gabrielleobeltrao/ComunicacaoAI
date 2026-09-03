@@ -71,6 +71,13 @@ interface Contexto {
   updatesAprovados: Set<string>
   /** O plano V2, quando o projeto tem um. Ausente = a aplicação é a do V1, inteira. */
   v2?: OfficeBlueprintV2 | null
+  /**
+   * As `key`s que o dono autorizou a ENTRAR NO AR nesta aplicação.
+   *
+   * Ativar é diferente de criar: um recurso criado fica parado até alguém olhar. Sem esta
+   * lista, aplicar uma proposta colocaria a operação para rodar sozinha no mesmo instante.
+   */
+  ativacoesAprovadas: Set<string>
 }
 
 const chave = (kind: ApplyStepKind, key: string): string => `${kind}:${key}`
@@ -153,7 +160,7 @@ const marcaDe = (ctx: Contexto, key: string): ArchitectStamp => ({
 export async function applyBlueprint(
   ownerId: string,
   project: ArchitectProject,
-  input: { blueprintHash: string; idempotencyKey: string; approvedAppKeys?: string[]; approvedUpdateKeys?: string[] },
+  input: { blueprintHash: string; idempotencyKey: string; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[] },
   hooks: ApplyHooks = {},
 ): Promise<ArchitectApplyOperation> {
   const bp = project.blueprint
@@ -179,7 +186,7 @@ export async function applyBlueprint(
     throw new ApplyConflict('esta aplicação já está em andamento')
   }
 
-  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []), project.blueprintV2 ?? null)
+  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []), project.blueprintV2 ?? null, new Set(input.approvedActivationKeys ?? []))
 }
 
 /** O corpo compartilhado por aplicar e retomar: roda a saga, fecha e solta o arrendamento. */
@@ -191,6 +198,7 @@ async function rodar(
   grantsAprovados: Set<string>,
   updatesAprovados: Set<string>,
   v2: OfficeBlueprintV2 | null,
+  ativacoesAprovadas: Set<string>,
 ): Promise<ArchitectApplyOperation> {
   const ctx: Contexto = {
     ownerId,
@@ -201,6 +209,7 @@ async function rodar(
     grantsAprovados,
     updatesAprovados,
     v2,
+    ativacoesAprovadas,
   }
 
   try {
@@ -557,6 +566,51 @@ async function executarSaga(ctx: Contexto): Promise<void> {
   //    `resourceMap` e são retomados pelo mesmo caminho. Um projeto sem plano V2 nem
   //    chega aqui, e continua aplicando exatamente o que aplicava antes.
   await aplicarV2(ctx)
+
+  // 9. Os testes de aceitação, e só então a ativação. A ordem não é negociável: ativar
+  //    antes de testar é exatamente o que "pronto = o documento existe" fazia.
+  await provarEAtivar(ctx)
+}
+
+/**
+ * Prova a operação e liga o que passou.
+ *
+ * "Pronto" exige teste observável. Um recurso sem teste declarado NÃO é ativado: ausência de
+ * teste não é prova de nada, e ligar por falta de evidência contrária é o defeito que os
+ * testes de aceitação existem para fechar.
+ */
+async function provarEAtivar(ctx: Contexto): Promise<void> {
+  if (!ctx.v2) return
+  const { runAcceptanceTests, activatableKeys } = await import('./acceptance.js')
+  const resultados = await runAcceptanceTests({
+    ownerId: ctx.ownerId,
+    blueprint: ctx.v2,
+    resourceMap: ctx.mapa,
+    operationId: ctx.operation._id,
+  })
+  await repo.recordAcceptance(ctx.ownerId, ctx.operation._id, resultados)
+  if (!resultados.length) return
+
+  const { setSourceStatus } = await import('../monitoring/service.js')
+  for (const key of activatableKeys(resultados, 'source')) {
+    // As DUAS condições, e as duas obrigatórias: o teste passou E o dono autorizou.
+    if (!ctx.ativacoesAprovadas.has(key)) {
+      await registrar(ctx, { kind: 'source', key, status: 'skipped', message: 'passou no teste, mas entrar no ar não foi autorizado nesta aplicação' })
+      continue
+    }
+    const id = ctx.mapa.get(chave('source', key))
+    if (!id || !ObjectId.isValid(id)) continue
+    // O portão de ativação do próprio domínio continua valendo: ele exige uma leitura
+    // bem-sucedida, e é ela que o teste de aceitação acabou de produzir.
+    const fonte = await setSourceStatus(ctx.ownerId, new ObjectId(id), 'active')
+    await registrar(ctx, {
+      kind: 'source',
+      key,
+      status: fonte?.status === 'active' ? 'updated' : 'skipped',
+      resourceId: id,
+      message: fonte?.status === 'active' ? 'no ar: passou no teste e foi autorizada' : 'o portão de ativação do domínio ainda não deixou',
+    })
+  }
 }
 
 /**
@@ -649,7 +703,7 @@ export async function resumeApply(ownerId: string, project: ArchitectProject, ho
 
   // O que já virou permissão está no mapa; o resto foi pulado e continua pulado até o
   // dono aprovar de novo — retomar não é lugar de conceder acesso novo.
-  return rodar(ownerId, anterior, project.blueprint, hooks, new Set(), new Set(), project.blueprintV2 ?? null)
+  return rodar(ownerId, anterior, project.blueprint, hooks, new Set(), new Set(), project.blueprintV2 ?? null, new Set())
 }
 
 /**

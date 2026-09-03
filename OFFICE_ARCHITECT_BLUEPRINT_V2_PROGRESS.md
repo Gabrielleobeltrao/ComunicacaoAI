@@ -509,3 +509,168 @@ tirando o plano V2 do cadeado do hash caem os 5 casos da saga ligada.
   porque os serviços canônicos não aceitam esse campo. A consequência é concreta: a janela
   entre criar e registrar o passo, que o V1 fecha pela marca, aqui é fechada só pelo
   `resourceMap` — uma queda exatamente nesse instante pode deixar um recurso órfão.
+
+---
+
+## Fase 6 — a prova, e o que ela destrava
+
+### "Pronto" deixou de significar "o documento existe"
+
+No V1, um item de checklist ficava verde porque o recurso tinha sido criado. Isso confirma
+que a **aplicação** rodou, não que a **operação** funciona: a fonte pode ter nascido
+apontando para uma URL que responde 404, o monitor pode observar um campo que o mapeamento
+nunca produz, o Flow pode ter um passo dependendo de outro que não existe. Nada disso
+aparece em "criado com sucesso".
+
+`backend/src/architect/acceptance.ts` roda os testes declarados no Blueprint contra o
+**recurso real criado nesta operação**:
+
+| Teste | O que observa de verdade |
+| --- | --- |
+| `source` | bate na origem, aplica o mapeamento, confere que os campos obrigatórios chegaram |
+| `monitor_simulation` | constrói a transição que a própria regra descreve e confere que ela dispara |
+| `flow` | confere que existe passo e que todo `dependsOn` resolve |
+| `agent_contract` | confere que a função escrita **não está vazia** |
+| `database_permission` | lê pelo caminho canônico, que filtra por dono, e confere que há conjunto com campos |
+| `channel`, `app_dry_run`, `delivery` | **pendentes**, cada um com o que fazer — nunca aprovados |
+
+O caso perigoso está coberto: uma fonte que responde 200 **sem o campo obrigatório** reprova.
+Ela parece viva, e o monitor em cima dela nunca dispararia.
+
+### Ativar exige as duas coisas
+
+Passo 10 do §12: *publicar/ativar somente o que passou e foi aprovado*. As duas condições,
+e as duas obrigatórias:
+
+- o teste do alvo **passou** — e um alvo com dois testes, um passando e um falhando, não é
+  ativável: o que reprova manda;
+- a `key` está em **`approvedActivationKeys`** da requisição — aplicar uma proposta nunca
+  coloca a operação para rodar sozinha no mesmo instante.
+
+Um alvo **sem teste declarado não é ativável**: ausência de teste não é prova de nada, e
+ligar por falta de evidência contrária é exatamente o defeito que esta fase fecha.
+
+### O resultado entra na Activity e na prontidão
+
+Cada teste abre uma raiz de execução em ambiente `test`, com `source: 'manual'` — é assim
+que ele aparece na linha do tempo pela projeção que **já existe**, sem uma segunda coleção
+contando a mesma coisa. Um teste reprovado marca a execução como falha, com
+`errorKind: 'acceptance_failed'`.
+
+Na checklist, cada resultado vira um item com `completionMode: 'test_result'` — o modo que
+existia no tipo e que **nenhum código usava**. Ninguém o marca à mão: ele só fica `done`
+quando o teste passou. Um obrigatório que não passou vira **bloqueio de prontidão**, com o
+texto do que foi observado.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectAcceptance.integration.test.mjs` | 18 | 18 passam |
+| `backend/test/architectApply.integration.test.mjs` | 33 (4 novos) | 33 passam |
+
+A fonte é testada contra um **servidor HTTP de verdade** subido no próprio arquivo: um mock
+devolvendo o que o teste espera provaria só que o mock funciona.
+
+Teeth check: desligando a autorização de ativação cai o caso 31; desligando o portão da
+prova caem os três casos de ativação, incluindo o da fonte autorizada que reprovou.
+
+### Pendências reais ao fim da fase
+
+- **A tela ainda não pergunta o que entrar no ar.** O cliente já aceita
+  `approvedActivationKeys`, e o diálogo de aplicação ainda não o preenche — o padrão seguro
+  vale (nada liga), mas hoje só dá para autorizar pela API. Entra junto com a prévia V2 na
+  fase 9.
+- Monitores e Flows têm portão de ativação no código (`activatableKeys` já os cobre), mas a
+  saga só liga **fontes** hoje: publicar um monitor pede a simulação com dados reais, que
+  depende da fonte já ter coletado ao menos uma vez.
+- `app_dry_run` fica pendente para todo App: nenhum manifesto declara execução de teste
+  ainda.
+
+---
+
+## Fase 9 — a flag, a conversão e o caminho de volta
+
+### `ARCHITECT_BLUEPRINT_V2`
+
+`backend/src/architect/flags.ts` é uma função de uma linha, lida **a cada compilação** e não
+uma vez no boot: mudar a variável e reiniciar basta, não há cache a limpar. `1`, `true` ou
+`on` ligam; qualquer outra coisa — inclusive a ausência — deixa desligado.
+
+Desligada, **nada muda**: o projeto não ganha `blueprintV2`, a saga não roda o passo do V2 e
+o hash é exatamente o que já era. É isso que faz o rollback ser uma variável de ambiente em
+vez de um deploy.
+
+### O defeito que a ligação revelou: dois escritórios
+
+O compilador V1 usa sempre a chave de andar `operacao`. O V2 gera **uma chave por área** —
+`atendimento`, `comercial`. Com os dois rodando juntos, um Flow do V2 apontaria para
+`floor:atendimento` enquanto a saga criou `floor:operacao`: a aplicação falharia num passo
+que não tem defeito, ou pior, criaria um andar por plano.
+
+`compileBriefV2` passou a aceitar **andares decididos fora** e a usá-los como estão, sem
+inventar `key` nenhuma. Enquanto a flag rola, quem decide a organização é o plano V1 — é ele
+que a saga aplica, e é dele que sai a chave que o `resourceMap` vai conhecer. Os dois
+documentos descrevem **um** escritório.
+
+Travado em teste: as chaves dos dois planos são comparadas, toda referência a andar é
+conferida contra as chaves que o V1 cria, e aplicar tem que criar **um** andar.
+
+### Templates da Comunidade
+
+Com a flag ligada, um template chega como proposta **V2 convertida** — nunca reescrita. A
+conversão preserva `key` e `resourceId`. O que o V1 não diz ela **não inventa**: um agente
+sem função vira um agente com a função vazia e uma pendência declarada. Preencher com o
+objetivo pareceria mais amigável e seria mentira na ficha do agente.
+
+E continua rascunho: instalar um template não cria agente na conta de ninguém.
+
+### Backfill: por que não existe
+
+Projetos antigos **não são convertidos em massa**, e é uma decisão. Rodar a conversão em
+lote encheria contas de pendências que ninguém pediu, num plano que talvez nunca seja
+aplicado de novo. A conversão acontece sob demanda, no único momento em que a pendência tem
+para quem aparecer.
+
+### Um defeito real, de duas fases atrás
+
+`test/auditRouteMap.test.mjs` — que exige **decisão explícita de auditoria para toda rota que
+muda alguma coisa** — estava vermelho desde a fase 8, e eu não tinha visto: a suíte roda em
+duas partições e eu havia lido só o fim da saída, que mostrava a segunda.
+
+Duas rotas sem decisão:
+
+- **`POST /floors/:id/purge`** — a exclusão irreversível, com tudo que morava no andar. É a
+  mutação que mais precisa de registro: sem ela, "cadê o meu setor?" não tem resposta em
+  lugar nenhum.
+- **`POST /architect/assistant/turn`** — e aqui a decisão não era só preencher a tabela. A
+  rodada é conversa: responder e explicar não mudam nada, e uma linha por pergunta feita
+  afogaria o histórico. Mas a proposta abre um projeto **por dentro do serviço**, sem passar
+  pela rota `POST /projects` — então um projeto criado pelo chat flutuante ficava sem
+  registro nenhum, enquanto o mesmo projeto criado pela tela ficava. A rota passou a
+  registrar a criação, e **só quando ela acontece**.
+
+### Documentação operacional
+
+`docs/architect-blueprint-v2-operacao.md`: como ligar, o que muda, como voltar, onde olhar
+quando algo dá errado, e o que ainda não está pronto.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectV2Flag.integration.test.mjs` | 7 | 7 passam |
+| `backend/test/architectCompileV2.test.mjs` | 22 (3 novos) | 22 passam |
+| `backend/test/extensionTemplates.integration.test.mjs` | 12 (3 novos) | 12 passam |
+| `backend/test/architectAssistant.integration.test.mjs` | 14 (1 novo) | 14 passam |
+| `backend/test/auditRouteMap.test.mjs` | 13 | 13 passam |
+
+Teeth check: neutralizando o registro da criação pelo assistente, o caso 14 cai.
+
+### Pendências reais ao fim da fase
+
+- A **tela** ainda não expõe a flag nem a prévia V2: quem liga hoje vê a mesma prévia V1, e
+  os recursos do V2 aparecem só na lista de passos da operação.
+- O compilador V2 ainda **não produz setores**, então a topologia continua vindo do V1.
+- O `LLM_FAKE` não gera brief de vigilância, então a cadeia fonte → monitor → Flow é
+  exercitada pelo compilador direto e pela saga, não ponta a ponta pela conversa.

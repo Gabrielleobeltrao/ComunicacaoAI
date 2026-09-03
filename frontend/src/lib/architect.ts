@@ -366,7 +366,12 @@ export const listProviders = () =>
 export const patchProject = (id: string, patch: { provider?: 'anthropic' | 'openai'; model?: string | null; title?: string }) =>
   request<ArchitectProject>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
 
-export const applyProject = (id: string, body: { blueprintHash: string; idempotencyKey: string; approvedAppKeys: string[]; approvedUpdateKeys: string[] }) =>
+// `approvedActivationKeys` é a autorização de ENTRAR NO AR, separada da de criar: sem ela o
+// recurso nasce e fica parado. Opcional de propósito — ausente significa "não ligue nada".
+export const applyProject = (
+  id: string,
+  body: { blueprintHash: string; idempotencyKey: string; approvedAppKeys: string[]; approvedUpdateKeys: string[]; approvedActivationKeys?: string[] },
+) =>
   request<ApplyResponse>(`/projects/${id}/apply`, { method: 'POST', body: JSON.stringify({ ...body, confirm: true }) })
 export const resumeProject = (id: string) => request<ApplyResponse>(`/projects/${id}/resume`, { method: 'POST' })
 export const recheckProject = (id: string) => request<ApplyResponse>(`/projects/${id}/recheck`, { method: 'POST' })

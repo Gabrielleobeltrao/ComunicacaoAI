@@ -18,6 +18,7 @@ import type {
   OfficeBlueprintV1,
 } from './types.js'
 import type { OfficeBlueprintV2 } from './typesV2.js'
+import type { AcceptanceResult } from './acceptance.js'
 
 // A persistência do Arquiteto. Três coleções, todas com `ownerId` no filtro de TODA
 // consulta — não há função aqui que aceite um id sem o dono junto, o que torna
@@ -147,6 +148,13 @@ export interface ArchitectApplyOperation {
   /** `kind:key` → id do recurso real. É o que faz repetir a aplicação não duplicar. */
   resourceMap: Record<string, string>
   steps: ApplyStepResult[]
+  /**
+   * O que os testes de aceitação observaram nesta operação.
+   *
+   * Fica na operação, e não no projeto, porque é a prova DESTA aplicação: uma nova aplicação
+   * tem que provar de novo. Ausente nas operações anteriores aos testes.
+   */
+  acceptance?: AcceptanceResult[]
   error: string | null
   /** Até quando esta operação está tomada por um processo. Ver `claimOperation`. */
   leaseUntil?: Date | null
@@ -401,6 +409,11 @@ export async function recordStep(ownerId: string, operationId: ObjectId, step: A
   const set: Record<string, unknown> = {}
   if (step.resourceId) set[`resourceMap.${step.kind}:${step.key}`] = step.resourceId
   await operations.updateOne({ _id: operationId, ownerId }, { $push: { steps: step }, ...(Object.keys(set).length ? { $set: set } : {}) })
+}
+
+/** Grava o que os testes viram. Substitui: a prova é a da última rodada, não um histórico. */
+export async function recordAcceptance(ownerId: string, operationId: ObjectId, acceptance: AcceptanceResult[]): Promise<void> {
+  await operations.updateOne({ _id: operationId, ownerId }, { $set: { acceptance } })
 }
 
 export async function finishOperation(ownerId: string, operationId: ObjectId, status: ApplyStatus, error: string | null): Promise<void> {

@@ -158,3 +158,58 @@ test('instalar duas vezes não cria dois projetos: a instalação é única por 
   await assert.rejects(() => tpl.installTemplate(QUEM_INSTALA, p._id), /já está instalado/)
   assert.equal(await db.collection('architect_projects').countDocuments({ ownerId: QUEM_INSTALA }), 1)
 })
+
+// --- o template como proposta V2 -----------------------------------------------------------
+//
+// Com a flag ligada, um template da Comunidade chega convertido — nunca reescrito. A
+// conversão preserva `key` e `resourceId`, e o que o V1 não diz ela não inventa.
+
+test('DESLIGADA: o template continua chegando como proposta V1', async () => {
+  delete process.env.ARCHITECT_BLUEPRINT_V2
+  const p = await publicado(BLUEPRINT, 'v1-puro')
+  const r = await tpl.installTemplate(QUEM_INSTALA, p._id)
+  const projeto = await db.collection('architect_projects').findOne({ _id: r.project._id })
+  assert.equal(projeto.blueprintV2, undefined)
+  assert.equal(projeto.blueprintVersion, 1)
+})
+
+test('LIGADA: o template vira proposta V2 preservando as `key`s', async () => {
+  process.env.ARCHITECT_BLUEPRINT_V2 = '1'
+  try {
+    const p = await publicado(BLUEPRINT, 'convertido')
+    const r = await tpl.installTemplate(QUEM_INSTALA, p._id)
+    const projeto = await db.collection('architect_projects').findOne({ _id: r.project._id })
+
+    assert.equal(projeto.blueprintVersion, 2)
+    assert.equal(projeto.blueprintV2.version, 2)
+    // As MESMAS chaves: chave nova num projeto aplicado significa recurso novo ao lado do
+    // que já existe — um escritório duplicado por causa de uma conversão.
+    assert.deepEqual(
+      projeto.blueprintV2.organization.floors.map((f) => f.key),
+      projeto.blueprint.floors.map((f) => f.key),
+    )
+    assert.deepEqual(
+      projeto.blueprintV2.organization.agents.map((a) => a.key),
+      projeto.blueprint.agents.map((a) => a.key),
+    )
+    // E continua rascunho: instalar um template não pode criar agente na conta de ninguém.
+    assert.equal(projeto.status, 'draft')
+    assert.equal(await db.collection('agents').countDocuments({ ownerId: QUEM_INSTALA }), 0)
+  } finally {
+    delete process.env.ARCHITECT_BLUEPRINT_V2
+  }
+})
+
+test('LIGADA: o hash cobre os dois planos', async () => {
+  process.env.ARCHITECT_BLUEPRINT_V2 = '1'
+  try {
+    const p = await publicado(BLUEPRINT, 'hash-dos-dois')
+    const r = await tpl.installTemplate(QUEM_INSTALA, p._id)
+    const { computeBlueprintHash } = await import('../dist/architect/blueprint.js')
+    const projeto = await db.collection('architect_projects').findOne({ _id: r.project._id })
+    assert.equal(projeto.blueprintHash, computeBlueprintHash(projeto.blueprint, projeto.blueprintV2))
+    assert.notEqual(projeto.blueprintHash, computeBlueprintHash(projeto.blueprint))
+  } finally {
+    delete process.env.ARCHITECT_BLUEPRINT_V2
+  }
+})

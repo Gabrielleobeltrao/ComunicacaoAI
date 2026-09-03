@@ -34,6 +34,15 @@ export interface CompileV2Input {
   inventory: OfficeInventory | null
   base: { title: string; objective: string }
   changeKind: BlueprintChangeKindV2
+  /**
+   * Os andares que a organização JÁ decidiu, quando ela é decidida em outro lugar.
+   *
+   * Enquanto a flag do V2 rola, quem cria andares e agentes continua sendo a saga do V1, a
+   * partir do plano V1. Se o V2 inventasse as próprias `key`s de andar, o Flow dele
+   * apontaria para um andar que ninguém criou — e `floor:atendimento` nunca resolveria no
+   * `resourceMap`. Recebendo os andares prontos, os dois documentos descrevem UM escritório.
+   */
+  floors?: { key: string; name: string }[]
 }
 
 export interface CompileV2Result {
@@ -225,7 +234,9 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
   const nomes = areas.length ? areas : [base.title.slice(0, 60) || 'Operação']
 
   const floorKeyDe = new Map<string, string>()
-  for (const nome of nomes) {
+  // Andares decididos fora: entram como estão, e nenhuma `key` é inventada aqui.
+  for (const andar of input.floors ?? []) floorKeyDe.set(andar.name, andar.key)
+  for (const nome of input.floors ? [] : nomes) {
     const existente = findExistingFloor(inventory, nome)
     const key = slug(nome) || 'operacao'
     floorKeyDe.set(nome, key)
@@ -242,6 +253,19 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       ...(brief.businessGoal ? { mission: brief.businessGoal.slice(0, 200) } : {}),
       workMode: 'organization',
     })
+  }
+  // Quando os andares vêm prontos, eles são o bloco de organização do V2 também: dois
+  // documentos, uma organização só.
+  if (input.floors?.length) {
+    bp.organization.floors = input.floors.map((a) => ({
+      key: a.key,
+      action: 'reuse' as const,
+      ...ESSENCIAL,
+      rationale: 'o andar é criado pela aplicação da organização; aqui ele só é referenciado',
+      dependsOn: [],
+      name: a.name,
+      workMode: 'organization' as const,
+    }))
   }
   const andarPadrao = bp.organization.floors[0].key
   /** Em qual andar este trabalho mora. Sem pista, o primeiro. */
