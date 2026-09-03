@@ -913,3 +913,25 @@ combinação" e mais nada. Consertado no `Field` compartilhado, vale para o app 
 inexistente e de outra conta; neutralizando as guardas, 5 caem) e
 `e2e/monitoring-center.spec.ts` **44/44**, incluindo 320 px nas abas novas, rótulos
 associados e alvo mínimo de toque.
+
+## Bloco 34 — o vermelho que ninguém consegue ler ✅
+
+**Estava errado**: o teste de contraste que esta sessão escreveu reprovou o texto de erro do
+histórico — **2,81:1**, contra o mínimo de 4,5:1 que um texto de 13px precisa. A causa é o
+token: `--intent-danger` é `--coral-500` (`#FF6A5B`), uma cor de **preenchimento**. Usada
+como cor de texto sobre fundo claro, ela não é legível — e o texto vermelho é exatamente o
+que alguém lê às três da manhã.
+
+**Passou a valer**: um token próprio de texto, `--intent-danger-text` (`--coral-700`,
+`#B8321F`, **5,98:1**), e os sete lugares da Central que pintavam texto com o token de
+preenchimento passaram a usá-lo.
+
+**Prova**: o caso de contraste calcula a razão WCAG a partir das cores computadas na
+página, subindo até o primeiro elemento que pinta o fundo de verdade. Antes: 2,81:1 e
+reprovado. Depois: aprovado.
+
+**O que NÃO foi mudado, e por quê**: `color: 'var(--intent-danger)'` aparece como cor de
+texto em **21 outros arquivos** desta aplicação, fora da Central. É o mesmo defeito, e a
+correção é a mesma troca de token — mas são 21 telas que este trabalho não revisou, e
+mudar a cor de todas sem olhar seria trocar um defeito conhecido por um risco não medido.
+O token existe agora; a troca é mecânica e está registrada aqui como pendência.

@@ -97,7 +97,7 @@ export function MonitoringCenter() {
 
         {erro && (
           <Card>
-            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="monitoring-error">
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="monitoring-error">
               {erro}
             </p>
           </Card>
@@ -417,7 +417,7 @@ function PainelDeAcessos({ sourceId }: { sourceId: string }) {
       </div>
 
       {erro && (
-        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="acesso-erro">
+        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="acesso-erro">
           {erro}
         </p>
       )}
@@ -1125,7 +1125,7 @@ function Wizard({
                 </Button>
                 {teste && !teste.ok && (
                   <div className="flex flex-col gap-1">
-                    <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="wizard-teste-erro">
+                    <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="wizard-teste-erro">
                       {teste.error?.message}
                       {teste.status ? ` (o servidor respondeu ${teste.status})` : ''}
                     </p>
@@ -1685,7 +1685,7 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
           </p>
 
           {erro && (
-            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="monitor-erro">
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="monitor-erro">
               {erro}
             </p>
           )}
@@ -1734,7 +1734,7 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
             </Button>
           </div>
           {erroSim && (
-            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="sim-erro">
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="sim-erro">
               {erroSim}
             </p>
           )}
@@ -1977,7 +1977,7 @@ function Historico({ fontes }: { fontes: SourceSummary[] | null }) {
       </Card>
 
       {erro && (
-        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="historico-erro">
+        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="historico-erro">
           {erro}
         </p>
       )}
@@ -2009,7 +2009,7 @@ function Historico({ fontes }: { fontes: SourceSummary[] | null }) {
               {e.runId ? ` · execução ${e.runId}` : ''}
             </p>
             {e.errorMessage && (
-              <p style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="historico-erro-item">
+              <p style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="historico-erro-item">
                 {e.errorCode}: {e.errorMessage}
               </p>
             )}

@@ -878,3 +878,82 @@ test('os botões novos alcançam o alvo mínimo de toque', async ({ page }) => {
     expect(caixa!.height, `${id} é pequeno demais para o dedo`).toBeGreaterThanOrEqual(36)
   }
 })
+
+test('teclado: dá para chegar aos botões da fonte por Tab, e o foco fica visível', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=sources')
+  await expect(page.getByTestId('fonte-item')).toBeVisible()
+
+  // Um foco invisível é um foco que só existe para quem já sabe onde está.
+  const alvo = page.getByTestId('fonte-testar')
+  await alvo.focus()
+  await expect(alvo).toBeFocused()
+  const contorno = await alvo.evaluate((el) => {
+    const s = getComputedStyle(el, ':focus-visible')
+    return { outline: s.outlineStyle, largura: s.outlineWidth, sombra: s.boxShadow }
+  })
+  expect(contorno.outline !== 'none' || contorno.sombra !== 'none', 'o botão focado não mostra nada').toBe(true)
+
+  // E Enter aciona, como um botão de verdade — não um div com onClick.
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('monitoring-aviso')).toContainText('testada')
+})
+
+test('teclado: o wizard inteiro é preenchível sem mouse', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-nova').focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('fonte-wizard')).toBeVisible()
+
+  await page.getByTestId('wizard-nome').focus()
+  await page.keyboard.type('Por teclado')
+  await page.getByTestId('wizard-avancar').focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByTestId('wizard-conexao')).toBeVisible()
+})
+
+/** O contraste de duas cores computadas, pela fórmula do WCAG. */
+const RAZAO = `(fg, bg) => {
+  const canal = (c) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
+  const lum = (cor) => {
+    const m = cor.match(/[\\d.]+/g).map(Number)
+    return 0.2126 * canal(m[0]) + 0.7152 * canal(m[1]) + 0.0722 * canal(m[2])
+  }
+  const a = lum(fg), b = lum(bg)
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+}`
+
+test('contraste: o texto das telas novas é legível sobre o fundo em que ele está', async ({ page }) => {
+  await stub(page, { monitores: [MONITOR], eventos: [EVENTO] })
+  await page.goto('/monitoring?tab=history')
+  await expect(page.getByTestId('historico-item')).toBeVisible()
+
+  // O erro no histórico é o texto que alguém lê às três da manhã, e ele é vermelho sobre
+  // um fundo claro — exatamente o par que costuma passar despercebido.
+  for (const [aba, id, minimo] of [
+    ['history', 'historico-erro-item', 4.5],
+    ['monitors', 'monitor-item', 4.5],
+  ] as const) {
+    await page.goto(`/monitoring?tab=${aba}`)
+    const alvo = page.getByTestId(id)
+    await expect(alvo).toBeVisible()
+    const razao = await alvo.evaluate((el, formula) => {
+      const calcular = eval(formula) as (fg: string, bg: string) => number
+      const s = getComputedStyle(el)
+      // O fundo efetivo: sobe até achar alguém que pinte de verdade.
+      let pai: HTMLElement | null = el as HTMLElement
+      let fundo = 'rgba(0, 0, 0, 0)'
+      while (pai) {
+        const b = getComputedStyle(pai).backgroundColor
+        if (b && !b.includes('rgba(0, 0, 0, 0)')) {
+          fundo = b
+          break
+        }
+        pai = pai.parentElement
+      }
+      return calcular(s.color, fundo)
+    }, RAZAO)
+    expect(razao, `${id} tem contraste ${razao.toFixed(2)}:1`).toBeGreaterThanOrEqual(minimo)
+  }
+})
