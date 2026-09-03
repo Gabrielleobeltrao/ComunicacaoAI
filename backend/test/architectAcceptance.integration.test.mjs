@@ -149,10 +149,29 @@ test('ACEITAÇÃO: a regra que reconhece a própria transição PASSA', async ()
   assert.equal(r.status, 'passed', r.observed)
 })
 
-test('a regra que NÃO dispara na própria transição reprova', async () => {
-  // "maior que 30" com a transição 31 → 29 não entra: é o erro clássico de escrever a
-  // comparação invertida, e publicar isso entregaria um monitor que nunca fala.
+test('ACEITAÇÃO: a regra de TETO também passa — a simulação segue o operador', async () => {
+  /**
+   * Este teste afirmava o contrário, e afirmava um DEFEITO.
+   *
+   * A simulação testava sempre a travessia de cima para baixo (limite+1 → limite-1). Para
+   * "maior que 30" isso é a transição errada: o valor já estava acima antes, e a regra
+   * corretamente não dispara. Toda regra de teto era reprovada por um caso que ela não
+   * descreve — e um monitor reprovado não é ativável, então nenhuma vigilância de máximo
+   * jamais entrou no ar.
+   */
   const m = await criarMonitorDe({ kind: 'compare', field: 'rsi', op: 'gt', value: 30 })
+  const [r] = await rodar([teste({ kind: 'monitor_simulation', targetKey: 'mon' })], [['monitor:mon', m._id.toString()]])
+  assert.equal(r.status, 'passed', r.observed)
+})
+
+test('a regra que NÃO dispara na própria transição reprova', async () => {
+  /**
+   * Igualdade sobre número contínuo: o alarme que nunca toca.
+   *
+   * A travessia passa PELO limite sem parar nele, e "igual a 30" não reconhece nem o antes
+   * nem o depois. Publicar isso entregaria um monitor que parece configurado e é mudo.
+   */
+  const m = await criarMonitorDe({ kind: 'compare', field: 'rsi', op: 'eq', value: 30 })
   const [r] = await rodar([teste({ kind: 'monitor_simulation', targetKey: 'mon' })], [['monitor:mon', m._id.toString()]])
   assert.equal(r.status, 'failed', r.observed)
   assert.match(r.observed, /não disparou/)

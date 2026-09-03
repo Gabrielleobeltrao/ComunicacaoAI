@@ -144,12 +144,26 @@ async function simularMonitor(ctx: AcceptanceContext, t: BlueprintAcceptanceTest
    * leitura real: quem simula quer entender a REGRA, e simular com a memória de plantão faria
    * o resultado depender do que o monitor viu ontem.
    */
-  const campo = (monitor.thresholdField as string | null) ?? campoDaCondicao(monitor.condition)
-  const limite = typeof monitor.threshold === 'number' ? monitor.threshold : 0
+  const daRegra = comparacaoDaCondicao(monitor.condition)
+  const campo = (monitor.thresholdField as string | null) ?? daRegra?.campo ?? null
+  /**
+   * O limite vem da REGRA quando o monitor não declara um próprio.
+   *
+   * `threshold` só é gravado nos modos `cross*`. Num `enter` sobre "rsi < 30" ele é nulo, o
+   * limite caía para zero, e a simulação testava 1 → -1: dois valores JÁ abaixo de 30, ou
+   * seja, nenhuma transição. A regra era reprovada por não disparar numa travessia que não
+   * acontecia — e o monitor ficava rascunho para sempre.
+   */
+  const limite = typeof monitor.threshold === 'number' ? monitor.threshold : (daRegra?.valor ?? 0)
   if (!campo) return resultado(t, 'pending', 'a regra não cita um campo numérico: simule na tela do monitor')
 
-  const antes = { [campo]: limite + 1 }
-  const agora = { [campo]: limite - 1 }
+  /**
+   * A direção também sai do operador: para "maior que", quem está ACIMA é o depois.
+   * Fixar sempre alto → baixo reprovava toda regra de teto pelo mesmo motivo.
+   */
+  const paraCima = daRegra ? daRegra.op === 'gt' || daRegra.op === 'gte' : false
+  const antes = { [campo]: paraCima ? limite - 1 : limite + 1 }
+  const agora = { [campo]: paraCima ? limite + 1 : limite - 1 }
   const r = simulateMonitor({
     condition: monitor.condition,
     triggerMode: (monitor.triggerMode as TriggerMode) ?? 'enter',
@@ -161,9 +175,22 @@ async function simularMonitor(ctx: AcceptanceContext, t: BlueprintAcceptanceTest
   if (!r.wouldTrigger) {
     // A regra não reconhece a própria transição que ela descreve: publicar isso entregaria um
     // monitor que nunca fala.
-    return resultado(t, 'failed', `a regra não disparou na transição que ela mesma descreve (${campo}: ${limite + 1} → ${limite - 1})`)
+    return resultado(t, 'failed', `a regra não disparou na transição que ela mesma descreve (${campo}: ${antes[campo]} → ${agora[campo]})`)
   }
   return resultado(t, 'passed', `${r.explanation}`.slice(0, 200))
+}
+
+/** O campo, o operador e o número da primeira comparação da regra. */
+function comparacaoDaCondicao(condition: unknown): { campo: string; op: string; valor: number } | null {
+  const c = condition as { field?: unknown; left?: unknown; op?: unknown; value?: unknown; clauses?: unknown[] } | null
+  if (!c || typeof c !== 'object') return null
+  const campo = typeof c.field === 'string' ? c.field : typeof c.left === 'string' ? c.left : null
+  if (campo && typeof c.value === 'number') return { campo, op: String(c.op ?? 'lt'), valor: c.value }
+  for (const filha of Array.isArray(c.clauses) ? c.clauses : []) {
+    const achado = comparacaoDaCondicao(filha)
+    if (achado) return achado
+  }
+  return null
 }
 
 /** O primeiro campo citado na condição, quando a regra não declara um limite próprio. */
