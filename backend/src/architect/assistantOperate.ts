@@ -43,6 +43,17 @@ export interface PendingOperation {
   expiresAt: Date
   createdAt: Date
   confirmedAt?: Date | null
+  /**
+   * O DESFECHO da execução — e não só o fato de alguém ter clicado.
+   *
+   * `confirmedAt` é gravado ANTES de rodar, porque é ele que torna o duplo clique idempotente.
+   * Sozinho, ele fazia toda tentativa parecer bem-sucedida: um handler que estourava deixava
+   * a operação "confirmada" para sempre, e a segunda tentativa lia "já foi confirmada" —
+   * a linha de auditoria mais enganosa possível.
+   */
+  outcome?: 'succeeded' | 'refused' | 'failed' | null
+  outcomeAt?: Date | null
+  outcomeReason?: string | null
 }
 
 const pendentes = db.collection<PendingOperation>('architect_pending_operations')
@@ -141,7 +152,16 @@ export async function confirmarOperacao(
   const doc = await pendentes.findOne({ id: String(input.id ?? ''), ownerId })
   // Mesma resposta para "não existe" e "é de outra conta": distinguir contaria que existe.
   if (!doc) return { ok: false, code: 'not_found', reason: 'essa operação não existe mais' }
-  if (doc.confirmedAt) return { ok: false, code: 'already_done', reason: 'essa operação já foi confirmada' }
+  if (doc.confirmedAt) {
+    // "Já foi confirmada" para o que deu certo; para o que não deu, o que a pessoa precisa
+    // ouvir é que pode pedir de novo.
+    if (doc.outcome === 'succeeded') return { ok: false, code: 'already_done', reason: 'essa operação já foi confirmada' }
+    return {
+      ok: false,
+      code: 'already_done',
+      reason: `essa tentativa não deu certo${doc.outcomeReason ? `: ${doc.outcomeReason}` : ''} — peça de novo para eu montar outra`,
+    }
+  }
   if (doc.expiresAt.getTime() < Date.now()) {
     return { ok: false, code: 'expired', reason: 'essa confirmação venceu — peça de novo para eu montar a prévia atual' }
   }
@@ -181,7 +201,24 @@ export async function confirmarOperacao(
   )
   if (!tomada) return { ok: false, code: 'already_done', reason: 'essa operação já foi confirmada' }
 
-  const r = await handler.run({ ownerId, inventory, query: doc.summary, ...(doc.target ? { targetRef: doc.target.label } : {}) })
+  const gravarDesfecho = (outcome: NonNullable<PendingOperation['outcome']>, outcomeReason: string | null) =>
+    pendentes.updateOne({ id: doc.id, ownerId }, { $set: { outcome, outcomeAt: new Date(), outcomeReason } })
+
+  let r
+  try {
+    r = await handler.run({ ownerId, inventory, query: doc.summary, ...(doc.target ? { targetRef: doc.target.label } : {}) })
+  } catch (erro) {
+    /**
+     * A EXCEÇÃO é gravada antes de subir.
+     *
+     * Ela sobe porque a rota precisa dela para auditar a tentativa; mas se ela subisse sem
+     * deixar nada aqui, o único registro seria um `confirmedAt` que parece sucesso.
+     */
+    await gravarDesfecho('failed', erro instanceof Error ? erro.message : 'falhou durante a execução')
+    throw erro
+  }
+
+  await gravarDesfecho(r.ok ? 'succeeded' : 'refused', r.ok ? null : r.reason)
   return r.ok ? { ok: true, text: r.text } : { ok: false, code: 'refused', reason: r.reason }
 }
 

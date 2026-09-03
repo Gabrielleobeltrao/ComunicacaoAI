@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
-import { Button, Icon } from '../ui'
+import { Button, Field, Icon, Input } from '../ui'
 import { API_URL } from '../lib/api'
 
 // O ARQUITETO COMO CHAT GLOBAL — uma instância só, montada no layout.
@@ -76,7 +76,7 @@ interface AssistantState {
   setRascunho: (t: string) => void
   enviar: () => Promise<void>
   /** Confirma a escrita que uma mensagem preparou. O texto do modelo nunca chega ao servidor. */
-  confirmar: (mensagemId: string) => Promise<void>
+  confirmar: (mensagemId: string, nomeDigitado?: string) => Promise<void>
 }
 
 const Ctx = createContext<AssistantState | null>(null)
@@ -109,6 +109,65 @@ export function idsDoCaminho(pathname: string): { pathname: string; floorId?: st
 const LARGURA_CHAVE = 'comunicacaoai.architect.width'
 const LARGURA_MIN = 320
 const LARGURA_MAX = 720
+
+/**
+ * O BLOCO DA OPERAÇÃO PENDENTE — e o nome que a torna confirmável.
+ *
+ * Quando o servidor devolve `requiresName`, só um botão não basta: ele manda a pessoa clicar
+ * sem dizer o que falta, a chamada volta recusada, e a operação de alto risco fica sem
+ * caminho pela tela. O nome digitado vive AQUI, e não numa lista global, porque cada mensagem
+ * tem a sua operação e uma janela própria de validade.
+ */
+function ConfirmacaoPendente({ mensagemId, pendente }: { mensagemId: string; pendente: NonNullable<Mensagem['pendente']> }) {
+  const a = useArchitectAssistant()
+  const [nome, setNome] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const campoId = `architect-confirmar-nome-${mensagemId}`
+  // Fora do provedor não há operação para confirmar: o bloco não se desenha pela metade.
+  if (!a) return null
+
+  const faltaNome = Boolean(pendente.requiresName) && !nome.trim()
+
+  return (
+    <div style={{ margin: '8px 0 0' }} data-testid="architect-confirmar-operacao">
+      <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 12.5, color: 'var(--text-muted)' }}>
+        {pendente.impact.map((linha) => (
+          <li key={linha}>{linha}</li>
+        ))}
+      </ul>
+      {pendente.requiresName ? (
+        <Field
+          label={`Digite \u201c${pendente.requiresName}\u201d para confirmar`}
+          hint="O nome é a confirmação: é o que garante que alguém leu o que está acima."
+          htmlFor={campoId}
+        >
+          <Input
+            id={campoId}
+            value={nome}
+            onChange={(e) => setNome(e.target.value)}
+            data-testid="architect-confirmar-nome"
+            autoComplete="off"
+            aria-required="true"
+          />
+        </Field>
+      ) : null}
+      <Button
+        variant="secondary"
+        disabled={faltaNome || enviando}
+        onClick={() => {
+          // O clique duplo não manda duas vezes: a segunda chamada gastaria a operação de uso
+          // único e a pessoa leria "não existe mais" como se tivesse falhado.
+          if (enviando) return
+          setEnviando(true)
+          void a.confirmar(mensagemId, nome).finally(() => setEnviando(false))
+        }}
+        data-testid="architect-confirmar"
+      >
+        Confirmar
+      </Button>
+    </div>
+  )
+}
 
 export function ArchitectAssistantProvider({ children }: { children: ReactNode }) {
   const [aberto, setAberto] = useState(false)
@@ -199,19 +258,38 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
    * Nada do que a pessoa ou o modelo escreveram viaja aqui: só a referência de uma operação
    * que o servidor já preparou e o carimbo do que foi mostrado.
    */
-  const confirmar = useCallback(async (mensagemId: string) => {
+  const confirmar = useCallback(async (mensagemId: string, nomeDigitado?: string) => {
     const alvo = mensagens.find((m) => m.id === mensagemId)
     if (!alvo?.pendente) return
+    /**
+     * O NOME é obrigatório quando o servidor pede um.
+     *
+     * Sem ele a chamada sai e volta recusada: a pessoa clica, não acontece nada visível, e a
+     * operação de alto risco fica sem caminho pela tela.
+     */
+    if (alvo.pendente.requiresName && !String(nomeDigitado ?? '').trim()) {
+      setMensagens((m) =>
+        m.map((x) => (x.id === mensagemId ? { ...x, desfecho: `digite o nome “${alvo.pendente!.requiresName}” para confirmar` } : x)),
+      )
+      return
+    }
     try {
       const res = await fetch(`${API_URL}/api/architect/assistant/confirm`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: alvo.pendente.id, operationHash: alvo.pendente.operationHash }),
+        body: JSON.stringify({
+          id: alvo.pendente.id,
+          operationHash: alvo.pendente.operationHash,
+          ...(alvo.pendente.requiresName ? { confirmationName: nomeDigitado ?? '' } : {}),
+        }),
       })
       const corpo = (await res.json().catch(() => null)) as { ok?: boolean; text?: string; message?: string } | null
       // O desfecho fica NA MENSAGEM: um alerta que some deixaria a pessoa sem saber se
       // aconteceu — e a recusa por hash vencido é exatamente o que ela precisa ler.
+      // A MENSAGEM DO SERVIDOR é preservada como veio: ela diz qual nome digitar, que o hash
+      // envelheceu ou que a janela passou — trocá-la por um texto genérico tira da pessoa a
+      // única informação que resolve.
       setMensagens((m) =>
         m.map((x) => (x.id === mensagemId ? { ...x, desfecho: corpo?.text ?? corpo?.message ?? 'não consegui confirmar', pendente: res.ok ? null : x.pendente } : x)),
       )
@@ -486,18 +564,7 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
                     {m.pergunta}
                   </p>
                 ) : null}
-                {m.pendente && !m.desfecho ? (
-                  <div style={{ margin: '8px 0 0' }} data-testid="architect-confirmar-operacao">
-                    <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 12.5, color: 'var(--text-muted)' }}>
-                      {m.pendente.impact.map((linha) => (
-                        <li key={linha}>{linha}</li>
-                      ))}
-                    </ul>
-                    <Button variant="secondary" onClick={() => void a.confirmar(m.id)} data-testid="architect-confirmar">
-                      Confirmar
-                    </Button>
-                  </div>
-                ) : null}
+                {m.pendente ? <ConfirmacaoPendente mensagemId={m.id} pendente={m.pendente} /> : null}
                 {m.desfecho ? (
                   <p style={{ margin: '8px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="architect-desfecho">
                     {m.desfecho}

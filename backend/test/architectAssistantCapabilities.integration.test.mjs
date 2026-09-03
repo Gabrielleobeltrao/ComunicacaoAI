@@ -362,3 +362,121 @@ test('ACEITAÇÃO: pergunta ESTÁTICA com OpenAI configurada responde de verdade
   assert.equal(r.phase, 'done')
   assert.match(r.text, /força relativa/, 'a resposta estática precisa chegar ao usuário')
 })
+
+// --- o que sobra depois da execução: estado, resultado e recuperação ---------------------------
+
+test('CARACTERIZAÇÃO: a operação guarda o RESULTADO da execução, e não só a confirmação', async () => {
+  const { turno } = await prepararPausa()
+  await op.confirmarOperacao(DONO, { id: turno.pendingOperation.id, operationHash: turno.pendingOperation.operationHash })
+
+  const doc = await db.collection('architect_pending_operations').findOne({ id: turno.pendingOperation.id })
+  assert.equal(doc.outcome, 'succeeded', 'sem o desfecho gravado, "confirmada" não distingue o que deu certo do que estourou')
+  assert.ok(doc.outcomeAt instanceof Date, 'sem quando, a auditoria não consegue ordenar a tentativa')
+})
+
+test('AMEAÇA: o handler que ESTOURA não vira sucesso — e a operação diz que falhou', async () => {
+  const { fonte, turno } = await prepararPausa()
+
+  /**
+   * O handler quebra DEPOIS de a operação ser tomada — a janela em que o registro mentiria.
+   *
+   * Antes disto, `confirmedAt` era gravado e a exceção subia: a operação ficava "confirmada"
+   * para sempre, a segunda tentativa lia "já foi confirmada", e ninguém conseguia distinguir
+   * uma pausa que aconteceu de uma que explodiu no meio.
+   */
+  const capMod = await import('../dist/architect/assistantCapabilities.js')
+  const alvo = await db.collection('architect_pending_operations').findOne({ id: turno.pendingOperation.id })
+  const original = capMod.capabilityByKey(alvo.capabilityKey)
+  const run = original?.run
+  assert.ok(run, `a capacidade "${alvo.capabilityKey}" precisa existir para este teste dizer alguma coisa`)
+  original.run = async () => {
+    throw new Error('o provedor caiu no meio')
+  }
+  try {
+    await assert.rejects(
+      () => op.confirmarOperacao(DONO, { id: alvo.id, operationHash: alvo.operationHash }),
+      /provedor caiu/,
+      'a exceção precisa subir para a rota poder auditá-la',
+    )
+  } finally {
+    original.run = run
+  }
+
+  const doc = await db.collection('architect_pending_operations').findOne({ id: alvo.id })
+  assert.equal(doc.outcome, 'failed', 'uma falha registrada como sucesso é a pior linha de auditoria possível')
+  assert.match(String(doc.outcomeReason ?? ''), /caiu|falh/i, 'sem motivo, a falha não é investigável')
+  // Nada foi escrito: a fonte continua como estava.
+  assert.equal((await db.collection('monitoring_sources').findOne({ _id: fonte._id })).status, 'active')
+
+  // E a segunda tentativa NÃO mente dizendo que já foi feita.
+  const denovo = await op.confirmarOperacao(DONO, { id: alvo.id, operationHash: alvo.operationHash })
+  assert.equal(denovo.ok, false)
+  assert.match(denovo.reason, /não deu certo|falhou|peça de novo/i, `a pessoa precisa saber que pode pedir de novo: "${denovo.reason}"`)
+})
+
+test('a RECUSA do handler também fica gravada — ela não é sucesso nem falha de sistema', async () => {
+  const { turno } = await prepararPausa()
+  const capMod = await import('../dist/architect/assistantCapabilities.js')
+  const alvo = await db.collection('architect_pending_operations').findOne({ id: turno.pendingOperation.id })
+  const original = capMod.capabilityByKey(alvo.capabilityKey)
+  const run = original.run
+  original.run = async () => ({ ok: false, reason: 'a fonte pertence a outro andar' })
+  try {
+    const r = await op.confirmarOperacao(DONO, { id: turno.pendingOperation.id, operationHash: turno.pendingOperation.operationHash })
+    assert.equal(r.ok, false)
+    assert.equal(r.code, 'refused')
+  } finally {
+    original.run = run
+  }
+
+  const doc = await db.collection('architect_pending_operations').findOne({ id: turno.pendingOperation.id })
+  assert.equal(doc.outcome, 'refused')
+  assert.match(String(doc.outcomeReason ?? ''), /outro andar/)
+})
+
+test('AUDITORIA: a tentativa que ESTOURA no handler também deixa linha', async () => {
+  const { turno } = await prepararPausa()
+  const alvo = await db.collection('architect_pending_operations').findOne({ id: turno.pendingOperation.id })
+
+  const express = (await import('express')).default
+  const { architectRouter } = await import('../dist/routes/architectRoutes.js')
+  const app = express()
+  app.use(express.json())
+  app.use((_req, res, next) => {
+    res.locals.userId = DONO
+    next()
+  })
+  app.use('/api/architect', architectRouter)
+  // O manipulador de erro do Express: sem ele a exceção derruba a resposta e o teste mede o silêncio.
+  app.use((_erro, _req, res, _next) => res.status(500).json({ message: 'erro' }))
+  const servidor = await new Promise((r) => {
+    const s = app.listen(0, () => r(s))
+  })
+  const porta = servidor.address().port
+
+  const capMod = await import('../dist/architect/assistantCapabilities.js')
+  const capacidade = capMod.capabilityByKey(alvo.capabilityKey)
+  const run = capacidade.run
+  capacidade.run = async () => {
+    throw new Error('o provedor caiu no meio')
+  }
+  try {
+    await db.collection('audit_events').deleteMany({})
+    const r = await fetch(`http://127.0.0.1:${porta}/api/architect/assistant/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: alvo.id, operationHash: alvo.operationHash }),
+    })
+    assert.equal(r.status, 500)
+
+    const linhas = await db.collection('audit_events').find({ entityType: 'architect_operation' }).toArray()
+    assert.equal(linhas.length, 1, 'uma escrita confirmada por alguém não pode sumir da auditoria por ter estourado')
+    assert.equal(linhas[0].result, 'failure')
+    assert.equal(linhas[0].entityId, alvo.id, 'sem o id, a linha não diz QUAL operação falhou')
+    // A mensagem crua não entra: ela conta caminho de arquivo e valor de variável.
+    assert.equal(/provedor caiu/.test(JSON.stringify(linhas[0])), false, 'a exceção crua vazou para a auditoria')
+  } finally {
+    capacidade.run = run
+    servidor.close()
+  }
+})

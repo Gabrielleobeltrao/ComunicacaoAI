@@ -437,3 +437,123 @@ test('a recusa da confirmação fica NA MENSAGEM, e o botão continua lá', asyn
   // Um alerta que some deixaria a pessoa sem saber por que nada aconteceu.
   await expect(page.getByTestId('architect-desfecho')).toContainText('mudou desde a prévia')
 })
+
+// --- alto risco: o nome é a confirmação ---------------------------------------------------
+
+/** Uma operação de alto risco: o servidor pede o nome digitado. */
+const pendenteComNome = (over: Record<string, unknown> = {}) => ({
+  intent: { mode: 'operate', action: 'apagar o andar', risk: 'high_risk' },
+  phase: 'awaiting_approval',
+  text: 'apagar o andar "Operação". Confirme para eu fazer.',
+  question: null,
+  projectId: null,
+  context: { pathname: '/', rejected: [] },
+  pendingOperation: {
+    id: 'op-risco',
+    operationHash: 'h1',
+    summary: 'apagar o andar "Operação"',
+    impact: ['3 agentes deixam de existir.', 'As conexões da empresa continuam.'],
+    expiresAt: new Date(Date.now() + 600000).toISOString(),
+    requiresName: 'Operação',
+    ...over,
+  },
+})
+
+const abrirRisco = async (page: import('@playwright/test').Page) => {
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('apague o andar Operação')
+  await page.getByTestId('architect-input').press('Enter')
+}
+
+test('ALTO RISCO: sem o nome digitado o botão não confirma — e a instrução diz qual nome', async ({ page }) => {
+  let chamou = 0
+  await stub(page, { turno: pendenteComNome() })
+  await page.route('**/api/architect/assistant/confirm', (r) => {
+    chamou += 1
+    return r.fulfill({ json: { ok: true, text: 'pronto' } })
+  })
+
+  await abrirRisco(page)
+
+  // A instrução é o nome EXATO: "confirme" sozinho manda a pessoa adivinhar.
+  await expect(page.getByTestId('architect-confirmar-operacao')).toContainText('Operação')
+  const campo = page.getByTestId('architect-confirmar-nome')
+  await expect(campo).toBeVisible()
+  await expect(page.getByTestId('architect-confirmar')).toBeDisabled()
+
+  // Espaço em branco não é nome.
+  await campo.fill('   ')
+  await expect(page.getByTestId('architect-confirmar')).toBeDisabled()
+  expect(chamou).toBe(0)
+})
+
+test('ALTO RISCO: com o nome certo, ele VIAJA na confirmação', async ({ page }) => {
+  let enviado: unknown = null
+  await stub(page, { turno: pendenteComNome() })
+  await page.route('**/api/architect/assistant/confirm', (r) => {
+    enviado = r.request().postDataJSON()
+    return r.fulfill({ json: { ok: true, text: 'O andar "Operação" foi apagado.' } })
+  })
+
+  await abrirRisco(page)
+  await page.getByTestId('architect-confirmar-nome').fill('Operação')
+  await page.getByTestId('architect-confirmar').click()
+
+  await expect.poll(() => enviado).not.toBeNull()
+  expect(enviado).toEqual({ id: 'op-risco', operationHash: 'h1', confirmationName: 'Operação' })
+  await expect(page.getByTestId('architect-desfecho')).toContainText('foi apagado')
+  // Confirmada, a operação some: um botão que continua ali convida a apagar duas vezes.
+  await expect(page.getByTestId('architect-confirmar-operacao')).toHaveCount(0)
+})
+
+test('ALTO RISCO: nome errado é recusado pelo servidor — e o campo fica para corrigir', async ({ page }) => {
+  await stub(page, { turno: pendenteComNome() })
+  await page.route('**/api/architect/assistant/confirm', (r) =>
+    r.fulfill({ status: 409, json: { ok: false, code: 'name_mismatch', message: 'digite o nome "Operação" para confirmar' } }),
+  )
+
+  await abrirRisco(page)
+  await page.getByTestId('architect-confirmar-nome').fill('Operacao')
+  await page.getByTestId('architect-confirmar').click()
+
+  // A MENSAGEM DO SERVIDOR, como veio: ela diz qual nome digitar.
+  await expect(page.getByTestId('architect-desfecho')).toContainText('digite o nome')
+  // E o campo continua: recomeçar a conversa para corrigir um acento é o caminho errado.
+  await expect(page.getByTestId('architect-confirmar-nome')).toBeVisible()
+})
+
+test('ALTO RISCO: a janela vencida diz que venceu — e não vira sucesso silencioso', async ({ page }) => {
+  await stub(page, { turno: pendenteComNome() })
+  await page.route('**/api/architect/assistant/confirm', (r) =>
+    r.fulfill({ status: 409, json: { ok: false, code: 'expired', message: 'a confirmação venceu: peça de novo para eu preparar outra' } }),
+  )
+
+  await abrirRisco(page)
+  await page.getByTestId('architect-confirmar-nome').fill('Operação')
+  await page.getByTestId('architect-confirmar').click()
+
+  await expect(page.getByTestId('architect-desfecho')).toContainText('venceu')
+  await expect(page.getByTestId('architect-confirmar-operacao')).toBeVisible()
+})
+
+test('ALTO RISCO: clique duplo manda UMA confirmação só', async ({ page }) => {
+  let chamadas = 0
+  await stub(page, { turno: pendenteComNome() })
+  await page.route('**/api/architect/assistant/confirm', async (r) => {
+    chamadas += 1
+    // A resposta demora: é exatamente a janela em que o segundo clique acontece.
+    await new Promise((ok) => setTimeout(ok, 400))
+    return r.fulfill({ json: { ok: true, text: 'apagado' } })
+  })
+
+  await abrirRisco(page)
+  await page.getByTestId('architect-confirmar-nome').fill('Operação')
+  const botao = page.getByTestId('architect-confirmar')
+  await botao.click()
+  await botao.click({ force: true, timeout: 2000 }).catch(() => undefined)
+
+  await expect(page.getByTestId('architect-desfecho')).toContainText('apagado')
+  // Uma operação é de uso único: a segunda chamada leria "não existe mais" como falha.
+  expect(chamadas).toBe(1)
+})

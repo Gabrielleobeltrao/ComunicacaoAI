@@ -167,6 +167,26 @@ architectRouter.post('/assistant/confirm', async (req, res, next) => {
     const status = r.code === 'not_found' ? 404 : r.code === 'name_mismatch' ? 400 : 409
     res.status(status).json({ code: r.code, message: r.reason })
   } catch (erro) {
+    /**
+     * A TENTATIVA QUE ESTOUROU também é uma tentativa.
+     *
+     * Ela saía por aqui sem passar pelo registro: a auditoria de uma escrita confirmada por
+     * alguém ficava sem linha nenhuma, justamente no caso que mais se investiga depois. A
+     * mensagem crua não entra — ela conta caminho de arquivo e valor de variável.
+     */
+    await recordAudit({
+      ownerId: res.locals.userId,
+      actorType: 'user',
+      actorId: res.locals.userId,
+      action: 'update',
+      entityType: 'architect_operation',
+      entityId: String(b.id ?? '') || null,
+      entityLabel: null,
+      floorId: null,
+      result: 'failure',
+      requestId: typeof res.locals.requestId === 'string' ? res.locals.requestId : randomUUID(),
+      metadata: { method: 'POST', statusCode: 500, via: 'assistant', code: 'exception' },
+    }).catch(() => undefined)
     next(erro as Error)
   }
 })
