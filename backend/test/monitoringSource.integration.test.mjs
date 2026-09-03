@@ -1028,3 +1028,35 @@ test('excluir leva junto o que só existia por causa da fonte — e deixa o hist
   assert.ok((await db.collection('data_history_records').countDocuments({ ownerId: DONO, recorderId })) > 0)
   assert.ok(await db.collection('data_recorders').findOne({ _id: recorderId }))
 })
+
+// --- o round-trip da própria fonte ---------------------------------------------------------
+
+test('a fonte gravada pode ser REESCRITA como está — o discriminador não vira campo estranho', async () => {
+  const f = await svc.createSource(DONO, entrada({ name: 'Antes' }))
+  const gravada = await svc.getSource(DONO, f._id)
+
+  // Ler, mudar uma coisa e gravar de volta é o que a tela faz e o que a aplicação de um
+  // Blueprint faz. O `kind` dentro do config é gerado pelo próprio servidor: recusá-lo na
+  // volta torna impossível editar qualquer fonte a partir do que está gravado.
+  const depois = await svc.updateSource(DONO, f._id, {
+    name: 'Depois',
+    kind: gravada.kind,
+    config: gravada.config,
+    mapping: gravada.mapping,
+    cadence: gravada.cadence,
+    destination: { live: true, history: gravada.destination.history },
+  })
+
+  assert.equal(depois.name, 'Depois')
+  assert.equal(depois.destination.live, true)
+  assert.equal(depois.config.url, gravada.config.url)
+})
+
+test('AMEAÇA: um `kind` de OUTRO tipo dentro do config continua recusado', async () => {
+  const f = await svc.createSource(DONO, entrada())
+  await assert.rejects(
+    () => svc.updateSource(DONO, f._id, { ...entrada(), config: { url: `http://127.0.0.1:${porta}/precos`, method: 'GET', kind: 'browser' } }),
+    /kind/,
+    'aceitar um discriminador trocado deixaria o config de um tipo entrar como o de outro',
+  )
+})

@@ -17,6 +17,7 @@ import type {
   BlueprintLayer,
   OfficeBlueprintV1,
 } from './types.js'
+import type { OfficeBlueprintV2 } from './typesV2.js'
 
 // A persistência do Arquiteto. Três coleções, todas com `ownerId` no filtro de TODA
 // consulta — não há função aqui que aceite um id sem o dono junto, o que torna
@@ -57,7 +58,14 @@ export interface ArchitectProject {
    * perde entre a versão que a pessoa leu e a que está na tela.
    */
   previousBrief?: OperationBrief | null
-  blueprintVersion: 1
+  blueprintVersion: 1 | 2
+  /**
+   * O plano V2 — recursos e operações, além da organização.
+   *
+   * Ausente nos projetos que já existem, e é o que os mantém funcionando: sem ele a
+   * aplicação roda só a saga do V1, exatamente como rodava antes.
+   */
+  blueprintV2?: OfficeBlueprintV2 | null
   /**
    * O PLANO INTEIRO — as três camadas juntas, cada item marcado com a sua.
    *

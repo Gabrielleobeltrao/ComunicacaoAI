@@ -206,7 +206,16 @@ export function validateConfig(kind: MonitoringSourceKind, bruto: unknown): Type
     internal_event: ['eventType'],
   }
 
-  const estranhos = Object.keys(c).filter((k) => !permitidos[kind].includes(k))
+  /**
+   * O `kind` dentro do config é o discriminador que ESTA função emite.
+   *
+   * Recusá-lo na volta torna impossível reescrever uma fonte a partir da que está gravada —
+   * e ler, mudar um campo e gravar de volta é o caminho normal da tela e da aplicação de um
+   * Blueprint. Um `kind` TROCADO continua recusado: ele deixaria o config de um tipo entrar
+   * como o de outro.
+   */
+  if ('kind' in c && c.kind !== kind) throw new ConfigError(`o "kind" do config (${String(c.kind)}) não é o da fonte (${kind})`, 'kind')
+  const estranhos = Object.keys(c).filter((k) => k !== 'kind' && !permitidos[kind].includes(k))
   if (estranhos.length) {
     throw new ConfigError(`"${estranhos[0]}" não faz parte de uma fonte do tipo ${kind}`, estranhos[0])
   }

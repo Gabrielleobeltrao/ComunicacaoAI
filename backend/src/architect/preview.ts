@@ -3,6 +3,7 @@ import { deriveChecklist, applyChecklistState, computeReadiness } from './checkl
 import { validateOfficeBlueprint } from './validate.js'
 import type { BlueprintOwnershipContext, BlueprintIssue } from './validate.js'
 import type { ArchitectChecklistItem, ArchitectReadiness, OfficeBlueprintV1 } from './types.js'
+import type { OfficeBlueprintV2 } from './typesV2.js'
 
 // A PRÉVIA: o que vai acontecer, item a item, antes de qualquer escrita.
 //
@@ -40,7 +41,7 @@ export interface ArchitectPreview {
 
 const doIssue = (issues: BlueprintIssue[], prefixo: string): BlueprintIssue[] => issues.filter((i) => i.path === prefixo || i.path.startsWith(`${prefixo}.`) || i.path.startsWith(`${prefixo}[`))
 
-export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipContext, marcados: Set<string> = new Set()): ArchitectPreview {
+export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipContext, marcados: Set<string> = new Set(), v2?: OfficeBlueprintV2 | null): ArchitectPreview {
   const { valid, issues } = validateOfficeBlueprint(bp, ctx)
   const items: PreviewItem[] = []
 
@@ -156,7 +157,7 @@ export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipConte
   const bloqueios = issues.filter((i) => i.severity === 'error').map((i) => i.message)
 
   return {
-    blueprintHash: computeBlueprintHash(bp),
+    blueprintHash: computeBlueprintHash(bp, v2),
     valid,
     issues,
     items,

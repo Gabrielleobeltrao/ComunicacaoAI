@@ -1,5 +1,6 @@
 import { computeDefinitionHash } from '../automations/validate.js'
 import type { OfficeBlueprintV1 } from './types.js'
+import type { OfficeBlueprintV2 } from './typesV2.js'
 
 // O blueprint em si: como se cria um vazio, como se junta um patch e como se calcula
 // o hash que a confirmação exige.
@@ -26,7 +27,15 @@ export const emptyBlueprint = (title: string, objective: string): OfficeBlueprin
  * chave não muda o resultado, e qualquer mudança de conteúdo muda o hash. É o que faz
  * "aplicar" recusar um blueprint que mudou entre a prévia e o clique.
  */
-export const computeBlueprintHash = (blueprint: OfficeBlueprintV1): string => computeDefinitionHash(blueprint)
+/**
+ * O cadeado da revisão.
+ *
+ * Quando o projeto tem plano V2, ele entra no MESMO hash: sem isso, mudar só os monitores
+ * deixaria o hash do V1 igual, e um clique feito olhando a revisão anterior aplicaria uma
+ * operação que ninguém leu. Projetos sem V2 seguem com exatamente o hash que já tinham.
+ */
+export const computeBlueprintHash = (blueprint: OfficeBlueprintV1, v2?: OfficeBlueprintV2 | null): string =>
+  v2 ? computeDefinitionHash({ v1: blueprint, v2 } as unknown as OfficeBlueprintV1) : computeDefinitionHash(blueprint)
 
 const LISTAS = [
   'floors',

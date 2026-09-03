@@ -3,6 +3,7 @@ import { ValidationError } from '../building.js'
 import * as service from '../architect/service.js'
 import * as repo from '../architect/repository.js'
 import { ArchitectRefusal } from '../architect/service.js'
+import { ApplyFailure } from '../architect/apply.js'
 import { allowRate, withProjectLock } from '../architect/guard.js'
 import * as L from '../architect/limits.js'
 import { auditEntity } from './auditMiddleware.js'
@@ -44,6 +45,16 @@ const refusalStatus: Record<string, number> = {
 }
 
 function refuse(res: Parameters<typeof fail>[0], error: unknown, next: Parameters<typeof fail>[2]): void {
+  /**
+   * Uma saga que falhou é um estado NORMAL do produto — existe rota para retomar.
+   *
+   * Sem este ramo ela caía no 500 padrão do Express, que devolve HTML: a tela ficava sem o
+   * motivo e sem o id da operação, e "retomar" não tinha o que retomar.
+   */
+  if (error instanceof ApplyFailure) {
+    res.status(502).json({ code: 'apply_failed', message: error.message, operationId: error.operationId })
+    return
+  }
   if (error instanceof ArchitectRefusal) {
     if (error.code === 'no_blueprint' && error.message === 'projeto não encontrado') return notFound(res)
     res.status(refusalStatus[error.code] ?? 400).json({ code: error.code, message: error.message })

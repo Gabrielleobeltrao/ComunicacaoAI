@@ -261,7 +261,27 @@ export interface OfficeBlueprintV1 {
 
 // --- aplicação -----------------------------------------------------------------------
 
-export type ApplyStepKind = 'floor' | 'agent' | 'sector' | 'wiring' | 'knowledge' | 'routine' | 'grant' | 'checklist'
+export type ApplyStepKind =
+  | 'floor'
+  | 'agent'
+  | 'sector'
+  | 'wiring'
+  | 'knowledge'
+  | 'routine'
+  | 'grant'
+  | 'checklist'
+  // Os blocos do V2. Eles entram na MESMA lista de passos: a auditoria, a retomada e o
+  // `resourceMap` são os mesmos, e é isso que impede uma segunda engine de existir.
+  | 'database'
+  | 'dataset'
+  | 'tool'
+  | 'source'
+  | 'live'
+  | 'history'
+  | 'monitor'
+  | 'flow'
+  | 'delivery'
+  | 'channel'
 
 export interface ApplyStepResult {
   kind: ApplyStepKind

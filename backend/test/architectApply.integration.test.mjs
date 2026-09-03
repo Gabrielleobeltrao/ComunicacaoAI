@@ -86,6 +86,10 @@ beforeEach(async () => {
     'connections',
     'knowledge_documents',
     'knowledge_chunks',
+    'data_stores',
+    'dataset_definitions',
+    'monitoring_sources',
+    'monitors',
   ])
     await db.collection(c).deleteMany({})
   resetGuards()
@@ -446,4 +450,229 @@ test('arquivado, sim, silencia a conversa', async () => {
   const r = await pedir('POST', `/projects/${id}/messages`, { content: 'oi' })
   assert.equal(r.status, 409)
   assert.match(r.body.message, /arquivado/)
+})
+
+// --- o plano V2 dentro da MESMA aplicação -----------------------------------------------------
+//
+// O V2 acrescenta Databases, datasets, fontes, monitores e Flows. Ele NÃO é uma segunda
+// engine: entra na mesma saga, escreve no mesmo `resourceMap`, registra os mesmos passos e é
+// retomado pelo mesmo caminho. É isso que estes casos protegem.
+
+const t2 = await import('../dist/architect/typesV2.js')
+
+const itemV2 = (over) => ({ action: 'create', layer: 'essential', rationale: 'x', dependsOn: [], ...over })
+
+/** Põe um plano V2 no projeto e devolve o hash que a confirmação precisa carregar. */
+const comPlanoV2 = async (id, monta) => {
+  const bp2 = t2.emptyBlueprintV2('Operação', 'Vigiar', 'create')
+  monta(bp2)
+  const projeto = await repo.patchProject(DONO, new ObjectId(id), { blueprintVersion: 2, blueprintV2: bp2 })
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.ok(previa.body.blueprintHash)
+  return { hash: previa.body.blueprintHash, projeto }
+}
+
+const planoSimples = (bp2) => {
+  bp2.resources.databases = [itemV2({ key: 'base', name: 'Cotações', owner: { ownerType: 'account' }, adapterKind: 'data_history' })]
+  bp2.resources.datasets = [
+    itemV2({
+      key: 'candles',
+      dependsOn: ['base'],
+      databaseKey: 'base',
+      datasetKey: 'candles',
+      name: 'Candles',
+      schema: { type: 'object', properties: { rsi: { type: 'number' } } },
+      mutability: 'append_only',
+    }),
+  ]
+  bp2.operations.sources = [
+    itemV2({
+      key: 'fonte',
+      name: 'Cotações CXSE3',
+      kind: 'api_polling',
+      config: { url: 'https://api.exemplo.test/cotacoes', method: 'GET' },
+      mapping: { version: 1, fields: [{ to: 'rsi', from: 'rsi', required: true }] },
+      cadence: { mode: 'interval', intervalMs: 60_000 },
+    }),
+  ]
+}
+
+test('o plano V2 é aplicado pela MESMA operação, e vira passo registrado', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, planoSimples)
+
+  const r = await aplicar(id, hash, 'op-v2')
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.equal(r.body.status, 'applied')
+
+  // Os recursos do V1 continuam nascendo: o V2 acrescenta, não substitui.
+  assert.equal(await db.collection('offices').countDocuments({ ownerId: DONO }), 1)
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+  assert.equal(await db.collection('dataset_definitions').countDocuments({ ownerId: DONO }), 1)
+
+  // A fonte nasce RASCUNHO: ninguém aplicou uma operação que já começa a bater fora.
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'draft')
+
+  // Os passos do V2 estão na MESMA lista de passos da operação — mesma auditoria.
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const kinds = operacao.steps.map((p) => p.kind)
+  for (const k of ['floor', 'agent', 'database', 'dataset', 'source']) assert.ok(kinds.includes(k), `faltou ${k} em ${kinds.join(',')}`)
+  assert.equal(operacao.resourceMap['database:base'], (await db.collection('data_stores').findOne({ ownerId: DONO }))._id.toString())
+})
+
+test('mudar SÓ o plano V2 invalida a confirmação anterior', async () => {
+  const { id, hash: hashV1 } = await projetoPronto()
+  await comPlanoV2(id, planoSimples)
+
+  // O hash do V1 não mudou — o recorte é o mesmo. Se ele ainda valesse como confirmação,
+  // um clique feito olhando a revisão sem monitor nenhum aplicaria a revisão com eles.
+  const r = await aplicar(id, hashV1, 'op-velha')
+  assert.equal(r.status, 409)
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 0)
+})
+
+test('uma falha no V2 derruba a operação — e o que já nasceu fica no mapa', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    // O monitor observa um conjunto que não está no plano: não há como criá-lo.
+    bp2.operations.monitors = [
+      itemV2({
+        key: 'rsi',
+        dependsOn: ['candles'],
+        name: 'RSI baixo',
+        observes: { kind: 'dataset', datasetKey: 'conjunto-que-nao-existe' },
+        condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+        triggerMode: 'enter',
+      }),
+    ]
+  })
+
+  // A falha volta como RESPOSTA, com motivo e id da operação. O 500 padrão do Express
+  // devolvia HTML, e a tela ficava sem o que mostrar e sem o que retomar.
+  const r = await aplicar(id, hash, 'op-falha')
+  assert.equal(r.status, 502, JSON.stringify(r.body))
+  assert.equal(r.body.code, 'apply_failed')
+  assert.match(r.body.message, /monitor "rsi"/)
+  assert.ok(r.body.operationId)
+
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  assert.equal(projeto.status, 'failed')
+  assert.equal(await db.collection('monitors').countDocuments({ ownerId: DONO }), 0, 'um monitor sem o que observar nunca dispara')
+
+  // O que nasceu ANTES da falha está no mapa: é isso que faz a retomada não duplicar.
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  assert.ok(operacao.resourceMap['database:base'])
+  assert.ok(operacao.resourceMap['source:fonte'])
+  assert.equal(operacao.status, 'failed')
+})
+
+test('retomar depois da falha NÃO cria o que já existe', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    bp2.operations.monitors = [
+      itemV2({
+        key: 'rsi',
+        dependsOn: ['candles'],
+        name: 'RSI baixo',
+        observes: { kind: 'dataset', datasetKey: 'conjunto-que-nao-existe' },
+        condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+        triggerMode: 'enter',
+      }),
+    ]
+  })
+  await aplicar(id, hash, 'op-retomar')
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+
+  // Corrigido: agora o monitor aponta para o conjunto que a aplicação criou.
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  const bp2 = projeto.blueprintV2
+  bp2.operations.monitors[0].observes.datasetKey = 'candles'
+  await repo.patchProject(DONO, new ObjectId(id), { blueprintV2: bp2 })
+
+  // Retomar exige o MESMO hash da operação: um plano corrigido é uma revisão nova.
+  const r = await pedir('POST', `/projects/${id}/resume`)
+  assert.equal(r.status, 409, JSON.stringify(r.body))
+  assert.match(r.body.message, /mudou/)
+
+  // E, acima de tudo: nada foi criado duas vezes.
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+  assert.equal(await db.collection('monitoring_sources').countDocuments({ ownerId: DONO }), 1)
+})
+
+test('retomar com o MESMO plano refaz só o que faltou', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    bp2.operations.monitors = [
+      itemV2({
+        key: 'rsi',
+        dependsOn: ['candles'],
+        name: 'RSI baixo',
+        observes: { kind: 'dataset', datasetKey: 'candles' },
+        condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+        triggerMode: 'enter',
+      }),
+    ]
+  })
+
+  // Uma queda antes do monitor: o Database e a fonte já existem, o monitor não.
+  const alvo = await db.collection('data_stores').findOne({ ownerId: DONO })
+  assert.equal(alvo, null)
+
+  const r = await aplicar(id, hash, 'op-completa')
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
+  assert.ok(monitor, 'o monitor do conjunto criado nesta mesma aplicação nasce junto')
+  assert.equal(monitor.status, 'draft', 'publicar é um ato separado')
+
+  // Aplicar de novo com a mesma chave devolve a mesma operação — nada é criado duas vezes.
+  const denovo = await aplicar(id, hash, 'op-completa')
+  assert.equal(denovo.status, 200)
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+  assert.equal(await db.collection('monitors').countDocuments({ ownerId: DONO }), 1)
+})
+
+test('o rollback desfaz também o que o V2 criou — e deixa o histórico', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    bp2.operations.monitors = [
+      itemV2({
+        key: 'rsi',
+        dependsOn: ['candles'],
+        name: 'RSI baixo',
+        observes: { kind: 'dataset', datasetKey: 'candles' },
+        condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+        triggerMode: 'enter',
+      }),
+    ]
+  })
+  await aplicar(id, hash, 'op-rollback-v2')
+  assert.equal(await db.collection('monitors').countDocuments({ ownerId: DONO }), 1)
+
+  const r = await pedir('POST', `/projects/${id}/rollback`)
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  for (const c of ['monitors', 'monitoring_sources', 'dataset_definitions', 'data_stores'])
+    assert.equal(await db.collection(c).countDocuments({ ownerId: DONO }), 0, `sobrou em ${c}`)
+})
+
+test('o rollback NÃO apaga o recurso do V2 editado depois de criado', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, planoSimples)
+  await aplicar(id, hash, 'op-rollback-editado')
+
+  const store = await db.collection('data_stores').findOne({ ownerId: DONO })
+  // Alguém renomeou o Database depois. Editado é trabalho de quem editou, não sobra
+  // da aplicação — e um desfazer que o apagasse destruiria o que a pessoa fez.
+  await db.collection('data_stores').updateOne({ _id: store._id }, { $set: { name: 'Meu', updatedAt: new Date(Date.now() + 60_000) } })
+
+  const r = await pedir('POST', `/projects/${id}/rollback`)
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+  assert.ok(r.body.kept.some((k) => /editado depois/.test(k.reason)), JSON.stringify(r.body.kept))
 })

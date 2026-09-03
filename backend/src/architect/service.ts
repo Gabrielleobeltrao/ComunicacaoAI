@@ -292,7 +292,7 @@ async function runTurn(
    */
   const camada = camadaDe(projeto)
   const recorte = blueprint ? selectLayer(blueprint, camada) : null
-  const hash = recorte ? computeBlueprintHash(recorte) : null
+  const hash = recorte ? computeBlueprintHash(recorte, projeto.blueprintV2) : null
   const patch: Partial<ArchitectProject> = {
     // Qual constituição valia quando esta proposta foi feita. Sem isso, mudar o texto
     // das regras torna uma decisão antiga inexplicável — e impossível de reproduzir.
@@ -429,7 +429,7 @@ export async function previewProject(ownerId: string, projectId: ObjectId) {
   if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para revisar')
   const [ctx, manifesto] = await Promise.all([loadOwnershipContext(ownerId), buildCapabilityManifest(ownerId).catch(() => null)])
   const recorte = recorteDe(projeto)!
-  const previa = buildPreview(recorte, ctx, marcadosDe(projeto))
+  const previa = buildPreview(recorte, ctx, marcadosDe(projeto), projeto.blueprintV2)
 
   /**
    * O crítico e o ensaio vão JUNTO da prévia.
@@ -646,7 +646,7 @@ export async function setBlueprintLinks(ownerId: string, projectId: ObjectId, li
   return (
     (await repo.patchProject(ownerId, projectId, {
       blueprint,
-      blueprintHash: computeBlueprintHash(recorte),
+      blueprintHash: computeBlueprintHash(recorte, projeto.blueprintV2),
       checklist,
       readiness: computeReadiness(checklist, []),
       // Uma ligação nova precisa ser validada de novo antes de aplicar.
@@ -680,7 +680,7 @@ export async function setProjectLayer(ownerId: string, projectId: ObjectId, laye
     (await repo.patchProject(ownerId, projectId, {
       layer: escolhida,
       previousBlueprint: anterior,
-      blueprintHash: computeBlueprintHash(recorte),
+      blueprintHash: computeBlueprintHash(recorte, projeto.blueprintV2),
       checklist,
       readiness: computeReadiness(checklist, []),
       status: 'draft',
@@ -816,7 +816,7 @@ export async function editBlueprint(ownerId: string, projectId: ObjectId, edits:
   }
 
   const recorte = selectLayer(bp, camadaDe(projeto))
-  const hash = computeBlueprintHash(recorte)
+  const hash = computeBlueprintHash(recorte, projeto.blueprintV2)
   if (hash === projeto.blueprintHash) return projeto
 
   const checklist = applyChecklistState(deriveChecklist(recorte), new Set(), marcadosDe(projeto))
@@ -882,7 +882,7 @@ function recompilar(projeto: ArchitectProject, brief: OperationBrief, manifesto:
   if (!projeto.compiled || brief.jobs.length === 0) return {}
   const { blueprint } = compileBrief(brief, manifesto, { title: projeto.title, objective: projeto.objective })
   const recorte = selectLayer(blueprint, camadaDe(projeto))
-  const hash = computeBlueprintHash(recorte)
+  const hash = computeBlueprintHash(recorte, projeto.blueprintV2)
   if (hash === projeto.blueprintHash) return { blueprint }
 
   const checklist = applyChecklistState(deriveChecklist(recorte), new Set(), marcadosDe(projeto))

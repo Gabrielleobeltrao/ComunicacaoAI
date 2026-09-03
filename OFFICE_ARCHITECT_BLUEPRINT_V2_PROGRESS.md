@@ -439,3 +439,73 @@ do `<Routes>`** para que a conversa sobreviva à navegação. Redimensionável (
 - `classified` ainda chega por parâmetro nos testes: a classificação por LLM entra no fluxo
   real, mas o modo é **sugerido** por heurística quando o modelo não responde, e é essa
   heurística que os casos exercitam.
+
+---
+
+## Fase 5 — a saga estendida, e não uma segunda engine
+
+### O que passou a existir
+
+`backend/src/architect/applyV2.ts` aplica os blocos que o V1 não conhecia — Databases,
+datasets, fontes, destinos ao vivo, históricos, monitores e Flows — e é chamado **de dentro
+da saga do V1**, como o passo 8. Não há segunda engine: mesmos passos registrados, mesmo
+`resourceMap`, mesmo arrendamento, mesma retomada, mesmo desfazer.
+
+Três regras atravessam o arquivo:
+
+- **Nada nasce ligado.** A fonte nasce `draft`, o monitor nasce `draft`, o Flow nasce
+  rascunho. Quem garante isso é o próprio domínio: `createSource` cria em rascunho e o
+  portão de ativação exige um teste bem-sucedido. Não há como criar ativo por aqui.
+- **A ordem vem do plano.** `applyOrder` faz a ordem topológica de `dependsOn`: um dataset
+  declarado antes do Database dele é criado depois, e não falha num passo sem defeito.
+- **Quem cria é o domínio.** Nenhuma coleção é escrita direto. Um `insertOne` aqui pularia
+  a validação, a cota e os índices que já existem.
+
+`tool`, `delivery` e `channel` devolvem **pendência explícita** em vez de um recurso
+incompleto: uma ferramenta própria precisa de endpoint e schema que o plano não inventa, uma
+entrega precisa de destino concreto, e o vínculo de canal depende da instalação conectada.
+
+### O cadeado da revisão passou a cobrir o V2
+
+`computeBlueprintHash(v1, v2?)`. Sem isso, mudar **só** os monitores deixava o hash do V1
+igual — e um clique feito olhando a revisão anterior aplicaria uma operação que ninguém leu.
+Projetos sem plano V2 continuam com exatamente o hash que já tinham.
+
+### Três defeitos reais encontrados pelos testes
+
+- **`validateConfig` recusava o próprio discriminador.** O `kind` dentro do config é gerado
+  pelo servidor e era rejeitado como campo estranho na volta: **nenhuma fonte podia ser
+  reescrita a partir da que estava gravada** — nem pela tela, nem pela aplicação de um
+  Blueprint. Agora um `kind` igual ao da fonte passa, e um **trocado** continua recusado.
+- **Uma aplicação que falhava devolvia HTML.** `ApplyFailure` caía no 500 padrão do Express:
+  a tela ficava sem o motivo e sem o id da operação — e existe rota para *retomar*, que sem
+  o id não tem o que retomar. Agora volta `502 apply_failed` com motivo e `operationId`.
+- **O desfazer não conhecia o V2.** Um rollback deixava Database, dataset, fonte e monitor de
+  pé. Agora eles saem na ordem inversa, pelos serviços canônicos, com as três regras do
+  desfazer inteiras: nada que já não exista, nada editado depois de criado, nada de outra
+  aplicação. `live` e `history` ficam em `kept`: são destinos ligados numa fonte que pode ser
+  preexistente, e desligá-los às cegas apagaria histórico que alguém já vinha alimentando.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectApplyV2.integration.test.mjs` | 13 | 13 passam |
+| `backend/test/architectApply.integration.test.mjs` | 29 (7 novos) | 29 passam |
+| `backend/test/monitoringSource.integration.test.mjs` | 71 (2 novos) | 71 passam |
+| Suíte backend completa | 2123 | 0 falhas |
+
+Teeth check, cada um derrubando o caso certo: desligando a aprovação por item cai o caso 6;
+tirando o plano V2 do cadeado do hash caem os 5 casos da saga ligada.
+
+### Pendências reais ao fim da fase
+
+- **Nenhum projeto guarda um `blueprintV2` ainda.** A saga sabe aplicá-lo, o hash sabe
+  cobri-lo e o desfazer sabe desfazê-lo — mas quem o produz é o compilador V2, que só é
+  ligado ao `service.ts` na fase 9. Hoje o campo é preenchido nos testes.
+- O `dataset` é identificado no mapa por `storeId:key`, e não por um `_id`. Funciona, mas é
+  a única `key` do mapa que não é um ObjectId.
+- Os recursos do V2 **não recebem a marca de origem** (`architect.operationId`) na escrita,
+  porque os serviços canônicos não aceitam esse campo. A consequência é concreta: a janela
+  entre criar e registrar o passo, que o V1 fecha pela marca, aqui é fechada só pelo
+  `resourceMap` — uma queda exatamente nesse instante pode deixar um recurso órfão.

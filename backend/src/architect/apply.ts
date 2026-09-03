@@ -14,6 +14,9 @@ import { computeBlueprintHash } from './blueprint.js'
 import * as repo from './repository.js'
 import type { ArchitectProject, ArchitectApplyOperation } from './repository.js'
 import type { ApplyStepKind, ApplyStepResult, BlueprintAgent, OfficeBlueprintV1 } from './types.js'
+import type { OfficeBlueprintV2 } from './typesV2.js'
+import { V2_ITEM_PATHS, itemsAt } from './typesV2.js'
+import { applyV2Resources } from './applyV2.js'
 
 // A APLICAÇÃO: a única parte do Arquiteto que escreve no escritório.
 //
@@ -66,6 +69,8 @@ interface Contexto {
   grantsAprovados: Set<string>
   /** As `key`s de alteração em recurso existente que o dono aprovou, uma a uma. */
   updatesAprovados: Set<string>
+  /** O plano V2, quando o projeto tem um. Ausente = a aplicação é a do V1, inteira. */
+  v2?: OfficeBlueprintV2 | null
 }
 
 const chave = (kind: ApplyStepKind, key: string): string => `${kind}:${key}`
@@ -154,7 +159,7 @@ export async function applyBlueprint(
   const bp = project.blueprint
   if (!bp) throw new ApplyConflict('ainda não existe proposta para aplicar')
 
-  const hashAtual = computeBlueprintHash(bp)
+  const hashAtual = computeBlueprintHash(bp, project.blueprintV2)
   if (input.blueprintHash !== hashAtual) {
     throw new ApplyConflict('a proposta mudou desde a última revisão; revise de novo antes de aplicar')
   }
@@ -174,7 +179,7 @@ export async function applyBlueprint(
     throw new ApplyConflict('esta aplicação já está em andamento')
   }
 
-  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []))
+  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []), project.blueprintV2 ?? null)
 }
 
 /** O corpo compartilhado por aplicar e retomar: roda a saga, fecha e solta o arrendamento. */
@@ -185,6 +190,7 @@ async function rodar(
   hooks: ApplyHooks,
   grantsAprovados: Set<string>,
   updatesAprovados: Set<string>,
+  v2: OfficeBlueprintV2 | null,
 ): Promise<ArchitectApplyOperation> {
   const ctx: Contexto = {
     ownerId,
@@ -194,6 +200,7 @@ async function rodar(
     hooks,
     grantsAprovados,
     updatesAprovados,
+    v2,
   }
 
   try {
@@ -544,6 +551,49 @@ async function executarSaga(ctx: Contexto): Promise<void> {
       return { id: instalacao._id.toString(), status: 'created' }
     })
   }
+
+  // 8. Recursos e operações do V2 — Databases, datasets, fontes, destinos, monitores e
+  //    Flows. É a MESMA saga: os passos entram na mesma lista, escrevem no mesmo
+  //    `resourceMap` e são retomados pelo mesmo caminho. Um projeto sem plano V2 nem
+  //    chega aqui, e continua aplicando exatamente o que aplicava antes.
+  await aplicarV2(ctx)
+}
+
+/**
+ * O bloco V2 dentro da saga do V1.
+ *
+ * A ordem importa: os andares e agentes já existem no `mapa` quando esta função roda, e é
+ * de lá que saem os ids — nunca do plano. Uma falha aqui derruba a operação inteira, que é
+ * o que faz o desfazer e a retomada continuarem valendo para o que o V2 criou.
+ */
+async function aplicarV2(ctx: Contexto): Promise<void> {
+  const bp = ctx.v2
+  if (!bp) return
+
+  /**
+   * O que está aprovado: criar e reusar vêm da aprovação da proposta inteira; ALTERAR um
+   * recurso que já existe exige a aprovação individual, a mesma do V1. Sem esta distinção,
+   * clicar em aplicar reescreveria recurso que a pessoa não marcou.
+   */
+  const aprovadas = new Set<string>()
+  for (const path of V2_ITEM_PATHS) {
+    for (const item of itemsAt(bp, path)) {
+      const key = String((item as { key?: unknown }).key ?? '')
+      if (!key) continue
+      const acao = String((item as { action?: unknown }).action ?? 'create')
+      if (acao === 'create' || acao === 'reuse' || ctx.updatesAprovados.has(key)) aprovadas.add(key)
+    }
+  }
+
+  const passos = await applyV2Resources({ ownerId: ctx.ownerId, blueprint: bp, resourceMap: ctx.mapa, approvedKeys: aprovadas })
+  for (const p of passos) {
+    await registrar(ctx, { kind: p.kind, key: p.key, status: p.status, resourceId: p.resourceId ?? null, ...(p.message ? { message: p.message } : {}) })
+  }
+
+  // Uma falha registrada e engolida seria pior que nenhuma: a operação apareceria
+  // "concluída" com um monitor que nunca foi criado.
+  const falhou = passos.find((p) => p.status === 'failed')
+  if (falhou) throw new Error(`${falhou.kind} "${falhou.key}": ${falhou.message ?? 'falhou'}`)
 }
 
 /** Só o que o domínio de agentes aceita, campo a campo. */
@@ -587,7 +637,7 @@ export async function resumeApply(ownerId: string, project: ArchitectProject, ho
   if (!anterior) throw new ApplyConflict('não há aplicação para retomar')
   if (anterior.status === 'completed') return anterior
   if (!project.blueprint) throw new ApplyConflict('a proposta não existe mais')
-  if (computeBlueprintHash(project.blueprint) !== anterior.blueprintHash) {
+  if (computeBlueprintHash(project.blueprint, project.blueprintV2) !== anterior.blueprintHash) {
     throw new ApplyConflict('a proposta mudou depois da falha; revise e aplique de novo')
   }
 
@@ -599,7 +649,7 @@ export async function resumeApply(ownerId: string, project: ArchitectProject, ho
 
   // O que já virou permissão está no mapa; o resto foi pulado e continua pulado até o
   // dono aprovar de novo — retomar não é lugar de conceder acesso novo.
-  return rodar(ownerId, anterior, project.blueprint, hooks, new Set(), new Set())
+  return rodar(ownerId, anterior, project.blueprint, hooks, new Set(), new Set(), project.blueprintV2 ?? null)
 }
 
 /**
@@ -613,6 +663,67 @@ export async function resumeApply(ownerId: string, project: ArchitectProject, ho
  * O que não é seguro remover fica de pé e vira aviso. Um rollback que apaga o que não
  * devia é pior do que um rollback que não completa.
  */
+/**
+ * Desfaz UM recurso do V2 — pelo serviço canônico, e só se ele ainda for desta operação.
+ *
+ * As três regras do desfazer valem aqui inteiras: nada que já não exista, nada que tenha
+ * sido editado depois de criado, e nada que tenha vindo de outra aplicação. Sem elas, um
+ * "desfazer" apagaria o Database que alguém passou a semana enchendo.
+ */
+async function desfazerV2(
+  ownerId: string,
+  kind: ApplyStepKind,
+  id: string,
+  criadoEm: Date,
+  operationId: ObjectId,
+  kept: { key: string; reason: string }[],
+  key: string,
+): Promise<boolean> {
+  const { db } = await import('../db.js')
+
+  if (kind === 'dataset') {
+    // O id de um dataset é `storeId:key` — ele não é um documento com _id próprio no mapa.
+    const [storeId, datasetKey] = id.split(':')
+    if (!storeId || !datasetKey || !ObjectId.isValid(storeId)) return false
+    const { deleteDataset } = await import('../databases/store.js')
+    return deleteDataset(ownerId, new ObjectId(storeId), datasetKey)
+  }
+
+  if (!ObjectId.isValid(id)) return false
+  const oid = new ObjectId(id)
+  const colecao = kind === 'database' ? 'data_stores' : kind === 'source' ? 'monitoring_sources' : kind === 'monitor' ? 'monitors' : 'automations'
+  const doc = await db.collection(colecao).findOne({ _id: oid, ownerId })
+  if (!doc) return false
+
+  if (doc.updatedAt instanceof Date && doc.updatedAt.getTime() > criadoEm.getTime() + 1000) {
+    kept.push({ key, reason: 'foi editado depois de criado' })
+    return false
+  }
+  const marca = (doc as { architect?: { operationId?: string } }).architect
+  if (marca?.operationId && marca.operationId !== operationId.toString()) {
+    kept.push({ key, reason: 'foi criado por outra aplicação' })
+    return false
+  }
+
+  if (kind === 'database') {
+    const { deleteDataStore } = await import('../databases/store.js')
+    return deleteDataStore(ownerId, oid)
+  }
+  if (kind === 'source') {
+    // `deleteSource` leva junto o alias em tempo real e o valor ao vivo, e DEIXA o histórico:
+    // o que a fonte gravou é fato acontecido, e apagar o passado é outra decisão.
+    const { deleteSource } = await import('../monitoring/service.js')
+    return deleteSource(ownerId, oid)
+  }
+  if (kind === 'monitor') {
+    const { deleteMonitor } = await import('../monitors/service.js')
+    return deleteMonitor(ownerId, oid)
+  }
+  const { deleteAutomationCascade } = await import('../automations/repository.js')
+  await deleteAutomationCascade(ownerId, oid)
+  return true
+}
+
 export async function rollbackOperation(
   ownerId: string,
   operationId: ObjectId,
@@ -632,11 +743,39 @@ export async function rollbackOperation(
   const removed: string[] = []
   const kept: { key: string; reason: string }[] = []
 
-  // Ordem inversa da criação: setor antes de agente, agente antes de andar.
-  const ordem: ApplyStepKind[] = ['grant', 'routine', 'knowledge', 'wiring', 'sector', 'agent', 'floor']
+  // Ordem inversa da criação: o V2 sai primeiro (ele nasceu por último), monitor antes da
+  // fonte, dataset antes do Database, setor antes de agente, agente antes de andar.
+  const ordem: ApplyStepKind[] = [
+    'monitor',
+    'flow',
+    'live',
+    'history',
+    'source',
+    'dataset',
+    'database',
+    'grant',
+    'routine',
+    'knowledge',
+    'wiring',
+    'sector',
+    'agent',
+    'floor',
+  ]
   for (const kind of ordem) {
     for (const step of operacao.steps.filter((s) => s.kind === kind && s.status === 'created' && s.resourceId)) {
       const id = step.resourceId!
+      if (kind === 'live' || kind === 'history') {
+        // Os dois são DESTINOS ligados numa fonte que pode ser preexistente. Desligá-los às
+        // cegas apagaria o histórico que alguém já vinha alimentando.
+        kept.push({ key: step.key, reason: 'destino ligado numa fonte existente: revise à mão' })
+        continue
+      }
+
+      if (kind === 'database' || kind === 'dataset' || kind === 'source' || kind === 'monitor' || kind === 'flow') {
+        if (await desfazerV2(ownerId, kind, id, step.at, operationId, kept, step.key)) removed.push(`${kind}:${step.key}`)
+        continue
+      }
+
       if (kind === 'wiring' || kind === 'grant') {
         // Vínculo e permissão são ALTERAÇÕES em recurso que pode ser preexistente.
         // Desfazê-las às cegas apagaria configuração que não era desta operação.
