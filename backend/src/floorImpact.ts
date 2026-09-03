@@ -370,10 +370,50 @@ export type PurgeOutcome =
 /**
  * ARQUIVAR — o padrão, e o que a maioria das pessoas quer quando diz "excluir".
  *
- * Ele desativa a entrada e preserva tudo. É reversível, e é por isso que ele não pede
- * confirmação por nome nem hash: nada se perde.
+ * Ele tira o andar do mapa E desliga o que estava no ar dentro dele. É reversível, e é por
+ * isso que não pede confirmação por nome nem hash: nada se perde.
+ *
+ * Um andar arquivado com Flow ativo e fonte coletando não está arquivado: ele saiu da tela e
+ * continuou trabalhando — gastando token, batendo em servidor de terceiro e gravando
+ * histórico que ninguém vai olhar, porque ninguém olha um andar arquivado.
+ *
+ * O que ele NÃO faz é apagar: arquivar é o padrão recuperável, e cada recurso continua
+ * inteiro no lugar dele. Pausar passa pelo serviço canônico de cada domínio, que é quem sabe
+ * o que mais precisa acontecer junto — desligar o gatilho de evento, soltar o arrendamento.
+ *
+ * Restaurar NÃO religa nada: reativar sozinho dispararia trabalho que ninguém pediu,
+ * possivelmente semanas depois.
  */
-export const archiveFloor = (ownerId: string, floorId: ObjectId) => setFloorStatus(ownerId, floorId, 'archived')
+export async function archiveFloor(ownerId: string, floorId: ObjectId) {
+  const andar = await setFloorStatus(ownerId, floorId, 'archived')
+  if (!andar) return andar
+
+  /**
+   * Uma falha ao pausar é DITA, não engolida.
+   *
+   * Silenciar deixaria o andar marcado como arquivado com metade da operação no ar — e
+   * ninguém descobriria, porque ninguém abre um andar arquivado. O andar já saiu do mapa
+   * quando isto acontece, então a mensagem nomeia o recurso que continuou ligado.
+   */
+  const naoPausados: string[] = []
+  const { setStatus } = await import('./automations/service.js')
+  for (const doc of await db.collection('automations').find({ ownerId, floorId, status: 'active' }, { projection: { _id: 1, name: 1 } }).toArray()) {
+    await setStatus(ownerId, doc._id, 'paused').catch(() => naoPausados.push(`Flow "${String(doc.name ?? doc._id)}"`))
+  }
+
+  const { setSourceStatus } = await import('./monitoring/service.js')
+  // O mesmo filtro que a análise de impacto usa: a fonte é do andar pelo ESCOPO dela, não
+  // por um `floorId`. Consultar pelo campo errado deixava a fonte no ar em silêncio.
+  const doAndar = { ownerId, 'scope.ownerType': 'floor', 'scope.ownerId': floorId.toString(), status: 'active' }
+  for (const doc of await db.collection('monitoring_sources').find(doAndar, { projection: { _id: 1, name: 1 } }).toArray()) {
+    await setSourceStatus(ownerId, doc._id, 'paused').catch(() => naoPausados.push(`fonte "${String(doc.name ?? doc._id)}"`))
+  }
+
+  if (naoPausados.length) {
+    throw new Error(`o andar foi arquivado, mas ${naoPausados.length} recurso(s) continuam no ar: ${naoPausados.join(', ')}`)
+  }
+  return andar
+}
 
 /**
  * RESTAURAR — traz o andar de volta, sem reativar operação nenhuma.

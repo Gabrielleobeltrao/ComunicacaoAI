@@ -98,17 +98,21 @@ test('LACUNA 2: uma necessidade de dado ao vivo não é compilada em fonte, dest
 
 // --- lacuna 3: só quatro tipos podem ser reaproveitados ---------------------------------
 
-test('LACUNA 3: reaproveitar recurso existente só vale para floor, agent, sector e routine', async () => {
+test('LACUNA 3 CORRIGIDA: reaproveitar vale também para Database, fonte, monitor e Flow', async () => {
   // `links.js` puxa o banco no import, e este arquivo é unitário de propósito: o que se
-  // caracteriza aqui é o VOCABULÁRIO fechado, que está no código-fonte.
+  // afirma aqui é o VOCABULÁRIO, que está no código-fonte.
   const { readFile } = await import('node:fs/promises')
   const fonte = await readFile(new URL('../src/architect/links.ts', import.meta.url), 'utf8')
   const linha = /const KINDS: LinkKind\[\] = \[([^\]]+)\]/.exec(fonte)
   assert.ok(linha, 'a lista de tipos precisa existir')
   const tipos = linha[1].split(',').map((t) => t.trim().replace(/'/g, '')).filter(Boolean)
-  assert.deepEqual(tipos.sort(), ['agent', 'floor', 'routine', 'sector'], 'só quatro tipos (lacuna 3)')
-  for (const ausente of ['database', 'source', 'monitor', 'flow', 'tool', 'knowledge']) {
-    assert.equal(tipos.includes(ausente), false, `${ausente} ainda não pode ser reaproveitado (lacuna 3)`)
+
+  // Os quatro do V1 continuam valendo…
+  for (const antigo of ['floor', 'agent', 'sector', 'routine']) assert.ok(tipos.includes(antigo), `${antigo} sumiu`)
+  // …e os do V2 passaram a existir. Sem eles, a pessoa via a proposta criar um segundo
+  // Database ao lado do dela e não tinha onde dizer o contrário.
+  for (const novo of ['database', 'source', 'monitor', 'flow']) {
+    assert.ok(tipos.includes(novo), `${novo} ainda não pode ser reaproveitado`)
   }
 })
 
@@ -204,6 +208,45 @@ test('LACUNA 9: "quando o RSI ficar abaixo de 30" vira rotina com cron padrão',
   assert.equal('monitors' in blueprint, false, 'não há monitor para onde a condição pudesse ir (lacuna 9)')
 })
 
+test('LACUNA 9 CORRIGIDA: o mesmo Brief, no V2, vira fonte + histórico + monitor + Flow', async () => {
+  const { compileBriefV2 } = await import('../dist/architect/compileV2.js')
+  const brief = briefDe({
+    businessGoal: 'Acompanhar CXSE3',
+    liveDataNeeds: [{ source: 'cotação CXSE3', required: true }],
+    jobs: [
+      {
+        id: 'avisar-rsi',
+        name: 'Avisar quando o RSI ficar abaixo de 30',
+        trigger: 'o RSI de CXSE3 fica abaixo de 30',
+        input: 'as cotações',
+        decision: '',
+        action: 'avisar',
+        output: 'o aviso',
+        frequency: 'a cada fechamento de candle',
+      },
+    ],
+  })
+  const { blueprint } = compileBriefV2({
+    brief,
+    manifest: manifesto(),
+    inventory: null,
+    base: { title: 'CXSE3', objective: 'Vigiar' },
+    changeKind: 'create',
+  })
+
+  // A condição é sobre o DADO, não sobre o horário: ela precisa de um "antes" e um "agora".
+  assert.ok(blueprint.operations.sources.length > 0, 'sem fonte, não há o que observar')
+  assert.ok(blueprint.operations.histories.length > 0, 'uma borda só existe com valor anterior')
+  assert.ok(blueprint.operations.monitors.length > 0, 'a condição precisa de um monitor')
+  assert.ok(blueprint.operations.flows.length > 0, 'o aviso precisa de um Flow para sair')
+  // E nenhuma rotina com cron inventado.
+  assert.equal(
+    blueprint.operations.routines.some((r) => r.cron === '0 8 * * *'),
+    false,
+    'um horário inventado dispara o aviso na hora errada, todo dia',
+  )
+})
+
 // --- lacuna 11: responsabilidade pode faltar no agente compilado ------------------------
 
 test('LACUNA 11: o validador ACEITA um agente sem responsabilidade e sem contratos', () => {
@@ -278,4 +321,18 @@ test('LACUNA 10: a simulação percorre o Blueprint e não toca em nenhum subsis
     assert.equal(sim.includes(dominio), false, `a simulação não alcança ${dominio} (lacuna 10)`)
   }
   assert.ok(sim.includes('sideEffectsAvoided'), 'ela declara que evita efeitos — e evita mesmo')
+})
+
+test('LACUNA 10 CORRIGIDA: a prova de integração mora em outro módulo, e ele TOCA nos domínios', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const aceitacao = await readFile(new URL('../src/architect/acceptance.ts', import.meta.url), 'utf8')
+
+  // A simulação continua estrutural de propósito: ela responde "a regra faz sentido?".
+  // Quem responde "isto funciona?" é o teste de aceitação — e ele bate na origem de
+  // verdade, pelos serviços canônicos.
+  for (const dominio of ['monitoring/service.js', 'monitors/condition.js', 'databases/store.js']) {
+    assert.ok(aceitacao.includes(dominio), `o teste de aceitação precisa alcançar ${dominio}`)
+  }
+  // E o resultado dele entra na linha do tempo, em ambiente de teste.
+  assert.ok(aceitacao.includes("environment: 'test'"), 'um teste não pode contar como produção')
 })

@@ -274,3 +274,153 @@ test('CONCORRÊNCIA: dois purges com o mesmo retrato — o segundo não encontra
   assert.ok(okCount >= 1)
   assert.equal(await db.collection('offices').countDocuments({ _id: andar }), 0)
 })
+
+// --- arquivar DESATIVA a entrada -----------------------------------------------------------
+//
+// §14.2: "archive — desativa entrada e preserva dados". Um andar arquivado com Flow ativo e
+// fonte coletando não está arquivado: ele saiu do mapa e continuou trabalhando, cobrando
+// token e batendo em servidor de terceiro. Ninguém olha um andar arquivado.
+
+test('ARQUIVAR pausa o que estava no ar dentro do andar, e preserva tudo', async () => {
+  await preparar()
+  await db.collection('monitoring_sources').insertOne({
+    _id: new ObjectId(),
+    ownerId: DONO,
+    name: 'Cotação',
+    kind: 'api_polling',
+    status: 'active',
+    scope: { ownerType: 'floor', ownerId: andar.toString() },
+  })
+
+  await impacto.archiveFloor(DONO, andar)
+
+  const flow = await db.collection('automations').findOne({ ownerId: DONO, floorId: andar })
+  assert.equal(flow.status, 'paused', 'um Flow ativo num andar arquivado continua disparando sozinho')
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO, 'scope.ownerId': andar.toString() })
+  assert.equal(fonte.status, 'paused', 'uma fonte ativa continua batendo em servidor de terceiro')
+
+  // E nada se perde: arquivar é o padrão RECUPERÁVEL.
+  assert.equal(await db.collection('agents').countDocuments({ ownerId: DONO, officeId: andar }), 1)
+  assert.equal(await db.collection('automations').countDocuments({ ownerId: DONO, floorId: andar }), 1)
+})
+
+test('ARQUIVAR não toca no que é de OUTRO andar', async () => {
+  await preparar()
+  const alheio = new ObjectId()
+  await db.collection('automations').insertOne({ _id: alheio, ownerId: DONO, floorId: outro, name: 'Do financeiro', status: 'active', createdAt: new Date(), updatedAt: new Date() })
+
+  await impacto.archiveFloor(DONO, andar)
+  const doOutro = await db.collection('automations').findOne({ _id: alheio })
+  assert.equal(doOutro.status, 'active', 'arquivar um andar não pode parar a operação do vizinho')
+})
+
+test('AMEAÇA: arquivar um andar não alcança a conta de outra pessoa', async () => {
+  const deOutro = new ObjectId()
+  await db.collection('automations').insertOne({ _id: deOutro, ownerId: 'vizinho', floorId: andar, name: 'Alheio', status: 'active', createdAt: new Date(), updatedAt: new Date() })
+  await preparar()
+
+  await impacto.archiveFloor(DONO, andar)
+  assert.equal((await db.collection('automations').findOne({ _id: deOutro })).status, 'active')
+})
+
+test('restaurar continua NÃO reativando o que foi pausado ao arquivar', async () => {
+  await preparar()
+  await db.collection('automations').updateOne({ ownerId: DONO, floorId: andar }, { $set: { status: 'active' } })
+  await impacto.archiveFloor(DONO, andar)
+  await impacto.restoreFloor(DONO, andar)
+
+  const flow = await db.collection('automations').findOne({ ownerId: DONO, floorId: andar })
+  assert.equal(flow.status, 'paused', 'reativar sozinho dispararia trabalho semanas depois, sem ninguém pedir')
+})
+
+// --- as ROTAS novas, e a posse nelas ---------------------------------------------------------
+//
+// O serviço já filtra por dono em toda consulta. O que estes casos protegem é a outra ponta:
+// que a rota passe o dono da SESSÃO, e não um id que veio do cliente.
+
+const express = (await import('express')).default
+const { floorRouter } = await import('../dist/routes/floorRoutes.js')
+
+let servidor
+let porta
+let sessao = DONO
+
+const pedir = async (metodo, caminho, corpo) => {
+  const res = await fetch(`http://127.0.0.1:${porta}/api/floors${caminho}`, {
+    method: metodo,
+    headers: corpo ? { 'Content-Type': 'application/json' } : undefined,
+    body: corpo ? JSON.stringify(corpo) : undefined,
+  })
+  const texto = await res.text()
+  return { status: res.status, body: texto ? JSON.parse(texto) : null }
+}
+
+before(async () => {
+  const app = express()
+  app.use(express.json())
+  app.use((_req, res, next) => {
+    res.locals.userId = sessao
+    next()
+  })
+  app.use('/api/floors', floorRouter)
+  await new Promise((r) => {
+    servidor = app.listen(0, () => {
+      porta = servidor.address().port
+      r()
+    })
+  })
+})
+after(async () => {
+  if (servidor) await new Promise((r) => servidor.close(r))
+})
+
+test('ROTA: a análise de impacto responde com o retrato do andar desta conta', async () => {
+  await preparar()
+  const r = await pedir('GET', `/${andar}/deletion-impact`)
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.equal(r.body.floor.name, 'Atendimento')
+  assert.ok(r.body.impactHash)
+})
+
+test('AMEAÇA: o andar de OUTRA conta não existe para esta rota', async () => {
+  const alheio = new ObjectId()
+  await db.collection('offices').insertOne({ _id: alheio, ownerId: 'vizinho', buildingId: new ObjectId(), name: 'Do vizinho', status: 'active', createdAt: new Date(), updatedAt: new Date() })
+
+  const r = await pedir('GET', `/${alheio}/deletion-impact`)
+  assert.equal(r.status, 404, 'um 403 já contaria que o andar existe')
+  assert.equal(await db.collection('offices').countDocuments({ _id: alheio }), 1)
+})
+
+test('AMEAÇA: o purge de um andar de outra conta não apaga nada', async () => {
+  const alheio = new ObjectId()
+  await db.collection('offices').insertOne({ _id: alheio, ownerId: 'vizinho', buildingId: new ObjectId(), name: 'Do vizinho', status: 'active', createdAt: new Date(), updatedAt: new Date() })
+  await db.collection('agents').insertOne({ _id: new ObjectId(), ownerId: 'vizinho', officeId: alheio, name: 'Alheio', provider: 'anthropic', createdAt: new Date() })
+
+  const r = await pedir('POST', `/${alheio}/purge`, { impactHash: 'qualquer', confirmationName: 'Do vizinho' })
+  assert.equal(r.status, 404)
+  assert.equal(await db.collection('offices').countDocuments({ _id: alheio }), 1)
+  assert.equal(await db.collection('agents').countDocuments({ ownerId: 'vizinho' }), 1)
+})
+
+test('ROTA: um hash velho é recusado com 409 e devolve o retrato de AGORA', async () => {
+  await preparar()
+  const r = await pedir('POST', `/${andar}/purge`, { impactHash: 'retrato-velho', confirmationName: 'Atendimento' })
+  assert.equal(r.status, 409, JSON.stringify(r.body))
+  assert.equal(r.body.code, 'impact_changed')
+  assert.ok(r.body.impact?.impactHash, 'sem o retrato novo, a pessoa não tem o que revisar')
+  assert.equal(await db.collection('offices').countDocuments({ _id: andar }), 1)
+})
+
+test('ROTA: o nome errado é recusado com 400, e nada é apagado', async () => {
+  await preparar()
+  const impacto = await pedir('GET', `/${andar}/deletion-impact`)
+  const r = await pedir('POST', `/${andar}/purge`, { impactHash: impacto.body.impactHash, confirmationName: 'Atendimentooo' })
+  assert.equal(r.status, 400)
+  assert.equal(r.body.code, 'name_mismatch')
+  assert.equal(await db.collection('offices').countDocuments({ _id: andar }), 1)
+})
+
+test('ROTA: um id malformado é 404, e não um erro do servidor', async () => {
+  assert.equal((await pedir('GET', '/nao-e-um-id/deletion-impact')).status, 404)
+  assert.equal((await pedir('POST', '/nao-e-um-id/purge', { impactHash: 'x', confirmationName: 'y' })).status, 404)
+})

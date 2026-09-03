@@ -668,13 +668,17 @@ export async function setBlueprintLinks(ownerId: string, projectId: ObjectId, li
   if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
   if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para ligar')
   // A ligação é feita no PLANO: um recurso ligado continua ligado quando a camada muda.
-  const blueprint = await applyBlueprintLinks(ownerId, projeto.blueprint, links)
+  const ligado = await applyBlueprintLinks(ownerId, projeto.blueprint, links, projeto.blueprintV2)
+  const blueprint = ligado.blueprint
   const recorte = selectLayer(blueprint, camadaDe(projeto))
   const checklist = applyChecklistState(deriveChecklist(recorte), new Set(), marcadosDe(projeto))
   return (
     (await repo.patchProject(ownerId, projectId, {
       blueprint,
-      blueprintHash: computeBlueprintHash(recorte, projeto.blueprintV2),
+      // O plano V2 também recebe a ligação: reaproveitar um Database existente é uma escolha
+      // sobre a proposta inteira, não só sobre a parte que o V1 sabe descrever.
+      ...(ligado.blueprintV2 ? { blueprintV2: ligado.blueprintV2 } : {}),
+      blueprintHash: computeBlueprintHash(recorte, ligado.blueprintV2 ?? projeto.blueprintV2),
       checklist,
       readiness: computeReadiness(checklist, []),
       // Uma ligação nova precisa ser validada de novo antes de aplicar.

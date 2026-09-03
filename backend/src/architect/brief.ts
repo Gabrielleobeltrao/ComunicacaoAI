@@ -42,6 +42,14 @@ export interface OperationBrief {
   integrations: { key?: string; need: string; connected: boolean | null }[]
   knowledgeNeeds: { scopeHint?: string; subject: string; required: boolean }[]
   liveDataNeeds: { source: string; freshness?: string; required: boolean }[]
+  /**
+   * O que precisa ficar GUARDADO — §10.1 do plano.
+   *
+   * "Dado atual" e "dado histórico" são perguntas diferentes: "quanto está agora" responde
+   * com uma leitura, "como variou" exige série. Sem este campo, toda proposta nascia sem
+   * Database nenhum, e a cadeia de recursos parava no monitor — que não tem o que observar.
+   */
+  recordsToKeep: { subject: string; fields: string[]; retentionDays: number | null }[]
   humanApprovals: { action: string; rule: string }[]
   successCriteria: string[]
   constraints: string[]
@@ -67,6 +75,7 @@ export const emptyBrief = (businessGoal = ''): OperationBrief => ({
   integrations: [],
   knowledgeNeeds: [],
   liveDataNeeds: [],
+  recordsToKeep: [],
   humanApprovals: [],
   successCriteria: [],
   constraints: [],
@@ -168,6 +177,20 @@ export function applyBriefPatch(base: OperationBrief, patch: unknown): Operation
       return source ? { source, ...(texto(l.freshness, 60) ? { freshness: texto(l.freshness, 60) } : {}), required: l.required !== false } : null
     })
   }
+  if (p.recordsToKeep !== undefined) {
+    fora.recordsToKeep = lista(p.recordsToKeep, (r) => {
+      const subject = texto(r.subject)
+      if (!subject) return null
+      const campos = (Array.isArray(r.fields) ? r.fields : [])
+        .map((c) => texto(c, 60))
+        .filter(Boolean)
+        .slice(0, BRIEF_LIMITS.lista)
+      // Retenção NEGATIVA ou fracionária não é retenção: ela vira "apague já" sem ninguém
+      // ter pedido. Sem número válido, quem decide é a política do domínio.
+      const dias = Number(r.retentionDays)
+      return { subject, fields: campos, retentionDays: Number.isInteger(dias) && dias > 0 ? Math.min(dias, 3650) : null }
+    })
+  }
   if (p.humanApprovals !== undefined) {
     fora.humanApprovals = lista(p.humanApprovals, (h) => {
       const action = texto(h.action)
@@ -230,6 +253,15 @@ export function briefForPrompt(brief: OperationBrief): string {
   }
   if (brief.integrations.length) {
     linhas.push(`Integrações: ${brief.integrations.map((i) => `${i.need}${i.connected === true ? ' (conectada)' : i.connected === false ? ' (NÃO conectada)' : ''}`).join('; ')}`)
+  }
+  // Ausente nos Briefs gravados antes deste campo: ler `.length` de `undefined` derrubaria
+  // a rodada de todo projeto que já existia.
+  if (brief.recordsToKeep?.length) {
+    linhas.push(
+      `Registros a guardar: ${(brief.recordsToKeep ?? [])
+        .map((r) => `${r.subject}${r.fields.length ? ` (${r.fields.join(', ')})` : ''}${r.retentionDays ? ` por ${r.retentionDays} dias` : ''}`)
+        .join('; ')}`,
+    )
   }
   if (brief.humanApprovals.length) linhas.push(`Aprovações humanas: ${brief.humanApprovals.map((h) => `${h.action} — ${h.rule}`).join('; ')}`)
   if (brief.knownFacts.length) linhas.push(`Fatos já sabidos (NÃO pergunte de novo): ${brief.knownFacts.map((f) => `${f.key}=${f.value}`).join('; ')}`)

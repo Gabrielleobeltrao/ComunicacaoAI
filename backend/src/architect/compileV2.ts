@@ -257,6 +257,14 @@ export function findExistingFloor(inventory: OfficeInventory | null, nome: strin
   return porArea ? { id: porArea.id, label: porArea.label } : null
 }
 
+/** O Database que já existe para este assunto, por nome. Nunca por semelhança vaga. */
+function acharDatabase(inventory: OfficeInventory | null, nome: string): { id: string; label: string } | null {
+  const alvo = slug(nome)
+  if (!alvo) return null
+  const achado = (inventory?.sections.database?.items ?? []).find((d) => slug(d.label) === alvo)
+  return achado ? { id: achado.id, label: achado.label } : null
+}
+
 /** As famílias de palavras que nomeiam uma área. Uma empresa com três áreas não é um andar só. */
 const AREAS: [RegExp, string][] = [
   [/\b(atend|suporte|sac|recep|cliente)\w*/, 'Atendimento'],
@@ -493,6 +501,70 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
     compilarFonteDeDado(bp, pending, { need, indice: i, floorKey: andarPadrao, manifest })
   }
 
+  /**
+   * --- 3b. o que precisa ficar GUARDADO vira Database + conjunto ----------------------------
+   *
+   * "Quanto está agora" e "como variou" são perguntas diferentes: a primeira responde com uma
+   * leitura, a segunda exige série. Sem este bloco, toda proposta nascia sem Database nenhum
+   * e a cadeia parava no monitor — que precisa de um conjunto para observar.
+   */
+  for (const [i, registro] of (brief.recordsToKeep ?? []).entries()) {
+    const raiz = slug(registro.subject) || `registro-${i}`
+    const dbKey = `base-${raiz}`
+    if (bp.resources.databases.some((d) => d.key === dbKey)) continue
+
+    const existente = acharDatabase(inventory, registro.subject)
+    bp.resources.databases.push({
+      key: dbKey,
+      // Expandir em vez de duplicar: um Database com o mesmo nome já é o lugar deste dado.
+      action: existente ? 'reuse' : 'create',
+      ...(existente ? { resourceId: existente.id } : {}),
+      ...ESSENCIAL,
+      rationale: existente ? 'este Database já existe: a proposta grava nele' : `"${registro.subject}" precisa ficar guardado para poder ser comparado depois`,
+      dependsOn: [],
+      name: existente?.label ?? registro.subject,
+      owner: { ownerType: 'account' },
+      adapterKind: 'data_history',
+      ...(registro.retentionDays ? { retentionDays: registro.retentionDays } : {}),
+    })
+
+    /**
+     * O conjunto declara os CAMPOS, e o domínio recusa um schema sem eles.
+     *
+     * Quando o Brief não diz quais são, a proposta não inventa: o conjunto fica como
+     * pendência, com o que falta. Um conjunto que aceita tudo não pode ser consultado nem
+     * observado — a DSL só permite o que o schema declara.
+     */
+    if (!registro.fields.length) {
+      pending.push({ kind: 'dataset_fields', ref: registro.subject, because: 'falta dizer quais campos guardar: um conjunto sem campos não pode ser consultado nem observado' })
+      continue
+    }
+    bp.resources.datasets.push({
+      key: `conjunto-${raiz}`,
+      action: 'create',
+      ...ESSENCIAL,
+      rationale: `é onde "${registro.subject}" fica gravado`,
+      dependsOn: [dbKey],
+      databaseKey: dbKey,
+      datasetKey: slug(registro.subject).replace(/-/g, '_') || `registro_${i}`,
+      name: registro.subject,
+      schema: {
+        type: 'object',
+        properties: Object.fromEntries(registro.fields.map((c) => [slug(c).replace(/-/g, '_') || c, {}])),
+      },
+      // Série gravada é fato acontecido: aceitar `update` faria alguém corrigir o valor de
+      // ontem e o gráfico mudar sem que nada registre a mudança.
+      mutability: 'append_only',
+    })
+    bp.acceptanceTests.push({
+      key: `teste-${dbKey}`,
+      kind: 'database_permission',
+      targetKey: dbKey,
+      expectation: `o Database de "${registro.subject}" responde com o conjunto declarado`,
+      required: true,
+    })
+  }
+
   // --- 4. o canal: o PEDIDO ganha ------------------------------------------------------------
   const canal = resolveChannel(brief.channels ?? [], manifest)
   const entrada = bp.organization.agents[0]
@@ -501,20 +573,32 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       pending.push({ kind: 'channel', ref: canal.missing, because: 'este canal não existe no catálogo desta conta' })
     } else {
       const app = (manifest?.apps ?? []).find((a) => a.key === canal.key)
+      const temAcoes = Boolean(app && (app.actions ?? []).length)
       const acoes = app ? resolveAppActions(app, { id: '', name: 'receber e responder mensagens', trigger: '', input: '', decision: '', action: 'enviar mensagem', output: 'a resposta' }) : { read: [], write: [] }
-      bp.resources.appRequirements.unshift({
-        key: slug(`canal-${canal.key}`),
-        action: 'create',
-        ...ESSENCIAL,
-        rationale: 'Receber o que chega e responder por onde a pessoa falou.',
-        dependsOn: [],
-        appKey: canal.key,
-        agentKeys: [entrada.key],
-        actionKeys: [...acoes.read, ...acoes.write],
-        autonomousWriteActionKeys: [],
-        resourceConfig: {},
-        required: true,
-      })
+      /**
+       * Um requisito de App SEM ação nenhuma é um requisito de nada — e o validador o
+       * recusa, o que derrubava a proposta inteira por causa de um canal nativo.
+       *
+       * `web_chat` é o caso: ele é uma porta de entrada do próprio produto, não um sistema
+       * de terceiro com ações declaradas. O que ele precisa é do VÍNCULO abaixo, que liga
+       * quem chega a um agente. Declarar um App vazio junto só criava um erro vermelho que
+       * ninguém conseguia resolver na tela.
+       */
+      if (temAcoes && (acoes.read.length || acoes.write.length)) {
+        bp.resources.appRequirements.unshift({
+          key: slug(`canal-${canal.key}`),
+          action: 'create',
+          ...ESSENCIAL,
+          rationale: 'Receber o que chega e responder por onde a pessoa falou.',
+          dependsOn: [],
+          appKey: canal.key,
+          agentKeys: [entrada.key],
+          actionKeys: [...acoes.read, ...acoes.write],
+          autonomousWriteActionKeys: [],
+          resourceConfig: {},
+          required: true,
+        })
+      }
       /**
        * O VÍNCULO do canal — o que o V1 não criava.
        *
@@ -527,7 +611,10 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
         action: 'create',
         ...ESSENCIAL,
         rationale: `Quem chega por ${canal.key} é atendido por ${entrada.name}.`,
-        dependsOn: [entrada.key, slug(`canal-${canal.key}`)],
+        // A dependência do requisito só existe quando o requisito existe: um `dependsOn`
+        // apontando para um item que não está no plano é recusado pelo validador, e com
+        // razão — a ordem de aplicação sairia de uma chave que ninguém vai criar.
+        dependsOn: temAcoes && (acoes.read.length || acoes.write.length) ? [entrada.key, slug(`canal-${canal.key}`)] : [entrada.key],
         appKey: canal.key,
         entryAgentKey: entrada.key,
         direction: 'both',

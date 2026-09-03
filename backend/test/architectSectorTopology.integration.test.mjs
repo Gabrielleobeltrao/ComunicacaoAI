@@ -235,3 +235,76 @@ test('AMEAÇA: o setor de outra conta não é alcançado — a posse é conferid
   assert.equal(alheio.name, 'Alheio')
   assert.deepEqual(alheio.members, [])
 })
+
+// --- CENÁRIO E: a prévia e a estrutura aplicada coincidem -------------------------------------
+//
+// A prévia é o que a pessoa lê antes de clicar. Se ela descreve uma equipe de três e a
+// aplicação monta uma de dois, a aprovação foi dada sobre uma coisa que não aconteceu — e
+// ninguém descobre, porque quem aprova não volta para conferir.
+
+const { buildPreview } = await import('../dist/architect/preview.js')
+const { loadOwnershipContext } = await import('../dist/architect/context.js')
+
+test('CENÁRIO E: o que a prévia descreve é o que a aplicação monta', async () => {
+  const setor = await createSector(
+    DONO,
+    andar,
+    'Recepção',
+    '#6366f1',
+    'orchestrated',
+    [{ agentId: marina, sector: '', routingDescription: '', advanceWhen: '', transitions: [], isDefault: true }],
+    { coordinatorAgentId: marina },
+  )
+  const plano = planoDeAtualizacao(setor._id)
+
+  const previa = buildPreview(plano, await loadOwnershipContext(DONO))
+  const noPlano = previa.items.find((i) => i.kind === 'sector')
+  assert.ok(noPlano, `a prévia não descreveu o setor: ${JSON.stringify(previa.items.map((i) => i.kind))}`)
+  assert.equal(noPlano.action, 'update')
+
+  await aplicar(plano)
+
+  const depois = await getSectorById(DONO, setor._id)
+  const doPlano = plano.sectors.find((s) => s.key === noPlano.key)
+
+  // Os três eixos que a prévia mostra e que o Flow desenha: modo, coordenador e equipe.
+  assert.equal(depois.mode, doPlano.mode, 'o modo aplicado tem que ser o que a prévia mostrou')
+  const equipeAplicada = depois.members.map((m) => m.agentId.toString()).sort()
+  const equipeDoPlano = doPlano.memberAgentKeys.map((k) => plano.agents.find((a) => a.key === k)?.resourceId).sort()
+  assert.deepEqual(equipeAplicada, equipeDoPlano, 'a equipe aplicada difere da que foi aprovada')
+  assert.equal(
+    depois.coordinatorAgentId?.toString(),
+    plano.agents.find((a) => a.key === doPlano.coordinatorAgentKey)?.resourceId,
+    'o coordenador aplicado difere do que foi aprovado',
+  )
+})
+
+test('CENÁRIO E: os três modos aparecem DISTINTOS na prévia, em português', async () => {
+  const ctx = await loadOwnershipContext(DONO)
+  const detalhes = new Map()
+
+  for (const modo of ['organization', 'orchestrated', 'pipeline']) {
+    const plano = { ...planoDeAtualizacao(new ObjectId()), title: modo }
+    plano.sectors = [{ ...plano.sectors[0], mode: modo, action: 'create' }]
+    delete plano.sectors[0].resourceId
+    if (modo !== 'orchestrated') delete plano.sectors[0].coordinatorAgentKey
+    if (modo === 'pipeline') {
+      plano.sectors[0].stages = [
+        { key: 'e1', agentKey: 'marina', expectedOutput: 'o resumo' },
+        { key: 'e2', agentKey: 'rafael', dependsOn: ['e1'], expectedOutput: 'a resposta' },
+      ]
+    }
+    const item = buildPreview(plano, ctx).items.find((i) => i.kind === 'sector')
+    detalhes.set(modo, item.detail)
+  }
+
+  // Três frases diferentes: dois modos com o mesmo texto deixam a pessoa aprovar o errado.
+  assert.equal(new Set(detalhes.values()).size, 3, JSON.stringify([...detalhes]))
+  // E nenhuma delas mostra o valor do enum: "Setor no modo parallel" não é uma frase.
+  for (const [modo, texto] of detalhes) {
+    assert.equal(texto.includes(modo), false, `o enum "${modo}" vazou para a tela: ${texto}`)
+  }
+  // O que só agrupa precisa DIZER que não executa: é a diferença que mais engana.
+  assert.match(detalhes.get('organization').toLowerCase(), /não executa/)
+  assert.match(detalhes.get('pipeline').toLowerCase(), /etapa/)
+})

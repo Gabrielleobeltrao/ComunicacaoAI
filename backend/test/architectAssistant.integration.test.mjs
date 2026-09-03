@@ -216,3 +216,34 @@ test('a rodada que CRIA um projeto fica registrada; a que só responde, não', a
     await new Promise((r) => servidor.close(r))
   }
 })
+
+test('ROTA /context: devolve o que a tela mostra, e recusa o id de outra conta', async () => {
+  const express = (await import('express')).default
+  const { architectRouter } = await import('../dist/routes/architectRoutes.js')
+  const app = express()
+  app.use(express.json())
+  app.use((_req, res, next) => {
+    res.locals.userId = DONO
+    next()
+  })
+  app.use('/api/architect', architectRouter)
+  const servidor = await new Promise((r) => {
+    const s = app.listen(0, () => r(s))
+  })
+  const porta = servidor.address().port
+
+  try {
+    const meu = await fetch(`http://127.0.0.1:${porta}/api/architect/context?pathname=/floors/x&floorId=${andar}`).then((r) => r.json())
+    assert.equal(meu.context.floor.name, 'Atendimento')
+    // O inventário do resumo NUNCA carrega ObjectId: ele vai para o modelo.
+    assert.equal(/[0-9a-f]{24}/i.test(JSON.stringify(meu.inventory)), false)
+
+    const alheio = new ObjectId()
+    await db.collection('offices').insertOne({ _id: alheio, ownerId: VIZINHO, buildingId: new ObjectId(), name: 'Andar alheio', status: 'active', createdAt: new Date(), updatedAt: new Date() })
+    const outro = await fetch(`http://127.0.0.1:${porta}/api/architect/context?pathname=/x&floorId=${alheio}`).then((r) => r.json())
+    assert.equal(outro.context.floor, undefined, 'a resposta não pode descrever o escritório de outra pessoa')
+    assert.deepEqual(outro.context.rejected, ['floorId'])
+  } finally {
+    await new Promise((r) => servidor.close(r))
+  }
+})

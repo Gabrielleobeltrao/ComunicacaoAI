@@ -589,3 +589,72 @@ test('gerar e revisar ficam no log; a conversa não', async () => {
   assert.deepEqual(auditTargetFor('POST', `/api/architect/projects/${ID}/rollback`), { entityType: 'architect_project', entityId: ID, action: 'delete' })
   assert.equal(auditTargetFor('POST', `/api/architect/projects/${ID}/messages`), null)
 })
+
+// --- LACUNA 3 CORRIGIDA: ligar também o que mora no plano V2 -----------------------------------
+//
+// O compilador já reaproveita por nome quando reconhece o recurso. O que faltava era a escolha
+// MANUAL: "este Database da proposta é aquele que eu já tenho". Sem ela, a pessoa via a
+// proposta criar um segundo Database ao lado do dela e não tinha onde dizer o contrário.
+
+const t2 = await import('../dist/architect/typesV2.js')
+const { createDataStore } = await import('../dist/databases/store.js')
+
+const projetoComV2 = async () => {
+  const bp2 = t2.emptyBlueprintV2('Teste', 'testar', 'create')
+  bp2.resources.databases = [
+    { key: 'base', action: 'create', layer: 'essential', rationale: 'x', dependsOn: [], name: 'Atendimentos', owner: { ownerType: 'account' }, adapterKind: 'data_history' },
+  ]
+  const p = await projetoCom(BASE())
+  await repo.patchProject(DONO, p._id, { blueprintVersion: 2, blueprintV2: bp2 })
+  return (await repo.getProject(DONO, p._id))
+}
+
+test('ligar um DATABASE da proposta ao que já existe muda a ação para reuse', async () => {
+  const meu = await createDataStore(DONO, { name: 'Atendimentos', adapterKind: 'data_history' })
+  const p = await projetoComV2()
+
+  const r = await pedir('PATCH', `/projects/${p._id}/links`, {
+    links: [{ kind: 'database', key: 'base', action: 'reuse', resourceId: meu._id.toString() }],
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const depois = await repo.getProject(DONO, p._id)
+  const item = depois.blueprintV2.resources.databases[0]
+  assert.equal(item.action, 'reuse')
+  assert.equal(item.resourceId, meu._id.toString())
+  // O plano V1 não é tocado: o Database não mora lá.
+  assert.deepEqual(depois.blueprint.floors[0].key, p.blueprint.floors[0].key)
+})
+
+test('AMEAÇA: um Database de OUTRA conta é recusado, com a mesma mensagem de sempre', async () => {
+  const alheio = await createDataStore(VIZINHO, { name: 'Do vizinho', adapterKind: 'data_history' })
+  const p = await projetoComV2()
+  const r = await pedir('PATCH', `/projects/${p._id}/links`, {
+    links: [{ kind: 'database', key: 'base', action: 'reuse', resourceId: alheio._id.toString() }],
+  })
+  assert.equal(r.status, 400)
+  // A mesma frase dos outros tipos: nenhuma resposta confirma a existência de um recurso alheio.
+  assert.match(r.body.message, /não existe nesta conta/)
+})
+
+test('ligar um item do V2 num projeto SEM plano V2 é recusado, e não cria um', async () => {
+  const p = await projetoCom(BASE())
+  const r = await pedir('PATCH', `/projects/${p._id}/links`, {
+    links: [{ kind: 'database', key: 'base', action: 'reuse', resourceId: new ObjectId().toString() }],
+  })
+  assert.equal(r.status, 400)
+  assert.equal((await repo.getProject(DONO, p._id)).blueprintV2, undefined)
+})
+
+test('o hash muda quando a ligação mexe no plano V2 — a revisão precisa ser refeita', async () => {
+  const meu = await createDataStore(DONO, { name: 'Atendimentos', adapterKind: 'data_history' })
+  const p = await projetoComV2()
+  const antes = (await repo.getProject(DONO, p._id)).blueprintHash
+
+  await pedir('PATCH', `/projects/${p._id}/links`, {
+    links: [{ kind: 'database', key: 'base', action: 'reuse', resourceId: meu._id.toString() }],
+  })
+  const depois = await repo.getProject(DONO, p._id)
+  assert.notEqual(depois.blueprintHash, antes, 'sem hash novo, uma confirmação antiga aplicaria a proposta mudada')
+  assert.equal(depois.status, 'draft')
+})

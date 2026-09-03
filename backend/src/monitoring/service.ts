@@ -320,7 +320,9 @@ export async function setSourceStatus(ownerId: string, id: ObjectId, status: Mon
    * As duas servem porque as duas provam a mesma coisa: alguém chegou no outro lado e
    * trouxe dado. Exigir só a leitura obrigava a gravar histórico para destravar um botão.
    */
-  const provou = fonte.telemetry.lastOkAt ?? fonte.telemetry.lastTestOkAt
+  // `telemetry` pode faltar num documento gravado antes de ela existir. Ler sem guarda
+  // estourava aqui inclusive ao PAUSAR — uma fonte que ninguém consegue desligar.
+  const provou = fonte.telemetry?.lastOkAt ?? fonte.telemetry?.lastTestOkAt
   if (status === 'active' && !provou && KIND_CAPABILITIES[fonte.kind].pull) {
     throw new MonitoringError('teste a fonte antes de ativar: ela ainda não leu nada', 'never_read')
   }

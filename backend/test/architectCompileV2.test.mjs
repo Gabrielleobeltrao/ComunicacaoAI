@@ -419,3 +419,97 @@ test('AMEAÇA: uma área DIFERENTE não sequestra o andar existente', () => {
   assert.equal(c2.findExistingFloor(salao, 'Financeiro'), null)
   assert.equal(c2.findExistingFloor(salao, 'Logística'), null)
 })
+
+// --- §10.1: o que precisa ficar GUARDADO ------------------------------------------------------
+//
+// "Quanto está agora" e "como variou" são perguntas diferentes. Sem `recordsToKeep`, toda
+// proposta nascia sem Database nenhum — e a cadeia parava no monitor, que precisa de um
+// conjunto para observar.
+
+const briefComRegistros = (over = {}) => ({
+  ...emptyBrief('Guardar o histórico de atendimento'),
+  recordsToKeep: [{ subject: 'Atendimentos', fields: ['cliente', 'assunto', 'duração'], retentionDays: 365 }],
+  jobs: [{ id: 'atender', name: 'Atender o cliente', trigger: 'chega mensagem', input: 'a mensagem', decision: 'o que responder', action: 'responder', output: 'a resposta' }],
+  ...over,
+})
+
+test('um registro a guardar vira Database + conjunto, com os campos declarados', () => {
+  const { blueprint } = compilar(briefComRegistros())
+  const db = blueprint.resources.databases[0]
+  assert.ok(db, 'nenhum Database foi proposto')
+  assert.equal(db.action, 'create')
+  assert.equal(db.name, 'Atendimentos')
+  assert.equal(db.retentionDays, 365)
+
+  const conjunto = blueprint.resources.datasets[0]
+  assert.ok(conjunto, 'um Database sem conjunto não tem o que guardar')
+  assert.equal(conjunto.dependsOn[0], db.key, 'o conjunto tem que ser criado depois do Database')
+  assert.deepEqual(Object.keys(conjunto.schema.properties).sort(), ['assunto', 'cliente', 'duracao'])
+  assert.equal(conjunto.mutability, 'append_only', 'corrigir o valor de ontem mudaria o gráfico sem registro')
+})
+
+test('sem CAMPOS declarados, o conjunto vira pendência — nunca um schema que aceita tudo', () => {
+  const r = compilar(briefComRegistros({ recordsToKeep: [{ subject: 'Atendimentos', fields: [], retentionDays: null }] }))
+  assert.equal(r.blueprint.resources.databases.length, 1, 'o Database ainda faz sentido')
+  assert.equal(r.blueprint.resources.datasets.length, 0)
+  assert.ok(
+    r.pending.some((p) => p.kind === 'dataset_fields'),
+    JSON.stringify(r.pending),
+  )
+})
+
+test('o registro guardado ganha um teste de aceitação obrigatório', () => {
+  const { blueprint } = compilar(briefComRegistros())
+  const teste = blueprint.acceptanceTests.find((t) => t.kind === 'database_permission')
+  assert.ok(teste, `nenhum teste do Database: ${JSON.stringify(blueprint.acceptanceTests)}`)
+  assert.equal(teste.targetKey, blueprint.resources.databases[0].key)
+  assert.equal(teste.required, true)
+})
+
+test('um Database que JÁ existe é reusado, e não duplicado', () => {
+  const inventory = {
+    ownerId: 'dono',
+    at: new Date(),
+    building: { id: '000000000000000000000b01', name: 'Prédio' },
+    sections: { database: { kind: 'database', total: 1, truncated: false, items: [{ id: '000000000000000000000d01', label: 'Atendimentos' }] } },
+  }
+  const { blueprint } = compilar(briefComRegistros(), { inventory })
+  assert.equal(blueprint.resources.databases[0].action, 'reuse')
+  assert.equal(blueprint.resources.databases[0].resourceId, '000000000000000000000d01')
+})
+
+test('o plano com Database continua passando na validação estrutural', () => {
+  const { blueprint } = compilar(briefComRegistros())
+  const r = v2.validateBlueprintV2(blueprint)
+  assert.equal(r.valid, true, JSON.stringify(r.issues))
+})
+
+test('um canal NATIVO, sem ação declarada, não vira requisito de App vazio', () => {
+  // `web_chat` é porta de entrada do próprio produto, não um sistema de terceiro. Um
+  // requisito de App sem ação nenhuma é recusado pelo validador — e derrubava a proposta
+  // inteira com um erro vermelho que ninguém conseguia resolver na tela.
+  const brief = {
+    ...emptyBrief('Atender pelo chat do site'),
+    channels: ['web_chat'],
+    jobs: [{ id: 'atender', name: 'Atender o cliente', trigger: 'chega mensagem', input: 'a mensagem', decision: 'o que responder', action: 'responder', output: 'a resposta' }],
+  }
+  const { blueprint } = compilar(brief)
+  assert.equal(blueprint.resources.appRequirements.some((r) => r.appKey === 'web_chat'), false)
+  // Mas o VÍNCULO existe: quem chega precisa de um agente que receba.
+  const vinculo = blueprint.operations.channels.find((c) => c.appKey === 'web_chat')
+  assert.ok(vinculo, 'sem vínculo, a mensagem não chega a lugar nenhum')
+  assert.deepEqual(vinculo.dependsOn, [blueprint.organization.agents[0].key], 'depender de um item que não está no plano é recusado pelo validador')
+  assert.equal(v2.validateBlueprintV2(blueprint).valid, true)
+})
+
+test('um canal COM ações declaradas continua virando requisito de App', () => {
+  const brief = {
+    ...emptyBrief('Atender pelo WhatsApp'),
+    channels: ['whatsapp'],
+    jobs: [{ id: 'atender', name: 'Atender o cliente', trigger: 'chega mensagem', input: 'a mensagem', decision: 'o que responder', action: 'responder', output: 'a resposta' }],
+  }
+  const { blueprint } = compilar(brief)
+  const req = blueprint.resources.appRequirements.find((r) => r.appKey === 'whatsapp')
+  assert.ok(req, 'o WhatsApp declara ações, e elas precisam ser pedidas')
+  assert.ok(req.actionKeys.length > 0)
+})

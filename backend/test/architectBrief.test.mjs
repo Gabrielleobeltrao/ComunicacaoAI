@@ -169,3 +169,35 @@ test('o Brief no prompt fala de negócio, não de estrutura técnica', () => {
   // "qual o output schema do setor" para descrever a própria empresa.
   assert.doesNotMatch(texto, /preset|blueprint|orchestrated|schema|floorKey/i)
 })
+
+// --- compatibilidade: o Brief gravado ANTES de `recordsToKeep` -------------------------------
+
+test('um Brief antigo, sem `recordsToKeep`, não derruba a rodada', () => {
+  // É exatamente o que está no banco de todo projeto que já existia: o campo simplesmente
+  // não está lá. Ler `.length` de `undefined` derrubaria a próxima mensagem dessas pessoas.
+  const antigo = emptyBrief('Atender clientes')
+  delete antigo.recordsToKeep
+  antigo.version = 1
+
+  const texto = briefForPrompt(antigo)
+  assert.match(texto, /Atender clientes/)
+  assert.equal(texto.includes('Registros a guardar'), false)
+})
+
+test('um patch com `recordsToKeep` preenche o campo que faltava', () => {
+  const antigo = emptyBrief('Atender clientes')
+  delete antigo.recordsToKeep
+  const depois = applyBriefPatch(antigo, { recordsToKeep: [{ subject: 'Atendimentos', fields: ['cliente'], retentionDays: 90 }] })
+  assert.equal(depois.recordsToKeep.length, 1)
+  assert.equal(depois.recordsToKeep[0].retentionDays, 90)
+})
+
+test('uma retenção inválida NÃO vira "apague já"', () => {
+  for (const valor of [-1, 0, 0.5, 'muito tempo', null, undefined]) {
+    const r = applyBriefPatch(emptyBrief('x'), { recordsToKeep: [{ subject: 'Atendimentos', fields: ['a'], retentionDays: valor }] })
+    assert.equal(r.recordsToKeep[0].retentionDays, null, `${valor} não é uma retenção`)
+  }
+  // E um número absurdo é limitado, em vez de virar retenção infinita por engano.
+  const teto = applyBriefPatch(emptyBrief('x'), { recordsToKeep: [{ subject: 'A', fields: ['a'], retentionDays: 99999 }] })
+  assert.equal(teto.recordsToKeep[0].retentionDays, 3650)
+})

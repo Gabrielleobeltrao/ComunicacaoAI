@@ -674,3 +674,113 @@ Teeth check: neutralizando o registro da criação pelo assistente, o caso 14 ca
 - O compilador V2 ainda **não produz setores**, então a topologia continua vindo do V1.
 - O `LLM_FAKE` não gera brief de vigilância, então a cadeia fonte → monitor → Flow é
   exercitada pelo compilador direto e pela saga, não ponta a ponta pela conversa.
+
+---
+
+## Fase 10 — os cenários ponta a ponta, e o que eles acharam
+
+### A suíte de cenários
+
+`backend/test/architectScenarios.integration.test.mjs` fecha o §20: o Brief é montado à mão,
+compilado pelos dois compiladores e **aplicado pela saga de verdade** — serviços canônicos,
+coleções reais, uma origem HTTP que responde de fato. Nenhum stub genérico: um mock
+devolvendo o que o teste espera provaria só que o mock funciona.
+
+Ela achou **cinco defeitos** que os testes de compilador não podiam ver, porque nenhum deles
+aparece no desenho — todos aparecem na hora de aplicar ou de ler.
+
+**1. Uma fonte sem origem derrubava a aplicação inteira.** O compilador emite a fonte de
+propósito quando o Brief não diz de onde o dado vem, para que ela apareça no plano com o
+motivo. Só que `createSource` recusa mapeamento vazio, e a saga morria com "mapeie ao menos
+um campo" numa etapa que não tem defeito — falta uma informação que só a pessoa tem. Agora é
+**pendência declarada**, e o que depende dela também: um destino ao vivo em cima de uma fonte
+pendente está esperando o mesmo dado, não quebrado.
+
+**2. "Reservar mesa" virava uma automação AGENDADA.** `frequency` empurrava qualquer trabalho
+para rotina, e ninguém perguntava se a palavra nomeia um horário. "Sempre" e "sob demanda"
+não nomeiam: quem dispara é o cliente, e cliente não tem cadência. É a mesma patologia de
+"quando o RSI ficar abaixo de 30" virando um cron das oito da manhã.
+
+**3. A ação do App casava por substring exata.** "criar o evento na agenda" não achava "Criar
+evento" — um artigo no meio da frase, e o agente é criado sem alcançar o sistema de que
+precisa. Ninguém descobre até a primeira reserva não entrar na agenda. Agora casa **palavra
+por palavra**, e continua conservador: "listar eventos" não casa com "criar o evento".
+
+**4. Um canal NATIVO virava um requisito de App vazio.** `web_chat` é porta de entrada do
+próprio produto, não um sistema de terceiro com ações declaradas. O requisito sem ação é
+recusado pelo validador — e derrubava a **proposta inteira** com um erro vermelho que ninguém
+conseguia resolver na tela. O vínculo do canal continua existindo; o requisito vazio, não.
+
+**5. A prévia dizia "Setor no modo parallel".** O valor do enum, em inglês, na tela de quem
+aprova. E os três modos decidem coisas diferentes — quem recebe o trabalho, quem cobra, em
+que ordem. Aprovar "orchestrated" achando que é "pipeline" é aprovar outra operação.
+
+### O andar existente, reconhecido pela área
+
+"Adicione recepção ao meu salão" vira a área **Atendimento**; o andar da pessoa se chama
+**Recepção**. Propor "Atendimento" ao lado dele cria dois andares para a mesma coisa. Agora o
+andar existente é reconhecido pela mesma família de palavras — e **só um nome de uma
+palavra**: "Atendimento ao fornecedor" continua sendo outro andar, porque o qualificador é o
+que o distingue.
+
+### §10.1: o que precisa ficar guardado
+
+O Brief ganhou `recordsToKeep` — e ele **muda a saída**: cada registro vira um Database e um
+conjunto com os campos declarados, `append_only`, mais um teste de aceitação obrigatório.
+Antes disto, toda proposta nascia com **zero Databases**, e a cadeia parava no monitor, que
+precisa de um conjunto para observar.
+
+Sem campos declarados, o conjunto vira pendência: um schema que aceita tudo não pode ser
+consultado nem observado, porque a DSL só permite o que o schema declara.
+
+### §20.E: a prévia e a estrutura aplicada coincidem
+
+O teste que faltava. A prévia é o que a pessoa lê antes de clicar; se ela descreve uma equipe
+de três e a aplicação monta uma de dois, a aprovação foi dada sobre uma coisa que não
+aconteceu — e ninguém descobre, porque quem aprova não volta para conferir. Modo, coordenador
+e equipe são comparados item a item.
+
+### Acessibilidade
+
+- O painel do Arquiteto ganhou **região viva**: sem ela, a resposta chega em silêncio para
+  quem usa leitor de tela, porque a conversa não muda de página.
+- Os **22 arquivos** que pintavam texto com `--intent-danger` (2,81:1) passaram para
+  `--intent-danger-text` (5,98:1). Preenchimento, borda e `fill` continuam com o token de
+  preenchimento, que é para o que ele existe. Um caso barato, sem navegador, impede o defeito
+  de voltar arquivo por arquivo — e um caso de E2E mede a razão WCAG do texto de erro do
+  painel a partir das cores computadas.
+
+### Sobre a suíte que falhou uma vez
+
+Numa execução, dez casos de `websocketRoutes` caíram com `fetch failed` num servidor local. A
+execução seguinte, idêntica, passou inteira. Não é regressão: é contenção — eu estava rodando
+o build do frontend e o Playwright na mesma máquina. Cheguei a escrever um teto de
+concorrência por memória no corredor e **revertí**: com 8,6 GB a conta dava o mesmo 4 de
+antes, então seria um conserto de fachada. O que vale é o que já está escrito no próprio
+corredor: a suíte roda sozinha.
+
+### §14.2: arquivar passou a desativar a entrada
+
+`archiveFloor` marcava o andar e **deixava tudo rodando**. Um andar arquivado com Flow ativo
+e fonte coletando não está arquivado: ele saiu da tela e continuou trabalhando — gastando
+token, batendo em servidor de terceiro e gravando histórico que ninguém vai olhar, porque
+ninguém olha um andar arquivado.
+
+Agora ele pausa Flows e fontes do andar pelos serviços canônicos de cada domínio, e **não
+apaga nada**: arquivar é o padrão recuperável. Restaurar continua **não religando** — reativar
+sozinho dispararia trabalho semanas depois, sem ninguém pedir.
+
+Dois defeitos vieram junto:
+
+- **`setSourceStatus` lia `telemetry` sem guarda**, inclusive ao PAUSAR. Um documento gravado
+  antes de a telemetria existir era uma fonte que ninguém conseguia desligar.
+- O primeiro rascunho **engolia** a falha de pausar. Silenciar deixaria o andar marcado como
+  arquivado com metade da operação no ar, e ninguém descobriria. Agora a falha nomeia o
+  recurso que continuou ligado.
+
+### A prévia reusa o rótulo do produto
+
+`detalheDoSetor` passou a vir de `SECTOR_MODE_LABEL`, que é de onde a tela de setores já tira
+o texto dela. Duas frases para a mesma coisa é como a prévia e o produto começam a discordar.
+E `organization` **não é paralelo**: ele agrupa no mapa e não executa nada — dizer o contrário
+seria o mesmo defeito com outra roupa.

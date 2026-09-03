@@ -160,7 +160,7 @@ const aplicar = async (brief, { title, objective, ativar = [], atualizarFonte } 
 
 const briefB = () => ({
   ...emptyBrief('Acompanhar CXSE3 e avisar sobre o RSI'),
-  channels: [{ kind: 'whatsapp', direction: 'outbound', required: true }],
+  channels: ['whatsapp'],
   liveDataNeeds: [{ source: 'cotação CXSE3', freshness: 'até 1 minuto', required: true }],
   jobs: [
     {
@@ -256,7 +256,7 @@ function v2Keys(tipo) {
 
 const briefC = () => ({
   ...emptyBrief('Automatizar atendimento e reservas pelo WhatsApp'),
-  channels: [{ kind: 'whatsapp', direction: 'inbound', required: true }],
+  channels: ['whatsapp'],
   knowledgeNeeds: [{ subject: 'cardápio', scope: 'floor', required: true }],
   jobs: [
     {

@@ -4,6 +4,8 @@ import { validateOfficeBlueprint } from './validate.js'
 import type { BlueprintOwnershipContext, BlueprintIssue } from './validate.js'
 import type { ArchitectChecklistItem, ArchitectReadiness, OfficeBlueprintV1 } from './types.js'
 import type { OfficeBlueprintV2 } from './typesV2.js'
+import { SECTOR_MODE_LABEL } from '../sectors.js'
+import type { SectorMode } from '../sectors.js'
 
 // A PRÉVIA: o que vai acontecer, item a item, antes de qualquer escrita.
 //
@@ -40,6 +42,26 @@ export interface ArchitectPreview {
 }
 
 const doIssue = (issues: BlueprintIssue[], prefixo: string): BlueprintIssue[] => issues.filter((i) => i.path === prefixo || i.path.startsWith(`${prefixo}.`) || i.path.startsWith(`${prefixo}[`))
+
+/**
+ * O que o modo do setor SIGNIFICA, em português.
+ *
+ * "Setor no modo parallel" não é uma frase: é o valor do enum vazando para a tela de quem
+ * aprova. E os três modos decidem coisas diferentes — um só agrupa no mapa e não executa
+ * nada, os outros dois executam de formas opostas. Aprovar "coordenado" achando que é
+ * "etapas" é aprovar outra operação.
+ *
+ * O texto vem de `SECTOR_MODE_LABEL`, que é de onde a tela de setores já tira o dela: duas
+ * frases para a mesma coisa é como a prévia e o produto passam a discordar.
+ */
+function detalheDoSetor(s: { mode: SectorMode; memberAgentKeys?: string[]; stages?: unknown[] }): string {
+  const rotulo = SECTOR_MODE_LABEL[s.mode] ?? SECTOR_MODE_LABEL.organization
+  const equipe = s.memberAgentKeys?.length ?? 0
+  const quantos = equipe === 1 ? '1 agente' : `${equipe} agentes`
+  const etapas = s.stages?.length ?? 0
+  const extra = s.mode === 'pipeline' && etapas ? ` ${etapas} etapa${etapas > 1 ? 's' : ''}.` : equipe ? ` ${quantos}.` : ''
+  return `${rotulo.title}: ${rotulo.help}${extra}`
+}
 
 export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipContext, marcados: Set<string> = new Set(), v2?: OfficeBlueprintV2 | null): ArchitectPreview {
   const { valid, issues } = validateOfficeBlueprint(bp, ctx)
@@ -97,7 +119,7 @@ export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipConte
       key: s.key,
       label: s.name,
       action: s.action,
-      detail: `Setor no modo ${s.mode}.`,
+      detail: detalheDoSetor(s),
       rationale: s.rationale?.trim() || undefined,
       dependsOn: (s.memberAgentKeys ?? []).map((k) => `agent:${k}`),
       usesLlm: false,
