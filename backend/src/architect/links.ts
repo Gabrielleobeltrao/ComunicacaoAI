@@ -7,6 +7,7 @@ import { listAutomations } from '../automations/service.js'
 import { listDataStores } from '../databases/store.js'
 import { listSources } from '../monitoring/service.js'
 import { listMonitors } from '../monitors/state.js'
+import { listConnections } from '../connections/service.js'
 import type { BlueprintAction, OfficeBlueprintV1 } from './types.js'
 import type { OfficeBlueprintV2 } from './typesV2.js'
 
@@ -51,11 +52,13 @@ export interface ArchitectTargets {
   sources: { id: string; name: string; status: string }[]
   monitors: { id: string; name: string; status: string }[]
   flows: { id: string; name: string; status: string }[]
+  /** Por onde uma entrega pode sair. Só as conectadas: as outras não entregariam nada. */
+  connections: { id: string; name: string; provider: string }[]
 }
 
 /** O que existe nesta conta — a lista que a tela mostra para escolher. */
 export async function loadTargets(ownerId: string): Promise<ArchitectTargets> {
-  const [andares, agentes, setores, rotinas, bases, fontes, monitores] = await Promise.all([
+  const [andares, agentes, setores, rotinas, bases, fontes, monitores, conexoes] = await Promise.all([
     listFloors(ownerId),
     listAgents(ownerId),
     listSectors(ownerId),
@@ -64,6 +67,7 @@ export async function loadTargets(ownerId: string): Promise<ArchitectTargets> {
     listDataStores(ownerId).catch(() => []),
     listSources(ownerId).catch(() => []),
     listMonitors(ownerId).catch(() => []),
+    listConnections(ownerId).catch(() => []),
   ])
   const automacoes = rotinas.items.map((r) => ({ id: r._id.toString(), name: r.name, status: r.status }))
   return {
@@ -76,6 +80,7 @@ export async function loadTargets(ownerId: string): Promise<ArchitectTargets> {
     monitors: monitores.map((m) => ({ id: m._id.toString(), name: m.name, status: m.status })),
     // Rotina e Flow são a mesma coleção: a diferença é o papel que a proposta dá a cada um.
     flows: automacoes,
+    connections: conexoes.filter((c) => c.status === 'connected').map((c) => ({ id: c._id.toString(), name: c.name, provider: c.provider })),
   }
 }
 

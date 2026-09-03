@@ -851,3 +851,73 @@ O mesmo vale para `tool`: endpoint e schema de uma ferramenta própria não são
 
 Teeth check: oferecendo na prévia um item sem teste declarado caem 3 casos; deixando o canal
 de App ser criado como se fosse nativo cai 1.
+
+---
+
+## Fase 10 (fechamento) — a cadeia inteira ligada, e duas coisas que eu tinha escrito errado
+
+### A saga ligava só fontes
+
+`activatableKeys` cobria os três desde a fase 6, mas o passo de ativação só agia sobre a
+fonte. Um monitor que passou na simulação e ficou em rascunho é um alarme desligado que
+parece ligado.
+
+Agora a cadeia é publicada na ordem que o domínio exige: **publicar o Flow → ativar o Flow →
+publicar o monitor**. Não é preferência de ordem — `publishMonitor` recusa um monitor cujo
+Flow não tem versão publicada, e está certo: um monitor que reconhece a transição e aciona um
+Flow sem versão é um alarme que toca no vazio.
+
+Uma recusa do domínio é **dita e registrada**, e não derruba a aplicação: o escritório já
+está montado quando isso acontece.
+
+### A entrega — eu estava errado
+
+Escrevi no relatório que a entrega era pendência "por desenho, impossível". Estava errado. O
+contrato do V2 proíbe **endereço** dentro do Blueprint, e isso continua valendo — mas o que a
+entrega precisa é de um `connectionId`, e ele pode vir da **requisição**, exatamente como
+`approvedAppKeys`: uma referência a uma conexão que já existe na conta, conferida contra o
+dono antes de qualquer escrita.
+
+A entrega passou a virar um passo **`delivery.send`** de verdade no Flow. Gravar só
+`definition.deliveries` não bastaria: quase ninguém lê esse campo, e quem entrega é o passo —
+é ele que aparece na Activity quando a mensagem sai. Um Flow com o campo e sem o passo pareceria
+configurado e não entregaria nada.
+
+Na tela, a seção "Por onde a resposta sai" lista as conexões **conectadas** da conta, e o
+padrão é **não escolher**: uma entrega ligada por engano manda mensagem para alguém que não
+pediu. Sem conexão nenhuma, a tela diz o que fazer em vez de oferecer um seletor vazio e mudo.
+
+### Um defeito que isso revelou
+
+O teste de aceitação do Flow lia `flow.definition.steps`. A automação guarda
+`draftDefinition` — então **todo** Flow reprovava, sempre com "o Flow não tem nenhum passo".
+Um teste que sempre falha é tão inútil quanto um que sempre passa, e este ainda mentia sobre o
+motivo. Agora ele lê a versão **publicada** quando existe (é ela que roda) e o rascunho quando
+não.
+
+### O que o hook apontou e NÃO é lacuna
+
+- **`app_dry_run`**: nenhum App do catálogo declara execução de teste, e o plano qualifica com
+  "app dry-run **quando suportado**" (§13). O teste retornar `pending` é o comportamento
+  correto.
+- **Streaming**: nenhum provider desta base faz streaming, e o plano qualifica com
+  "streaming/cancelamento **quando suportado pelo provider**" (§6).
+
+Nos dois casos, implementar exigiria primeiro criar a capacidade no provedor — que é outro
+trabalho, não este.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectApply.integration.test.mjs` | 45 (6 novos) | 45 passam |
+| `backend/test/architectApplyV2.integration.test.mjs` | 24 (4 novos) | 24 passam |
+| `frontend/e2e/architect-app.spec.ts` | 90 (3 novos) | 90 passam |
+
+Teeth check: desligando a ativação de Flow caem 2 casos; lendo `definition` em vez de
+`draftDefinition` caem os mesmos 2; aceitando conexão de outra conta cai 1.
+
+### Bateria completa
+
+backend **1551 + 2210 = 3761**, runner 21, browser-worker 32, frontend 294, E2E **735** com 0
+flaky, lint 0 erros, secret-scan 2257 arquivos, smoke e `git diff --check` verdes.

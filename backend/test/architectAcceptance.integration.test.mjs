@@ -166,7 +166,9 @@ test('o Flow com dependência órfã reprova, dizendo qual passo', async () => {
     _id: id,
     ownerId: DONO,
     name: 'F',
-    definition: { steps: [{ id: 'a', name: 'Resumir', dependsOn: ['nao-existe'] }] },
+    // `draftDefinition` é onde a definição mora de verdade — o campo que o produto grava.
+    draftDefinition: { steps: [{ id: 'a', name: 'Resumir', dependsOn: ['nao-existe'] }] },
+    lastPublishedVersion: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   })

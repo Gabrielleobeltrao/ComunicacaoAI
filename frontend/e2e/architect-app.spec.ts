@@ -1693,3 +1693,50 @@ test('a proposta mostra o que o V2 acrescenta, agrupado e com nome de produto', 
   await expect(proposta).toContainText('Cotações CXSE3')
   await expect(proposta).toContainText('ativa só depois de testar')
 })
+
+test('a entrega pede uma CONEXÃO na hora de aplicar, e o padrão é não escolher', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    preview: { ...PREVIA, pendingDeliveries: [{ key: 'entrega', label: 'meu e-mail', hint: 'Sai quando o Flow rodar.' }] },
+    targets: { floors: [], agents: [], sectors: [], routines: [], connections: [{ id: 'c1', name: 'Meu e-mail', provider: 'email' }] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+
+  const secao = page.getByTestId('architect-delivery-connection')
+  await expect(secao).toBeVisible()
+  await expect(secao).toContainText('meu e-mail')
+  // O padrão é NÃO escolher: uma entrega ligada por engano manda mensagem para alguém que
+  // não pediu.
+  await expect(page.getByTestId('architect-delivery-entrega')).toHaveValue('')
+
+  await page.getByTestId('architect-apply-confirm').click()
+  await expect.poll(() => aplicado?.deliveryConnections).toEqual([])
+})
+
+test('escolher a conexão manda a referência — nunca o endereço', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    preview: { ...PREVIA, pendingDeliveries: [{ key: 'entrega', label: 'meu e-mail', hint: '' }] },
+    targets: { floors: [], agents: [], sectors: [], routines: [], connections: [{ id: 'c1', name: 'Meu e-mail', provider: 'email' }] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await page.getByTestId('architect-delivery-entrega').selectOption('c1')
+  await page.getByTestId('architect-apply-confirm').click()
+
+  await expect.poll(() => aplicado?.deliveryConnections).toEqual([{ key: 'entrega', connectionId: 'c1' }])
+  // O que viaja é o ID de uma conexão da conta. Nenhum endereço no corpo do pedido.
+  expect(/@|\+\d{6}/.test(JSON.stringify(aplicado))).toBe(false)
+})
+
+test('sem conexão nenhuma, a tela diz o que fazer em vez de oferecer um vazio mudo', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    preview: { ...PREVIA, pendingDeliveries: [{ key: 'entrega', label: 'meu e-mail', hint: '' }] },
+    targets: { floors: [], agents: [], sectors: [], routines: [], connections: [] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await expect(page.getByTestId('architect-delivery-connection')).toContainText('ainda não tem uma conexão de envio')
+})

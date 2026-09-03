@@ -44,6 +44,9 @@ export function ArchitectProject() {
   const [pendente, setPendente] = useState(false)
   const [erro, setErro] = useState<{ code: string; message: string } | null>(null)
   const [dialogo, setDialogo] = useState(false)
+  // Por onde uma entrega pode sair. Carregado junto com a prévia: sem a lista, o diálogo
+  // ofereceria uma escolha vazia.
+  const [conexoes, setConexoes] = useState<{ id: string; name: string; provider: string }[]>([])
   const [aplicando, setAplicando] = useState(false)
   const [tela, setTela] = useState<Tela>('proposta')
   // A conversa fechada vira um botão flutuante. Estado da aba, não do servidor: é
@@ -192,6 +195,12 @@ export function ArchitectProject() {
 
   async function abrirAplicacao() {
     await revisar()
+    // Falhar aqui não pode impedir de aplicar: sem conexões, a entrega vira pendência, que
+    // é exatamente o que ela já seria.
+    await api
+      .listTargets()
+      .then((t) => setConexoes(t.connections ?? []))
+      .catch(() => setConexoes([]))
     setDialogo(true)
   }
 
@@ -545,6 +554,7 @@ export function ArchitectProject() {
       {previa && (
         <ApplyDialog
           preview={previa}
+          conexoes={conexoes}
           aberto={dialogo}
           aplicando={aplicando}
           erro={erro && dialogo ? erro.message : null}

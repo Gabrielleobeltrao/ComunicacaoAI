@@ -38,7 +38,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'automations', 'automation_versions', 'widgets'])
+  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'automations', 'automation_versions', 'widgets', 'connections'])
     await db.collection(c).deleteMany({})
 
   predio = new ObjectId()
@@ -294,16 +294,13 @@ test('o monitor de um DATASET real é criado, e nasce rascunho', async () => {
 
 // --- o que ainda NÃO é criado, e é dito -----------------------------------------------------------
 
-test('tool, delivery e channel viram pendência explícita — nunca um recurso incompleto', async () => {
+test('a TOOL vira pendência explícita — endpoint e schema não são inferíveis', async () => {
   const bp = base()
   bp.resources.tools = [item({ key: 'calc-rsi', name: 'RSI', description: 'calcula', provider: 'function', agentKeys: [] })]
-  bp.operations.deliveries = [item({ key: 'entrega', fromKey: 'calc-rsi', destinationHint: 'meu WhatsApp', format: 'text' })]
 
   const passos = await aplicar(bp)
-  for (const p of passos) {
-    assert.equal(p.status, 'skipped')
-    assert.match(p.message, /ainda não é aplicado automaticamente/)
-  }
+  assert.equal(passos[0].status, 'skipped')
+  assert.match(passos[0].message, /ainda não é aplicado automaticamente/)
 })
 
 // --- posse -----------------------------------------------------------------------------------------
@@ -399,12 +396,95 @@ test('um canal SEM quem receba fica pendente — uma porta que não leva a lugar
   assert.equal(await db.collection('widgets').countDocuments({ ownerId: DONO }), 0)
 })
 
-test('a ENTREGA continua pendente — o endereço não mora no Blueprint', async () => {
+test('a ENTREGA sem conexão escolhida fica pendente, dizendo o que falta', async () => {
   const bp = base()
   bp.operations.deliveries = [item({ key: 'entrega', fromKey: 'flow-x', destinationHint: 'meu WhatsApp', format: 'text' })]
   const passos = await aplicar(bp)
   assert.equal(passos[0].status, 'skipped')
-  // Não é lacuna: o contrato do V2 proíbe endereço concreto dentro do plano, porque ele é
-  // lido inteiro pela tela e viaja no histórico do projeto.
-  assert.match(passos[0].message, /ainda não é aplicado automaticamente/)
+  // O endereço não entra no plano — ele é lido inteiro pela tela e viaja no histórico do
+  // projeto. A conexão é escolhida na hora de aplicar.
+  assert.match(passos[0].message, /escolha por onde esta entrega sai/)
+})
+
+// --- a entrega: a conexão vem da REQUISIÇÃO, nunca do plano -------------------------------------
+//
+// O endereço não mora no Blueprint, e não é por acaso: o plano é lido inteiro pela tela e viaja
+// no histórico do projeto. O que entra é uma referência a uma conexão que já existe na conta,
+// escolhida na hora de aplicar e conferida contra o dono.
+
+const { createConnection } = await import('../dist/connections/service.js')
+
+const planoComFlowEEntrega = () => {
+  const bp = base()
+  bp.operations.flows = [
+    item({
+      key: 'avisar',
+      floorKey: 'operacao',
+      name: 'Avisar',
+      trigger: { type: 'manual' },
+      steps: [{ id: 'r', type: 'transform.template', name: 'Resumo', enabled: true, config: { template: 'viu: {{input}}' } }],
+    }),
+  ]
+  bp.operations.deliveries = [item({ key: 'entrega', dependsOn: ['avisar'], fromKey: 'avisar', destinationHint: 'meu e-mail', format: 'text' })]
+  return bp
+}
+
+const comConexao = (bp, mapa) =>
+  applyV2Resources({
+    ownerId: DONO,
+    blueprint: bp,
+    resourceMap: mapaInicial(),
+    approvedKeys: new Set(chavesDe(bp)),
+    deliveryConnections: new Map(mapa),
+  })
+
+test('ACEITAÇÃO: a entrega vira um PASSO do Flow, ligado na conexão escolhida', async () => {
+  const conexao = await createConnection(DONO, { provider: 'email', name: 'Meu e-mail', config: { host: 'smtp.exemplo.test', port: 587, secure: false, user: 'a@b.test', pass: 'nao-e-um-segredo-real', from: 'a@b.test' } })
+  const bp = planoComFlowEEntrega()
+
+  const passos = await comConexao(bp, [['entrega', conexao._id.toString()]])
+  const entrega = passos.find((p) => p.kind === 'delivery')
+  assert.equal(entrega.status, 'created', entrega.message)
+  assert.match(entrega.message, /Meu e-mail/)
+
+  // O passo é o que entrega de verdade — e é ele que aparece na Activity quando sai.
+  const flow = await db.collection('automations').findOne({ ownerId: DONO })
+  const passo = flow.draftDefinition.steps.find((p) => p.type === 'delivery.send')
+  assert.ok(passo, 'sem o passo, o Flow parece configurado e não entrega nada')
+  assert.equal(passo.config.connectionId, conexao._id.toString())
+  assert.equal(passo.dependsOn[0], 'r', 'a entrega sai do resultado da etapa anterior')
+})
+
+test('sem conexão escolhida, a entrega é pendência — e diz o que fazer', async () => {
+  const passos = await comConexao(planoComFlowEEntrega(), [])
+  const entrega = passos.find((p) => p.kind === 'delivery')
+  assert.equal(entrega.status, 'skipped')
+  assert.match(entrega.message, /escolha por onde esta entrega sai/)
+
+  const flow = await db.collection('automations').findOne({ ownerId: DONO })
+  assert.equal(flow.draftDefinition.steps.some((p) => p.type === 'delivery.send'), false)
+})
+
+test('AMEAÇA: a conexão de OUTRA conta não liga a entrega', async () => {
+  const alheia = await createConnection('vizinho', { provider: 'email', name: 'Do vizinho', config: { host: 'smtp.exemplo.test', port: 587, secure: false, user: 'v@b.test', pass: 'nao-e-um-segredo-real', from: 'v@b.test' } })
+  const passos = await comConexao(planoComFlowEEntrega(), [['entrega', alheia._id.toString()]])
+  const entrega = passos.find((p) => p.kind === 'delivery')
+  assert.equal(entrega.status, 'skipped')
+  assert.match(entrega.message, /não existe nesta conta/)
+
+  const flow = await db.collection('automations').findOne({ ownerId: DONO })
+  assert.equal(flow.draftDefinition.steps.some((p) => p.type === 'delivery.send'), false, 'a entrega sairia pela conexão de outra pessoa')
+})
+
+test('aplicar duas vezes não duplica o passo de entrega', async () => {
+  const conexao = await createConnection(DONO, { provider: 'email', name: 'Meu e-mail', config: { host: 'smtp.exemplo.test', port: 587, secure: false, user: 'a@b.test', pass: 'nao-e-um-segredo-real', from: 'a@b.test' } })
+  const bp = planoComFlowEEntrega()
+  const mapa = mapaInicial()
+  const entrada = { ownerId: DONO, blueprint: bp, resourceMap: mapa, approvedKeys: new Set(chavesDe(bp)), deliveryConnections: new Map([['entrega', conexao._id.toString()]]) }
+
+  await applyV2Resources(entrada)
+  await applyV2Resources(entrada)
+
+  const flow = await db.collection('automations').findOne({ ownerId: DONO })
+  assert.equal(flow.draftDefinition.steps.filter((p) => p.type === 'delivery.send').length, 1)
 })

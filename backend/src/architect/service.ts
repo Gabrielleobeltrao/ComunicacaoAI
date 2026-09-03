@@ -617,7 +617,7 @@ export const projectDetail = (p: ArchitectProject) => ({
 export async function applyProject(
   ownerId: string,
   projectId: ObjectId,
-  input: { blueprintHash: string; idempotencyKey: string; confirm: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[] },
+  input: { blueprintHash: string; idempotencyKey: string; confirm: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[]; deliveryConnections?: { key: string; connectionId: string }[] },
   hooks: ApplyHooks = {},
 ) {
   const projeto = await requireProject(ownerId, projectId)

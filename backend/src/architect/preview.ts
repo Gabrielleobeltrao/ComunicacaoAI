@@ -76,6 +76,13 @@ export interface ArchitectPreview {
   counts: { create: number; reuse: number; update: number; waitUser: number }
   /** O que a pessoa pode autorizar a entrar no ar. Vazio quando não há plano V2. */
   activatable: ActivatableItem[]
+  /**
+   * As entregas que esperam uma CONEXÃO, e as opções que a conta tem.
+   *
+   * O endereço nunca entra no plano; a escolha acontece aqui, na hora de aplicar, entre
+   * conexões que já existem — e o servidor confere a posse de novo antes de ligar.
+   */
+  pendingDeliveries: { key: string; label: string; hint: string }[]
 }
 
 /** Um item de prévia para cada recurso e operação do plano V2, na ordem em que aparecem. */
@@ -293,6 +300,11 @@ export function buildPreview(bp: OfficeBlueprintV1, ctx: BlueprintOwnershipConte
     checklist,
     readiness: computeReadiness(checklist, bloqueios),
     activatable: activatableFrom(v2),
+    pendingDeliveries: (v2?.operations.deliveries ?? []).map((d) => ({
+      key: d.key,
+      label: d.destinationHint || d.key,
+      hint: d.rationale?.trim() || 'Sai quando o Flow rodar.',
+    })),
     counts: {
       create: items.filter((i) => i.action === 'create').length,
       reuse: items.filter((i) => i.action === 'reuse').length,

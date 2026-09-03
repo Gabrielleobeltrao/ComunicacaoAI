@@ -389,6 +389,7 @@ architectRouter.post('/projects/:id/apply', async (req, res, next) => {
       approvedAppKeys?: string[]
       approvedUpdateKeys?: string[]
       approvedActivationKeys?: string[]
+      deliveryConnections?: { key?: unknown; connectionId?: unknown }[]
     }
     const r = await service.applyProject(res.locals.userId, id, {
       blueprintHash: String(body.blueprintHash ?? ''),
@@ -401,6 +402,11 @@ architectRouter.post('/projects/:id/apply', async (req, res, next) => {
       // Entrar no ar é outra autorização. Sem ela, o recurso é criado e fica parado —
       // aplicar uma proposta nunca coloca a operação para rodar sozinha no mesmo instante.
       approvedActivationKeys: Array.isArray(body.approvedActivationKeys) ? body.approvedActivationKeys.map(String).slice(0, 60) : [],
+      // A conexão de cada entrega. O id vem do cliente e é conferido contra o dono na saga:
+      // aceitá-lo sem conferir faria a entrega sair pela conexão de outra pessoa.
+      deliveryConnections: Array.isArray(body.deliveryConnections)
+        ? body.deliveryConnections.slice(0, 20).map((d) => ({ key: String(d?.key ?? ''), connectionId: String(d?.connectionId ?? '') }))
+        : [],
     })
     auditEntity(res, { id: r.project._id.toString(), label: r.project.title })
     res.json({ ...service.projectDetail(r.project), operation: r.operation, links: r.links })

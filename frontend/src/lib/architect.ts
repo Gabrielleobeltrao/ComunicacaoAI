@@ -62,10 +62,17 @@ export interface ArchitectTargets {
   agents: { id: string; name: string; floorId: string }[]
   sectors: { id: string; name: string; floorId: string }[]
   routines: { id: string; name: string; status: string }[]
+  // Os do plano V2. Ausentes nas respostas antigas: a tela trata como lista vazia.
+  databases?: { id: string; name: string }[]
+  sources?: { id: string; name: string; status: string }[]
+  monitors?: { id: string; name: string; status: string }[]
+  flows?: { id: string; name: string; status: string }[]
+  /** Por onde uma entrega pode sair. Só nome e provedor — o segredo nunca sai daqui. */
+  connections?: { id: string; name: string; provider: string }[]
 }
 
 export interface BlueprintLink {
-  kind: 'floor' | 'agent' | 'sector' | 'routine'
+  kind: 'floor' | 'agent' | 'sector' | 'routine' | 'database' | 'source' | 'monitor' | 'flow'
   key: string
   action: 'create' | 'reuse' | 'update'
   resourceId?: string | null
@@ -288,6 +295,8 @@ export interface ArchitectPreview {
   counts: { create: number; reuse: number; update: number; waitUser: number }
   /** Ausente nas prévias anteriores a esta versão — e ausente significa "nada a ligar". */
   activatable?: ActivatableItem[]
+  /** As entregas que esperam uma conexão. O endereço nunca vem no plano. */
+  pendingDeliveries?: { key: string; label: string; hint: string }[]
   /** O que a validação estrutural não vê: gerente sem equipe, executor incoerente. */
   critique?: {
     findings: CriticFinding[]
@@ -399,7 +408,15 @@ export const patchProject = (id: string, patch: { provider?: 'anthropic' | 'open
 // recurso nasce e fica parado. Opcional de propósito — ausente significa "não ligue nada".
 export const applyProject = (
   id: string,
-  body: { blueprintHash: string; idempotencyKey: string; approvedAppKeys: string[]; approvedUpdateKeys: string[]; approvedActivationKeys?: string[] },
+  body: {
+    blueprintHash: string
+    idempotencyKey: string
+    approvedAppKeys: string[]
+    approvedUpdateKeys: string[]
+    approvedActivationKeys?: string[]
+    /** A conexão escolhida por entrega. O servidor confere a posse de novo. */
+    deliveryConnections?: { key: string; connectionId: string }[]
+  },
 ) =>
   request<ApplyResponse>(`/projects/${id}/apply`, { method: 'POST', body: JSON.stringify({ ...body, confirm: true }) })
 export const resumeProject = (id: string) => request<ApplyResponse>(`/projects/${id}/resume`, { method: 'POST' })

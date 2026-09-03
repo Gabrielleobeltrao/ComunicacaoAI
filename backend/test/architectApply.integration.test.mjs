@@ -884,3 +884,144 @@ test('sem plano V2, a prévia continua exatamente como era', async () => {
     assert.equal(tipos.has(doV2), false, `"${doV2}" apareceu num projeto sem V2`)
   }
 })
+
+// --- ativar o Flow e o monitor, não só a fonte -------------------------------------------------
+//
+// `activatableKeys` cobria os três, mas a saga ligava só fontes. Um monitor que passou na
+// simulação e ficou em rascunho é um alarme que ninguém sabe que está desligado.
+
+const comCadeia = (bp2, testes) => {
+  planoSimples(bp2)
+  bp2.operations.flows = [
+    itemV2({
+      key: 'avisar',
+      floorKey: 'operacao',
+      name: 'Avisar o time',
+      trigger: { type: 'manual' },
+      steps: [{ id: 'r', type: 'transform.template', name: 'Resumo', enabled: true, config: { template: 'viu: {{input}}' } }],
+    }),
+  ]
+  bp2.operations.monitors = [
+    itemV2({
+      key: 'rsi',
+      dependsOn: ['candles', 'avisar'],
+      name: 'RSI baixo',
+      observes: { kind: 'dataset', datasetKey: 'candles' },
+      condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+      triggerMode: 'enter',
+      threshold: 30,
+      thresholdField: 'rsi',
+      flowKey: 'avisar',
+    }),
+  ]
+  bp2.acceptanceTests = testes
+}
+
+const TESTES_DA_CADEIA = [
+  { key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true },
+  { key: 't-flow', kind: 'flow', targetKey: 'avisar', expectation: 'a rota resolve', required: true },
+  { key: 't-mon', kind: 'monitor_simulation', targetKey: 'rsi', expectation: 'dispara na transição', required: true },
+]
+
+test('ACEITAÇÃO: Flow e monitor autorizados entram no ar, não só a fonte', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => comCadeia(bp2, TESTES_DA_CADEIA))
+
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-cadeia',
+    confirm: true,
+    approvedActivationKeys: ['fonte', 'avisar', 'rsi'],
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'active')
+
+  // O Flow tem que estar PUBLICADO e ativo: publicar é o que congela a definição que roda.
+  const flow = await db.collection('automations').findOne({ ownerId: DONO })
+  assert.equal(flow.status, 'active', 'um Flow em rascunho não é acionado por monitor nenhum')
+  assert.ok(flow.lastPublishedVersion != null, 'sem versão publicada, o monitor recusa publicar')
+
+  const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
+  assert.equal(monitor.status, 'published', 'um monitor em rascunho é um alarme desligado que parece ligado')
+})
+
+test('o Flow é publicado ANTES do monitor — a ordem não é preferência', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => comCadeia(bp2, TESTES_DA_CADEIA))
+  await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-ordem',
+    confirm: true,
+    approvedActivationKeys: ['avisar', 'rsi'],
+  })
+
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const ligados = operacao.steps.filter((p) => p.status === 'updated').map((p) => p.kind)
+  assert.ok(ligados.indexOf('flow') < ligados.indexOf('monitor'), JSON.stringify(ligados))
+})
+
+test('sem autorizar o Flow, o monitor NÃO é publicado — e o motivo é dito', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => comCadeia(bp2, TESTES_DA_CADEIA))
+  // Só o monitor é autorizado: o Flow dele continua em rascunho.
+  await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-so-monitor',
+    confirm: true,
+    approvedActivationKeys: ['rsi'],
+  })
+
+  const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
+  assert.notEqual(monitor.status, 'published', 'um monitor que aciona um Flow sem versão toca no vazio')
+
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const passo = operacao.steps.filter((p) => p.kind === 'monitor' && p.status === 'skipped').pop()
+  assert.match(passo.message, /publique o Flow|não foi autorizado/)
+})
+
+test('a recusa do domínio não derruba a aplicação — o escritório já está montado', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => comCadeia(bp2, TESTES_DA_CADEIA))
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-recusa',
+    confirm: true,
+    approvedActivationKeys: ['rsi'],
+  })
+  assert.equal(r.status, 200, 'a ativação recusada é uma pendência, não uma falha da aplicação')
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  assert.equal(projeto.status, 'applied')
+})
+
+test('a prévia lista as entregas que esperam conexão', async () => {
+  const { id } = await projetoPronto()
+  await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    bp2.operations.flows = [
+      itemV2({ key: 'avisar', floorKey: 'operacao', name: 'Avisar', trigger: { type: 'manual' }, steps: [{ id: 'r', type: 'transform.template', name: 'R', enabled: true, config: { template: 'x' } }] }),
+    ]
+    bp2.operations.deliveries = [itemV2({ key: 'entrega', dependsOn: ['avisar'], fromKey: 'avisar', destinationHint: 'meu e-mail', format: 'text' })]
+  })
+
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.equal(previa.body.pendingDeliveries.length, 1)
+  assert.equal(previa.body.pendingDeliveries[0].key, 'entrega')
+  // O rótulo é a PISTA do plano, nunca um endereço: ele não mora no Blueprint.
+  assert.equal(previa.body.pendingDeliveries[0].label, 'meu e-mail')
+  assert.equal(/@|\+\d/.test(JSON.stringify(previa.body.pendingDeliveries)), false, 'nenhum endereço concreto viaja no plano')
+})
+
+test('as conexões oferecidas são as CONECTADAS desta conta, e só elas', async () => {
+  const { createConnection } = await import('../dist/connections/service.js')
+  const cfg = { host: 'smtp.exemplo.test', port: 587, secure: false, user: 'a@b.test', pass: 'nao-e-um-segredo-real', from: 'a@b.test' }
+  const minha = await createConnection(DONO, { provider: 'email', name: 'Meu e-mail', config: cfg })
+  await createConnection(VIZINHO, { provider: 'email', name: 'Do vizinho', config: cfg })
+
+  const r = await pedir('GET', '/targets')
+  const ids = r.body.connections.map((c) => c.id)
+  assert.deepEqual(ids, [minha._id.toString()], 'uma conexão alheia na lista é um endereço de outra pessoa oferecido como opção')
+  // O segredo nunca sai: a lista tem nome e provedor, e nada mais.
+  assert.deepEqual(Object.keys(r.body.connections[0]).sort(), ['id', 'name', 'provider'])
+})

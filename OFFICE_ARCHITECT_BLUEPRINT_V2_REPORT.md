@@ -1,6 +1,6 @@
 # Blueprint V2 do Arquiteto — relatório final
 
-Branch: `feat/office-blueprint-v2`, sobre `development`. 13 commits.
+Branch: `feat/office-blueprint-v2`, sobre `development`. 14 commits.
 
 Este relatório descreve o que está de pé, o que foi encontrado no caminho e o que **não**
 ficou pronto. A última seção não é um apêndice: é a parte que decide se isto pode ser ligado
@@ -111,12 +111,12 @@ Nenhum deles aparece no desenho. Todos aparecem na hora de aplicar, de ler ou de
 | --- | --- |
 | `npm ci` | exit 0 (instalação limpa a partir do lockfile) |
 | `npm run build` | exit 0, inclusive **depois** do `npm ci` |
-| `npm run test -w backend` | **1551 + 2200 = 3751**, 0 falhas |
+| `npm run test -w backend` | **1551 + 2210 = 3761**, 0 falhas |
 | `npm run test:runner` | 21, 0 falhas |
 | `npm run test:browser-worker` | 32, 0 falhas |
 | `npm run test -w frontend` | **294** em 36 arquivos, 0 falhas |
 | `npm run lint -w frontend` | exit 0 — **0 erros**, 44 avisos |
-| `npm run test:e2e -w frontend` | **732 passaram**, 17 puladas, **0 falhas, 0 flaky** |
+| `npm run test:e2e -w frontend` | **735 passaram**, 17 puladas, **0 falhas, 0 flaky** |
 | `npm run smoke` | exit 0 |
 | `npm run secret-scan` | 2257 arquivos, nada encontrado |
 | `git diff --check` | limpo |
@@ -158,27 +158,33 @@ Enquanto isso for verdade, a flag não deve sair.
 | --- | --- |
 | Database, dataset, Source, Live, History, Monitor, Flow | criados pela saga |
 | `channel` nativo (`web_chat`) | **criado**, apontado para o agente ou setor de entrada |
+| `delivery` | **criada** como passo `delivery.send`, na conexão escolhida ao aplicar |
 | `channel` de App (WhatsApp, Telegram) | pendência: depende do número, do token e da instalação conectada |
 | `tool` | pendência: endpoint e schema de uma ferramenta própria não são inferíveis |
-| `delivery` | pendência **por desenho** — ver abaixo |
 
-A entrega **não é uma lacuna**. `DeliveryTarget` exige um `connectionId` real, e o próprio
-contrato do V2 proíbe endereço concreto dentro do Blueprint: ele é lido inteiro pela tela e
-viaja no histórico do projeto. Uma entrega compilada com endereço seria um vazamento, não uma
-conveniência.
+Sobre a entrega, uma correção do que este relatório dizia antes: eu havia escrito que ela era
+impossível por desenho. Não é. O contrato do V2 proíbe **endereço** dentro do Blueprint — e
+isso continua valendo, porque o plano é lido inteiro pela tela e viaja no histórico do
+projeto. Mas o que a entrega precisa é de um `connectionId`, e ele vem da **requisição**,
+como `approvedAppKeys`: uma referência a uma conexão que já existe na conta, conferida contra
+o dono antes de qualquer escrita.
 
 Cada pendência traz o motivo — nunca um recurso incompleto que parece pronto.
 
-### A ativação automática cobre só fontes
+### A ativação cobre a cadeia inteira
 
-`activatableKeys` já cobre monitor e Flow, mas a saga liga **fontes**. Publicar um monitor
-pede simulação com dados reais, que só existem depois da primeira coleta.
+Fonte, Flow e monitor entram no ar quando o teste passou **e** o dono autorizou. A ordem é a
+que o domínio exige — publicar o Flow, ativar o Flow, publicar o monitor — porque
+`publishMonitor` recusa um monitor cujo Flow não tem versão publicada: um monitor que aciona
+um Flow sem versão é um alarme que toca no vazio.
 
 ### Outras pendências reais
 
-- **`app_dry_run` fica pendente para todo App**: nenhum manifesto declara execução de teste.
-- **A conversa global não tem streaming nem cancelamento.** A rodada devolve o texto inteiro
-  de uma vez; para respostas longas isso aparece como espera.
+- **`app_dry_run` fica pendente para todo App**: nenhum manifesto do catálogo declara
+  execução de teste. O plano qualifica com "app dry-run **quando suportado**" (§13), então o
+  resultado `pending` é o correto — implementar exigiria primeiro criar a capacidade nos Apps.
+- **A conversa global não tem streaming**, e nenhum provider desta base faz streaming. O plano
+  qualifica com "streaming/cancelamento **quando suportado pelo provider**" (§6).
 - **Em `/architect/:id` existem duas conversas** — a da página e a global, que se esconde.
 - **O inventário não tem seções de canais e entregas.** Elas não são reaproveitadas ainda.
 - **Os recursos do V2 não recebem a marca de origem** (`architect.operationId`) na escrita,

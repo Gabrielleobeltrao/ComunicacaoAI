@@ -188,7 +188,20 @@ async function testarFlow(ctx: AcceptanceContext, t: BlueprintAcceptanceTestV2):
   const flow = await db.collection('automations').findOne({ _id: new ObjectId(id), ownerId: ctx.ownerId })
   if (!flow) return resultado(t, 'failed', 'o Flow não existe mais nesta conta')
 
-  const passos = (flow.definition?.steps ?? []) as { id?: string; dependsOn?: string[]; name?: string }[]
+  /**
+   * A definição de um Flow mora em `draftDefinition` — e é a PUBLICADA que roda.
+   *
+   * Ler `definition` (que não existe) fazia todo Flow reprovar com "não tem nenhum passo":
+   * um teste que sempre falha é tão inútil quanto um que sempre passa, e este mentia sobre
+   * o motivo. Quando há versão publicada, é ela que vale: o rascunho pode estar adiante do
+   * que realmente vai rodar.
+   */
+  const publicada =
+    flow.lastPublishedVersion == null
+      ? null
+      : await db.collection('automation_versions').findOne({ ownerId: ctx.ownerId, automationId: flow._id, version: flow.lastPublishedVersion })
+  const definicao = (publicada?.definition ?? flow.draftDefinition ?? {}) as { steps?: unknown[] }
+  const passos = (definicao.steps ?? []) as { id?: string; dependsOn?: string[]; name?: string }[]
   if (!passos.length) return resultado(t, 'failed', 'o Flow não tem nenhum passo: ele não faria nada')
 
   // Cada dependência tem que apontar para um passo que existe. Um `dependsOn` órfão faz o

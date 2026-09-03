@@ -62,6 +62,15 @@ export interface ApplyV2Context {
   resourceMap: Map<string, string>
   /** As keys que a pessoa aprovou nesta aplicação. Vazio = nada é criado. */
   approvedKeys: Set<string>
+  /**
+   * A CONEXÃO escolhida para cada entrega — `key` do item → id da conexão.
+   *
+   * O endereço não mora no Blueprint, e não é por acaso: o plano é lido inteiro pela tela e
+   * viaja no histórico do projeto. O que vem daqui é uma REFERÊNCIA a uma conexão que já
+   * existe na conta, escolhida na hora de aplicar e conferida contra o dono — o mesmo
+   * caminho dos grants de App.
+   */
+  deliveryConnections?: Map<string, string>
 }
 
 const chave = (kind: string, key: string): string => `${kind}:${key}`
@@ -358,8 +367,62 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
     return { id: canal._id.toString(), message: 'canal do site criado e apontado para quem recebe' }
   }
 
+  if (kind === 'delivery') {
+    const conexaoId = ctx.deliveryConnections?.get(String(item.key ?? ''))
+    if (!conexaoId) {
+      return { pendency: 'escolha por onde esta entrega sai: uma conexão da sua conta, na hora de aplicar' }
+    }
+    if (!ObjectId.isValid(conexaoId)) return { pendency: 'a conexão escolhida não é válida' }
+
+    // A posse é conferida AQUI, contra o dono da sessão. Um id que veio do cliente é um
+    // pedido, e aceitá-lo faria a entrega sair pela conexão de outra pessoa.
+    const { getConnection } = await import('../connections/service.js')
+    const conexao = await getConnection(ownerId, new ObjectId(conexaoId))
+    if (!conexao) return { pendency: 'a conexão escolhida não existe nesta conta' }
+    if (conexao.status !== 'connected') return { pendency: `a conexão "${conexao.name}" não está conectada` }
+
+    const flowId = idDe('flow', item.fromKey)
+    if (!flowId || !ObjectId.isValid(flowId)) throw new Error(`o Flow "${String(item.fromKey)}" não foi criado`)
+
+    /**
+     * A entrega é um PASSO do Flow — não um campo solto.
+     *
+     * `definition.deliveries` é lido por quase ninguém; quem entrega de verdade é o passo
+     * `delivery.send`, e é ele que aparece na Activity quando sai. Gravar só o campo daria
+     * um Flow que parece configurado e não entrega nada.
+     */
+    const { getAutomation, updateDraft } = await import('../automations/service.js')
+    const flow = await getAutomation(ownerId, new ObjectId(flowId))
+    if (!flow) throw new Error('o Flow desta entrega não existe mais')
+    const definicao = flow.draftDefinition
+    const ultimo = definicao.steps[definicao.steps.length - 1]
+    if (!ultimo) return { pendency: 'o Flow não tem etapa nenhuma: não há resultado para entregar' }
+
+    const stepId = `entrega-${String(item.key ?? 'saida')}`
+    if (!definicao.steps.some((p) => p.id === stepId)) {
+      definicao.steps.push({
+        id: stepId,
+        name: 'Entregar resultado',
+        type: 'delivery.send',
+        enabled: true,
+        dependsOn: [ultimo.id],
+        inputMapping: {},
+        config: { connectionId: conexaoId, fromStepId: ultimo.id },
+        timeoutMs: 30_000,
+        retryPolicy: { maxAttempts: 2, backoffMs: 2000 },
+        continueOnError: false,
+      } as never)
+      definicao.deliveries = [
+        ...(definicao.deliveries ?? []),
+        { provider: conexao.provider, connectionId: conexaoId, fromStepId: ultimo.id, required: false },
+      ]
+      await updateDraft(ownerId, new ObjectId(flowId), { definition: definicao })
+    }
+    return { id: `${flowId}:${stepId}`, message: `entrega ligada em "${conexao.name}" — sai quando o Flow rodar` }
+  }
+
   /**
-   * `tool` e `delivery` não têm criação automática.
+   * `tool` não tem criação automática.
    *
    * Não é esquecimento. Uma ferramenta própria precisa de endpoint e schema que o plano não
    * tem como inventar. E uma entrega precisa de uma CONEXÃO concreta — o próprio contrato do

@@ -78,6 +78,8 @@ interface Contexto {
    * lista, aplicar uma proposta colocaria a operação para rodar sozinha no mesmo instante.
    */
   ativacoesAprovadas: Set<string>
+  /** A conexão escolhida para cada entrega. O endereço nunca vem do plano. */
+  conexoesDeEntrega: Map<string, string>
 }
 
 const chave = (kind: ApplyStepKind, key: string): string => `${kind}:${key}`
@@ -160,7 +162,7 @@ const marcaDe = (ctx: Contexto, key: string): ArchitectStamp => ({
 export async function applyBlueprint(
   ownerId: string,
   project: ArchitectProject,
-  input: { blueprintHash: string; idempotencyKey: string; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[] },
+  input: { blueprintHash: string; idempotencyKey: string; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[]; deliveryConnections?: { key: string; connectionId: string }[] },
   hooks: ApplyHooks = {},
 ): Promise<ArchitectApplyOperation> {
   const bp = project.blueprint
@@ -186,7 +188,7 @@ export async function applyBlueprint(
     throw new ApplyConflict('esta aplicação já está em andamento')
   }
 
-  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []), project.blueprintV2 ?? null, new Set(input.approvedActivationKeys ?? []))
+  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []), project.blueprintV2 ?? null, new Set(input.approvedActivationKeys ?? []), new Map((input.deliveryConnections ?? []).map((d) => [String(d.key), String(d.connectionId)])))
 }
 
 /** O corpo compartilhado por aplicar e retomar: roda a saga, fecha e solta o arrendamento. */
@@ -199,6 +201,7 @@ async function rodar(
   updatesAprovados: Set<string>,
   v2: OfficeBlueprintV2 | null,
   ativacoesAprovadas: Set<string>,
+  conexoesDeEntrega: Map<string, string>,
 ): Promise<ArchitectApplyOperation> {
   const ctx: Contexto = {
     ownerId,
@@ -210,6 +213,7 @@ async function rodar(
     updatesAprovados,
     v2,
     ativacoesAprovadas,
+    conexoesDeEntrega,
   }
 
   try {
@@ -591,15 +595,25 @@ async function provarEAtivar(ctx: Contexto): Promise<void> {
   await repo.recordAcceptance(ctx.ownerId, ctx.operation._id, resultados)
   if (!resultados.length) return
 
+  /**
+   * As DUAS condições, e as duas obrigatórias: o teste passou E o dono autorizou.
+   *
+   * Devolve o id quando pode ligar; `null` quando não — registrando o motivo, para a
+   * pessoa saber por que o recurso ficou parado.
+   */
+  const autorizado = async (kind: ApplyStepKind, key: string): Promise<string | null> => {
+    if (!ctx.ativacoesAprovadas.has(key)) {
+      await registrar(ctx, { kind, key, status: 'skipped', message: 'passou no teste, mas entrar no ar não foi autorizado nesta aplicação' })
+      return null
+    }
+    const id = ctx.mapa.get(chave(kind, key))
+    return id && ObjectId.isValid(id) ? id : null
+  }
+
   const { setSourceStatus } = await import('../monitoring/service.js')
   for (const key of activatableKeys(resultados, 'source')) {
-    // As DUAS condições, e as duas obrigatórias: o teste passou E o dono autorizou.
-    if (!ctx.ativacoesAprovadas.has(key)) {
-      await registrar(ctx, { kind: 'source', key, status: 'skipped', message: 'passou no teste, mas entrar no ar não foi autorizado nesta aplicação' })
-      continue
-    }
-    const id = ctx.mapa.get(chave('source', key))
-    if (!id || !ObjectId.isValid(id)) continue
+    const id = await autorizado('source', key)
+    if (!id) continue
     // O portão de ativação do próprio domínio continua valendo: ele exige uma leitura
     // bem-sucedida, e é ela que o teste de aceitação acabou de produzir.
     const fonte = await setSourceStatus(ctx.ownerId, new ObjectId(id), 'active')
@@ -610,6 +624,51 @@ async function provarEAtivar(ctx: Contexto): Promise<void> {
       resourceId: id,
       message: fonte?.status === 'active' ? 'no ar: passou no teste e foi autorizada' : 'o portão de ativação do domínio ainda não deixou',
     })
+  }
+
+  /**
+   * O FLOW vem antes do monitor, e não é uma preferência de ordem.
+   *
+   * `publishMonitor` recusa um monitor cujo Flow não está publicado — e está certo: um
+   * monitor que reconhece a transição e aciona um Flow que não existe em versão nenhuma é
+   * um alarme que toca no vazio. Publicar é o que congela a definição que vai rodar.
+   */
+  const { publishAutomation, setStatus } = await import('../automations/service.js')
+  for (const key of activatableKeys(resultados, 'flow')) {
+    const id = await autorizado('flow', key)
+    if (!id) continue
+    try {
+      await publishAutomation(ctx.ownerId, new ObjectId(id), ctx.ownerId)
+      const flow = await setStatus(ctx.ownerId, new ObjectId(id), 'active')
+      await registrar(ctx, {
+        kind: 'flow',
+        key,
+        status: flow?.status === 'active' ? 'updated' : 'skipped',
+        resourceId: id,
+        message: flow?.status === 'active' ? 'publicado e no ar: passou no teste e foi autorizado' : 'o portão do domínio ainda não deixou',
+      })
+    } catch (erro) {
+      // Uma recusa do domínio é DITA, e não derruba o resto: o escritório já está montado.
+      await registrar(ctx, { kind: 'flow', key, status: 'skipped', resourceId: id, message: String((erro as Error).message).slice(0, 200) })
+    }
+  }
+
+  const { setMonitorStatus } = await import('../monitors/service.js')
+  for (const key of activatableKeys(resultados, 'monitor')) {
+    const id = await autorizado('monitor', key)
+    if (!id) continue
+    try {
+      const m = await setMonitorStatus(ctx.ownerId, new ObjectId(id), 'published')
+      await registrar(ctx, {
+        kind: 'monitor',
+        key,
+        status: m?.status === 'published' ? 'updated' : 'skipped',
+        resourceId: id,
+        message: m?.status === 'published' ? 'publicado: a simulação passou e foi autorizado' : 'o portão do domínio ainda não deixou',
+      })
+    } catch (erro) {
+      await registrar(ctx, { kind: 'monitor', key, status: 'skipped', resourceId: id, message: String((erro as Error).message).slice(0, 200) })
+    }
   }
 }
 
@@ -639,7 +698,13 @@ async function aplicarV2(ctx: Contexto): Promise<void> {
     }
   }
 
-  const passos = await applyV2Resources({ ownerId: ctx.ownerId, blueprint: bp, resourceMap: ctx.mapa, approvedKeys: aprovadas })
+  const passos = await applyV2Resources({
+    ownerId: ctx.ownerId,
+    blueprint: bp,
+    resourceMap: ctx.mapa,
+    approvedKeys: aprovadas,
+    deliveryConnections: ctx.conexoesDeEntrega,
+  })
   for (const p of passos) {
     await registrar(ctx, { kind: p.kind, key: p.key, status: p.status, resourceId: p.resourceId ?? null, ...(p.message ? { message: p.message } : {}) })
   }
@@ -703,7 +768,7 @@ export async function resumeApply(ownerId: string, project: ArchitectProject, ho
 
   // O que já virou permissão está no mapa; o resto foi pulado e continua pulado até o
   // dono aprovar de novo — retomar não é lugar de conceder acesso novo.
-  return rodar(ownerId, anterior, project.blueprint, hooks, new Set(), new Set(), project.blueprintV2 ?? null, new Set())
+  return rodar(ownerId, anterior, project.blueprint, hooks, new Set(), new Set(), project.blueprintV2 ?? null, new Set(), new Map())
 }
 
 /**
