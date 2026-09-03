@@ -19,6 +19,28 @@ import type { StorageTarget } from './storage/types.js'
 export const SOURCE_KINDS = ['event', 'live_data', 'manual'] as const
 export type SourceKind = (typeof SOURCE_KINDS)[number]
 
+/**
+ * Uma série CALCULADA de outra — o RSI a partir dos fechamentos.
+ *
+ * Ela não tem fonte externa: quem a alimenta é o motor, no instante em que a série de origem
+ * grava. A versão é fixada de propósito: uma função atualizada não muda o comportamento de uma
+ * vigilância já no ar sem alguém decidir isso.
+ */
+export interface DerivedIndicator {
+  /** A série de ORIGEM, de onde os números são lidos. */
+  recorderId: ObjectId
+  functionName: string
+  version: string
+  /** O campo lido de cada registro da origem. */
+  inputField: string
+  /** O nome do argumento da função que recebe a série. */
+  inputArg: string
+  /** Quantos pontos a conta exige. Menos que isso é estado degradado, nunca estimativa. */
+  lookback: number
+  /** O resto dos argumentos, fixos. */
+  params: Record<string, unknown>
+}
+
 export interface DataSourceDefinition {
   kind: SourceKind
   /**
@@ -136,6 +158,8 @@ export interface DataRecorderDefinition {
   recordCount: number
   lastRecordAt: Date | null
   lastError: { message: string; at: Date } | null
+  /** Presente quando esta série é calculada de outra. Ausente = série de origem externa. */
+  derivedFrom?: DerivedIndicator | null
   createdAt: Date
   updatedAt: Date
 }

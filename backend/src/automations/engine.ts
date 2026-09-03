@@ -26,6 +26,7 @@ import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
 import { registerMonitorObservers, resumePendingDispatches } from '../monitors/dispatch.js'
 import { registerDatabaseMonitors } from '../monitors/dataSource.js'
+import { registerDerivedIndicators } from '../dataHistory/derived.js'
 import { registerMonitoringHistoryBridge } from '../monitoring/history.js'
 import { startSseSupervisor } from '../monitoring/sse.js'
 import { claimDueSources, readSourceOnce, releaseSource } from '../monitoring/service.js'
@@ -91,6 +92,10 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   // E os monitores de DATASET: eles observam no instante da gravação, e não por varredura
   // — uma varredura chegaria atrasada e leria o mesmo registro várias vezes.
   registerDatabaseMonitors(onError)
+  // E os INDICADORES DERIVADOS: a conta que transforma fechamentos em RSI acontece no
+  // instante da gravação, pelo mesmo motor — e a série calculada é observável como qualquer
+  // outra. Registrado antes do bridge porque o que ele grava também é um registro.
+  registerDerivedIndicators(onError)
   // O fio entre a fonte, o monitor e o Flow — anotado depois do disparo, nunca no lugar dele.
   registerMonitoringHistoryBridge()
   // E os destinos do App de WebSocket: memória e rotina, pelos mesmos caminhos de

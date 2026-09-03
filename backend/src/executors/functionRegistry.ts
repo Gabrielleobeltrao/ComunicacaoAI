@@ -108,6 +108,26 @@ export interface RegisteredFunction {
    * catálogo é lido pelo formulário, e o que está aqui é o que sai para o cliente.
    */
   metadata?: Record<string, string>
+  /**
+   * Quando a função consome uma SÉRIE — o que permite que ela vire indicador derivado.
+   *
+   * O plano precisa saber duas coisas para ligar "fechamentos" a "RSI" sem inventar nada:
+   * qual argumento recebe a série, e quantos pontos a conta exige. As duas são conhecimento
+   * da função, não de quem a chama — e declará-las aqui é o que evita a alternativa, que
+   * seria o compilador guardar uma lista de nomes de argumento por função.
+   */
+  series?: SeriesInput
+}
+
+export interface SeriesInput {
+  /** O argumento que recebe a série, do mais ANTIGO para o mais recente. */
+  arg: string
+  /** O parâmetro que define o tamanho da janela, quando ela é configurável. */
+  windowParam?: string
+  /** Quantos pontos além da janela a conta exige. */
+  extra: number
+  /** O mínimo quando a janela não é informada — o padrão da função. */
+  minimum: number
 }
 
 /**
@@ -162,6 +182,8 @@ export interface PublicFunction {
   configSchema: Record<string, unknown> | null
   timeoutMs: number
   metadata: Record<string, string>
+  /** Presente quando a função consome uma série. Ver `SeriesInput`. */
+  series?: SeriesInput
 }
 
 export const listPublicFunctions = (): PublicFunction[] =>
@@ -176,6 +198,7 @@ export const listPublicFunctions = (): PublicFunction[] =>
       configSchema: f.configSchema ?? null,
       timeoutMs: f.timeoutMs,
       metadata: f.metadata ?? {},
+      ...(f.series ? { series: f.series } : {}),
     }))
     .sort((a, b) => a.functionName.localeCompare(b.functionName))
 

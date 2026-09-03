@@ -131,4 +131,11 @@ registerFunction({
   // A conta é local e sobre uma série no máximo de 5000 pontos: um segundo é folga.
   timeoutMs: 1000,
   metadata: { family: 'indicador', deterministic: 'true' },
+  /**
+   * A SÉRIE que ela consome — declarada para quem monta a cadeia.
+   *
+   * 14 períodos exigem 15 fechamentos, e é isso que `extra: 1` diz. O plano lê daqui em vez
+   * de guardar essa regra do lado dele: a definição do RSI mora na função que o calcula.
+   */
+  series: { arg: 'closes', windowParam: 'period', extra: 1, minimum: RSI_PERIODO_PADRAO + 1 },
 })

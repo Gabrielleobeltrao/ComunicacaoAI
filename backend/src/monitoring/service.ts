@@ -818,7 +818,14 @@ async function registrarFalha(fonte: MonitoringSource, code: string, agora: Date
    * continuava chamando no intervalo cheio, e uma fonte quebrada martelava de 15 em 15
    * segundos um serviço que já tinha respondido 500.
    */
-  const atraso = backoffDelay(fonte.retry, fonte.telemetry.consecutiveFailures + 1)
+  /**
+   * A telemetria pode não existir — e o caminho da FALHA é o pior lugar para descobrir isso.
+   *
+   * Um documento gravado antes deste campo existir fazia `registrarFalha` estourar em cima do
+   * erro que ela estava registrando: o motivo real da leitura ter falhado sumia, e o que
+   * aparecia era um `TypeError` sobre `consecutiveFailures`.
+   */
+  const atraso = backoffDelay(fonte.retry, (fonte.telemetry?.consecutiveFailures ?? 0) + 1)
   await sources.updateOne(
     { _id: fonte._id },
     {
