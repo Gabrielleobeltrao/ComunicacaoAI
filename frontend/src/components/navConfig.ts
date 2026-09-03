@@ -31,6 +31,17 @@ export interface NavItemDef {
 const floorPath = (floorId: string | null, suffix: string, legacy: string) => (floorId ? `/floors/${floorId}${suffix}` : legacy)
 
 export const NAV_V2: NavItemDef[] = [
+  /**
+   * MONTAR E AJUSTAR — a porta principal, e não um caminho que se aprende.
+   *
+   * Ela ficava só dentro do menu de andares: quem não soubesse abrir aquele menu não
+   * encontrava o Arquiteto. Mas ele não é só "criar andar" — é por onde se expande,
+   * conserta e reorganiza o que já existe, e isso pertence à navegação.
+   *
+   * O menu de andares continua oferecendo o mesmo caminho: duas portas para a mesma sala
+   * não é duplicação, é a sala deixar de estar escondida.
+   */
+  { key: 'architect', label: 'Montar e ajustar escritório', shortLabel: 'Montar', icon: 'sparkles', scope: 'general', group: 'operation', path: () => '/architect', activePrefixes: () => ['/architect'] },
   // Operation surfaces: the floor overview + the teams that staff it (kept together).
   // The floor home is also the building home — exact match so it doesn't stay active
   // on the floor's sub-pages.
@@ -43,9 +54,6 @@ export const NAV_V2: NavItemDef[] = [
   // Building-wide observability over the agents' automatic work. It is a control
   // surface, not an editor: every row links back to the agent that owns the work.
   // What the account can reach: connected once here, granted per agent.
-  // "Montar operação" NÃO está aqui de propósito: ela cria e reutiliza andares, então
-  // mora no menu de andares — `BuildingSwitcher` no desktop, `MobileFloorPicker` no
-  // celular —, logo abaixo de criar um à mão. O endereço `/architect` não mudou.
   /**
    * RECURSOS: o que o escritório possui. Apps já era isto e estava em CONTROLE, ao lado
    * de telas de observação — o que misturava "o que existe" com "o que aconteceu".

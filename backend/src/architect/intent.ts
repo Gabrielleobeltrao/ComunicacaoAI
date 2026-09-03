@@ -196,11 +196,19 @@ export function clarifyingQuestion(mensagem: string, intent: ArchitectIntent): s
   const pedeMudanca = /\b(crie|criar|monte|montar|adicione|adicionar|configure|configurar|automatize)\b/.test(m)
   const pergunta = /\?/.test(m)
 
-  if (intent.mode === 'answer' && pedeMudanca) {
+  /**
+   * A ambiguidade é ter os DOIS sinais na mesma frase.
+   *
+   * "crie um relatório?" tem verbo de mudança e ponto de interrogação: quem escreveu pode
+   * estar pedindo para montar, ou perguntando se dá para montar. Escolher um dos dois é
+   * exatamente o palpite que o plano proíbe — então a saída é uma pergunta de uma linha.
+   */
+  if (pedeMudanca && pergunta) {
     return 'Quer que eu só responda, ou que eu monte isso no seu escritório?'
   }
-  if (intent.mode === 'propose' && pergunta && !pedeMudanca) {
-    return 'Isso é uma pergunta ou um pedido para eu montar? Respondo dos dois jeitos.'
+  // Classificado como resposta, mas com verbo de mudança: o modelo pode ter errado o lado.
+  if (intent.mode === 'answer' && pedeMudanca) {
+    return 'Quer que eu só responda, ou que eu monte isso no seu escritório?'
   }
   return null
 }

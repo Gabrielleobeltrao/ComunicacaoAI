@@ -371,3 +371,71 @@ O mesmo aconteceu com a caracterização da lacuna 8.
   Um arquivamento simples do andar não propaga hoje — está registrado como pendência em vez
   de virar uma varredura que ninguém revisou.
 - A **auditoria** do purge (quem apagou o quê, quando) ainda não é gravada em Activity.
+
+---
+
+## Fase 7 — o Arquiteto como chat global
+
+### A lacuna 12, medida antes de consertar
+
+`frontend/e2e/architect-v2-characterization.spec.ts` provou o que o plano descrevia: o
+Arquiteto só existia como **página**. Quem estava num andar, num agente ou no Monitoramento
+tinha de sair de onde estava, ir para `/architect`, perder o contexto da tela e recomeçar a
+conversa. E o item nem aparecia na navegação nova — `NAV_V2` não tinha o Arquiteto: era um
+recurso que sumia dependendo de como a conta tinha sido construída.
+
+### O que passou a existir
+
+**`backend/src/architect/assistant.ts`** — uma rodada de conversa que **não é um projeto**:
+
+```
+runAssistantTurn({ ownerId, message, uiContext, classified }) → { intent, phase, text, question, projectId }
+```
+
+Os quatro modos do §6 do plano decidem o que acontece, e só **um deles** cria estrutura:
+
+| Modo | O que faz | Cria projeto? |
+| --- | --- | --- |
+| `answer` | responde com fonte e horário, ou recusa dizendo o que falta conectar | não |
+| `explain` | lê o inventário e descreve o escritório real | não |
+| `operate` | leitura responde; escrita para em `awaiting_approval` com prévia | não |
+| `propose` | monta a proposta e abre o projeto | **sim** |
+
+"Qual o valor do dólar hoje?" agora responde — ou recusa — **sem deixar um projeto no
+histórico da conta para sempre**. Sem fonte conectada, a recusa diz o que conectar, e nenhum
+número aparece: um valor lembrado com cara de cotação é pior que nenhum valor.
+
+**O contexto da tela é uma referência, nunca conteúdo.** `resolveUiContext` reconfere cada id
+contra a conta e joga o que não pertence em `rejected[]`. Um `floorId` de outra conta some da
+rodada — a resposta não pode descrever o escritório de outra pessoa.
+
+**`frontend/src/components/ArchitectAssistant.tsx`** — o painel flutuante, montado **acima
+do `<Routes>`** para que a conversa sobreviva à navegação. Redimensionável (guardado em
+`localStorage`), Esc fecha, Enter envia, Shift+Enter quebra linha. Some sozinho em
+`/architect/:id`, onde a página já é a conversa.
+
+### Dois defeitos reais que o E2E encontrou
+
+- **O lançador cobria o "Próximo" da contratação** num viewport de 390px. Agora ele se
+  recolhe enquanto qualquer modal está aberto, por `MutationObserver`. O primeiro conserto
+  criou o segundo: o próprio painel tem `role="dialog"`, então o lançador nunca voltava
+  depois da primeira abertura — a exclusão de si mesmo é parte da regra.
+- **`NAV_V2` não tinha o Arquiteto.** Era a lacuna 12 de verdade, e não só a falta do chat.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectAssistant.integration.test.mjs` | 13 | 13 passam |
+| `frontend/e2e/architect-v2-characterization.spec.ts` | 10 | 10 passam |
+| Suíte E2E completa | 724 + 17 puladas | 0 falhas, 0 flaky |
+
+### Pendências reais ao fim da fase
+
+- A conversa **não tem streaming nem cancelamento**: a rodada devolve o texto inteiro de uma
+  vez. Para respostas longas isso aparece como espera.
+- Em `/architect/:id` continuam existindo **duas conversas** — a da página e a global, que se
+  esconde. Unificar as duas é trabalho da fase 9, junto com a flag.
+- `classified` ainda chega por parâmetro nos testes: a classificação por LLM entra no fluxo
+  real, mas o modo é **sugerido** por heurística quando o modelo não responde, e é essa
+  heurística que os casos exercitam.

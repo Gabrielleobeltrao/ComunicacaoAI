@@ -1529,34 +1529,37 @@ test('reconferir apura de novo contra o estado real', async ({ page }) => {
 // --- navegação -------------------------------------------------------------------------------------------------------
 
 /**
- * Onde fica a porta de entrada — e ela depende do modo de navegação.
+ * Onde fica a porta de entrada — agora em mais de um lugar, de propósito.
  *
- * Com o prédio ligado, "Montar operação" mora no menu de ANDARES, logo abaixo de criar
- * um à mão: é lá que ela pertence, porque é isso que ela faz. Sem o prédio não existe
- * menu de andares, e ela continua sendo uma linha da barra lateral — tirá-la ali
- * deixaria a tela sem caminho nenhum.
+ * O desenho anterior tirava o Arquiteto da barra lateral e o deixava SÓ dentro do menu de
+ * andares. Isso o transformava num caminho que a pessoa precisava aprender: ela só o
+ * encontrava se soubesse abrir aquele menu.
  *
- * O teste confere o modo do build em que está rodando em vez de presumir um: o `dist`
- * do CI não tem `.env` e sobe em V1, e o de quem desenvolve sobe em V2.
+ * Ele agora é uma entrada de primeira classe na navegação — "Montar e ajustar escritório",
+ * porque as duas coisas moram ali — e continua no menu de andares para quem já conhece o
+ * caminho. Duas portas para a mesma sala não é duplicação: é a sala deixar de estar
+ * escondida.
  */
-test('“Montar operação” tem entrada no menu, no modo que o build usa', async ({ page }) => {
+test('“Montar e ajustar escritório” tem entrada de primeira classe na navegação', async ({ page }) => {
   await stub(page)
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/architect')
 
+  /**
+   * A barra lateral é um TRILHO recolhido: os rótulos ficam clipados por `overflow-hidden`
+   * até o ponteiro entrar. Existir nela já é ser de primeira classe; o rótulo aparece no
+   * hover, que é o desenho da barra e não uma limitação deste teste.
+   */
+  const naBarraLateral = page.locator('aside').getByRole('link', { name: 'Montar e ajustar escritório' })
+  await expect(naBarraLateral).toHaveCount(1)
+  await page.locator('aside').hover()
+  await expect(naBarraLateral).toBeVisible()
+
+  // E, quando o prédio está ligado, o menu de andares continua oferecendo o mesmo caminho.
   const menuDeAndares = page.getByTestId('building-switcher')
-  const naBarraLateral = page.locator('aside').getByRole('link', { name: 'Montar operação' })
-  // Esperar a barra lateral existir ANTES de decidir o modo. Contar logo depois do
-  // `goto` lia a tela antes de ela montar: dava zero nos dois, o teste caía no ramo V1
-  // e falhava de vez em quando por tempo, não por comportamento.
-  await expect.poll(async () => (await menuDeAndares.count()) + (await naBarraLateral.count())).toBeGreaterThan(0)
   if (await menuDeAndares.count()) {
     await menuDeAndares.first().click()
     await expect(page.getByTestId('open-architect')).toBeVisible()
-    // E não está mais duplicada na barra lateral.
-    await expect(naBarraLateral).toHaveCount(0)
-  } else {
-    await expect(naBarraLateral).toBeVisible()
   }
 })
 

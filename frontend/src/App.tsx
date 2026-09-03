@@ -6,6 +6,7 @@ import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
+import { ArchitectAssistantProvider } from './components/ArchitectAssistant'
 import { DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
 import { Building } from './pages/Building'
 import { ArchitectProjects } from './pages/architect/Projects'
@@ -162,7 +163,19 @@ function App() {
     </Routes>
   )
 
-  return v2 ? <BuildingProvider>{routes}</BuildingProvider> : routes
+  /**
+   * O Arquiteto fica ACIMA das rotas — uma instância só, para o app inteiro.
+   *
+   * Dentro de uma página ele seria remontado a cada navegação, e a conversa (e o rascunho)
+   * morreriam junto. É essa a diferença entre um chat global e um chat por tela.
+   */
+  return v2 ? (
+    <BuildingProvider>
+      <ArchitectAssistantProvider>{routes}</ArchitectAssistantProvider>
+    </BuildingProvider>
+  ) : (
+    routes
+  )
 }
 
 export default App

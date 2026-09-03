@@ -14,7 +14,9 @@ export const NAV: NavLink[] = [
   { to: '/dashboard', label: 'Escritório', icon: 'layout-dashboard' },
   // Também na navegação antiga: a tela existe nos dois modos, e um item só num deles
   // é um recurso que some sem aviso dependendo de como a conta foi construída.
-  { to: '/architect', label: 'Montar operação', icon: 'sparkles' },
+  // "Montar e ajustar" porque as duas coisas moram aqui: o Arquiteto cria a operação nova e
+  // é também por onde se expande, conserta e reorganiza a que já existe.
+  { to: '/architect', label: 'Montar e ajustar escritório', icon: 'sparkles' },
   // "Automação" is not a product surface: scheduled work lives inside each agent
   // as Rotinas, so there is no standalone Automações nav entry.
   { to: '/agents', label: 'Agentes', icon: 'users-round' },

@@ -6,6 +6,8 @@ import { ArchitectRefusal } from '../architect/service.js'
 import { allowRate, withProjectLock } from '../architect/guard.js'
 import * as L from '../architect/limits.js'
 import { auditEntity } from './auditMiddleware.js'
+import { runAssistantTurn, resolveUiContext, ASSISTANT_LIMITS } from '../architect/assistant.js'
+import { loadOfficeInventory, summarizeInventory } from '../architect/inventory.js'
 import { fail, notFound, oid } from './http.js'
 
 // “Montar operação”, do lado da API.
@@ -54,6 +56,57 @@ function refuse(res: Parameters<typeof fail>[0], error: unknown, next: Parameter
 const comRitmo = (ownerId: string): void => {
   if (!allowRate(ownerId, 10, 60_000)) throw new ArchitectRefusal('too_many_messages', 'muitas mensagens em pouco tempo; aguarde um instante')
 }
+
+/**
+ * O ASSISTENTE GLOBAL — uma rodada que pode NÃO virar projeto.
+ *
+ * É a porta do chat flutuante. O modo decide o que acontece, e só `propose` cria projeto:
+ * perguntar "qual o valor do dólar hoje?" não pode deixar um projeto no histórico da conta.
+ *
+ * O contexto da tela chega como REFERÊNCIA e é reconferido aqui: um id que vem do cliente é
+ * um pedido, e aceitá-lo faria a resposta descrever o escritório de outra pessoa.
+ */
+architectRouter.post('/assistant/turn', async (req, res, next) => {
+  const b = (req.body ?? {}) as { message?: unknown; uiContext?: unknown; classified?: unknown }
+  const mensagem = String(b.message ?? '').trim()
+  if (!mensagem) return void res.status(400).json({ code: 'invalid', message: 'escreva o que você quer' })
+  if (mensagem.length > ASSISTANT_LIMITS.message) {
+    return void res.status(400).json({ code: 'too_long', message: 'mensagem longa demais' })
+  }
+
+  // O MESMO limite de taxa das outras rodadas: uma conversa não pode virar um laço.
+  if (!allowRate(res.locals.userId, 10, 60_000)) {
+    return void res.status(429).json({ code: 'too_many_messages', message: 'muitas mensagens em pouco tempo; aguarde um instante' })
+  }
+
+  try {
+    const r = await runAssistantTurn({
+      ownerId: res.locals.userId,
+      message: mensagem,
+      uiContext: (b.uiContext ?? null) as never,
+      ...(b.classified !== undefined ? { classified: b.classified } : {}),
+    })
+    res.json(r)
+  } catch (erro) {
+    next(erro as Error)
+  }
+})
+
+/** O contexto atual, resumido — o que a tela mostra sem perguntar nada ao modelo. */
+architectRouter.get('/context', async (req, res, next) => {
+  try {
+    const contexto = await resolveUiContext(res.locals.userId, {
+      pathname: String(req.query.pathname ?? ''),
+      floorId: req.query.floorId ? String(req.query.floorId) : undefined,
+      sectorId: req.query.sectorId ? String(req.query.sectorId) : undefined,
+      agentId: req.query.agentId ? String(req.query.agentId) : undefined,
+    })
+    const resumo = summarizeInventory(await loadOfficeInventory(res.locals.userId))
+    res.json({ context: contexto, inventory: resumo })
+  } catch (erro) {
+    next(erro as Error)
+  }
+})
 
 architectRouter.post('/projects', async (req, res, next) => {
   try {

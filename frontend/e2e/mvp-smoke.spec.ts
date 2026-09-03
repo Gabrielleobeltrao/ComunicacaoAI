@@ -553,7 +553,7 @@ test('no celular, o menu abre, navega e fecha', async ({ browser }) => {
   await ctx.close()
 })
 
-test('“Montar operação” mora no menu de andares, não na barra lateral', async ({ page }) => {
+test('“Montar e ajustar escritório” é acesso de primeira classe, e não só um item de menu', async ({ page }) => {
   test.setTimeout(120_000)
   await irPara(page, '/login')
   await page.locator('input[type="email"]').fill(CONTA.email)
@@ -561,9 +561,15 @@ test('“Montar operação” mora no menu de andares, não na barra lateral', a
   await page.getByRole('button', { name: /Entrar/i }).click()
   await page.waitForURL(/\/(building|dashboard|floors)/, { timeout: 30_000 })
 
-  // Ela cria e reutiliza ANDARES: o lugar dela é o menu onde se escolhe andar, logo
-  // abaixo de criar um à mão — e não mais uma linha na barra lateral.
-  await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toHaveCount(0)
+  /**
+   * O Arquiteto deixou de ser um caminho escondido.
+   *
+   * O desenho anterior o tirava da barra lateral e o deixava SÓ dentro do seletor de
+   * andares — um menu que a pessoa precisa saber abrir. Ele agora é uma entrada de primeira
+   * classe na navegação, e continua no seletor de andares para quem já aprendeu o caminho.
+   */
+  // A barra lateral é um trilho recolhido: o rótulo é clipado até o ponteiro entrar.
+  await expect(page.locator('aside').getByRole('link', { name: 'Montar e ajustar escritório' })).toHaveCount(1)
 
   await page.getByTestId('building-switcher').first().click()
   const criar = page.getByTestId('create-floor')
@@ -577,7 +583,7 @@ test('“Montar operação” mora no menu de andares, não na barra lateral', a
     const b = document.querySelector('[data-testid="open-architect"]')!
     return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 'depois' : 'antes'
   })
-  expect(posicao, '“Montar operação” tem que vir depois de “Criar andar”').toBe('depois')
+  expect(posicao, 'no menu de andares ela continua vindo depois de “Criar andar”').toBe('depois')
 
   await montar.click()
   await page.waitForURL(/\/architect/, { timeout: 20_000 })
