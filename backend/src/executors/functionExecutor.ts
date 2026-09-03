@@ -16,6 +16,7 @@ import type { FunctionContext } from './functionRegistry.js'
 import './liveDataFunctions.js'
 import './dataHistoryFunctions.js'
 import './realtimeDataFunctions.js'
+import './indicatorFunctions.js'
 import type { FunctionExecutorConfig } from './types.js'
 import type { ExecutorError, ExecutorResult } from './types.js'
 
