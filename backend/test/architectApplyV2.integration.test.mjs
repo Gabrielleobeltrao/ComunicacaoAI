@@ -259,8 +259,18 @@ test('o MONITOR de um conjunto que ainda não existe fica PENDENTE, e não mudo'
 
   const passos = await aplicar(bp)
   const monitor = passos.find((p) => p.kind === 'monitor')
-  // O `datasetKey` de uma fonte é o id do recorder, que só existe depois da ativação.
-  assert.match(monitor.message, /pendente até a fonte ser ativada/)
+  /**
+   * PENDÊNCIA de verdade — `skipped`, e não `created` com o id da fonte.
+   *
+   * Antes, este caminho devolvia `{ id: <id da fonte> }` e o passo ficava `created`: o
+   * `resourceMap` passava a apontar `monitor:x` para um documento de `monitoring_sources`, e
+   * o desfazer removeria a fonte achando que remove o monitor.
+   */
+  assert.equal(monitor.status, 'skipped')
+  // A pendência do histórico CASCATEIA: o monitor diz de quem está esperando, que é o que
+  // torna a retomada possível sem adivinhação.
+  assert.match(monitor.message, /ative a fonte|espera o conjunto|depende de "historico"/)
+  assert.equal(monitor.resourceId ?? null, null, 'uma pendência não carrega id de outro recurso')
   assert.equal(await db.collection('monitors').countDocuments({ ownerId: DONO }), 0, 'um monitor sem o que observar nunca dispara')
 })
 

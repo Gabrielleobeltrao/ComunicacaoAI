@@ -299,11 +299,29 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
   }
 
   if (kind === 'history') {
-    // O histórico é um DESTINO da fonte, e não um recurso próprio: ele é materializado pela
-    // Central quando a fonte é ativada. Aqui só se registra a intenção.
+    /**
+     * O histórico é um DESTINO da fonte, e não um recurso próprio.
+     *
+     * Ele é materializado pela Central quando a fonte é ativada — e é só aí que o recorder e o
+     * dataset passam a existir. Enquanto isso, ele é uma PENDÊNCIA: devolver o id da fonte
+     * como se fosse o conjunto fazia o monitor observar um documento de `monitoring_sources`.
+     *
+     * Quando o recorder já existe, o que sai daqui é `storeId:datasetKey` — o endereço real do
+     * conjunto, que é o que o monitor precisa.
+     */
     const fonteId = idDe('source', item.sourceKey)
-    if (!fonteId) throw new Error(`a fonte "${String(item.sourceKey)}" não foi criada`)
-    return { id: fonteId, message: 'o histórico é materializado quando a fonte é ativada' }
+    if (!fonteId || !ObjectId.isValid(fonteId)) throw new Error(`a fonte "${String(item.sourceKey)}" não foi criada`)
+    const { getSource } = await import('../monitoring/service.js')
+    const fonte = await getSource(ownerId, new ObjectId(fonteId))
+    if (!fonte?.destination.recorderId) {
+      return { pendency: 'o histórico é materializado quando a fonte entra no ar: ative a fonte e aplique de novo' }
+    }
+    const { ensureDatasetForRecorder } = await import('../databases/migration.js')
+    const { obterRecorder } = await import('../dataHistory/recorders.js')
+    const recorder = await obterRecorder(ownerId, fonte.destination.recorderId)
+    if (!recorder) return { pendency: 'o histórico desta fonte não existe mais' }
+    const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(ownerId, recorder)
+    return { id: `${dataStoreId.toString()}:${datasetKey}`, message: 'histórico materializado: o conjunto existe' }
   }
 
   if (kind === 'live') {
@@ -344,7 +362,14 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
       if (!alvo) throw new Error(`o conjunto "${String(observa.datasetKey)}" ainda não existe: ative a fonte antes`)
       const [storeId, datasetKey] = alvo.includes(':') ? alvo.split(':') : [null, null]
       if (!storeId || !datasetKey) {
-        return { id: alvo, message: 'o monitor fica pendente até a fonte ser ativada e o conjunto existir' }
+        /**
+         * PENDÊNCIA, e nunca o id da fonte.
+         *
+         * Devolver `{ id: alvo }` aqui marcava o passo como `created` com o id de um
+         * documento de `monitoring_sources`: o `resourceMap` passava a apontar `monitor:x`
+         * para uma FONTE, e o desfazer removeria a fonte achando que remove o monitor.
+         */
+        return { pendency: 'o monitor espera o conjunto: ative a fonte para o histórico existir, e aplique de novo' }
       }
       const m = await createMonitor(ownerId, {
         name: String(item.name ?? item.key),

@@ -155,10 +155,13 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
       : context.floor
         ? `o andar ${context.floor.name}`
         : ''
+  // O MESMO escolhedor que abre projeto: uma conta só com OpenAI classifica com OpenAI, em
+  // vez de cair na heurística porque ninguém procurou a chave certa.
+  const provedor = input.provider ?? (await (await import('./service.js')).primeiroProvedorConfigurado(input.ownerId))
   const classificada = await classifyIntent({
     ownerId: input.ownerId,
     message: mensagem,
-    provider: input.provider ?? 'anthropic',
+    provider: provedor,
     model: input.model ?? null,
     ...(onde ? { contextLine: onde } : {}),
     chargeKey: `assistant:${input.ownerId}:${Date.now()}`,
@@ -395,7 +398,7 @@ async function responderEstatico(input: AssistantTurnInput, mensagem: string): P
     const { getMonthlyTokenCap, getProviderApiKey } = await import('../userSettings.js')
     const { getMonthlyTokens, recordReplyUsageOnce } = await import('../tokenUsage.js')
 
-    const provider = input.provider ?? 'anthropic'
+    const provider = input.provider ?? (await (await import('./service.js')).primeiroProvedorConfigurado(input.ownerId))
     const apiKey = await getProviderApiKey(input.ownerId, provider)
     if (!apiKey) return ''
     const teto = await getMonthlyTokenCap(input.ownerId)

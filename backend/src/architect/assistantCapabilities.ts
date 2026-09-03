@@ -254,11 +254,26 @@ export const capabilityByKey = (key: string): AssistantCapability | undefined =>
  * para capacidade é aqui, e o risco declarado no registro é o que vale.
  */
 export function capabilityFor(mode: 'answer' | 'operate', texto: string): AssistantCapability | null {
-  const t = String(texto ?? '').toLowerCase()
+  const t = String(texto ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
   if (mode === 'answer') return consultarValorAtual
-  if (/\b(pause|pausar|parar|desativ|desligar)\b/.test(t)) return pausarFonte
-  if (/\b(ativ|ligar|religar|colocar no ar|subir)\b/.test(t)) return ativarFonte
-  if (/\b(liste|listar|mostre|mostrar|quais)\b/.test(t)) return listarRecursos
+
+  /**
+   * O `\b` DEPOIS de um radical quebra a palavra flexionada.
+   *
+   * `/\bativ\b/` não casa com "ative", "ativar" nem "ativa": ele exige fronteira logo após
+   * "ativ", e ali vem outra letra. O efeito era o pior possível — "desative a fonte" não
+   * casava com nada e caía na recusa "não sei fazer isso", enquanto "pause" funcionava. Duas
+   * frases equivalentes, comportamentos diferentes.
+   *
+   * A fronteira fica só na ENTRADA do radical; o fim é livre para a flexão. E a ordem importa:
+   * "desativar" contém "ativar", então o desligar é testado primeiro.
+   */
+  if (/\b(pau[sz]\w*|par(a|ar|e)\b|desativ\w*|deslig\w*|suspend\w*)/.test(t)) return pausarFonte
+  if (/\b(ativ\w*|lig(a|ar|ue)\w*|relig\w*|reativ\w*|colocar no ar|subir)/.test(t)) return ativarFonte
+  if (/\b(list\w*|mostr\w*|quais|exib\w*|ver\b)/.test(t)) return listarRecursos
   return null
 }
 

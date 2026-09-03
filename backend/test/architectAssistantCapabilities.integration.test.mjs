@@ -230,3 +230,135 @@ test('resolver por nome é conservador: dois candidatos parecidos não escolhem 
   assert.equal(cap.resolveByName(inv, ['source'], 'dólar'), null, 'escolher entre dois seria adivinhar')
   assert.ok(cap.resolveByName(inv, ['source'], 'Dólar turismo'), 'o nome exato resolve')
 })
+
+// --- os verbos em português ---------------------------------------------------------------------
+//
+// `/\bativ\b/` não casa com "ative", "ativar" nem "ativa": o `\b` exige fronteira logo depois
+// do radical, e ali vem outra letra. "Desative a fonte" caía em "não sei fazer isso" enquanto
+// "pause" funcionava — duas frases equivalentes, comportamentos diferentes.
+
+test('ACEITAÇÃO: toda flexão de LIGAR alcança a capacidade de ativar', () => {
+  for (const frase of [
+    'ative a fonte de cotações',
+    'ativar a fonte',
+    'ativa a fonte do dólar',
+    'ligue a fonte',
+    'ligar a fonte',
+    'liga a fonte',
+    'religar a fonte',
+    'reative a fonte',
+    'colocar no ar a fonte',
+  ]) {
+    const c = cap.capabilityFor('operate', frase)
+    assert.ok(c, `"${frase}" não achou capacidade nenhuma`)
+    assert.equal(c.key, 'activate_source', `"${frase}" foi para ${c.key}`)
+  }
+})
+
+test('ACEITAÇÃO: toda flexão de DESLIGAR alcança a capacidade de pausar', () => {
+  for (const frase of [
+    'pause a fonte',
+    'pausar a fonte',
+    'pausa a fonte',
+    'parar a fonte',
+    'pare a fonte',
+    'desative a fonte',
+    'desativar a fonte',
+    'desativa a fonte',
+    'desliga a fonte',
+    'desligar a fonte',
+    'suspenda a fonte',
+  ]) {
+    const c = cap.capabilityFor('operate', frase)
+    assert.ok(c, `"${frase}" não achou capacidade nenhuma`)
+    assert.equal(c.key, 'pause_source', `"${frase}" foi para ${c.key}`)
+  }
+})
+
+test('"desativar" NÃO cai em ativar — a ordem do teste importa', () => {
+  // "desativar" contém "ativar": testar o ligar primeiro faria o desligar virar ligar, que é
+  // o erro mais caro possível neste mapeamento.
+  for (const frase of ['desativar a fonte', 'desative agora', 'desativa isso']) {
+    assert.equal(cap.capabilityFor('operate', frase).key, 'pause_source', frase)
+  }
+})
+
+test('acento não muda o verbo', () => {
+  assert.equal(cap.capabilityFor('operate', 'páre a fonte')?.key, 'pause_source')
+  assert.equal(cap.capabilityFor('operate', 'atíve a fonte')?.key, 'activate_source')
+})
+
+test('as flexões de LISTAR alcançam a listagem', () => {
+  for (const frase of ['liste as fontes', 'listar fontes', 'lista as fontes', 'mostre os monitores', 'mostrar Flows', 'quais são meus agentes']) {
+    assert.equal(cap.capabilityFor('operate', frase)?.key, 'list_resources', frase)
+  }
+})
+
+test('AMEAÇA: uma frase sem verbo conhecido continua sem capacidade', () => {
+  for (const frase of ['faça o que eu mandar', 'resolva isso', 'sei lá']) {
+    assert.equal(cap.capabilityFor('operate', frase), null, frase)
+  }
+})
+
+// --- qual provedor o chat usa --------------------------------------------------------------------
+//
+// `/assistant/turn` fixava Anthropic. Numa conta que só configurou OpenAI, a busca pela chave
+// não achava nada e a rodada caía na heurística — em silêncio, sem dizer que a chave existente
+// não era a procurada.
+
+test('ACEITAÇÃO: conta só com OPENAI classifica com OpenAI, e não cai na heurística', async () => {
+  await db.collection('user_settings').deleteMany({})
+  await setProviderApiKey(DONO, 'openai', 'chave-de-teste-que-nao-e-segredo')
+
+  let usado = null
+  const espiao = async (provider) => {
+    usado = provider
+    return { text: JSON.stringify({ mode: 'explain', question: 'x' }), usage: { inputTokens: 1, outputTokens: 1 } }
+  }
+  const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'o que eu tenho aqui?', ask: espiao })
+  assert.equal(usado, 'openai', 'o provedor configurado precisa ser o consultado')
+  assert.equal(r.intent.mode, 'explain', 'a classificação do modelo é a que vale')
+})
+
+test('conta só com ANTHROPIC continua usando Anthropic', async () => {
+  let usado = null
+  const espiao = async (provider) => {
+    usado = provider
+    return { text: JSON.stringify({ mode: 'explain', question: 'x' }), usage: { inputTokens: 1, outputTokens: 1 } }
+  }
+  await assistente.runAssistantTurn({ ownerId: DONO, message: 'o que eu tenho?', ask: espiao })
+  assert.equal(usado, 'anthropic')
+})
+
+test('sem provedor nenhum, a heurística responde — e a rodada termina', async () => {
+  await db.collection('user_settings').deleteMany({})
+  let chamou = false
+  const espiao = async () => {
+    chamou = true
+    return { text: '{}', usage: { inputTokens: 1, outputTokens: 1 } }
+  }
+  const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'liste minhas fontes', ask: espiao })
+  assert.equal(chamou, false, 'sem chave, não se chama o provedor')
+  assert.ok(['done', 'failed'].includes(r.phase))
+  assert.ok(r.text.trim(), 'uma rodada sem texto deixa o campo bloqueado')
+})
+
+test('ACEITAÇÃO: pergunta ESTÁTICA com OpenAI configurada responde de verdade', async () => {
+  await db.collection('user_settings').deleteMany({})
+  await setProviderApiKey(DONO, 'openai', 'chave-de-teste-que-nao-e-segredo')
+
+  const provedores = []
+  const espiao = async (provider, prompt) => {
+    provedores.push(provider)
+    // A segunda chamada é a da resposta em si; a primeira, a da classificação.
+    const ehIntencao = prompt.includes('classifica a INTENÇÃO')
+    return {
+      text: ehIntencao ? JSON.stringify({ mode: 'answer', query: 'o que é RSI', freshness: 'static' }) : 'O RSI mede a força relativa de um preço entre 0 e 100.',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }
+  }
+  const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'o que é RSI?', ask: espiao })
+  assert.deepEqual(provedores, ['openai', 'openai'], 'as duas chamadas usam o provedor da conta')
+  assert.equal(r.phase, 'done')
+  assert.match(r.text, /força relativa/, 'a resposta estática precisa chegar ao usuário')
+})

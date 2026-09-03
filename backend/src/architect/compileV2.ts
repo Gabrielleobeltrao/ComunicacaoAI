@@ -774,7 +774,14 @@ function compilarVigilancia(
     action: 'create',
     layer: 'essential',
     rationale: `${decision.jobName}: a condição é sobre o dado, não sobre o horário`,
-    dependsOn: [historicoKey],
+    /**
+     * O monitor depende do FLOW, e não o contrário.
+     *
+     * Ele grava o id do Flow que aciona: criado antes, o `flowId` sai nulo e o alarme
+     * reconhece a transição sem acionar nada — um monitor que parece configurado. O Flow, por
+     * sua vez, não precisa do monitor para existir: quem o chama é o monitor, depois.
+     */
+    dependsOn: [historicoKey, flowKey],
     name: decision.jobName,
     observes: { kind: 'dataset', datasetKey: historicoKey },
     condition: { kind: 'compare', field: condicao.field, op: condicao.op, value: condicao.value },
@@ -794,7 +801,9 @@ function compilarVigilancia(
     action: 'create',
     layer: 'essential',
     rationale: 'o trabalho só começa na borda verdadeira, e não a cada leitura',
-    dependsOn: [monitorKey, ...(dono ? [dono.key] : [])],
+    // Sem `monitorKey` aqui: declarar os dois lados fazia a ordem topológica inverter a
+    // cadeia — e a dependência real é a do monitor, que precisa do id do Flow.
+    dependsOn: [...(dono ? [dono.key] : [])],
     floorKey,
     name: `Avisar: ${decision.jobName}`,
     trigger: { type: 'monitor', monitorKey },

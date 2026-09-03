@@ -17,6 +17,7 @@ import type { ApplyStepKind, ApplyStepResult, BlueprintAgent, OfficeBlueprintV1 
 import type { OfficeBlueprintV2 } from './typesV2.js'
 import { V2_ITEM_PATHS, itemsAt } from './typesV2.js'
 import { applyV2Resources } from './applyV2.js'
+import type { ApplyV2Step } from './applyV2.js'
 
 // A APLICAÇÃO: a única parte do Arquiteto que escreve no escritório.
 //
@@ -653,6 +654,25 @@ async function provarEAtivar(ctx: Contexto): Promise<void> {
     }
   }
 
+  /**
+   * A SEGUNDA PASSADA — o que a ativação da fonte acabou de destravar.
+   *
+   * O histórico e o dataset só existem depois que a fonte entra no ar: até lá, o monitor que
+   * os observa é uma pendência honesta. Ativar sem voltar para criá-lo deixaria a cadeia pela
+   * metade, com um Flow que ninguém aciona.
+   *
+   * É a MESMA engine, com o mesmo mapa: o que já foi criado volta como `reused`, e só o que
+   * estava esperando é criado agora. Uma segunda função aqui seria a segunda engine que este
+   * trabalho inteiro existe para não ter.
+   */
+  if (resultados.some((r) => r.kind === 'source' && r.status === 'passed')) {
+    for (const p of await aplicarV2(ctx, false)) {
+      if (p.status === 'created') {
+        await registrar(ctx, { kind: p.kind, key: p.key, status: 'created', resourceId: p.resourceId ?? null, ...(p.message ? { message: p.message } : {}) })
+      }
+    }
+  }
+
   const { setMonitorStatus } = await import('../monitors/service.js')
   for (const key of activatableKeys(resultados, 'monitor')) {
     const id = await autorizado('monitor', key)
@@ -679,9 +699,9 @@ async function provarEAtivar(ctx: Contexto): Promise<void> {
  * de lá que saem os ids — nunca do plano. Uma falha aqui derruba a operação inteira, que é
  * o que faz o desfazer e a retomada continuarem valendo para o que o V2 criou.
  */
-async function aplicarV2(ctx: Contexto): Promise<void> {
+async function aplicarV2(ctx: Contexto, registrarPassos = true): Promise<ApplyV2Step[]> {
   const bp = ctx.v2
-  if (!bp) return
+  if (!bp) return []
 
   /**
    * O que está aprovado: criar e reusar vêm da aprovação da proposta inteira; ALTERAR um
@@ -710,14 +730,17 @@ async function aplicarV2(ctx: Contexto): Promise<void> {
     projectId: ctx.operation.projectId.toString(),
     ...(ctx.hooks.afterCreate ? { afterCreate: ctx.hooks.afterCreate as never } : {}),
   })
-  for (const p of passos) {
-    await registrar(ctx, { kind: p.kind, key: p.key, status: p.status, resourceId: p.resourceId ?? null, ...(p.message ? { message: p.message } : {}) })
+  if (registrarPassos) {
+    for (const p of passos) {
+      await registrar(ctx, { kind: p.kind, key: p.key, status: p.status, resourceId: p.resourceId ?? null, ...(p.message ? { message: p.message } : {}) })
+    }
   }
 
   // Uma falha registrada e engolida seria pior que nenhuma: a operação apareceria
   // "concluída" com um monitor que nunca foi criado.
   const falhou = passos.find((p) => p.status === 'failed')
   if (falhou) throw new Error(`${falhou.kind} "${falhou.key}": ${falhou.message ?? 'falhou'}`)
+  return passos
 }
 
 /** Só o que o domínio de agentes aceita, campo a campo. */

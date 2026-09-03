@@ -62,7 +62,15 @@ const requireProject = async (ownerId: string, id: ObjectId): Promise<ArchitectP
 }
 
 /** O primeiro provedor com chave nesta conta; Anthropic quando nenhum tem. */
-async function primeiroProvedorConfigurado(ownerId: string): Promise<'anthropic' | 'openai'> {
+/**
+ * O provedor que a conta REALMENTE tem.
+ *
+ * Fixar Anthropic fazia o trabalho apontar para um provedor sem chave numa conta que só
+ * configurou OpenAI — e a chamada caía em silêncio, sem dizer que a chave existente não era a
+ * procurada. Exportado porque o chat global precisa da mesma escolha: duas regras para "qual
+ * provedor?" divergem no primeiro caso que ninguém testa.
+ */
+export async function primeiroProvedorConfigurado(ownerId: string): Promise<'anthropic' | 'openai'> {
   const status = await getProviderKeyStatus(ownerId)
   if (status.anthropic) return 'anthropic'
   if (status.openai) return 'openai'
