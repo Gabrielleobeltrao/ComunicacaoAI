@@ -485,7 +485,15 @@ test('ALTO RISCO: sem o nome digitado o botão não confirma — e a instrução
   // Espaço em branco não é nome.
   await campo.fill('   ')
   await expect(page.getByTestId('architect-confirmar')).toBeDisabled()
+
+  // Nome PARECIDO também não: "Operacao" sem acento é outro andar.
+  await campo.fill('Operacao')
+  await expect(page.getByTestId('architect-confirmar')).toBeDisabled()
   expect(chamou).toBe(0)
+
+  // Com o nome exato, ele libera.
+  await campo.fill('Operação')
+  await expect(page.getByTestId('architect-confirmar')).toBeEnabled()
 })
 
 test('ALTO RISCO: com o nome certo, ele VIAJA na confirmação', async ({ page }) => {
@@ -507,14 +515,22 @@ test('ALTO RISCO: com o nome certo, ele VIAJA na confirmação', async ({ page }
   await expect(page.getByTestId('architect-confirmar-operacao')).toHaveCount(0)
 })
 
-test('ALTO RISCO: nome errado é recusado pelo servidor — e o campo fica para corrigir', async ({ page }) => {
+test('ALTO RISCO: nome recusado pelo SERVIDOR — e o campo fica para corrigir', async ({ page }) => {
   await stub(page, { turno: pendenteComNome() })
   await page.route('**/api/architect/assistant/confirm', (r) =>
-    r.fulfill({ status: 409, json: { ok: false, code: 'name_mismatch', message: 'digite o nome "Operação" para confirmar' } }),
+    r.fulfill({ status: 409, json: { ok: false, code: 'name_mismatch', message: 'digite o nome "Operação renomeada" para confirmar' } }),
   )
 
   await abrirRisco(page)
-  await page.getByTestId('architect-confirmar-nome').fill('Operacao')
+  /**
+   * O SERVIDOR é a autoridade — e ele pode discordar do que a tela mostra.
+   *
+   * O caso real: o andar foi renomeado entre a prévia e o clique. A pessoa digita o nome que
+   * está na tela dela, que é o certo do ponto de vista dela, e o servidor recusa porque o
+   * recurso já não se chama assim. O `disabled` do lado de cá é conveniência: ele evita a ida
+   * e volta óbvia, e não substitui a conferência contra o que o servidor guardou.
+   */
+  await page.getByTestId('architect-confirmar-nome').fill('Operação')
   await page.getByTestId('architect-confirmar').click()
 
   // A MENSAGEM DO SERVIDOR, como veio: ela diz qual nome digitar.

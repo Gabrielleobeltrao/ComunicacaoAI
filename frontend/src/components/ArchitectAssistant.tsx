@@ -126,7 +126,14 @@ function ConfirmacaoPendente({ mensagemId, pendente }: { mensagemId: string; pen
   // Fora do provedor não há operação para confirmar: o bloco não se desenha pela metade.
   if (!a) return null
 
-  const faltaNome = Boolean(pendente.requiresName) && !nome.trim()
+  /**
+   * O botão espera o nome EXATO — e o servidor continua sendo quem decide.
+   *
+   * Isto é conveniência de tela: ela evita a ida e volta que só devolve "digite o nome
+   * X". A conferência de verdade acontece no servidor, contra o que ele guardou, porque
+   * um `disabled` é uma sugestão do lado de cá — some com um clique no inspetor.
+   */
+  const faltaNome = Boolean(pendente.requiresName) && nome.trim() !== String(pendente.requiresName).trim()
 
   return (
     <div style={{ margin: '8px 0 0' }} data-testid="architect-confirmar-operacao">
