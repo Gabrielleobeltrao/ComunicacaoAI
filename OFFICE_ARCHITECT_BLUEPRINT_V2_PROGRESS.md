@@ -106,3 +106,64 @@ limitada — um ciclo em dado real transformaria a análise num laço.
   um serviço canônico que os liste por conta. Eles entram na Fase 3, junto com a resolução
   exata de canal — e a ausência está registrada aqui em vez de virar uma seção vazia que
   parece implementada.
+
+---
+
+## Fase 2 — contratos V2 ✅
+
+`backend/src/architect/typesV2.ts` e `backend/src/architect/blueprintV2.ts`.
+
+### O que passou a existir
+
+**`OfficeBlueprintV2`** com `version: 2`, em três blocos — `organization`, `resources`,
+`operations` — mais `access` e `acceptanceTests`. Ele representa o que o V1 não representava:
+Databases e datasets, Tools, Sources, destinos Live e History, Monitors, Flows, canais,
+entregas e grants por recurso.
+
+**A validação estrutural.** Ela confere a FORMA e nada além: keys únicas e referenciáveis,
+referências que existem, dependências sem ciclo, tetos e ausência de segredo. O que é
+específico de um domínio continua sendo validado por ele — a condição de um monitor pela AST
+canônica, a config de uma fonte pela união discriminada da Central. Uma segunda opinião
+divergiria da primeira no campo seguinte, e a que estivesse errada só apareceria na hora de
+aplicar, depois de alguém ter aprovado.
+
+**Códigos de erro estáveis** (`agent_without_role`, `app_without_action`,
+`secret_in_blueprint`, `dependency_cycle`…). A tela decide o que oferecer pelo código, não
+casando a mensagem por texto — casar por texto quebra na primeira vez que alguém melhora a
+frase.
+
+**`applyOrder`** — ordenação topológica de `dependsOn`. Sem ela a aplicação criaria um
+monitor antes do dataset que ele observa, e falharia num passo que não tem nada de errado.
+
+**`diffBlueprintsV2`** compara por key, nunca por posição: reordenar não é mudar.
+
+**`convertV1ToV2`** preserva `key` e `resourceId` e **marca** o que o V1 não dizia. Um agente
+sem `role` vira um agente com `role` vazio e uma pendência declarada — preencher com o
+objetivo pareceria mais amigável e seria mentira: o Flow mostraria uma responsabilidade que
+ninguém escreveu. A conversão nunca produz `archive` (intenção que o V1 não tem) e **nunca
+herda escrita autônoma**, que é aprovação por ação e não efeito de conectar.
+
+### Decisões que o teste trava
+
+- **agente sem responsabilidade, gatilho ou contrato é ERRO**, não aviso — é a correção da
+  lacuna 11 no nível do contrato;
+- **App obrigatório sem ação é erro**: um grant sem ação resolve para zero ferramentas;
+- **escrita autônoma** só existe entre as ações pedidas;
+- **segredo**: um campo chamado `token`/`apiKey`/`password` em qualquer profundidade é
+  recusado; `headerNames` — o NOME do cabeçalho, que é público — passa;
+- **key única no documento**, e não na lista: duas listas com a mesma key transformariam uma
+  dependência em ambiguidade;
+- **ciclo** é detectado e a mensagem diz qual é o caminho.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectBlueprintV2.test.mjs` | 26 | 26 passam |
+| suíte inteira do Arquiteto (V1 + V2) | 342 | 342 passam |
+
+### Pendências reais ao fim da fase
+
+- O V2 ainda **não é produzido por ninguém**: o compilador continua emitindo V1. É a Fase 3.
+- `mergeBlueprintPatch` e o `diff` da prévia continuam só no V1; eles passam a aceitar os
+  dois formatos quando o compilador V2 existir.
