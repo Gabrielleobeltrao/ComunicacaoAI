@@ -23,7 +23,7 @@ let andar
 
 const COLECOES = [
   'buildings', 'offices', 'agents', 'sectors', 'connections', 'data_stores',
-  'dataset_definitions', 'database_grants', 'monitoring_sources', 'monitors', 'automations', 'tools',
+  'dataset_definitions', 'database_grants', 'monitoring_sources', 'monitors', 'automations', 'tools', 'widgets',
 ]
 
 before(async () => {
@@ -206,4 +206,56 @@ test('dependentsOf responde "o que quebra se isto sumir", sem entrar em laço', 
   const comCiclo = { nodes: g.nodes, edges: [...g.edges, { from: inv.floorRef(andar), to: g.edges[0].from, relation: 'forjada', required: false }] }
   const r = inv.dependentsOf(comCiclo, inv.floorRef(andar), 6)
   assert.ok(r.length <= comCiclo.edges.length, 'a travessia termina')
+})
+
+// --- canais e entregas -------------------------------------------------------------------------
+//
+// Sem eles, o Arquiteto propunha criar o canal que já existe, e a análise de impacto de um
+// andar não sabia dizer o que a exclusão levaria junto.
+
+test('o inventário lista CANAIS, dizendo se levam a alguém', async () => {
+  const { createWidget } = await import('../dist/widgets.js')
+  const agente = new ObjectId()
+  await db.collection('agents').insertOne({ _id: agente, ownerId: DONO, officeId: andar, name: 'Marina', provider: 'anthropic', createdAt: new Date() })
+  await createWidget(DONO, 'Chat do site', { agentId: agente })
+  await createWidget(DONO, 'Chat órfão', {})
+
+  const i = await inv.loadOfficeInventory(DONO)
+  const canais = i.sections.channel.items
+  assert.equal(canais.length, 2)
+  assert.equal(canais.find((c) => c.label === 'Chat do site').status, 'bound')
+  // Um canal sem quem receba é uma porta que não leva a lugar nenhum — e ele aparece.
+  assert.equal(canais.find((c) => c.label === 'Chat órfão').status, 'unbound')
+})
+
+test('o inventário lista ENTREGAS — sem endereço nenhum', async () => {
+  const { createConnection } = await import('../dist/connections/service.js')
+  await createConnection(DONO, {
+    provider: 'email',
+    name: 'Meu e-mail',
+    config: { host: 'smtp.exemplo.test', port: 587, secure: false, user: 'a@b.test', pass: 'nao-e-um-segredo-real', from: 'a@b.test' },
+  })
+
+  const i = await inv.loadOfficeInventory(DONO)
+  const entregas = i.sections.delivery.items
+  assert.equal(entregas.length, 1)
+  assert.equal(entregas[0].label, 'Meu e-mail')
+  assert.equal(entregas[0].meta.provider, 'email')
+  // O endereço é dado pessoal: ele não viaja no inventário nem no resumo que vai ao modelo.
+  assert.equal(/@/.test(JSON.stringify(entregas)), false)
+})
+
+test('AMEAÇA: canal e entrega de OUTRA conta não entram', async () => {
+  const { createWidget } = await import('../dist/widgets.js')
+  const { createConnection } = await import('../dist/connections/service.js')
+  await createWidget('vizinho', 'Do vizinho', {})
+  await createConnection('vizinho', {
+    provider: 'email',
+    name: 'E-mail do vizinho',
+    config: { host: 'smtp.exemplo.test', port: 587, secure: false, user: 'v@b.test', pass: 'nao-e-um-segredo-real', from: 'v@b.test' },
+  })
+
+  const i = await inv.loadOfficeInventory(DONO)
+  assert.equal(i.sections.channel.items.some((c) => c.label === 'Do vizinho'), false)
+  assert.equal(i.sections.delivery.items.some((c) => c.label === 'E-mail do vizinho'), false)
 })

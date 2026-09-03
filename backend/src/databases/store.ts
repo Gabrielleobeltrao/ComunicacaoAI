@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb'
+import type { ArchitectStamp } from '../architectStamp.js'
 import { db } from '../db.js'
 import { ensureDefaultBuilding } from '../building.js'
 import type { DataSetDefinition, DataStore, DataStoreAdapterKind, DataStoreGrant, DataStoreStatus, QueryLogEntry } from './types.js'
@@ -49,7 +50,7 @@ export interface CreateStoreInput {
   retention?: DataStore['retention']
 }
 
-export async function createDataStore(ownerId: string, input: CreateStoreInput): Promise<DataStore> {
+export async function createDataStore(ownerId: string, input: CreateStoreInput & { architect?: ArchitectStamp }): Promise<DataStore> {
   const name = String(input.name ?? '').trim()
   if (!name || name.length > 120) throw new DataStoreError('o nome precisa ter de 1 a 120 caracteres')
   if (!ADAPTER_KINDS.includes(input.adapterKind)) throw new DataStoreError('adapter desconhecido')
@@ -70,6 +71,9 @@ export async function createDataStore(ownerId: string, input: CreateStoreInput):
     // Referências, nunca segredo — o adapter resolve a credencial na fonte dela.
     adapterConfig: sanitizarConfig(input.adapterConfig ?? {}),
     status: 'active',
+    // A marca vai na MESMA escrita que cria o recurso: gravá-la depois reabriria a janela
+    // que ela existe para fechar.
+    ...(input.architect ? { architect: input.architect } : {}),
     retention: input.retention ?? { mode: 'forever' },
     version: 1,
     createdAt: agora,

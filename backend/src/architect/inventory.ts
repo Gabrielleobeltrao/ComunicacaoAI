@@ -1,4 +1,6 @@
 import { ObjectId } from 'mongodb'
+import { listWidgets } from '../widgets.js'
+import { listConnections } from '../connections/service.js'
 import { db } from '../db.js'
 import { getBuilding } from '../building.js'
 import { listFloors } from '../floors.js'
@@ -83,7 +85,7 @@ const rotulo = (texto: unknown): string => String(texto ?? '').slice(0, INVENTOR
  * feita aqui com `ownerId` explícito e está marcada como tal.
  */
 export async function loadOfficeInventory(ownerId: string): Promise<OfficeInventory> {
-  const [predio, andares, agentes, instalacoes, stores, fontes, monitores, flows, ferramentas] = await Promise.all([
+  const [predio, andares, agentes, instalacoes, stores, fontes, monitores, flows, ferramentas, canais, conexoes] = await Promise.all([
     getBuilding(ownerId).catch(() => null),
     listFloors(ownerId, { includeArchived: true }).catch(() => []),
     listAgents(ownerId).catch(() => []),
@@ -93,6 +95,10 @@ export async function loadOfficeInventory(ownerId: string): Promise<OfficeInvent
     describeMonitors(ownerId).catch(() => []),
     listAutomations(ownerId, { limit: INVENTORY_LIMITS.perKind, skip: 0 }).catch(() => ({ items: [], total: 0 })),
     listTools(ownerId).catch(() => []),
+    // CANAIS e ENTREGAS: sem eles, o Arquiteto propunha criar o canal que já existe e não
+    // sabia dizer o que a exclusão de um andar levaria junto.
+    listWidgets(ownerId).catch(() => []),
+    listConnections(ownerId).catch(() => []),
   ])
 
   const setores = (await Promise.all(andares.map((f) => listSectors(ownerId, f._id).catch(() => [])))).flat()
@@ -219,6 +225,42 @@ export async function loadOfficeInventory(ownerId: string): Promise<OfficeInvent
             sourceKind: String((m.source as { kind?: string } | undefined)?.kind ?? ''),
             datasetKey: String((m.source as { datasetKey?: string } | undefined)?.datasetKey ?? ''),
           },
+        })),
+      ),
+      /**
+       * O CANAL é o vínculo: por onde a mensagem entra e quem recebe.
+       *
+       * Um App desconectado continua aparecendo — como pendência. Some-lo esconderia
+       * justamente o que precisa de atenção.
+       */
+      channel: secao(
+        'channel',
+        (canais as { _id?: unknown; name?: unknown; channel?: unknown; agentId?: unknown; sectorId?: unknown }[]).map((c) => ({
+          id: String(c._id ?? ''),
+          label: rotulo(c.name),
+          ownerScope: 'account',
+          status: c.agentId || c.sectorId ? 'bound' : 'unbound',
+          meta: {
+            kind: String(c.channel ?? 'web_chat'),
+            // Quem recebe, sem carregar o id para o resumo que vai ao modelo.
+            entry: c.agentId ? 'agent' : c.sectorId ? 'sector' : 'none',
+          },
+        })),
+      ),
+      /**
+       * A ENTREGA é por onde a resposta SAI — a conexão da conta.
+       *
+       * O endereço não aparece aqui: `maskDestination` existe porque um e-mail ou um número
+       * num inventário é dado pessoal viajando para uma tela e para o resumo do modelo.
+       */
+      delivery: secao(
+        'delivery',
+        (conexoes as { _id?: unknown; name?: unknown; provider?: unknown; status?: unknown }[]).map((c) => ({
+          id: String(c._id ?? ''),
+          label: rotulo(c.name),
+          ownerScope: 'account',
+          status: String(c.status ?? ''),
+          meta: { provider: String(c.provider ?? '') },
         })),
       ),
       flow: secao(

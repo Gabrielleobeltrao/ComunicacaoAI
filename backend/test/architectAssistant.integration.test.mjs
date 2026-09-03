@@ -172,7 +172,9 @@ test('a rodada usa o contexto conferido para explicar onde a pessoa está', asyn
     uiContext: { pathname: `/floors/${andar}`, floorId: andar.toString() },
     ask: provedorQueResponde({ mode: 'explain', question: 'o que é isto?' }),
   })
-  assert.match(r.text, /andar Atendimento/)
+  // A resposta agora fala do andar em si — missão e equipe — em vez de repetir "você está
+  // olhando o andar X" e listar contagens.
+  assert.match(r.text, /Atendimento/)
   assert.equal(r.phase, 'done')
 })
 
@@ -360,4 +362,69 @@ test('TODA rodada termina em done, failed ou awaiting_approval', async () => {
     assert.ok(['done', 'failed', 'awaiting_approval'].includes(r.phase), `"${m}" parou em ${r.phase}`)
     assert.ok(r.text.trim(), `"${m}" respondeu vazio e deixaria o campo bloqueado`)
   }
+})
+
+// --- explain sobre UM recurso ------------------------------------------------------------------
+//
+// "O que este agente faz?" pede a função dele, não a contagem de andares do escritório.
+
+test('ACEITAÇÃO: explain sobre um agente responde com a FUNÇÃO dele', async () => {
+  const r = await assistente.runAssistantTurn({
+    ownerId: DONO,
+    message: 'o que este agente faz?',
+    uiContext: { pathname: `/agents/${agente}`, agentId: agente.toString() },
+    ask: provedorQueResponde({ mode: 'explain', question: 'o que este agente faz?' }),
+  })
+  assert.equal(r.phase, 'done')
+  assert.match(r.text, /Marina/)
+  assert.match(r.text, /Recebe/, 'a resposta vem do recurso real, não de um resumo genérico')
+})
+
+test('um agente SEM função escrita é dito — nunca descrito por invenção', async () => {
+  const mudo = new ObjectId()
+  await db.collection('agents').insertOne({ _id: mudo, ownerId: DONO, officeId: andar, name: 'Sem função', role: '   ', provider: 'anthropic', createdAt: new Date() })
+
+  const r = await assistente.runAssistantTurn({
+    ownerId: DONO,
+    message: 'o que este agente faz?',
+    uiContext: { pathname: `/agents/${mudo}`, agentId: mudo.toString() },
+    ask: provedorQueResponde({ mode: 'explain', question: 'o que ele faz?' }),
+  })
+  assert.match(r.text, /sem função escrita/, 'uma descrição plausível inventada soa certa e é falsa')
+})
+
+test('explain sobre o ANDAR diz a missão e quem trabalha nele', async () => {
+  await db.collection('offices').updateOne({ _id: andar }, { $set: { mission: 'atender bem quem chega' } })
+  const r = await assistente.runAssistantTurn({
+    ownerId: DONO,
+    message: 'como funciona este andar?',
+    uiContext: { pathname: `/floors/${andar}`, floorId: andar.toString() },
+    ask: provedorQueResponde({ mode: 'explain', question: 'como funciona?' }),
+  })
+  assert.match(r.text, /Atendimento/)
+  assert.match(r.text, /atender bem quem chega/)
+  assert.match(r.text, /Marina/)
+})
+
+test('sem alvo nenhum, explain devolve o panorama — e não uma resposta vazia', async () => {
+  const r = await assistente.runAssistantTurn({
+    ownerId: DONO,
+    message: 'o que eu tenho no escritório?',
+    ask: provedorQueResponde({ mode: 'explain', question: 'o que eu tenho?' }),
+  })
+  assert.equal(r.phase, 'done')
+  assert.match(r.text, /1 andar/)
+})
+
+test('AMEAÇA: o agente de OUTRA conta não é descrito', async () => {
+  const alheio = new ObjectId()
+  await db.collection('agents').insertOne({ _id: alheio, ownerId: VIZINHO, officeId: new ObjectId(), name: 'Alheio', role: 'Segredo', provider: 'anthropic', createdAt: new Date() })
+
+  const r = await assistente.runAssistantTurn({
+    ownerId: DONO,
+    message: 'o que este agente faz?',
+    uiContext: { pathname: '/x', agentId: alheio.toString() },
+    ask: provedorQueResponde({ mode: 'explain', question: 'o que ele faz?' }),
+  })
+  assert.equal(/Segredo|Alheio/.test(r.text), false, 'descrever o agente do vizinho é vazamento')
 })

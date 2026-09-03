@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { ArchitectStamp } from '../architectStamp.js'
 
 // A FONTE MONITORADA — orquestração, não motor novo.
 //
@@ -208,6 +209,13 @@ export interface MonitoringConfig {
 }
 
 export interface MonitoringSource {
+  /**
+   * De onde ele veio, quando veio do Arquiteto.
+   *
+   * Fecha a janela entre criar e registrar o passo: com a marca, a retomada PROCURA antes de
+   * criar e encontra o que ficou de pé. Opcional — quem cria pela tela não tem origem.
+   */
+  architect?: ArchitectStamp
   _id: ObjectId
   ownerId: string
   /** De quem é, dentro do escritório. Grant por agente/setor sai daqui. */

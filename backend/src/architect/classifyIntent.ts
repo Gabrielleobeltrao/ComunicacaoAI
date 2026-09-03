@@ -46,7 +46,10 @@ export interface ClassifiedIntent {
   fallbackReason?: string
 }
 
-const PROMPT = `Você classifica a INTENÇÃO de uma mensagem para um assistente que monta e opera escritórios de agentes.
+export const INTENT_MARKER = '[[ARQUITETO_INTENCAO_V1]]'
+
+const PROMPT = `${INTENT_MARKER}
+Você classifica a INTENÇÃO de uma mensagem para um assistente que monta e opera escritórios de agentes.
 
 Responda SOMENTE com um objeto JSON, sem texto antes ou depois, com um destes formatos:
 

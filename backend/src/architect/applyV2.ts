@@ -71,6 +71,19 @@ export interface ApplyV2Context {
    * caminho dos grants de App.
    */
   deliveryConnections?: Map<string, string>
+  /**
+   * A operação que está aplicando. É ela que vira MARCA no recurso criado.
+   *
+   * Entre criar o recurso e registrar o passo há um instante em que o recurso existe e a
+   * operação não sabe. Uma queda ali deixa o Database de pé e o mapa sem ele — e a retomada
+   * cria o segundo. Com a marca, a retomada procura antes de criar e encontra.
+   *
+   * Opcional: quem aplica sem operação não ganha marca, e o comportamento é o de antes.
+   */
+  operationId?: string
+  projectId?: string
+  /** Chamado DEPOIS de criar e ANTES de registrar. É como um teste exercita a janela. */
+  afterCreate?: (kind: ApplyV2Kind, key: string) => void | Promise<void>
 }
 
 const chave = (kind: string, key: string): string => `${kind}:${key}`
@@ -148,8 +161,23 @@ export async function applyV2Resources(ctx: ApplyV2Context): Promise<ApplyV2Step
       continue
     }
 
+    /**
+     * A JANELA: antes de criar, PROCURAR pela marca desta operação.
+     *
+     * Sem isto, uma queda entre a criação e o registro do passo fazia a retomada criar o
+     * segundo recurso. A marca é o que torna a retomada capaz de reconhecer o que ela mesma
+     * já tinha feito.
+     */
+    const recuperado = await recuperarPelaMarca(ctx, alvo.kind, key)
+    if (recuperado) {
+      ctx.resourceMap.set(chave(alvo.kind, key), recuperado)
+      passos.push({ kind: alvo.kind, key, status: 'created', resourceId: recuperado, message: 'recuperado: já tinha sido criado antes da queda' })
+      continue
+    }
+
     try {
-      const r = await criar(ctx, alvo.kind, alvo.item)
+      const r = await criar(ctx, alvo.kind, alvo.item, key)
+      await ctx.afterCreate?.(alvo.kind, key)
       if (r && 'id' in r) {
         ctx.resourceMap.set(chave(alvo.kind, key), r.id)
         passos.push({ kind: alvo.kind, key, status: 'created', resourceId: r.id, ...(r.message ? { message: r.message } : {}) })
@@ -176,16 +204,41 @@ export async function applyV2Resources(ctx: ApplyV2Context): Promise<ApplyV2Step
   return passos
 }
 
+/** Onde a marca de cada tipo mora. Sem entrada aqui, o tipo não é recuperável — e é dito. */
+const COLECAO_DA_MARCA: Partial<Record<ApplyV2Kind, string>> = {
+  database: 'data_stores',
+  source: 'monitoring_sources',
+  monitor: 'monitors',
+  flow: 'automations',
+}
+
+/** Já existe um recurso DESTA operação para esta `key`? */
+async function recuperarPelaMarca(ctx: ApplyV2Context, kind: ApplyV2Kind, key: string): Promise<string | null> {
+  if (!ctx.operationId) return null
+  const colecao = COLECAO_DA_MARCA[kind]
+  if (!colecao) return null
+  const { db } = await import('../db.js')
+  const doc = await db
+    .collection(colecao)
+    .findOne({ ownerId: ctx.ownerId, 'architect.operationId': ctx.operationId, 'architect.blueprintKey': key }, { projection: { _id: 1 } })
+  return doc ? doc._id.toString() : null
+}
+
+/** A marca gravada JUNTO com o recurso, na mesma escrita. */
+const marcaDe = (ctx: ApplyV2Context, key: string) =>
+  ctx.operationId ? { projectId: ctx.projectId ?? '', operationId: ctx.operationId, blueprintKey: key } : undefined
+
 /** Cria UM item pelo serviço canônico do domínio dele. */
 type Criacao = { id: string; message?: string } | { pendency: string } | null
 
-async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string, unknown>): Promise<Criacao> {
+async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string, unknown>, key: string): Promise<Criacao> {
   const { ownerId, resourceMap } = ctx
   const idDe = (k: string, key: unknown): string | null => resourceMap.get(chave(k, String(key ?? ''))) ?? null
 
   if (kind === 'database') {
     const { createDataStore } = await import('../databases/store.js')
     const store = await createDataStore(ownerId, {
+      ...(marcaDe(ctx, key) ? { architect: marcaDe(ctx, key)! } : {}),
       name: String(item.name ?? 'Database'),
       ...(item.description ? { description: String(item.description) } : {}),
       adapterKind: String(item.adapterKind ?? 'data_history') as never,
@@ -233,6 +286,7 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
      * Não há como criar uma fonte ativa por aqui, e é exatamente o que se quer.
      */
     const fonte = await createSource(ownerId, {
+      ...(marcaDe(ctx, key) ? { architect: marcaDe(ctx, key)! } : {}),
       name: String(item.name ?? item.key),
       kind: String(item.kind ?? 'api_polling') as never,
       config: (item.config as never) ?? {},

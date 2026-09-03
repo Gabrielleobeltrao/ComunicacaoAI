@@ -95,6 +95,7 @@ function respostaDoDuble(prompt: string): string {
       return ''
     }
   }
+  if (prompt.includes(INTENT_MARKER)) return architectIntent(prompt)
   if (prompt.includes(CRITIQUE_MARKER)) return architectCritique()
   return prompt.includes(ARCHITECT_MARKER) ? architectTurn(prompt) : ''
 }
@@ -104,6 +105,33 @@ export const ARCHITECT_MARKER = '[[ARQUITETO_V1]]'
 
 /** A do crítico auxiliar. Ver `architect/criticLlm.ts`. */
 export const CRITIQUE_MARKER = '[[ARQUITETO_CRITICA_V1]]'
+
+/** A do roteador de intenção. Ver `architect/classifyIntent.ts`. */
+export const INTENT_MARKER = '[[ARQUITETO_INTENCAO_V1]]'
+
+/**
+ * A classificação do dublê — por forma da frase, sempre igual.
+ *
+ * Ele não é um modelo: é um substituto determinístico que devolve o MESMO formato que o
+ * roteador espera, para o caminho da classificação ser exercitável sem chave nem rede. As
+ * regras aqui são grosseiras de propósito — quem precisa acertar de verdade é o modelo, e
+ * quem protege contra o erro dele é `parseIntent`.
+ */
+function architectIntent(prompt: string): string {
+  const msg = (/Mensagem: "([\s\S]*)"\s*$/.exec(prompt)?.[1] ?? '').toLowerCase()
+  if (/\b(observe|monitore|acompanhe|me avise|vigie|automatize|crie|monte|adicione)\b/.test(msg)) {
+    return JSON.stringify({ mode: 'propose', changeKind: /\b(adicione|expanda|também)\b/.test(msg) ? 'expand' : 'create', objective: msg.slice(0, 200) })
+  }
+  if (/\b(liste|listar|mostre|pause|pausar|ative|ativar)\b/.test(msg)) {
+    const escreve = /\b(pause|pausar|ative|ativar)\b/.test(msg)
+    return JSON.stringify({ mode: 'operate', action: msg.slice(0, 120), risk: escreve ? 'write' : 'read' })
+  }
+  if (/\b(meu|minha|este|esta|aqui)\b/.test(msg) && /\?/.test(msg)) {
+    return JSON.stringify({ mode: 'explain', question: msg.slice(0, 120) })
+  }
+  const agora = /\b(hoje|agora|atual|cotação|valor do|preço do)\b/.test(msg)
+  return JSON.stringify({ mode: 'answer', query: msg.slice(0, 120), freshness: agora ? 'current' : 'static' })
+}
 
 /**
  * A leitura auxiliar do dublê: um achado, sem agente, sempre igual.

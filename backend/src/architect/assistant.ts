@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb'
 import { clarifyingQuestion, noCurrentSource, policyFor } from './intent.js'
 import { classifyIntent } from './classifyIntent.js'
 import type { ClassifyIntentInput } from './classifyIntent.js'
-import { capabilityFor, inventoryFor } from './assistantCapabilities.js'
+import { capabilityFor, inventoryFor, resolveByName } from './assistantCapabilities.js'
 import type { CapabilityOutcome } from './assistantCapabilities.js'
 import type { ArchitectIntent } from './intent.js'
 import { loadOfficeInventory, summarizeInventory } from './inventory.js'
@@ -170,12 +170,19 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   const question = clarifyingQuestion(mensagem, intent)
 
   if (intent.mode === 'explain') {
-    // Explicar lê o inventário e devolve o resumo: é a pergunta "o que eu tenho?".
+    /**
+     * "O que este agente faz?" pede a FUNÇÃO dele, não a contagem de andares.
+     *
+     * Quando a pergunta é sobre um recurso específico — porque a tela diz onde a pessoa está,
+     * ou porque ela citou o nome — a resposta vem do recurso real, lido pelo getter canônico.
+     * Só quando não há alvo é que a resposta é o panorama.
+     */
+    const sobreUm = await explicarRecurso(input.ownerId, intent, context)
     const resumo = summarizeInventory(await loadOfficeInventory(input.ownerId))
     return {
       intent,
       phase: 'done',
-      text: explicar(resumo, context),
+      text: sobreUm || explicar(resumo, context),
       question,
       projectId: null,
       context,
@@ -259,11 +266,19 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   }
 
   // `propose` é o ÚNICO modo que cria projeto.
-  const { createProject } = await import('./repository.js')
+  const { appendMessage, createProject } = await import('./repository.js')
   const projeto = await createProject(input.ownerId, {
     title: tituloDe(intent.objective),
     objective: intent.objective,
   })
+  /**
+   * A FRASE ORIGINAL entra no projeto como a primeira mensagem.
+   *
+   * Sem isto, quem pedia "observe CXSE3 e me avise quando o RSI cair abaixo de 30" no chat
+   * abria um projeto vazio e tinha que digitar tudo de novo — e a segunda versão nunca é
+   * igual à primeira. É ela que o entendimento do projeto lê para montar o Brief.
+   */
+  await appendMessage(input.ownerId, projeto._id, 'user', mensagem).catch(() => undefined)
   /**
    * A rodada TERMINA aqui — o projeto foi aberto.
    *
@@ -414,4 +429,64 @@ async function responderEstatico(input: AssistantTurnInput, mensagem: string): P
     console.error('[architect] resposta estática falhou:', (erro as Error)?.message)
     return ''
   }
+}
+
+/**
+ * O que UM recurso faz — lido dele, não inferido.
+ *
+ * Devolve `''` quando não há alvo: aí a resposta certa é o panorama. O que ela nunca faz é
+ * inventar a função de um agente que não tem função escrita — nesse caso ela diz que está
+ * vazia, que é o que a pessoa precisa saber para consertar.
+ */
+async function explicarRecurso(ownerId: string, intent: Extract<ArchitectIntent, { mode: 'explain' }>, ctx: ResolvedUiContext): Promise<string> {
+  const { ObjectId: OID } = await import('mongodb')
+
+  // O contexto da tela ganha da citação: quem está olhando um agente e pergunta "o que ele
+  // faz?" está falando daquele, mesmo que o nome de outro apareça na frase.
+  if (ctx.agent) return descreverAgente(await (await import('../agents.js')).getAgentById(ownerId, new OID(ctx.agent.id)))
+  if (ctx.sector) {
+    const setor = await (await import('../sectors.js')).getSectorById(ownerId, new OID(ctx.sector.id))
+    if (setor) {
+      const { SECTOR_MODE_LABEL } = await import('../sectors.js')
+      const rotulo = SECTOR_MODE_LABEL[setor.mode as keyof typeof SECTOR_MODE_LABEL] ?? SECTOR_MODE_LABEL.organization
+      return `O setor "${setor.name}" trabalha assim: ${rotulo.title.toLowerCase()} — ${rotulo.help} Ele tem ${setor.members?.length ?? 0} agente(s).`
+    }
+  }
+  if (ctx.floor) {
+    const andar = await (await import('../floors.js')).getFloor(ownerId, new OID(ctx.floor.id))
+    if (andar) {
+      const { listAgents } = await import('../agents.js')
+      const equipe = (await listAgents(ownerId).catch(() => [])).filter((a) => String(a.officeId) === ctx.floor!.id)
+      const missao = String(andar.mission ?? '').trim()
+      return `O andar "${andar.name}" ${missao ? `existe para ${missao.toLowerCase()}` : 'ainda não tem missão escrita'}. Nele trabalham ${equipe.length} agente(s)${equipe.length ? `: ${equipe.slice(0, 5).map((a) => a.name).join(', ')}` : ''}.`
+    }
+  }
+
+  // Sem contexto de tela: o nome citado, resolvido contra o inventário.
+  if (intent.targetRef) {
+    const inv = await inventoryFor(ownerId)
+    const achado = resolveByName(inv, ['agent', 'sector', 'floor'], intent.targetRef)
+    if (achado?.kind === 'agent') return descreverAgente(await (await import('../agents.js')).getAgentById(ownerId, new OID(achado.item.id)))
+  }
+  return ''
+}
+
+/** A ficha do agente, em português — e a pendência quando ela está vazia. */
+function descreverAgente(agente: { name?: unknown; role?: unknown; objective?: unknown; instructions?: unknown } | null): string {
+  if (!agente) return ''
+  const nome = String(agente.name ?? 'Este agente')
+  const funcao = String(agente.role ?? '').trim()
+  const objetivo = String(agente.objective ?? '').trim()
+  if (!funcao && !objetivo) {
+    /**
+     * A resposta honesta para um agente sem função escrita é dizer isso.
+     *
+     * Inventar uma descrição plausível a partir do nome é o erro mais fácil de cometer aqui —
+     * e o mais difícil de perceber, porque a frase soa certa.
+     */
+    return `${nome} está sem função escrita. Abra o agente e diga o que ele faz: sem isso, ninguém — nem outro agente que fosse delegar para ele — consegue saber.`
+  }
+  const partes = [`${nome} ${funcao ? `faz: ${funcao}` : `existe para ${objetivo}`}.`]
+  if (funcao && objetivo) partes.push(`O objetivo dele é ${objetivo}.`)
+  return partes.join(' ')
 }

@@ -166,7 +166,19 @@ export function policyFor(intent: ArchitectIntent): IntentPolicy {
 export function suggestIntent(mensagem: string): ArchitectIntent {
   const m = String(mensagem ?? '').toLowerCase()
 
-  const pedeMudanca = /\b(crie|criar|monte|montar|adicione|adicionar|configure|configurar|automatize|automatizar|quero que|preciso de um|preciso de uma|implemente|monta|expanda|expandir|reorganize|conserte|consertar|corrija|corrigir)\b/.test(m)
+  /**
+   * VIGIAR é construir.
+   *
+   * "Observe CXSE3 e me avise quando o RSI ficar abaixo de 30" não é uma pergunta e não é uma
+   * ação sobre algo que já existe: é o pedido para montar uma operação que fica de olho. Sem
+   * isto, o cenário principal do plano caía em `answer` — o assistente procurava uma fonte
+   * que ninguém criou e recusava.
+   */
+  const pedeVigilancia =
+    /\b(observe|observar|acompanhe|acompanhar|monitore|monitorar|vigie|vigiar|fique de olho|me avise|me avisa|avise quando|alerte|alertar)\b/.test(m)
+  const pedeMudanca =
+    pedeVigilancia ||
+    /\b(crie|criar|monte|montar|adicione|adicionar|configure|configurar|automatize|automatizar|quero que|preciso de um|preciso de uma|implemente|monta|expanda|expandir|reorganize|conserte|consertar|corrija|corrigir)\b/.test(m)
   const pedeAgora = /\b(hoje|agora|atual|no momento|neste momento|cotação|cotacao|valor do|preço do|preco do|quanto está|quanto esta)\b/.test(m)
   const pergunta = /\?|^(o que|qual|quais|quanto|como|por que|porque|quem|quando|onde)\b/.test(m.trim())
 

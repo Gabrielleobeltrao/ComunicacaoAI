@@ -704,6 +704,11 @@ async function aplicarV2(ctx: Contexto): Promise<void> {
     resourceMap: ctx.mapa,
     approvedKeys: aprovadas,
     deliveryConnections: ctx.conexoesDeEntrega,
+    // A MARCA da operação: é ela que faz a retomada reconhecer o que ficou de pé numa queda
+    // entre criar o recurso e registrar o passo.
+    operationId: ctx.operation._id.toString(),
+    projectId: ctx.operation.projectId.toString(),
+    ...(ctx.hooks.afterCreate ? { afterCreate: ctx.hooks.afterCreate as never } : {}),
   })
   for (const p of passos) {
     await registrar(ctx, { kind: p.kind, key: p.key, status: p.status, resourceId: p.resourceId ?? null, ...(p.message ? { message: p.message } : {}) })
