@@ -372,6 +372,7 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
         return { pendency: 'o monitor espera o conjunto: ative a fonte para o histórico existir, e aplique de novo' }
       }
       const m = await createMonitor(ownerId, {
+        ...(marcaDe(ctx, key) ? { architect: marcaDe(ctx, key)! } : {}),
         name: String(item.name ?? item.key),
         source: { kind: 'database', dataStoreId: new ObjectId(storeId), datasetKey },
         condition: item.condition,
@@ -387,6 +388,7 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
     }
 
     const m = await createMonitor(ownerId, {
+      ...(marcaDe(ctx, key) ? { architect: marcaDe(ctx, key)! } : {}),
       name: String(item.name ?? item.key),
       source: { kind: 'internal_event', eventType: String(observa?.eventType ?? '') } as never,
       condition: item.condition,
@@ -405,6 +407,7 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
     if (!andarId) throw new Error(`o andar "${String(item.floorKey)}" não foi criado`)
     const { createAutomation } = await import('../automations/service.js')
     const a = await createAutomation(ownerId, {
+      ...(marcaDe(ctx, key) ? { architect: marcaDe(ctx, key)! } : {}),
       floorId: andarId,
       name: String(item.name ?? item.key),
       definition: {

@@ -118,6 +118,134 @@ test('AMEAÇA: a marca de OUTRA operação não é reaproveitada', async () => {
   assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 2, 'adotar o recurso de outra operação faria o desfazer apagar o que não é dele')
 })
 
+// --- a janela, TIPO A TIPO ---------------------------------------------------------------------
+//
+// `COLECAO_DA_MARCA` declarava monitor e flow, mas os documentos deles não tinham onde guardar
+// a marca: a busca da retomada nunca achava nada, e a janela continuava aberta para os dois.
+
+const planoCompleto = () => {
+  const bp = t2.emptyBlueprintV2('T', 'O', 'create')
+  bp.resources.databases = [item({ key: 'base', name: 'Cotações', owner: { ownerType: 'account' }, adapterKind: 'data_history' })]
+  bp.resources.datasets = [
+    item({
+      key: 'candles',
+      dependsOn: ['base'],
+      databaseKey: 'base',
+      datasetKey: 'candles',
+      name: 'Candles',
+      schema: { type: 'object', properties: { rsi: {} } },
+      mutability: 'append_only',
+    }),
+  ]
+  bp.operations.sources = [
+    item({
+      key: 'fonte',
+      name: 'Cotações CXSE3',
+      kind: 'api_polling',
+      config: { url: 'https://api.exemplo.test/c', method: 'GET' },
+      mapping: { version: 1, fields: [{ to: 'rsi', from: 'rsi', required: true }] },
+      cadence: { mode: 'interval', intervalMs: 60_000 },
+    }),
+  ]
+  bp.operations.flows = [
+    item({
+      key: 'avisar',
+      floorKey: 'operacao',
+      name: 'Avisar',
+      trigger: { type: 'manual' },
+      steps: [{ id: 'r', type: 'transform.template', name: 'R', enabled: true, config: { template: 'x' } }],
+    }),
+  ]
+  bp.operations.monitors = [
+    item({
+      key: 'rsi',
+      dependsOn: ['candles', 'avisar'],
+      name: 'RSI baixo',
+      observes: { kind: 'dataset', datasetKey: 'candles' },
+      condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+      triggerMode: 'enter',
+      flowKey: 'avisar',
+    }),
+  ]
+  return bp
+}
+
+const COLECAO_DE = { database: 'data_stores', source: 'monitoring_sources', flow: 'automations', monitor: 'monitors' }
+
+for (const [kind, colecao] of Object.entries(COLECAO_DE)) {
+  test(`ACEITAÇÃO: o ${kind} criado leva a marca da operação`, async () => {
+    const operationId = new ObjectId().toString()
+    const projectId = new ObjectId().toString()
+    await applyV2Resources({
+      ownerId: DONO,
+      blueprint: planoCompleto(),
+      resourceMap: new Map([['floor:operacao', andar.toString()], ['agent:marina', agente.toString()]]),
+      approvedKeys: new Set(['base', 'candles', 'fonte', 'avisar', 'rsi']),
+      operationId,
+      projectId,
+    })
+    const doc = await db.collection(colecao).findOne({ ownerId: DONO })
+    assert.ok(doc, `nenhum ${kind} foi criado`)
+    assert.equal(doc.architect?.operationId, operationId, `o ${kind} não levou a marca: a retomada não o acharia`)
+    assert.equal(doc.architect?.projectId, projectId)
+    assert.ok(doc.architect?.blueprintKey, `o ${kind} não levou a key do plano`)
+  })
+
+  test(`ACEITAÇÃO: queda na janela do ${kind} não duplica na retomada`, async () => {
+    const operationId = new ObjectId().toString()
+    const bp = planoCompleto()
+    const base = {
+      ownerId: DONO,
+      blueprint: bp,
+      resourceMap: new Map([['floor:operacao', andar.toString()], ['agent:marina', agente.toString()]]),
+      approvedKeys: new Set(['base', 'candles', 'fonte', 'avisar', 'rsi']),
+      operationId,
+    }
+
+    // A queda acontece DEPOIS de criar e ANTES de o passo entrar no mapa.
+    const primeira = await applyV2Resources({
+      ...base,
+      resourceMap: new Map(base.resourceMap),
+      afterCreate: (k) => {
+        if (k === kind) throw new Error(`queda simulada em ${kind}`)
+      },
+    })
+    const falho = primeira.find((p) => p.kind === kind)
+    assert.equal(falho?.status, 'failed', `a queda em ${kind} não foi registrada: ${JSON.stringify(primeira)}`)
+    const antes = await db.collection(colecao).countDocuments({ ownerId: DONO })
+    assert.equal(antes, 1, `o ${kind} precisa ter ficado de pé para haver janela`)
+
+    // A retomada: mesmo plano, MESMA operação, mapa limpo.
+    const segunda = await applyV2Resources({ ...base, resourceMap: new Map(base.resourceMap) })
+    assert.equal(await db.collection(colecao).countDocuments({ ownerId: DONO }), 1, `a retomada criou um segundo ${kind}`)
+    assert.match(segunda.find((p) => p.kind === kind)?.message ?? '', /recuperado/, 'a retomada precisa dizer que encontrou')
+  })
+
+  test(`AMEAÇA: a marca de outra operação não é adotada para ${kind}`, async () => {
+    const bp = planoCompleto()
+    const base = {
+      ownerId: DONO,
+      blueprint: bp,
+      approvedKeys: new Set(['base', 'candles', 'fonte', 'avisar', 'rsi']),
+    }
+    await applyV2Resources({
+      ...base,
+      resourceMap: new Map([['floor:operacao', andar.toString()], ['agent:marina', agente.toString()]]),
+      operationId: new ObjectId().toString(),
+    })
+    assert.equal(await db.collection(colecao).countDocuments({ ownerId: DONO }), 1)
+
+    // Outra operação, mesmo plano: adotar o recurso da anterior faria o desfazer apagar o
+    // que não é dele.
+    await applyV2Resources({
+      ...base,
+      resourceMap: new Map([['floor:operacao', andar.toString()], ['agent:marina', agente.toString()]]),
+      operationId: new ObjectId().toString(),
+    })
+    assert.equal(await db.collection(colecao).countDocuments({ ownerId: DONO }), 2, `${kind}: marca de outra operação foi adotada`)
+  })
+}
+
 test('sem operationId, nada muda: a marca é opcional', async () => {
   const passos = await applyV2Resources({
     ownerId: DONO,

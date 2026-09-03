@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb'
+import type { ArchitectStamp } from '../architectStamp.js'
 import { db } from '../db.js'
 import type { ConditionAst, TriggerMode } from './condition.js'
 import { evaluateCondition, shouldTrigger } from './condition.js'
@@ -18,6 +19,13 @@ import { evaluateCondition, shouldTrigger } from './condition.js'
 export type MonitorStatus = 'watching' | 'paused' | 'degraded' | 'error'
 
 export interface MonitorDefinition {
+  /**
+   * De onde ele veio, quando veio do Arquiteto.
+   *
+   * Fecha a janela entre criar e registrar o passo: com a marca, a retomada PROCURA antes de
+   * criar e encontra o que ficou de pé. Opcional — quem cria pela tela não tem origem.
+   */
+  architect?: ArchitectStamp
   _id: ObjectId
   ownerId: string
   name: string

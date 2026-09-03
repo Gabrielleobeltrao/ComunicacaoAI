@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb'
+import type { ArchitectStamp } from '../architectStamp.js'
 import { db } from '../db.js'
 import { getAutomation } from '../automations/service.js'
 import { EVENT_TYPES, isEventType } from '../events/types.js'
@@ -24,6 +25,8 @@ export class MonitorError extends Error {
 }
 
 export interface MonitorInput {
+  /** De onde ele veio, quando veio do Arquiteto. Fecha a janela entre criar e registrar. */
+  architect?: ArchitectStamp
   name: string
   source: MonitorDefinition['source']
   condition: unknown
@@ -151,7 +154,16 @@ function normalizarFonte(bruto: MonitorDefinition['source']): MonitorDefinition[
 export async function createMonitor(ownerId: string, input: MonitorInput): Promise<MonitorDefinition> {
   const campos = await normalizar(ownerId, input)
   const agora = new Date()
-  const doc: MonitorDefinition = { _id: new ObjectId(), ownerId, ...campos, status: 'draft', createdAt: agora, updatedAt: agora }
+  // A marca vai na MESMA escrita: gravá-la depois reabriria a janela que ela fecha.
+  const doc: MonitorDefinition = {
+    _id: new ObjectId(),
+    ownerId,
+    ...campos,
+    ...(input.architect ? { architect: input.architect } : {}),
+    status: 'draft',
+    createdAt: agora,
+    updatedAt: agora,
+  }
   await monitorsCollection.insertOne(doc)
   return doc
 }
