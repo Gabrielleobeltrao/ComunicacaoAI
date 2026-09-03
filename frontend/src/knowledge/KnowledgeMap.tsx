@@ -146,7 +146,7 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
                 pessoa concluir que não há conhecimento e sair para criar o que já existe. */}
             {loading && !graph && <p style={{ fontSize: 13, color: 'var(--text-muted)' }} data-testid="knowledge-loading">Carregando o mapa…</p>}
             {error && (
-              <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="knowledge-error">
+              <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="knowledge-error">
                 {error} <button type="button" onClick={recarregar} style={{ textDecoration: 'underline', background: 'none', border: 0, cursor: 'pointer', color: 'inherit' }}>Tentar de novo</button>
               </p>
             )}

@@ -35,7 +35,7 @@ export function ResourceAccessMatrix({ agentId }: { agentId: string }) {
   if (erro) {
     return (
       <Card>
-        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="access-matrix-error">
+        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="access-matrix-error">
           Não foi possível carregar o acesso deste agente: {erro}
         </p>
       </Card>

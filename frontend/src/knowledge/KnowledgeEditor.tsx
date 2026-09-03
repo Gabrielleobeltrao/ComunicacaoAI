@@ -188,7 +188,7 @@ export function KnowledgeEditor({
                 indexação — e tentar de novo é a ação, não recomeçar. */}
             {doc.indexStatus === 'error' && (
               <>
-                <span style={{ fontSize: 12.5, color: 'var(--intent-danger)' }}>{doc.indexError}</span>
+                <span style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }}>{doc.indexError}</span>
                 <Button variant="secondary" onClick={reindexar} data-testid="knowledge-editor-reindex">
                   Tentar novamente
                 </Button>
@@ -210,7 +210,7 @@ export function KnowledgeEditor({
         )}
 
         {erro && (
-          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="knowledge-editor-error">
+          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="knowledge-editor-error">
             {erro}
           </p>
         )}

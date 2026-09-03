@@ -128,7 +128,7 @@ export function Brief({
                     </label>
                   ))}
                   {erro && (
-                    <p style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="architect-brief-error">
+                    <p style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="architect-brief-error">
                       {erro}
                     </p>
                   )}

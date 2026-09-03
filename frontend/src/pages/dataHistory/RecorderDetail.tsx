@@ -71,7 +71,7 @@ export function RecorderDetail() {
     <AppLayout current="/historicos" title={rec?.name ?? 'Histórico'} subtitle={rec ? `${SOURCE_LABEL[rec.source.kind]} · ${rec.source.ref}` : undefined}>
       <div className="flex flex-col gap-4" data-testid="recorder-detail">
         {erro && (
-          <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="detail-error">
+          <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="detail-error">
             {erro}
           </p>
         )}

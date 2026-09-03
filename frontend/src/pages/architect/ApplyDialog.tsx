@@ -84,7 +84,7 @@ export function ApplyDialog({
         )}
 
         {erro && (
-          <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="architect-apply-error">
+          <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="architect-apply-error">
             {erro}
           </p>
         )}

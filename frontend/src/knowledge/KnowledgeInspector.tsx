@@ -74,7 +74,7 @@ export function KnowledgeInspector({
           <>
             {carregando && <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>Carregando documento…</p>}
             {erro && (
-              <p style={{ fontSize: 13, color: 'var(--intent-danger)' }} role="alert">
+              <p style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} role="alert">
                 {erro}
               </p>
             )}
@@ -88,7 +88,7 @@ export function KnowledgeInspector({
                   )}
                 </div>
                 {doc.indexError && (
-                  <p style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="knowledge-index-error">
+                  <p style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="knowledge-index-error">
                     {doc.indexError}
                   </p>
                 )}

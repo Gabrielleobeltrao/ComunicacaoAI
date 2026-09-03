@@ -158,3 +158,44 @@ test('o texto para o modelo carrega a decisão E a alternativa recusada', () => 
   assert.match(texto, /Não crie agente para trabalho que já foi classificado/)
   assert.match(texto, /Isto é o núcleo: 1 agente/)
 })
+
+// --- "sempre" não é uma cadência ---------------------------------------------------------------
+//
+// `frequency` empurrava qualquer trabalho para ROTINA. Mas "sempre" e "sob demanda" não são
+// horários: são "toda vez que acontecer". Um trabalho disparado por uma PESSOA — "quando o
+// cliente pede mesa" — virava uma automação agendada, que é a mesma patologia de
+// "quando o RSI ficar abaixo de 30" virando um cron das oito da manhã.
+
+test('"sempre" NÃO transforma um trabalho reativo em rotina agendada', () => {
+  const d = classifyJob(
+    job({
+      name: 'Reservar mesa',
+      trigger: 'quando o cliente pede mesa',
+      decision: 'se há disponibilidade',
+      action: 'criar o evento na agenda',
+      frequency: 'sempre',
+    }),
+    manifesto,
+  )
+  assert.notEqual(d.kind, 'routine', 'quem dispara é o cliente, e um cliente não tem horário')
+  assert.equal(d.kind, 'agent', 'há julgamento: "se há disponibilidade"')
+})
+
+test('"sob demanda" e "a cada pedido" também não são cadências', () => {
+  for (const frequencia of ['sob demanda', 'a cada pedido', 'quando pedirem', 'conforme a necessidade']) {
+    const d = classifyJob(job({ name: 'Emitir a segunda via', trigger: 'quando o cliente pede', decision: 'se o boleto venceu', frequency: frequencia }), manifesto)
+    assert.notEqual(d.kind, 'routine', `"${frequencia}" não é um horário`)
+  }
+})
+
+test('uma cadência DE VERDADE continua virando rotina', () => {
+  for (const frequencia of ['diário', 'a cada hora', 'toda segunda', 'a cada 15 minutos', 'semanal', 'mensal']) {
+    const d = classifyJob(job({ name: 'Montar o relatório do dia', action: 'montar o relatório', frequency: frequencia }), manifesto)
+    assert.equal(d.kind, 'routine', `"${frequencia}" é um horário e tem que virar rotina`)
+  }
+})
+
+test('vigilância continua virando rotina mesmo sem frequência', () => {
+  const d = classifyJob(job({ name: 'Monitorar o estoque', action: 'acompanhar o estoque' }), manifesto)
+  assert.equal(d.kind, 'routine')
+})

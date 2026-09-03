@@ -93,7 +93,7 @@ export function Monitors() {
       <div className="flex flex-col gap-3">
         {erro && (
           <Card>
-            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="monitors-error">
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="monitors-error">
               {erro}
             </p>
           </Card>
@@ -252,7 +252,7 @@ export function Monitors() {
                 Quando <strong>{m.conditionText}</strong> — {TRIGGER_LABEL[m.triggerMode]}.
               </p>
               {m.state?.error && (
-                <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger)' }}>
+                <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }}>
                   {m.state.error.message}
                 </p>
               )}

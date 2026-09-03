@@ -75,6 +75,8 @@ const chave = (kind: string, key: string): string => `${kind}:${key}`
  */
 export async function applyV2Resources(ctx: ApplyV2Context): Promise<ApplyV2Step[]> {
   const passos: ApplyV2Step[] = []
+  /** As `key`s que ficaram como pendência. Quem depende delas fica pendente também. */
+  const pendencias = new Set<string>()
   const ordem = applyOrder(ctx.blueprint)
   const porKey = new Map<string, { kind: ApplyV2Kind; item: Record<string, unknown> }>()
 
@@ -123,12 +125,30 @@ export async function applyV2Resources(ctx: ApplyV2Context): Promise<ApplyV2Step
       continue
     }
 
+    /**
+     * O que depende de uma PENDÊNCIA também é pendência — nunca uma falha.
+     *
+     * Um destino ao vivo em cima de uma fonte que ficou pendente não tem defeito nenhum: ele
+     * está esperando o mesmo dado que ela. Derrubar a aplicação aqui transformaria "falta
+     * dizer de onde vem o dado" em "a aplicação quebrou".
+     */
+    const pendente = (alvo.item.dependsOn as string[] | undefined)?.find((d) => pendencias.has(String(d)))
+    if (pendente) {
+      pendencias.add(key)
+      passos.push({ kind: alvo.kind, key, status: 'skipped', message: `depende de "${pendente}", que ficou pendente` })
+      continue
+    }
+
     try {
       const r = await criar(ctx, alvo.kind, alvo.item)
-      if (r) {
+      if (r && 'id' in r) {
         ctx.resourceMap.set(chave(alvo.kind, key), r.id)
         passos.push({ kind: alvo.kind, key, status: 'created', resourceId: r.id, ...(r.message ? { message: r.message } : {}) })
+      } else if (r && 'pendency' in r) {
+        pendencias.add(key)
+        passos.push({ kind: alvo.kind, key, status: 'skipped', message: r.pendency })
       } else {
+        pendencias.add(key)
         passos.push({ kind: alvo.kind, key, status: 'skipped', message: 'este tipo ainda não é aplicado automaticamente' })
       }
     } catch (erro) {
@@ -148,11 +168,9 @@ export async function applyV2Resources(ctx: ApplyV2Context): Promise<ApplyV2Step
 }
 
 /** Cria UM item pelo serviço canônico do domínio dele. */
-async function criar(
-  ctx: ApplyV2Context,
-  kind: ApplyV2Kind,
-  item: Record<string, unknown>,
-): Promise<{ id: string; message?: string } | null> {
+type Criacao = { id: string; message?: string } | { pendency: string } | null
+
+async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string, unknown>): Promise<Criacao> {
   const { ownerId, resourceMap } = ctx
   const idDe = (k: string, key: unknown): string | null => resourceMap.get(chave(k, String(key ?? ''))) ?? null
 
@@ -184,6 +202,20 @@ async function criar(
   }
 
   if (kind === 'source') {
+    /**
+     * Sem origem ou sem mapeamento, a fonte é uma PENDÊNCIA declarada — não um passo que
+     * falha.
+     *
+     * O compilador emite a fonte de propósito, para que ela apareça no plano com o motivo:
+     * de onde o dado vem é exatamente o que ele não pode inventar. Tentar criá-la assim
+     * derrubava a aplicação inteira com "mapeie ao menos um campo", numa etapa que não tem
+     * defeito nenhum — só falta uma informação que só a pessoa tem.
+     */
+    const config = (item.config ?? {}) as Record<string, unknown>
+    const campos = ((item.mapping as { fields?: unknown[] } | undefined)?.fields ?? []) as unknown[]
+    if (!Object.keys(config).length) return { pendency: 'falta dizer de onde este dado vem: endereço, App ou conjunto existente' }
+    if (!campos.length) return { pendency: 'falta dizer quais campos ler desta origem' }
+
     const { createSource } = await import('../monitoring/service.js')
     /**
      * A fonte nasce RASCUNHO — é o próprio domínio que garante isso.

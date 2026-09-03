@@ -84,7 +84,7 @@ export function Marketplace() {
 
         {erro && (
           <Card>
-            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="marketplace-error">
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="marketplace-error">
               {erro}
             </p>
           </Card>
@@ -162,7 +162,7 @@ export function Marketplace() {
                     <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>v{p.latestVersion ?? 'sem versão'}</span>
                   </div>
                   {p.suspendedReason && (
-                    <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger)' }}>
+                    <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }}>
                       Suspenso: {p.suspendedReason}
                     </p>
                   )}

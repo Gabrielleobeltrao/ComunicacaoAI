@@ -385,3 +385,37 @@ test('SEM andares de fora, o V2 continua decidindo os próprios — o caminho an
   assert.equal(r.blueprint.organization.floors.length >= 1, true)
   assert.equal(r.blueprint.organization.floors[0].action, 'create')
 })
+
+// --- o casamento de ação, palavra por palavra --------------------------------------------------
+//
+// `alvo.includes('criar evento')` falha em "criar o evento na agenda" — a frase que qualquer
+// pessoa escreve. Perder o App por causa de um artigo no meio cria um agente que não alcança
+// o sistema de que ele precisa, e ninguém descobre até a primeira reserva não entrar na
+// agenda.
+
+test('a ação casa mesmo com artigo no meio da frase', () => {
+  const app = manifesto().apps.find((a) => a.key === 'google_calendar')
+  const r = c2.resolveAppActions(app, { id: 'j', name: 'Reservar mesa', action: 'criar o evento na agenda', output: 'a confirmação', decision: 'se há vaga' })
+  assert.ok(r.write.includes('create_event'), JSON.stringify(r))
+})
+
+test('e continua conservador: a ação que NÃO foi citada não entra', () => {
+  const app = manifesto().apps.find((a) => a.key === 'google_calendar')
+  const r = c2.resolveAppActions(app, { id: 'j', name: 'Reservar mesa', action: 'criar o evento na agenda', output: '', decision: '' })
+  assert.equal(r.write.includes('delete_event'), false, 'apagar evento é destrutivo e ninguém pediu')
+  assert.equal(r.read.includes('list_events'), false, '"listar" não aparece em lugar nenhum')
+})
+
+test('o andar existente é reconhecido pela MESMA ÁREA, e não só pelo nome igual', () => {
+  const salao = inventarioCom([{ id: '000000000000000000000f01', label: 'Recepção' }])
+  // "adicione recepção" vira a área "Atendimento"; o andar da pessoa se chama "Recepção".
+  const achado = c2.findExistingFloor(salao, 'Atendimento')
+  assert.equal(achado?.id, '000000000000000000000f01', 'propor "Atendimento" ao lado de "Recepção" cria dois andares para a mesma coisa')
+  assert.equal(achado.label, 'Recepção', 'o nome que fica é o que a pessoa já usa')
+})
+
+test('AMEAÇA: uma área DIFERENTE não sequestra o andar existente', () => {
+  const salao = inventarioCom([{ id: '000000000000000000000f01', label: 'Recepção' }])
+  assert.equal(c2.findExistingFloor(salao, 'Financeiro'), null)
+  assert.equal(c2.findExistingFloor(salao, 'Logística'), null)
+})

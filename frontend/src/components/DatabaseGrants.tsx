@@ -113,7 +113,7 @@ export function DatabaseGrants({ databaseId }: { databaseId: string }) {
         </div>
 
         {erro && (
-          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="grants-error">
+          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="grants-error">
             {erro}
           </p>
         )}

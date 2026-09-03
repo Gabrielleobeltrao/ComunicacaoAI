@@ -383,7 +383,18 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
 
       {a.minimizado ? null : (
         <>
-          <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }} data-testid="architect-mensagens">
+          {/*
+            A resposta chega SEM mudar de página.
+            Sem região viva, quem usa leitor de tela não recebe aviso nenhum de que ela
+            chegou: a conversa acontece em silêncio. `polite` porque ela não interrompe o
+            que a pessoa está fazendo — ela entra na fila.
+          */}
+          <div
+            aria-live="polite"
+            aria-atomic="false"
+            style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}
+            data-testid="architect-mensagens"
+          >
             {a.mensagens.length === 0 ? (
               <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }} data-testid="architect-vazio">
                 Pergunte qualquer coisa, ou peça para eu montar. Perguntar não cria nada no seu escritório.

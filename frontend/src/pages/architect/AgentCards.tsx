@@ -122,7 +122,7 @@ export function AgentFicha({ agentKey, blueprint, preview }: { agentKey: string;
       )}
 
       {problemas.map((p, n) => (
-        <p key={`${p.code}-${n}`} style={{ fontSize: 12.5, color: p.severity === 'error' ? 'var(--intent-danger)' : 'var(--text-muted)' }}>
+        <p key={`${p.code}-${n}`} style={{ fontSize: 12.5, color: p.severity === 'error' ? 'var(--intent-danger-text)' : 'var(--text-muted)' }}>
           {p.message} <span style={{ color: 'var(--text-faint)' }}>— {p.fix}</span>
         </p>
       ))}

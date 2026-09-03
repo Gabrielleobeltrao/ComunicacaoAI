@@ -157,7 +157,7 @@ export function KnowledgeAccessSection({ agentId }: { agentId: string }) {
         )}
 
         {erro && (
-          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="knowledge-access-error">
+          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="knowledge-access-error">
             {erro}
           </p>
         )}

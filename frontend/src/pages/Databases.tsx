@@ -45,7 +45,7 @@ export function Databases() {
       <div className="flex flex-col gap-3">
         {erro && (
           <Card>
-            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="databases-error">
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="databases-error">
               {erro}{' '}
               <button type="button" onClick={carregar} style={{ textDecoration: 'underline', background: 'none', border: 0, cursor: 'pointer', color: 'inherit' }}>
                 Tentar de novo
@@ -148,7 +148,7 @@ function NovoDatabase({ onCriado }: { onCriado: () => void }) {
           </select>
         </label>
         {erro && (
-          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="database-new-error">
+          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="database-new-error">
             {erro}
           </p>
         )}
@@ -185,7 +185,7 @@ function DetalheDoDatabase({ id, onVoltar, onMudou }: { id: string; onVoltar: ()
   if (erro) {
     return (
       <Card>
-        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="database-detail-error">
+        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="database-detail-error">
           {erro}
         </p>
       </Card>
@@ -296,7 +296,7 @@ function NovoDataset({ databaseId, onCriado }: { databaseId: string; onCriado: (
         <Textarea rows={4} value={campos} onChange={(e) => setCampos(e.target.value)} data-testid="dataset-new-fields" />
       </label>
       {erro && (
-        <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="dataset-new-error">
+        <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="dataset-new-error">
           {erro}
         </p>
       )}
@@ -345,7 +345,7 @@ function ConsultaDoDataset({ databaseId, dataset }: { databaseId: string; datase
 
         {carregando && <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Consultando…</p>}
         {erro && (
-          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="dataset-query-error">
+          <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="dataset-query-error">
             {erro}
           </p>
         )}

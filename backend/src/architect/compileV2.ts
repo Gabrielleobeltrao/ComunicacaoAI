@@ -137,6 +137,30 @@ export function parseDataCondition(texto: string): ParsedCondition | null {
  * Leitura e escrita saem SEPARADAS de propósito: a tela mostra as duas em blocos diferentes, e
  * escrita autônoma é uma aprovação por ação, nunca um efeito de conectar.
  */
+/** "eventos" e "evento" são a mesma palavra para efeito de casamento. */
+const semPlural = (t: string): string => t.toLowerCase().replace(/s\b/g, '')
+
+/**
+ * A frase aparece no texto, PALAVRA POR PALAVRA — e não como substring exata.
+ *
+ * `alvo.includes('criar evento')` falha em "criar o evento na agenda", que é como qualquer
+ * pessoa escreve. Perder o App por causa de um artigo no meio cria um agente que não alcança
+ * o sistema de que ele precisa — e ninguém descobre isso até a primeira reserva não entrar
+ * na agenda.
+ *
+ * Continua conservador: TODAS as palavras significativas precisam estar lá. "Listar eventos"
+ * não casa com "criar o evento", porque "listar" não aparece.
+ */
+function mencionaAFrase(alvo: string, frase: string): boolean {
+  const palavras = frase
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((p) => p.length > 3)
+    .map(semPlural)
+  if (!palavras.length) return false
+  const texto = semPlural(alvo)
+  return palavras.every((p) => texto.includes(p))
+}
+
 export function resolveAppActions(app: CapabilityApp, job: BriefJob | null): { read: string[]; write: string[] } {
   const alvo = `${job?.name ?? ''} ${job?.action ?? ''} ${job?.output ?? ''} ${job?.decision ?? ''}`.toLowerCase()
   const read: string[] = []
@@ -147,7 +171,7 @@ export function resolveAppActions(app: CapabilityApp, job: BriefJob | null): { r
     const chave = acao.key.toLowerCase().replace(/_/g, ' ')
     // Casa por nome OU por chave, e cada palavra da chave conta: `create_event` casa com
     // "criar evento" e com "agendar", porque o nome declarado é "Criar evento".
-    const casa = alvo.includes(nome) || alvo.includes(chave) || chave.split(' ').every((p) => p.length > 3 && alvo.includes(p))
+    const casa = mencionaAFrase(alvo, nome) || mencionaAFrase(alvo, chave)
     if (!casa) continue
     ;(acao.risk === 'read' ? read : write).push(acao.key)
   }
@@ -199,25 +223,54 @@ export function resolveChannel(
  * verdade. Reaproveitar por semelhança vaga faria "Atendimento" e "Atendimento ao fornecedor"
  * virarem o mesmo andar, e a expansão sobrescreveria o que já existia.
  */
+/**
+ * O andar que já existe para este nome — por nome igual, ou pela MESMA ÁREA.
+ *
+ * O nome igual não basta: "adicione recepção ao meu salão" vira a área "Atendimento", e o
+ * andar que a pessoa tem se chama "Recepção". Propor "Atendimento" ao lado dele é criar um
+ * segundo andar para a mesma coisa — que é exatamente o que a expansão não pode fazer.
+ *
+ * Continua conservador: só casa quando o nome do andar existente cai na MESMA família de
+ * palavras que produziu a área. "Recepção" e "Atendimento" casam; "Recepção" e "Financeiro"
+ * não.
+ */
 export function findExistingFloor(inventory: OfficeInventory | null, nome: string): { id: string; label: string } | null {
   const alvo = slug(nome)
   if (!alvo) return null
-  const achado = (inventory?.sections.floor?.items ?? []).find((f) => slug(f.label) === alvo)
-  return achado ? { id: achado.id, label: achado.label } : null
+  const andares = inventory?.sections.floor?.items ?? []
+  const porNome = andares.find((f) => slug(f.label) === alvo)
+  if (porNome) return { id: porNome.id, label: porNome.label }
+
+  const familia = AREAS.find(([, area]) => area === nome)?.[0]
+  if (!familia) return null
+  /**
+   * Só um nome de UMA palavra é reusado pela família.
+   *
+   * "Recepção" é o andar de atendimento com outro nome. "Atendimento ao fornecedor" não é o
+   * andar de atendimento ao cliente — o qualificador é o que o distingue, e reaproveitar por
+   * semelhança vaga faria a expansão escrever no andar errado.
+   */
+  const porArea = andares.find((f) => {
+    const palavras = f.label.trim().split(/\s+/)
+    return palavras.length === 1 && familia.test(palavras[0].toLowerCase())
+  })
+  return porArea ? { id: porArea.id, label: porArea.label } : null
 }
 
-/** As ÁREAS que o Brief descreve. Uma empresa com três áreas não é um andar só. */
+/** As famílias de palavras que nomeiam uma área. Uma empresa com três áreas não é um andar só. */
+const AREAS: [RegExp, string][] = [
+  [/\b(atend|suporte|sac|recep|cliente)\w*/, 'Atendimento'],
+  [/\b(vend|comercial|prospec)\w*/, 'Comercial'],
+  [/\b(financ|cobran|faturam|pagament)\w*/, 'Financeiro'],
+  [/\b(logíst|logist|entreg|expedi|estoque)\w*/, 'Logística'],
+  [/\b(marketing|conteúdo|conteudo|campanha)\w*/, 'Marketing'],
+  [/\b(operaç|operac|produç|produc)\w*/, 'Operações'],
+]
+
+/** As ÁREAS que o Brief descreve. */
 export function areasOf(brief: OperationBrief): string[] {
   const texto = `${brief.businessGoal} ${brief.jobs.map((j) => j.name).join(' ')}`.toLowerCase()
-  const conhecidas: [RegExp, string][] = [
-    [/\b(atend|suporte|sac|recep|cliente)\w*/, 'Atendimento'],
-    [/\b(vend|comercial|prospec)\w*/, 'Comercial'],
-    [/\b(financ|cobran|faturam|pagament)\w*/, 'Financeiro'],
-    [/\b(logíst|logist|entreg|expedi|estoque)\w*/, 'Logística'],
-    [/\b(marketing|conteúdo|conteudo|campanha)\w*/, 'Marketing'],
-    [/\b(operaç|operac|produç|produc)\w*/, 'Operações'],
-  ]
-  const achadas = conhecidas.filter(([re]) => re.test(texto)).map(([, nome]) => nome)
+  const achadas = AREAS.filter(([re]) => re.test(texto)).map(([, nome]) => nome)
   return achadas.length ? achadas : []
 }
 
@@ -346,8 +399,10 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
         // Só quando alguma ação REALMENTE casou: o fallback de leitura mínima existe para
         // quem já foi escolhido, não para escolher.
         const citado = `${job?.action ?? ''} ${job?.output ?? ''} ${job?.name ?? ''}`.toLowerCase()
-        const mencionado = citado.includes(app.key.replace(/_/g, ' ')) || citado.includes(app.name.toLowerCase()) ||
-          (app.actions ?? []).some((a) => citado.includes(a.name.toLowerCase()))
+        const mencionado =
+          citado.includes(app.key.replace(/_/g, ' ')) ||
+          citado.includes(app.name.toLowerCase()) ||
+          (app.actions ?? []).some((a) => mencionaAFrase(citado, a.name))
         if (!mencionado || !acoes.write.length && !acoes.read.length) continue
         const chave = slug(`app-${app.key}-${decision.jobId}`)
         if (bp.resources.appRequirements.some((r) => r.key === chave)) continue

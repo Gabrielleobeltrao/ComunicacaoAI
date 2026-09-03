@@ -327,3 +327,40 @@ test('AMEAÇA: um `reuse` apontando para recurso de outra conta não vira criaç
   assert.equal(dataset.status, 'failed')
   assert.equal(await db.collection('dataset_definitions').countDocuments({}), 0)
 })
+
+// --- a pendência declarada, que não é uma falha ---------------------------------------------------
+
+test('uma fonte SEM origem é pendência declarada, e não derruba a aplicação', async () => {
+  const bp = base()
+  // É assim que o compilador a emite quando o Brief não diz de onde o dado vem: a fonte
+  // aparece no plano com o motivo, porque a origem é o que ele não pode inventar.
+  bp.operations.sources = [item({ key: 'fonte', name: 'Cotação', kind: 'api_polling', config: {}, mapping: { version: 1, fields: [] }, cadence: { mode: 'interval', intervalMs: 60_000 } })]
+
+  const passos = await aplicar(bp)
+  assert.equal(passos[0].status, 'skipped')
+  assert.match(passos[0].message, /de onde este dado vem/)
+  assert.equal(await db.collection('monitoring_sources').countDocuments({ ownerId: DONO }), 0)
+})
+
+test('uma fonte com origem e SEM campos também é pendência, com o motivo certo', async () => {
+  const bp = base()
+  bp.operations.sources = [
+    item({ key: 'fonte', name: 'Cotação', kind: 'api_polling', config: { url: 'https://api.exemplo.test/c', method: 'GET' }, mapping: { version: 1, fields: [] }, cadence: { mode: 'interval', intervalMs: 60_000 } }),
+  ]
+  const passos = await aplicar(bp)
+  assert.equal(passos[0].status, 'skipped')
+  assert.match(passos[0].message, /quais campos ler/)
+})
+
+test('o que DEPENDE de uma pendência também fica pendente — nunca falha', async () => {
+  const bp = base()
+  bp.operations.sources = [item({ key: 'fonte', name: 'Cotação', kind: 'api_polling', config: {}, mapping: { version: 1, fields: [] }, cadence: { mode: 'interval', intervalMs: 60_000 } })]
+  bp.operations.liveDestinations = [item({ key: 'agora', dependsOn: ['fonte'], sourceKey: 'fonte', alias: 'cot', staleAfterSeconds: 60, agentKeys: [] })]
+  bp.operations.histories = [item({ key: 'historico', dependsOn: ['fonte'], sourceKey: 'fonte' })]
+
+  const passos = await aplicar(bp)
+  // Um destino ao vivo em cima de uma fonte pendente não tem defeito nenhum: ele espera o
+  // mesmo dado. Derrubar aqui viraria "falta dizer de onde vem" em "a aplicação quebrou".
+  for (const p of passos) assert.equal(p.status, 'skipped', `${p.key}: ${p.message}`)
+  assert.ok(passos.slice(1).every((p) => /pendente/.test(p.message)), JSON.stringify(passos))
+})

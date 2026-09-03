@@ -49,6 +49,17 @@ const CONVERSA = /(responder|atender|explicar|conversar|negociar|orientar|acolhe
 /** Pensar sobre o que chegou: interpretar, comparar, concluir. */
 const JULGAMENTO = /(decidir|escolher|classificar|interpretar|analisar|avaliar|comparar|resumir|priorizar|recomendar)/i
 
+/**
+ * Uma CADÊNCIA é um horário. "Sempre", "sob demanda" e "a cada pedido" não são.
+ *
+ * `frequency` sozinho empurrava qualquer trabalho para rotina — e um trabalho disparado por
+ * uma PESSOA ("quando o cliente pede mesa") virava uma automação agendada. É a mesma
+ * patologia de "quando o RSI ficar abaixo de 30" virando um cron das oito da manhã: o texto
+ * tem a palavra da frequência, e ninguém perguntou se ela nomeia um horário.
+ */
+const CADENCIA =
+  /(\bdiári|\bdiario|\bsemanal|\bmensal|\banual|\bhora\b|\bhoras\b|\bminuto|\bsegundo|\bdia\b|\bdias\b|\bsemana|\bmês\b|\bmes\b|\bmeses|\btoda\s|\btodo\s|\btodos\s|\bcada\s+\d|\bmanhã|\bmanha|\btarde|\bnoite|\bmadrugada|\bútil|\butil|\bsegunda|\bterça|\bterca|\bquarta|\bquinta|\bsexta|\bsábado|\bsabado|\bdomingo|\bcron|\d\s*(h|:)\d?)/i
+
 /** Vigiar: acontece sozinho, no tempo, e avisa quando uma condição bate. */
 const VIGILANCIA = /(monitorar|acompanhar|vigiar|avisar quando|alertar|observar)/i
 
@@ -126,7 +137,7 @@ export function classifyJob(job: BriefJob, manifest: ArchitectCapabilityManifest
   }
 
   // 3. Vigiar uma fonte no tempo é ROTINA (com monitor quando há interpretação).
-  if (VIGILANCIA.test(alvo) || (job.frequency && !CONVERSA.test(alvo))) {
+  if (VIGILANCIA.test(alvo) || (job.frequency && CADENCIA.test(job.frequency) && !CONVERSA.test(alvo))) {
     rejected.push({ kind: 'agent', because: 'quem dispara é o tempo ou a condição, não uma pessoa falando' })
     return {
       jobId: job.id,

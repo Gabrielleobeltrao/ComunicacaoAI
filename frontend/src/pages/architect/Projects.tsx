@@ -101,7 +101,7 @@ export function ArchitectProjects() {
               ))}
             </div>
             {erro && (
-              <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="architect-error">
+              <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="architect-error">
                 {erro}
               </p>
             )}
@@ -185,7 +185,7 @@ export function ArchitectProjects() {
             seguem funcionando e podem ser editados pelas telas de sempre.
           </p>
           {erro && (
-            <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="architect-delete-error">
+            <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="architect-delete-error">
               {erro}
             </p>
           )}

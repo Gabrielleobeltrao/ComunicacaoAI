@@ -115,7 +115,7 @@ export function Resources() {
         {carregando && !dados && <p style={{ fontSize: 13, color: 'var(--text-muted)' }} data-testid="resources-loading">Carregando recursos…</p>}
         {erro && (
           <Card>
-            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="resources-error">
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="resources-error">
               {erro}{' '}
               <button type="button" onClick={carregar} style={{ textDecoration: 'underline', background: 'none', border: 0, cursor: 'pointer', color: 'inherit' }}>
                 Tentar de novo

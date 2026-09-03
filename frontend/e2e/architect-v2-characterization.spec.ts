@@ -205,3 +205,127 @@ test('na página de um PROJETO o chat global se retira — uma conversa por tela
   await expect(page.getByTestId('architect-launcher')).toHaveCount(0)
   await expect(page.getByTestId('architect-panel')).toHaveCount(0)
 })
+
+// --- quem não enxerga a tela ---------------------------------------------------------------
+//
+// O chat global é a porta principal do produto. Uma porta que só funciona para quem vê a cor
+// e usa o mouse não é a porta principal de ninguém.
+
+test('o leitor de tela sabe o que é o botão e o que é o painel', async ({ page }) => {
+  await stub(page)
+  await page.goto('/dashboard')
+
+  const botao = page.getByTestId('architect-launcher')
+  // Um botão só com ícone é um botão mudo: sem nome acessível, o leitor anuncia "botão".
+  const nome = (await botao.getAttribute('aria-label')) ?? (await botao.innerText())
+  expect(nome.trim().length, 'o lançador precisa de um nome acessível').toBeGreaterThan(3)
+
+  await botao.click()
+  const painel = page.getByTestId('architect-panel')
+  await expect(painel).toBeVisible()
+  await expect(painel).toHaveAttribute('role', 'dialog')
+  const rotulo = (await painel.getAttribute('aria-label')) ?? (await painel.getAttribute('aria-labelledby'))
+  expect(rotulo, 'um diálogo sem rótulo é anunciado como "diálogo"').toBeTruthy()
+})
+
+test('o foco vai para o campo ao abrir, e a resposta é anunciada', async ({ page }) => {
+  await stub(page)
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+
+  // Abrir e ter que caçar o campo com Tab é o que faz alguém desistir da porta principal.
+  await expect(page.getByTestId('architect-input')).toBeFocused()
+
+  await page.getByTestId('architect-input').fill('qual o valor do dólar hoje?')
+  await page.getByTestId('architect-input').press('Enter')
+  await expect(page.getByTestId('architect-mensagens')).toContainText('entendi')
+
+  // A resposta chega sem mudar de página: sem região viva, quem usa leitor de tela não
+  // recebe aviso nenhum de que ela chegou.
+  const viva = page.locator('[data-testid="architect-mensagens"][aria-live], [data-testid="architect-mensagens"] [aria-live]')
+  await expect(viva.first()).toHaveCount(1)
+})
+
+
+test('o texto de ERRO do painel é legível — o token de perigo não pinta texto', async ({ page }) => {
+  await stub(page)
+  // A rodada falha no transporte: é este caminho que pinta a linha vermelha.
+  await page.route('**/api/architect/assistant/turn', (r) => r.fulfill({ status: 500, json: { message: 'deu ruim' } }))
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('qualquer coisa')
+  await page.getByTestId('architect-input').press('Enter')
+  await expect(page.getByTestId('architect-erro')).toBeVisible()
+
+  const razao = await page.evaluate(() => {
+    const alvo = document.querySelector('[data-testid="architect-erro"]') as HTMLElement
+    const lum = (p: number[]) => {
+      const c = p.slice(0, 3).map((v) => {
+        const x = v / 255
+        return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4
+      })
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    }
+    let fundo: number[] | null = null
+    for (let el: HTMLElement | null = alvo; el; el = el.parentElement) {
+      const partes = (getComputedStyle(el).backgroundColor.match(/[\d.]+/g) ?? []).map(Number)
+      if (partes.length >= 3 && (partes.length < 4 || partes[3] > 0)) {
+        fundo = partes
+        break
+      }
+    }
+    const a = lum((getComputedStyle(alvo).color.match(/[\d.]+/g) ?? []).map(Number)) + 0.05
+    const b = lum(fundo ?? [255, 255, 255]) + 0.05
+    return Math.round((Math.max(a, b) / Math.min(a, b)) * 100) / 100
+  })
+  // `--intent-danger` é uma cor de preenchimento: 2,81:1 como texto. O token de texto dá 5,98.
+  expect(razao, 'o vermelho de preenchimento não pode virar cor de texto').toBeGreaterThanOrEqual(4.5)
+})
+
+test('o texto do painel alcança o contraste mínimo, inclusive o de erro', async ({ page }) => {
+  await stub(page, {
+    turno: {
+      intent: { mode: 'answer', query: 'dólar', freshness: 'current' },
+      phase: 'failed',
+      text: 'não tenho uma fonte conectada para "dólar" agora. Conecte um App ou uma fonte de dados que traga esse número.',
+      question: null,
+      projectId: null,
+      context: { pathname: '/', rejected: [] },
+    },
+  })
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('qual o valor do dólar hoje?')
+  await page.getByTestId('architect-input').press('Enter')
+  await expect(page.getByTestId('architect-mensagens')).toContainText('fonte conectada')
+
+  // A razão WCAG é calculada das cores COMPUTADAS, subindo até o primeiro ancestral que
+  // pinta o fundo de verdade — um fundo transparente herda o de trás, e medir contra ele
+  // daria um número que a tela não tem.
+  const razao = await page.evaluate(() => {
+    const alvo = document.querySelector('[data-testid="architect-mensagens"]') as HTMLElement
+    const ultimo = (alvo.querySelectorAll('p, div, span')[alvo.querySelectorAll('p, div, span').length - 1] as HTMLElement) ?? alvo
+    const rgb = (s: string) => (s.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
+    const lum = ([r, g, b]: number[]) => {
+      const c = [r, g, b].map((v) => {
+        const x = v / 255
+        return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4
+      })
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+    }
+    let fundo: number[] | null = null
+    for (let el: HTMLElement | null = ultimo; el; el = el.parentElement) {
+      const cor = getComputedStyle(el).backgroundColor
+      const partes = (cor.match(/[\d.]+/g) ?? []).map(Number)
+      if (partes.length >= 3 && (partes.length < 4 || partes[3] > 0)) {
+        fundo = partes.slice(0, 3)
+        break
+      }
+    }
+    const texto = rgb(getComputedStyle(ultimo).color)
+    const a = lum(texto) + 0.05
+    const b = lum(fundo ?? [255, 255, 255]) + 0.05
+    return Math.round((Math.max(a, b) / Math.min(a, b)) * 100) / 100
+  })
+  expect(razao, 'texto abaixo de 4,5:1 é o que ninguém consegue ler às três da manhã').toBeGreaterThanOrEqual(4.5)
+})

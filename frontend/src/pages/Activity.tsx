@@ -60,7 +60,7 @@ export function Activity() {
       <div className="flex flex-col gap-3">
         {erro && (
           <Card>
-            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="activity-error">
+            <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }} data-testid="activity-error">
               {erro}
             </p>
           </Card>
@@ -161,7 +161,7 @@ export function Activity() {
                         padding: '2px 8px',
                         borderRadius: 'var(--radius-control)',
                         border: '1px solid var(--border-subtle)',
-                        color: p.status === 'failed' ? 'var(--intent-danger)' : 'var(--text-muted)',
+                        color: p.status === 'failed' ? 'var(--intent-danger-text)' : 'var(--text-muted)',
                       }}
                     >
                       {p.stepType} · {p.status}
@@ -172,7 +172,7 @@ export function Activity() {
               )}
 
               {item.errorKind && (
-                <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger)' }}>
+                <p role="alert" style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }}>
                   Terminou com erro: {item.errorKind}
                 </p>
               )}

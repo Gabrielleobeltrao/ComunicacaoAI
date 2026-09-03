@@ -338,7 +338,7 @@ export function ArchitectProject() {
         {erro && (
           <Card>
             <div className="flex flex-col gap-2" data-testid="architect-error">
-              <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }}>
+              <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }}>
                 {erro.message}
               </p>
               {/* Cada recusa leva a um lugar diferente. Uma mensagem só deixaria a

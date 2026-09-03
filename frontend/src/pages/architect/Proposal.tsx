@@ -225,7 +225,7 @@ export function Proposal({
       {erros.length > 0 && (
         <Card>
           <div className="flex flex-col gap-2" data-testid="architect-issues">
-            <strong style={{ fontSize: 13, color: 'var(--intent-danger)' }}>Precisa ser resolvido antes de aplicar</strong>
+            <strong style={{ fontSize: 13, color: 'var(--intent-danger-text)' }}>Precisa ser resolvido antes de aplicar</strong>
             {erros.map((i, n) => (
               <p key={`${i.path}-${n}`} style={{ fontSize: 13 }}>
                 {i.message}
@@ -334,7 +334,7 @@ export function Proposal({
                     </label>
                   ))}
                   {erroEdicao && (
-                    <p style={{ fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="architect-edit-error">
+                    <p style={{ fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="architect-edit-error">
                       {erroEdicao}
                     </p>
                   )}
