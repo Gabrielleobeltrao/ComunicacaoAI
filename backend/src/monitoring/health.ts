@@ -1,4 +1,5 @@
 import { nextFireAt } from '../automations/scheduleClock.js'
+import { emptyTelemetry } from './types.js'
 import type { MonitoringFreshness, MonitoringHealth, MonitoringSource, MonitoringTelemetry } from './types.js'
 
 // A SAÚDE de uma fonte — calculada, nunca gravada.
@@ -27,7 +28,14 @@ export function computeHealth(
   source: Pick<MonitoringSource, 'status' | 'telemetry' | 'freshness'>,
   agora: Date = new Date(),
 ): HealthView {
-  const t: MonitoringTelemetry = source.telemetry
+  /**
+   * `telemetry` pode faltar num documento gravado antes de ela existir.
+   *
+   * Ler sem guarda estourava aqui — e como a saúde é calculada na LISTAGEM, um único
+   * documento antigo derrubava o inventário inteiro: a tela de fontes, o assistente e a
+   * prévia do Arquiteto, todos por causa de um campo ausente num registro.
+   */
+  const t: MonitoringTelemetry = source.telemetry ?? emptyTelemetry()
   const f: MonitoringFreshness = source.freshness
 
   if (source.status === 'paused') return { health: 'paused', reason: 'pausada por quem administra', staleAt: null, ageMs: null }

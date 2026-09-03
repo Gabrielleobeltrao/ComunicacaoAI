@@ -14,6 +14,7 @@ process.env.ENCRYPTION_KEY ||= 'chave-de-teste-que-nao-e-segredo'
 
 const { mongoClient, db } = await import('../dist/db.js')
 const assistente = await import('../dist/architect/assistant.js')
+const { setProviderApiKey } = await import('../dist/userSettings.js')
 
 const DONO = 'dono-assistente'
 const VIZINHO = 'vizinho'
@@ -30,7 +31,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'architect_projects', 'monitoring_sources', 'automations', 'connections', 'audit_events'])
+  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'architect_projects', 'monitoring_sources', 'automations', 'connections', 'audit_events', 'user_settings', 'architect_pending_operations'])
     await db.collection(c).deleteMany({})
 
   predio = new ObjectId()
@@ -39,9 +40,24 @@ beforeEach(async () => {
   await db.collection('buildings').insertOne({ _id: predio, ownerId: DONO, name: 'Prédio QA', createdAt: new Date(), updatedAt: new Date() })
   await db.collection('offices').insertOne({ _id: andar, ownerId: DONO, buildingId: predio, name: 'Atendimento', status: 'active', workMode: 'organization', createdAt: new Date(), updatedAt: new Date() })
   await db.collection('agents').insertOne({ _id: agente, ownerId: DONO, officeId: andar, name: 'Marina', role: 'Recebe', provider: 'anthropic', createdAt: new Date() })
+  // Sem chave, o classificador cai na heurística — e o dublê do provedor nunca é chamado.
+  // A chave é o que faz o teste exercitar o caminho REAL da classificação.
+  await setProviderApiKey(DONO, 'anthropic', 'chave-de-teste-que-nao-e-segredo')
 })
 
 const projetos = () => db.collection('architect_projects').countDocuments({ ownerId: DONO })
+
+/**
+ * O provedor, dublê.
+ *
+ * A classificação passou a acontecer no SERVIDOR: o cliente não escolhe mais o modo. Para
+ * exercitar cada modo, o teste injeta a resposta do provedor — que é o que o servidor
+ * consulta — em vez de mandar a decisão pronta pelo corpo da requisição.
+ */
+const provedorQueResponde = (json) => async () => ({ text: JSON.stringify(json), usage: { inputTokens: 1, outputTokens: 1 } })
+const provedorQueCai = () => async () => {
+  throw new Error('provedor fora')
+}
 
 // --- perguntar não cria estrutura -----------------------------------------------------------
 
@@ -65,7 +81,7 @@ test('EXPLICAR lê o inventário e responde com números REAIS, sem criar nada',
   const r = await assistente.runAssistantTurn({
     ownerId: DONO,
     message: 'o que eu tenho no meu escritório?',
-    classified: { mode: 'explain', question: 'o que eu tenho?' },
+    ask: provedorQueResponde({ mode: 'explain', question: 'o que eu tenho?' }),
   })
   assert.equal(r.intent.mode, 'explain')
   assert.equal(r.projectId, null)
@@ -81,27 +97,47 @@ test('PROPOR é o único modo que cria projeto', async () => {
   })
   assert.equal(r.intent.mode, 'propose')
   assert.ok(r.projectId, 'a proposta precisa de um projeto')
-  assert.equal(r.phase, 'preparing_proposal')
+  // A rodada TERMINA: `preparing_proposal` como fase final deixava a tela num "preparando…"
+  // que nunca resolvia, e o campo bloqueado.
+  assert.equal(r.phase, 'done')
   assert.equal(await projetos(), 1)
   assert.match(r.text, /nada é aplicado sem a sua aprovação/)
 })
 
-test('OPERAR de escrita espera aprovação; de leitura, não', async () => {
+test('OPERAR de escrita espera aprovação; de leitura, executa', async () => {
+  // Uma fonte de verdade: sem recurso, a recusa honesta seria "não achei" — e o que este
+  // caso precisa provar é o caminho da ESCRITA, que só existe quando há o que escrever.
+  await db.collection('monitoring_sources').insertOne({
+    _id: new ObjectId(),
+    ownerId: DONO,
+    name: 'Cotações',
+    kind: 'api_polling',
+    status: 'active',
+    scope: { ownerType: 'account', ownerId: '' },
+    destination: { live: true, history: true },
+  })
+
   const escrita = await assistente.runAssistantTurn({
     ownerId: DONO,
     message: 'pause a fonte de cotações',
-    classified: { mode: 'operate', action: 'pausar a fonte', risk: 'write' },
+    ask: provedorQueResponde({ mode: 'operate', action: 'pausar a fonte de cotações', risk: 'write', targetRef: 'Cotações' }),
   })
-  assert.equal(escrita.phase, 'awaiting_approval')
-  assert.match(escrita.text, /prévia com o impacto/)
+  assert.equal(escrita.intent.mode, 'operate')
+  assert.equal(escrita.phase, 'awaiting_approval', escrita.text)
+  assert.ok(escrita.pendingOperation?.operationHash, 'sem hash não há o que confirmar')
   assert.equal(await projetos(), 0, 'operar não cria projeto')
+
+  // E NADA foi alterado: a prévia é uma prévia.
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'active', 'a escrita aconteceu antes da confirmação')
 
   const leitura = await assistente.runAssistantTurn({
     ownerId: DONO,
     message: 'liste minhas fontes',
-    classified: { mode: 'operate', action: 'listar fontes', risk: 'read' },
+    ask: provedorQueResponde({ mode: 'operate', action: 'listar as fontes', risk: 'read' }),
   })
-  assert.equal(leitura.phase, 'consulting')
+  assert.equal(leitura.phase, 'done', 'uma leitura autorizada termina a rodada')
+  assert.match(leitura.text, /Cotações/, 'ler e não responder nada deixa o chat pendurado')
 })
 
 // --- o contexto da tela é uma referência, não conteúdo ----------------------------------------
@@ -134,9 +170,10 @@ test('a rodada usa o contexto conferido para explicar onde a pessoa está', asyn
     ownerId: DONO,
     message: 'o que é isto aqui?',
     uiContext: { pathname: `/floors/${andar}`, floorId: andar.toString() },
-    classified: { mode: 'explain', question: 'o que é isto?' },
+    ask: provedorQueResponde({ mode: 'explain', question: 'o que é isto?' }),
   })
   assert.match(r.text, /andar Atendimento/)
+  assert.equal(r.phase, 'done')
 })
 
 // --- a fronteira de confiança -----------------------------------------------------------------
@@ -155,7 +192,7 @@ test('AMEAÇA: um ObjectId no que o modelo devolveu não sobrevive', async () =>
   const r = await assistente.runAssistantTurn({
     ownerId: DONO,
     message: 'faça algo',
-    classified: { mode: 'operate', action: `mexer em ${id}`, targetRef: id, risk: 'high_risk' },
+    ask: provedorQueResponde({ mode: 'operate', action: `mexer em ${id}`, targetRef: id, risk: 'high_risk' }),
   })
   assert.equal(JSON.stringify(r.intent).includes(id), false)
 })
@@ -245,5 +282,82 @@ test('ROTA /context: devolve o que a tela mostra, e recusa o id de outra conta',
     assert.deepEqual(outro.context.rejected, ['floorId'])
   } finally {
     await new Promise((r) => servidor.close(r))
+  }
+})
+
+// --- a classificação é do SERVIDOR ---------------------------------------------------------
+//
+// Antes, o modo vinha no corpo da requisição. Quem manda o corpo é o navegador: bastava
+// mandar `{ mode: 'operate', risk: 'read' }` para escolher o caminho que executa.
+
+test('AMEAÇA: o modo mandado pelo CLIENTE é ignorado', async () => {
+  const { architectRouter } = await import('../dist/routes/architectRoutes.js')
+  const express = (await import('express')).default
+  const app = express()
+  app.use(express.json())
+  app.use((_req, res, next) => {
+    res.locals.userId = DONO
+    next()
+  })
+  app.use('/api/architect', architectRouter)
+  const servidor = await new Promise((r) => {
+    const s = app.listen(0, () => r(s))
+  })
+  const porta = servidor.address().port
+
+  try {
+    const r = await fetch(`http://127.0.0.1:${porta}/api/architect/assistant/turn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // O cliente tenta escolher "operate de leitura" para uma frase que é uma pergunta.
+      body: JSON.stringify({ message: 'o que eu tenho no escritório?', classified: { mode: 'operate', action: 'apagar tudo', risk: 'read' } }),
+    }).then((x) => x.json())
+
+    assert.notEqual(r.intent.mode, 'operate', 'o corpo do cliente não pode escolher o modo')
+  } finally {
+    await new Promise((r) => servidor.close(r))
+  }
+})
+
+test('sem provedor, a heurística responde — a conversa não fica muda', async () => {
+  await db.collection('user_settings').deleteMany({})
+  const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'o que este agente faz?' })
+  assert.equal(r.intent.mode, 'explain', 'a rede alcança explain sem o provedor')
+  assert.equal(r.phase, 'done')
+  assert.ok(r.text.trim())
+})
+
+test('provedor que CAI não pendura a conversa: cai na heurística e termina', async () => {
+  const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'liste minhas fontes', ask: provedorQueCai() })
+  assert.ok(['done', 'failed'].includes(r.phase), `terminou em ${r.phase}`)
+  assert.ok(r.text.trim(), 'uma rodada sem texto deixa o campo bloqueado')
+})
+
+test('provedor LENTO não pendura: o prazo estoura e a heurística assume', async () => {
+  const lento = () => new Promise(() => {})
+  const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'o que eu tenho?', ask: lento, classifyTimeoutMs: 30 })
+  assert.ok(['done', 'failed'].includes(r.phase))
+  assert.ok(r.text.trim())
+})
+
+test('resposta ILEGÍVEL do provedor não vira modo estranho', async () => {
+  const ilegivel = async () => ({ text: 'não sei responder isso', usage: { inputTokens: 1, outputTokens: 1 } })
+  const r = await assistente.runAssistantTurn({ ownerId: DONO, message: 'liste minhas fontes', ask: ilegivel })
+  assert.ok(['answer', 'explain', 'operate', 'propose'].includes(r.intent.mode))
+  assert.ok(['done', 'failed', 'awaiting_approval'].includes(r.phase))
+})
+
+test('TODA rodada termina em done, failed ou awaiting_approval', async () => {
+  const mensagens = [
+    'o que é RSI?',
+    'qual o valor do dólar hoje?',
+    'o que este agente faz?',
+    'liste minhas fontes',
+    'automatize meu atendimento',
+  ]
+  for (const m of mensagens) {
+    const r = await assistente.runAssistantTurn({ ownerId: DONO, message: m })
+    assert.ok(['done', 'failed', 'awaiting_approval'].includes(r.phase), `"${m}" parou em ${r.phase}`)
+    assert.ok(r.text.trim(), `"${m}" respondeu vazio e deixaria o campo bloqueado`)
   }
 })

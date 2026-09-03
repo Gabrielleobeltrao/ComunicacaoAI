@@ -81,6 +81,10 @@ export type AuditEntityType =
   // agente e setor criado pela aplicação é auditado como ele mesmo, pelo caminho de
   // sempre — senão a auditoria diria "projeto criado" sobre cinco agentes novos.
   | 'architect_project'
+  // Uma ESCRITA que o chat do Arquiteto preparou e alguém confirmou — ou tentou confirmar.
+  // Ela é auditada aqui e não como o recurso que muda, porque o que importa investigar é a
+  // decisão: quem confirmou, sobre qual retrato, e se foi recusada.
+  | 'architect_operation'
   // A REGRA de um histórico genérico — o que gravar, de onde e por quanto tempo. Os
   // registros que ela produz não são auditados um a um: são dado, e são milhares.
   | 'data_recorder'
@@ -116,6 +120,7 @@ export type AuditEntityType =
   // A sessão de quem entra na conta. Só a tentativa recusada é registrada aqui.
   | 'session'
 export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
+  'architect_operation',
   'data_recorder',
   'realtime_source',
   'monitor',

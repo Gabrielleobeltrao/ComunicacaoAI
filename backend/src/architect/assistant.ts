@@ -1,5 +1,9 @@
 import { ObjectId } from 'mongodb'
-import { clarifyingQuestion, noCurrentSource, parseIntent, policyFor, suggestIntent } from './intent.js'
+import { clarifyingQuestion, noCurrentSource, policyFor } from './intent.js'
+import { classifyIntent } from './classifyIntent.js'
+import type { ClassifyIntentInput } from './classifyIntent.js'
+import { capabilityFor, inventoryFor } from './assistantCapabilities.js'
+import type { CapabilityOutcome } from './assistantCapabilities.js'
 import type { ArchitectIntent } from './intent.js'
 import { loadOfficeInventory, summarizeInventory } from './inventory.js'
 import type { OfficeInventorySummary } from './inventory.js'
@@ -107,14 +111,21 @@ export interface AssistantTurnResult {
   context: ResolvedUiContext
   /** O que a conta tem, resumido. É o que a tela usa para explicar sem outra chamada. */
   inventory?: OfficeInventorySummary
+  /** A escrita esperando confirmação. Só em `operate` de escrita. */
+  pendingOperation?: { id: string; operationHash: string; summary: string; impact: string[]; expiresAt: string; requiresName?: string }
 }
 
 export interface AssistantTurnInput {
   ownerId: string
   message: string
   uiContext?: ArchitectUiContext | null
-  /** A classificação que o modelo devolveu, quando houve chamada. Ausente = heurística. */
-  classified?: unknown
+  /** Qual provedor classifica. O padrão é o mesmo que o Arquiteto usa nos projetos. */
+  provider?: 'anthropic' | 'openai'
+  model?: string | null
+  /** A chamada ao provedor, injetável — é o que permite exercitar prazo e queda num teste. */
+  ask?: ClassifyIntentInput['ask']
+  /** Quanto esperar pela classificação antes de seguir com a heurística. */
+  classifyTimeoutMs?: number
 }
 
 /** Teto do que entra: uma mensagem é um pedido, não um upload. */
@@ -131,12 +142,30 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   const context = await resolveUiContext(input.ownerId, input.uiContext)
 
   /**
-   * A intenção vem do modelo QUANDO ele foi consultado; senão, da heurística.
+   * A intenção é classificada NO SERVIDOR, com a chave da conta.
    *
-   * A heurística sugere e não decide: ela só produz `answer` e `propose`, os dois modos que
-   * não executam nada sozinhos. É o que dá uma resposta útil quando o provedor está fora.
+   * Antes ela vinha no corpo da requisição: quem manda o corpo é o navegador, e bastava
+   * mandar `{ mode: 'operate', risk: 'read' }` para escolher o caminho que executa. A
+   * heurística continua existindo como rede — ela produz só modos que não mudam nada.
    */
-  const intent = input.classified !== undefined ? parseIntent(input.classified, mensagem) : suggestIntent(mensagem)
+  const onde = context.agent
+    ? `o agente ${context.agent.name}`
+    : context.sector
+      ? `o setor ${context.sector.name}`
+      : context.floor
+        ? `o andar ${context.floor.name}`
+        : ''
+  const classificada = await classifyIntent({
+    ownerId: input.ownerId,
+    message: mensagem,
+    provider: input.provider ?? 'anthropic',
+    model: input.model ?? null,
+    ...(onde ? { contextLine: onde } : {}),
+    chargeKey: `assistant:${input.ownerId}:${Date.now()}`,
+    ...(input.ask ? { ask: input.ask } : {}),
+    ...(input.classifyTimeoutMs !== undefined ? { timeoutMs: input.classifyTimeoutMs } : {}),
+  })
+  const intent = classificada.intent
   const policy = policyFor(intent)
   const question = clarifyingQuestion(mensagem, intent)
 
@@ -157,20 +186,40 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   if (intent.mode === 'answer') {
     if (policy.requiresProvenance) {
       /**
-       * Sem fonte conectada, a resposta é uma RECUSA — e não um número lembrado.
+       * A resposta sobre o AGORA vem de uma fonte da conta — ou não vem.
        *
-       * Um valor de câmbio de três meses atrás apresentado como "hoje" não é uma resposta
-       * pior: é uma resposta errada, e quem lê não tem como saber. A ligação com as fontes
-       * reais da conta entra quando o executor de ferramentas do assistente existir; até lá,
-       * a recusa é honesta e diz o que fazer.
+       * A capacidade procura entre as fontes ao vivo owner-scoped, reconfere a posse na hora
+       * e devolve valor, origem e instante. Sem fonte compatível, a saída é uma recusa que
+       * diz o que conectar: um valor lembrado apresentado como "hoje" não é uma resposta
+       * pior, é uma resposta errada, e quem lê não tem como saber.
        */
-      const recusa = noCurrentSource(intent.query)
-      return { intent, phase: 'failed', text: recusa.reason ?? '', question, projectId: null, context }
+      const r = await executarCapacidade(input.ownerId, 'answer', intent.query, undefined)
+      if (r && r.ok) {
+        return {
+          intent,
+          phase: 'done',
+          text: `${r.text} — fonte: ${r.provenance?.source ?? 'desconhecida'}, lido em ${formatarInstante(r.provenance?.at)}.`,
+          question,
+          projectId: null,
+          context,
+          ...(r.provenance ? { provenance: r.provenance } : {}),
+        }
+      }
+      const recusa = r && !r.ok ? r.reason : noCurrentSource(intent.query).reason
+      return { intent, phase: 'failed', text: `${recusa}`, question, projectId: null, context }
     }
+
+    /**
+     * Pergunta ESTÁTICA: responde o provedor, e a rodada termina de qualquer jeito.
+     *
+     * O que ela não pode é devolver texto vazio numa fase intermediária: o campo do chat
+     * ficava bloqueado esperando uma continuação que nunca vinha.
+     */
+    const texto = await responderEstatico(input, mensagem)
     return {
       intent,
-      phase: 'answering',
-      text: '',
+      phase: texto ? 'done' : 'failed',
+      text: texto || 'Não consegui responder agora. Tente de novo, ou me diga o que você quer montar.',
       question,
       projectId: null,
       context,
@@ -178,15 +227,34 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
   }
 
   if (intent.mode === 'operate') {
+    if (policy.writesWithoutConfirmation) {
+      // LEITURA autorizada executa de verdade e responde. Antes ela devolvia texto vazio.
+      const r = await executarCapacidade(input.ownerId, 'operate', intent.action, intent.targetRef)
+      if (r && r.ok) return { intent, phase: 'done', text: r.text, question, projectId: null, context }
+      return {
+        intent,
+        phase: 'failed',
+        text: r && !r.ok ? r.reason : 'não sei fazer essa consulta ainda — diga o que você quer ver',
+        question,
+        projectId: null,
+        context,
+      }
+    }
+
+    /**
+     * ESCRITA nunca sai da conversa. Ela vira uma proposta de operação com prévia, impacto,
+     * hash e prazo — confirmada num endpoint próprio.
+     */
+    const { prepararOperacao } = await import('./assistantOperate.js')
+    const preparo = await prepararOperacao(input.ownerId, intent)
     return {
       intent,
-      phase: policy.writesWithoutConfirmation ? 'consulting' : 'awaiting_approval',
-      text: policy.writesWithoutConfirmation
-        ? ''
-        : `"${intent.action}" muda o escritório. Vou preparar a prévia com o impacto antes de fazer qualquer coisa.`,
+      phase: preparo.ok ? 'awaiting_approval' : 'failed',
+      text: preparo.ok ? preparo.text : preparo.reason,
       question,
       projectId: null,
       context,
+      ...(preparo.ok ? { pendingOperation: preparo.pending } : {}),
     }
   }
 
@@ -196,9 +264,16 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<Assis
     title: tituloDe(intent.objective),
     objective: intent.objective,
   })
+  /**
+   * A rodada TERMINA aqui — o projeto foi aberto.
+   *
+   * `preparing_proposal` como fase final deixava a tela num "preparando…" que nunca resolvia,
+   * e o campo bloqueado: a pessoa não conseguia nem continuar a conversa nem abrir o projeto.
+   * Montar a proposta é o próximo passo, dentro do projeto, e ele tem estado próprio.
+   */
   return {
     intent,
-    phase: 'preparing_proposal',
+    phase: 'done',
     text: maskSecretsDeep(`Vou montar isso. Comecei um projeto para "${tituloDe(intent.objective)}" — nada é aplicado sem a sua aprovação.`) as string,
     question,
     projectId: projeto._id.toString(),
@@ -244,4 +319,99 @@ function explicar(resumo: OfficeInventorySummary, ctx: ResolvedUiContext): strin
     partes.push(`Precisa de atenção: ${resumo.attention.slice(0, 3).join('; ')}.`)
   }
   return partes.join(' ') || 'Seu escritório ainda está vazio. Me diga o que você quer que ele faça.'
+}
+
+// --- os auxiliares da rodada ---------------------------------------------------------------
+
+/**
+ * Executa uma capacidade REGISTRADA — ou devolve `null` quando nenhuma atende.
+ *
+ * O modelo não escolhe a chave da capacidade. Ele descreve o pedido; o mapeamento para
+ * handler é do código, e o risco declarado no registro é o que vale.
+ */
+async function executarCapacidade(
+  ownerId: string,
+  mode: 'answer' | 'operate',
+  texto: string,
+  targetRef: string | undefined,
+): Promise<CapabilityOutcome | null> {
+  const capacidade = capabilityFor(mode, texto)
+  if (!capacidade) return null
+  /**
+   * Uma capacidade de ESCRITA não roda por este caminho, nunca.
+   *
+   * Este é o caminho da conversa. Se um dia o mapeamento devolvesse aqui uma capacidade de
+   * escrita, ela sairia executada direto do texto — que é exatamente o que a prévia e a
+   * confirmação existem para impedir.
+   */
+  if (capacidade.risk !== 'read') return { ok: false, reason: 'essa ação muda o escritório: preciso te mostrar a prévia antes' }
+  try {
+    return await capacidade.run({ ownerId, inventory: await inventoryFor(ownerId), query: texto, ...(targetRef ? { targetRef } : {}) })
+  } catch (erro) {
+    console.error('[architect] capacidade do assistente falhou:', (erro as Error)?.message)
+    return { ok: false, reason: 'não consegui consultar agora' }
+  }
+}
+
+/** "há 2 min", "agora mesmo" — o instante em português, para a resposta não virar ISO cru. */
+function formatarInstante(iso: string | undefined): string {
+  if (!iso) return 'agora'
+  const quando = new Date(iso)
+  if (Number.isNaN(quando.getTime())) return 'agora'
+  const min = Math.round((Date.now() - quando.getTime()) / 60_000)
+  if (min <= 0) return 'agora mesmo'
+  if (min === 1) return 'há 1 minuto'
+  if (min < 60) return `há ${min} minutos`
+  const h = Math.round(min / 60)
+  return h === 1 ? 'há 1 hora' : `há ${h} horas`
+}
+
+/**
+ * A resposta de uma pergunta ESTÁTICA — a que não depende de agora.
+ *
+ * Ela vem do provedor, e o pior caso é uma string vazia, que a rodada trata como falha. O que
+ * ela não pode fazer é deixar a conversa pendurada: antes daqui, `answer` devolvia texto vazio
+ * numa fase intermediária, e o campo do chat ficava bloqueado esperando uma continuação que
+ * nunca vinha.
+ */
+async function responderEstatico(input: AssistantTurnInput, mensagem: string): Promise<string> {
+  try {
+    const { askAuxWithUsage } = await import('../llm.js')
+    const { getMonthlyTokenCap, getProviderApiKey } = await import('../userSettings.js')
+    const { getMonthlyTokens, recordReplyUsageOnce } = await import('../tokenUsage.js')
+
+    const provider = input.provider ?? 'anthropic'
+    const apiKey = await getProviderApiKey(input.ownerId, provider)
+    if (!apiKey) return ''
+    const teto = await getMonthlyTokenCap(input.ownerId)
+    if (teto > 0 && (await getMonthlyTokens(input.ownerId)) >= teto) return ''
+
+    const prompt = [
+      'Você é o assistente de um produto que monta escritórios de agentes de IA.',
+      'Responda a pergunta abaixo em português, de forma direta e curta (no máximo 4 frases).',
+      'Se a resposta depender de um dado de agora (cotação, saldo, clima), diga que precisa de uma fonte conectada em vez de estimar.',
+      'Não invente números, datas nem nomes de recursos da conta.',
+      '',
+      `Pergunta: ${mensagem}`,
+    ].join('\n')
+
+    const chamada = (input.ask ?? askAuxWithUsage)(provider, prompt, input.model ?? null, apiKey, 600)
+      .then(async (r) => {
+        await recordReplyUsageOnce(input.ownerId, r.usage, `assistant:${input.ownerId}:${Date.now()}:answer`)
+        return r
+      })
+      .catch(() => null)
+
+    let expirou: NodeJS.Timeout | undefined
+    const prazo = new Promise<null>((resolve) => {
+      expirou = setTimeout(() => resolve(null), input.classifyTimeoutMs ?? 15_000)
+      expirou.unref?.()
+    })
+    const r = await Promise.race([chamada, prazo])
+    if (expirou) clearTimeout(expirou)
+    return maskSecretsDeep(String(r?.text ?? '').trim().slice(0, 2000)) as string
+  } catch (erro) {
+    console.error('[architect] resposta estática falhou:', (erro as Error)?.message)
+    return ''
+  }
 }

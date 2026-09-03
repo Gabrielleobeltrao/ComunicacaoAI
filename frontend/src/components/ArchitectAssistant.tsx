@@ -58,6 +58,8 @@ interface AssistantState {
   mensagens: Mensagem[]
   rascunho: string
   phase: AssistantPhase
+  /** Há uma rodada em voo? É isto que bloqueia o campo — nunca a fase. */
+  enviando: boolean
   erro: string | null
   abrir: () => void
   fechar: () => void
@@ -103,6 +105,15 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
   const [mensagens, setMensagens] = useState<Mensagem[]>([])
   const [rascunho, setRascunho] = useState('')
   const [phase, setPhase] = useState<AssistantPhase>('idle')
+  /**
+   * O campo é bloqueado pela requisição EM VOO — não pela fase que o servidor devolveu.
+   *
+   * Bloquear por fase amarrava a tela a um valor do backend: bastava uma rodada terminar num
+   * estado intermediário para o campo ficar travado para sempre, sem nada na tela dizendo
+   * por quê e sem caminho de volta. A fase continua sendo mostrada; ela só não decide mais
+   * se a pessoa pode escrever.
+   */
+  const [enviando, setEnviando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
 
   const location = useLocation()
@@ -121,11 +132,12 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
 
   const enviar = useCallback(async () => {
     const texto = rascunho.trim()
-    if (!texto || phase === 'answering' || phase === 'preparing_proposal') return
+    if (!texto || enviando) return
 
     const minha: Mensagem = { id: `p-${Date.now()}`, autor: 'pessoa', texto }
     setMensagens((m) => [...m, minha])
     setRascunho('')
+    setEnviando(true)
     setPhase('answering')
     setErro(null)
 
@@ -156,8 +168,11 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
     } catch (e) {
       setErro((e as Error).message)
       setPhase('failed')
+    } finally {
+      // SEMPRE: erro de rede, resposta estranha ou sucesso soltam o campo do mesmo jeito.
+      setEnviando(false)
     }
-  }, [rascunho, phase, uiContext])
+  }, [rascunho, enviando, uiContext])
 
   const valor = useMemo<AssistantState>(
     () => ({
@@ -166,6 +181,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       mensagens,
       rascunho,
       phase,
+      enviando,
       erro,
       abrir: () => {
         setAberto(true)
@@ -176,7 +192,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       setRascunho,
       enviar,
     }),
-    [aberto, minimizado, mensagens, rascunho, phase, erro, enviar],
+    [aberto, minimizado, mensagens, rascunho, phase, enviando, erro, enviar],
   )
 
   /**
@@ -317,7 +333,8 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
 
   if (!a || !a.aberto) return null
 
-  const trabalhando = a.phase === 'answering' || a.phase === 'preparing_proposal' || a.phase === 'applying' || a.phase === 'testing'
+  // O botão segue a requisição em voo, pelo mesmo motivo do campo.
+  const trabalhando = a.enviando
 
   return (
     <aside

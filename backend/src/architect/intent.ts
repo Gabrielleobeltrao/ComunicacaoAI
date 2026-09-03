@@ -156,9 +156,12 @@ export function policyFor(intent: ArchitectIntent): IntentPolicy {
  * Um palpite por FORMA da frase — sugestão, nunca decisão.
  *
  * Ele existe por dois motivos práticos: dá uma resposta quando o provedor está fora, e serve
- * de rede quando a classificação volta ilegível. O plano é explícito que heurística por
- * regex pode sugerir e não pode decidir — então o resultado dele é sempre `answer` ou
- * `propose`, os dois modos que não executam nada sozinhos.
+ * de rede quando a classificação volta ilegível. O plano é explícito que heurística por regex
+ * pode sugerir e não pode decidir — então ele produz apenas os modos que NÃO mudam nada:
+ * `answer`, `explain`, `propose` (que só abre projeto) e `operate` de LEITURA.
+ *
+ * Escrita e alto risco nunca saem daqui. "Pause a fonte" e "apague o andar" parecem iguais
+ * para uma expressão regular, e um dos dois é irreversível.
  */
 export function suggestIntent(mensagem: string): ArchitectIntent {
   const m = String(mensagem ?? '').toLowerCase()
@@ -176,6 +179,32 @@ export function suggestIntent(mensagem: string): ArchitectIntent {
       changeKind: conserta ? 'repair' : reorganiza ? 'reorganize' : expande ? 'expand' : 'create',
       objective: texto(mensagem),
     }
+  }
+
+  /**
+   * A pergunta sobre o PRÓPRIO ESCRITÓRIO é `explain`, não `answer`.
+   *
+   * "O que este agente faz?" e "como meu atendimento funciona?" têm resposta no inventário
+   * da conta — respondê-las como `answer` mandaria a pessoa para um caminho que procura
+   * fonte de dado externa e recusa por não achar nenhuma.
+   */
+  const sobreOEscritorio =
+    /\b(meu|minha|meus|minhas|este|esta|esse|essa|deste|desta|aqui)\b/.test(m) &&
+    /\b(agente|setor|andar|escritório|escritorio|atendimento|operação|operacao|fluxo|flow|monitor|fonte|automação|automacao|equipe|time)\b/.test(m)
+  if (pergunta && (sobreOEscritorio || /\b(o que eu tenho|o que tem|como funciona|quem faz|quem cuida)\b/.test(m))) {
+    return { mode: 'explain', question: texto(mensagem) }
+  }
+
+  /**
+   * LISTAR é a única operação que a heurística produz — e ela não muda nada.
+   *
+   * Adivinhar uma escrita por expressão regular é o erro que este roteador existe para
+   * evitar: "pause a fonte" e "apague o andar" parecem iguais para um regex, e um deles é
+   * irreversível. Quando o provedor está fora, o pior que acontece é a pessoa receber uma
+   * lista em vez da ação — e ela pede de novo.
+   */
+  if (/\b(liste|listar|mostre|mostrar|quais são|quais sao|me diga quais)\b/.test(m)) {
+    return { mode: 'operate', action: texto(mensagem), risk: 'read' }
   }
 
   if (pergunta || pedeAgora) {

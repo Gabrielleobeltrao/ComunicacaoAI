@@ -80,7 +80,9 @@ const comRitmo = (ownerId: string): void => {
  * um pedido, e aceitá-lo faria a resposta descrever o escritório de outra pessoa.
  */
 architectRouter.post('/assistant/turn', async (req, res, next) => {
-  const b = (req.body ?? {}) as { message?: unknown; uiContext?: unknown; classified?: unknown }
+  // `classified` NÃO é lido. Quem manda o corpo é o navegador, e aceitar a classificação dele
+  // era deixar o cliente escolher o caminho que executa. A intenção é decidida no servidor.
+  const b = (req.body ?? {}) as { message?: unknown; uiContext?: unknown }
   const mensagem = String(b.message ?? '').trim()
   if (!mensagem) return void res.status(400).json({ code: 'invalid', message: 'escreva o que você quer' })
   if (mensagem.length > ASSISTANT_LIMITS.message) {
@@ -97,7 +99,6 @@ architectRouter.post('/assistant/turn', async (req, res, next) => {
       ownerId: res.locals.userId,
       message: mensagem,
       uiContext: (b.uiContext ?? null) as never,
-      ...(b.classified !== undefined ? { classified: b.classified } : {}),
     })
     /**
      * A rodada só é REGISTRADA quando ela cria alguma coisa.
@@ -122,6 +123,49 @@ architectRouter.post('/assistant/turn', async (req, res, next) => {
       })
     }
     res.json(r)
+  } catch (erro) {
+    next(erro as Error)
+  }
+})
+
+/**
+ * CONFIRMAR uma escrita que a conversa preparou.
+ *
+ * Endpoint próprio de propósito: a confirmação não pode ser mais uma mensagem, senão o texto
+ * do modelo voltaria a ser o que dispara a escrita. Aqui chega o id de uma operação que o
+ * servidor montou e o hash que ele mesmo carimbou.
+ */
+architectRouter.post('/assistant/confirm', async (req, res, next) => {
+  const b = (req.body ?? {}) as { id?: unknown; operationHash?: unknown; confirmationName?: unknown }
+  try {
+    const { confirmarOperacao } = await import('../architect/assistantOperate.js')
+    const r = await confirmarOperacao(res.locals.userId, {
+      id: String(b.id ?? ''),
+      operationHash: String(b.operationHash ?? ''),
+      ...(b.confirmationName !== undefined ? { confirmationName: String(b.confirmationName) } : {}),
+    })
+    /**
+     * A tentativa e o resultado ficam na auditoria — inclusive a recusa.
+     *
+     * Uma escrita recusada por hash vencido é exatamente o que alguém vai querer investigar
+     * depois; registrar só o sucesso contaria metade da história.
+     */
+    await recordAudit({
+      ownerId: res.locals.userId,
+      actorType: 'user',
+      actorId: res.locals.userId,
+      action: 'update',
+      entityType: 'architect_operation',
+      entityId: String(b.id ?? '') || null,
+      entityLabel: null,
+      floorId: null,
+      result: r.ok ? 'success' : 'failure',
+      requestId: typeof res.locals.requestId === 'string' ? res.locals.requestId : randomUUID(),
+      metadata: { method: 'POST', statusCode: r.ok ? 200 : 409, via: 'assistant', ...(r.ok ? {} : { code: r.code }) },
+    })
+    if (r.ok) return void res.json({ ok: true, text: r.text })
+    const status = r.code === 'not_found' ? 404 : r.code === 'name_mismatch' ? 400 : 409
+    res.status(status).json({ code: r.code, message: r.reason })
   } catch (erro) {
     next(erro as Error)
   }

@@ -165,3 +165,48 @@ test('sem fonte atual, a resposta é uma recusa que diz o que fazer', () => {
   assert.match(r.reason, /Conecte um App ou uma fonte/)
   assert.match(r.reason, /cotação do dólar/)
 })
+
+// --- a heurística alcança explain e leitura, e nunca escrita -----------------------------------
+//
+// Quando o provedor está fora, a conversa não pode ficar muda nem cair sempre em `answer`:
+// "o que este agente faz?" tem resposta no inventário, e mandá-la para `answer` faria o
+// assistente procurar fonte externa e recusar por não achar nenhuma.
+
+test('pergunta sobre o PRÓPRIO escritório vira explain, não answer', () => {
+  for (const m of [
+    'o que este agente faz?',
+    'como meu atendimento funciona?',
+    'o que eu tenho no escritório?',
+    'quem cuida das reservas aqui?',
+  ]) {
+    assert.equal(i.suggestIntent(m).mode, 'explain', `"${m}" tem resposta no inventário`)
+  }
+})
+
+test('pedido de LISTA vira operate de leitura — a única operação que a heurística produz', () => {
+  for (const m of ['liste minhas fontes', 'mostre os monitores', 'quais são meus Flows']) {
+    const r = i.suggestIntent(m)
+    assert.equal(r.mode, 'operate', m)
+    assert.equal(r.risk, 'read', 'listar não muda nada')
+  }
+})
+
+test('AMEAÇA: nenhum pedido de escrita sai da heurística como operate', () => {
+  // Um regex não distingue "pause" de "apague": errar aqui executa o irreversível.
+  for (const m of [
+    'pause a fonte de cotações',
+    'apague o andar Atendimento',
+    'desative o monitor do RSI',
+    'revogue o acesso do Rafael',
+    'remova o agente Marina',
+  ]) {
+    const r = i.suggestIntent(m)
+    assert.notEqual(r.mode, 'operate', `"${m}" não pode virar operate sem o provedor decidir`)
+  }
+})
+
+test('o modo do provedor continua valendo para escrita — a heurística é só a rede', () => {
+  const r = i.parseIntent({ mode: 'operate', action: 'pausar a fonte', risk: 'write' }, 'pause a fonte')
+  assert.equal(r.mode, 'operate')
+  assert.equal(r.risk, 'write')
+})

@@ -342,6 +342,9 @@ const RULES: Rule[] = [
   // proposta, quem registra a criação é o próprio `POST /projects`, chamado por dentro — e
   // registrar aqui também contaria a mesma criação duas vezes.
   R('POST', 'api/architect/assistant/turn', null, { why: 'conversation traffic' }),
+  // A confirmação de uma escrita preparada pelo chat registra a si mesma, com o resultado —
+  // inclusive a recusa por hash vencido, que é justamente o que alguém vai querer investigar.
+  R('POST', 'api/architect/assistant/confirm', null, { why: 'audita a si mesma, com o desfecho' }),
   R('POST', 'api/architect/projects/:/turn', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/generate', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/validate', { entityType: 'architect_project', action: 'test' }, { idAt: 3 }),
