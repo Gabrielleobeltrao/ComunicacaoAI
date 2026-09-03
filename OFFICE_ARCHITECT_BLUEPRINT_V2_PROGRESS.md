@@ -298,3 +298,76 @@ renderizou".
   topologia. Hoje a prévia do Arquiteto desenha a partir do Blueprint e o setor desenha a
   partir do banco; os dois caminhos existem e ainda **não há um teste que compare os dois**.
 - O compilador V2 ainda não produz `sectors`, então a topologia proposta vem do V1.
+
+---
+
+## Fase 8 — exclusão e arquivamento de andar ✅
+
+`backend/src/floorImpact.ts`, rotas em `floorRoutes.ts`, e
+`frontend/src/components/FloorDeletionDialog.tsx`.
+
+### O que existia, e por que era grave
+
+`deleteFloor` contava agentes e setores. Um andar com fonte de monitoramento, monitor e Flow
+era considerado **vazio** — era apagado, e os três ficavam órfãos apontando para um andar que
+não existe mais.
+
+### Três regras que carregam o módulo
+
+**Arquivar é o padrão.** Recuperável, sem hash nem nome digitado, porque nada se perde.
+Restaurar traz o andar de volta **sem reativar operação nenhuma**: reativar sozinho
+dispararia trabalho que ninguém pediu, possivelmente semanas depois.
+
+**Compartilhado se preserva.** Database corporativo, App instalado na empresa e conexão usada
+por outro andar continuam existindo — o que sai é o **vínculo**. E nunca inferir que uma
+conexão pertence ao andar só porque os agentes dele a usam: a mesma credencial costuma servir
+a vários andares.
+
+**O retrato tem validade.** O `impactHash` cobre ids, `updatedAt` e as escolhas — escolher
+"excluir os exclusivos" muda o hash, porque muda o resultado. Um purge com hash velho é um
+purge sobre um escritório que já mudou, e a resposta é `409` com o retrato novo.
+
+### As três portas do purge
+
+Antes de qualquer escrita: hash bate, nome digitado é o do andar, nenhum bloqueio de pé.
+Cada recusa tem código próprio — a tela precisa distinguir "o escritório mudou, revise" de
+"você digitou o nome errado".
+
+Uma falha em um item **não derruba o purge inteiro**: o item volta na próxima análise, que é
+o que torna a retomada possível. Parar no meio deixaria o andar num estado indescritível.
+
+### A tela
+
+"Tem certeza?" deixou de existir. O diálogo diz, antes do clique:
+
+> Excluir “Atendimento” afetará 1 agente, 1 setor, 1 Flow, 1 fonte, 1 Database, 1 acesso a
+> Database e 1 App.
+
+E separa **será arquivado / será excluído / será desvinculado / continuará existindo /
+impede a exclusão**, cada item com o motivo. O nome digitado é a confirmação. Depois, o
+resultado mostra removidos, desvinculados e mantidos.
+
+**Um defeito real que o E2E encontrou:** o cliente de andares transformava toda recusa em
+`new Error("409")` — a tela não conseguia distinguir "o escritório mudou" de "nome errado" e
+mostrava a mesma frase genérica. Agora a recusa chega inteira, com código e mensagem.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectV2FloorImpact.integration.test.mjs` | 16 | 16 passam |
+| `frontend/e2e/floor-deletion-impact.spec.ts` | 9 | 9 passam |
+
+Teeth check: neutralizando cada uma das três portas do purge, um caso cai por porta.
+
+Os dois primeiros casos do arquivo de integração eram de **caracterização** e foram virados
+do avesso: eles agora afirmam o comportamento novo, e é neles que a correção fica visível.
+O mesmo aconteceu com a caracterização da lacuna 8.
+
+### Pendências reais ao fim da fase
+
+- **Arquivar em cascata não existe**: `archiveFloor` marca o andar, e os agentes/setores dele
+  ficam com `status: 'archived'` **apenas quando o purge roda com `disposition: archive`**.
+  Um arquivamento simples do andar não propaga hoje — está registrado como pendência em vez
+  de virar uma varredura que ninguém revisou.
+- A **auditoria** do purge (quem apagou o quê, quando) ainda não é gravada em Activity.

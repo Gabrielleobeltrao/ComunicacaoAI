@@ -242,25 +242,27 @@ test('LACUNA 7: a aplicação não cria vínculo entre canal, agente de entrada 
 
 // --- lacuna 8: revisão não atualiza a topologia inteira ---------------------------------
 
-test('LACUNA 8: atualizar um setor só troca nome, cor e instrução — nunca a topologia', async () => {
+test('LACUNA 8 CORRIGIDA: atualizar um setor mexe na topologia inteira', async () => {
+  // Esta era uma caracterização; a Fase 4 a virou do avesso. O que ela afirma agora é o
+  // comportamento novo — e é nesta linha que a correção fica visível no histórico.
   const { readFile } = await import('node:fs/promises')
   const apply = await readFile(new URL('../src/architect/apply.ts', import.meta.url), 'utf8')
 
-  // O corpo do caminho `update` de setor, exatamente como ele está hoje.
   const inicio = apply.indexOf("if (sector.action === 'update')")
   assert.ok(inicio > 0, 'o caminho de update existe')
-  const corpo = apply.slice(inicio, apply.indexOf('const floorId', inicio))
+  const corpo = apply.slice(inicio, apply.indexOf('const floorId = ctx.mapa.get', inicio))
 
-  // O que ele MEXE:
   for (const campo of ['name', 'color', 'instruction', 'inputContract', 'outputContract']) {
     assert.ok(corpo.includes(`patch.${campo}`), `update mexe em ${campo}`)
   }
-  // E o que ele NÃO mexe — que é justamente a topologia do setor.
-  for (const campo of ['members', 'coordinatorAgentId', 'stages', 'mode']) {
-    assert.equal(corpo.includes(`patch.${campo}`), false, `update não mexe em ${campo} (lacuna 8)`)
+  // A topologia, que antes ficava de fora:
+  for (const campo of ['members', 'coordinatorAgentId', 'stages', 'mode', 'officeId']) {
+    assert.ok(corpo.includes(`patch.${campo}`), `update passou a mexer em ${campo}`)
   }
+  // E mover de andar sem mover a equipe é bloqueado com o nome de quem teria de ir junto.
+  assert.match(corpo, /exige mover antes/)
 
-  // `reuse` sai antes de qualquer escrita: o setor fica exatamente como estava.
+  // `reuse` continua saindo antes de qualquer escrita — reusar não é atualizar.
   const reuse = apply.slice(apply.indexOf("if (sector.action === 'reuse')"), inicio)
   assert.match(reuse, /return \{ id: String\(sector\.resourceId\), status: 'reused' \}/)
 })

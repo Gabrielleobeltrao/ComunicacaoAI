@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import type { Floor } from '../floors.js'
 import { createFloor, deleteFloor, getFloor, getFloorActivity, listFloors, setFloorStatus, updateFloor } from '../floors.js'
+import { floorDeletionImpact, purgeFloor } from '../floorImpact.js'
 import { agentStatesForFloor, floorMetrics } from '../automations/metrics.js'
 import { agentLiveStatesForFloor, legacyWorkingMap, liveStatesEtag } from '../agentLiveState.js'
 import { floorWorkOverview } from '../floorWork.js'
@@ -91,6 +92,52 @@ floorRouter.get('/:floorId/executions/analytics', async (req, res) => {
   res.json(await executionAnalytics({ ownerId: res.locals.userId, scope: 'floor', period, floorId: id }))
 })
 
+/**
+ * O IMPACTO — o que acontece se este andar for embora.
+ *
+ * `choices` entra na conta porque ela muda o resultado: escolher apagar os recursos
+ * exclusivos transforma "será arquivado" em "será excluído", e o hash precisa cobrir isso.
+ */
+floorRouter.get('/:floorId/deletion-impact', async (req, res) => {
+  const id = oid(req.params.floorId)
+  if (!id) return notFound(res)
+  const impacto = await floorDeletionImpact(res.locals.userId, id, {
+    deleteExclusiveResources: String(req.query.deleteExclusiveResources ?? '') === '1',
+    removeDedicatedConnections: String(req.query.removeDedicatedConnections ?? '') === '1',
+  })
+  if (!impacto) return notFound(res)
+  res.json(impacto)
+})
+
+/**
+ * PURGE — exige o retrato, o nome digitado e nenhum bloqueio.
+ *
+ * As três portas ficam ANTES de qualquer escrita, e cada recusa tem um código próprio: a
+ * tela precisa distinguir "o escritório mudou, revise" de "você digitou o nome errado".
+ */
+floorRouter.post('/:floorId/purge', async (req, res) => {
+  const id = oid(req.params.floorId)
+  if (!id) return notFound(res)
+  const b = (req.body ?? {}) as { impactHash?: string; confirmationName?: string; choices?: Record<string, boolean> }
+  const r = await purgeFloor(res.locals.userId, id, {
+    impactHash: String(b.impactHash ?? ''),
+    confirmationName: String(b.confirmationName ?? ''),
+    choices: {
+      deleteExclusiveResources: Boolean(b.choices?.deleteExclusiveResources),
+      removeDedicatedConnections: Boolean(b.choices?.removeDedicatedConnections),
+    },
+  })
+  if (r.ok) return res.json(r)
+  if (r.code === 'not_found') return notFound(res)
+  if (r.code === 'impact_changed') {
+    return res.status(409).json({ code: r.code, message: 'o escritório mudou desde a análise; revise o impacto antes de confirmar', impact: r.impact })
+  }
+  if (r.code === 'name_mismatch') {
+    return res.status(400).json({ code: r.code, message: 'digite o nome do andar exatamente como ele aparece para confirmar' })
+  }
+  return res.status(409).json({ code: r.code, message: 'há dependências que impedem a exclusão', blockers: r.blockers })
+})
+
 floorRouter.delete('/:floorId', async (req, res) => {
   const id = oid(req.params.floorId)
   if (!id) return notFound(res)
@@ -104,6 +151,12 @@ floorRouter.delete('/:floorId', async (req, res) => {
     res.status(409).json({ code: result.code, message })
     return
   }
+  /**
+   * O DELETE legado continua valendo para andar vazio.
+   *
+   * Ele não cascateia nada escondido, e é essa a diferença: quem tem andar ocupado recebe
+   * `409` e é mandado para a análise de impacto, em vez de descobrir depois o que sumiu.
+   */
   res.status(204).end()
 })
 
