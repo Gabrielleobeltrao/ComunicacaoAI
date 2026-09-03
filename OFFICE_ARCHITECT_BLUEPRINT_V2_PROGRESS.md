@@ -238,3 +238,63 @@ mutação, via `policyFor` + `noCurrentSource`), **B** (CXSE3 → fonte/históri
 - O compilador V2 **ainda não está ligado ao serviço**: `service.ts` continua chamando
   `compileBrief` (V1). A troca acontece com a feature flag, na Fase 9.
 - `sectors` não é produzido pelo compilador V2 — a Fase 4 é quem trata topologia de setor.
+
+---
+
+## Fase 4 — Flow e atualização estrutural ✅
+
+### Backend: a topologia passa a ser atualizada (lacuna 8)
+
+`apply.ts` — o caminho `update` de setor trocava nome, cor, instrução e contratos. Uma
+revisão que acrescentava um agente à equipe era aprovada, aplicada e **não acontecia**: quem
+olhava a proposta via o agente novo; quem abria o setor não via.
+
+Agora ele carrega **membros, coordenador, modo, etapas e andar**. As etapas usam a **mesma
+forma** de quando o setor é criado — `dependsOn`, `expectedOutput`, `retryPolicy`, `onError` —
+porque um pipeline atualizado não pode ter comportamento diferente de um recém-criado.
+
+**Mover de andar bloqueia com impacto.** Todo membro de um setor trabalha no andar dele, e
+mover agente entre andares não existe na API canônica de agentes. Mover o setor sozinho
+produziria um setor inválido, então a aplicação para e diz **quem** precisaria mudar antes:
+
+> mover "Recepção" de andar exige mover antes 1 agente(s): Marina.
+
+**Três garantias do V1 que os testes confirmaram como corretas** (e que as fixtures tiveram
+de respeitar, em vez de contornar): setor orquestrado precisa de coordenador **e** pelo menos
+um especialista; todo membro fica no mesmo andar do setor; e um id que não é desta conta é
+recusado na validação — antes de qualquer escrita.
+
+### Frontend: nenhuma ficha do Flow renderiza vazia (lacuna 11)
+
+`SectorFlow.tsx`:
+
+- `funcaoDe` passou a distinguir **três estados**: papel escrito, objetivo legado, e ausência.
+  Antes os três colapsavam em `undefined` e a linha sumia;
+- ausência vira **pendência acionável** — "função não definida — abra o agente e escreva o
+  que ele faz" —, e ela é uma **linha própria**, não um substituto do subtítulo: o
+  coordenador já tem "coordena" escrito ali, e a falta da função dele continuaria invisível;
+- o objetivo é fallback de dado legado e é **marcado** (`(do objetivo)`): "entrega
+  relatórios" não responde "quando este agente entra";
+- as arestas ganharam **nome da relação** — `recebe`, `delega`, `depende da etapa anterior`,
+  `entrega`. A seta sozinha diz que existe caminho e não diz qual.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectSectorTopology.integration.test.mjs` | 8 | 8 passam |
+| `frontend/e2e/sector-teams.spec.ts` | 41 | 41 passam |
+
+Teeth check: neutralizando a aplicação de `members`, 3 casos caem.
+
+**Um defeito que o E2E encontrou:** `allTextContents()` do Playwright **não espera** — ele lê
+o instante. O teste das arestas falhava com o elemento presente no DOM; a correção foi
+esperar a primeira aresta antes de ler, que é o que separa "não existe" de "ainda não
+renderizou".
+
+### Pendências reais ao fim da fase
+
+- **Preview × aplicado**: o plano pede que a prévia e o recurso aplicado produzam a mesma
+  topologia. Hoje a prévia do Arquiteto desenha a partir do Blueprint e o setor desenha a
+  partir do banco; os dois caminhos existem e ainda **não há um teste que compare os dois**.
+- O compilador V2 ainda não produz `sectors`, então a topologia proposta vem do V1.

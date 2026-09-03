@@ -273,6 +273,90 @@ async function executarSaga(ctx: Contexto): Promise<void> {
         if (sector.instruction !== undefined) patch.instruction = sector.instruction
         if (sector.inputContract !== undefined) patch.inputContract = sector.inputContract
         if (sector.outputContract !== undefined) patch.outputContract = sector.outputContract
+
+        /**
+         * A TOPOLOGIA também é atualizada — membros, coordenador, modo, etapas e andar.
+         *
+         * Antes, `update` só trocava nome, cor, instrução e contratos: uma revisão que
+         * acrescentava um agente ao setor era aprovada, aplicada e não acontecia. Quem
+         * olhava a proposta via o agente novo na equipe; quem abria o setor não via.
+         *
+         * O membro é resolvido pela `key` no mapa da operação, como em `create`. Uma key
+         * que não virou recurso é erro, e não uma equipe silenciosamente menor.
+         */
+        if (sector.memberAgentKeys) {
+          patch.members = sector.memberAgentKeys.map((k, indice) => {
+            const agenteId = ctx.mapa.get(chave('agent', k))
+            if (!agenteId) throw new Error(`o agente ${k} do setor ${sector.name} não existe nesta operação`)
+            return {
+              agentId: new ObjectId(agenteId),
+              sector: '',
+              routingDescription: bp.agents?.find((a) => a.key === k)?.routingDescription ?? '',
+              advanceWhen: '',
+              transitions: [],
+              isDefault: indice === 0,
+            }
+          })
+        }
+        if (sector.mode) patch.mode = sector.mode
+        if (sector.coordinatorAgentKey !== undefined) {
+          const coordenador = sector.coordinatorAgentKey ? ctx.mapa.get(chave('agent', sector.coordinatorAgentKey)) : null
+          if (sector.coordinatorAgentKey && !coordenador) {
+            throw new Error(`o coordenador ${sector.coordinatorAgentKey} do setor ${sector.name} não existe nesta operação`)
+          }
+          patch.coordinatorAgentId = coordenador ? new ObjectId(coordenador) : null
+        }
+        if (sector.stages) {
+          // A MESMA forma de `create`: uma etapa parcial aqui viraria um pipeline com
+          // política de erro e saída esperada diferentes das que a criação produz.
+          patch.stages = sector.stages.map((etapa, indice) => {
+            const agenteId = ctx.mapa.get(chave('agent', etapa.agentKey))
+            if (!agenteId) throw new Error(`o agente ${etapa.agentKey} da etapa ${indice + 1} não existe nesta operação`)
+            return {
+              id: etapa.key || `etapa-${indice + 1}`,
+              name: etapa.key || `Etapa ${indice + 1}`,
+              agentId: new ObjectId(agenteId),
+              instruction: etapa.instruction ?? '',
+              dependsOn: etapa.dependsOn ?? [],
+              inputMapping: {},
+              expectedOutput: etapa.outputContract ?? '',
+              retryPolicy: { maxAttempts: 1, backoffMs: 0 },
+              onError: 'stop' as const,
+            }
+          })
+        }
+        /**
+         * MOVER de andar atualiza a referência — ou BLOQUEIA dizendo quem teria de ir junto.
+         *
+         * Duas coisas se juntam aqui. A primeira: um setor cujo `floorKey` mudou e cujo
+         * `officeId` não muda fica apontando para o andar anterior — ele some da tela do
+         * andar novo e continua aparecendo no antigo.
+         *
+         * A segunda: todo membro de um setor trabalha no andar dele, e mover um agente
+         * entre andares não existe na API canônica de agentes. Então mover o setor sem
+         * mover a equipe produziria um setor inválido. Em vez de fazer isso em silêncio, a
+         * aplicação para e diz exatamente quem precisaria mudar de andar antes.
+         */
+        const andarNovo = ctx.mapa.get(chave('floor', sector.floorKey))
+        if (andarNovo) {
+          const atual = await (await import('../sectors.js')).getSectorById(ctx.ownerId, new ObjectId(id))
+          if (atual && atual.officeId?.toString() !== andarNovo) {
+            const { listAgents } = await import('../agents.js')
+            const noAndarNovo = new Set((await listAgents(ctx.ownerId, new ObjectId(andarNovo))).map((a) => a._id.toString()))
+            const membros = (patch.members as { agentId: ObjectId }[] | undefined) ?? atual.members ?? []
+            const forade = membros.map((m) => m.agentId.toString()).filter((a) => !noAndarNovo.has(a))
+            if (forade.length) {
+              const nomes = (await listAgents(ctx.ownerId))
+                .filter((a) => forade.includes(a._id.toString()))
+                .map((a) => a.name)
+              throw new Error(
+                `mover "${sector.name}" de andar exige mover antes ${nomes.length} agente(s): ${nomes.join(', ')}. Um setor cujos membros ficam em outro andar não é válido.`,
+              )
+            }
+          }
+          patch.officeId = new ObjectId(andarNovo)
+        }
+
         const r = await updateSector(ctx.ownerId, new ObjectId(id), patch)
         if (!r) throw new Error(`o setor "${sector.name}" não existe mais nesta conta`)
         return { id, status: 'updated' }
