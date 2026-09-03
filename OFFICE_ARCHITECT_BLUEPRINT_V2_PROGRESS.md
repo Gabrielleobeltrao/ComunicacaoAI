@@ -1237,15 +1237,136 @@ e então:
 | lint | `npm run lint` (frontend) | 0 erros (avisos pré-existentes em `e2e/`) |
 | smoke | `npm run smoke` | verde, incluindo 503 na prontidão e SIGTERM drenado |
 | secret-scan | `npm run secret-scan` | 2267 arquivos, nada encontrado |
+| smoke | `npm run smoke` | verde na corrida final; ver o SIGTERM intermitente acima |
 | espaço em branco | `git diff --check` | verde |
 
 ### O que continua pendente, de verdade
 
-- **A entrega do aviso** é pendência declarada no plano: ela precisa de uma conexão concreta
-  da conta, escolhida na hora de aplicar. O Flow monta o texto; por onde ele sai é a pergunta
-  que sobra.
 - **A fonte do CXSE3** é pendência acionável, e é o certo: o Brief diz "cotação CXSE3", que é
   uma descrição e não um endereço. O teste ponta a ponta inclui o passo humano — criar a fonte
   e ligá-la por `PATCH /links` — porque é exatamente o que uma pessoa faria.
+- **A conexão de entrega** também é escolha de pessoa, e continua sendo: o plano declara a
+  entrega e o canal pedido, e quem aplica escolhe por qual conexão ela sai.
 - **`app_dry_run`**, **streaming** e **canais/entregas no inventário** continuam como o
   relatório descreve.
+
+---
+
+## Fechamento II: do candle à notificação
+
+O fechamento anterior deixou a cadeia no ar — e escondia dois buracos que só aparecem quando
+alguém pergunta "mas o RSI, quem calcula?" e "mas o aviso, quem recebe?".
+
+### O RSI não era calculado
+
+`calculate_rsi` aparecia no Blueprint e não participava de nada. A fonte de teste entregava
+`rsi` pronto e o monitor comparava esse número: **o cálculo estava desligado e nada acusava**.
+Uma cadeia assim só funciona se a API já publicar o indicador — o que transfere a conta para
+fora, amarra a vigilância a quem publica, e faz o teste medir o provedor.
+
+A conta entrou pelo caminho que já existia. `onRecordWritten` — o gancho que os monitores de
+dataset usam — passou a disparar uma **série derivada**: os `period + 1` últimos fechamentos
+lidos na ordem certa (o RSI de Wilder é sequencial; a série invertida dá um número plausível e
+errado), `calculate_rsi@1.0.0` executada pelo executor canônico, e o resultado gravado como
+qualquer outra série. Nenhuma engine nova: um laço próprio lendo de tempos em tempos chegaria
+atrasado, releria o mesmo registro e teria a própria noção de "já processei".
+
+Três coisas que o desenho garante:
+
+- **A versão fica fixada** no plano e no recorder. Atualizar a função não muda uma vigilância
+  no ar sem alguém decidir isso.
+- **Dado insuficiente é estado degradado com o número que falta** — "faltam 6 leituras" —,
+  gravado no `lastError` do recorder. Nunca uma estimativa sobre menos pontos que a definição.
+- **A conta aparece na Activity**, com raiz idempotente por registro. A que falha aparece como
+  falha: uma função que para de calcular deixa o monitor sem disparar, e "não disparou" é
+  indistinguível de "não aconteceu".
+
+O que declara "esta função consome uma série, neste argumento, com este mínimo" é a **própria
+função** (`series` no registro). O compilador lê de lá; guardar essa regra do lado dele seria
+uma segunda verdade que envelhece.
+
+E o campo de ENTRADA não é adivinhado: ele sai do que a pessoa disse que quer guardar
+("Candles CXSE3: fechamento, rsi" diz as duas pontas). Com mais de um candidato, é pendência.
+
+### Duas fontes do mesmo dado
+
+O mesmo pedido produzia `fonte-avisar-rsi` (da vigilância) e `fonte-cotacao-cxse3` (da
+necessidade de dado ao vivo): dois pedidos de configuração para a mesma pessoa, duas coletas do
+mesmo endereço, dois históricos que divergem no primeiro erro de rede.
+
+As necessidades passaram a ser compiladas **antes** das peças que as consomem, e a vigilância
+reúsa a fonte já declarada quando as duas compartilham um termo distintivo — o papel, o SKU, o
+código do sensor. Termo genérico ("cotação", "valor") não casa: seria o erro oposto e pior, com
+duas vigilâncias dependendo de uma coleta que não é a delas. A fonte reusada ganha o campo que
+a vigilância consome, senão ela responderia sem trazer nada do que a conta precisa.
+
+### O aviso não chegava a ninguém
+
+"Me avise pelo WhatsApp" terminava na Activity. A entrega era uma pendência solta; o Flow
+rodava, montava o texto, e ninguém recebia.
+
+Ela virou item do plano, ligada ao Flow, com o canal PEDIDO preservado — e o dublê de LLM
+parou de trocá-lo: ele devolvia `channels: ['web']` sempre, então quem escrevia "pelo WhatsApp"
+recebia um Brief correto sobre tudo menos sobre a única coisa pedida por escrito.
+
+Do outro lado, o WhatsApp virou destino de entrega **sem duplicar credencial**: a conexão
+guarda a referência ao número já conectado no App, e o token continua cifrado no canal. O envio
+reconfere na hora, com o dono no filtro — entre aprovar e sair, o canal pode ter sido apagado,
+desconectado, ou apontar para o widget de outra conta. E o canal que recusa levanta: devolver
+silêncio marcaria como enviada uma mensagem que não saiu.
+
+O DESTINO vem da requisição, como o `connectionId`, e não do Blueprint.
+
+### Um defeito que apareceu no caminho
+
+- **`registrarFalha` lia `telemetry` sem guarda** e estourava em cima do erro que estava
+  registrando: o motivo real da leitura ter falhado sumia, e o que aparecia era um `TypeError`.
+  É o terceiro da mesma família (`computeHealth` e `setSourceStatus` foram os anteriores).
+### Um defeito que NÃO foi resolvido
+
+**O encerramento por SIGTERM vira SIGKILL de forma intermitente.** No smoke, cerca de uma em
+cada oito corridas termina com "o processo não saiu sozinho com SIGTERM". Ele é anterior a esta
+fase: as mesmas corridas em `f524ad3` falham na mesma proporção.
+
+Três hipóteses foram levantadas e as três foram **descartadas por teeth check**, e não por
+opinião — cada correção foi escrita, o caso foi reproduzido isoladamente (subir o backend,
+derrubar o banco, mandar SIGTERM), e o encerramento continuou saindo em ~2s com e sem ela:
+
+- `mongoClient.close()` esperando um socket morto depois de o banco cair;
+- o dreno (`Promise.allSettled` das execuções em voo) esperando execução que não termina;
+- `httpServer.close()` segurado por um `keep-alive` ocioso — inclusive com o smoke alterado
+  para manter um socket aberto de propósito, o que tornaria o caso determinístico se fosse ele.
+
+As três correções foram **revertidas**: código especulativo que nenhum teste distingue é
+código que ninguém consegue manter. A reprodução isolada não expõe o defeito, o que sugere que
+ele depende da carga que a suíte do smoke cria (execuções, fluxos e sockets em voo). Fica
+registrado com o que já foi eliminado, para quem retomar não repetir o mesmo caminho.
+
+### Testes
+
+| Arquivo | Casos |
+| --- | --- |
+| `architectCxse3EndToEnd.integration.test.mjs` | 19 |
+| `dataHistoryDerived.integration.test.mjs` | 9 |
+| `architectApplyV2.integration.test.mjs` | 28 |
+| `architect-v2-characterization.spec.ts` (E2E) | 24 |
+
+Teeth check: trocando a função executada caem 4 casos; fazendo o monitor observar os
+fechamentos, 5; desligando o reuso de fonte, 12; tirando o canal pedido do compilador, 1;
+tirando-o do dublê, 1; deixando o canal recusado passar como sucesso, 1; afrouxando o campo do
+nome para "não vazio", 1 no E2E.
+
+### Bateria de fechamento
+
+Instalação limpa (`rm -rf node_modules` nos cinco pacotes + `npm ci`), build do monorepo, e:
+
+| O quê | Comando | Resultado |
+| --- | --- | --- |
+| backend | `node scripts/run-tests.mjs` | **1566 + 2310 = 3876**, 0 falhas |
+| frontend | `npm run test -- --run` | 294 em 36 arquivos, 0 falhas |
+| runner | `npm test` | 21, 0 falhas |
+| browser-worker | `npm test` | 32, 0 falhas |
+| E2E | `E2E_PREVIEW=1 npx playwright test` | 744 passaram, 17 pulados, 0 flaky |
+| lint | `npm run lint` | 0 erros |
+| secret-scan | `npm run secret-scan` | 2269 arquivos, nada encontrado |
+| espaço em branco | `git diff --check` | verde |

@@ -170,7 +170,7 @@ Os dois estão corrigidos, com teeth check.
 | `channel` de App (WhatsApp, Telegram) | pendência: depende do número, do token e da instalação conectada |
 | `tool` `existing` | **ligada** nos agentes que a usam, pelo `updateAgent` canônico |
 | `tool` `app_action` | pendência: é um grant, e o caminho é o bloco de Apps |
-| `tool` `function` | **resolvida** quando o registro tem a função (o plano a nomeia); pendência quando não tem — código não se infere de uma descrição |
+| `tool` `function` | **resolvida e EXECUTADA** quando o registro tem a função: o plano a nomeia com versão, e ela roda a cada leitura (ver "o indicador calculado"). Pendência quando o registro não tem — código não se infere de uma descrição |
 
 Sobre a entrega, uma correção do que este relatório dizia antes: eu havia escrito que ela era
 impossível por desenho. Não é. O contrato do V2 proíbe **endereço** dentro do Blueprint — e
@@ -181,9 +181,47 @@ o dono antes de qualquer escrita.
 
 Cada pendência traz o motivo — nunca um recurso incompleto que parece pronto.
 
+### O indicador calculado — o elo que faltava
+
+A fonte entrega FECHAMENTOS; o monitor compara RSI. Entre os dois havia um buraco que a
+proposta escondia bem: `calculate_rsi` aparecia no Blueprint e não participava de nada. A
+cadeia só funcionava se a API já publicasse o indicador pronto — o que transfere a conta para
+fora, amarra a vigilância a quem publica, e faz qualquer teste medir o provedor.
+
+A conta entra pelo caminho que já existia. `onRecordWritten` — o mesmo gancho que os monitores
+de dataset usam — dispara uma **série derivada**: os `period + 1` últimos fechamentos são lidos
+na ordem certa, `calculate_rsi@1.0.0` roda pelo executor canônico, e o resultado é gravado como
+qualquer outra série, com a mesma dedupe e observável pelos mesmos monitores. É essa série que
+o monitor observa; observar os fechamentos compararia o PREÇO contra 30.
+
+Três garantias que valem escrever:
+
+- **A versão é fixada no plano.** A proposta que a pessoa aprovou descreve uma conta
+  específica. Uma função atualizada depois não muda uma vigilância no ar sem alguém decidir.
+- **Dado insuficiente é estado degradado com o número que falta**, gravado onde quem
+  configurou vai olhar — nunca uma estimativa sobre menos pontos do que a definição pede.
+- **A conta aparece na Activity**, a que deu certo e principalmente a que falhou: uma função
+  que para de calcular deixa o monitor sem disparar, e "não disparou" é indistinguível de
+  "não aconteceu".
+
+Nenhum modelo calcula nem estima o indicador em nenhum ponto desta cadeia.
+
+### A entrega, concluída
+
+"Me avise pelo WhatsApp" terminava na Activity: o Flow rodava, montava o texto, e ninguém
+recebia. Agora a entrega é um item do plano ligado ao Flow, com o canal PEDIDO preservado — e
+o WhatsApp virou destino de entrega sem duplicar credencial: a conexão guarda a REFERÊNCIA ao
+número já conectado no App, e o token continua cifrado no canal, revalidado pelo fluxo de
+canais. O envio reconfere na hora, com o dono no filtro, porque entre aprovar e sair o canal
+pode ter sido apagado, desconectado, ou apontar para o widget de outra conta.
+
+O DESTINO vem da requisição, como o `connectionId`. Ele não entra no Blueprint: o plano é lido
+inteiro pela tela e viaja no histórico do projeto.
+
 ### A cadeia da vigilância, do jeito que ela realmente funciona
 
-A ordem é **fonte → histórico/conjunto → Flow → monitor**, e ela é assim porque o monitor
+A ordem é **fonte → histórico/conjunto → indicador calculado → Flow → monitor → entrega**, e ela
+é assim porque o monitor
 grava o id do Flow que aciona. Criá-lo antes deixa o `flowId` nulo: um alarme que reconhece a
 transição e não aciona nada. O Flow, por sua vez, não precisa do monitor para existir — quem
 o chama é o monitor, depois.
