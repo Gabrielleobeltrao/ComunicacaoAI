@@ -43,6 +43,8 @@ export interface CapabilityFunction {
   description: string
   capabilities: string[]
   hasConfig: boolean
+  /** Presente quando a função consome uma série — é o que permite derivá-la de um histórico. */
+  series?: { arg: string; windowParam?: string; extra: number; minimum: number }
 }
 
 export interface CapabilityApp {
@@ -129,6 +131,7 @@ export async function buildCapabilityManifest(ownerId: string): Promise<Architec
       description: f.description,
       capabilities: f.capabilities,
       hasConfig: f.configSchema !== null,
+      ...(f.series ? { series: f.series } : {}),
     })),
     apps: OFFICIAL_APPS.map((app) => ({
       key: app.key,

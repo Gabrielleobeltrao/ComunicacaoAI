@@ -80,7 +80,7 @@ interface Contexto {
    */
   ativacoesAprovadas: Set<string>
   /** A conexão escolhida para cada entrega. O endereço nunca vem do plano. */
-  conexoesDeEntrega: Map<string, string>
+  conexoesDeEntrega: Map<string, { connectionId: string; destination: string }>
 }
 
 const chave = (kind: ApplyStepKind, key: string): string => `${kind}:${key}`
@@ -163,7 +163,7 @@ const marcaDe = (ctx: Contexto, key: string): ArchitectStamp => ({
 export async function applyBlueprint(
   ownerId: string,
   project: ArchitectProject,
-  input: { blueprintHash: string; idempotencyKey: string; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[]; deliveryConnections?: { key: string; connectionId: string }[] },
+  input: { blueprintHash: string; idempotencyKey: string; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[]; deliveryConnections?: { key: string; connectionId: string; destination?: string }[] },
   hooks: ApplyHooks = {},
 ): Promise<ArchitectApplyOperation> {
   const bp = project.blueprint
@@ -189,7 +189,7 @@ export async function applyBlueprint(
     throw new ApplyConflict('esta aplicação já está em andamento')
   }
 
-  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []), project.blueprintV2 ?? null, new Set(input.approvedActivationKeys ?? []), new Map((input.deliveryConnections ?? []).map((d) => [String(d.key), String(d.connectionId)])))
+  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []), project.blueprintV2 ?? null, new Set(input.approvedActivationKeys ?? []), new Map((input.deliveryConnections ?? []).map((d) => [String(d.key), { connectionId: String(d.connectionId), destination: String(d.destination ?? '') }])))
 }
 
 /** O corpo compartilhado por aplicar e retomar: roda a saga, fecha e solta o arrendamento. */
@@ -202,7 +202,7 @@ async function rodar(
   updatesAprovados: Set<string>,
   v2: OfficeBlueprintV2 | null,
   ativacoesAprovadas: Set<string>,
-  conexoesDeEntrega: Map<string, string>,
+  conexoesDeEntrega: Map<string, { connectionId: string; destination: string }>,
 ): Promise<ArchitectApplyOperation> {
   const ctx: Contexto = {
     ownerId,

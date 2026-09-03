@@ -236,6 +236,23 @@ export interface BlueprintHistoryV2 extends BlueprintItemBaseV2 {
   /** O conjunto que a série alimenta. Sem ele, o monitor não tem o que observar. */
   datasetKey?: string | null
   retentionDays?: number | null
+  /**
+   * Presente quando esta série é CALCULADA de outra — o RSI a partir dos fechamentos.
+   *
+   * A versão é fixada no plano de propósito: a proposta que a pessoa aprovou descreve uma
+   * conta específica, e uma função atualizada depois não pode mudar o comportamento de uma
+   * vigilância no ar sem alguém decidir isso.
+   */
+  derive?: {
+    fromHistoryKey: string
+    functionName: string
+    version: string
+    inputField: string
+    inputArg: string
+    lookback: number
+    outputField: string
+    params: Record<string, unknown>
+  } | null
 }
 
 export interface BlueprintMonitorV2 extends BlueprintItemBaseV2 {

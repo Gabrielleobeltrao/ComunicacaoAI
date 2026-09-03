@@ -34,7 +34,7 @@ import { retrieveForAgent } from '../knowledgeRetrieval.js'
 import { decryptConfig, getConnection } from '../connections/service.js'
 import { insertDeliveryIdempotent, updateDelivery } from '../connections/repository.js'
 import { maskDestination, sendEmail, sendTelegram } from '../connections/adapters.js'
-import type { Delivery, EmailConfig, TelegramConfig } from '../connections/types.js'
+import type { Delivery, EmailConfig, TelegramConfig, WhatsAppConfig } from '../connections/types.js'
 
 // Executing ONE run: builds the real adapters, drives the linear runner, and
 // persists step-runs, artifacts and the final status. Shared by the automation
@@ -229,7 +229,9 @@ function buildDeps(run: AutomationRun): RunnerDeps {
         const result =
           conn.provider === 'email'
             ? await sendEmail(config as EmailConfig, { to: call.destination, subject: call.subject, text: call.content })
-            : await sendTelegram(config as TelegramConfig, { chatId: call.destination, text: call.content })
+            : conn.provider === 'whatsapp'
+              ? await enviarPeloCanal(run.ownerId, (config as WhatsAppConfig).widgetId, call.destination, call.content)
+              : await sendTelegram(config as TelegramConfig, { chatId: call.destination, text: call.content })
         await updateDelivery(delivery._id, { status: 'sent', providerMessageId: result.providerMessageId, sentAt: new Date() })
         return { providerMessageId: result.providerMessageId }
       } catch (error) {
@@ -244,6 +246,31 @@ function buildDeps(run: AutomationRun): RunnerDeps {
       return fresh?.status === 'cancel_requested'
     },
   }
+}
+
+/**
+ * O envio pelo WhatsApp — pelo canal já conectado, conferido de novo na hora.
+ *
+ * A conexão guarda a referência ao número, e não o token. Conferir de novo aqui não é excesso:
+ * entre aprovar a entrega e ela sair, o canal pode ter sido apagado, desconectado ou — o caso
+ * que importa — a referência pode apontar para um widget de OUTRA conta. O `ownerId` no filtro
+ * é o que impede que um id guardado vire acesso ao número de outra pessoa.
+ */
+async function enviarPeloCanal(ownerId: string, widgetId: string, destino: string, texto: string): Promise<{ providerMessageId: string | null }> {
+  if (!ObjectId.isValid(widgetId)) throw new Error('o canal desta entrega não é válido')
+  const { db } = await import('../db.js')
+  const widget = await db.collection('widgets').findOne({ _id: new ObjectId(widgetId), ownerId })
+  if (!widget) throw new Error('o canal desta entrega não existe nesta conta')
+  if (!widget.whatsapp) throw new Error('o canal desta entrega não é um número de WhatsApp')
+  if (widget.status && widget.status !== 'active') throw new Error('o canal desta entrega não está ativo')
+  if (!String(destino ?? '').trim()) throw new Error('a entrega precisa de um número de destino')
+
+  const { sendWhatsAppText } = await import('../whatsapp.js')
+  const r = await sendWhatsAppText(widget as never, destino, texto)
+  // O envio nunca levanta: ele devolve o motivo. Transformá-lo em exceção é o que faz a
+  // entrega ser marcada como falha em vez de sair como sucesso silencioso.
+  if (!r.ok) throw new Error(r.error ?? 'o canal recusou o envio')
+  return { providerMessageId: null }
 }
 
 // Which agents this run actually drives. Read from the SNAPSHOT, so a routine edited

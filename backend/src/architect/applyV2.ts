@@ -70,7 +70,7 @@ export interface ApplyV2Context {
    * existe na conta, escolhida na hora de aplicar e conferida contra o dono — o mesmo
    * caminho dos grants de App.
    */
-  deliveryConnections?: Map<string, string>
+  deliveryConnections?: Map<string, { connectionId: string; destination: string }>
   /**
    * A operação que está aplicando. É ela que vira MARCA no recurso criado.
    *
@@ -298,6 +298,74 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
     return { id: fonte._id.toString(), message: 'criada como rascunho: ativa só depois de testar' }
   }
 
+  if (kind === 'history' && item.derive) {
+    /**
+     * A SÉRIE CALCULADA — um histórico que não tem fonte externa.
+     *
+     * Quem a alimenta é o motor, no instante em que a série de origem grava. Ela precisa
+     * existir como recorder de verdade (com conjunto próprio) porque é ela que o monitor
+     * observa: observar os fechamentos seria comparar o preço contra 30, que é outra pergunta.
+     */
+    const d = item.derive as {
+      fromHistoryKey: string
+      functionName: string
+      version: string
+      inputField: string
+      inputArg: string
+      lookback: number
+      outputField: string
+      params: Record<string, unknown>
+    }
+    const origem = idDe('history', d.fromHistoryKey)
+    if (!origem) {
+      return { pendency: 'a série de origem ainda não existe: ative a fonte e aplique de novo' }
+    }
+    // O passo da origem devolve `storeId:datasetKey`, e o `datasetKey` é o id do recorder.
+    const [, recorderDaOrigem] = origem.includes(':') ? origem.split(':') : [null, null]
+    if (!recorderDaOrigem || !ObjectId.isValid(recorderDaOrigem)) {
+      return { pendency: 'a série de origem ainda não tem conjunto: ative a fonte e aplique de novo' }
+    }
+
+    const { criarRecorder, listarRecorders } = await import('../dataHistory/recorders.js')
+    const { refDerivada } = await import('../dataHistory/derived.js')
+    const ref = refDerivada(recorderDaOrigem, d.outputField)
+    // Aplicar de novo não cria uma segunda série: a referência é determinística.
+    const existente = (await listarRecorders(ownerId)).find((r) => r.source.kind === 'manual' && r.source.ref === ref)
+    const recorder =
+      existente ??
+      (await criarRecorder(ownerId, {
+        name: `${d.outputField.toUpperCase()} de ${String(item.name ?? d.outputField)}`,
+        source: { kind: 'manual', ref },
+        mode: 'every_event',
+        retention: { mode: 'ttl', days: Number(item.retentionDays ?? 365) },
+        /**
+         * Os CAMPOS que esta série grava, lidos do contrato da função.
+         *
+         * Sem eles o conjunto nasce sem `properties`, e o monitor é recusado com "o campo
+         * 'rsi' não existe nesta fonte" — a condição é validada contra o schema do conjunto,
+         * que é exatamente o ponto: uma regra sobre um campo que ninguém declarou não pode
+         * ser aceita. Declarar aqui não inventa nada; é o `outputSchema` da própria função.
+         */
+        selectedFields: [...(await camposDaFuncao(d.functionName)), 'calculatedBy'],
+        derivedFrom: {
+          recorderId: recorderDaOrigem,
+          functionName: d.functionName,
+          version: d.version,
+          inputField: d.inputField,
+          inputArg: d.inputArg,
+          lookback: d.lookback,
+          params: d.params ?? {},
+        },
+      }))
+
+    const { ensureDatasetForRecorder } = await import('../databases/migration.js')
+    const { dataStoreId, datasetKey } = await ensureDatasetForRecorder(ownerId, recorder)
+    return {
+      id: `${dataStoreId.toString()}:${datasetKey}`,
+      message: `${d.outputField} calculado por ${d.functionName}@${d.version} a cada leitura de "${d.inputField}"`,
+    }
+  }
+
   if (kind === 'history') {
     /**
      * O histórico é um DESTINO da fonte, e não um recurso próprio.
@@ -503,7 +571,8 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
   }
 
   if (kind === 'delivery') {
-    const conexaoId = ctx.deliveryConnections?.get(String(item.key ?? ''))
+    const escolha = ctx.deliveryConnections?.get(String(item.key ?? ''))
+    const conexaoId = escolha?.connectionId
     if (!conexaoId) {
       return { pendency: 'escolha por onde esta entrega sai: uma conexão da sua conta, na hora de aplicar' }
     }
@@ -542,7 +611,7 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
         enabled: true,
         dependsOn: [ultimo.id],
         inputMapping: {},
-        config: { connectionId: conexaoId, fromStepId: ultimo.id },
+        config: { connectionId: conexaoId, fromStepId: ultimo.id, ...(escolha?.destination ? { destination: escolha.destination } : {}) },
         timeoutMs: 30_000,
         retryPolicy: { maxAttempts: 2, backoffMs: 2000 },
         continueOnError: false,
@@ -566,4 +635,17 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
    * um recurso incompleto que parece pronto.
    */
   return null
+}
+
+
+/**
+ * Os campos que uma função registrada devolve — do contrato dela, nunca de uma lista aqui.
+ *
+ * Guardar "rsi, period, samples, method" deste lado criaria uma segunda verdade que envelhece:
+ * bastaria a função ganhar um campo para o conjunto passar a recusar o que ela grava.
+ */
+async function camposDaFuncao(functionName: string): Promise<string[]> {
+  const { findFunction } = await import('../executors/functionRegistry.js')
+  const schema = findFunction(functionName)?.outputSchema as { properties?: Record<string, unknown> } | undefined
+  return Object.keys(schema?.properties ?? {})
 }

@@ -493,13 +493,17 @@ const planoComFlowEEntrega = () => {
   return bp
 }
 
+/**
+ * O mapa de entregas carrega a conexão E o destino — o destino vem da requisição, e nunca do
+ * Blueprint, porque um endereço dentro do plano fica exposto no histórico do projeto.
+ */
 const comConexao = (bp, mapa) =>
   applyV2Resources({
     ownerId: DONO,
     blueprint: bp,
     resourceMap: mapaInicial(),
     approvedKeys: new Set(chavesDe(bp)),
-    deliveryConnections: new Map(mapa),
+    deliveryConnections: new Map(mapa.map(([k, id]) => [k, { connectionId: id, destination: 'a@b.test' }])),
   })
 
 test('ACEITAÇÃO: a entrega vira um PASSO do Flow, ligado na conexão escolhida', async () => {
@@ -544,7 +548,7 @@ test('aplicar duas vezes não duplica o passo de entrega', async () => {
   const conexao = await createConnection(DONO, { provider: 'email', name: 'Meu e-mail', config: { host: 'smtp.exemplo.test', port: 587, secure: false, user: 'a@b.test', pass: 'nao-e-um-segredo-real', from: 'a@b.test' } })
   const bp = planoComFlowEEntrega()
   const mapa = mapaInicial()
-  const entrada = { ownerId: DONO, blueprint: bp, resourceMap: mapa, approvedKeys: new Set(chavesDe(bp)), deliveryConnections: new Map([['entrega', conexao._id.toString()]]) }
+  const entrada = { ownerId: DONO, blueprint: bp, resourceMap: mapa, approvedKeys: new Set(chavesDe(bp)), deliveryConnections: new Map([['entrega', { connectionId: conexao._id.toString(), destination: 'a@b.test' }]]) }
 
   await applyV2Resources(entrada)
   await applyV2Resources(entrada)

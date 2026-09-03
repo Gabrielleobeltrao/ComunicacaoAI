@@ -161,7 +161,7 @@ export interface AutomationInput {
 }
 
 export interface DeliveryTarget {
-  provider: 'email' | 'telegram'
+  provider: 'email' | 'telegram' | 'whatsapp'
   connectionId: string
   // Reference to the step/artifact whose output is delivered.
   fromStepId: string

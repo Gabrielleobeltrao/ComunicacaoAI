@@ -2,9 +2,9 @@ import { ObjectId } from 'mongodb'
 import { decrypt, encrypt } from '../crypto.js'
 import { ensureDefaultBuilding, ValidationError } from '../building.js'
 import * as repo from './repository.js'
-import type { Connection, ConnectionProvider, EmailConfig, TelegramConfig } from './types.js'
+import type { Connection, ConnectionProvider, EmailConfig, TelegramConfig, WhatsAppConfig } from './types.js'
 
-const PROVIDERS: ConnectionProvider[] = ['email', 'telegram']
+const PROVIDERS: ConnectionProvider[] = ['email', 'telegram', 'whatsapp']
 const isNonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0
 
 function validateConfig(provider: ConnectionProvider, config: unknown): void {
@@ -16,6 +16,18 @@ function validateConfig(provider: ConnectionProvider, config: unknown): void {
     if (!isNonEmpty(c.user)) throw new ValidationError('email user required')
     if (!isNonEmpty(c.pass)) throw new ValidationError('email pass required')
     if (!isNonEmpty(c.from)) throw new ValidationError('email from required')
+  } else if (provider === 'whatsapp') {
+    /**
+     * Só a referência ao canal — nunca o token.
+     *
+     * O número do WhatsApp é conectado no App, e é lá que a credencial fica cifrada e é
+     * revalidada. Uma conexão de entrega que guardasse o token de novo dobraria a superfície
+     * de vazamento e ficaria velha na primeira rotação.
+     */
+    if (!isNonEmpty(c.widgetId) || !ObjectId.isValid(String(c.widgetId))) throw new ValidationError('whatsapp: escolha um número já conectado.')
+    for (const proibido of ['token', 'accessToken', 'apiKey', 'secret', 'password']) {
+      if (c[proibido] !== undefined) throw new ValidationError('whatsapp: a credencial fica no canal, não na conexão.')
+    }
   } else {
     if (!isNonEmpty(c.botToken)) throw new ValidationError('telegram botToken required')
   }
@@ -81,11 +93,13 @@ export function deleteConnection(ownerId: string, id: ObjectId): Promise<boolean
 }
 
 // Internal only — never exposed by the API. Used by the worker to send.
-export function decryptConfig(c: Connection): EmailConfig | TelegramConfig {
+export function decryptConfig(c: Connection): EmailConfig | TelegramConfig | WhatsAppConfig {
   return JSON.parse(decrypt(c.encryptedConfig))
 }
 
 export const CONNECTION_CATALOG = [
   { provider: 'email', label: 'E-mail (SMTP)', fields: ['host', 'port', 'secure', 'user', 'pass', 'from'] },
   { provider: 'telegram', label: 'Telegram', fields: ['botToken'] },
+  // Sem campo de credencial: o que se escolhe aqui é um número já conectado no App.
+  { provider: 'whatsapp', label: 'WhatsApp', fields: ['widgetId'] },
 ] as const

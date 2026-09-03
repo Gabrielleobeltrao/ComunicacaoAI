@@ -348,7 +348,19 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
     return andarPadrao
   }
 
-  // --- 2. as peças, por classificação -------------------------------------------------------
+  /**
+   * --- 2. o dado que o Brief pediu, ANTES das peças que o consomem ---------------------------
+   *
+   * A ordem não é arrumação: a vigilância REUSA a fonte já declarada em vez de criar a sua. Com
+   * as necessidades compiladas depois, "observe CXSE3" produzia duas fontes do mesmo papel —
+   * dois pedidos de configuração para a mesma pessoa, duas coletas do mesmo endereço, e dois
+   * históricos que divergem no primeiro erro de rede.
+   */
+  for (const [i, need] of (brief.liveDataNeeds ?? []).entries()) {
+    compilarFonteDeDado(bp, pending, { need, indice: i, floorKey: andarPadrao, manifest })
+  }
+
+  // --- 3. as peças, por classificação -------------------------------------------------------
   const NOMES = ['Marina', 'Rafael', 'Tereza', 'Bruno', 'Helena', 'Caio', 'Alice', 'Otávio', 'Lívia', 'Gustavo']
   let indiceDeAgente = 0
   const agentePorTrabalho = new Map<string, string>()
@@ -369,7 +381,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
      */
     const vigilancia = parseDataCondition(`${job?.trigger ?? ''} ${job?.name ?? ''}`)
     if (vigilancia && decision.kind !== 'agent') {
-      compilarVigilancia(bp, pending, { brief, job, decision, condicao: vigilancia, floorKey: andarDo(job) })
+      compilarVigilancia(bp, pending, { brief, job, decision, condicao: vigilancia, floorKey: andarDo(job), manifest })
       if (decision.kind === 'function') {
         if (decision.resolved && decision.resourceRef) {
           /**
@@ -499,7 +511,7 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
       // A pergunta que o V1 não fazia: isto é um HORÁRIO ou uma CONDIÇÃO?
       const condicao = parseDataCondition(`${job?.trigger ?? ''} ${job?.name ?? ''}`)
       if (condicao) {
-        compilarVigilancia(bp, pending, { brief, job, decision, condicao, floorKey: andarDo(job) })
+        compilarVigilancia(bp, pending, { brief, job, decision, condicao, floorKey: andarDo(job), manifest })
         continue
       }
       const dono = bp.organization.agents[0]
@@ -525,11 +537,6 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
         ],
       })
     }
-  }
-
-  // --- 3. o dado ao vivo que o Brief pediu e o V1 jogava fora --------------------------------
-  for (const [i, need] of (brief.liveDataNeeds ?? []).entries()) {
-    compilarFonteDeDado(bp, pending, { need, indice: i, floorKey: andarPadrao, manifest })
   }
 
   /**
@@ -759,31 +766,77 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
 function compilarVigilancia(
   bp: OfficeBlueprintV2,
   pending: CompileV2Result['pending'],
-  ctx: { brief: OperationBrief; job: BriefJob | undefined; decision: ResourceDecision; condicao: ParsedCondition; floorKey: string },
+  ctx: {
+    brief: OperationBrief
+    job: BriefJob | undefined
+    decision: ResourceDecision
+    condicao: ParsedCondition
+    floorKey: string
+    manifest: ArchitectCapabilityManifest | null
+  },
 ): void {
-  const { job, decision, condicao, floorKey } = ctx
+  const { brief, job, decision, condicao, floorKey, manifest } = ctx
   const raiz = slug(decision.jobId) || 'vigilancia'
 
-  const fonteKey = `fonte-${raiz}`
   const historicoKey = `historico-${raiz}`
   const monitorKey = `monitor-${raiz}`
   const flowKey = `flow-${raiz}`
 
-  // A fonte: sem ela o dado não existe, e sem dado não há o que observar. Ela nasce sem
-  // config resolvida quando o Brief não diz de onde vem — e isso é pendência declarada.
-  bp.operations.sources.push({
-    key: fonteKey,
-    action: 'create',
-    layer: 'essential',
-    rationale: `sem uma fonte, "${decision.jobName}" não tem o que observar`,
-    dependsOn: [],
-    name: decision.jobName,
-    kind: 'api_polling',
-    config: {},
-    mapping: { version: 1, fields: condicao.field ? [{ to: condicao.field, from: condicao.field, required: true }] : [] },
-    cadence: { mode: 'interval', intervalMs: 60_000 },
-  })
-  pending.push({ kind: 'source_config', ref: decision.jobName, because: 'falta dizer de onde este dado vem: endereço, App ou conjunto existente' })
+  /**
+   * A DERIVAÇÃO é decidida primeiro porque ela muda o que a fonte precisa trazer.
+   *
+   * Com ela, a fonte entrega FECHAMENTOS e a conta produz o RSI. Sem ela, a fonte precisa
+   * entregar o próprio campo observado. Mapear `rsi` na fonte quando existe quem o calcule
+   * seria pedir à API um número que este servidor sabe calcular melhor — e amarrar a
+   * vigilância a quem publica o indicador.
+   */
+  const derivacao = derivacaoDoIndicador({ brief, decision, condicao, manifest })
+  const campoDaFonte = derivacao ? derivacao.inputField : condicao.field
+
+  /**
+   * A FONTE já pode existir — e duas fontes do mesmo dado são duas contas do mesmo dado.
+   *
+   * "Observe CXSE3 e me avise quando o RSI cair" produzia uma fonte da vigilância e outra da
+   * necessidade de dado ao vivo: dois pedidos de configuração para a mesma pessoa, duas
+   * coletas do mesmo endereço, dois históricos que divergem no primeiro erro de rede. Elas são
+   * a MESMA fonte semântica, e é assim que ela é compilada agora.
+   *
+   * O reuso é por termo distintivo compartilhado — o papel, o SKU, o sensor. Sem termo em
+   * comum, são dados diferentes mesmo, e cada um tem a sua fonte.
+   */
+  const jaDeclarada = fonteQueJaServe(bp, `${decision.jobName} ${job?.input ?? ''}`)
+  const fonteKey = jaDeclarada ?? `fonte-${raiz}`
+  if (jaDeclarada && campoDaFonte) {
+    /**
+     * A fonte reusada precisa TRAZER o campo que esta vigilância consome.
+     *
+     * Uma necessidade de dado ao vivo nasce sem mapeamento — ela só diz que o dado precisa
+     * chegar. Reusá-la sem acrescentar o campo daria uma fonte que responde e não traz nada
+     * do que a conta precisa: a prova de fonte reprova, e o motivo ("não trouxe fechamento")
+     * só apareceria depois de alguém configurar o endereço.
+     */
+    const fonte = bp.operations.sources.find((f) => f.key === jaDeclarada)!
+    if (!fonte.mapping.fields.some((c) => c.to === campoDaFonte)) {
+      fonte.mapping = { ...fonte.mapping, fields: [...fonte.mapping.fields, { to: campoDaFonte, from: campoDaFonte, required: true }] }
+    }
+  }
+  if (!jaDeclarada) {
+    // Sem ela o dado não existe, e sem dado não há o que observar. Ela nasce sem config
+    // resolvida quando o Brief não diz de onde vem — e isso é pendência declarada.
+    bp.operations.sources.push({
+      key: fonteKey,
+      action: 'create',
+      layer: 'essential',
+      rationale: `sem uma fonte, "${decision.jobName}" não tem o que observar`,
+      dependsOn: [],
+      name: decision.jobName,
+      kind: 'api_polling',
+      config: {},
+      mapping: { version: 1, fields: campoDaFonte ? [{ to: campoDaFonte, from: campoDaFonte, required: true }] : [] },
+      cadence: { mode: 'interval', intervalMs: 60_000 },
+    })
+    pending.push({ kind: 'source_config', ref: decision.jobName, because: 'falta dizer de onde este dado vem: endereço, App ou conjunto existente' })
+  }
 
   // O histórico: é ele que dá "antes" e "agora". Sem os dois, uma borda não existe.
   bp.operations.histories.push({
@@ -806,6 +859,46 @@ function compilarVigilancia(
     return
   }
 
+  /**
+   * O INDICADOR CALCULADO — o buraco no meio da cadeia.
+   *
+   * A fonte entrega fechamentos; o monitor compara RSI. Enquanto ninguém fazia essa conta, a
+   * vigilância só funcionava se a API já publicasse o indicador pronto — e a maioria não
+   * publica. Pior: um modelo "calculando" o RSI devolve um número plausível e erra em silêncio.
+   *
+   * Quando o classificador resolveu o trabalho para uma função registrada que consome série, a
+   * cadeia ganha um elo: uma série DERIVADA, calculada pela função com versão fixada, e é ela
+   * que o monitor observa. O campo de entrada não é inventado — ele sai do que a pessoa disse
+   * que quer guardar; sem isso, é pendência.
+   */
+  const observadoKey = derivacao ? `indicador-${raiz}` : historicoKey
+  if (derivacao) {
+    bp.operations.histories.push({
+      key: observadoKey,
+      action: 'create',
+      layer: 'essential',
+      rationale: `"${condicao.field}" é calculado de "${derivacao.inputField}" por ${derivacao.functionName} — a conta é determinística, e um modelo aqui erraria em silêncio`,
+      dependsOn: [historicoKey],
+      sourceKey: fonteKey,
+      derive: {
+        fromHistoryKey: historicoKey,
+        functionName: derivacao.functionName,
+        version: derivacao.version,
+        inputField: derivacao.inputField,
+        inputArg: derivacao.inputArg,
+        lookback: derivacao.lookback,
+        outputField: condicao.field,
+        params: {},
+      },
+    })
+  } else if (decision.kind === 'function' && decision.resolved) {
+    pending.push({
+      kind: 'indicator_input',
+      ref: decision.jobName,
+      because: `falta dizer de qual campo "${condicao.field}" é calculado: sem isso, a conta seria sobre um número que ninguém declarou`,
+    })
+  }
+
   bp.operations.monitors.push({
     key: monitorKey,
     action: 'create',
@@ -818,9 +911,11 @@ function compilarVigilancia(
      * reconhece a transição sem acionar nada — um monitor que parece configurado. O Flow, por
      * sua vez, não precisa do monitor para existir: quem o chama é o monitor, depois.
      */
-    dependsOn: [historicoKey, flowKey],
+    dependsOn: [observadoKey, flowKey],
     name: decision.jobName,
-    observes: { kind: 'dataset', datasetKey: historicoKey },
+    // Ele observa a série CALCULADA quando ela existe: observar os fechamentos seria comparar
+    // o preço contra 30, que é outra pergunta.
+    observes: { kind: 'dataset', datasetKey: observadoKey },
     condition: { kind: 'compare', field: condicao.field, op: condicao.op, value: condicao.value },
     triggerMode: condicao.triggerMode,
     ...(condicao.triggerMode.startsWith('cross') ? { threshold: condicao.value, thresholdField: condicao.field } : {}),
@@ -877,9 +972,38 @@ function compilarVigilancia(
         : []),
     ],
   })
-  // A ENTREGA é o que continua pendente: ela precisa de uma conexão concreta, escolhida na
-  // hora de aplicar. O aviso existe; por onde ele sai é a pergunta que sobra.
-  pending.push({ kind: 'delivery', ref: decision.jobName, because: 'escolha por onde o aviso sai: uma conexão da sua conta' })
+  /**
+   * A ENTREGA é declarada — e o endereço não entra no plano.
+   *
+   * Enquanto ela era só uma pendência solta, "me avise pelo WhatsApp" terminava na Activity: o
+   * Flow rodava, montava o texto e ninguém recebia nada. Declará-la como item do plano é o que
+   * dá à tela algo para ligar, e à aplicação algo para transformar em passo `delivery.send`.
+   *
+   * O canal PEDIDO é preservado. Trocá-lo pelo primeiro conectado entregaria o aviso por onde a
+   * pessoa não pediu — e ela descobriria pelo canal errado, ou não descobriria.
+   */
+  const pedido = canalPedido(brief, job)
+  bp.operations.deliveries.push({
+    key: `entrega-${raiz}`,
+    action: 'create',
+    layer: 'essential',
+    rationale: pedido
+      ? `"${decision.jobName}" sai por ${pedido}, que foi o canal pedido`
+      : `"${decision.jobName}" precisa chegar a alguém — um aviso que só existe no painel não avisa`,
+    dependsOn: [flowKey],
+    fromKey: flowKey,
+    ...(pedido ? { channelKey: slug(pedido) } : {}),
+    // A dica é o CANAL, nunca o endereço: o plano é lido inteiro pela tela e viaja no histórico.
+    destinationHint: pedido ? `uma conexão de ${pedido} desta conta` : 'uma conexão desta conta',
+    format: 'text',
+  })
+  pending.push({
+    kind: 'delivery',
+    ref: decision.jobName,
+    because: pedido
+      ? `escolha a conexão de ${pedido} por onde o aviso sai`
+      : 'escolha por onde o aviso sai: uma conexão da sua conta',
+  })
 }
 
 /**
@@ -930,6 +1054,108 @@ function compilarFonteDeDado(
   })
 
   pending.push({ kind: 'source_config', ref: need.source, because: 'falta dizer de onde este dado vem: endereço, App ou conjunto existente' })
+}
+
+/**
+ * O canal que a pessoa PEDIU para receber o aviso.
+ *
+ * Lido do que ela escreveu — o trabalho e os canais do Brief —, e não do que a conta tem
+ * conectado. Um canal pedido e ausente é pendência; um canal substituído em silêncio é o aviso
+ * chegando por onde ninguém combinou.
+ */
+function canalPedido(brief: OperationBrief, job: BriefJob | undefined): string | null {
+  const texto = `${job?.output ?? ''} ${job?.action ?? ''} ${job?.name ?? ''} ${(brief.channels ?? []).join(' ')}`
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+  const conhecidos: [RegExp, string][] = [
+    [/whats\s?app|zap\b/, 'WhatsApp'],
+    [/telegram/, 'Telegram'],
+    [/\be-?mail\b|email/, 'E-mail'],
+    [/\bsms\b/, 'SMS'],
+    [/slack/, 'Slack'],
+  ]
+  for (const [padrao, nome] of conhecidos) if (padrao.test(texto)) return nome
+  return null
+}
+
+/**
+ * A fonte já declarada que serve para este dado, se houver.
+ *
+ * O casamento é por termo distintivo — o papel ("CXSE3"), o SKU, o código do sensor. Um termo
+ * genérico ("cotação", "dado") casaria fontes de coisas diferentes, que é o erro oposto e pior:
+ * duas vigilâncias passariam a depender de uma coleta que não é a delas.
+ */
+function fonteQueJaServe(bp: OfficeBlueprintV2, texto: string): string | null {
+  const termos = termosDistintivos(texto)
+  if (!termos.length) return null
+  for (const fonte of bp.operations.sources) {
+    const dela = termosDistintivos(`${fonte.name} ${fonte.rationale ?? ''}`)
+    if (dela.some((t) => termos.includes(t))) return fonte.key
+  }
+  return null
+}
+
+/** Palavras que identificam UMA coisa: fora do vocabulário comum e com dígito ou tamanho. */
+const GENERICOS_DE_DADO = new Set([
+  'cotacao','cotacoes','preco','precos','valor','valores','dado','dados','fonte','fontes','avisar','aviso','sobre',
+  'quando','ficar','abaixo','acima','indicador','serie','historico','monitor','alerta','media','minuto','minutos',
+])
+function termosDistintivos(texto: string): string[] {
+  return [
+    ...new Set(
+      String(texto ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 4 && !GENERICOS_DE_DADO.has(t)),
+    ),
+  ]
+}
+
+/**
+ * Como o campo observado é CALCULADO, quando ele é.
+ *
+ * Três coisas precisam existir juntas, e a ausência de qualquer uma é pendência, nunca palpite:
+ * a função registrada (que o classificador resolveu), a declaração de que ela consome série
+ * (que mora na própria função), e o campo de ENTRADA — que sai do que a pessoa disse que quer
+ * guardar, e não de uma lista de nomes prováveis.
+ */
+function derivacaoDoIndicador(ctx: {
+  brief: OperationBrief
+  decision: ResourceDecision
+  condicao: ParsedCondition
+  manifest: ArchitectCapabilityManifest | null
+}): { functionName: string; version: string; inputField: string; inputArg: string; lookback: number } | null {
+  const { brief, decision, condicao, manifest } = ctx
+  if (decision.kind !== 'function' || !decision.resolved || !decision.resourceRef || !condicao.field) return null
+
+  const fn = (manifest?.functions ?? []).find((f) => f.functionName === decision.resourceRef)
+  if (!fn?.series) return null
+
+  /**
+   * O campo de entrada vem do REGISTRO que a pessoa pediu para guardar.
+   *
+   * "Candles CXSE3: fechamento, rsi" diz as duas pontas: o que é guardado bruto e o que é
+   * calculado. Com mais de um candidato não há como escolher sem adivinhar — e adivinhar aqui
+   * calcularia o RSI do volume.
+   */
+  const alvo = condicao.field.toLowerCase()
+  for (const registro of brief.recordsToKeep ?? []) {
+    const campos = (registro.fields ?? []).map((c) => slug(c).replace(/-/g, '_') || c)
+    if (!campos.some((c) => c.toLowerCase() === alvo)) continue
+    const entradas = campos.filter((c) => c.toLowerCase() !== alvo)
+    if (entradas.length !== 1) continue
+    return {
+      functionName: fn.functionName,
+      version: fn.version,
+      inputField: entradas[0],
+      inputArg: fn.series.arg,
+      lookback: fn.series.minimum,
+    }
+  }
+  return null
 }
 
 /**

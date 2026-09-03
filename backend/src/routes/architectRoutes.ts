@@ -453,7 +453,7 @@ architectRouter.post('/projects/:id/apply', async (req, res, next) => {
       approvedAppKeys?: string[]
       approvedUpdateKeys?: string[]
       approvedActivationKeys?: string[]
-      deliveryConnections?: { key?: unknown; connectionId?: unknown }[]
+      deliveryConnections?: { key?: unknown; connectionId?: unknown; destination?: unknown }[]
     }
     const r = await service.applyProject(res.locals.userId, id, {
       blueprintHash: String(body.blueprintHash ?? ''),
@@ -469,7 +469,12 @@ architectRouter.post('/projects/:id/apply', async (req, res, next) => {
       // A conexão de cada entrega. O id vem do cliente e é conferido contra o dono na saga:
       // aceitá-lo sem conferir faria a entrega sair pela conexão de outra pessoa.
       deliveryConnections: Array.isArray(body.deliveryConnections)
-        ? body.deliveryConnections.slice(0, 20).map((d) => ({ key: String(d?.key ?? ''), connectionId: String(d?.connectionId ?? '') }))
+        ? body.deliveryConnections
+            .slice(0, 20)
+            // O DESTINO vem daqui, e nunca do Blueprint: o plano é lido inteiro pela tela e
+            // viaja no histórico do projeto, e um número de telefone dentro dele é um endereço
+            // exposto para sempre.
+            .map((d) => ({ key: String(d?.key ?? ''), connectionId: String(d?.connectionId ?? ''), destination: String(d?.destination ?? '').slice(0, 200) }))
         : [],
     })
     auditEntity(res, { id: r.project._id.toString(), label: r.project.title })

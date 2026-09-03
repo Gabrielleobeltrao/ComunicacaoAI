@@ -129,14 +129,22 @@ function architectTurnVigilancia(prompt: string): string {
       warnings: [],
     })
   }
+  /**
+   * O canal PEDIDO é preservado.
+   *
+   * O dublê devolvia `channels: ['web']` sempre. Quem escrevia "me avise pelo WhatsApp" recebia
+   * um Brief que dizia "web": a proposta ficava correta sobre tudo menos sobre a única coisa
+   * que a pessoa pediu por escrito, e o teste em cima disso mediria o dublê.
+   */
+  const canal = /whats\s?app|zap\b/i.test(prompt) ? 'WhatsApp' : /telegram/i.test(prompt) ? 'Telegram' : /\be-?mail\b/i.test(prompt) ? 'E-mail' : 'web'
   return JSON.stringify({
     assistantText: 'Montei a vigilância. Confira antes de aplicar.',
     phase: 'proposal',
     question: null,
     answerPatch: {},
     briefPatch: {
-      businessGoal: 'acompanhar CXSE3 e avisar quando o RSI ficar abaixo de 30',
-      channels: ['web'],
+      businessGoal: `acompanhar CXSE3 e avisar${canal === 'web' ? '' : ` pelo ${canal}`} quando o RSI ficar abaixo de 30`,
+      channels: [canal],
       // O dado que chega continuamente: sem ele não há série, e sem série não há borda.
       liveDataNeeds: [{ source: 'cotação CXSE3', freshness: 'até 1 minuto', required: true }],
       recordsToKeep: [{ subject: 'Candles CXSE3', fields: ['fechamento', 'rsi'], retentionDays: 365 }],
@@ -148,7 +156,7 @@ function architectTurnVigilancia(prompt: string): string {
           input: 'as cotações de CXSE3',
           decision: '',
           action: 'avisar',
-          output: 'o aviso de que o RSI caiu abaixo de 30',
+          output: `o aviso${canal === 'web' ? '' : ` pelo ${canal}`} de que o RSI caiu abaixo de 30`,
           frequency: 'a cada fechamento de candle',
         },
       ],
