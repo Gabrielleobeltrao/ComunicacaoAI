@@ -37,6 +37,8 @@ export function MonitoringCenter() {
   const [erro, setErro] = useState<string | null>(null)
   const [aviso, setAviso] = useState<string | null>(null)
   const [wizard, setWizard] = useState(false)
+  /** A fonte aberta para EDIÇÃO. O mesmo wizard, com o que já existe preenchido. */
+  const [editando, setEditando] = useState<SourceSummary | null>(null)
 
   const carregar = useCallback(async () => {
     setErro(null)
@@ -121,16 +123,30 @@ export function MonitoringCenter() {
             )}
             {wizard && (
               <Wizard
-                onCancel={() => setWizard(false)}
+                {...(editando ? { fonte: editando } : {})}
+                onCancel={() => {
+                  setWizard(false)
+                  setEditando(null)
+                }}
                 onDone={async (mensagem) => {
                   setWizard(false)
+                  setEditando(null)
                   setAviso(mensagem)
                   await carregar()
                 }}
                 onError={setErro}
               />
             )}
-            <ListaDeFontes fontes={fontes} acao={acao} />
+            <ListaDeFontes
+              fontes={fontes}
+              acao={acao}
+              onEditar={(f) => {
+                setEditando(f)
+                setWizard(true)
+                setErro(null)
+                setAviso(null)
+              }}
+            />
           </>
         )}
 
@@ -193,7 +209,8 @@ function VisaoGeral({ visao }: { visao: { items: OverviewItem[]; summary: Record
 /** A ação da lista: a mensagem pode ser fixa ou vir do resultado da chamada. */
 type Acao = <T>(fn: () => Promise<T>, m?: string | ((r: T) => string)) => Promise<void>
 
-function ListaDeFontes({ fontes, acao }: { fontes: SourceSummary[] | null; acao: Acao }) {
+function ListaDeFontes({ fontes, acao, onEditar }: { fontes: SourceSummary[] | null; acao: Acao; onEditar?: (f: SourceSummary) => void }) {
+  const [acessosDe, setAcessosDe] = useState<string | null>(null)
   if (!fontes) return null
   if (fontes.length === 0) {
     return (
@@ -249,18 +266,175 @@ function ListaDeFontes({ fontes, acao }: { fontes: SourceSummary[] | null; acao:
               <Button variant="ghost" onClick={() => acao(() => api.duplicate(f.id), 'Fonte duplicada como rascunho.')} data-testid="fonte-duplicar">
                 Duplicar
               </Button>
+              <Button variant="ghost" onClick={() => onEditar?.(f)} data-testid="fonte-editar">
+                Editar
+              </Button>
+              <Button variant="ghost" onClick={() => setAcessosDe(acessosDe === f.id ? null : f.id)} data-testid="fonte-acessos">
+                {acessosDe === f.id ? 'Fechar acessos' : 'Quem alcança'}
+              </Button>
               <Button
                 variant="ghost"
-                onClick={() => acao(() => api.remove(f.id), 'Fonte excluída. O histórico que ela gravou continua.')}
+                onClick={() => {
+                  /**
+                   * A confirmação DIZ O QUE SE PERDE — e o que não se perde.
+                   *
+                   * "Tem certeza?" não é uma pergunta: quem clicou já tinha certeza do que
+                   * achava que ia acontecer. O que muda a decisão é saber que o histórico
+                   * fica e que a regra de coleta é que some.
+                   */
+                  const guarda = [f.destination.history ? 'histórico' : null, f.destination.live ? 'ao vivo' : null].filter(Boolean).join(' e ')
+                  const aviso =
+                    `Excluir “${f.name}”?\n\n` +
+                    `O que ela já gravou em ${guarda || 'algum destino'} CONTINUA existindo — apagar o passado é outra decisão, em Históricos.\n` +
+                    `O que deixa de existir é a regra de coleta: ela para de ler${f.status === 'active' ? ' agora mesmo' : ''}.` +
+                    (f.telemetry.readsOk > 0 ? `\n\nEla já leu com sucesso ${f.telemetry.readsOk} vez(es).` : '')
+                  if (!window.confirm(aviso)) return
+                  void acao(() => api.remove(f.id), 'Fonte excluída. O histórico que ela gravou continua.')
+                }}
                 data-testid="fonte-excluir"
               >
                 Excluir
               </Button>
             </div>
+            {acessosDe === f.id && <PainelDeAcessos sourceId={f.id} />}
           </div>
         </Card>
       ))}
     </>
+  )
+}
+
+/**
+ * QUEM ALCANÇA esta fonte — prédio, andar, setor ou agente.
+ *
+ * A regra já existia no servidor e não tinha tela: a única forma de conceder era chamar a
+ * API na mão, e a única forma de descobrir quem alcançava era ler o banco. Uma política que
+ * ninguém consegue ver é uma política que ninguém revisa.
+ *
+ * `deny` continua vencendo qualquer `allow`, e o mais específico ganha entre permissões —
+ * a tela diz isso, em vez de deixar quem concede descobrir na hora errada.
+ */
+function PainelDeAcessos({ sourceId }: { sourceId: string }) {
+  const [itens, setItens] = useState<api.SourceGrant[] | null>(null)
+  const [sujeitos, setSujeitos] = useState<api.SubjectOption[]>([])
+  const [escolhido, setEscolhido] = useState('')
+  const [capacidades, setCapacidades] = useState<api.SourceCapability[]>(['read'])
+  const [efeito, setEfeito] = useState<'allow' | 'deny'>('allow')
+  const [erro, setErro] = useState<string | null>(null)
+  const [ocupado, setOcupado] = useState(false)
+
+  const carregar = useCallback(async () => {
+    setErro(null)
+    try {
+      const [gs, ss] = await Promise.all([api.grants(sourceId), api.subjects().catch(() => [] as api.SubjectOption[])])
+      setItens(gs)
+      setSujeitos(ss)
+    } catch (e) {
+      setErro((e as Error).message)
+    }
+  }, [sourceId])
+
+  useEffect(() => {
+    void carregar()
+  }, [carregar])
+
+  const nomeDe = (g: { subjectType: api.SubjectType; subjectId: string }) =>
+    sujeitos.find((s) => s.subjectType === g.subjectType && s.subjectId === g.subjectId)?.name ?? g.subjectId
+
+  const agir = async (fn: () => Promise<unknown>) => {
+    setErro(null)
+    setOcupado(true)
+    try {
+      await fn()
+      await carregar()
+    } catch (e) {
+      setErro((e as Error).message)
+    } finally {
+      setOcupado(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2" style={{ marginTop: 8 }} data-testid="fonte-acessos-painel">
+      <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+        Recusar vence qualquer permissão, e entre permissões o mais específico ganha: agente, depois setor, depois andar, depois prédio.
+      </p>
+
+      {itens?.length === 0 && (
+        <p style={{ fontSize: 12.5 }} data-testid="acessos-vazio">
+          Ninguém além de quem administra a conta alcança esta fonte.
+        </p>
+      )}
+
+      {(itens ?? []).map((g) => (
+        <div key={`${g.subjectType}:${g.subjectId}`} className="flex flex-wrap items-center gap-2" data-testid="acesso-item">
+          <Badge tone={g.effect === 'deny' ? 'danger' : 'success'}>{g.effect === 'deny' ? 'recusa' : 'permite'}</Badge>
+          <span style={{ fontSize: 13 }}>
+            {api.SUBJECT_LABEL[g.subjectType]} {nomeDe(g)}
+          </span>
+          <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+            {g.capabilities.map((c) => api.CAPABILITY_LABEL[c]).join(' e ')}
+          </span>
+          <Button variant="ghost" disabled={ocupado} onClick={() => void agir(() => api.removeGrant(sourceId, g.subjectType, g.subjectId))} data-testid="acesso-remover">
+            Remover
+          </Button>
+        </div>
+      ))}
+
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Field label="Quem" style={{ flex: 1 }}>
+          <Select value={escolhido} onChange={(e) => setEscolhido(e.target.value)} data-testid="acesso-sujeito">
+            <option value="">Escolha</option>
+            {sujeitos.map((s) => (
+              <option key={`${s.subjectType}:${s.subjectId}`} value={`${s.subjectType}:${s.subjectId}`}>
+                {api.SUBJECT_LABEL[s.subjectType]}: {s.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Pode" style={{ flex: 1 }}>
+          <Select
+            value={capacidades.join(',')}
+            onChange={(e) => setCapacidades(e.target.value.split(',') as api.SourceCapability[])}
+            options={[
+              { value: 'read', label: 'ler o dado' },
+              { value: 'read,configure', label: 'ler e configurar' },
+            ]}
+            data-testid="acesso-capacidades"
+          />
+        </Field>
+        <Field label="Efeito" style={{ flex: 1 }}>
+          <Select
+            value={efeito}
+            onChange={(e) => setEfeito(e.target.value as 'allow' | 'deny')}
+            options={[
+              { value: 'allow', label: 'permitir' },
+              { value: 'deny', label: 'recusar' },
+            ]}
+            data-testid="acesso-efeito"
+          />
+        </Field>
+      </div>
+
+      {erro && (
+        <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }} data-testid="acesso-erro">
+          {erro}
+        </p>
+      )}
+
+      <div>
+        <Button
+          disabled={!escolhido || ocupado}
+          onClick={() => {
+            const [subjectType, subjectId] = escolhido.split(':')
+            void agir(() => api.putGrant(sourceId, { subjectType: subjectType as api.SubjectType, subjectId, capabilities: capacidades, effect: efeito }))
+          }}
+          data-testid="acesso-conceder"
+        >
+          {efeito === 'deny' ? 'Recusar' : 'Conceder'}
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -396,18 +570,67 @@ function configDoTipo(kind: SourceKind, c: Cfg): Record<string, unknown> {
   }
 }
 
-function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (m: string) => Promise<void>; onError: (m: string) => void }) {
+/**
+ * O que já existe, traduzido para o formulário.
+ *
+ * A configuração guardada é a união discriminada do servidor; o formulário guarda os
+ * campos de todos os tipos num objeto só. Ler o que existe é traduzir de volta — e o que
+ * não pertence ao tipo simplesmente não está lá.
+ */
+function cfgDaFonte(f: SourceSummary): Cfg {
+  const c = f.config as Record<string, unknown>
+  const pag = (c.pagination ?? {}) as Record<string, unknown>
+  const script = (c.extractScript ?? {}) as Record<string, unknown>
+  return {
+    ...CFG_VAZIA,
+    url: String(c.url ?? ''),
+    method: c.method === 'POST' ? 'POST' : 'GET',
+    body: String(c.body ?? ''),
+    query: Array.isArray(c.query) ? (c.query as { key: string; value: string }[]) : [],
+    headerNames: Array.isArray(c.headerNames) ? (c.headerNames as string[]).join(', ') : '',
+    paginacao: pag.kind === 'cursor' ? 'cursor' : pag.kind === 'page' ? 'page' : 'none',
+    cursorPath: String(pag.cursorPath ?? ''),
+    pageParam: String(pag.pageParam ?? 'page'),
+    maxPages: Number(pag.maxPages ?? 5),
+    retomar: pag.resume === true,
+    selector: String(c.selector ?? ''),
+    strategy: Array.isArray(c.strategy) ? (c.strategy as Cfg['strategy']) : CFG_VAZIA.strategy,
+    protocol: c.protocol === 'websocket' ? 'websocket' : 'sse',
+    subscriptions: Array.isArray(c.subscriptions) ? (c.subscriptions as string[]).join(', ') : '',
+    heartbeatMs: Number(c.heartbeatMs ?? 30_000),
+    installationId: String(c.installationId ?? ''),
+    appKey: String(c.appKey ?? ''),
+    actionKey: String(c.actionKey ?? ''),
+    dataStoreId: String(c.dataStoreId ?? ''),
+    datasetKey: String(c.datasetKey ?? ''),
+    eventType: String(c.eventType ?? ''),
+    script: String(script.source ?? ''),
+  }
+}
+
+function Wizard({
+  onCancel,
+  onDone,
+  onError,
+  fonte: existente,
+}: {
+  onCancel: () => void
+  onDone: (m: string) => Promise<void>
+  onError: (m: string) => void
+  /** Quando presente, o wizard EDITA em vez de criar. O tipo não muda: ele decide a forma. */
+  fonte?: SourceSummary
+}) {
   const [passo, setPasso] = useState(0)
-  const [kind, setKind] = useState<SourceKind>('api_polling')
-  const [name, setName] = useState('')
-  const [cfg, setCfg] = useState<Cfg>(CFG_VAZIA)
+  const [kind, setKind] = useState<SourceKind>(existente?.kind ?? 'api_polling')
+  const [name, setName] = useState(existente?.name ?? '')
+  const [cfg, setCfg] = useState<Cfg>(existente ? cfgDaFonte(existente) : CFG_VAZIA)
   const [avancado, setAvancado] = useState(false)
-  const [ritmo, setRitmo] = useState<'interval' | 'cron'>('interval')
-  const [intervalMs, setIntervalMs] = useState(60_000)
-  const [cron, setCron] = useState('0 9 * * *')
-  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
-  const [campos, setCampos] = useState<api.FieldRule[]>([{ to: 'valor', from: '' }])
-  const [destino, setDestino] = useState({ live: false, history: true })
+  const [ritmo, setRitmo] = useState<'interval' | 'cron'>(existente?.cadence.mode === 'cron' ? 'cron' : 'interval')
+  const [intervalMs, setIntervalMs] = useState(existente?.cadence.intervalMs ?? 60_000)
+  const [cron, setCron] = useState(existente?.cadence.cron ?? '0 9 * * *')
+  const [timezone, setTimezone] = useState(existente?.cadence.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+  const [campos, setCampos] = useState<api.FieldRule[]>(existente?.mapping.fields.length ? existente.mapping.fields : [{ to: 'valor', from: '' }])
+  const [destino, setDestino] = useState({ live: existente?.destination.live ?? false, history: existente?.destination.history ?? true })
   const [teste, setTeste] = useState<TestOutcome | null>(null)
   const [ocupado, setOcupado] = useState(false)
   const [conexoes, setConexoes] = useState<api.ConnectionOption[]>([])
@@ -474,6 +697,17 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
   const salvar = async () => {
     setOcupado(true)
     try {
+      /**
+       * Editar ATUALIZA a fonte que existe, em vez de criar uma parecida.
+       *
+       * Sem isto, corrigir um endereço significava duplicar e apagar — e o destino
+       * materializado (o recorder que já grava, a série que já existe) ficava para trás.
+       */
+      if (existente) {
+        await api.updateSource(existente.id, corpo())
+        await onDone('Fonte atualizada. O que ela já gravou continua.')
+        return
+      }
       const fonte = await api.createSource(corpo())
       if (!criarMonitor) {
         await onDone('Fonte criada como rascunho. Teste e ative quando estiver certa.')
@@ -527,11 +761,13 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
                 value={kind}
                 onChange={(e) => trocarTipo(e.target.value as SourceKind)}
                 options={(Object.keys(KIND_LABEL) as SourceKind[]).map((k) => ({ value: k, label: KIND_LABEL[k] }))}
+                disabled={Boolean(existente)}
                 data-testid="wizard-tipo"
               />
             </Field>
             <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="wizard-tipo-explica">
               {cap.puxa ? 'A plataforma consulta esta fonte no ritmo que você escolher.' : 'O dado chega sozinho: não há intervalo a configurar.'}
+              {existente ? ' O tipo não muda numa edição: ele decide a forma inteira da fonte, e trocá-lo seria criar outra.' : ''}
             </p>
           </>
         )}
@@ -950,8 +1186,12 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
             <p style={{ color: 'var(--text-muted)' }}>
               {connectionId ? 'Usa uma conexão do cofre para autenticar.' : 'Sem credencial: nada é digitado aqui.'}
             </p>
-            <p style={{ color: 'var(--text-muted)' }}>Ela nasce como rascunho: nada é consultado até você ativar.</p>
-            <div style={{ marginTop: 8 }}>
+            <p style={{ color: 'var(--text-muted)' }}>
+              {existente
+                ? `Ela continua ${STATUS_LABEL[existente.status]}: salvar altera a regra, não o que já foi gravado.`
+                : 'Ela nasce como rascunho: nada é consultado até você ativar.'}
+            </p>
+            <div style={{ marginTop: 8, ...(existente ? { display: 'none' } : {}) }}>
               <Button
                 variant={criarMonitor ? 'primary' : 'ghost'}
                 onClick={() => {
@@ -1020,7 +1260,7 @@ function Wizard({ onCancel, onDone, onError }: { onCancel: () => void; onDone: (
           )}
           {passo === passos.length - 1 && (
             <Button onClick={salvar} disabled={ocupado || monitorIncompleto} data-testid="wizard-salvar">
-              Criar rascunho
+              {existente ? 'Salvar alterações' : 'Criar rascunho'}
             </Button>
           )}
           <Button variant="ghost" onClick={onCancel}>

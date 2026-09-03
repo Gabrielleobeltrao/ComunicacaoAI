@@ -17,7 +17,11 @@ import {
 import { KIND_CAPABILITIES, MONITORING_SOURCE_KINDS } from '../monitoring/types.js'
 import { computeHealth, nextReadAt } from '../monitoring/health.js'
 import { rotateWebhookSecret } from '../monitoring/webhookSource.js'
-import { deleteSourceGrant, listSourceGrants, putSourceGrant, resolveSourceAccess } from '../monitoring/access.js'
+import { GrantError, deleteSourceGrant, listSourceGrants, putSourceGrant, resolveSourceAccess } from '../monitoring/access.js'
+import { getBuilding } from '../building.js'
+import { listFloors } from '../floors.js'
+import { listSectors } from '../sectors.js'
+import { listAgents } from '../agents.js'
 import { migrateRecordersToSources, rollbackRecorderMigration } from '../monitoring/migration.js'
 import { listarEventos } from '../monitoring/history.js'
 import { MonitorError } from '../monitors/service.js'
@@ -47,6 +51,10 @@ const recusa = (res: Parameters<typeof notFound>[0], erro: unknown): boolean => 
   // A recusa do motor de monitores chega inteira: ela já diz qual campo não existe na
   // fonte ou qual Flow não é desta conta, e trocar isso por "erro interno" apagaria a
   // única informação capaz de consertar o formulário.
+  if (erro instanceof GrantError) {
+    res.status(erro.code === 'not_found' ? 404 : 400).json({ code: erro.code, message: erro.message, error: erro.message })
+    return true
+  }
   if (erro instanceof MonitorError) {
     res.status(erro.code === 'not_found' ? 404 : 400).json({ code: erro.code, message: erro.message, error: erro.message })
     return true
@@ -331,7 +339,10 @@ monitoringRouter.put('/sources/:id/grants', async (req, res, next) => {
   try {
     const g = await putSourceGrant(res.locals.userId, {
       sourceId: id,
-      subjectType: (body.subjectType ?? 'agent') as 'agent',
+      // O tipo vai como veio: quem confere se ele é um dos quatro é o próprio serviço,
+      // que também confere a existência e a conta. Normalizar para 'agent' aqui esconderia
+      // um pedido malformado atrás de um padrão.
+      subjectType: String(body.subjectType ?? 'agent') as 'agent',
       subjectId: String(body.subjectId ?? ''),
       capabilities: (body.capabilities ?? []) as ('read' | 'configure')[],
       ...(body.effect === 'deny' ? { effect: 'deny' as const } : {}),
@@ -339,6 +350,35 @@ monitoringRouter.put('/sources/:id/grants', async (req, res, next) => {
     res.json({ id: g._id.toString(), effect: g.effect, capabilities: g.capabilities })
   } catch (erro) {
     if (!recusa(res, erro)) res.status(400).json({ message: (erro as Error).message, error: (erro as Error).message })
+  }
+})
+
+/**
+ * Os SUJEITOS a quem se pode dar acesso — prédio, andares, setores e agentes desta conta.
+ *
+ * Uma chamada só porque a tela faz uma pergunta só: "quem pode receber acesso a esta
+ * fonte?". Deixar a tela juntar quatro listagens seria quatro chances de mostrar um id de
+ * outra conta por engano.
+ */
+monitoringRouter.get('/subjects', async (_req, res, next) => {
+  try {
+    const conta = res.locals.userId
+    const [predio, andares, setores, agentes] = await Promise.all([
+      getBuilding(conta),
+      listFloors(conta),
+      listSectors(conta),
+      listAgents(conta),
+    ])
+    res.json({
+      items: [
+        ...(predio ? [{ subjectType: 'building' as const, subjectId: predio._id.toString(), name: predio.name }] : []),
+        ...andares.map((a) => ({ subjectType: 'floor' as const, subjectId: a._id.toString(), name: a.name })),
+        ...setores.map((s) => ({ subjectType: 'sector' as const, subjectId: s._id.toString(), name: s.name })),
+        ...agentes.map((a) => ({ subjectType: 'agent' as const, subjectId: a._id.toString(), name: a.name })),
+      ],
+    })
+  } catch (erro) {
+    if (!recusa(res, erro)) next(erro as Error)
   }
 })
 

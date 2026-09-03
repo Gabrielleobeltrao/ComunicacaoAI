@@ -1,6 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { db } from '../db.js'
-import { resolveAgentSubject } from '../resources/scope.js'
+import { resolveAgentSubject, resolveSubject } from '../resources/scope.js'
 import { sourcesCollection } from './service.js'
 
 // QUEM ALCANÇA UMA FONTE — com a mesma precedência do resto do produto.
@@ -113,12 +113,42 @@ export interface PutGrantInput {
   effect?: 'allow' | 'deny'
 }
 
+export class GrantError extends Error {
+  constructor(
+    message: string,
+    readonly code = 'invalid',
+  ) {
+    super(message)
+  }
+}
+
 export async function putSourceGrant(ownerId: string, input: PutGrantInput): Promise<SourceGrant> {
   const fonte = await sourcesCollection.findOne({ _id: input.sourceId, ownerId })
-  if (!fonte) throw new Error('fonte não encontrada')
+  if (!fonte) throw new GrantError('fonte não encontrada', 'not_found')
+
+  /**
+   * O SUJEITO é resolvido contra a conta — tipo, forma do id, existência e dono.
+   *
+   * Antes, nada disso era conferido: dava para gravar um acesso para
+   * `{subjectType:'banana', subjectId:'lixo'}`, que ficava na lista para sempre sem
+   * significar nada, ou para o setor de OUTRA conta, que é pior — a linha na tela diria
+   * que alguém tem acesso, e a decisão nunca bateria com ela.
+   *
+   * Quem resolve é o mesmo `resolveSubject` do resto do produto, que já filtra por conta
+   * nos quatro tipos. Um segundo resolvedor aqui divergiria na primeira mudança de
+   * hierarquia.
+   */
+  if (!(['building', 'floor', 'sector', 'agent'] as string[]).includes(input.subjectType)) {
+    throw new GrantError('escolha prédio, andar, setor ou agente', 'bad_subject_type')
+  }
+  if (!ObjectId.isValid(input.subjectId)) throw new GrantError('esse sujeito não existe nesta conta', 'subject_not_found')
+  const sujeito = await resolveSubject(ownerId, { subjectType: input.subjectType, subjectId: input.subjectId })
+  // A recusa é a mesma para id inválido, inexistente e de outra conta: distinguir os três
+  // contaria que aquele id existe em algum lugar.
+  if (!sujeito) throw new GrantError('esse sujeito não existe nesta conta', 'subject_not_found')
 
   const capabilities = [...new Set(input.capabilities)].filter((c): c is SourceCapability => SOURCE_CAPABILITIES.includes(c))
-  if (capabilities.length === 0) throw new Error('escolha ao menos uma capacidade')
+  if (capabilities.length === 0) throw new GrantError('escolha ao menos uma capacidade')
 
   const agora = new Date()
   const doc = await grants.findOneAndUpdate(

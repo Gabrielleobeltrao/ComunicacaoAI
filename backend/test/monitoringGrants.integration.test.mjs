@@ -154,7 +154,9 @@ test('AMEAÇA: agente de OUTRA conta não devolve a política dele', async () =>
   // Perguntar "o agente X pode?" com um id de outra conta já seria vazamento, mesmo sem ler.
   const alheio = new ObjectId()
   await db.collection('agents').insertOne({ _id: alheio, ownerId: 'vizinho', name: 'Alheio', provider: 'anthropic', createdAt: new Date() })
-  await conceder('agent', alheio.toString(), ['read'])
+  // A concessão nem chega a existir — a conferência do sujeito acontece antes de gravar.
+  await assert.rejects(() => conceder('agent', alheio.toString(), ['read']), /não existe nesta conta/)
+  // E a leitura continua negando, que é a segunda tranca: as duas juntas é que fecham.
   const r = await acesso.resolveSourceAccess({ accountId: DONO, sourceId: fonte._id, agentId: alheio })
   assert.equal(r.allowed, false)
 })
@@ -193,4 +195,52 @@ test('conceder duas vezes ATUALIZA em vez de duplicar', async () => {
 test('grant sem capacidade nenhuma é recusado', async () => {
   await assert.rejects(() => conceder('agent', agentId.toString(), []), /ao menos uma capacidade/)
   await assert.rejects(() => conceder('agent', agentId.toString(), ['inventada']), /ao menos uma capacidade/)
+})
+
+// --- o sujeito é conferido ANTES de virar linha na tela ----------------------------------
+//
+// Antes, nada disso era conferido: dava para gravar um acesso para um tipo inventado, para
+// um id que não é ObjectId, ou para o setor de OUTRA conta. A linha ficava na tela dizendo
+// que alguém tem acesso, e a decisão nunca batia com ela.
+
+test('tipo de sujeito inventado é recusado', async () => {
+  await assert.rejects(() => conceder('banana', agentId.toString(), ['read']), /prédio, andar, setor ou agente/)
+  assert.equal(await db.collection('monitoring_source_grants').countDocuments({}), 0)
+})
+
+test('id que não é ObjectId é recusado — e a recusa não conta se aquele id existe', async () => {
+  await assert.rejects(() => conceder('agent', 'lixo', ['read']), /não existe nesta conta/)
+})
+
+test('sujeito que não existe nesta conta é recusado', async () => {
+  await assert.rejects(() => conceder('sector', new ObjectId().toString(), ['read']), /não existe nesta conta/)
+})
+
+test('AMEAÇA: o setor de OUTRA conta não vira acesso nesta', async () => {
+  const alheio = new ObjectId()
+  await db.collection('sectors').insertOne({ _id: alheio, ownerId: 'vizinho', officeId: null, name: 'Alheio', members: [], createdAt: new Date() })
+  // A recusa é a MESMA de um id inexistente: distinguir contaria que aquele setor existe.
+  await assert.rejects(() => conceder('sector', alheio.toString(), ['read']), /não existe nesta conta/)
+  assert.equal(await db.collection('monitoring_source_grants').countDocuments({}), 0)
+})
+
+test('AMEAÇA: o agente de outra conta também não', async () => {
+  const alheio = new ObjectId()
+  await db.collection('agents').insertOne({ _id: alheio, ownerId: 'vizinho', name: 'De fora', objective: 'x', provider: 'anthropic', createdAt: new Date() })
+  await assert.rejects(() => conceder('agent', alheio.toString(), ['read']), /não existe nesta conta/)
+})
+
+test('os quatro tipos válidos continuam passando', async () => {
+  await conceder('building', BUILDING.toString(), ['read'])
+  await conceder('floor', FLOOR.toString(), ['read'])
+  await conceder('sector', SECTOR.toString(), ['read'])
+  await conceder('agent', agentId.toString(), ['read'])
+  assert.equal(await db.collection('monitoring_source_grants').countDocuments({}), 4)
+})
+
+test('conceder numa fonte de outra conta é recusado antes de olhar o sujeito', async () => {
+  await assert.rejects(
+    () => acesso.putSourceGrant('vizinho', { sourceId: fonte._id, subjectType: 'agent', subjectId: agentId.toString(), capabilities: ['read'] }),
+    /fonte não encontrada/,
+  )
 })

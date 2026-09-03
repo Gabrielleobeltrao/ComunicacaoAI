@@ -190,6 +190,42 @@ export const remove = (id: string) => req<null>(`/api/monitoring/sources/${id}`,
 export const createMonitorForSource = (id: string, body: unknown) =>
   req<{ id: string; status: string }>(`/api/monitoring/sources/${id}/monitor`, { method: 'POST', body })
 
+export type SubjectType = 'building' | 'floor' | 'sector' | 'agent'
+export type SourceCapability = 'read' | 'configure'
+
+export const SUBJECT_LABEL: Record<SubjectType, string> = {
+  building: 'prédio',
+  floor: 'andar',
+  sector: 'setor',
+  agent: 'agente',
+}
+
+export const CAPABILITY_LABEL: Record<SourceCapability, string> = {
+  read: 'ler o dado',
+  configure: 'configurar a fonte',
+}
+
+export interface SubjectOption {
+  subjectType: SubjectType
+  subjectId: string
+  name: string
+}
+
+export interface SourceGrant {
+  subjectType: SubjectType
+  subjectId: string
+  capabilities: SourceCapability[]
+  effect: 'allow' | 'deny'
+}
+
+/** Quem pode receber acesso: prédio, andares, setores e agentes desta conta. */
+export const subjects = () => req<{ items: SubjectOption[] }>('/api/monitoring/subjects').then((r) => r.items)
+export const grants = (id: string) => req<{ items: SourceGrant[] }>(`/api/monitoring/sources/${id}/grants`).then((r) => r.items)
+export const putGrant = (id: string, body: { subjectType: SubjectType; subjectId: string; capabilities: SourceCapability[]; effect: 'allow' | 'deny' }) =>
+  req<{ id: string }>(`/api/monitoring/sources/${id}/grants`, { method: 'PUT', body })
+export const removeGrant = (id: string, subjectType: SubjectType, subjectId: string) =>
+  req<null>(`/api/monitoring/sources/${id}/grants/${subjectType}/${subjectId}`, { method: 'DELETE' })
+
 export type EventKind = 'collect' | 'delivery' | 'dispatch'
 export type EventOutcome = 'ok' | 'unchanged' | 'failed' | 'refused'
 

@@ -64,7 +64,10 @@ const AMOSTRA = {
 
 let criado: unknown = null
 let monitorCriado: unknown = null
+let monitorSalvo: unknown = null
+let concedido: unknown = null
 let ativou = false
+let monitores: unknown[] = []
 
 const LIVE = [
   {
@@ -85,10 +88,16 @@ const LIVE = [
   },
 ]
 
-async function stub(page: Page, opts: { ativarErro?: string; live?: unknown[]; monitorErro?: string } = {}) {
+async function stub(
+  page: Page,
+  opts: { ativarErro?: string; live?: unknown[]; monitorErro?: string; monitores?: unknown[]; eventos?: unknown[]; grants?: unknown[] } = {},
+) {
   criado = null
   monitorCriado = null
+  monitorSalvo = null
+  concedido = null
   ativou = false
+  monitores = opts.monitores ?? []
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   const user = { id: 'u1', email: 'qa@local.test', name: 'QA', emailVerified: true, createdAt: NOW, updatedAt: NOW }
   await page.route('**/api/auth/**', (r) =>
@@ -107,6 +116,41 @@ async function stub(page: Page, opts: { ativarErro?: string; live?: unknown[]; m
     ativou = true
     return r.fulfill({ json: { status: 'active' } })
   })
+  await page.route('**/api/monitors', (r) => {
+    if (r.request().method() === 'POST') return r.fulfill({ status: 201, json: { id: 'm-novo', status: 'draft' } })
+    return r.fulfill({ json: monitores })
+  })
+  await page.route('**/api/monitors/*', (r) => {
+    if (r.request().method() === 'PUT') {
+      monitorSalvo = r.request().postDataJSON()
+      return r.fulfill({ json: { id: 'm1', status: 'draft' } })
+    }
+    if (r.request().method() === 'DELETE') return r.fulfill({ status: 204, body: '' })
+    return r.fulfill({ json: {} })
+  })
+  await page.route('**/api/monitors/*/publish', (r) => r.fulfill({ json: { id: 'm1', status: 'published' } }))
+  await page.route('**/api/monitors/*/pause', (r) => r.fulfill({ json: { id: 'm1', status: 'paused' } }))
+  await page.route('**/api/automations**', (r) => r.fulfill({ json: { items: [{ id: 'flow-1', name: 'Avisar o time', status: 'active', lastPublishedVersion: 1 }] } }))
+  await page.route('**/api/monitoring/history**', (r) => r.fulfill({ json: { items: opts.eventos ?? [], nextCursor: null } }))
+  await page.route('**/api/monitoring/subjects', (r) =>
+    r.fulfill({
+      json: {
+        items: [
+          { subjectType: 'building', subjectId: 'b1', name: 'Prédio QA' },
+          { subjectType: 'sector', subjectId: 's1', name: 'Análise' },
+          { subjectType: 'agent', subjectId: 'a1', name: 'Marina' },
+        ],
+      },
+    }),
+  )
+  await page.route(`**/api/monitoring/sources/${ID}/grants`, (r) => {
+    if (r.request().method() === 'PUT') {
+      concedido = r.request().postDataJSON()
+      return r.fulfill({ json: { id: 'g1' } })
+    }
+    return r.fulfill({ json: { items: opts.grants ?? [] } })
+  })
+  await page.route('**/api/monitoring/sources/*/grants/*/*', (r) => r.fulfill({ status: 204, body: '' }))
   await page.route('**/api/monitoring/sources/*/monitor', (r) => {
     monitorCriado = r.request().postDataJSON()
     if (opts.monitorErro) return r.fulfill({ status: 400, json: { message: opts.monitorErro } })
@@ -572,4 +616,265 @@ test('FALHA PARCIAL: a visão geral mostra a degradada ao lado da que está no a
   // Uma fonte quebrada não esconde as que funcionam, nem o contrário.
   await expect(page.getByTestId('monitoring-item')).toHaveCount(2)
   await expect(page.getByTestId('monitoring-resumo')).toContainText('1')
+})
+
+
+// --- a aba Monitores, completa ------------------------------------------------------------
+
+const MONITOR = {
+  id: 'm1',
+  name: 'Preço abaixo de 100',
+  status: 'draft',
+  source: { kind: 'database', dataStoreId: 'ds1', datasetKey: 'rec-1' },
+  condition: { kind: 'compare', field: 'preco', op: 'lt', value: 100 },
+  conditionText: 'preco abaixo de 100',
+  triggerMode: 'enter',
+  threshold: null,
+  thresholdField: null,
+  debounceMs: 0,
+  cooldownMs: 0,
+  flowId: 'flow-1',
+  state: { status: 'watching', conditionIsTrue: false, lastObservedAt: null, lastTriggeredAt: null, error: null },
+}
+
+test('a aba Monitores LISTA o que existe, com estado e o Flow que roda', async ({ page }) => {
+  await stub(page, { monitores: [MONITOR] })
+  await page.goto('/monitoring?tab=monitors')
+  const item = page.getByTestId('monitor-item')
+  await expect(item).toContainText('Preço abaixo de 100')
+  await expect(item).toContainText('rascunho')
+  await expect(item).toContainText('Avisar o time')
+  await expect(page.getByTestId('monitor-estado')).toContainText('nunca disparou')
+})
+
+test('sem monitor nenhum, a aba diz o que fazer em vez de ficar vazia', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=monitors')
+  await expect(page.getByTestId('monitores-vazio')).toContainText('nasce rascunho')
+})
+
+test('criar um monitor exige o mínimo, e a falta é dita', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=monitors')
+  await expect(page.getByTestId('monitor-salvar')).toBeDisabled()
+  await expect(page.getByTestId('monitor-falta')).toContainText('dê um nome')
+
+  await page.getByTestId('monitor-nome').fill('Preço baixo')
+  await expect(page.getByTestId('monitor-falta')).toContainText('escolha a fonte')
+  await page.getByTestId('monitor-fonte').selectOption(ID)
+  await expect(page.getByTestId('monitor-falta')).toContainText('monte ao menos uma condição')
+
+  await page.getByTestId('monitor-campo-0').selectOption('preco')
+  await page.getByTestId('monitor-valor-0').fill('100')
+  await page.getByTestId('monitor-flow').selectOption('flow-1')
+  await expect(page.getByTestId('monitor-salvar')).toBeEnabled()
+  await page.getByTestId('monitor-salvar').click()
+
+  // O monitor é criado PELA CENTRAL, que materializa o destino da fonte antes.
+  await expect.poll(() => monitorCriado).not.toBeNull()
+  expect(monitorCriado).toMatchObject({
+    name: 'Preço baixo',
+    condition: { kind: 'compare', field: 'preco', op: 'lt', value: 100 },
+    triggerMode: 'enter',
+    flowId: 'flow-1',
+  })
+  await expect(page.getByTestId('monitor-aviso')).toContainText('rascunho')
+})
+
+test('EDITAR carrega o monitor no formulário e salva no mesmo id', async ({ page }) => {
+  await stub(page, { monitores: [MONITOR] })
+  await page.goto('/monitoring?tab=monitors')
+  await page.getByTestId('monitor-editar').click()
+  await expect(page.getByTestId('monitor-nome')).toHaveValue('Preço abaixo de 100')
+  await expect(page.getByTestId('monitor-valor-0')).toHaveValue('100')
+
+  await page.getByTestId('monitor-valor-0').fill('90')
+  await page.getByTestId('monitor-salvar').click()
+  await expect.poll(() => monitorSalvo).not.toBeNull()
+  // A fonte observada vai junto: sem ela, "salvar" viraria "criar em outro lugar".
+  expect(monitorSalvo).toMatchObject({
+    condition: { kind: 'compare', field: 'preco', op: 'lt', value: 90 },
+    source: { kind: 'database', dataStoreId: 'ds1', datasetKey: 'rec-1' },
+  })
+})
+
+test('publicar, pausar e excluir estão na lista — e excluir pergunta antes', async ({ page }) => {
+  await stub(page, { monitores: [MONITOR] })
+  await page.goto('/monitoring?tab=monitors')
+  await page.getByTestId('monitor-publicar').click()
+  await expect(page.getByTestId('monitor-aviso')).toContainText('observa de verdade')
+
+  page.on('dialog', (d) => {
+    expect(d.message()).toContain('já registrou continua')
+    void d.accept()
+  })
+  await page.getByTestId('monitor-excluir').click()
+  await expect(page.getByTestId('monitor-aviso')).toContainText('excluído')
+})
+
+// --- acessos ------------------------------------------------------------------------------
+
+test('QUEM ALCANÇA: a política aparece na tela, com a precedência dita', async ({ page }) => {
+  await stub(page, { grants: [{ subjectType: 'sector', subjectId: 's1', capabilities: ['read'], effect: 'allow' }] })
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-acessos').click()
+  const painel = page.getByTestId('fonte-acessos-painel')
+  await expect(painel).toContainText('Recusar vence qualquer permissão')
+  await expect(page.getByTestId('acesso-item')).toContainText('setor Análise')
+  await expect(page.getByTestId('acesso-item')).toContainText('ler o dado')
+})
+
+test('conceder manda o TIPO do sujeito, e não só o id', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-acessos').click()
+  await expect(page.getByTestId('acessos-vazio')).toBeVisible()
+  await page.getByTestId('acesso-sujeito').selectOption('agent:a1')
+  await page.getByTestId('acesso-capacidades').selectOption('read,configure')
+  await page.getByTestId('acesso-conceder').click()
+
+  await expect.poll(() => concedido).not.toBeNull()
+  expect(concedido).toMatchObject({ subjectType: 'agent', subjectId: 'a1', capabilities: ['read', 'configure'], effect: 'allow' })
+})
+
+test('a recusa do servidor ao conceder aparece na tela', async ({ page }) => {
+  await stub(page)
+  await page.route(`**/api/monitoring/sources/${ID}/grants`, (r) => {
+    if (r.request().method() === 'PUT') return r.fulfill({ status: 400, json: { message: 'esse sujeito não existe nesta conta' } })
+    return r.fulfill({ json: { items: [] } })
+  })
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-acessos').click()
+  await page.getByTestId('acesso-sujeito').selectOption('agent:a1')
+  await page.getByTestId('acesso-conceder').click()
+  await expect(page.getByTestId('acesso-erro')).toContainText('não existe nesta conta')
+})
+
+// --- histórico operacional ----------------------------------------------------------------
+
+const EVENTO = {
+  id: 'e1',
+  sourceId: ID,
+  sourceName: 'Preço do fornecedor',
+  kind: 'collect',
+  outcome: 'failed',
+  at: new Date(Date.now() - 90_000).toISOString(),
+  durationMs: 240,
+  rows: 0,
+  recorded: 0,
+  errorCode: 'http',
+  errorMessage: 'o servidor respondeu 503',
+  pages: null,
+  monitorId: null,
+  monitorName: null,
+  runId: null,
+}
+
+test('o HISTÓRICO mostra o que aconteceu, com duração e erro — não só contadores', async ({ page }) => {
+  await stub(page, { eventos: [EVENTO] })
+  await page.goto('/monitoring?tab=history')
+  const item = page.getByTestId('historico-item')
+  await expect(item).toContainText('falhou')
+  await expect(item).toContainText('Preço do fornecedor')
+  await expect(item).toContainText('240 ms')
+  await expect(page.getByTestId('historico-erro-item')).toContainText('503')
+})
+
+test('o histórico vazio explica, e os filtros existem', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=history')
+  await expect(page.getByTestId('historico-vazio')).toContainText('Nada aconteceu ainda')
+  await expect(page.getByTestId('historico-filtro')).toBeVisible()
+  await expect(page.getByTestId('historico-tipo')).toBeVisible()
+  await expect(page.getByTestId('historico-resultado')).toBeVisible()
+})
+
+test('o histórico dispara uma busca por FONTE ao filtrar', async ({ page }) => {
+  await stub(page, { eventos: [EVENTO] })
+  const pedidos: string[] = []
+  await page.route('**/api/monitoring/history**', (r) => {
+    pedidos.push(r.request().url())
+    return r.fulfill({ json: { items: [EVENTO], nextCursor: null } })
+  })
+  await page.goto('/monitoring?tab=history')
+  await expect(page.getByTestId('historico-item')).toBeVisible()
+  await page.getByTestId('historico-resultado').selectOption('failed')
+  await expect.poll(() => pedidos.some((u) => u.includes('outcome=failed'))).toBe(true)
+})
+
+// --- edição de fonte e exclusão com impacto -----------------------------------------------
+
+test('EDITAR uma fonte abre o wizard preenchido e salva no mesmo id', async ({ page }) => {
+  await stub(page)
+  let atualizado: unknown = null
+  await page.route(`**/api/monitoring/sources/${ID}`, (r) => {
+    if (r.request().method() === 'PUT') {
+      atualizado = r.request().postDataJSON()
+      return r.fulfill({ json: { id: ID } })
+    }
+    return r.fulfill({ status: 204, body: '' })
+  })
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-editar').click()
+
+  await expect(page.getByTestId('wizard-nome')).toHaveValue('Preço do fornecedor')
+  // O tipo decide a forma inteira da fonte: trocá-lo numa edição seria criar outra.
+  await expect(page.getByTestId('wizard-tipo')).toBeDisabled()
+  await page.getByTestId('wizard-nome').fill('Preço do fornecedor (revisado)')
+  for (let i = 0; i < 6; i++) await page.getByTestId('wizard-avancar').click()
+  await expect(page.getByTestId('wizard-revisao')).toContainText('não o que já foi gravado')
+  await page.getByTestId('wizard-salvar').click()
+
+  await expect.poll(() => atualizado).not.toBeNull()
+  expect(atualizado).toMatchObject({ name: 'Preço do fornecedor (revisado)', config: { url: 'https://api.exemplo.test/precos' } })
+})
+
+test('excluir DIZ O QUE SE PERDE — e o que não se perde', async ({ page }) => {
+  await stub(page)
+  let mensagem = ''
+  page.on('dialog', (d) => {
+    mensagem = d.message()
+    void d.dismiss()
+  })
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-excluir').click()
+  await expect.poll(() => mensagem).toContain('CONTINUA existindo')
+  expect(mensagem).toContain('regra de coleta')
+})
+
+// --- 320 px e acessibilidade nas telas novas ----------------------------------------------
+
+test('em 320 px as abas novas não empurram a página para os lados', async ({ page }) => {
+  await stub(page, { monitores: [MONITOR], eventos: [EVENTO] })
+  await page.setViewportSize({ width: 320, height: 720 })
+  for (const aba of ['monitors', 'history']) {
+    await page.goto(`/monitoring?tab=${aba}`)
+    await expect(page.locator('body')).toBeVisible()
+    const largura = await page.evaluate(() => document.documentElement.scrollWidth)
+    expect(largura, `a aba ${aba} vazou em 320 px`).toBeLessThanOrEqual(321)
+  }
+})
+
+test('acessibilidade: os campos novos têm rótulo, e o erro é anunciado', async ({ page }) => {
+  await stub(page)
+  await page.goto('/monitoring?tab=sources')
+  await page.getByTestId('fonte-acessos').click()
+  // Um `select` sem rótulo é um campo que o leitor de tela anuncia como "combo box".
+  for (const id of ['acesso-sujeito', 'acesso-capacidades', 'acesso-efeito']) {
+    const rotulo = await page.getByTestId(id).evaluate((el) => {
+      const campo = el as HTMLElement
+      const porFor = campo.id ? document.querySelector(`label[for="${campo.id}"]`) : null
+      return (porFor ?? campo.closest('label'))?.textContent?.trim() ?? ''
+    })
+    expect(rotulo, `${id} sem rótulo`).not.toEqual('')
+  }
+})
+
+test('os botões novos alcançam o alvo mínimo de toque', async ({ page }) => {
+  await stub(page, { monitores: [MONITOR] })
+  await page.goto('/monitoring?tab=monitors')
+  for (const id of ['monitor-editar', 'monitor-publicar', 'monitor-excluir']) {
+    const caixa = await page.getByTestId(id).boundingBox()
+    expect(caixa!.height, `${id} é pequeno demais para o dedo`).toBeGreaterThanOrEqual(36)
+  }
 })
