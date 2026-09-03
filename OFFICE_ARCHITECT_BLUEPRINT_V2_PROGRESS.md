@@ -167,3 +167,74 @@ herda escrita autônoma**, que é aprovação por ação e não efeito de conect
 - O V2 ainda **não é produzido por ninguém**: o compilador continua emitindo V1. É a Fase 3.
 - `mergeBlueprintPatch` e o `diff` da prévia continuam só no V1; eles passam a aceitar os
   dois formatos quando o compilador V2 existir.
+
+---
+
+## Fase 3 (parcial) — roteador de intenção e compilador V2 ✅
+
+`backend/src/architect/intent.ts` e `backend/src/architect/compileV2.ts`.
+
+### O roteador dos quatro modos
+
+A regra que atravessa o arquivo: **a LLM classifica e descreve; o código decide e executa.**
+Uma regra escrita em português dentro de um prompt é uma sugestão — o modelo a segue quase
+sempre, e o "quase" é o caso que ninguém testa.
+
+O que o parser garante, e nenhum prompt garantiria:
+
+- **modo fora do vocabulário vira `answer`** — o modo que não cria projeto, não escreve e não
+  aciona nada. Cair no mais inofensivo diante de resposta estranha separa "não entendi" de
+  "fiz algo que ninguém pediu";
+- **nenhum ObjectId sobrevive**, em campo nenhum. Um id vindo do modelo é um id inventado;
+- **o risco SOBE na dúvida**: `risk` ausente ou desconhecido vira `write`. Errar para cima
+  custa uma confirmação; errar para baixo executa uma escrita que ninguém autorizou;
+- **`policyFor`** decide as consequências em código: só `propose` cria projeto, escrita nunca
+  acontece sem confirmação, e `answer` sobre o agora exige origem e instante;
+- **`noCurrentSource`** é a recusa honesta: sem fonte conectada, nenhum número é inventado.
+
+### O compilador V2 — cinco lacunas mortas
+
+| Lacuna | O que passou a acontecer |
+| --- | --- |
+| 4 — um andar genérico | `areasOf` reconhece as áreas do Brief: três áreas viram três andares |
+| 4 — nunca expandir | `findExistingFloor` reaproveita o andar que já existe (`action: 'reuse'`), e é conservador: "Atendimento ao fornecedor" **não** é "Atendimento" |
+| 5 — `actionKeys: []` | `resolveAppActions` casa o verbo do trabalho com as ações **reais** do manifesto, separando leitura de escrita. Escrita autônoma sai sempre vazia |
+| 6 — canal errado | `resolveChannel` faz o **pedido** ganhar; a conexão pendente vira checklist. Só sem pedido o conectado serve |
+| 2 — `liveDataNeeds` no vazio | vira fonte + destino ao vivo, com `staleAfterSeconds` derivado do texto ("até 1 minuto" → 60) e **zero agentes**: acesso é concessão |
+| 9 — condição vira cron | `parseDataCondition` separa horário de condição. Uma condição vira **fonte → histórico → monitor → Flow**, e o Flow só começa na borda verdadeira |
+| 7 — canal sem vínculo | nasce um `channels[]` ligando App, agente de entrada e direção |
+
+**Dois defeitos que os testes de cenário encontraram durante a fase:**
+
+1. o classificador chamava "avise quando o RSI ficar abaixo de 30" de **cálculo** — ele vê
+   "RSI" e conclui fórmula. Está certo sobre o cálculo e errado sobre a forma. A condição de
+   dado passou a ser lida **antes** do tipo, e as duas coisas convivem: a vigilância é
+   compilada e o cálculo continua descendo para virar função ou pendência;
+2. um agente que "cria o evento na agenda" não ganhava o App: requisito de App só nascia
+   quando o classificador dizia `tool`, e um trabalho que mistura conversa e ação externa não
+   é `tool` — é um agente com ferramenta.
+
+**Campo e limiar ausentes nunca viram zero.** Um monitor com limiar inventado dispara sempre
+ou nunca, e nos dois casos ninguém descobre por quê — então vira pendência declarada.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectIntent.test.mjs` | 18 | 18 passam |
+| `backend/test/architectCompileV2.test.mjs` | 19 | 19 passam |
+| suíte inteira do Arquiteto | 379 | 379 passam |
+
+Os quatro cenários do plano estão cobertos no nível do compilador: **A** (pergunta sem
+mutação, via `policyFor` + `noCurrentSource`), **B** (CXSE3 → fonte/histórico/monitor/Flow),
+**C** (restaurante → ações exatas + vínculo de canal) e **D** (salão → reuso sem duplicar).
+
+### Pendências reais ao fim da fase
+
+- **Brief V2** (§10.1 do plano) ainda não estendeu os campos novos: tolerância de atraso,
+  política de aprovação humana e critérios de aceitação observáveis continuam fora do
+  `OperationBrief`. O compilador já produz `acceptanceTests`, mas derivados da forma do
+  plano, não de critérios que a pessoa declarou.
+- O compilador V2 **ainda não está ligado ao serviço**: `service.ts` continua chamando
+  `compileBrief` (V1). A troca acontece com a feature flag, na Fase 9.
+- `sectors` não é produzido pelo compilador V2 — a Fase 4 é quem trata topologia de setor.
