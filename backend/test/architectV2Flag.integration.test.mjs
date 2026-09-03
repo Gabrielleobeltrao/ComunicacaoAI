@@ -1,8 +1,11 @@
-// A FLAG do Blueprint V2 — e a única coisa que ela não pode fazer: mudar o que já existe.
+// A FLAG do Blueprint V2 — agora LIGADA por padrão, e a chave de desligar que sobrou.
+//
+// Ela nasceu desligada enquanto o V2 não estava provado. Os critérios de saída do §22 foram
+// atendidos, então o padrão virou o V2 — mas `ARCHITECT_BLUEPRINT_V2=0` continua existindo, e
+// é isso que faz o rollback ser uma variável de ambiente em vez de um deploy.
 //
 // Desligada, nada acontece: o projeto não ganha `blueprintV2`, a saga não roda o passo do V2
-// e o hash é exatamente o que já era. É isso que faz o rollback ser uma variável de ambiente
-// em vez de um deploy.
+// e o hash é exatamente o que já era.
 //
 // Ligada, os dois documentos têm que descrever UM escritório. O risco concreto: se o V2
 // inventasse as próprias `key`s de andar, o Flow dele apontaria para um andar que ninguém
@@ -86,21 +89,24 @@ const proposta = async () => {
 
 // --- a flag em si ------------------------------------------------------------------------------
 
-test('a flag nasce DESLIGADA, e um valor qualquer não a liga', () => {
+test('a flag nasce LIGADA, e só um "não" explícito a desliga', () => {
   delete process.env.ARCHITECT_BLUEPRINT_V2
-  assert.equal(architectV2Enabled(), false)
-  for (const v of ['0', 'false', 'off', 'talvez', '']) {
+  assert.equal(architectV2Enabled(), true, 'os critérios de saída foram atendidos: o padrão é o V2')
+  // Só o "não" explícito desliga. Um valor inesperado NÃO pode desligar o produto por
+  // acidente — uma variável mal digitada derrubaria o V2 sem ninguém perceber.
+  for (const v of ['0', 'false', 'OFF']) {
     process.env.ARCHITECT_BLUEPRINT_V2 = v
-    assert.equal(architectV2Enabled(), false, `"${v}" não pode ligar`)
+    assert.equal(architectV2Enabled(), false, `"${v}" tinha que desligar`)
   }
-  for (const v of ['1', 'true', 'ON']) {
+  for (const v of ['1', 'true', 'on', 'talvez', '']) {
     process.env.ARCHITECT_BLUEPRINT_V2 = v
-    assert.equal(architectV2Enabled(), true, `"${v}" tinha que ligar`)
+    assert.equal(architectV2Enabled(), true, `"${v}" não pode desligar`)
   }
   delete process.env.ARCHITECT_BLUEPRINT_V2
 })
 
 test('DESLIGADA: o projeto continua exatamente como era', async () => {
+  process.env.ARCHITECT_BLUEPRINT_V2 = '0'
   const id = await proposta()
   const projeto = await repo.getProject(DONO, new ObjectId(id))
   assert.ok(projeto.blueprint, 'o plano V1 continua sendo montado')
@@ -164,13 +170,12 @@ test('LIGADA: nenhum passo do V2 falha por andar inexistente', async () => {
 // --- o rollback da flag -----------------------------------------------------------------------------
 
 test('desligar a flag DEPOIS não quebra um projeto que já tem plano V2', async () => {
-  process.env.ARCHITECT_BLUEPRINT_V2 = '1'
   const id = await proposta()
   assert.ok((await repo.getProject(DONO, new ObjectId(id))).blueprintV2)
 
   // O plano V2 continua gravado; a saga continua sabendo aplicá-lo. Desligar a flag para de
   // COMPILAR planos novos — não apaga nem invalida os que já existem.
-  delete process.env.ARCHITECT_BLUEPRINT_V2
+  process.env.ARCHITECT_BLUEPRINT_V2 = '0'
   const v = await pedir('POST', `/projects/${id}/validate`)
   assert.equal(v.body.valid, true, JSON.stringify(v.body.issues))
   const previa = await pedir('GET', `/projects/${id}/preview`)

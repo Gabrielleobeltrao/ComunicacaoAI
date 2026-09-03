@@ -165,12 +165,13 @@ test('instalar duas vezes não cria dois projetos: a instalação é única por 
 // conversão preserva `key` e `resourceId`, e o que o V1 não diz ela não inventa.
 
 test('DESLIGADA: o template continua chegando como proposta V1', async () => {
-  delete process.env.ARCHITECT_BLUEPRINT_V2
+  process.env.ARCHITECT_BLUEPRINT_V2 = '0'
   const p = await publicado(BLUEPRINT, 'v1-puro')
   const r = await tpl.installTemplate(QUEM_INSTALA, p._id)
   const projeto = await db.collection('architect_projects').findOne({ _id: r.project._id })
   assert.equal(projeto.blueprintV2, undefined)
   assert.equal(projeto.blueprintVersion, 1)
+  delete process.env.ARCHITECT_BLUEPRINT_V2
 })
 
 test('LIGADA: o template vira proposta V2 preservando as `key`s', async () => {

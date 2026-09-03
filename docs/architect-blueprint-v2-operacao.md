@@ -5,18 +5,23 @@ perguntas: **como ligar**, **o que muda quando liga**, e **como voltar** se algo
 
 ## A chave
 
+O V2 é o padrão. Para **desligar**:
+
 ```
-ARCHITECT_BLUEPRINT_V2=1
+ARCHITECT_BLUEPRINT_V2=0
 ```
 
-`1`, `true` ou `on` ligam. Qualquer outra coisa — inclusive a ausência da variável — deixa
-desligado. Não há default oculto: a leitura é `backend/src/architect/flags.ts`, uma função de
-uma linha, e ela é consultada a cada compilação, não uma vez no boot. Isso significa que
-**mudar a variável e reiniciar o processo basta**; não há cache a limpar.
+`0`, `false` ou `off` desligam. Qualquer outra coisa — inclusive a ausência da variável —
+deixa **ligado**. Um valor mal digitado não derruba o produto por acidente: só o "não"
+explícito desliga.
+
+A leitura é `backend/src/architect/flags.ts`, uma função de uma linha consultada a cada
+compilação, não uma vez no boot. **Mudar a variável e reiniciar o processo basta**; não há
+cache a limpar.
 
 ## O que muda quando liga
 
-| | Desligada | Ligada |
+| | Desligada (`=0`) | Ligada (padrão) |
 | --- | --- | --- |
 | Plano V1 | montado como sempre | montado como sempre |
 | Plano V2 | não existe | compilado do mesmo Brief e gravado em `blueprintV2` |
@@ -47,13 +52,13 @@ Fonte, monitor e Flow nascem rascunho. Entrar no ar exige **as duas coisas**:
 
 Um alvo sem teste declarado **não é ativável**. Ausência de teste não é prova.
 
-## Como ligar com segurança
+## Como conferir depois de subir
 
-1. Ligue em **uma conta de teste** primeiro (`ARCHITECT_BLUEPRINT_V2=1` num processo isolado).
-2. Crie um projeto, valide e abra a prévia. O hash muda — é esperado: ele agora cobre os dois
-   planos.
-3. Aplique **sem** `approvedActivationKeys`. Confira que os recursos nasceram e que nada
-   entrou no ar.
+1. Crie um projeto, valide e abra a prévia. O hash muda — é esperado: ele agora cobre os dois
+   planos. A proposta passa a mostrar Databases, fontes e monitores, agrupados.
+2. Aplique **sem** marcar nada em "O que já entra no ar". Confira que os recursos nasceram e
+   que nada entrou no ar.
+3. Aplique de novo marcando a fonte. Confira que ela só entra no ar se o teste passar.
 4. Confira os passos da operação: `GET /projects/:id` traz `operation.steps`. Nenhum passo
    pode estar `failed`.
 5. Confira a prontidão: os itens com `completionMode: 'test_result'` refletem os testes de
@@ -61,7 +66,7 @@ Um alvo sem teste declarado **não é ativável**. Ausência de teste não é pr
 
 ## Como voltar atrás
 
-**Desligar a variável e reiniciar.** É tudo.
+**`ARCHITECT_BLUEPRINT_V2=0` e reiniciar.** É tudo.
 
 O que acontece com o que já foi criado:
 
@@ -105,13 +110,14 @@ aparecer.
 | "Pronto" não fica verde | `readiness.blockers` | o texto do que o teste observou |
 | Um teste de aceitação | Activity | execução com `environment: 'test'` e `errorKind: 'acceptance_failed'` |
 
-## O que ainda não está pronto
+## O que ainda fica pendente, e por quê
 
-- A tela de aplicação **não pergunta** o que entrar no ar. O cliente já aceita
-  `approvedActivationKeys`; hoje só dá para autorizar pela API. O padrão seguro vale: sem a
-  lista, nada liga.
-- A saga liga **fontes**; monitores e Flows têm o portão no código mas dependem de dados
-  reais para a simulação, que só existem depois da primeira coleta.
-- `app_dry_run` fica pendente para todo App: nenhum manifesto declara execução de teste.
-- `tool`, `delivery` e `channel` não têm criação automática — cada um vira pendência
-  explícita, com o que falta.
+- **`tool` com `provider: 'function'`** — um cálculo a registrar precisa de código, e código
+  não se infere de uma descrição. Os outros dois providers funcionam: `existing` liga a
+  ferramenta que a conta já tem, `app_action` aponta o bloco de Apps.
+- **Canal de App** (WhatsApp, Telegram) — depende do número, do token e da instalação
+  conectada. O canal nativo do site é criado.
+- **`app_dry_run`** — nenhum App do catálogo declara execução de teste. O plano qualifica com
+  "quando suportado"; implementar exige criar a capacidade nos Apps primeiro.
+- **Streaming da conversa** — nenhum provider desta base faz streaming, e o plano qualifica
+  com "quando suportado pelo provider".

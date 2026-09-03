@@ -367,6 +367,59 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
     return { id: canal._id.toString(), message: 'canal do site criado e apontado para quem recebe' }
   }
 
+  if (kind === 'tool') {
+    const agentes = ((item.agentKeys as string[] | undefined) ?? [])
+      .map((k) => idDe('agent', k) ?? '')
+      .filter((id) => id !== '' && ObjectId.isValid(id))
+    if (!agentes.length) return { pendency: 'nenhum agente desta proposta usaria esta ferramenta' }
+
+    const provider = String(item.provider ?? 'function')
+
+    /**
+     * Uma FUNÇÃO a registrar precisa de código — e código não se infere de uma descrição.
+     *
+     * Os outros dois providers são referências a coisas que já existem na conta, e essas o
+     * plano pode ligar: é a diferença entre "escreva este cálculo para mim" e "dê ao agente
+     * a ferramenta que eu já tenho".
+     */
+    if (provider === 'function') {
+      return { pendency: `"${String(item.name ?? item.key)}" é um cálculo a registrar: crie a função e depois ligue no agente` }
+    }
+
+    if (provider === 'app_action') {
+      // Uma ação de App é um GRANT, e o caminho dele é o mesmo dos requisitos de App: ele
+      // exige instalação ativa e aprovação, que a saga do V1 já confere.
+      return { pendency: `esta ferramenta é a ação "${String(item.actionKey ?? '')}" de ${String(item.appKey ?? '')}: conceda pelo bloco de Apps` }
+    }
+
+    const { listTools } = await import('../tools.js')
+    /**
+     * O nome de uma ferramenta é um IDENTIFICADOR (`cotacao_b3`), e o plano escreve como
+     * gente ("Cotação B3"). Comparar as duas strings cruas nunca casaria — e o resultado
+     * seria uma pendência dizendo que a ferramenta não existe quando ela está lá.
+     */
+    const chaveDoNome = (t: string) =>
+      t
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '')
+    const alvo = chaveDoNome(String(item.name ?? ''))
+    const ferramenta = alvo ? (await listTools(ownerId)).find((t) => chaveDoNome(t.name) === alvo) : undefined
+    if (!ferramenta) return { pendency: `não achei uma ferramenta chamada "${String(item.name ?? '')}" nesta conta` }
+
+    const { getAgentById, updateAgent } = await import('../agents.js')
+    for (const agentId of agentes) {
+      const agente = await getAgentById(ownerId, new ObjectId(agentId))
+      if (!agente) continue
+      // ACRESCENTA. Uma ferramenta que o agente já tinha não é removida nem duplicada.
+      const atuais = agente.toolIds ?? []
+      if (atuais.includes(ferramenta._id.toString())) continue
+      await updateAgent(ownerId, new ObjectId(agentId), { toolIds: [...atuais, ferramenta._id.toString()] })
+    }
+    return { id: ferramenta._id.toString(), message: `ferramenta "${ferramenta.name}" ligada em ${agentes.length} agente(s)` }
+  }
+
   if (kind === 'delivery') {
     const conexaoId = ctx.deliveryConnections?.get(String(item.key ?? ''))
     if (!conexaoId) {
@@ -422,7 +475,7 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
   }
 
   /**
-   * `tool` não tem criação automática.
+   * O que sobra não tem criação automática.
    *
    * Não é esquecimento. Uma ferramenta própria precisa de endpoint e schema que o plano não
    * tem como inventar. E uma entrega precisa de uma CONEXÃO concreta — o próprio contrato do

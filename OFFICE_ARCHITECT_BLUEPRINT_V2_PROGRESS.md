@@ -921,3 +921,70 @@ Teeth check: desligando a ativação de Flow caem 2 casos; lendo `definition` em
 
 backend **1551 + 2210 = 3761**, runner 21, browser-worker 32, frontend 294, E2E **735** com 0
 flaky, lint 0 erros, secret-scan 2257 arquivos, smoke e `git diff --check` verdes.
+
+---
+
+## Fase 10 (conclusão) — a flag ligada, e os dois defeitos que ela expôs
+
+### Os critérios de saída foram atendidos, então o padrão virou o V2
+
+A Fase 10 diz "remover flag apenas após critérios de saída". Os 12 critérios do §22 estão
+atendidos, então `ARCHITECT_BLUEPRINT_V2` passou a nascer **ligada**.
+
+Ela **não foi removida**: `ARCHITECT_BLUEPRINT_V2=0` continua desligando. Remover de vez
+apagaria o rollback documentado e transformaria "voltar atrás" num deploy. Enquanto custa uma
+linha, mantê-la é mais barato que o incidente que ela evita. E só o "não" explícito desliga:
+uma variável mal digitada não pode derrubar o produto por acidente.
+
+### Ligar a flag revelou dois defeitos que quebrariam o produto para todo mundo
+
+**1. Nenhuma primeira aplicação funcionaria.** O hash gravado no projeto era calculado com
+`projeto.blueprintV2` — o V2 **anterior** — enquanto o mesmo patch salvava o V2 **novo**. A
+aplicação recomputava com o novo, os dois não batiam, e toda tentativa era recusada com "a
+proposta mudou desde a última revisão". Com a flag desligada nunca havia V2, então o defeito
+era invisível.
+
+**2. A segunda aplicação duplicaria o escritório.** Depois de aplicar, uma rodada nova
+recompila do zero. No V1 isso é corrigido por `marcarOQueJaExiste`, que transforma os itens em
+`update` apontando para o recurso real. O V2 **não tinha equivalente**: cada Database, fonte e
+monitor voltava como `create`, e a segunda aplicação criaria um segundo de cada — exatamente o
+que o critério 5 proíbe.
+
+**3. E um menor:** os itens do V2 na prévia não pediam aprovação individual. Agora que voltam
+como `update`, alterar um Database que já existe exige o mesmo aval do V1. O mecanismo já
+estava na saga; só a marcação da prévia estava errada.
+
+Um teste também estava medindo a coisa errada: ele recalculava o hash só sobre o V1, então a
+aplicação era recusada por conflito antes de criar qualquer coisa. O `assert.rejects` passava,
+mas pelo motivo errado — o caso dizia testar a retomada e testava a recusa da revisão.
+
+### A ferramenta, fechando o §5
+
+`resources.tools` tem três providers, e eu tratava os três como pendência. Só um é de fato
+impossível:
+
+- **`existing`** — aponta uma ferramenta que a conta já tem. Agora é **ligada** nos agentes
+  pelo `updateAgent` canônico, acrescentando sem duplicar. O casamento é por slug, porque o
+  nome de uma ferramenta é identificador (`cotacao_b3`) e o plano escreve como gente
+  ("Cotação B3"): comparar as strings cruas nunca casaria, e a pendência mentiria dizendo que
+  a ferramenta não existe.
+- **`app_action`** — é um grant, e o caminho dele é o bloco de Apps, que exige instalação
+  ativa e aprovação. Conceder por baixo pularia as duas.
+- **`function`** — cálculo a registrar. Continua pendência: código não se infere de uma
+  descrição.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectApply.integration.test.mjs` | 47 (2 novos) | 47 passam |
+| `backend/test/architectApplyV2.integration.test.mjs` | 28 (5 novos) | 28 passam |
+| `backend/test/architectV2Flag.integration.test.mjs` | 7 | 7 passam |
+
+Teeth check: revertendo o hash para o V2 antigo caem 2 casos; tirando o `marcarOQueJaExisteV2`
+cai 1; deixando a ferramenta de outra conta ser encontrada caem 3.
+
+### Bateria, com a flag LIGADA
+
+backend **1551 + 2216 = 3767**, runner 21, browser-worker 32, frontend 294, E2E 735 com 0
+flaky, lint 0 erros, secret-scan 2257, smoke e `git diff --check` verdes.

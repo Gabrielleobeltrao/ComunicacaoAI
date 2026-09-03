@@ -1,6 +1,6 @@
 # Blueprint V2 do Arquiteto — relatório final
 
-Branch: `feat/office-blueprint-v2`, sobre `development`. 14 commits.
+Branch: `feat/office-blueprint-v2`, sobre `development`. 15 commits.
 
 Este relatório descreve o que está de pé, o que foi encontrado no caminho e o que **não**
 ficou pronto. A última seção não é um apêndice: é a parte que decide se isto pode ser ligado
@@ -111,7 +111,7 @@ Nenhum deles aparece no desenho. Todos aparecem na hora de aplicar, de ler ou de
 | --- | --- |
 | `npm ci` | exit 0 (instalação limpa a partir do lockfile) |
 | `npm run build` | exit 0, inclusive **depois** do `npm ci` |
-| `npm run test -w backend` | **1551 + 2210 = 3761**, 0 falhas |
+| `npm run test -w backend` | **1551 + 2216 = 3767**, 0 falhas |
 | `npm run test:runner` | 21, 0 falhas |
 | `npm run test:browser-worker` | 32, 0 falhas |
 | `npm run test -w frontend` | **294** em 36 arquivos, 0 falhas |
@@ -138,19 +138,27 @@ são de uma execução com a máquina livre.
 Esta seção existe porque o §22.12 pede que ela exista, e porque nada abaixo está escondido em
 outro lugar do relatório.
 
-### A flag continua desligada — mas por outro motivo
+### A flag está LIGADA, e a chave de desligar continua existindo
 
-`ARCHITECT_BLUEPRINT_V2` nasce desligada. O que a segurava — a tela não perguntar o que entra
-no ar — **foi resolvido**: a prévia devolve `activatable` (os itens que declaram teste de
-aceitação, com o que cada teste vai observar) e o diálogo de aplicação tem a seção "O que já
-entra no ar", vazia por padrão.
+Os 12 critérios do §22 foram atendidos, e a Fase 10 diz "remover flag apenas após critérios de
+saída" — então `ARCHITECT_BLUEPRINT_V2` passou a nascer ligada. Ela **não foi removida**:
+`ARCHITECT_BLUEPRINT_V2=0` desliga. Remover de vez apagaria o rollback documentado e
+transformaria "voltar atrás" num deploy; enquanto custa uma linha, mantê-la é mais barato que
+o incidente que ela evita. E só o "não" explícito desliga: uma variável mal digitada não pode
+derrubar o produto por acidente.
 
-O que continua faltando para ligá-la é menor, e é honesto dizer qual é: **não existe prévia
-do V2 na tela**. Quem liga a flag vê a mesma prévia V1, e os recursos do V2 — Databases,
-fontes, monitores — aparecem só na lista de passos da operação, depois de aplicar. A pessoa
-autoriza a ativação de algo que ela não viu ser proposto.
+**Ligar a flag revelou dois defeitos que teriam quebrado o produto para todos**, e é a melhor
+justificativa possível para ter ligado antes de declarar pronto:
 
-Enquanto isso for verdade, a flag não deve sair.
+1. **Nenhuma primeira aplicação funcionaria.** O hash gravado usava o `blueprintV2`
+   **anterior** enquanto o mesmo patch salvava o novo. A aplicação recomputava com o novo, os
+   dois não batiam, e toda tentativa era recusada com "a proposta mudou desde a última
+   revisão".
+2. **A segunda aplicação duplicaria o escritório.** Depois de aplicar, uma rodada nova
+   recompila do zero; o V1 corrige isso com `marcarOQueJaExiste`, e o V2 não tinha
+   equivalente. Cada Database, fonte e monitor voltava como `create`.
+
+Os dois estão corrigidos, com teeth check.
 
 ### A cadeia de Operação está parcial
 
@@ -160,7 +168,9 @@ Enquanto isso for verdade, a flag não deve sair.
 | `channel` nativo (`web_chat`) | **criado**, apontado para o agente ou setor de entrada |
 | `delivery` | **criada** como passo `delivery.send`, na conexão escolhida ao aplicar |
 | `channel` de App (WhatsApp, Telegram) | pendência: depende do número, do token e da instalação conectada |
-| `tool` | pendência: endpoint e schema de uma ferramenta própria não são inferíveis |
+| `tool` `existing` | **ligada** nos agentes que a usam, pelo `updateAgent` canônico |
+| `tool` `app_action` | pendência: é um grant, e o caminho é o bloco de Apps |
+| `tool` `function` | pendência: cálculo a registrar — código não se infere de uma descrição |
 
 Sobre a entrega, uma correção do que este relatório dizia antes: eu havia escrito que ela era
 impossível por desenho. Não é. O contrato do V2 proíbe **endereço** dentro do Blueprint — e

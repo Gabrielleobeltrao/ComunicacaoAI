@@ -112,8 +112,15 @@ function itensDoV2(v2: OfficeBlueprintV2 | null | undefined): PreviewItem[] {
         ...(item.rationale?.trim() ? { rationale: item.rationale } : {}),
         dependsOn: item.dependsOn ?? [],
         usesLlm: false,
-        // A aprovação individual do V2 é a de ATIVAÇÃO, que tem lista própria no diálogo.
-        requiresApproval: false,
+        /**
+         * Alterar um recurso que JÁ EXISTE exige aval individual — a mesma regra do V1.
+         *
+         * Criar não pede: quem abriu a tela para montar a operação espera que ela crie. Mas
+         * `update` mexe no que já estava lá, e numa rodada depois de aplicada é exatamente
+         * isso que os itens do V2 viram. A outra pergunta do V2 — entrar no ar — tem lista
+         * própria no diálogo e é independente desta.
+         */
+        requiresApproval: item.action === 'update',
         issues: [],
       })
     }

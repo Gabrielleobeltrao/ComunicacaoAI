@@ -272,11 +272,18 @@ test('uma falha no meio deixa o que já foi feito, e a retomada continua sem dup
   await pedir('POST', `/projects/${id}/messages`, { content: 'pelo site' })
   await pedir('POST', `/projects/${id}/validate`)
   const projeto = await repo.getProject(DONO, new ObjectId(id))
-  const hash = computeBlueprintHash(projeto.blueprint)
+  /**
+   * O hash é o que o SERVIDOR gravou — não um recalculado só sobre o V1.
+   *
+   * Recalcular parcialmente fazia a aplicação ser recusada por conflito de hash antes de
+   * criar qualquer coisa. O `assert.rejects` passava, mas pelo motivo errado: o caso
+   * dizia testar a retomada e testava a recusa da revisão.
+   */
+  const hash = projeto.blueprintHash
 
   // Cai no primeiro setor: os andares e agentes já foram criados.
-  await assert.rejects(
-    service.applyProject(
+  const erro = await service
+    .applyProject(
       DONO,
       new ObjectId(id),
       { blueprintHash: hash, idempotencyKey: 'op-falha', confirm: true },
@@ -285,8 +292,10 @@ test('uma falha no meio deixa o que já foi feito, e a retomada continua sem dup
           if (kind === 'sector') throw new Error('queda simulada no meio da aplicação')
         },
       },
-    ),
-  )
+    )
+    .then(() => null, (e) => e)
+  assert.ok(erro, 'a queda injetada precisa derrubar a aplicação')
+  assert.match(String(erro.message), /queda simulada/, `caiu por outro motivo: ${String(erro.message)}`)
 
   assert.equal(await db.collection('agents').countDocuments({ ownerId: DONO }), 2, 'o que já foi criado fica')
   assert.equal(await db.collection('sectors').countDocuments({ ownerId: DONO }), 0)
@@ -436,7 +445,11 @@ test('depois de aplicado dá para continuar conversando — e a rodada nova NÃO
 
   // E a prévia trata tudo como alteração — que exige aprovação item a item na confirmação.
   const previa = await pedir('GET', `/projects/${id}/preview`)
-  assert.equal(previa.body.counts.create, 0)
+  assert.equal(
+    previa.body.counts.create,
+    0,
+    `nada pode voltar como "criar": ${JSON.stringify(previa.body.items.filter((i) => i.action === 'create').map((i) => `${i.kind}:${i.key}`))}`,
+  )
   assert.ok(previa.body.counts.update >= 3)
   assert.ok(previa.body.items.filter((i) => i.kind !== 'app' && i.kind !== 'knowledge').every((i) => i.requiresApproval))
 })
@@ -877,12 +890,15 @@ test('a prévia MOSTRA os recursos e operações do V2, e não só andar e agent
 })
 
 test('sem plano V2, a prévia continua exatamente como era', async () => {
+  // A flag é o padrão; este caso é sobre o caminho DESLIGADO, que precisa continuar intacto.
+  process.env.ARCHITECT_BLUEPRINT_V2 = '0'
   const { id } = await projetoPronto()
   const previa = await pedir('GET', `/projects/${id}/preview`)
   const tipos = new Set(previa.body.items.map((i) => i.kind))
   for (const doV2 of ['database', 'source', 'monitor', 'flow', 'channel', 'delivery']) {
     assert.equal(tipos.has(doV2), false, `"${doV2}" apareceu num projeto sem V2`)
   }
+  delete process.env.ARCHITECT_BLUEPRINT_V2
 })
 
 // --- ativar o Flow e o monitor, não só a fonte -------------------------------------------------
@@ -1024,4 +1040,52 @@ test('as conexões oferecidas são as CONECTADAS desta conta, e só elas', async
   assert.deepEqual(ids, [minha._id.toString()], 'uma conexão alheia na lista é um endereço de outra pessoa oferecido como opção')
   // O segredo nunca sai: a lista tem nome e provedor, e nada mais.
   assert.deepEqual(Object.keys(r.body.connections[0]).sort(), ['id', 'name', 'provider'])
+})
+
+// --- dois defeitos que só aparecem com o V2 ligado ---------------------------------------------
+
+test('o hash gravado cobre o plano V2 QUE FOI GRAVADO — não o anterior', async () => {
+  // Com `projeto.blueprintV2` (o antigo) no cálculo, o hash guardado era de um documento e a
+  // aplicação recomputava com outro: TODA primeira aplicação era recusada com "a proposta
+  // mudou". O defeito só existe quando existe um V2 — por isso passou despercebido enquanto
+  // a flag estava desligada.
+  const { id } = await projetoPronto()
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  assert.ok(projeto.blueprintV2, 'este caso precisa de um projeto com plano V2')
+
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: projeto.blueprintHash,
+    idempotencyKey: 'op-hash-gravado',
+    confirm: true,
+  })
+  assert.equal(r.status, 200, `o hash gravado tem que ser aceito: ${JSON.stringify(r.body)}`)
+})
+
+test('depois de aplicado, os recursos do V2 voltam como ALTERAR — nunca como criar de novo', async () => {
+  const { id, hash } = await projetoPronto()
+  await aplicar(id, hash, 'op-v2-update')
+  const antes = await db.collection('data_stores').countDocuments({ ownerId: DONO })
+
+  await pedir('POST', `/projects/${id}/messages`, { content: 'quero ajustar o atendimento' })
+
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const criados = Object.keys(operacao.resourceMap ?? {})
+  assert.ok(criados.length > 0)
+
+  // Todo item do V2 que virou recurso real aponta para ele — e com ação de alteração.
+  for (const chave of criados) {
+    const [kind, key] = chave.split(':')
+    const listas = [
+      ...projeto.blueprintV2.resources.databases,
+      ...projeto.blueprintV2.operations.sources,
+      ...projeto.blueprintV2.operations.monitors,
+      ...projeto.blueprintV2.operations.flows,
+    ]
+    const item = listas.find((i) => i.key === key)
+    if (!item) continue
+    assert.equal(item.action, 'update', `${kind}:${key} voltou como "${item.action}" e criaria um segundo`)
+    assert.equal(item.resourceId, operacao.resourceMap[chave])
+  }
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), antes, 'conversar não cria recurso')
 })

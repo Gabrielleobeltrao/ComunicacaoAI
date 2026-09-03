@@ -38,7 +38,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'automations', 'automation_versions', 'widgets', 'connections'])
+  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'automations', 'automation_versions', 'widgets', 'connections', 'tools'])
     await db.collection(c).deleteMany({})
 
   predio = new ObjectId()
@@ -294,13 +294,67 @@ test('o monitor de um DATASET real é criado, e nasce rascunho', async () => {
 
 // --- o que ainda NÃO é criado, e é dito -----------------------------------------------------------
 
-test('a TOOL vira pendência explícita — endpoint e schema não são inferíveis', async () => {
+// --- a ferramenta: referência liga, código não se infere ---------------------------------------
+
+const { createTool } = await import('../dist/tools.js')
+
+test('uma ferramenta que JÁ EXISTE é ligada nos agentes que a usam', async () => {
+  const ferramenta = await createTool(DONO, {
+    name: 'cotacao_b3',
+    description: 'consulta cotação',
+    method: 'GET',
+    url: 'https://api.exemplo.test/cotacao',
+    inputSchema: { type: 'object', properties: {} },
+  })
   const bp = base()
-  bp.resources.tools = [item({ key: 'calc-rsi', name: 'RSI', description: 'calcula', provider: 'function', agentKeys: [] })]
+  bp.resources.tools = [item({ key: 'cotacao', name: 'Cotação B3', description: 'consulta', provider: 'existing', agentKeys: ['marina'] })]
+
+  const passos = await aplicar(bp)
+  assert.equal(passos[0].status, 'created', passos[0].message)
+
+  const depois = await db.collection('agents').findOne({ _id: agente })
+  assert.ok((depois.toolIds ?? []).includes(ferramenta._id.toString()), 'o agente foi criado sem alcançar a ferramenta')
+})
+
+test('ligar duas vezes não duplica a ferramenta no agente', async () => {
+  const ferramenta = await createTool(DONO, { name: 'cotacao_b3', description: 'consulta a cotação atual do papel', method: 'GET', url: 'https://api.exemplo.test/c', inputSchema: { type: 'object', properties: {} } })
+  const bp = base()
+  bp.resources.tools = [item({ key: 'cotacao', name: 'Cotação B3', description: 'x', provider: 'existing', agentKeys: ['marina'] })]
+
+  await aplicar(bp)
+  await applyV2Resources({ ownerId: DONO, blueprint: bp, resourceMap: mapaInicial(), approvedKeys: new Set(chavesDe(bp)) })
+
+  const depois = await db.collection('agents').findOne({ _id: agente })
+  assert.equal((depois.toolIds ?? []).filter((t) => t === ferramenta._id.toString()).length, 1)
+})
+
+test('uma FUNÇÃO a registrar vira pendência — código não se infere de uma descrição', async () => {
+  const bp = base()
+  bp.resources.tools = [item({ key: 'calc-rsi', name: 'RSI', description: 'calcula', provider: 'function', agentKeys: ['marina'] })]
 
   const passos = await aplicar(bp)
   assert.equal(passos[0].status, 'skipped')
-  assert.match(passos[0].message, /ainda não é aplicado automaticamente/)
+  assert.match(passos[0].message, /cálculo a registrar/)
+})
+
+test('uma ação de App é dita como GRANT, e não ligada por baixo', async () => {
+  const bp = base()
+  bp.resources.tools = [item({ key: 'agenda', name: 'Agenda', description: 'x', provider: 'app_action', appKey: 'google_calendar', actionKey: 'create_event', agentKeys: ['marina'] })]
+
+  const passos = await aplicar(bp)
+  assert.equal(passos[0].status, 'skipped')
+  // Conceder por aqui pularia a instalação ativa e a aprovação, que o bloco de Apps confere.
+  assert.match(passos[0].message, /conceda pelo bloco de Apps/)
+})
+
+test('AMEAÇA: a ferramenta de OUTRA conta não é encontrada', async () => {
+  await createTool('vizinho', { name: 'do_vizinho', description: 'consulta a cotação atual do papel', method: 'GET', url: 'https://api.exemplo.test/v', inputSchema: { type: 'object', properties: {} } })
+  const bp = base()
+  bp.resources.tools = [item({ key: 'alheia', name: 'Do vizinho', description: 'x', provider: 'existing', agentKeys: ['marina'] })]
+
+  const passos = await aplicar(bp)
+  assert.equal(passos[0].status, 'skipped')
+  assert.match(passos[0].message, /não achei uma ferramenta/)
 })
 
 // --- posse -----------------------------------------------------------------------------------------

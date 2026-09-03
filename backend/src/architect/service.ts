@@ -4,6 +4,8 @@ import { maskSecrets, containsSecret } from './secrets.js'
 import { mergeBlueprintPatch, computeBlueprintHash } from './blueprint.js'
 import { compileBrief, layerCounts, selectLayer } from './compile.js'
 import { compileBriefV2 } from './compileV2.js'
+import { V2_ITEM_PATHS, itemsAt } from './typesV2.js'
+import type { OfficeBlueprintV2 } from './typesV2.js'
 import { loadOfficeInventory } from './inventory.js'
 import { architectV2Enabled } from './flags.js'
 import { runLlmCritique } from './criticLlm.js'
@@ -319,7 +321,20 @@ async function runTurn(
    */
   const camada = camadaDe(projeto)
   const recorte = blueprint ? selectLayer(blueprint, camada) : null
-  const hash = recorte ? computeBlueprintHash(recorte, projeto.blueprintV2) : null
+  /**
+   * O hash cobre o plano V2 QUE ESTÁ SENDO GRAVADO — não o que o projeto tinha antes.
+   *
+   * Usar `projeto.blueprintV2` aqui gravava o hash de um documento e salvava outro: a
+   * aplicação recomputava com o V2 novo, os dois não batiam, e TODA primeira aplicação era
+   * recusada com "a proposta mudou desde a última revisão". Ninguém conseguiria aplicar
+   * nada — e o defeito só aparece quando existe um V2, por isso ele passou despercebido
+   * enquanto a flag estava desligada.
+   */
+  const v2Recompilado = compiladoV2?.blueprint ?? null
+  const v2Vigente =
+    (turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExisteV2(ownerId, projeto, v2Recompilado) : v2Recompilado) ??
+    projeto.blueprintV2
+  const hash = recorte ? computeBlueprintHash(recorte, v2Vigente) : null
   const patch: Partial<ArchitectProject> = {
     // Qual constituição valia quando esta proposta foi feita. Sem isso, mudar o texto
     // das regras torna uma decisão antiga inexplicável — e impossível de reproduzir.
@@ -334,7 +349,7 @@ async function runTurn(
     // que só respondeu uma pergunta não pode zerar o "o que mudou" da revisão passada.
     ...(projeto.blueprint && hash !== projeto.blueprintHash ? { previousBlueprint: recorteDe(projeto) } : {}),
     ...(compilado ? { compiled: true } : {}),
-    ...(compiladoV2 ? { blueprintVersion: 2 as const, blueprintV2: compiladoV2.blueprint } : {}),
+    ...(compiladoV2 ? { blueprintVersion: 2 as const, blueprintV2: v2Vigente as OfficeBlueprintV2 } : {}),
     // Proposta na mesa é `draft`; a validação é que promove para `ready`. Um projeto
     // aplicado que ganhou proposta nova volta para `draft` — é a rodada seguinte.
     status: blueprint ? 'draft' : projeto.status === 'applied' ? 'applied' : 'discovery',
@@ -409,6 +424,56 @@ async function marcarOQueJaExiste(ownerId: string, projeto: ArchitectProject, ba
     }
   }
   return bp
+}
+
+/**
+ * O MESMO para o plano V2 — e sem ele a segunda aplicação duplicaria o escritório.
+ *
+ * Depois de aplicar, uma rodada nova recompila do zero: cada Database, fonte e monitor volta
+ * como `create`. No V1 isso é corrigido por `marcarOQueJaExiste`; o V2 não tinha equivalente,
+ * então a segunda aplicação criaria um segundo Database ao lado do primeiro — exatamente o
+ * que a garantia "não duplica recursos existentes" proíbe.
+ *
+ * O que decide é o `resourceMap` da última operação: ele é o registro do que foi criado de
+ * verdade, e não uma comparação por nome.
+ */
+async function marcarOQueJaExisteV2(ownerId: string, projeto: ArchitectProject, base: OfficeBlueprintV2 | null): Promise<OfficeBlueprintV2 | null> {
+  if (!base) return base
+  const operacao = await repo.lastOperation(ownerId, projeto._id)
+  const mapa = new Map(Object.entries(operacao?.resourceMap ?? {}))
+  if (mapa.size === 0) return base
+
+  const bp = structuredClone(base)
+  for (const path of V2_ITEM_PATHS) {
+    for (const item of itemsAt(bp, path) as unknown as { key: string; action: string; resourceId?: string | null }[]) {
+      // O `kind` do mapa é o último segmento do caminho, no singular — a mesma chave que a
+      // saga usou para gravar.
+      const kind = KIND_DO_PATH[path]
+      const id = kind ? mapa.get(`${kind}:${item.key}`) : undefined
+      if (!id) continue
+      item.action = 'update'
+      item.resourceId = id
+    }
+  }
+  return bp
+}
+
+/** De onde o item mora no documento para a `kind` que o `resourceMap` conhece. */
+const KIND_DO_PATH: Partial<Record<(typeof V2_ITEM_PATHS)[number], string>> = {
+  'organization.floors': 'floor',
+  'organization.agents': 'agent',
+  'organization.sectors': 'sector',
+  'resources.databases': 'database',
+  'resources.datasets': 'dataset',
+  'resources.tools': 'tool',
+  'operations.sources': 'source',
+  'operations.liveDestinations': 'live',
+  'operations.histories': 'history',
+  'operations.monitors': 'monitor',
+  'operations.flows': 'flow',
+  'operations.routines': 'routine',
+  'operations.channels': 'channel',
+  'operations.deliveries': 'delivery',
 }
 
 /**
