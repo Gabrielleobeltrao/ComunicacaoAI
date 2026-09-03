@@ -59,3 +59,50 @@ Registrados em `docs/adr/` nesta fase:
 ### Pendências reais ao fim da fase
 
 - Nenhuma. A fase 0 não muda comportamento, e é isso que ela promete.
+
+---
+
+## Fase 1 — inventário e dependências ✅
+
+`backend/src/architect/inventory.ts`.
+
+### O que passou a existir
+
+**`OfficeInventory`** — completo, owner-scoped, com teto. Cada seção sai do **serviço
+canônico** do domínio: `listFloors`, `listSectors`, `listAgents`, `listInstallations`,
+`listDataStores`/`listDatasets`/`listGrants`, `listSources`, `describeMonitors`,
+`listAutomations`, `listTools`. Nenhuma consulta direta a coleção que já tem dono.
+
+**`OfficeInventorySummary`** — o que vai para o modelo, e só. Contagens, os primeiros nomes
+e uma lista de "o que está pela metade". **Nenhum ObjectId**: um id no contexto é um id que
+o modelo pode devolver, e um id devolvido pelo modelo é um id inventado.
+
+**`DependencyGraph`** — nós e arestas para **impacto e ordem**, nunca para autorização. A
+aresta carrega `required`, que é o que separa dependência de vínculo: a fonte *alimenta* um
+dataset (sem ela a série para, não deixa de existir) e o monitor *observa* (sem o dataset
+ele nunca dispara). `dependentsOf` responde "o que quebra se isto sumir" com profundidade
+limitada — um ciclo em dado real transformaria a análise num laço.
+
+### Decisões que o teste trava
+
+- **conta cruzada**: o inventário de uma conta não contém nome nem id da outra;
+- **credencial**: `configEncrypted`, `secretEncrypted` e cabeçalho com token não atravessam
+  o inventário — nem cifrados, nem por referência;
+- **teto**: acima de `INVENTORY_LIMITS.perKind` a resposta corta, mas `total` continua
+  verdadeiro e `truncated` diz que cortou;
+- **vocabulário do domínio**: o App fora do ar é descrito pelo motivo real (`error`,
+  `revoked`, `needs_reauth`), porque reautenticar não é o mesmo que reconectar e "não
+  conectado" para os três esconde o que fazer a seguir.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectInventory.integration.test.mjs` | 9 | 9 passam |
+
+### Pendências reais ao fim da fase
+
+- **canais vinculados e entregas** ainda não têm seção no inventário: o produto não tem hoje
+  um serviço canônico que os liste por conta. Eles entram na Fase 3, junto com a resolução
+  exata de canal — e a ausência está registrada aqui em vez de virar uma seção vazia que
+  parece implementada.
