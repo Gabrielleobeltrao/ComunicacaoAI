@@ -285,6 +285,9 @@ const RULES: Rule[] = [
   R('POST', 'api/monitoring/sources/:/read', null, { why: 'coleta sob demanda: o registro é auditado pelo histórico' }),
   // Girar o segredo de um webhook é exatamente o que uma auditoria precisa mostrar depois.
   R('POST', 'api/monitoring/sources/:/webhook-secret', { entityType: 'monitoring_source', action: 'rotate' }, { idAt: 3 }),
+  // Criar um monitor A PARTIR de uma fonte cria uma regra que vai agir sozinha — e ainda
+  // materializa o destino da fonte. As duas coisas são mudança, e as duas entram.
+  R('POST', 'api/monitoring/sources/:/monitor', { entityType: 'monitor', action: 'create' }, { idAt: 3 }),
   // Conceder e revogar alcance é mudança de permissão: entra no registro.
   R('PUT', 'api/monitoring/sources/:/grants', { entityType: 'monitoring_source', action: 'update' }, { idAt: 3 }),
   R('DELETE', 'api/monitoring/sources/:/grants/:/:', { entityType: 'monitoring_source', action: 'update' }, { idAt: 3 }),

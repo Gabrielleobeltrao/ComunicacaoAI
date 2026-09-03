@@ -293,3 +293,58 @@ test('a entrega BOA continua bloqueando o replay dela mesma', async () => {
   assert.equal((await entregar(CORPO, { eventId: 'e-boa' })).ok, true)
   assert.equal((await entregar(CORPO, { eventId: 'e-boa' })).reason, 'duplicate')
 })
+
+test('editar um webhook NÃO apaga o endereço que o outro lado já configurou', async () => {
+  // A chave pública nasce no servidor e é o endereço configurado do outro lado. Ela não vem
+  // no formulário — uma edição a mandaria de volta como `null`, e o endereço deixaria de
+  // existir sem ninguém ter pedido isso.
+  const antes = (await svc.getSource(DONO, fonte._id)).config.webhookPublicKey
+  assert.ok(antes)
+
+  await svc.updateSource(DONO, fonte._id, {
+    name: 'Pedidos da loja (revisado)',
+    kind: 'webhook',
+    config: {},
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, fields: [{ to: 'pedido', from: 'id', required: true }] },
+    destination: { history: true },
+  })
+
+  const depois = await svc.getSource(DONO, fonte._id)
+  assert.equal(depois.name, 'Pedidos da loja (revisado)')
+  assert.equal(depois.config.webhookPublicKey, antes, 'o endereço precisa sobreviver à edição')
+
+  // E a entrega continua chegando no mesmo endereço, com o mesmo segredo.
+  const corpo = JSON.stringify({ id: 'depois-da-edicao', valor: '3' })
+  const r = await wh.receiveWebhook(antes, corpo, {
+    'x-signature': signBody(credencial.secret, corpo),
+    'x-event-id': 'pos-edicao',
+    'x-timestamp': String(Date.now()),
+  })
+  assert.equal(r.ok, true)
+})
+
+test('AMEAÇA: informar uma chave pública na edição não sequestra o endereço de outra fonte', async () => {
+  const outra = await svc.createSource(DONO, {
+    name: 'Outra loja',
+    kind: 'webhook',
+    config: {},
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, fields: [{ to: 'pedido', from: 'id', required: true }] },
+    destination: { history: true },
+  })
+  const credOutra = await wh.rotateWebhookSecret(DONO, outra._id)
+
+  await svc.updateSource(DONO, fonte._id, {
+    name: 'Pedidos da loja',
+    kind: 'webhook',
+    config: { webhookPublicKey: credOutra.publicKey },
+    cadence: { mode: 'stream' },
+    mapping: { version: 1, fields: [{ to: 'pedido', from: 'id', required: true }] },
+    destination: { history: true },
+  })
+
+  const depois = await svc.getSource(DONO, fonte._id)
+  assert.equal(depois.config.webhookPublicKey, credencial.publicKey, 'a chave informada pelo cliente é ignorada')
+  assert.notEqual(depois.config.webhookPublicKey, credOutra.publicKey)
+})

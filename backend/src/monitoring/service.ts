@@ -274,11 +274,26 @@ export async function updateSource(ownerId: string, id: ObjectId, input: SourceI
   const existente = await sources.findOne({ _id: id, ownerId })
   if (!existente) return null
   const campos = normalizar(input)
+  /**
+   * O que o SERVIDOR gerou não é reescrito por quem edita.
+   *
+   * A chave pública de um webhook nasce aqui e é o endereço que o outro lado já configurou.
+   * Ela não vem no formulário, então uma edição a mandaria de volta como `null` — e o
+   * endereço deixaria de existir sem ninguém ter pedido isso. O mesmo vale para uma chave
+   * que alguém tentasse INFORMAR: aceitar um `webhookPublicKey` do cliente deixaria
+   * apontar uma fonte para o endereço de outra.
+   */
+  const config =
+    existente.kind === 'webhook'
+      ? { ...campos.config, ...(existente.config.webhookPublicKey ? { webhookPublicKey: existente.config.webhookPublicKey } : {}) }
+      : campos.config
+
   const atualizado = await sources.findOneAndUpdate(
     { _id: id, ownerId },
     {
       $set: {
         ...campos,
+        config,
         // O destino já materializado é preservado: reescrevê-lo com `null` desligaria a
         // fonte do histórico que ela vem alimentando.
         destination: { ...campos.destination, recorderId: existente.destination.recorderId ?? null, realtimeSourceId: existente.destination.realtimeSourceId ?? null },
