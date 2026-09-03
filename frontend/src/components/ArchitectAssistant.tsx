@@ -50,6 +50,15 @@ interface Mensagem {
   pergunta?: string
   projectId?: string | null
   phase?: AssistantPhase
+  /**
+   * A escrita esperando confirmação.
+   *
+   * Sem isto, o servidor preparava a operação e a conversa não tinha como dizer "sim": a
+   * escrita ficava sem saída, e a pessoa via o impacto sem nenhum botão.
+   */
+  pendente?: { id: string; operationHash: string; summary: string; impact: string[]; expiresAt: string; requiresName?: string } | null
+  /** O desfecho depois de confirmar. Fica na própria mensagem, e não num alerta que some. */
+  desfecho?: string
 }
 
 interface AssistantState {
@@ -66,6 +75,8 @@ interface AssistantState {
   minimizar: () => void
   setRascunho: (t: string) => void
   enviar: () => Promise<void>
+  /** Confirma a escrita que uma mensagem preparou. O texto do modelo nunca chega ao servidor. */
+  confirmar: (mensagemId: string) => Promise<void>
 }
 
 const Ctx = createContext<AssistantState | null>(null)
@@ -149,7 +160,14 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
         body: JSON.stringify({ message: texto, uiContext }),
       })
       const corpo = (await res.json().catch(() => null)) as
-        | { text?: string; question?: string | null; projectId?: string | null; phase?: AssistantPhase; message?: string }
+        | {
+            text?: string
+            question?: string | null
+            projectId?: string | null
+            phase?: AssistantPhase
+            message?: string
+            pendingOperation?: Mensagem['pendente']
+          }
         | null
       if (!res.ok) throw new Error(corpo?.message ?? 'não consegui responder agora')
 
@@ -162,6 +180,7 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
           ...(corpo?.question ? { pergunta: corpo.question } : {}),
           projectId: corpo?.projectId ?? null,
           phase: corpo?.phase ?? 'done',
+          pendente: corpo?.pendingOperation ?? null,
         },
       ])
       setPhase(corpo?.phase ?? 'done')
@@ -173,6 +192,33 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       setEnviando(false)
     }
   }, [rascunho, enviando, uiContext])
+
+  /**
+   * O "sim" vai para um endpoint PRÓPRIO, com o id e o hash que o servidor montou.
+   *
+   * Nada do que a pessoa ou o modelo escreveram viaja aqui: só a referência de uma operação
+   * que o servidor já preparou e o carimbo do que foi mostrado.
+   */
+  const confirmar = useCallback(async (mensagemId: string) => {
+    const alvo = mensagens.find((m) => m.id === mensagemId)
+    if (!alvo?.pendente) return
+    try {
+      const res = await fetch(`${API_URL}/api/architect/assistant/confirm`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: alvo.pendente.id, operationHash: alvo.pendente.operationHash }),
+      })
+      const corpo = (await res.json().catch(() => null)) as { ok?: boolean; text?: string; message?: string } | null
+      // O desfecho fica NA MENSAGEM: um alerta que some deixaria a pessoa sem saber se
+      // aconteceu — e a recusa por hash vencido é exatamente o que ela precisa ler.
+      setMensagens((m) =>
+        m.map((x) => (x.id === mensagemId ? { ...x, desfecho: corpo?.text ?? corpo?.message ?? 'não consegui confirmar', pendente: res.ok ? null : x.pendente } : x)),
+      )
+    } catch (e) {
+      setMensagens((m) => m.map((x) => (x.id === mensagemId ? { ...x, desfecho: (e as Error).message } : x)))
+    }
+  }, [mensagens])
 
   const valor = useMemo<AssistantState>(
     () => ({
@@ -191,8 +237,9 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       minimizar: () => setMinimizado((v) => !v),
       setRascunho,
       enviar,
+      confirmar,
     }),
-    [aberto, minimizado, mensagens, rascunho, phase, enviando, erro, enviar],
+    [aberto, minimizado, mensagens, rascunho, phase, enviando, erro, enviar, confirmar],
   )
 
   /**
@@ -437,6 +484,23 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
                 {m.pergunta ? (
                   <p style={{ margin: '6px 0 0', fontSize: 13, fontWeight: 600 }} data-testid="architect-pergunta">
                     {m.pergunta}
+                  </p>
+                ) : null}
+                {m.pendente && !m.desfecho ? (
+                  <div style={{ margin: '8px 0 0' }} data-testid="architect-confirmar-operacao">
+                    <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 12.5, color: 'var(--text-muted)' }}>
+                      {m.pendente.impact.map((linha) => (
+                        <li key={linha}>{linha}</li>
+                      ))}
+                    </ul>
+                    <Button variant="secondary" onClick={() => void a.confirmar(m.id)} data-testid="architect-confirmar">
+                      Confirmar
+                    </Button>
+                  </div>
+                ) : null}
+                {m.desfecho ? (
+                  <p style={{ margin: '8px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="architect-desfecho">
+                    {m.desfecho}
                   </p>
                 ) : null}
                 {m.projectId ? (

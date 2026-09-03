@@ -329,3 +329,111 @@ test('o texto do painel alcança o contraste mínimo, inclusive o de erro', asyn
   })
   expect(razao, 'texto abaixo de 4,5:1 é o que ninguém consegue ler às três da manhã').toBeGreaterThanOrEqual(4.5)
 })
+
+// --- a fronteira do cliente ---------------------------------------------------------------
+//
+// O modo era escolhido pelo corpo da requisição. Quem manda o corpo é o navegador.
+
+test('o cliente NÃO manda classificação — quem decide o modo é o servidor', async ({ page }) => {
+  await stub(page)
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('pause tudo')
+  await page.getByTestId('architect-input').press('Enter')
+
+  await expect.poll(() => enviado).not.toBeNull()
+  const corpo = enviado as Record<string, unknown>
+  // Mandar a classificação deixaria o cliente escolher o caminho que executa.
+  expect(Object.keys(corpo).sort()).toEqual(['message', 'uiContext'])
+})
+
+test('uma fase INESPERADA do servidor não bloqueia o campo para sempre', async ({ page }) => {
+  await stub(page, {
+    turno: {
+      intent: { mode: 'answer', query: 'x', freshness: 'static' },
+      // Uma fase intermediária: antes, ela travava o campo sem nada dizer por quê.
+      phase: 'consulting',
+      text: 'consultando',
+      question: null,
+      projectId: null,
+      context: { pathname: '/', rejected: [] },
+    },
+  })
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('primeira')
+  await page.getByTestId('architect-input').press('Enter')
+  await expect(page.getByTestId('architect-mensagens')).toContainText('consultando')
+
+  // O campo continua utilizável: a segunda mensagem sai.
+  await page.getByTestId('architect-input').fill('segunda')
+  await page.getByTestId('architect-input').press('Enter')
+  await expect(page.getByTestId('architect-msg-pessoa').last()).toContainText('segunda')
+})
+
+test('a escrita mostra o IMPACTO e espera o clique — nada acontece antes', async ({ page }) => {
+  let confirmado: unknown = null
+  await stub(page, {
+    turno: {
+      intent: { mode: 'operate', action: 'pausar a fonte', risk: 'write' },
+      phase: 'awaiting_approval',
+      text: 'pausar a fonte "Cotações". Confirme para eu fazer.',
+      question: null,
+      projectId: null,
+      context: { pathname: '/', rejected: [] },
+      pendingOperation: {
+        id: 'op-1',
+        operationHash: 'abc123',
+        summary: 'pausar a fonte "Cotações"',
+        impact: ['A fonte "Cotações" para de coletar até você reativar.'],
+        expiresAt: new Date(Date.now() + 600000).toISOString(),
+      },
+    },
+  })
+  await page.route('**/api/architect/assistant/confirm', (r) => {
+    confirmado = r.request().postDataJSON()
+    return r.fulfill({ json: { ok: true, text: 'A fonte "Cotações" foi pausada.' } })
+  })
+
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('pause a fonte de cotações')
+  await page.getByTestId('architect-input').press('Enter')
+
+  // O impacto aparece ANTES do botão: confirmar sem ler o que vai acontecer é o que a
+  // prévia existe para evitar.
+  await expect(page.getByTestId('architect-confirmar-operacao')).toContainText('para de coletar')
+  expect(confirmado).toBeNull()
+
+  await page.getByTestId('architect-confirmar').click()
+  await expect.poll(() => confirmado).not.toBeNull()
+  // O que viaja é o id e o hash que o SERVIDOR montou — nunca o texto do modelo.
+  expect(confirmado).toEqual({ id: 'op-1', operationHash: 'abc123' })
+  await expect(page.getByTestId('architect-desfecho')).toContainText('foi pausada')
+})
+
+test('a recusa da confirmação fica NA MENSAGEM, e o botão continua lá', async ({ page }) => {
+  await stub(page, {
+    turno: {
+      intent: { mode: 'operate', action: 'pausar', risk: 'write' },
+      phase: 'awaiting_approval',
+      text: 'confirme',
+      question: null,
+      projectId: null,
+      context: { pathname: '/', rejected: [] },
+      pendingOperation: { id: 'op-2', operationHash: 'velho', summary: 'pausar', impact: ['x'], expiresAt: new Date(Date.now() + 600000).toISOString() },
+    },
+  })
+  await page.route('**/api/architect/assistant/confirm', (r) =>
+    r.fulfill({ status: 409, json: { code: 'hash_changed', message: 'o escritório mudou desde a prévia — revise e peça de novo' } }),
+  )
+
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('pause a fonte')
+  await page.getByTestId('architect-input').press('Enter')
+  await page.getByTestId('architect-confirmar').click()
+
+  // Um alerta que some deixaria a pessoa sem saber por que nada aconteceu.
+  await expect(page.getByTestId('architect-desfecho')).toContainText('mudou desde a prévia')
+})

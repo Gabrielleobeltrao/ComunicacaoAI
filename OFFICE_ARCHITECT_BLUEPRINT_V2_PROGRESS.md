@@ -988,3 +988,117 @@ cai 1; deixando a ferramenta de outra conta ser encontrada caem 3.
 
 backend **1551 + 2216 = 3767**, runner 21, browser-worker 32, frontend 294, E2E 735 com 0
 flaky, lint 0 erros, secret-scan 2257, smoke e `git diff --check` verdes.
+
+---
+
+## Pós-V2 — o Arquiteto Central que responde, consulta, explica e opera
+
+O V2 entregou o plano e a aplicação. O que o chat ainda não fazia era **conversar**: ele
+classificava pelo corpo da requisição, respondia vazio e travava o campo. Esta parte fecha
+isso.
+
+### A classificação saiu do cliente
+
+`/assistant/turn` aceitava um `classified` no corpo. Quem manda o corpo é o navegador: bastava
+mandar `{ mode: 'operate', risk: 'read' }` para escolher o caminho que executa. A intenção
+passou a ser classificada no servidor (`classifyIntent`), com a chave da conta, saída
+estruturada e validação por `parseIntent` — que arranca ObjectId de todo campo e escala o
+risco na dúvida.
+
+A heurística continua como rede, e passou a alcançar `explain` e `operate` de **leitura**.
+Escrita e alto risco nunca saem dela: "pause a fonte" e "apague o andar" parecem iguais para
+uma expressão regular, e um dos dois é irreversível.
+
+### Nenhuma rodada fica pendurada
+
+`answer` devolvia `text: ''` em `answering`; `operate` de leitura, vazio em `consulting`;
+`propose` parava em `preparing_proposal`. Os três eram fases finais que nunca resolviam — o
+campo do chat ficava bloqueado esperando uma continuação que não vinha.
+
+Agora toda rodada termina em `done`, `failed` ou `awaiting_approval`, **com texto**. E na tela
+o bloqueio passou a ser pela requisição em voo: amarrá-lo à fase devolvida fazia uma fase
+inesperada travar o campo para sempre, sem nada dizendo por quê.
+
+### O registro allowlisted
+
+O modelo descreve o pedido. Ele não escolhe id, credencial, endereço nem comando: o servidor
+resolve o **nome** contra o inventário owner-scoped e chama um handler registrado. Uma chave
+fora do registro não executa — o modelo pode pedir `rm -rf`, e aqui isso é uma recusa.
+
+O mapeamento pedido→capacidade também é do código. Se o modelo escolhesse a chave, bastaria
+ele responder `pause_source` para uma pergunta virar escrita.
+
+### `answer` sobre o agora
+
+Consulta a fonte ao vivo da conta, reconfere a posse no instante do uso e devolve **valor,
+fonte e horário**. Acima do frescor que a própria fonte declarou, a resposta é uma recusa que
+diz de quando é o último valor: um número de duas horas atrás apresentado como "agora" é uma
+resposta errada, e quem lê não tem como saber.
+
+### `operate`: a escrita nunca sai da conversa
+
+Ela vira uma operação pendente com prévia, impacto, hash e prazo, confirmada num **endpoint
+próprio**. O texto do modelo não chega lá — só o id que o servidor montou e o hash que ele
+carimbou. O hash é recalculado do estado de agora; dois cliques confirmam uma vez; a tentativa
+vai para a auditoria **inclusive quando é recusada**, que é justamente o que alguém vai querer
+investigar.
+
+### `calculate_rsi`
+
+Wilder, versionada, com schemas de entrada e saída. Dado insuficiente é recusa com o que falta
+("faltam 7 fechamentos") — um número sobre menos dados do que a definição pede é errado com
+cara de certo. Série só de alta é 100 por definição, não uma divisão por zero.
+
+### A janela órfã
+
+Entre criar o recurso e registrar o passo havia um instante em que o recurso existia e a
+operação não sabia. Os serviços canônicos do V2 passam a aceitar a marca de origem
+(`operationId` + `blueprintKey`), gravada na **mesma escrita** que cria o recurso, e a saga
+procura pela marca antes de criar. A marca de **outra** operação não é adotada: adotá-la faria
+o desfazer apagar o que não é dele.
+
+### Canais e entregas no inventário
+
+O canal diz se leva a alguém (`bound`/`unbound`) — uma porta que não leva a lugar nenhum
+aparece. A entrega mostra o provedor e **nenhum endereço**: um e-mail no inventário é dado
+pessoal viajando para a tela e para o resumo que vai ao modelo.
+
+### CXSE3 pela rota real
+
+`architectCxse3EndToEnd` parte de `POST /assistant/turn` com a frase que alguém digitaria.
+Nada de Brief montado à mão — ele sai da conversa do projeto, que continua de onde o chat
+parou.
+
+### Cinco defeitos reais que apareceram no caminho
+
+1. **`computeHealth` lia `telemetry` sem guarda.** A saúde é calculada na listagem: um único
+   documento antigo derrubava o inventário inteiro — a tela de fontes, o assistente e a prévia.
+2. **A heurística não reconhecia "observe X e me avise quando Y" como proposta.** O cenário
+   principal do plano caía em `answer`, procurava uma fonte que ninguém criou, e recusava.
+3. **O assistente perdia a frase original ao abrir o projeto.** A pessoa teria que digitar tudo
+   de novo, e a segunda versão nunca é igual à primeira.
+4. **`explain` respondia "o que este agente faz?" com contagem de andares.** Agora lê o agente
+   real — e um sem função escrita é **dito**, não descrito por invenção: uma descrição plausível
+   tirada do nome soa certa e é falsa.
+5. **A escrita não tinha como ser confirmada pela tela.** O servidor preparava a operação e a
+   conversa não tinha botão.
+
+### Testes
+
+| Arquivo | Casos |
+| --- | --- |
+| `architectAssistant.integration.test.mjs` | 26 |
+| `architectAssistantCapabilities.integration.test.mjs` | 14 |
+| `architectCxse3EndToEnd.integration.test.mjs` | 9 |
+| `architectV2OrphanWindow.integration.test.mjs` | 4 |
+| `indicatorFunctions.test.mjs` | 11 |
+| `architectIntent.test.mjs` | 22 |
+| `architect-v2-characterization.spec.ts` (E2E) | 19 |
+
+Teeth check: neutralizando o portão do hash caem 2; o do frescor, 1; a busca pela marca, 1;
+a posse da conexão de entrega, 1; a ativação de Flow, 2.
+
+### Bateria
+
+backend **1566 + 2257 = 3823**, runner 21, browser-worker 32, frontend 294, E2E 739 com 0
+flaky, lint 0 erros, secret-scan 2265, smoke e `git diff --check` verdes.

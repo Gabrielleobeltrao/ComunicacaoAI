@@ -1,6 +1,6 @@
 # Blueprint V2 do Arquiteto — relatório final
 
-Branch: `feat/office-blueprint-v2`, sobre `development`. 15 commits.
+Branch: `feat/office-blueprint-v2`, sobre `development`. 18 commits.
 
 Este relatório descreve o que está de pé, o que foi encontrado no caminho e o que **não**
 ficou pronto. A última seção não é um apêndice: é a parte que decide se isto pode ser ligado
@@ -111,14 +111,14 @@ Nenhum deles aparece no desenho. Todos aparecem na hora de aplicar, de ler ou de
 | --- | --- |
 | `npm ci` | exit 0 (instalação limpa a partir do lockfile) |
 | `npm run build` | exit 0, inclusive **depois** do `npm ci` |
-| `npm run test -w backend` | **1551 + 2216 = 3767**, 0 falhas |
+| `npm run test -w backend` | **1566 + 2257 = 3823**, 0 falhas |
 | `npm run test:runner` | 21, 0 falhas |
 | `npm run test:browser-worker` | 32, 0 falhas |
 | `npm run test -w frontend` | **294** em 36 arquivos, 0 falhas |
 | `npm run lint -w frontend` | exit 0 — **0 erros**, 44 avisos |
-| `npm run test:e2e -w frontend` | **735 passaram**, 17 puladas, **0 falhas, 0 flaky** |
+| `npm run test:e2e -w frontend` | **739 passaram**, 17 puladas, **0 falhas, 0 flaky** |
 | `npm run smoke` | exit 0 |
-| `npm run secret-scan` | 2257 arquivos, nada encontrado |
+| `npm run secret-scan` | 2265 arquivos, nada encontrado |
 | `git diff --check` | limpo |
 
 Nenhuma asserção foi reduzida, nenhum retry foi acrescentado e nenhuma integração foi trocada
@@ -187,6 +187,14 @@ Fonte, Flow e monitor entram no ar quando o teste passou **e** o dono autorizou.
 que o domínio exige — publicar o Flow, ativar o Flow, publicar o monitor — porque
 `publishMonitor` recusa um monitor cujo Flow não tem versão publicada: um monitor que aciona
 um Flow sem versão é um alarme que toca no vazio.
+
+### O chat deixou de ser um buraco
+
+O relatório anterior descrevia um chat que classificava pelo corpo da requisição, respondia
+vazio e travava o campo. Isso foi fechado: a intenção é decidida no servidor, `answer` consulta
+a fonte real e devolve valor/fonte/horário, `operate` executa leitura e prepara escrita com
+prévia e hash, `explain` lê o recurso, e **toda** rodada termina com texto. O detalhe está na
+seção correspondente do PROGRESS.
 
 ### Outras pendências reais
 
