@@ -77,10 +77,30 @@ function funcaoQueServe(job: BriefJob, manifest: ArchitectCapabilityManifest | n
    * nenhuma: ela vira proposta aprovada em cima de um recurso que não serve, e o
    * defeito só aparece quando alguém usa.
    */
-  return manifest.functions.find((f) => {
-    const nome = (f.functionName.split('.').pop() ?? f.functionName).toLowerCase()
+  const nomeDe = (f: { functionName: string }) => (f.functionName.split('.').pop() ?? f.functionName).toLowerCase()
+  const porNome = manifest.functions.find((f) => {
+    const nome = nomeDe(f)
     return nome.length >= 4 && alvo.includes(nome)
-  })?.functionName
+  })
+  if (porNome) return porNome.functionName
+
+  /**
+   * SEGUNDA PASSADA: o termo distintivo do nome, como palavra inteira.
+   *
+   * `calculate_rsi` nunca casava — nenhum Brief em português escreve "calculate_rsi", e o
+   * compilador declarava "nenhuma função registrada faz este cálculo" para a única conta que
+   * ele sabe fazer com exatidão. O RSI voltava a ser palpite do modelo.
+   *
+   * Ela só roda quando a primeira não achou NADA, então nenhuma resolução de hoje muda; e
+   * casa só palavra inteira, fora da lista de termos genéricos — "get" ou "series" dentro de
+   * uma frase qualquer resolveria para uma função que não faz o que o trabalho pede.
+   */
+  const GENERICOS = new Set(['calculate', 'calcular', 'get', 'list', 'latest', 'range', 'series', 'serie', 'summary', 'data', 'dados', 'lista', 'texto', 'json', 'regra', 'somar', 'idade', 'aggregate'])
+  return manifest.functions.find((f) =>
+    nomeDe(f)
+      .split(/[_\-.]/)
+      .some((seg) => seg.length >= 3 && !GENERICOS.has(seg) && new RegExp(`(^|[^a-z0-9])${seg}([^a-z0-9]|$)`).test(alvo)),
+  )?.functionName
 }
 
 /** O App conectado que executa este trabalho, se existir. */

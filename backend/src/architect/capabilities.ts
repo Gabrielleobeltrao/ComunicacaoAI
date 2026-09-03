@@ -2,6 +2,8 @@ import { ACTIVATION_MODES } from '../agents.js'
 import { AGENT_PRESET_SPECS } from '../agentPresets.js'
 import { roleUIConfigOf } from '../agentCapabilities.js'
 import { SECTOR_MODES } from '../sectors.js'
+// O manifesto só é honesto se o catálogo estiver REGISTRADO quando ele é lido.
+import '../executors/registeredFunctions.js'
 import { listPublicFunctions } from '../executors/functionRegistry.js'
 import { OFFICIAL_APPS } from '../apps/official/index.js'
 import { listInstallations } from '../apps/installations.js'
