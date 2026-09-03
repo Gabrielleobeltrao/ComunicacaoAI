@@ -151,6 +151,20 @@ test('ACEITAÇÃO: o projeto aberto pelo chat monta um BRIEF a partir da convers
   assert.ok(projeto.brief, 'sem entendimento, o desenho é um palpite sobre uma frase')
   assert.ok(projeto.brief.jobs.length > 0, 'o Brief precisa ter ao menos um trabalho mapeado')
   assert.ok(projeto.blueprint, 'sem plano, não há o que aprovar')
+
+  /**
+   * O ENTENDIMENTO tem que carregar as três coisas que a pessoa disse: o papel, o indicador e
+   * o número. Um Brief que perde o "30" produz um alarme com um limiar inventado.
+   */
+  const briefTexto = JSON.stringify(projeto.brief)
+  assert.match(briefTexto, /CXSE3/i, 'o Brief perdeu o papel que a pessoa citou')
+  assert.match(briefTexto, /RSI/i, 'o Brief perdeu o indicador')
+  assert.match(briefTexto, /\b30\b/, 'o Brief perdeu o limiar: 30')
+
+  // E o plano tem que carregar a CADEIA — não só a intenção.
+  const planoTexto = JSON.stringify(projeto.blueprintV2)
+  assert.match(planoTexto, /calculate_rsi/, 'o plano não cita a função que faz a conta: o RSI viraria palpite do modelo')
+  assert.equal(projeto.blueprintV2.operations.monitors[0]?.condition?.value, 30, 'o monitor precisa comparar contra 30, o número da frase')
 })
 
 test('ACEITAÇÃO: a proposta é válida e a prévia mostra o que vai ser criado', async () => {
@@ -160,33 +174,92 @@ test('ACEITAÇÃO: a proposta é válida e a prévia mostra o que vai ser criado
   const previa = await pedir('GET', `/projects/${id}/preview`)
   assert.equal(previa.status, 200)
   assert.ok(previa.body.items.length > 0)
-  // A pessoa vê o que vai acontecer antes de clicar — inclusive o que o V2 acrescenta.
+  /**
+   * A pessoa vê a CADEIA antes de clicar.
+   *
+   * Vigiar um dado não exige agente: "observe e me avise" notifica sem intermediário. O que
+   * ele exige é a cadeia — de onde o dado vem, onde ele fica, o que observa e o que acontece.
+   */
   const tipos = new Set(previa.body.items.map((i) => i.kind))
-  assert.ok(tipos.has('floor') && tipos.has('agent'))
+  assert.ok(tipos.has('floor'), 'a operação precisa de um lugar')
+  for (const esperado of ['source', 'monitor', 'flow']) {
+    assert.ok(tipos.has(esperado), `"${esperado}" não aparece na prévia: ${[...tipos].join(', ')}`)
+  }
 })
 
-// --- do plano ao recurso -----------------------------------------------------------------------
+// --- a pendência que só uma pessoa resolve --------------------------------------------------------
 
-test('ACEITAÇÃO: aplicar cria a organização e NADA entra no ar sozinho', async () => {
+test('ACEITAÇÃO: sem origem do dado, a fonte é PENDÊNCIA acionável — nunca um endereço inventado', async () => {
   const { id } = await ateAProposta()
   const previa = await pedir('GET', `/projects/${id}/preview`)
-  const r = await pedir('POST', `/projects/${id}/apply`, {
-    blueprintHash: previa.body.blueprintHash,
-    idempotencyKey: 'cxse3-1',
-    confirm: true,
+  await pedir('POST', `/projects/${id}/apply`, { blueprintHash: previa.body.blueprintHash, idempotencyKey: 'cxse3-pend', confirm: true })
+
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const passoDaFonte = operacao.steps.find((p) => p.kind === 'source')
+  assert.equal(passoDaFonte.status, 'skipped', 'o Brief diz "cotação CXSE3" — uma descrição, não um endereço')
+  assert.match(passoDaFonte.message, /de onde este dado vem/)
+  assert.equal(await db.collection('monitoring_sources').countDocuments({ ownerId: DONO }), 0)
+
+  // E o que dependia dela cascateia, dizendo de quem espera: é o que torna retomável.
+  const passoDoMonitor = operacao.steps.find((p) => p.kind === 'monitor')
+  assert.equal(passoDoMonitor.status, 'skipped')
+  assert.ok(passoDoMonitor.message?.trim())
+})
+
+// --- do plano ao recurso, com a origem conectada ---------------------------------------------------
+
+/**
+ * O passo humano: a pessoa conecta o provedor de candles.
+ *
+ * O plano não inventa endereço. Quem sabe de onde vêm os candles é quem tem a conta no
+ * provedor — e é por isso que a fonte é declarada e a origem fica pendente. Aqui ela é
+ * conectada pelo serviço canônico, exatamente como a Central faria.
+ */
+const conectarProvedor = async () => {
+  const svc = await import('../dist/monitoring/service.js')
+  return svc.createSource(DONO, {
+    name: 'Candles CXSE3',
+    kind: 'api_polling',
+    config: { url: `http://127.0.0.1:${portaDaOrigem}/candles`, method: 'GET' },
+    mapping: { version: 1, fields: [{ to: 'rsi', from: 'rsi', transforms: [{ op: 'number' }], required: true }] },
+    cadence: { mode: 'interval', intervalMs: 60_000 },
+    destination: { history: true, live: true },
+  })
+}
+
+/** Liga o item da proposta à fonte que a pessoa conectou, e devolve a prévia atual. */
+const ligarFonte = async (id, fonte) => {
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  const item = projeto.blueprintV2.operations.sources[0]
+  assert.ok(item, 'a proposta precisa declarar a fonte para poder ligá-la')
+  const r = await pedir('PATCH', `/projects/${id}/links`, {
+    links: [{ kind: 'source', key: item.key, action: 'reuse', resourceId: fonte._id.toString() }],
   })
   assert.equal(r.status, 200, JSON.stringify(r.body))
+  await pedir('POST', `/projects/${id}/validate`)
+  return (await pedir('GET', `/projects/${id}/preview`)).body
+}
 
-  assert.ok((await db.collection('offices').countDocuments({ ownerId: DONO })) >= 1)
-  assert.ok((await db.collection('agents').countDocuments({ ownerId: DONO })) >= 1)
+test('ACEITAÇÃO: com a origem conectada, aplicar cria a cadeia — e NADA entra no ar sozinho', async () => {
+  const { id } = await ateAProposta()
+  const fonte = await conectarProvedor()
+  const previa = await ligarFonte(id, fonte)
+
+  const r = await pedir('POST', `/projects/${id}/apply`, { blueprintHash: previa.blueprintHash, idempotencyKey: 'cxse3-1', confirm: true })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  assert.ok((await db.collection('offices').countDocuments({ ownerId: DONO })) >= 1, 'a operação precisa de um lugar')
+  // A cadeia real: de onde o dado vem, e o que acontece quando a condição bate. Agente não
+  // entra — "observe e me avise" notifica sem intermediário.
+  assert.equal(await db.collection('monitoring_sources').countDocuments({ ownerId: DONO }), 1, 'a fonte conectada é REUSADA, não duplicada')
+  assert.ok((await db.collection('automations').countDocuments({ ownerId: DONO })) >= 1, 'sem Flow o aviso não sai')
 
   // Nada foi ligado: sem `approvedActivationKeys`, tudo nasce parado.
   for (const fonte of await db.collection('monitoring_sources').find({ ownerId: DONO }).toArray()) {
     assert.notEqual(fonte.status, 'active', `a fonte "${fonte.name}" entrou no ar sem ninguém autorizar`)
   }
-  for (const m of await db.collection('monitors').find({ ownerId: DONO }).toArray()) {
-    assert.notEqual(m.status, 'published', 'o monitor foi publicado sem autorização')
-  }
+  const monitores = await db.collection('monitors').find({ ownerId: DONO }).toArray()
+  for (const m of monitores) assert.notEqual(m.status, 'published', 'o monitor foi publicado sem autorização')
 })
 
 test('nenhum passo da aplicação falha — a cadeia inteira resolve', async () => {
@@ -205,11 +278,17 @@ test('os recursos criados levam a MARCA da operação — a retomada os reconhec
   await pedir('POST', `/projects/${id}/apply`, { blueprintHash: previa.body.blueprintHash, idempotencyKey: 'cxse3-3', confirm: true })
 
   const operacao = await repo.lastOperation(DONO, new ObjectId(id))
-  for (const doc of await db.collection('data_stores').find({ ownerId: DONO }).toArray()) {
-    assert.equal(doc.architect?.operationId, operacao._id.toString(), 'sem marca, uma queda na janela duplicaria este Database')
-  }
-  for (const doc of await db.collection('monitoring_sources').find({ ownerId: DONO }).toArray()) {
-    assert.equal(doc.architect?.operationId, operacao._id.toString())
+  /**
+   * Um `for` sobre coleção vazia passa sem provar nada — por isso cada laço declara antes
+   * quantos documentos ele exige ver.
+   */
+  for (const [colecao, minimo] of [['data_stores', 1], ['automations', 1], ['monitors', 0], ['monitoring_sources', 0]]) {
+    const docs = await db.collection(colecao).find({ ownerId: DONO }).toArray()
+    assert.ok(docs.length >= minimo, `esperava ao menos ${minimo} em ${colecao}, veio ${docs.length}`)
+    for (const doc of docs) {
+      assert.equal(doc.architect?.operationId, operacao._id.toString(), `sem marca, uma queda na janela duplicaria este ${colecao}`)
+      assert.ok(doc.architect?.blueprintKey, `a marca sem a chave do plano não reconhece O QUE é este ${colecao}`)
+    }
   }
 })
 
@@ -224,12 +303,14 @@ test('sem provedor de candles conectado, o RSI vira PENDÊNCIA — nunca um ende
   // onde vêm os candles, e inventar um endereço é pior que declarar a pendência.
   assert.equal(/b3\.com|yahoo|alphavantage|finance\./i.test(texto), false, 'o plano trouxe um endereço que ninguém configurou')
 
-  // A fonte, quando existe, nasce sem config resolvida — e isso aparece como pendência.
-  for (const f of projeto.blueprintV2?.operations.sources ?? []) {
-    if (Object.keys(f.config ?? {}).length === 0) {
-      assert.ok(true, 'a fonte é declarada e a origem fica pendente: é o comportamento certo')
-    }
-  }
+  // A fonte é DECLARADA e a origem fica pendente — com motivo, ou não é retomável.
+  const fontes = projeto.blueprintV2?.operations.sources ?? []
+  assert.ok(fontes.length > 0, 'sem fonte declarada não há o que conectar')
+  const pendencias = projeto.blueprintV2?.warnings ?? []
+  assert.ok(
+    pendencias.some((p) => p.path === 'source_config' && String(p.message ?? '').trim()),
+    `a origem não resolvida precisa virar pendência com motivo: ${JSON.stringify(pendencias)}`,
+  )
 })
 
 test('a função calculate_rsi está disponível para o plano usar', async () => {
@@ -238,4 +319,102 @@ test('a função calculate_rsi está disponível para o plano usar', async () =>
   const fn = findFunction('calculate_rsi')
   assert.ok(fn, 'sem a função registrada, o RSI seria um palpite do modelo')
   assert.equal(fn.version, '1.0.0')
+})
+
+// --- a ativação autorizada e a transição de verdade -------------------------------------------
+
+/** Leva a cadeia até aplicada, com a origem conectada e a ativação autorizada. */
+const ateNoAr = async () => {
+  const { id } = await ateAProposta()
+  const fonte = await conectarProvedor()
+  const previa = await ligarFonte(id, fonte)
+
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  const chaves = [
+    ...projeto.blueprintV2.operations.sources.map((s) => s.key),
+    ...projeto.blueprintV2.operations.flows.map((f) => f.key),
+    ...projeto.blueprintV2.operations.monitors.map((m) => m.key),
+  ]
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: previa.blueprintHash,
+    idempotencyKey: `cxse3-ar-${Math.random().toString(36).slice(2)}`,
+    confirm: true,
+    approvedActivationKeys: chaves,
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  return { id, fonte }
+}
+
+test('ACEITAÇÃO: a fonte é TESTADA antes de entrar no ar', async () => {
+  const { id, fonte } = await ateNoAr()
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const prova = (operacao.acceptance ?? []).find((a) => a.kind === 'source')
+  assert.ok(prova, `nenhum teste de fonte foi declarado: ${JSON.stringify(operacao.acceptance)}`)
+  assert.equal(prova.status, 'passed', prova.observed)
+
+  const depois = await db.collection('monitoring_sources').findOne({ _id: fonte._id })
+  assert.equal(depois.status, 'active')
+  assert.ok(depois.telemetry.lastTestOkAt, 'o portão do domínio exige leitura bem-sucedida')
+})
+
+test('ACEITAÇÃO: com autorização, a cadeia INTEIRA entra no ar', async () => {
+  const { id } = await ateNoAr()
+
+  const flow = await db.collection('automations').findOne({ ownerId: DONO })
+  assert.equal(flow?.status, 'active', 'o Flow parado é o aviso que nunca sai')
+  assert.ok(flow.lastPublishedVersion != null, 'sem versão publicada, o monitor recusa publicar')
+
+  const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
+  assert.ok(monitor, `o monitor não foi criado: ${JSON.stringify((await repo.lastOperation(DONO, new ObjectId(id))).steps)}`)
+  assert.equal(monitor.status, 'published', 'um monitor em rascunho é um alarme desligado que parece ligado')
+  assert.equal(String(monitor.action.flowId), flow._id.toString(), 'o monitor precisa apontar para o Flow desta aplicação')
+})
+
+test('ACEITAÇÃO: a transição verdadeira dispara UMA execução — e o evento repetido não dispara outra', async () => {
+  await ateNoAr()
+  const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
+  assert.ok(monitor?.action?.flowId, 'sem Flow ligado, nada dispararia')
+
+  const { observeAndDispatch } = await import('../dist/monitors/dispatch.js')
+  const base = { ownerId: DONO, monitor }
+
+  // ACIMA de 30: a condição é falsa, e nada acontece.
+  const acima = await observeAndDispatch({ ...base, eventId: 'e1', value: { rsi: 42 } })
+  assert.equal(acima.triggered, false, 'RSI 42 não é "abaixo de 30"')
+
+  // ABAIXO de 30: a borda acontece, e dispara UMA vez.
+  const monitorAgora = await db.collection('monitors').findOne({ _id: monitor._id })
+  const abaixo = await observeAndDispatch({ ...base, monitor: monitorAgora, eventId: 'e2', value: { rsi: 22 } })
+  assert.equal(abaixo.triggered, true, `a transição precisa disparar: ${abaixo.reason}`)
+  assert.ok(abaixo.runId, 'disparar sem execução é um alarme que não faz nada')
+
+  const depoisDoDisparo = await db.collection('monitors').findOne({ _id: monitor._id })
+
+  // O MESMO evento de novo: a chave é a mesma, e reenfileirar não cria uma segunda execução.
+  const repetido = await observeAndDispatch({ ...base, monitor: depoisDoDisparo, eventId: 'e2', value: { rsi: 22 } })
+  assert.equal(repetido.created, false, 'o evento duplicado criou uma segunda execução')
+
+  // E continuar abaixo também não redispara: a borda já foi consumida.
+  const aindaAbaixo = await observeAndDispatch({ ...base, monitor: depoisDoDisparo, eventId: 'e3', value: { rsi: 21 } })
+  assert.equal(aindaAbaixo.triggered, false, 'ficar abaixo não é cruzar para baixo — isso é o alarme tocando sem parar')
+
+  const execucoes = await db.collection('automation_runs').countDocuments({ ownerId: DONO })
+  assert.equal(execucoes, 1, `esperava exatamente uma execução, veio ${execucoes}`)
+})
+
+test('ACEITAÇÃO: a execução aparece na Activity, com a origem no monitor', async () => {
+  await ateNoAr()
+  const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
+  const { observeAndDispatch } = await import('../dist/monitors/dispatch.js')
+  await observeAndDispatch({ ownerId: DONO, monitor, eventId: 'a1', value: { rsi: 42 } })
+  const atual = await db.collection('monitors').findOne({ _id: monitor._id })
+  const r = await observeAndDispatch({ ownerId: DONO, monitor: atual, eventId: 'a2', value: { rsi: 19 } })
+  assert.equal(r.triggered, true, r.reason)
+
+  const { listActivity } = await import('../dist/activity/timeline.js')
+  const linha = await listActivity({ ownerId: DONO, limit: 10 })
+  assert.ok(linha.items.length > 0, 'uma execução que não aparece na linha do tempo é invisível')
+  const daVigilancia = linha.items.find((i) => i.origin?.kind === 'monitor')
+  assert.ok(daVigilancia, `nenhuma execução com origem no monitor: ${JSON.stringify(linha.items.map((i) => i.origin))}`)
+  assert.equal(daVigilancia.origin.id, monitor._id.toString())
 })

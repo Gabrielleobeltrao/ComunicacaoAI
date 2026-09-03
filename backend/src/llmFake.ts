@@ -100,6 +100,79 @@ function respostaDoDuble(prompt: string): string {
   return prompt.includes(ARCHITECT_MARKER) ? architectTurn(prompt) : ''
 }
 
+/**
+ * A VIGILÂNCIA — o Brief que "observe X e me avise quando Y" tem que produzir.
+ *
+ * Determinístico como o resto do dublê: mesma entrada, mesmo Brief. O que ele carrega e o
+ * outro não é o que faz a cadeia existir — um dado que chega continuamente, uma condição
+ * sobre esse dado, e um limiar.
+ */
+function architectTurnVigilancia(prompt: string): string {
+  const jaPerguntou = prompt.includes('cadencia-da-vigilancia')
+  if (!jaPerguntou) {
+    return JSON.stringify({
+      assistantText: 'Para vigiar isso, de quanto em quanto tempo eu olho?',
+      phase: 'discovery',
+      question: {
+        key: 'cadencia-da-vigilancia',
+        text: 'De quanto em quanto tempo eu olho o dado?',
+        why: 'A cadência decide o custo e a rapidez do aviso.',
+        choices: [
+          { value: 'candle', label: 'A cada fechamento de candle' },
+          { value: 'minuto', label: 'A cada minuto' },
+        ],
+        allowUnknown: true,
+      },
+      answerPatch: {},
+      blueprintPatch: null,
+      assumptions: [],
+      warnings: [],
+    })
+  }
+  return JSON.stringify({
+    assistantText: 'Montei a vigilância. Confira antes de aplicar.',
+    phase: 'proposal',
+    question: null,
+    answerPatch: {},
+    briefPatch: {
+      businessGoal: 'acompanhar CXSE3 e avisar quando o RSI ficar abaixo de 30',
+      channels: ['web'],
+      // O dado que chega continuamente: sem ele não há série, e sem série não há borda.
+      liveDataNeeds: [{ source: 'cotação CXSE3', freshness: 'até 1 minuto', required: true }],
+      recordsToKeep: [{ subject: 'Candles CXSE3', fields: ['fechamento', 'rsi'], retentionDays: 365 }],
+      jobs: [
+        {
+          id: 'avisar-rsi',
+          name: 'Avisar sobre o RSI de CXSE3',
+          trigger: 'quando o RSI ficar abaixo de 30',
+          input: 'as cotações de CXSE3',
+          decision: '',
+          action: 'avisar',
+          output: 'o aviso de que o RSI caiu abaixo de 30',
+          frequency: 'a cada fechamento de candle',
+        },
+      ],
+    },
+    // O sinal de "já dá para propor". O desenho quem faz é o compilador.
+    blueprintPatch: {
+      title: 'Vigilância de CXSE3',
+      objective: 'avisar quando o RSI ficar abaixo de 30',
+      floors: [{ key: 'operacao', action: 'create', name: 'Operação', workMode: 'organization', rationale: 'onde a vigilância mora' }],
+      agents: [],
+      sectors: [],
+      routines: [],
+      appRequirements: [],
+      knowledgeRequirements: [],
+      assumptions: [],
+      warnings: [],
+      checklist: [],
+      version: 1,
+    },
+    assumptions: [],
+    warnings: [],
+  })
+}
+
 /** A marca que o prompt do Arquiteto carrega. Ver `architect/prompt.ts`. */
 export const ARCHITECT_MARKER = '[[ARQUITETO_V1]]'
 
@@ -160,6 +233,23 @@ function architectCritique(): string {
  * jornada mandando as mensagens na ordem.
  */
 function architectTurn(prompt: string): string {
+  /**
+   * O dublê responde ao QUE FOI PEDIDO — e não a um roteiro fixo.
+   *
+   * Ele devolvia o restaurante para qualquer mensagem. Um teste de "observe CXSE3 e me avise
+   * quando o RSI cair abaixo de 30" recebia um Brief de atendimento, zero fontes e zero
+   * monitores — e passava, porque nada afirmava que a cadeia tinha nascido. Um dublê que
+   * ignora a entrada faz o teste medir o dublê.
+   */
+  /**
+   * O gatilho é o PAPEL, e não a palavra "RSI".
+   *
+   * O prompt carrega o catálogo de capacidades, e o catálogo descreve `calculate_rsi` como
+   * "Calcula o RSI (Wilder)...". Rotear por `\brsi\b` fazia a conversa do restaurante cair
+   * na vigilância assim que a função entrou no manifesto: o dublê passava a responder ao
+   * texto do sistema em vez de responder à pessoa.
+   */
+  if (/cxse3/i.test(prompt)) return architectTurnVigilancia(prompt)
   const jaPerguntou = prompt.includes('canais-de-atendimento')
   if (!jaPerguntou) {
     return JSON.stringify({
