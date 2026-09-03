@@ -1002,3 +1002,29 @@ test('uma fonte com os DOIS destinos alimenta os dois', async () => {
   await flushLiveData()
   assert.ok(await getLiveValue(DONO, svc.liveConnectionOf(f._id), 'valor'))
 })
+
+test('excluir leva junto o que só existia por causa da fonte — e deixa o histórico', async () => {
+  const f = await svc.createSource(DONO, entrada({ name: 'Some junto', destination: { live: true, history: true } }))
+  await svc.testSource(DONO, await svc.getSource(DONO, f._id))
+  await svc.setSourceStatus(DONO, f._id, 'active')
+  await svc.readSourceOnce(await svc.getSource(DONO, f._id))
+
+  const { flushLiveData } = await import('../dist/integrations/websocket/liveData.js')
+  await flushLiveData()
+
+  const materializada = await svc.getSource(DONO, f._id)
+  const recorderId = materializada.destination.recorderId
+  assert.ok(recorderId)
+  assert.ok(await db.collection('realtime_sources').findOne({ _id: materializada.destination.realtimeSourceId }))
+
+  assert.equal(await svc.deleteSource(DONO, f._id), true)
+
+  // O que morre: o alias em tempo real e o valor ao vivo. Um alias apontando para uma fonte
+  // que não existe mais é um nome que nunca responde.
+  assert.equal(await db.collection('realtime_sources').countDocuments({ _id: materializada.destination.realtimeSourceId }), 0)
+  assert.equal(await db.collection('live_data').countDocuments({ connectionId: svc.liveConnectionOf(f._id) }), 0)
+
+  // O que FICA: o que ela gravou é fato acontecido, e apagar o passado é outra decisão.
+  assert.ok((await db.collection('data_history_records').countDocuments({ ownerId: DONO, recorderId })) > 0)
+  assert.ok(await db.collection('data_recorders').findOne({ _id: recorderId }))
+})

@@ -630,7 +630,7 @@ disco, subprocesso nem rede — e que um laço infinito é cortado.
 
 Comando: `node --test test/monitoringScript.integration.test.mjs` → **11/11**.
 
-## Bateria completa — final
+## Bateria da sessão anterior
 
 | Comando | Resultado |
 | --- | --- |
@@ -644,23 +644,272 @@ Comando: `node --test test/monitoringScript.integration.test.mjs` → **11/11**.
 | `npm run smoke` | verde, saída 0 |
 | `npm run secret-scan` | 2234 arquivos, nada encontrado |
 
-## Próxima ação exata
 
-1. **Unions discriminadas** para `config` e `cadence`, com validação por tipo — hoje
-   `MonitoringConfig` é um objeto com todos os campos opcionais, e a validação é por
-   capacidade do tipo (`KIND_CAPABILITIES`), não pela forma.
-2. **O script de extração e o retrato não estão no wizard**: os dois existem na API e são
-   testados, mas quem usa a tela ainda não consegue configurá-los. É configuração avançada,
-   e a decisão de deixá-la fora do wizard inicial foi deliberada — mas ela é uma lacuna de
-   interface, e está registrada como tal.
-3. **Tipos que ainda não funcionam**: **browser** (renderizado, com OCR/visão de fallback) e
-   **SSE** como protocolo explícito. Os outros oito funcionam.
-4. **Browser em worker isolado** e **OCR/visão com confiança e evidência** — nada existe, e
-   o plano é explícito que dado incerto não dispara.
-5. **Grants por agente/setor** sobre fonte, e autorização reconferida antes da leitura.
-6. E2E 320 px, acessibilidade, e a bateria completa (frontend, lint, smoke, secret-scan).
+---
 
-## O que ainda NÃO existe
+# Sessão de fechamento — os 16 bloqueios do fluxo real
 
-Nada da Central está na tela ainda, e nenhuma fonte é executada por ela — este bloco é o
-modelo e o extrator, com teste. O resto está na lista acima.
+Os blocos acima descrevem peças que existiam e passavam nos próprios testes. Esta sessão
+tratou do que separa "a peça existe" de "o fluxo funciona": onde uma garantia estava
+escrita e não era lida, onde a tela prometia o que a API não fazia, e onde um teste
+verde media um sistema diferente do que roda em produção.
+
+Cada bloco abaixo tem o mesmo formato: **o que estava errado**, **o que passou a valer** e
+**a prova**. Onde a prova é um teste, a linha de produção foi revertida e o teste caiu —
+uma garantia sem essa conferência é uma garantia que não se sabe se existe.
+
+## Bloco 22 — testar destrava ativar, sem virar leitura ✅
+
+**Estava errado**: o portão de ativação só aceitava `telemetry.lastOkAt`, que apenas a
+coleta real escreve. Quem testava com sucesso era empurrado a "coletar agora" só para
+destravar o botão — gravando histórico que não pediu.
+
+**Passou a valer**: o teste de uma fonte gravada deixa telemetria própria
+(`lastTestAt`, `lastTestOkAt`, `lastTestError`), e o portão aceita qualquer uma das duas
+provas. O teste **não** toca `readsOk`, `lastReadAt` nem `lastContentHash`: o hash de um
+teste envenenaria a dedupe, e a primeira coleta de verdade acharia que "não mudou".
+"Coletar agora" passou a existir na UI, com aviso que distingue linhas gravadas de "nada
+mudou".
+
+**Prova**: `monitoringSource.integration.test.mjs` — a fonte testada e nunca coletada
+ativa; testar não escreve em `data_history_records`; teste que falha registra o erro e
+continua barrando a ativação. Revertendo o portão, 2 casos caem.
+
+## Bloco 23 — cadência validada, com cron que dispara ✅
+
+**Estava errado**: `cadence.mode: 'cron'` era aceito sem conferência e a varredura só
+procurava `mode: 'interval'`. A fonte ficava ativa, verde e **muda para sempre**, e o único
+jeito de descobrir era ir procurar o dado que nunca chegou.
+
+**Passou a valer**: união discriminada validada — intervalo com faixa, cron conferido
+contra o **mesmo relógio das rotinas** (`automations/scheduleClock`, no fuso de quem
+configurou) e `stream` para quem empurra. `nextReadAt` conta o cron a partir da última
+leitura, e não de agora: perguntar "qual o próximo depois deste instante" responderia
+sempre amanhã, e a fonte atrasada nunca venceria.
+
+**Prova**: `monitoringHealth.test.mjs` (4 casos de cron, incluindo o disparo perdido e a
+expressão que o relógio não entende) e `monitoringSource.integration.test.mjs` (cron
+inválido recusado; fonte de horário entrando na varredura). Revertendo o filtro de
+`dueSources`, o caso da varredura cai.
+
+## Bloco 24 — o wizard discriminado por tipo, e o monitor que existe ✅
+
+**Estava errado**: o wizard mandava `url + GET + intervalo` para os nove tipos. Dava para
+escolher "Webhook" no primeiro passo e descobrir no último que aquele caminho **nunca**
+funcionou — o servidor recusa a criação inteira por um campo que o formulário mandou
+sozinho. O mapeamento vinha depois do teste, então o teste despejava a resposta e deixava
+quem lê procurando. E "criar também um monitor" só ligava um booleano local: a mensagem
+dizia que o monitor foi criado, e quem fosse procurá-lo não encontrava nada.
+
+**Passou a valer**:
+
+- cada tipo diz o que pede, e os passos que não pertencem a ele **somem**;
+- o payload sai na forma da união discriminada do backend, sem campo estranho;
+- **mapeamento antes do teste**, e o teste responde "achei o preço" e "não achei o
+  estoque", com status e o que fazer a seguir;
+- a criação do monitor é uma chamada de verdade a `POST /sources/:id/monitor`, que
+  materializa o destino da fonte antes (um monitor de dataset sem dataset é recusado) e
+  cria no motor canônico, sempre rascunho. Sem o mínimo, salvar fica indisponível; se a
+  criação falha, a recusa aparece e **nenhuma mensagem promete um monitor**;
+- avançado expõe paginação, parâmetros, seletor, estratégia de leitura, script de extração
+  e o aviso da visão. Ritmo aceita intervalo ou horário em cron com fuso.
+
+**Prova**: `e2e/monitoring-center.spec.ts` — webhook não manda `url` nem `intervalMs`; cron
+manda cron e fuso; o teste diz o que não achou; o monitor vira POST com a condição certa; a
+falha do monitor aparece como recusa.
+
+## Bloco 25 — aluguel atômico por fonte, e backoff que adia ✅
+
+**Estava errado**: a API e o worker podiam coletar a mesma fonte no mesmo segundo — duas
+linhas do mesmo instante, telemetria sobrescrita, e um `lastContentHash` que era o da
+leitura que terminou por último, não o da última. E o `nextAttemptMs` era calculado e
+devolvido na resposta, onde ninguém lia: a fonte quebrada continuava sendo chamada no
+intervalo cheio, martelando um serviço que já tinha respondido 500. `rateLimitPerMinute`
+estava no modelo e ninguém lia.
+
+**Passou a valer**: `claimDueSources` toma a fonte por `findOneAndUpdate` condicional; quem
+primeiro trocar o documento leva. O aluguel **vence** em vez de ser devolvido — um processo
+que morre no meio não trava a fonte para sempre. `nextAttemptAt` é gravado, entra no filtro
+da varredura, e uma leitura boa o apaga. O limite de taxa é cumprido por quem o prometeu.
+
+**Prova**: `monitoringSource.integration.test.mjs` — duas varreduras concorrentes levam uma
+só; o aluguel vence sozinho; falhar adia e a varredura respeita; ler bem apaga o
+adiamento; o limite de taxa espaça as leituras. Neutralizando a condição do aluguel, o caso
+de concorrência cai.
+
+## Bloco 26 — paginação por cursor e por página ✅
+
+**Estava errado**: `pagination` estava no modelo e no validador e **nunca era usada na
+coleta**. Uma API paginada entregava a primeira página e a série ficava pela metade, sem
+erro nenhum — o número existia, estava certo, e era de vinte por cento dos dados.
+
+**Passou a valer**: o laço respeita `maxPages`, bytes, linhas e relógio de parede. Página
+vazia é o fim mesmo com cursor, e o mesmo cursor de novo é a API dizendo que não sabe
+avançar — uma API que devolve cursor não-nulo por engano viraria laço infinito contra o
+servidor de outra pessoa. Uma página seguinte que falha não derruba o que já veio. A razão
+da parada volta no resultado: "buscou 3 de no máximo 3" é notícia diferente de "buscou 3 e
+acabou". O cursor de **retomada** é uma escolha, não um palpite: num feed que só cresce,
+recomeçar relê o passado; numa listagem do estado atual, retomar pula o começo.
+
+**Prova**: 5 casos em `monitoringSource.integration.test.mjs`, contra servidores locais que
+paginam de verdade. Neutralizando o laço, 4 caem.
+
+## Bloco 27 — o destino AO VIVO existe ✅
+
+**Estava errado**: `realtimeSourceId` nascia `null`, era preservado em toda atualização e
+nunca recebia nada. Uma fonte com `live: true, history: false` não tinha recorder — e o Ao
+vivo, que lia do histórico, mostrava **zero leituras para sempre**.
+
+**Passou a valer**: ativar uma fonte ao vivo materializa o par em `realtime_sources`, a
+coleta escreve o valor de agora no `live_data` com o TTL da janela de validade da fonte, e
+o Ao vivo lê do destino que a fonte realmente tem. Para isso, `monitoring` virou um
+`sourceKind` de fonte em tempo real ao lado de `live_data`: os dois são origem que empurra
+valores por chave, e o valor mora na mesma coleção — o mesmo valor serve ao Ao vivo, ao
+agente e à tool de tempo real por um caminho só. A fonte em tempo real nasce **sem agente
+nenhum**: acesso é concessão, não padrão.
+
+**Prova**: 4 casos em `monitoringSource.integration.test.mjs`. Neutralizando a
+materialização, 3 caem; neutralizando a escrita no `live_data`, 3 caem.
+
+## Bloco 28 — o cliente SSE, e o que separa "implementei" de "funciona" ✅
+
+**Estava errado**: SSE era um protocolo declarado na configuração e mais nada. Nenhum
+cliente, nenhuma conexão, nenhuma entrega. E ativar uma fonte SSE era impossível: o portão
+exigia `installationId`, que é o "onde" do WebSocket, não o do SSE.
+
+**Passou a valer** (`backend/src/monitoring/sse.ts`):
+
+- conexão no **endereço conferido**, reconferido a cada volta;
+- o formato inteiro: `data` em várias linhas, `id`, `event`, `retry`, comentário, as três
+  quebras de linha do protocolo, evento partido entre pacotes;
+- **silêncio é morte** — um socket pendurado não dá erro, ele só para de entregar. O
+  relógio começa no envio do pedido, e não na resposta: escrevendo o teste apareceu que um
+  servidor que aceita a conexão e nunca manda cabeçalho deixava o cliente pendurado para
+  sempre;
+- volta com o backoff da fonte e jitter, usando o `retry:` do servidor como **piso** — um
+  servidor pedindo "volte em 1s" enquanto cai receberia uma tempestade justo quando menos
+  aguenta;
+- `Last-Event-ID` reenviado, e a **memória de entrega** (a mesma do webhook) impedindo que
+  reconectar duplique a série: a identidade do fato no motor de histórico inclui o
+  instante, e o instante da segunda chegada é outro;
+- parar é parar: o `stop()` aborta o socket, limpa os relógios e não reconecta;
+- um supervisor reconcilia as fontes ativas, então ativar na tela sobe a assinatura sem
+  reiniciar nada, e pausar realmente para de consumir a rede do outro lado.
+
+**Prova**: `monitoringSse.integration.test.mjs`, **18/18**. Sem o relógio de silêncio, 10
+caem; sem a memória de entrega, o caso de dedupe cai.
+
+## Bloco 29 — o histórico operacional ✅
+
+**Estava errado**: a aba mostrava contadores acumulados — "12 leituras boas, 3 falhas".
+Isso não responde nenhuma das perguntas de quem abre isto às três da manhã: quando parou,
+quanto demorou, quantas linhas vieram, qual foi o erro, e se aquele Flow disparou por causa
+desta fonte.
+
+**Passou a valer** (`backend/src/monitoring/history.ts`): cada coleta, entrega e disparo
+vira uma linha com instante, fonte, status, duração, quantidade lida e gravada, páginas e
+erro **redigido**. Filtro por fonte, tipo e resultado; página pelo `_id` — paginar por
+instante repetiria o empate de dois eventos do mesmo milissegundo. Prazo de 30 dias por
+TTL do Mongo. **Conteúdo não entra**: um log de operação que guarda payload é o lugar mais
+fácil de vazar o que a plataforma inteira protege, e ele fica aberto numa tela, num
+chamado, num print.
+
+O fio entre a fonte, o monitor e o Flow passou a existir: o motor de monitores avisa o que
+**já** disparou (`onMonitorDispatched`) e a ponte anota. Um segundo observador dobraria as
+execuções — que é justamente o defeito que este log existe para ajudar a investigar.
+
+**Prova**: `monitoringHistory.integration.test.mjs`, **10/10**, incluindo o caso de ponta a
+ponta (fonte → coleta → registro → monitor → Flow) que confere o `runId` gravado.
+
+## Bloco 30 — DNS rebinding fechado na renderização ✅
+
+**Estava errado** — e este era o pior. O guarda devolvia o endereço conferido e a busca
+simples o usava, mas a **renderização** chamava `rota.continue()`: o Chromium ia à rede
+sozinho e resolvia o nome **de novo**. Um nome que responde um endereço público na
+conferência e um privado meio segundo depois passava inteiro, porque quem conectou nunca
+viu o endereço aprovado.
+
+**Passou a valer**: nenhuma requisição do navegador chega à rede. Cada uma é buscada pelo
+mesmo caminho da busca simples, que abre socket no endereço conferido, revalida cada
+redirect e manda o `Host` original; a resposta volta pronta ao navegador. Segunda tranca:
+`--host-resolver-rules=MAP * ~NOTFOUND` e service workers bloqueados — o que escapar da
+interceptação não resolve nada. `POST` partindo de dentro da página é abortado: coleta é
+leitura.
+
+No caminho apareceu um **bug de concorrência**: com a busca `await`ada, trinta requisições
+de uma página passavam todas pela mesma conferência de teto antes de qualquer uma
+terminar. A vaga passou a ser reservada antes da busca.
+
+**Prova**: `browser-worker/test/worker.test.mjs` — a página é buscada num nome que o DNS
+real não resolve (se carregar, ninguém perguntou ao DNS); o nome que muda de endereço entre
+a conferência e a subrequisição tem a subrequisição recusada; `POST` de dentro da página é
+abortado. Devolvendo o `continue()`, os dois casos de rebinding caem.
+
+## Bloco 31 — o worker implantável de verdade ✅
+
+**Estava errado**: sem Dockerfile, sem dependência declarada, sem healthcheck, sem limites,
+e o `playwright` só existia por acaso na raiz do monorepo.
+
+**Passou a valer**: `browser-worker/Dockerfile` sobre a imagem oficial do Playwright (que
+já traz Chromium e as bibliotecas de sistema — instalar à mão dá uma lista que envelhece a
+cada versão do navegador), usuário `pwuser` sem privilégio, healthcheck por TCP,
+`playwright` declarado em `dependencies`, e `BROWSER_REQUEST_TIMEOUT_MS` como teto do
+pedido inteiro — os limites de etapa somados ainda deixavam uma página patológica segurar
+a vaga. Limites de CPU, memória, PIDs e rede documentados **com o porquê de cada número**.
+
+**Prova**: `worker.test.mjs` — o teto corta uma página que nunca responde e a vaga volta.
+
+## Bloco 32 — o webhook: identidade por linha, instante e reenvio ✅
+
+**Estava errado**, três coisas no mesmo caminho:
+
+1. `factId` era um por **entrega**. Uma entrega de cinco pedidos gravava um: o motor de
+   histórico via a segunda linha como repetição da primeira e a descartava, e as outras
+   quatro sumiam **sem erro nenhum**;
+2. entrega sem `x-timestamp` pulava a conferência inteira — bastava não mandar o cabeçalho
+   para o replay voltar a valer para sempre;
+3. o registro de idempotência sobrevivia a uma recusa corrigível: o mesmo `x-event-id`,
+   corrigido, virava "duplicado" para sempre, e quem reenviava o evento certo ouvia
+   silêncio.
+
+**Passou a valer**: identidade por linha (chave da entidade quando existe — estável entre
+reenvios — ou índice); política de instante explícita, `required` por padrão para quem
+nasce hoje e `optional` para o provedor que não manda instante, com documento antigo sem o
+campo continuando como antes; e a lembrança desfeita quando nada foi gravado, com a entrega
+**boa** continuando a bloquear o replay dela mesma.
+
+**Prova**: `monitoringWebhook.integration.test.mjs`, **23/23**. Revertendo os três, 4 casos
+caem.
+
+## Bloco 33 — a aba Monitores, os acessos e a edição ✅
+
+**Estava errado**: a aba Monitores só simulava — não listava, não salvava, não publicava.
+Os acessos existiam no servidor e não tinham tela (conceder exigia chamar a API na mão), e
+o backend **não conferia o sujeito**: dava para gravar acesso para um tipo inventado, para
+um id que não é ObjectId, ou para o setor de **outra conta** — a linha na tela dizia que
+alguém tinha acesso, e a decisão nunca batia com ela. E editar uma fonte significava
+duplicar e apagar, deixando para trás o destino materializado.
+
+**Passou a valer**:
+
+- **Monitores**: lista com estado e Flow, criação pelo caminho da Central, edição no mesmo
+  id (a fonte observada vai junto — sem ela, "salvar" viraria "criar em outro lugar"),
+  publicar, pausar, excluir com confirmação, e o mínimo que falta dito em vez de o botão
+  ficar mudo;
+- **Acessos**: painel por fonte com prédio/andar/setor/agente, a precedência escrita na
+  tela, e o backend resolvendo o sujeito pelo mesmo `resolveSubject` do resto do produto —
+  um segundo resolvedor divergiria na primeira mudança de hierarquia. A recusa é a mesma
+  para id inválido, inexistente e de outra conta: distinguir contaria que aquele id existe;
+- **Edição de fonte**: o mesmo wizard, com o tipo travado — ele decide a forma inteira, e
+  trocá-lo seria criar outra fonte;
+- **Exclusão**: "tem certeza?" não é pergunta. A confirmação diz o que continua existindo
+  (o histórico) e o que deixa de existir (a regra de coleta).
+
+**E um achado**: escrevendo o teste de acessibilidade apareceu que **nenhum campo desta
+página tinha rótulo associado programaticamente** — quem navega por teclado ouvia "caixa de
+combinação" e mais nada. Consertado no `Field` compartilhado, vale para o app inteiro.
+
+**Prova**: `monitoringGrants.integration.test.mjs` **22/22** (6 novos de sujeito inválido,
+inexistente e de outra conta; neutralizando as guardas, 5 caem) e
+`e2e/monitoring-center.spec.ts` **44/44**, incluindo 320 px nas abas novas, rótulos
+associados e alvo mínimo de toque.

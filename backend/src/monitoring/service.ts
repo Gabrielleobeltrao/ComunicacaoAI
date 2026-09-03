@@ -374,8 +374,31 @@ export async function duplicateSource(ownerId: string, id: ObjectId): Promise<Mo
  * Históricos, olhando o que vai perder.
  */
 export async function deleteSource(ownerId: string, id: ObjectId): Promise<boolean> {
+  const fonte = await sources.findOne({ _id: id, ownerId })
+  if (!fonte) return false
   const r = await sources.deleteOne({ _id: id, ownerId })
-  return r.deletedCount === 1
+  if (r.deletedCount !== 1) return false
+
+  /**
+   * O que MORRE junto — e o que fica.
+   *
+   * O recorder e o histórico FICAM: o que a fonte gravou é fato acontecido, e apagar o
+   * passado é outra decisão, tomada em Históricos olhando o que se perde.
+   *
+   * O que morre é o que só existia por causa dela: o par em tempo real (uma fonte de dado
+   * ao vivo apontando para uma fonte que não existe mais é um alias que nunca responde), os
+   * valores ao vivo dela, e os acessos concedidos — um grant órfão reapareceria colado numa
+   * fonte nova que reusasse o id.
+   */
+  if (fonte.destination.realtimeSourceId) {
+    await db.collection('realtime_sources').deleteOne({ _id: fonte.destination.realtimeSourceId, ownerId }).catch(() => undefined)
+  }
+  if (fonte.destination.live) {
+    const { deleteLiveDataFor } = await import('../integrations/websocket/liveData.js')
+    await deleteLiveDataFor(ownerId, liveConnectionOf(id)).catch(() => undefined)
+  }
+  await db.collection('monitoring_source_grants').deleteMany({ ownerId, sourceId: id }).catch(() => undefined)
+  return true
 }
 
 /**
