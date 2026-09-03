@@ -38,7 +38,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'automations', 'automation_versions'])
+  for (const c of ['buildings', 'offices', 'agents', 'sectors', 'data_stores', 'dataset_definitions', 'monitoring_sources', 'monitors', 'automations', 'automation_versions', 'widgets'])
     await db.collection(c).deleteMany({})
 
   predio = new ObjectId()
@@ -363,4 +363,48 @@ test('o que DEPENDE de uma pendência também fica pendente — nunca falha', as
   // mesmo dado. Derrubar aqui viraria "falta dizer de onde vem" em "a aplicação quebrou".
   for (const p of passos) assert.equal(p.status, 'skipped', `${p.key}: ${p.message}`)
   assert.ok(passos.slice(1).every((p) => /pendente/.test(p.message)), JSON.stringify(passos))
+})
+
+// --- o canal: o nativo é criado, o de App é pendência ------------------------------------------
+
+test('o canal do SITE é criado e aponta para quem recebe', async () => {
+  const bp = base()
+  bp.operations.channels = [item({ key: 'entrada', name: 'Chat do site', appKey: 'web_chat', entryAgentKey: 'marina', direction: 'both' })]
+
+  const passos = await aplicar(bp)
+  assert.equal(passos[0].status, 'created', passos[0].message)
+
+  const canal = await db.collection('widgets').findOne({ ownerId: DONO })
+  assert.ok(canal, 'sem vínculo, a mensagem não chega a lugar nenhum')
+  assert.equal(canal.agentId.toString(), agente.toString())
+})
+
+test('um canal de APP fica pendente, dizendo o que conectar', async () => {
+  const bp = base()
+  bp.operations.channels = [item({ key: 'zap', name: 'WhatsApp', appKey: 'whatsapp', entryAgentKey: 'marina', direction: 'inbound' })]
+
+  const passos = await aplicar(bp)
+  assert.equal(passos[0].status, 'skipped')
+  assert.match(passos[0].message, /conecte whatsapp/)
+  assert.equal(await db.collection('widgets').countDocuments({ ownerId: DONO }), 0)
+})
+
+test('um canal SEM quem receba fica pendente — uma porta que não leva a lugar nenhum', async () => {
+  const bp = base()
+  bp.operations.channels = [item({ key: 'orfao', name: 'Chat', appKey: 'web_chat', entryAgentKey: 'ninguem', direction: 'both' })]
+
+  const passos = await aplicar(bp)
+  assert.equal(passos[0].status, 'skipped')
+  assert.match(passos[0].message, /não tem quem receba/)
+  assert.equal(await db.collection('widgets').countDocuments({ ownerId: DONO }), 0)
+})
+
+test('a ENTREGA continua pendente — o endereço não mora no Blueprint', async () => {
+  const bp = base()
+  bp.operations.deliveries = [item({ key: 'entrega', fromKey: 'flow-x', destinationHint: 'meu WhatsApp', format: 'text' })]
+  const passos = await aplicar(bp)
+  assert.equal(passos[0].status, 'skipped')
+  // Não é lacuna: o contrato do V2 proíbe endereço concreto dentro do plano, porque ele é
+  // lido inteiro pela tela e viaja no histórico do projeto.
+  assert.match(passos[0].message, /ainda não é aplicado automaticamente/)
 })

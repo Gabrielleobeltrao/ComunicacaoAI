@@ -195,7 +195,7 @@ export function ArchitectProject() {
     setDialogo(true)
   }
 
-  async function aplicar(aprovado: { approvedAppKeys: string[]; approvedUpdateKeys: string[] }) {
+  async function aplicar(aprovado: { approvedAppKeys: string[]; approvedUpdateKeys: string[]; approvedActivationKeys: string[] }) {
     if (!previa) return
     setAplicando(true)
     setErro(null)

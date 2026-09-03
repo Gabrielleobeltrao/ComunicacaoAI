@@ -33,6 +33,17 @@ export const KIND_LABEL: Record<PreviewItem['kind'], string> = {
   routine: 'Rotina',
   app: 'App',
   knowledge: 'Conhecimento',
+  // Os do plano V2, com o nome que a pessoa usa no produto — não o do código.
+  database: 'Database',
+  dataset: 'Conjunto',
+  source: 'Fonte',
+  history: 'Histórico',
+  live: 'Valor de agora',
+  monitor: 'Monitor',
+  flow: 'Flow',
+  channel: 'Canal',
+  delivery: 'Entrega',
+  tool: 'Ferramenta',
 }
 
 export const CHECK_LABEL: Record<ChecklistItem['category'], string> = {

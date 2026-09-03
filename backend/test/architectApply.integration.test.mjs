@@ -797,3 +797,90 @@ test('a prova entra na checklist com `test_result`, e não pode ser marcada à m
   assert.equal(deTeste.length, 2, JSON.stringify(projeto.checklist.map((i) => i.id)))
   for (const i of deTeste) assert.equal(i.status, 'done', i.description)
 })
+
+// --- a PRÉVIA diz o que pode entrar no ar ------------------------------------------------------
+//
+// O servidor não ativa nada sem teste. Oferecer na tela algo que ele vai recusar seria um
+// checkbox que mente — então só entra na lista o item que declara um teste de aceitação.
+
+test('a prévia lista o que é ativável, com o que o teste vai observar', async () => {
+  const { id } = await projetoPronto()
+  await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [
+      { key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'a fonte responde e traz o RSI', required: true },
+      { key: 't-mon', kind: 'monitor_simulation', targetKey: 'rsi', expectation: 'a regra dispara abaixo de 30', required: true },
+    ]),
+  )
+
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  const ligaveis = previa.body.activatable
+  assert.equal(ligaveis.length, 2, JSON.stringify(ligaveis))
+  const fonte = ligaveis.find((a) => a.kind === 'source')
+  assert.equal(fonte.key, 'fonte')
+  assert.equal(fonte.label, 'Cotações CXSE3', 'a pessoa reconhece o recurso pelo nome, não pela key')
+  assert.match(fonte.expectation, /responde/)
+  assert.ok(ligaveis.some((a) => a.kind === 'monitor'))
+})
+
+test('o que NÃO tem teste declarado não aparece como ativável', async () => {
+  const { id } = await projetoPronto()
+  // O plano cria fonte, dataset e monitor — e declara teste só para a fonte.
+  await comPlanoV2(id, (bp2) => comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]))
+
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.deepEqual(
+    previa.body.activatable.map((a) => a.kind),
+    ['source'],
+    'ausência de teste não é prova: ligar por falta de evidência contrária é o defeito que isto fecha',
+  )
+})
+
+test('um projeto SEM plano V2 não oferece nada para ligar', async () => {
+  const { id } = await projetoPronto()
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.deepEqual(previa.body.activatable, [])
+})
+
+test('dois testes no MESMO alvo aparecem uma vez só', async () => {
+  const { id } = await projetoPronto()
+  await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [
+      { key: 't1', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true },
+      { key: 't2', kind: 'source', targetKey: 'fonte', expectation: 'traz o campo', required: true },
+    ]),
+  )
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.equal(previa.body.activatable.length, 1, 'um alvo, uma linha — dois checkboxes para a mesma coisa confundem')
+})
+
+test('a prévia MOSTRA os recursos e operações do V2, e não só andar e agente', async () => {
+  const { id } = await projetoPronto()
+  await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]),
+  )
+
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  const tipos = new Set(previa.body.items.map((i) => i.kind))
+  // O que o V1 já mostrava continua lá…
+  assert.ok(tipos.has('floor') && tipos.has('agent'))
+  // …e o que o V2 acrescenta passou a aparecer. Sem isto, a pessoa aprova uma proposta que
+  // não viu inteira e depois autoriza a ativação de algo que nunca apareceu na tela.
+  for (const esperado of ['database', 'dataset', 'source', 'monitor']) {
+    assert.ok(tipos.has(esperado), `"${esperado}" não aparece na prévia: ${[...tipos].join(', ')}`)
+  }
+
+  const fonte = previa.body.items.find((i) => i.kind === 'source')
+  assert.equal(fonte.label, 'Cotações CXSE3', 'a pessoa reconhece pelo nome, não pela key')
+  assert.match(fonte.detail, /ativa só depois de testar/)
+  // Item do V2 não pede aprovação individual aqui: a pergunta dele é a de ATIVAÇÃO.
+  assert.equal(fonte.requiresApproval, false)
+})
+
+test('sem plano V2, a prévia continua exatamente como era', async () => {
+  const { id } = await projetoPronto()
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  const tipos = new Set(previa.body.items.map((i) => i.kind))
+  for (const doV2 of ['database', 'source', 'monitor', 'flow', 'channel', 'delivery']) {
+    assert.equal(tipos.has(doV2), false, `"${doV2}" apareceu num projeto sem V2`)
+  }
+})

@@ -200,7 +200,26 @@ export interface Blueprint {
 }
 
 export interface PreviewItem {
-  kind: 'building' | 'floor' | 'agent' | 'sector' | 'routine' | 'app' | 'knowledge'
+  // Os últimos dez vêm do plano V2: sem eles, a proposta mostra andares e agentes e cala
+  // sobre o Database, a fonte e o monitor que vão ser criados.
+  kind:
+    | 'building'
+    | 'floor'
+    | 'agent'
+    | 'sector'
+    | 'routine'
+    | 'app'
+    | 'knowledge'
+    | 'database'
+    | 'dataset'
+    | 'source'
+    | 'history'
+    | 'live'
+    | 'monitor'
+    | 'flow'
+    | 'channel'
+    | 'delivery'
+    | 'tool'
   key: string
   label: string
   action: 'create' | 'reuse' | 'update' | 'wait_user'
@@ -251,6 +270,14 @@ export interface SimulationRun {
   passed: number
 }
 
+/** O que pode ENTRAR NO AR: só o item do plano que declara um teste de aceitação. */
+export interface ActivatableItem {
+  kind: 'source' | 'monitor' | 'flow'
+  key: string
+  label: string
+  expectation: string
+}
+
 export interface ArchitectPreview {
   blueprintHash: string
   valid: boolean
@@ -259,6 +286,8 @@ export interface ArchitectPreview {
   checklist: ChecklistItem[]
   readiness: ArchitectReadiness
   counts: { create: number; reuse: number; update: number; waitUser: number }
+  /** Ausente nas prévias anteriores a esta versão — e ausente significa "nada a ligar". */
+  activatable?: ActivatableItem[]
   /** O que a validação estrutural não vê: gerente sem equipe, executor incoerente. */
   critique?: {
     findings: CriticFinding[]

@@ -278,7 +278,7 @@ async function runTurn(
           changeKind: projeto.status === 'applied' ? 'expand' : 'create',
           // Os andares vêm do plano V1: é ele que a saga aplica, e é dele que sai a `key`
           // que o `resourceMap` vai conhecer.
-          floors: compilado.blueprint.floors.map((f) => ({ key: f.key, name: f.name })),
+          floors: compilado.blueprint.floors.map((f) => ({ key: f.key, name: f.name, action: f.action === 'reuse' ? ('reuse' as const) : ('create' as const), resourceId: f.resourceId ?? null })),
         })
       : null
 

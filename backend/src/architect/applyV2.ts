@@ -332,13 +332,40 @@ async function criar(ctx: ApplyV2Context, kind: ApplyV2Kind, item: Record<string
     return { id: a._id.toString(), message: 'criado como rascunho: publique depois de revisar' }
   }
 
+  if (kind === 'channel') {
+    const agenteId = idDe('agent', item.entryAgentKey)
+    const setorId = idDe('sector', item.entrySectorKey)
+    if (!agenteId && !setorId) {
+      return { pendency: 'este canal não tem quem receba: escolha o agente ou o setor de entrada' }
+    }
+    /**
+     * O canal NATIVO é criado; o de App, não.
+     *
+     * `web_chat` é porta de entrada do próprio produto: ela não depende de credencial
+     * nenhuma, e criar o vínculo é o que faz a mensagem chegar a alguém. Um canal de App —
+     * WhatsApp, Telegram — depende do número, do token e da instalação conectada, que o
+     * plano não pode inventar e que a pessoa escolhe na tela.
+     */
+    const appKey = String(item.appKey ?? '')
+    if (appKey !== 'web_chat') {
+      return { pendency: `conecte ${appKey} e escolha a conta: o vínculo depende da instalação, que este plano não pode escolher por você` }
+    }
+    const { createWidget } = await import('../widgets.js')
+    const canal = await createWidget(ownerId, String(item.name ?? 'Canal do site'), {
+      ...(agenteId && ObjectId.isValid(agenteId) ? { agentId: new ObjectId(agenteId) } : {}),
+      ...(!agenteId && setorId && ObjectId.isValid(setorId) ? { sectorId: new ObjectId(setorId) } : {}),
+    })
+    return { id: canal._id.toString(), message: 'canal do site criado e apontado para quem recebe' }
+  }
+
   /**
-   * `tool`, `delivery` e `channel` ainda não têm criação automática.
+   * `tool` e `delivery` não têm criação automática.
    *
-   * Não é esquecimento: uma ferramenta própria precisa de endpoint e schema que o plano não
-   * tem como inventar; uma entrega precisa de destino concreto, que é escolhido na tela; e o
-   * vínculo de canal depende da instalação estar conectada. Devolver `null` os deixa como
-   * pendência explícita, em vez de criar um recurso incompleto que parece pronto.
+   * Não é esquecimento. Uma ferramenta própria precisa de endpoint e schema que o plano não
+   * tem como inventar. E uma entrega precisa de uma CONEXÃO concreta — o próprio contrato do
+   * V2 proíbe endereço dentro do Blueprint, porque ele é lido inteiro pela tela e viaja no
+   * histórico do projeto. Devolver `null` os deixa como pendência explícita, em vez de criar
+   * um recurso incompleto que parece pronto.
    */
   return null
 }

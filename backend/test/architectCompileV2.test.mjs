@@ -363,8 +363,9 @@ test('os andares recebidos de fora são usados COMO ESTÃO — nenhuma key é in
     r.blueprint.organization.floors.map((f) => f.key),
     ['operacao'],
   )
-  // E o andar recebido nasce como `reuse`: quem o cria é a aplicação da organização.
-  assert.equal(r.blueprint.organization.floors[0].action, 'reuse')
+  // A AÇÃO vem junto: `reuse` sem `resourceId` seria dizer que existe um andar que não
+  // existe, e o validador recusa isso.
+  assert.equal(r.blueprint.organization.floors[0].action, 'create')
 })
 
 test('TUDO que o V2 aponta para andar aponta para um andar que existe no plano', () => {
@@ -512,4 +513,63 @@ test('um canal COM ações declaradas continua virando requisito de App', () => 
   const req = blueprint.resources.appRequirements.find((r) => r.appKey === 'whatsapp')
   assert.ok(req, 'o WhatsApp declara ações, e elas precisam ser pedidas')
   assert.ok(req.actionKeys.length > 0)
+})
+
+// --- o setor, que o V2 não produzia ------------------------------------------------------------
+//
+// Enquanto a organização é aplicada pelo plano V1, os dois documentos precisam falar do MESMO
+// setor. Uma chave diferente criaria um segundo setor ao lado do primeiro.
+
+const briefDeDoisAgentes = () => ({
+  ...emptyBrief('Atender e cobrar'),
+  jobs: [
+    { id: 'atender', name: 'Atender o cliente', trigger: 'chega mensagem', input: 'a mensagem', decision: 'o que responder', action: 'responder', output: 'a resposta' },
+    { id: 'cobrar', name: 'Cobrar o cliente', trigger: 'quando a fatura vence', input: 'a fatura', decision: 'se cobra agora', action: 'avisar', output: 'o aviso' },
+  ],
+})
+
+test('dois agentes no mesmo andar viram um setor coordenado', () => {
+  const { blueprint } = compilar(briefDeDoisAgentes(), { floors: [{ key: 'operacao', name: 'Operação' }] })
+  const setor = blueprint.organization.sectors[0]
+  assert.ok(setor, `nenhum setor: ${JSON.stringify(blueprint.organization.agents.map((a) => a.key))}`)
+  assert.equal(setor.key, 'mesa', 'a chave é a mesma do V1: outra criaria um segundo setor')
+  assert.equal(setor.mode, 'orchestrated')
+  assert.equal(setor.memberAgentKeys.length, 2)
+  assert.equal(setor.coordinatorAgentKey, blueprint.organization.agents[0].key)
+  // O setor depende do andar E dos membros: sem isso, a equipe aplicada seria menor.
+  assert.ok(setor.dependsOn.includes('operacao'))
+  for (const a of setor.memberAgentKeys) assert.ok(setor.dependsOn.includes(a), `falta ${a} em dependsOn`)
+})
+
+test('UM agente não vira setor — agrupar uma pessoa é o que a constituição proíbe', () => {
+  const brief = { ...emptyBrief('Só atender'), jobs: [briefDeDoisAgentes().jobs[0]] }
+  const { blueprint } = compilar(brief, { floors: [{ key: 'operacao', name: 'Operação' }] })
+  assert.equal(blueprint.organization.agents.length, 1)
+  assert.deepEqual(blueprint.organization.sectors, [])
+})
+
+test('o plano com setor continua passando na validação estrutural', () => {
+  const { blueprint } = compilar(briefDeDoisAgentes(), { floors: [{ key: 'operacao', name: 'Operação' }] })
+  const r = v2.validateBlueprintV2(blueprint)
+  assert.equal(r.valid, true, JSON.stringify(r.issues))
+})
+
+test('o andar recebido de fora carrega a ação DELE, com o resourceId junto', () => {
+  const r = compilar(briefDeDoisAgentes(), {
+    floors: [{ key: 'operacao', name: 'Atendimento', action: 'reuse', resourceId: '000000000000000000000f01' }],
+  })
+  const andar = r.blueprint.organization.floors[0]
+  assert.equal(andar.action, 'reuse')
+  assert.equal(andar.resourceId, '000000000000000000000f01')
+  assert.equal(v2.validateBlueprintV2(r.blueprint).valid, true, JSON.stringify(v2.validateBlueprintV2(r.blueprint).issues))
+})
+
+test('AMEAÇA: `reuse` sem resourceId não sai daqui — seria apontar para um andar que não existe', () => {
+  const r = compilar(briefDeDoisAgentes(), { floors: [{ key: 'operacao', name: 'Operação', action: 'reuse' }] })
+  const andar = r.blueprint.organization.floors[0]
+  assert.equal(andar.resourceId, undefined)
+  // Sem id, o compilador não pode honrar o `reuse`: ele cai para `create`, que é o que a
+  // aplicação vai fazer de verdade.
+  assert.equal(andar.action, 'create')
+  assert.equal(v2.validateBlueprintV2(r.blueprint).valid, true)
 })

@@ -784,3 +784,70 @@ Dois defeitos vieram junto:
 o texto dela. Duas frases para a mesma coisa é como a prévia e o produto começam a discordar.
 E `organization` **não é paralelo**: ele agrupa no mapa e não executa nada — dizer o contrário
 seria o mesmo defeito com outra roupa.
+
+---
+
+## Fase 10 (continuação) — o critério 3 do §22, e a tela que destrava a flag
+
+O relatório dizia que o critério 3 estava parcial e que a flag não podia sair. Esta parte
+fecha o que dava para fechar e diz, com precisão, o que **não é lacuna** — é desenho.
+
+### A tela passou a perguntar o que entra no ar
+
+Era a pendência que segurava tudo: o servidor exigia `approvedActivationKeys` e a tela não
+tinha como dar. Um produto em que a autorização só existe pela API não está entregue.
+
+A prévia ganhou `activatable`: os itens do plano V2 que **declaram um teste de aceitação**,
+com o nome que a pessoa reconhece e o que o teste vai observar. Só eles — o servidor não
+ativa nada sem prova, e oferecer o resto seria um checkbox que mente.
+
+No diálogo, a seção **"O que já entra no ar"** nasce vazia. Cada linha diz o que será
+provado, porque "entra no ar" sem critério é um checkbox que a pessoa marca sem saber o que
+está sendo verificado. Sem marcar nada, tudo é criado parado.
+
+### O compilador V2 passou a produzir setores
+
+Faltava a metade da organização. Agora dois agentes no mesmo andar viram um setor coordenado
+— e a `key` é a **mesma do V1** (`mesa`) de propósito: enquanto a organização é aplicada pelo
+plano V1, os dois documentos precisam falar do mesmo setor. Uma chave diferente criaria um
+segundo setor ao lado do primeiro.
+
+Um agente sozinho **não** vira setor: agrupar uma pessoa é o "setor orquestrado para agrupar
+visualmente" que a constituição proíbe.
+
+**Um defeito veio junto:** o andar recebido de fora era marcado `reuse` sem `resourceId`, e o
+validador recusa — com razão, porque é dizer que existe um andar que não existe. A ação passou
+a vir junto com o andar, e um `reuse` sem id cai para `create`, que é o que a aplicação vai
+fazer de verdade.
+
+### O canal nativo é criado; o de App, não — e a diferença é real
+
+`web_chat` é porta de entrada do próprio produto: não depende de credencial nenhuma, e criar
+o vínculo é o que faz a mensagem chegar a alguém. Agora a saga o cria pelo `createWidget`
+canônico, apontado para o agente ou o setor de entrada. Um canal **sem quem receba** fica
+pendente: uma porta que não leva a lugar nenhum.
+
+Um canal de App — WhatsApp, Telegram — depende do número, do token e da instalação conectada.
+Continua pendência, dizendo o que conectar.
+
+### A entrega não é lacuna: é o contrato
+
+`DeliveryTarget` exige um `connectionId` real, e o **próprio contrato do V2 proíbe** endereço
+concreto dentro do Blueprint — ele é lido inteiro pela tela e viaja no histórico do projeto.
+Uma entrega compilada com endereço seria um vazamento, não uma conveniência. Ela fica
+pendência por desenho, e o comentário no código passou a dizer isso em vez de sugerir que
+falta implementar.
+
+O mesmo vale para `tool`: endpoint e schema de uma ferramenta própria não são inferíveis.
+
+### Testes
+
+| Arquivo | Casos | Resultado |
+| --- | --- | --- |
+| `backend/test/architectApply.integration.test.mjs` | 37 (4 novos) | 37 passam |
+| `backend/test/architectCompileV2.test.mjs` | 38 (5 novos) | 38 passam |
+| `backend/test/architectApplyV2.integration.test.mjs` | 20 (4 novos) | 20 passam |
+| `frontend/e2e/architect-app.spec.ts` | 87 (3 novos) | 87 passam |
+
+Teeth check: oferecendo na prévia um item sem teste declarado caem 3 casos; deixando o canal
+de App ser criado como se fosse nativo cai 1.

@@ -1625,3 +1625,71 @@ test('cada campo tem rótulo, e o erro é anunciado', async ({ page }) => {
   await page.getByTestId('architect-send').click()
   await expect(page.getByRole('alert')).toBeVisible()
 })
+
+// --- o que entra no ar -------------------------------------------------------------------------
+//
+// Criar um monitor não é o mesmo que ligá-lo. Sem esta seção, o servidor exigia a autorização
+// de ativação e a tela não tinha como dar — então nada nunca entrava no ar pelo produto.
+
+const LIGAVEIS = [
+  { kind: 'source', key: 'fonte', label: 'Cotações CXSE3', expectation: 'a fonte responde e traz o RSI' },
+  { kind: 'monitor', key: 'rsi', label: 'RSI abaixo de 30', expectation: 'a regra dispara na transição' },
+]
+
+test('a lista do que entra no ar nasce VAZIA, e o pedido vai sem ativação nenhuma', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA, preview: { ...PREVIA, activatable: LIGAVEIS } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+
+  const secao = page.getByTestId('architect-approve-activation')
+  await expect(secao).toBeVisible()
+  // Cada linha diz o que o teste vai observar: "entra no ar" sem critério é um checkbox que
+  // a pessoa marca sem saber o que está sendo provado.
+  await expect(secao).toContainText('a fonte responde e traz o RSI')
+  await expect(secao).toContainText('só entra no ar se passar no teste')
+
+  await page.getByTestId('architect-apply-confirm').click()
+  await expect.poll(() => aplicado?.approvedActivationKeys).toEqual([])
+})
+
+test('marcar uma fonte manda a key dela — e só ela', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA, preview: { ...PREVIA, activatable: LIGAVEIS } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  // O `<label>` embrulha o input e o texto: clicar no texto marca a caixa, que é o que a
+  // pessoa faz. `getByRole` com nome não resolve aqui porque o input é `sr-only`.
+  await page.getByTestId('architect-approve-activation').getByText('Fonte: Cotações CXSE3').click()
+  await page.getByTestId('architect-apply-confirm').click()
+
+  await expect.poll(() => aplicado?.approvedActivationKeys).toEqual(['fonte'])
+})
+
+test('sem nada ativável, a seção não existe — nenhuma pergunta sem resposta possível', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA, preview: { ...PREVIA, activatable: [] } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await expect(page.getByTestId('architect-apply-dialog')).toBeVisible()
+  await expect(page.getByTestId('architect-approve-activation')).toHaveCount(0)
+})
+
+test('a proposta mostra o que o V2 acrescenta, agrupado e com nome de produto', async ({ page }) => {
+  const comV2 = {
+    ...PREVIA,
+    items: [
+      ...PREVIA.items,
+      { kind: 'database', key: 'base', label: 'Cotações', action: 'create', detail: 'Onde este dado fica guardado.', rationale: '', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+      { kind: 'source', key: 'fonte', label: 'Cotações CXSE3', action: 'create', detail: 'De onde o dado chega. Nasce parada: ativa só depois de testar.', rationale: '', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+      { kind: 'monitor', key: 'rsi', label: 'RSI abaixo de 30', action: 'create', detail: 'A regra que reconhece a transição. Nasce rascunho.', rationale: '', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+    ],
+  }
+  await stub(page, { project: COM_PROPOSTA, preview: comV2 })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const proposta = page.getByTestId('architect-proposal')
+  // Os grupos têm o nome que a pessoa usa, não o do código.
+  await expect(proposta).toContainText('Onde o dado fica')
+  await expect(proposta).toContainText('De onde o dado vem')
+  await expect(proposta).toContainText('O que fica de olho')
+  await expect(proposta).toContainText('Cotações CXSE3')
+  await expect(proposta).toContainText('ativa só depois de testar')
+})

@@ -42,7 +42,7 @@ export interface CompileV2Input {
    * apontaria para um andar que ninguém criou — e `floor:atendimento` nunca resolveria no
    * `resourceMap`. Recebendo os andares prontos, os dois documentos descrevem UM escritório.
    */
-  floors?: { key: string; name: string }[]
+  floors?: { key: string; name: string; action?: 'create' | 'reuse'; resourceId?: string | null }[]
 }
 
 export interface CompileV2Result {
@@ -318,11 +318,21 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
   // Quando os andares vêm prontos, eles são o bloco de organização do V2 também: dois
   // documentos, uma organização só.
   if (input.floors?.length) {
+    /**
+     * A AÇÃO vem junto com o andar, e não é inventada aqui.
+     *
+     * `reuse` sem `resourceId` é recusado pelo validador — e com razão: dizer "reutilizar"
+     * sem apontar para nada é dizer que existe um andar que não existe. Quem sabe se este
+     * andar é novo ou já estava lá é quem decidiu a organização.
+     */
     bp.organization.floors = input.floors.map((a) => ({
       key: a.key,
-      action: 'reuse' as const,
+      // `reuse` sem id cai para `create`: apontar para um andar que não existe produziria um
+      // plano inválido, e a aplicação vai criar o andar de qualquer jeito.
+      action: a.action === 'reuse' && a.resourceId ? 'reuse' : 'create',
+      ...(a.action === 'reuse' && a.resourceId ? { resourceId: a.resourceId } : {}),
       ...ESSENCIAL,
-      rationale: 'o andar é criado pela aplicação da organização; aqui ele só é referenciado',
+      rationale: 'a organização é aplicada pelo plano que a decidiu; aqui o andar só é referenciado',
       dependsOn: [],
       name: a.name,
       workMode: 'organization' as const,
@@ -623,6 +633,42 @@ export function compileBriefV2(input: CompileV2Input): CompileV2Result {
         pending.push({ kind: 'connection', ref: canal.key, because: 'este canal precisa ser conectado antes de a operação receber mensagem' })
       }
     }
+  }
+
+  /**
+   * --- 4b. o SETOR, quando há mais de um agente no mesmo andar -------------------------------
+   *
+   * O setor só existe quando há mais de um agente E alguém para coordenar. Criar setor com um
+   * agente é agrupar uma pessoa — é o "setor orquestrado para agrupar visualmente" que a
+   * constituição proíbe.
+   *
+   * A `key` é a mesma do V1 (`mesa`) de propósito: enquanto a organização é aplicada pelo
+   * plano V1, os dois documentos precisam falar do MESMO setor. Uma chave diferente criaria
+   * um segundo setor ao lado do primeiro.
+   */
+  for (const andar of bp.organization.floors) {
+    const equipe = bp.organization.agents.filter((a) => a.floorKey === andar.key)
+    if (equipe.length < 2) continue
+    const coordenador = equipe[0]
+    const key = bp.organization.floors.length > 1 ? slug(`mesa-${andar.key}`) : 'mesa'
+    if (bp.organization.sectors.some((s) => s.key === key)) continue
+    bp.organization.sectors.push({
+      key,
+      action: 'create',
+      layer: 'recommended',
+      rationale: 'são etapas encadeadas; o setor é o que faz elas conversarem',
+      // O setor depende do andar e de TODOS os membros: sem eles, a equipe aplicada seria
+      // menor do que a aprovada.
+      dependsOn: [andar.key, ...equipe.map((a) => a.key)],
+      floorKey: andar.key,
+      name: bp.organization.floors.length > 1 ? `Mesa de ${andar.name}` : 'Mesa de trabalho',
+      mode: 'orchestrated',
+      memberAgentKeys: equipe.map((a) => a.key),
+      coordinatorAgentKey: coordenador.key,
+      instruction: 'Uma porta de entrada só: o coordenador recebe e distribui.',
+      inputContract: coordenador.inputContract,
+      outputContract: coordenador.outputContract,
+    })
   }
 
   // --- 5. as ferramentas ficam com quem conduz ------------------------------------------------

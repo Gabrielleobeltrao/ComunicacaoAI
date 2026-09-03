@@ -1,6 +1,6 @@
 # Blueprint V2 do Arquiteto — relatório final
 
-Branch: `feat/office-blueprint-v2`, sobre `development`. 11 commits, 103 arquivos.
+Branch: `feat/office-blueprint-v2`, sobre `development`. 13 commits.
 
 Este relatório descreve o que está de pé, o que foi encontrado no caminho e o que **não**
 ficou pronto. A última seção não é um apêndice: é a parte que decide se isto pode ser ligado
@@ -111,14 +111,14 @@ Nenhum deles aparece no desenho. Todos aparecem na hora de aplicar, de ler ou de
 | --- | --- |
 | `npm ci` | exit 0 (instalação limpa a partir do lockfile) |
 | `npm run build` | exit 0, inclusive **depois** do `npm ci` |
-| `npm run test -w backend` | **1546 + 2190 = 3736**, 0 falhas |
+| `npm run test -w backend` | **1551 + 2200 = 3751**, 0 falhas |
 | `npm run test:runner` | 21, 0 falhas |
 | `npm run test:browser-worker` | 32, 0 falhas |
 | `npm run test -w frontend` | **294** em 36 arquivos, 0 falhas |
 | `npm run lint -w frontend` | exit 0 — **0 erros**, 44 avisos |
-| `npm run test:e2e -w frontend` | **728 passaram**, 17 puladas, **0 falhas, 0 flaky** |
+| `npm run test:e2e -w frontend` | **732 passaram**, 17 puladas, **0 falhas, 0 flaky** |
 | `npm run smoke` | exit 0 |
-| `npm run secret-scan` | 2253 arquivos, nada encontrado |
+| `npm run secret-scan` | 2257 arquivos, nada encontrado |
 | `git diff --check` | limpo |
 
 Nenhuma asserção foi reduzida, nenhum retry foi acrescentado e nenhuma integração foi trocada
@@ -138,28 +138,36 @@ são de uma execução com a máquina livre.
 Esta seção existe porque o §22.12 pede que ela exista, e porque nada abaixo está escondido em
 outro lugar do relatório.
 
-### A flag continua desligada, e não deve ser removida ainda
+### A flag continua desligada — mas por outro motivo
 
-`ARCHITECT_BLUEPRINT_V2` nasce desligada. O critério de saída não foi atingido: **a tela ainda
-não pergunta o que entrar no ar.** O cliente já aceita `approvedActivationKeys` e o servidor
-já exige a lista, mas o diálogo de aplicação não a preenche — hoje só dá para autorizar pela
-API. O padrão seguro vale (sem a lista, nada liga), mas um produto em que a autorização só
-existe na API não está pronto para todo mundo.
+`ARCHITECT_BLUEPRINT_V2` nasce desligada. O que a segurava — a tela não perguntar o que entra
+no ar — **foi resolvido**: a prévia devolve `activatable` (os itens que declaram teste de
+aceitação, com o que cada teste vai observar) e o diálogo de aplicação tem a seção "O que já
+entra no ar", vazia por padrão.
 
-Também não existe **prévia do V2 na tela**: quem liga a flag vê a mesma prévia V1, e os
-recursos do V2 aparecem só na lista de passos da operação.
+O que continua faltando para ligá-la é menor, e é honesto dizer qual é: **não existe prévia
+do V2 na tela**. Quem liga a flag vê a mesma prévia V1, e os recursos do V2 — Databases,
+fontes, monitores — aparecem só na lista de passos da operação, depois de aplicar. A pessoa
+autoriza a ativação de algo que ela não viu ser proposto.
+
+Enquanto isso for verdade, a flag não deve sair.
 
 ### A cadeia de Operação está parcial
 
 | Tipo | Estado |
 | --- | --- |
 | Database, dataset, Source, Live, History, Monitor, Flow | criados pela saga |
-| `tool` | **não é criado**: uma ferramenta própria precisa de endpoint e schema que o plano não inventa |
-| `delivery` | **não é criada**: precisa de destino concreto, escolhido na tela |
-| `channel` | **não é criado**: depende de a instalação estar conectada |
+| `channel` nativo (`web_chat`) | **criado**, apontado para o agente ou setor de entrada |
+| `channel` de App (WhatsApp, Telegram) | pendência: depende do número, do token e da instalação conectada |
+| `tool` | pendência: endpoint e schema de uma ferramenta própria não são inferíveis |
+| `delivery` | pendência **por desenho** — ver abaixo |
 
-Os três viram **pendência explícita** com o motivo — nunca um recurso incompleto que parece
-pronto.
+A entrega **não é uma lacuna**. `DeliveryTarget` exige um `connectionId` real, e o próprio
+contrato do V2 proíbe endereço concreto dentro do Blueprint: ele é lido inteiro pela tela e
+viaja no histórico do projeto. Uma entrega compilada com endereço seria um vazamento, não uma
+conveniência.
+
+Cada pendência traz o motivo — nunca um recurso incompleto que parece pronto.
 
 ### A ativação automática cobre só fontes
 
@@ -168,8 +176,6 @@ pede simulação com dados reais, que só existem depois da primeira coleta.
 
 ### Outras pendências reais
 
-- **O compilador V2 não produz setores.** A topologia vem do plano V1 enquanto o rollout roda.
-  É consistente com "uma organização, dois documentos", mas é uma metade do V2 que não existe.
 - **`app_dry_run` fica pendente para todo App**: nenhum manifesto declara execução de teste.
 - **A conversa global não tem streaming nem cancelamento.** A rodada devolve o texto inteiro
   de uma vez; para respostas longas isso aparece como espera.

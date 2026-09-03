@@ -66,8 +66,31 @@ const LISTA: Partial<Record<PreviewItem['kind'], keyof Blueprint>> = {
   knowledge: 'knowledgeRequirements',
 }
 
-/** A ordem em que os grupos aparecem: o lugar, depois quem trabalha nele, depois o resto. */
-const GRUPOS: PreviewItem['kind'][] = ['floor', 'sector', 'agent', 'routine', 'app', 'knowledge']
+/**
+ * A ordem em que os grupos aparecem: o lugar, quem trabalha nele, o que o escritório possui e
+ * o que acontece.
+ *
+ * Os últimos vêm do plano V2. Sem eles, a proposta mostrava andares e agentes e calava sobre o
+ * Database, a fonte e o monitor — e a pessoa aprovava uma proposta que não tinha visto inteira.
+ */
+const GRUPOS: PreviewItem['kind'][] = [
+  'floor',
+  'sector',
+  'agent',
+  'routine',
+  'app',
+  'knowledge',
+  'database',
+  'dataset',
+  'tool',
+  'source',
+  'history',
+  'live',
+  'monitor',
+  'flow',
+  'channel',
+  'delivery',
+]
 
 const GRUPO_LABEL: Record<PreviewItem['kind'], string> = {
   building: 'Prédio',
@@ -77,6 +100,16 @@ const GRUPO_LABEL: Record<PreviewItem['kind'], string> = {
   routine: 'Roda sozinho',
   app: 'Apps',
   knowledge: 'Conhecimento',
+  database: 'Onde o dado fica',
+  dataset: 'Conjuntos',
+  tool: 'Ferramentas',
+  source: 'De onde o dado vem',
+  history: 'Histórico',
+  live: 'Valor de agora',
+  monitor: 'O que fica de olho',
+  flow: 'O que acontece',
+  channel: 'Por onde entra',
+  delivery: 'Para onde sai',
 }
 
 const TITULO_GRUPO = {
