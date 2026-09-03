@@ -170,7 +170,7 @@ Os dois estão corrigidos, com teeth check.
 | `channel` de App (WhatsApp, Telegram) | pendência: depende do número, do token e da instalação conectada |
 | `tool` `existing` | **ligada** nos agentes que a usam, pelo `updateAgent` canônico |
 | `tool` `app_action` | pendência: é um grant, e o caminho é o bloco de Apps |
-| `tool` `function` | pendência: cálculo a registrar — código não se infere de uma descrição |
+| `tool` `function` | **resolvida** quando o registro tem a função (o plano a nomeia); pendência quando não tem — código não se infere de uma descrição |
 
 Sobre a entrega, uma correção do que este relatório dizia antes: eu havia escrito que ela era
 impossível por desenho. Não é. O contrato do V2 proíbe **endereço** dentro do Blueprint — e
@@ -180,6 +180,22 @@ como `approvedAppKeys`: uma referência a uma conexão que já existe na conta, 
 o dono antes de qualquer escrita.
 
 Cada pendência traz o motivo — nunca um recurso incompleto que parece pronto.
+
+### A cadeia da vigilância, do jeito que ela realmente funciona
+
+A ordem é **fonte → histórico/conjunto → Flow → monitor**, e ela é assim porque o monitor
+grava o id do Flow que aciona. Criá-lo antes deixa o `flowId` nulo: um alarme que reconhece a
+transição e não aciona nada. O Flow, por sua vez, não precisa do monitor para existir — quem
+o chama é o monitor, depois.
+
+O monitor é criado numa **segunda passada**, depois de a fonte entrar no ar, porque é aí que
+o conjunto observado passa a existir. E o que nasce nessa segunda passada é provado antes de
+ser publicado: sem isso o monitor ficaria com o teste `skipped` para sempre, e um teste pulado
+não torna nada ativável.
+
+O Flow do aviso tem etapa mesmo sem agente. "Observe e me avise" não precisa de um: montar o
+texto do que aconteceu é determinístico, e um agente ali só acrescentaria custo e a chance de
+ele reescrever o número.
 
 ### A ativação cobre a cadeia inteira
 
@@ -204,15 +220,29 @@ seção correspondente do PROGRESS.
 - **A conversa global não tem streaming**, e nenhum provider desta base faz streaming. O plano
   qualifica com "streaming/cancelamento **quando suportado pelo provider**" (§6).
 - **Em `/architect/:id` existem duas conversas** — a da página e a global, que se esconde.
-- **O inventário não tem seções de canais e entregas.** Elas não são reaproveitadas ainda.
-- **Os recursos do V2 não recebem a marca de origem** (`architect.operationId`) na escrita,
-  porque os serviços canônicos não aceitam esse campo. A consequência é concreta: a janela
-  entre criar e registrar o passo, que o V1 fecha pela marca, aqui é fechada só pelo
-  `resourceMap` — uma queda exatamente nesse instante pode deixar um recurso órfão.
-- **O `LLM_FAKE` não gera brief de vigilância**, então a cadeia fonte → monitor → Flow é
-  exercitada pelo compilador e pela saga, não ponta a ponta **pela conversa**.
+- **O inventário não reaproveita canais e entregas** — repetido aqui porque é a pendência que
+  mais aparece na prática: um canal já conectado não é oferecido de volta pelo plano.
 - **`docs/security/` tinha zero documentos** antes deste trabalho; agora tem um, o do
   Arquiteto. O resto do produto continua sem.
+
+### O que estava aqui como pendência e deixou de estar
+
+Duas linhas deste relatório descreviam limitações que hoje não existem mais. Elas ficam
+registradas porque o que mudou é verificável:
+
+- **A marca de origem chegou aos quatro tipos.** `architect.operationId`, `projectId` e
+  `blueprintKey` são gravados na MESMA escrita que cria o recurso, para Database, Source,
+  Monitor e Flow. É o que fecha a janela entre criar e registrar o passo: uma queda ali era
+  um recurso órfão, e a retomada criava outro.
+  Provado em `architectV2OrphanWindow.integration.test.mjs` — 16 casos, um por tipo: a marca
+  gravada, a queda na janela que não duplica na retomada, e a marca de OUTRA operação que não
+  é adotada.
+
+- **O dublê de LLM responde à frase.** Ele devolvia o mesmo brief de restaurante para
+  qualquer entrada, então a cadeia fonte → histórico → Flow → monitor era exercitada pelo
+  compilador e pela saga, nunca pela conversa. Hoje "Observe CXSE3 e me avise quando o RSI
+  ficar abaixo de 30" entra por `POST /assistant/turn` e sai do outro lado com a cadeia no ar.
+  Provado em `architectCxse3EndToEnd.integration.test.mjs` — 14 casos.
 
 ### Uma decisão que pode ser revista
 

@@ -1102,3 +1102,150 @@ a posse da conexão de entrega, 1; a ativação de Flow, 2.
 
 backend **1566 + 2257 = 3823**, runner 21, browser-worker 32, frontend 294, E2E 739 com 0
 flaky, lint 0 erros, secret-scan 2265, smoke e `git diff --check` verdes.
+
+---
+
+## Fechamento: a cadeia CXSE3 no ar, e o que estava quebrado no caminho
+
+O objetivo desta fase era um só: *"Observe CXSE3 e me avise quando o RSI ficar abaixo de 30"*
+funcionando ponta a ponta, entrando pela frase real. Ele obrigou a consertar sete defeitos —
+quatro deles descobertos porque o teste finalmente exercitava a cadeia inteira.
+
+### A ordem da cadeia estava invertida
+
+O compilador declarava o monitor dependendo do histórico e o Flow dependendo do monitor. A
+ordem topológica saía histórico → monitor → Flow: **o monitor nascia antes do Flow**, e o
+`flowId` dele saía `null`. Um monitor sem ação reconhece a transição e não aciona nada — ele
+parece configurado. Invertido: o monitor depende do Flow, e o Flow não precisa do monitor
+para existir, porque quem o chama é o monitor, depois.
+
+E quando o conjunto observado ainda não existia, a aplicação devolvia **o id da FONTE** como
+se o monitor tivesse sido criado. O passo ficava `created`, o `resourceMap` passava a apontar
+`monitor:x` para um documento de `monitoring_sources`, e o desfazer removeria a fonte achando
+que remove o monitor. Virou pendência com motivo, que é o que ela sempre foi.
+
+### O Flow do aviso não tinha etapa nenhuma
+
+`steps: dono ? [...] : []` — e "observe e me avise" não precisa de agente. Sem etapa o Flow
+não faz nada, reprova na aceitação e nunca pode ser publicado; como `publishMonitor` exige
+versão publicada do Flow, a cadeia inteira parava aí. Montar o texto do aviso é
+determinístico: virou um passo `transform.template`, e o agente, quando existe, entra depois
+para acrescentar julgamento e não formatação.
+
+### As provas rodavam antes da segunda passada
+
+O monitor só pode ser criado depois que a fonte entra no ar (é quando o conjunto observado
+existe). Essa segunda passada acontecia **depois** da rodada de provas: o monitor recém-criado
+ficava com o teste `skipped` — "não foi criado nesta aplicação" — e um teste pulado não torna
+nada ativável. Resultado: Flow ativo e ninguém para acioná-lo. As provas agora rodam de novo
+quando a segunda passada cria alguma coisa, e o melhor resultado de cada teste vale.
+
+### A simulação do monitor reprovava regras corretas
+
+Duas coisas. O **limite** caía para zero quando o monitor não declarava `threshold` — e ele só
+é gravado nos modos `cross*`. Num `enter` sobre "rsi < 30" a simulação testava 1 → -1: dois
+valores já abaixo de 30, nenhuma travessia. A **direção** era sempre de cima para baixo, então
+toda regra de teto ("maior que 30") era reprovada por um caso que ela não descreve — e nenhuma
+vigilância de máximo jamais entrou no ar. O teste que afirmava isso afirmava o defeito e foi
+invertido; no lugar dele, um alarme que é mesmo mudo: igualdade sobre número contínuo.
+
+### O RSI voltava a ser palpite do modelo
+
+As funções entram no registro por efeito de import, e essa lista vivia só dentro de
+`functionExecutor`. O manifesto lia `functionRegistry` direto: pedir um plano antes de
+qualquer execução listava só as 25 funções puras, e `calculate_rsi` ficava de fora. O
+compilador declarava "nenhuma função registrada faz este cálculo" para a única conta que ele
+sabe fazer com exatidão. A lista virou `registeredFunctions.ts`, importado por quem executa e
+por quem descreve — puro, para não arrastar `db.js` ao caminho do manifesto.
+
+Faltava ainda o casamento: `calculate_rsi` só resolvia se o Brief escrevesse o nome inteiro, e
+nenhum Brief em português escreve isso. Uma segunda passada casa o termo distintivo do nome
+como palavra inteira, fora de uma lista de genéricos, e **só roda quando a primeira não achou
+nada** — nenhuma resolução de hoje muda, e o risco de resolver errado continua coberto.
+Resolvida, a função agora consta do plano com nome: antes ela não aparecia em lugar nenhum, e
+o monitor comparava um `rsi` que nada no plano produzia.
+
+### O dublê respondia ao texto do sistema
+
+O `LLM_FAKE` roteava por `\brsi\b`, e o prompt carrega o catálogo — que passou a descrever
+`calculate_rsi` como "Calcula o RSI (Wilder)". A conversa do restaurante caiu inteira na
+vigilância: 16 testes vermelhos de uma vez. O gatilho agora é o papel, não uma palavra que o
+sistema também escreve.
+
+### Um estado por monitor
+
+Falha intermitente de "a MESMA entrega chegando por dois caminhos produz UM disparo": passa
+sozinha, falha sob carga. Duas observações simultâneas do mesmo evento sobre um monitor nunca
+observado produziam **dois disparos**. O caminho de atualização já punha a `version` anterior
+no filtro; o de inserção não tinha o que pôr. São duas metades: índice único em
+`(ownerId, monitorId)`, e `version: {$exists: false}` no filtro quando não há estado anterior
+— porque, mesmo com o índice, o upsert que **encontra** documento atualiza em vez de inserir,
+e o worker atrasado sobrescrevia a transição do primeiro. Quem colide sai por `lost_race`.
+
+O índice não apaga nada: se a coleção já carrega o resultado dessa corrida, ele não sobe e o
+comportamento continua o de hoje.
+
+### A confirmação de alto risco não tinha campo
+
+A UI declarava `requiresName` no tipo e nunca o mostrava: só um botão. A pessoa clicava, o
+servidor recusava por nome ausente, e nada visível acontecia — uma operação de alto risco era
+**inconfirmável pela tela**. O campo agora aparece com a instrução que diz qual nome digitar
+(a mesma forma do purge de andar), o botão espera o campo, e a mensagem do servidor é
+preservada como veio.
+
+E a tentativa passou a deixar rastro. `confirmedAt` é gravado antes de executar — é o que torna
+o duplo clique idempotente — e era tudo que ficava: um handler que estourava deixava a operação
+"confirmada" para sempre, e a segunda tentativa lia "já foi confirmada". O desfecho agora é
+gravado (`succeeded`, `refused`, `failed`, com motivo e horário), o que não deu certo responde
+dizendo que pode pedir de novo, e a exceção — que saía pelo `next(erro)` sem passar pelo
+registro — também vira linha de auditoria, sem a mensagem crua.
+
+### Testes
+
+| Arquivo | Casos |
+| --- | --- |
+| `architectCxse3EndToEnd.integration.test.mjs` | 14 |
+| `architectAssistantCapabilities.integration.test.mjs` | 28 |
+| `architectAcceptance.integration.test.mjs` | 19 |
+| `architectV2OrphanWindow.integration.test.mjs` | 16 |
+| `architectV2Chain.integration.test.mjs` | 6 |
+| `monitors.integration.test.mjs` | 17 |
+| `architect-v2-characterization.spec.ts` (E2E) | 24 |
+
+Teeth check, um a um: revertendo o limite da regra caem 3 casos do CXSE3; a direção pelo
+operador, 1; o passo do Flow, 3; a reprova depois da segunda passada, 3; o barril de funções,
+1; a segunda passada do casamento, 1; a função no plano, 1; o índice único, 2; o envio do
+`confirmationName`, 1 no E2E; o campo do nome, 5 no E2E; o desfecho da exceção, 1; a auditoria
+da exceção, 1.
+
+Dois dentes **não** morderam e foram removidos em vez de mantidos: o `if (enviando) return`
+duplicava o `disabled` do botão, e o `corpo?.ok !== false` cobria um 200-com-erro que a rota
+nunca devolve.
+
+### Bateria de fechamento
+
+Instalação limpa (`rm -rf node_modules` nos cinco pacotes + `npm ci`), build do monorepo,
+e então:
+
+| O quê | Comando | Resultado |
+| --- | --- | --- |
+| backend | `node scripts/run-tests.mjs` | **1566 + 2296 = 3862**, 0 falhas |
+| frontend | `npm run test -- --run` | 294 em 36 arquivos, 0 falhas |
+| runner | `npm test` | 21, 0 falhas |
+| browser-worker | `npm test` | 32, 0 falhas |
+| E2E | `E2E_PREVIEW=1 npx playwright test` | 744 passaram, 17 pulados, 0 flaky |
+| lint | `npm run lint` (frontend) | 0 erros (avisos pré-existentes em `e2e/`) |
+| smoke | `npm run smoke` | verde, incluindo 503 na prontidão e SIGTERM drenado |
+| secret-scan | `npm run secret-scan` | 2267 arquivos, nada encontrado |
+| espaço em branco | `git diff --check` | verde |
+
+### O que continua pendente, de verdade
+
+- **A entrega do aviso** é pendência declarada no plano: ela precisa de uma conexão concreta
+  da conta, escolhida na hora de aplicar. O Flow monta o texto; por onde ele sai é a pergunta
+  que sobra.
+- **A fonte do CXSE3** é pendência acionável, e é o certo: o Brief diz "cotação CXSE3", que é
+  uma descrição e não um endereço. O teste ponta a ponta inclui o passo humano — criar a fonte
+  e ligá-la por `PATCH /links` — porque é exatamente o que uma pessoa faria.
+- **`app_dry_run`**, **streaming** e **canais/entregas no inventário** continuam como o
+  relatório descreve.
