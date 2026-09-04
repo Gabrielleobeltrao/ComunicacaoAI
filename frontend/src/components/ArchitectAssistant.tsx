@@ -436,8 +436,18 @@ function ArchitectLauncher() {
       aria-label="Abrir o Arquiteto"
       style={{
         position: 'fixed',
-        // Acima da navegação inferior do celular, e fora da área do indicador.
-        bottom: 'calc(var(--safe-bottom, 0px) + 76px)',
+        /**
+         * No canto, com a folga que ainda existe de verdade.
+         *
+         * Ele estava 76 px acima da base para escapar de uma barra de navegação inferior no
+         * celular — que não existe mais: o menu virou gaveta, e o que sobrou embaixo é a área
+         * do indicador do aparelho. A folga antiga virou um botão flutuando no meio do nada,
+         * longe do canto onde a mão o procura.
+         *
+         * `--safe-bottom` continua somando: no iPhone ele é a diferença entre encostar no
+         * indicador e ficar logo acima dele.
+         */
+        bottom: 'calc(var(--safe-bottom, 0px) + 16px)',
         right: 16,
         zIndex: 60,
         display: 'flex',

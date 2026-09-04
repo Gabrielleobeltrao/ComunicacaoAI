@@ -184,6 +184,25 @@ test('o alvo de toque do botão alcança o mínimo', async ({ page }) => {
   expect(caixa!.height).toBeGreaterThanOrEqual(44)
 })
 
+test('o botão fica NO CANTO — e não flutuando no meio do nada', async ({ page }) => {
+  /**
+   * Ele ficou 76 px acima da base por causa de uma barra de navegação inferior no celular que
+   * não existe mais: o menu virou gaveta. A folga sobreviveu ao motivo dela, e o resultado era
+   * um botão longe do canto onde a mão o procura.
+   *
+   * O teto aqui é folgado de propósito — ele guarda "está no canto", não um número exato.
+   */
+  await stub(page)
+  for (const [largura, altura] of [[1440, 900], [390, 844]]) {
+    await page.setViewportSize({ width: largura, height: altura })
+    await page.goto('/dashboard')
+    const caixa = await page.getByTestId('architect-launcher').boundingBox()
+    const daBase = altura - (caixa!.y + caixa!.height)
+    expect(daBase, `em ${largura}px o botão está a ${Math.round(daBase)}px da base`).toBeLessThanOrEqual(40)
+    expect(daBase, 'encostado na borda também é errado: ele precisa respirar').toBeGreaterThanOrEqual(8)
+  }
+})
+
 test('na página de um PROJETO o chat global se retira — uma conversa por tela', async ({ page }) => {
   await stub(page)
   await page.route('**/api/architect/projects/*', (r) =>
