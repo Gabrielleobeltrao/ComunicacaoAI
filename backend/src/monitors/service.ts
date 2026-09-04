@@ -227,10 +227,42 @@ export async function deleteMonitor(ownerId: string, id: ObjectId): Promise<bool
 }
 
 /** O monitor como a tela o lê: com a condição em português e o estado atual junto. */
+/**
+ * Execuções e tokens por monitor, agregados numa consulta só.
+ *
+ * Uma consulta por monitor transformaria a aba em vinte idas ao banco; a correlação é o
+ * `requestId` que o disparo grava (`monitor:<id>:<evento>`), que é o mesmo fio que a Activity
+ * usa para dizer de onde a execução veio.
+ */
+async function custoPorMonitor(
+  ownerId: string,
+  ids: ObjectId[],
+): Promise<Map<string, { runs: number; inputTokens: number; outputTokens: number }>> {
+  const saida = new Map<string, { runs: number; inputTokens: number; outputTokens: number }>()
+  if (!ids.length) return saida
+  const linhas = await db
+    .collection('automation_runs')
+    .aggregate([
+      { $match: { ownerId, requestId: { $in: ids.map((id) => new RegExp(`^monitor:${id.toString()}:`)) } } },
+      {
+        $group: {
+          _id: { $arrayElemAt: [{ $split: ['$requestId', ':'] }, 1] },
+          runs: { $sum: 1 },
+          inputTokens: { $sum: { $ifNull: ['$usage.inputTokens', 0] } },
+          outputTokens: { $sum: { $ifNull: ['$usage.outputTokens', 0] } },
+        },
+      },
+    ])
+    .toArray()
+  for (const l of linhas) saida.set(String(l._id), { runs: l.runs, inputTokens: l.inputTokens, outputTokens: l.outputTokens })
+  return saida
+}
+
 export async function describeMonitors(ownerId: string) {
   const monitores = await monitorsCollection.find({ ownerId }).sort({ name: 1 }).toArray()
   const estados = await monitorStatesCollection.find({ ownerId }).toArray()
   const porMonitor = new Map(estados.map((e) => [e.monitorId.toString(), e]))
+  const custo = await custoPorMonitor(ownerId, monitores.map((m) => m._id))
   return monitores.map((m) => {
     const estado = porMonitor.get(m._id.toString())
     return {
@@ -251,6 +283,18 @@ export async function describeMonitors(ownerId: string) {
       debounceMs: m.debounceMs,
       cooldownMs: m.cooldownMs,
       flowId: m.action?.flowId.toString() ?? null,
+      /**
+       * O QUE ESTE ALARME JÁ CUSTOU — e de onde o número vem.
+       *
+       * Vigiar é de graça: a coleta e a comparação são determinísticas. O que custa é o que
+       * acontece DEPOIS da borda, quando o Flow tem uma etapa de modelo. Sem esse número na
+       * tela, um monitor com cooldown mal ajustado só aparece na fatura.
+       *
+       * Ele é contado das execuções que este monitor pediu, e não de um contador próprio: um
+       * contador aqui divergiria do painel de execuções na primeira falha de escrita, e a
+       * mesma pergunta passaria a ter duas respostas.
+       */
+      cost: custo.get(m._id.toString()) ?? { runs: 0, inputTokens: 0, outputTokens: 0 },
       state: estado
         ? {
             status: estado.status,

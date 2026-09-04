@@ -66,6 +66,8 @@ export interface MonitorSummary {
   debounceMs: number
   cooldownMs: number
   flowId: string | null
+  /** O que este alarme já custou — contado das execuções que ele pediu, nunca de um contador próprio. */
+  cost: { runs: number; inputTokens: number; outputTokens: number }
   state: MonitorState | null
 }
 

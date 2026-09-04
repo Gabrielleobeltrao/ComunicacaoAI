@@ -1783,6 +1783,14 @@ function AbaMonitores({ fontes }: { fontes: SourceSummary[] | null }) {
                   {m.state.lastTriggeredAt ? ` · disparou ${desde(m.state.lastTriggeredAt)}` : ' · nunca disparou'}
                 </p>
               )}
+              {/* O QUE ELE JÁ CUSTOU. Vigiar é de graça; o que custa é o que roda depois da
+                  borda. Sem isto na tela, um monitor com cooldown mal ajustado só aparece na
+                  fatura — e "qual deles está gastando?" fica sem resposta no produto. */}
+              <p style={{ fontSize: 12.5, color: 'var(--text-muted)' }} data-testid="monitor-custo">
+                {m.cost.runs === 0
+                  ? 'nenhuma execução ainda · 0 tokens'
+                  : `${m.cost.runs} execuç${m.cost.runs === 1 ? 'ão' : 'ões'} · ${(m.cost.inputTokens + m.cost.outputTokens).toLocaleString('pt-BR')} tokens`}
+              </p>
               <div className="flex flex-wrap gap-2">
                 <Button variant="ghost" onClick={() => editar(m)} data-testid="monitor-editar">
                   Editar

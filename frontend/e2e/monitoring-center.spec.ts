@@ -634,6 +634,7 @@ const MONITOR = {
   debounceMs: 0,
   cooldownMs: 0,
   flowId: 'flow-1',
+  cost: { runs: 0, inputTokens: 0, outputTokens: 0 },
   state: { status: 'watching', conditionIsTrue: false, lastObservedAt: null, lastTriggeredAt: null, error: null },
 }
 
@@ -645,6 +646,28 @@ test('a aba Monitores LISTA o que existe, com estado e o Flow que roda', async (
   await expect(item).toContainText('rascunho')
   await expect(item).toContainText('Avisar o time')
   await expect(page.getByTestId('monitor-estado')).toContainText('nunca disparou')
+})
+
+test('a aba Monitores diz o que cada alarme JÁ CUSTOU', async ({ page }) => {
+  /**
+   * Vigiar é de graça; o que custa é o que roda depois da borda. Um monitor com cooldown mal
+   * ajustado só aparecia na fatura, e "qual deles está gastando?" não tinha resposta em lugar
+   * nenhum do produto.
+   */
+  await stub(page, {
+    monitores: [
+      { ...MONITOR, id: 'm1', name: 'Caro', cost: { runs: 12, inputTokens: 8000, outputTokens: 2000 } },
+      { ...MONITOR, id: 'm2', name: 'Quieto', cost: { runs: 0, inputTokens: 0, outputTokens: 0 } },
+    ],
+  })
+  await page.goto('/monitoring?tab=monitors')
+
+  const custos = page.getByTestId('monitor-custo')
+  await expect(custos.first()).toContainText('12 execuções')
+  await expect(custos.first()).toContainText('10.000 tokens')
+  // Zero é DITO, e não omitido: um campo em branco se lê como "não sei".
+  await expect(custos.nth(1)).toContainText('nenhuma execução ainda')
+  await expect(custos.nth(1)).toContainText('0 tokens')
 })
 
 test('sem monitor nenhum, a aba diz o que fazer em vez de ficar vazia', async ({ page }) => {

@@ -44,7 +44,7 @@ after(async () => {
 })
 
 beforeEach(async () => {
-  for (const c of ['monitors', 'monitor_states', 'automations', 'automation_versions', 'buildings', 'offices', 'data_stores', 'dataset_definitions'])
+  for (const c of ['monitors', 'monitor_states', 'automations', 'automation_versions', 'automation_runs', 'buildings', 'offices', 'data_stores', 'dataset_definitions'])
     await db.collection(c).deleteMany({})
   await db.collection('buildings').insertOne({ _id: BUILDING, ownerId: DONO, name: 'Prédio', createdAt: new Date(), updatedAt: new Date() })
   await db.collection('offices').insertOne({ _id: FLOOR, ownerId: DONO, buildingId: BUILDING, name: 'Térreo', status: 'active', createdAt: new Date() })
@@ -230,4 +230,52 @@ test('a flag MONITORS_ENABLED=0 nega a rota de verdade', async () => {
     delete process.env.MONITORS_ENABLED
     servidor.close()
   }
+})
+
+// --- o que o alarme já custou ----------------------------------------------------------------
+
+test('ACEITAÇÃO: a listagem diz quantas execuções o monitor pediu e quanto elas custaram', async () => {
+  /**
+   * Vigiar é de graça; o que custa é o que acontece DEPOIS da borda.
+   *
+   * Sem esse número na tela, um monitor com cooldown mal ajustado só aparece na fatura — e aí
+   * a pergunta "qual deles está gastando?" não tem resposta em lugar nenhum do produto.
+   */
+  const m = await createMonitor(DONO, entrada({}))
+  const alheio = await createMonitor(DONO, entrada({ name: 'Outro' }))
+
+  // Duas execuções deste monitor e uma do outro, correlacionadas pelo mesmo fio que a
+  // Activity usa: o `requestId` que o disparo grava.
+  await db.collection('automation_runs').insertMany([
+    { _id: new ObjectId(), ownerId: DONO, requestId: `monitor:${m._id.toString()}:e1`, usage: { inputTokens: 120, outputTokens: 30 }, status: 'succeeded' },
+    { _id: new ObjectId(), ownerId: DONO, requestId: `monitor:${m._id.toString()}:e2`, usage: { inputTokens: 80, outputTokens: 20 }, status: 'succeeded' },
+    { _id: new ObjectId(), ownerId: DONO, requestId: `monitor:${alheio._id.toString()}:e1`, usage: { inputTokens: 999, outputTokens: 999 }, status: 'succeeded' },
+  ])
+
+  const visao = await describeMonitors(DONO)
+  const meu = visao.find((v) => v.id === m._id.toString())
+  assert.deepEqual(meu.cost, { runs: 2, inputTokens: 200, outputTokens: 50 })
+
+  // O custo do vizinho não entra no meu: são alarmes diferentes.
+  const outro = visao.find((v) => v.id === alheio._id.toString())
+  assert.equal(outro.cost.runs, 1)
+})
+
+test('o monitor que nunca disparou custa ZERO — e diz isso, em vez de omitir', async () => {
+  const m = await createMonitor(DONO, entrada({}))
+  const [visao] = (await describeMonitors(DONO)).filter((v) => v.id === m._id.toString())
+  assert.deepEqual(visao.cost, { runs: 0, inputTokens: 0, outputTokens: 0 }, 'campo ausente faz a tela mostrar vazio, que se lê como "não sei"')
+})
+
+test('AMEAÇA: a execução de OUTRA conta não entra no custo deste monitor', async () => {
+  const m = await createMonitor(DONO, entrada({}))
+  await db.collection('automation_runs').insertOne({
+    _id: new ObjectId(),
+    ownerId: 'vizinho',
+    requestId: `monitor:${m._id.toString()}:e1`,
+    usage: { inputTokens: 500, outputTokens: 500 },
+    status: 'succeeded',
+  })
+  const [visao] = (await describeMonitors(DONO)).filter((v) => v.id === m._id.toString())
+  assert.equal(visao.cost.runs, 0, 'o id do monitor não é segredo: o dono precisa estar no filtro')
 })
