@@ -5,6 +5,7 @@ import { ensureDefaultBuilding } from '../building.js'
 import type { DataSetDefinition, DataStore, DataStoreAdapterKind, DataStoreGrant, DataStoreStatus, QueryLogEntry } from './types.js'
 import { ADAPTER_KINDS, DATABASE_CAPABILITIES } from './types.js'
 import type { DatabaseCapability } from './types.js'
+import { ensureTtlIndex } from '../ttlIndex.js'
 
 // A persistência dos Data Stores.
 //
@@ -26,7 +27,7 @@ export async function ensureDatabaseIndexes(): Promise<void> {
   await queryLog.createIndex({ ownerId: 1, at: -1 })
   // O log de consulta é telemetria: ele mede uso, não guarda dado. Sem prazo, ele vira
   // um arquivo que ninguém lê e todo mundo paga.
-  await queryLog.createIndex({ at: 1 }, { expireAfterSeconds: 30 * 24 * 3600, name: 'query_log_retencao' })
+  await ensureTtlIndex(queryLog, { at: 1 }, 30 * 24 * 3600, 'query_log_retencao')
 }
 
 export class DataStoreError extends Error {
