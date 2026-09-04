@@ -1485,8 +1485,18 @@ na ordem do Dockerfile. O host é Node `v22.17.1` contra `node:22` das imagens �
 - frontend: `npm ci` + `npm run build` → `dist/index.html`, com `nginx.conf` no contexto;
 - browser-worker: `npm ci --omit=dev` e `import('playwright')` resolvendo de `/app`.
 
-O que continua sem cobertura é o que exige daemon: as camadas empilharem, o `COPY --from=` entre
-estágios, o usuário sem privilégio, o healthcheck e o container subir. Precisa de CI.
+O que exige daemon passou a rodar na **CI**, que já existia e já construía backend e frontend. O
+comentário que estava lá dizia: "um Dockerfile que só é exercitado na hora do deploy é um
+Dockerfile que falha na hora do deploy" — e as duas imagens que ela não exercitava eram as duas
+que estavam quebradas.
+
+`runner` e `browser-worker` passam a ser construídos junto, e o worker do browser é **levantado**:
+`/health` carrega o motor de verdade e responde `capabilities.render`; `false` derruba o job. A
+requisição vai assinada como o backend assina, e o container sobe com as travas que o Dockerfile
+documenta. Conferido localmente contra o worker real — com Playwright, `"render":true`; sem ele,
+`false`.
+
+O que falta é o job rodar uma vez. Nesta máquina não há daemon, e isso não muda.
 
 ### Bateria
 

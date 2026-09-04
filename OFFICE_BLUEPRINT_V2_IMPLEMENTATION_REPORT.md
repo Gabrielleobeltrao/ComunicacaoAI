@@ -374,9 +374,23 @@ por arquivo) e rodei os `RUN` na ordem do Dockerfile:
 | browser-worker | `npm ci --omit=dev` | passa, e `import('playwright')` resolve a partir de `/app` (§2.7) |
 | runner / browser-worker | `node --check` no alvo de `CMD` | passa |
 
-O que **continua sem cobertura** e precisa de daemon: as camadas empilharem de verdade, o
-`COPY --from=` entre estágios, o usuário sem privilégio, o healthcheck, e o container subir. É o
-primeiro dos próximos passos.
+O que exige daemon — as camadas empilharem, o `COPY --from=` entre estágios, o container subir —
+**passou a rodar na CI**, que já existia e já construía backend e frontend. O comentário que
+estava lá dizia: *"um Dockerfile que só é exercitado na hora do deploy é um Dockerfile que falha
+na hora do deploy"*. Ele estava certo, e as duas imagens que a CI **não** exercitava eram
+exatamente as duas que estavam quebradas.
+
+`runner` e `browser-worker` passam a ser construídos junto. E o worker do browser é **levantado**,
+porque construir não prova que ele renderiza: `/health` carrega o motor de verdade e responde
+`capabilities.render`, e o passo derruba o job quando ele vem `false` — o estado da imagem até
+este trabalho. A requisição vai assinada como o backend assina (HMAC sobre
+`timestamp.nonce.corpo`, nonce de uso único), e o container sobe com as mesmas travas que o
+Dockerfile documenta para produção.
+
+Conferido localmente antes de commitar, contra o worker real: com o Playwright instalado o
+`/health` assinado devolve `"render":true`; sem ele, `false`. O grep da CI distingue os dois.
+
+O que ainda depende de rodar lá: o job em si. Nesta máquina não há daemon, e isso não muda.
 
 O que sobrou virou teste, para não depender de alguém repetir isto à mão: sincronia
 `package.json` ↔ lock por pacote, todo `COPY` conferido contra o contexto, toda imagem
@@ -431,9 +445,10 @@ quem retomar não repetir o caminho.
 
 ## 7. Próximos passos, na ordem em que eu faria
 
-1. **CI que construa as quatro imagens.** É o único jeito de fechar o que sobrou do item 5, e
-   esta rodada mostrou o preço de não ter: o build do backend estava quebrado havia quanto
-   tempo ninguém sabe.
+1. **Rodar a CI.** As quatro imagens agora são construídas e o browser-worker é levantado com
+   prova de renderização — mas o job precisa executar uma vez para isso deixar de ser uma
+   afirmação. Esta rodada mostrou o preço de não ter: o build do backend estava quebrado havia
+   quanto tempo ninguém sabe.
 2. **O SIGTERM.** Instrumentar o encerramento com um log por etapa concluída e rodar o smoke em
    laço até capturar a falha: a etapa que não registra é a que trava. As três já eliminadas estão
    acima.
