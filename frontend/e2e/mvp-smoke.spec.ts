@@ -596,3 +596,42 @@ test('“Montar e ajustar escritório” é acesso de primeira classe, e não s�
   await page.getByRole('button', { name: /Trocar andar\. Andar atual:/ }).click()
   await expect(page.getByTestId('floor-picker-architect')).toHaveCount(0)
 })
+
+/**
+ * O PRIMEIRO PAINT não carrega o escritório inteiro.
+ *
+ * Tudo num pacote só dava 1,4 MB para quem abre a tela de login — e a maior parte disso são
+ * telas que essa pessoa ainda não tem como ver. A Central de monitoramento sozinha tem duas
+ * mil linhas.
+ *
+ * O que este caso guarda é a propriedade, não o número: as páginas autenticadas chegam em
+ * pedaços próprios, e nenhum deles é baixado antes de alguém entrar. Sem isso, um `import`
+ * estático acrescentado por engano em `App.tsx` desfaz o corte sem nenhum sinal.
+ */
+test('a tela pública não baixa as páginas autenticadas', async ({ page }) => {
+  /**
+   * O que se mede é o PESO, e não o nome dos pedaços.
+   *
+   * Medir "o pacote da Central não foi pedido" não pega a regressão que importa: um `import`
+   * estático não cria pedaço nenhum — ele costura a página dentro do pacote de entrada, e o
+   * nome some junto. O peso é o que distingue os dois mundos, e é o que a pessoa espera.
+   */
+  let bytes = 0
+  let scripts = 0
+  page.on('response', async (r) => {
+    if (r.request().resourceType() !== 'script') return
+    scripts += 1
+    bytes += Number(r.headers()['content-length'] ?? (await r.body().catch(() => Buffer.alloc(0))).length)
+  })
+
+  await irPara(page, '/login')
+  await expect(page.getByRole('button', { name: /Entrar/i })).toBeVisible()
+
+  expect(scripts, 'nenhum script carregado — o teste não está medindo a aplicação').toBeGreaterThan(0)
+  /**
+   * O teto é folgado de propósito: ele existe para pegar o retorno ao pacote único (1,4 MB),
+   * e não para policiar cada quilobyte. Hoje a entrada tem ~610 KB.
+   */
+  const TETO_KB = 900
+  expect(Math.round(bytes / 1024), `a tela pública baixou ${Math.round(bytes / 1024)} KB de script`).toBeLessThan(TETO_KB)
+})
