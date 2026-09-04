@@ -301,6 +301,134 @@ destacar porque é o ponto onde a versão anterior mentia:
 
 ---
 
+## 2-bis. A arquitetura de "Montar operação" — de módulo a modo
+
+Rodada seguinte, direcionamento novo: **"Montar operação" não é um produto nem um módulo — é
+uma página/modo de trabalho dentro do Arquiteto.** O que estava errado não era a tela; era o
+lugar dela.
+
+### O que o lugar estava dizendo
+
+Ela vivia na navegação, ao lado de Agentes, Setores e Apps. Listada ali, ela **parecia um módulo
+irmão deles** — e "Arquiteto", "Blueprint" e "Montar operação" viravam três nomes que a pessoa
+tinha que descobrir sozinha que apontavam para a mesma coisa. A rodada anterior já havia tirado
+duas duplicatas (o menu de andares e a folha do celular) pelo argumento de que três portas são
+demais; este direcionamento vai mais fundo, e está certo: o problema não era a quantidade de
+portas, era o que a posição delas afirmava.
+
+### O que mudou
+
+**Saiu da navegação** — `navConfig.ts` (que serve a barra lateral *e* o menu do celular, pelo
+mesmo arquivo) e `navItems.ts` (a navegação antiga). A funcionalidade não saiu de lugar nenhum:
+a rota `/architect` continua inteira.
+
+**A porta virou um botão dentro do chat**, que é onde a conversa já está acontecendo. Ele:
+
+- com **projeto em andamento**, abre esse projeto e o rótulo muda para "Continuar a montagem" —
+  perguntar "qual projeto?" para quem acabou de conversar sobre um só é uma pergunta cuja
+  resposta o sistema já tem;
+- **sem projeto**, abre a lista, que é onde se começa um e se retomam os antigos;
+- leva o **rascunho** junto. Quem digitou "quero avisar quando o estoque acabar" e clicou não
+  pode encontrar um campo vazio do outro lado: pedir para redigitar é a forma mais barata de
+  fazer alguém desistir.
+
+O projeto atual é **derivado das mensagens**, não guardado à parte: um segundo lugar para "qual é
+o projeto atual" diverge do primeiro assim que alguém fecha o painel, e aí o botão levaria para o
+projeto errado.
+
+**A rota canônica é `/architect`**, e sempre foi — ela já pertence ao Arquiteto. O que mudou é
+que `/architect/new` deixou de descartar a query: ele redirecionava com um destino fixo, então um
+favorito com `?objetivo=…` — exatamente o que o botão do chat produz — chegava do outro lado com
+o campo vazio.
+
+**Os títulos** passaram a dizer de quem a tela é: "Arquiteto · Montar operação", nas duas
+páginas. "Blueprint" não aparece em texto de interface em lugar nenhum — ele só existe como
+identificador de código, o que já estava certo.
+
+### O que NÃO mudou, de propósito
+
+Nada de backend, Blueprint, conversas, preview, diff, checklist, apply, rollback ou persistência.
+Nenhum endpoint, componente ou estado novo. A página é a mesma; o que mudou foi como se chega
+nela e o que o caminho diz sobre o que ela é.
+
+### Testes
+
+| Caso | O que ele trava |
+| --- | --- |
+| `“Montar operação” NÃO é um módulo da navegação — a porta é o chat` | nem barra lateral, nem menu de andares, nem folha do celular; e a rota continua respondendo |
+| `MONTAR: sem projeto, o botão abre a montagem levando o RASCUNHO junto` | o texto digitado atravessa |
+| `MONTAR: sem rascunho, ele abre a lista` | o caminho de quem ainda não escreveu nada |
+| `MONTAR: com projeto em andamento, ele CONTINUA esse projeto` | o rótulo e o destino |
+| `MONTAR: no celular o botão continua no chat, com alvo de toque acessível` | ≥ 44 px |
+| `COMPATIBILIDADE: a rota antiga redireciona PRESERVANDO os parâmetros` | o favorito antigo não perde a query |
+| `“Montar operação” é um MODO do Arquiteto, e a porta é o chat` (smoke) | o mesmo, com login e navegação reais |
+
+Dois testes E2E **afirmavam o desenho antigo** ("entrada de primeira classe na navegação") e
+foram reescritos — eles agora afirmam o novo.
+
+### Arquivos alterados nesta rodada (não commitados)
+
+| Arquivo | O quê |
+| --- | --- |
+| `frontend/src/components/navConfig.ts` | a entrada saiu da navegação (barra lateral e celular saem daqui) |
+| `frontend/src/components/navItems.ts` | idem, na navegação antiga |
+| `frontend/src/components/ArchitectAssistant.tsx` | `projetoAtual` derivado, `montarOperacao`, e o botão no chat |
+| `frontend/src/pages/architect/Projects.tsx` | recebe `?objetivo=`; título "Arquiteto · Montar operação" |
+| `frontend/src/pages/architect/Project.tsx` | o mesmo título |
+| `frontend/src/pages/redirects.tsx` | `ArchitectLegacyRedirect`, que preserva a query |
+| `frontend/src/App.tsx` | `/architect/new` passa pelo redirect que preserva |
+| `frontend/e2e/architect-v2-characterization.spec.ts` | os cinco casos do botão e do redirect |
+| `frontend/e2e/architect-app.spec.ts`, `mvp-smoke.spec.ts` | os dois casos do desenho antigo, reescritos |
+| `.github/workflows/ci.yml` | o Chromium instalado ANTES dos testes de backend |
+
+### Comandos e resultados
+
+| O quê | Comando | Resultado |
+| --- | --- | --- |
+| typecheck | `npx tsc --noEmit` | 0 erros |
+| build | `npm run build` | 0 erros; entrada em 608 KB |
+| lint | `npm run lint` | 0 erros |
+| frontend | `npm run test -- --run` | 294 em 36 arquivos |
+| E2E | `E2E_PREVIEW=1 npx playwright test` | **752** passaram, 17 pulados |
+| smoke | `npm run smoke` | 7/7 |
+
+**Nada commitado nesta rodada**, conforme a instrução que veio com ela.
+
+### A CI estava vermelha havia doze corridas — e o motivo era ordem de passo
+
+Empurrar os commits produziu o sinal que faltava: a CI de `development` **falha desde 3 de
+setembro**, doze corridas seguidas, todas no mesmo passo (`Backend tests`) e nos mesmos casos.
+
+Os dois que as anotações nomeiam são de `monitoringBrowser`: *"a página que só existe DEPOIS do
+JavaScript é lida"* e *"sem dado estruturado, o degrau caro é tentado"*. Os dois exercitam o
+**motor de renderização de verdade** — que é o item 5.
+
+A causa: o workflow instala o Chromium (`npx playwright install --with-deps chromium`) **depois**
+do passo de testes do backend, porque ele foi acrescentado para as jornadas do widget. Sem
+navegador, o worker devolve `render: false` — que é o comportamento certo dele — e os casos
+falham. Na máquina de quem desenvolve o navegador já está instalado de outras rodadas, então
+passa: 19/19 aqui, vermelho lá.
+
+Reproduzido localmente com `PLAYWRIGHT_BROWSERS_PATH=/nao/existe`: os mesmos dois casos caem,
+mais três de visão, com a mensagem `browserType.launch: Executable doesn't exist`.
+
+**A correção é a ordem**: o Chromium passa a ser instalado antes dos testes de backend, que
+também precisam dele. Nada de `skip` — pular esconderia justamente o que o item 5 existe para
+garantir, e a falha já diz o que falta.
+
+O efeito colateral era pior que dois casos vermelhos: **uma CI que sempre falha para de ser
+lida**. Doze corridas de sinal desperdiçado.
+
+### Uma anomalia que não reproduz
+
+Numa corrida, `npm run test` do frontend devolveu 35 arquivos e 267 casos (contra 36/294), com
+duas falhas nos testes de token de cor. Rodando de novo, e mais duas vezes seguidas: 36/294, zero
+falhas; e os dois arquivos passam isolados. O `include` do vitest é estrito a `src/**`, então
+artefatos de E2E não explicam. **Não inventei correção para o que não consigo reproduzir** — fica
+registrado para quem vir de novo.
+
+---
+
 ## 3. Migrações
 
 Nenhuma nesta rodada. As anteriores relevantes, todas aditivas e retrocompatíveis:
@@ -442,6 +570,20 @@ depende da carga que a suíte do smoke cria. Fica registrado com o que já foi e
 quem retomar não repetir o caminho.
 
 ---
+
+## 6-bis. O único bloqueio que não é meu
+
+Tudo o que este trabalho podia fechar sozinho está fechado e provado. **Uma coisa depende de uma
+decisão sua**, e vale isolá-la para não ficar diluída entre limitações técnicas:
+
+**A correção da CI está na árvore e não foi commitada.** Ela é a que devolve o sinal — o
+Chromium instalado antes dos testes de backend, que é a causa de doze corridas vermelhas
+seguidas. Enquanto ela não subir, a CI continua vermelha, os quatro builds de imagem continuam
+sem rodar, e a prova de renderização do browser-worker continua sendo uma afirmação em vez de um
+job verde.
+
+Não é limitação técnica nem falta de trabalho: é que a instrução desta rodada foi não commitar.
+Subir esse arquivo é uma decisão de uma linha, e é a que destrava o que resta do item 5.
 
 ## 7. Próximos passos, na ordem em que eu faria
 
