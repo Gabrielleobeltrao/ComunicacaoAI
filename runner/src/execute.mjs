@@ -24,6 +24,37 @@ export const RUNTIMES = ['javascript']
 const ARGS_BASE = ['--permission', '--disallow-code-generation-from-strings', '--no-warnings', '--input-type=module']
 
 /**
+ * A versão em que `--permission` passou a existir com esse nome.
+ *
+ * Antes dela o flag se chamava `--experimental-permission`, e um Node mais antigo recebe
+ * `--permission` como opção desconhecida: ele sai na largada, com código diferente de zero.
+ */
+const NODE_COM_PERMISSAO = [22, 13, 0]
+
+/**
+ * Este Node sabe armar o sandbox?
+ *
+ * A pergunta é de SEGURANÇA, não de compatibilidade. Sem o modelo de permissão, o processo
+ * filho enxerga o disco, abre subprocesso e carrega addon nativo — ou seja, o código do autor
+ * roda sem isolamento nenhum. A única resposta segura é não rodar.
+ *
+ * O sintoma sem esta checagem é pior que a falha: o filho morre em milissegundos e o runner
+ * responde "a execução falhou", que aponta o dedo para o script do autor. Foi assim que uma CI
+ * inteira ficou vermelha sem ninguém saber por quê — ela roda num Node mais velho que o das
+ * imagens, e o sandbox nunca chegou a existir lá.
+ */
+export function permissaoDisponivel(versao = process.versions.node) {
+  const partes = String(versao).split('.').map((n) => Number.parseInt(n, 10))
+  for (let i = 0; i < 3; i += 1) {
+    const atual = partes[i] ?? 0
+    const minimo = NODE_COM_PERMISSAO[i]
+    if (atual > minimo) return true
+    if (atual < minimo) return false
+  }
+  return true
+}
+
+/**
  * O programa que roda no filho: o código do autor vira uma função, e a entrada chega pelo
  * stdin. Nada de `import()` do que o autor escrever — o `--permission` já nega, e a
  * mensagem daqui explica em vez de deixar o erro cru vazar.
@@ -79,6 +110,23 @@ export async function executeJavascript({ source, input, limits, sha256 }) {
   if (sha256 && hashOf(source) !== sha256) {
     // O hash é o que liga o que roda ao que foi revisado. Diferente = não é isso.
     return { ok: false, error: { kind: 'denied', message: 'o código não corresponde ao hash revisado' } }
+  }
+
+  /**
+   * SEM MODELO DE PERMISSÃO, NÃO RODA. Fail-closed, e o motivo é o runner — não o autor.
+   *
+   * Deixar seguir aqui daria uma de duas coisas, ambas ruins: o filho morrendo com "opção
+   * desconhecida" e o erro sendo atribuído ao script de quem escreveu; ou, num Node que
+   * aceitasse o flag antigo, o código rodando com isolamento que ninguém conferiu.
+   */
+  if (!permissaoDisponivel()) {
+    return {
+      ok: false,
+      error: {
+        kind: 'denied',
+        message: `este runner exige Node ${NODE_COM_PERMISSAO.join('.')} ou mais novo: sem o modelo de permissão o código rodaria sem isolamento`,
+      },
+    }
   }
 
   const teto = {

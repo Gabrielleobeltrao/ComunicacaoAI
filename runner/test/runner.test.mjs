@@ -210,3 +210,44 @@ test('executeJavascript nunca lança: erro vira dado', async () => {
   assert.match(r.error.message, /quebrou de propósito/)
   assert.ok(!JSON.stringify(r).includes('at run'), 'sem stack: ele conta caminho de arquivo')
 })
+
+// --- sem modelo de permissão, não roda -------------------------------------------------------
+
+test('a fronteira do Node que sabe armar o sandbox', async () => {
+  /**
+   * `--permission` passou a ter esse nome no 22.13. Antes ele era
+   * `--experimental-permission`, e um Node mais velho recebe `--permission` como opção
+   * desconhecida: sai na largada.
+   */
+  const { permissaoDisponivel } = await import('../src/execute.mjs')
+  for (const velho of ['18.20.4', '20.19.0', '22.0.0', '22.12.9']) {
+    assert.equal(permissaoDisponivel(velho), false, `${velho} não tem o flag e precisa ser recusado`)
+  }
+  for (const novo of ['22.13.0', '22.17.1', '23.5.0', '24.0.0']) {
+    assert.equal(permissaoDisponivel(novo), true, `${novo} tem o flag`)
+  }
+})
+
+test('AMEAÇA: sem o modelo de permissão o runner RECUSA — e diz que o motivo é ele', async () => {
+  /**
+   * A pergunta é de segurança, não de compatibilidade: sem o modelo de permissão o processo
+   * filho enxerga o disco, abre subprocesso e carrega addon nativo. O código do autor rodaria
+   * sem isolamento nenhum, e a única resposta segura é não rodar.
+   *
+   * E a recusa precisa dizer que o problema é o RUNNER. Antes disto o filho morria em
+   * milissegundos e a resposta era "a execução falhou" — que aponta para o script de quem
+   * escreveu, e manda essa pessoa depurar um código que está correto.
+   */
+  const mod = await import('../src/execute.mjs')
+  const versaoReal = process.versions.node
+  Object.defineProperty(process.versions, 'node', { value: '20.19.0', configurable: true })
+  try {
+    const r = await mod.executeJavascript({ source: 'function extract(d) { return d }', input: {} })
+    assert.equal(r.ok, false)
+    assert.equal(r.error.kind, 'denied', 'recusar é diferente de falhar rodando')
+    assert.match(r.error.message, /22\.13\.0|modelo de permiss/i, `a recusa precisa dizer o motivo: ${r.error.message}`)
+    assert.equal(/execução falhou/.test(r.error.message), false, 'a mensagem antiga culpava o script do autor')
+  } finally {
+    Object.defineProperty(process.versions, 'node', { value: versaoReal, configurable: true })
+  }
+})
