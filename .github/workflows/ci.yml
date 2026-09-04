@@ -55,11 +55,19 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          # Pinned to 20.19+: rolldown (vite's bundler) declares
-          # engines.node "^20.19.0 || >=22.12.0", and on an older 20.x npm silently
-          # skips its native binding, so the build dies with "Cannot find native
-          # binding" instead of a useful error.
-          node-version: '20.19'
+          # A MESMA versão das imagens — `node:22` nos quatro Dockerfiles.
+          #
+          # Ela estava em 20.19 por causa do rolldown, que declara
+          # `engines.node "^20.19.0 || >=22.12.0"`. Só que isso é um PISO, e o piso virou a
+          # escolha: a CI passou a testar uma configuração que nunca sobe.
+          #
+          # O preço apareceu no sandbox. `--permission` só tem esse nome a partir do 22.13 (antes
+          # era `--experimental-permission`), então no 20.19 o processo filho morria na largada e
+          # dois casos ficavam vermelhos com "a execução falhou" — apontando para o script do
+          # autor, que estava correto. Em produção, `node:22-alpine`, o mesmo código funciona.
+          #
+          # Testar no que sobe é o mínimo para a CI significar alguma coisa.
+          node-version: '22'
           cache: npm
 
       - name: Clean install
@@ -424,7 +432,8 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: '20.19'
+          # Mesma versão das imagens, pelo motivo explicado no job `verify`.
+          node-version: '22'
           cache: npm
 
       - name: Clean install
