@@ -210,7 +210,65 @@ navegadores já estão em `/ms-playwright`. Verificado no contexto real: o `npm 
 O invariante virou teste: **toda imagem instala as dependências que declara**, e quem roda
 `npm ci` copia o lock. Teeth check: tirando a linha do Dockerfile, reprova.
 
-### 2.8 O que a verificação confirmou como pronto
+### 2.8 O item 1, conferido peça por peça — e o slot que evaporaria
+
+"O blueprint deve criar/ajustar andares, setores, agentes, responsabilidades, knowledge, apps,
+permissões, databases, tools, flows, routines e monitors usando chaves estáveis" é o
+sub-requisito mais fácil de afirmar e o mais difícil de provar. Fui atrás de cada peça.
+
+**Quem cria o quê.** O contrato do V2 declara dezoito listas. A aplicação do V2 percorre dez —
+`databases`, `datasets`, `tools`, `channels`, `sources`, `liveDestinations`, `histories`,
+`monitors`, `flows`, `deliveries`. As outras (andar, setor, agente, responsabilidade, knowledge,
+rotina, grant) são criadas pela saga do V1 **na mesma operação**, com o mesmo `resourceMap`, a
+mesma auditoria e a mesma retomada — é isso que impede uma segunda engine de existir. Os dois
+documentos descrevem UM escritório.
+
+**A terceira possibilidade, que ninguém tinha como ver.** Uma lista declarada que *nenhum* dos
+dois percorre: um item ali não é criado, não vira pendência e não aparece na prévia. Ele
+simplesmente não existe, e a proposta diz que existe. `resources.memoryPolicies` é esse caso —
+nenhum compilador o emite hoje, então nada some, mas basta alguém emitir um.
+
+Virou teste: todo item declarado nas listas que a aplicação percorre precisa virar passo —
+criado, reusado ou pendência **com motivo**. Teeth check: tirando `resources.tools` do registro,
+reprova.
+
+**As chaves.** Um segundo caso percorre todas as listas e afirma que nenhuma chave é um
+ObjectId, que todas são slugs estáveis em minúsculas, e que **duas compilações do mesmo Brief
+produzem exatamente as mesmas chaves** — senão uma revisão criaria recursos ao lado dos que já
+existem, em vez de ajustá-los.
+
+**O resto do item 1** já tinha prova e foi conferido contra ela: a separação entre pergunta
+informativa e ação estrutural é o `intent` decidido no servidor (`answer` / `operate` /
+`explain` / `propose`), com `answer` consultando a fonte real e devolvendo valor, fonte e
+horário; e o ciclo plano → validação → prévia/diff → impacto → confirmação → saga idempotente →
+auditoria é o que `architectApply`, `architectApplyV2` e os 26 casos E2E cobrem.
+
+### 2.9 O item 6, conferido peça por peça
+
+O catálogo está em `src/extensions/`, com 46 casos entre `extensions.integration.test.mjs` (34) e
+`extensionTemplates.integration.test.mjs` (12). O que eles provam, um a um contra o que o
+objetivo pede:
+
+- **draft → review → published**: o ciclo é um grafo, e um salto que ele não prevê não acontece;
+  aprovar e publicar são da revisão, não do autor;
+- **versionamento imutável**: republicar o mesmo número é recusado, e o hash ignora a ordem das
+  chaves — reescrita cosmética não é versão nova;
+- **instalação**: fixa a versão, e o autor publicar não muda o que já roda;
+- **permissões**: o diff diz o que a versão nova passa a poder fazer; perder permissão não exige
+  aprovação, ampliar exige; MAIOR diferente é marcado incompatível e não atualiza sozinho;
+- **secrets protegidos**: credencial dentro do manifesto impede a publicação, e a recusa não
+  repete o segredo; a instalação não traz credencial, grant nem dado do autor;
+- **isolamento por owner**: o pacote de outra pessoa não se submete, e o pacote privado de outra
+  conta não existe para instalar;
+- **suspensão**: exige motivo, o motivo fica visível para quem instalou, e ela barra a execução
+  do que já estava instalado — fail-closed.
+
+**Código de usuário não executa**, que é o que o objetivo autoriza explicitamente enquanto a
+sandbox segura não puder ser entregue. O portão é `extensionRuntime/gate.ts`, e
+`CODE_TOOLS_ENABLED=1` sozinho não basta — é a diferença entre uma flag e uma garantia. Está em
+§6.1 com o que falta para destravá-lo.
+
+### 2.10 O que a verificação confirmou como pronto
 
 | Item | Prova conferida |
 | --- | --- |
@@ -286,7 +344,7 @@ pacotes seguido de `npm install` — e não `npm ci`, porque o lock mudou nesta 
 | --- | --- | --- |
 | build monorepo | `npm run build` | 0 erros |
 | typecheck frontend | `npx tsc --noEmit` | 0 erros |
-| backend | `node scripts/run-tests.mjs` | **1576 + 2314 = 3890**, 0 falhas |
+| backend | `node scripts/run-tests.mjs` | **1576 + 2316 = 3892**, 0 falhas |
 | frontend | `npm run test -- --run` | 294 em 36 arquivos, 0 falhas |
 | runner | `npm test` | 21, 0 falhas |
 | browser-worker | `npm test` | 33, 0 falhas |

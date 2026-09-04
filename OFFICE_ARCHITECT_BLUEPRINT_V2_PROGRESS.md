@@ -917,6 +917,22 @@ trabalho, não este.
 Teeth check: desligando a ativação de Flow caem 2 casos; lendo `definition` em vez de
 `draftDefinition` caem os mesmos 2; aceitando conexão de outra conta cai 1.
 
+### O item 1, conferido peça por peça
+
+"O blueprint deve criar/ajustar [doze tipos] com chaves estáveis" é o sub-requisito mais fácil de
+afirmar e o mais difícil de provar. O contrato declara dezoito listas: a aplicação do V2 percorre
+dez, e as outras (andar, setor, agente, responsabilidade, knowledge, rotina, grant) são criadas
+pela saga do V1 **na mesma operação**, com o mesmo `resourceMap` e a mesma auditoria.
+
+A terceira possibilidade é a que ninguém tinha como ver: uma lista declarada que *nenhum* dos
+dois percorre. Um item ali não é criado, não vira pendência e não aparece na prévia — ele não
+existe, e a proposta diz que existe. `resources.memoryPolicies` é esse caso; nada o emite hoje,
+mas basta alguém emitir.
+
+Dois casos novos travam a porta: todo item declarado vira passo (criado, reusado ou pendência
+**com motivo**), e nenhuma chave é ObjectId — são slugs estáveis, e duas compilações do mesmo
+Brief produzem exatamente as mesmas, senão uma revisão criaria recursos ao lado dos existentes.
+
 ### Bateria completa
 
 backend **1551 + 2210 = 3761**, runner 21, browser-worker 32, frontend 294, E2E **735** com 0
@@ -1474,7 +1490,7 @@ estágios, o usuário sem privilégio, o healthcheck e o container subir. Precis
 
 ### Bateria
 
-backend **1576 + 2314 = 3890** · frontend 294 · E2E 747 (17 pulados) · runner 21 ·
+backend **1576 + 2316 = 3892** · frontend 294 · E2E 747 (17 pulados) · runner 21 ·
 browser-worker 33 · smoke 7/7 · lint 0 erros · audit **0 vulnerabilidades** · secret-scan 2269 ·
 `git diff --check` limpo.
 
