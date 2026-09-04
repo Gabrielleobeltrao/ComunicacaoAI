@@ -1,0 +1,14 @@
+{
+  "name": "sandbox-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runner isolado para código de extensão. Deployável separadamente do backend.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

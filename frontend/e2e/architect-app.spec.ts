@@ -16,13 +16,44 @@ const BLUEPRINT = {
   objective: 'atender dúvidas e registrar pedidos',
   floors: [{ key: 'atendimento', name: 'Atendimento do Restaurante', workMode: 'organization' }],
   agents: [
-    { key: 'gerente', name: 'Marina', preset: 'manager', floorKey: 'atendimento', role: 'Recebe toda mensagem e decide quem resolve', objective: 'Distribuir a conversa para quem sabe responder.', instructions: 'Nunca prometa prazo.' },
-    { key: 'duvidas', name: 'Rafael', preset: 'researcher', floorKey: 'atendimento', role: 'Quando a pergunta for sobre cardápio ou horário', objective: 'Responder horários, endereço e cardápio.', instructions: '' },
+    {
+      key: 'gerente',
+      name: 'Marina',
+      preset: 'manager',
+      floorKey: 'atendimento',
+      role: 'Recebe toda mensagem e decide quem resolve',
+      objective: 'Distribuir a conversa para quem sabe responder.',
+      instructions: 'Nunca prometa prazo.',
+      constraints: 'Não responde preço nem prazo por conta própria.',
+      executorKind: 'llm',
+      inputContract: 'a mensagem da pessoa',
+      outputContract: 'a resposta consolidada',
+      activationModes: ['mention'],
+      delegationPolicy: 'floor',
+      handoffEnabled: true,
+      layer: 'essential',
+      layerReason: 'é quem recebe e responde: sem ele a operação não existe',
+    },
+    {
+      key: 'duvidas',
+      name: 'Rafael',
+      preset: 'researcher',
+      floorKey: 'atendimento',
+      role: 'Quando a pergunta for sobre cardápio ou horário',
+      objective: 'Responder horários, endereço e cardápio.',
+      instructions: '',
+      executorKind: 'llm',
+      handoffEnabled: false,
+      layer: 'recommended',
+      layerReason: 'divide um trabalho que o primeiro agente faria sozinho',
+    },
   ],
   sectors: [{ key: 'setor', name: 'Mesa de Atendimento', floorKey: 'atendimento', mode: 'orchestrated', memberAgentKeys: ['gerente', 'duvidas'], coordinatorAgentKey: 'gerente' }],
   routines: [],
-  appRequirements: [{ key: 'canal', appKey: 'web_chat', reason: 'Receber as conversas do site.', required: true }],
-  knowledgeRequirements: [{ key: 'cardapio', title: 'Enviar o cardápio com preços', description: 'Sem ele, o agente não responde preço.', required: true, state: 'missing' }],
+  appRequirements: [{ key: 'canal', appKey: 'web_chat', reason: 'Receber as conversas do site.', required: true, agentKeys: ['gerente'], layer: 'essential' }],
+  knowledgeRequirements: [
+    { key: 'cardapio', title: 'Enviar o cardápio com preços', description: 'Sem ele, o agente não responde preço.', required: true, state: 'missing', scope: 'agent', targetKey: 'duvidas', layer: 'essential' },
+  ],
   assumptions: [{ key: 'horario', text: 'Assumi atendimento em horário comercial.' }],
   warnings: [],
 }
@@ -35,6 +66,36 @@ const CHECKLIST = [
   { id: 'test:conversa-de-teste', category: 'test', title: 'Testar a operação com uma conversa real', description: 'Converse com o agente de entrada.', required: true, status: 'blocked', completionMode: 'manual', dependsOn: ['structure:floor-atendimento'] },
 ]
 
+/** O ENTENDIMENTO de onde a proposta foi compilada. */
+const BRIEF = {
+  version: 3,
+  businessGoal: 'atender quem chega pelo site do restaurante',
+  audience: 'clientes do site',
+  channels: ['web'],
+  jobs: [
+    {
+      id: 'duvidas',
+      name: 'Responder dúvidas de horário, endereço e cardápio',
+      trigger: 'alguém manda mensagem no site',
+      input: 'a pergunta da pessoa',
+      decision: 'qual resposta cabe',
+      action: 'responder',
+      output: 'a resposta para a pessoa',
+    },
+  ],
+  knowledgeNeeds: [{ subject: 'Cardápio com preços', required: true }],
+  integrations: [],
+  constraints: [],
+  assumptions: [{ id: 'horario', text: 'Assumi atendimento em horário comercial.', status: 'open' }],
+  openQuestions: ['Quem responde fora do horário comercial?'],
+}
+
+const CONTAGENS = {
+  essential: { agents: 1, sectors: 0, routines: 0, apps: 1 },
+  recommended: { agents: 2, sectors: 1, routines: 0, apps: 1 },
+  complete: { agents: 2, sectors: 1, routines: 1, apps: 1 },
+}
+
 const READINESS = { requiredDone: 0, requiredTotal: 4, optionalDone: 0, optionalTotal: 0, ready: false, blockers: [] }
 
 const PREVIA = {
@@ -45,13 +106,73 @@ const PREVIA = {
     { kind: 'floor', key: 'atendimento', label: 'Atendimento do Restaurante', action: 'create', detail: 'Andar novo.', rationale: 'Onde a operação de atendimento mora.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
     { kind: 'agent', key: 'gerente', label: 'Marina', action: 'create', detail: 'Agente novo.', rationale: 'Recebe a conversa e decide quem responde.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
     { kind: 'agent', key: 'duvidas', label: 'Rafael', action: 'create', detail: 'Agente novo.', rationale: 'Responde o que mais perguntam.', dependsOn: ['floor:atendimento'], usesLlm: false, requiresApproval: false, issues: [] },
-    { kind: 'sector', key: 'setor', label: 'Mesa de Atendimento', action: 'create', detail: 'Setor no modo orchestrated.', rationale: 'Uma porta de entrada só.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+    { kind: 'sector', key: 'setor', label: 'Mesa de Atendimento', action: 'create', detail: 'Um gerente coordena: um coordenador recebe o pedido, aciona quem precisa e junta a resposta. 2 agentes.', rationale: 'Uma porta de entrada só.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
     { kind: 'app', key: 'canal', label: 'web_chat', action: 'wait_user', detail: 'Receber as conversas do site. Conecte o App para os agentes poderem usá-lo.', rationale: '', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
     { kind: 'knowledge', key: 'cardapio', label: 'Enviar o cardápio com preços', action: 'wait_user', detail: 'Fica pendente até você enviar o conteúdo. Nada é inventado.', rationale: 'Sem ele, o agente não responde preço.', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
   ],
   checklist: CHECKLIST,
   readiness: READINESS,
   counts: { create: 4, reuse: 0, update: 0, waitUser: 2 },
+  layer: 'complete',
+  layerCounts: CONTAGENS,
+  critique: {
+    clean: false,
+    findings: [
+      {
+        source: 'responsibility',
+        code: 'manager_without_team',
+        agentKey: 'gerente',
+        message: '"Marina" coordena, mas não alcança ninguém',
+        fix: 'dê a ela delegação por andar, ou liste quem ela pode acionar',
+        severity: 'error',
+        evidence: ['agente "Marina"'],
+      },
+      {
+        source: 'architecture',
+        code: 'orphan_agent',
+        agentKey: 'duvidas',
+        message: 'nada aciona "Rafael"',
+        fix: 'coloque-o num setor, ligue-o a um canal, ou dê a ele uma rotina',
+        severity: 'warning',
+        evidence: ['fora de setor', 'sem canal'],
+      },
+    ],
+    score: {
+      coverage: 100,
+      cohesion: 100,
+      executorFit: 100,
+      permissionSafety: 50,
+      setupCompleteness: 0,
+      handoffSimplicity: 100,
+      facts: {
+        coverage: ['2 de 2 agentes dizem o que entregam'],
+        cohesion: ['2 de 2 agentes ficam em até dois domínios'],
+        executorFit: ['2 de 2 agentes têm executor coerente com o papel'],
+        permissionSafety: ['1 de 2 agentes preveem passar para uma pessoa'],
+        setupCompleteness: ['2 pendências antes de a operação rodar sozinha'],
+        handoffSimplicity: ['0 repasses declarados entre agentes'],
+      },
+    },
+    mergeSplit: [
+      { agentKey: 'gerente', agentName: 'Marina', jobs: ['Distribuir a conversa'], rationale: 'cuida de atendimento; perfil manager' },
+      { agentKey: 'duvidas', agentName: 'Rafael', jobs: ['Responder horários'], rationale: 'separado de "Marina" porque o papel é outro' },
+    ],
+    llmStatus: 'stale',
+  },
+  simulation: {
+    version: 1,
+    cases: [
+      { id: 'job:duvida', input: 'pergunta do cliente', trigger: 'mensagem', expectedRoute: ['Responder dúvida'], expectsApproval: false },
+      { id: 'fora-do-previsto', input: 'uma pergunta que não se encaixa', trigger: 'mensagem', expectedRoute: [], expectsApproval: false },
+      { id: 'aprovacao', input: 'um pedido que deveria exigir aprovação', trigger: 'mensagem', expectedRoute: [], expectsApproval: true },
+    ],
+    results: [
+      { caseId: 'job:duvida', observedRoute: ['Marina', 'Rafael'], steps: [{ kind: 'tool', ref: 'web_chat.reply', detail: 'dublê: a chamada foi registrada, não executada' }], problems: [], sideEffectsAvoided: ['web_chat.reply'], matchedExpected: true },
+      { caseId: 'fora-do-previsto', observedRoute: ['Marina'], steps: [], problems: [], sideEffectsAvoided: [], matchedExpected: true },
+      { caseId: 'aprovacao', observedRoute: ['Marina'], steps: [], problems: [{ code: 'missing_approval', message: 'o cenário exige aprovação e o caminho não para em ninguém', fix: 'ligue a passagem para humano' }], sideEffectsAvoided: [], matchedExpected: false },
+    ],
+    passed: 2,
+  },
 }
 
 const projeto = (extra: Record<string, unknown> = {}) => ({
@@ -88,7 +209,19 @@ const PERGUNTA = {
   allowUnknown: true,
 }
 
-const COM_PROPOSTA = projeto({ status: 'draft', hasBlueprint: true, blueprint: BLUEPRINT, blueprintHash: HASH, checklist: CHECKLIST, assumptions: BLUEPRINT.assumptions })
+const COM_PROPOSTA = projeto({
+  status: 'draft',
+  hasBlueprint: true,
+  blueprint: BLUEPRINT,
+  plan: BLUEPRINT,
+  layer: 'complete',
+  layerCounts: CONTAGENS,
+  brief: BRIEF,
+  canUndoBrief: true,
+  blueprintHash: HASH,
+  checklist: CHECKLIST,
+  assumptions: BLUEPRINT.assumptions,
+})
 
 let aplicado: Record<string, unknown> | null = null
 let mensagensEnviadas: string[] = []
@@ -99,6 +232,9 @@ let salvoNoProjeto: Record<string, unknown> | null = null
 let rodadasAutomaticas = 0
 /** O que a tela mandou corrigir na proposta — e a prévia que o servidor devolveria depois. */
 let edicoesEnviadas: { kind: string; key: string; fields?: Record<string, string>; remove?: boolean }[] = []
+/** A camada que a tela pediu para aplicar, e a correção do entendimento que ela mandou. */
+let camadaPedida: string | null = null
+let briefEnviado: Record<string, unknown> | null = null
 let previaCorrente = PREVIA
 
 // A FORMA REAL de `/api/providers`: `models` é uma lista de objetos, não de textos.
@@ -139,6 +275,8 @@ async function stub(
   salvoNoProjeto = null
   rodadasAutomaticas = 0
   edicoesEnviadas = []
+  camadaPedida = null
+  briefEnviado = null
   previaCorrente = (opts.preview as typeof PREVIA) ?? PREVIA
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
 
@@ -203,6 +341,31 @@ async function stub(
       }),
     }
     return r.fulfill({ json: { ...COM_PROPOSTA, blueprint, changes: mudancas } })
+  })
+  // Trocar a camada é uma revisão: o servidor devolve o projeto recortado, em rascunho.
+  await page.route('**/api/architect/projects/*/layer', (r) => {
+    camadaPedida = (r.request().postDataJSON() as { layer: string }).layer
+    const essencial = camadaPedida === 'essential'
+    previaCorrente = {
+      ...previaCorrente,
+      blueprintHash: `${HASH}-${camadaPedida}`,
+      layer: camadaPedida as 'essential',
+      items: essencial ? previaCorrente.items.filter((i) => i.key !== 'duvidas' && i.kind !== 'sector') : PREVIA.items,
+    }
+    return r.fulfill({
+      json: {
+        ...COM_PROPOSTA,
+        layer: camadaPedida,
+        blueprintHash: `${HASH}-${camadaPedida}`,
+        blueprint: essencial ? { ...BLUEPRINT, agents: [BLUEPRINT.agents[0]], sectors: [] } : BLUEPRINT,
+      },
+    })
+  })
+  await page.route('**/api/architect/projects/*/brief', (r) => {
+    const body = r.request().postDataJSON() as { patch?: Record<string, unknown>; undo?: boolean }
+    briefEnviado = body
+    if (body.undo) return r.fulfill({ json: { ...COM_PROPOSTA, canUndoBrief: false } })
+    return r.fulfill({ json: { ...COM_PROPOSTA, brief: { ...BRIEF, ...body.patch } } })
   })
   await page.route('**/api/architect/projects/*/apply', (r) => {
     aplicado = r.request().postDataJSON() as Record<string, unknown>
@@ -381,6 +544,92 @@ test('a proposta mostra o que será criado e o que depende da pessoa', async ({ 
   await expect(page.getByTestId('architect-item-app-canal')).toContainText('Depende de você')
 })
 
+test('a ficha do agente diz o que ele entrega, com o quê e o que NÃO faz', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const ficha = page.getByTestId('architect-agent-card-gerente')
+  await expect(ficha).toContainText('Coordena')
+  await expect(page.getByTestId('architect-agent-objective-gerente')).toContainText('Distribuir a conversa')
+  await expect(page.getByTestId('architect-agent-limits-gerente')).toContainText('Não responde preço nem prazo')
+  await expect(page.getByTestId('architect-agent-executor-gerente')).toContainText('interpreta e responde')
+  await expect(page.getByTestId('architect-agent-tools-gerente')).toContainText('web_chat')
+  await expect(page.getByTestId('architect-agent-handoff-gerente')).toContainText('passa para uma pessoa')
+  // Por que ele é um agente separado — a pergunta que decide se há gente demais.
+  await expect(page.getByTestId('architect-agent-rationale-duvidas')).toContainText('o papel é outro')
+  // O problema do agente aparece NO agente, e não só numa lista solta em cima.
+  await expect(page.getByTestId('architect-agent-problems-gerente')).toContainText('1 ponto a resolver')
+  await expect(ficha).toContainText('não alcança ninguém')
+})
+
+test('o que não foi declarado aparece como não declarado', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  // Rafael não tem "não faz" escrito. Preencher com um padrão bonito esconderia
+  // justamente o campo que precisa ser corrigido antes de aplicar.
+  await expect(page.getByTestId('architect-agent-limits-duvidas')).toContainText('não declarado')
+  await expect(page.getByTestId('architect-agent-handoff-duvidas')).toContainText('não passa para ninguém')
+})
+
+// --- as camadas ---------------------------------------------------------------------------------
+
+test('as três camadas são o mesmo plano em três tamanhos — e trocar é uma revisão', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const essencial = page.getByTestId('architect-layer-essential')
+  await expect(essencial).toContainText('Essencial')
+  // A contagem é o que torna a escolha comparável.
+  await expect(essencial).toContainText('1 agente')
+  await expect(page.getByTestId('architect-layer-complete')).toContainText('2 agentes')
+  await expect(page.getByTestId('architect-layer-complete')).toHaveAttribute('aria-checked', 'true')
+
+  await essencial.click()
+  expect(camadaPedida).toBe('essential')
+  // O recorte novo vale para tudo: o agente que saiu some da proposta.
+  await expect(page.getByTestId('architect-layer-essential')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByTestId('architect-item-agent-duvidas')).toHaveCount(0)
+  await expect(page.getByTestId('architect-item-agent-gerente')).toBeVisible()
+})
+
+// --- o entendimento -----------------------------------------------------------------------------
+
+test('"O que entendi" mostra os fatos de onde a proposta saiu', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const brief = page.getByTestId('architect-brief')
+  await expect(page.getByTestId('architect-brief-goal')).toContainText('atender quem chega pelo site')
+  // O trabalho aparece como a frase inteira, na ordem em que ele acontece.
+  await expect(page.getByTestId('architect-brief-job-duvidas')).toContainText('Quando alguém manda mensagem no site')
+  await expect(page.getByTestId('architect-brief-job-duvidas')).toContainText('entrega a resposta para a pessoa')
+  await expect(brief).toContainText('Cardápio com preços')
+  // O que ainda não se sabe é dito — e não vira suposição escondida.
+  await expect(brief).toContainText('Quem responde fora do horário comercial?')
+})
+
+test('corrigir o entendimento refaz a proposta, e dá para desfazer', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  await page.getByTestId('architect-brief-job-duvidas').click()
+  await page.getByTestId('architect-brief-field-output').fill('a resposta e o link do cardápio')
+  await page.getByTestId('architect-brief-save').click()
+
+  await expect.poll(() => (briefEnviado?.patch as { jobs?: { output: string }[] })?.jobs?.[0]?.output).toBe('a resposta e o link do cardápio')
+
+  await page.getByTestId('architect-brief-undo').click()
+  await expect.poll(() => briefEnviado?.undo).toBe(true)
+  // Desfeito, não há mais o que desfazer — e o botão some em vez de mentir.
+  await expect(page.getByTestId('architect-brief-undo')).toHaveCount(0)
+})
+
+test('a leitura obsoleta do modelo é dita como obsoleta, não mostrada como atual', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await expect(page.getByTestId('architect-llm-status')).toContainText('revisão anterior')
+})
+
 test('7) o porquê de cada item aparece — foi gerado e pago, não se joga fora', async ({ page }) => {
   await stub(page, { project: COM_PROPOSTA })
   await page.goto(`/architect/${PROJETO_ID}`)
@@ -528,6 +777,51 @@ test('depois de aplicar, a conversa continua aberta para pedir ajuste', async ({
   await campo.fill('troque o objetivo da Marina')
   await page.getByTestId('architect-send').click()
   await expect.poll(() => mensagensEnviadas).toContain('troque o objetivo da Marina')
+})
+
+test('o crítico aparece antes da lista, com o conserto ao lado', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const critica = page.getByTestId('architect-critique')
+  await expect(critica).toBeVisible()
+  // O que trava vem marcado como trava; o que vale ver, como aviso.
+  const gerente = page.getByTestId('architect-finding-manager_without_team')
+  await expect(gerente).toContainText('coordena, mas não alcança ninguém')
+  await expect(gerente).toContainText('O que fazer:')
+  await expect(gerente).toContainText('Trava')
+  await expect(page.getByTestId('architect-finding-orphan_agent')).toContainText('Vale ver')
+
+  // A leitura da operação carrega o FATO de cada nota — nota sem fato é palpite com número.
+  const score = page.getByTestId('architect-score')
+  await expect(score).toContainText('entrega declarada')
+  await expect(score).toContainText('2 de 2 agentes dizem o que entregam')
+  // E não se chama confiança da IA em lugar nenhum.
+  await expect(critica).not.toContainText(/confian/i)
+})
+
+test('o ensaio mostra o caminho e diz que nada foi executado', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const ensaio = page.getByTestId('architect-simulation')
+  await expect(ensaio).toContainText('2 de 3 cenários passaram')
+  // A garantia que mais importa: nada sai daqui.
+  await expect(ensaio).toContainText('sem executar nada')
+  await expect(ensaio).toContainText('dublê')
+  await expect(page.getByTestId('architect-scenario-job:duvida')).toContainText('Marina → Rafael')
+  // O cenário que falhou aparece com o motivo e o conserto.
+  const aprovacao = page.getByTestId('architect-scenario-aprovacao')
+  await expect(aprovacao).toContainText('não para em ninguém')
+  await expect(aprovacao).toContainText('ligue a passagem para humano')
+})
+
+test('o motivo de cada agente existir fica visível', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  const bloco = page.getByTestId('architect-mergesplit')
+  await expect(bloco).toContainText('Marina')
+  await expect(bloco).toContainText('perfil manager')
 })
 
 test('o que preocupa aparece como aviso, e não como erro', async ({ page }) => {
@@ -1235,35 +1529,35 @@ test('reconferir apura de novo contra o estado real', async ({ page }) => {
 // --- navegação -------------------------------------------------------------------------------------------------------
 
 /**
- * Onde fica a porta de entrada — e ela depende do modo de navegação.
+ * Onde fica a porta de entrada — uma só, e dentro da conversa.
  *
- * Com o prédio ligado, "Montar operação" mora no menu de ANDARES, logo abaixo de criar
- * um à mão: é lá que ela pertence, porque é isso que ela faz. Sem o prédio não existe
- * menu de andares, e ela continua sendo uma linha da barra lateral — tirá-la ali
- * deixaria a tela sem caminho nenhum.
+ * Ela já morou em três lugares ao mesmo tempo: a navegação, o menu de andares e a folha de
+ * andares do celular. O problema não era a quantidade — era o que a quantidade dizia. Listada
+ * ao lado de Agentes e Setores, "Montar operação" parecia um MÓDULO irmão deles, e
+ * "Arquiteto", "Blueprint" e "Montar operação" viravam três produtos que a pessoa precisava
+ * descobrir sozinha que eram a mesma coisa.
  *
- * O teste confere o modo do build em que está rodando em vez de presumir um: o `dist`
- * do CI não tem `.env` e sobe em V1, e o de quem desenvolve sobe em V2.
+ * Ela é um MODO DE TRABALHO do Arquiteto. A porta é o botão dentro do chat, que é onde a
+ * conversa já está acontecendo — e a rota `/architect` continua inteira, para deep link,
+ * favorito e projeto antigo não perderem nada.
  */
-test('“Montar operação” tem entrada no menu, no modo que o build usa', async ({ page }) => {
+test('“Montar operação” NÃO é um módulo da navegação — a porta é o chat', async ({ page }) => {
   await stub(page)
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto('/architect')
+  await page.goto('/dashboard')
 
+  // Nem na barra lateral, nem no menu de andares, nem na folha do celular.
+  await expect(page.locator('aside').getByRole('link', { name: /Montar/i })).toHaveCount(0)
   const menuDeAndares = page.getByTestId('building-switcher')
-  const naBarraLateral = page.locator('aside').getByRole('link', { name: 'Montar operação' })
-  // Esperar a barra lateral existir ANTES de decidir o modo. Contar logo depois do
-  // `goto` lia a tela antes de ela montar: dava zero nos dois, o teste caía no ramo V1
-  // e falhava de vez em quando por tempo, não por comportamento.
-  await expect.poll(async () => (await menuDeAndares.count()) + (await naBarraLateral.count())).toBeGreaterThan(0)
   if (await menuDeAndares.count()) {
     await menuDeAndares.first().click()
-    await expect(page.getByTestId('open-architect')).toBeVisible()
-    // E não está mais duplicada na barra lateral.
-    await expect(naBarraLateral).toHaveCount(0)
-  } else {
-    await expect(naBarraLateral).toBeVisible()
+    await expect(page.getByTestId('open-architect')).toHaveCount(0)
+    await page.keyboard.press('Escape')
   }
+
+  // E a rota continua respondendo: tirar o item de menu não tira a tela.
+  await page.goto('/architect')
+  await expect(page.getByTestId('architect-projects')).toBeVisible()
 })
 
 // --- celular -----------------------------------------------------------------------------------------------------------
@@ -1327,4 +1621,119 @@ test('cada campo tem rótulo, e o erro é anunciado', async ({ page }) => {
   await page.getByTestId('architect-input').fill('oi')
   await page.getByTestId('architect-send').click()
   await expect(page.getByRole('alert')).toBeVisible()
+})
+
+// --- o que entra no ar -------------------------------------------------------------------------
+//
+// Criar um monitor não é o mesmo que ligá-lo. Sem esta seção, o servidor exigia a autorização
+// de ativação e a tela não tinha como dar — então nada nunca entrava no ar pelo produto.
+
+const LIGAVEIS = [
+  { kind: 'source', key: 'fonte', label: 'Cotações CXSE3', expectation: 'a fonte responde e traz o RSI' },
+  { kind: 'monitor', key: 'rsi', label: 'RSI abaixo de 30', expectation: 'a regra dispara na transição' },
+]
+
+test('a lista do que entra no ar nasce VAZIA, e o pedido vai sem ativação nenhuma', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA, preview: { ...PREVIA, activatable: LIGAVEIS } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+
+  const secao = page.getByTestId('architect-approve-activation')
+  await expect(secao).toBeVisible()
+  // Cada linha diz o que o teste vai observar: "entra no ar" sem critério é um checkbox que
+  // a pessoa marca sem saber o que está sendo provado.
+  await expect(secao).toContainText('a fonte responde e traz o RSI')
+  await expect(secao).toContainText('só entra no ar se passar no teste')
+
+  await page.getByTestId('architect-apply-confirm').click()
+  await expect.poll(() => aplicado?.approvedActivationKeys).toEqual([])
+})
+
+test('marcar uma fonte manda a key dela — e só ela', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA, preview: { ...PREVIA, activatable: LIGAVEIS } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  // O `<label>` embrulha o input e o texto: clicar no texto marca a caixa, que é o que a
+  // pessoa faz. `getByRole` com nome não resolve aqui porque o input é `sr-only`.
+  await page.getByTestId('architect-approve-activation').getByText('Fonte: Cotações CXSE3').click()
+  await page.getByTestId('architect-apply-confirm').click()
+
+  await expect.poll(() => aplicado?.approvedActivationKeys).toEqual(['fonte'])
+})
+
+test('sem nada ativável, a seção não existe — nenhuma pergunta sem resposta possível', async ({ page }) => {
+  await stub(page, { project: COM_PROPOSTA, preview: { ...PREVIA, activatable: [] } })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await expect(page.getByTestId('architect-apply-dialog')).toBeVisible()
+  await expect(page.getByTestId('architect-approve-activation')).toHaveCount(0)
+})
+
+test('a proposta mostra o que o V2 acrescenta, agrupado e com nome de produto', async ({ page }) => {
+  const comV2 = {
+    ...PREVIA,
+    items: [
+      ...PREVIA.items,
+      { kind: 'database', key: 'base', label: 'Cotações', action: 'create', detail: 'Onde este dado fica guardado.', rationale: '', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+      { kind: 'source', key: 'fonte', label: 'Cotações CXSE3', action: 'create', detail: 'De onde o dado chega. Nasce parada: ativa só depois de testar.', rationale: '', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+      { kind: 'monitor', key: 'rsi', label: 'RSI abaixo de 30', action: 'create', detail: 'A regra que reconhece a transição. Nasce rascunho.', rationale: '', dependsOn: [], usesLlm: false, requiresApproval: false, issues: [] },
+    ],
+  }
+  await stub(page, { project: COM_PROPOSTA, preview: comV2 })
+  await page.goto(`/architect/${PROJETO_ID}`)
+
+  const proposta = page.getByTestId('architect-proposal')
+  // Os grupos têm o nome que a pessoa usa, não o do código.
+  await expect(proposta).toContainText('Onde o dado fica')
+  await expect(proposta).toContainText('De onde o dado vem')
+  await expect(proposta).toContainText('O que fica de olho')
+  await expect(proposta).toContainText('Cotações CXSE3')
+  await expect(proposta).toContainText('ativa só depois de testar')
+})
+
+test('a entrega pede uma CONEXÃO na hora de aplicar, e o padrão é não escolher', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    preview: { ...PREVIA, pendingDeliveries: [{ key: 'entrega', label: 'meu e-mail', hint: 'Sai quando o Flow rodar.' }] },
+    targets: { floors: [], agents: [], sectors: [], routines: [], connections: [{ id: 'c1', name: 'Meu e-mail', provider: 'email' }] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+
+  const secao = page.getByTestId('architect-delivery-connection')
+  await expect(secao).toBeVisible()
+  await expect(secao).toContainText('meu e-mail')
+  // O padrão é NÃO escolher: uma entrega ligada por engano manda mensagem para alguém que
+  // não pediu.
+  await expect(page.getByTestId('architect-delivery-entrega')).toHaveValue('')
+
+  await page.getByTestId('architect-apply-confirm').click()
+  await expect.poll(() => aplicado?.deliveryConnections).toEqual([])
+})
+
+test('escolher a conexão manda a referência — nunca o endereço', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    preview: { ...PREVIA, pendingDeliveries: [{ key: 'entrega', label: 'meu e-mail', hint: '' }] },
+    targets: { floors: [], agents: [], sectors: [], routines: [], connections: [{ id: 'c1', name: 'Meu e-mail', provider: 'email' }] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await page.getByTestId('architect-delivery-entrega').selectOption('c1')
+  await page.getByTestId('architect-apply-confirm').click()
+
+  await expect.poll(() => aplicado?.deliveryConnections).toEqual([{ key: 'entrega', connectionId: 'c1' }])
+  // O que viaja é o ID de uma conexão da conta. Nenhum endereço no corpo do pedido.
+  expect(/@|\+\d{6}/.test(JSON.stringify(aplicado))).toBe(false)
+})
+
+test('sem conexão nenhuma, a tela diz o que fazer em vez de oferecer um vazio mudo', async ({ page }) => {
+  await stub(page, {
+    project: COM_PROPOSTA,
+    preview: { ...PREVIA, pendingDeliveries: [{ key: 'entrega', label: 'meu e-mail', hint: '' }] },
+    targets: { floors: [], agents: [], sectors: [], routines: [], connections: [] },
+  })
+  await page.goto(`/architect/${PROJETO_ID}`)
+  await page.getByTestId('architect-apply').click()
+  await expect(page.getByTestId('architect-delivery-connection')).toContainText('ainda não tem uma conexão de envio')
 })

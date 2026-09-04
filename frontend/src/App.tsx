@@ -1,32 +1,57 @@
+import { Suspense, lazy } from 'react'
 import type { ReactNode } from 'react'
-import { Apps } from './pages/Apps'
 import { APP_SURFACE_ROUTES } from './components/appSurfaceRegistry'
 import { LegacyChannelRedirect } from './pages/redirects'
 import { Navigate, Route, Routes } from 'react-router'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
-import { DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
-import { Building } from './pages/Building'
-import { ArchitectProjects } from './pages/architect/Projects'
-import { DataRecorders } from './pages/dataHistory/Recorders'
-import { RecorderForm } from './pages/dataHistory/RecorderForm'
-import { RecorderDetail } from './pages/dataHistory/RecorderDetail'
-import { ArchitectProject } from './pages/architect/Project'
-import { FloorView } from './pages/FloorView'
-import { AgentDetail } from './pages/AgentDetail'
-import { Agents } from './pages/Agents'
-import { Dashboard } from './pages/Dashboard'
-import { Executions } from './pages/Executions'
-import { Logs } from './pages/Logs'
-import Memories from './pages/Memories'
+import { ArchitectAssistantProvider } from './components/ArchitectAssistant'
+import { ArchitectLegacyRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
-import { Settings } from './pages/Settings'
-import { SectorDetail } from './pages/SectorDetail'
-import { Setores } from './pages/Setores'
 import { Widget } from './pages/Widget'
+
+/**
+ * As páginas AUTENTICADAS chegam sob demanda; as públicas, no primeiro paint.
+ *
+ * Tudo num pacote só dava 1,4 MB para quem abre a tela de login — e a maior parte disso é
+ * tela que essa pessoa talvez nunca veja. A Central de monitoramento sozinha tem 2 mil linhas.
+ *
+ * O corte é por AUTENTICAÇÃO, e não por tamanho: `/`, `/login`, `/register` e `/widget` são o
+ * primeiro contato, e um `Suspense` neles trocaria a página inicial por um vazio piscando. O
+ * resto só existe depois do login, quando já há um pacote carregado e a espera é de uma
+ * navegação — não da primeira impressão.
+ *
+ * `lazy` pede `default`; estas páginas exportam por nome, e é isso que o `.then` resolve.
+ */
+const sobDemanda = <T extends Record<string, unknown>, K extends keyof T>(carregar: () => Promise<T>, nome: K) =>
+  lazy(() => carregar().then((m) => ({ default: m[nome] as React.ComponentType })))
+
+const Apps = sobDemanda(() => import('./pages/Apps'), 'Apps')
+const Building = sobDemanda(() => import('./pages/Building'), 'Building')
+const ArchitectProjects = sobDemanda(() => import('./pages/architect/Projects'), 'ArchitectProjects')
+const ArchitectProject = sobDemanda(() => import('./pages/architect/Project'), 'ArchitectProject')
+const DataRecorders = sobDemanda(() => import('./pages/dataHistory/Recorders'), 'DataRecorders')
+const RecorderForm = sobDemanda(() => import('./pages/dataHistory/RecorderForm'), 'RecorderForm')
+const RecorderDetail = sobDemanda(() => import('./pages/dataHistory/RecorderDetail'), 'RecorderDetail')
+const FloorView = sobDemanda(() => import('./pages/FloorView'), 'FloorView')
+const Resources = sobDemanda(() => import('./pages/Resources'), 'Resources')
+const Databases = sobDemanda(() => import('./pages/Databases'), 'Databases')
+const Monitors = sobDemanda(() => import('./pages/Monitors'), 'Monitors')
+const MonitoringCenter = sobDemanda(() => import('./pages/MonitoringCenter'), 'MonitoringCenter')
+const Activity = sobDemanda(() => import('./pages/Activity'), 'Activity')
+const Marketplace = sobDemanda(() => import('./pages/Marketplace'), 'Marketplace')
+const AgentDetail = sobDemanda(() => import('./pages/AgentDetail'), 'AgentDetail')
+const Agents = sobDemanda(() => import('./pages/Agents'), 'Agents')
+const Dashboard = sobDemanda(() => import('./pages/Dashboard'), 'Dashboard')
+const Executions = sobDemanda(() => import('./pages/Executions'), 'Executions')
+const Logs = sobDemanda(() => import('./pages/Logs'), 'Logs')
+const Memories = lazy(() => import('./pages/Memories'))
+const Settings = sobDemanda(() => import('./pages/Settings'), 'Settings')
+const SectorDetail = sobDemanda(() => import('./pages/SectorDetail'), 'SectorDetail')
+const Setores = sobDemanda(() => import('./pages/Setores'), 'Setores')
 
 // Navigation V2 is gated by aiBuilding: when ON, floor-scoped canonical routes +
 // legacy redirects replace the flat routes; when OFF, the original app is byte-
@@ -42,7 +67,15 @@ function App() {
     <Route key={route.path} path={route.path} element={<P>{route.element()}</P>} />
   ))
 
+  /**
+   * UM `Suspense` para todas as rotas, e não um por página.
+   *
+   * O que ele mostra é um vazio de propósito: a troca dura o tempo de baixar um pedaço, e um
+   * "carregando" que aparece e some em 80 ms é mais ruído que informação. O que não pode é a
+   * página anterior sumir sem nada no lugar — por isso a área mantém a altura da janela.
+   */
   const routes = (
+    <Suspense fallback={<div style={{ minHeight: '100vh' }} aria-busy="true" data-testid="rota-carregando" />}>
     <Routes>
       {/* Public */}
       <Route path="/" element={<Home />} />
@@ -71,6 +104,12 @@ function App() {
           {/* A memória é do prédio inteiro, não de um andar: fica ao lado dos logs. */}
           <Route path="/memories" element={<P><Memories /></P>} />
           {/* Canonical floor-scoped routes */}
+          <Route path="/resources" element={<P><Resources /></P>} />
+          <Route path="/databases" element={<P><Databases /></P>} />
+          <Route path="/monitors" element={<P><Monitors /></P>} />
+          <Route path="/monitoring" element={<P><MonitoringCenter /></P>} />
+          <Route path="/activity" element={<P><Activity /></P>} />
+          <Route path="/community" element={<P><Marketplace /></P>} />
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
           <Route path="/floors/:floorId/agents" element={<P><Agents /></P>} />
           <Route path="/floors/:floorId/agents/:agentId" element={<P><AgentDetail /></P>} />
@@ -135,7 +174,7 @@ function App() {
           vários. Por isso mora aqui, ao lado das outras áreas globais, e existe nos
           dois modos de navegação. */}
       <Route path="/architect" element={<P><ArchitectProjects /></P>} />
-      <Route path="/architect/new" element={<Navigate to="/architect" replace />} />
+      <Route path="/architect/new" element={<ArchitectLegacyRedirect />} />
       <Route path="/architect/:projectId" element={<P><ArchitectProject /></P>} />
 
       {/* Global areas (both modes). /widgets and /chats predate the App pages and
@@ -148,9 +187,22 @@ function App() {
       <Route path="/teams/*" element={<Navigate to="/setores" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
+    </Suspense>
   )
 
-  return v2 ? <BuildingProvider>{routes}</BuildingProvider> : routes
+  /**
+   * O Arquiteto fica ACIMA das rotas — uma instância só, para o app inteiro.
+   *
+   * Dentro de uma página ele seria remontado a cada navegação, e a conversa (e o rascunho)
+   * morreriam junto. É essa a diferença entre um chat global e um chat por tela.
+   */
+  return v2 ? (
+    <BuildingProvider>
+      <ArchitectAssistantProvider>{routes}</ArchitectAssistantProvider>
+    </BuildingProvider>
+  ) : (
+    routes
+  )
 }
 
 export default App

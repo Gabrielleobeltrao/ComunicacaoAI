@@ -21,7 +21,8 @@ import { ObjectId } from 'mongodb'
 import { finishDelegation, startDelegation } from './delegationLog.js'
 import { recordAgentEvent } from './agentEvents.js'
 import { recordReplyUsageOnce } from './tokenUsage.js'
-import { listDocuments, retrieveContext } from './knowledge.js'
+import { listDocuments } from './knowledge.js'
+import { retrieveForAgents } from './knowledgeRetrieval.js'
 import { ensureFreshWithTimeout } from './webKnowledge.js'
 import { rememberSearchPages } from './webSearch/memory.js'
 import type { ReadResult } from './adaptiveWebReader.js'
@@ -205,7 +206,22 @@ export function productionDelegationDeps(): DelegationDeps {
     // already owner-verified sector context). The WHOLE result travels — status and
     // provenance included — so a delegation can tell "found nothing" from "could not
     // look", and can cite what it used.
-    retrieveContext: (agentId, query, opts) => retrieveContext(agentId, query, { verifiedSectorId: opts.sectorId ?? null }),
+    /**
+     * A leitura passa pela POLÍTICA de cada agente — sempre, e num lugar só.
+     *
+     * Os ids chegam aqui; os agentes são carregados por conta, e a política de cada um
+     * resolve as bases. Um id de outra conta não carrega agente nenhum e por isso não
+     * vira base: a lista de donos nunca é montada a partir do que foi enviado.
+     */
+    retrieveContext: async (agentId, query, opts) => {
+      const ids = Array.isArray(agentId) ? agentId : [agentId]
+      const agentes = (await Promise.all(ids.map((id) => getAgentById(opts.ownerId, id)))).filter(Boolean) as Agent[]
+      return retrieveForAgents(opts.ownerId, agentes, query, {
+        verifiedSectorId: opts.sectorId ?? null,
+        requireGrounding: opts.requireGrounding,
+        ...(opts.executionId ? { execution: { executionId: opts.executionId, kind: 'delegation' } } : {}),
+      })
+    },
     livePassages: (ownerId, agent) => livePassagesFor(ownerId, agent),
     chargeUsage: (ownerId, usage, chargeKey) => recordReplyUsageOnce(ownerId, usage, chargeKey).then(() => undefined),
   }

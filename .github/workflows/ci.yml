@@ -55,11 +55,19 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          # Pinned to 20.19+: rolldown (vite's bundler) declares
-          # engines.node "^20.19.0 || >=22.12.0", and on an older 20.x npm silently
-          # skips its native binding, so the build dies with "Cannot find native
-          # binding" instead of a useful error.
-          node-version: '20.19'
+          # A MESMA versão das imagens — `node:22` nos quatro Dockerfiles.
+          #
+          # Ela estava em 20.19 por causa do rolldown, que declara
+          # `engines.node "^20.19.0 || >=22.12.0"`. Só que isso é um PISO, e o piso virou a
+          # escolha: a CI passou a testar uma configuração que nunca sobe.
+          #
+          # O preço apareceu no sandbox. `--permission` só tem esse nome a partir do 22.13 (antes
+          # era `--experimental-permission`), então no 20.19 o processo filho morria na largada e
+          # dois casos ficavam vermelhos com "a execução falhou" — apontando para o script do
+          # autor, que estava correto. Em produção, `node:22-alpine`, o mesmo código funciona.
+          #
+          # Testar no que sobe é o mínimo para a CI significar alguma coisa.
+          node-version: '22'
           cache: npm
 
       - name: Clean install
@@ -79,8 +87,36 @@ jobs:
       # Dependência com falha conhecida é a porta que não precisa ser arrombada. `high`
       # como piso: `critical` sozinho deixaria passar exatamente a faixa que costuma ter
       # execução remota.
+      #
+      # DUAS FALHAS DIFERENTES, e confundi-las custa caro nos dois sentidos.
+      #
+      # "Achei uma vulnerabilidade alta" e "não consegui perguntar" não são a mesma coisa. O
+      # endpoint de audit devolve `400 Invalid package tree` de forma intermitente — medido:
+      # uma em quatro chamadas, com a mesma árvore, sem nada mudar. Tratar isso como
+      # vulnerabilidade deixa a barra vermelha por motivo errado, e uma barra que fica vermelha
+      # por motivo errado para de ser lida (foi o que aconteceu com esta CI por doze corridas).
+      #
+      # Tratar o contrário — engolir o erro e seguir verde — é pior: seria chamar de sucesso o
+      # que nem chegou a ser verificado.
+      #
+      # Então: tenta três vezes; se o endpoint responder, o veredito dele MANDA. Se não
+      # responder nenhuma vez, o passo falha dizendo que a checagem não aconteceu.
       - name: Dependências vulneráveis (npm audit)
-        run: npm audit --audit-level=high
+        shell: bash
+        run: |
+          for tentativa in 1 2 3; do
+            saida=$(npm audit --audit-level=high 2>&1) && { echo "$saida"; exit 0; }
+            if echo "$saida" | grep -qE 'audit endpoint returned an error|Invalid package tree|ENETUNREACH|ETIMEDOUT'; then
+              echo "::warning::npm audit não respondeu (tentativa $tentativa/3) — o endpoint, não a árvore"
+              sleep $((tentativa * 5))
+              continue
+            fi
+            # Respondeu e reprovou: é vulnerabilidade de verdade, e ela manda.
+            echo "$saida"
+            exit 1
+          done
+          echo "::error::npm audit não conseguiu rodar em 3 tentativas — a verificação NÃO aconteceu, e isso não é sucesso"
+          exit 1
 
       # Segredo commitado não é revogado por `git rm`: ele fica no histórico e no fork de
       # quem clonou. A varredura não tem dependência nem rede — roda igual aqui e na
@@ -99,6 +135,21 @@ jobs:
           path: ~/.cache/mongodb-binaries
           key: mongod-${{ runner.os }}
 
+      # O CHROMIUM ENTRA AQUI, e não depois — porque a suíte do backend precisa dele.
+      #
+      # Ele era instalado mais abaixo, para as jornadas do widget. Só que dois casos de
+      # `monitoringBrowser` exercitam o motor de renderização de verdade: "a página que só
+      # existe DEPOIS do JavaScript é lida" e "sem dado estruturado, o degrau caro é tentado".
+      # Sem navegador, o worker devolve `render: false` — que é o comportamento certo dele — e
+      # os dois falham.
+      #
+      # O efeito era pior que dois casos vermelhos: a CI de `development` ficou vermelha por
+      # dias seguidos, e uma CI que sempre falha para de ser lida. Na máquina de quem
+      # desenvolve o navegador já está instalado de outras rodadas, então passava.
+      - name: Install Chromium (backend + e2e)
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
       # `npm test` particiona a suíte: os arquivos que sobem um mongod de verdade
       # rodam com concorrência limitada, o resto em paralelo total. Ver
       # backend/scripts/run-tests.mjs — o runner do GitHub é menor que a máquina
@@ -116,9 +167,23 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          grep -E '^not ok|^ *error:|^ *code:|failureType|AssertionError|Error:' /tmp/backend-tests.log \
-            | head -40 \
-            | while IFS= read -r linha; do echo "::error::${linha:0:400}"; done
+          # O BLOCO INTEIRO de cada falha, e não só os rótulos.
+          #
+          # O filtro anterior pegava `error: |-` — que é o RÓTULO. A mensagem vem nas linhas
+          # seguintes, indentadas, e ficava de fora: a anotação dizia "houve um AssertionError"
+          # sem dizer qual. Uma falha que só acontece no runner e não pode ser lida é uma falha
+          # que vira adivinhação, e foi exatamente o que aconteceu.
+          #
+          # `-A 12` cobre o bloco YAML que o `node --test` escreve depois de cada `not ok`.
+          # Sem log não há o que diagnosticar: este passo roda em QUALQUER falha anterior, e
+          # falhar por não achar arquivo esconderia a falha de verdade — o oposto do que ele faz.
+          [ -f /tmp/backend-tests.log ] || { echo "::warning::a suíte do backend não chegou a rodar"; exit 0; }
+          grep -E -A 12 '^not ok' /tmp/backend-tests.log \
+            | head -80 \
+            | while IFS= read -r linha; do
+                [ -z "${linha// /}" ] && continue
+                echo "::error::${linha:0:400}"
+              done
           echo "::error::(as linhas acima saem do relatório TAP do node --test)"
 
       - name: Frontend unit tests
@@ -130,10 +195,7 @@ jobs:
       # ficou fora do ar sem ninguém notar.
       #
       # A jornada existia e não rodava aqui. Um teste que não roda é um teste que não
-      # protege nada.
-      - name: Install Chromium (widget e2e)
-        run: npx playwright install --with-deps chromium
-        working-directory: frontend
+      # protege nada. (O Chromium já foi instalado antes dos testes de backend.)
 
       # `--workers=1`: as jornadas do widget compartilham chave pública e rotas
       # interceptadas, e em paralelo uma interceptação atende o pedido da outra.
@@ -193,6 +255,77 @@ jobs:
 
       - name: Build frontend image
         run: docker build -t comunicacaoai-frontend:ci --build-arg VITE_API_URL=https://api.comunicacaoai.onplataform.com frontend
+
+      # Os dois workers também. O comentário acima vale INTEIRO para eles, e eles eram
+      # justamente os que ninguém construía: o Dockerfile do browser-worker declarava
+      # `playwright` no `package.json` e não instalava nada — a imagem base traz o navegador,
+      # não o pacote npm. A falha é silenciosa por desenho (`loadEngine` devolve `null` para o
+      # worker não morrer sem navegador), então o container subia, o healthcheck de TCP passava,
+      # e o que se via era uma fonte de página que nunca renderizava.
+      - name: Build runner image
+        run: docker build -t comunicacaoai-runner:ci runner
+
+      - name: Build browser-worker image
+        run: docker build -t comunicacaoai-browser-worker:ci browser-worker
+
+      # E o worker do browser é LEVANTADO, porque construir não prova que ele renderiza.
+      #
+      # `/health` carrega o motor de verdade e diz se ele existe — é o único lugar onde a
+      # diferença entre "o processo está de pé" e "o navegador abre" aparece. O healthcheck do
+      # Dockerfile é TCP de propósito (o endpoint exige assinatura), então esta conferência
+      # precisa vir de fora, com o segredo.
+      # E o worker do browser é LEVANTADO, porque construir não prova que ele renderiza.
+      #
+      # `/health` carrega o motor DE VERDADE e responde `capabilities.render` — é o único lugar
+      # onde a diferença entre "o processo está de pé" e "o navegador abre" aparece. O
+      # healthcheck do Dockerfile é TCP de propósito (o endpoint exige assinatura), então esta
+      # conferência precisa vir de fora, assinada como o backend assina.
+      - name: O browser-worker RENDERIZA (não só sobe)
+        run: |
+          set -euo pipefail
+          SEGREDO="ci-$(openssl rand -hex 16)"
+          docker run -d --name bw-ci \
+            --cap-drop=ALL --security-opt no-new-privileges \
+            --memory 1g --memory-swap 1g --cpus 1 --pids-limit 512 \
+            --tmpfs /tmp:rw,nosuid,size=256m \
+            -e BROWSER_WORKER_SECRET="$SEGREDO" \
+            -p 4400:4400 comunicacaoai-browser-worker:ci
+
+          # O processo precisa aceitar conexão antes de a pergunta fazer sentido.
+          for _ in $(seq 1 30); do
+            (echo > /dev/tcp/127.0.0.1/4400) >/dev/null 2>&1 && break
+            sleep 2
+          done
+
+          # A assinatura é a mesma de `browser-worker/src/auth.mjs`: HMAC sobre
+          # `timestamp.nonce.corpo`, com nonce de uso único e janela de tempo.
+          SAUDE=$(BW_SECRET="$SEGREDO" node -e '
+            const { createHmac, randomUUID } = require("node:crypto")
+            const secret = process.env.BW_SECRET
+            const timestamp = Date.now()
+            const nonce = randomUUID()
+            const assinatura = createHmac("sha256", secret).update(`${timestamp}.${nonce}.`).digest("hex")
+            fetch("http://127.0.0.1:4400/health", {
+              headers: {
+                "x-sandbox-timestamp": String(timestamp),
+                "x-sandbox-nonce": nonce,
+                "x-sandbox-signature": assinatura,
+              },
+            })
+              .then((r) => r.text())
+              .then((t) => console.log(t))
+              .catch((e) => { console.log(JSON.stringify({ erro: String(e.message) })); process.exit(0) })
+          ')
+          echo "health: $SAUDE"
+          docker logs bw-ci 2>&1 | tail -20
+          docker rm -f bw-ci >/dev/null 2>&1 || true
+
+          # `render: false` é o defeito que este passo existe para pegar: o worker de pé, sem
+          # navegador, e nenhum alarme em lugar nenhum. Era o estado da imagem até este commit.
+          echo "$SAUDE" | grep -q '"render":true' || {
+            echo "::error::o browser-worker subiu SEM motor de renderizacao: import(playwright) nao resolve dentro da imagem"
+            exit 1
+          }
 
       # A imagem carrega mais coisa que o nosso código: base, runtime e tudo o que veio
       # junto. Falha ALTA ou CRÍTICA com correção disponível derruba o job — sem correção
@@ -299,7 +432,8 @@ jobs:
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: '20.19'
+          # Mesma versão das imagens, pelo motivo explicado no job `verify`.
+          node-version: '22'
           cache: npm
 
       - name: Clean install

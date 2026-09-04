@@ -2,11 +2,27 @@ import { ObjectId } from 'mongodb'
 import { ValidationError } from '../building.js'
 import { maskSecrets, containsSecret } from './secrets.js'
 import { mergeBlueprintPatch, computeBlueprintHash } from './blueprint.js'
+import { compileBrief, layerCounts, selectLayer } from './compile.js'
+import { compileBriefV2 } from './compileV2.js'
+import { V2_ITEM_PATHS, itemsAt } from './typesV2.js'
+import type { OfficeBlueprintV2 } from './typesV2.js'
+import { loadOfficeInventory } from './inventory.js'
+import { architectV2Enabled } from './flags.js'
+import { runLlmCritique } from './criticLlm.js'
 import { diffBlueprints } from './diff.js'
 import { repairBlueprintPatch, repairReuseWithoutTarget } from './repair.js'
 import { buildArchitectPrompt } from './prompt.js'
 import { runArchitectTurn } from './turn.js'
 import { loadAppsForPrompt, loadExistingResources, loadOwnershipContext } from './context.js'
+import { buildCapabilityManifest, manifestForPrompt } from './capabilities.js'
+import { applyBriefPatch, briefForPrompt, emptyBrief, resolveIntegrations } from './brief.js'
+import type { OperationBrief } from './brief.js'
+import type { ArchitectCapabilityManifest } from './capabilities.js'
+import { gapsForPrompt, nextQuestions } from './nextQuestion.js'
+import { classifyBrief, classificationForPrompt } from './classify.js'
+import { runCritic } from './critic.js'
+import { runSimulation } from './simulate.js'
+import { ARCHITECT_CONSTITUTION_VERSION } from './constitution.js'
 import { applyBlueprintLinks, loadTargets } from './links.js'
 import { buildPreview } from './preview.js'
 import { deriveChecklist, applyChecklistState, computeReadiness } from './checklist.js'
@@ -19,7 +35,8 @@ import { recheckProject, appliedLinks } from './recheck.js'
 import * as repo from './repository.js'
 import * as L from './limits.js'
 import type { ArchitectProject } from './repository.js'
-import type { ArchitectAssumption, OfficeBlueprintV1 } from './types.js'
+import { BLUEPRINT_LAYERS } from './types.js'
+import type { ArchitectAssumption, BlueprintLayer, OfficeBlueprintV1 } from './types.js'
 import type { TurnFailure } from './turn.js'
 
 // O que as rotas chamam. Toda função aqui recebe `ownerId` e o repassa a TODA consulta;
@@ -45,7 +62,15 @@ const requireProject = async (ownerId: string, id: ObjectId): Promise<ArchitectP
 }
 
 /** O primeiro provedor com chave nesta conta; Anthropic quando nenhum tem. */
-async function primeiroProvedorConfigurado(ownerId: string): Promise<'anthropic' | 'openai'> {
+/**
+ * O provedor que a conta REALMENTE tem.
+ *
+ * Fixar Anthropic fazia o trabalho apontar para um provedor sem chave numa conta que só
+ * configurou OpenAI — e a chamada caía em silêncio, sem dizer que a chave existente não era a
+ * procurada. Exportado porque o chat global precisa da mesma escolha: duas regras para "qual
+ * provedor?" divergem no primeiro caso que ninguém testa.
+ */
+export async function primeiroProvedorConfigurado(ownerId: string): Promise<'anthropic' | 'openai'> {
   const status = await getProviderKeyStatus(ownerId)
   if (status.anthropic) return 'anthropic'
   if (status.openai) return 'openai'
@@ -141,10 +166,13 @@ async function runTurn(
   opts: { forceProposal?: boolean; secretMasked: boolean; answeringPending?: string },
 ): Promise<{ project: ArchitectProject; assistantText: string; question: unknown; secretMasked: boolean }> {
   // O escritório atual entra junto: sem ele o Arquiteto propõe criar o que já existe.
-  const [messages, apps, existing] = await Promise.all([
+  const [messages, apps, existing, manifesto] = await Promise.all([
     repo.recentMessages(ownerId, projeto._id, CONTEXTO),
     loadAppsForPrompt(ownerId),
     loadExistingResources(ownerId).catch(() => undefined),
+    // O catálogo REAL desta conta, montado agora. Montado a cada rodada de propósito:
+    // é o que impede o Arquiteto de propor o App que a pessoa acabou de desconectar.
+    buildCapabilityManifest(ownerId).catch(() => null),
   ])
 
   const respondidas = { ...projeto.answers }
@@ -152,11 +180,43 @@ async function runTurn(
     respondidas[projeto.pendingQuestion.key] = opts.answeringPending.trim()
   }
 
+  /**
+   * O ENTENDIMENTO entra no prompt, e as lacunas também.
+   *
+   * O modelo recebe o que já foi entendido do negócio e a lista fechada de assuntos que
+   * ele pode perguntar agora. Escolher a pergunta é do servidor: deixar o modelo
+   * escolher produzia pergunta já respondida e pergunta técnica que ele mesmo deveria
+   * deduzir — e as duas custam a mesma coisa, que é a pessoa parar de acreditar que o
+   * sistema está entendendo.
+   */
+  const briefAtual = resolveIntegrations(projeto.brief ?? emptyBrief(projeto.objective), manifesto)
+  const lacunas = nextQuestions(briefAtual, manifesto)
+  /**
+   * A classificação vem ANTES do desenho, e vai junto no prompt.
+   *
+   * É o que impede as duas patologias: o superagente (tudo num só) e o enxame (um
+   * agente por microetapa). O servidor decide o que é agente, o que é função e o que é
+   * ferramenta; o modelo desenha em cima disso.
+   */
+  const classificacao = classifyBrief(briefAtual, manifesto)
+
   const resultado = await runArchitectTurn({
     ownerId,
     provider: projeto.provider,
     model: projeto.model,
-    prompt: buildArchitectPrompt({ project: { ...projeto, answers: respondidas }, messages, apps, existing, forceProposal: opts.forceProposal }),
+    prompt: buildArchitectPrompt({
+      project: { ...projeto, answers: respondidas },
+      messages,
+      apps,
+      existing,
+      capabilities: manifesto ? manifestForPrompt(manifesto) : undefined,
+      brief: briefForPrompt(briefAtual),
+      classification: classificationForPrompt(classificacao) || undefined,
+      // Com pedido explícito de proposta não há entrevista: a pessoa já disse que quer
+      // ver o desenho agora.
+      gaps: opts.forceProposal ? undefined : gapsForPrompt(lacunas),
+      forceProposal: opts.forceProposal,
+    }),
     chargeKey,
   })
 
@@ -183,10 +243,61 @@ async function runTurn(
    * apareciam como erro vermelho bloqueando a aplicação. Cada conserto deixa um aviso,
    * porque mudar o plano de alguém em silêncio é pior que o erro.
    */
-  const consertoDoPatch = turno.blueprintPatch ? repairBlueprintPatch(turno.blueprintPatch) : null
-  const mesclado = consertoDoPatch
-    ? mergeBlueprintPatch(projeto.blueprint, consertoDoPatch.patch as Partial<OfficeBlueprintV1>, { title: projeto.title, objective: projeto.objective })
-    : projeto.blueprint
+  /**
+   * O Brief é atualizado ANTES do desenho.
+   *
+   * A ordem importa: o entendimento é o que justifica a estrutura. E o anterior fica
+   * guardado — desfazer a última correção é o que permite dizer "não era isso" sem
+   * recomeçar a entrevista.
+   */
+  const briefNovo = turno.briefPatch ? resolveIntegrations(applyBriefPatch(briefAtual, turno.briefPatch), manifesto) : briefAtual
+
+  /**
+   * O DESENHO é compilado do entendimento — não é mais o que o modelo escreveu.
+   *
+   * O `blueprintPatch` continua importando como SINAL: é por ele que o modelo diz "já
+   * entendi o bastante, é hora de propor". O conteúdo do patch é descartado, e é essa a
+   * mudança: duas conversas iguais passam a produzir o mesmo desenho, com as mesmas
+   * chaves, e cada agente tem um porquê que veio de uma regra e não de uma frase.
+   *
+   * Um plano que o modelo já tinha desenhado NÃO é recompilado. As chaves seriam outras,
+   * e num projeto aplicado chave nova significa recurso novo ao lado do que já existe —
+   * um escritório duplicado por causa de uma troca de motor.
+   */
+  const legadoDoModelo = Boolean(projeto.blueprint) && !projeto.compiled
+  const compilar = briefNovo.jobs.length > 0 && !legadoDoModelo && Boolean(turno.blueprintPatch || (turno.briefPatch && projeto.compiled))
+  const compilado = compilar ? compileBrief(briefNovo, manifesto, { title: projeto.title, objective: projeto.objective }) : null
+
+  /**
+   * O plano V2 é compilado do MESMO Brief, e só quando a flag está ligada.
+   *
+   * As `key`s saem do mesmo `slug()` do V1, e é isso que faz `floor:atendimento` e
+   * `agent:marina` resolverem no mesmo `resourceMap` durante a aplicação: o V1 cria a
+   * organização, o V2 acrescenta recursos e operações em cima dela. Chaves diferentes
+   * criariam dois escritórios lado a lado.
+   *
+   * Com a flag desligada isto nem roda, e o projeto continua exatamente como era.
+   */
+  const compiladoV2 =
+    compilado && architectV2Enabled()
+      ? compileBriefV2({
+          brief: briefNovo,
+          manifest: manifesto,
+          inventory: await loadOfficeInventory(ownerId).catch(() => null),
+          base: { title: projeto.title, objective: projeto.objective },
+          changeKind: projeto.status === 'applied' ? 'expand' : 'create',
+          // Os andares vêm do plano V1: é ele que a saga aplica, e é dele que sai a `key`
+          // que o `resourceMap` vai conhecer.
+          floors: compilado.blueprint.floors.map((f) => ({ key: f.key, name: f.name, action: f.action === 'reuse' ? ('reuse' as const) : ('create' as const), resourceId: f.resourceId ?? null })),
+        })
+      : null
+
+  const consertoDoPatch = !compilado && turno.blueprintPatch ? repairBlueprintPatch(turno.blueprintPatch) : null
+  const mesclado = compilado
+    ? compilado.blueprint
+    : consertoDoPatch
+      ? mergeBlueprintPatch(projeto.blueprint, consertoDoPatch.patch as Partial<OfficeBlueprintV1>, { title: projeto.title, objective: projeto.objective })
+      : projeto.blueprint
 
   const consertoDoReuso = mesclado ? repairReuseWithoutTarget(mesclado, existing) : null
 
@@ -209,8 +320,34 @@ async function runTurn(
   }
 
   const assumptions = mesclarSuposicoes(projeto.assumptions, turno.assumptions, answers)
-  const hash = blueprint ? computeBlueprintHash(blueprint) : null
+  /**
+   * O hash carimba o RECORTE, não o plano.
+   *
+   * É o recorte que a pessoa lê e aprova, e é ele que a aplicação escreve. Se o hash
+   * fosse do plano inteiro, trocar de camada não mudaria o hash — e uma confirmação
+   * feita olhando "Essencial" aplicaria o "Completo" sem que nada avisasse.
+   */
+  const camada = camadaDe(projeto)
+  const recorte = blueprint ? selectLayer(blueprint, camada) : null
+  /**
+   * O hash cobre o plano V2 QUE ESTÁ SENDO GRAVADO — não o que o projeto tinha antes.
+   *
+   * Usar `projeto.blueprintV2` aqui gravava o hash de um documento e salvava outro: a
+   * aplicação recomputava com o V2 novo, os dois não batiam, e TODA primeira aplicação era
+   * recusada com "a proposta mudou desde a última revisão". Ninguém conseguiria aplicar
+   * nada — e o defeito só aparece quando existe um V2, por isso ele passou despercebido
+   * enquanto a flag estava desligada.
+   */
+  const v2Recompilado = compiladoV2?.blueprint ?? null
+  const v2Vigente =
+    (turno.blueprintPatch && projeto.status === 'applied' ? await marcarOQueJaExisteV2(ownerId, projeto, v2Recompilado) : v2Recompilado) ??
+    projeto.blueprintV2
+  const hash = recorte ? computeBlueprintHash(recorte, v2Vigente) : null
   const patch: Partial<ArchitectProject> = {
+    // Qual constituição valia quando esta proposta foi feita. Sem isso, mudar o texto
+    // das regras torna uma decisão antiga inexplicável — e impossível de reproduzir.
+    architectConstitutionVersion: ARCHITECT_CONSTITUTION_VERSION,
+    ...(turno.briefPatch ? { brief: briefNovo, previousBrief: projeto.brief ?? null } : {}),
     answers,
     pendingQuestion: turno.question ? { key: turno.question.key, text: turno.question.text } : null,
     assumptions,
@@ -218,15 +355,44 @@ async function runTurn(
     blueprintHash: hash,
     // A versão anterior só é guardada quando a revisão MUDOU alguma coisa. Uma rodada
     // que só respondeu uma pergunta não pode zerar o "o que mudou" da revisão passada.
-    ...(projeto.blueprint && hash !== projeto.blueprintHash ? { previousBlueprint: projeto.blueprint } : {}),
+    ...(projeto.blueprint && hash !== projeto.blueprintHash ? { previousBlueprint: recorteDe(projeto) } : {}),
+    ...(compilado ? { compiled: true } : {}),
+    ...(compiladoV2 ? { blueprintVersion: 2 as const, blueprintV2: v2Vigente as OfficeBlueprintV2 } : {}),
     // Proposta na mesa é `draft`; a validação é que promove para `ready`. Um projeto
     // aplicado que ganhou proposta nova volta para `draft` — é a rodada seguinte.
     status: blueprint ? 'draft' : projeto.status === 'applied' ? 'applied' : 'discovery',
   }
-  if (blueprint) {
-    const checklist = applyChecklistState(deriveChecklist(blueprint), new Set(), marcadosDe(projeto))
+  if (recorte) {
+    const checklist = applyChecklistState(deriveChecklist(recorte), new Set(), marcadosDe(projeto))
     patch.checklist = checklist
     patch.readiness = computeReadiness(checklist, [])
+    // O ensaio da versão que acabou de nascer. Guardado para a revisão seguinte poder
+    // responder "o que quebrou desde o que eu aprovei?".
+    // Aqui o carimbo tem sentido: diz quando ESTE ensaio aconteceu.
+    patch.simulation = runSimulation(briefNovo, recorte, manifesto, briefNovo.version, new Date())
+
+    /**
+     * A leitura do modelo acontece AQUI — uma vez por revisão, e só quando a revisão
+     * mudou de verdade.
+     *
+     * Não na prévia: abrir a proposta três vezes gastaria três inferências para dizer a
+     * mesma coisa. Não na aplicação: ninguém deve esperar por um palpite para poder
+     * aplicar o que já foi aprovado. Aqui a pessoa já está esperando por uma proposta,
+     * e o que ela recebe é a proposta já revisada.
+     *
+     * Falhar aqui não é falhar a rodada: `runLlmCritique` não lança, e o pior caso é
+     * uma proposta sem a segunda leitura — que é como ela era antes desta camada.
+     */
+    if (hash && hash !== projeto.blueprintHash) {
+      patch.llmCritique = await runLlmCritique({
+        ownerId,
+        provider: projeto.provider,
+        model: projeto.model,
+        chargeKey,
+        blueprint: recorte,
+        hash,
+      })
+    }
   }
   const atualizado = (await repo.patchProject(ownerId, projeto._id, patch)) ?? projeto
 
@@ -268,6 +434,70 @@ async function marcarOQueJaExiste(ownerId: string, projeto: ArchitectProject, ba
   return bp
 }
 
+/**
+ * O MESMO para o plano V2 — e sem ele a segunda aplicação duplicaria o escritório.
+ *
+ * Depois de aplicar, uma rodada nova recompila do zero: cada Database, fonte e monitor volta
+ * como `create`. No V1 isso é corrigido por `marcarOQueJaExiste`; o V2 não tinha equivalente,
+ * então a segunda aplicação criaria um segundo Database ao lado do primeiro — exatamente o
+ * que a garantia "não duplica recursos existentes" proíbe.
+ *
+ * O que decide é o `resourceMap` da última operação: ele é o registro do que foi criado de
+ * verdade, e não uma comparação por nome.
+ */
+async function marcarOQueJaExisteV2(ownerId: string, projeto: ArchitectProject, base: OfficeBlueprintV2 | null): Promise<OfficeBlueprintV2 | null> {
+  if (!base) return base
+  const operacao = await repo.lastOperation(ownerId, projeto._id)
+  const mapa = new Map(Object.entries(operacao?.resourceMap ?? {}))
+  if (mapa.size === 0) return base
+
+  const bp = structuredClone(base)
+  for (const path of V2_ITEM_PATHS) {
+    for (const item of itemsAt(bp, path) as unknown as { key: string; action: string; resourceId?: string | null }[]) {
+      // O `kind` do mapa é o último segmento do caminho, no singular — a mesma chave que a
+      // saga usou para gravar.
+      const kind = KIND_DO_PATH[path]
+      const id = kind ? mapa.get(`${kind}:${item.key}`) : undefined
+      if (!id) continue
+      item.action = 'update'
+      item.resourceId = id
+    }
+  }
+  return bp
+}
+
+/** De onde o item mora no documento para a `kind` que o `resourceMap` conhece. */
+const KIND_DO_PATH: Partial<Record<(typeof V2_ITEM_PATHS)[number], string>> = {
+  'organization.floors': 'floor',
+  'organization.agents': 'agent',
+  'organization.sectors': 'sector',
+  'resources.databases': 'database',
+  'resources.datasets': 'dataset',
+  'resources.tools': 'tool',
+  'operations.sources': 'source',
+  'operations.liveDestinations': 'live',
+  'operations.histories': 'history',
+  'operations.monitors': 'monitor',
+  'operations.flows': 'flow',
+  'operations.routines': 'routine',
+  'operations.channels': 'channel',
+  'operations.deliveries': 'delivery',
+}
+
+/**
+ * A CAMADA aprovada, e o recorte que ela produz.
+ *
+ * `blueprint` guarda o plano inteiro. O que a pessoa aprova, o que o hash carimba e o
+ * que a aplicação escreve é sempre o RECORTE — uma tela mostrando o plano completo e um
+ * apply escrevendo outra coisa seria a pior forma de errar isso. Projeto sem camada
+ * escolhida (todo o legado, e todo plano que o modelo desenhou) não tem item marcado:
+ * o recorte é o plano inteiro, e nada muda para ele.
+ */
+export const camadaDe = (p: { layer?: BlueprintLayer }): BlueprintLayer => p.layer ?? 'complete'
+
+export const recorteDe = (p: { blueprint: OfficeBlueprintV1 | null; layer?: BlueprintLayer }): OfficeBlueprintV1 | null =>
+  p.blueprint ? selectLayer(p.blueprint, camadaDe(p)) : null
+
 /** Uma suposição some quando a pergunta que ela cobria foi respondida. */
 function mesclarSuposicoes(anteriores: ArchitectAssumption[], novas: ArchitectAssumption[], answers: Record<string, unknown>): ArchitectAssumption[] {
   const porChave = new Map<string, ArchitectAssumption>()
@@ -286,7 +516,9 @@ export async function validateProject(ownerId: string, projectId: ObjectId) {
   const projeto = await requireProject(ownerId, projectId)
   if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para validar')
   const ctx = await loadOwnershipContext(ownerId)
-  const r = validateOfficeBlueprint(projeto.blueprint, ctx)
+  // Vale o RECORTE: é ele que vai ser escrito. Validar o plano inteiro reprovaria por
+  // causa de um item que a camada escolhida nem inclui.
+  const r = validateOfficeBlueprint(recorteDe(projeto)!, ctx)
   if (isEditable(projeto.status)) {
     await repo.patchProject(ownerId, projectId, { status: r.valid ? 'ready' : 'draft' })
   }
@@ -296,8 +528,39 @@ export async function validateProject(ownerId: string, projectId: ObjectId) {
 export async function previewProject(ownerId: string, projectId: ObjectId) {
   const projeto = await requireProject(ownerId, projectId)
   if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para revisar')
-  const ctx = await loadOwnershipContext(ownerId)
-  return buildPreview(projeto.blueprint, ctx, marcadosDe(projeto))
+  const [ctx, manifesto] = await Promise.all([loadOwnershipContext(ownerId), buildCapabilityManifest(ownerId).catch(() => null)])
+  const recorte = recorteDe(projeto)!
+  const previa = buildPreview(recorte, ctx, marcadosDe(projeto), projeto.blueprintV2)
+
+  /**
+   * O crítico e o ensaio vão JUNTO da prévia.
+   *
+   * Eles respondem o que a validação estrutural não responde — o gerente sem equipe, o
+   * caminho que morre num App desconectado — e é na prévia que a pessoa decide aplicar.
+   * Separar em outra chamada faria a decisão acontecer antes da informação chegar.
+   *
+   * Os dois são determinísticos e não escrevem nada: rodar a prévia duas vezes dá o
+   * mesmo resultado, e nenhuma delas toca no escritório.
+   */
+  const deterministico = runCritic(recorte, manifesto)
+  /**
+   * A leitura do modelo entra JUNTO — mas só a desta revisão.
+   *
+   * Hash diferente é leitura de outro desenho: ela apontaria problema em agente que já
+   * não existe, e quem lê não teria como saber disso. Descartada, a tela diz que a
+   * leitura ainda não foi feita — o que é verdade — em vez de mostrar uma opinião velha
+   * como se fosse sobre o que está na frente da pessoa.
+   */
+  const leitura = projeto.llmCritique
+  const valida = leitura && leitura.hash === projeto.blueprintHash
+  const critique = {
+    ...deterministico,
+    findings: valida && leitura.status === 'ok' ? [...deterministico.findings, ...leitura.findings] : deterministico.findings,
+    // A leitura auxiliar nunca muda `clean`: ela não bloqueia aplicação nenhuma.
+    llmStatus: !leitura ? ('absent' as const) : !valida ? ('stale' as const) : leitura.status,
+  }
+  const simulation = runSimulation(projeto.brief ?? emptyBrief(projeto.objective), recorte, manifesto, projeto.brief?.version ?? 0)
+  return { ...previa, critique, simulation, layer: camadaDe(projeto), layerCounts: layerCounts(projeto.blueprint) }
 }
 
 /** Editar uma resposta anterior. Regerar a proposta é um passo separado e explícito. */
@@ -397,10 +660,20 @@ export const projectDetail = (p: ArchitectProject) => ({
   answers: p.answers,
   pendingQuestion: p.pendingQuestion ?? null,
   assumptions: p.assumptions,
-  blueprint: p.blueprint,
+  // A proposta é o RECORTE da camada escolhida — o que a pessoa lê é o que vai ser
+  // aplicado. O plano inteiro vai junto, porque é dele que sai a comparação entre as
+  // camadas: sem ele, "Recomendado" seria um número sem plano por trás.
+  blueprint: recorteDe(p),
+  plan: p.blueprint,
+  layer: camadaDe(p),
+  layerCounts: p.blueprint ? layerCounts(p.blueprint) : null,
   blueprintHash: p.blueprintHash,
+  // O entendimento vai junto: é ele que a tela mostra como "O que entendi", e é por ele
+  // que a pessoa corrige o Arquiteto sem precisar reabrir a conversa inteira.
+  brief: p.brief ?? null,
+  canUndoBrief: Boolean(p.previousBrief),
   // O que a última revisão mexeu. Vazio na primeira proposta: não há com o que comparar.
-  changes: diffBlueprints(p.previousBlueprint, p.blueprint),
+  changes: diffBlueprints(p.previousBlueprint, recorteDe(p)),
   checklist: p.checklist,
   applyState: p.applyState,
 })
@@ -417,7 +690,7 @@ export const projectDetail = (p: ArchitectProject) => ({
 export async function applyProject(
   ownerId: string,
   projectId: ObjectId,
-  input: { blueprintHash: string; idempotencyKey: string; confirm: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[] },
+  input: { blueprintHash: string; idempotencyKey: string; confirm: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[]; deliveryConnections?: { key: string; connectionId: string }[] },
   hooks: ApplyHooks = {},
 ) {
   const projeto = await requireProject(ownerId, projectId)
@@ -439,7 +712,9 @@ export async function applyProject(
   }
 
   try {
-    const operacao = await applyBlueprint(ownerId, travado, input, hooks)
+    // Escreve o RECORTE aprovado, e só ele. O hash que a pessoa confirmou é o desta
+    // camada; aplicar o plano inteiro criaria o que ninguém aprovou.
+    const operacao = await applyBlueprint(ownerId, { ...travado, blueprint: recorteDe(travado) }, input, hooks)
     return finalizarAplicacao(ownerId, projectId, operacao)
   } catch (error) {
     // O id REAL da operação, inclusive aqui: é por ele que "retomar" sabe o que
@@ -465,15 +740,54 @@ export async function setBlueprintLinks(ownerId: string, projectId: ObjectId, li
   const projeto = await requireProject(ownerId, projectId)
   if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
   if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para ligar')
-  const blueprint = await applyBlueprintLinks(ownerId, projeto.blueprint, links)
-  const checklist = applyChecklistState(deriveChecklist(blueprint), new Set(), marcadosDe(projeto))
+  // A ligação é feita no PLANO: um recurso ligado continua ligado quando a camada muda.
+  const ligado = await applyBlueprintLinks(ownerId, projeto.blueprint, links, projeto.blueprintV2)
+  const blueprint = ligado.blueprint
+  const recorte = selectLayer(blueprint, camadaDe(projeto))
+  const checklist = applyChecklistState(deriveChecklist(recorte), new Set(), marcadosDe(projeto))
   return (
     (await repo.patchProject(ownerId, projectId, {
       blueprint,
-      blueprintHash: computeBlueprintHash(blueprint),
+      // O plano V2 também recebe a ligação: reaproveitar um Database existente é uma escolha
+      // sobre a proposta inteira, não só sobre a parte que o V1 sabe descrever.
+      ...(ligado.blueprintV2 ? { blueprintV2: ligado.blueprintV2 } : {}),
+      blueprintHash: computeBlueprintHash(recorte, ligado.blueprintV2 ?? projeto.blueprintV2),
       checklist,
       readiness: computeReadiness(checklist, []),
       // Uma ligação nova precisa ser validada de novo antes de aplicar.
+      status: 'draft',
+    })) ?? projeto
+  )
+}
+
+/**
+ * Trocar a camada — e por que isso é uma REVISÃO, não um filtro de tela.
+ *
+ * Cada camada é um recorte diferente do mesmo plano, com hash próprio. Trocar muda o
+ * que vai ser escrito no escritório, então derruba para `draft`, guarda o recorte
+ * anterior para o diff e invalida o hash que estava confirmado: uma confirmação em voo
+ * com o hash antigo é recusada, que é exatamente o comportamento certo.
+ */
+export async function setProjectLayer(ownerId: string, projectId: ObjectId, layer: unknown): Promise<ArchitectProject> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!isEditable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto já foi aplicado ou arquivado')
+  if (!projeto.blueprint) throw new ArchitectRefusal('no_blueprint', 'ainda não existe proposta para recortar')
+  if (typeof layer !== 'string' || !(BLUEPRINT_LAYERS as readonly string[]).includes(layer)) {
+    throw new ValidationError('escolha entre essencial, recomendado e completo')
+  }
+  const escolhida = layer as BlueprintLayer
+  if (escolhida === camadaDe(projeto)) return projeto
+
+  const anterior = recorteDe(projeto)
+  const recorte = selectLayer(projeto.blueprint, escolhida)
+  const checklist = applyChecklistState(deriveChecklist(recorte), new Set(), marcadosDe(projeto))
+  return (
+    (await repo.patchProject(ownerId, projectId, {
+      layer: escolhida,
+      previousBlueprint: anterior,
+      blueprintHash: computeBlueprintHash(recorte, projeto.blueprintV2),
+      checklist,
+      readiness: computeReadiness(checklist, []),
       status: 'draft',
     })) ?? projeto
   )
@@ -606,14 +920,15 @@ export async function editBlueprint(ownerId: string, projectId: ObjectId, edits:
     }
   }
 
-  const hash = computeBlueprintHash(bp)
+  const recorte = selectLayer(bp, camadaDe(projeto))
+  const hash = computeBlueprintHash(recorte, projeto.blueprintV2)
   if (hash === projeto.blueprintHash) return projeto
 
-  const checklist = applyChecklistState(deriveChecklist(bp), new Set(), marcadosDe(projeto))
+  const checklist = applyChecklistState(deriveChecklist(recorte), new Set(), marcadosDe(projeto))
   return (
     (await repo.patchProject(ownerId, projectId, {
       blueprint: bp,
-      previousBlueprint: anterior,
+      previousBlueprint: selectLayer(anterior, camadaDe(projeto)),
       blueprintHash: hash,
       checklist,
       readiness: computeReadiness(checklist, []),
@@ -622,6 +937,70 @@ export async function editBlueprint(ownerId: string, projectId: ObjectId, edits:
       status: 'draft',
     })) ?? projeto
   )
+}
+
+/**
+ * Corrigir o entendimento à mão — sem gastar inferência.
+ *
+ * "O que entendi" existe para ser corrigido: se a pessoa precisa reabrir a conversa e
+ * torcer para o modelo entender que ela discorda, o painel vira decoração. Aqui o
+ * patch é o mesmo contrato do modelo, validado do mesmo jeito.
+ */
+export async function editBrief(ownerId: string, projectId: ObjectId, patch: unknown): Promise<ArchitectProject> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!isConversable(projeto.status)) throw new ArchitectRefusal('not_editable', 'este projeto foi arquivado')
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new ValidationError('informe o que mudou')
+
+  const manifesto = await buildCapabilityManifest(ownerId).catch(() => null)
+  const atual = projeto.brief ?? emptyBrief(projeto.objective)
+  const novo = resolveIntegrations(applyBriefPatch(atual, patch), manifesto)
+  return (await repo.patchProject(ownerId, projectId, { brief: novo, previousBrief: atual, ...recompilar(projeto, novo, manifesto) })) ?? projeto
+}
+
+/** Desfazer a última mudança do entendimento. Uma só — ver `previousBrief`. */
+export async function undoBrief(ownerId: string, projectId: ObjectId): Promise<ArchitectProject> {
+  const projeto = await requireProject(ownerId, projectId)
+  if (!projeto.previousBrief) throw new ValidationError('não há mudança recente para desfazer')
+  const manifesto = await buildCapabilityManifest(ownerId).catch(() => null)
+  return (
+    (await repo.patchProject(ownerId, projectId, {
+      brief: projeto.previousBrief,
+      previousBrief: null,
+      ...recompilar(projeto, projeto.previousBrief, manifesto),
+    })) ?? projeto
+  )
+}
+
+/**
+ * Corrigir o ENTENDIMENTO refaz o DESENHO — na hora, sem passar pelo modelo.
+ *
+ * É o que dá sentido a "O que entendi" ser editável: corrigir "não é um restaurante, é
+ * uma clínica" e ver a proposta continuar a mesma seria a tela dizendo que ouviu e não
+ * mudando nada. Como o desenho é compilado, refazer não custa inferência.
+ *
+ * Só vale para plano compilado: o desenho que o modelo fez tem outras chaves, e trocar
+ * as chaves de um projeto aplicado criaria um segundo escritório ao lado do que roda.
+ * A leitura auxiliar do modelo NÃO é refeita aqui — ela fica obsoleta e é descartada na
+ * prévia, porque uma correção de texto não deve gastar uma inferência.
+ */
+function recompilar(projeto: ArchitectProject, brief: OperationBrief, manifesto: ArchitectCapabilityManifest | null): Partial<ArchitectProject> {
+  if (!projeto.compiled || brief.jobs.length === 0) return {}
+  const { blueprint } = compileBrief(brief, manifesto, { title: projeto.title, objective: projeto.objective })
+  const recorte = selectLayer(blueprint, camadaDe(projeto))
+  const hash = computeBlueprintHash(recorte, projeto.blueprintV2)
+  if (hash === projeto.blueprintHash) return { blueprint }
+
+  const checklist = applyChecklistState(deriveChecklist(recorte), new Set(), marcadosDe(projeto))
+  return {
+    blueprint,
+    blueprintHash: hash,
+    previousBlueprint: recorteDe(projeto),
+    checklist,
+    readiness: computeReadiness(checklist, []),
+    simulation: runSimulation(brief, recorte, manifesto, brief.version, new Date()),
+    // Desenho novo é proposta a validar de novo — e o hash antigo, em voo, é recusado.
+    status: 'draft',
+  }
 }
 
 export const architectTargets = (ownerId: string) => loadTargets(ownerId)
@@ -681,7 +1060,7 @@ export async function rollbackProject(ownerId: string, projectId: ObjectId) {
   const projeto = await requireProject(ownerId, projectId)
   const operacao = await repo.lastOperation(ownerId, projectId)
   if (!operacao) throw new ArchitectRefusal('no_blueprint', 'não há aplicação para desfazer')
-  const r = await rollbackOperation(ownerId, operacao._id, projeto.blueprint)
+  const r = await rollbackOperation(ownerId, operacao._id, recorteDe(projeto))
   await repo.patchProject(ownerId, projectId, { status: 'draft', appliedAt: null })
   return { ...r, project: (await repo.getProject(ownerId, projectId)) ?? projeto }
 }

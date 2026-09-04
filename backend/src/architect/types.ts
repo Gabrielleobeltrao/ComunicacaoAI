@@ -93,8 +93,24 @@ export interface ArchitectReadiness {
 export type BlueprintAction = 'create' | 'reuse' | 'update'
 export const BLUEPRINT_ACTIONS: readonly BlueprintAction[] = ['create', 'reuse', 'update']
 
+/**
+ * A CAMADA de um item — o mesmo plano, em três recortes.
+ *
+ * Não são três propostas: é uma só, com o que é indispensável separado do que melhora e
+ * do que pode esperar. Três propostas independentes se contradizem na segunda revisão;
+ * um plano em camadas continua sendo um plano.
+ *
+ * Ausente = `essential`, que é o comportamento dos projetos anteriores a isto.
+ */
+export type BlueprintLayer = 'essential' | 'recommended' | 'complete'
+export const BLUEPRINT_LAYERS: readonly BlueprintLayer[] = ['essential', 'recommended', 'complete']
+
 interface BlueprintItemBase {
   key: string
+  /** Em qual recorte este item entra. Ausente = núcleo. */
+  layer?: BlueprintLayer
+  /** Por que ele ficou nessa camada. Sem isso, o recorte é arbitrário. */
+  layerReason?: string
   action: BlueprintAction
   /**
    * O recurso real, quando `reuse`/`update`. É um id de banco — e é justamente por isso
@@ -192,6 +208,8 @@ export interface BlueprintRoutine extends BlueprintItemBase {
 
 export interface BlueprintAppRequirement {
   key: string
+  layer?: BlueprintLayer
+  layerReason?: string
   appKey: string
   reason: string
   required: boolean
@@ -205,6 +223,8 @@ export type KnowledgeState = 'missing' | 'supplied' | 'confirmed' | 'indexed'
 
 export interface BlueprintKnowledgeRequirement {
   key: string
+  layer?: BlueprintLayer
+  layerReason?: string
   scope: 'agent' | 'sector' | 'floor' | 'building'
   /** A key do agente/setor/andar de destino. Ausente quando o escopo é o prédio. */
   targetKey?: string
@@ -241,7 +261,27 @@ export interface OfficeBlueprintV1 {
 
 // --- aplicação -----------------------------------------------------------------------
 
-export type ApplyStepKind = 'floor' | 'agent' | 'sector' | 'wiring' | 'knowledge' | 'routine' | 'grant' | 'checklist'
+export type ApplyStepKind =
+  | 'floor'
+  | 'agent'
+  | 'sector'
+  | 'wiring'
+  | 'knowledge'
+  | 'routine'
+  | 'grant'
+  | 'checklist'
+  // Os blocos do V2. Eles entram na MESMA lista de passos: a auditoria, a retomada e o
+  // `resourceMap` são os mesmos, e é isso que impede uma segunda engine de existir.
+  | 'database'
+  | 'dataset'
+  | 'tool'
+  | 'source'
+  | 'live'
+  | 'history'
+  | 'monitor'
+  | 'flow'
+  | 'delivery'
+  | 'channel'
 
 export interface ApplyStepResult {
   kind: ApplyStepKind

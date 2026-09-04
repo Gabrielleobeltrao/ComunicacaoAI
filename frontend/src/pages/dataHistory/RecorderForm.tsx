@@ -453,7 +453,7 @@ export function RecorderForm() {
               <Textarea rows={6} value={amostras} onChange={(e) => setAmostras(e.target.value)} data-testid="recorder-samples" />
             </Field>
             {erro && (
-              <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="recorder-error">
+              <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="recorder-error">
                 {erro}
               </p>
             )}

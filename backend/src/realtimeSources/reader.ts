@@ -29,6 +29,16 @@ function recortar(valor: unknown, campos: readonly string[] | null): Record<stri
   return fora
 }
 
+/**
+ * A conexão do `live_data` desta fonte — a mesma coleção, origens diferentes.
+ *
+ * Uma conexão de WebSocket é identificada pelo id dela; uma fonte da Central, pelo prefixo
+ * `monitoring:` mais o id. As duas empurram valores por chave, e é por isso que uma
+ * leitura só serve às duas.
+ */
+const conexaoDe = (fonte: RealtimeDataSource): string | null =>
+  fonte.sourceKind === 'live_data' ? fonte.sourceRef : fonte.sourceKind === 'monitoring' ? `monitoring:${fonte.sourceRef}` : null
+
 const semValor = (fonte: RealtimeDataSource): RealtimeReading => ({
   found: false,
   alias: fonte.alias,
@@ -51,8 +61,9 @@ const semValor = (fonte: RealtimeDataSource): RealtimeReading => ({
  * premissa falsa.
  */
 export async function lerFonte(fonte: RealtimeDataSource, agora = new Date()): Promise<RealtimeReading> {
-  if (fonte.sourceKind !== 'live_data') return semValor(fonte)
-  const r = await getLiveValue(fonte.ownerId, fonte.sourceRef, fonte.key, agora)
+  const conexao = conexaoDe(fonte)
+  if (!conexao) return semValor(fonte)
+  const r = await getLiveValue(fonte.ownerId, conexao, fonte.key, agora)
   if (!r) return semValor(fonte)
   const ageMs = agora.getTime() - r.receivedAt.getTime()
   return {
@@ -80,10 +91,11 @@ export async function esperarFonte(
   timeoutMs: number,
   agora = new Date(),
 ): Promise<RealtimeReading & { matched: boolean }> {
-  if (fonte.sourceKind !== 'live_data') return { ...semValor(fonte), matched: false }
+  const conexao = conexaoDe(fonte)
+  if (!conexao) return { ...semValor(fonte), matched: false }
   const r = await waitForLiveValue(
     fonte.ownerId,
-    fonte.sourceRef,
+    conexao,
     fonte.key,
     condicao as Parameters<typeof waitForLiveValue>[3],
     timeoutMs,

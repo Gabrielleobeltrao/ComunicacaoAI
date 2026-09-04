@@ -8,7 +8,7 @@ export type NavScope = 'general' | 'floor' | 'communication'
 // scheduled work is CREATED inside each agent as Rotinas/Gatilhos, never in a
 // standalone builder. 'control' is the opposite direction — one building-wide place
 // to SEE that work: what is scheduled, armed, running and done.
-export type NavGroup = 'operation' | 'communication' | 'control'
+export type NavGroup = 'operation' | 'resources' | 'communication' | 'control' | 'community'
 
 export interface NavItemDef {
   key: string
@@ -31,6 +31,19 @@ export interface NavItemDef {
 const floorPath = (floorId: string | null, suffix: string, legacy: string) => (floorId ? `/floors/${floorId}${suffix}` : legacy)
 
 export const NAV_V2: NavItemDef[] = [
+  /**
+   * "MONTAR OPERAÇÃO" NÃO É UM MÓDULO — e por isso não está aqui.
+   *
+   * Ela viveu na navegação porque parecia um lugar: uma tela com endereço próprio, ao lado de
+   * Agentes e Setores. Só que ela não é um produto irmão desses — é um MODO DE TRABALHO do
+   * Arquiteto, o mesmo assistente que responde no chat flutuante. Listada aqui, ela fazia
+   * "Arquiteto", "Blueprint" e "Montar operação" parecerem três coisas diferentes, e a pessoa
+   * tinha que descobrir sozinha que eram a mesma.
+   *
+   * A porta agora é uma só e está onde a conversa acontece: o botão "Montar operação" dentro do
+   * chat, que abre a página completa já no modo de montagem. A rota `/architect` continua
+   * existindo inteira — deep link, favorito e projeto antigo não perdem nada.
+   */
   // Operation surfaces: the floor overview + the teams that staff it (kept together).
   // The floor home is also the building home — exact match so it doesn't stay active
   // on the floor's sub-pages.
@@ -43,25 +56,55 @@ export const NAV_V2: NavItemDef[] = [
   // Building-wide observability over the agents' automatic work. It is a control
   // surface, not an editor: every row links back to the agent that owns the work.
   // What the account can reach: connected once here, granted per agent.
-  // "Montar operação" NÃO está aqui de propósito: ela cria e reutiliza andares, então
-  // mora no menu de andares — `BuildingSwitcher` no desktop, `MobileFloorPicker` no
-  // celular —, logo abaixo de criar um à mão. O endereço `/architect` não mudou.
-  { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'control', path: () => '/apps', activePrefixes: () => ['/apps'] },
+  /**
+   * RECURSOS: o que o escritório possui. Apps já era isto e estava em CONTROLE, ao lado
+   * de telas de observação — o que misturava "o que existe" com "o que aconteceu".
+   */
+  { key: 'resources', label: 'Recursos', icon: 'layers', scope: 'general', group: 'resources', path: () => '/resources', activePrefixes: () => ['/resources'] },
+  { key: 'apps', label: 'Apps', icon: 'blocks', scope: 'general', group: 'resources', path: () => '/apps', activePrefixes: () => ['/apps'] },
   // Históricos: o que a conta guarda ao longo do tempo. Fica em CONTROLE porque é uma
   // superfície de observação — quem entra aqui vem consultar, não construir.
-  { key: 'data-history', label: 'Históricos', icon: 'database', scope: 'general', group: 'control', path: () => '/historicos', activePrefixes: () => ['/historicos'] },
+  { key: 'databases', label: 'Databases', icon: 'database', scope: 'general', group: 'resources', path: () => '/databases', activePrefixes: () => ['/databases'] },
+  // Históricos continua no lugar de sempre: ele é a REGRA de gravação, e Databases é o
+  // recurso que a expõe. Mover a rota agora quebraria bookmark por uma reorganização
+  // que ainda não terminou.
+  { key: 'data-history', label: 'Históricos', icon: 'clock', scope: 'general', group: 'resources', path: () => '/historicos', activePrefixes: () => ['/historicos'] },
+  // O plantão: o que o escritório vigia. Fica em OPERAÇÕES porque é observação — quem
+  // entra aqui vem ver o que está armado, não construir um agente.
+  // A ATIVIDADE: o que aconteceu, correlacionado do começo ao fim. Fica ao lado de
+  // Execuções porque as duas respondem à mesma pergunta em níveis diferentes — aqui a
+  // cadeia inteira, lá a execução da automação.
+  { key: 'activity', label: 'Atividade', icon: 'activity', scope: 'general', group: 'control', path: () => '/activity', activePrefixes: () => ['/activity'] },
+  // A CENTRAL é a porta: ela responde "está tudo bem?", e de dentro dela se chega às
+  // fontes e aos monitores. Monitores continua tendo endereço próprio — quem tinha o
+  // bookmark não perde —, mas quem chega pelo menu chega pela pergunta certa.
+  { key: 'monitoring', label: 'Monitoramento', icon: 'radar', scope: 'general', group: 'control', path: () => '/monitoring', activePrefixes: () => ['/monitoring', '/monitors'] },
   { key: 'executions', label: 'Execuções', icon: 'activity', scope: 'general', group: 'control', path: () => '/executions', activePrefixes: () => ['/executions'], mobilePrimary: true },
+  // COMUNIDADE: o que dá para instalar, o que é seu e o que já está aqui. Entrou quando o
+  // Marketplace passou a existir de verdade — um item de menu que leva a uma tela vazia
+  // promete e não entrega. Fica no fim da lista porque fica no fim dos grupos: uma
+  // declaração fora de ordem faria a trilha do teclado discordar da tela.
+  { key: 'community', label: 'Comunidade', icon: 'store', scope: 'general', group: 'community', path: () => '/community', activePrefixes: () => ['/community'] },
 ]
 
 export function navItemsFor(_floorId: string | null): NavItemDef[] {
   return NAV_V2.filter((i) => !i.featureFlag || featureFlags[i.featureFlag])
 }
 
-const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'communication', 'control']
+/**
+ * A ordem das camadas: quem existe, o que o escritório possui, o que acontece, e o que dá
+ * para trazer de fora.
+ *
+ * COMUNIDADE fica por último de propósito: ela é a única que traz coisa de terceiro para
+ * dentro, e essa distância na lista é a mesma distância que a cabeça de quem usa faz.
+ */
+const NAV_GROUP_ORDER: NavGroup[] = ['operation', 'resources', 'communication', 'control', 'community']
 const NAV_GROUP_LABEL: Record<NavGroup, string> = {
-  operation: 'ANDAR',
+  operation: 'ESCRITÓRIO',
+  resources: 'RECURSOS',
   communication: 'COMUNICAÇÃO',
-  control: 'CONTROLE',
+  control: 'OPERAÇÕES',
+  community: 'COMUNIDADE',
 }
 
 // Ordered, non-empty nav groups for the rail/drawer. The operation group shows the
@@ -72,7 +115,7 @@ export function navGroupsFor(floorId: string | null, activeFloorName?: string): 
   for (const group of NAV_GROUP_ORDER) {
     const items = all.filter((i) => i.group === group)
     if (!items.length) continue
-    const label = group === 'operation' && activeFloorName ? `ANDAR · ${activeFloorName.toUpperCase()}` : NAV_GROUP_LABEL[group]
+    const label = group === 'operation' && activeFloorName ? `ESCRITÓRIO · ${activeFloorName.toUpperCase()}` : NAV_GROUP_LABEL[group]
     groups.push({ group, label, items })
   }
   return groups

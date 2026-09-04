@@ -81,18 +81,51 @@ export type AuditEntityType =
   // agente e setor criado pela aplicação é auditado como ele mesmo, pelo caminho de
   // sempre — senão a auditoria diria "projeto criado" sobre cinco agentes novos.
   | 'architect_project'
+  // Uma ESCRITA que o chat do Arquiteto preparou e alguém confirmou — ou tentou confirmar.
+  // Ela é auditada aqui e não como o recurso que muda, porque o que importa investigar é a
+  // decisão: quem confirmou, sobre qual retrato, e se foi recusada.
+  | 'architect_operation'
   // A REGRA de um histórico genérico — o que gravar, de onde e por quanto tempo. Os
   // registros que ela produz não são auditados um a um: são dado, e são milhares.
   | 'data_recorder'
+  /**
+   * Um DATABASE — o recurso lógico, seus datasets e seus grants.
+   *
+   * Os REGISTROS dentro dele não são auditados um a um pelo mesmo motivo do histórico:
+   * são dado, e são milhares. O que entra aqui é a mudança de estrutura e de quem alcança.
+   */
+  | 'database'
   // Uma fonte de dados em tempo real vinculável a agentes. Ela não guarda nada:
   // histórico é outra decisão, em outro lugar.
   | 'realtime_source'
+  /**
+   * Um MONITOR — o que fica de plantão e aciona um Flow sozinho.
+   *
+   * O que entra aqui é a mudança da regra: criar, editar, pôr de plantão, pausar,
+   * apagar. As OBSERVAÇÕES não entram — são milhares por dia, e o que elas produzem
+   * (a execução do Flow) já é auditado como execução.
+   */
+  | 'monitor'
+  /**
+   * Uma EXTENSÃO — o pacote compartilhável e a instalação dele.
+   *
+   * O que entra aqui é criar, congelar versão, mover o ciclo e instalar. O que uma
+   * extensão instalada FAZ é auditado como o que ela é: uma ação de App é uma ação de
+   * App, e continua no registro dela.
+   */
+  | 'extension'
+  /** Uma FONTE da Central de Monitoramento: a regra do que o escritório observa sozinho. */
+  | 'monitoring_source'
   | 'settings'
   // A sessão de quem entra na conta. Só a tentativa recusada é registrada aqui.
   | 'session'
 export const AUDIT_ENTITY_TYPES: AuditEntityType[] = [
+  'architect_operation',
   'data_recorder',
   'realtime_source',
+  'monitor',
+  'extension',
+  'monitoring_source',
   'memory',
   'agent',
   'sector',

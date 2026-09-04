@@ -95,6 +95,9 @@ const RULES: Rule[] = [
   R('POST', 'api/agents/:/event-triggers/:/pause', { entityType: 'event_trigger', action: 'pause' }, { idAt: 4 }),
   R('POST', 'api/agents/:/event-triggers/:/archive', { entityType: 'event_trigger', action: 'archive' }, { idAt: 4 }),
 
+  // Quem lê o quê é uma mudança de permissão, e entra no registro como tal.
+  R('PUT', 'api/agents/:/knowledge-access', { entityType: 'agent', action: 'update' }, { idAt: 2 }),
+
   // --- agent knowledge ---------------------------------------------------------------
   R('POST', 'api/agents/:/documents/upload', { entityType: 'knowledge', action: 'create' }),
   R('POST', 'api/agents/:/documents', { entityType: 'knowledge', action: 'create' }),
@@ -124,6 +127,9 @@ const RULES: Rule[] = [
   R('POST', 'api/floors/:/archive', { entityType: 'floor', action: 'archive' }, { idAt: 2 }),
   // Restoring is its own verb: it used to fall through to "created a floor".
   R('POST', 'api/floors/:/restore', { entityType: 'floor', action: 'restore' }, { idAt: 2 }),
+  // O purge é a exclusão IRREVERSÍVEL, com tudo que morava no andar. É a mutação que mais
+  // precisa de registro: sem ela, "cadê o meu setor?" não tem resposta em lugar nenhum.
+  R('POST', 'api/floors/:/purge', { entityType: 'floor', action: 'delete' }, { idAt: 2 }),
   R('PATCH', 'api/building', { entityType: 'building', action: 'update' }),
   // Who may talk to whom across floors is a security decision of the building.
   R('PATCH', 'api/building/floor-communication', { entityType: 'building', action: 'update' }),
@@ -210,12 +216,120 @@ const RULES: Rule[] = [
   // A sessão do visitante do widget: pública, sem dono para atribuir, e o token não
   // pode ser registrado em lugar nenhum.
   R('POST', 'api/public/widgets/:/session', null, { why: 'public visitor session, no owner context' }),
+  /**
+   * A base de conhecimento pela porta única — MESMO tipo de entidade das rotas por dono.
+   *
+   * O objeto é o mesmo documento; só a porta é outra. Um tipo novo faria a mesma
+   * exclusão aparecer no registro com dois nomes, dependendo de por onde ela passou.
+   */
+  R('POST', 'api/knowledge/documents/upload', { entityType: 'knowledge', action: 'create' }),
+  // Aprovar uma proposta CRIA um documento; recusar decide sobre ela. Os dois são
+  // mudanças no que os agentes leem, e entram no registro.
+  R('POST', 'api/knowledge/proposals/:/approve', { entityType: 'knowledge', action: 'create' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/proposals/:/reject', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/conflicts/:/resolve', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/gaps/:/resolve', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/gaps/:/dismiss', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  // Varrer não muda documento nenhum: é uma leitura que grava o que encontrou.
+  R('POST', 'api/knowledge/conflicts/scan', null, { why: 'detection, not a change' }),
+  // Posição de nó não é conhecimento: arrastar não muda o que ninguém lê.
+  R('PUT', 'api/knowledge/graph/layout', null, { why: 'view preference, not knowledge' }),
+  R('DELETE', 'api/knowledge/graph/layout', null, { why: 'view preference, not knowledge' }),
+  R('POST', 'api/knowledge/documents', { entityType: 'knowledge', action: 'create' }),
+  R('PATCH', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  R('DELETE', 'api/knowledge/documents/:', { entityType: 'knowledge', action: 'delete' }, { idAt: 3 }),
+  R('POST', 'api/knowledge/documents/:/reindex', { entityType: 'knowledge', action: 'update' }, { idAt: 3 }),
+  /**
+   * DATABASES. Criar, editar e apagar um database ou dataset muda o que os agentes
+   * conseguem consultar — entra no registro. Consultar não: leitura não é mudança, e um
+   * registro por consulta afogaria o log justamente quando ele importa.
+   */
+  // Publicar uma VERSÃO de ferramenta é uma mudança no que pode ser instalado e
+  // executado — e ela é imutável depois, o que torna o registro a única forma de saber
+  // quem publicou o quê.
+  R('POST', 'api/tools/:/versions', { entityType: 'tool', action: 'create' }, { idAt: 2 }),
+
+  /**
+   * EXTENSÕES: criar, congelar uma versão, mover o ciclo e instalar.
+   *
+   * Publicar uma versão é imutável depois — o registro é a única forma de saber quem
+   * publicou o quê. E instalar é conceder alcance a código de terceiro dentro do
+   * escritório: exatamente o tipo de mudança que uma auditoria existe para responder.
+   */
+  R('POST', 'api/extensions/packages', { entityType: 'extension', action: 'create' }),
+  R('POST', 'api/extensions/packages/:/versions', { entityType: 'extension', action: 'publish' }, { idAt: 3 }),
+  R('POST', 'api/extensions/packages/from-tool/:', { entityType: 'extension', action: 'create' }),
+  // O backfill CRIA pacotes a partir do que a conta já tem: é mudança, e entra no registro.
+  R('POST', 'api/extensions/backfill/apps', { entityType: 'extension', action: 'create' }),
+  // A DECISÃO de revisão é o registro mais importante que existe aqui: ela é o que
+  // autoriza código a rodar, e quem a tomou precisa estar no log de auditoria também.
+  R('POST', 'api/extensions/review/decisions', { entityType: 'extension', action: 'publish' }),
+  R('POST', 'api/extensions/packages/:/status', { entityType: 'extension', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/extensions/installed/:', { entityType: 'extension', action: 'create' }, { idAt: 3 }),
+  R('POST', 'api/extensions/installed/:/update', { entityType: 'extension', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/extensions/installed/:/template', { entityType: 'extension', action: 'create' }, { idAt: 3 }),
+  R('DELETE', 'api/extensions/installed/:', { entityType: 'extension', action: 'pause' }, { idAt: 3 }),
+
+  /**
+   * As FONTES da Central. Criar, editar, ativar e apagar mudam o que o escritório
+   * observa sozinho — e "quem ligou esta fonte" é exatamente o que uma auditoria
+   * precisa responder. Testar e ler NÃO entram: são leitura, e são frequentes.
+   */
+  R('POST', 'api/monitoring/sources', { entityType: 'monitoring_source', action: 'create' }),
+  R('POST', 'api/monitoring/migrate/recorders', { entityType: 'monitoring_source', action: 'create' }),
+  R('POST', 'api/monitoring/migrate/recorders/rollback', { entityType: 'monitoring_source', action: 'delete' }),
+  R('PUT', 'api/monitoring/sources/:', { entityType: 'monitoring_source', action: 'update' }, { idAt: 3 }),
+  R('POST', 'api/monitoring/sources/:/activate', { entityType: 'monitoring_source', action: 'activate' }, { idAt: 3 }),
+  R('POST', 'api/monitoring/sources/:/pause', { entityType: 'monitoring_source', action: 'pause' }, { idAt: 3 }),
+  R('POST', 'api/monitoring/sources/:/duplicate', { entityType: 'monitoring_source', action: 'create' }, { idAt: 3 }),
+  R('DELETE', 'api/monitoring/sources/:', { entityType: 'monitoring_source', action: 'delete' }, { idAt: 3 }),
+  R('POST', 'api/monitoring/sources/test', null, { why: 'leitura de teste, não muda nada' }),
+  R('POST', 'api/monitoring/sources/:/test', null, { why: 'leitura de teste, não muda nada' }),
+  R('POST', 'api/monitoring/sources/:/read', null, { why: 'coleta sob demanda: o registro é auditado pelo histórico' }),
+  // Girar o segredo de um webhook é exatamente o que uma auditoria precisa mostrar depois.
+  R('POST', 'api/monitoring/sources/:/webhook-secret', { entityType: 'monitoring_source', action: 'rotate' }, { idAt: 3 }),
+  // Criar um monitor A PARTIR de uma fonte cria uma regra que vai agir sozinha — e ainda
+  // materializa o destino da fonte. As duas coisas são mudança, e as duas entram.
+  R('POST', 'api/monitoring/sources/:/monitor', { entityType: 'monitor', action: 'create' }, { idAt: 3 }),
+  // Conceder e revogar alcance é mudança de permissão: entra no registro.
+  R('PUT', 'api/monitoring/sources/:/grants', { entityType: 'monitoring_source', action: 'update' }, { idAt: 3 }),
+  R('DELETE', 'api/monitoring/sources/:/grants/:/:', { entityType: 'monitoring_source', action: 'update' }, { idAt: 3 }),
+
+  // O MONITOR é uma regra que age sozinha: quem a criou, quem a pôs de plantão e quem a
+  // pausou é exatamente o que uma auditoria precisa responder depois. Publicar é
+  // `activate` e não `publish`: o que muda é o ESTADO de plantão, não uma versão imutável.
+  R('POST', 'api/monitors', { entityType: 'monitor', action: 'create' }),
+  R('POST', 'api/monitors/simulate', null, { why: 'simulação pura: não toca em estado nem dispara' }),
+  R('PUT', 'api/monitors/:', { entityType: 'monitor', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/monitors/:/publish', { entityType: 'monitor', action: 'activate' }, { idAt: 2 }),
+  R('POST', 'api/monitors/:/pause', { entityType: 'monitor', action: 'pause' }, { idAt: 2 }),
+  R('DELETE', 'api/monitors/:', { entityType: 'monitor', action: 'delete' }, { idAt: 2 }),
+
+  // A migração cria Data Stores e datasets a partir do que a conta já grava: é mudança.
+  R('POST', 'api/databases/migrate/histories', { entityType: 'database', action: 'create' }),
+  R('POST', 'api/databases/migrate/histories/rollback', { entityType: 'database', action: 'delete' }),
+
+  R('POST', 'api/databases', { entityType: 'database', action: 'create' }),
+  R('PATCH', 'api/databases/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/databases/:', { entityType: 'database', action: 'delete' }, { idAt: 2 }),
+  R('POST', 'api/databases/:/datasets', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('PATCH', 'api/databases/:/datasets/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/databases/:/datasets/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('PUT', 'api/databases/:/grants', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('DELETE', 'api/databases/:/grants/:', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/databases/:/datasets/:/rows', { entityType: 'database', action: 'update' }, { idAt: 2 }),
+  R('POST', 'api/databases/:/datasets/:/query', null, { why: 'read, not a change' }),
+
   R('POST', 'api/architect/projects', { entityType: 'architect_project', action: 'create' }),
   R('PATCH', 'api/architect/projects/:', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('PATCH', 'api/architect/projects/:/links', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   // Correção à mão na proposta: muda o plano que a confirmação vai aplicar, e por isso
   // entra no registro como qualquer outra alteração do projeto.
   R('PATCH', 'api/architect/projects/:/blueprint', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  // Trocar a camada muda o que vai ser escrito no escritório: é uma revisão da proposta.
+  R('PATCH', 'api/architect/projects/:/layer', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
+  // O entendimento do negócio corrigido à mão: muda o que a proposta seguinte assume.
+  R('PATCH', 'api/architect/projects/:/brief', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/archive', { entityType: 'architect_project', action: 'archive' }, { idAt: 3 }),
   // Apagar a CONVERSA. O que ela criou continua de pé — ver `deleteProject`.
   R('DELETE', 'api/architect/projects/:', { entityType: 'architect_project', action: 'delete' }, { idAt: 3 }),
@@ -224,6 +338,13 @@ const RULES: Rule[] = [
   // no log não dá para contar a história de como o projeto chegou onde chegou. O que
   // fica registrado é a ação e o projeto; nunca o prompt, a conversa ou o blueprint.
   R('POST', 'api/architect/projects/:/messages', null, { why: 'conversation traffic' }),
+  // A rodada do assistente é conversa: responder e explicar não mudam nada. Quando ela vira
+  // proposta, quem registra a criação é o próprio `POST /projects`, chamado por dentro — e
+  // registrar aqui também contaria a mesma criação duas vezes.
+  R('POST', 'api/architect/assistant/turn', null, { why: 'conversation traffic' }),
+  // A confirmação de uma escrita preparada pelo chat registra a si mesma, com o resultado —
+  // inclusive a recusa por hash vencido, que é justamente o que alguém vai querer investigar.
+  R('POST', 'api/architect/assistant/confirm', null, { why: 'audita a si mesma, com o desfecho' }),
   R('POST', 'api/architect/projects/:/turn', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/generate', { entityType: 'architect_project', action: 'update' }, { idAt: 3 }),
   R('POST', 'api/architect/projects/:/validate', { entityType: 'architect_project', action: 'test' }, { idAt: 3 }),

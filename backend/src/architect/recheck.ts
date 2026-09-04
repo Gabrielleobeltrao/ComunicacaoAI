@@ -60,8 +60,32 @@ export async function recheckProject(ownerId: string, project: ArchitectProject)
 
   const marcados = new Set(itens.filter((i) => i.completionMode === 'manual' && i.status === 'done').map((i) => i.id))
   const comTexto = itens.map((i) => (reescritos.has(i.id) ? { ...i, ...reescritos.get(i.id) } : i))
-  const checklist = applyChecklistState(comTexto, concluidos, marcados)
-  return { checklist, readiness: computeReadiness(checklist, project.readiness?.blockers ?? []) }
+
+  /**
+   * A PROVA entra na checklist — e é ela que decide se a operação está pronta.
+   *
+   * Antes disto, "pronto" queria dizer "o recurso existe". Os itens de teste têm
+   * `completionMode: 'test_result'`: ninguém os marca à mão, e eles só ficam concluídos
+   * quando o teste passou de verdade. Um obrigatório que não passou vira bloqueio.
+   */
+  const { itens: deTeste, bloqueios } = await provasDaUltimaAplicacao(ownerId, project)
+  for (const i of deTeste) if (i.status === 'done') concluidos.add(i.id)
+
+  const checklist = applyChecklistState([...comTexto.filter((i) => !i.id.startsWith('test:')), ...deTeste], concluidos, marcados)
+  return { checklist, readiness: computeReadiness(checklist, [...(project.readiness?.blockers ?? []), ...bloqueios]) }
+}
+
+/** Os testes de aceitação da última aplicação, como itens de checklist e bloqueios. */
+async function provasDaUltimaAplicacao(
+  ownerId: string,
+  project: ArchitectProject,
+): Promise<{ itens: ArchitectChecklistItem[]; bloqueios: string[] }> {
+  const repo = await import('./repository.js')
+  const operacao = await repo.lastOperation(ownerId, project._id)
+  const resultados = operacao?.acceptance ?? []
+  if (!resultados.length) return { itens: [], bloqueios: [] }
+  const { acceptanceChecklist, acceptanceBlockers } = await import('./acceptance.js')
+  return { itens: acceptanceChecklist(resultados), bloqueios: acceptanceBlockers(resultados) }
 }
 
 /**

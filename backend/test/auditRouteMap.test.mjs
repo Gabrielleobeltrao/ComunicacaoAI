@@ -128,6 +128,13 @@ const ROUTER_PREFIX = {
   'routes/realtimeSourceRoutes.ts': '/api/realtime-sources',
   'routes/dataHistoryRoutes.ts': '/api/data-history',
   'routes/architectRoutes.ts': '/api/architect',
+  'routes/knowledgeRoutes.ts': '/api/knowledge',
+  'routes/knowledgeAccessRoutes.ts': '/api/agents/:agentId',
+  'routes/resourceRoutes.ts': '/api/resources',
+  'routes/databaseRoutes.ts': '/api/databases',
+  'routes/monitorRoutes.ts': '/api/monitors',
+  'routes/monitoringRoutes.ts': '/api/monitoring',
+  'routes/extensionRoutes.ts': '/api/extensions',
 }
 
 function declaredRoutes() {
@@ -208,7 +215,10 @@ test('every route file is covered by the scan', () => {
   const scanned = new Set(Object.keys(ROUTER_PREFIX).map((f) => f.replace('routes/', '')))
   // webhookRoutes is the public receiver (skipped by prefix); logRoutes is read-only.
   // appRoutes is the read-only App catalog.
-  const exempt = new Set(['webhookRoutes.ts', 'logRoutes.ts', 'executionRoutes.ts', 'appRoutes.ts', 'sectorExecutionRoutes.ts'])
+  // activityRoutes é a linha do tempo: leitura pura, sem um único verbo de escrita.
+  // monitoringWebhookRoutes é o receptor público, como webhookRoutes: quem prova quem é
+  // ali é a assinatura do corpo, e não uma sessão para auditar.
+  const exempt = new Set(['webhookRoutes.ts', 'logRoutes.ts', 'executionRoutes.ts', 'appRoutes.ts', 'sectorExecutionRoutes.ts', 'activityRoutes.ts', 'monitoringWebhookRoutes.ts'])
   for (const file of files) {
     assert.ok(scanned.has(file) || exempt.has(file), `${file} is neither scanned nor exempt`)
   }

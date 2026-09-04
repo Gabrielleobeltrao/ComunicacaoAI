@@ -135,7 +135,7 @@ export function AgentRealtimeSources({ agentId }: { agentId: string }) {
         </div>
 
         {erro && (
-          <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="realtime-error">
+          <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="realtime-error">
             {erro}
           </p>
         )}

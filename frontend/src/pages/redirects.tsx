@@ -45,3 +45,19 @@ export function LegacyChannelRedirect({ to, whatsappTo }: { to: string; whatsapp
   const query = rest.toString()
   return <Navigate to={query ? `${target}?${query}` : target} replace />
 }
+
+/**
+ * As rotas antigas do Arquiteto — e a query que elas carregam.
+ *
+ * `/architect/new` redirecionava com `<Navigate to="/architect">` fixo, o que DESCARTA a query.
+ * Um favorito com `?objetivo=…` — que é exatamente o que o botão "Montar operação" do chat
+ * produz — chegava do outro lado com o campo vazio, e a pessoa redigitava sem entender por quê.
+ *
+ * A rota canônica é `/architect`, que pertence ao Arquiteto e sempre pertenceu. O que muda aqui
+ * é só isto: o que veio junto continua vindo.
+ */
+export function ArchitectLegacyRedirect() {
+  const [params] = useSearchParams()
+  const query = params.toString()
+  return <Navigate to={query ? `/architect?${query}` : '/architect'} replace />
+}

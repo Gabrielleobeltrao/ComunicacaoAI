@@ -401,7 +401,13 @@ export interface DelegationDeps {
     // time inteiro quando a dele não responde (ver `executeSectorTeam`).
     agentId: ObjectId | ObjectId[],
     query: string,
-    opts: { sectorId?: ObjectId | null },
+    /**
+     * `ownerId` é obrigatório: é por ele que a política de acesso de cada agente é
+     * resolvida, e é ele que faz um id de outra conta não virar base nenhuma. Sem a
+     * conta, quem monta a lista teria que confiar no id — que é justamente o que a
+     * resolução única existe para não fazer.
+     */
+    opts: { sectorId?: ObjectId | null; ownerId: string; executionId?: string | null; requireGrounding?: boolean },
   ) => Promise<{
     context: string[]
     sources?: { documentId: string | null; title: string | null; origin?: 'manual' | 'web' | 'search'; capturedAt?: string | null }[]
@@ -880,7 +886,14 @@ export async function runAgentTask(
   const buscar = async () =>
     query && deps.retrieveContext && capacidades.knowledge
       ? await deps
-          .retrieveContext(target._id, query, { sectorId: sectorId ?? null })
+          .retrieveContext(target._id, query, {
+            sectorId: sectorId ?? null,
+            ownerId: ctx.ownerId,
+            // A raiz da execução é o que liga o manifesto ao que aconteceu: numa
+            // delegação, todas as leituras pertencem à MESMA execução.
+            executionId: ctx.rootExecutionId?.toString() ?? null,
+            requireGrounding: Boolean(target.requireGrounding),
+          })
           .catch(() => ({ context: [], sources: [], status: 'unavailable', failed: true }))
       : { context: [], sources: [], status: 'no_base' as const, failed: false }
   const leitura = (r: Awaited<ReturnType<typeof buscar>>) => {

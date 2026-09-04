@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 process.env.MONGODB_URI ||= 'mongodb://127.0.0.1:27017/comunicacaoai_test'
 
 const { buildArchitectPrompt } = await import('../dist/architect/prompt.js')
+const { ARCHITECT_CONSTITUTION_VERSION } = await import('../dist/architect/constitution.js')
 
 const base = {
   project: { title: 'Restaurante', objective: 'atender reservas', locale: 'pt-BR', answers: {}, blueprint: null },
@@ -105,15 +106,30 @@ test('4) as regras de qualidade estão no prompt', () => {
 
 // --- o que o modelo precisa saber para montar uma OPERAÇÃO, e não um agente ------------
 
-test('o catálogo de perfis está no prompt, com quando usar cada um', () => {
+test('o catálogo de perfis vem do MANIFESTO do servidor, não de texto fixo', () => {
+  // Antes a lista de perfis estava escrita no prompt. Uma lista escrita envelhece
+  // sozinha: continua oferecendo o que foi removido e não sabe do que foi acrescentado.
+  const sem = buildArchitectPrompt(base)
+  assert.match(sem, /"preset" NÃO é opcional/)
+  assert.match(sem, /Escolher "custom" para tudo é o erro mais comum/)
+
+  const com = buildArchitectPrompt({ ...base, capabilities: 'CATALOGO-DE-TESTE: perfis, executores e Apps reais' })
+  assert.match(com, /CATALOGO-DE-TESTE/)
+  assert.ok(com.length > sem.length, 'o manifesto entra no prompt')
+})
+
+test('a constituição entra INTEIRA no prompt, com a versão', () => {
+  // Regra obrigatória recuperada por busca é regra que às vezes não chega. O exemplo
+  // pode faltar numa conversa; "não invente ferramenta" não pode.
   const p = buildArchitectPrompt(base)
-  // Sem a lista, "preset" era um campo opcional que o modelo não sabia preencher — e
-  // todo agente nascia "personalizado", sem instrução de papel nem política de chamada.
-  for (const perfil of ['"manager"', '"researcher"', '"analyst"', '"operator"', '"communicator"', '"secretary"', '"monitor"', '"custom"']) {
-    assert.match(p, new RegExp(perfil.replace(/"/g, '"')), perfil)
-  }
-  assert.match(p, /"preset" NÃO é opcional/)
-  assert.match(p, /Escolher "custom" para tudo é o erro mais comum/)
+  assert.match(p, new RegExp(`CONSTITUIÇÃO DO ARQUITETO \\(v${ARCHITECT_CONSTITUTION_VERSION}\\)`))
+  assert.match(p, /Comece pela MENOR operação/)
+  assert.match(p, /Agente não é sinônimo de etapa/)
+  assert.match(p, /Cálculo e transformação determinística usam executor "function"/)
+  assert.match(p, /Não existe queda silenciosa/)
+  assert.match(p, /sozinho não é operação/) // a frase quebra a linha no texto da constituição
+  assert.match(p, /Não invente ferramenta, App, ação, trigger, capability ou integração/)
+  assert.match(p, /Nenhuma proposta é aplicada sozinha/)
 })
 
 test('o prompt ensina a decompor em ETAPAS e a montar setor', () => {

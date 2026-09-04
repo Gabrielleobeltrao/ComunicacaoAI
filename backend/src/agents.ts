@@ -292,6 +292,26 @@ export interface Agent {
   // which actions, and which of those may run without being asked. Not listed
   // means not reachable — assignment IS the permission.
   appGrants: AgentAppGrant[]
+  /**
+   * O QUE ESTE AGENTE PODE LER — a política de acesso ao conhecimento.
+   *
+   * Ausente nos agentes que existem hoje, e ausente é a resposta: sem política salva
+   * vale o comportamento de sempre (base própria, e o setor só quando a execução veio
+   * de um setor validado). Ver `knowledgeAccess.ts` — os defaults são resolvidos na
+   * LEITURA, e não por migração, porque gravar um padrão em massa mudaria em silêncio o
+   * que agentes existentes respondem.
+   *
+   * NÃO entra em `withAgentDefaults`: a diferença entre "o dono escolheu isto" e "é o
+   * padrão" precisa continuar visível para quem lê o agente.
+   */
+  knowledgeAccess?: {
+    version: number
+    own: boolean
+    building: boolean
+    floor: boolean
+    sectorMode: 'execution_context' | 'home_sector' | 'selected' | 'none'
+    selectedSectorIds: ObjectId[]
+  }
   // --- Agent-as-the-primary-unit model (additive; legacy agents get safe defaults
   // via withAgentDefaults on read, so no destructive migration is needed) ---
   preset: AgentPreset

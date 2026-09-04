@@ -573,3 +573,90 @@ test('sem função escrita, o fluxo não inventa — mostra o objetivo', async (
 
   await expect(page.getByTestId('sector-flow')).toContainText('Receber pedidos e distribuir')
 })
+
+// ------------------------------------------------- responsabilidade nunca vazia
+//
+// LACUNA 11 CORRIGIDA. Um quadrado sem a linha de baixo não é uma informação a menos: é uma
+// pergunta que a tela deixa de fazer. Quem olha o fluxo não descobre o que aquele agente faz
+// nem em qual tela ir escrever.
+
+/** Um agente sem `role` E sem `objective` — o caso legado que renderizava vazio. */
+const SEM_NADA = {
+  ...agent(A1, 'Órfã', 'manager'),
+  objective: '',
+}
+const SO_OBJETIVO = {
+  ...agent(A2, 'Legada', 'operator'),
+  objective: 'Entrega relatórios semanais',
+}
+
+const SETOR_ORFAO = {
+  _id: SECTOR_ID,
+  floorId: FLOOR_ID,
+  name: 'Sem função',
+  color: '#88a',
+  mode: 'orchestrated',
+  coordinatorAgentId: A1,
+  members: [member(A1, { isDefault: true }), member(A2)],
+  inputContract: 'um pedido',
+  outputContract: 'uma resposta',
+}
+
+test('LACUNA 11: um agente sem função aparece como PENDÊNCIA acionável, nunca em branco', async ({ page }) => {
+  await stubApi(page, { sectors: [SETOR_ORFAO], agents: [SEM_NADA, SO_OBJETIVO], overview: overviewFor(SETOR_ORFAO) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+
+  const pendencia = page.getByTestId('flow-pendencia').first()
+  await expect(pendencia).toBeVisible()
+  await expect(pendencia).toContainText('função não definida')
+  await expect(pendencia).toContainText('abra o agente')
+})
+
+test('LACUNA 11: o objetivo serve de fallback para dado legado — e é MARCADO como tal', async ({ page }) => {
+  await stubApi(page, { sectors: [SETOR_ORFAO], agents: [SEM_NADA, SO_OBJETIVO], overview: overviewFor(SETOR_ORFAO) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+
+  const flow = page.getByTestId('sector-flow')
+  // "entrega relatórios" não responde "quando este agente entra", então a origem é dita.
+  await expect(flow).toContainText('Entrega relatórios semanais (do objetivo)')
+})
+
+test('LACUNA 11: nenhuma ficha do fluxo renderiza sem uma segunda linha', async ({ page }) => {
+  await stubApi(page, { sectors: [SETOR_ORFAO], agents: [SEM_NADA, SO_OBJETIVO], overview: overviewFor(SETOR_ORFAO) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+
+  const vazias = await page.getByTestId('sector-flow').locator('a, > div').evaluateAll((els) =>
+    els
+      .filter((el) => el.querySelector('span'))
+      .filter((el) => {
+        const linhas = el.querySelectorAll(':scope > span')
+        // Título sem nenhuma linha de baixo é exatamente o defeito.
+        return linhas.length === 1
+      })
+      .map((el) => el.textContent?.trim()),
+  )
+  expect(vazias, `fichas sem segunda linha: ${JSON.stringify(vazias)}`).toEqual([])
+})
+
+test('as arestas dizem QUAL relação é: recebe, delega e entrega', async ({ page }) => {
+  await stubApi(page, { sectors: [SETOR_ORFAO], agents: [SEM_NADA, SO_OBJETIVO], overview: overviewFor(SETOR_ORFAO) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+
+  // `allTextContents()` NÃO espera — ele lê o instante. Esperar a primeira aresta é o que
+  // separa "não existe" de "ainda não renderizou".
+  await expect(page.getByTestId('flow-edge-label').first()).toBeVisible()
+  const rotulos = await page.getByTestId('flow-edge-label').allTextContents()
+
+  // A seta sozinha diz que existe caminho e não diz qual: "recebe" e "delega" desenham igual.
+  expect(rotulos).toContain('recebe')
+  expect(rotulos).toContain('delega')
+  expect(rotulos).toContain('entrega')
+})
+
+test('o pipeline distingue dependência de paralelismo', async ({ page }) => {
+  await stubApi(page, { sectors: [PIPELINE_SECTOR], agents: AGENTS, overview: overviewFor(PIPELINE_SECTOR) })
+  await page.goto(`/floors/${FLOOR_ID}/sectors/${SECTOR_ID}`)
+  await expect(page.getByTestId('flow-edge-label').first()).toBeVisible()
+  const rotulos = await page.getByTestId('flow-edge-label').allTextContents()
+  expect(rotulos.some((r) => r.includes('depende'))).toBe(true)
+})

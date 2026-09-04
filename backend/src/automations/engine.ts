@@ -24,6 +24,13 @@ import { ensureRealtimeSourceIndexes } from '../realtimeSources/repository.js'
 import { ensureCandleIndexes } from '../marketData/candleStore.js'
 import { ensureMarketStateIndexes } from '../marketData/state.js'
 import { registerInternalEventTriggers } from './internalEvents.js'
+import { registerMonitorObservers, resumePendingDispatches } from '../monitors/dispatch.js'
+import { registerDatabaseMonitors } from '../monitors/dataSource.js'
+import { registerDerivedIndicators } from '../dataHistory/derived.js'
+import { registerMonitoringHistoryBridge } from '../monitoring/history.js'
+import { startSseSupervisor } from '../monitoring/sse.js'
+import { claimDueSources, readSourceOnce, releaseSource } from '../monitoring/service.js'
+import { ensureMonitorIndexes } from '../monitors/state.js'
 import { registerWebSocketDestinations } from '../integrations/websocket/destinations.js'
 import { websocketAdapterFor } from '../integrations/websocket/service.js'
 import { ensureWebSocketIndexes } from '../integrations/websocket/repository.js'
@@ -70,6 +77,7 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   await ensureCandleIndexes()
   await ensureMarketStateIndexes()
   await ensureWebSocketIndexes()
+  await ensureMonitorIndexes()
   await ensureDataHistoryIndexes()
   await ensureRealtimeSourceIndexes()
   // O motor de mercado escuta o barramento. Registrar aqui, e não na importação, deixa
@@ -77,12 +85,69 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
   registerMarketDataHandlers()
   // E o gatilho interno: é ele que transforma um evento do barramento em execução.
   registerInternalEventTriggers(onError)
+  // E os monitores: outro consumidor do MESMO barramento. O monitor não observa uma
+  // segunda verdade sobre o que aconteceu — ele lê o evento que já foi publicado, e o
+  // que ele reconhece como transição vira execução pela fila de sempre.
+  registerMonitorObservers(onError)
+  // E os monitores de DATASET: eles observam no instante da gravação, e não por varredura
+  // — uma varredura chegaria atrasada e leria o mesmo registro várias vezes.
+  registerDatabaseMonitors(onError)
+  // E os INDICADORES DERIVADOS: a conta que transforma fechamentos em RSI acontece no
+  // instante da gravação, pelo mesmo motor — e a série calculada é observável como qualquer
+  // outra. Registrado antes do bridge porque o que ele grava também é um registro.
+  registerDerivedIndicators(onError)
+  // O fio entre a fonte, o monitor e o Flow — anotado depois do disparo, nunca no lugar dele.
+  registerMonitoringHistoryBridge()
   // E os destinos do App de WebSocket: memória e rotina, pelos mesmos caminhos de
   // sempre. Agente e setor já são atendidos pelo gatilho interno acima.
   registerWebSocketDestinations()
   // E o histórico genérico: ele escuta TODOS os tipos do barramento e decide pelo que
   // está configurado. Nenhum tipo de evento novo foi criado para isso.
   registerDataHistoryHandlers()
+
+  /**
+   * O disparo que ficou pendurado quando o processo caiu.
+   *
+   * A borda já foi consumida e a execução não chegou a existir; sem esta varredura o
+   * alerta só voltaria a andar quando a fonte publicasse de novo — o que, numa fonte
+   * de hora em hora, é uma hora de silêncio. A chave de idempotência é derivada do
+   * evento, então retomar nunca cria uma segunda execução.
+   */
+  resumePendingDispatches().catch((error) => onError('monitores pendentes', error))
+
+  /**
+   * As fontes PUXADAS da Central, lidas pelo mesmo worker que já roda o resto.
+   *
+   * Um processo próprio para isso seria mais uma coisa para subir, monitorar e reiniciar —
+   * e o trabalho é o mesmo tipo de trabalho: acordar de tempos em tempos, ver o que
+   * venceu, fazer, gravar. Quem grava é o histórico; quem observa são os monitores; o que
+   * este laço acrescenta é só o "agora".
+   */
+  /**
+   * Os fluxos SSE — assinaturas que vivem, não leituras que acontecem.
+   *
+   * O supervisor reconcilia sozinho: ativar uma fonte na tela sobe a assinatura sem
+   * reiniciar nada, e pausar realmente para de consumir a rede do outro lado.
+   */
+  const fluxos = startSseSupervisor({ onError: (e) => onError('fluxo SSE', e) })
+
+  const relogioDeFontes = setInterval(() => {
+    void (async () => {
+      try {
+        for (const fonte of await claimDueSources(id)) {
+          // Uma falha de fonte não derruba as outras: cada leitura já grava a própria
+          // telemetria e devolve erro como dado. O aluguel é devolvido de qualquer jeito —
+          // segurá-lo até vencer atrasaria a próxima leitura por um erro já registrado.
+          await readSourceOnce(fonte)
+            .catch((error) => onError(`fonte ${fonte._id.toString()}`, error))
+            .finally(() => releaseSource(fonte._id, id).catch(() => {}))
+        }
+      } catch (error) {
+        onError('varredura de fontes', error)
+      }
+    })()
+  }, Number(process.env.MONITORING_POLL_MS ?? 15_000))
+  relogioDeFontes.unref()
 
   let stopping = false
   // In-flight runs, so shutdown can wait for them instead of cutting them off.
@@ -217,6 +282,10 @@ export async function startAutomationEngine(options: EngineOptions = {}): Promis
     stop: async () => {
       if (stopping) return
       stopping = true
+      clearInterval(relogioDeFontes)
+      // As assinaturas de fluxo fecham junto: um socket vivo depois do desligamento
+      // continuaria recebendo dado que ninguém vai gravar.
+      await fluxos.stop().catch(() => undefined)
       clearInterval(fontesTimer)
       clearInterval(runTimer)
       clearInterval(schedulerTimer)

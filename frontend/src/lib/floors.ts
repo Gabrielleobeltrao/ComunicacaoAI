@@ -58,8 +58,29 @@ export interface FloorWorkOverview {
   preview: { from: string; to: string[] } | null
 }
 
+export class FloorApiError extends Error {
+  status: number
+  code?: string
+  constructor(status: number, message: string, code?: string) {
+    super(message)
+    this.name = 'FloorApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
+/**
+ * A recusa do servidor chega INTEIRA — com código e mensagem.
+ *
+ * Antes, uma falha virava `new Error("409")`: a tela não conseguia distinguir "o escritório
+ * mudou, revise" de "você digitou o nome errado", e mostrava a mesma frase genérica para as
+ * duas. O código é o que a tela usa para decidir o que oferecer.
+ */
 async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`${res.status}`)
+  if (!res.ok) {
+    const corpo = (await res.json().catch(() => null)) as { code?: string; message?: string } | null
+    throw new FloorApiError(res.status, corpo?.message ?? `${res.status}`, corpo?.code)
+  }
   return res.json() as Promise<T>
 }
 
@@ -93,16 +114,56 @@ export const restoreFloor = (floorId: string) => fetch(`${API_URL}/api/floors/${
 
 // Surfaces the backend's guard message/code (LAST_FLOOR / FLOOR_NOT_EMPTY) instead
 // of a bare status, so the settings dialog can explain why a delete was refused.
-export class FloorApiError extends Error {
-  status: number
-  code?: string
-  constructor(status: number, message: string, code?: string) {
-    super(message)
-    this.name = 'FloorApiError'
-    this.status = status
-    this.code = code
-  }
+export type ImpactDisposition = 'archive' | 'delete' | 'unlink' | 'keep' | 'blocks'
+
+export interface ImpactEntry {
+  kind: string
+  id: string
+  name: string
+  disposition: ImpactDisposition
+  reason: string
 }
+
+export interface FloorDeletionImpact {
+  floor: { id: string; name: string; status: string }
+  entries: ImpactEntry[]
+  counts: Record<ImpactDisposition, number>
+  byKind: Record<string, number>
+  blockers: string[]
+  /** O retrato. Um purge confirmado com hash velho é um purge sobre um escritório que mudou. */
+  impactHash: string
+  at: string
+}
+
+export interface PurgeChoices {
+  deleteExclusiveResources?: boolean
+  removeDedicatedConnections?: boolean
+}
+
+/** O que acontece se este andar for embora — perguntado antes do clique. */
+export const floorDeletionImpact = async (floorId: string, choices: PurgeChoices = {}): Promise<FloorDeletionImpact> => {
+  const q = new URLSearchParams()
+  if (choices.deleteExclusiveResources) q.set('deleteExclusiveResources', '1')
+  if (choices.removeDedicatedConnections) q.set('removeDedicatedConnections', '1')
+  const res = await fetch(`${API_URL}/api/floors/${floorId}/deletion-impact${q.toString() ? `?${q}` : ''}`, opts('GET'))
+  return json<FloorDeletionImpact>(res)
+}
+
+export interface PurgeResult {
+  ok: boolean
+  removed: ImpactEntry[]
+  kept: ImpactEntry[]
+  unlinked: ImpactEntry[]
+}
+
+export const purgeFloor = async (
+  floorId: string,
+  body: { impactHash: string; confirmationName: string; choices?: PurgeChoices },
+): Promise<PurgeResult> => {
+  const res = await fetch(`${API_URL}/api/floors/${floorId}/purge`, opts('POST', body))
+  return json<PurgeResult>(res)
+}
+
 export const deleteFloor = async (floorId: string): Promise<void> => {
   const res = await fetch(`${API_URL}/api/floors/${floorId}`, opts('DELETE'))
   if (res.ok || res.status === 204) return

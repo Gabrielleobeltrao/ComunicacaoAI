@@ -2,6 +2,9 @@ import { ObjectId } from 'mongodb'
 import { db } from '../db.js'
 import * as L from './limits.js'
 import { maskSecrets } from './secrets.js'
+import type { OperationBrief } from './brief.js'
+import type { CriticFinding } from './critic.js'
+import type { SimulationRun } from './simulate.js'
 import type {
   ApplyStatus,
   ApplyStepResult,
@@ -11,8 +14,11 @@ import type {
   ArchitectLocale,
   ArchitectReadiness,
   ArchitectStatus,
+  BlueprintLayer,
   OfficeBlueprintV1,
 } from './types.js'
+import type { OfficeBlueprintV2 } from './typesV2.js'
+import type { AcceptanceResult } from './acceptance.js'
 
 // A persistência do Arquiteto. Três coleções, todas com `ownerId` no filtro de TODA
 // consulta — não há função aqui que aceite um id sem o dono junto, o que torna
@@ -37,8 +43,52 @@ export interface ArchitectProject {
    */
   pendingQuestion: { key: string; text: string } | null
   assumptions: ArchitectAssumption[]
-  blueprintVersion: 1
+  /** A constituição vigente quando a proposta foi montada. Ausente nos projetos antigos. */
+  architectConstitutionVersion?: number
+  /**
+   * O ENTENDIMENTO do negócio — o artefato que vem antes do desenho.
+   *
+   * Ausente nos projetos criados antes desta versão: eles continuam funcionando pelo
+   * caminho antigo (conversa → blueprint), e é isso que os mantém abertos.
+   */
+  brief?: OperationBrief
+  /**
+   * A versão anterior do Brief, para desfazer a última mudança.
+   *
+   * Uma só, pelo mesmo motivo do `previousBlueprint`: o que se perde numa correção se
+   * perde entre a versão que a pessoa leu e a que está na tela.
+   */
+  previousBrief?: OperationBrief | null
+  blueprintVersion: 1 | 2
+  /**
+   * O plano V2 — recursos e operações, além da organização.
+   *
+   * Ausente nos projetos que já existem, e é o que os mantém funcionando: sem ele a
+   * aplicação roda só a saga do V1, exatamente como rodava antes.
+   */
+  blueprintV2?: OfficeBlueprintV2 | null
+  /**
+   * O PLANO INTEIRO — as três camadas juntas, cada item marcado com a sua.
+   *
+   * O que a pessoa aprova e o que a aplicação escreve é o RECORTE da camada escolhida;
+   * guardar o plano inteiro é o que permite trocar de camada sem refazer a conversa, e
+   * o que faz "Recomendado" ser o mesmo plano de "Essencial" com mais coisa — não outra
+   * proposta.
+   */
   blueprint: OfficeBlueprintV1 | null
+  /**
+   * A camada escolhida. Ausente nos projetos anteriores às camadas: eles não têm item
+   * marcado, então o recorte é o plano inteiro e nada muda para eles.
+   */
+  layer?: BlueprintLayer
+  /**
+   * Este plano veio do COMPILADOR, e não do modelo.
+   *
+   * Só um plano compilado pode ser recompilado quando o Brief muda: recompilar o
+   * desenho que o modelo fez trocaria as chaves de tudo — e, num projeto aplicado,
+   * chave nova é recurso novo ao lado do que já existe.
+   */
+  compiled?: boolean
   /**
    * A proposta ANTERIOR, para o dono ver o que a revisão mexeu.
    *
@@ -47,7 +97,22 @@ export interface ArchitectProject {
    * ausente é "não há o que comparar", nunca "nada mudou".
    */
   previousBlueprint?: OfficeBlueprintV1 | null
+  /**
+   * O último ensaio da operação — cenários e resultados, versionados.
+   *
+   * Guardado no projeto para poder ser COMPARADO entre revisões: "o que quebrou desde a
+   * versão que eu aprovei?" só tem resposta se o ensaio anterior ficou registrado.
+   */
+  simulation?: SimulationRun | null
   blueprintHash: string | null
+  /**
+   * A leitura auxiliar do modelo sobre ESTA revisão.
+   *
+   * Guardada com o hash de quando foi feita: se a proposta mudou, a leitura fala de
+   * outro desenho e é descartada na hora de mostrar. Guardar sem o hash faria a tela
+   * apontar problema em agente que já não existe.
+   */
+  llmCritique?: { hash: string; findings: CriticFinding[]; status: 'ok' | 'failed'; createdAt: Date } | null
   checklist: ArchitectChecklistItem[]
   readiness: ArchitectReadiness
   applyState: ArchitectApplyState | null
@@ -83,6 +148,13 @@ export interface ArchitectApplyOperation {
   /** `kind:key` → id do recurso real. É o que faz repetir a aplicação não duplicar. */
   resourceMap: Record<string, string>
   steps: ApplyStepResult[]
+  /**
+   * O que os testes de aceitação observaram nesta operação.
+   *
+   * Fica na operação, e não no projeto, porque é a prova DESTA aplicação: uma nova aplicação
+   * tem que provar de novo. Ausente nas operações anteriores aos testes.
+   */
+  acceptance?: AcceptanceResult[]
   error: string | null
   /** Até quando esta operação está tomada por um processo. Ver `claimOperation`. */
   leaseUntil?: Date | null
@@ -337,6 +409,11 @@ export async function recordStep(ownerId: string, operationId: ObjectId, step: A
   const set: Record<string, unknown> = {}
   if (step.resourceId) set[`resourceMap.${step.kind}:${step.key}`] = step.resourceId
   await operations.updateOne({ _id: operationId, ownerId }, { $push: { steps: step }, ...(Object.keys(set).length ? { $set: set } : {}) })
+}
+
+/** Grava o que os testes viram. Substitui: a prova é a da última rodada, não um histórico. */
+export async function recordAcceptance(ownerId: string, operationId: ObjectId, acceptance: AcceptanceResult[]): Promise<void> {
+  await operations.updateOne({ _id: operationId, ownerId }, { $set: { acceptance } })
 }
 
 export async function finishOperation(ownerId: string, operationId: ObjectId, status: ApplyStatus, error: string | null): Promise<void> {

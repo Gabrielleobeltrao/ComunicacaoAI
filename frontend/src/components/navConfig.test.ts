@@ -36,8 +36,24 @@ describe('the CONTROLE group', () => {
     // Canais and Conversas became pages of the Chat Web / WhatsApp Apps, so the
     // static communication group is gone: those entries are built at runtime from
     // the account's active Apps and the user's pins.
-    expect(groups.map((g) => g.group)).toEqual(['operation', 'control'])
-    expect(groups.find((g) => g.group === 'control')?.label).toBe('CONTROLE')
+    //
+    // RECURSOS entrou entre os dois: "o que o escritório possui" é uma pergunta
+    // diferente de "o que aconteceu", e elas estavam no mesmo grupo.
+    // COMUNIDADE entrou por último quando o Marketplace passou a existir: ela é a única
+    // camada que traz coisa de terceiro para dentro, e a distância na lista é a mesma
+    // distância que a cabeça de quem usa faz.
+    expect(groups.map((g) => g.group)).toEqual(['operation', 'resources', 'control', 'community'])
+    expect(groups.find((g) => g.group === 'control')?.label).toBe('OPERAÇÕES')
+    expect(groups.find((g) => g.group === 'resources')?.label).toBe('RECURSOS')
+  })
+
+  it('COMUNIDADE aparece porque a tela existe — e aponta para ela', () => {
+    // A regra não mudou: um item de menu que leva a uma tela inexistente promete e não
+    // entrega. O que mudou é que a tela existe, e a rota é conferida aqui.
+    const grupos = navGroupsFor('floor-1', 'Térreo')
+    const comunidade = grupos.find((g) => g.group === 'community')
+    expect(comunidade?.label).toBe('COMUNIDADE')
+    expect(comunidade?.items.map((i) => i.path(null))).toEqual(['/community'])
   })
 
   it('carries Apps, the account-wide catalogue', () => {

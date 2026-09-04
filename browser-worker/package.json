@@ -1,0 +1,17 @@
+{
+  "name": "browser-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Worker isolado que busca e renderiza páginas para a Central de Monitoramento. Deployável separadamente da API.",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1"
+  }
+}

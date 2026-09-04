@@ -15,8 +15,15 @@ import type { ObjectId } from 'mongodb'
  * queria saber o preço de agora.
  */
 
-/** De onde a fonte lê. Hoje só o Dado ao vivo — mas o conceito não é dele. */
-export const REALTIME_SOURCE_KINDS = ['live_data'] as const
+/**
+ * De onde a fonte lê.
+ *
+ * `live_data` é uma conexão de WebSocket empurrando valores. `monitoring` é uma fonte da
+ * Central fazendo o mesmo papel: ela também é uma origem que produz valores identificados
+ * por chave, e o valor de agora dela mora na mesma coleção. Os dois são "origem que
+ * empurra"; o que muda é quem empurra.
+ */
+export const REALTIME_SOURCE_KINDS = ['live_data', 'monitoring'] as const
 export type RealtimeSourceKind = (typeof REALTIME_SOURCE_KINDS)[number]
 
 export interface RealtimeDataSource {
@@ -25,7 +32,11 @@ export interface RealtimeDataSource {
   /** O nome que a pessoa lê na tela: "BTC atual". */
   name: string
   sourceKind: RealtimeSourceKind
-  /** `live_data` → o id da conexão. Conferido com o dono no filtro, nunca confiado. */
+  /**
+   * `live_data` → o id da conexão. `monitoring` → o id da fonte da Central.
+   *
+   * Conferido com o dono no filtro, nunca confiado: um id que chega de fora é um pedido.
+   */
   sourceRef: string
   /** A chave dentro da fonte: `BTCUSDT`, `sensor-3`, `SKU-1`. */
   key: string

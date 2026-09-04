@@ -13,6 +13,9 @@ process.env.NODE_ENV = 'test'
 process.env.LLM_FAKE = '1'
 process.env.MONGODB_URI = await startMongo()
 process.env.ENCRYPTION_KEY ||= 'chave-de-teste-que-nao-e-segredo'
+// Os testes de aceitação batem numa origem DE VERDADE. O guarda de SSRF recusa loopback
+// por padrão, e é o alvo local que estes casos precisam.
+process.env.ALLOW_LOOPBACK_HTTP_TARGETS = '1'
 
 const { mongoClient, db } = await import('../dist/db.js')
 const { architectRouter } = await import('../dist/routes/architectRoutes.js')
@@ -25,7 +28,13 @@ const { setProviderApiKey } = await import('../dist/userSettings.js')
 const { resetGuards } = await import('../dist/architect/guard.js')
 const { createInstallation } = await import('../dist/apps/installations.js')
 const { getApp } = await import('../dist/apps/registry.js')
+const { ensureExecutionRootIndexes } = await import('../dist/executionRoots.js')
 const express = (await import('express')).default
+const { createServer } = await import('node:http')
+
+let origem
+let portaDaOrigem
+let corpoDaOrigem = { rsi: 22.5 }
 
 const DONO = 'dono-aplicacao'
 const VIZINHO = 'vizinho-aplicacao'
@@ -48,6 +57,16 @@ before(async () => {
   await repo.ensureArchitectIndexes()
   await ensureTokenUsageIndexes()
   await ensureRunIndexes()
+  await ensureExecutionRootIndexes()
+
+  // A ORIGEM de verdade que os testes de aceitação consultam. Um mock devolvendo o que o
+  // teste espera provaria só que o mock funciona.
+  origem = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(corpoDaOrigem))
+  })
+  await new Promise((r) => origem.listen(0, r))
+  portaDaOrigem = origem.address().port
 
   const app = express()
   app.use(express.json())
@@ -65,6 +84,7 @@ before(async () => {
 })
 
 after(async () => {
+  origem?.close()
   await new Promise((resolve) => server.close(resolve))
   await mongoClient.close().catch(() => undefined)
   await stopMongo()
@@ -86,9 +106,15 @@ beforeEach(async () => {
     'connections',
     'knowledge_documents',
     'knowledge_chunks',
+    'data_stores',
+    'dataset_definitions',
+    'monitoring_sources',
+    'monitors',
+    'execution_roots',
   ])
     await db.collection(c).deleteMany({})
   resetGuards()
+  corpoDaOrigem = { rsi: 22.5 }
   sessao = DONO
   await setProviderApiKey(DONO, 'anthropic', 'chave-de-teste')
 })
@@ -220,9 +246,11 @@ test('com o App conectado, a permissão só sai se o dono aprovar', async () => 
   const aprovado = await projetoPronto()
   await aplicar(aprovado.id, aprovado.hash, 'op-b', { approvedAppKeys: ['web_chat'] })
   const agentes2 = await db.collection('agents').find({ ownerId: DONO }).toArray()
-  const gerente = agentes2.find((a) => a.name.includes('Gerente'))
-  assert.equal(gerente.appGrants.length, 1)
-  assert.equal(gerente.appGrants[0].appKey, 'web_chat')
+  // A permissão vai para quem a proposta indicou — e só para ele. Procurar pelo nome
+  // dizia menos: os agentes têm nome de pessoa, escolhido pelo compilador.
+  const comPermissao = agentes2.filter((a) => (a.appGrants ?? []).length > 0)
+  assert.equal(comPermissao.length, 1, 'permissão concedida a mais de um agente')
+  assert.equal(comPermissao[0].appGrants[0].appKey, 'web_chat')
 })
 
 test('a rotina nasce rascunho, e o Arquiteto não publica nada', async () => {
@@ -244,11 +272,18 @@ test('uma falha no meio deixa o que já foi feito, e a retomada continua sem dup
   await pedir('POST', `/projects/${id}/messages`, { content: 'pelo site' })
   await pedir('POST', `/projects/${id}/validate`)
   const projeto = await repo.getProject(DONO, new ObjectId(id))
-  const hash = computeBlueprintHash(projeto.blueprint)
+  /**
+   * O hash é o que o SERVIDOR gravou — não um recalculado só sobre o V1.
+   *
+   * Recalcular parcialmente fazia a aplicação ser recusada por conflito de hash antes de
+   * criar qualquer coisa. O `assert.rejects` passava, mas pelo motivo errado: o caso
+   * dizia testar a retomada e testava a recusa da revisão.
+   */
+  const hash = projeto.blueprintHash
 
   // Cai no primeiro setor: os andares e agentes já foram criados.
-  await assert.rejects(
-    service.applyProject(
+  const erro = await service
+    .applyProject(
       DONO,
       new ObjectId(id),
       { blueprintHash: hash, idempotencyKey: 'op-falha', confirm: true },
@@ -257,8 +292,10 @@ test('uma falha no meio deixa o que já foi feito, e a retomada continua sem dup
           if (kind === 'sector') throw new Error('queda simulada no meio da aplicação')
         },
       },
-    ),
-  )
+    )
+    .then(() => null, (e) => e)
+  assert.ok(erro, 'a queda injetada precisa derrubar a aplicação')
+  assert.match(String(erro.message), /queda simulada/, `caiu por outro motivo: ${String(erro.message)}`)
 
   assert.equal(await db.collection('agents').countDocuments({ ownerId: DONO }), 2, 'o que já foi criado fica')
   assert.equal(await db.collection('sectors').countDocuments({ ownerId: DONO }), 0)
@@ -380,9 +417,9 @@ test('com instalação E permissão, a pendência se resolve sozinha', async () 
   assert.equal(r.body.checklist.find((i) => i.id === itemApp.id).status, 'done')
 
   // E é permissão de verdade no agente, não um estado guardado no projeto.
-  const gerente = await db.collection('agents').findOne({ ownerId: DONO, name: /Gerente/ })
-  assert.equal(gerente.appGrants.length, 1)
-  assert.equal(gerente.appGrants[0].appKey, 'web_chat')
+  const comPermissao = await db.collection('agents').find({ ownerId: DONO, 'appGrants.0': { $exists: true } }).toArray()
+  assert.equal(comPermissao.length, 1)
+  assert.equal(comPermissao[0].appGrants[0].appKey, 'web_chat')
 })
 
 // --- a conversa não fecha ao aplicar -------------------------------------------------------
@@ -408,7 +445,11 @@ test('depois de aplicado dá para continuar conversando — e a rodada nova NÃO
 
   // E a prévia trata tudo como alteração — que exige aprovação item a item na confirmação.
   const previa = await pedir('GET', `/projects/${id}/preview`)
-  assert.equal(previa.body.counts.create, 0)
+  assert.equal(
+    previa.body.counts.create,
+    0,
+    `nada pode voltar como "criar": ${JSON.stringify(previa.body.items.filter((i) => i.action === 'create').map((i) => `${i.kind}:${i.key}`))}`,
+  )
   assert.ok(previa.body.counts.update >= 3)
   assert.ok(previa.body.items.filter((i) => i.kind !== 'app' && i.kind !== 'knowledge').every((i) => i.requiresApproval))
 })
@@ -444,4 +485,607 @@ test('arquivado, sim, silencia a conversa', async () => {
   const r = await pedir('POST', `/projects/${id}/messages`, { content: 'oi' })
   assert.equal(r.status, 409)
   assert.match(r.body.message, /arquivado/)
+})
+
+// --- o plano V2 dentro da MESMA aplicação -----------------------------------------------------
+//
+// O V2 acrescenta Databases, datasets, fontes, monitores e Flows. Ele NÃO é uma segunda
+// engine: entra na mesma saga, escreve no mesmo `resourceMap`, registra os mesmos passos e é
+// retomado pelo mesmo caminho. É isso que estes casos protegem.
+
+const t2 = await import('../dist/architect/typesV2.js')
+
+const itemV2 = (over) => ({ action: 'create', layer: 'essential', rationale: 'x', dependsOn: [], ...over })
+
+/** Põe um plano V2 no projeto e devolve o hash que a confirmação precisa carregar. */
+const comPlanoV2 = async (id, monta) => {
+  const bp2 = t2.emptyBlueprintV2('Operação', 'Vigiar', 'create')
+  monta(bp2)
+  const projeto = await repo.patchProject(DONO, new ObjectId(id), { blueprintVersion: 2, blueprintV2: bp2 })
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.ok(previa.body.blueprintHash)
+  return { hash: previa.body.blueprintHash, projeto }
+}
+
+const planoSimples = (bp2) => {
+  bp2.resources.databases = [itemV2({ key: 'base', name: 'Cotações', owner: { ownerType: 'account' }, adapterKind: 'data_history' })]
+  bp2.resources.datasets = [
+    itemV2({
+      key: 'candles',
+      dependsOn: ['base'],
+      databaseKey: 'base',
+      datasetKey: 'candles',
+      name: 'Candles',
+      schema: { type: 'object', properties: { rsi: { type: 'number' } } },
+      mutability: 'append_only',
+    }),
+  ]
+  bp2.operations.sources = [
+    itemV2({
+      key: 'fonte',
+      name: 'Cotações CXSE3',
+      kind: 'api_polling',
+      config: { url: `http://127.0.0.1:${portaDaOrigem}/cotacoes`, method: 'GET' },
+      mapping: { version: 1, fields: [{ to: 'rsi', from: 'rsi', required: true }] },
+      cadence: { mode: 'interval', intervalMs: 60_000 },
+    }),
+  ]
+}
+
+test('o plano V2 é aplicado pela MESMA operação, e vira passo registrado', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, planoSimples)
+
+  const r = await aplicar(id, hash, 'op-v2')
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.equal(r.body.status, 'applied')
+
+  // Os recursos do V1 continuam nascendo: o V2 acrescenta, não substitui.
+  assert.equal(await db.collection('offices').countDocuments({ ownerId: DONO }), 1)
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+  assert.equal(await db.collection('dataset_definitions').countDocuments({ ownerId: DONO }), 1)
+
+  // A fonte nasce RASCUNHO: ninguém aplicou uma operação que já começa a bater fora.
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'draft')
+
+  // Os passos do V2 estão na MESMA lista de passos da operação — mesma auditoria.
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const kinds = operacao.steps.map((p) => p.kind)
+  for (const k of ['floor', 'agent', 'database', 'dataset', 'source']) assert.ok(kinds.includes(k), `faltou ${k} em ${kinds.join(',')}`)
+  assert.equal(operacao.resourceMap['database:base'], (await db.collection('data_stores').findOne({ ownerId: DONO }))._id.toString())
+})
+
+test('mudar SÓ o plano V2 invalida a confirmação anterior', async () => {
+  const { id, hash: hashV1 } = await projetoPronto()
+  await comPlanoV2(id, planoSimples)
+
+  // O hash do V1 não mudou — o recorte é o mesmo. Se ele ainda valesse como confirmação,
+  // um clique feito olhando a revisão sem monitor nenhum aplicaria a revisão com eles.
+  const r = await aplicar(id, hashV1, 'op-velha')
+  assert.equal(r.status, 409)
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 0)
+})
+
+test('uma falha no V2 derruba a operação — e o que já nasceu fica no mapa', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    // O monitor observa um conjunto que não está no plano: não há como criá-lo.
+    bp2.operations.monitors = [
+      itemV2({
+        key: 'rsi',
+        dependsOn: ['candles'],
+        name: 'RSI baixo',
+        observes: { kind: 'dataset', datasetKey: 'conjunto-que-nao-existe' },
+        condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+        triggerMode: 'enter',
+      }),
+    ]
+  })
+
+  // A falha volta como RESPOSTA, com motivo e id da operação. O 500 padrão do Express
+  // devolvia HTML, e a tela ficava sem o que mostrar e sem o que retomar.
+  const r = await aplicar(id, hash, 'op-falha')
+  assert.equal(r.status, 502, JSON.stringify(r.body))
+  assert.equal(r.body.code, 'apply_failed')
+  assert.match(r.body.message, /monitor "rsi"/)
+  assert.ok(r.body.operationId)
+
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  assert.equal(projeto.status, 'failed')
+  assert.equal(await db.collection('monitors').countDocuments({ ownerId: DONO }), 0, 'um monitor sem o que observar nunca dispara')
+
+  // O que nasceu ANTES da falha está no mapa: é isso que faz a retomada não duplicar.
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  assert.ok(operacao.resourceMap['database:base'])
+  assert.ok(operacao.resourceMap['source:fonte'])
+  assert.equal(operacao.status, 'failed')
+})
+
+test('retomar depois da falha NÃO cria o que já existe', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    bp2.operations.monitors = [
+      itemV2({
+        key: 'rsi',
+        dependsOn: ['candles'],
+        name: 'RSI baixo',
+        observes: { kind: 'dataset', datasetKey: 'conjunto-que-nao-existe' },
+        condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+        triggerMode: 'enter',
+      }),
+    ]
+  })
+  await aplicar(id, hash, 'op-retomar')
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+
+  // Corrigido: agora o monitor aponta para o conjunto que a aplicação criou.
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  const bp2 = projeto.blueprintV2
+  bp2.operations.monitors[0].observes.datasetKey = 'candles'
+  await repo.patchProject(DONO, new ObjectId(id), { blueprintV2: bp2 })
+
+  // Retomar exige o MESMO hash da operação: um plano corrigido é uma revisão nova.
+  const r = await pedir('POST', `/projects/${id}/resume`)
+  assert.equal(r.status, 409, JSON.stringify(r.body))
+  assert.match(r.body.message, /mudou/)
+
+  // E, acima de tudo: nada foi criado duas vezes.
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+  assert.equal(await db.collection('monitoring_sources').countDocuments({ ownerId: DONO }), 1)
+})
+
+test('retomar com o MESMO plano refaz só o que faltou', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    bp2.operations.monitors = [
+      itemV2({
+        key: 'rsi',
+        dependsOn: ['candles'],
+        name: 'RSI baixo',
+        observes: { kind: 'dataset', datasetKey: 'candles' },
+        condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+        triggerMode: 'enter',
+      }),
+    ]
+  })
+
+  // Uma queda antes do monitor: o Database e a fonte já existem, o monitor não.
+  const alvo = await db.collection('data_stores').findOne({ ownerId: DONO })
+  assert.equal(alvo, null)
+
+  const r = await aplicar(id, hash, 'op-completa')
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
+  assert.ok(monitor, 'o monitor do conjunto criado nesta mesma aplicação nasce junto')
+  assert.equal(monitor.status, 'draft', 'publicar é um ato separado')
+
+  // Aplicar de novo com a mesma chave devolve a mesma operação — nada é criado duas vezes.
+  const denovo = await aplicar(id, hash, 'op-completa')
+  assert.equal(denovo.status, 200)
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+  assert.equal(await db.collection('monitors').countDocuments({ ownerId: DONO }), 1)
+})
+
+test('o rollback desfaz também o que o V2 criou — e deixa o histórico', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    bp2.operations.monitors = [
+      itemV2({
+        key: 'rsi',
+        dependsOn: ['candles'],
+        name: 'RSI baixo',
+        observes: { kind: 'dataset', datasetKey: 'candles' },
+        condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+        triggerMode: 'enter',
+      }),
+    ]
+  })
+  await aplicar(id, hash, 'op-rollback-v2')
+  assert.equal(await db.collection('monitors').countDocuments({ ownerId: DONO }), 1)
+
+  const r = await pedir('POST', `/projects/${id}/rollback`)
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  for (const c of ['monitors', 'monitoring_sources', 'dataset_definitions', 'data_stores'])
+    assert.equal(await db.collection(c).countDocuments({ ownerId: DONO }), 0, `sobrou em ${c}`)
+})
+
+test('o rollback NÃO apaga o recurso do V2 editado depois de criado', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, planoSimples)
+  await aplicar(id, hash, 'op-rollback-editado')
+
+  const store = await db.collection('data_stores').findOne({ ownerId: DONO })
+  // Alguém renomeou o Database depois. Editado é trabalho de quem editou, não sobra
+  // da aplicação — e um desfazer que o apagasse destruiria o que a pessoa fez.
+  await db.collection('data_stores').updateOne({ _id: store._id }, { $set: { name: 'Meu', updatedAt: new Date(Date.now() + 60_000) } })
+
+  const r = await pedir('POST', `/projects/${id}/rollback`)
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), 1)
+  assert.ok(r.body.kept.some((k) => /editado depois/.test(k.reason)), JSON.stringify(r.body.kept))
+})
+
+// --- prova e ativação: "pronto" é o que passou num teste ------------------------------------------
+
+const comTestes = (bp2, testes) => {
+  planoSimples(bp2)
+  bp2.operations.monitors = [
+    itemV2({
+      key: 'rsi',
+      dependsOn: ['candles'],
+      name: 'RSI baixo',
+      observes: { kind: 'dataset', datasetKey: 'candles' },
+      condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+      triggerMode: 'enter',
+      threshold: 30,
+      thresholdField: 'rsi',
+    }),
+  ]
+  bp2.acceptanceTests = testes
+}
+
+test('ACEITAÇÃO: a fonte que passou no teste E foi autorizada entra no ar', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]),
+  )
+
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-ativa',
+    confirm: true,
+    approvedActivationKeys: ['fonte'],
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'active', 'a fonte provada e autorizada tem que entrar no ar')
+
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  assert.equal(operacao.acceptance.find((a) => a.key === 't-fonte').status, 'passed')
+})
+
+test('a fonte que passou no teste mas NÃO foi autorizada continua parada', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]),
+  )
+  // Nenhuma `approvedActivationKeys`: aplicar a proposta não coloca a operação para rodar.
+  const r = await aplicar(id, hash, 'op-sem-autorizacao')
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'draft')
+
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const passo = operacao.steps.find((p) => p.kind === 'source' && p.status === 'skipped')
+  assert.match(passo.message, /não foi autorizado/)
+})
+
+test('AMEAÇA: a fonte AUTORIZADA que REPROVOU no teste não entra no ar', async () => {
+  // A origem responde 200, mas sem o campo obrigatório: a fonte parece viva.
+  corpoDaOrigem = { outra: 1 }
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]),
+  )
+
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-reprovada',
+    confirm: true,
+    approvedActivationKeys: ['fonte'],
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'draft', 'autorização não substitui prova')
+
+  // E a prontidão diz por quê, em vez de ficar verde.
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  assert.equal(projeto.readiness.ready, false)
+  assert.ok(projeto.readiness.blockers.some((b) => /não trouxe rsi/.test(b)), JSON.stringify(projeto.readiness.blockers))
+  assert.ok(projeto.checklist.some((i) => i.id === 't-fonte' || i.id === 'test:t-fonte'))
+})
+
+test('a prova entra na checklist com `test_result`, e não pode ser marcada à mão', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [
+      { key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true },
+      { key: 't-mon', kind: 'monitor_simulation', targetKey: 'rsi', expectation: 'dispara', required: true },
+    ]),
+  )
+  await aplicar(id, hash, 'op-checklist')
+
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  const deTeste = projeto.checklist.filter((i) => i.completionMode === 'test_result')
+  assert.equal(deTeste.length, 2, JSON.stringify(projeto.checklist.map((i) => i.id)))
+  for (const i of deTeste) assert.equal(i.status, 'done', i.description)
+})
+
+// --- a PRÉVIA diz o que pode entrar no ar ------------------------------------------------------
+//
+// O servidor não ativa nada sem teste. Oferecer na tela algo que ele vai recusar seria um
+// checkbox que mente — então só entra na lista o item que declara um teste de aceitação.
+
+test('a prévia lista o que é ativável, com o que o teste vai observar', async () => {
+  const { id } = await projetoPronto()
+  await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [
+      { key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'a fonte responde e traz o RSI', required: true },
+      { key: 't-mon', kind: 'monitor_simulation', targetKey: 'rsi', expectation: 'a regra dispara abaixo de 30', required: true },
+    ]),
+  )
+
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  const ligaveis = previa.body.activatable
+  assert.equal(ligaveis.length, 2, JSON.stringify(ligaveis))
+  const fonte = ligaveis.find((a) => a.kind === 'source')
+  assert.equal(fonte.key, 'fonte')
+  assert.equal(fonte.label, 'Cotações CXSE3', 'a pessoa reconhece o recurso pelo nome, não pela key')
+  assert.match(fonte.expectation, /responde/)
+  assert.ok(ligaveis.some((a) => a.kind === 'monitor'))
+})
+
+test('o que NÃO tem teste declarado não aparece como ativável', async () => {
+  const { id } = await projetoPronto()
+  // O plano cria fonte, dataset e monitor — e declara teste só para a fonte.
+  await comPlanoV2(id, (bp2) => comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]))
+
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.deepEqual(
+    previa.body.activatable.map((a) => a.kind),
+    ['source'],
+    'ausência de teste não é prova: ligar por falta de evidência contrária é o defeito que isto fecha',
+  )
+})
+
+test('um projeto SEM plano V2 não oferece nada para ligar', async () => {
+  const { id } = await projetoPronto()
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.deepEqual(previa.body.activatable, [])
+})
+
+test('dois testes no MESMO alvo aparecem uma vez só', async () => {
+  const { id } = await projetoPronto()
+  await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [
+      { key: 't1', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true },
+      { key: 't2', kind: 'source', targetKey: 'fonte', expectation: 'traz o campo', required: true },
+    ]),
+  )
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.equal(previa.body.activatable.length, 1, 'um alvo, uma linha — dois checkboxes para a mesma coisa confundem')
+})
+
+test('a prévia MOSTRA os recursos e operações do V2, e não só andar e agente', async () => {
+  const { id } = await projetoPronto()
+  await comPlanoV2(id, (bp2) =>
+    comTestes(bp2, [{ key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true }]),
+  )
+
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  const tipos = new Set(previa.body.items.map((i) => i.kind))
+  // O que o V1 já mostrava continua lá…
+  assert.ok(tipos.has('floor') && tipos.has('agent'))
+  // …e o que o V2 acrescenta passou a aparecer. Sem isto, a pessoa aprova uma proposta que
+  // não viu inteira e depois autoriza a ativação de algo que nunca apareceu na tela.
+  for (const esperado of ['database', 'dataset', 'source', 'monitor']) {
+    assert.ok(tipos.has(esperado), `"${esperado}" não aparece na prévia: ${[...tipos].join(', ')}`)
+  }
+
+  const fonte = previa.body.items.find((i) => i.kind === 'source')
+  assert.equal(fonte.label, 'Cotações CXSE3', 'a pessoa reconhece pelo nome, não pela key')
+  assert.match(fonte.detail, /ativa só depois de testar/)
+  // Item do V2 não pede aprovação individual aqui: a pergunta dele é a de ATIVAÇÃO.
+  assert.equal(fonte.requiresApproval, false)
+})
+
+test('sem plano V2, a prévia continua exatamente como era', async () => {
+  // A flag é o padrão; este caso é sobre o caminho DESLIGADO, que precisa continuar intacto.
+  process.env.ARCHITECT_BLUEPRINT_V2 = '0'
+  const { id } = await projetoPronto()
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  const tipos = new Set(previa.body.items.map((i) => i.kind))
+  for (const doV2 of ['database', 'source', 'monitor', 'flow', 'channel', 'delivery']) {
+    assert.equal(tipos.has(doV2), false, `"${doV2}" apareceu num projeto sem V2`)
+  }
+  delete process.env.ARCHITECT_BLUEPRINT_V2
+})
+
+// --- ativar o Flow e o monitor, não só a fonte -------------------------------------------------
+//
+// `activatableKeys` cobria os três, mas a saga ligava só fontes. Um monitor que passou na
+// simulação e ficou em rascunho é um alarme que ninguém sabe que está desligado.
+
+const comCadeia = (bp2, testes) => {
+  planoSimples(bp2)
+  bp2.operations.flows = [
+    itemV2({
+      key: 'avisar',
+      floorKey: 'operacao',
+      name: 'Avisar o time',
+      trigger: { type: 'manual' },
+      steps: [{ id: 'r', type: 'transform.template', name: 'Resumo', enabled: true, config: { template: 'viu: {{input}}' } }],
+    }),
+  ]
+  bp2.operations.monitors = [
+    itemV2({
+      key: 'rsi',
+      dependsOn: ['candles', 'avisar'],
+      name: 'RSI baixo',
+      observes: { kind: 'dataset', datasetKey: 'candles' },
+      condition: { kind: 'compare', field: 'rsi', op: 'lt', value: 30 },
+      triggerMode: 'enter',
+      threshold: 30,
+      thresholdField: 'rsi',
+      flowKey: 'avisar',
+    }),
+  ]
+  bp2.acceptanceTests = testes
+}
+
+const TESTES_DA_CADEIA = [
+  { key: 't-fonte', kind: 'source', targetKey: 'fonte', expectation: 'responde', required: true },
+  { key: 't-flow', kind: 'flow', targetKey: 'avisar', expectation: 'a rota resolve', required: true },
+  { key: 't-mon', kind: 'monitor_simulation', targetKey: 'rsi', expectation: 'dispara na transição', required: true },
+]
+
+test('ACEITAÇÃO: Flow e monitor autorizados entram no ar, não só a fonte', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => comCadeia(bp2, TESTES_DA_CADEIA))
+
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-cadeia',
+    confirm: true,
+    approvedActivationKeys: ['fonte', 'avisar', 'rsi'],
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const fonte = await db.collection('monitoring_sources').findOne({ ownerId: DONO })
+  assert.equal(fonte.status, 'active')
+
+  // O Flow tem que estar PUBLICADO e ativo: publicar é o que congela a definição que roda.
+  const flow = await db.collection('automations').findOne({ ownerId: DONO })
+  assert.equal(flow.status, 'active', 'um Flow em rascunho não é acionado por monitor nenhum')
+  assert.ok(flow.lastPublishedVersion != null, 'sem versão publicada, o monitor recusa publicar')
+
+  const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
+  assert.equal(monitor.status, 'published', 'um monitor em rascunho é um alarme desligado que parece ligado')
+})
+
+test('o Flow é publicado ANTES do monitor — a ordem não é preferência', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => comCadeia(bp2, TESTES_DA_CADEIA))
+  await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-ordem',
+    confirm: true,
+    approvedActivationKeys: ['avisar', 'rsi'],
+  })
+
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const ligados = operacao.steps.filter((p) => p.status === 'updated').map((p) => p.kind)
+  assert.ok(ligados.indexOf('flow') < ligados.indexOf('monitor'), JSON.stringify(ligados))
+})
+
+test('sem autorizar o Flow, o monitor NÃO é publicado — e o motivo é dito', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => comCadeia(bp2, TESTES_DA_CADEIA))
+  // Só o monitor é autorizado: o Flow dele continua em rascunho.
+  await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-so-monitor',
+    confirm: true,
+    approvedActivationKeys: ['rsi'],
+  })
+
+  const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
+  assert.notEqual(monitor.status, 'published', 'um monitor que aciona um Flow sem versão toca no vazio')
+
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const passo = operacao.steps.filter((p) => p.kind === 'monitor' && p.status === 'skipped').pop()
+  assert.match(passo.message, /publique o Flow|não foi autorizado/)
+})
+
+test('a recusa do domínio não derruba a aplicação — o escritório já está montado', async () => {
+  const { id } = await projetoPronto()
+  const { hash } = await comPlanoV2(id, (bp2) => comCadeia(bp2, TESTES_DA_CADEIA))
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: hash,
+    idempotencyKey: 'op-recusa',
+    confirm: true,
+    approvedActivationKeys: ['rsi'],
+  })
+  assert.equal(r.status, 200, 'a ativação recusada é uma pendência, não uma falha da aplicação')
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  assert.equal(projeto.status, 'applied')
+})
+
+test('a prévia lista as entregas que esperam conexão', async () => {
+  const { id } = await projetoPronto()
+  await comPlanoV2(id, (bp2) => {
+    planoSimples(bp2)
+    bp2.operations.flows = [
+      itemV2({ key: 'avisar', floorKey: 'operacao', name: 'Avisar', trigger: { type: 'manual' }, steps: [{ id: 'r', type: 'transform.template', name: 'R', enabled: true, config: { template: 'x' } }] }),
+    ]
+    bp2.operations.deliveries = [itemV2({ key: 'entrega', dependsOn: ['avisar'], fromKey: 'avisar', destinationHint: 'meu e-mail', format: 'text' })]
+  })
+
+  const previa = await pedir('GET', `/projects/${id}/preview`)
+  assert.equal(previa.body.pendingDeliveries.length, 1)
+  assert.equal(previa.body.pendingDeliveries[0].key, 'entrega')
+  // O rótulo é a PISTA do plano, nunca um endereço: ele não mora no Blueprint.
+  assert.equal(previa.body.pendingDeliveries[0].label, 'meu e-mail')
+  assert.equal(/@|\+\d/.test(JSON.stringify(previa.body.pendingDeliveries)), false, 'nenhum endereço concreto viaja no plano')
+})
+
+test('as conexões oferecidas são as CONECTADAS desta conta, e só elas', async () => {
+  const { createConnection } = await import('../dist/connections/service.js')
+  const cfg = { host: 'smtp.exemplo.test', port: 587, secure: false, user: 'a@b.test', pass: 'nao-e-um-segredo-real', from: 'a@b.test' }
+  const minha = await createConnection(DONO, { provider: 'email', name: 'Meu e-mail', config: cfg })
+  await createConnection(VIZINHO, { provider: 'email', name: 'Do vizinho', config: cfg })
+
+  const r = await pedir('GET', '/targets')
+  const ids = r.body.connections.map((c) => c.id)
+  assert.deepEqual(ids, [minha._id.toString()], 'uma conexão alheia na lista é um endereço de outra pessoa oferecido como opção')
+  // O segredo nunca sai: a lista tem nome e provedor, e nada mais.
+  assert.deepEqual(Object.keys(r.body.connections[0]).sort(), ['id', 'name', 'provider'])
+})
+
+// --- dois defeitos que só aparecem com o V2 ligado ---------------------------------------------
+
+test('o hash gravado cobre o plano V2 QUE FOI GRAVADO — não o anterior', async () => {
+  // Com `projeto.blueprintV2` (o antigo) no cálculo, o hash guardado era de um documento e a
+  // aplicação recomputava com outro: TODA primeira aplicação era recusada com "a proposta
+  // mudou". O defeito só existe quando existe um V2 — por isso passou despercebido enquanto
+  // a flag estava desligada.
+  const { id } = await projetoPronto()
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  assert.ok(projeto.blueprintV2, 'este caso precisa de um projeto com plano V2')
+
+  const r = await pedir('POST', `/projects/${id}/apply`, {
+    blueprintHash: projeto.blueprintHash,
+    idempotencyKey: 'op-hash-gravado',
+    confirm: true,
+  })
+  assert.equal(r.status, 200, `o hash gravado tem que ser aceito: ${JSON.stringify(r.body)}`)
+})
+
+test('depois de aplicado, os recursos do V2 voltam como ALTERAR — nunca como criar de novo', async () => {
+  const { id, hash } = await projetoPronto()
+  await aplicar(id, hash, 'op-v2-update')
+  const antes = await db.collection('data_stores').countDocuments({ ownerId: DONO })
+
+  await pedir('POST', `/projects/${id}/messages`, { content: 'quero ajustar o atendimento' })
+
+  const projeto = await repo.getProject(DONO, new ObjectId(id))
+  const operacao = await repo.lastOperation(DONO, new ObjectId(id))
+  const criados = Object.keys(operacao.resourceMap ?? {})
+  assert.ok(criados.length > 0)
+
+  // Todo item do V2 que virou recurso real aponta para ele — e com ação de alteração.
+  for (const chave of criados) {
+    const [kind, key] = chave.split(':')
+    const listas = [
+      ...projeto.blueprintV2.resources.databases,
+      ...projeto.blueprintV2.operations.sources,
+      ...projeto.blueprintV2.operations.monitors,
+      ...projeto.blueprintV2.operations.flows,
+    ]
+    const item = listas.find((i) => i.key === key)
+    if (!item) continue
+    assert.equal(item.action, 'update', `${kind}:${key} voltou como "${item.action}" e criaria um segundo`)
+    assert.equal(item.resourceId, operacao.resourceMap[chave])
+  }
+  assert.equal(await db.collection('data_stores').countDocuments({ ownerId: DONO }), antes, 'conversar não cria recurso')
 })

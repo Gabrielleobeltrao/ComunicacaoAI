@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { archiveFloor, deleteFloor, FloorApiError, patchFloor, restoreFloor } from '../lib/floors'
+import { FloorDeletionDialog } from './FloorDeletionDialog'
 import type { Floor, Language } from '../lib/floors'
 import { FloorWorkSection } from './FloorWorkSection'
 import type { FloorWorkValue } from './FloorWorkSection'
@@ -48,6 +49,8 @@ export function FloorSettingsDialog({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [busyLifecycle, setBusyLifecycle] = useState(false)
+  /** O diálogo de impacto: ele é quem sabe o que se perde. */
+  const [impactoAberto, setImpactoAberto] = useState(false)
 
   // Reseed from the floor whenever the dialog (re)opens.
   useEffect(() => {
@@ -105,14 +108,24 @@ export function FloorSettingsDialog({
     }
   }
 
+  /**
+   * Excluir passa pelo IMPACTO — "tem certeza?" não é uma pergunta.
+   *
+   * O andar vazio ainda usa o caminho antigo, que é direto e não tem o que mostrar. Com
+   * qualquer coisa dentro, quem decide precisa ver o que fica, o que sai e o que bloqueia.
+   */
   async function remove() {
-    if (!window.confirm(`Excluir o andar "${floor.name}"? Essa ação não pode ser desfeita.`)) return
     setBusyLifecycle(true)
     setError('')
     try {
       await deleteFloor(floor.id)
       onDeleted()
     } catch (e) {
+      // `409` com andar ocupado é o servidor mandando para a análise, e não uma falha.
+      if (e instanceof FloorApiError && /agente|setor/i.test(e.message)) {
+        setImpactoAberto(true)
+        return
+      }
       setError(e instanceof FloorApiError ? e.message : 'Não foi possível excluir o andar.')
     } finally {
       setBusyLifecycle(false)
@@ -187,15 +200,31 @@ export function FloorSettingsDialog({
             <Button variant="secondary" icon={archived ? 'archive-restore' : 'archive'} onClick={toggleArchive} disabled={busyLifecycle}>
               {archived ? 'Restaurar andar' : 'Arquivar andar'}
             </Button>
-            <Button variant="danger" icon="trash-2" onClick={remove} disabled={busyLifecycle}>
+            <Button variant="danger" icon="trash-2" onClick={remove} disabled={busyLifecycle} data-testid="floor-excluir">
               Excluir andar
+            </Button>
+            <Button variant="ghost" onClick={() => setImpactoAberto(true)} disabled={busyLifecycle} data-testid="floor-ver-impacto">
+              Ver o que será afetado
             </Button>
           </div>
           <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
-            Um andar só pode ser excluído quando estiver vazio (sem agentes nem setores) e não for o único do prédio.
+            Arquivar é reversível e preserva tudo. Excluir mostra antes o que será arquivado, excluído, desvinculado e
+            mantido — e o que impede a exclusão.
           </p>
         </section>
       </div>
+
+      {impactoAberto ? (
+        <FloorDeletionDialog
+          open
+          floorId={floor.id}
+          onClose={() => setImpactoAberto(false)}
+          onPurged={() => {
+            setImpactoAberto(false)
+            onDeleted()
+          }}
+        />
+      ) : null}
     </Dialog>
   )
 }

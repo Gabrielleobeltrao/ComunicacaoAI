@@ -13,7 +13,7 @@ import { KIND_LABEL } from './shared'
 type Kind = BlueprintLink['kind']
 const ORDEM: Kind[] = ['floor', 'agent', 'sector', 'routine']
 
-const VAZIO: ArchitectTargets = { floors: [], agents: [], sectors: [], routines: [] }
+const VAZIO: ArchitectTargets = { floors: [], agents: [], sectors: [], routines: [], databases: [], sources: [], monitors: [], flows: [], connections: [] }
 
 /** Mesmo nome, ignorando acento, caixa e espaço sobrando. */
 const normal = (texto: string) =>

@@ -263,6 +263,20 @@ export async function deleteFloor(ownerId: string, floorId: ObjectId): Promise<D
   const { agentCount, sectorCount } = await getFloorActivity(ownerId, floorId)
   if (agentCount > 0 || sectorCount > 0) return { ok: false, code: 'FLOOR_NOT_EMPTY', agentCount, sectorCount }
   await collection.deleteOne({ _id: floorId, ownerId })
+  /**
+   * A base do andar vai junto.
+   *
+   * Documento e chunk não guardam o id da conta — eles guardam o do dono. Um andar
+   * apagado sem esta linha deixaria os dois apontando para um dono que não existe:
+   * invisíveis em qualquer tela, contados na cota da conta para sempre, e ainda
+   * alcançáveis pela busca vetorial, que filtra por `ownerId` e não pergunta se aquele
+   * id ainda é de alguém.
+   *
+   * Import tardio de propósito: `knowledge.ts` puxa o cliente de embedding, e este
+   * módulo é importado por caminhos que não precisam dele.
+   */
+  const { deleteAllForFloor } = await import('./knowledge.js')
+  await deleteAllForFloor(floorId)
   return { ok: true }
 }
 

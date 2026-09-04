@@ -14,6 +14,10 @@ import { computeBlueprintHash } from './blueprint.js'
 import * as repo from './repository.js'
 import type { ArchitectProject, ArchitectApplyOperation } from './repository.js'
 import type { ApplyStepKind, ApplyStepResult, BlueprintAgent, OfficeBlueprintV1 } from './types.js'
+import type { OfficeBlueprintV2 } from './typesV2.js'
+import { V2_ITEM_PATHS, itemsAt } from './typesV2.js'
+import { applyV2Resources } from './applyV2.js'
+import type { ApplyV2Step } from './applyV2.js'
 
 // A APLICAÇÃO: a única parte do Arquiteto que escreve no escritório.
 //
@@ -66,6 +70,17 @@ interface Contexto {
   grantsAprovados: Set<string>
   /** As `key`s de alteração em recurso existente que o dono aprovou, uma a uma. */
   updatesAprovados: Set<string>
+  /** O plano V2, quando o projeto tem um. Ausente = a aplicação é a do V1, inteira. */
+  v2?: OfficeBlueprintV2 | null
+  /**
+   * As `key`s que o dono autorizou a ENTRAR NO AR nesta aplicação.
+   *
+   * Ativar é diferente de criar: um recurso criado fica parado até alguém olhar. Sem esta
+   * lista, aplicar uma proposta colocaria a operação para rodar sozinha no mesmo instante.
+   */
+  ativacoesAprovadas: Set<string>
+  /** A conexão escolhida para cada entrega. O endereço nunca vem do plano. */
+  conexoesDeEntrega: Map<string, { connectionId: string; destination: string }>
 }
 
 const chave = (kind: ApplyStepKind, key: string): string => `${kind}:${key}`
@@ -148,13 +163,13 @@ const marcaDe = (ctx: Contexto, key: string): ArchitectStamp => ({
 export async function applyBlueprint(
   ownerId: string,
   project: ArchitectProject,
-  input: { blueprintHash: string; idempotencyKey: string; approvedAppKeys?: string[]; approvedUpdateKeys?: string[] },
+  input: { blueprintHash: string; idempotencyKey: string; approvedAppKeys?: string[]; approvedUpdateKeys?: string[]; approvedActivationKeys?: string[]; deliveryConnections?: { key: string; connectionId: string; destination?: string }[] },
   hooks: ApplyHooks = {},
 ): Promise<ArchitectApplyOperation> {
   const bp = project.blueprint
   if (!bp) throw new ApplyConflict('ainda não existe proposta para aplicar')
 
-  const hashAtual = computeBlueprintHash(bp)
+  const hashAtual = computeBlueprintHash(bp, project.blueprintV2)
   if (input.blueprintHash !== hashAtual) {
     throw new ApplyConflict('a proposta mudou desde a última revisão; revise de novo antes de aplicar')
   }
@@ -174,7 +189,7 @@ export async function applyBlueprint(
     throw new ApplyConflict('esta aplicação já está em andamento')
   }
 
-  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []))
+  return rodar(ownerId, operation, bp, hooks, new Set(input.approvedAppKeys ?? []), new Set(input.approvedUpdateKeys ?? []), project.blueprintV2 ?? null, new Set(input.approvedActivationKeys ?? []), new Map((input.deliveryConnections ?? []).map((d) => [String(d.key), { connectionId: String(d.connectionId), destination: String(d.destination ?? '') }])))
 }
 
 /** O corpo compartilhado por aplicar e retomar: roda a saga, fecha e solta o arrendamento. */
@@ -185,6 +200,9 @@ async function rodar(
   hooks: ApplyHooks,
   grantsAprovados: Set<string>,
   updatesAprovados: Set<string>,
+  v2: OfficeBlueprintV2 | null,
+  ativacoesAprovadas: Set<string>,
+  conexoesDeEntrega: Map<string, { connectionId: string; destination: string }>,
 ): Promise<ArchitectApplyOperation> {
   const ctx: Contexto = {
     ownerId,
@@ -194,6 +212,9 @@ async function rodar(
     hooks,
     grantsAprovados,
     updatesAprovados,
+    v2,
+    ativacoesAprovadas,
+    conexoesDeEntrega,
   }
 
   try {
@@ -273,6 +294,90 @@ async function executarSaga(ctx: Contexto): Promise<void> {
         if (sector.instruction !== undefined) patch.instruction = sector.instruction
         if (sector.inputContract !== undefined) patch.inputContract = sector.inputContract
         if (sector.outputContract !== undefined) patch.outputContract = sector.outputContract
+
+        /**
+         * A TOPOLOGIA também é atualizada — membros, coordenador, modo, etapas e andar.
+         *
+         * Antes, `update` só trocava nome, cor, instrução e contratos: uma revisão que
+         * acrescentava um agente ao setor era aprovada, aplicada e não acontecia. Quem
+         * olhava a proposta via o agente novo na equipe; quem abria o setor não via.
+         *
+         * O membro é resolvido pela `key` no mapa da operação, como em `create`. Uma key
+         * que não virou recurso é erro, e não uma equipe silenciosamente menor.
+         */
+        if (sector.memberAgentKeys) {
+          patch.members = sector.memberAgentKeys.map((k, indice) => {
+            const agenteId = ctx.mapa.get(chave('agent', k))
+            if (!agenteId) throw new Error(`o agente ${k} do setor ${sector.name} não existe nesta operação`)
+            return {
+              agentId: new ObjectId(agenteId),
+              sector: '',
+              routingDescription: bp.agents?.find((a) => a.key === k)?.routingDescription ?? '',
+              advanceWhen: '',
+              transitions: [],
+              isDefault: indice === 0,
+            }
+          })
+        }
+        if (sector.mode) patch.mode = sector.mode
+        if (sector.coordinatorAgentKey !== undefined) {
+          const coordenador = sector.coordinatorAgentKey ? ctx.mapa.get(chave('agent', sector.coordinatorAgentKey)) : null
+          if (sector.coordinatorAgentKey && !coordenador) {
+            throw new Error(`o coordenador ${sector.coordinatorAgentKey} do setor ${sector.name} não existe nesta operação`)
+          }
+          patch.coordinatorAgentId = coordenador ? new ObjectId(coordenador) : null
+        }
+        if (sector.stages) {
+          // A MESMA forma de `create`: uma etapa parcial aqui viraria um pipeline com
+          // política de erro e saída esperada diferentes das que a criação produz.
+          patch.stages = sector.stages.map((etapa, indice) => {
+            const agenteId = ctx.mapa.get(chave('agent', etapa.agentKey))
+            if (!agenteId) throw new Error(`o agente ${etapa.agentKey} da etapa ${indice + 1} não existe nesta operação`)
+            return {
+              id: etapa.key || `etapa-${indice + 1}`,
+              name: etapa.key || `Etapa ${indice + 1}`,
+              agentId: new ObjectId(agenteId),
+              instruction: etapa.instruction ?? '',
+              dependsOn: etapa.dependsOn ?? [],
+              inputMapping: {},
+              expectedOutput: etapa.outputContract ?? '',
+              retryPolicy: { maxAttempts: 1, backoffMs: 0 },
+              onError: 'stop' as const,
+            }
+          })
+        }
+        /**
+         * MOVER de andar atualiza a referência — ou BLOQUEIA dizendo quem teria de ir junto.
+         *
+         * Duas coisas se juntam aqui. A primeira: um setor cujo `floorKey` mudou e cujo
+         * `officeId` não muda fica apontando para o andar anterior — ele some da tela do
+         * andar novo e continua aparecendo no antigo.
+         *
+         * A segunda: todo membro de um setor trabalha no andar dele, e mover um agente
+         * entre andares não existe na API canônica de agentes. Então mover o setor sem
+         * mover a equipe produziria um setor inválido. Em vez de fazer isso em silêncio, a
+         * aplicação para e diz exatamente quem precisaria mudar de andar antes.
+         */
+        const andarNovo = ctx.mapa.get(chave('floor', sector.floorKey))
+        if (andarNovo) {
+          const atual = await (await import('../sectors.js')).getSectorById(ctx.ownerId, new ObjectId(id))
+          if (atual && atual.officeId?.toString() !== andarNovo) {
+            const { listAgents } = await import('../agents.js')
+            const noAndarNovo = new Set((await listAgents(ctx.ownerId, new ObjectId(andarNovo))).map((a) => a._id.toString()))
+            const membros = (patch.members as { agentId: ObjectId }[] | undefined) ?? atual.members ?? []
+            const forade = membros.map((m) => m.agentId.toString()).filter((a) => !noAndarNovo.has(a))
+            if (forade.length) {
+              const nomes = (await listAgents(ctx.ownerId))
+                .filter((a) => forade.includes(a._id.toString()))
+                .map((a) => a.name)
+              throw new Error(
+                `mover "${sector.name}" de andar exige mover antes ${nomes.length} agente(s): ${nomes.join(', ')}. Um setor cujos membros ficam em outro andar não é válido.`,
+              )
+            }
+          }
+          patch.officeId = new ObjectId(andarNovo)
+        }
+
         const r = await updateSector(ctx.ownerId, new ObjectId(id), patch)
         if (!r) throw new Error(`o setor "${sector.name}" não existe mais nesta conta`)
         return { id, status: 'updated' }
@@ -375,7 +480,8 @@ async function executarSaga(ctx: Contexto): Promise<void> {
       // etapa falhar — antes, virava um documento sob um ObjectId novo, que não era de
       // agente nenhum e não aparecia em tela nenhuma.
       const r = await writeArchitectKnowledge(ctx.ownerId, req, conteudo, { resolve: (kind, key) => ctx.mapa.get(chave(kind as ApplyStepKind, key)) })
-      return { id: r.id, status: 'created', message: r.mechanism === 'memory' ? 'guardado na memória do escopo' : undefined }
+      // Os quatro escopos gravam na base canônica: mesma indexação, mesma busca.
+      return { id: r.id, status: 'created', message: undefined }
     })
   }
 
@@ -459,6 +565,202 @@ async function executarSaga(ctx: Contexto): Promise<void> {
       return { id: instalacao._id.toString(), status: 'created' }
     })
   }
+
+  // 8. Recursos e operações do V2 — Databases, datasets, fontes, destinos, monitores e
+  //    Flows. É a MESMA saga: os passos entram na mesma lista, escrevem no mesmo
+  //    `resourceMap` e são retomados pelo mesmo caminho. Um projeto sem plano V2 nem
+  //    chega aqui, e continua aplicando exatamente o que aplicava antes.
+  await aplicarV2(ctx)
+
+  // 9. Os testes de aceitação, e só então a ativação. A ordem não é negociável: ativar
+  //    antes de testar é exatamente o que "pronto = o documento existe" fazia.
+  await provarEAtivar(ctx)
+}
+
+/**
+ * Prova a operação e liga o que passou.
+ *
+ * "Pronto" exige teste observável. Um recurso sem teste declarado NÃO é ativado: ausência de
+ * teste não é prova de nada, e ligar por falta de evidência contrária é o defeito que os
+ * testes de aceitação existem para fechar.
+ */
+async function provarEAtivar(ctx: Contexto): Promise<void> {
+  if (!ctx.v2) return
+  const { runAcceptanceTests, activatableKeys } = await import('./acceptance.js')
+  const resultados = await runAcceptanceTests({
+    ownerId: ctx.ownerId,
+    blueprint: ctx.v2,
+    resourceMap: ctx.mapa,
+    operationId: ctx.operation._id,
+  })
+  await repo.recordAcceptance(ctx.ownerId, ctx.operation._id, resultados)
+  if (!resultados.length) return
+
+  /**
+   * As DUAS condições, e as duas obrigatórias: o teste passou E o dono autorizou.
+   *
+   * Devolve o id quando pode ligar; `null` quando não — registrando o motivo, para a
+   * pessoa saber por que o recurso ficou parado.
+   */
+  const autorizado = async (kind: ApplyStepKind, key: string): Promise<string | null> => {
+    if (!ctx.ativacoesAprovadas.has(key)) {
+      await registrar(ctx, { kind, key, status: 'skipped', message: 'passou no teste, mas entrar no ar não foi autorizado nesta aplicação' })
+      return null
+    }
+    const id = ctx.mapa.get(chave(kind, key))
+    return id && ObjectId.isValid(id) ? id : null
+  }
+
+  const { setSourceStatus } = await import('../monitoring/service.js')
+  for (const key of activatableKeys(resultados, 'source')) {
+    const id = await autorizado('source', key)
+    if (!id) continue
+    // O portão de ativação do próprio domínio continua valendo: ele exige uma leitura
+    // bem-sucedida, e é ela que o teste de aceitação acabou de produzir.
+    const fonte = await setSourceStatus(ctx.ownerId, new ObjectId(id), 'active')
+    await registrar(ctx, {
+      kind: 'source',
+      key,
+      status: fonte?.status === 'active' ? 'updated' : 'skipped',
+      resourceId: id,
+      message: fonte?.status === 'active' ? 'no ar: passou no teste e foi autorizada' : 'o portão de ativação do domínio ainda não deixou',
+    })
+  }
+
+  /**
+   * O FLOW vem antes do monitor, e não é uma preferência de ordem.
+   *
+   * `publishMonitor` recusa um monitor cujo Flow não está publicado — e está certo: um
+   * monitor que reconhece a transição e aciona um Flow que não existe em versão nenhuma é
+   * um alarme que toca no vazio. Publicar é o que congela a definição que vai rodar.
+   */
+  const { publishAutomation, setStatus } = await import('../automations/service.js')
+  for (const key of activatableKeys(resultados, 'flow')) {
+    const id = await autorizado('flow', key)
+    if (!id) continue
+    try {
+      await publishAutomation(ctx.ownerId, new ObjectId(id), ctx.ownerId)
+      const flow = await setStatus(ctx.ownerId, new ObjectId(id), 'active')
+      await registrar(ctx, {
+        kind: 'flow',
+        key,
+        status: flow?.status === 'active' ? 'updated' : 'skipped',
+        resourceId: id,
+        message: flow?.status === 'active' ? 'publicado e no ar: passou no teste e foi autorizado' : 'o portão do domínio ainda não deixou',
+      })
+    } catch (erro) {
+      // Uma recusa do domínio é DITA, e não derruba o resto: o escritório já está montado.
+      await registrar(ctx, { kind: 'flow', key, status: 'skipped', resourceId: id, message: String((erro as Error).message).slice(0, 200) })
+    }
+  }
+
+  /**
+   * A SEGUNDA PASSADA — o que a ativação da fonte acabou de destravar.
+   *
+   * O histórico e o dataset só existem depois que a fonte entra no ar: até lá, o monitor que
+   * os observa é uma pendência honesta. Ativar sem voltar para criá-lo deixaria a cadeia pela
+   * metade, com um Flow que ninguém aciona.
+   *
+   * É a MESMA engine, com o mesmo mapa: o que já foi criado volta como `reused`, e só o que
+   * estava esperando é criado agora. Uma segunda função aqui seria a segunda engine que este
+   * trabalho inteiro existe para não ter.
+   */
+  if (resultados.some((r) => r.kind === 'source' && r.status === 'passed')) {
+    let criouAlgo = false
+    for (const p of await aplicarV2(ctx, false)) {
+      if (p.status === 'created') {
+        criouAlgo = true
+        await registrar(ctx, { kind: p.kind, key: p.key, status: 'created', resourceId: p.resourceId ?? null, ...(p.message ? { message: p.message } : {}) })
+      }
+    }
+    /**
+     * O que nasceu na segunda passada precisa ser PROVADO antes de entrar no ar.
+     *
+     * A rodada de provas anterior viu o monitor como "não criado nesta aplicação" — e um
+     * teste `skipped` não torna nada ativável. Sem reprovar aqui, o monitor recém-criado
+     * ficaria rascunho para sempre, com o Flow ativo e ninguém para acioná-lo.
+     */
+    if (criouAlgo) {
+      const segunda = await runAcceptanceTests({ ownerId: ctx.ownerId, blueprint: ctx.v2, resourceMap: ctx.mapa, operationId: ctx.operation._id })
+      // O melhor resultado de cada teste vale: o que era `skipped` por ausência agora tem
+      // veredito, e o que já passara não é rebaixado por uma segunda leitura.
+      for (const nova of segunda) {
+        const i = resultados.findIndex((r) => r.key === nova.key)
+        if (i < 0) resultados.push(nova)
+        else if (resultados[i].status !== 'passed') resultados[i] = nova
+      }
+      await repo.recordAcceptance(ctx.ownerId, ctx.operation._id, resultados)
+    }
+  }
+
+  const { setMonitorStatus } = await import('../monitors/service.js')
+  for (const key of activatableKeys(resultados, 'monitor')) {
+    const id = await autorizado('monitor', key)
+    if (!id) continue
+    try {
+      const m = await setMonitorStatus(ctx.ownerId, new ObjectId(id), 'published')
+      await registrar(ctx, {
+        kind: 'monitor',
+        key,
+        status: m?.status === 'published' ? 'updated' : 'skipped',
+        resourceId: id,
+        message: m?.status === 'published' ? 'publicado: a simulação passou e foi autorizado' : 'o portão do domínio ainda não deixou',
+      })
+    } catch (erro) {
+      await registrar(ctx, { kind: 'monitor', key, status: 'skipped', resourceId: id, message: String((erro as Error).message).slice(0, 200) })
+    }
+  }
+}
+
+/**
+ * O bloco V2 dentro da saga do V1.
+ *
+ * A ordem importa: os andares e agentes já existem no `mapa` quando esta função roda, e é
+ * de lá que saem os ids — nunca do plano. Uma falha aqui derruba a operação inteira, que é
+ * o que faz o desfazer e a retomada continuarem valendo para o que o V2 criou.
+ */
+async function aplicarV2(ctx: Contexto, registrarPassos = true): Promise<ApplyV2Step[]> {
+  const bp = ctx.v2
+  if (!bp) return []
+
+  /**
+   * O que está aprovado: criar e reusar vêm da aprovação da proposta inteira; ALTERAR um
+   * recurso que já existe exige a aprovação individual, a mesma do V1. Sem esta distinção,
+   * clicar em aplicar reescreveria recurso que a pessoa não marcou.
+   */
+  const aprovadas = new Set<string>()
+  for (const path of V2_ITEM_PATHS) {
+    for (const item of itemsAt(bp, path)) {
+      const key = String((item as { key?: unknown }).key ?? '')
+      if (!key) continue
+      const acao = String((item as { action?: unknown }).action ?? 'create')
+      if (acao === 'create' || acao === 'reuse' || ctx.updatesAprovados.has(key)) aprovadas.add(key)
+    }
+  }
+
+  const passos = await applyV2Resources({
+    ownerId: ctx.ownerId,
+    blueprint: bp,
+    resourceMap: ctx.mapa,
+    approvedKeys: aprovadas,
+    deliveryConnections: ctx.conexoesDeEntrega,
+    // A MARCA da operação: é ela que faz a retomada reconhecer o que ficou de pé numa queda
+    // entre criar o recurso e registrar o passo.
+    operationId: ctx.operation._id.toString(),
+    projectId: ctx.operation.projectId.toString(),
+    ...(ctx.hooks.afterCreate ? { afterCreate: ctx.hooks.afterCreate as never } : {}),
+  })
+  if (registrarPassos) {
+    for (const p of passos) {
+      await registrar(ctx, { kind: p.kind, key: p.key, status: p.status, resourceId: p.resourceId ?? null, ...(p.message ? { message: p.message } : {}) })
+    }
+  }
+
+  // Uma falha registrada e engolida seria pior que nenhuma: a operação apareceria
+  // "concluída" com um monitor que nunca foi criado.
+  const falhou = passos.find((p) => p.status === 'failed')
+  if (falhou) throw new Error(`${falhou.kind} "${falhou.key}": ${falhou.message ?? 'falhou'}`)
+  return passos
 }
 
 /** Só o que o domínio de agentes aceita, campo a campo. */
@@ -502,7 +804,7 @@ export async function resumeApply(ownerId: string, project: ArchitectProject, ho
   if (!anterior) throw new ApplyConflict('não há aplicação para retomar')
   if (anterior.status === 'completed') return anterior
   if (!project.blueprint) throw new ApplyConflict('a proposta não existe mais')
-  if (computeBlueprintHash(project.blueprint) !== anterior.blueprintHash) {
+  if (computeBlueprintHash(project.blueprint, project.blueprintV2) !== anterior.blueprintHash) {
     throw new ApplyConflict('a proposta mudou depois da falha; revise e aplique de novo')
   }
 
@@ -514,7 +816,7 @@ export async function resumeApply(ownerId: string, project: ArchitectProject, ho
 
   // O que já virou permissão está no mapa; o resto foi pulado e continua pulado até o
   // dono aprovar de novo — retomar não é lugar de conceder acesso novo.
-  return rodar(ownerId, anterior, project.blueprint, hooks, new Set(), new Set())
+  return rodar(ownerId, anterior, project.blueprint, hooks, new Set(), new Set(), project.blueprintV2 ?? null, new Set(), new Map())
 }
 
 /**
@@ -528,6 +830,67 @@ export async function resumeApply(ownerId: string, project: ArchitectProject, ho
  * O que não é seguro remover fica de pé e vira aviso. Um rollback que apaga o que não
  * devia é pior do que um rollback que não completa.
  */
+/**
+ * Desfaz UM recurso do V2 — pelo serviço canônico, e só se ele ainda for desta operação.
+ *
+ * As três regras do desfazer valem aqui inteiras: nada que já não exista, nada que tenha
+ * sido editado depois de criado, e nada que tenha vindo de outra aplicação. Sem elas, um
+ * "desfazer" apagaria o Database que alguém passou a semana enchendo.
+ */
+async function desfazerV2(
+  ownerId: string,
+  kind: ApplyStepKind,
+  id: string,
+  criadoEm: Date,
+  operationId: ObjectId,
+  kept: { key: string; reason: string }[],
+  key: string,
+): Promise<boolean> {
+  const { db } = await import('../db.js')
+
+  if (kind === 'dataset') {
+    // O id de um dataset é `storeId:key` — ele não é um documento com _id próprio no mapa.
+    const [storeId, datasetKey] = id.split(':')
+    if (!storeId || !datasetKey || !ObjectId.isValid(storeId)) return false
+    const { deleteDataset } = await import('../databases/store.js')
+    return deleteDataset(ownerId, new ObjectId(storeId), datasetKey)
+  }
+
+  if (!ObjectId.isValid(id)) return false
+  const oid = new ObjectId(id)
+  const colecao = kind === 'database' ? 'data_stores' : kind === 'source' ? 'monitoring_sources' : kind === 'monitor' ? 'monitors' : 'automations'
+  const doc = await db.collection(colecao).findOne({ _id: oid, ownerId })
+  if (!doc) return false
+
+  if (doc.updatedAt instanceof Date && doc.updatedAt.getTime() > criadoEm.getTime() + 1000) {
+    kept.push({ key, reason: 'foi editado depois de criado' })
+    return false
+  }
+  const marca = (doc as { architect?: { operationId?: string } }).architect
+  if (marca?.operationId && marca.operationId !== operationId.toString()) {
+    kept.push({ key, reason: 'foi criado por outra aplicação' })
+    return false
+  }
+
+  if (kind === 'database') {
+    const { deleteDataStore } = await import('../databases/store.js')
+    return deleteDataStore(ownerId, oid)
+  }
+  if (kind === 'source') {
+    // `deleteSource` leva junto o alias em tempo real e o valor ao vivo, e DEIXA o histórico:
+    // o que a fonte gravou é fato acontecido, e apagar o passado é outra decisão.
+    const { deleteSource } = await import('../monitoring/service.js')
+    return deleteSource(ownerId, oid)
+  }
+  if (kind === 'monitor') {
+    const { deleteMonitor } = await import('../monitors/service.js')
+    return deleteMonitor(ownerId, oid)
+  }
+  const { deleteAutomationCascade } = await import('../automations/repository.js')
+  await deleteAutomationCascade(ownerId, oid)
+  return true
+}
+
 export async function rollbackOperation(
   ownerId: string,
   operationId: ObjectId,
@@ -547,11 +910,39 @@ export async function rollbackOperation(
   const removed: string[] = []
   const kept: { key: string; reason: string }[] = []
 
-  // Ordem inversa da criação: setor antes de agente, agente antes de andar.
-  const ordem: ApplyStepKind[] = ['grant', 'routine', 'knowledge', 'wiring', 'sector', 'agent', 'floor']
+  // Ordem inversa da criação: o V2 sai primeiro (ele nasceu por último), monitor antes da
+  // fonte, dataset antes do Database, setor antes de agente, agente antes de andar.
+  const ordem: ApplyStepKind[] = [
+    'monitor',
+    'flow',
+    'live',
+    'history',
+    'source',
+    'dataset',
+    'database',
+    'grant',
+    'routine',
+    'knowledge',
+    'wiring',
+    'sector',
+    'agent',
+    'floor',
+  ]
   for (const kind of ordem) {
     for (const step of operacao.steps.filter((s) => s.kind === kind && s.status === 'created' && s.resourceId)) {
       const id = step.resourceId!
+      if (kind === 'live' || kind === 'history') {
+        // Os dois são DESTINOS ligados numa fonte que pode ser preexistente. Desligá-los às
+        // cegas apagaria o histórico que alguém já vinha alimentando.
+        kept.push({ key: step.key, reason: 'destino ligado numa fonte existente: revise à mão' })
+        continue
+      }
+
+      if (kind === 'database' || kind === 'dataset' || kind === 'source' || kind === 'monitor' || kind === 'flow') {
+        if (await desfazerV2(ownerId, kind, id, step.at, operationId, kept, step.key)) removed.push(`${kind}:${step.key}`)
+        continue
+      }
+
       if (kind === 'wiring' || kind === 'grant') {
         // Vínculo e permissão são ALTERAÇÕES em recurso que pode ser preexistente.
         // Desfazê-las às cegas apagaria configuração que não era desta operação.

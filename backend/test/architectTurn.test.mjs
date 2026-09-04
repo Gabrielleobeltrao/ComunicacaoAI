@@ -48,7 +48,10 @@ test('campo fora do contrato não entra', () => {
     __proto__: { poluido: true },
   })
   assert.equal('campoInventado' in fora, false)
-  assert.deepEqual(Object.keys(fora).sort(), ['answerPatch', 'assistantText', 'assumptions', 'blueprintPatch', 'phase', 'question', 'warnings'])
+  // 'briefPatch' entrou no contrato: o entendimento do negócio é um artefato próprio,
+  // separado do desenho. A lista fechada continua sendo a garantia — o que não está
+  // escrito aqui não atravessa para o banco.
+  assert.deepEqual(Object.keys(fora).sort(), ['answerPatch', 'assistantText', 'assumptions', 'blueprintPatch', 'briefPatch', 'phase', 'question', 'warnings'])
 })
 
 test('sem texto para a pessoa ler, não há rodada', () => {

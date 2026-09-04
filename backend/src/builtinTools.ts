@@ -8,10 +8,15 @@ import { sourceCheckTool } from './automations/sourceTool.js'
 import { clarifyTool } from './clarify.js'
 import { sourceSettingsOf } from './agents.js'
 import { getToolsByIds } from './tools.js'
+import type { Tool } from './tools.js'
+import { databaseToolsFor } from './databases/agentTools.js'
 import { executeToolCall } from './toolExecution.js'
 import type { ResolvedTool } from './agentTools.js'
-import { resolveHttpTool } from './agentTools.js'
+import { missingCapability, resolveHttpTool } from './agentTools.js'
 import { resolveAppGrantTools } from './apps/grants.js'
+import { activeRuntimeVersions } from './toolVersions.js'
+import type { ToolVersion } from './toolVersions.js'
+import { executeAgentTool } from './executors/toolExecutor.js'
 import { getGoogleStatus } from './googleCalendar.js'
 import { googleCalendarTools, googleSheetsTools } from './googleTools.js'
 import {
@@ -294,10 +299,28 @@ export async function resolveAgentTools(
   // getToolsByIds is owner-scoped, so a stale or foreign id resolves to nothing.
   // Each tool gets its own per-run counter, which is what stops a model from
   // hammering the same endpoint in a loop.
+  /**
+   * As ferramentas de DATABASE — tipadas, e com a permissão reconferida a cada chamada.
+   *
+   * Elas só aparecem quando o agente alcança algum database: uma ferramenta visível que
+   * recusa toda chamada gasta contexto do modelo para não fazer nada.
+   */
+  const bancos = capacidades.externalTools ? await databaseToolsFor({ accountId: ownerId, agent }).catch(() => []) : []
+
   const assigned = capacidades.externalTools ? await getToolsByIds(ownerId, agent.toolIds ?? []) : []
+  /**
+   * A VERSÃO publicada de cada ferramenta atribuída — uma consulta para todas.
+   *
+   * Ferramenta sem versão continua sendo a ferramenta HTTP de sempre, montada logo
+   * abaixo com o mesmo executor de sempre. O mapa existe para as que passaram a ser
+   * outra coisa: ação de App ou função registrada.
+   */
+  const versoes = assigned.length ? await activeRuntimeVersions(ownerId, assigned.map((t) => t._id)).catch(() => new Map<string, ToolVersion>()) : new Map<string, ToolVersion>()
   const custom: ResolvedTool[] = assigned
     .filter((tool) => tool.enabled)
     .map((tool) => {
+      const versao = versoes.get(tool._id.toString())
+      if (versao && versao.runtimeKind !== 'http') return versionedTool(agent, ownerId, tool, versao)
       let callsSoFar = 0
       return {
         name: tool.name,
@@ -340,7 +363,7 @@ export async function resolveAgentTools(
   // concedida, a ferramenta não aparece.
   const realtime = emTempoReal.length ? [realtimeSourceTool(ownerId, agent._id), realtimeWaitTool(ownerId, agent._id)] : []
   const proprias = [...(capacidades.memory ? [memoria] : []), ...(capacidades.webSources ? [fonte] : []), ...realtime, esclarecer]
-  if (enabled.length === 0) return [...proprias, ...http, ...custom, ...fromGrants]
+  if (enabled.length === 0) return [...proprias, ...http, ...custom, ...bancos, ...fromGrants]
 
   const needsGoogle = enabled.some((b) => getBuiltinApp(b.key)?.connection === 'google')
   const googleConnected = needsGoogle ? (await getGoogleStatus(ownerId)).connected : false
@@ -352,5 +375,40 @@ export async function resolveAgentTools(
     if (app.connection === 'google' && !googleConnected) continue
     builtins.push(...app.resolve(ownerId, entry.config ?? {}))
   }
-  return [...proprias, ...http, ...custom, ...fromGrants, ...builtins]
+  return [...proprias, ...http, ...custom, ...bancos, ...fromGrants, ...builtins]
+}
+
+/**
+ * A ferramenta que o modelo vê quando ela é uma VERSÃO publicada.
+ *
+ * O que muda em relação à ferramenta HTTP de sempre é só o que ela executa — e nada
+ * disso é decidido aqui: `executeAgentTool` relê a ferramenta, confere que ela continua
+ * atribuída a este agente, resolve a versão ativa e despacha para o App ou para a função
+ * registrada, com grant, risco e contrato conferidos lá. Montar a lista não autoriza
+ * nada; autorizar é o que acontece dentro de `run`.
+ */
+function versionedTool(agent: Agent, ownerId: string, tool: Tool, versao: ToolVersion): ResolvedTool {
+  // Um teto por execução, como o das ferramentas HTTP: é o que impede o modelo de
+  // martelar a mesma ação em laço.
+  const teto = Number((versao.manifest as { maxCallsPerRun?: unknown }).maxCallsPerRun ?? 5)
+  let chamadas = 0
+  return {
+    name: tool.name,
+    description: tool.description,
+    // O contrato PUBLICADO é o que o modelo enxerga: é ele que a execução valida.
+    inputSchema: versao.inputSchema,
+    risk: versao.risk === 'read' ? 'read' : 'write',
+    run: async (args) => {
+      if (chamadas >= teto) {
+        return missingCapability(tool.name, 'limite_de_chamadas', `Esta ferramenta já foi usada ${teto} vezes nesta execução.`)
+      }
+      chamadas++
+      const r = await executeAgentTool(agent, ownerId, { kind: 'tool', toolId: tool._id.toString() }, args)
+      if (!r.ok) {
+        // Recusa estruturada: o modelo precisa saber que a ação NÃO aconteceu.
+        return missingCapability(tool.name, r.error?.kind ?? 'erro', r.error?.message)
+      }
+      return { ok: true, result: r.text ?? JSON.stringify(r.structured?.data ?? {}) }
+    },
+  }
 }

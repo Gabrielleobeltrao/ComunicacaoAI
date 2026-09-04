@@ -25,6 +25,7 @@
   --coral-50:#FFECE9;
   --coral-500:#FF6A5B;
   --coral-600:#DE4535;
+  --coral-700:#B8321F;
   --grape-50:#F2EBFF;
   --grape-500:#8B5CF6;
   --grape-600:#6D3FDB;
@@ -55,6 +56,10 @@
   --intent-warning:var(--mango-500);
   --intent-warning-soft:var(--mango-50);
   --intent-danger:var(--coral-500);
+  /* O vermelho de TEXTO, e ele é outro. `--intent-danger` é cor de preenchimento: sobre
+     fundo claro ele dá 2,81:1, abaixo do mínimo de 4,5:1 que um texto de 13px precisa —
+     e o texto vermelho é justamente o que alguém lê às três da manhã. */
+  --intent-danger-text:var(--coral-700);
   --intent-danger-soft:var(--coral-50);
   --intent-creative:var(--grape-500);
   --intent-creative-soft:var(--grape-50);

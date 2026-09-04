@@ -88,9 +88,9 @@ import { runMigrations } from './migrate.js'
 import { ensureConversationTurnsVectorIndex, recordTurn, searchRelevantTurns } from './conversationTurns.js'
 import { mongoClient } from './db.js'
 import { extractTextFromFile } from './fileExtraction.js'
+import { retrieveForAgent } from './knowledgeRetrieval.js'
 import {
   createDocument,
-  retrieveContext,
   deleteAllForAgent,
   deleteAllForSector,
   backfillKnowledgeOwners,
@@ -158,6 +158,44 @@ import { liveWebhookCountByAgent } from './automations/webhookTriggers.js'
 import { listActivePublished } from './automations/repository.js'
 import { sentDeliveriesByAgent } from './connections/repository.js'
 import { sectorKnowledgeRouter } from './routes/sectorKnowledgeRoutes.js'
+import { knowledgeRouter } from './routes/knowledgeRoutes.js'
+import { agentResourceAccessRouter, resourceRouter } from './routes/resourceRoutes.js'
+import { databaseRouter } from './routes/databaseRoutes.js'
+import { monitorRouter } from './routes/monitorRoutes.js'
+import { activityRouter } from './routes/activityRoutes.js'
+import { monitoringRouter } from './routes/monitoringRoutes.js'
+import { ensureMonitoringIndexes } from './monitoring/service.js'
+import { ensureMonitoringHistoryIndexes } from './monitoring/history.js'
+import { monitoringWebhookRouter } from './routes/monitoringWebhookRoutes.js'
+import { ensureWebhookIndexes as ensureMonitoringWebhookIndexes } from './monitoring/webhookSource.js'
+import { ensureSourceGrantIndexes } from './monitoring/access.js'
+import { extensionRouter } from './routes/extensionRoutes.js'
+import { ensureExtensionIndexes } from './extensions/packages.js'
+import { ensureBrokerIndexes } from './extensionRuntime/broker.js'
+import { ensureKillSwitchIndexes } from './extensionRuntime/gate.js'
+import { providerFromEnv } from './extensionRuntime/httpProvider.js'
+import { ensureReviewIndexes } from './extensionRuntime/review.js'
+import { registerSandboxProvider } from './extensionRuntime/provider.js'
+import { browserWorkerFromEnv, registerBrowserWorker } from './monitoring/browserProvider.js'
+import { visionProviderFromEnv } from './monitoring/visionProvider.js'
+import { registerVisionProvider } from './monitoring/vision.js'
+import { ensureKnowledgeMigrationIndexes } from './knowledgeMigration.js'
+import { ensureContextManifestIndexes } from './contextManifest.js'
+import { ensureKnowledgeGapIndexes } from './knowledgeGaps.js'
+import { ensureKnowledgeGraphIndexes } from './knowledgeGraph.js'
+import { ensureResourceAuditIndexes } from './resources/audit.js'
+import { ensureDatabaseIndexes } from './databases/store.js'
+import { ToolVersionError, describeLegacyTool, ensureToolVersionCallIndexes, ensureToolVersionIndexes, latestVersion, listVersionCalls, listVersions, publishVersion } from './toolVersions.js'
+import { notFound as naoEncontrado, oid as paraObjectId } from './routes/http.js'
+import { ensureKnowledgeProposalIndexes } from './knowledgeProposals.js'
+import { ensureKnowledgeConflictIndexes } from './knowledgeConflicts.js'
+import {
+  KnowledgeQuotaError,
+  KnowledgeValidationError,
+  extractUpload,
+  saveDocument,
+  updateDocument as atualizarDocumento,
+} from './knowledgeService.js'
 import { sectorExecutionRouter } from './routes/sectorExecutionRoutes.js'
 import type { GroundingStatus, KnowledgeOwner } from './knowledge.js'
 import { availableMetricKeys, composeAgentStats, getAgentEventMetricsBatch, periodSince, PERIODS, resolveMetricKey } from './agentMetrics.js'
@@ -236,6 +274,7 @@ import { policyRouter } from './routes/policyRoutes.js'
 import { websocketRouter } from './routes/websocketRoutes.js'
 import { architectRouter } from './routes/architectRoutes.js'
 import { appGrantRouter } from './routes/appGrantRoutes.js'
+import { knowledgeAccessRouter } from './routes/knowledgeAccessRoutes.js'
 import { ensureGoogleInstallation, revokeGoogleInstallation } from './apps/migration.js'
 import { webhookRouter } from './routes/webhookRoutes.js'
 import { guardAuthAttempts, requireKnownOrigin, securityHeaders } from './routes/httpSecurity.js'
@@ -477,6 +516,27 @@ app.use('/api/memories', requireAuth, memoryRouter)
 // Agent routines + history (agent-owned scheduled automations). Sub-paths that this
 // router doesn't handle fall through to the inline /api/agents/:agentId routes below.
 app.use('/api/agents/:agentId', requireAuth, agentRoutineRouter)
+/**
+ * A base de conhecimento dos QUATRO escopos, por uma porta só.
+ *
+ * As rotas por dono (`/api/agents/:id/documents`, `/api/sectors/:id/documents`)
+ * continuam existindo com o mesmo contrato — elas são adaptadores desta mesma camada.
+ * Apagá-las agora quebraria a tela em produção sem ganhar nada.
+ */
+/**
+ * O catálogo COMUM de recursos — leitura, e só.
+ *
+ * Mutação continua nas rotas canônicas de cada tipo: é lá que moram as validações que
+ * aquele tipo entende, e uma rota genérica de escrita teria que reimplementar todas elas.
+ */
+app.use('/api/databases', requireAuth, databaseRouter)
+app.use('/api/monitors', requireAuth, monitorRouter)
+app.use('/api/activity', requireAuth, activityRouter)
+app.use('/api/monitoring', requireAuth, monitoringRouter)
+app.use('/api/extensions', requireAuth, extensionRouter)
+app.use('/api/resources', requireAuth, resourceRouter)
+app.use('/api/agents/:agentId', requireAuth, agentResourceAccessRouter)
+app.use('/api/knowledge', requireAuth, knowledgeRouter)
 // Shared sector knowledge (same store as agent knowledge). Non-matching sub-paths
 // fall through to the inline /api/sectors/:sectorId routes below.
 app.use('/api/sectors/:sectorId', requireAuth, sectorKnowledgeRouter)
@@ -494,8 +554,13 @@ app.use('/api/trading-policies', requireAuth, policyRouter)
 app.use('/api/websocket', requireAuth, websocketRouter)
 app.use('/api/architect', requireAuth, architectRouter)
 app.use('/api/agents/:agentId', requireAuth, appGrantRouter)
+// O que este agente pode LER: a política de acesso ao conhecimento.
+app.use('/api/agents/:agentId', requireAuth, knowledgeAccessRouter)
 // PUBLIC (no requireAuth): authenticated by public key + HMAC signature.
 app.use('/api/hooks', webhookRouter)
+// O receptor das fontes de webhook: público como o dos Flows, e pelo mesmo motivo — quem
+// entrega é o servidor de outra empresa, que não tem sessão aqui.
+app.use('/api/monitoring-hooks', monitoringWebhookRouter)
 
 app.get('/api/providers', requireAuth, async (_req, res) => {
   const results = await Promise.all(
@@ -2184,7 +2249,81 @@ app.get('/api/tools', requireAuth, async (_req, res) => {
       usedBy.get(id)?.push({ _id: agent._id.toString(), name: agent.name })
     }
   }
-  res.json(tools.map((t) => ({ ...toPublicTool(t), usedBy: usedBy.get(t._id.toString()) ?? [] })))
+  /**
+   * Runtime, versão e risco vêm DERIVADOS na leitura.
+   *
+   * Nenhuma ferramenta existente foi tocada: `_id`, nome e atribuição continuam os
+   * mesmos, e é isso que faz nenhuma delas parar de funcionar. Uma migração que
+   * carimbasse `runtimeKind` em massa mudaria o `updatedAt` de tudo o que já roda para
+   * gravar uma informação que já dá para calcular.
+   */
+  const comVersoes = await Promise.all(
+    tools.map(async (t) => {
+      const publicada = await latestVersion(ownerId, t._id).catch(() => null)
+      return {
+        ...toPublicTool(t),
+        usedBy: usedBy.get(t._id.toString()) ?? [],
+        ...describeLegacyTool(t),
+        ...(publicada ? { version: publicada.version, runtimeKind: publicada.runtimeKind, risk: publicada.risk, sha256: publicada.sha256 } : {}),
+      }
+    }),
+  )
+  res.json(comVersoes)
+})
+
+/**
+ * As versões de uma ferramenta, e a publicação de uma nova.
+ *
+ * Publicar é o que torna uma ferramenta compartilhável: a versão fica imutável e ganha
+ * hash, e é o hash que permite conferir, na hora de executar, que o que roda é o que foi
+ * revisado.
+ */
+app.get('/api/tools/:toolId/versions', requireAuth, async (req, res) => {
+  const id = paraObjectId(String(req.params.toolId))
+  if (!id) return naoEncontrado(res)
+  const tool = await getTool(res.locals.userId, id)
+  if (!tool) return naoEncontrado(res)
+  res.json({
+    items: await listVersions(res.locals.userId, id),
+    current: describeLegacyTool(tool),
+    // O que esta ferramenta REALMENTE fez: metadado de execução, nunca argumento
+    // nem resposta. É a trilha que responde "o que rodou com este hash".
+    calls: await listVersionCalls(res.locals.userId, id, 20).catch(() => []),
+  })
+})
+
+app.post('/api/tools/:toolId/versions', requireAuth, async (req, res, next) => {
+  const id = paraObjectId(String(req.params.toolId))
+  if (!id) return naoEncontrado(res)
+  const tool = await getTool(res.locals.userId, id)
+  if (!tool) return naoEncontrado(res)
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const v = await publishVersion(res.locals.userId, id, {
+      version: String(body.version ?? ''),
+      runtimeKind: (body.runtimeKind as never) ?? 'http',
+      // O manifesto da versão é o que a ferramenta É hoje — sem segredo: cabeçalho e
+      // corpo com credencial ficam no documento cifrado, e não na versão publicável.
+      manifest: (body.manifest as Record<string, unknown>) ?? {
+        method: tool.method,
+        url: tool.url,
+        allowedDomains: tool.allowedDomains,
+        timeoutMs: tool.timeoutMs,
+        maxCallsPerRun: tool.maxCallsPerRun,
+      },
+      inputSchema: (body.inputSchema as Record<string, unknown>) ?? tool.inputSchema,
+      outputSchema: (body.outputSchema as Record<string, unknown>) ?? null,
+      changelog: typeof body.changelog === 'string' ? body.changelog : '',
+    })
+    auditEntity(res, { id: tool._id.toString(), label: `${tool.name} ${v.version}` })
+    res.status(201).json({ version: v.version, runtimeKind: v.runtimeKind, risk: v.risk, sha256: v.sha256, immutable: v.immutable })
+  } catch (erro) {
+    if (erro instanceof ToolVersionError) {
+      res.status(erro.code === 'immutable' ? 409 : 400).json({ code: erro.code, message: erro.message, error: erro.message })
+      return
+    }
+    next(erro as Error)
+  }
 })
 
 const toolError = (res: Response, error: unknown): boolean => {
@@ -3124,6 +3263,15 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   }
 
   /**
+   * A identidade DESTA execução, lida antes de qualquer busca.
+   *
+   * Ela é a chave do manifesto e da trilha: sem um id, o que foi lido nesta conversa não
+   * tem como ser reencontrado depois — nem pela tela de execução, nem pela análise de
+   * impacto, que conta uso real por execução.
+   */
+  const traceChat = typeof (req.body ?? {}).traceId === 'string' ? String(req.body.traceId).slice(0, 100) : null
+
+  /**
    * O site ANTES da busca — o passo que faltava para um agente sozinho.
    *
    * No time, o executor compartilhado já fazia isso antes de perguntar à base. No chat de
@@ -3148,7 +3296,19 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
    * diferentes para a mesma base davam duas respostas diferentes.
    */
   const buscarBase = async (): Promise<{ context: string[]; status: GroundingStatus }> =>
-    retrieveContext([agent._id], lastUser.content).catch((error) => {
+    // A MESMA porta dos outros executores: a política do agente decide as bases, e o
+    // orçamento é um só. Montar a lista aqui faria o teste responder diferente da
+    // produção — que é exatamente o que um teste não pode fazer.
+    retrieveForAgent(res.locals.userId, agent, lastUser.content, {
+      requireGrounding: Boolean(agent.requireGrounding),
+      // O manifesto é gravado com o id da execução — o mesmo que a trilha usa, quando ela
+      // existe. Sem trilha, o id do agente e o instante: uma execução sem identidade não
+      // teria como ser reencontrada no mapa depois.
+      // A raiz da execução só é aberta adiante; aqui o que identifica esta leitura é o
+      // agente e a trilha, quando ela existe. Um manifesto precisa de um id que a tela
+      // consiga reencontrar — e o da trilha é o que ela já usa.
+      execution: { executionId: traceChat ?? agent._id.toString(), kind: 'playground' },
+    }).catch((error) => {
       console.error('Playground knowledge search failed, replying without grounding:', error)
       return { context: [] as string[], status: 'unavailable' as GroundingStatus }
     })
@@ -3310,7 +3470,6 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
     })
     return
   }
-  const traceChat = typeof (req.body ?? {}).traceId === 'string' ? String(req.body.traceId).slice(0, 100) : null
   const trilhaChat = (entrada: Omit<TraceInput, 'ownerId' | 'executionId'>) => {
     if (!traceChat) return
     traceEvent({ ...entrada, ownerId: res.locals.userId, executionId: traceChat })
@@ -3634,6 +3793,24 @@ app.post('/api/agents/:agentId/playground', requireAuth, async (req, res) => {
   })
 })
 
+/**
+ * A recusa da camada compartilhada, traduzida para o que estas rotas já devolviam.
+ *
+ * O código e a frase da cota são os mesmos de antes: a tela que já sabia reagir a
+ * `storage_quota_exceeded` continua reagindo igual.
+ */
+function recusaDeConhecimento(res: Response, erro: unknown): boolean {
+  if (erro instanceof KnowledgeQuotaError) {
+    res.status(413).json({ error: erro.message, code: erro.code })
+    return true
+  }
+  if (erro instanceof KnowledgeValidationError) {
+    res.status(400).json({ error: erro.message })
+    return true
+  }
+  return false
+}
+
 app.post('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
   const agentId = String(req.params.agentId)
   if (!ObjectId.isValid(agentId)) {
@@ -3652,17 +3829,17 @@ app.post('/api/agents/:agentId/documents', requireAuth, async (req, res) => {
   }
 
   try {
-    const espaco = await checkOwnerStorage(res.locals.userId, Buffer.byteLength(String(content), 'utf8'))
-    if (!espaco.allowed) {
-      res.status(413).json({
-        error: 'O espaço de armazenamento desta conta acabou. Apague documentos antigos para liberar.',
-        code: 'storage_quota_exceeded',
-      })
-      return
-    }
-    const document = await createDocument(agent._id, title, content)
+    /**
+     * ADAPTADOR: mesma rota, mesmo contrato, camada compartilhada por baixo.
+     *
+     * `maxContent: null` mantém o que esta rota SEMPRE aceitou. O teto de cem mil
+     * caracteres nasceu no setor, e aplicá-lo aqui agora recusaria em silêncio um
+     * texto que ontem entrava — quem limita este caminho é a cota, como sempre foi.
+     */
+    const document = await saveDocument(res.locals.userId, { ownerType: 'agent', ownerId: agent._id }, { title, content, maxContent: null })
     res.status(201).json({ ...document, content: undefined })
   } catch (error) {
+    if (recusaDeConhecimento(res, error)) return
     console.error('Failed to create knowledge document:', error)
     res.status(502).json({ error: 'Failed to process document. Check the embedding service configuration.' })
   }
@@ -3691,24 +3868,13 @@ app.post(
 
     try {
       const apiKey = await getProviderApiKey(res.locals.userId, agent.provider)
-      const content = await extractTextFromFile(req.file.buffer, req.file.mimetype, agent.provider, apiKey)
-      if (!content.trim()) {
-        res.status(400).json({ error: 'Could not extract any text from this file' })
-        return
-      }
-      // A cota do dono, conferida com o tamanho REAL do que vai entrar — depois da
-      // extração, porque é o texto extraído que ocupa espaço, não o arquivo enviado.
-      const espaco = await checkOwnerStorage(res.locals.userId, Buffer.byteLength(content, 'utf8'))
-      if (!espaco.allowed) {
-        res.status(413).json({
-          error: 'O espaço de armazenamento desta conta acabou. Apague documentos antigos para liberar.',
-          code: 'storage_quota_exceeded',
-        })
-        return
-      }
-      const document = await createDocument(agent._id, title, content)
+      // A cota do dono é conferida lá dentro com o tamanho REAL do que vai entrar —
+      // depois da extração, porque é o texto extraído que ocupa espaço, não o arquivo.
+      const content = await extractUpload(req.file.buffer, req.file.mimetype, agent.provider, apiKey)
+      const document = await saveDocument(res.locals.userId, { ownerType: 'agent', ownerId: agent._id }, { title, content, maxContent: null })
       res.status(201).json({ ...document, content: undefined })
     } catch (error) {
+      if (recusaDeConhecimento(res, error)) return
       console.error('Failed to process uploaded document:', error)
       res.status(502).json({ error: 'Failed to process the uploaded file.' })
     }
@@ -3788,13 +3954,14 @@ app.patch('/api/agents/:agentId/documents/:documentId', requireAuth, async (req,
   }
 
   try {
-    const document = await updateDocument(agent._id, new ObjectId(documentId), updates)
+    const document = await atualizarDocumento(res.locals.userId, { ownerType: 'agent', ownerId: agent._id }, new ObjectId(documentId), { ...updates, maxContent: null })
     if (!document) {
       res.status(404).json({ error: 'Document not found' })
       return
     }
     res.json({ ...document, content: undefined })
   } catch (error) {
+    if (recusaDeConhecimento(res, error)) return
     console.error('Failed to update knowledge document:', error)
     res.status(502).json({ error: 'Failed to process document. Check the embedding service configuration.' })
   }
@@ -4632,7 +4799,6 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // picks the specialists (or asks to clarify) and merges them into one voice.
   let agent: WithId<Agent>
   let replyObjective: string
-  let knowledgeAgentIds: ObjectId[]
   let replyAgentName: string | null
   let clarificationTopics: string[] | null
   // O setor rodado pelo executor único; ausente quando o canal aponta para um agente só.
@@ -4653,7 +4819,6 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     setorDoCanal = setor
     agent = config
     replyObjective = config.objective
-    knowledgeAgentIds = [config._id]
     replyAgentName = null
     clarificationTopics = null
   } else {
@@ -4661,7 +4826,6 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
     if (!single) return
     agent = single
     replyObjective = single.objective
-    knowledgeAgentIds = [single._id]
     replyAgentName = null
     clarificationTopics = null
   }
@@ -4731,7 +4895,13 @@ async function respondWithAgentIfLinked(widget: WithId<Widget>, conversationId: 
   // every consulted specialist, for a sector. Skipped when only clarifying.
   // Only a SECTOR-answered channel reads the sector's shared base; a widget wired
   // straight to one agent stays on that agent's own knowledge.
-  const { context: knowledgeBase } = await retrieveContext(knowledgeAgentIds, visitorContent, { verifiedSectorId: widget.sectorId ?? null })
+  const { context: knowledgeBase } = await retrieveForAgent(ownerId, agent, visitorContent, {
+    verifiedSectorId: widget.sectorId ?? null,
+    requireGrounding: Boolean(agent.requireGrounding),
+    // O id do widget e o da conversa: a execução do canal ainda não tem raiz neste
+    // ponto, e um manifesto sem identidade não seria reencontrável depois.
+    execution: { executionId: `${widget._id.toString()}:${conversationId.toString()}`, kind: 'channel' },
+  })
   const knowledge = [
     ...knowledgeBase,
     // Idem no canal: quem escolheu "sempre" ou "quando mudar" espera o conteúdo aqui.
@@ -5286,6 +5456,84 @@ async function start() {
   settlePendingCharges()
     .then((n) => n && console.log(`Settled ${n} pending token charge(s)`))
     .catch((error) => console.error('settlePendingCharges failed:', error))
+  // Só ÍNDICES. A migração do conhecimento do Arquiteto não roda aqui: um servidor que
+  // sobe reescrevendo dados faz, num reinício automático de madrugada, uma migração que
+  // ninguém está olhando. Ela é um script, e é chamada à mão.
+  ensureExtensionIndexes().catch((error) => {
+    console.error('ensureExtensionIndexes failed:', error)
+  })
+  ensureBrokerIndexes().catch((error) => {
+    console.error('ensureBrokerIndexes failed:', error)
+  })
+  ensureKillSwitchIndexes().catch((error) => {
+    console.error('ensureKillSwitchIndexes failed:', error)
+  })
+  ensureReviewIndexes().catch((error) => {
+    console.error('ensureReviewIndexes failed:', error)
+  })
+  ensureMonitoringHistoryIndexes().catch((error) => {
+    console.error('ensureMonitoringHistoryIndexes failed:', error)
+  })
+  ensureMonitoringIndexes().catch((error) => {
+    console.error('ensureMonitoringIndexes failed:', error)
+  })
+  ensureMonitoringWebhookIndexes().catch((error) => {
+    console.error('ensureMonitoringWebhookIndexes failed:', error)
+  })
+  ensureSourceGrantIndexes().catch((error) => {
+    console.error('ensureSourceGrantIndexes failed:', error)
+  })
+  /**
+   * O runner isolado, quando ele foi configurado.
+   *
+   * A URL e o segredo vêm do ambiente do SERVIDOR, nunca de um pedido: deixar o cliente
+   * escolher o endereço do runner seria dar a ele um proxy para a rede interna. Sem os
+   * dois, nada é registrado e o padrão fail-closed continua valendo.
+   */
+  const runner = providerFromEnv()
+  if (runner) registerSandboxProvider(runner)
+  // O worker de páginas, quando configurado. Mesma regra: a URL vem do ambiente do
+  // servidor, e sem ela o tipo `browser` continua recusando.
+  const paginas = browserWorkerFromEnv()
+  if (paginas) registerBrowserWorker(paginas)
+  /**
+   * A visão, quando alguém a ligou de propósito.
+   *
+   * `VISION_ENABLED=1` é exigido além da chave: ter uma chave de modelo não é o mesmo que
+   * querer que páginas sejam lidas por adivinhação.
+   */
+  const visao = visionProviderFromEnv()
+  if (visao) registerVisionProvider(visao)
+  ensureToolVersionCallIndexes().catch((error) => {
+    console.error('ensureToolVersionCallIndexes failed:', error)
+  })
+  ensureToolVersionIndexes().catch((error) => {
+    console.error('ensureToolVersionIndexes failed:', error)
+  })
+  ensureDatabaseIndexes().catch((error) => {
+    console.error('ensureDatabaseIndexes failed:', error)
+  })
+  ensureResourceAuditIndexes().catch((error) => {
+    console.error('ensureResourceAuditIndexes failed:', error)
+  })
+  ensureKnowledgeGraphIndexes().catch((error) => {
+    console.error('ensureKnowledgeGraphIndexes failed:', error)
+  })
+  ensureKnowledgeGapIndexes().catch((error) => {
+    console.error('ensureKnowledgeGapIndexes failed:', error)
+  })
+  ensureKnowledgeProposalIndexes().catch((error) => {
+    console.error('ensureKnowledgeProposalIndexes failed:', error)
+  })
+  ensureKnowledgeConflictIndexes().catch((error) => {
+    console.error('ensureKnowledgeConflictIndexes failed:', error)
+  })
+  ensureContextManifestIndexes().catch((error) => {
+    console.error('ensureContextManifestIndexes failed:', error)
+  })
+  ensureKnowledgeMigrationIndexes().catch((error) => {
+    console.error('ensureKnowledgeMigrationIndexes failed:', error)
+  })
   ensureKnowledgeIndexes().catch((error) => {
     console.error('ensureKnowledgeIndexes failed:', error)
   })

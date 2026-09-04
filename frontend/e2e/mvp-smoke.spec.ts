@@ -553,7 +553,7 @@ test('no celular, o menu abre, navega e fecha', async ({ browser }) => {
   await ctx.close()
 })
 
-test('“Montar operação” mora no menu de andares, não na barra lateral', async ({ page }) => {
+test('“Montar operação” é um MODO do Arquiteto, e a porta é o chat', async ({ page }) => {
   test.setTimeout(120_000)
   await irPara(page, '/login')
   await page.locator('input[type="email"]').fill(CONTA.email)
@@ -561,35 +561,75 @@ test('“Montar operação” mora no menu de andares, não na barra lateral', a
   await page.getByRole('button', { name: /Entrar/i }).click()
   await page.waitForURL(/\/(building|dashboard|floors)/, { timeout: 30_000 })
 
-  // Ela cria e reutiliza ANDARES: o lugar dela é o menu onde se escolhe andar, logo
-  // abaixo de criar um à mão — e não mais uma linha na barra lateral.
-  await expect(page.locator('aside').getByRole('link', { name: 'Montar operação' })).toHaveCount(0)
+  /**
+   * Ela morou em três lugares ao mesmo tempo: a navegação, o menu de andares e a folha de
+   * andares do celular. O problema não era a quantidade — era o que a quantidade dizia.
+   * Listada ao lado de Agentes e Setores, ela parecia um MÓDULO irmão deles, e "Arquiteto",
+   * "Blueprint" e "Montar operação" viravam três produtos que a pessoa precisava descobrir
+   * sozinha que eram a mesma coisa.
+   *
+   * A porta é uma só e fica onde a conversa já acontece.
+   */
+  await expect(page.locator('aside').getByRole('link', { name: /Montar/i })).toHaveCount(0)
 
   await page.getByTestId('building-switcher').first().click()
-  const criar = page.getByTestId('create-floor')
-  const montar = page.getByTestId('open-architect')
-  await expect(criar).toBeVisible()
-  await expect(montar).toBeVisible()
+  await expect(page.getByTestId('create-floor')).toBeVisible()
+  await expect(page.getByTestId('open-architect')).toHaveCount(0)
+  await page.keyboard.press('Escape')
 
-  // Abaixo de "Criar andar", que é o que foi pedido — e a ordem no DOM é a ordem na tela.
-  const posicao = await page.evaluate(() => {
-    const a = document.querySelector('[data-testid="create-floor"]')!
-    const b = document.querySelector('[data-testid="open-architect"]')!
-    return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 'depois' : 'antes'
-  })
-  expect(posicao, '“Montar operação” tem que vir depois de “Criar andar”').toBe('depois')
-
-  await montar.click()
+  // O botão no chat leva à tela completa — e ela continua sendo a mesma de sempre.
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-montar-operacao').click()
   await page.waitForURL(/\/architect/, { timeout: 20_000 })
+  await expect(page.getByTestId('architect-projects')).toBeVisible()
 
-  // E no celular, onde não há barra lateral, a mesma saída está na folha de andares —
-  // senão tirar o item da barra deixaria o telefone sem caminho para a tela.
+  // A rota canônica responde direto: tirar o item de menu não tira a tela nem quebra favorito.
+  await irPara(page, '/architect')
+  await expect(page.getByTestId('architect-projects')).toBeVisible()
+
+  // E no celular a folha de andares também não a repete.
   const andares = await (await page.request.get('/api/floors')).json()
   await page.setViewportSize({ width: 390, height: 844 })
   await irPara(page, `/floors/${andares[0].id}`)
   await page.getByRole('button', { name: /Trocar andar\. Andar atual:/ }).click()
-  const noCelular = page.getByTestId('floor-picker-architect')
-  await expect(noCelular).toBeVisible({ timeout: 20_000 })
-  await noCelular.click()
-  await page.waitForURL(/\/architect/, { timeout: 20_000 })
+  await expect(page.getByTestId('floor-picker-architect')).toHaveCount(0)
+})
+
+/**
+ * O PRIMEIRO PAINT não carrega o escritório inteiro.
+ *
+ * Tudo num pacote só dava 1,4 MB para quem abre a tela de login — e a maior parte disso são
+ * telas que essa pessoa ainda não tem como ver. A Central de monitoramento sozinha tem duas
+ * mil linhas.
+ *
+ * O que este caso guarda é a propriedade, não o número: as páginas autenticadas chegam em
+ * pedaços próprios, e nenhum deles é baixado antes de alguém entrar. Sem isso, um `import`
+ * estático acrescentado por engano em `App.tsx` desfaz o corte sem nenhum sinal.
+ */
+test('a tela pública não baixa as páginas autenticadas', async ({ page }) => {
+  /**
+   * O que se mede é o PESO, e não o nome dos pedaços.
+   *
+   * Medir "o pacote da Central não foi pedido" não pega a regressão que importa: um `import`
+   * estático não cria pedaço nenhum — ele costura a página dentro do pacote de entrada, e o
+   * nome some junto. O peso é o que distingue os dois mundos, e é o que a pessoa espera.
+   */
+  let bytes = 0
+  let scripts = 0
+  page.on('response', async (r) => {
+    if (r.request().resourceType() !== 'script') return
+    scripts += 1
+    bytes += Number(r.headers()['content-length'] ?? (await r.body().catch(() => Buffer.alloc(0))).length)
+  })
+
+  await irPara(page, '/login')
+  await expect(page.getByRole('button', { name: /Entrar/i })).toBeVisible()
+
+  expect(scripts, 'nenhum script carregado — o teste não está medindo a aplicação').toBeGreaterThan(0)
+  /**
+   * O teto é folgado de propósito: ele existe para pegar o retorno ao pacote único (1,4 MB),
+   * e não para policiar cada quilobyte. Hoje a entrada tem ~610 KB.
+   */
+  const TETO_KB = 900
+  expect(Math.round(bytes / 1024), `a tela pública baixou ${Math.round(bytes / 1024)} KB de script`).toBeLessThan(TETO_KB)
 })

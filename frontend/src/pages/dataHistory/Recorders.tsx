@@ -49,7 +49,7 @@ export function DataRecorders() {
         </div>
 
         {erro && (
-          <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="recorders-error">
+          <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="recorders-error">
             {erro}
           </p>
         )}
@@ -82,7 +82,7 @@ export function DataRecorders() {
                       {SOURCE_LABEL[r.source.kind]} · {r.source.ref} · {r.recordCount.toLocaleString('pt-BR')} registro(s)
                     </p>
                     {r.lastError && (
-                      <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--intent-danger)' }} data-testid="recorder-last-error">
+                      <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--intent-danger-text)' }} data-testid="recorder-last-error">
                         {r.lastError.message}
                       </p>
                     )}

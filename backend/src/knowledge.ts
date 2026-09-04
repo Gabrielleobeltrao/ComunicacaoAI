@@ -7,16 +7,39 @@ export { buildRetrievalQuery } from './retrievalQuery.js'
 import { embedText, embedTexts } from './voyage.js'
 import { extractTerms, extractWindow, scoreDocument, scoreText, termsToPattern } from './lexicalRetrieval.js'
 
-// Curated knowledge base (RAG) shared by agents AND sectors. There is ONE store:
-// the same `knowledge_documents` / `knowledge_chunks` collections, the same Voyage
-// embeddings and the same Atlas Vector Search index — a document just belongs to an
-// owner, which is either an agent or a sector.
+// Curated knowledge base (RAG) shared by the whole hierarchy. There is ONE store: the
+// same `knowledge_documents` / `knowledge_chunks` collections, the same chunking, the
+// same Voyage embeddings and the same Atlas Vector Search index — a document just
+// belongs to an owner, which is a building, a floor, a sector or an agent.
+//
+// Quatro donos, uma base. A alternativa — uma coleção por escopo — obrigaria a busca a
+// consultar quatro lugares, o orçamento de trechos a ser dividido antes de saber o que
+// existe, e cada correção a ser feita quatro vezes. Aqui um documento tem UM dono
+// canônico, e a busca combina escopos filtrando por `ownerType`/`ownerId`.
 //
 // Backwards compatibility: legacy rows only had `agentId`. Every row now also carries
 // `ownerType` + `ownerId`, backfilled as ('agent', agentId) — and `agentId` keeps
 // being written for agent-owned rows, so older code paths and any un-migrated reader
 // keep working during the transition.
-export type KnowledgeOwnerType = 'agent' | 'sector'
+export type KnowledgeOwnerType = 'building' | 'floor' | 'sector' | 'agent'
+
+export const KNOWLEDGE_OWNER_TYPES: readonly KnowledgeOwnerType[] = ['building', 'floor', 'sector', 'agent']
+
+export const isKnowledgeOwnerType = (v: unknown): v is KnowledgeOwnerType => KNOWLEDGE_OWNER_TYPES.includes(v as KnowledgeOwnerType)
+
+/**
+ * O CICLO DE VIDA de um documento, e o peso dele.
+ *
+ * Os dois existem porque "o que a base sabe" não é uma pilha plana: uma política
+ * oficial aprovada e um rascunho de alguém não podem valer a mesma coisa quando as
+ * duas respondem a mesma pergunta. Os campos são gravados agora e passam a decidir
+ * precedência quando o Context Engine existir; até lá, eles descrevem — não filtram.
+ */
+export type KnowledgeLifecycleStatus = 'draft' | 'approved' | 'archived'
+export const KNOWLEDGE_LIFECYCLE_STATUSES: readonly KnowledgeLifecycleStatus[] = ['draft', 'approved', 'archived']
+
+export type KnowledgeAuthority = 'official_policy' | 'procedure' | 'reference' | 'note'
+export const KNOWLEDGE_AUTHORITIES: readonly KnowledgeAuthority[] = ['official_policy', 'procedure', 'reference', 'note']
 
 export interface KnowledgeOwner {
   ownerType: KnowledgeOwnerType
@@ -65,8 +88,63 @@ export interface KnowledgeDocument {
    */
   indexedHash?: string | null
   chunkCount: number
+  /**
+   * O formato do conteúdo. Markdown é o único hoje, e por isso o campo é opcional: um
+   * documento antigo não o tem, e a leitura devolve 'markdown' sem reescrever nada.
+   */
+  format?: 'markdown'
+  lifecycleStatus?: KnowledgeLifecycleStatus
+  authority?: KnowledgeAuthority
+  /** A janela em que este documento VALE. Ausente = vale sempre, que é o caso comum. */
+  validFrom?: Date | null
+  validUntil?: Date | null
+  /** Quem conferiu, quando, e de quanto em quanto tempo isto precisa ser reconferido. */
+  verifiedAt?: Date | null
+  verifiedBy?: string | null
+  reviewIntervalDays?: number | null
+  /**
+   * A confiança — SOMENTE quando ela vem de um processo verificável.
+   *
+   * Nunca preenchida pela interface e nunca por um modelo dizendo que está confiante:
+   * um número inventado aqui viraria precedência real na hora de escolher o que
+   * responde, e ninguém saberia de onde ele veio.
+   */
+  confidence?: { value: number; method: string; at: Date } | null
+  /**
+   * As ligações entre documentos, para a fase do grafo.
+   *
+   * Gravado agora, resolvido depois: o campo existe para que um documento escrito hoje
+   * não precise ser reescrito quando os links passarem a ser navegáveis.
+   */
+  links?: { target: string; resolvedDocumentId?: ObjectId | null; label?: string }[]
   createdAt: Date
   updatedAt: Date
+}
+
+/**
+ * O documento COMO ELE É LIDO — com os defaults dos campos que ainda não existiam.
+ *
+ * Aplicado na leitura, e não por migração: reescrever a coleção inteira para gravar
+ * `format: 'markdown'` custaria uma passada em tudo o que já está lá, mudaria o
+ * `updatedAt` de documentos que ninguém tocou e não acrescentaria uma informação
+ * sequer — o default é a verdade sobre eles.
+ *
+ * `confidence` NÃO ganha default. Ausente significa "ninguém mediu", e um número
+ * inventado aqui viraria precedência de verdade na hora de escolher o que responde.
+ */
+export function withKnowledgeDefaults<T extends Partial<KnowledgeDocument>>(doc: T): T & {
+  format: 'markdown'
+  lifecycleStatus: KnowledgeLifecycleStatus
+  authority: KnowledgeAuthority
+} {
+  return {
+    ...doc,
+    format: doc.format ?? 'markdown',
+    // `approved` é o default porque é o que os documentos existentes SÃO: eles já
+    // respondem hoje. Nascer `draft` tiraria da busca tudo o que está gravado.
+    lifecycleStatus: doc.lifecycleStatus ?? 'approved',
+    authority: doc.authority ?? 'reference',
+  }
 }
 
 export interface KnowledgeChunk {
@@ -120,11 +198,14 @@ export function chunkText(text: string): string[] {
 // A filter that matches rows written before the ownerType backfill as well as new
 // ones — the transition never hides a document.
 export function ownerFilter(owner: KnowledgeOwner): Record<string, unknown> {
+  // Só o agente tem passado: linha antiga não tem `ownerType`, e casa por `agentId`.
+  // Prédio, andar e setor nasceram com o modelo novo — não há linha legada deles.
   if (owner.ownerType === 'agent') {
     return { $or: [{ ownerType: 'agent', ownerId: owner.ownerId }, { ownerType: { $exists: false }, agentId: owner.ownerId }] }
   }
-  return { ownerType: 'sector', ownerId: owner.ownerId }
+  return { ownerType: owner.ownerType, ownerId: owner.ownerId }
 }
+
 
 export interface WebDocumentMeta {
   sourceType: 'web'
@@ -174,6 +255,14 @@ export interface CreateDocumentInput {
   sourceRef?: string | null
   authorId?: string | null
   web?: WebDocumentMeta
+  lifecycleStatus?: KnowledgeLifecycleStatus
+  authority?: KnowledgeAuthority
+  validFrom?: Date | null
+  validUntil?: Date | null
+  verifiedAt?: Date | null
+  verifiedBy?: string | null
+  reviewIntervalDays?: number | null
+  links?: KnowledgeDocument['links']
 }
 
 export async function createDocumentFor(owner: KnowledgeOwner, input: CreateDocumentInput) {
@@ -190,6 +279,17 @@ export async function createDocumentFor(owner: KnowledgeOwner, input: CreateDocu
     authorId: input.authorId ?? null,
     indexStatus: 'pending',
     chunkCount: 0,
+    // Gravados no documento novo; ausentes continuam válidos nos antigos, onde o
+    // default da leitura diz a mesma coisa.
+    format: 'markdown',
+    lifecycleStatus: input.lifecycleStatus ?? 'approved',
+    authority: input.authority ?? 'reference',
+    ...(input.validFrom !== undefined ? { validFrom: input.validFrom } : {}),
+    ...(input.validUntil !== undefined ? { validUntil: input.validUntil } : {}),
+    ...(input.verifiedAt !== undefined ? { verifiedAt: input.verifiedAt } : {}),
+    ...(input.verifiedBy !== undefined ? { verifiedBy: input.verifiedBy } : {}),
+    ...(input.reviewIntervalDays !== undefined ? { reviewIntervalDays: input.reviewIntervalDays } : {}),
+    ...(input.links ? { links: input.links } : {}),
     createdAt: now,
     updatedAt: now,
   }
@@ -422,10 +522,27 @@ export function getDocument(agentId: ObjectId, documentId: ObjectId) {
   return getDocumentFor({ ownerType: 'agent', ownerId: agentId }, documentId)
 }
 
-export async function updateDocumentFor(owner: KnowledgeOwner, documentId: ObjectId, updates: { title?: string; content?: string; web?: WebDocumentMeta }) {
+export interface UpdateDocumentInput {
+  title?: string
+  content?: string
+  web?: WebDocumentMeta
+  lifecycleStatus?: KnowledgeLifecycleStatus
+  authority?: KnowledgeAuthority
+  validFrom?: Date | null
+  validUntil?: Date | null
+  verifiedAt?: Date | null
+  verifiedBy?: string | null
+  reviewIntervalDays?: number | null
+  links?: KnowledgeDocument['links']
+}
+
+export async function updateDocumentFor(owner: KnowledgeOwner, documentId: ObjectId, updates: UpdateDocumentInput) {
   const setFields: Partial<KnowledgeDocument> = { updatedAt: new Date() }
   if (updates.title !== undefined) setFields.title = updates.title
   if (updates.web !== undefined) setFields.web = updates.web
+  for (const campo of ['lifecycleStatus', 'authority', 'validFrom', 'validUntil', 'verifiedAt', 'verifiedBy', 'reviewIntervalDays', 'links'] as const) {
+    if (updates[campo] !== undefined) (setFields as Record<string, unknown>)[campo] = updates[campo]
+  }
   if (updates.content !== undefined) {
     setFields.content = updates.content
     setFields.indexStatus = 'pending'
@@ -470,6 +587,20 @@ export function deleteAllForAgent(agentId: ObjectId) {
 }
 export function deleteAllForSector(sectorId: ObjectId) {
   return deleteAllFor({ ownerType: 'sector', ownerId: sectorId })
+}
+/**
+ * Andar e prédio apagados levam a base deles junto.
+ *
+ * Sem isto, apagar um andar deixaria documentos e chunks apontando para um dono que
+ * não existe: invisíveis em qualquer tela, contados na cota da conta para sempre, e
+ * ainda alcançáveis pela busca vetorial, que filtra por `ownerId` e não pergunta se
+ * aquele id ainda é de alguém.
+ */
+export function deleteAllForFloor(floorId: ObjectId) {
+  return deleteAllFor({ ownerType: 'floor', ownerId: floorId })
+}
+export function deleteAllForBuilding(buildingId: ObjectId) {
+  return deleteAllFor({ ownerType: 'building', ownerId: buildingId })
 }
 
 export const VECTOR_INDEX_NAME = 'knowledge_vector_index'
@@ -517,6 +648,9 @@ export async function ensureVectorIndex() {
 // Plain Mongo indexes for the CRUD/listing paths.
 export async function ensureKnowledgeIndexes(): Promise<void> {
   await documents.createIndex({ ownerType: 1, ownerId: 1, createdAt: -1 })
+  // A listagem ordena por `updatedAt` — sem este índice ela ordena em memória, e uma
+  // base grande passa a custar uma varredura por página.
+  await documents.createIndex({ ownerType: 1, ownerId: 1, updatedAt: -1 })
   await chunks.createIndex({ ownerType: 1, ownerId: 1 })
   await chunks.createIndex({ documentId: 1 })
   /**
@@ -557,6 +691,72 @@ export async function ensureKnowledgeIndexes(): Promise<void> {
  */
 export async function findBySourceRef(owner: KnowledgeOwner, sourceRef: string): Promise<KnowledgeDocument | null> {
   return documents.findOne({ ...ownerFilter(owner), sourceRef }, { projection: { content: 0 } }) as Promise<KnowledgeDocument | null>
+}
+
+/**
+ * O ESTADO DE REVISÃO de um documento — calculado, nunca perguntado a um modelo.
+ *
+ * Comparar datas é aritmética. Uma LLM decidindo se um documento venceu erraria de vez
+ * em quando, custaria por documento e não teria como ser reproduzida — três razões, e
+ * qualquer uma bastaria.
+ */
+export type ReviewState = 'ok' | 'due_for_review' | 'expiring_soon' | 'expired'
+
+export function reviewStateOf(
+  doc: Pick<KnowledgeDocument, 'validUntil' | 'verifiedAt' | 'reviewIntervalDays' | 'updatedAt'>,
+  now: Date = new Date(),
+  soonDays = 14,
+): ReviewState {
+  const venceEm = doc.validUntil ? new Date(doc.validUntil).getTime() : null
+  if (venceEm !== null && venceEm <= now.getTime()) return 'expired'
+  if (venceEm !== null && venceEm - now.getTime() <= soonDays * 86400_000) return 'expiring_soon'
+  if (doc.reviewIntervalDays && doc.reviewIntervalDays > 0) {
+    // Sem verificação registrada, a última edição é o melhor que existe — e é honesto
+    // dizer que ela conta como "a última vez que alguém olhou".
+    const base = doc.verifiedAt ? new Date(doc.verifiedAt).getTime() : new Date(doc.updatedAt).getTime()
+    if (now.getTime() - base >= doc.reviewIntervalDays * 86400_000) return 'due_for_review'
+  }
+  return 'ok'
+}
+
+/**
+ * Os documentos que precisam de atenção — vencidos, vencendo e com revisão atrasada.
+ *
+ * Uma varredura por escopo, com o cálculo feito no banco: trazer a base inteira para
+ * decidir em memória é exatamente o que a cota existe para impedir.
+ */
+export async function listDocumentsNeedingReview(owner: KnowledgeOwner, now: Date = new Date(), soonDays = 14) {
+  const limite = new Date(now.getTime() + soonDays * 86400_000)
+  const docs = await documents
+    .find(
+      {
+        $and: [
+          ownerFilter(owner),
+          { $or: [{ validUntil: { $lte: limite } }, { reviewIntervalDays: { $gt: 0 } }] },
+        ],
+      },
+      { projection: { content: 0 } },
+    )
+    .limit(500)
+    .toArray()
+  return docs
+    .map((d) => ({ document: d as Omit<KnowledgeDocument, 'content'>, state: reviewStateOf(d, now, soonDays) }))
+    .filter((x) => x.state !== 'ok')
+}
+
+/**
+ * A busca encontra ESTE documento por ESTE assunto, neste escopo?
+ *
+ * É a conferência de que uma lacuna foi mesmo resolvida. Fica na camada de conhecimento,
+ * e não na rota, porque quem sabe buscar é quem sabe buscar — e porque a regra de que
+ * ninguém procura por donos fora daqui vale inclusive para uma conferência.
+ *
+ * Não envolve política de acesso: aqui não há agente respondendo, há um escopo sendo
+ * conferido contra um assunto.
+ */
+export async function scopeSearchFinds(owner: KnowledgeOwner, subject: string, documentId: ObjectId): Promise<boolean> {
+  const r = await retrieveForOwners([owner], subject, { minScore: 0 })
+  return r.sources.some((s) => s.documentId === documentId.toString())
 }
 
 /** Só o carimbo de validade: renovar não reescreve texto e não gera embedding. */
@@ -608,6 +808,17 @@ export interface KnowledgeSource {
   title: string | null
   ownerType: KnowledgeOwnerType
   ownerId: string
+  /** Quanto este trecho casou com a pergunta. É o que torna a seleção discutível. */
+  score?: number
+  /**
+   * Como este trecho chegou: por semelhança, por termo exato ou por expansão de ligação.
+   *
+   * As três erram de jeitos diferentes, e é por esta marca que o eval consegue medir se
+   * a expansão pelo grafo ajudou ou só ocupou o orçamento.
+   */
+  retrieval?: 'vector' | 'lexical' | 'graph_expansion'
+  /** Por que a base deste trecho estava disponível: própria, do andar, do setor… */
+  reason?: string
   /** QUANDO foi capturado. Uma resposta sobre "hoje" precisa saber a idade da fonte. */
   capturedAt?: string | null
   /** Escrito à mão ou lido de um site. Ausente quando a origem não foi resolvida. */
@@ -668,6 +879,10 @@ export async function searchKnowledgeForOwners(
           $or: [{ 'doc.web.expiresAt': { $exists: false } }, { 'doc.web.expiresAt': null }, { 'doc.web.expiresAt': { $gt: new Date() } }],
         },
       },
+      // Arquivado, rascunho e vencido não respondem como fato atual. O recorte vem do
+      // DOCUMENTO — o chunk não guarda ciclo de vida, e duplicá-lo nele envelheceria
+      // em separado na primeira edição.
+      { $match: prefixarDoc(curationFilter()) },
       ...(Object.keys(metadataFilter(filtros)).length > 0
         ? [
             {
@@ -717,6 +932,55 @@ export async function searchKnowledgeForOwners(
  *
  * Ausente = tudo, que é como a busca sempre funcionou.
  */
+/**
+ * O que NÃO responde uma pergunta sobre o estado atual.
+ *
+ * Arquivado nunca: ele foi tirado de circulação por alguém, e voltar pela busca seria
+ * desfazer a decisão em silêncio. Vencido também não — mas por outro motivo: ele PODE
+ * ser a única evidência histórica que existe, e por isso o filtro é opcional. Quem
+ * pergunta "qual é a política hoje" não pode receber a de 2023 como fato; quem pergunta
+ * "o que valia em 2023" precisa dela, e aí ela vem marcada como histórica.
+ *
+ * Rascunho e proposta ficam de fora pelo mesmo motivo que uma proposta não vira
+ * documento sozinha: o que ainda não foi aprovado não responde em nome da empresa.
+ */
+/**
+ * O mesmo recorte, escrito para o documento que veio por `$lookup`.
+ *
+ * O `$lookup` traz `doc` como ARRAY, e um filtro sobre `doc.campo` casa quando qualquer
+ * elemento casa — que aqui é o único, então a semântica é a desejada. O prefixo é
+ * aplicado por função para as duas buscas usarem a MESMA regra: duas cópias divergiriam
+ * na primeira mudança de política, e a que erra seria a que ninguém está lendo.
+ */
+export function prefixarDoc(filtro: Record<string, unknown>): Record<string, unknown> {
+  const prefixar = (f: Record<string, unknown>): Record<string, unknown> => {
+    const fora: Record<string, unknown> = {}
+    for (const [chave, valor] of Object.entries(f)) {
+      if (chave === '$and' || chave === '$or' || chave === '$nor') {
+        fora[chave] = (valor as Record<string, unknown>[]).map(prefixar)
+      } else {
+        fora[`doc.${chave}`] = valor
+      }
+    }
+    return fora
+  }
+  return prefixar(filtro)
+}
+
+export function curationFilter(now: Date = new Date(), opts: { includeExpired?: boolean; includeDrafts?: boolean } = {}): Record<string, unknown> {
+  const partes: Record<string, unknown>[] = [
+    // Ausente = aprovado: é o default de leitura dos documentos que já existiam.
+    opts.includeDrafts
+      ? { lifecycleStatus: { $ne: 'archived' } }
+      : { $or: [{ lifecycleStatus: { $exists: false } }, { lifecycleStatus: 'approved' }] },
+  ]
+  if (!opts.includeExpired) {
+    partes.push({ $or: [{ validUntil: { $exists: false } }, { validUntil: null }, { validUntil: { $gt: now } }] })
+    partes.push({ $or: [{ validFrom: { $exists: false } }, { validFrom: null }, { validFrom: { $lte: now } }] })
+  }
+  return { $and: partes }
+}
+
 export interface KnowledgeFilters {
   /** Só documentos publicados a partir desta data (metadado declarado pela página). */
   publishedAfter?: Date | null
@@ -794,7 +1058,14 @@ export async function searchKnowledgeLexicallyForOwners(
       // O recorte por metadado entra ANTES da comparação de texto: o que está fora do
       // período nem chega a ser lido.
       ...metadataFilter(filtros),
-      $and: [naoVencido(new Date()), { $or: [{ content: { $regex: padrao, $options: 'i' } }, { title: { $regex: padrao, $options: 'i' } }] }],
+      $and: [
+        naoVencido(new Date()),
+        // O MESMO recorte curatorial da busca vetorial: arquivado, rascunho e vencido
+        // não respondem como fato atual, e a regra não pode depender de qual das duas
+        // buscas atendeu a pergunta.
+        curationFilter(),
+        { $or: [{ content: { $regex: padrao, $options: 'i' } }, { title: { $regex: padrao, $options: 'i' } }] },
+      ],
     })
     // Um teto de leitura: o corte por nota acontece depois, em memória.
     .limit(Math.max(limit * 4, 20))
@@ -839,28 +1110,65 @@ export function combineKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number
 
 // The selection itself, keeping the hit (so provenance survives): relevance floor,
 // then dedup, then top-K within the character budget.
-export function selectKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number; charBudget?: number; minScore?: number } = {}): KnowledgeHit[] {
+export interface IgnoredHit {
+  kind: string
+  ref: string
+  reason: string
+}
+
+/**
+ * A seleção, com o motivo de cada descarte.
+ *
+ * "Não usou" sem motivo é uma reclamação sem endereço: o dono vê o documento na tela,
+ * vê o agente respondendo sem ele, e não tem como saber se foi score baixo, orçamento
+ * cheio ou texto repetido. Cada um desses tem uma ação diferente.
+ */
+export function selectKnowledgeHitsDetailed(
+  hits: KnowledgeHit[],
+  opts: { topK?: number; charBudget?: number; minScore?: number } = {},
+): { selected: KnowledgeHit[]; ignored: IgnoredHit[] } {
   const topK = opts.topK ?? RETRIEVAL_TOP_K
   const charBudget = opts.charBudget ?? RETRIEVAL_CHAR_BUDGET
   const minScore = opts.minScore ?? RETRIEVAL_MIN_SCORE
   const seen = new Set<string>()
   const out: KnowledgeHit[] = []
+  const ignored: IgnoredHit[] = []
+  const descartar = (hit: KnowledgeHit, reason: string) => {
+    if (ignored.length < 20) ignored.push({ kind: 'chunk', ref: hit.documentId ?? hit.title ?? '(sem id)', reason })
+  }
   let used = 0
   for (const hit of [...hits].sort((a, b) => b.score - a.score)) {
     const content = (hit.content ?? '').trim()
     if (!content) continue
+    if (out.length >= topK) {
+      descartar(hit, 'o limite de trechos já tinha sido alcançado')
+      continue
+    }
     // Below the floor it never reaches the prompt: a weak match presented as curated
     // knowledge is worse than no knowledge at all.
-    if (typeof hit.score === 'number' && hit.score < minScore) continue
+    if (typeof hit.score === 'number' && hit.score < minScore) {
+      descartar(hit, `relevância abaixo do mínimo (${hit.score.toFixed(2)} < ${minScore})`)
+      continue
+    }
     const key = content.replace(/\s+/g, ' ').toLowerCase()
-    if (seen.has(key)) continue // same passage from agent + sector base
-    if (used + content.length > charBudget) continue
+    if (seen.has(key)) {
+      // same passage from agent + sector base
+      descartar(hit, 'o mesmo texto já tinha entrado por outra base')
+      continue
+    }
+    if (used + content.length > charBudget) {
+      descartar(hit, 'não cabia no orçamento de caracteres')
+      continue
+    }
     seen.add(key)
     out.push({ ...hit, content })
     used += content.length
-    if (out.length >= topK) break
   }
-  return out
+  return { selected: out, ignored }
+}
+
+export function selectKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number; charBudget?: number; minScore?: number } = {}): KnowledgeHit[] {
+  return selectKnowledgeHitsDetailed(hits, opts).selected
 }
 
 // Retrieve the context for an execution: the agent's base, plus the sector's when the
@@ -877,7 +1185,17 @@ export function selectKnowledgeHits(hits: KnowledgeHit[], opts: { topK?: number;
 //   unavailable — embedding/vector search FAILED. Never confused with 'empty': the
 //                 model must not be told "there is no knowledge" when the truth is
 //                 "we could not look".
-export type GroundingStatus = 'ok' | 'empty' | 'no_base' | 'unavailable'
+/**
+ * O que aconteceu na busca — e os quatro casos precisam continuar distinguíveis.
+ *
+ * `empty` é "procurei e não achei". `unavailable` é "não consegui procurar" — e é o que
+ * impede o agente de afirmar ausência sobre uma base que tem a resposta escrita.
+ * `no_base` é "não há base para procurar". `denied` é a política: este agente não tem
+ * base nenhuma, e isso não é o mesmo que não existir conhecimento. `conflict` é o pior
+ * de todos para esconder — dois documentos dizem coisas diferentes e a regra não decidiu
+ * qual vale.
+ */
+export type GroundingStatus = 'ok' | 'empty' | 'no_base' | 'unavailable' | 'denied' | 'conflict'
 
 export interface RetrievalResult {
   context: string[]
@@ -903,26 +1221,44 @@ export interface RetrievalResult {
   topScore?: number
   /** A seleção foi cortada: existe mais do que o que está aqui. */
   truncated?: boolean
+  /** O que foi visto e NÃO entrou, com o motivo. Vai para o manifesto. */
+  ignored?: IgnoredHit[]
+  /** Autoridade e validade de cada documento selecionado, para o manifesto e a precedência. */
+  documentMeta?: Map<string, { authority: string | null; validAtExecution: boolean | null }>
 }
 
-export async function retrieveContext(
-  agentIds: ObjectId | ObjectId[],
+/**
+ * A busca nas bases QUE ESTE AGENTE PODE LER — quatro escopos, um orçamento só.
+ *
+ * O orçamento é global de propósito: `topK`, teto de caracteres e score mínimo valem
+ * para a seleção inteira, e não por escopo. Um orçamento por escopo daria quatro vezes
+ * mais contexto para quem tem quatro bases ligadas — e o trecho fraco do prédio entraria
+ * na frente do trecho forte do agente só porque cada um tinha sua cota.
+ *
+ * Quem decide QUAIS bases é `resolveKnowledgeOwnersForExecution`. Aqui já chegam
+ * resolvidas: esta função não sabe de política e não recebe id de cliente.
+ */
+export async function retrieveForOwners(
+  owners: (KnowledgeOwner & { reason?: string })[],
   query: string,
-  opts: { verifiedSectorId?: ObjectId | null; topK?: number; charBudget?: number; minScore?: number; filters?: KnowledgeFilters | null } = {},
+  opts: { topK?: number; charBudget?: number; minScore?: number; filters?: KnowledgeFilters | null } = {},
 ): Promise<RetrievalResult> {
-  const ids = Array.isArray(agentIds) ? agentIds : [agentIds]
-  const owners: KnowledgeOwner[] = ids.map((id) => ({ ownerType: 'agent' as const, ownerId: id }))
-  // The sector base joins ONLY with an explicit sector context — never implied by
-  // the agent's home sector.
-  if (opts.verifiedSectorId) owners.push({ ownerType: 'sector', ownerId: opts.verifiedSectorId })
   if (owners.length === 0 || !query.trim()) return { context: [], sources: [], status: 'no_base', failed: false }
 
+  // De qual base veio, e por quê — para a proveniência dizer "do setor Mesa, porque a
+  // execução começou nele" em vez de repetir um id.
+  const motivo = new Map<string, string>()
+  for (const o of owners) if (o.reason) motivo.set(`${o.ownerType}:${o.ownerId.toString()}`, o.reason)
+
+  let descartados: IgnoredHit[] = []
   const emResultado = (
     selected: KnowledgeHit[],
     status: GroundingStatus,
     failed: boolean,
+    retrieval?: 'vector' | 'lexical',
     encontrados?: number,
   ): RetrievalResult => ({
+    ignored: descartados,
     context: selected.map((hit) => hit.content),
     ...(selected.length > 0 ? { topScore: Math.max(...selected.map((h) => (typeof h.score === 'number' ? h.score : 0))) } : {}),
     sources: selected.map((hit) => ({
@@ -931,6 +1267,9 @@ export async function retrieveContext(
       title: hit.title ? String(hit.title).slice(0, 120) : null,
       ownerType: hit.ownerType,
       ownerId: hit.ownerId,
+      ...(typeof hit.score === 'number' ? { score: hit.score } : {}),
+      ...(retrieval ? { retrieval } : {}),
+      ...(motivo.has(`${hit.ownerType}:${hit.ownerId}`) ? { reason: motivo.get(`${hit.ownerType}:${hit.ownerId}`) } : {}),
       ...(hit.origin ? { origin: hit.origin } : {}),
       ...(hit.capturedAt ? { capturedAt: new Date(hit.capturedAt).toISOString() } : {}),
     })),
@@ -940,6 +1279,13 @@ export async function retrieveContext(
     ...(encontrados !== undefined && encontrados > selected.length ? { truncated: true } : {}),
   })
 
+  /**
+   * O quanto se BUSCA cresce com o número de bases; o quanto se ESCOLHE, não.
+   *
+   * Trazer poucos candidatos de quatro bases faria a seleção global escolher entre
+   * sobras: cada base devolveria só os seus melhores, e o melhor do conjunto poderia
+   * nem ter sido lido. O corte continua sendo um só, depois.
+   */
   const limite = Math.max(opts.topK ?? RETRIEVAL_TOP_K, 5) * owners.length
 
   // --- metade 1: o vizinho semântico ------------------------------------------------------
@@ -949,14 +1295,16 @@ export async function retrieveContext(
   try {
     const brutos = await searchKnowledgeForOwners(owners, query, limite, opts.filters)
     encontrados = brutos.length
-    selecionados = selectKnowledgeHits(brutos, opts)
+    const escolha = selectKnowledgeHitsDetailed(brutos, opts)
+    selecionados = escolha.selected
+    descartados = escolha.ignored
   } catch (error) {
     // Sem Atlas Search ou sem chave de embedding, ela falha SEMPRE. Isso não é "não há
     // conhecimento" — é "não consegui olhar por semelhança". A busca exata ainda pode.
     console.error('knowledge retrieval (vector) failed:', (error as Error).message)
     vetorialFalhou = true
   }
-  if (selecionados.length > 0) return emResultado(selecionados, 'ok', false, encontrados)
+  if (selecionados.length > 0) return await comMetadados(emResultado(selecionados, 'ok', false, 'vector', encontrados))
 
   // --- metade 2: o termo exato ------------------------------------------------------------
   //
@@ -965,8 +1313,11 @@ export async function retrieveContext(
   // dizer "não há dados" seria mentira sobre uma base que tem a resposta escrita.
   try {
     const brutosLexicais = await searchKnowledgeLexicallyForOwners(owners, query, limite, opts.filters)
-    const lexicais = selectKnowledgeHits(brutosLexicais, opts)
-    if (lexicais.length > 0) return emResultado(lexicais, 'ok', false, brutosLexicais.length)
+    const escolhaLexical = selectKnowledgeHitsDetailed(brutosLexicais, opts)
+    if (escolhaLexical.selected.length > 0) {
+      descartados = escolhaLexical.ignored
+      return await comMetadados(emResultado(escolhaLexical.selected, 'ok', false, 'lexical', brutosLexicais.length))
+    }
   } catch (error) {
     console.error('knowledge retrieval (lexical) failed:', (error as Error).message)
     return emResultado([], 'unavailable', true)
@@ -988,4 +1339,52 @@ export async function retrieveContext(
   // Se a semântica sequer rodou, o honesto é 'unavailable': a busca exata não substitui
   // a outra, e afirmar ausência aqui seria afirmar demais.
   return emResultado([], vetorialFalhou ? 'unavailable' : 'empty', vetorialFalhou)
+}
+
+/**
+ * A autoridade e a validade de cada documento selecionado.
+ *
+ * Uma leitura a mais por busca, e ela paga por si: é o que permite ao manifesto dizer
+ * "isto veio de uma política oficial e estava válida na hora", e é o que a precedência
+ * usa quando dois trechos se contradizem. Sem ela, os dois chegariam ao modelo com o
+ * mesmo peso e ele escolheria sozinho, sem dizer que escolheu.
+ */
+async function comMetadados(r: RetrievalResult): Promise<RetrievalResult> {
+  const ids = [...new Set(r.sources.map((s) => s.documentId).filter(Boolean))] as string[]
+  if (ids.length === 0) return r
+  const agora = new Date()
+  const docs = await documents
+    .find({ _id: { $in: ids.map((id) => new ObjectId(id)) } }, { projection: { authority: 1, lifecycleStatus: 1, validFrom: 1, validUntil: 1 } })
+    .toArray()
+  const meta = new Map<string, { authority: string | null; validAtExecution: boolean | null }>()
+  for (const d of docs) {
+    // `null` quando o documento não declara janela nenhuma: "sem validade declarada" não
+    // é o mesmo que "válido", e um `true` aqui inventaria uma conferência que ninguém fez.
+    const temJanela = d.validFrom || d.validUntil
+    const valido = !temJanela
+      ? null
+      : (!d.validFrom || new Date(d.validFrom) <= agora) && (!d.validUntil || new Date(d.validUntil) > agora)
+    meta.set(d._id.toString(), { authority: (d.authority as string) ?? null, validAtExecution: valido })
+  }
+  return { ...r, documentMeta: meta }
+}
+
+/**
+ * A forma ANTIGA: agentes mais, se houver, o setor validado da execução.
+ *
+ * Mantida porque há um chamador que ainda não tem agente carregado (o widget monta a
+ * lista a partir do canal). Ela não decide política nenhuma — monta os mesmos donos que
+ * o comportamento legado sempre montou e entrega para a busca acima.
+ */
+export async function retrieveContext(
+  agentIds: ObjectId | ObjectId[],
+  query: string,
+  opts: { verifiedSectorId?: ObjectId | null; topK?: number; charBudget?: number; minScore?: number; filters?: KnowledgeFilters | null } = {},
+): Promise<RetrievalResult> {
+  const ids = Array.isArray(agentIds) ? agentIds : [agentIds]
+  const owners: (KnowledgeOwner & { reason?: string })[] = ids.map((id) => ({ ownerType: 'agent' as const, ownerId: id, reason: 'own' }))
+  // The sector base joins ONLY with an explicit sector context — never implied by
+  // the agent's home sector.
+  if (opts.verifiedSectorId) owners.push({ ownerType: 'sector', ownerId: opts.verifiedSectorId, reason: 'execution_sector' })
+  return retrieveForOwners(owners, query, opts)
 }

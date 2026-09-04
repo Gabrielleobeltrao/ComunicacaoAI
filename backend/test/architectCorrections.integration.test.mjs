@@ -169,26 +169,30 @@ test('conhecimento de SETOR vira documento na base do setor', async () => {
   assert.ok(doc.ownerId.equals(setor._id))
 })
 
-test('conhecimento de ANDAR vai para a memória do andar — e NÃO para um agente inventado', async () => {
+test('conhecimento de ANDAR vira documento do ANDAR — e NÃO de um agente inventado', async () => {
+  // Antes isto ia para a memória determinística, por falta de dono: a base só aceitava
+  // agente e setor. Ele existia, mas não era encontrado por busca semântica e não
+  // aparecia em base nenhuma — agora o andar é dono de verdade.
   const p = await projetoCom(comConhecimento('floor', 'andar', 'Horário: 11h às 23h'))
-  const r = await aplicar(p)
+  await aplicar(p)
 
-  assert.equal(await db.collection('knowledge_documents').countDocuments({}), 0, 'nenhum documento de agente')
-  const memoria = await db.collection('memories').findOne({ tenantId: DONO })
-  assert.ok(memoria, 'foi para a memória')
+  const doc = await db.collection('knowledge_documents').findOne({})
+  assert.ok(doc, 'o documento existe')
+  assert.equal(doc.ownerType, 'floor')
   const andar = await db.collection('offices').findOne({ ownerId: DONO })
-  assert.equal(memoria.scopeKey, `floor:${andar._id.toString()}`, 'no andar real, com o id real')
-  assert.match(JSON.stringify(memoria.payload), /11h às 23h/)
-  assert.match(r.operation.steps.find((s) => s.kind === 'knowledge').message, /memória/)
+  assert.ok(doc.ownerId.equals(andar._id), 'no andar real, com o id real')
+  assert.match(doc.content, /11h às 23h/)
+  assert.equal(await db.collection('memories').countDocuments({}), 0, 'a memória não é mais o lugar disto')
 })
 
-test('conhecimento do PRÉDIO vai para a memória do prédio', async () => {
+test('conhecimento do PRÉDIO vira documento do prédio', async () => {
   const p = await projetoCom(comConhecimento('building', null, 'Somos uma pizzaria'))
   await aplicar(p)
   const predio = await ensureDefaultBuilding(DONO)
-  const memoria = await db.collection('memories').findOne({ tenantId: DONO })
-  assert.equal(memoria.scopeKey, `building:${predio._id.toString()}`)
-  assert.equal(await db.collection('knowledge_documents').countDocuments({}), 0)
+  const doc = await db.collection('knowledge_documents').findOne({})
+  assert.equal(doc.ownerType, 'building')
+  assert.ok(doc.ownerId.equals(predio._id))
+  assert.equal(await db.collection('memories').countDocuments({}), 0)
 })
 
 test('conhecimento do prédio não aponta para alvo nenhum: quem resolve é o servidor', () => {
@@ -471,12 +475,14 @@ test('o desfazer leva a base do agente junto com ele', async () => {
   assert.equal(await db.collection('knowledge_chunks').countDocuments({}), 0)
 })
 
-test('o desfazer da memória do andar remove o registro certo', async () => {
+test('o desfazer leva o documento do andar — e os pedaços dele', async () => {
   const p = await projetoCom(comConhecimento('floor', 'andar', 'Horário: 11h às 23h'))
   await aplicar(p)
-  assert.equal(await db.collection('memories').countDocuments({ tenantId: DONO }), 1)
+  const doc = await db.collection('knowledge_documents').findOne({})
+  await db.collection('knowledge_chunks').insertOne({ _id: new ObjectId(), documentId: doc._id, ownerType: 'floor', ownerId: doc.ownerId, content: 'Horário', createdAt: new Date() })
   await service.rollbackProject(DONO, p._id)
-  assert.equal(await db.collection('memories').countDocuments({ tenantId: DONO }), 0)
+  assert.equal(await db.collection('knowledge_documents').countDocuments({}), 0)
+  assert.equal(await db.collection('knowledge_chunks').countDocuments({}), 0, 'nenhum pedaço órfão')
 })
 
 test('o desfazer da rotina leva versões e execuções junto', async () => {
@@ -582,4 +588,73 @@ test('gerar e revisar ficam no log; a conversa não', async () => {
   assert.deepEqual(auditTargetFor('POST', `/api/architect/projects/${ID}/resume`), { entityType: 'architect_project', entityId: ID, action: 'publish' })
   assert.deepEqual(auditTargetFor('POST', `/api/architect/projects/${ID}/rollback`), { entityType: 'architect_project', entityId: ID, action: 'delete' })
   assert.equal(auditTargetFor('POST', `/api/architect/projects/${ID}/messages`), null)
+})
+
+// --- LACUNA 3 CORRIGIDA: ligar também o que mora no plano V2 -----------------------------------
+//
+// O compilador já reaproveita por nome quando reconhece o recurso. O que faltava era a escolha
+// MANUAL: "este Database da proposta é aquele que eu já tenho". Sem ela, a pessoa via a
+// proposta criar um segundo Database ao lado do dela e não tinha onde dizer o contrário.
+
+const t2 = await import('../dist/architect/typesV2.js')
+const { createDataStore } = await import('../dist/databases/store.js')
+
+const projetoComV2 = async () => {
+  const bp2 = t2.emptyBlueprintV2('Teste', 'testar', 'create')
+  bp2.resources.databases = [
+    { key: 'base', action: 'create', layer: 'essential', rationale: 'x', dependsOn: [], name: 'Atendimentos', owner: { ownerType: 'account' }, adapterKind: 'data_history' },
+  ]
+  const p = await projetoCom(BASE())
+  await repo.patchProject(DONO, p._id, { blueprintVersion: 2, blueprintV2: bp2 })
+  return (await repo.getProject(DONO, p._id))
+}
+
+test('ligar um DATABASE da proposta ao que já existe muda a ação para reuse', async () => {
+  const meu = await createDataStore(DONO, { name: 'Atendimentos', adapterKind: 'data_history' })
+  const p = await projetoComV2()
+
+  const r = await pedir('PATCH', `/projects/${p._id}/links`, {
+    links: [{ kind: 'database', key: 'base', action: 'reuse', resourceId: meu._id.toString() }],
+  })
+  assert.equal(r.status, 200, JSON.stringify(r.body))
+
+  const depois = await repo.getProject(DONO, p._id)
+  const item = depois.blueprintV2.resources.databases[0]
+  assert.equal(item.action, 'reuse')
+  assert.equal(item.resourceId, meu._id.toString())
+  // O plano V1 não é tocado: o Database não mora lá.
+  assert.deepEqual(depois.blueprint.floors[0].key, p.blueprint.floors[0].key)
+})
+
+test('AMEAÇA: um Database de OUTRA conta é recusado, com a mesma mensagem de sempre', async () => {
+  const alheio = await createDataStore(VIZINHO, { name: 'Do vizinho', adapterKind: 'data_history' })
+  const p = await projetoComV2()
+  const r = await pedir('PATCH', `/projects/${p._id}/links`, {
+    links: [{ kind: 'database', key: 'base', action: 'reuse', resourceId: alheio._id.toString() }],
+  })
+  assert.equal(r.status, 400)
+  // A mesma frase dos outros tipos: nenhuma resposta confirma a existência de um recurso alheio.
+  assert.match(r.body.message, /não existe nesta conta/)
+})
+
+test('ligar um item do V2 num projeto SEM plano V2 é recusado, e não cria um', async () => {
+  const p = await projetoCom(BASE())
+  const r = await pedir('PATCH', `/projects/${p._id}/links`, {
+    links: [{ kind: 'database', key: 'base', action: 'reuse', resourceId: new ObjectId().toString() }],
+  })
+  assert.equal(r.status, 400)
+  assert.equal((await repo.getProject(DONO, p._id)).blueprintV2, undefined)
+})
+
+test('o hash muda quando a ligação mexe no plano V2 — a revisão precisa ser refeita', async () => {
+  const meu = await createDataStore(DONO, { name: 'Atendimentos', adapterKind: 'data_history' })
+  const p = await projetoComV2()
+  const antes = (await repo.getProject(DONO, p._id)).blueprintHash
+
+  await pedir('PATCH', `/projects/${p._id}/links`, {
+    links: [{ kind: 'database', key: 'base', action: 'reuse', resourceId: meu._id.toString() }],
+  })
+  const depois = await repo.getProject(DONO, p._id)
+  assert.notEqual(depois.blueprintHash, antes, 'sem hash novo, uma confirmação antiga aplicaria a proposta mudada')
+  assert.equal(depois.status, 'draft')
 })

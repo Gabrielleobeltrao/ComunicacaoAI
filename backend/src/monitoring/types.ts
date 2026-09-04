@@ -1,0 +1,322 @@
+import type { ObjectId } from 'mongodb'
+import type { ArchitectStamp } from '../architectStamp.js'
+
+// A FONTE MONITORADA — orquestração, não motor novo.
+//
+// Cada tipo aqui já tem um mecanismo funcionando no produto: polling de HTTP é o executor
+// de ferramenta com guarda de SSRF; webhook é o receptor dos Flows; WebSocket é o App;
+// ação de App é `resolveGrant`; dataset é Databases; evento interno é o barramento. O que
+// não existia era o LUGAR onde a pessoa vê tudo isso como uma coisa só, com a mesma
+// pergunta em todos: está online? qual foi a última leitura? o que ela dispara?
+//
+// Por isso `MonitoringSource` guarda REFERÊNCIAS aos subsistemas, e nunca uma cópia do que
+// eles fazem. Duplicar o polling aqui criaria dois lugares decidindo backoff, e o dia em
+// que divergissem um estaria tentando de novo o que o outro desistiu.
+
+export type MonitoringSourceKind =
+  | 'api_polling'
+  | 'webhook'
+  | 'websocket'
+  | 'app_action'
+  | 'rss'
+  | 'http_page'
+  | 'browser'
+  | 'dataset'
+  | 'internal_event'
+
+export const MONITORING_SOURCE_KINDS: readonly MonitoringSourceKind[] = [
+  'api_polling',
+  'webhook',
+  'websocket',
+  'app_action',
+  'rss',
+  'http_page',
+  'browser',
+  'dataset',
+  'internal_event',
+]
+
+/** O que cada tipo precisa saber fazer. Usado pela tela para não oferecer o que não existe. */
+export const KIND_CAPABILITIES: Record<MonitoringSourceKind, { pull: boolean; push: boolean; needsUrl: boolean; needsConnection: boolean }> = {
+  api_polling: { pull: true, push: false, needsUrl: true, needsConnection: false },
+  webhook: { pull: false, push: true, needsUrl: false, needsConnection: false },
+  websocket: { pull: false, push: true, needsUrl: false, needsConnection: true },
+  app_action: { pull: true, push: false, needsUrl: false, needsConnection: true },
+  rss: { pull: true, push: false, needsUrl: true, needsConnection: false },
+  http_page: { pull: true, push: false, needsUrl: true, needsConnection: false },
+  browser: { pull: true, push: false, needsUrl: true, needsConnection: false },
+  dataset: { pull: true, push: false, needsUrl: false, needsConnection: false },
+  internal_event: { pull: false, push: true, needsUrl: false, needsConnection: false },
+}
+
+export type MonitoringStatus = 'draft' | 'active' | 'paused'
+/** O que a Visão geral mostra. `degraded` é o estado que diz a verdade em vez de mentir verde. */
+export type MonitoringHealth = 'online' | 'degraded' | 'paused' | 'never_read'
+
+/**
+ * O DESTINO do que a fonte lê.
+ *
+ * "Ao vivo" é valor de agora, consultado sob demanda; "histórico" é série guardada. Os
+ * dois existem porque respondem perguntas diferentes — "quanto está agora" e "como
+ * variou" — e escolher errado custa: guardar tudo o que só interessa agora enche o banco,
+ * e não guardar o que interessa depois perde o passado para sempre.
+ */
+export interface MonitoringDestination {
+  live: boolean
+  history: boolean
+  /** O recorder que grava — criado pelo serviço, nunca digitado. */
+  recorderId?: ObjectId | null
+  /** A fonte ao vivo correspondente, quando `live`. */
+  realtimeSourceId?: ObjectId | null
+  /** Quantos dias guardar. `null` = a política do histórico decide. */
+  retentionDays?: number | null
+}
+
+/**
+ * COMO a fonte é lida. Puxada tem cadência; empurrada não tem — e forçar uma cadência
+ * numa fonte que empurra seria inventar trabalho que ninguém pediu.
+ */
+export interface MonitoringCadence {
+  mode: 'interval' | 'cron' | 'stream'
+  intervalMs?: number | null
+  cron?: string | null
+  timezone?: string | null
+}
+
+/**
+ * O que fazer quando falha — e por quanto tempo insistir.
+ *
+ * O jitter não é detalhe: sem ele, cem fontes que caíram juntas voltam juntas, e a
+ * primeira tentativa depois de um incidente vira o segundo incidente.
+ */
+export interface MonitoringRetry {
+  timeoutMs: number
+  maxAttempts: number
+  backoffMs: number
+  jitterRatio: number
+  /** Teto de leituras por minuto. Protege o serviço do outro lado, não este. */
+  rateLimitPerMinute: number | null
+}
+
+/**
+ * Quando um dado deixa de valer.
+ *
+ * Sem isto, uma fonte que parou de responder continua "verde" com o último valor de três
+ * dias atrás — e um monitor decide sobre um número que já não é verdade.
+ */
+export interface MonitoringFreshness {
+  /** Depois disso, o valor é considerado velho e a fonte fica `degraded`. */
+  staleAfterMs: number
+  /** O que o monitor faz com dado velho: nada, ou avisar. Nunca decidir como se fosse novo. */
+  onStale: 'ignore' | 'degrade'
+}
+
+export interface MonitoringTelemetry {
+  lastReadAt: Date | null
+  lastOkAt: Date | null
+  lastErrorAt: Date | null
+  lastErrorCode: string | null
+  /** Latência da última leitura. Não é média: média esconde o pico que derruba. */
+  lastLatencyMs: number | null
+  consecutiveFailures: number
+  readsOk: number
+  readsFailed: number
+  /** Reconexões, para fontes que mantêm sessão. */
+  reconnects: number
+  /** O conteúdo da última leitura gravada. É o que faz "de novo o mesmo" não virar linha. */
+  lastContentHash?: string | null
+  /**
+   * O TESTE — separado da leitura de verdade, de propósito.
+   *
+   * Testar prova que a configuração funciona; ler é o trabalho. Misturar os dois faria um
+   * teste bem-sucedido contar como leitura: a fonte apareceria "no ar" sem nunca ter
+   * coletado, e o `lastContentHash` de um teste envenenaria a dedupe da primeira coleta
+   * real — ela acharia que "não mudou" e não gravaria nada.
+   */
+  lastTestAt?: Date | null
+  lastTestOkAt?: Date | null
+  lastTestError?: string | null
+}
+
+export const emptyTelemetry = (): MonitoringTelemetry => ({
+  lastReadAt: null,
+  lastOkAt: null,
+  lastErrorAt: null,
+  lastErrorCode: null,
+  lastLatencyMs: null,
+  consecutiveFailures: 0,
+  readsOk: 0,
+  readsFailed: 0,
+  reconnects: 0,
+  lastContentHash: null,
+  lastTestAt: null,
+  lastTestOkAt: null,
+  lastTestError: null,
+})
+
+/**
+ * A CONFIGURAÇÃO por tipo — referências, nunca segredo.
+ *
+ * Credencial mora na conexão cifrada (`connectionId`) e no cofre do App. Um segredo aqui
+ * ficaria em texto claro num documento que a tela lê inteiro.
+ */
+export interface MonitoringConfig {
+  /** `api_polling`, `rss`, `http_page`, `browser`. */
+  url?: string
+  method?: 'GET' | 'POST'
+  query?: { key: string; value: string }[]
+  /** Corpo para POST. Sem interpolação de segredo: isso é da conexão. */
+  body?: string
+  /** Nomes de cabeçalho que a conexão preenche. O valor nunca está aqui. */
+  headerNames?: string[]
+  /** Paginação, quando a API tem. `resume` só existe no cursor de retomada. */
+  pagination?: { kind: 'none' | 'cursor' | 'page'; cursorPath?: string; pageParam?: string; maxPages?: number; resume?: boolean }
+  /** A política de instante do webhook. Documento antigo sem o campo é lido como opcional. */
+  timestampPolicy?: 'required' | 'optional'
+  /** `app_action`. */
+  appKey?: string
+  actionKey?: string
+  /** `websocket` — a instalação do App de WebSocket, com as subscriptions dela. */
+  installationId?: string
+  subscriptions?: string[]
+  /**
+   * WebSocket ou SSE — DITO, e não adivinhado pela URL.
+   *
+   * Adivinhar por `wss://` versus `https://` erraria num SSE servido por uma API que
+   * também fala WebSocket, e o erro só apareceria em produção.
+   */
+  protocol?: 'websocket' | 'sse'
+  /** Silêncio além disso é conexão morta, mesmo sem erro. */
+  heartbeatMs?: number
+  /** `dataset`. */
+  dataStoreId?: string
+  datasetKey?: string
+  /** `internal_event`. */
+  eventType?: string
+  /** `webhook` — a chave pública gerada; o segredo de assinatura fica cifrado. */
+  webhookPublicKey?: string
+  /** `http_page` e `browser`: a estratégia, em ordem de preferência. */
+  strategy?: ('json' | 'jsonld' | 'dom' | 'browser' | 'vision')[]
+  selector?: string
+  /**
+   * O script de extração — versionado, e executado SÓ na sandbox.
+   *
+   * Ele recebe dado já sanitizado (JSON analisado ou texto extraído), nunca HTML cru. O
+   * DSL fechado continua sendo o caminho normal; isto é para a transformação que ele não
+   * faz, e o custo de passar pela sandbox é exatamente o custo que essa escolha deve ter.
+   */
+  extractScript?: { version: number; source: string } | null
+}
+
+export interface MonitoringSource {
+  /**
+   * De onde ele veio, quando veio do Arquiteto.
+   *
+   * Fecha a janela entre criar e registrar o passo: com a marca, a retomada PROCURA antes de
+   * criar e encontra o que ficou de pé. Opcional — quem cria pela tela não tem origem.
+   */
+  architect?: ArchitectStamp
+  _id: ObjectId
+  ownerId: string
+  /** De quem é, dentro do escritório. Grant por agente/setor sai daqui. */
+  scope: { ownerType: 'account' | 'building' | 'floor' | 'sector'; ownerId: string }
+  name: string
+  description: string
+  kind: MonitoringSourceKind
+  status: MonitoringStatus
+  /** A conexão que empresta credencial. Referência, nunca valor. */
+  connectionId?: ObjectId | null
+  config: MonitoringConfig
+  /** O contrato do que sai desta fonte, depois do mapeamento. */
+  schema: Record<string, unknown>
+  /** O extrator, versionado: mudar o mapeamento não reescreve o passado. */
+  mapping: FieldMapping
+  cadence: MonitoringCadence
+  retry: MonitoringRetry
+  freshness: MonitoringFreshness
+  /** O campo que identifica a coisa observada, quando a fonte traz várias. */
+  entityKeyPath: string | null
+  /** Como decidir que duas leituras são a mesma. */
+  dedupe: { mode: 'none' | 'content_hash' | 'field'; field?: string | null }
+  destination: MonitoringDestination
+  telemetry: MonitoringTelemetry
+  /**
+   * O ALUGUEL da coleta — o que impede dois processos de lerem a mesma fonte junto.
+   *
+   * Sem ele, a API e o worker podem coletar ao mesmo tempo: duas leituras concorrentes
+   * gravam duas linhas do mesmo instante, cada uma sobrescreve a telemetria da outra e o
+   * `lastContentHash` acaba sendo o da que terminou por último — que não é a última.
+   *
+   * O aluguel VENCE em vez de ser devolvido: um processo que morre no meio da leitura
+   * devolveria nada, e a fonte ficaria travada para sempre esperando um dono que não volta.
+   */
+  lease?: { owner: string; until: Date } | null
+  /**
+   * Quando esta fonte pode ser tentada de novo. Depois de uma falha, é o backoff.
+   *
+   * Antes, o atraso era CALCULADO e devolvido na resposta — e ninguém o lia. A fonte
+   * quebrada continuava sendo tentada no intervalo cheio, martelando um serviço que já
+   * tinha dito que não estava bem.
+   */
+  nextAttemptAt?: Date | null
+  /**
+   * O cursor guardado — só para a fonte que pediu RETOMADA.
+   *
+   * Num cursor de retomada (um feed que só cresce), começar da primeira página toda vez
+   * relê o passado inteiro a cada coleta. Quem guarda é o serviço, e não o coletor: uma
+   * função que lê e escreve o documento da fonte no meio da coleta seria dois donos do
+   * mesmo campo.
+   */
+  cursor?: string | null
+  /**
+   * O segredo que assina as entregas de webhook — cifrado, e nunca devolvido.
+   *
+   * Ele é mostrado uma vez, na criação e na rotação. Um segredo que a tela consegue
+   * reexibir é um segredo que vaza no primeiro print.
+   */
+  webhookSecretEncrypted?: string
+  createdAt: Date
+  updatedAt: Date
+}
+
+// --- o mapeamento -------------------------------------------------------------------------
+
+/**
+ * O EXTRATOR — fechado, versionado e sem uma linha de código do usuário.
+ *
+ * Um campo é um caminho no documento mais uma lista de transformações escolhidas de uma
+ * lista fixa. Não há expressão, não há `eval`, não há função enviada pela tela: o que
+ * existe é dado descrevendo qual pedaço pegar e o que fazer com ele.
+ *
+ * A VERSÃO importa porque o mapeamento envelhece junto com a API do outro lado. Guardar a
+ * versão que produziu cada leitura é o que permite olhar uma série antiga e saber por que
+ * ela tem a forma que tem.
+ */
+export type TransformOp =
+  /** O formato é EXPLÍCITO: adivinhar entre "1.234" (mil) e "1.234" (um vírgula dois) erra metade das vezes. */
+  | { op: 'number'; locale?: 'pt-BR' | 'en-US' }
+  | { op: 'trim' }
+  | { op: 'lower' }
+  | { op: 'upper' }
+  | { op: 'boolean' }
+  | { op: 'date' }
+  | { op: 'first' }
+  | { op: 'join'; separator: string }
+  | { op: 'replace'; find: string; with: string }
+  | { op: 'default'; value: string | number | boolean }
+
+export interface FieldRule {
+  /** O nome que o campo terá no dado normalizado. */
+  to: string
+  /** De onde ele vem: `dados.preco`, `items[0].valor`. Sem curinga e sem expressão. */
+  from: string
+  transforms?: TransformOp[]
+  required?: boolean
+}
+
+export interface FieldMapping {
+  version: number
+  /** Onde está a lista, quando a fonte devolve várias linhas. Vazio = um objeto só. */
+  itemsPath?: string | null
+  fields: FieldRule[]
+}

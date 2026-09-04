@@ -71,7 +71,7 @@ export interface RoutineSpec {
   outputFormat?: OutputFormat
   // null = "no destination"; UNDEFINED on an update = "keep whatever it has", so an
   // edit made while the connections were still loading cannot erase one.
-  delivery?: { provider: 'email' | 'telegram'; connectionId: string } | null
+  delivery?: { provider: 'email' | 'telegram' | 'whatsapp'; connectionId: string } | null
   retryMaxAttempts?: number
   maxOutputChars?: number
   // Optional EXPLICIT sector context for knowledge grounding. Authorised

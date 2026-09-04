@@ -168,7 +168,7 @@ export function MobileNav({ current, open, onOpenChange, onOpenFloorPicker }: { 
                 <Icon name="settings" size={18} />
                 <span>Configurações</span>
               </Link>
-              <button onClick={handleSignOut} className="flex items-center gap-3 rounded-md px-3 text-left" style={{ minHeight: 'var(--hit-min)', color: 'var(--intent-danger)', background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit' }}>
+              <button onClick={handleSignOut} className="flex items-center gap-3 rounded-md px-3 text-left" style={{ minHeight: 'var(--hit-min)', color: 'var(--intent-danger-text)', background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit' }}>
                 <Icon name="log-out" size={18} />
                 <span>Sair</span>
               </button>

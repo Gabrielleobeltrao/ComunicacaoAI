@@ -18,7 +18,7 @@ import {
   RECORDER_MODES,
   SOURCE_KINDS,
 } from './types.js'
-import type { AggregationRule, DataRecorderDefinition, PersistPolicy, RecorderFilter, RecorderMode, Retention, SourceKind } from './types.js'
+import type { AggregationRule, DataRecorderDefinition, DerivedIndicator, PersistPolicy, RecorderFilter, RecorderMode, Retention, SourceKind } from './types.js'
 
 /**
  * A DEFINIÇÃO de um histórico: o que gravar, de onde, quando e por quanto tempo.
@@ -113,6 +113,7 @@ export interface RecorderInput {
   retention?: unknown
   storage?: unknown
   buildingId?: unknown
+  derivedFrom?: unknown
 }
 
 /**
@@ -132,6 +133,7 @@ export function normalizarRecorder(bruto: RecorderInput): Omit<DataRecorderDefin
   const mode = String(bruto.mode ?? '') as RecorderMode
   if (!RECORDER_MODES.includes(mode)) throw new ValidationError('modo: escolha quando gravar.')
 
+  const derivedFrom = normalizarDerivacao(bruto.derivedFrom)
   const aggregations = normalizarAgregacoes(bruto.aggregations)
   const filters = normalizarFiltros(bruto.filters)
 
@@ -200,7 +202,32 @@ export function normalizarRecorder(bruto: RecorderInput): Omit<DataRecorderDefin
     retentionDays: retention.mode === 'ttl' ? retention.days : null,
     storage,
     buildingId: bruto.buildingId ? String(bruto.buildingId) : null,
+    ...(derivedFrom ? { derivedFrom } : {}),
   }
+}
+
+/**
+ * A DERIVAÇÃO, validada como o resto: ou ela faz sentido inteira, ou não entra.
+ *
+ * Uma derivação pela metade — sem função, sem campo, sem quantos pontos ler — produziria um
+ * recorder que parece calculado e nunca calcula nada. E `lookback` tem teto porque ele vira o
+ * `limit` de uma consulta à série a cada gravação.
+ */
+function normalizarDerivacao(bruto: unknown): DerivedIndicator | null {
+  if (bruto === undefined || bruto === null) return null
+  const d = bruto as Record<string, unknown>
+  const origem = String(d.recorderId ?? '')
+  if (!ObjectId.isValid(origem)) throw new ValidationError('derivação: escolha a série de origem.')
+  const functionName = texto(d.functionName, 'derivação: função', 120)
+  const version = texto(d.version, 'derivação: versão', 40)
+  const inputField = texto(d.inputField, 'derivação: campo de entrada', 120)
+  const inputArg = texto(d.inputArg, 'derivação: argumento da série', 120)
+  const lookback = Math.trunc(Number(d.lookback ?? 0))
+  if (!Number.isFinite(lookback) || lookback < 2 || lookback > 5000) {
+    throw new ValidationError('derivação: quantos pontos ler precisa ser um inteiro de 2 a 5000.')
+  }
+  const params = d.params && typeof d.params === 'object' && !Array.isArray(d.params) ? (d.params as Record<string, unknown>) : {}
+  return { recorderId: new ObjectId(origem), functionName, version, inputField, inputArg, lookback, params }
 }
 
 // --- repositório -----------------------------------------------------------------

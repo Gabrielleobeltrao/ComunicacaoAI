@@ -62,10 +62,17 @@ export interface ArchitectTargets {
   agents: { id: string; name: string; floorId: string }[]
   sectors: { id: string; name: string; floorId: string }[]
   routines: { id: string; name: string; status: string }[]
+  // Os do plano V2. Ausentes nas respostas antigas: a tela trata como lista vazia.
+  databases?: { id: string; name: string }[]
+  sources?: { id: string; name: string; status: string }[]
+  monitors?: { id: string; name: string; status: string }[]
+  flows?: { id: string; name: string; status: string }[]
+  /** Por onde uma entrega pode sair. Só nome e provedor — o segredo nunca sai daqui. */
+  connections?: { id: string; name: string; provider: string }[]
 }
 
 export interface BlueprintLink {
-  kind: 'floor' | 'agent' | 'sector' | 'routine'
+  kind: 'floor' | 'agent' | 'sector' | 'routine' | 'database' | 'source' | 'monitor' | 'flow'
   key: string
   action: 'create' | 'reuse' | 'update'
   resourceId?: string | null
@@ -96,6 +103,18 @@ export interface ArchitectProject {
   pendingQuestion?: { key: string; text: string } | null
   assumptions?: { key: string; text: string; questionKey?: string }[]
   blueprint?: Blueprint | null
+  /**
+   * O PLANO INTEIRO — as três camadas juntas. `blueprint` é o recorte da escolhida.
+   *
+   * Os dois vêm porque respondem perguntas diferentes: o recorte é o que vai ser
+   * aplicado, e o plano é do que sai a comparação entre as camadas.
+   */
+  plan?: Blueprint | null
+  layer?: BlueprintLayer
+  layerCounts?: Record<BlueprintLayer, { agents: number; sectors: number; routines: number; apps: number }> | null
+  /** O que o Arquiteto entendeu do negócio. É o que a tela mostra como "O que entendi". */
+  brief?: OperationBrief | null
+  canUndoBrief?: boolean
   blueprintHash?: string | null
   checklist?: ChecklistItem[]
   applyState?: { operationId: string; status: string; error: string | null } | null
@@ -103,6 +122,39 @@ export interface ArchitectProject {
   links?: ArchitectLink[]
   /** O que a última revisão mexeu. Vazio na primeira proposta. */
   changes?: BlueprintChange[]
+}
+
+export type BlueprintLayer = 'essential' | 'recommended' | 'complete'
+
+export const LAYERS: { key: BlueprintLayer; label: string; hint: string }[] = [
+  { key: 'essential', label: 'Essencial', hint: 'o caminho mínimo até a primeira resposta' },
+  { key: 'recommended', label: 'Recomendado', hint: 'o que faz a resposta ser boa' },
+  { key: 'complete', label: 'Completo', hint: 'tudo o que foi entendido, inclusive o que roda sozinho' },
+]
+
+/** O ENTENDIMENTO: o que a operação faz, em fatos — antes de virar desenho. */
+export interface OperationBrief {
+  version: number
+  businessGoal: string
+  audience: string
+  channels: string[]
+  jobs: {
+    id: string
+    name: string
+    trigger?: string
+    input?: string
+    decision?: string
+    action?: string
+    output?: string
+    frequency?: string
+    volume?: string
+    risk?: string
+  }[]
+  knowledgeNeeds: { subject: string; required: boolean; source?: string }[]
+  integrations: { name: string; purpose?: string; connected?: boolean }[]
+  constraints: string[]
+  assumptions: { id: string; text: string; status: string }[]
+  openQuestions: string[]
 }
 
 export interface BlueprintChange {
@@ -125,17 +177,56 @@ export interface Blueprint {
   title: string
   objective: string
   floors: { key: string; name: string; workMode: string; mission?: string; description?: string; rationale?: string }[]
-  agents: { key: string; name: string; floorKey: string; preset?: string; objective?: string; role?: string; instructions?: string; constraints?: string; rationale?: string }[]
+  agents: {
+    key: string
+    name: string
+    floorKey: string
+    preset?: string
+    objective?: string
+    role?: string
+    instructions?: string
+    constraints?: string
+    rationale?: string
+    executorKind?: 'llm' | 'function' | 'tool'
+    functionName?: string
+    inputContract?: string
+    outputContract?: string
+    activationModes?: string[]
+    delegationPolicy?: string
+    callableAgentKeys?: string[]
+    handoffEnabled?: boolean
+    layer?: BlueprintLayer
+    layerReason?: string
+  }[]
   sectors: { key: string; name: string; mode: string; floorKey?: string; memberAgentKeys: string[]; coordinatorAgentKey?: string | null; instruction?: string; rationale?: string }[]
-  routines: { key: string; name: string; ownerAgentKey: string; description?: string; rationale?: string }[]
-  appRequirements: { key: string; appKey: string; reason: string; required: boolean }[]
-  knowledgeRequirements: { key: string; title: string; description: string; required: boolean; state: string; content?: string }[]
+  routines: { key: string; name: string; ownerAgentKey: string; description?: string; rationale?: string; triggerType?: string; cron?: string; layer?: BlueprintLayer; layerReason?: string }[]
+  appRequirements: { key: string; appKey: string; reason: string; required: boolean; agentKeys?: string[]; layer?: BlueprintLayer; layerReason?: string }[]
+  knowledgeRequirements: { key: string; title: string; description: string; required: boolean; state: string; content?: string; scope?: string; targetKey?: string; layer?: BlueprintLayer; layerReason?: string }[]
   assumptions: { key: string; text: string }[]
   warnings: { path: string; message: string }[]
 }
 
 export interface PreviewItem {
-  kind: 'building' | 'floor' | 'agent' | 'sector' | 'routine' | 'app' | 'knowledge'
+  // Os últimos dez vêm do plano V2: sem eles, a proposta mostra andares e agentes e cala
+  // sobre o Database, a fonte e o monitor que vão ser criados.
+  kind:
+    | 'building'
+    | 'floor'
+    | 'agent'
+    | 'sector'
+    | 'routine'
+    | 'app'
+    | 'knowledge'
+    | 'database'
+    | 'dataset'
+    | 'source'
+    | 'history'
+    | 'live'
+    | 'monitor'
+    | 'flow'
+    | 'channel'
+    | 'delivery'
+    | 'tool'
   key: string
   label: string
   action: 'create' | 'reuse' | 'update' | 'wait_user'
@@ -148,6 +239,52 @@ export interface PreviewItem {
   issues: BlueprintIssue[]
 }
 
+export interface CriticFinding {
+  source: 'responsibility' | 'executor' | 'architecture' | 'llm'
+  code: string
+  agentKey?: string
+  message: string
+  fix: string
+  severity: 'error' | 'warning'
+  evidence: string[]
+}
+
+export interface ArchitectureScore {
+  coverage: number
+  cohesion: number
+  executorFit: number
+  permissionSafety: number
+  setupCompleteness: number
+  handoffSimplicity: number
+  /** Os fatos por trás de cada nota. Nota sem fato é palpite com número. */
+  facts: Record<string, string[]>
+}
+
+export interface SimulationResult {
+  caseId: string
+  observedRoute: string[]
+  steps: { kind: string; ref: string; detail: string }[]
+  problems: { code: string; message: string; fix: string }[]
+  sideEffectsAvoided: string[]
+  matchedExpected: boolean
+}
+
+export interface SimulationRun {
+  version: number
+  createdAt?: string
+  cases: { id: string; input: string; trigger: string; expectedRoute: string[]; expectsApproval: boolean }[]
+  results: SimulationResult[]
+  passed: number
+}
+
+/** O que pode ENTRAR NO AR: só o item do plano que declara um teste de aceitação. */
+export interface ActivatableItem {
+  kind: 'source' | 'monitor' | 'flow'
+  key: string
+  label: string
+  expectation: string
+}
+
 export interface ArchitectPreview {
   blueprintHash: string
   valid: boolean
@@ -156,6 +293,30 @@ export interface ArchitectPreview {
   checklist: ChecklistItem[]
   readiness: ArchitectReadiness
   counts: { create: number; reuse: number; update: number; waitUser: number }
+  /** Ausente nas prévias anteriores a esta versão — e ausente significa "nada a ligar". */
+  activatable?: ActivatableItem[]
+  /** As entregas que esperam uma conexão. O endereço nunca vem no plano. */
+  pendingDeliveries?: { key: string; label: string; hint: string }[]
+  /** O que a validação estrutural não vê: gerente sem equipe, executor incoerente. */
+  critique?: {
+    findings: CriticFinding[]
+    score: ArchitectureScore
+    mergeSplit: { agentKey: string; agentName: string; jobs: string[]; rationale: string }[]
+    clean: boolean
+    /**
+     * A leitura auxiliar do modelo sobre ESTA revisão.
+     *
+     * `stale` é a leitura de outra revisão, descartada; `absent` é "ainda não houve".
+     * A tela diz qual dos dois — fingir que a proposta foi revisada é pior que dizer
+     * que não foi.
+     */
+    llmStatus?: 'ok' | 'failed' | 'stale' | 'absent'
+  }
+  /** O ensaio da operação, sem efeito nenhum. */
+  simulation?: SimulationRun
+  /** A camada que este recorte representa, e o que cada uma entrega. */
+  layer?: BlueprintLayer
+  layerCounts?: Record<BlueprintLayer, { agents: number; sectors: number; routines: number; apps: number }>
 }
 
 export interface ArchitectMessage {
@@ -216,6 +377,14 @@ export const previewProject = (id: string) => request<ArchitectPreview>(`/projec
 export const listTargets = () => request<ArchitectTargets>('/targets')
 export const setLinks = (id: string, links: BlueprintLink[]) => request<ArchitectProject>(`/projects/${id}/links`, { method: 'PATCH', body: JSON.stringify({ links }) })
 /** Corrige a proposta sem chamar o modelo — texto, e só. Ver `editBlueprint` no servidor. */
+export const setLayer = (id: string, layer: BlueprintLayer) =>
+  request<ArchitectProject>(`/projects/${id}/layer`, { method: 'PATCH', body: JSON.stringify({ layer }) })
+
+export const editBrief = (id: string, patch: Partial<OperationBrief>) =>
+  request<ArchitectProject>(`/projects/${id}/brief`, { method: 'PATCH', body: JSON.stringify({ patch }) })
+
+export const undoBrief = (id: string) => request<ArchitectProject>(`/projects/${id}/brief`, { method: 'PATCH', body: JSON.stringify({ undo: true }) })
+
 export const editBlueprint = (id: string, edits: BlueprintEdit[]) =>
   request<ArchitectProject>(`/projects/${id}/blueprint`, { method: 'PATCH', body: JSON.stringify({ edits }) })
 export const rollbackProject = (id: string) => request<ArchitectProject & { removed: string[]; kept: { key: string; reason: string }[] }>(`/projects/${id}/rollback`, { method: 'POST' })
@@ -235,7 +404,20 @@ export const listProviders = () =>
 export const patchProject = (id: string, patch: { provider?: 'anthropic' | 'openai'; model?: string | null; title?: string }) =>
   request<ArchitectProject>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
 
-export const applyProject = (id: string, body: { blueprintHash: string; idempotencyKey: string; approvedAppKeys: string[]; approvedUpdateKeys: string[] }) =>
+// `approvedActivationKeys` é a autorização de ENTRAR NO AR, separada da de criar: sem ela o
+// recurso nasce e fica parado. Opcional de propósito — ausente significa "não ligue nada".
+export const applyProject = (
+  id: string,
+  body: {
+    blueprintHash: string
+    idempotencyKey: string
+    approvedAppKeys: string[]
+    approvedUpdateKeys: string[]
+    approvedActivationKeys?: string[]
+    /** A conexão escolhida por entrega. O servidor confere a posse de novo. */
+    deliveryConnections?: { key: string; connectionId: string }[]
+  },
+) =>
   request<ApplyResponse>(`/projects/${id}/apply`, { method: 'POST', body: JSON.stringify({ ...body, confirm: true }) })
 export const resumeProject = (id: string) => request<ApplyResponse>(`/projects/${id}/resume`, { method: 'POST' })
 export const recheckProject = (id: string) => request<ApplyResponse>(`/projects/${id}/recheck`, { method: 'POST' })

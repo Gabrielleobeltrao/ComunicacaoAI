@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
 import { Badge, Button, Card, Dialog, EmptyState, Icon, IconButton, Textarea } from '../../ui'
 import { createProject, deleteProject, listProjects } from '../../lib/architect'
@@ -14,8 +14,16 @@ const EXEMPLOS = [
 
 export function ArchitectProjects() {
   const navigate = useNavigate()
+  const [parametros] = useSearchParams()
   const [projetos, setProjetos] = useState<ArchitectProject[] | null>(null)
-  const [objetivo, setObjetivo] = useState('')
+  /**
+   * O RASCUNHO vem junto quando a pessoa clicou em "Montar operação" no chat.
+   *
+   * Quem digitou "quero avisar quando o estoque acabar" e clicou não pode encontrar um campo
+   * vazio do outro lado: o trabalho já estava feito, e pedir para redigitar é a forma mais
+   * barata de fazer alguém desistir.
+   */
+  const [objetivo, setObjetivo] = useState(() => (parametros.get('objetivo') ?? '').slice(0, 400))
   const [erro, setErro] = useState<string | null>(null)
   const [criando, setCriando] = useState(false)
   /** A conversa que está prestes a sumir. Apagar sem perguntar não é opção. */
@@ -63,7 +71,11 @@ export function ArchitectProjects() {
   }
 
   return (
-    <AppLayout current="/architect" title="Montar operação" subtitle="Descreva o resultado que você quer. O sistema faz as perguntas e propõe a estrutura.">
+    <AppLayout
+      current="/architect"
+      title="Arquiteto · Montar operação"
+      subtitle="Descreva o resultado que você quer. O Arquiteto faz as perguntas e propõe a estrutura."
+    >
       <div className="flex flex-col gap-4" data-testid="architect-projects">
         <Card>
           <div className="flex flex-col gap-3">
@@ -101,7 +113,7 @@ export function ArchitectProjects() {
               ))}
             </div>
             {erro && (
-              <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="architect-error">
+              <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="architect-error">
                 {erro}
               </p>
             )}
@@ -185,7 +197,7 @@ export function ArchitectProjects() {
             seguem funcionando e podem ser editados pelas telas de sempre.
           </p>
           {erro && (
-            <p role="alert" style={{ color: 'var(--intent-danger)', fontSize: 13 }} data-testid="architect-delete-error">
+            <p role="alert" style={{ color: 'var(--intent-danger-text)', fontSize: 13 }} data-testid="architect-delete-error">
               {erro}
             </p>
           )}

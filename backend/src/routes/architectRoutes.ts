@@ -3,10 +3,15 @@ import { ValidationError } from '../building.js'
 import * as service from '../architect/service.js'
 import * as repo from '../architect/repository.js'
 import { ArchitectRefusal } from '../architect/service.js'
+import { ApplyFailure } from '../architect/apply.js'
 import { allowRate, withProjectLock } from '../architect/guard.js'
 import * as L from '../architect/limits.js'
 import { auditEntity } from './auditMiddleware.js'
+import { runAssistantTurn, resolveUiContext, ASSISTANT_LIMITS } from '../architect/assistant.js'
+import { loadOfficeInventory, summarizeInventory } from '../architect/inventory.js'
 import { fail, notFound, oid } from './http.js'
+import { recordAudit } from '../audit.js'
+import { randomUUID } from 'node:crypto'
 
 // “Montar operação”, do lado da API.
 //
@@ -42,6 +47,16 @@ const refusalStatus: Record<string, number> = {
 }
 
 function refuse(res: Parameters<typeof fail>[0], error: unknown, next: Parameters<typeof fail>[2]): void {
+  /**
+   * Uma saga que falhou é um estado NORMAL do produto — existe rota para retomar.
+   *
+   * Sem este ramo ela caía no 500 padrão do Express, que devolve HTML: a tela ficava sem o
+   * motivo e sem o id da operação, e "retomar" não tinha o que retomar.
+   */
+  if (error instanceof ApplyFailure) {
+    res.status(502).json({ code: 'apply_failed', message: error.message, operationId: error.operationId })
+    return
+  }
   if (error instanceof ArchitectRefusal) {
     if (error.code === 'no_blueprint' && error.message === 'projeto não encontrado') return notFound(res)
     res.status(refusalStatus[error.code] ?? 400).json({ code: error.code, message: error.message })
@@ -54,6 +69,143 @@ function refuse(res: Parameters<typeof fail>[0], error: unknown, next: Parameter
 const comRitmo = (ownerId: string): void => {
   if (!allowRate(ownerId, 10, 60_000)) throw new ArchitectRefusal('too_many_messages', 'muitas mensagens em pouco tempo; aguarde um instante')
 }
+
+/**
+ * O ASSISTENTE GLOBAL — uma rodada que pode NÃO virar projeto.
+ *
+ * É a porta do chat flutuante. O modo decide o que acontece, e só `propose` cria projeto:
+ * perguntar "qual o valor do dólar hoje?" não pode deixar um projeto no histórico da conta.
+ *
+ * O contexto da tela chega como REFERÊNCIA e é reconferido aqui: um id que vem do cliente é
+ * um pedido, e aceitá-lo faria a resposta descrever o escritório de outra pessoa.
+ */
+architectRouter.post('/assistant/turn', async (req, res, next) => {
+  // `classified` NÃO é lido. Quem manda o corpo é o navegador, e aceitar a classificação dele
+  // era deixar o cliente escolher o caminho que executa. A intenção é decidida no servidor.
+  const b = (req.body ?? {}) as { message?: unknown; uiContext?: unknown }
+  const mensagem = String(b.message ?? '').trim()
+  if (!mensagem) return void res.status(400).json({ code: 'invalid', message: 'escreva o que você quer' })
+  if (mensagem.length > ASSISTANT_LIMITS.message) {
+    return void res.status(400).json({ code: 'too_long', message: 'mensagem longa demais' })
+  }
+
+  // O MESMO limite de taxa das outras rodadas: uma conversa não pode virar um laço.
+  if (!allowRate(res.locals.userId, 10, 60_000)) {
+    return void res.status(429).json({ code: 'too_many_messages', message: 'muitas mensagens em pouco tempo; aguarde um instante' })
+  }
+
+  try {
+    const r = await runAssistantTurn({
+      ownerId: res.locals.userId,
+      message: mensagem,
+      uiContext: (b.uiContext ?? null) as never,
+    })
+    /**
+     * A rodada só é REGISTRADA quando ela cria alguma coisa.
+     *
+     * Responder e explicar não mudam nada, e uma linha de auditoria por pergunta feita
+     * afogaria o histórico. Mas a proposta abre um projeto — e um projeto criado pelo chat
+     * flutuante não pode ficar sem registro só porque não passou pela tela do Arquiteto.
+     */
+    if (r.projectId) {
+      await recordAudit({
+        ownerId: res.locals.userId,
+        actorType: 'user',
+        actorId: res.locals.userId,
+        action: 'create',
+        entityType: 'architect_project',
+        entityId: r.projectId,
+        entityLabel: null,
+        floorId: null,
+        result: 'success',
+        requestId: typeof res.locals.requestId === 'string' ? res.locals.requestId : randomUUID(),
+        metadata: { method: 'POST', statusCode: 200, via: 'assistant' },
+      })
+    }
+    res.json(r)
+  } catch (erro) {
+    next(erro as Error)
+  }
+})
+
+/**
+ * CONFIRMAR uma escrita que a conversa preparou.
+ *
+ * Endpoint próprio de propósito: a confirmação não pode ser mais uma mensagem, senão o texto
+ * do modelo voltaria a ser o que dispara a escrita. Aqui chega o id de uma operação que o
+ * servidor montou e o hash que ele mesmo carimbou.
+ */
+architectRouter.post('/assistant/confirm', async (req, res, next) => {
+  const b = (req.body ?? {}) as { id?: unknown; operationHash?: unknown; confirmationName?: unknown }
+  try {
+    const { confirmarOperacao } = await import('../architect/assistantOperate.js')
+    const r = await confirmarOperacao(res.locals.userId, {
+      id: String(b.id ?? ''),
+      operationHash: String(b.operationHash ?? ''),
+      ...(b.confirmationName !== undefined ? { confirmationName: String(b.confirmationName) } : {}),
+    })
+    /**
+     * A tentativa e o resultado ficam na auditoria — inclusive a recusa.
+     *
+     * Uma escrita recusada por hash vencido é exatamente o que alguém vai querer investigar
+     * depois; registrar só o sucesso contaria metade da história.
+     */
+    await recordAudit({
+      ownerId: res.locals.userId,
+      actorType: 'user',
+      actorId: res.locals.userId,
+      action: 'update',
+      entityType: 'architect_operation',
+      entityId: String(b.id ?? '') || null,
+      entityLabel: null,
+      floorId: null,
+      result: r.ok ? 'success' : 'failure',
+      requestId: typeof res.locals.requestId === 'string' ? res.locals.requestId : randomUUID(),
+      metadata: { method: 'POST', statusCode: r.ok ? 200 : 409, via: 'assistant', ...(r.ok ? {} : { code: r.code }) },
+    })
+    if (r.ok) return void res.json({ ok: true, text: r.text })
+    const status = r.code === 'not_found' ? 404 : r.code === 'name_mismatch' ? 400 : 409
+    res.status(status).json({ code: r.code, message: r.reason })
+  } catch (erro) {
+    /**
+     * A TENTATIVA QUE ESTOUROU também é uma tentativa.
+     *
+     * Ela saía por aqui sem passar pelo registro: a auditoria de uma escrita confirmada por
+     * alguém ficava sem linha nenhuma, justamente no caso que mais se investiga depois. A
+     * mensagem crua não entra — ela conta caminho de arquivo e valor de variável.
+     */
+    await recordAudit({
+      ownerId: res.locals.userId,
+      actorType: 'user',
+      actorId: res.locals.userId,
+      action: 'update',
+      entityType: 'architect_operation',
+      entityId: String(b.id ?? '') || null,
+      entityLabel: null,
+      floorId: null,
+      result: 'failure',
+      requestId: typeof res.locals.requestId === 'string' ? res.locals.requestId : randomUUID(),
+      metadata: { method: 'POST', statusCode: 500, via: 'assistant', code: 'exception' },
+    }).catch(() => undefined)
+    next(erro as Error)
+  }
+})
+
+/** O contexto atual, resumido — o que a tela mostra sem perguntar nada ao modelo. */
+architectRouter.get('/context', async (req, res, next) => {
+  try {
+    const contexto = await resolveUiContext(res.locals.userId, {
+      pathname: String(req.query.pathname ?? ''),
+      floorId: req.query.floorId ? String(req.query.floorId) : undefined,
+      sectorId: req.query.sectorId ? String(req.query.sectorId) : undefined,
+      agentId: req.query.agentId ? String(req.query.agentId) : undefined,
+    })
+    const resumo = summarizeInventory(await loadOfficeInventory(res.locals.userId))
+    res.json({ context: contexto, inventory: resumo })
+  } catch (erro) {
+    next(erro as Error)
+  }
+})
 
 architectRouter.post('/projects', async (req, res, next) => {
   try {
@@ -118,6 +270,22 @@ architectRouter.patch('/projects/:id/blueprint', async (req, res, next) => {
   }
 })
 
+// "O que entendi", corrigido à mão. Não chama modelo nenhum.
+architectRouter.patch('/projects/:id/brief', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const body = (req.body ?? {}) as { patch?: unknown; undo?: boolean }
+    const projeto = await withProjectLock(id.toString(), () =>
+      body.undo === true ? service.undoBrief(res.locals.userId, id) : service.editBrief(res.locals.userId, id, body.patch),
+    )
+    auditEntity(res, { id: projeto._id.toString(), label: projeto.title })
+    res.json(service.projectDetail(projeto))
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
 // O que existe nesta conta, para a tela poder oferecer a escolha. Leitura pura.
 architectRouter.get('/targets', async (_req, res) => {
   res.json(await service.architectTargets(res.locals.userId))
@@ -129,6 +297,19 @@ architectRouter.patch('/projects/:id/links', async (req, res, next) => {
   try {
     const body = (req.body ?? {}) as { links?: unknown }
     const projeto = await service.setBlueprintLinks(res.locals.userId, id, body.links)
+    auditEntity(res, { id: projeto._id.toString(), label: projeto.title })
+    res.json(service.projectDetail(projeto))
+  } catch (error) {
+    refuse(res, error, next)
+  }
+})
+
+architectRouter.patch('/projects/:id/layer', async (req, res, next) => {
+  const id = oid(req.params.id)
+  if (!id) return notFound(res)
+  try {
+    const body = (req.body ?? {}) as { layer?: unknown }
+    const projeto = await service.setProjectLayer(res.locals.userId, id, body.layer)
     auditEntity(res, { id: projeto._id.toString(), label: projeto.title })
     res.json(service.projectDetail(projeto))
   } catch (error) {
@@ -265,7 +446,15 @@ architectRouter.post('/projects/:id/apply', async (req, res, next) => {
   const id = oid(req.params.id)
   if (!id) return notFound(res)
   try {
-    const body = (req.body ?? {}) as { blueprintHash?: string; idempotencyKey?: string; confirm?: boolean; approvedAppKeys?: string[]; approvedUpdateKeys?: string[] }
+    const body = (req.body ?? {}) as {
+      blueprintHash?: string
+      idempotencyKey?: string
+      confirm?: boolean
+      approvedAppKeys?: string[]
+      approvedUpdateKeys?: string[]
+      approvedActivationKeys?: string[]
+      deliveryConnections?: { key?: unknown; connectionId?: unknown; destination?: unknown }[]
+    }
     const r = await service.applyProject(res.locals.userId, id, {
       blueprintHash: String(body.blueprintHash ?? ''),
       idempotencyKey: String(body.idempotencyKey ?? ''),
@@ -274,6 +463,19 @@ architectRouter.post('/projects/:id/apply', async (req, res, next) => {
       // O que a tela marcou. Conferido de novo na saga: o checkbox decide o que é
       // enviado, o servidor decide o que é feito.
       approvedUpdateKeys: Array.isArray(body.approvedUpdateKeys) ? body.approvedUpdateKeys.map(String).slice(0, 60) : [],
+      // Entrar no ar é outra autorização. Sem ela, o recurso é criado e fica parado —
+      // aplicar uma proposta nunca coloca a operação para rodar sozinha no mesmo instante.
+      approvedActivationKeys: Array.isArray(body.approvedActivationKeys) ? body.approvedActivationKeys.map(String).slice(0, 60) : [],
+      // A conexão de cada entrega. O id vem do cliente e é conferido contra o dono na saga:
+      // aceitá-lo sem conferir faria a entrega sair pela conexão de outra pessoa.
+      deliveryConnections: Array.isArray(body.deliveryConnections)
+        ? body.deliveryConnections
+            .slice(0, 20)
+            // O DESTINO vem daqui, e nunca do Blueprint: o plano é lido inteiro pela tela e
+            // viaja no histórico do projeto, e um número de telefone dentro dele é um endereço
+            // exposto para sempre.
+            .map((d) => ({ key: String(d?.key ?? ''), connectionId: String(d?.connectionId ?? ''), destination: String(d?.destination ?? '').slice(0, 200) }))
+        : [],
     })
     auditEntity(res, { id: r.project._id.toString(), label: r.project.title })
     res.json({ ...service.projectDetail(r.project), operation: r.operation, links: r.links })

@@ -6,6 +6,7 @@ import * as api from '../../lib/architect'
 import type { ApplyResponse, ApplyStep, ArchitectMessage, ArchitectPreview, ArchitectProject, ArchitectQuestion, BlueprintLink } from '../../lib/architect'
 import { Conversation } from './Conversation'
 import { Proposal } from './Proposal'
+import { Brief } from './Brief'
 import { Checklist } from './Checklist'
 import { ApplyDialog } from './ApplyDialog'
 import { Advanced } from './Advanced'
@@ -43,6 +44,9 @@ export function ArchitectProject() {
   const [pendente, setPendente] = useState(false)
   const [erro, setErro] = useState<{ code: string; message: string } | null>(null)
   const [dialogo, setDialogo] = useState(false)
+  // Por onde uma entrega pode sair. Carregado junto com a prévia: sem a lista, o diálogo
+  // ofereceria uma escolha vazia.
+  const [conexoes, setConexoes] = useState<{ id: string; name: string; provider: string }[]>([])
   const [aplicando, setAplicando] = useState(false)
   const [tela, setTela] = useState<Tela>('proposta')
   // A conversa fechada vira um botão flutuante. Estado da aba, não do servidor: é
@@ -132,6 +136,46 @@ export function ArchitectProject() {
     await recarregarPrevia(p)
   }
 
+  /**
+   * Trocar a camada é uma REVISÃO, não um filtro: muda o que vai ser criado, então
+   * derruba para rascunho e invalida o hash confirmado. A tela recarrega a prévia
+   * porque o crítico e o ensaio são refeitos para o recorte novo.
+   */
+  async function trocarCamada(layer: api.BlueprintLayer) {
+    setPendente(true)
+    setErro(null)
+    try {
+      const p = await api.setLayer(projectId, layer)
+      setProjeto(p)
+      await recarregarPrevia(p)
+    } catch (e) {
+      setErro({ code: (e as api.ArchitectError).code ?? 'layer', message: (e as Error).message })
+    } finally {
+      setPendente(false)
+    }
+  }
+
+  /** Corrigir o entendimento refaz o desenho — sem passar pelo modelo. */
+  async function corrigirBrief(patch: Partial<api.OperationBrief>) {
+    const p = await api.editBrief(projectId, patch)
+    setProjeto(p)
+    await recarregarPrevia(p)
+  }
+
+  async function desfazerBrief() {
+    setPendente(true)
+    setErro(null)
+    try {
+      const p = await api.undoBrief(projectId)
+      setProjeto(p)
+      await recarregarPrevia(p)
+    } catch (e) {
+      setErro({ code: (e as api.ArchitectError).code ?? 'brief', message: (e as Error).message })
+    } finally {
+      setPendente(false)
+    }
+  }
+
   async function revisar() {
     setErro(null)
     try {
@@ -151,10 +195,16 @@ export function ArchitectProject() {
 
   async function abrirAplicacao() {
     await revisar()
+    // Falhar aqui não pode impedir de aplicar: sem conexões, a entrega vira pendência, que
+    // é exatamente o que ela já seria.
+    await api
+      .listTargets()
+      .then((t) => setConexoes(t.connections ?? []))
+      .catch(() => setConexoes([]))
     setDialogo(true)
   }
 
-  async function aplicar(aprovado: { approvedAppKeys: string[]; approvedUpdateKeys: string[] }) {
+  async function aplicar(aprovado: { approvedAppKeys: string[]; approvedUpdateKeys: string[]; approvedActivationKeys: string[] }) {
     if (!previa) return
     setAplicando(true)
     setErro(null)
@@ -246,7 +296,7 @@ export function ArchitectProject() {
 
   if (!projeto) {
     return (
-      <AppLayout current="/architect" title="Montar operação">
+      <AppLayout current="/architect" title="Arquiteto · Montar operação">
         <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{erro ? erro.message : 'Carregando…'}</p>
       </AppLayout>
     )
@@ -267,6 +317,9 @@ export function ArchitectProject() {
   )
   const proposta = (
     <div className="flex flex-col gap-3">
+      {/* O ENTENDIMENTO antes do desenho: é dele que a proposta é compilada, e é onde
+          um mal-entendido custa menos para corrigir. */}
+      <Brief project={projeto} editavel={EDITAVEL.includes(projeto.status)} carregando={pendente} onCorrigir={corrigirBrief} onDesfazer={desfazerBrief} />
       {EDITAVEL.includes(projeto.status) && projeto.hasBlueprint && <ResourceLinks project={projeto} onSalvar={salvarLigacoes} carregando={pendente} />}
       <Proposal
         project={projeto}
@@ -276,6 +329,7 @@ export function ArchitectProject() {
         onEditar={editarProposta}
         onRevisar={revisar}
         onAplicar={abrirAplicacao}
+        onTrocarCamada={trocarCamada}
       />
       <Advanced project={projeto} steps={passos} onTrocarProvedor={trocarProvedor} onArquivar={arquivar} onDesfazer={desfazer} carregando={pendente} />
     </div>
@@ -293,7 +347,7 @@ export function ArchitectProject() {
         {erro && (
           <Card>
             <div className="flex flex-col gap-2" data-testid="architect-error">
-              <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger)' }}>
+              <p role="alert" style={{ fontSize: 13, color: 'var(--intent-danger-text)' }}>
                 {erro.message}
               </p>
               {/* Cada recusa leva a um lugar diferente. Uma mensagem só deixaria a
@@ -500,6 +554,7 @@ export function ArchitectProject() {
       {previa && (
         <ApplyDialog
           preview={previa}
+          conexoes={conexoes}
           aberto={dialogo}
           aplicando={aplicando}
           erro={erro && dialogo ? erro.message : null}
