@@ -743,3 +743,30 @@ test('AMEAÇA: o canal que RECUSA não vira entrega enviada — e o motivo fica 
   assert.ok(daVigilancia, 'a execução precisa aparecer na Activity mesmo tendo falhado')
   assert.equal(daVigilancia.deliveries, 0, 'uma entrega falha não pode ser contada como saída')
 })
+
+test('ACEITAÇÃO: enquanto o RSI não cruza, NENHUM token é gasto', async () => {
+  /**
+   * A vigilância que custa dinheiro parada é a que ninguém deixa ligada.
+   *
+   * Vinte e uma leituras entram, o RSI é calculado em todas, e a condição não acontece: o
+   * caminho inteiro — coleta, conta, observação — é determinístico e não passa por modelo
+   * nenhum. Um agente no meio disso cobraria por candle, e a conta chegaria no fim do mês.
+   */
+  await ateNoAr()
+  await db.collection('token_usage').deleteMany({ ownerId: DONO })
+
+  // A série que SOBE: a condição "abaixo de 30" nunca fica verdadeira.
+  for (const f of SUBIDA) await entrarUmFechamento(f)
+
+  const gasto = await db.collection('token_usage').find({ ownerId: DONO }).toArray()
+  const total = gasto.reduce((s, d) => s + (d.inputTokens ?? 0) + (d.outputTokens ?? 0), 0)
+  assert.equal(total, 0, `a vigilância parada gastou ${total} tokens: ${JSON.stringify(gasto)}`)
+
+  // E nada disparou, que é o outro lado da mesma afirmação.
+  assert.equal(await db.collection('automation_runs').countDocuments({ ownerId: DONO }), 0)
+
+  // A prova de que o teste está medindo alguma coisa: as contas ACONTECERAM.
+  const derivado = await db.collection('data_recorders').findOne({ ownerId: DONO, derivedFrom: { $ne: null } })
+  const calculados = await db.collection('data_history_records').countDocuments({ ownerId: DONO, recorderId: derivado._id })
+  assert.ok(calculados > 0, 'nenhum RSI foi calculado — o zero de tokens seria trivial')
+})

@@ -225,6 +225,19 @@ test('o ÚLTIMO andar ativo continua protegido', async () => {
   await db.collection('offices').deleteOne({ _id: outro })
   const analise = await impacto.floorDeletionImpact(DONO, andar)
   assert.ok(analise.blockers.some((b) => b.includes('único andar ativo')))
+
+  /**
+   * E a EXECUÇÃO recusa — não só a análise.
+   *
+   * "A prévia avisa" e "a exclusão não acontece" são coisas diferentes: quem chama a API
+   * direto, com o hash e o nome corretos, não passa pela tela que mostra o aviso. O bloqueio
+   * precisa estar no caminho que apaga, e é isso que este pedaço prova.
+   */
+  const nome = (await db.collection('offices').findOne({ _id: andar })).name
+  const r = await impacto.purgeFloor(DONO, andar, { impactHash: analise.impactHash, confirmationName: nome })
+  assert.equal(r.ok, false, 'o último andar foi apagado apesar do bloqueio')
+  assert.equal(r.code, 'blocked')
+  assert.equal(await db.collection('offices').countDocuments({ _id: andar }), 1, 'o escritório ficou sem andar nenhum')
 })
 
 test('o histórico é preservado pela retenção, e a análise diz isso', async () => {
