@@ -99,6 +99,21 @@ jobs:
           path: ~/.cache/mongodb-binaries
           key: mongod-${{ runner.os }}
 
+      # O CHROMIUM ENTRA AQUI, e não depois — porque a suíte do backend precisa dele.
+      #
+      # Ele era instalado mais abaixo, para as jornadas do widget. Só que dois casos de
+      # `monitoringBrowser` exercitam o motor de renderização de verdade: "a página que só
+      # existe DEPOIS do JavaScript é lida" e "sem dado estruturado, o degrau caro é tentado".
+      # Sem navegador, o worker devolve `render: false` — que é o comportamento certo dele — e
+      # os dois falham.
+      #
+      # O efeito era pior que dois casos vermelhos: a CI de `development` ficou vermelha por
+      # dias seguidos, e uma CI que sempre falha para de ser lida. Na máquina de quem
+      # desenvolve o navegador já está instalado de outras rodadas, então passava.
+      - name: Install Chromium (backend + e2e)
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
       # `npm test` particiona a suíte: os arquivos que sobem um mongod de verdade
       # rodam com concorrência limitada, o resto em paralelo total. Ver
       # backend/scripts/run-tests.mjs — o runner do GitHub é menor que a máquina
@@ -130,10 +145,7 @@ jobs:
       # ficou fora do ar sem ninguém notar.
       #
       # A jornada existia e não rodava aqui. Um teste que não roda é um teste que não
-      # protege nada.
-      - name: Install Chromium (widget e2e)
-        run: npx playwright install --with-deps chromium
-        working-directory: frontend
+      # protege nada. (O Chromium já foi instalado antes dos testes de backend.)
 
       # `--workers=1`: as jornadas do widget compartilham chave pública e rotas
       # interceptadas, e em paralelo uma interceptação atende o pedido da outra.
