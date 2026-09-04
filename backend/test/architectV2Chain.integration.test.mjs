@@ -238,3 +238,86 @@ test('a fonte nasce parada, o Flow rascunho e o monitor rascunho — nada entra 
   const monitor = await db.collection('monitors').findOne({ ownerId: DONO })
   if (monitor) assert.notEqual(monitor.status, 'published')
 })
+
+// --- nada do plano some em silêncio ------------------------------------------------------------
+
+/**
+ * TODO item do Blueprint vira passo — criado, reusado, ou pendência com motivo.
+ *
+ * O contrato do V2 declara dezoito listas. A aplicação percorre dez delas; o resto é criado pela
+ * saga do V1, na MESMA operação e no mesmo `resourceMap`. A pergunta que ninguém tinha como
+ * responder é a terceira possibilidade: uma lista declarada que **ninguém** percorre. Um item ali
+ * não é criado, não vira pendência e não aparece na prévia — ele simplesmente não existe, e a
+ * proposta diz que existe.
+ *
+ * `resources.memoryPolicies` é exatamente esse caso hoje: nenhum compilador o emite, então nada
+ * some — mas basta alguém emitir um para ele evaporar sem nenhum sinal. Este caso trava a porta:
+ * o que o plano declara, a aplicação registra.
+ */
+test('ACEITAÇÃO: todo item declarado no plano vira PASSO — nenhum some calado', async () => {
+  const bp = compilar()
+  for (const f of bp.operations.sources) {
+    f.config = { url: 'https://api.exemplo.test/c', method: 'GET' }
+    f.mapping = { version: 1, fields: [{ to: 'fechamento', from: 'fechamento', required: true }] }
+  }
+  // Um item em cada lista que a aplicação do V2 percorre, para o caso valer alguma coisa.
+  bp.resources.databases.push({ key: 'base-extra', action: 'create', layer: 'essential', rationale: 'x', dependsOn: [], name: 'Extra', owner: { ownerType: 'account' }, adapterKind: 'data_history' })
+  bp.resources.tools.push({ key: 'ferramenta-extra', action: 'create', layer: 'essential', rationale: 'x', dependsOn: [], name: 'calculate_rsi', description: 'a conta', provider: 'function', agentKeys: [] })
+
+  const passos = await aplicar(bp)
+  const comPasso = new Set(passos.map((p) => p.key))
+
+  const CRIADAS_PELO_V2 = [
+    'resources.databases',
+    'resources.datasets',
+    'resources.tools',
+    'operations.channels',
+    'operations.sources',
+    'operations.liveDestinations',
+    'operations.histories',
+    'operations.monitors',
+    'operations.flows',
+    'operations.deliveries',
+  ]
+  const semPasso = []
+  for (const caminho of CRIADAS_PELO_V2) {
+    for (const item of t2.itemsAt(bp, caminho)) {
+      if (!comPasso.has(item.key)) semPasso.push(`${caminho}:${item.key}`)
+    }
+  }
+  assert.deepEqual(semPasso, [], `itens declarados que não viraram passo: ${semPasso.join(', ')}`)
+
+  /**
+   * E toda pendência diz POR QUÊ.
+   *
+   * Um passo `skipped` sem motivo é indistinguível de um esquecimento: quem retoma não sabe o
+   * que fazer, e quem audita não sabe o que aconteceu.
+   */
+  for (const p of passos.filter((x) => x.status === 'skipped')) {
+    assert.ok(String(p.message ?? '').trim(), `${p.kind}:${p.key} ficou pendente sem motivo`)
+  }
+})
+
+test('AMEAÇA: nenhuma CHAVE do plano é um ObjectId — elas são estáveis, e o modelo não as inventa', async () => {
+  /**
+   * A chave é o que liga a proposta ao recurso aplicado, e ela precisa sobreviver a uma
+   * recompilação. Um ObjectId ali significaria que o modelo escolheu um id — e um id escolhido
+   * por um modelo aponta para o recurso de outra pessoa ou para nada.
+   */
+  const bp = compilar()
+  const chaves = []
+  for (const caminho of t2.V2_ITEM_PATHS) for (const i of t2.itemsAt(bp, caminho)) chaves.push(`${caminho}:${i.key}`)
+  assert.ok(chaves.length > 0, 'o plano precisa ter itens para este caso dizer algo')
+
+  for (const entrada of chaves) {
+    const key = entrada.split(':').pop()
+    assert.equal(ObjectId.isValid(key), false, `${entrada} é um ObjectId: a chave tem que ser estável`)
+    assert.match(key, /^[a-z0-9][a-z0-9-]*$/, `${entrada} não é uma chave estável em minúsculas`)
+  }
+
+  // E a mesma compilação, de novo, produz as MESMAS chaves.
+  const outra = compilar()
+  const denovo = []
+  for (const caminho of t2.V2_ITEM_PATHS) for (const i of t2.itemsAt(outra, caminho)) denovo.push(`${caminho}:${i.key}`)
+  assert.deepEqual(denovo, chaves, 'a chave mudou entre duas compilações do mesmo Brief: uma revisão criaria recursos ao lado dos que já existem')
+})
