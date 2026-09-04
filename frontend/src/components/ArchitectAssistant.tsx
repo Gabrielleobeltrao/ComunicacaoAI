@@ -78,6 +78,16 @@ interface AssistantState {
   enviar: () => Promise<void>
   /** Confirma a escrita que uma mensagem preparou. O texto do modelo nunca chega ao servidor. */
   confirmar: (mensagemId: string, nomeDigitado?: string) => Promise<void>
+  /**
+   * O projeto que esta conversa abriu, se abriu algum.
+   *
+   * DERIVADO das mensagens, e não guardado à parte: um segundo lugar para "qual é o projeto
+   * atual" diverge do primeiro assim que alguém fecha o painel, e aí o botão levaria para o
+   * projeto errado.
+   */
+  projetoAtual: string | null
+  /** Abre a página completa do Arquiteto no modo de montagem. */
+  montarOperacao: () => void
 }
 
 const Ctx = createContext<AssistantState | null>(null)
@@ -306,6 +316,28 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
     }
   }, [mensagens])
 
+  /** O último projeto que esta conversa abriu. Derivado, nunca guardado em paralelo. */
+  const projetoAtual = useMemo(() => {
+    for (let i = mensagens.length - 1; i >= 0; i -= 1) if (mensagens[i].projectId) return mensagens[i].projectId!
+    return null
+  }, [mensagens])
+
+  /**
+   * "MONTAR OPERAÇÃO" — a mesma sala, pela porta que a pessoa já está usando.
+   *
+   * Com projeto em andamento, ela abre ESSE projeto: perguntar "qual?" para quem acabou de
+   * conversar sobre um só é uma pergunta cuja resposta o sistema já tem.
+   *
+   * Sem projeto, ela abre a lista, que é onde se começa um e se retoma os antigos — e leva o
+   * RASCUNHO junto. Quem digitou "quero avisar quando o estoque acabar" e clicou em montar não
+   * pode encontrar um campo vazio do outro lado: o trabalho já estava feito.
+   */
+  const montarOperacao = useCallback(() => {
+    if (projetoAtual) return navigate(`/architect/${projetoAtual}`)
+    const texto = rascunho.trim()
+    navigate(texto ? `/architect?objetivo=${encodeURIComponent(texto.slice(0, 400))}` : '/architect')
+  }, [navigate, projetoAtual, rascunho])
+
   const valor = useMemo<AssistantState>(
     () => ({
       aberto,
@@ -324,8 +356,10 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
       setRascunho,
       enviar,
       confirmar,
+      projetoAtual,
+      montarOperacao,
     }),
-    [aberto, minimizado, mensagens, rascunho, phase, enviando, erro, enviar, confirmar],
+    [aberto, minimizado, mensagens, rascunho, phase, enviando, erro, enviar, confirmar, projetoAtual, montarOperacao],
   )
 
   /**
@@ -608,6 +642,46 @@ function ArchitectPanel({ onAbrirProjeto }: { onAbrirProjeto: (id: string) => vo
               {a.erro}
             </p>
           ) : null}
+
+          {/*
+            A PORTA para a tela completa fica AQUI, e não na navegação.
+            "Montar operação" é um modo de trabalho do Arquiteto, não um módulo irmão de
+            Agentes e Setores. Listá-la na barra lateral fazia "Arquiteto", "Blueprint" e
+            "Montar operação" parecerem três produtos, e a pessoa tinha que descobrir sozinha
+            que eram a mesma coisa. Aqui ela está onde a conversa acontece — e o rótulo diz
+            para onde leva: continuar o que já começou, ou abrir a montagem.
+          */}
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              padding: '8px 12px 0',
+              alignItems: 'center',
+            }}
+          >
+            <button
+              type="button"
+              onClick={a.montarOperacao}
+              data-testid="architect-montar-operacao"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                // Alvo mínimo de toque: no celular este botão fica ao lado do campo de texto.
+                minHeight: 44,
+                padding: '8px 12px',
+                borderRadius: 8,
+                border: '1px solid var(--border-subtle)',
+                background: 'transparent',
+                color: 'var(--text-body)',
+                fontSize: 13,
+                cursor: 'pointer',
+              }}
+            >
+              <Icon name="layout-dashboard" size={15} color="var(--intent-brand)" />
+              {a.projetoAtual ? 'Continuar a montagem' : 'Montar operação'}
+            </button>
+          </div>
 
           <form
             onSubmit={(e) => {

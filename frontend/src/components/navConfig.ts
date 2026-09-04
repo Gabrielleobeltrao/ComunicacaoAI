@@ -32,16 +32,18 @@ const floorPath = (floorId: string | null, suffix: string, legacy: string) => (f
 
 export const NAV_V2: NavItemDef[] = [
   /**
-   * MONTAR E AJUSTAR — a porta principal, e não um caminho que se aprende.
+   * "MONTAR OPERAÇÃO" NÃO É UM MÓDULO — e por isso não está aqui.
    *
-   * Ela ficava só dentro do menu de andares: quem não soubesse abrir aquele menu não
-   * encontrava o Arquiteto. Mas ele não é só "criar andar" — é por onde se expande,
-   * conserta e reorganiza o que já existe, e isso pertence à navegação.
+   * Ela viveu na navegação porque parecia um lugar: uma tela com endereço próprio, ao lado de
+   * Agentes e Setores. Só que ela não é um produto irmão desses — é um MODO DE TRABALHO do
+   * Arquiteto, o mesmo assistente que responde no chat flutuante. Listada aqui, ela fazia
+   * "Arquiteto", "Blueprint" e "Montar operação" parecerem três coisas diferentes, e a pessoa
+   * tinha que descobrir sozinha que eram a mesma.
    *
-   * O menu de andares continua oferecendo o mesmo caminho: duas portas para a mesma sala
-   * não é duplicação, é a sala deixar de estar escondida.
+   * A porta agora é uma só e está onde a conversa acontece: o botão "Montar operação" dentro do
+   * chat, que abre a página completa já no modo de montagem. A rota `/architect` continua
+   * existindo inteira — deep link, favorito e projeto antigo não perdem nada.
    */
-  { key: 'architect', label: 'Montar e ajustar escritório', shortLabel: 'Montar', icon: 'sparkles', scope: 'general', group: 'operation', path: () => '/architect', activePrefixes: () => ['/architect'] },
   // Operation surfaces: the floor overview + the teams that staff it (kept together).
   // The floor home is also the building home — exact match so it doesn't stay active
   // on the floor's sub-pages.

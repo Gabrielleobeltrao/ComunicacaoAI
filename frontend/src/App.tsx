@@ -7,7 +7,7 @@ import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
 import { ArchitectAssistantProvider } from './components/ArchitectAssistant'
-import { DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
+import { ArchitectLegacyRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
@@ -174,7 +174,7 @@ function App() {
           vários. Por isso mora aqui, ao lado das outras áreas globais, e existe nos
           dois modos de navegação. */}
       <Route path="/architect" element={<P><ArchitectProjects /></P>} />
-      <Route path="/architect/new" element={<Navigate to="/architect" replace />} />
+      <Route path="/architect/new" element={<ArchitectLegacyRedirect />} />
       <Route path="/architect/:projectId" element={<P><ArchitectProject /></P>} />
 
       {/* Global areas (both modes). /widgets and /chats predate the App pages and

@@ -608,3 +608,91 @@ test('e continua aparecendo em página autenticada', async ({ page }) => {
   await page.goto('/dashboard')
   await expect(page.getByTestId('architect-launcher')).toBeVisible()
 })
+
+// --- a porta para a montagem, dentro do chat ---------------------------------------------
+
+/**
+ * "Montar operação" é um MODO do Arquiteto, e a porta fica onde a conversa está.
+ *
+ * Ela saiu da navegação porque, listada ao lado de Agentes e Setores, parecia um módulo irmão
+ * deles — e "Arquiteto", "Blueprint" e "Montar operação" viravam três produtos que a pessoa
+ * precisava descobrir sozinha que eram a mesma coisa.
+ */
+test('MONTAR: sem projeto, o botão abre a montagem levando o RASCUNHO junto', async ({ page }) => {
+  await stub(page)
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+
+  const botao = page.getByTestId('architect-montar-operacao')
+  await expect(botao).toBeVisible()
+  await expect(botao).toHaveText(/Montar operação/)
+
+  // O que já foi digitado não pode sumir na travessia: pedir para redigitar é a forma mais
+  // barata de fazer alguém desistir.
+  await page.getByTestId('architect-input').fill('quero avisar quando o estoque acabar')
+  await botao.click()
+
+  await page.waitForURL(/\/architect\?objetivo=/, { timeout: 20_000 })
+  await expect(page.getByTestId('architect-objective')).toHaveValue('quero avisar quando o estoque acabar')
+})
+
+test('MONTAR: sem rascunho, ele abre a lista — onde se começa um e se retoma os antigos', async ({ page }) => {
+  await stub(page)
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-montar-operacao').click()
+
+  await page.waitForURL(/\/architect$/, { timeout: 20_000 })
+  await expect(page.getByTestId('architect-projects')).toBeVisible()
+})
+
+test('MONTAR: com projeto em andamento, ele CONTINUA esse projeto — e o rótulo diz isso', async ({ page }) => {
+  /**
+   * Perguntar "qual projeto?" para quem acabou de conversar sobre um só é uma pergunta cuja
+   * resposta o sistema já tem.
+   */
+  await stub(page, {
+    turno: {
+      intent: { mode: 'propose', action: 'montar', risk: 'read' },
+      phase: 'proposal',
+      text: 'Abri um projeto para isso.',
+      question: null,
+      projectId: '000000000000000000000abc',
+      context: { pathname: '/', rejected: [] },
+      pendingOperation: null,
+    },
+  })
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-input').fill('quero montar o atendimento')
+  await page.getByTestId('architect-input').press('Enter')
+
+  const botao = page.getByTestId('architect-montar-operacao')
+  await expect(botao).toHaveText(/Continuar a montagem/)
+  await botao.click()
+  await page.waitForURL(/\/architect\/000000000000000000000abc/, { timeout: 20_000 })
+})
+
+test('MONTAR: no celular o botão continua no chat, com alvo de toque acessível', async ({ page }) => {
+  await stub(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/dashboard')
+  await page.getByTestId('architect-launcher').click()
+
+  const botao = page.getByTestId('architect-montar-operacao')
+  await expect(botao).toBeVisible()
+  const caixa = await botao.boundingBox()
+  expect(caixa!.height, 'alvo de toque abaixo do mínimo').toBeGreaterThanOrEqual(44)
+})
+
+test('COMPATIBILIDADE: a rota antiga redireciona PRESERVANDO os parâmetros', async ({ page }) => {
+  /**
+   * `/architect/new` redirecionava com um destino fixo, o que descartava a query. Um favorito
+   * com `?objetivo=…` — que é exatamente o que o botão do chat produz — chegava do outro lado
+   * com o campo vazio, e a pessoa redigitava sem entender por quê.
+   */
+  await stub(page)
+  await page.goto('/architect/new?objetivo=vindo%20de%20um%20favorito%20antigo')
+  await page.waitForURL(/\/architect\?objetivo=/, { timeout: 20_000 })
+  await expect(page.getByTestId('architect-objective')).toHaveValue('vindo de um favorito antigo')
+})

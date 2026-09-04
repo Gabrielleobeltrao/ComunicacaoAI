@@ -1529,38 +1529,35 @@ test('reconferir apura de novo contra o estado real', async ({ page }) => {
 // --- navegação -------------------------------------------------------------------------------------------------------
 
 /**
- * Onde fica a porta de entrada — agora em mais de um lugar, de propósito.
+ * Onde fica a porta de entrada — uma só, e dentro da conversa.
  *
- * O desenho anterior tirava o Arquiteto da barra lateral e o deixava SÓ dentro do menu de
- * andares. Isso o transformava num caminho que a pessoa precisava aprender: ela só o
- * encontrava se soubesse abrir aquele menu.
+ * Ela já morou em três lugares ao mesmo tempo: a navegação, o menu de andares e a folha de
+ * andares do celular. O problema não era a quantidade — era o que a quantidade dizia. Listada
+ * ao lado de Agentes e Setores, "Montar operação" parecia um MÓDULO irmão deles, e
+ * "Arquiteto", "Blueprint" e "Montar operação" viravam três produtos que a pessoa precisava
+ * descobrir sozinha que eram a mesma coisa.
  *
- * Ele agora é uma entrada de primeira classe na navegação — "Montar e ajustar escritório",
- * porque as duas coisas moram ali — e continua no menu de andares para quem já conhece o
- * caminho. Duas portas para a mesma sala não é duplicação: é a sala deixar de estar
- * escondida.
+ * Ela é um MODO DE TRABALHO do Arquiteto. A porta é o botão dentro do chat, que é onde a
+ * conversa já está acontecendo — e a rota `/architect` continua inteira, para deep link,
+ * favorito e projeto antigo não perderem nada.
  */
-test('“Montar e ajustar escritório” tem entrada de primeira classe na navegação', async ({ page }) => {
+test('“Montar operação” NÃO é um módulo da navegação — a porta é o chat', async ({ page }) => {
   await stub(page)
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto('/architect')
+  await page.goto('/dashboard')
 
-  /**
-   * A barra lateral é um TRILHO recolhido: os rótulos ficam clipados por `overflow-hidden`
-   * até o ponteiro entrar. Existir nela já é ser de primeira classe; o rótulo aparece no
-   * hover, que é o desenho da barra e não uma limitação deste teste.
-   */
-  const naBarraLateral = page.locator('aside').getByRole('link', { name: 'Montar e ajustar escritório' })
-  await expect(naBarraLateral).toHaveCount(1)
-  await page.locator('aside').hover()
-  await expect(naBarraLateral).toBeVisible()
-
-  // E o menu de andares NÃO oferece o mesmo caminho: ele voltou a ser só escolher andar.
+  // Nem na barra lateral, nem no menu de andares, nem na folha do celular.
+  await expect(page.locator('aside').getByRole('link', { name: /Montar/i })).toHaveCount(0)
   const menuDeAndares = page.getByTestId('building-switcher')
   if (await menuDeAndares.count()) {
     await menuDeAndares.first().click()
     await expect(page.getByTestId('open-architect')).toHaveCount(0)
+    await page.keyboard.press('Escape')
   }
+
+  // E a rota continua respondendo: tirar o item de menu não tira a tela.
+  await page.goto('/architect')
+  await expect(page.getByTestId('architect-projects')).toBeVisible()
 })
 
 // --- celular -----------------------------------------------------------------------------------------------------------

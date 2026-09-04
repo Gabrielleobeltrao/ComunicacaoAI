@@ -553,7 +553,7 @@ test('no celular, o menu abre, navega e fecha', async ({ browser }) => {
   await ctx.close()
 })
 
-test('“Montar e ajustar escritório” é acesso de primeira classe, e não só um item de menu', async ({ page }) => {
+test('“Montar operação” é um MODO do Arquiteto, e a porta é o chat', async ({ page }) => {
   test.setTimeout(120_000)
   await irPara(page, '/login')
   await page.locator('input[type="email"]').fill(CONTA.email)
@@ -562,34 +562,32 @@ test('“Montar e ajustar escritório” é acesso de primeira classe, e não s�
   await page.waitForURL(/\/(building|dashboard|floors)/, { timeout: 30_000 })
 
   /**
-   * O Arquiteto deixou de ser um caminho escondido.
+   * Ela morou em três lugares ao mesmo tempo: a navegação, o menu de andares e a folha de
+   * andares do celular. O problema não era a quantidade — era o que a quantidade dizia.
+   * Listada ao lado de Agentes e Setores, ela parecia um MÓDULO irmão deles, e "Arquiteto",
+   * "Blueprint" e "Montar operação" viravam três produtos que a pessoa precisava descobrir
+   * sozinha que eram a mesma coisa.
    *
-   * O desenho anterior o tirava da barra lateral e o deixava SÓ dentro do seletor de
-   * andares — um menu que a pessoa precisa saber abrir. Ele agora é uma entrada de primeira
-   * classe na navegação, e continua no seletor de andares para quem já aprendeu o caminho.
+   * A porta é uma só e fica onde a conversa já acontece.
    */
-  // A barra lateral é um trilho recolhido: o rótulo é clipado até o ponteiro entrar.
-  await expect(page.locator('aside').getByRole('link', { name: 'Montar e ajustar escritório' })).toHaveCount(1)
+  await expect(page.locator('aside').getByRole('link', { name: /Montar/i })).toHaveCount(0)
 
-  /**
-   * E o menu de andares NÃO a repete.
-   *
-   * Ela morava em três lugares: a navegação, o menu de andares e a folha de andares do
-   * celular — três portas para a mesma sala, sendo que o assistente flutuante abre em
-   * qualquer página. A que fica escondida dentro de um menu é a que ninguém encontra, e a
-   * que sobra é ruído no menu de escolher andar.
-   */
   await page.getByTestId('building-switcher').first().click()
   await expect(page.getByTestId('create-floor')).toBeVisible()
   await expect(page.getByTestId('open-architect')).toHaveCount(0)
   await page.keyboard.press('Escape')
 
-  // A navegação continua levando lá — é a porta que sobrou, e ela funciona.
-  await page.locator('aside').getByRole('link', { name: 'Montar e ajustar escritório' }).click()
+  // O botão no chat leva à tela completa — e ela continua sendo a mesma de sempre.
+  await page.getByTestId('architect-launcher').click()
+  await page.getByTestId('architect-montar-operacao').click()
   await page.waitForURL(/\/architect/, { timeout: 20_000 })
+  await expect(page.getByTestId('architect-projects')).toBeVisible()
 
-  // E no celular a folha de andares também não a repete: a navegação do celular sai do
-  // mesmo `navConfig` da barra lateral, então o caminho existe sem duplicata.
+  // A rota canônica responde direto: tirar o item de menu não tira a tela nem quebra favorito.
+  await irPara(page, '/architect')
+  await expect(page.getByTestId('architect-projects')).toBeVisible()
+
+  // E no celular a folha de andares também não a repete.
   const andares = await (await page.request.get('/api/floors')).json()
   await page.setViewportSize({ width: 390, height: 844 })
   await irPara(page, `/floors/${andares[0].id}`)

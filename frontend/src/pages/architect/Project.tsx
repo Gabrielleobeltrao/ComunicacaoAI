@@ -296,7 +296,7 @@ export function ArchitectProject() {
 
   if (!projeto) {
     return (
-      <AppLayout current="/architect" title="Montar operação">
+      <AppLayout current="/architect" title="Arquiteto · Montar operação">
         <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{erro ? erro.message : 'Carregando…'}</p>
       </AppLayout>
     )
