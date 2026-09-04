@@ -1,5 +1,6 @@
 import { db, mongoClient } from './db.js'
 import type { TokenUsage } from './llm.js'
+import { ensureTtlIndex } from './ttlIndex.js'
 
 // One rolling document per owner per UTC day. Keeps the collection tiny and
 // makes "this week" / "this month" rollups a cheap range scan.
@@ -60,7 +61,7 @@ const usageCharges = db.collection<UsageChargeDoc>('token_usage_charges')
 export async function ensureTokenUsageIndexes(): Promise<void> {
   // Longer than the widest reporting window (a calendar month) so a pending row is
   // never dropped while it still counts.
-  await usageCharges.createIndex({ createdAt: 1 }, { expireAfterSeconds: 45 * 24 * 3600 })
+  await ensureTtlIndex(usageCharges, { createdAt: 1 }, 45 * 24 * 3600)
   await usageCharges.createIndex({ ownerId: 1, applied: 1, date: 1 })
 }
 

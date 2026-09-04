@@ -12,6 +12,7 @@
 // histórico que o cliente envia, como antes.
 import { ObjectId } from 'mongodb'
 import { db } from './db.js'
+import { ensureTtlIndex } from './ttlIndex.js'
 
 /** O teto da própria rota do Playground: guardar mais do que se pode reenviar é lixo. */
 const MAX_TURNOS = 40
@@ -46,7 +47,7 @@ const sessions = db.collection<PlaygroundSession>('playground_sessions')
 export async function ensurePlaygroundSessionIndexes(): Promise<void> {
   // Uma conversa por dono e por agente: o teste é um lugar só, não uma lista de threads.
   await sessions.createIndex({ ownerId: 1, scopeType: 1, scopeId: 1 }, { unique: true })
-  await sessions.createIndex({ updatedAt: 1 }, { expireAfterSeconds: DIAS * 24 * 3600 })
+  await ensureTtlIndex(sessions, { updatedAt: 1 }, DIAS * 24 * 3600)
 }
 
 const cortar = (turno: PlaygroundTurn): PlaygroundTurn => ({

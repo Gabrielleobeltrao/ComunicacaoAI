@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb'
 import { db } from './db.js'
 import type { GroundingStatus, KnowledgeOwnerType, KnowledgeSource } from './knowledge.js'
 import type { OwnerReason, ResolvedOwner } from './knowledgeAccess.js'
+import { ensureTtlIndex } from './ttlIndex.js'
 
 // O QUE ESTA EXECUÇÃO REALMENTE LEU — registrado pelo servidor, não pelo modelo.
 //
@@ -82,7 +83,7 @@ export async function ensureContextManifestIndexes(): Promise<void> {
    * ninguém lê e todo mundo paga. Noventa dias cobrem a auditoria de uma decisão
    * recente; o que importa depois disso é o documento, que não expira.
    */
-  await manifests.createIndex({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 3600, name: 'manifesto_retencao' })
+  await ensureTtlIndex(manifests, { createdAt: 1 }, 90 * 24 * 3600, 'manifesto_retencao')
 }
 
 /**
