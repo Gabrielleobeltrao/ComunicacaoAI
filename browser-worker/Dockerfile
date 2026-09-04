@@ -20,7 +20,21 @@ USER pwuser
 WORKDIR /app
 
 # Só o worker. O backend, as chaves e a conexão com o banco ficam do outro lado.
-COPY --chown=pwuser:pwuser package.json ./
+COPY --chown=pwuser:pwuser package.json package-lock.json ./
+
+# A BIBLIOTECA precisa ser instalada — a imagem traz o navegador, não o pacote npm.
+#
+# Sem esta linha, `import('playwright')` de `/app/src` não resolve: a resolução do Node sobe por
+# `node_modules` a partir do arquivo, e o pacote global da imagem base não está nesse caminho. E
+# a falha é SILENCIOSA por desenho: `loadEngine` devolve `null` para o worker continuar servindo
+# `fetch` em vez de morrer, o healthcheck de TCP passa, e o que se vê é uma fonte de página
+# configurada na Central que nunca renderiza nada.
+#
+# Os NAVEGADORES não são baixados de novo: eles já estão em `/ms-playwright`, e baixá-los aqui
+# acrescentaria centenas de megabytes à imagem para chegar ao mesmo lugar.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN npm ci --omit=dev
+
 COPY --chown=pwuser:pwuser src ./src
 
 ENV NODE_ENV=production

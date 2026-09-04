@@ -430,3 +430,31 @@ test('o pedido tem TETO de tempo: a vaga volta mesmo com uma página que não te
     else process.env.BROWSER_REQUEST_TIMEOUT_MS = antes
   }
 })
+
+// --- a imagem e a biblioteca precisam ser a MESMA versão -------------------------------------
+
+test('a tag do Playwright no Dockerfile bate com a versão do package.json', async () => {
+  /**
+   * O próprio Dockerfile avisa, e é o tipo de aviso que ninguém lê na hora certa: uma imagem
+   * com o Chromium de uma versão e a biblioteca de outra falha ao abrir o navegador, e o erro
+   * não diz isso. O sintoma é "browser não inicia" num domingo, depois de um bump de rotina
+   * que ninguém associou.
+   *
+   * A conferência é boba de propósito: dois números, um arquivo cada.
+   */
+  const { readFile } = await import('node:fs/promises')
+  const raiz = new URL('..', import.meta.url)
+  const dockerfile = await readFile(new URL('Dockerfile', raiz), 'utf8')
+  const pkg = JSON.parse(await readFile(new URL('package.json', raiz), 'utf8'))
+
+  const naImagem = /^FROM mcr\.microsoft\.com\/playwright:v([\d.]+)-/m.exec(dockerfile)?.[1]
+  const naBiblioteca = String(pkg.dependencies?.playwright ?? pkg.devDependencies?.playwright ?? '').replace(/^[^\d]*/, '')
+
+  assert.ok(naImagem, 'o Dockerfile precisa fixar uma tag de versão do Playwright')
+  assert.ok(naBiblioteca, 'o package.json precisa declarar a versão do Playwright')
+  assert.equal(
+    naImagem,
+    naBiblioteca,
+    `a imagem traz o Chromium ${naImagem} e a biblioteca é ${naBiblioteca}: o navegador não abre, e o erro não diz isso`,
+  )
+})
