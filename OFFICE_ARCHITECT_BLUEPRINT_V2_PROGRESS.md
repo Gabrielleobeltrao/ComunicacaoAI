@@ -1370,3 +1370,114 @@ Instalação limpa (`rm -rf node_modules` nos cinco pacotes + `npm ci`), build d
 | lint | `npm run lint` | 0 erros |
 | secret-scan | `npm run secret-scan` | 2269 arquivos, nada encontrado |
 | espaço em branco | `git diff --check` | verde |
+
+---
+
+## Fechamento III: a verificação que faltava
+
+O fechamento anterior declarava os itens do plano prontos com base nos próprios documentos de
+progresso. **Ler um relatório não é verificar.** Esta rodada refez a conferência sub-requisito
+por sub-requisito, contra o código que roda, e achou cinco coisas dadas como prontas que não
+estavam. Elas estão em `OFFICE_BLUEPRINT_V2_IMPLEMENTATION_REPORT.md` §2; o resumo:
+
+### O assistente aparecia para quem não entrou
+
+O botão é fixo na janela, acima de tudo, e não perguntava quem estava do outro lado: aparecia no
+login, no cadastro, na inicial e **dentro do widget que roda no site de outra pessoa**. Clicar
+abre um painel que chama rota autenticada — a pessoa recebe erro; e no widget é o botão de um
+produto aparecendo no site de um cliente. A sessão que o `ProtectedRoute` já lê passou a valer
+para o assistente.
+
+Junto veio um defeito no **stub** que só apareceu porque a checagem ficou mais estrita: o
+curinga de API estava registrado depois da rota de sessão, e no Playwright a última vence. A
+sessão respondia `[]` — verdadeiro em JS —, as telas abriam, e qualquer leitura de `user` saía
+`undefined`.
+
+### "Zero tokens enquanto nada muda" não era provado
+
+Estava no objetivo e não tinha caso. Agora tem, com a prova de que o teste mede algo: as contas
+acontecem, os registros existem, e `token_usage` fica em zero.
+
+### A Central não mostrava custo
+
+Vigiar é de graça; o que custa é o que roda depois da borda. Sem o número, um monitor com
+cooldown mal ajustado só aparece na fatura. Ele é agregado das execuções que o monitor pediu,
+pelo `requestId` que a Activity já usa — nunca um contador próprio, que divergiria do painel de
+execuções na primeira falha de escrita.
+
+### O último andar: a análise avisava, a exclusão não recusava
+
+Quem chama a API direto, com hash e nome corretos, não passa pela tela que mostra o aviso. O
+bloqueio precisa estar no caminho que apaga.
+
+### A imagem e a biblioteca podiam divergir
+
+O Dockerfile avisava em comentário que a tag do Playwright e a versão do `package.json` andam
+juntas, e que a divergência falha ao abrir o navegador com um erro que não diz isso. Virou teste.
+
+### O resto desta rodada
+
+- **`qs`**: uma moderada no `npm audit`. `audit fix` mudava zero pacotes e `overrides` na raiz o
+  npm registrava e ignorava (instalava 6.15.3 marcando `invalid`). `qs@^6.16.0` como dependência
+  explícita do backend resolve, com uma cópia deduplicada. **0 vulnerabilidades.**
+- **Code splitting**: 1,4 MB num pacote só → **608 KB** de entrada em 47 pedaços. A guarda custou
+  duas tentativas: verificar "o pacote da Central não foi baixado" não morde, porque um `import`
+  estático não cria pedaço nenhum — ele costura a página na entrada e o nome some. O que
+  discrimina é o peso.
+- **Três portas para a mesma sala**: "Montar operação" saiu do menu de andares e da folha do
+  celular. Dois testes E2E afirmavam a duplicata e foram invertidos.
+
+### O build Docker do backend estava quebrado
+
+Sem daemon de container aqui, o primeiro registro foi "builds Docker não executados". Isso é
+aceitar a limitação em vez de trabalhar dentro dela: a maior parte do que um build verifica é
+conferível sem daemon.
+
+O Dockerfile do backend copia `package.json` e `package-lock.json` do contexto dele e roda
+`npm ci`, que não resolve nada — instala o que o lock diz e recusa quando os dois discordam.
+Rodando esse comando exato numa cópia isolada do contexto, ele **falhava**: `ws` e `qs` estavam
+no `package.json` do backend e não no lock dele. O `ws` já estava assim **antes** desta rodada.
+
+O mecanismo é o que torna isso invisível: num monorepo de workspaces, `npm install` na raiz
+atualiza o lock **da raiz**; o lock do pacote, que só a imagem usa, fica para trás. Passa na
+máquina de quem editou e quebra no deploy.
+
+Os locks foram regravados no contexto isolado e `npm ci` passa a aceitá-los. O invariante virou
+teste em `deployment.test.mjs`, junto de outro que confere se todo `COPY` dos quatro Dockerfiles
+aponta para algo que existe. Teeth check nos dois.
+
+### E o worker do browser nunca renderizaria, em silêncio
+
+Executar os comandos das camadas — e não só olhar os arquivos — achou o segundo defeito. O
+`package.json` do `browser-worker` depende de `playwright` e o Dockerfile **não instalava nada**:
+a imagem base traz o navegador, não o pacote npm, e a resolução do Node não alcança o pacote
+global da base.
+
+O silêncio é por desenho: `loadEngine` captura a falha e devolve `null` para o worker continuar
+servindo `fetch` em vez de morrer sem navegador — decisão certa, que aqui escondia o defeito. O
+`HEALTHCHECK` é TCP e passa. O resultado seria uma fonte de página configurada na Central que
+nunca renderiza, sem alarme nenhum.
+
+### O que foi executado de verdade, sem daemon
+
+Montei o contexto de build real de cada pacote (respeitando o `.dockerignore`) e rodei os `RUN`
+na ordem do Dockerfile. O host é Node `v22.17.1` contra `node:22` das imagens — mesmo major.
+
+- backend: `npm ci --include=dev` → `npm run build` → `dist/index.js` e `dist/worker.js` existem;
+- backend runtime: `npm ci --omit=dev` e o `dist` **resolvem todos os imports**, parando em
+  "Missing required production environment variable: CLIENT_URL" — onde uma imagem correta para;
+- frontend: `npm ci` + `npm run build` → `dist/index.html`, com `nginx.conf` no contexto;
+- browser-worker: `npm ci --omit=dev` e `import('playwright')` resolvendo de `/app`.
+
+O que continua sem cobertura é o que exige daemon: as camadas empilharem, o `COPY --from=` entre
+estágios, o usuário sem privilégio, o healthcheck e o container subir. Precisa de CI.
+
+### Bateria
+
+backend **1576 + 2314 = 3890** · frontend 294 · E2E 747 (17 pulados) · runner 21 ·
+browser-worker 33 · smoke 7/7 · lint 0 erros · audit **0 vulnerabilidades** · secret-scan 2269 ·
+`git diff --check` limpo.
+
+**Builds Docker não rodaram**: não há runtime de container nesta máquina (`docker`, `podman`,
+`nerdctl`, `finch`, `colima`, `lima`, `buildah`, `img` — nenhum). Falha de infraestrutura fica
+registrada como tal, nunca como sucesso.
