@@ -79,8 +79,36 @@ jobs:
       # Dependência com falha conhecida é a porta que não precisa ser arrombada. `high`
       # como piso: `critical` sozinho deixaria passar exatamente a faixa que costuma ter
       # execução remota.
+      #
+      # DUAS FALHAS DIFERENTES, e confundi-las custa caro nos dois sentidos.
+      #
+      # "Achei uma vulnerabilidade alta" e "não consegui perguntar" não são a mesma coisa. O
+      # endpoint de audit devolve `400 Invalid package tree` de forma intermitente — medido:
+      # uma em quatro chamadas, com a mesma árvore, sem nada mudar. Tratar isso como
+      # vulnerabilidade deixa a barra vermelha por motivo errado, e uma barra que fica vermelha
+      # por motivo errado para de ser lida (foi o que aconteceu com esta CI por doze corridas).
+      #
+      # Tratar o contrário — engolir o erro e seguir verde — é pior: seria chamar de sucesso o
+      # que nem chegou a ser verificado.
+      #
+      # Então: tenta três vezes; se o endpoint responder, o veredito dele MANDA. Se não
+      # responder nenhuma vez, o passo falha dizendo que a checagem não aconteceu.
       - name: Dependências vulneráveis (npm audit)
-        run: npm audit --audit-level=high
+        shell: bash
+        run: |
+          for tentativa in 1 2 3; do
+            saida=$(npm audit --audit-level=high 2>&1) && { echo "$saida"; exit 0; }
+            if echo "$saida" | grep -qE 'audit endpoint returned an error|Invalid package tree|ENETUNREACH|ETIMEDOUT'; then
+              echo "::warning::npm audit não respondeu (tentativa $tentativa/3) — o endpoint, não a árvore"
+              sleep $((tentativa * 5))
+              continue
+            fi
+            # Respondeu e reprovou: é vulnerabilidade de verdade, e ela manda.
+            echo "$saida"
+            exit 1
+          done
+          echo "::error::npm audit não conseguiu rodar em 3 tentativas — a verificação NÃO aconteceu, e isso não é sucesso"
+          exit 1
 
       # Segredo commitado não é revogado por `git rm`: ele fica no histórico e no fork de
       # quem clonou. A varredura não tem dependência nem rede — roda igual aqui e na
@@ -139,6 +167,9 @@ jobs:
           # que vira adivinhação, e foi exatamente o que aconteceu.
           #
           # `-A 12` cobre o bloco YAML que o `node --test` escreve depois de cada `not ok`.
+          # Sem log não há o que diagnosticar: este passo roda em QUALQUER falha anterior, e
+          # falhar por não achar arquivo esconderia a falha de verdade — o oposto do que ele faz.
+          [ -f /tmp/backend-tests.log ] || { echo "::warning::a suíte do backend não chegou a rodar"; exit 0; }
           grep -E -A 12 '^not ok' /tmp/backend-tests.log \
             | head -80 \
             | while IFS= read -r linha; do
