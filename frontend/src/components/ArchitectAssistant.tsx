@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { Button, Field, Icon, Input } from '../ui'
 import { API_URL } from '../lib/api'
+import { useSession } from '../lib/auth-client'
 
 // O ARQUITETO COMO CHAT GLOBAL — uma instância só, montada no layout.
 //
@@ -336,10 +337,23 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
    */
   const naPaginaDeProjeto = /^\/architect\/[^/]+/.test(location.pathname)
 
+  /**
+   * E ele só existe para quem ENTROU.
+   *
+   * O botão é fixo na janela, acima de tudo, e não perguntava quem estava do outro lado: ele
+   * aparecia na tela de login, na de cadastro e — o pior caso — dentro do widget que roda no
+   * site de outra pessoa. Clicar ali abre um painel que chama rota autenticada, então a
+   * resposta é um erro; e no widget é o botão de um produto aparecendo no site de um cliente.
+   *
+   * A sessão é a mesma que o `ProtectedRoute` lê. Enquanto ela está sendo conferida, o botão
+   * não aparece: piscar e sumir é pior que aparecer um instante depois.
+   */
+  const { data: sessao } = useSession()
+
   return (
     <Ctx.Provider value={valor}>
       {children}
-      {naPaginaDeProjeto ? null : (
+      {naPaginaDeProjeto || !sessao?.user ? null : (
         <>
           <ArchitectLauncher />
           <ArchitectPanel onAbrirProjeto={(id) => navigate(`/architect/${id}`)} />

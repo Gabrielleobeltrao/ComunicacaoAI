@@ -13,10 +13,16 @@ async function stub(page: Page, opts: { turno?: unknown } = {}) {
   enviado = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   const user = { id: 'u1', email: 'qa@local.test', name: 'QA', emailVerified: true, createdAt: NOW, updatedAt: NOW }
+  // O curinga vem PRIMEIRO, e a sessão depois.
+  //
+  // No Playwright a rota registrada por último ganha. Com o curinga de API registrado antes da
+  // rota de sessão, a sessão respondia `[]` — um array, que é verdadeiro em JS. As telas abriam
+  // (o `ProtectedRoute` só testa se há algo) e qualquer leitura de `user` saía `undefined`.
+  // Um stub que mente assim faz o teste medir outra coisa.
+  await page.route('**/api/**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/auth/**', (r) =>
     r.fulfill({ json: { session: { id: 's1', userId: 'u1', expiresAt: new Date(Date.now() + 864e5).toISOString(), token: 't' }, user } }),
   )
-  await page.route('**/api/**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/building', (r) =>
     r.fulfill({ json: { id: 'b1', name: 'Prédio QA', description: '', defaultTimezone: 'America/Sao_Paulo', defaultLanguage: 'pt', createdAt: NOW, updatedAt: NOW } }),
   )
@@ -572,4 +578,33 @@ test('ALTO RISCO: clique duplo manda UMA confirmação só', async ({ page }) =>
   await expect(page.getByTestId('architect-desfecho')).toContainText('apagado')
   // Uma operação é de uso único: a segunda chamada leria "não existe mais" como falha.
   expect(chamadas).toBe(1)
+})
+
+// --- onde o assistente PODE aparecer -----------------------------------------------------
+
+test('AMEAÇA: o assistente não aparece para quem não entrou', async ({ page }) => {
+  /**
+   * O botão é fixo na janela, acima de tudo, e não perguntava quem estava do outro lado.
+   *
+   * Nas páginas públicas — a inicial, o login, o cadastro e o widget que roda no site de
+   * outra pessoa — ele aparecia igual. Clicar ali abre um painel que chama uma rota
+   * autenticada: a pessoa recebe um erro em vez de resposta, e no widget o botão de outro
+   * produto aparece dentro do site de um cliente.
+   */
+  await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
+  // O curinga primeiro e a sessão por último — a última rota registrada é a que vale.
+  await page.route('**/api/**', (r) => r.fulfill({ json: [] }))
+  // Sem sessão: é `null` que a rota devolve para quem não entrou, e não um objeto vazio.
+  await page.route('**/api/auth/**', (r) => r.fulfill({ json: null }))
+
+  for (const caminho of ['/login', '/register', '/']) {
+    await page.goto(caminho)
+    await expect(page.getByTestId('architect-launcher'), `o Arquiteto apareceu em ${caminho}`).toHaveCount(0)
+  }
+})
+
+test('e continua aparecendo em página autenticada', async ({ page }) => {
+  await stub(page)
+  await page.goto('/dashboard')
+  await expect(page.getByTestId('architect-launcher')).toBeVisible()
 })
