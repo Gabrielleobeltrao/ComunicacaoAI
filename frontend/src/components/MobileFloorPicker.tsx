@@ -156,10 +156,9 @@ export function MobileFloorPicker({ open, onClose }: { open: boolean; onClose: (
             Criar andar
           </Button>
         </div>
-        <button onClick={() => irPara('/architect')} style={rodape} data-testid="floor-picker-architect">
-          <Icon name="sparkles" size={16} color="var(--text-muted)" />
-          Montar operação
-        </button>
+        {/* Sem "Montar operação" aqui: a navegação do celular já a carrega, pelo mesmo
+            `navConfig` da barra lateral, e o assistente flutuante abre em qualquer página.
+            Repeti-la na folha de andares era a terceira porta para a mesma sala. */}
         <button onClick={() => setSettingsOpen(true)} style={{ ...rodape, borderTop: 0 }} data-testid="floor-picker-settings">
           <Icon name="settings" size={16} color="var(--text-muted)" />
           Configurações do prédio

@@ -571,31 +571,28 @@ test('“Montar e ajustar escritório” é acesso de primeira classe, e não s�
   // A barra lateral é um trilho recolhido: o rótulo é clipado até o ponteiro entrar.
   await expect(page.locator('aside').getByRole('link', { name: 'Montar e ajustar escritório' })).toHaveCount(1)
 
+  /**
+   * E o menu de andares NÃO a repete.
+   *
+   * Ela morava em três lugares: a navegação, o menu de andares e a folha de andares do
+   * celular — três portas para a mesma sala, sendo que o assistente flutuante abre em
+   * qualquer página. A que fica escondida dentro de um menu é a que ninguém encontra, e a
+   * que sobra é ruído no menu de escolher andar.
+   */
   await page.getByTestId('building-switcher').first().click()
-  const criar = page.getByTestId('create-floor')
-  const montar = page.getByTestId('open-architect')
-  await expect(criar).toBeVisible()
-  await expect(montar).toBeVisible()
+  await expect(page.getByTestId('create-floor')).toBeVisible()
+  await expect(page.getByTestId('open-architect')).toHaveCount(0)
+  await page.keyboard.press('Escape')
 
-  // Abaixo de "Criar andar", que é o que foi pedido — e a ordem no DOM é a ordem na tela.
-  const posicao = await page.evaluate(() => {
-    const a = document.querySelector('[data-testid="create-floor"]')!
-    const b = document.querySelector('[data-testid="open-architect"]')!
-    return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? 'depois' : 'antes'
-  })
-  expect(posicao, 'no menu de andares ela continua vindo depois de “Criar andar”').toBe('depois')
-
-  await montar.click()
+  // A navegação continua levando lá — é a porta que sobrou, e ela funciona.
+  await page.locator('aside').getByRole('link', { name: 'Montar e ajustar escritório' }).click()
   await page.waitForURL(/\/architect/, { timeout: 20_000 })
 
-  // E no celular, onde não há barra lateral, a mesma saída está na folha de andares —
-  // senão tirar o item da barra deixaria o telefone sem caminho para a tela.
+  // E no celular a folha de andares também não a repete: a navegação do celular sai do
+  // mesmo `navConfig` da barra lateral, então o caminho existe sem duplicata.
   const andares = await (await page.request.get('/api/floors')).json()
   await page.setViewportSize({ width: 390, height: 844 })
   await irPara(page, `/floors/${andares[0].id}`)
   await page.getByRole('button', { name: /Trocar andar\. Andar atual:/ }).click()
-  const noCelular = page.getByTestId('floor-picker-architect')
-  await expect(noCelular).toBeVisible({ timeout: 20_000 })
-  await noCelular.click()
-  await page.waitForURL(/\/architect/, { timeout: 20_000 })
+  await expect(page.getByTestId('floor-picker-architect')).toHaveCount(0)
 })

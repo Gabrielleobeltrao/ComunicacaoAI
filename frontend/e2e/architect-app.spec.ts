@@ -1555,11 +1555,11 @@ test('“Montar e ajustar escritório” tem entrada de primeira classe na naveg
   await page.locator('aside').hover()
   await expect(naBarraLateral).toBeVisible()
 
-  // E, quando o prédio está ligado, o menu de andares continua oferecendo o mesmo caminho.
+  // E o menu de andares NÃO oferece o mesmo caminho: ele voltou a ser só escolher andar.
   const menuDeAndares = page.getByTestId('building-switcher')
   if (await menuDeAndares.count()) {
     await menuDeAndares.first().click()
-    await expect(page.getByTestId('open-architect')).toBeVisible()
+    await expect(page.getByTestId('open-architect')).toHaveCount(0)
   }
 })
 
