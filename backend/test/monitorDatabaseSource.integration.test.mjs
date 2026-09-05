@@ -114,6 +114,25 @@ beforeEach(async () => {
 
 const execucoes = () => db.collection('automation_runs').find({ ownerId: DONO }).toArray()
 
+/**
+ * Espera ATÉ a condição valer — em vez de dormir um prazo fixo.
+ *
+ * O aviso ao monitor sai FORA da gravação, de propósito: gravar não pode depender de
+ * observar. Um `sleep(150)` transformava isso num palpite sobre a velocidade da máquina,
+ * e o palpite errou na CI: o teste acusou "0 execuções" para um caminho que funciona, só
+ * que 150ms depois. Esperar pela condição passa tão rápido quanto a máquina permitir, e
+ * só falha quando a coisa de fato não acontece — que é o defeito que o caso procura.
+ */
+const ateQue = async (condicao, oQue, limiteMs = 5000) => {
+  const fim = Date.now() + limiteMs
+  for (;;) {
+    const valor = await condicao()
+    if (valor) return valor
+    if (Date.now() > fim) throw new Error(`esperei ${limiteMs}ms por: ${oQue}`)
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
+
 // --- a ponte -------------------------------------------------------------------------------
 
 test('ACEITAÇÃO: gravar um registro faz o monitor observar e o Flow ser enfileirado', async () => {
@@ -122,10 +141,12 @@ test('ACEITAÇÃO: gravar um registro faz o monitor observar e o Flow ser enfile
   // O primeiro estabelece o "antes"; o segundo cruza para baixo.
   assert.equal(await inserirRegistro(registro({ value: { rsi: 55 }, dedupeKey: 'r1' })), 'gravado')
   assert.equal(await inserirRegistro(registro({ value: { rsi: 22 }, dedupeKey: 'r2' })), 'gravado')
-  // O aviso é disparado sem bloquear a gravação; esperar um tique do event loop basta.
-  await new Promise((r) => setTimeout(r, 150))
-
-  const runs = await execucoes()
+  // Só o segundo registro (rsi 22) satisfaz a condição, então a primeira execução a
+  // aparecer é a dele: esperar por UMA não esconde uma segunda que não pode existir.
+  const runs = await ateQue(async () => {
+    const r = await execucoes()
+    return r.length > 0 ? r : null
+  }, 'a execução enfileirada pela transição')
   assert.equal(runs.length, 1, 'exatamente uma execução para a transição')
   assert.equal(runs[0].idempotencyKey, `${monitor._id.toString()}:mon:r2`)
 })
@@ -151,9 +172,8 @@ test('a gravação repetida nem chega ao monitor — a dedupe do histórico vem 
   const doc = registro({ value: { rsi: 10 }, dedupeKey: 'igual' })
   assert.equal(await inserirRegistro(doc), 'gravado')
   assert.equal(await inserirRegistro(doc), 'repetido')
-  await new Promise((r) => setTimeout(r, 150))
   // Uma observação só: a segunda gravação não aconteceu.
-  const estado = await getState(DONO, monitor._id)
+  const estado = await ateQue(() => getState(DONO, monitor._id), 'o monitor observar a gravação')
   assert.equal(estado.lastEventId, 'igual')
 })
 
@@ -208,6 +228,8 @@ test('a falha de um monitor não desfaz a gravação — o registro é um fato',
   // Um monitor apontando para um Flow que não existe: o dispatch marca degradado e segue.
   await db.collection('monitors').updateOne({ _id: monitor._id }, { $set: { action: { flowId: new ObjectId() } } })
   assert.equal(await inserirRegistro(registro({ value: { rsi: 10 }, dedupeKey: 'f1' })), 'gravado')
-  await new Promise((r) => setTimeout(r, 150))
+  // Espera o monitor CHEGAR na falha — sem isso, o caso mediria um instante em que ele
+  // ainda nem tinha tentado, e passaria mesmo se a falha desfizesse a gravação depois.
+  await ateQue(async () => (await getState(DONO, monitor._id))?.status === 'degraded', 'o monitor marcar que está degradado')
   assert.equal(await db.collection('data_history_records').countDocuments({ dedupeKey: 'f1' }), 1)
 })
