@@ -233,9 +233,11 @@ test('o mapa desenha os nós com a identidade de cada tipo', async ({ page }) =>
   await stub(page)
   await abrirConhecimento(page)
 
-  // Setor com a cor real; agente com o retrato que o sistema já usa.
+  // Setor com a cor real; agente com o retrato que o sistema já usa. A conferência é
+  // sobre o círculo BASE, e não sobre "o primeiro círculo": o sombreamento da esfera
+  // passa por cima dele, e a cor de identidade tem de continuar sendo a do setor.
   const setor = page.getByTestId('knode-sector:s1')
-  await expect(setor.locator('circle').first()).toHaveAttribute('fill', '#4466aa')
+  await expect(setor.getByTestId('knode-base')).toHaveAttribute('fill', '#4466aa')
   await expect(setor.locator('text').first()).toHaveText('M')
   await expect(page.getByTestId(`knode-agent:${MARINA}`).locator('image')).toHaveCount(1)
 
@@ -246,6 +248,52 @@ test('o mapa desenha os nós com a identidade de cada tipo', async ({ page }) =>
   const sinais = await vencido.locator('title').allTextContents()
   expect(sinais).toContain('vencido')
   expect(sinais).toContain('erro ao indexar')
+})
+
+test('ACEITAÇÃO: o mapa tem profundidade — o que está atrás é desenhado menor e mais fraco', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  const escalaDe = async (testId: string) => {
+    const t = await page.getByTestId(testId).getAttribute('transform')
+    return Number(/scale\(([\d.]+)\)/.exec(t ?? '')?.[1] ?? 0)
+  }
+  const opacidadeDe = (testId: string) => page.getByTestId(testId).getAttribute('opacity')
+
+  const fundo = await escalaDe(`knode-floor:${FLOOR_ID}`)
+  const frente = await escalaDe(`knode-document:${DOC_MARINA}`)
+  expect(fundo).toBeGreaterThan(0)
+  expect(fundo).toBeLessThan(frente)
+  expect(Number(await opacidadeDe(`knode-floor:${FLOOR_ID}`))).toBeLessThan(Number(await opacidadeDe(`knode-document:${DOC_MARINA}`)))
+})
+
+test('a esfera tem luz, terminação e contato — e a cor de identidade continua por baixo', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+  const setor = page.getByTestId('knode-sector:s1')
+
+  // A cor do setor está no círculo base; o volume vem por cima, sem cor própria.
+  await expect(setor.getByTestId('knode-base')).toHaveAttribute('fill', '#4466aa')
+  await expect(setor.locator('circle[fill="url(#k-lustre)"]')).toHaveCount(1)
+  await expect(setor.locator('circle[fill="url(#k-terminacao)"]')).toHaveCount(1)
+  await expect(setor.locator('ellipse[fill="url(#k-contato)"]')).toHaveCount(1)
+})
+
+test('AMEAÇA: o que está à FRENTE cobre o que está atrás, e não o contrário', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  /**
+   * A ordem do pintor. Se um documento sair por baixo do setor que está atrás dele, a
+   * perspectiva se desmonta justamente no cruzamento — que é onde o olho procura a prova
+   * de que existe profundidade.
+   */
+  const ordem = await page.evaluate(() => {
+    const nos = [...document.querySelectorAll('[data-profundidade]')]
+    return nos.map((n) => Number(n.getAttribute('data-profundidade')))
+  })
+  expect(ordem.length).toBeGreaterThan(1)
+  expect([...ordem].sort((a, b) => a - b)).toEqual(ordem)
 })
 
 // --- ver como agente --------------------------------------------------------------------

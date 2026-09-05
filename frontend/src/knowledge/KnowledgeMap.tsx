@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { Button, Card } from '../ui'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import { useKnowledgeGraph } from './useKnowledgeGraph'
-import { boundsOf, layoutGraph } from './layout'
+import { boundsOf, brumaDe, escalaDe, layoutGraph } from './layout'
 import type { Positioned } from './layout'
 import { KnowledgeNode, RAIO } from './KnowledgeNode'
 import { KnowledgeFilters } from './KnowledgeFilters'
@@ -20,7 +20,7 @@ import type { KnowledgeScopeType } from '../lib/knowledge'
 // `prefers-reduced-motion` pede para não existir. O layout aqui é calculado uma vez e
 // fica parado.
 
-const ALTURA = 'clamp(320px, 58dvh, 560px)'
+const ALTURA = 'clamp(360px, 64dvh, 620px)'
 
 export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorName: string }) {
   const [filtros, setFiltros] = useState<FiltrosDoMapa>({ q: '', status: '', source: '', viewAs: null })
@@ -43,6 +43,14 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
     [posicionados],
   )
   const porId = useMemo(() => new Map(posicionados.map((n) => [n.id, n])), [posicionados])
+  /**
+   * A ordem do PINTOR: o que está longe é desenhado primeiro, e o que está perto cobre.
+   *
+   * Sem isso, um documento à frente sai por baixo do setor que está atrás dele, e a
+   * perspectiva se desmonta no primeiro cruzamento — que é justamente onde o olho
+   * procura a prova de que existe profundidade.
+   */
+  const pintura = useMemo(() => [...posicionados].sort((a, b) => a.profundidade - b.profundidade), [posicionados])
 
   /**
    * A vizinhança do nó selecionado fica forte; o resto perde opacidade.
@@ -160,7 +168,26 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
               <svg
                 ref={svgRef}
                 viewBox={`${caixa.minX} ${caixa.minY} ${caixa.width} ${caixa.height}`}
-                style={{ width: '100%', height: ALTURA, touchAction: 'none', display: 'block' }}
+                style={{
+                  width: '100%',
+                  height: ALTURA,
+                  touchAction: 'none',
+                  display: 'block',
+                  borderRadius: 'var(--radius-md, 12px)',
+                  /**
+                   * O CHÃO — no elemento, e não num `<rect>` da viewBox.
+                   *
+                   * Um retângulo em coordenadas do desenho só cobre a viewBox, e a viewBox
+                   * de um mapa mais alto que largo fica com tarja nos dois lados: o chão
+                   * virava uma faixa vertical no meio do cartão. Como fundo do SVG ele
+                   * preenche o elemento inteiro, em qualquer proporção.
+                   *
+                   * Claro ao fundo, rebaixado à frente: é a perspectiva atmosférica, a
+                   * mesma razão pela qual a serra distante parece mais clara que a da
+                   * frente.
+                   */
+                  background: 'linear-gradient(to bottom, var(--surface-card) 0%, var(--surface-app) 62%, var(--surface-sunken) 100%)',
+                }}
                 role="group"
                 aria-label={`Mapa de conhecimento de ${floorName}`}
                 data-testid="knowledge-svg"
@@ -171,6 +198,28 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
                 onPointerUp={soltar}
                 onPointerLeave={soltar}
               >
+                <defs>
+                  {/* A LUZ, uma só, vindo de cima à esquerda — como em todo o resto da
+                      interface. Duas fontes de luz num mesmo desenho é o que faz um
+                      volume parecer adesivo em vez de esfera. */}
+                  <radialGradient id="k-lustre" cx="0.34" cy="0.26" r="0.72">
+                    <stop offset="0" stopColor="#fff" stopOpacity="0.5" />
+                    <stop offset="0.45" stopColor="#fff" stopOpacity="0.12" />
+                    <stop offset="0.8" stopColor="#fff" stopOpacity="0" />
+                  </radialGradient>
+                  {/* A terminação: a borda oposta à luz escurece. Translúcida e sem cor
+                      própria, então vale para a cor de qualquer setor. */}
+                  <radialGradient id="k-terminacao" cx="0.36" cy="0.3" r="0.98">
+                    <stop offset="0.5" stopColor="var(--ink-1)" stopOpacity="0" />
+                    <stop offset="0.82" stopColor="var(--ink-1)" stopOpacity="0.14" />
+                    <stop offset="1" stopColor="var(--ink-1)" stopOpacity="0.34" />
+                  </radialGradient>
+                  {/* O contato com o plano. É a sombra que diz "isto está APOIADO ali". */}
+                  <radialGradient id="k-contato" cx="0.5" cy="0.5" r="0.5">
+                    <stop offset="0" stopColor="var(--ink-1)" stopOpacity="0.2" />
+                    <stop offset="1" stopColor="var(--ink-1)" stopOpacity="0" />
+                  </radialGradient>
+                </defs>
                 <g transform={`scale(${zoom}) translate(${pan.x} ${pan.y})`}>
                   {/* As linhas são NEUTRAS: colorir a conexão com a cor do agente foi
                       descartado — a cor é identidade do nó, não do caminho. */}
@@ -183,18 +232,21 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
                       <line
                         key={e.id}
                         x1={a.x}
-                        y1={a.y + RAIO[a.kind]}
+                        y1={a.y + RAIO[a.kind] * escalaDe(a.profundidade)}
                         x2={b.x}
-                        y2={b.y - RAIO[b.kind]}
-                        stroke="var(--border-subtle)"
+                        y2={b.y - RAIO[b.kind] * escalaDe(b.profundidade)}
+                        stroke="var(--border-strong)"
                         strokeWidth={1}
                         strokeDasharray={e.kind === 'can_access' ? '4 4' : undefined}
-                        opacity={forte ? 0.8 : 0.15}
+                        // A ligação também recua: ela some na bruma junto com a ponta mais
+                        // distante que segura. Uma linha de contraste igual em toda a
+                        // profundidade desfaz o que as esferas acabaram de construir.
+                        opacity={(forte ? 0.8 : 0.15) * brumaDe(Math.min(a.profundidade, b.profundidade))}
                         aria-hidden="true"
                       />
                     )
                   })}
-                  {posicionados.map((n) => (
+                  {pintura.map((n) => (
                     <KnowledgeNode
                       key={n.id}
                       node={n}

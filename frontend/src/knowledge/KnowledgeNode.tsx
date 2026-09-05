@@ -1,11 +1,17 @@
+import { brumaDe, escalaDe } from './layout'
 import type { Positioned } from './layout'
 
-// O NÓ — círculo compacto, do jeito que a especificação fixou.
+// O NÓ — uma ESFERA compacta, do jeito que a especificação fixou.
 //
 // Setor: a cor real do setor e a inicial do nome, que funciona como ícone. Agente: o
 // MESMO retrato que o sistema já usa em toda tela, para ser a mesma pessoa em todo
 // lugar. Documento: círculo neutro com um ícone pequeno e o estado de indexação
 // discreto. Nada de card retangular dentro do grafo.
+//
+// O VOLUME vem de três coisas, e nenhuma delas é uma imagem: a luz de cima à esquerda
+// (o lustre), o escurecimento da borda oposta (a terminação), e o contato com o plano
+// (a sombra elíptica embaixo). A cor de identidade continua sendo a do círculo de baixo
+// — o sombreamento passa POR CIMA dela, então um setor azul continua azul.
 
 export const RAIO: Record<Positioned['kind'], number> = { building: 26, floor: 24, sector: 22, agent: 22, document: 16 }
 
@@ -42,11 +48,17 @@ export function KnowledgeNode({
   const inicial = node.label.trim().charAt(0).toUpperCase() || '?'
   const cor = node.color ?? null
   const flag = (node.flags ?? []).map((f) => INDICADOR[f]).find(Boolean)
+  const escala = escalaDe(node.profundidade)
+  // A bruma da distância MULTIPLICA o apagamento da vizinhança em vez de substituí-lo:
+  // são duas perguntas diferentes ("está longe" e "não tem a ver com o que eu escolhi"),
+  // e o mapa precisa responder as duas ao mesmo tempo.
+  const opacidade = (dimmed ? 0.25 : 1) * brumaDe(node.profundidade)
 
   return (
     <g
-      transform={`translate(${node.x} ${node.y})`}
-      opacity={dimmed ? 0.25 : 1}
+      transform={`translate(${node.x} ${node.y}) scale(${escala})`}
+      data-profundidade={node.profundidade}
+      opacity={opacidade}
       style={{ cursor: 'pointer' }}
       tabIndex={0}
       role="button"
@@ -65,19 +77,30 @@ export function KnowledgeNode({
         }
       }}
     >
+      {/* A sombra de contato: uma elipse achatada logo abaixo. É ela que tira a bolinha
+          do papel — sombreamento sozinho não convence, o olho procura o contato. Elipse,
+          e não círculo, porque o plano é visto de viés. */}
+      <ellipse cx={r * 0.12} cy={r * 1.08} rx={r * 0.92} ry={r * 0.26} fill="url(#k-contato)" aria-hidden="true" pointerEvents="none" />
       {selected && <circle r={r + 6} fill="none" stroke="var(--intent-brand)" strokeWidth={2} />}
       {node.kind === 'agent' && portrait ? (
         <>
           <clipPath id={`clip-${node.id}`}>
             <circle r={r} />
           </clipPath>
-          <circle r={r} fill={NEUTRO} stroke={BORDA} />
+          <circle r={r} fill={NEUTRO} stroke={BORDA} data-testid="knode-base" />
           <image href={portrait} x={-r} y={-r} width={r * 2} height={r * 2} clipPath={`url(#clip-${node.id})`} preserveAspectRatio="xMidYMid slice" />
+          <circle r={r} fill="url(#k-terminacao)" pointerEvents="none" />
+          <circle r={r} fill="url(#k-lustre)" pointerEvents="none" />
           <circle r={r} fill="none" stroke={BORDA} />
         </>
       ) : (
         <>
-          <circle r={r} fill={cor ?? NEUTRO} stroke={cor ?? BORDA} strokeWidth={1} />
+          <circle r={r} fill={cor ?? NEUTRO} stroke={cor ?? BORDA} strokeWidth={1} data-testid="knode-base" />
+          {/* A terminação escurece a borda oposta à luz; o lustre é o brilho dela. Os
+              dois são translúcidos e sem cor própria, então servem para qualquer cor de
+              setor sem precisar de um gradiente por cor. */}
+          <circle r={r} fill="url(#k-terminacao)" pointerEvents="none" />
+          <circle r={r} fill="url(#k-lustre)" pointerEvents="none" />
           {/* Setor: a inicial É o ícone. Não existe upload de ícone de setor, e inventar
               um agora seria um sistema novo para uma decisão que já está tomada. */}
           <text
