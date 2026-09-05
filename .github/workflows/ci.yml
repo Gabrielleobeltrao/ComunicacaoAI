@@ -291,31 +291,35 @@ jobs:
             -e BROWSER_WORKER_SECRET="$SEGREDO" \
             -p 4400:4400 comunicacaoai-browser-worker:ci
 
-          # O processo precisa aceitar conexão antes de a pergunta fazer sentido.
-          for _ in $(seq 1 30); do
-            (echo > /dev/tcp/127.0.0.1/4400) >/dev/null 2>&1 && break
+          # A PRONTIDÃO é a própria pergunta, e não um teste de porta.
+          #
+          # O `/dev/tcp` no host responde assim que o Docker publica a porta — o que acontece
+          # ANTES de o processo lá dentro aceitar conexão. A pergunta assinada saía cedo demais
+          # e voltava vazia, e o passo acusava "sem motor" para um worker que estava só
+          # nascendo. Perguntar de novo, com nonce novo, é a espera certa: o que ela aguarda é
+          # exatamente o que ela quer saber.
+          SAUDE=""
+          for tentativa in $(seq 1 30); do
+            SAUDE=$(BW_SECRET="$SEGREDO" node -e '
+              const { createHmac, randomUUID } = require("node:crypto")
+              const timestamp = Date.now()
+              const nonce = randomUUID()
+              const assinatura = createHmac("sha256", process.env.BW_SECRET).update(`${timestamp}.${nonce}.`).digest("hex")
+              fetch("http://127.0.0.1:4400/health", {
+                headers: {
+                  "x-sandbox-timestamp": String(timestamp),
+                  "x-sandbox-nonce": nonce,
+                  "x-sandbox-signature": assinatura,
+                },
+              })
+                .then((r) => r.text())
+                .then((t) => console.log(t))
+                .catch(() => { console.log(""); process.exit(0) })
+            ') || true
+            [ -n "$SAUDE" ] && break
             sleep 2
           done
 
-          # A assinatura é a mesma de `browser-worker/src/auth.mjs`: HMAC sobre
-          # `timestamp.nonce.corpo`, com nonce de uso único e janela de tempo.
-          SAUDE=$(BW_SECRET="$SEGREDO" node -e '
-            const { createHmac, randomUUID } = require("node:crypto")
-            const secret = process.env.BW_SECRET
-            const timestamp = Date.now()
-            const nonce = randomUUID()
-            const assinatura = createHmac("sha256", secret).update(`${timestamp}.${nonce}.`).digest("hex")
-            fetch("http://127.0.0.1:4400/health", {
-              headers: {
-                "x-sandbox-timestamp": String(timestamp),
-                "x-sandbox-nonce": nonce,
-                "x-sandbox-signature": assinatura,
-              },
-            })
-              .then((r) => r.text())
-              .then((t) => console.log(t))
-              .catch((e) => { console.log(JSON.stringify({ erro: String(e.message) })); process.exit(0) })
-          ')
           LOGS=$(docker logs bw-ci 2>&1 | tail -25)
           docker rm -f bw-ci >/dev/null 2>&1 || true
 
