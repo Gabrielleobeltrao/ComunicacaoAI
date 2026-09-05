@@ -19,6 +19,17 @@ const svc = await import('../dist/monitoring/service.js')
 const hist = await import('../dist/monitoring/history.js')
 const { ensureDataHistoryIndexes } = await import('../dist/dataHistory/store.js')
 
+/** Espera ATÉ a condição valer, em vez de dormir um prazo fixo. Ver o mesmo em monitorDatabaseSource. */
+const ateQue = async (condicao, oQue, limiteMs = 5000) => {
+  const fim = Date.now() + limiteMs
+  for (;;) {
+    const valor = await condicao()
+    if (valor) return valor
+    if (Date.now() > fim) throw new Error(`esperei ${limiteMs}ms por: ${oQue}`)
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
+
 const DONO = 'dono-historico'
 let servidor
 let porta
@@ -241,10 +252,16 @@ test('ACEITAÇÃO: o disparo entra no histórico com o monitor e a execução', 
 
   const leitura = await svc.readSourceOnce(await svc.getSource(DONO, f._id))
   assert.ok(leitura.recorded > 0, 'sem registro gravado não há o que observar')
-  // O ouvinte de gravação é assíncrono: ele roda depois que o registro existe.
-  await new Promise((r) => setTimeout(r, 300))
-
-  const { items } = await hist.listarEventos(DONO, { kind: 'dispatch' })
+  /**
+   * O ouvinte de gravação é assíncrono: ele roda DEPOIS que o registro existe, e sem
+   * bloquear a gravação. Um prazo fixo aqui é um palpite sobre a velocidade da máquina —
+   * numa CI carregada o palpite erra, e o caso acusa "nenhum disparo" para um caminho que
+   * funciona, só que mais devagar. Esperar pela condição passa tão rápido quanto der.
+   */
+  const { items } = await ateQue(async () => {
+    const r = await hist.listarEventos(DONO, { kind: 'dispatch' })
+    return r.items.length > 0 ? r : null
+  }, 'o disparo aparecer no histórico da fonte')
   assert.equal(items.length, 1, 'o disparo precisa aparecer no histórico da fonte')
   assert.equal(items[0].sourceName, 'Preço vigiado')
   assert.equal(items[0].monitorId, m.id)
