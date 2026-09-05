@@ -101,3 +101,32 @@ test('a falha não vaza mensagem de provedor para a tela', async () => {
   assert.equal(r.ok, false)
   assert.ok(!/http|api|key|token/i.test(r.failure.message), r.failure.message)
 })
+
+// --- o provedor gravado no projeto e a chave que a conta REALMENTE tem ------------------------
+
+test('ACEITAÇÃO: com só OpenAI configurada, o turno USA a OpenAI — mesmo com o projeto marcado anthropic', async () => {
+  /**
+   * O projeto guarda o provedor, e `repository.createProject` grava `anthropic` por padrão.
+   * Quem tem só a chave da OpenAI ficava preso: o turno pedia a chave do provedor gravado, não
+   * achava, e respondia "Configure a chave do provedor em Configurações" — para alguém que já
+   * tinha configurado uma.
+   *
+   * A pergunta certa não é "a chave DESTE provedor existe?", e sim "esta conta consegue
+   * trabalhar?". Se ela consegue por outro provedor, é por ele que o turno vai.
+   */
+  await setProviderApiKey(DONO, 'openai', 'chave-de-teste-openai')
+
+  const r = await runArchitectTurn({ ownerId: DONO, provider: 'anthropic', model: null, prompt: prompt(), chargeKey: 'prov-1' })
+  assert.equal(r.ok, true, `esperava a rodada acontecer pela OpenAI: ${JSON.stringify(r.failure ?? {})}`)
+})
+
+test('AMEAÇA: sem chave NENHUMA, a recusa diz quais provedores ele procurou', async () => {
+  /**
+   * "Configure a chave do provedor" não dizia QUAL. Quem tinha uma das duas lia isso como
+   * "o sistema não vê a minha chave" e ia procurar defeito no lugar errado.
+   */
+  const r = await runArchitectTurn({ ownerId: DONO, provider: 'anthropic', model: null, prompt: prompt(), chargeKey: 'prov-2' })
+  assert.equal(r.ok, false)
+  assert.equal(r.failure.code, 'no_provider_key')
+  assert.match(r.failure.message, /Anthropic|OpenAI/i, `a recusa precisa nomear os provedores: "${r.failure.message}"`)
+})
