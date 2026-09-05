@@ -7,7 +7,7 @@ import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
 import { ArchitectAssistantProvider } from './components/ArchitectAssistant'
-import { ArchitectLegacyRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
+import { ArchitectLegacyRedirect, CommunityRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
@@ -42,7 +42,6 @@ const Databases = sobDemanda(() => import('./pages/Databases'), 'Databases')
 const Monitors = sobDemanda(() => import('./pages/Monitors'), 'Monitors')
 const MonitoringCenter = sobDemanda(() => import('./pages/MonitoringCenter'), 'MonitoringCenter')
 const Activity = sobDemanda(() => import('./pages/Activity'), 'Activity')
-const Marketplace = sobDemanda(() => import('./pages/Marketplace'), 'Marketplace')
 const AgentDetail = sobDemanda(() => import('./pages/AgentDetail'), 'AgentDetail')
 const Agents = sobDemanda(() => import('./pages/Agents'), 'Agents')
 const Dashboard = sobDemanda(() => import('./pages/Dashboard'), 'Dashboard')
@@ -109,7 +108,7 @@ function App() {
           <Route path="/monitors" element={<P><Monitors /></P>} />
           <Route path="/monitoring" element={<P><MonitoringCenter /></P>} />
           <Route path="/activity" element={<P><Activity /></P>} />
-          <Route path="/community" element={<P><Marketplace /></P>} />
+          <Route path="/community" element={<CommunityRedirect />} />
           <Route path="/floors/:floorId" element={<P><FloorView /></P>} />
           <Route path="/floors/:floorId/agents" element={<P><Agents /></P>} />
           <Route path="/floors/:floorId/agents/:agentId" element={<P><AgentDetail /></P>} />

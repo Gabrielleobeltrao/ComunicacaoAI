@@ -5,6 +5,9 @@ import { CustomToolsPanel } from './Tools'
 import { PrivateAppsPanel } from '../components/PrivateAppsPanel'
 import { AppLogo } from '../components/AppLogo'
 import { AppDetailDialog } from '../components/AppDetailDialog'
+import { ExtensionDialog, carregarComunidade, juntarComunidade } from '../components/ExtensionDialog'
+import type { ItemDeComunidade } from '../components/ExtensionDialog'
+import { KIND_LABEL, STATUS_LABEL as STATUS_PACOTE } from '../lib/extensions'
 import { StreamCTA, StreamPanel } from '../components/StreamPanel'
 import { TradingPolicyPanel } from '../components/TradingPolicyPanel'
 import { listStreams } from '../lib/streams'
@@ -22,13 +25,39 @@ import {
 import type { AppCatalogEntry, AppInstallation } from '../lib/apps'
 import { API_URL } from '../lib/api'
 import { useAppNavigation } from '../lib/appNavigation'
-import { Button, Card, Dialog, EmptyState, Field, Icon, IconButton, Input, Tabs, Tag } from '../ui'
+import { Badge, Button, Card, Dialog, EmptyState, Field, Icon, IconButton, Input, Tabs, Tag } from '../ui'
 
 // The Apps page: what the account can connect (Catálogo), what it already connected
 // (Conectados) and the HTTP actions the owner wrote themselves (Personalizados).
 //
 // Nothing on this page ever displays a stored credential — the API does not return
 // one. A secret field left blank on save means "keep the current one".
+
+/**
+ * A PROCEDÊNCIA de um item da prateleira.
+ *
+ * Ela era um cabeçalho de grupo — três listas separadas, oficiais, comunidade e privados.
+ * Separar dizia que instalar algo de outra pessoa é uma atividade diferente de usar um
+ * App, e não é: é a mesma prateleira, com etiquetas diferentes. O que a procedência
+ * continua fazendo é o que ela sempre fez de útil: dizer de quem é aquilo, e permitir
+ * separar a quem quiser separar.
+ */
+type Origem = 'todos' | 'plataforma' | 'comunidade' | 'meus'
+const ORIGENS: { valor: Origem; label: string }[] = [
+  { valor: 'todos', label: 'Tudo' },
+  { valor: 'plataforma', label: 'Da plataforma' },
+  { valor: 'comunidade', label: 'Da comunidade' },
+  { valor: 'meus', label: 'Meus' },
+]
+
+interface ItemDaPrateleira {
+  chave: string
+  origem: Exclude<Origem, 'todos'>
+  categorias: string[]
+  busca: string
+  app?: AppCatalogEntry
+  pacote?: ItemDeComunidade
+}
 
 type TabKey = 'catalog' | 'connected' | 'mine' | 'custom'
 const TABS: { value: TabKey; label: string }[] = [
@@ -49,7 +78,14 @@ export function Apps() {
   const [failed, setFailed] = useState(false)
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState<string>('')
+  const [origem, setOrigem] = useState<Origem>('todos')
   const [detail, setDetail] = useState<AppCatalogEntry | null>(null)
+  // A COMUNIDADE não é um lugar: é uma procedência. O que era uma página à parte mora
+  // aqui, na mesma prateleira, com o mesmo campo de busca e os mesmos filtros.
+  const [comunidade, setComunidade] = useState<ItemDeComunidade[]>([])
+  // O popup guarda o ID, não o objeto: depois de instalar, a lista é relida e o popup
+  // precisa mostrar o estado NOVO. Um objeto capturado no clique mostraria o antigo.
+  const [pacoteId, setPacoteId] = useState<string | null>(null)
 
   // `silent` refreshes without swapping the list for a spinner — a background
   // refresh must not unmount the panel the owner is reading (it would throw away the
@@ -58,9 +94,16 @@ export function Apps() {
     if (!silent) setLoading(true)
     setFailed(false)
     try {
-      const [apps, installed] = await Promise.all([listAppCatalog(), listInstallations()])
+      const [apps, installed, extensoes] = await Promise.all([
+        listAppCatalog(),
+        listInstallations(),
+        // Apps e templates: os dois são "coisa que se instala e passa a operar". As
+        // ferramentas ficam na prateleira de ferramentas, que é onde se procura por elas.
+        carregarComunidade(['app', 'template']),
+      ])
       setCatalog(apps)
       setInstallations(installed)
+      setComunidade(juntarComunidade(extensoes.catalogo, extensoes.meus, extensoes.instalados))
     } catch {
       setFailed(true)
     } finally {
@@ -72,16 +115,44 @@ export function Apps() {
     void load()
   }, [load])
 
-  const categories = useMemo(() => [...new Set(catalog.flatMap((a) => a.categories))].sort(), [catalog])
+  const pacote = useMemo(() => comunidade.find((i) => i.id === pacoteId) ?? null, [comunidade, pacoteId])
+
+  const prateleira = useMemo<ItemDaPrateleira[]>(
+    () => [
+      // `?? []` porque uma categoria ausente não pode derrubar a prateleira inteira: o
+      // texto de busca é montado para TODO item, e antes só era montado quando alguém
+      // digitava algo — o que escondia o buraco até o dia em que alguém digitasse.
+      ...catalog.map((app) => ({
+        chave: `app:${app.key}`,
+        origem: app.source === 'system' ? ('plataforma' as const) : ('meus' as const),
+        categorias: app.categories ?? [],
+        busca: `${app.name} ${app.description} ${(app.categories ?? []).join(' ')}`,
+        app,
+      })),
+      ...comunidade.map((item) => ({
+        chave: `pkg:${item.id}`,
+        // Um pacote MEU é meu, mesmo publicado: quem o escreveu não o procura em
+        // "comunidade", procura no que é dele.
+        origem: item.meu ? ('meus' as const) : item.author === 'platform' ? ('plataforma' as const) : ('comunidade' as const),
+        categorias: item.categories ?? [],
+        busca: `${item.name} ${item.summary} ${(item.categories ?? []).join(' ')}`,
+        pacote: item,
+      })),
+    ],
+    [catalog, comunidade],
+  )
+
+  const categories = useMemo(() => [...new Set(prateleira.flatMap((i) => i.categorias))].sort(), [prateleira])
 
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase()
-    return catalog.filter((app) => {
-      if (category && !app.categories.includes(category)) return false
+    return prateleira.filter((item) => {
+      if (origem !== 'todos' && item.origem !== origem) return false
+      if (category && !item.categorias.includes(category)) return false
       if (!needle) return true
-      return `${app.name} ${app.description} ${app.categories.join(' ')}`.toLowerCase().includes(needle)
+      return item.busca.toLowerCase().includes(needle)
     })
-  }, [catalog, search, category])
+  }, [prateleira, search, category, origem])
 
   const setTab = (value: string) => {
     const next = new URLSearchParams(params)
@@ -141,29 +212,30 @@ export function Apps() {
               </div>
             </div>
 
+            {/* A procedência não separa mais a prateleira — separa quem QUISER separar. */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} data-testid="origem-filtros">
+              {ORIGENS.map((o) => (
+                <CategoryChip
+                  key={o.valor}
+                  label={o.label}
+                  active={origem === o.valor}
+                  onClick={() => setOrigem(o.valor)}
+                  data-testid={`origem-${o.valor}`}
+                />
+              ))}
+            </div>
+
             {visible.length === 0 ? (
               <EmptyState icon="search" title="Nenhum App encontrado" body="Tente outro termo ou limpe o filtro." />
             ) : (
-              <div style={{ display: 'grid', gap: 20 }} data-testid="app-catalog">
-                {GROUPS.map(({ source, title, note }) => {
-                  const doGrupo = visible.filter((a) => a.source === source)
-                  // Grupo sem App não vira um cabeçalho vazio: uma conta que nunca criou
-                  // App não precisa ver "Meus Apps" com nada embaixo.
-                  if (doGrupo.length === 0) return null
-                  return (
-                    <div key={source} style={{ display: 'grid', gap: 10 }} data-testid={`app-group-${source}`}>
-                      <div>
-                        <h2 style={{ margin: 0, fontSize: 15 }}>{title}</h2>
-                        <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>{note}</p>
-                      </div>
-                      <div style={GRID}>
-                        {doGrupo.map((app) => (
-                          <AppCard key={app.key} app={app} onOpen={() => setDetail(app)} />
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })}
+              <div style={GRID} data-testid="app-catalog">
+                {visible.map((item) =>
+                  item.app ? (
+                    <AppCard key={item.chave} app={item.app} onOpen={() => setDetail(item.app!)} />
+                  ) : (
+                    <PacoteCard key={item.chave} item={item.pacote!} onOpen={() => setPacoteId(item.pacote!.id)} />
+                  ),
+                )}
               </div>
             )}
           </>
@@ -171,6 +243,10 @@ export function Apps() {
           <ConnectedList installations={installations} catalog={catalog} onChanged={load} />
         )}
       </div>
+
+      {/* Fechar depois de instalar engoliria o aviso — e é justamente o aviso do template
+          que diz que NADA foi criado ainda. Quem fecha é quem leu. */}
+      <ExtensionDialog item={pacote} onClose={() => setPacoteId(null)} onChanged={() => void load(true)} />
 
       <AppDetailDialog
         app={detail}
@@ -189,12 +265,13 @@ export function Apps() {
 const GRID = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))', gap: 14 } as const
 const LINK = { background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--intent-brand)', textDecoration: 'underline', cursor: 'pointer' } as const
 
-function CategoryChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function CategoryChip({ label, active, onClick, ...rest }: { label: string; active: boolean; onClick: () => void } & { 'data-testid'?: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={active}
+      {...rest}
       // `ds-hit` só vale sob ponteiro grosso: no desktop o chip continua com 30px
       // de altura, no celular ele cresce até o mínimo tocável. O visual do mouse
       // não muda; o que muda é o dedo acertar.
@@ -220,20 +297,6 @@ function CategoryChip({ label, active, onClick }: { label: string; active: boole
 // mudar a chave quebraria todo grant e instalação já gravados.
 const SOURCE_LABEL: Record<string, string> = { system: 'Oficial', private: 'Meu App', community: 'Comunidade' }
 
-/**
- * Os três grupos do catálogo.
- *
- * A separação existe porque a procedência muda o que o App pode fazer: um oficial roda
- * código compilado neste repositório; um da comunidade e um privado são DATA-only, só
- * HTTP declarado no manifesto. Misturá-los numa lista só faria parecer que todos têm o
- * mesmo alcance.
- */
-const GROUPS: { source: string; title: string; note: string }[] = [
-  { source: 'system', title: 'Oficiais', note: 'Mantidos por nós, com integração nativa.' },
-  { source: 'community', title: 'Comunidade', note: 'Publicados por terceiros. Só requisições HTTP declaradas no manifesto.' },
-  { source: 'private', title: 'Meus Apps', note: 'Criados por você nesta conta. Só requisições HTTP declaradas no manifesto.' },
-]
-
 // "Em breve" é anúncio: o App aparece com nome e descrição para o dono saber o que
 // está vindo, e as ações ficam fora do alcance. Esconder seria a alternativa fácil, e
 // desperdiçaria a única coisa que um "em breve" tem de útil.
@@ -247,7 +310,15 @@ function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) 
         <AppLogo appKey={app.key} icon={app.icon} size={40} title={app.name} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
           <span style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{app.name}</span>
-          <Tag>{SOURCE_LABEL[app.source] ?? app.source}</Tag>
+          {/* O SELO é só de quem é da plataforma. O da comunidade não ganha nada — por
+              ora —, e "nada" é a informação certa: não afirma o que ninguém conferiu. */}
+          {app.source === 'system' ? (
+            <Badge tone="success" data-testid="selo-plataforma">
+              {SOURCE_LABEL.system}
+            </Badge>
+          ) : (
+            <Tag>{SOURCE_LABEL[app.source] ?? app.source}</Tag>
+          )}
           {emBreve(app) ? <Tag data-testid="app-coming-soon">Em breve</Tag> : null}
           {app.connected ? <Tag>Conectado</Tag> : null}
         </div>
@@ -280,6 +351,43 @@ function AppCard({ app, onOpen }: { app: AppCatalogEntry; onOpen: () => void }) 
                 : app.requiresAuth
                   ? 'Conectar'
                   : 'Ativar'}
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+/**
+ * O cartão de um item da comunidade — do mesmo tamanho e no mesmo grid do cartão de App.
+ *
+ * A igualdade visual é o ponto: quem procura "algo que consulte CEP" não está procurando
+ * "um pacote da comunidade", está procurando a função. O que distingue é a etiqueta, não
+ * a prateleira.
+ */
+function PacoteCard({ item, onOpen }: { item: ItemDeComunidade; onOpen: () => void }) {
+  return (
+    <Card padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="app-card" data-origem={item.meu ? 'meus' : item.author}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+        <span style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{item.name}</span>
+        {item.author === 'platform' && !item.meu ? (
+          <Badge tone="success" data-testid="selo-plataforma">
+            Oficial
+          </Badge>
+        ) : null}
+        <Tag>{KIND_LABEL[item.kind]}</Tag>
+        {/* Um pacote meu mostra o ESTADO dele, que é a única coisa que eu preciso saber
+            olhando de longe: rascunho não está publicado, suspenso saiu do ar. */}
+        {item.meu && item.meu.status !== 'published' ? <Tag>{STATUS_PACOTE[item.meu.status]}</Tag> : null}
+        {item.instalado ? <Tag>Instalado</Tag> : null}
+      </div>
+      <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)', lineHeight: 1.45 }}>{item.summary}</p>
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
+        v{item.version ?? '—'}
+        {item.installs !== null ? ` · ${item.installs} instalações` : ''}
+      </p>
+      <div style={{ paddingTop: 4 }}>
+        <Button size="sm" variant={item.instalado ? 'secondary' : 'primary'} onClick={onOpen} data-testid="app-open">
+          {item.instalado ? 'Ver instalação' : 'Ver detalhes'}
         </Button>
       </div>
     </Card>
