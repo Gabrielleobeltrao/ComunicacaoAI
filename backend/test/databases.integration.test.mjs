@@ -256,6 +256,34 @@ test('a consulta lê o histórico que já existe, sem copiar nada', async () => 
   assert.ok(r.freshness instanceof Date)
 })
 
+test('paginar percorre TODOS os registros: nenhum repete, nenhum some', async () => {
+  /**
+   * A tela de Databases só oferece "ver todos" porque `skip` funciona aqui. Se ele fosse
+   * ignorado, a segunda página devolveria a primeira de novo — e a tela mostraria a mesma
+   * coisa com outro rótulo, que é pior do que não paginar.
+   */
+  for (let i = 0; i < 5; i++) await inserirRegistro({ ticker: `T${i}`, preco: i }, new Date(1000 + i))
+
+  const pagina = async (skip) =>
+    runQuery({ accountId: DONO, dataStoreId: cena.store._id, datasetKey: 'ordens', query: { limit: 2, skip } })
+
+  const p1 = await pagina(0)
+  const p2 = await pagina(2)
+  const p3 = await pagina(4)
+
+  assert.deepEqual([p1.rows.length, p2.rows.length, p3.rows.length], [2, 2, 1])
+  assert.deepEqual(
+    [...p1.rows, ...p2.rows, ...p3.rows].map((r) => r.ticker),
+    // A ordem padrão é do mais novo para o mais velho.
+    ['T4', 'T3', 'T2', 'T1', 'T0'],
+  )
+  // `total` é quantos EXISTEM — não muda de página para página.
+  assert.deepEqual([p1.total, p2.total, p3.total], [5, 5, 5])
+  // E a última página diz que acabou.
+  assert.equal(p3.truncated, false)
+  assert.equal(p1.truncated, true)
+})
+
 test('a consulta de outra conta não enxerga estes registros', async () => {
   await inserirRegistro({ ticker: 'PETR4', preco: 30 })
   const alheio = await createDataStore(VIZINHO, { name: 'Operações', adapterKind: 'data_history', adapterConfig: { recorderId: cena.recorderId.toString() } })
