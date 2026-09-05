@@ -61,3 +61,20 @@ export function ArchitectLegacyRedirect() {
   const query = params.toString()
   return <Navigate to={query ? `/architect?${query}` : '/architect'} replace />
 }
+
+/**
+ * /community — o endereço que a Comunidade tinha quando ela era uma página.
+ *
+ * Ela deixou de ser um lugar: o que vem de terceiro aparece dentro de Apps e de
+ * Ferramentas. O favorito de quem já tinha continua chegando, e a aba antiga é
+ * traduzida: "instalados" e "catálogo" viram a prateleira de Apps; "ferramentas"
+ * — que era onde as ferramentas compartilhadas estavam — vira a aba delas.
+ */
+export function CommunityRedirect() {
+  const [params] = useSearchParams()
+  const tab = params.get('tab')
+  const rest = new URLSearchParams(params)
+  rest.delete('tab')
+  rest.set('tab', tab === 'mine' ? 'mine' : tab === 'tools' ? 'custom' : 'catalog')
+  return <Navigate to={`/apps?${rest.toString()}`} replace />
+}

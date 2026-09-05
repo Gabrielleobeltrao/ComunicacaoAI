@@ -280,14 +280,50 @@ async function verificarProntidaoComBancoFora(pararMongo) {
 async function verificarEncerramento(proc, linhas) {
   log('conferindo o encerramento por SIGTERM…')
   const saiu = new Promise((r) => proc.once('exit', (codigo, sinal) => r({ codigo, sinal })))
+  const t0 = Date.now()
   proc.kill('SIGTERM')
-  const forcado = setTimeout(() => proc.kill('SIGKILL'), 20_000)
+
+  /**
+   * A PACIÊNCIA daqui precisa ser MAIOR que o prazo que a aplicação declara.
+   *
+   * Ela usa `SHUTDOWN_TIMEOUT_MS` (25s por padrão) como freio de emergência, "deliberadamente
+   * abaixo do prazo do orquestrador" — está escrito no código dela. Esperar 20s aqui era
+   * cobrar um contrato que ninguém prometeu: quando o dreno legitimamente passava de 20s, o
+   * SIGKILL vinha antes do freio e a falha aparecia como "não encerrou sozinho".
+   *
+   * Com a margem, SIGKILL volta a significar o que deve: a aplicação estourou o PRÓPRIO prazo.
+   */
+  const PRAZO_DA_APLICACAO_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 25_000)
+  const forcado = setTimeout(() => proc.kill('SIGKILL'), PRAZO_DA_APLICACAO_MS + 10_000)
   const { codigo, sinal } = await saiu
   clearTimeout(forcado)
+  const levou = Date.now() - t0
   const registro = linhas.join('\n')
-  if (sinal === 'SIGKILL') throw new Error('o processo não saiu sozinho com SIGTERM — foi preciso SIGKILL')
+  if (sinal === 'SIGKILL') {
+    /**
+     * O QUE FALTOU aparece junto do erro.
+     *
+     * O log do backend só era impresso no caminho feliz, então a falha chegava sem nenhuma
+     * pista de onde o tempo foi — e três hipóteses foram testadas e descartadas às cegas por
+     * causa disso. As etapas do encerramento se cronometram sozinhas; aqui elas viram a
+     * mensagem.
+     */
+    const etapas = linhas.filter((l) => /shutdown:|Received SIGTERM|Shutdown complete|engine stopped/i.test(l))
+    throw new Error(
+      `o processo não saiu sozinho com SIGTERM em ${levou}ms (prazo da aplicação: ${PRAZO_DA_APLICACAO_MS}ms)\n` +
+        `etapas do encerramento:\n${etapas.length ? etapas.map((l) => `  ${l}`).join('\n') : '  (nenhuma — ele nem começou a encerrar)'}`,
+    )
+  }
   if (!/Automation engine stopped/.test(registro)) throw new Error('o motor não registrou encerramento limpo')
-  log(`encerrou sozinho com SIGTERM (código ${codigo ?? 0}) e o motor drenou`)
+  /**
+   * As etapas aparecem SEMPRE, e não só quando falha.
+   *
+   * São quatro linhas por corrida, e elas são a diferença entre "às vezes demora" e saber
+   * QUAL etapa demora. O encerramento normal leva ~3s; medindo, apareceu um pico de 21s — que
+   * era exatamente o que batia no limite antigo e produzia uma falha sem explicação.
+   */
+  for (const l of linhas.filter((l) => /shutdown:|Shutdown complete/.test(l))) log(l.trim())
+  log(`encerrou sozinho com SIGTERM (código ${codigo ?? 0}) em ${levou}ms e o motor drenou`)
 }
 
 // --- orquestração --------------------------------------------------------------------

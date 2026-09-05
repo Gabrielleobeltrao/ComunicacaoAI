@@ -179,6 +179,21 @@ test('o catálogo só mostra o que foi publicado — rascunho e suspenso ficam f
   assert.equal((await pkg.searchCatalog({})).length, 0, 'suspenso some do catálogo na mesma consulta')
 })
 
+test('o catálogo separa por TIPO — e é disso que a prateleira depende', async () => {
+  /**
+   * Apps e Ferramentas passaram a mostrar o que é da comunidade dentro delas: a página de
+   * Apps pede `kind=app` e `kind=template`, a de Ferramentas pede `kind=tool`. Se o filtro
+   * fosse ignorado, uma ferramenta apareceria entre os Apps com um botão de instalar que
+   * não faz o que o cartão promete.
+   */
+  await ateOPublicado({ kind: 'app', visibility: 'community', slug: 'crm-app' })
+  await ateOPublicado({ kind: 'tool', visibility: 'community', slug: 'cep-tool' })
+
+  assert.deepEqual((await pkg.searchCatalog({ kind: 'app' })).map((p) => p.slug), ['crm-app'])
+  assert.deepEqual((await pkg.searchCatalog({ kind: 'tool' })).map((p) => p.slug), ['cep-tool'])
+  assert.equal((await pkg.searchCatalog({})).length, 2, 'sem tipo, o catálogo continua sendo o catálogo inteiro')
+})
+
 test('a contagem de instalações vem do BANCO, e não de um contador', async () => {
   const p = await ateOPublicado({ visibility: 'community', slug: 'crm-contado' })
   await inst.install('conta-1', p._id)

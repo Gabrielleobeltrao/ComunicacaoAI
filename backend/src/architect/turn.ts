@@ -209,6 +209,24 @@ export interface RunTurnInput {
 }
 
 /**
+ * O provedor que a conta consegue de fato usar, começando pelo preferido.
+ *
+ * Devolve `null` só quando NENHUM dos dois tem chave — que é a única situação em que o
+ * Arquiteto realmente não pode trabalhar.
+ */
+async function provedorComChave(
+  ownerId: string,
+  preferido: 'anthropic' | 'openai',
+): Promise<{ provider: 'anthropic' | 'openai'; apiKey: string } | null> {
+  const ordem: ('anthropic' | 'openai')[] = preferido === 'openai' ? ['openai', 'anthropic'] : ['anthropic', 'openai']
+  for (const provider of ordem) {
+    const apiKey = await getProviderApiKey(ownerId, provider)
+    if (apiKey) return { provider, apiKey }
+  }
+  return null
+}
+
+/**
  * Confere o limite, chama, contabiliza e devolve o objeto — ou uma recusa tipada.
  *
  * Exatamente UMA tentativa de reparo. Depois disso, a rodada falha de forma segura e a
@@ -216,10 +234,30 @@ export interface RunTurnInput {
  * alta, e é justamente quando o modelo está confuso que ele erra de novo.
  */
 export async function runArchitectTurn(input: RunTurnInput): Promise<TurnOutcome> {
-  const apiKey = await getProviderApiKey(input.ownerId, input.provider)
-  if (!apiKey) {
-    return { ok: false, failure: { code: 'no_provider_key', message: 'Configure a chave do provedor em Configurações para o Arquiteto poder trabalhar.' }, usage: semUso() }
+  /**
+   * A pergunta é "esta CONTA consegue trabalhar?", e não "a chave DESTE provedor existe?".
+   *
+   * O projeto guarda o provedor, e ele é gravado como `anthropic` por padrão. Quem tinha só a
+   * chave da OpenAI ficava preso: o turno procurava a chave do provedor gravado, não achava, e
+   * respondia "Configure a chave do provedor" — para alguém que já havia configurado uma. O
+   * provedor do projeto é uma PREFERÊNCIA; a chave que existe é o fato.
+   */
+  const escolha = await provedorComChave(input.ownerId, input.provider)
+  if (!escolha) {
+    return {
+      ok: false,
+      failure: {
+        code: 'no_provider_key',
+        // Nomear os dois é o que separa "não configurei" de "configurei e ele não vê".
+        message: 'Configure em Configurações a chave da Anthropic ou da OpenAI para o Arquiteto poder trabalhar.',
+      },
+      usage: semUso(),
+    }
   }
+  const { provider, apiKey } = escolha
+  // O modelo pedido pertence ao provedor pedido: trocar de provedor sem trocar de modelo
+  // mandaria um nome que o outro não conhece.
+  const model = provider === input.provider ? input.model : null
 
   const maxTokens = input.maxTokens ?? 8000
   let usoTotal = semUso()
@@ -241,7 +279,7 @@ export async function runArchitectTurn(input: RunTurnInput): Promise<TurnOutcome
       return { erro: { code: 'budget_exceeded', message: 'O limite mensal de tokens desta conta foi atingido.' } }
     }
     try {
-      const { text, usage } = await askAuxWithUsage(input.provider, prompt, input.model, apiKey, maxTokens)
+      const { text, usage } = await askAuxWithUsage(provider, prompt, model, apiKey, maxTokens)
       usoTotal = somar(usoTotal, usage)
       // Cobrado mesmo quando a resposta é ilegível: o provedor já cobrou.
       await recordReplyUsageOnce(input.ownerId, usage, `${input.chargeKey}${sufixoDaChave}`)
@@ -258,7 +296,7 @@ export async function runArchitectTurn(input: RunTurnInput): Promise<TurnOutcome
        * O texto do provedor continua sem sair daqui: ele pode trazer a URL com a chave.
        * O que vai para a tela é a nossa frase; o detalhe fica no registro do servidor.
        */
-      const motivo = classifyLlmFailure(error, input.model ?? defaultModelOf(input.provider))
+      const motivo = classifyLlmFailure(error, model ?? defaultModelOf(provider))
       console.error(`[architect] falha na chamada ao provedor (${motivo.code}):`, (error as Error).message)
       return { erro: motivo }
     }

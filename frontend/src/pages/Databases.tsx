@@ -312,26 +312,49 @@ function NovoDataset({ databaseId, onCriado }: { databaseId: string; onCriado: (
   )
 }
 
+/**
+ * Os tamanhos de página que a tela oferece.
+ *
+ * O teto do servidor é 500 (`MAX_LIMIT` no DSL); pedir mais que isso seria pedir o que ele
+ * recusa. 20 continua o padrão: é o que cabe na tela sem rolar.
+ */
+const TAMANHOS = [20, 50, 100, 200]
+
 function ConsultaDoDataset({ databaseId, dataset }: { databaseId: string; dataset: DatasetSummary }) {
   const [resultado, setResultado] = useState<QueryResult | null>(null)
   const [erro, setErro] = useState<string | null>(null)
   const [carregando, setCarregando] = useState(false)
+  /**
+   * VER TODOS os registros, e saber onde se está.
+   *
+   * A consulta trazia 20 e dizia "20 de 137". Os outros 117 não tinham caminho nenhum: quem
+   * precisava conferir um registro gravado ontem lia quantos existiam sem ter como chegar
+   * neles. O servidor já aceitava `skip` — o DSL diz "paginação com teto" desde sempre —, e
+   * quem não usava era a tela.
+   */
+  const [tamanho, setTamanho] = useState(TAMANHOS[0])
+  const [pulo, setPulo] = useState(0)
 
   const consultar = useCallback(async () => {
     setCarregando(true)
     setErro(null)
     try {
-      setResultado(await api.queryDataset(databaseId, dataset.key, { limit: 20 }))
+      setResultado(await api.queryDataset(databaseId, dataset.key, { limit: tamanho, skip: pulo }))
     } catch (e) {
       setErro((e as Error).message)
     } finally {
       setCarregando(false)
     }
-  }, [databaseId, dataset.key])
+  }, [databaseId, dataset.key, tamanho, pulo])
 
   useEffect(() => {
     void consultar()
   }, [consultar])
+
+  // Trocar de conjunto recomeça a leitura: a página 3 de um não é a página 3 do outro.
+  useEffect(() => {
+    setPulo(0)
+  }, [databaseId, dataset.key])
 
   return (
     <Card>
@@ -358,6 +381,60 @@ function ConsultaDoDataset({ databaseId, dataset }: { databaseId: string; datase
               {resultado.returned} de {resultado.total} registro(s)
               {resultado.freshness ? ` · atualizado em ${new Date(resultado.freshness).toLocaleString('pt-BR')}` : ' · sem registros ainda'}
             </p>
+
+            {/* A NAVEGAÇÃO diz a FAIXA, e não o número da página.
+                "Página 2" obriga a pessoa a multiplicar de cabeça para saber o que está vendo;
+                "21–40 de 137" já é a resposta. */}
+            <div className="flex flex-wrap items-center gap-2" data-testid="dataset-paginacao">
+              <span style={{ fontSize: 12, color: 'var(--text-body)' }} data-testid="dataset-pagina">
+                {resultado.total === 0 ? '0 de 0' : `${pulo + 1}–${pulo + resultado.returned} de ${resultado.total}`}
+              </span>
+              <Button
+                variant="ghost"
+                disabled={pulo === 0 || carregando}
+                onClick={() => setPulo((p) => Math.max(0, p - tamanho))}
+                data-testid="dataset-anterior"
+              >
+                Anterior
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={pulo + resultado.returned >= resultado.total || carregando}
+                onClick={() => setPulo((p) => p + tamanho)}
+                data-testid="dataset-proxima"
+              >
+                Próxima
+              </Button>
+              <label htmlFor={`tamanho-${dataset.key}`} className="sr-only">
+                Registros por página
+              </label>
+              <select
+                id={`tamanho-${dataset.key}`}
+                value={tamanho}
+                onChange={(e) => {
+                  // Trocar o tamanho volta para o começo: continuar "na página 2" mostraria uma
+                  // faixa que ninguém pediu.
+                  setTamanho(Number(e.target.value))
+                  setPulo(0)
+                }}
+                data-testid="dataset-tamanho"
+                style={{
+                  fontSize: 12.5,
+                  padding: '6px 8px',
+                  minHeight: 'var(--hit-min, 44px)',
+                  borderRadius: 8,
+                  border: '1px solid var(--border-subtle)',
+                  background: 'var(--surface-app)',
+                  color: 'var(--text-body)',
+                }}
+              >
+                {TAMANHOS.map((t) => (
+                  <option key={t} value={t}>
+                    {t} por página
+                  </option>
+                ))}
+              </select>
+            </div>
             {resultado.rows.length > 0 && (
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ fontSize: 12.5, borderCollapse: 'collapse', minWidth: '100%' }} data-testid="dataset-query-table">

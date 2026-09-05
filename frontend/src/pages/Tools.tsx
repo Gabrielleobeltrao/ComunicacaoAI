@@ -4,7 +4,10 @@ import { ToolForm } from '../components/ToolForm'
 import { useT } from '../i18n'
 import { deleteTool, listTools } from '../lib/tools'
 import type { Tool } from '../lib/tools'
-import { Button, Card, Dialog, Tag } from '../ui'
+import { Button, Card, Dialog, Input, Tag } from '../ui'
+import { ExtensionDialog, carregarComunidade, juntarComunidade } from '../components/ExtensionDialog'
+import type { ItemDeComunidade } from '../components/ExtensionDialog'
+import { STATUS_LABEL } from '../lib/extensions'
 
 // The Tools area: create, edit, duplicate, test, enable/disable, delete, and see
 // which agents use each one. Every string comes from the dictionary — this page
@@ -30,12 +33,22 @@ export function CustomToolsPanel() {
   const [creating, setCreating] = useState(false)
   // A duplicate is a create pre-filled from another tool.
   const [draft, setDraft] = useState<Tool | null>(null)
+  // A COMUNIDADE mora aqui dentro: uma ferramenta publicada por outra pessoa é uma
+  // ferramenta, e é aqui que alguém procura por uma. O que a distingue é a etiqueta.
+  const [comunidade, setComunidade] = useState<ItemDeComunidade[]>([])
+  // O ID, não o objeto: depois de instalar, a lista é relida e o popup mostra o novo estado.
+  const [pacoteId, setPacoteId] = useState<string | null>(null)
+  const [busca, setBusca] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     setError(false)
     try {
-      setTools(await listTools())
+      // A comunidade pode estar fechada, e uma falha dela não pode esconder as minhas
+      // ferramentas: são duas leituras independentes, e só a primeira é essencial.
+      const [minhas, extensoes] = await Promise.all([listTools(), carregarComunidade('tool')])
+      setTools(minhas)
+      setComunidade(juntarComunidade(extensoes.catalogo, extensoes.meus, extensoes.instalados))
     } catch {
       setError(true)
     } finally {
@@ -71,15 +84,36 @@ export function CustomToolsPanel() {
     setCreating(true)
   }
 
-  const sorted = useMemo(() => [...tools].sort((a, b) => a.name.localeCompare(b.name)), [tools])
+  const filtro = busca.trim().toLowerCase()
+  const sorted = useMemo(
+    () =>
+      [...tools]
+        .filter((t) => !filtro || `${t.name} ${t.description} ${t.url}`.toLowerCase().includes(filtro))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [tools, filtro],
+  )
+  const pacote = useMemo(() => comunidade.find((i) => i.id === pacoteId) ?? null, [comunidade, pacoteId])
+  const daComunidade = useMemo(
+    () => comunidade.filter((i) => !filtro || `${i.name} ${i.summary}`.toLowerCase().includes(filtro)),
+    [comunidade, filtro],
+  )
 
   return (
     <>
       <div style={{ display: 'grid', gap: 16 }}>
-        <div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <Button icon="plus" onClick={() => setCreating(true)} data-testid="new-tool">
             {t('tools.new')}
           </Button>
+          {/* Uma busca só, que alcança as minhas e as da comunidade. */}
+          <Input
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Buscar ferramenta"
+            aria-label="Buscar ferramenta"
+            data-testid="tools-search"
+            style={{ maxWidth: 280 }}
+          />
         </div>
 
         {loading ? (
@@ -91,7 +125,7 @@ export function CustomToolsPanel() {
               {t('common.retry')}
             </button>
           </p>
-        ) : sorted.length === 0 ? (
+        ) : sorted.length === 0 && daComunidade.length === 0 ? (
           <p style={{ fontSize: 14, color: 'var(--text-muted)', maxWidth: 620 }} data-testid="tools-empty">
             {t('tools.empty')}
           </p>
@@ -122,9 +156,34 @@ export function CustomToolsPanel() {
                 </div>
               </Card>
             ))}
+
+            {daComunidade.map((item) => (
+              <Card key={item.id} padding="16px" style={{ display: 'grid', gap: 10 }} data-testid="tool-card" data-origem={item.meu ? 'meus' : item.author}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 800, color: 'var(--text-heading)' }}>{item.name}</span>
+                  {/* Selo só para a plataforma. Comunidade não ganha etiqueta de origem —
+                      dizer "não conferimos isto" com uma medalha seria pior do que calar. */}
+                  {item.author === 'platform' && !item.meu ? <Tag>Oficial</Tag> : null}
+                  {item.meu && item.meu.status !== 'published' ? <Tag>{STATUS_LABEL[item.meu.status]}</Tag> : null}
+                  {item.instalado ? <Tag>Instalada</Tag> : null}
+                </div>
+                <p style={{ margin: 0, fontSize: 13.5, color: 'var(--text-muted)', lineHeight: 1.45 }}>{item.summary}</p>
+                <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
+                  v{item.version ?? '—'}
+                  {item.installs !== null ? ` · ${item.installs} instalações` : ''}
+                </p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 4 }}>
+                  <Button size="sm" variant={item.instalado ? 'secondary' : 'primary'} onClick={() => setPacoteId(item.id)} data-testid="tool-open">
+                    {item.instalado ? 'Ver instalação' : 'Ver detalhes'}
+                  </Button>
+                </div>
+              </Card>
+            ))}
           </div>
         )}
       </div>
+
+      <ExtensionDialog item={pacote} onClose={() => setPacoteId(null)} onChanged={() => void load()} />
 
       <Dialog open={creating || editing !== null} onClose={close} title={editing ? t('common.edit') : t('tools.new')} width={720}>
         <ToolForm key={editing?._id ?? draft?.name ?? 'new'} tool={editing ?? draft} onSaved={onSaved} onCancel={close} />

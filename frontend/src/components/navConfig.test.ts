@@ -39,21 +39,20 @@ describe('the CONTROLE group', () => {
     //
     // RECURSOS entrou entre os dois: "o que o escritório possui" é uma pergunta
     // diferente de "o que aconteceu", e elas estavam no mesmo grupo.
-    // COMUNIDADE entrou por último quando o Marketplace passou a existir: ela é a única
-    // camada que traz coisa de terceiro para dentro, e a distância na lista é a mesma
-    // distância que a cabeça de quem usa faz.
-    expect(groups.map((g) => g.group)).toEqual(['operation', 'resources', 'control', 'community'])
+    // COMUNIDADE saiu: ela não é um lugar, é uma procedência. O que vem de terceiro
+    // aparece dentro de Apps e de Ferramentas, na mesma lista e na mesma busca.
+    expect(groups.map((g) => g.group)).toEqual(['operation', 'resources', 'control'])
     expect(groups.find((g) => g.group === 'control')?.label).toBe('OPERAÇÕES')
     expect(groups.find((g) => g.group === 'resources')?.label).toBe('RECURSOS')
   })
 
-  it('COMUNIDADE aparece porque a tela existe — e aponta para ela', () => {
+  it('COMUNIDADE não é mais um destino — e nenhum item de menu aponta para lá', () => {
     // A regra não mudou: um item de menu que leva a uma tela inexistente promete e não
-    // entrega. O que mudou é que a tela existe, e a rota é conferida aqui.
-    const grupos = navGroupsFor('floor-1', 'Térreo')
-    const comunidade = grupos.find((g) => g.group === 'community')
-    expect(comunidade?.label).toBe('COMUNIDADE')
-    expect(comunidade?.items.map((i) => i.path(null))).toEqual(['/community'])
+    // entrega. A tela deixou de existir, então o item também. O endereço antigo continua
+    // funcionando por redirecionamento — o que não continua é a promessa no menu.
+    const itens = navItemsFor('floor-1')
+    expect(itens.some((i) => i.path(null).startsWith('/community'))).toBe(false)
+    expect(navGroupsFor('floor-1', 'Térreo').some((g) => g.label === 'COMUNIDADE')).toBe(false)
   })
 
   it('carries Apps, the account-wide catalogue', () => {

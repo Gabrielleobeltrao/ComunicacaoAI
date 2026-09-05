@@ -31,17 +31,7 @@ const DETALHE = {
   ],
 }
 
-const CONSULTA = {
-  rows: [
-    { ticker: 'PETR4', preco: 30.5, occurredAt: NOW },
-    { ticker: 'VALE3', preco: 60.1, occurredAt: NOW },
-  ],
-  total: 137,
-  returned: 2,
-  truncated: true,
-  freshness: NOW,
-}
-
+let consultas: { limit?: number; skip?: number }[] = []
 let criado: Record<string, unknown> | null = null
 let grantSalvo: Record<string, unknown> | null = null
 
@@ -68,10 +58,24 @@ async function stub(page: Page, opts: { listStatus?: number; empty?: boolean } =
   await page.route('**/api/auth/**', (r) =>
     r.fulfill({ json: { session: { id: 's1', userId: 'u1', expiresAt: new Date(Date.now() + 864e5).toISOString(), token: 't' }, user } }),
   )
+  consultas = []
   await page.route('**/api/**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/building', (r) => r.fulfill({ json: { id: 'b1', name: 'Prédio QA', description: '', defaultTimezone: 'America/Sao_Paulo', defaultLanguage: 'pt', createdAt: NOW, updatedAt: NOW } }))
   await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: [], pinned: [] } }))
-  await page.route(`**/api/databases/${DB_ID}/datasets/ordens/query`, (r) => r.fulfill({ json: CONSULTA }))
+  await page.route(`**/api/databases/${DB_ID}/datasets/ordens/query`, (r) => {
+    // A consulta responde de acordo com o que foi PEDIDO: é assim que a paginação é
+    // verificável de verdade, e não contra um corpo fixo que ignora `skip`.
+    const pedido = (r.request().postDataJSON() ?? {}) as { limit?: number; skip?: number }
+    consultas.push(pedido)
+    const limite = Number(pedido.limit ?? 20)
+    const pulo = Number(pedido.skip ?? 0)
+    const linhas = Array.from({ length: Math.max(0, Math.min(limite, 137 - pulo)) }, (_, i) => ({
+      ticker: `T${pulo + i}`,
+      preco: 10 + pulo + i,
+      occurredAt: NOW,
+    }))
+    return r.fulfill({ json: { rows: linhas, total: 137, returned: linhas.length, truncated: pulo + linhas.length < 137, freshness: NOW } })
+  })
   await page.route(`**/api/databases/${DB_ID}/datasets`, (r) => {
     criado = r.request().postDataJSON() as Record<string, unknown>
     return r.fulfill({ status: 201, json: { key: String(criado.key) } })
@@ -116,8 +120,8 @@ test('abrir um database mostra os conjuntos e a consulta', async ({ page }) => {
   await expect(page.getByTestId('dataset-ordens')).toContainText('só acrescenta')
 
   // "Quantos vieram" nunca é apresentado como "quantos existem".
-  await expect(page.getByTestId('dataset-query-counts')).toContainText('2 de 137')
-  await expect(page.getByTestId('dataset-query-table')).toContainText('PETR4')
+  await expect(page.getByTestId('dataset-query-counts')).toContainText('20 de 137')
+  await expect(page.getByTestId('dataset-query-table')).toContainText('T0')
 })
 
 test('criar um conjunto monta o schema a partir de campo:tipo', async ({ page }) => {
@@ -199,4 +203,70 @@ test('sem grant nenhum, a tela diz o que isso significa', async ({ page }) => {
   await page.route(`**/api/databases/${DB_ID}/grants`, (r) => r.fulfill({ json: { items: [] } }))
   await page.goto(`/databases?id=${DB_ID}`)
   await expect(page.getByTestId('grants-empty')).toContainText('nenhum agente consulta')
+})
+
+
+// --- ver TODOS os registros, com paginação clara ---------------------------------------------
+
+test('ACEITAÇÃO: dá para percorrer TODOS os registros, e a tela diz onde você está', async ({ page }) => {
+  /**
+   * A consulta trazia 20 e mostrava "20 de 137". Os outros 117 não tinham caminho: quem
+   * precisava conferir um registro gravado ontem não tinha por onde chegar nele, e a tela
+   * dizia quantos existiam sem oferecer nenhum modo de vê-los.
+   */
+  await stub(page)
+  await page.goto(`/databases?id=${DB_ID}`)
+  await expect(page.getByTestId('dataset-query-table')).toBeVisible()
+
+  // Onde estou: a faixa mostrada e o total, não só "quantos vieram".
+  await expect(page.getByTestId('dataset-pagina')).toContainText('1–20 de 137')
+
+  await page.getByTestId('dataset-proxima').click()
+  await expect(page.getByTestId('dataset-pagina')).toContainText('21–40 de 137')
+  await expect(page.getByTestId('dataset-query-table')).toContainText('T20')
+
+  await page.getByTestId('dataset-anterior').click()
+  await expect(page.getByTestId('dataset-pagina')).toContainText('1–20 de 137')
+  await expect(page.getByTestId('dataset-query-table')).toContainText('T0')
+})
+
+test('nas pontas, o botão que não leva a lugar nenhum fica DESLIGADO', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/databases?id=${DB_ID}`)
+  await expect(page.getByTestId('dataset-query-table')).toBeVisible()
+
+  // Na primeira página não há anterior.
+  await expect(page.getByTestId('dataset-anterior')).toBeDisabled()
+  await expect(page.getByTestId('dataset-proxima')).toBeEnabled()
+})
+
+test('o tamanho da página é escolha de quem lê — e ela volta para a primeira', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/databases?id=${DB_ID}`)
+  await expect(page.getByTestId('dataset-query-table')).toBeVisible()
+
+  await page.getByTestId('dataset-proxima').click()
+  await expect(page.getByTestId('dataset-pagina')).toContainText('21–40')
+
+  /**
+   * Trocar o tamanho na página 2 e continuar "na página 2" mostraria uma faixa que a pessoa
+   * não pediu. Voltar para a primeira é o que mantém a leitura previsível.
+   */
+  await page.getByTestId('dataset-tamanho').selectOption('100')
+  await expect(page.getByTestId('dataset-pagina')).toContainText('1–100 de 137')
+  expect(consultas.at(-1)).toEqual({ limit: 100, skip: 0 })
+})
+
+test('AMEAÇA: a última página não pede mais do que existe', async ({ page }) => {
+  await stub(page)
+  await page.goto(`/databases?id=${DB_ID}`)
+  await expect(page.getByTestId('dataset-query-table')).toBeVisible()
+
+  await page.getByTestId('dataset-tamanho').selectOption('100')
+  await expect(page.getByTestId('dataset-pagina')).toContainText('1–100')
+  await page.getByTestId('dataset-proxima').click()
+
+  // 137 registros: a segunda página de 100 tem 37, e não há terceira.
+  await expect(page.getByTestId('dataset-pagina')).toContainText('101–137 de 137')
+  await expect(page.getByTestId('dataset-proxima')).toBeDisabled()
 })

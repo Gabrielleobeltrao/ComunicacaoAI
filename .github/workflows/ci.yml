@@ -291,41 +291,60 @@ jobs:
             -e BROWSER_WORKER_SECRET="$SEGREDO" \
             -p 4400:4400 comunicacaoai-browser-worker:ci
 
-          # O processo precisa aceitar conexão antes de a pergunta fazer sentido.
-          for _ in $(seq 1 30); do
-            (echo > /dev/tcp/127.0.0.1/4400) >/dev/null 2>&1 && break
+          # A PRONTIDÃO é a própria pergunta, e não um teste de porta.
+          #
+          # O `/dev/tcp` no host responde assim que o Docker publica a porta — o que acontece
+          # ANTES de o processo lá dentro aceitar conexão. A pergunta assinada saía cedo demais
+          # e voltava vazia, e o passo acusava "sem motor" para um worker que estava só
+          # nascendo. Perguntar de novo, com nonce novo, é a espera certa: o que ela aguarda é
+          # exatamente o que ela quer saber.
+          SAUDE=""
+          for tentativa in $(seq 1 30); do
+            SAUDE=$(BW_SECRET="$SEGREDO" node -e '
+              const { createHmac, randomUUID } = require("node:crypto")
+              const timestamp = Date.now()
+              const nonce = randomUUID()
+              const assinatura = createHmac("sha256", process.env.BW_SECRET).update(`${timestamp}.${nonce}.`).digest("hex")
+              fetch("http://127.0.0.1:4400/health", {
+                headers: {
+                  "x-sandbox-timestamp": String(timestamp),
+                  "x-sandbox-nonce": nonce,
+                  "x-sandbox-signature": assinatura,
+                },
+              })
+                .then((r) => r.text())
+                .then((t) => console.log(t))
+                .catch(() => { console.log(""); process.exit(0) })
+            ') || true
+            [ -n "$SAUDE" ] && break
             sleep 2
           done
 
-          # A assinatura é a mesma de `browser-worker/src/auth.mjs`: HMAC sobre
-          # `timestamp.nonce.corpo`, com nonce de uso único e janela de tempo.
-          SAUDE=$(BW_SECRET="$SEGREDO" node -e '
-            const { createHmac, randomUUID } = require("node:crypto")
-            const secret = process.env.BW_SECRET
-            const timestamp = Date.now()
-            const nonce = randomUUID()
-            const assinatura = createHmac("sha256", secret).update(`${timestamp}.${nonce}.`).digest("hex")
-            fetch("http://127.0.0.1:4400/health", {
-              headers: {
-                "x-sandbox-timestamp": String(timestamp),
-                "x-sandbox-nonce": nonce,
-                "x-sandbox-signature": assinatura,
-              },
-            })
-              .then((r) => r.text())
-              .then((t) => console.log(t))
-              .catch((e) => { console.log(JSON.stringify({ erro: String(e.message) })); process.exit(0) })
-          ')
-          echo "health: $SAUDE"
-          docker logs bw-ci 2>&1 | tail -20
+          LOGS=$(docker logs bw-ci 2>&1 | tail -25)
           docker rm -f bw-ci >/dev/null 2>&1 || true
 
-          # `render: false` é o defeito que este passo existe para pegar: o worker de pé, sem
-          # navegador, e nenhum alarme em lugar nenhum. Era o estado da imagem até este commit.
-          echo "$SAUDE" | grep -q '"render":true' || {
-            echo "::error::o browser-worker subiu SEM motor de renderizacao: import(playwright) nao resolve dentro da imagem"
+          # AS TRÊS FALHAS SÃO DIFERENTES, e dizer sempre a mesma coisa manda quem lê procurar
+          # no lugar errado. A primeira versão deste passo acusava "sem motor de renderização"
+          # para qualquer desfecho — inclusive quando o worker nem tinha respondido.
+          echo "::group::resposta do /health"; echo "$SAUDE"; echo "::endgroup::"
+          echo "::group::log do container"; echo "$LOGS"; echo "::endgroup::"
+
+          if [ -z "$SAUDE" ] || echo "$SAUDE" | grep -q '"erro"'; then
+            echo "::error::o browser-worker NAO RESPONDEU ao /health assinado — o container subiu?"
+            echo "$LOGS" | while IFS= read -r l; do echo "::error::  ${l:0:300}"; done
             exit 1
-          }
+          fi
+          if echo "$SAUDE" | grep -q 'unauthorized'; then
+            echo "::error::o /health recusou a assinatura — o segredo ou o relogio do runner, nao o motor"
+            exit 1
+          fi
+          if ! echo "$SAUDE" | grep -q '"render":true'; then
+            echo "::error::o browser-worker subiu SEM motor: import(playwright) nao resolve dentro da imagem"
+            echo "::error::  health: ${SAUDE:0:300}"
+            echo "$LOGS" | while IFS= read -r l; do echo "::error::  ${l:0:300}"; done
+            exit 1
+          fi
+          echo "browser-worker renderiza: ok"
 
       # A imagem carrega mais coisa que o nosso código: base, runtime e tudo o que veio
       # junto. Falha ALTA ou CRÍTICA com correção disponível derruba o job — sem correção

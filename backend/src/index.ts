@@ -5580,14 +5580,31 @@ async function shutdown(signal: string) {
     process.exit(1)
   }, config.shutdownTimeoutMs)
   forced.unref()
+  /**
+   * Cada etapa do encerramento DIZ quanto levou.
+   *
+   * Sem isso, um encerramento que estoura o prazo do orquestrador é indistinguível de um que
+   * travou: os dois aparecem como SIGKILL, sem nenhuma pista de onde o tempo foi. Foi assim
+   * que uma falha intermitente do smoke sobreviveu a três hipóteses testadas e descartadas.
+   *
+   * O custo é uma linha por etapa, uma vez por processo.
+   */
+  const comecou = Date.now()
+  const etapa = async <T>(nome: string, fn: () => Promise<T> | T): Promise<T> => {
+    const t = Date.now()
+    const r = await fn()
+    console.log(`  shutdown: ${nome} em ${Date.now() - t}ms (total ${Date.now() - comecou}ms)`)
+    return r
+  }
+
   try {
-    io.close()
-    await new Promise<void>((resolve) => httpServer.close(() => resolve()))
+    await etapa('io.close', () => io.close())
+    await etapa('httpServer.close', () => new Promise<void>((resolve) => httpServer.close(() => resolve())))
     // Stop claiming new runs and let the in-flight ones finish (their leases are
     // renewed meanwhile, so nothing steals them) before the database goes.
-    await stopEmbeddedEngine()
-    await mongoClient.close()
-    console.log('Shutdown complete')
+    await etapa('stopEmbeddedEngine', () => stopEmbeddedEngine())
+    await etapa('mongoClient.close', () => mongoClient.close())
+    console.log(`Shutdown complete em ${Date.now() - comecou}ms`)
     process.exit(0)
   } catch (error) {
     console.error('Error during shutdown:', error)

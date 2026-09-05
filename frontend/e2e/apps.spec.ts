@@ -210,10 +210,12 @@ test('o catálogo mostra origem, ações e o que cada uma faz com os dados', asy
   await expect(catalog).toContainText('1 ação')
   await expect(catalog).toContainText('altera dados')
 
-  // E os grupos existem: a procedência muda o que o App pode fazer, então oficiais,
-  // comunidade e privados não podem aparecer numa lista só.
-  await expect(page.getByTestId('app-group-system')).toBeVisible()
-  await expect(page.getByTestId('app-group-system')).toContainText('integração nativa')
+  // E a lista é UMA só. Os grupos por procedência foram desfeitos: separar em três
+  // prateleiras dizia que instalar algo de outra pessoa é uma atividade diferente de
+  // usar um App, e não é. A procedência continua dita — no selo, e no filtro de quem
+  // quiser separar —, mas a prateleira é a mesma.
+  await expect(page.getByTestId('app-group-system')).toHaveCount(0)
+  await expect(page.getByTestId('origem-comunidade')).toBeVisible()
 })
 
 test('antes de conectar, o dono lê domínios, dados e o impacto de desconectar', async ({ page }) => {
