@@ -26,7 +26,7 @@ const NO = (id: string, kind: string, label: string, extra: Record<string, unkno
 })
 
 const GRAFO_COMPLETO = {
-  viewKey: `floor:${FLOOR_ID}`,
+  viewKey: `floor:${FLOOR_ID}#2`,
   documentTotal: 2,
   documentLimit: 200,
   truncated: false,
@@ -99,10 +99,12 @@ const IMPACTO = {
 }
 
 let layoutSalvo: { viewKey: string; positions: { nodeId: string; x: number; y: number }[] } | null = null
+/** Posições já gravadas na conta ANTES de abrir a tela — o caso de quem já usou o mapa. */
+let layoutAntigo: { nodeId: string; x: number; y: number }[] | null = null
 let salvo: Record<string, unknown> | null = null
 
 async function stub(page: Page, opts: { graphStatus?: number } = {}) {
-  layoutSalvo = null
+  layoutSalvo = layoutAntigo ? { viewKey: `floor:${FLOOR_ID}#2`, positions: layoutAntigo } : null
   salvo = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
 
@@ -233,9 +235,11 @@ test('o mapa desenha os nós com a identidade de cada tipo', async ({ page }) =>
   await stub(page)
   await abrirConhecimento(page)
 
-  // Setor com a cor real; agente com o retrato que o sistema já usa.
+  // Setor com a cor real; agente com o retrato que o sistema já usa. A conferência é
+  // sobre o círculo BASE, e não sobre "o primeiro círculo": o sombreamento da esfera
+  // passa por cima dele, e a cor de identidade tem de continuar sendo a do setor.
   const setor = page.getByTestId('knode-sector:s1')
-  await expect(setor.locator('circle').first()).toHaveAttribute('fill', '#4466aa')
+  await expect(setor.getByTestId('knode-base')).toHaveAttribute('fill', '#4466aa')
   await expect(setor.locator('text').first()).toHaveText('M')
   await expect(page.getByTestId(`knode-agent:${MARINA}`).locator('image')).toHaveCount(1)
 
@@ -246,6 +250,106 @@ test('o mapa desenha os nós com a identidade de cada tipo', async ({ page }) =>
   const sinais = await vencido.locator('title').allTextContents()
   expect(sinais).toContain('vencido')
   expect(sinais).toContain('erro ao indexar')
+})
+
+test('ACEITAÇÃO: o mapa GIRA — arrastar o fundo vira a nuvem, como um globo', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  const onde = async (testId: string) => {
+    const t = await page.getByTestId(testId).getAttribute('transform')
+    const m = /translate\(([-\d.]+) ([-\d.]+)\) scale\(([\d.]+)\)/.exec(t ?? '')
+    return { x: Number(m?.[1]), y: Number(m?.[2]), escala: Number(m?.[3]) }
+  }
+
+  const antes = await onde(`knode-agent:${MARINA}`)
+  const svg = page.getByTestId('knowledge-svg')
+  const caixa = await svg.boundingBox()
+  // Arrastar o FUNDO, longe de qualquer nó: é o gesto que gira.
+  await page.mouse.move((caixa?.x ?? 0) + 30, (caixa?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((caixa?.x ?? 0) + 230, (caixa?.y ?? 0) + 70, { steps: 8 })
+  await page.mouse.up()
+
+  const depois = await onde(`knode-agent:${MARINA}`)
+  // Girar move na tela E muda a profundidade: um deslocamento sem mudança de escala
+  // seria arrastar o mapa, não girá-lo.
+  expect(Math.abs(depois.x - antes.x) + Math.abs(depois.y - antes.y)).toBeGreaterThan(10)
+  expect(Math.abs(depois.escala - antes.escala)).toBeGreaterThan(0.01)
+
+  // E dá para voltar: girar é fácil de exagerar.
+  await page.getByTestId('knowledge-reset-view').click()
+  const voltou = await onde(`knode-agent:${MARINA}`)
+  expect(Math.abs(voltou.x - antes.x)).toBeLessThan(1)
+  expect(Math.abs(voltou.escala - antes.escala)).toBeLessThan(0.01)
+})
+
+test('AMEAÇA: girar NÃO recalcula o mapa — os vizinhos continuam sendo os mesmos', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  /**
+   * Um layout recalculado a cada giro seria um mapa novo a cada gesto: a pessoa perde a
+   * referência do que estava lendo, e "girar" deixa de ser olhar de outro ângulo para
+   * virar embaralhar. O que muda é o ponto de vista, nunca as posições.
+   */
+  const distancia = async () => {
+    const p = async (t: string) => {
+      const tr = await page.getByTestId(t).getAttribute('transform')
+      const m = /translate\(([-\d.]+) ([-\d.]+)\)/.exec(tr ?? '')
+      return { x: Number(m?.[1]), y: Number(m?.[2]) }
+    }
+    const a = await p(`knode-agent:${MARINA}`)
+    const b = await p(`knode-document:${DOC_MARINA}`)
+    const c = await p(`knode-agent:${RAFAEL}`)
+    // O documento da Marina está mais perto DELA do que do Rafael — antes e depois.
+    return Math.hypot(a.x - b.x, a.y - b.y) < Math.hypot(c.x - b.x, c.y - b.y)
+  }
+
+  expect(await distancia()).toBe(true)
+  const caixa = await page.getByTestId('knowledge-svg').boundingBox()
+  await page.mouse.move((caixa?.x ?? 0) + 30, (caixa?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((caixa?.x ?? 0) + 300, (caixa?.y ?? 0) + 150, { steps: 8 })
+  await page.mouse.up()
+  expect(await distancia()).toBe(true)
+})
+
+test('a esfera tem luz, terminação e contato — e a cor de identidade continua por baixo', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+  const setor = page.getByTestId('knode-sector:s1')
+
+  // A cor do setor está no círculo base; o volume vem por cima, sem cor própria.
+  await expect(setor.getByTestId('knode-base')).toHaveAttribute('fill', '#4466aa')
+  await expect(setor.locator('circle[fill="url(#k-lustre)"]')).toHaveCount(1)
+  await expect(setor.locator('circle[fill="url(#k-terminacao)"]')).toHaveCount(1)
+  await expect(setor.locator('ellipse[fill="url(#k-contato)"]')).toHaveCount(1)
+})
+
+test('o que está à FRENTE é desenhado maior, mais forte, e por cima', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  /**
+   * A ordem do pintor. Se um nó da frente sair por baixo do que está atrás, a
+   * profundidade se desmonta justamente no cruzamento — que é onde o olho procura a
+   * prova de que ela existe.
+   */
+  const nos = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-profundidade]')].map((n) => ({
+      escala: Number(n.getAttribute('data-profundidade')),
+      opacidade: Number(n.getAttribute('opacity')),
+    })),
+  )
+  expect(nos.length).toBeGreaterThan(2)
+  expect(nos.map((n) => n.escala)).toEqual([...nos.map((n) => n.escala)].sort((a, b) => a - b))
+
+  // E o da frente é o mais nítido: a bruma cresce com a distância.
+  const primeiro = nos[0]
+  const ultimo = nos[nos.length - 1]
+  expect(ultimo.escala).toBeGreaterThan(primeiro.escala)
+  expect(ultimo.opacidade).toBeGreaterThan(primeiro.opacidade)
 })
 
 // --- ver como agente --------------------------------------------------------------------
@@ -349,6 +453,231 @@ test('arrastar um nó guarda a posição, e ela volta ao recarregar', async ({ p
 })
 
 // --- estados ----------------------------------------------------------------------------------
+
+test('AMEAÇA: com o mapa GIRADO, o nó arrastado continua debaixo do dedo', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  /**
+   * Arrastar acontece na TELA; a posição é guardada no MUNDO. Entre um e outro há um giro
+   * e uma divisão por profundidade, e cada uma tem inversa. Sem desfazer as duas, empurrar
+   * para a direita manda o nó para uma diagonal qualquer — e quanto mais girado o mapa,
+   * mais longe do dedo ele fica.
+   *
+   * A pergunta é feita ao NAVEGADOR: o que está sob o ponteiro no fim do gesto ainda é
+   * aquele nó? Uma conversão de coordenadas refeita aqui só provaria que ela concorda
+   * consigo mesma — e, pior, uma medida tirada ANTES de `hover()` rolar a página mede uma
+   * posição que já mudou. (Foi o que aconteceu: o defeito estava na régua, não na peça.)
+   */
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+  await page.mouse.move((quadro?.x ?? 0) + 30, (quadro?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((quadro?.x ?? 0) + 180, (quadro?.y ?? 0) + 110, { steps: 8 })
+  await page.mouse.up()
+
+  const no = page.getByTestId(`knode-agent:${MARINA}`)
+  // O hover primeiro, e a medida DEPOIS: é ele que rola a página até o nó, e uma caixa
+  // lida antes disso aponta para onde o nó estava, não para onde ele está.
+  await no.hover()
+  const caixaDoNo = await no.boundingBox()
+  const pega = { x: (caixaDoNo?.x ?? 0) + (caixaDoNo?.width ?? 0) / 2, y: (caixaDoNo?.y ?? 0) + (caixaDoNo?.height ?? 0) / 2 }
+  const alvo = { x: pega.x + 150, y: pega.y + 90 }
+
+  await page.mouse.move(pega.x, pega.y)
+  await page.mouse.down()
+  await page.mouse.move(alvo.x, alvo.y, { steps: 8 })
+  // Medido AINDA com o botão pressionado: soltar reenquadra o mapa para caber o nó no
+  // lugar novo, e aí a posição na tela muda por um motivo diferente do arrasto.
+  const depois = await page.getByTestId(`knode-agent:${MARINA}`).boundingBox()
+  const parou = { x: (depois?.x ?? 0) + (depois?.width ?? 0) / 2, y: (depois?.y ?? 0) + (depois?.height ?? 0) / 2 }
+  await page.mouse.up()
+
+  // O DESLOCAMENTO do nó é o deslocamento do dedo. A diferença entre o ponto agarrado e o
+  // centro da bolinha é constante e se cancela na subtração; um erro de projeção, não.
+  expect(Math.abs(parou.x - pega.x - 150)).toBeLessThan(12)
+  expect(Math.abs(parou.y - pega.y - 90)).toBeLessThan(12)
+})
+
+test.afterEach(() => {
+  layoutAntigo = null
+})
+
+test('AMEAÇA: com o layout ANTIGO salvo, o mapa não fica pendurado num canto', async ({ page }) => {
+  /**
+   * Quem já usou o mapa tem posições gravadas no sistema em que foram salvas — o antigo,
+   * em fileiras, que desce centenas de unidades. Elas entram cruas por cima do resultado
+   * das forças. Com o giro e o enquadramento presos à origem, o conjunto inteiro fica
+   * fora do meio do quadro e desenhado pequeno: "o centro fica movendo, não consigo mais
+   * ver as bolinhas".
+   */
+  // Espalhado como o layout antigo espalhava de verdade: fileiras de 110 em 110, e um
+  // andar com muitos documentos passa fácil dos milhares de unidades de largura.
+  layoutAntigo = [
+    { nodeId: 'building:b1', x: 0, y: 0 },
+    { nodeId: `floor:${FLOOR_ID}`, x: 0, y: 500 },
+    { nodeId: 'sector:s1', x: 0, y: 1000 },
+    { nodeId: `agent:${MARINA}`, x: -400, y: 1500 },
+    { nodeId: `agent:${RAFAEL}`, x: 400, y: 1500 },
+    { nodeId: `document:${DOC_MARINA}`, x: -2200, y: 2000 },
+    { nodeId: `document:${DOC_ANDAR}`, x: 2200, y: 2000 },
+  ]
+  await stub(page)
+  await abrirConhecimento(page)
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+
+  const medir = () =>
+    page.evaluate(([x, y, w, h]) => {
+      const nos = [...document.querySelectorAll('[data-testid^="knode-"]')]
+      const centros = nos.map((n) => {
+        const r = n.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })
+      const dentro = centros.filter(
+        (c) => c.x >= (x as number) && c.x <= (x as number) + (w as number) && c.y >= (y as number) && c.y <= (y as number) + (h as number),
+      ).length
+      const meio = {
+        x: centros.reduce((t, c) => t + c.x, 0) / centros.length,
+        y: centros.reduce((t, c) => t + c.y, 0) / centros.length,
+      }
+      return { total: nos.length, dentro, desvioY: Math.abs(meio.y - ((y as number) + (h as number) / 2)) / (h as number) }
+    }, [quadro?.x ?? 0, quadro?.y ?? 0, quadro?.width ?? 0, quadro?.height ?? 0])
+
+  for (const passo of [0, 1, 2, 3]) {
+    if (passo > 0) {
+      await page.mouse.move((quadro?.x ?? 0) + 40, (quadro?.y ?? 0) + 40)
+      await page.mouse.down()
+      await page.mouse.move((quadro?.x ?? 0) + 40 + 150 * passo, (quadro?.y ?? 0) + 70, { steps: 6 })
+      await page.mouse.up()
+    }
+    const m = await medir()
+    // Todas as bolinhas dentro do quadro, em qualquer ângulo…
+    expect(m.dentro, `giro ${passo}: ${m.dentro} de ${m.total} dentro do quadro`).toBe(m.total)
+    // …e o conjunto no MEIO dele, não pendurado embaixo.
+    expect(m.desvioY, `giro ${passo}: conjunto deslocado ${(m.desvioY * 100).toFixed(0)}% da altura`).toBeLessThan(0.2)
+  }
+
+  /**
+   * E as bolinhas têm o TAMANHO de sempre.
+   *
+   * O raio do nó é uma constante em unidades do mundo, e o quadro se ajusta ao que existe.
+   * Coordenadas salvas numa escala maior — o layout antigo tem mais de mil unidades de
+   * altura — desenhavam as mesmas bolinhas a menos da metade, num quadro correto e vazio:
+   * "não consigo mais ver as bolinhas".
+   */
+  // Medido no CÍRCULO, não no grupo: a caixa do grupo inclui o nome embaixo, que é mais
+  // largo que a bolinha e esconderia justamente o encolhimento que se quer pegar.
+  const largura = (await page.getByTestId('knode-sector:s1').getByTestId('knode-base').boundingBox())?.width ?? 0
+  expect(largura, `a bolinha do setor saiu com ${largura.toFixed(0)}px`).toBeGreaterThan(28)
+})
+
+test('ACEITAÇÃO: dá para ver o mapa em 2D, e a escolha fica no endereço', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  const escalas = () =>
+    page.evaluate(() => [...new Set([...document.querySelectorAll('[data-profundidade]')].map((n) => n.getAttribute('data-profundidade')))])
+
+  // No 3D cada nó tem a sua escala: é a perspectiva.
+  expect((await escalas()).length).toBeGreaterThan(1)
+
+  await page.getByTestId('knowledge-toggle-2d').click()
+  await expect(page).toHaveURL(/mapa=2d/)
+  // No plano, uma só: tudo do mesmo tamanho, nada escondido atrás de nada — que é o que
+  // torna um mapa grande legível. `poll` porque a troca de visão recalcula o layout, e a
+  // navegação do router entra como transição: a URL muda antes do desenho.
+  await expect.poll(escalas).toEqual(['1'])
+  await expect(page.getByTestId('knowledge-toggle-2d')).toHaveAttribute('aria-pressed', 'true')
+
+  // E volta.
+  await page.getByTestId('knowledge-toggle-2d').click()
+  await expect(page).not.toHaveURL(/mapa=2d/)
+  await expect.poll(async () => (await escalas()).length).toBeGreaterThan(1)
+})
+
+test('AMEAÇA: no 2D o arrasto do fundo DESLOCA, e não gira', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+  await page.getByTestId('knowledge-toggle-2d').click()
+  await expect
+    .poll(() => page.evaluate(() => [...new Set([...document.querySelectorAll('[data-profundidade]')].map((n) => n.getAttribute('data-profundidade')))]))
+    .toEqual(['1'])
+
+  const onde = async () => {
+    const t = await page.getByTestId(`knode-agent:${MARINA}`).getAttribute('transform')
+    const m = /translate\(([-\d.]+) ([-\d.]+)\) scale\(([\d.]+)\)/.exec(t ?? '')
+    return { x: Number(m?.[1]), y: Number(m?.[2]), escala: Number(m?.[3]) }
+  }
+
+  const antes = await onde()
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+  await page.mouse.move((quadro?.x ?? 0) + 30, (quadro?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((quadro?.x ?? 0) + 190, (quadro?.y ?? 0) + 120, { steps: 8 })
+  await page.mouse.up()
+
+  const depois = await onde()
+  // Deslocou…
+  expect(Math.abs(depois.x - antes.x) + Math.abs(depois.y - antes.y)).toBeGreaterThan(20)
+  // …e NÃO girou: sem profundidade, girar só embaralharia posições sem revelar nada, e a
+  // escala de todo mundo continua sendo a mesma.
+  expect(depois.escala).toBe(antes.escala)
+})
+
+test('ACEITAÇÃO: clicar FORA tira a seleção', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  const no = page.getByTestId(`knode-document:${DOC_MARINA}`)
+  await no.click()
+  await expect(page.getByTestId('knowledge-inspector')).toBeVisible()
+  await expect(no).toHaveAttribute('aria-pressed', 'true')
+
+  // Clicar no fundo, longe de qualquer nó.
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+  await page.mouse.click((quadro?.x ?? 0) + 20, (quadro?.y ?? 0) + 20)
+
+  await expect(page.getByTestId('knowledge-inspector')).toHaveCount(0)
+  await expect(no).toHaveAttribute('aria-pressed', 'false')
+})
+
+test('AMEAÇA: GIRAR não tira a seleção — arrastar não é clicar', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+  await page.getByTestId(`knode-document:${DOC_MARINA}`).click()
+  await expect(page.getByTestId('knowledge-inspector')).toBeVisible()
+
+  /**
+   * O gesto do fundo é o mesmo botão: apertar, arrastar, soltar. Se soltar sempre
+   * limpasse, girar o mapa para olhar a vizinhança do nó selecionado apagaria justamente
+   * a seleção que se estava examinando — e o painel fecharia na cara de quem girou.
+   */
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+  await page.mouse.move((quadro?.x ?? 0) + 30, (quadro?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((quadro?.x ?? 0) + 200, (quadro?.y ?? 0) + 90, { steps: 8 })
+  await page.mouse.up()
+
+  await expect(page.getByTestId('knowledge-inspector')).toBeVisible()
+})
+
+test('Esc também tira a seleção', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+  await page.getByTestId(`knode-document:${DOC_MARINA}`).click()
+  await expect(page.getByTestId('knowledge-inspector')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('knowledge-inspector')).toHaveCount(0)
+})
 
 test('erro de API NÃO vira mapa vazio', async ({ page }) => {
   await stub(page, { graphStatus: 500 })

@@ -412,9 +412,22 @@ knowledgeRouter.get('/graph', async (req, res) => {
     skip: Number(req.query.skip) || 0,
   })
 
-  // As posições arrastadas entram no DTO: sem elas, o mapa reorganizaria por baixo de
-  // quem acabou de organizá-lo.
-  const viewKey = floorId ? `floor:${floorId.toString()}` : 'building'
+  /**
+   * As posições arrastadas entram no DTO: sem elas, o mapa reorganizaria por baixo de
+   * quem acabou de organizá-lo.
+   *
+   * A GERAÇÃO na chave existe porque uma posição só significa alguma coisa DENTRO do
+   * sistema de coordenadas em que foi gravada. O mapa era uma pilha de fileiras com vãos
+   * de 150 unidades, onde duzentos documentos ocupavam vinte e dois mil de largura;
+   * agora é uma nuvem resolvida por forças, com algumas centenas. Misturar os dois é o
+   * que se via na tela: os poucos nós arrastados lá longe e todo o resto colapsado num
+   * ponto só, um em cima do outro.
+   *
+   * Trocar a chave não APAGA nada — as linhas antigas continuam gravadas, apenas deixam
+   * de ser lidas por um layout que não as produziu. Quem quiser reorganizar recomeça de
+   * um mapa que se enxerga.
+   */
+  const viewKey = floorId ? `floor:${floorId.toString()}#2` : 'building#2'
   const posicoes = new Map((await getGraphLayout(res.locals.userId, viewKey)).map((p) => [p.nodeId, { x: p.x, y: p.y }]))
   res.json({
     ...grafo,

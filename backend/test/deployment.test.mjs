@@ -86,6 +86,44 @@ test('the automation engine is documented as part of the backend', () => {
   assert.ok(pkg.scripts['start:worker'], 'the dedicated-worker escape hatch must still exist')
 })
 
+// --- o caminho de desenvolvimento ------------------------------------------------------
+
+test('o `dev` do backend EXECUTA o compilado, e não transpila 416 arquivos a cada arranque', () => {
+  /**
+   * O `dev:api` era `tsx watch src/index.ts`. `src/index.ts` puxa 169 imports sobre um
+   * grafo de 416 arquivos, e o tsx os transpila TODA vez que o processo sobe. Numa
+   * máquina apertada isso não é lento: é não subir — medido, seis minutos sem imprimir
+   * sequer a primeira linha, enquanto o mesmo backend a partir do `dist` respondia
+   * `/api/ready` em segundos.
+   */
+  for (const script of ['dev', 'dev:api', 'dev:worker']) {
+    const cmd = pkg.scripts[script]
+    assert.ok(cmd, `o backend precisa do script ${script}`)
+    assert.match(cmd, /^node scripts\/dev\.mjs dist\//, `${script} deve rodar o orquestrador sobre o compilado: ${cmd}`)
+  }
+  // O caminho antigo continua disponível, com outro nome: quem quiser um processo só não
+  // ficou sem opção.
+  assert.match(pkg.scripts['dev:tsx'] ?? '', /tsx watch/)
+})
+
+test('o orquestrador de desenvolvimento espera a saída antes de subir de novo', () => {
+  /**
+   * A primeira tentativa foi `tsc -w` ao lado de `node --watch`, e ela falhava toda vez:
+   * o compilador reescreve o `dist`, o node reinicia na hora, e o processo novo tenta
+   * escutar a porta antes de o antigo largá-la — `EADDRINUSE`, e o servidor fica parado
+   * esperando um arquivo mudar. O encerramento gracioso leva segundos DE PROPÓSITO (ele
+   * drena o que está em execução), então "reiniciar na hora" é justamente o que não pode
+   * ser feito. Estas três coisas são o que impede a volta daquele defeito.
+   */
+  const dev = read('../scripts/dev.mjs')
+  assert.match(dev, /Watching for file changes/, 'o reinício tem de esperar a compilação TERMINAR')
+  assert.match(dev, /once\('exit'/, 'e esperar a SAÍDA do processo anterior, não só pedir que ele saia')
+  assert.match(dev, /SIGKILL/, 'com um prazo, para um processo travado não pendurar o desenvolvimento')
+  // O compilador é resolvido pelo Node, e não por um caminho montado à mão: num monorepo
+  // de workspaces o typescript fica içado para a raiz, e o caminho local não existe.
+  assert.match(dev, /createRequire\(import\.meta\.url\)\.resolve\('typescript/, 'o tsc tem de ser resolvido, não adivinhado')
+})
+
 test('no real secret value is committed in the deployment docs', () => {
   // Placeholders only: never a populated connection string or a 32-byte hex key.
   assert.ok(!/mongodb\+srv:\/\/[^<\s]+:[^<@\s]+@/.test(coolify), 'a real MongoDB credential leaked into the docs')

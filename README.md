@@ -586,7 +586,10 @@ que já existem em *Configurações*.
 
 Run from the repo root:
 
-- `npm run dev` — runs the frontend and backend together (`concurrently`)
+- `npm run dev` — runs the frontend and backend together (`concurrently`). O backend compila em
+  watch e executa o `dist`: transpilar 416 arquivos a cada arranque, que era o caminho anterior
+  (`tsx watch`), custa minutos numa máquina apertada. `npm run dev:tsx -w backend` mantém o
+  comportamento antigo em um processo só.
 - `npm run build` — builds both workspaces
 
 ## Roadmap

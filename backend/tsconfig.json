@@ -10,7 +10,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    /* Compilação INCREMENTAL: o `dev` compila antes de subir, e sem o cache ele pagaria
+       o custo inteiro a cada vez. O arquivo de cache já é ignorado pelo git (*.tsbuildinfo),
+       e uma compilação limpa — CI, imagem Docker — simplesmente não o encontra e faz tudo. */
+    "incremental": true
   },
   "include": ["src"]
 }
