@@ -14,7 +14,7 @@ repo root; run a single workspace's script with `-w frontend` / `-w backend`.
 
 | Task | Command |
 |---|---|
-| Dev (API + worker) | `npm run dev -w backend` |
+| Dev (API + worker) | `npm run dev -w backend` — compila em watch e roda o `dist`; `dev:tsx` é o caminho antigo, um processo só |
 | Dev API only | `npm run dev:api -w backend` |
 | Dev worker only | `npm run dev:worker -w backend` |
 | Typecheck | `cd backend && npx tsc --noEmit` |
