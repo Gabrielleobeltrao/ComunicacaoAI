@@ -1,4 +1,4 @@
-import { brumaDe, escalaDe } from './layout'
+import { brumaDe } from './layout'
 import type { Positioned } from './layout'
 
 // O NÓ — uma ESFERA compacta, do jeito que a especificação fixou.
@@ -29,6 +29,7 @@ const INDICADOR: Record<string, { cor: string; titulo: string }> = {
 
 export function KnowledgeNode({
   node,
+  visto,
   portrait,
   selected,
   dimmed,
@@ -37,6 +38,8 @@ export function KnowledgeNode({
   onDragStart,
 }: {
   node: Positioned
+  /** Onde este nó cai na tela DESTE ângulo, e quanto ele cresceu ou encolheu na perspectiva. */
+  visto: { x: number; y: number; escala: number }
   portrait: string | null
   selected: boolean
   dimmed: boolean
@@ -48,16 +51,15 @@ export function KnowledgeNode({
   const inicial = node.label.trim().charAt(0).toUpperCase() || '?'
   const cor = node.color ?? null
   const flag = (node.flags ?? []).map((f) => INDICADOR[f]).find(Boolean)
-  const escala = escalaDe(node.profundidade)
   // A bruma da distância MULTIPLICA o apagamento da vizinhança em vez de substituí-lo:
   // são duas perguntas diferentes ("está longe" e "não tem a ver com o que eu escolhi"),
   // e o mapa precisa responder as duas ao mesmo tempo.
-  const opacidade = (dimmed ? 0.25 : 1) * brumaDe(node.profundidade)
+  const opacidade = (dimmed ? 0.25 : 1) * brumaDe(visto.escala)
 
   return (
     <g
-      transform={`translate(${node.x} ${node.y}) scale(${escala})`}
-      data-profundidade={node.profundidade}
+      transform={`translate(${visto.x} ${visto.y}) scale(${visto.escala})`}
+      data-profundidade={visto.escala}
       opacity={opacidade}
       style={{ cursor: 'pointer' }}
       tabIndex={0}

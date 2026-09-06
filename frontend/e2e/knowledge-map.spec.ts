@@ -250,21 +250,67 @@ test('o mapa desenha os nós com a identidade de cada tipo', async ({ page }) =>
   expect(sinais).toContain('erro ao indexar')
 })
 
-test('ACEITAÇÃO: o mapa tem profundidade — o que está atrás é desenhado menor e mais fraco', async ({ page }) => {
+test('ACEITAÇÃO: o mapa GIRA — arrastar o fundo vira a nuvem, como um globo', async ({ page }) => {
   await stub(page)
   await abrirConhecimento(page)
 
-  const escalaDe = async (testId: string) => {
+  const onde = async (testId: string) => {
     const t = await page.getByTestId(testId).getAttribute('transform')
-    return Number(/scale\(([\d.]+)\)/.exec(t ?? '')?.[1] ?? 0)
+    const m = /translate\(([-\d.]+) ([-\d.]+)\) scale\(([\d.]+)\)/.exec(t ?? '')
+    return { x: Number(m?.[1]), y: Number(m?.[2]), escala: Number(m?.[3]) }
   }
-  const opacidadeDe = (testId: string) => page.getByTestId(testId).getAttribute('opacity')
 
-  const fundo = await escalaDe(`knode-floor:${FLOOR_ID}`)
-  const frente = await escalaDe(`knode-document:${DOC_MARINA}`)
-  expect(fundo).toBeGreaterThan(0)
-  expect(fundo).toBeLessThan(frente)
-  expect(Number(await opacidadeDe(`knode-floor:${FLOOR_ID}`))).toBeLessThan(Number(await opacidadeDe(`knode-document:${DOC_MARINA}`)))
+  const antes = await onde(`knode-agent:${MARINA}`)
+  const svg = page.getByTestId('knowledge-svg')
+  const caixa = await svg.boundingBox()
+  // Arrastar o FUNDO, longe de qualquer nó: é o gesto que gira.
+  await page.mouse.move((caixa?.x ?? 0) + 30, (caixa?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((caixa?.x ?? 0) + 230, (caixa?.y ?? 0) + 70, { steps: 8 })
+  await page.mouse.up()
+
+  const depois = await onde(`knode-agent:${MARINA}`)
+  // Girar move na tela E muda a profundidade: um deslocamento sem mudança de escala
+  // seria arrastar o mapa, não girá-lo.
+  expect(Math.abs(depois.x - antes.x) + Math.abs(depois.y - antes.y)).toBeGreaterThan(10)
+  expect(Math.abs(depois.escala - antes.escala)).toBeGreaterThan(0.01)
+
+  // E dá para voltar: girar é fácil de exagerar.
+  await page.getByTestId('knowledge-reset-view').click()
+  const voltou = await onde(`knode-agent:${MARINA}`)
+  expect(Math.abs(voltou.x - antes.x)).toBeLessThan(1)
+  expect(Math.abs(voltou.escala - antes.escala)).toBeLessThan(0.01)
+})
+
+test('AMEAÇA: girar NÃO recalcula o mapa — os vizinhos continuam sendo os mesmos', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  /**
+   * Um layout recalculado a cada giro seria um mapa novo a cada gesto: a pessoa perde a
+   * referência do que estava lendo, e "girar" deixa de ser olhar de outro ângulo para
+   * virar embaralhar. O que muda é o ponto de vista, nunca as posições.
+   */
+  const distancia = async () => {
+    const p = async (t: string) => {
+      const tr = await page.getByTestId(t).getAttribute('transform')
+      const m = /translate\(([-\d.]+) ([-\d.]+)\)/.exec(tr ?? '')
+      return { x: Number(m?.[1]), y: Number(m?.[2]) }
+    }
+    const a = await p(`knode-agent:${MARINA}`)
+    const b = await p(`knode-document:${DOC_MARINA}`)
+    const c = await p(`knode-agent:${RAFAEL}`)
+    // O documento da Marina está mais perto DELA do que do Rafael — antes e depois.
+    return Math.hypot(a.x - b.x, a.y - b.y) < Math.hypot(c.x - b.x, c.y - b.y)
+  }
+
+  expect(await distancia()).toBe(true)
+  const caixa = await page.getByTestId('knowledge-svg').boundingBox()
+  await page.mouse.move((caixa?.x ?? 0) + 30, (caixa?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((caixa?.x ?? 0) + 300, (caixa?.y ?? 0) + 150, { steps: 8 })
+  await page.mouse.up()
+  expect(await distancia()).toBe(true)
 })
 
 test('a esfera tem luz, terminação e contato — e a cor de identidade continua por baixo', async ({ page }) => {
@@ -279,21 +325,29 @@ test('a esfera tem luz, terminação e contato — e a cor de identidade continu
   await expect(setor.locator('ellipse[fill="url(#k-contato)"]')).toHaveCount(1)
 })
 
-test('AMEAÇA: o que está à FRENTE cobre o que está atrás, e não o contrário', async ({ page }) => {
+test('o que está à FRENTE é desenhado maior, mais forte, e por cima', async ({ page }) => {
   await stub(page)
   await abrirConhecimento(page)
 
   /**
-   * A ordem do pintor. Se um documento sair por baixo do setor que está atrás dele, a
-   * perspectiva se desmonta justamente no cruzamento — que é onde o olho procura a prova
-   * de que existe profundidade.
+   * A ordem do pintor. Se um nó da frente sair por baixo do que está atrás, a
+   * profundidade se desmonta justamente no cruzamento — que é onde o olho procura a
+   * prova de que ela existe.
    */
-  const ordem = await page.evaluate(() => {
-    const nos = [...document.querySelectorAll('[data-profundidade]')]
-    return nos.map((n) => Number(n.getAttribute('data-profundidade')))
-  })
-  expect(ordem.length).toBeGreaterThan(1)
-  expect([...ordem].sort((a, b) => a - b)).toEqual(ordem)
+  const nos = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-profundidade]')].map((n) => ({
+      escala: Number(n.getAttribute('data-profundidade')),
+      opacidade: Number(n.getAttribute('opacity')),
+    })),
+  )
+  expect(nos.length).toBeGreaterThan(2)
+  expect(nos.map((n) => n.escala)).toEqual([...nos.map((n) => n.escala)].sort((a, b) => a - b))
+
+  // E o da frente é o mais nítido: a bruma cresce com a distância.
+  const primeiro = nos[0]
+  const ultimo = nos[nos.length - 1]
+  expect(ultimo.escala).toBeGreaterThan(primeiro.escala)
+  expect(ultimo.opacidade).toBeGreaterThan(primeiro.opacidade)
 })
 
 // --- ver como agente --------------------------------------------------------------------
@@ -397,6 +451,52 @@ test('arrastar um nó guarda a posição, e ela volta ao recarregar', async ({ p
 })
 
 // --- estados ----------------------------------------------------------------------------------
+
+test('AMEAÇA: com o mapa GIRADO, o nó arrastado continua debaixo do dedo', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  /**
+   * Arrastar acontece na TELA; a posição é guardada no MUNDO. Entre um e outro há um giro
+   * e uma divisão por profundidade, e cada uma tem inversa. Sem desfazer as duas, empurrar
+   * para a direita manda o nó para uma diagonal qualquer — e quanto mais girado o mapa,
+   * mais longe do dedo ele fica.
+   *
+   * A pergunta é feita ao NAVEGADOR: o que está sob o ponteiro no fim do gesto ainda é
+   * aquele nó? Uma conversão de coordenadas refeita aqui só provaria que ela concorda
+   * consigo mesma — e, pior, uma medida tirada ANTES de `hover()` rolar a página mede uma
+   * posição que já mudou. (Foi o que aconteceu: o defeito estava na régua, não na peça.)
+   */
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+  await page.mouse.move((quadro?.x ?? 0) + 30, (quadro?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((quadro?.x ?? 0) + 180, (quadro?.y ?? 0) + 110, { steps: 8 })
+  await page.mouse.up()
+
+  const no = page.getByTestId(`knode-agent:${MARINA}`)
+  // O hover primeiro, e a medida DEPOIS: é ele que rola a página até o nó, e uma caixa
+  // lida antes disso aponta para onde o nó estava, não para onde ele está.
+  await no.hover()
+  const caixaDoNo = await no.boundingBox()
+  const pega = { x: (caixaDoNo?.x ?? 0) + (caixaDoNo?.width ?? 0) / 2, y: (caixaDoNo?.y ?? 0) + (caixaDoNo?.height ?? 0) / 2 }
+  const alvo = { x: pega.x + 150, y: pega.y + 90 }
+
+  await page.mouse.move(pega.x, pega.y)
+  await page.mouse.down()
+  await page.mouse.move(alvo.x, alvo.y, { steps: 8 })
+  // Medido AINDA com o botão pressionado: soltar reenquadra o mapa para caber o nó no
+  // lugar novo, e aí a posição na tela muda por um motivo diferente do arrasto.
+  const depois = await page.getByTestId(`knode-agent:${MARINA}`).boundingBox()
+  const parou = { x: (depois?.x ?? 0) + (depois?.width ?? 0) / 2, y: (depois?.y ?? 0) + (depois?.height ?? 0) / 2 }
+  await page.mouse.up()
+
+  // O DESLOCAMENTO do nó é o deslocamento do dedo. A diferença entre o ponto agarrado e o
+  // centro da bolinha é constante e se cancela na subtração; um erro de projeção, não.
+  expect(Math.abs(parou.x - pega.x - 150)).toBeLessThan(12)
+  expect(Math.abs(parou.y - pega.y - 90)).toBeLessThan(12)
+})
 
 test('erro de API NÃO vira mapa vazio', async ({ page }) => {
   await stub(page, { graphStatus: 500 })
