@@ -1,35 +1,28 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 
-// RECURSOS: o catálogo comum e a matriz de acesso do agente.
+// RECURSOS: a tela que era um ESPELHO, e o endereço dela que continua chegando.
 //
-// O que estes casos protegem: a lista distingue os quatro estados (carregando, erro,
-// vazio, lista) — um erro desenhado como vazio faz a pessoa concluir que não tem recurso
-// nenhum e sair para criar o que já existe; e a matriz mostra o NEGADO com o motivo, que
-// é a pergunta que alguém traz até ela.
+// Ela listava documentos, Apps, databases e ferramentas sem deixar fazer nada com eles —
+// cada um já tem a sua tela, e é lá que se age. A pergunta que justificaria uma tela
+// própria (quem alcança isto, quem usou de verdade, o que quebra se eu tirar) nunca foi
+// desenhada, e uma lista que duplica quatro telas é um item de menu que promete mais do
+// que entrega.
+//
+// O que estes casos protegem: o favorito antigo não morre, e chega no lugar CERTO — o
+// tipo que a pessoa estava olhando decide o destino.
 const NOW = new Date(0).toISOString()
+const FLOOR_ID = '000000000000000000000f11'
 const AGENT_ID = '000000000000000000000a11'
-
-const RECURSOS = {
-  kinds: ['knowledge', 'app', 'tool'],
-  byKind: { knowledge: 2, app: 1, tool: 1 },
-  items: [
-    { kind: 'knowledge', id: 'k1', name: 'Política de troca', owner: { ownerType: 'agent', ownerId: AGENT_ID }, status: 'indexed', updatedAt: NOW },
-    { kind: 'knowledge', id: 'k2', name: 'Aviso do andar', owner: { ownerType: 'floor', ownerId: 'f1' }, status: 'error', flags: ['index_error'], updatedAt: NOW },
-    { kind: 'app', id: 'web_chat', name: 'Chat Web', description: 'Atendimento pelo site', owner: { ownerType: 'platform', ownerId: 'platform' }, status: 'not_connected', flags: ['not_connected'] },
-    { kind: 'tool', id: 't1', name: 'consulta_cep', description: 'consulta um CEP', owner: { ownerType: 'account', ownerId: 'conta' }, status: 'enabled' },
-  ],
-}
 
 const MATRIZ = {
   items: [
     { kind: 'knowledge', resourceId: 'k1', name: 'Política de troca', allowed: true, capabilities: ['discover', 'retrieve'], origin: 'direct', reason: 'é a base própria dele', pending: null },
-    { kind: 'knowledge', resourceId: 'k2', name: 'Aviso do andar', allowed: false, capabilities: [], origin: 'none', reason: 'a política de conhecimento deste agente não inclui esta base', pending: null },
     { kind: 'tool', resourceId: 't1', name: 'consulta_cep', allowed: false, capabilities: ['discover'], origin: 'direct', reason: 'a ferramenta está desligada', pending: { code: 'tool_desligada', message: 'Ligue a ferramenta em Ferramentas para o agente poder usá-la.' } },
   ],
 }
 
-async function stub(page: Page, opts: { resourcesStatus?: number; empty?: boolean } = {}) {
+async function stub(page: Page) {
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
   const user = { id: 'u1', email: 'qa@local.test', name: 'QA', emailVerified: true, createdAt: NOW, updatedAt: NOW }
   await page.route('**/api/auth/**', (r) =>
@@ -37,73 +30,51 @@ async function stub(page: Page, opts: { resourcesStatus?: number; empty?: boolea
   )
   await page.route('**/api/**', (r) => r.fulfill({ json: [] }))
   await page.route('**/api/building', (r) => r.fulfill({ json: { id: 'b1', name: 'Prédio QA', description: '', defaultTimezone: 'America/Sao_Paulo', defaultLanguage: 'pt', createdAt: NOW, updatedAt: NOW } }))
+  await page.route('**/api/floors**', (r) =>
+    r.fulfill({
+      json: [{ id: FLOOR_ID, buildingId: 'b1', name: 'Térreo', mission: '', description: '', timezone: 'America/Sao_Paulo', defaultLanguage: 'pt', color: null, icon: null, order: 0, status: 'active', createdAt: NOW, updatedAt: NOW }],
+    }),
+  )
   await page.route('**/api/apps/navigation', (r) => r.fulfill({ json: { apps: [], pinned: [] } }))
-  await page.route('**/api/resources?**', (r) => {
-    if (opts.resourcesStatus && opts.resourcesStatus >= 400) return r.fulfill({ status: opts.resourcesStatus, json: { message: 'o catálogo não pôde ser carregado' } })
-    if (opts.empty) return r.fulfill({ json: { ...RECURSOS, items: [], byKind: {} } })
-    const url = new URL(r.request().url())
-    const kind = url.searchParams.get('kind')
-    const q = url.searchParams.get('q')
-    let items = RECURSOS.items
-    if (kind) items = items.filter((i) => i.kind === kind)
-    if (q) items = items.filter((i) => i.name.toLowerCase().includes(q.toLowerCase()))
-    return r.fulfill({ json: { ...RECURSOS, items } })
-  })
+  await page.route('**/api/apps/catalog', (r) => r.fulfill({ json: [] }))
   await page.route(`**/api/agents/${AGENT_ID}/resource-access`, (r) => r.fulfill({ json: MATRIZ }))
 }
 
-test('o catálogo lista os recursos com dono e estado', async ({ page }) => {
+test('ACEITAÇÃO: /resources não é mais uma tela — e o favorito antigo chega em algum lugar', async ({ page }) => {
   await stub(page)
   await page.goto('/resources')
-  await expect(page.getByTestId('resources-list')).toBeVisible()
-  await expect(page.getByTestId('resource-knowledge-k1')).toContainText('Política de troca')
-  // Dono e estado são coisas diferentes, e a tela diz as duas.
-  await expect(page.getByTestId('resource-app-web_chat')).toContainText('Plataforma')
-  await expect(page.getByTestId('resource-app-web_chat')).toContainText('sem conexão')
-  await expect(page.getByTestId('resource-knowledge-k2')).toContainText('erro ao indexar')
+  await expect(page).toHaveURL(/\/apps/)
+  // A prateleira de Apps é o mais próximo de "o que este escritório tem".
+  await expect(page.getByTestId('apps-filtros')).toBeVisible()
 })
 
-test('o filtro por tipo e a busca funcionam, e o tipo fica na URL', async ({ page }) => {
+test('o TIPO que a pessoa estava olhando decide para onde ela vai', async ({ page }) => {
   await stub(page)
-  await page.goto('/resources')
-  await page.getByTestId('resources-tab-tool').click()
-  await expect(page).toHaveURL(/kind=tool/)
-  await expect(page.getByTestId('resource-tool-t1')).toBeVisible()
-  await expect(page.getByTestId('resource-knowledge-k1')).toHaveCount(0)
 
-  await page.getByTestId('resources-tab-all').click()
-  await page.getByTestId('resources-search').fill('Política')
-  await expect(page.getByTestId('resource-knowledge-k1')).toBeVisible()
-  await expect(page.getByTestId('resource-tool-t1')).toHaveCount(0)
+  await page.goto('/resources?kind=database')
+  await expect(page).toHaveURL(/\/databases/)
+
+  await page.goto('/resources?kind=tool')
+  await expect(page).toHaveURL(/\/apps\?tab=custom/)
+
+  // Conhecimento vive no ANDAR: o destino é o mapa do andar ativo.
+  await page.goto('/resources?kind=knowledge')
+  await expect(page).toHaveURL(new RegExp(`/floors/${FLOOR_ID}\\?view=knowledge`))
 })
 
-test('erro NÃO vira lista vazia', async ({ page }) => {
-  await stub(page, { resourcesStatus: 500 })
-  await page.goto('/resources')
-  await expect(page.getByTestId('resources-error')).toBeVisible()
-  await expect(page.getByTestId('resources-empty')).toHaveCount(0)
-  await expect(page.getByTestId('resources-error')).toContainText('Tentar de novo')
-})
-
-test('vazio é dito como vazio', async ({ page }) => {
-  await stub(page, { empty: true })
-  await page.goto('/resources')
-  await expect(page.getByTestId('resources-empty')).toBeVisible()
-  await expect(page.getByTestId('resources-error')).toHaveCount(0)
-})
-
-test('em 320 px o catálogo não estoura para os lados', async ({ page }) => {
-  await page.setViewportSize({ width: 320, height: 720 })
+test('AMEAÇA: o menu não promete mais uma tela de Recursos', async ({ page }) => {
   await stub(page)
-  await page.goto('/resources')
-  await expect(page.getByTestId('resources-list')).toBeVisible()
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
-  expect(overflow).toBeLessThanOrEqual(1)
+  await page.goto('/apps')
+  const nav = page.locator('nav').first()
+  // O GRUPO fica — Apps, Databases e Históricos continuam nele. O que sai é o item que
+  // levava ao espelho.
+  await expect(nav).toContainText('RECURSOS')
+  await expect(nav.getByRole('link', { name: 'Recursos', exact: true })).toHaveCount(0)
 })
 
 test('a navegação separa ESCRITÓRIO, RECURSOS e OPERAÇÕES — e não promete uma Comunidade', async ({ page }) => {
   await stub(page)
-  await page.goto('/resources')
+  await page.goto('/apps')
   const nav = page.locator('nav').first()
   await expect(nav).toContainText('RECURSOS')
   await expect(nav).toContainText('OPERAÇÕES')

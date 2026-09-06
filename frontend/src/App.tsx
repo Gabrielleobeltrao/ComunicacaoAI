@@ -7,7 +7,7 @@ import { ProtectedRoute } from './components/ProtectedRoute'
 import { featureFlags } from './featureFlags'
 import { BuildingProvider } from './contexts/BuildingContext'
 import { ArchitectAssistantProvider } from './components/ArchitectAssistant'
-import { ArchitectLegacyRedirect, CommunityRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect } from './pages/redirects'
+import { ArchitectLegacyRedirect, CommunityRedirect, DashboardHome, FloorModuleRedirect, LegacyModuleRedirect, ResourcesRedirect } from './pages/redirects'
 import { Home } from './pages/Home'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
@@ -37,7 +37,6 @@ const DataRecorders = sobDemanda(() => import('./pages/dataHistory/Recorders'), 
 const RecorderForm = sobDemanda(() => import('./pages/dataHistory/RecorderForm'), 'RecorderForm')
 const RecorderDetail = sobDemanda(() => import('./pages/dataHistory/RecorderDetail'), 'RecorderDetail')
 const FloorView = sobDemanda(() => import('./pages/FloorView'), 'FloorView')
-const Resources = sobDemanda(() => import('./pages/Resources'), 'Resources')
 const Databases = sobDemanda(() => import('./pages/Databases'), 'Databases')
 const Monitors = sobDemanda(() => import('./pages/Monitors'), 'Monitors')
 const MonitoringCenter = sobDemanda(() => import('./pages/MonitoringCenter'), 'MonitoringCenter')
@@ -103,7 +102,7 @@ function App() {
           {/* A memória é do prédio inteiro, não de um andar: fica ao lado dos logs. */}
           <Route path="/memories" element={<P><Memories /></P>} />
           {/* Canonical floor-scoped routes */}
-          <Route path="/resources" element={<P><Resources /></P>} />
+          <Route path="/resources" element={<ResourcesRedirect />} />
           <Route path="/databases" element={<P><Databases /></P>} />
           <Route path="/monitors" element={<P><Monitors /></P>} />
           <Route path="/monitoring" element={<P><MonitoringCenter /></P>} />
