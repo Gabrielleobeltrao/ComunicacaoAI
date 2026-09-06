@@ -134,6 +134,21 @@ async function subirBackend(mongoUri) {
     // 503 é resposta legítima enquanto banco/migração/motor não terminam de subir.
     return false
   })
+  /**
+   * O arranque NÃO pode ser mudo.
+   *
+   * Entre o processo começar e "Backend listening" existe conexão ao banco, migração e o
+   * motor conferindo uma dezena de índices em série. Numa máquina carregada isso leva
+   * minutos, e minutos de terminal mudo são indistinguíveis de um servidor morto: quem
+   * espera conclui que quebrou e mata o processo justamente enquanto ele subia. Foi o que
+   * aconteceu de verdade, e por isso está preso aqui.
+   */
+  const registro = linhas.join('')
+  const etapas = ['Backend: iniciando', 'Backend: MongoDB conectado', 'Backend: migrações aplicadas', 'Backend: ligando o motor de automações']
+  const faltando = etapas.filter((e) => !registro.includes(e))
+  if (faltando.length) throw new Error(`o arranque não disse onde estava: faltaram ${faltando.join(', ')}`)
+  for (const l of registro.split('\n').filter((l) => /^Backend[:.]/.test(l.trim()))) log(l.trim())
+
   log('API pronta (/api/ready 200)')
   return { proc, linhas }
 }

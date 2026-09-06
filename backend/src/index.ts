@@ -5410,14 +5410,30 @@ async function sendStructuredOutputWebhook(url: string, payload: unknown) {
 }
 
 async function start() {
+  /**
+   * O arranque FALA, desde a primeira linha.
+   *
+   * Antes daqui até "Backend listening" não saía nada — e o caminho entre os dois passa
+   * por conectar no Atlas, rodar migrações e ligar o motor, que confere uma dezena de
+   * índices em série. Numa máquina carregada (o vite reconstruindo o cache de
+   * dependências ao lado, por exemplo) isso leva minutos, e minutos de terminal mudo são
+   * indistinguíveis de um servidor morto: quem está esperando conclui que quebrou e
+   * mata o processo justamente enquanto ele estava subindo.
+   */
+  const comecou = Date.now()
+  const passo = (nome: string) => console.log(`Backend: ${nome} (${Date.now() - comecou}ms)`)
+  passo('iniciando')
+
   // Fail fast in production if a deploy-critical env var is missing/invalid.
   validateConfig()
 
   await mongoClient.connect()
+  passo('MongoDB conectado')
 
   // Sector renames + Escritório hierarchy backfill. Awaited so a collection
   // rename completes before we serve requests against the new names.
   await runMigrations()
+  passo('migrações aplicadas')
 
   // Don't hold up accepting connections on this — it's a one-time setup
   // step (a no-op after the first successful run) and unrelated routes
@@ -5557,10 +5573,11 @@ async function start() {
   // EMBEDDED_WORKER=false to run `npm run start:worker` as a separate process.
   // A failure here is NEVER swallowed: it is logged and it keeps /api/ready red, so
   // an instance that cannot run routines never takes traffic as if it could.
+  passo('ligando o motor de automações')
   await startEmbeddedEngine()
 
   httpServer.listen(port, () => {
-    console.log(`Backend listening on port ${port} (${config.nodeEnv})`)
+    console.log(`Backend listening on port ${port} (${config.nodeEnv}) — pronto em ${Date.now() - comecou}ms`)
   })
 }
 
