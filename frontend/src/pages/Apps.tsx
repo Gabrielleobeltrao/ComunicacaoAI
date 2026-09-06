@@ -25,7 +25,7 @@ import {
 import type { AppCatalogEntry, AppInstallation } from '../lib/apps'
 import { API_URL } from '../lib/api'
 import { useAppNavigation } from '../lib/appNavigation'
-import { Badge, Button, Card, Dialog, EmptyState, Field, Icon, IconButton, Input, Tabs, Tag } from '../ui'
+import { Badge, Button, Card, Dialog, EmptyState, Field, Icon, IconButton, Input, Select, Tabs, Tag } from '../ui'
 
 // The Apps page: what the account can connect (Catálogo), what it already connected
 // (Conectados) and the HTTP actions the owner wrote themselves (Personalizados).
@@ -195,34 +195,77 @@ export function Apps() {
           </p>
         ) : tab === 'catalog' ? (
           <>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Buscar App"
-                aria-label="Buscar App"
-                data-testid="apps-search"
-                style={{ maxWidth: 280 }}
-              />
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                <CategoryChip label="Todos" active={category === ''} onClick={() => setCategory('')} />
-                {categories.map((c) => (
-                  <CategoryChip key={c} label={c} active={category === c} onClick={() => setCategory(c)} />
-                ))}
-              </div>
-            </div>
-
-            {/* A procedência não separa mais a prateleira — separa quem QUISER separar. */}
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} data-testid="origem-filtros">
-              {ORIGENS.map((o) => (
-                <CategoryChip
-                  key={o.valor}
-                  label={o.label}
-                  active={origem === o.valor}
-                  onClick={() => setOrigem(o.valor)}
-                  data-testid={`origem-${o.valor}`}
+            {/* CADA FILTRO É UMA PERGUNTA, e a pergunta fica escrita.
+                Eram quinze pastilhas soltas em duas fileiras sem rótulo — e duas delas,
+                "Todos" e "Tudo", com a mesma cara e significados diferentes. */}
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }} data-testid="apps-filtros">
+              {/* Larguras que ENCOLHEM: num celular os três controles empilham, e um campo
+                  de largura fixa deixa uma faixa morta ao lado dele. */}
+              <label style={{ ...ROTULO, flex: '1 1 200px', maxWidth: 280 }}>
+                Buscar
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="nome, descrição…"
+                  aria-label="Buscar App"
+                  data-testid="apps-search"
+                  style={{ width: '100%' }}
                 />
-              ))}
+              </label>
+
+              {/* A categoria vem dos dados e cresce com o catálogo: uma fileira de pastilhas
+                  quebra em duas linhas no dia em que alguém publica a décima segunda. */}
+              <label style={{ ...ROTULO, flex: '1 1 160px', maxWidth: 220 }}>
+                Categoria
+                <Select
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  data-testid="apps-filtro-categoria"
+                  style={{ width: '100%' }}
+                  options={[{ value: '', label: 'Todas' }, ...categories.map((c) => ({ value: c, label: c }))]}
+                />
+              </label>
+
+              {/* A origem é um conjunto FECHADO de quatro: emendadas, elas se leem como um
+                  controle só — e não como quatro pastilhas soltas ao lado das outras onze. */}
+              <div style={{ ...ROTULO, maxWidth: '100%' }} role="group" aria-label="Origem" data-testid="origem-filtros">
+                Origem
+                {/* Quatro segmentos emendados não podem quebrar linha sem virar dois
+                    controles: numa tela estreita eles rolam dentro do próprio bloco, como
+                    a tabela larga faz em toda parte deste projeto. */}
+                <div style={{ display: 'flex', overflowX: 'auto', maxWidth: '100%' }}>
+                  {ORIGENS.map((o, i) => (
+                    <SegmentoDeOrigem
+                      key={o.valor}
+                      label={o.label}
+                      active={origem === o.valor}
+                      primeiro={i === 0}
+                      ultimo={i === ORIGENS.length - 1}
+                      onClick={() => setOrigem(o.valor)}
+                      data-testid={`origem-${o.valor}`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Só aparece quando há o que limpar: um controle que não faz nada é ruído. */}
+              {(search || category || origem !== 'todos') && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSearch('')
+                    setCategory('')
+                    setOrigem('todos')
+                  }}
+                  // Alinhado à base dos outros controles: ele pertence à mesma linha, e não
+                  // a uma fileira própria embaixo.
+                  style={{ marginBottom: 6 }}
+                  data-testid="apps-limpar-filtros"
+                >
+                  Limpar filtros
+                </Button>
+              )}
             </div>
 
             {visible.length === 0 ? (
@@ -265,26 +308,49 @@ export function Apps() {
 const GRID = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))', gap: 14 } as const
 const LINK = { background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--intent-brand)', textDecoration: 'underline', cursor: 'pointer' } as const
 
-function CategoryChip({ label, active, onClick, ...rest }: { label: string; active: boolean; onClick: () => void } & { 'data-testid'?: string }) {
+/** O rótulo de um filtro: a pergunta em cima, o controle embaixo — como no mapa. */
+const ROTULO = { display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12, color: 'var(--text-muted)', minWidth: 0 } as const
+
+/**
+ * Um segmento da origem — emendado ao vizinho.
+ *
+ * Quatro botões colados são UM controle: o olho lê "escolha uma destas quatro". Quatro
+ * pastilhas separadas, ao lado de outras onze, são quinze coisas soltas.
+ */
+function SegmentoDeOrigem({
+  label,
+  active,
+  primeiro,
+  ultimo,
+  onClick,
+  ...rest
+}: { label: string; active: boolean; primeiro: boolean; ultimo: boolean; onClick: () => void } & { 'data-testid'?: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      {...rest}
-      // `ds-hit` só vale sob ponteiro grosso: no desktop o chip continua com 30px
-      // de altura, no celular ele cresce até o mínimo tocável. O visual do mouse
-      // não muda; o que muda é o dedo acertar.
       className="ds-hit"
+      {...rest}
       style={{
-        height: 30,
-        padding: '0 12px',
-        borderRadius: 999,
+        height: 42,
+        padding: '0 14px',
         border: `1px solid ${active ? 'var(--intent-brand)' : 'var(--border-strong)'}`,
-        background: active ? 'var(--surface-sunken)' : 'transparent',
+        // A borda compartilhada não pode virar duas: o vizinho da direita cobre a do vizinho
+        // da esquerda, e o botão ativo sobe para a frente para a dele não ser coberta.
+        marginLeft: primeiro ? 0 : -1,
+        zIndex: active ? 1 : 0,
+        borderTopLeftRadius: primeiro ? 'var(--radius-control)' : 0,
+        borderBottomLeftRadius: primeiro ? 'var(--radius-control)' : 0,
+        borderTopRightRadius: ultimo ? 'var(--radius-control)' : 0,
+        borderBottomRightRadius: ultimo ? 'var(--radius-control)' : 0,
+        background: active ? 'var(--surface-sunken)' : 'var(--surface-card)',
         color: active ? 'var(--text-heading)' : 'var(--text-muted)',
-        fontSize: 13,
+        fontFamily: 'var(--font-ui)',
+        fontSize: 13.5,
+        fontWeight: active ? 700 : 500,
         cursor: 'pointer',
+        position: 'relative',
       }}
     >
       {label}

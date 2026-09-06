@@ -284,6 +284,49 @@ test('testar a conexão diz o resultado sem ecoar o que está guardado', async (
   await expect(page.getByText('Configuração lida com sucesso.')).toBeVisible()
 })
 
+test('ACEITAÇÃO: cada filtro diz o que ele filtra, e cabe numa linha', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps')
+
+  /**
+   * Eram quinze pastilhas soltas em duas fileiras, sem nada dizendo o que cada fileira
+   * filtrava — e duas delas, "Todos" e "Tudo", com a mesma cara e significados diferentes.
+   * Cada filtro é uma PERGUNTA, e a pergunta tem de estar escrita.
+   */
+  await expect(page.getByTestId('apps-filtro-categoria')).toBeVisible()
+  await expect(page.getByLabel('Categoria')).toBeVisible()
+  await expect(page.getByLabel('Origem')).toBeVisible()
+
+  // A categoria é uma lista, e não uma fileira que cresce com o catálogo até quebrar linha.
+  await page.getByTestId('apps-filtro-categoria').selectOption('produtividade')
+  await expect(page.getByTestId('app-catalog')).not.toContainText('Slack')
+})
+
+test('limpar só aparece quando há o que limpar — e devolve tudo', async ({ page }) => {
+  await stub(page)
+  await page.goto('/apps')
+  // Sem filtro nenhum, não existe botão de limpar: ele seria um controle que não faz nada.
+  await expect(page.getByTestId('apps-limpar-filtros')).toHaveCount(0)
+
+  await page.getByTestId('apps-search').fill('agenda')
+  await expect(page.getByTestId('app-card')).toHaveCount(1)
+  await page.getByTestId('apps-limpar-filtros').click()
+
+  await expect(page.getByTestId('apps-search')).toHaveValue('')
+  await expect(page.getByTestId('app-card')).toHaveCount(2)
+  await expect(page.getByTestId('apps-limpar-filtros')).toHaveCount(0)
+})
+
+test('em 320 px os filtros empilham e nada estoura para os lados', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 })
+  await stub(page)
+  await page.goto('/apps')
+  await page.getByTestId('apps-filtros').waitFor()
+  // Larguras fixas num campo de filtro são o jeito clássico de furar a tela estreita.
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
+})
+
 test('a busca filtra o catálogo', async ({ page }) => {
   await stub(page)
   await page.goto('/apps')
