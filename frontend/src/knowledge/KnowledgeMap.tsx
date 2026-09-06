@@ -62,7 +62,7 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
   const arrastando = useRef<{ nodeId: string; dx: number; dy: number } | null>(null)
   // O arrasto do FUNDO GIRA o mapa, como se gira um globo. É o que transforma a nuvem de
   // pontos num objeto: parado, o olho não tem como saber o que está na frente do quê.
-  const arrastandoFundo = useRef<{ x: number; y: number; giro: number; inclinacao: number; panX: number; panY: number } | null>(null)
+  const arrastandoFundo = useRef<{ x: number; y: number; giro: number; inclinacao: number; panX: number; panY: number; moveu: boolean } | null>(null)
 
   const camera: Camera = useMemo(() => ({ ...angulo, zoom, pan, plano }), [angulo, zoom, pan, plano])
 
@@ -206,6 +206,9 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
     }
     if (arrastandoFundo.current) {
       const de = arrastandoFundo.current
+      // Um gesto só vira ARRASTO depois de andar: a mão treme alguns pixels em qualquer
+      // clique, e sem essa folga um clique no fundo seria lido como um giro minúsculo.
+      if (Math.abs(e.clientX - de.x) + Math.abs(e.clientY - de.y) > 4) de.moveu = true
       if (plano) {
         // No plano não há o que girar: o gesto do fundo passa a ser deslocar o quadro, que
         // é como se percorre um mapa grande depois de aproximar o zoom.
@@ -232,6 +235,14 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
 
   const soltar = () => {
     const arrastava = Boolean(arrastando.current)
+    /**
+     * CLICAR NO FUNDO tira a seleção; ARRASTAR o fundo, não.
+     *
+     * É o mesmo botão para os dois gestos, e a diferença é só ter andado ou não. Se soltar
+     * sempre limpasse, girar o mapa para olhar a vizinhança do nó selecionado apagaria
+     * justamente a seleção que se estava examinando.
+     */
+    if (arrastandoFundo.current && !arrastandoFundo.current.moveu) setSelecionado(null)
     arrastando.current = null
     arrastandoFundo.current = null
     // Solto o nó, o quadro volta a acompanhar — inclusive para caber onde ele foi parar.
@@ -373,12 +384,20 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
                 data-testid="knowledge-svg"
                 onPointerMove={aoMover}
                 onPointerDown={(e) => {
-                  arrastandoFundo.current = { x: e.clientX, y: e.clientY, giro: angulo.giro, inclinacao: angulo.inclinacao, panX: pan.x, panY: pan.y }
+                  arrastandoFundo.current = { x: e.clientX, y: e.clientY, giro: angulo.giro, inclinacao: angulo.inclinacao, panX: pan.x, panY: pan.y, moveu: false }
                   // A captura segue o ponteiro para fora do quadro: girar até a borda e
                   // continuar girando é o gesto natural, e sem isso ele morre no caminho.
                   e.currentTarget.setPointerCapture?.(e.pointerId)
                 }}
                 onPointerUp={soltar}
+                // O equivalente de teclado de clicar fora. Quem chegou ao nó pelo Tab não
+                // tem "fora" onde clicar.
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && selecionado) {
+                    e.stopPropagation()
+                    setSelecionado(null)
+                  }
+                }}
                 /**
                  * `pointerleave` NÃO encerra o arrasto.
                  *

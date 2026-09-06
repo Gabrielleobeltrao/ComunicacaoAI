@@ -629,6 +629,56 @@ test('AMEAÇA: no 2D o arrasto do fundo DESLOCA, e não gira', async ({ page }) 
   expect(depois.escala).toBe(antes.escala)
 })
 
+test('ACEITAÇÃO: clicar FORA tira a seleção', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  const no = page.getByTestId(`knode-document:${DOC_MARINA}`)
+  await no.click()
+  await expect(page.getByTestId('knowledge-inspector')).toBeVisible()
+  await expect(no).toHaveAttribute('aria-pressed', 'true')
+
+  // Clicar no fundo, longe de qualquer nó.
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+  await page.mouse.click((quadro?.x ?? 0) + 20, (quadro?.y ?? 0) + 20)
+
+  await expect(page.getByTestId('knowledge-inspector')).toHaveCount(0)
+  await expect(no).toHaveAttribute('aria-pressed', 'false')
+})
+
+test('AMEAÇA: GIRAR não tira a seleção — arrastar não é clicar', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+  await page.getByTestId(`knode-document:${DOC_MARINA}`).click()
+  await expect(page.getByTestId('knowledge-inspector')).toBeVisible()
+
+  /**
+   * O gesto do fundo é o mesmo botão: apertar, arrastar, soltar. Se soltar sempre
+   * limpasse, girar o mapa para olhar a vizinhança do nó selecionado apagaria justamente
+   * a seleção que se estava examinando — e o painel fecharia na cara de quem girou.
+   */
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+  await page.mouse.move((quadro?.x ?? 0) + 30, (quadro?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((quadro?.x ?? 0) + 200, (quadro?.y ?? 0) + 90, { steps: 8 })
+  await page.mouse.up()
+
+  await expect(page.getByTestId('knowledge-inspector')).toBeVisible()
+})
+
+test('Esc também tira a seleção', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+  await page.getByTestId(`knode-document:${DOC_MARINA}`).click()
+  await expect(page.getByTestId('knowledge-inspector')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('knowledge-inspector')).toHaveCount(0)
+})
+
 test('erro de API NÃO vira mapa vazio', async ({ page }) => {
   await stub(page, { graphStatus: 500 })
   await page.goto(`/floors/${FLOOR_ID}?view=knowledge`)
