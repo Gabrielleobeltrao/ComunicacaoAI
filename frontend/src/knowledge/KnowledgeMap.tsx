@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { Button, Card } from '../ui'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import { useKnowledgeGraph } from './useKnowledgeGraph'
-import { boundsOf, brumaDe, centroDe, girar, layoutGraph, noPlanoDoMundo, normalizacaoDe, projetar, raioDe, relativoAo } from './layout'
+import { boundsOf, brumaDe, centroDe, daTela, layoutGraph, normalizacaoDe, paraTela, raioDe, relativoAo } from './layout'
+import type { Camera } from './layout'
 import type { Positioned } from './layout'
 import { KnowledgeNode, RAIO } from './KnowledgeNode'
 import { KnowledgeFilters } from './KnowledgeFilters'
@@ -26,6 +28,22 @@ import type { KnowledgeScopeType } from '../lib/knowledge'
 const ALTURA = 'clamp(360px, 64dvh, 620px)'
 
 export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorName: string }) {
+  /**
+   * A VISÃO — 3D ou plana — mora na URL, como as outras escolhas de tela deste projeto.
+   *
+   * Num mapa grande a perspectiva atrapalha mais do que ajuda: ela sobrepõe o que está
+   * atrás e faz tamanhos diferentes significarem distância em vez de tipo. O plano mostra
+   * tudo do mesmo tamanho, sem nada escondido atrás de nada.
+   */
+  const [paramsDaTela, setParamsDaTela] = useSearchParams()
+  const plano = paramsDaTela.get('mapa') === '2d'
+  const trocarVisao = () => {
+    const p = new URLSearchParams(paramsDaTela)
+    if (plano) p.delete('mapa')
+    else p.set('mapa', '2d')
+    setParamsDaTela(p, { replace: true })
+  }
+
   const [filtros, setFiltros] = useState<FiltrosDoMapa>({ q: '', status: '', source: '', viewAs: null })
   const { graph, loading, error, recarregar, moveNode, organizar } = useKnowledgeGraph(floorId, filtros)
   const [selecionado, setSelecionado] = useState<string | null>(null)
@@ -38,11 +56,15 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
    * alguém gira — o que ninguém faz sem antes desconfiar de que dá.
    */
   const [angulo, setAngulo] = useState({ giro: -0.35, inclinacao: 0.22 })
+  /** Só a visão plana desloca o quadro: no 3D o gesto do fundo é girar. */
+  const [pan, setPan] = useState({ x: 0, y: 0 })
   const svgRef = useRef<SVGSVGElement | null>(null)
   const arrastando = useRef<{ nodeId: string; dx: number; dy: number } | null>(null)
   // O arrasto do FUNDO GIRA o mapa, como se gira um globo. É o que transforma a nuvem de
   // pontos num objeto: parado, o olho não tem como saber o que está na frente do quê.
-  const arrastandoFundo = useRef<{ x: number; y: number; giro: number; inclinacao: number } | null>(null)
+  const arrastandoFundo = useRef<{ x: number; y: number; giro: number; inclinacao: number; panX: number; panY: number } | null>(null)
+
+  const camera: Camera = useMemo(() => ({ ...angulo, zoom, pan, plano }), [angulo, zoom, pan, plano])
 
   /**
    * A simulação roda quando a ESTRUTURA muda — e só então.
@@ -54,7 +76,7 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
    */
   const forma = graph ? `${graph.nodes.map((n) => n.id).join(',')}|${graph.edges.map((e) => e.id).join(',')}` : ''
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const base = useMemo(() => (graph ? layoutGraph(graph.nodes, graph.edges) : []), [forma])
+  const base = useMemo(() => (graph ? layoutGraph(graph.nodes, graph.edges, plano) : []), [forma, plano])
   const posicionados = useMemo(() => {
     const salvas = new Map((graph?.nodes ?? []).filter((n) => n.position).map((n) => [n.id, n.position!]))
     return base.map((n) => {
@@ -99,12 +121,12 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
    */
   const vistos = useMemo(() => {
     const fora = new Map<string, { x: number; y: number; escala: number; z: number }>()
-    for (const n of posicionados) fora.set(n.id, projetar(girar(paraODesenho(n), angulo.giro, angulo.inclinacao), zoom))
+    for (const n of posicionados) fora.set(n.id, paraTela(paraODesenho(n), camera))
     return fora
     // `centro` NA LISTA. Sem ele, o enquadramento passava a usar o centro novo e a
     // projeção continuava com o antigo: a caixa crescia para caber uma nuvem que estava
     // sendo desenhada em outro lugar, e quatro nós ficavam fora da tela.
-  }, [posicionados, angulo, zoom, paraODesenho])
+  }, [posicionados, camera, paraODesenho])
 
   /**
    * A ordem do PINTOR: o que está longe é desenhado primeiro, e o que está perto cobre.
@@ -170,10 +192,10 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
       // O caminho de volta, na ordem inversa: desprojeta, desfaz a normalização e soma o
       // centro. Pular a normalização faz o nó andar na escala errada — e quanto mais
       // espalhado o mapa salvo, mais longe do dedo ele para.
-      const p = noPlanoDoMundo(emCoordenadas(clientX, clientY), angulo.giro, angulo.inclinacao, zoom)
+      const p = daTela(emCoordenadas(clientX, clientY), camera)
       return { x: p.x / normal + centro.x, y: p.y / normal + centro.y, z: 0 }
     },
-    [emCoordenadas, zoom, angulo, centro, normal],
+    [emCoordenadas, camera, centro, normal],
   )
 
   const aoMover = (e: React.PointerEvent) => {
@@ -184,6 +206,13 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
     }
     if (arrastandoFundo.current) {
       const de = arrastandoFundo.current
+      if (plano) {
+        // No plano não há o que girar: o gesto do fundo passa a ser deslocar o quadro, que
+        // é como se percorre um mapa grande depois de aproximar o zoom.
+        const escala = caixa.width / (svgRef.current?.getBoundingClientRect().width || 1)
+        setPan({ x: de.panX + (e.clientX - de.x) * escala, y: de.panY + (e.clientY - de.y) * escala })
+        return
+      }
       /**
        * Um terço de grau por pixel.
        *
@@ -227,7 +256,7 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
     // A referência do agarre passa pelo MESMO caminho de volta que o ponteiro: desprojeta,
     // desfaz a normalização, soma o centro. Parar no meio do caminho mistura o espaço do
     // desenho com o espaço em que a posição é gravada, e o nó sai andando na escala errada.
-    const doDesenho = v ? noPlanoDoMundo(v, angulo.giro, angulo.inclinacao, zoom) : null
+    const doDesenho = v ? daTela(v, camera) : null
     const naTela = doDesenho ? { x: doDesenho.x / normal + centro.x, y: doDesenho.y / normal + centro.y } : n
     arrastando.current = { nodeId: n.id, dx: p.x - naTela.x, dy: p.y - naTela.y }
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
@@ -254,6 +283,15 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
         <Button variant="secondary" onClick={organizar} data-testid="knowledge-auto-layout">
           Organizar automaticamente
         </Button>
+        <Button
+          variant="secondary"
+          onClick={trocarVisao}
+          aria-pressed={plano}
+          data-testid="knowledge-toggle-2d"
+          title={plano ? 'Voltar para a visão com profundidade' : 'Ver tudo do mesmo tamanho, sem nada atrás de nada'}
+        >
+          {plano ? 'Ver em 3D' : 'Ver em 2D'}
+        </Button>
         <div className="flex items-center gap-1" style={{ marginLeft: 'auto' }}>
           <Button variant="secondary" onClick={() => setZoom((z) => Math.max(0.5, z - 0.2))} aria-label="Diminuir zoom" data-testid="knowledge-zoom-out">
             −
@@ -268,8 +306,9 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
             onClick={() => {
               setAngulo({ giro: -0.35, inclinacao: 0.22 })
               setZoom(1)
+              setPan({ x: 0, y: 0 })
             }}
-            aria-label="Voltar ao ângulo inicial"
+            aria-label="Voltar ao enquadramento inicial"
             data-testid="knowledge-reset-view"
           >
             Endireitar
@@ -330,11 +369,11 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
                   background: 'linear-gradient(to bottom, var(--surface-card) 0%, var(--surface-app) 62%, var(--surface-sunken) 100%)',
                 }}
                 role="group"
-                aria-label={`Mapa de conhecimento de ${floorName}. Arraste o fundo para girar.`}
+                aria-label={`Mapa de conhecimento de ${floorName}. Arraste o fundo para ${plano ? 'deslocar' : 'girar'}.`}
                 data-testid="knowledge-svg"
                 onPointerMove={aoMover}
                 onPointerDown={(e) => {
-                  arrastandoFundo.current = { x: e.clientX, y: e.clientY, giro: angulo.giro, inclinacao: angulo.inclinacao }
+                  arrastandoFundo.current = { x: e.clientX, y: e.clientY, giro: angulo.giro, inclinacao: angulo.inclinacao, panX: pan.x, panY: pan.y }
                   // A captura segue o ponteiro para fora do quadro: girar até a borda e
                   // continuar girando é o gesto natural, e sem isso ele morre no caminho.
                   e.currentTarget.setPointerCapture?.(e.pointerId)

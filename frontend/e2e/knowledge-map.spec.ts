@@ -574,6 +574,61 @@ test('AMEAÇA: com o layout ANTIGO salvo, o mapa não fica pendurado num canto',
   expect(largura, `a bolinha do setor saiu com ${largura.toFixed(0)}px`).toBeGreaterThan(28)
 })
 
+test('ACEITAÇÃO: dá para ver o mapa em 2D, e a escolha fica no endereço', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+
+  const escalas = () =>
+    page.evaluate(() => [...new Set([...document.querySelectorAll('[data-profundidade]')].map((n) => n.getAttribute('data-profundidade')))])
+
+  // No 3D cada nó tem a sua escala: é a perspectiva.
+  expect((await escalas()).length).toBeGreaterThan(1)
+
+  await page.getByTestId('knowledge-toggle-2d').click()
+  await expect(page).toHaveURL(/mapa=2d/)
+  // No plano, uma só: tudo do mesmo tamanho, nada escondido atrás de nada — que é o que
+  // torna um mapa grande legível. `poll` porque a troca de visão recalcula o layout, e a
+  // navegação do router entra como transição: a URL muda antes do desenho.
+  await expect.poll(escalas).toEqual(['1'])
+  await expect(page.getByTestId('knowledge-toggle-2d')).toHaveAttribute('aria-pressed', 'true')
+
+  // E volta.
+  await page.getByTestId('knowledge-toggle-2d').click()
+  await expect(page).not.toHaveURL(/mapa=2d/)
+  await expect.poll(async () => (await escalas()).length).toBeGreaterThan(1)
+})
+
+test('AMEAÇA: no 2D o arrasto do fundo DESLOCA, e não gira', async ({ page }) => {
+  await stub(page)
+  await abrirConhecimento(page)
+  await page.getByTestId('knowledge-toggle-2d').click()
+  await expect
+    .poll(() => page.evaluate(() => [...new Set([...document.querySelectorAll('[data-profundidade]')].map((n) => n.getAttribute('data-profundidade')))]))
+    .toEqual(['1'])
+
+  const onde = async () => {
+    const t = await page.getByTestId(`knode-agent:${MARINA}`).getAttribute('transform')
+    const m = /translate\(([-\d.]+) ([-\d.]+)\) scale\(([\d.]+)\)/.exec(t ?? '')
+    return { x: Number(m?.[1]), y: Number(m?.[2]), escala: Number(m?.[3]) }
+  }
+
+  const antes = await onde()
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+  await page.mouse.move((quadro?.x ?? 0) + 30, (quadro?.y ?? 0) + 30)
+  await page.mouse.down()
+  await page.mouse.move((quadro?.x ?? 0) + 190, (quadro?.y ?? 0) + 120, { steps: 8 })
+  await page.mouse.up()
+
+  const depois = await onde()
+  // Deslocou…
+  expect(Math.abs(depois.x - antes.x) + Math.abs(depois.y - antes.y)).toBeGreaterThan(20)
+  // …e NÃO girou: sem profundidade, girar só embaralharia posições sem revelar nada, e a
+  // escala de todo mundo continua sendo a mesma.
+  expect(depois.escala).toBe(antes.escala)
+})
+
 test('erro de API NÃO vira mapa vazio', async ({ page }) => {
   await stub(page, { graphStatus: 500 })
   await page.goto(`/floors/${FLOOR_ID}?view=knowledge`)

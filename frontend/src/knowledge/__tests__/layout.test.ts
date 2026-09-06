@@ -9,7 +9,7 @@
 // solto, nada disso aparece numa grade. Agora as posições saem de forças, e o que se pode
 // exigir delas é o que as forças de fato garantem: parentes perto, estranhos longe.
 import { describe, expect, it } from 'vitest'
-import { boundsOf, brumaDe, centroDe, desgirar, girar, layoutGraph, normalizacaoDe, projetar, raioDe, relativoAo } from '../layout'
+import { boundsOf, brumaDe, centroDe, daTela, desgirar, girar, layoutGraph, normalizacaoDe, paraTela, projetar, raioDe, relativoAo } from '../layout'
 import type { GraphEdge, GraphNode } from '../../lib/knowledge'
 
 const no = (id: string, kind: GraphNode['kind'], label: string, position: GraphNode['position'] = null): GraphNode => ({ id, kind, label, position })
@@ -231,6 +231,60 @@ describe('layout do mapa de conhecimento', () => {
       }))
       expect(maisLonge).toBeGreaterThan(boundsOf(p).width * 0.28)
     }
+  })
+
+  it('a visão PLANA resolve em duas dimensões — e não achata uma de três', () => {
+    /**
+     * Achatar um layout 3D empilha nós que a simulação já tinha separado em profundidade,
+     * que é exatamente o que a visão plana existe para evitar. Aqui as forças rodam em duas
+     * dimensões desde o sorteio inicial.
+     */
+    // Com poucos nós, achatar até que dá certo por sorte. O aperto aparece quando há gente
+    // suficiente para a terceira dimensão estar fazendo trabalho de verdade.
+    const muitos: GraphNode[] = [
+      ...GRAFO,
+      ...Array.from({ length: 16 }, (_, i) => no(`document:x${i}`, 'document', `Doc ${i}`)),
+    ]
+    const arestas: GraphEdge[] = [...ARESTAS, ...Array.from({ length: 16 }, (_, i) => ({ id: `x${i}`, source: 'agent:a1', target: `document:x${i}`, kind: 'contains' as const }))]
+
+    const p = layoutGraph(muitos, arestas, true)
+    for (const n of p) expect(n.z).toBe(0)
+
+    let maisPerto = Infinity
+    for (let i = 0; i < p.length; i++) {
+      for (let j = i + 1; j < p.length; j++) maisPerto = Math.min(maisPerto, dist(p[i], p[j]))
+    }
+    // Duas bolinhas de raio 16 a menos de 36 de distância já se encostam.
+    expect(maisPerto).toBeGreaterThan(36)
+  })
+
+  it('ACEITAÇÃO: a ida e a volta da câmera batem — nas DUAS visões', () => {
+    /**
+     * Uma câmera, uma ida, uma volta. Três dos defeitos que chegaram à tela foram uma
+     * inversa que discordava da ida em algum ponto; com as duas escritas lado a lado e
+     * conferidas aqui, uma não pode andar sem a outra.
+     */
+    for (const plano of [false, true]) {
+      for (const c of [
+        { giro: 0, inclinacao: 0, zoom: 1, pan: { x: 0, y: 0 }, plano },
+        { giro: -0.35, inclinacao: 0.22, zoom: 1, pan: { x: 0, y: 0 }, plano },
+        { giro: 0.9, inclinacao: -0.5, zoom: 1.6, pan: { x: 40, y: -70 }, plano },
+      ]) {
+        for (const alvo of [{ x: 120, y: -60 }, { x: -240, y: 155 }, { x: 3, y: 8 }]) {
+          const volta = paraTela(daTela(alvo, c), c)
+          expect(volta.x).toBeCloseTo(alvo.x, 3)
+          expect(volta.y).toBeCloseTo(alvo.y, 3)
+        }
+      }
+    }
+  })
+
+  it('no PLANO nada tem perspectiva: tudo do mesmo tamanho, nada atrás de nada', () => {
+    const c = { giro: 0, inclinacao: 0, zoom: 1, pan: { x: 0, y: 0 }, plano: true }
+    // Mesmo com profundidade no ponto, a visão plana ignora — é o que faz um mapa grande
+    // ficar legível: tamanho volta a significar TIPO, e não distância.
+    expect(paraTela({ x: 10, y: 10, z: 300 }, c).escala).toBe(paraTela({ x: 10, y: 10, z: -300 }, c).escala)
+    expect(paraTela({ x: 10, y: 10, z: 300 }, c).z).toBe(0)
   })
 
   it('grafo vazio não quebra a caixa', () => {

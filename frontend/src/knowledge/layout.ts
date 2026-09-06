@@ -85,7 +85,7 @@ const ITERACOES = 320
  * inventar uma terceira aqui seria manter no cliente um dado que ele não vai receber de
  * volta na próxima carga.
  */
-export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[]): Positioned[] {
+export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], plano = false): Positioned[] {
   const n = nodes.length
   if (n === 0) return []
 
@@ -93,8 +93,11 @@ export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[]): Positioned[
     // Sorteio inicial sobre uma esfera: começar todo mundo no mesmo ponto faria as forças
     // explodirem, e começar num plano faria o resultado nascer chato.
     const a = semente(no.id) * Math.PI * 2
-    const b = Math.acos(2 * semente(`${no.id}#b`) - 1)
     const r = K * (0.6 + semente(`${no.id}#r`) * 1.4)
+    // No plano o sorteio é num CÍRCULO, e não numa esfera: começar com profundidade para
+    // depois achatá-la empilha nós que a simulação já tinha separado.
+    if (plano) return { x: r * Math.cos(a), y: r * Math.sin(a), z: 0 }
+    const b = Math.acos(2 * semente(`${no.id}#b`) - 1)
     return { x: r * Math.sin(b) * Math.cos(a), y: r * Math.sin(b) * Math.sin(a), z: r * Math.cos(b) }
   })
 
@@ -179,6 +182,9 @@ export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[]): Positioned[
       const limite = Math.min(m, temperatura) / m
       pontos[i].x += desloc[i].x * limite
       pontos[i].y += desloc[i].y * limite
+      // Sem guarda para o plano: com todo mundo semeado em `z = 0`, as forças em z se
+      // cancelam por simetria e ele fica zero sozinho. Uma guarda aqui não mudaria nada —
+      // e escondia o fato de que quem define a dimensão é a SEMENTE, não este passo.
       pontos[i].z += desloc[i].z * limite
     }
   }
@@ -204,7 +210,7 @@ export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[]): Positioned[
     ...no,
     x: no.position ? no.position.x : red(pontos[i].x - centro.x),
     y: no.position ? no.position.y : red(pontos[i].y - centro.y),
-    z: no.position ? 0 : red(pontos[i].z - centro.z),
+    z: no.position || plano ? 0 : red(pontos[i].z - centro.z),
   }))
 }
 
@@ -301,6 +307,39 @@ export function noPlanoDoMundo(tela: { x: number; y: number }, giro: number, inc
     ponto = { x: ponto.x + (d * ex - b * ey) / det, y: ponto.y + (-c * ex + a * ey) / det, z: 0 }
   }
   return ponto
+}
+
+/**
+ * A CÂMERA — de onde se olha, nas duas visões.
+ *
+ * Uma só, com a ida e a volta escritas lado a lado. A alternativa era um caminho de
+ * projeção por visão, e o histórico deste arquivo diz o que acontece com isso: três dos
+ * defeitos que chegaram à tela foram uma inversa que discordava da ida em algum ponto.
+ * Aqui não há como uma discordar da outra sem que o teste de ida e volta perceba.
+ */
+export interface Camera {
+  giro: number
+  inclinacao: number
+  zoom: number
+  /** Deslocamento do quadro. Só a visão plana usa: no 3D o gesto do fundo é girar. */
+  pan: { x: number; y: number }
+  /** Plano: sem giro e sem divisão por profundidade — tudo do mesmo tamanho. */
+  plano: boolean
+}
+
+/** Do espaço do desenho para a tela. */
+export function paraTela(p: Ponto3, c: Camera): { x: number; y: number; escala: number; z: number } {
+  if (c.plano) return { x: p.x * c.zoom + c.pan.x, y: p.y * c.zoom + c.pan.y, escala: c.zoom, z: 0 }
+  const v = girar(p, c.giro, c.inclinacao)
+  const e = projetar(v, c.zoom)
+  return { x: e.x + c.pan.x, y: e.y + c.pan.y, escala: e.escala, z: v.z }
+}
+
+/** Da tela de volta para o espaço do desenho, no plano `z = 0`. */
+export function daTela(tela: { x: number; y: number }, c: Camera): Ponto3 {
+  const t = { x: tela.x - c.pan.x, y: tela.y - c.pan.y }
+  if (c.plano) return { x: t.x / c.zoom, y: t.y / c.zoom, z: 0 }
+  return noPlanoDoMundo(t, c.giro, c.inclinacao, c.zoom)
 }
 
 /**
