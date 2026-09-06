@@ -154,7 +154,9 @@ test('o grafo pagina e diz o total real', async () => {
 
 test('a posição arrastada é guardada, devolvida e apagada por visão', async () => {
   await createDocumentFor({ ownerType: 'agent', ownerId: cena.marina._id }, { title: 'Doc', content: 'x' })
-  const viewKey = `floor:${cena.andar._id}`
+  // A chave vem do SERVIDOR: ela carrega a geração do layout, e montá-la à mão aqui faria
+  // o teste guardar numa visão que a tela não lê.
+  const viewKey = (await pedir('GET', `/api/knowledge/graph?floorId=${cena.andar._id}`)).body.viewKey
   const salvo = await pedir('PUT', '/api/knowledge/graph/layout', { viewKey, positions: [{ nodeId: `agent:${cena.marina._id}`, x: 120, y: 340 }] })
   assert.equal(salvo.body.saved, 1)
 
@@ -170,8 +172,32 @@ test('a posição arrastada é guardada, devolvida e apagada por visão', async 
   assert.equal(depois.body.nodes.find((n) => n.id === `agent:${cena.marina._id}`).position, null)
 })
 
+test('AMEAÇA: posição salva pelo layout ANTIGO não é lida pelo novo', async () => {
+  /**
+   * Uma posição só significa alguma coisa dentro do sistema de coordenadas em que foi
+   * gravada. O mapa era uma pilha de fileiras com vãos de 150 unidades — duzentos
+   * documentos ocupavam vinte e dois mil de largura; agora é uma nuvem por forças, com
+   * algumas centenas. Ler as duas juntas põe os poucos nós arrastados lá longe e colapsa
+   * todo o resto num ponto só, um em cima do outro. Foi o que apareceu na tela.
+   *
+   * A geração na chave resolve sem apagar nada: a linha antiga continua gravada, e apenas
+   * deixa de ser lida por um layout que não a produziu.
+   */
+  const antiga = `floor:${cena.andar._id}`
+  await pedir('PUT', '/api/knowledge/graph/layout', { viewKey: antiga, positions: [{ nodeId: `agent:${cena.marina._id}`, x: 22000, y: 9000 }] })
+
+  const g = await pedir('GET', `/api/knowledge/graph?floorId=${cena.andar._id}`)
+  assert.notEqual(g.body.viewKey, antiga, 'a visão de hoje não pode ser a mesma do layout antigo')
+  assert.equal(g.body.nodes.find((n) => n.id === `agent:${cena.marina._id}`).position, null, 'a posição antiga não entra no mapa novo')
+
+  // E o que for salvo agora é lido normalmente, na visão de hoje.
+  await pedir('PUT', '/api/knowledge/graph/layout', { viewKey: g.body.viewKey, positions: [{ nodeId: `agent:${cena.marina._id}`, x: 10, y: 20 }] })
+  const depois = await pedir('GET', `/api/knowledge/graph?floorId=${cena.andar._id}`)
+  assert.deepEqual(depois.body.nodes.find((n) => n.id === `agent:${cena.marina._id}`).position, { x: 10, y: 20 })
+})
+
 test('o layout de outra conta não é lido nem sobrescrito', async () => {
-  const viewKey = `floor:${cena.andar._id}`
+  const viewKey = (await pedir('GET', `/api/knowledge/graph?floorId=${cena.andar._id}`)).body.viewKey
   await pedir('PUT', '/api/knowledge/graph/layout', { viewKey, positions: [{ nodeId: 'agent:x', x: 1, y: 2 }] })
   sessao = 'vizinho'
   const g = await pedir('GET', `/api/knowledge/graph?floorId=${cena.andar._id}`)

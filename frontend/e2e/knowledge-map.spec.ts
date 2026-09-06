@@ -26,7 +26,7 @@ const NO = (id: string, kind: string, label: string, extra: Record<string, unkno
 })
 
 const GRAFO_COMPLETO = {
-  viewKey: `floor:${FLOOR_ID}`,
+  viewKey: `floor:${FLOOR_ID}#2`,
   documentTotal: 2,
   documentLimit: 200,
   truncated: false,
@@ -104,7 +104,7 @@ let layoutAntigo: { nodeId: string; x: number; y: number }[] | null = null
 let salvo: Record<string, unknown> | null = null
 
 async function stub(page: Page, opts: { graphStatus?: number } = {}) {
-  layoutSalvo = layoutAntigo ? { viewKey: `floor:${FLOOR_ID}`, positions: layoutAntigo } : null
+  layoutSalvo = layoutAntigo ? { viewKey: `floor:${FLOOR_ID}#2`, positions: layoutAntigo } : null
   salvo = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
 
