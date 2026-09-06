@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Card } from '../ui'
 import { buildCharacterResolver } from '../lib/agentAvatar'
 import { useKnowledgeGraph } from './useKnowledgeGraph'
-import { boundsOf, brumaDe, girar, layoutGraph, noPlanoDoMundo, projetar } from './layout'
+import { boundsOf, brumaDe, centroDe, girar, layoutGraph, noPlanoDoMundo, normalizacaoDe, projetar, raioDe, relativoAo } from './layout'
 import type { Positioned } from './layout'
 import { KnowledgeNode, RAIO } from './KnowledgeNode'
 import { KnowledgeFilters } from './KnowledgeFilters'
@@ -70,11 +70,21 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
    * tudo encolhia — e o nó nunca alcançava o ponteiro, sempre uns 30% atrás. Um laço de
    * realimentação que parece "arrasto travado" e é, na verdade, o quadro fugindo junto.
    */
-  const caixaAlvo = useMemo(() => boundsOf(posicionados), [posicionados])
-  const [caixa, setCaixa] = useState(caixaAlvo)
+  const alvo = useMemo(() => {
+    const centro = centroDe(posicionados)
+    return { centro, normal: normalizacaoDe(raioDe(posicionados, centro)), caixa: boundsOf(posicionados) }
+  }, [posicionados])
+  const [enquadramento, setEnquadramento] = useState(alvo)
   useEffect(() => {
-    if (!arrastando.current) setCaixa(caixaAlvo)
-  }, [caixaAlvo])
+    if (!arrastando.current) setEnquadramento(alvo)
+  }, [alvo])
+  const { centro, normal, caixa } = enquadramento
+
+  /** Do sistema em que a posição está gravada para o sistema em que o mapa é desenhado. */
+  const paraODesenho = useCallback((p: { x: number; y: number; z: number }) => {
+    const r = relativoAo(p, centro)
+    return { x: r.x * normal, y: r.y * normal, z: r.z * normal }
+  }, [centro, normal])
   const retratos = useMemo(
     () => buildCharacterResolver(posicionados.filter((n) => n.kind === 'agent').map((n) => n.ownerId ?? n.id)),
     [posicionados],
@@ -89,9 +99,12 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
    */
   const vistos = useMemo(() => {
     const fora = new Map<string, { x: number; y: number; escala: number; z: number }>()
-    for (const n of posicionados) fora.set(n.id, projetar(girar(n, angulo.giro, angulo.inclinacao), zoom))
+    for (const n of posicionados) fora.set(n.id, projetar(girar(paraODesenho(n), angulo.giro, angulo.inclinacao), zoom))
     return fora
-  }, [posicionados, angulo, zoom])
+    // `centro` NA LISTA. Sem ele, o enquadramento passava a usar o centro novo e a
+    // projeção continuava com o antigo: a caixa crescia para caber uma nuvem que estava
+    // sendo desenhada em outro lugar, e quatro nós ficavam fora da tela.
+  }, [posicionados, angulo, zoom, paraODesenho])
 
   /**
    * A ordem do PINTOR: o que está longe é desenhado primeiro, e o que está perto cobre.
@@ -151,8 +164,16 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
    * mandaria o nó para uma diagonal qualquer.
    */
   const noMundo = useCallback(
-    (clientX: number, clientY: number) => noPlanoDoMundo(emCoordenadas(clientX, clientY), angulo.giro, angulo.inclinacao, zoom),
-    [emCoordenadas, zoom, angulo],
+    (clientX: number, clientY: number) => {
+      // A conta acontece em torno do centro da nuvem; a posição gravada é absoluta. Somar
+      // o centro de volta é o que liga os dois sistemas.
+      // O caminho de volta, na ordem inversa: desprojeta, desfaz a normalização e soma o
+      // centro. Pular a normalização faz o nó andar na escala errada — e quanto mais
+      // espalhado o mapa salvo, mais longe do dedo ele para.
+      const p = noPlanoDoMundo(emCoordenadas(clientX, clientY), angulo.giro, angulo.inclinacao, zoom)
+      return { x: p.x / normal + centro.x, y: p.y / normal + centro.y, z: 0 }
+    },
+    [emCoordenadas, zoom, angulo, centro, normal],
   )
 
   const aoMover = (e: React.PointerEvent) => {
@@ -185,7 +206,10 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
     arrastando.current = null
     arrastandoFundo.current = null
     // Solto o nó, o quadro volta a acompanhar — inclusive para caber onde ele foi parar.
-    if (arrastava) setCaixa(boundsOf(posicionados))
+    if (arrastava) {
+      const c = centroDe(posicionados)
+      setEnquadramento({ centro: c, normal: normalizacaoDe(raioDe(posicionados, c)), caixa: boundsOf(posicionados) })
+    }
   }
 
   const iniciarArrasto = (n: Positioned) => (e: React.PointerEvent) => {
@@ -200,7 +224,11 @@ export function KnowledgeMap({ floorId, floorName }: { floorId: string; floorNam
      * quanto mais girado o mapa, mais longe.
      */
     const v = vistos.get(n.id)
-    const naTela = v ? noPlanoDoMundo(v, angulo.giro, angulo.inclinacao, zoom) : n
+    // A referência do agarre passa pelo MESMO caminho de volta que o ponteiro: desprojeta,
+    // desfaz a normalização, soma o centro. Parar no meio do caminho mistura o espaço do
+    // desenho com o espaço em que a posição é gravada, e o nó sai andando na escala errada.
+    const doDesenho = v ? noPlanoDoMundo(v, angulo.giro, angulo.inclinacao, zoom) : null
+    const naTela = doDesenho ? { x: doDesenho.x / normal + centro.x, y: doDesenho.y / normal + centro.y } : n
     arrastando.current = { nodeId: n.id, dx: p.x - naTela.x, dy: p.y - naTela.y }
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
   }

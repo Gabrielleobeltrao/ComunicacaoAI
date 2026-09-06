@@ -99,10 +99,12 @@ const IMPACTO = {
 }
 
 let layoutSalvo: { viewKey: string; positions: { nodeId: string; x: number; y: number }[] } | null = null
+/** Posições já gravadas na conta ANTES de abrir a tela — o caso de quem já usou o mapa. */
+let layoutAntigo: { nodeId: string; x: number; y: number }[] | null = null
 let salvo: Record<string, unknown> | null = null
 
 async function stub(page: Page, opts: { graphStatus?: number } = {}) {
-  layoutSalvo = null
+  layoutSalvo = layoutAntigo ? { viewKey: `floor:${FLOOR_ID}`, positions: layoutAntigo } : null
   salvo = null
   await page.addInitScript(() => window.localStorage.setItem('comunicacaoai.locale', 'pt'))
 
@@ -496,6 +498,80 @@ test('AMEAÇA: com o mapa GIRADO, o nó arrastado continua debaixo do dedo', asy
   // centro da bolinha é constante e se cancela na subtração; um erro de projeção, não.
   expect(Math.abs(parou.x - pega.x - 150)).toBeLessThan(12)
   expect(Math.abs(parou.y - pega.y - 90)).toBeLessThan(12)
+})
+
+test.afterEach(() => {
+  layoutAntigo = null
+})
+
+test('AMEAÇA: com o layout ANTIGO salvo, o mapa não fica pendurado num canto', async ({ page }) => {
+  /**
+   * Quem já usou o mapa tem posições gravadas no sistema em que foram salvas — o antigo,
+   * em fileiras, que desce centenas de unidades. Elas entram cruas por cima do resultado
+   * das forças. Com o giro e o enquadramento presos à origem, o conjunto inteiro fica
+   * fora do meio do quadro e desenhado pequeno: "o centro fica movendo, não consigo mais
+   * ver as bolinhas".
+   */
+  // Espalhado como o layout antigo espalhava de verdade: fileiras de 110 em 110, e um
+  // andar com muitos documentos passa fácil dos milhares de unidades de largura.
+  layoutAntigo = [
+    { nodeId: 'building:b1', x: 0, y: 0 },
+    { nodeId: `floor:${FLOOR_ID}`, x: 0, y: 500 },
+    { nodeId: 'sector:s1', x: 0, y: 1000 },
+    { nodeId: `agent:${MARINA}`, x: -400, y: 1500 },
+    { nodeId: `agent:${RAFAEL}`, x: 400, y: 1500 },
+    { nodeId: `document:${DOC_MARINA}`, x: -2200, y: 2000 },
+    { nodeId: `document:${DOC_ANDAR}`, x: 2200, y: 2000 },
+  ]
+  await stub(page)
+  await abrirConhecimento(page)
+  const svg = page.getByTestId('knowledge-svg')
+  await svg.hover()
+  const quadro = await svg.boundingBox()
+
+  const medir = () =>
+    page.evaluate(([x, y, w, h]) => {
+      const nos = [...document.querySelectorAll('[data-testid^="knode-"]')]
+      const centros = nos.map((n) => {
+        const r = n.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })
+      const dentro = centros.filter(
+        (c) => c.x >= (x as number) && c.x <= (x as number) + (w as number) && c.y >= (y as number) && c.y <= (y as number) + (h as number),
+      ).length
+      const meio = {
+        x: centros.reduce((t, c) => t + c.x, 0) / centros.length,
+        y: centros.reduce((t, c) => t + c.y, 0) / centros.length,
+      }
+      return { total: nos.length, dentro, desvioY: Math.abs(meio.y - ((y as number) + (h as number) / 2)) / (h as number) }
+    }, [quadro?.x ?? 0, quadro?.y ?? 0, quadro?.width ?? 0, quadro?.height ?? 0])
+
+  for (const passo of [0, 1, 2, 3]) {
+    if (passo > 0) {
+      await page.mouse.move((quadro?.x ?? 0) + 40, (quadro?.y ?? 0) + 40)
+      await page.mouse.down()
+      await page.mouse.move((quadro?.x ?? 0) + 40 + 150 * passo, (quadro?.y ?? 0) + 70, { steps: 6 })
+      await page.mouse.up()
+    }
+    const m = await medir()
+    // Todas as bolinhas dentro do quadro, em qualquer ângulo…
+    expect(m.dentro, `giro ${passo}: ${m.dentro} de ${m.total} dentro do quadro`).toBe(m.total)
+    // …e o conjunto no MEIO dele, não pendurado embaixo.
+    expect(m.desvioY, `giro ${passo}: conjunto deslocado ${(m.desvioY * 100).toFixed(0)}% da altura`).toBeLessThan(0.2)
+  }
+
+  /**
+   * E as bolinhas têm o TAMANHO de sempre.
+   *
+   * O raio do nó é uma constante em unidades do mundo, e o quadro se ajusta ao que existe.
+   * Coordenadas salvas numa escala maior — o layout antigo tem mais de mil unidades de
+   * altura — desenhavam as mesmas bolinhas a menos da metade, num quadro correto e vazio:
+   * "não consigo mais ver as bolinhas".
+   */
+  // Medido no CÍRCULO, não no grupo: a caixa do grupo inclui o nome embaixo, que é mais
+  // largo que a bolinha e esconderia justamente o encolhimento que se quer pegar.
+  const largura = (await page.getByTestId('knode-sector:s1').getByTestId('knode-base').boundingBox())?.width ?? 0
+  expect(largura, `a bolinha do setor saiu com ${largura.toFixed(0)}px`).toBeGreaterThan(28)
 })
 
 test('erro de API NÃO vira mapa vazio', async ({ page }) => {

@@ -312,7 +312,60 @@ export function noPlanoDoMundo(tela: { x: number; y: number }, giro: number, inc
 export const brumaDe = (escala: number): number => Math.max(0.55, Math.min(1, 0.32 + escala * 0.7))
 
 /**
- * A caixa do desenho — quadrada e do tamanho do RAIO do conjunto.
+ * O CENTRO da nuvem — o ponto em torno do qual ela gira e é enquadrada.
+ *
+ * Não é a origem. As forças centram o que elas mesmas resolvem, mas as posições SALVAS
+ * entram por cima, cruas, no sistema de coordenadas em que foram gravadas — inclusive as
+ * do layout antigo, em fileiras, que descem centenas de unidades. Com o centro fixo na
+ * origem, uma conta que já tinha organizado o mapa à mão via tudo pendurado num canto,
+ * metade do quadro vazio, e o conjunto balançando em torno de um ponto que não é o dele.
+ * Medido: a nuvem inteira a 381 unidades abaixo do centro do quadro.
+ */
+/**
+ * O RAIO padrão em que a nuvem é desenhada — e por que ela é NORMALIZADA para ele.
+ *
+ * As posições podem chegar em qualquer escala: as forças produzem umas centenas de
+ * unidades, mas uma posição salva vem no sistema em que foi gravada. O layout antigo
+ * espalhava documentos de 110 em 110 numa fileira só — duzentos documentos são vinte e
+ * dois mil de largura.
+ *
+ * Com a câmera a uma distância FIXA, uma nuvem desse tamanho encosta nela: a ampliação da
+ * perspectiva dispara, o quadro vai a dez mil unidades e a bolinha do setor sai com cinco
+ * pixels. Medido. Normalizar resolve os três de uma vez — a perspectiva volta a ser suave,
+ * o quadro fica do mesmo tamanho para toda conta, e o raio do nó (uma constante em
+ * unidades do mundo) volta a significar o mesmo na tela.
+ */
+export const RAIO_DE_DESENHO = 260
+
+/** O quanto multiplicar as posições para a nuvem caber no raio de desenho. */
+export const normalizacaoDe = (raio: number): number => RAIO_DE_DESENHO / Math.max(raio, 1)
+
+/** O raio da nuvem a partir do seu centro — o que a normalização precisa saber. */
+export function raioDe(nodes: Positioned[], centro: Ponto3): number {
+  if (nodes.length === 0) return RAIO_DE_DESENHO
+  return Math.max(
+    ...nodes.map((n) => {
+      const r = relativoAo(n, centro)
+      return Math.sqrt(r.x * r.x + r.y * r.y + r.z * r.z)
+    }),
+    1,
+  )
+}
+
+export function centroDe(nodes: Positioned[]): Ponto3 {
+  if (nodes.length === 0) return { x: 0, y: 0, z: 0 }
+  return {
+    x: nodes.reduce((t, n) => t + n.x, 0) / nodes.length,
+    y: nodes.reduce((t, n) => t + n.y, 0) / nodes.length,
+    z: nodes.reduce((t, n) => t + n.z, 0) / nodes.length,
+  }
+}
+
+/** Um ponto visto a partir do centro da nuvem: é nessas coordenadas que se gira e projeta. */
+export const relativoAo = (p: Ponto3, centro: Ponto3): Ponto3 => ({ x: p.x - centro.x, y: p.y - centro.y, z: p.z - centro.z })
+
+/**
+ * A caixa do desenho — quadrada e do tamanho do RAIO do conjunto, medido do centro dele.
  *
  * Quadrada de propósito: o mapa gira, e uma caixa ajustada ao contorno de agora mudaria a
  * cada grau, fazendo tudo pular de tamanho enquanto a pessoa arrasta. Um quadrado que
@@ -320,7 +373,9 @@ export const brumaDe = (escala: number): number => Math.max(0.55, Math.min(1, 0.
  */
 export function boundsOf(nodes: Positioned[]): { minX: number; minY: number; width: number; height: number } {
   if (nodes.length === 0) return { minX: -200, minY: -150, width: 400, height: 300 }
-  const raio = Math.max(...nodes.map((n) => Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z)), 140)
+  // A nuvem é normalizada antes de ser desenhada, então o raio aqui é sempre o mesmo — e o
+  // quadro, por consequência, também. Contas diferentes veem o mapa do mesmo tamanho.
+  const raio = RAIO_DE_DESENHO
   // O nó mais à frente é também o mais AMPLIADO: a caixa tem de caber o raio já projetado
   // pela escala máxima, mais o corpo da esfera e o nome embaixo dela. Folga a mais aqui
   // não é segurança — é o mapa inteiro desenhado menor do que precisava.

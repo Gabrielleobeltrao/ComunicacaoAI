@@ -9,7 +9,7 @@
 // solto, nada disso aparece numa grade. Agora as posições saem de forças, e o que se pode
 // exigir delas é o que as forças de fato garantem: parentes perto, estranhos longe.
 import { describe, expect, it } from 'vitest'
-import { boundsOf, brumaDe, desgirar, girar, layoutGraph, projetar } from '../layout'
+import { boundsOf, brumaDe, centroDe, desgirar, girar, layoutGraph, normalizacaoDe, projetar, raioDe, relativoAo } from '../layout'
 import type { GraphEdge, GraphNode } from '../../lib/knowledge'
 
 const no = (id: string, kind: GraphNode['kind'], label: string, position: GraphNode['position'] = null): GraphNode => ({ id, kind, label, position })
@@ -35,6 +35,19 @@ const ARESTAS: GraphEdge[] = [
 
 const dist = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
   Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+
+/**
+ * Do sistema em que a posição está gravada para o sistema em que o mapa é desenhado —
+ * a mesma conta que a tela faz: centrar e normalizar.
+ */
+const paraODesenho = (p: ReturnType<typeof layoutGraph>) => {
+  const centro = centroDe(p)
+  const normal = normalizacaoDe(raioDe(p, centro))
+  return (n: (typeof p)[number]) => {
+    const r = relativoAo(n, centro)
+    return { x: r.x * normal, y: r.y * normal, z: r.z * normal }
+  }
+}
 
 describe('layout do mapa de conhecimento', () => {
   it('o mesmo grafo produz sempre as mesmas posições', () => {
@@ -132,16 +145,91 @@ describe('layout do mapa de conhecimento', () => {
      * escapando da mão.
      */
     const p = layoutGraph(GRAFO, ARESTAS)
+    const desenhar = paraODesenho(p)
     const c = boundsOf(p)
     expect(c.width).toBe(c.height)
     for (const angulo of [0, 0.8, 1.9, 3.4]) {
       for (const n of p) {
-        const v = projetar(girar(n, angulo, 0.3))
+        const v = projetar(girar(desenhar(n), angulo, 0.3))
         expect(v.x).toBeGreaterThanOrEqual(c.minX)
         expect(v.x).toBeLessThanOrEqual(c.minX + c.width)
         expect(v.y).toBeGreaterThanOrEqual(c.minY)
         expect(v.y).toBeLessThanOrEqual(c.minY + c.height)
       }
+    }
+  })
+
+  it('AMEAÇA: com posições SALVAS fora do centro, o mapa continua enquadrado', () => {
+    /**
+     * As forças centram o que elas resolvem, mas a posição salva entra crua, no sistema em
+     * que foi gravada — inclusive a do layout antigo, em fileiras, que desce centenas de
+     * unidades. Com o centro preso na origem, uma conta que já tinha organizado o mapa à
+     * mão via tudo pendurado num canto, metade do quadro vazio e o conjunto balançando em
+     * torno de um ponto que não é o dele. Medido antes da correção: a nuvem inteira a 381
+     * unidades abaixo do centro do quadro.
+     */
+    const antigo = GRAFO.map((n, i) => ({ ...n, position: { x: (i % 2) * 220 - 110, y: i * 150 } }))
+    const p = layoutGraph(antigo, ARESTAS)
+    const desenhar = paraODesenho(p)
+    const c = boundsOf(p)
+
+    for (const angulo of [0, 0.9, 2.1, 3.6, 5.2]) {
+      const vistos = p.map((n) => projetar(girar(desenhar(n), angulo, 0.22)))
+      for (const v of vistos) {
+        expect(v.x).toBeGreaterThanOrEqual(c.minX)
+        expect(v.x).toBeLessThanOrEqual(c.minX + c.width)
+        expect(v.y).toBeGreaterThanOrEqual(c.minY)
+        expect(v.y).toBeLessThanOrEqual(c.minY + c.height)
+      }
+      // E o conjunto fica NO MEIO do quadro, não pendurado num canto: o centro visual
+      // nunca se afasta do centro da caixa mais que um décimo do lado dela.
+      const meio = {
+        x: vistos.reduce((t, v) => t + v.x, 0) / vistos.length,
+        y: vistos.reduce((t, v) => t + v.y, 0) / vistos.length,
+      }
+      expect(Math.abs(meio.x)).toBeLessThan(c.width * 0.1)
+      expect(Math.abs(meio.y)).toBeLessThan(c.height * 0.1)
+
+      /**
+       * E o quadro é APERTADO no conjunto.
+       *
+       * Uma caixa medida da origem, com a nuvem longe dela, fica enorme para alcançar um
+       * ponto que nem é o mais distante do grupo — e o mapa inteiro é desenhado pequeno
+       * dentro dela. "Não consigo mais ver as bolinhas" é isto: elas estão todas lá,
+       * desenhadas a metade do tamanho que caberia.
+       */
+      const maisLonge = Math.max(...vistos.map((v) => Math.max(Math.abs(v.x), Math.abs(v.y))))
+      expect(maisLonge).toBeGreaterThan(c.width * 0.28)
+    }
+  })
+
+  it('AMEAÇA: o mapa tem o MESMO tamanho, seja qual for a escala das coordenadas salvas', () => {
+    /**
+     * As posições chegam no sistema em que foram gravadas. O layout antigo espalhava
+     * documentos de 110 em 110 numa fileira só — duzentos documentos são vinte e dois mil
+     * de largura. Com a câmera a uma distância fixa, uma nuvem desse tamanho encosta nela:
+     * a ampliação da perspectiva dispara, o quadro vai a dez mil unidades e a bolinha do
+     * setor sai com CINCO pixels. Medido no navegador, e é o "não consigo mais ver as
+     * bolinhas".
+     */
+    const espalhado = GRAFO.map((n, i) => ({ ...n, position: { x: (i % 2) * 800 - 400, y: i * 500 } }))
+    const apertado = GRAFO.map((n, i) => ({ ...n, position: { x: (i % 2) * 40 - 20, y: i * 25 } }))
+
+    const quadro = (ns: typeof GRAFO) => boundsOf(layoutGraph(ns, ARESTAS)).width
+    // O quadro é o mesmo nas duas pontas: é a NUVEM que é normalizada para ele, e não o
+    // quadro que corre atrás da nuvem.
+    expect(quadro(espalhado)).toBe(quadro(apertado))
+    expect(quadro(espalhado)).toBe(quadro(GRAFO))
+
+    // E o desenho ocupa o quadro nas duas: ninguém fica do tamanho de um ponto.
+    for (const ns of [espalhado, apertado]) {
+      const p = layoutGraph(ns, ARESTAS)
+      const desenhar = paraODesenho(p)
+      const maisLonge = Math.max(...p.map((n) => {
+        const v = projetar(girar(desenhar(n), 0.4, 0.22))
+        return Math.max(Math.abs(v.x), Math.abs(v.y))
+      }))
+      expect(maisLonge).toBeGreaterThan(boundsOf(p).width * 0.28)
     }
   })
 
