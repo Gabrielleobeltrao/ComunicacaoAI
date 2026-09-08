@@ -17,6 +17,8 @@
     "jsx": "react-jsx",
 
     /* Linting */
+    /* A lista de páginas públicas é JSON: uma fonte só, lida pelo app e pelo script de build. */
+    "resolveJsonModule": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
