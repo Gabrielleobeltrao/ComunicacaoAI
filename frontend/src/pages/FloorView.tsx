@@ -91,8 +91,11 @@ export function FloorView() {
                 aria-selected={view === chave}
                 onClick={() => trocarVisao(chave)}
                 data-testid={`floor-view-${chave}`}
+                // `minHeight` inline VENCERIA a classe — foi assim que o índice da
+                // documentação continuou pequeno mesmo com `ds-hit`. Vira `height`.
+                className="ds-hit"
                 style={{
-                  minHeight: 40,
+                  height: 40,
                   padding: '0 16px',
                   borderRadius: 999,
                   border: '1px solid var(--border-subtle)',

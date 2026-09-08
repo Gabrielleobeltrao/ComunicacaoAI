@@ -198,10 +198,14 @@ export function Apps() {
             {/* CADA FILTRO É UMA PERGUNTA, e a pergunta fica escrita.
                 Eram quinze pastilhas soltas em duas fileiras sem rótulo — e duas delas,
                 "Todos" e "Tudo", com a mesma cara e significados diferentes. */}
-            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }} data-testid="apps-filtros">
+            {/* `minWidth: 0`: sem isto o `min-width: auto` de item flex deixava este bloco
+                ficar mais largo que a coluna (391 num espaço de 358) e o campo "Categoria"
+                era cortado na borda — com a rolagem interna da Origem nunca entrando em
+                ação, porque não havia o que rolar. */}
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end', minWidth: 0 }} data-testid="apps-filtros">
               {/* Larguras que ENCOLHEM: num celular os três controles empilham, e um campo
                   de largura fixa deixa uma faixa morta ao lado dele. */}
-              <label style={{ ...ROTULO, flex: '1 1 200px', maxWidth: 280 }}>
+              <label className="max-sm:!max-w-full" style={{ ...ROTULO, flex: '1 1 200px', maxWidth: 280 }}>
                 Buscar
                 <Input
                   value={search}
@@ -215,7 +219,7 @@ export function Apps() {
 
               {/* A categoria vem dos dados e cresce com o catálogo: uma fileira de pastilhas
                   quebra em duas linhas no dia em que alguém publica a décima segunda. */}
-              <label style={{ ...ROTULO, flex: '1 1 160px', maxWidth: 220 }}>
+              <label className="max-sm:!max-w-full" style={{ ...ROTULO, flex: '1 1 160px', maxWidth: 220 }}>
                 Categoria
                 <Select
                   value={category}
@@ -335,6 +339,10 @@ function SegmentoDeOrigem({
       style={{
         height: 42,
         padding: '0 14px',
+        // Sem isto o flex encolhia cada segmento até partir a palavra: "Tud|o", "Meu|s".
+        // O bloco em volta já rola para o lado; o que faltava era o botão não ceder.
+        whiteSpace: 'nowrap',
+        flex: '0 0 auto',
         border: `1px solid ${active ? 'var(--intent-brand)' : 'var(--border-strong)'}`,
         // A borda compartilhada não pode virar duas: o vizinho da direita cobre a do vizinho
         // da esquerda, e o botão ativo sobe para a frente para a dele não ser coberta.

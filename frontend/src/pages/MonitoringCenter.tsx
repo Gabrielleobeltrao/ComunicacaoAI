@@ -176,7 +176,10 @@ function VisaoGeral({ visao }: { visao: { items: OverviewItem[]; summary: Record
       <Card>
         <div className="flex flex-wrap gap-3" data-testid="monitoring-resumo">
           {(['online', 'degraded', 'paused', 'neverRead'] as const).map((k) => (
-            <div key={k} style={{ minWidth: 92 }}>
+            // 92 deixava TRÊS caberem em 326 px e a quarta descia sozinha. 120 não deixa
+            // três caberem, então no celular são duas e duas — e numa tela larga os
+            // quatro continuam na mesma linha.
+            <div key={k} style={{ minWidth: 120 }}>
               <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{visao.summary[k] ?? 0}</div>
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                 {k === 'online' ? 'no ar' : k === 'degraded' ? 'degradadas' : k === 'paused' ? 'pausadas' : 'nunca leram'}

@@ -14,6 +14,8 @@ export function Select({ options = [], children, style, ...rest }: SelectProps) 
   return (
     <span style={{ position: 'relative', display: 'block', ...style }}>
       <select
+        // Mesmo tratamento do Input: 42 no desktop, `--hit-min` sob ponteiro grosso.
+        className="ds-hit"
         style={{
           width: '100%',
           height: 42,

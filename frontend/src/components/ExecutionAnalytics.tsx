@@ -115,6 +115,7 @@ export function ExecutionAnalytics({
               key={p}
               onClick={() => setPeriod(p)}
               data-testid={`analytics-period-${p}`}
+              className="ds-hit"
               style={{
                 height: 32,
                 padding: '0 12px',
@@ -215,6 +216,7 @@ export function ExecutionAnalytics({
                   onClick={() => setGroupBy(g)}
                   data-testid={`group-${g}`}
                   aria-pressed={groupBy === g}
+                  className="ds-hit"
                   style={{
                     height: 32,
                     padding: '0 10px',
