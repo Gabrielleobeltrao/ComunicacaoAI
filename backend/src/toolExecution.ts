@@ -91,6 +91,41 @@ function fillTemplate(template: string, args: Record<string, unknown>, encode: b
   })
 }
 
+/**
+ * O corpo montado a partir de um template JSON — substituindo DEPOIS de interpretar.
+ *
+ * Costurar o valor no texto cru do template é injeção: um texto com aspa escapa da string
+ * e vira campo. Medido, com um template de chat e uma avaliação de produto como entrada:
+ *
+ *   {"messages":[{"role":"user","content":"Resuma: ótimo", "max_tokens": 99999, "lixo": ""}]}
+ *                                                          ↑ isto veio de dentro do texto
+ *
+ * O texto vem de FORA — uma avaliação, uma mensagem de cliente —, então quem escreve nele
+ * escolhe campos do corpo de qualquer ferramenta que use template. E o caso inocente é tão
+ * comum quanto: `produto "ótimo"` quebra o JSON e a chamada falha com um erro que não
+ * explica nada.
+ *
+ * Interpretando primeiro e substituindo dentro dos valores já separados, o texto não tem
+ * como virar estrutura: ele é sempre conteúdo de uma string, e o `JSON.stringify` final
+ * escapa o que precisar. Template que não é JSON continua pelo caminho de texto — nem todo
+ * corpo é JSON, e forçar escape num XML o corromperia.
+ */
+function fillJsonTemplate(template: string, args: Record<string, unknown>): string | null {
+  let arvore: unknown
+  try {
+    arvore = JSON.parse(template)
+  } catch {
+    return null
+  }
+  const substituir = (no: unknown): unknown => {
+    if (typeof no === 'string') return fillTemplate(no, args, false)
+    if (Array.isArray(no)) return no.map(substituir)
+    if (no && typeof no === 'object') return Object.fromEntries(Object.entries(no as Record<string, unknown>).map(([k, v]) => [k, substituir(v)]))
+    return no
+  }
+  return JSON.stringify(substituir(arvore))
+}
+
 export interface ExecuteToolOptions {
   // Enforced by the caller's counter; passed in so the message can be specific.
   callsSoFar?: number
@@ -211,7 +246,9 @@ export async function executeToolCall(tool: ExecutableTool, rawArgs: unknown, op
   let body: string | undefined
   const sendsBody = tool.method !== 'GET' && tool.method !== 'DELETE'
   if (sendsBody) {
-    body = tool.bodyTemplate ? fillTemplate(tool.bodyTemplate, args, false) : JSON.stringify(args)
+    // JSON primeiro: só quando o template não é JSON é que o texto cru serve — ver
+    // `fillJsonTemplate` para o porquê.
+    body = tool.bodyTemplate ? (fillJsonTemplate(tool.bodyTemplate, args) ?? fillTemplate(tool.bodyTemplate, args, false)) : JSON.stringify(args)
     if (!headers['Content-Type'] && !headers['content-type']) headers['Content-Type'] = 'application/json'
   } else {
     // GET/DELETE carry the arguments as query parameters, unless the URL template
