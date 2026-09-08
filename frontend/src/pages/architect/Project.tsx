@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 import { AppLayout } from '../../components/AppLayout'
+import { useArchitectAssistant } from '../../components/ArchitectAssistant'
 import { Badge, Button, Card, Icon } from '../../ui'
 import * as api from '../../lib/architect'
-import type { ApplyResponse, ApplyStep, ArchitectMessage, ArchitectPreview, ArchitectProject, ArchitectQuestion, BlueprintLink } from '../../lib/architect'
-import { Conversation } from './Conversation'
+import type { ApplyResponse, ApplyStep, ArchitectPreview, ArchitectProject, BlueprintLink } from '../../lib/architect'
 import { Proposal } from './Proposal'
 import { Brief } from './Brief'
 import { Checklist } from './Checklist'
@@ -37,8 +37,6 @@ const TELAS: { key: Tela; label: string }[] = [
 export function ArchitectProject() {
   const { projectId = '' } = useParams()
   const [projeto, setProjeto] = useState<ArchitectProject | null>(null)
-  const [mensagens, setMensagens] = useState<ArchitectMessage[]>([])
-  const [pergunta, setPergunta] = useState<ArchitectQuestion | null>(null)
   const [previa, setPrevia] = useState<ArchitectPreview | null>(null)
   const [links, setLinks] = useState<ApplyResponse['links']>([])
   const [pendente, setPendente] = useState(false)
@@ -51,10 +49,8 @@ export function ArchitectProject() {
   const [tela, setTela] = useState<Tela>('proposta')
   // A conversa fechada vira um botão flutuante. Estado da aba, não do servidor: é
   // preferência de quem está olhando agora.
-  const [chatAberto, setChatAberto] = useState(true)
   // A rodada automática vale UMA vez por projeto. O efeito pode ser remontado, e cada
   // remontagem seria outra chamada ao modelo — cobrada.
-  const jaIniciou = useRef<string | null>(null)
   const [passos, setPassos] = useState<ApplyStep[]>([])
   const [resultadoDesfazer, setResultadoDesfazer] = useState<{ removed: string[]; kept: { key: string; reason: string }[] } | null>(null)
 
@@ -70,61 +66,70 @@ export function ArchitectProject() {
     [],
   )
 
+  /**
+   * A PÁGINA ANDA JUNTO COM A CONVERSA.
+   *
+   * A rodada acontece no painel do Arquiteto, e é ela que monta e revisa a proposta que
+   * está DESTA tela. Sem este acompanhamento, a pessoa pedia a mudança, o painel respondia
+   * "pronto", e a proposta ao lado continuava sendo a de antes até alguém recarregar.
+   */
+  const assistente = useArchitectAssistant()
+  const doAssistente = assistente?.projeto
+  /**
+   * A CARGA INICIAL PERDE PARA A CONVERSA.
+   *
+   * As duas correm: a página pede `getProject` ao montar, e o painel pode terminar uma
+   * rodada antes dessa resposta chegar. Quando isso acontecia, a resposta atrasada —
+   * tirada de ANTES da rodada — sobrescrevia a proposta recém-montada, e a tela voltava a
+   * dizer que não havia proposta nenhuma. Quem veio da conversa é mais novo por
+   * construção; a carga inicial só vale enquanto ninguém trouxe nada melhor.
+   */
+  const veioDaConversa = useRef(false)
+  useEffect(() => {
+    if (!doAssistente || doAssistente.id !== projectId) return
+    veioDaConversa.current = true
+    // SEM comparar `updatedAt`: o objeto do painel só muda quando uma rodada terminou, e
+    // comparar carimbos fazia a página ignorar uma proposta recém-montada sempre que o
+    // servidor devolvia o mesmo instante. Quem acabou de rodar é mais novo por construção.
+    setProjeto(doAssistente)
+    // Os links vêm no mesmo objeto: sem isto, recarregar um projeto APLICADO perdia os
+    // caminhos para o que foi criado — a carga inicial que os trazia cede a vez à conversa.
+    setLinks(doAssistente.links ?? [])
+    void recarregarPrevia(doAssistente)
+  }, [doAssistente, projectId])
+
+  /**
+   * A FALHA DA CONVERSA continua chegando à página.
+   *
+   * A rodada mudou de lugar, mas a saída não pode mudar de lugar com ela: é este cartão
+   * que oferece "Abrir Configurações" quando falta chave de provedor. Sem isto a pessoa
+   * leria o problema no painel e não teria nada para clicar.
+   */
+  const erroDoAssistente = assistente?.ultimoErro
+  useEffect(() => {
+    if (erroDoAssistente) setErro(erroDoAssistente)
+  }, [erroDoAssistente])
+
   useEffect(() => {
     if (!projectId) return
-    Promise.all([api.getProject(projectId), api.listMessages(projectId)])
-      .then(async ([p, m]) => {
+    api
+      .getProject(projectId)
+      .then(async (p) => {
+        if (veioDaConversa.current) return
         setProjeto(p)
-        setMensagens(m)
         // Os links vêm do servidor, e não da memória desta aba: recarregar a página de
         // um projeto aplicado precisa reconstruir os caminhos para o que foi criado.
         setLinks(p.links ?? [])
-        if (p.pendingQuestion) setPergunta({ ...p.pendingQuestion, why: '', allowUnknown: true })
         await recarregarPrevia(p)
 
-        // A descrição já é a primeira mensagem. Sem esta rodada, a tela abria com o que
-        // a pessoa escreveu e um silêncio — ela teria que reenviar para começar.
-        if (p.status === 'discovery' && !p.hasBlueprint && !p.pendingQuestion && m.length === 1 && jaIniciou.current !== projectId) {
-          jaIniciou.current = projectId
-          await registrar(() => api.advanceTurn(projectId))
-        }
+        // A rodada de partida é do PAINEL agora: é ele que desenha a conversa, e a
+        // pergunta que ela devolve precisa chegar a quem a mostra.
       })
       .catch((e: Error) => setErro({ code: 'load', message: e.message }))
     // `registrar` depende do estado da conversa e não deve reagendar esta carga.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, recarregarPrevia])
 
-  const registrar = async (fn: () => Promise<api.TurnResponse>) => {
-    setPendente(true)
-    setErro(null)
-    try {
-      const r = await fn()
-      setProjeto(r)
-      setPergunta(r.question)
-      setMensagens(await api.listMessages(projectId))
-      await recarregarPrevia(r)
-      /**
-       * Uma revisão NÃO troca a tela.
-       *
-       * Quem pediu "muda o nome da Marina" está olhando o desenho ou a lista, e é ali
-       * que a mudança precisa aparecer — arrastar a pessoa para a Proposta a cada
-       * resposta faria a conversa disputar o lugar com o que ela mesma alterou. A tela
-       * só muda por clique na aba, ou quando a aplicação termina (aí vai para a
-       * checklist, que é o que sobra a fazer).
-       */
-    } catch (e) {
-      const err = e as api.ArchitectError
-      setErro({ code: err.code ?? 'error', message: err.message })
-      setMensagens(await api.listMessages(projectId).catch(() => mensagens))
-    } finally {
-      setPendente(false)
-    }
-  }
-
-  const enviar = (texto: string) => {
-    setMensagens((atual) => [...atual, { id: `local-${Date.now()}`, role: 'user', content: texto, createdAt: new Date().toISOString() }])
-    return registrar(() => api.sendMessage(projectId, texto))
-  }
 
   /**
    * Uma correção à mão na proposta. Não chama o modelo — e por isso o erro sobe: quem
@@ -303,18 +308,6 @@ export function ArchitectProject() {
   }
 
   const aplicado = projeto.status === 'applied'
-  const conversa = (
-    <Conversation
-      messages={mensagens}
-      question={pergunta}
-      pending={pendente}
-      // A conversa não fecha ao aplicar: é por ela que se pede o ajuste seguinte, e a
-      // rodada nova vem apoiada no que já foi criado. Só o arquivado silencia.
-      disabled={projeto.status === 'archived'}
-      onSend={enviar}
-      onGenerate={() => registrar(() => api.generateProposal(projectId))}
-    />
-  )
   const proposta = (
     <div className="flex flex-col gap-3">
       {/* O ENTENDIMENTO antes do desenho: é dele que a proposta é compilada, e é onde
@@ -474,81 +467,12 @@ export function ArchitectProject() {
           )}
         </div>
 
-        {/* A CONVERSA — uma instância só, sempre no mesmo lugar da árvore.
-            Montar uma para o desktop e outra para o celular duplicaria o estado: o que
-            você digitou numa não estaria na outra. Quem muda é a posição:
+        {/* A CONVERSA NÃO MORA MAIS AQUI.
+            Ela é o painel do Arquiteto, que nesta página se abre sozinho preso a este
+            projeto. Eram duas caixas contra dois backends: o que a pessoa dizia no painel
+            flutuante não existia para a página, e o que ela dizia aqui sumia ao sair. Uma
+            conversa só, gravada, e as duas telas são janelas para ela. */}
 
-            * sem proposta, ela é a tela (centrada, no fluxo da página);
-            * com proposta, ela vira janela flutuante no canto — fixa, então não tira
-              largura da proposta, do fluxo, do escritório nem da checklist;
-            * no celular, nunca sobrepõe: fica abaixo do conteúdo, na coluna. */}
-        <aside
-          aria-label="Conversa com o Arquiteto"
-          data-testid="architect-chat-panel"
-          className={
-            projeto.hasBlueprint
-              ? `mt-4 flex min-w-0 flex-col lg:fixed lg:bottom-6 lg:right-6 lg:z-30 lg:mt-0 lg:w-[420px] ${chatAberto ? 'lg:flex' : 'lg:hidden'}`
-              : 'mx-auto flex min-h-0 w-full min-w-0 flex-col lg:max-w-3xl'
-          }
-          style={
-            projeto.hasBlueprint
-              ? {
-                  borderRadius: 'var(--radius-card)',
-                  background: 'var(--surface-card)',
-                  border: '1px solid var(--border-subtle)',
-                  boxShadow: 'var(--shadow-raised)',
-                  maxHeight: 'min(70dvh, 640px)',
-                }
-              : undefined
-          }
-        >
-          {projeto.hasBlueprint && (
-            <div className="hidden lg:flex" style={{ alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px 0' }}>
-              <strong style={{ fontSize: 13 }}>Arquiteto</strong>
-              <button
-                type="button"
-                onClick={() => setChatAberto(false)}
-                data-testid="architect-chat-collapse"
-                aria-label="Fechar a conversa"
-                style={{ border: 0, background: 'transparent', color: 'var(--text-muted)', fontSize: 12.5, minHeight: 32, cursor: 'pointer' }}
-              >
-                Fechar
-              </button>
-            </div>
-          )}
-          <div className="flex min-h-0 flex-1 flex-col" style={projeto.hasBlueprint ? { padding: '0 14px 12px' } : undefined}>
-            {conversa}
-          </div>
-        </aside>
-
-        {/* Fechada, ela não some: viraria a perda do único caminho para pedir mudança. */}
-        {projeto.hasBlueprint && !chatAberto && (
-          <button
-            type="button"
-            onClick={() => setChatAberto(true)}
-            data-testid="architect-chat-open"
-            className="hidden lg:flex"
-            style={{
-              position: 'fixed',
-              right: 24,
-              bottom: 24,
-              zIndex: 30,
-              alignItems: 'center',
-              gap: 8,
-              padding: '12px 18px',
-              borderRadius: 999,
-              border: '1px solid var(--border-subtle)',
-              background: 'var(--intent-brand)',
-              color: '#fff',
-              fontSize: 13.5,
-              minHeight: 44,
-              boxShadow: 'var(--shadow-raised)',
-              cursor: 'pointer',
-            }}
-          >
-            <Icon name="message-circle" size={16} /> Abrir Arquiteto
-          </button>
-        )}
       </div>
 
       {previa && (
