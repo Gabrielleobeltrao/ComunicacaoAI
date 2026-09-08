@@ -285,7 +285,20 @@ export function ArchitectAssistantProvider({ children }: { children: ReactNode }
     setProjeto(p)
     // `getProject` não devolve `question` — quem tem pergunta aberta é `pendingQuestion`,
     // gravada no projeto. É a mesma leitura que a página do projeto faz ao abrir.
-    setPergunta(p.pendingQuestion ? { ...p.pendingQuestion, why: '', allowUnknown: true } : null)
+    /**
+     * As OPÇÕES sobrevivem ao recarregamento.
+     *
+     * Antes, reabrir a página no meio de uma pergunta de escolha fechada devolvia o texto
+     * sem os botões — e "agente ou função?" virava um campo aberto onde qualquer frase
+     * responde, inclusive uma que o servidor vai ignorar. `allowUnknown` só continua
+     * valendo quando não há opções: numa escolha entre duas formas, "não sei ainda" não é
+     * resposta, é a proposta parada.
+     */
+    setPergunta(
+      p.pendingQuestion
+        ? { ...p.pendingQuestion, why: '', choices: p.pendingQuestion.choices ?? [], allowUnknown: !p.pendingQuestion.choices?.length }
+        : null,
+    )
     setMensagens(linhas.map(daLinha))
     return p
   }, [])

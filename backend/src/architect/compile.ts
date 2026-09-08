@@ -96,8 +96,13 @@ export function compileBrief(
   base: { title: string; objective: string },
   /** O que a conta já tem. Sem isto, todo pedido abria um andar próprio. */
   inventory: OfficeInventory | null = null,
+  /**
+   * O que a pessoa RESPONDEU. `forma:<jobId>` é a escolha entre agente, função,
+   * ferramenta e rotina — e ela vence a recomendação da regra.
+   */
+  answers: Record<string, unknown> = {},
 ): CompileResult {
-  const classification = classifyBrief(brief, manifest)
+  const classification = classifyBrief(brief, manifest, answers)
   const bp: OfficeBlueprintV1 = emptyBlueprint(base.title, brief.businessGoal || base.objective)
   const pending: CompileResult['pending'] = []
   const jobs: CompiledJob[] = []

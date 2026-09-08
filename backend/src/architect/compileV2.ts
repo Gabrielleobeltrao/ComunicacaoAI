@@ -43,6 +43,8 @@ export interface CompileV2Input {
    * `resourceMap`. Recebendo os andares prontos, os dois documentos descrevem UM escritório.
    */
   floors?: { key: string; name: string; action?: 'create' | 'reuse'; resourceId?: string | null }[]
+  /** O que a pessoa respondeu — `forma:<jobId>` decide agente x função x ferramenta. */
+  answers?: Record<string, unknown>
 }
 
 export interface CompileV2Result {
@@ -286,7 +288,7 @@ export function areasOf(brief: OperationBrief): string[] {
 
 export function compileBriefV2(input: CompileV2Input): CompileV2Result {
   const { brief, manifest, inventory, base, changeKind } = input
-  const classification = classifyBrief(brief, manifest)
+  const classification = classifyBrief(brief, manifest, input.answers ?? {})
   const bp = emptyBlueprintV2(base.title, brief.businessGoal || base.objective, changeKind)
   const pending: CompileV2Result['pending'] = []
 
