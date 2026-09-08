@@ -139,6 +139,37 @@ export function formaPedida(job: BriefJob): ResourceKind | null {
   return null
 }
 
+/**
+ * HÁ DÚVIDA REAL entre o que a regra recomenda e o que a pessoa pediu?
+ *
+ * Perguntar em toda divergência é quase tão ruim quanto trocar em silêncio: "agente" é
+ * como muita gente diz "quero que o sistema faça isso", e virar uma escolha de arquitetura
+ * a cada uso da palavra enche a conversa de degraus que não mudam nada.
+ *
+ * Duas coisas, e as duas são medíveis:
+ *
+ *   1. A RECOMENDAÇÃO NÃO SE SUSTENTA. A regra pede função e não existe função registrada
+ *      que faça aquilo; pede ferramenta e nenhum App serve. Recomendar o que não dá para
+ *      construir é justamente o caso em que a alternativa merece ser considerada.
+ *   2. A DESCRIÇÃO APOIA O PEDIDO. A pessoa escreveu "agente" e o trabalho tem julgamento
+ *      no texto; escreveu "ferramenta" e há ação em sistema. Aí a palavra foi escolha, e
+ *      não modo de falar.
+ *
+ * Fora disso a regra decide e segue. Não perguntar não é o mesmo que não contar: o que foi
+ * recusado e por quê continua em `rejected`, e a proposta mostra.
+ */
+export function haDuvidaDeForma(job: BriefJob, decisao: ResourceDecision, pedida: ResourceKind): boolean {
+  if (decisao.kind === pedida) return false
+  if (!decisao.resolved) return true
+  const alvo = texto(job)
+  const temDecisao = Boolean(job.decision && job.decision.trim())
+  if (pedida === 'agent') return JULGAMENTO.test(alvo) || CONVERSA.test(alvo) || temDecisao
+  if (pedida === 'tool') return ACAO_EXTERNA.test(alvo)
+  if (pedida === 'routine') return VIGILANCIA.test(alvo) || Boolean(job.frequency && CADENCIA.test(job.frequency))
+  if (pedida === 'function') return CALCULO.test(alvo)
+  return false
+}
+
 /** As formas que uma pessoa escolhe para um trabalho. `sector` não é uma delas. */
 const FORMAS_ESCOLHIVEIS: readonly ResourceKind[] = ['agent', 'function', 'tool', 'routine']
 

@@ -266,3 +266,51 @@ test('respondida a favor da regra, nada muda — e a pergunta não volta', () =>
   assert.equal(classifyBrief(brief, manifesto, { 'forma:j1': 'function' }).decisions[0].kind, 'function')
   assert.equal(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'), undefined, 'a pergunta respondida voltou')
 })
+
+// --- a pergunta só quando há DÚVIDA -----------------------------------------------------
+//
+// Perguntar em toda divergência é quase tão ruim quanto trocar em silêncio: "agente" é
+// como muita gente diz "quero que o sistema faça isso", e transformar cada uso da palavra
+// numa escolha de arquitetura enche a conversa de degraus que não mudam nada.
+//
+// Dúvida é uma coisa MEDÍVEL, e são duas:
+//
+//   1. a recomendação não se sustenta — a regra pede uma função e não existe função
+//      registrada que faça aquilo, ou pede ferramenta e nenhum App serve. Recomendar o que
+//      não dá para construir é o caso em que a alternativa merece ser considerada;
+//   2. a descrição da pessoa APOIA a forma que ela pediu — ela escreveu "agente" e o
+//      trabalho tem julgamento no texto. Aí a palavra foi escolha, não modo de falar.
+//
+// Fora disso a regra decide e segue, e o porquê continua na proposta em `rejected`: não
+// perguntar não é o mesmo que não contar.
+
+test('SEM dúvida: cálculo puro com função registrada não vira pergunta', () => {
+  // A função `lista.ordenar` existe e o trabalho a nomeia; nada no texto sugere julgamento.
+  // A regra está certa e sozinha — perguntar aqui é degrau à toa.
+  const j = job({ id: 'j1', name: 'quero um agente que faça ordenar a lista de preços', action: 'ordenar a lista' })
+  const brief = { ...emptyBrief('médias'), jobs: [j] }
+  assert.equal(classifyJob(j, manifesto).resolved, true, 'a recomendação tinha de estar resolvida')
+  assert.equal(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'), undefined)
+})
+
+test('COM dúvida: a recomendação não se sustenta — não há função que faça a conta', () => {
+  const j = job({ id: 'j1', name: 'quero um agente que calcule o índice de satisfação', action: 'calcular o índice de satisfação' })
+  const brief = { ...emptyBrief('satisfação'), jobs: [j] }
+  const decisao = classifyJob(j, manifesto)
+  assert.equal(decisao.kind, 'function')
+  assert.equal(decisao.resolved, false, 'nenhuma função registrada faz isto')
+  assert.ok(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'), 'com recomendação sem lastro, tem de perguntar')
+})
+
+test('COM dúvida: o texto da pessoa APOIA a forma que ela pediu', () => {
+  // "avaliar" é julgamento; "quero um agente" deixa de ser modo de falar.
+  const j = job({ id: 'j1', name: 'quero um agente que consulte o pedido e avalie se cabe reembolso', action: 'consultar o pedido' })
+  const brief = { ...emptyBrief('reembolso'), jobs: [j] }
+  assert.ok(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'))
+})
+
+test('SEM dúvida: pediu ferramenta e a regra deu ferramenta — nada a perguntar', () => {
+  const j = job({ id: 'j1', name: 'crie uma ferramenta para consultar o pedido na Nuvemshop', action: 'consultar pedido' })
+  const brief = { ...emptyBrief('pedidos'), jobs: [j] }
+  assert.equal(detectGaps(brief, manifesto).find((g) => g.id === 'forma:j1'), undefined)
+})

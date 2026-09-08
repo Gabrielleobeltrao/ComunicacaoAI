@@ -1,6 +1,6 @@
 import type { ArchitectCapabilityManifest } from './capabilities.js'
 import type { OperationBrief } from './brief.js'
-import { classifyJob, formaPedida } from './classify.js'
+import { classifyJob, formaPedida, haDuvidaDeForma } from './classify.js'
 
 // QUAL pergunta fazer agora — decidido pelo servidor, não pelo modelo.
 //
@@ -74,9 +74,12 @@ export function detectGaps(brief: OperationBrief, manifest: ArchitectCapabilityM
   for (const job of brief.jobs) {
     const pedida = formaPedida(job)
     if (!pedida) continue
-    const decidida = classifyJob(job, manifest).kind
+    const decisao = classifyJob(job, manifest)
+    const decidida = decisao.kind
     if (decidida === pedida) continue
     if (jaSabido(brief, `forma:${job.id}`)) continue
+    // E só quando a decisão é DE FATO apertada — ver `haDuvidaDeForma`.
+    if (!haDuvidaDeForma(job, decisao, pedida)) continue
     lacunas.push({
       id: `forma:${job.id}`,
       question: `Para "${job.name.slice(0, 60)}": ${NOME_DA_FORMA[decidida]} ou ${NOME_DA_FORMA[pedida]}?`,
