@@ -88,11 +88,13 @@ function Indice({ atual }: { atual?: string }) {
               to={`/docs/${p.slug}`}
               data-testid={`docs-link-${p.slug}`}
               aria-current={atual === p.slug ? 'page' : undefined}
+              className="ds-hit"
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                minHeight: 36,
-                padding: '0 8px',
+                // Sem `minHeight` em linha: ele venceria o `ds-hit` e o alvo ficaria em 36
+                // no celular. O respiro do desktop vem do padding.
+                padding: '8px',
                 borderRadius: 8,
                 fontSize: 14,
                 textDecoration: 'none',
@@ -110,8 +112,19 @@ function Indice({ atual }: { atual?: string }) {
   )
 }
 
+/**
+ * Tem espaço para a coluna lateral?
+ *
+ * Lido UMA vez, no primeiro render, e não por observador de tamanho: o que se decide aqui
+ * é o estado inicial de um `<details>` que a pessoa pode abrir e fechar. Reagir a cada
+ * mudança de largura desfaria a escolha dela no meio da leitura, que é pior do que a
+ * imprecisão de girar o telefone e ter de tocar de novo.
+ */
+const temEspacoParaColuna = () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
+
 export function Docs() {
   const { slug } = useParams<{ slug: string }>()
+  const [temColuna] = useState(temEspacoParaColuna)
   const [termo, setTermo] = useState('')
   const resultados = useMemo(() => buscar(termo), [termo])
   const pagina = slug ? paginaPorSlug(slug) : undefined
@@ -153,6 +166,11 @@ export function Docs() {
             aria-label="Buscar na documentação"
             data-testid="docs-busca"
           />
+          {/* NO CELULAR o índice fica dobrado.
+              Empilhado acima do texto, ele empurrava o título da página para 609 px numa
+              tela de 844 — abrir um artigo e ver a busca mais seis links antes da primeira
+              linha. O `open` inicial é lido do tamanho da tela uma vez: quem tem coluna
+              lateral continua com o índice aberto, quem não tem abre com um toque. */}
           {termo.trim().length >= 2 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }} data-testid="docs-resultados">
               {resultados.length === 0 ? (
@@ -169,7 +187,17 @@ export function Docs() {
               )}
             </div>
           ) : (
-            <Indice atual={pagina?.slug} />
+            <details open={temColuna} data-testid="docs-indice-dobra" style={{ borderRadius: 10 }}>
+              <summary
+                className="ds-hit lg:hidden"
+                style={{ display: 'flex', alignItems: 'center', fontSize: 13.5, fontWeight: 700, color: 'var(--text-heading)', cursor: 'pointer', listStyle: 'none' }}
+              >
+                Nesta documentação
+              </summary>
+              <div style={{ paddingTop: 8 }}>
+                <Indice atual={pagina?.slug} />
+              </div>
+            </details>
           )}
         </aside>
 
@@ -181,14 +209,14 @@ export function Docs() {
               </article>
               <div className="flex flex-wrap justify-between gap-3" style={{ marginTop: 36, paddingTop: 18, borderTop: '1px solid var(--border-subtle)' }}>
                 {anterior ? (
-                  <Link to={`/docs/${anterior.slug}`} data-testid="docs-anterior" style={{ fontSize: 14, color: 'var(--text-link)' }}>
+                  <Link to={`/docs/${anterior.slug}`} data-testid="docs-anterior" className="ds-hit inline-flex items-center" style={{ fontSize: 14, color: 'var(--text-link)' }}>
                     ← {anterior.titulo}
                   </Link>
                 ) : (
                   <span />
                 )}
                 {proxima ? (
-                  <Link to={`/docs/${proxima.slug}`} data-testid="docs-proxima" style={{ fontSize: 14, color: 'var(--text-link)' }}>
+                  <Link to={`/docs/${proxima.slug}`} data-testid="docs-proxima" className="ds-hit inline-flex items-center" style={{ fontSize: 14, color: 'var(--text-link)' }}>
                     {proxima.titulo} →
                   </Link>
                 ) : (

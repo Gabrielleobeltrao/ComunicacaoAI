@@ -15,8 +15,11 @@ export function Input({ icon, invalid, style, ...rest }: InputProps) {
         <Icon name={icon} size={16} color="var(--text-faint)" style={{ position: 'absolute', left: 13, top: 13 }} />
       ) : null}
       <input
+        className="ds-hit"
         style={{
           width: '100%',
+          // 42 no desktop; sob ponteiro grosso o `ds-hit` leva ao mínimo tocável. Dois
+          // pixels parecem nada e são a diferença entre acertar e errar o campo no ônibus.
           height: 42,
           padding: icon ? '0 14px 0 38px' : '0 14px',
           borderRadius: 'var(--radius-control)',
